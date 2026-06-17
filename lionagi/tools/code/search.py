@@ -46,7 +46,7 @@ class SearchRequest(BaseModel):
             "For 'find': a shell glob pattern to match filenames (e.g. '*.py', 'test_*')."
         ),
     )
-    path: str = Field(
+    path: str | None = Field(
         default=".",
         description=(
             "File or directory to search. Defaults to '.' (current directory). "
@@ -61,7 +61,7 @@ class SearchRequest(BaseModel):
             "(e.g. '*.py'). Passed as --include to grep."
         ),
     )
-    max_results: int = Field(
+    max_results: int | None = Field(
         default=50,
         description=(
             "Maximum number of results to return. "
@@ -185,9 +185,13 @@ class SearchTool(LionTool):
         if isinstance(request, dict):
             request = SearchRequest(**request)
 
+        # Callers (LLM tool calls) may send explicit null for optional fields; treat as defaults.
+        path = request.path or "."
+        max_results = request.max_results or 50
+
         # Validate path before launching subprocess (fail-closed)
         try:
-            _validate_search_path(request.path, self._workspace_root)
+            _validate_search_path(path, self._workspace_root)
         except PermissionError as exc:
             return SearchResponse(success=False, error=str(exc), count=0)
 
@@ -195,17 +199,17 @@ class SearchTool(LionTool):
             return await run_sync(
                 _grep_sync,
                 request.pattern,
-                request.path,
+                path,
                 request.include,
-                request.max_results,
+                max_results,
                 self._workspace_root,
             )
         if request.action == SearchAction.find:
             return await run_sync(
                 _find_sync,
-                request.path,
+                path,
                 request.pattern,
-                request.max_results,
+                max_results,
                 self._workspace_root,
             )
         return SearchResponse(success=False, error="Unknown action", count=0)
