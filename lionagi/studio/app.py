@@ -12,6 +12,7 @@ from starlette.responses import FileResponse, JSONResponse
 from starlette.staticfiles import StaticFiles
 
 from .config import CORS_ORIGINS, HOST
+from .registry import iter_studio_routes, load_studio_route_modules
 from .routers import (
     admin,
     agents,
@@ -145,6 +146,29 @@ async def require_studio_bearer_token(request: Request, call_next):
             return JSONResponse({"detail": "Unauthorized"}, status_code=401)
     return await call_next(request)
 
+
+# Mount routes registered via the @studio_route decorator. In phase 0 the
+# registry is empty (_STUDIO_ROUTE_MODULES = ()), so this loop adds nothing
+# and observable behavior is unchanged. Future phases append area modules to
+# _STUDIO_ROUTE_MODULES so their routes are registered here instead of via
+# include_router.
+load_studio_route_modules()
+for _route in iter_studio_routes():
+    app.add_api_route(
+        f"/api{_route.path}",
+        _route.handler,
+        methods=[_route.method],
+        response_model=_route.response_model,
+        dependencies=list(_route.dependencies),
+        status_code=_route.status_code,
+        tags=list(_route.tags),
+        name=_route.name,
+        summary=_route.summary,
+        description=_route.description,
+        response_class=_route.response_class,
+        responses=dict(_route.responses) if _route.responses is not None else None,
+        include_in_schema=_route.include_in_schema,
+    )
 
 app.include_router(casts.router, prefix="/api")
 app.include_router(runs.router, prefix="/api")
