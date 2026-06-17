@@ -13,7 +13,7 @@ from lionagi.service.connections.endpoint import Endpoint
 from lionagi.service.connections.endpoint_config import EndpointConfig
 from lionagi.utils import is_import_installed
 
-from .._config import OllamaConfigs
+from .._config import OllamaConfigs, _setup_ollama_endpoint
 
 __all__ = ("OllamaGenerateEndpoint",)
 
@@ -27,15 +27,7 @@ class OllamaGenerateEndpoint(Endpoint):
     """Ollama /api/generate endpoint; supports context for multi-turn and base models without chat templates."""
 
     def __init__(self, config: EndpointConfig = None, **kwargs):
-        if not _HAS_OLLAMA:
-            raise ModuleNotFoundError(
-                "ollama is not installed, please install it with `pip install lionagi[ollama]`"
-            )
-        # Ollama does not need an API key
-        kwargs.pop("api_key", None)
-        # Ollama runs on the local machine; allow loopback addresses in the SSRF
-        # guard while keeping all other blocked ranges (IMDS etc.) enforced.
-        kwargs.setdefault("allow_local_network", True)
+        _setup_ollama_endpoint(_HAS_OLLAMA, kwargs)
         super().__init__(config=config, **kwargs)
 
     def create_payload(
