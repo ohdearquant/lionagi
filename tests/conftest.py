@@ -54,13 +54,20 @@ _OPTIONAL_DEPS = (
 
 
 def _missing_optional_dep(exc):
-    """Return the dep message if exc (or its cause chain) is a missing-optional-dep, else None."""
+    """Return the dep message if exc (or its cause chain) names a missing OPTIONAL extra, else None.
+
+    Gated on _OPTIONAL_DEPS: a missing required/internal import (e.g. a typo or a
+    broken core dependency like orjson) is NOT a missing-optional-dep and must still
+    fail loudly rather than be silently skipped.
+    """
     seen = set()
     while exc is not None and id(exc) not in seen:
         seen.add(id(exc))
-        if isinstance(exc, ModuleNotFoundError):
-            return str(exc)
-        if any(h in str(exc).lower() for h in _MISSING_DEP_HINTS):
+        low = str(exc).lower()
+        is_missing = isinstance(exc, ModuleNotFoundError) or any(
+            h in low for h in _MISSING_DEP_HINTS
+        )
+        if is_missing and any(d in low for d in _OPTIONAL_DEPS):
             return str(exc)
         exc = exc.__cause__ or exc.__context__
     return None

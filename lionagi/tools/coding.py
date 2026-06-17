@@ -21,6 +21,7 @@ from ._subprocess import _SHELL_CONTROL, _subprocess_sync
 from .base import LionTool
 from .code.bash import BashRequest
 from .code.check import CodeCheckRequest, _resolve_check_paths, _ruff_check_sync
+from .code.search import SearchAction as SearchAction  # re-export: preserves the public API
 from .code.search import SearchRequest
 from .context.context import ContextRequest, ContextTool
 from .file.editor import EditorRequest, _write_text_no_follow
