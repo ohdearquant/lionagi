@@ -20,7 +20,7 @@ from typing import Any, Literal
 from pydantic import BaseModel, Field, field_validator, model_validator
 
 from lionagi import ln
-from lionagi.libs.path_safety import check_paths_safe
+from lionagi.libs.path_safety import check_paths_safe, contain_and_resolve
 from lionagi.libs.path_safety import contain_paths_in_root as contain_paths_in_repo
 from lionagi.libs.schema.as_readable import as_readable
 from lionagi.ln.concurrency.utils import maybe_await
@@ -157,18 +157,7 @@ class GeminiCodeRequest(BaseModel):
         if ".." in ws_path.parts:
             raise ValueError(f"Directory traversal detected in workspace path: {self.ws}")
 
-        repo_resolved = self.repo.resolve()
-        result = (self.repo / ws_path).resolve()
-
-        try:
-            result.relative_to(repo_resolved)
-        except ValueError:
-            raise ValueError(
-                f"Workspace path escapes repository bounds. "
-                f"Repository: {repo_resolved}, Workspace: {result}"
-            ) from None
-
-        return result
+        return contain_and_resolve(ws_path, self.repo)
 
     def as_cmd_args(self) -> list[str]:
         args: list[str] = ["-p", self.prompt, "--output-format", "stream-json"]
