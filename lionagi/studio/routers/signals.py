@@ -11,10 +11,10 @@ import time
 from typing import Any
 
 from fastapi import APIRouter, HTTPException
-from starlette.responses import StreamingResponse
 
 from ..services import sessions as sessions_svc
 from ..services import signals as signals_svc
+from ._sse import sse_response
 
 router = APIRouter(prefix="/sessions", tags=["sessions"])
 
@@ -53,12 +53,4 @@ async def stream_signals(session_id: str) -> Any:
 
             await asyncio.sleep(0.5)
 
-    return StreamingResponse(
-        generate(),
-        media_type="text/event-stream",
-        headers={
-            "Cache-Control": "no-cache",
-            "Connection": "keep-alive",
-            "X-Accel-Buffering": "no",
-        },
-    )
+    return sse_response(generate())

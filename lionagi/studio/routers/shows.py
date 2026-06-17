@@ -3,9 +3,9 @@ from __future__ import annotations
 from typing import Any
 
 from fastapi import APIRouter, HTTPException
-from starlette.responses import StreamingResponse
 
 from ..services import shows as shows_svc
+from ._sse import sse_response
 
 router = APIRouter(prefix="/shows", tags=["shows"])
 
@@ -37,12 +37,4 @@ async def stream_show(topic: str):
     """SSE stream of file changes under one show directory."""
     if await shows_svc.get_show(topic) is None:
         raise HTTPException(status_code=404, detail=f"Show '{topic}' not found")
-    return StreamingResponse(
-        shows_svc.watch_show(topic),
-        media_type="text/event-stream",
-        headers={
-            "Cache-Control": "no-cache",
-            "Connection": "keep-alive",
-            "X-Accel-Buffering": "no",
-        },
-    )
+    return sse_response(shows_svc.watch_show(topic))

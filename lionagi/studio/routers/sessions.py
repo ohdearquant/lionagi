@@ -6,9 +6,9 @@ import time
 from typing import Any
 
 from fastapi import APIRouter, HTTPException  # HTTPException used for 404 guards
-from starlette.responses import StreamingResponse
 
 from ..services import sessions as sessions_svc
+from ._sse import sse_response
 
 router = APIRouter(prefix="/sessions", tags=["sessions"])
 
@@ -60,12 +60,4 @@ async def stream_session(session_id: str):
 
             await asyncio.sleep(0.5)
 
-    return StreamingResponse(
-        generate(),
-        media_type="text/event-stream",
-        headers={
-            "Cache-Control": "no-cache",
-            "Connection": "keep-alive",
-            "X-Accel-Buffering": "no",
-        },
-    )
+    return sse_response(generate())
