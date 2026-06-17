@@ -10,9 +10,13 @@ import time
 import uuid
 from typing import Any
 
+from fastapi import HTTPException
+from pydantic import BaseModel
+
 from lionagi.state.db import StateDB
 
 from .. import config
+from ..registry import studio_route
 from ..scheduler.subprocess import build_argv
 from ..services.schedules import (
     _svc_validate_action_model,
@@ -218,3 +222,29 @@ async def _spawn_detached(argv: list[str], inv_id: str, *, tmp_path: str | None)
             )
     except Exception:
         _log.exception("Failed to update invocation %s after detached launch", inv_id)
+
+
+class LaunchRequest(BaseModel):
+    action_kind: str
+    action_model: str | None = None
+    action_prompt: str | None = None
+    action_agent: str | None = None
+    action_playbook: str | None = None
+    action_project: str | None = None
+    action_flow_yaml: str | None = None
+    action_engine_def: str | None = None
+    action_extra_args: list[str] | None = None
+
+
+@studio_route("/launches/", method="POST", area="launches", status_code=202)
+async def launch_run(body: LaunchRequest) -> dict[str, Any]:
+    """Fire an orchestration run immediately; process runs detached.
+
+    Returns invocation_id; monitor via GET /api/invocations/{id} and GET /api/sessions/{id}/signals.
+    """
+    try:
+        return await launch(body.model_dump(exclude_none=True))
+    except TooManyLaunchesError as exc:
+        raise HTTPException(status_code=429, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc

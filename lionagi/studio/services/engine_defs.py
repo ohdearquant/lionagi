@@ -10,7 +10,12 @@ import time
 import uuid
 from typing import Any
 
+from fastapi import HTTPException, Query
+from pydantic import BaseModel
+
 from lionagi.state.db import DEFAULT_DB_PATH, StateDB
+
+from ..registry import studio_route
 
 
 class NameConflictError(Exception):
@@ -197,3 +202,76 @@ async def update_engine_def(def_id: str, fields: dict[str, Any]) -> bool:
 async def delete_engine_def(def_id: str) -> bool:
     async with StateDB() as db:
         return await db.delete_engine_def(def_id)
+
+
+class CreateEngineDefRequest(BaseModel):
+    name: str
+    kind: str
+    model: str | None = None
+    max_depth: int | None = None
+    max_agents: int | None = None
+    options: dict[str, str] | None = None
+    description: str | None = None
+
+
+class UpdateEngineDefRequest(BaseModel):
+    name: str | None = None
+    kind: str | None = None
+    model: str | None = None
+    max_depth: int | None = None
+    max_agents: int | None = None
+    options: dict[str, str] | None = None
+    description: str | None = None
+
+
+@studio_route("/engine-defs/", method="GET", area="engine-defs", name="list_engine_defs")
+async def list_engine_defs_route(
+    kind: str | None = Query(default=None),
+    limit: int = Query(default=100, ge=1, le=200),
+    offset: int = Query(default=0, ge=0),
+) -> list[dict[str, Any]]:
+    return await list_engine_defs(kind=kind, limit=limit, offset=offset)
+
+
+@studio_route(
+    "/engine-defs/", method="POST", area="engine-defs", status_code=201, name="create_engine_def"
+)
+async def create_engine_def_route(body: CreateEngineDefRequest) -> dict[str, Any]:
+    try:
+        return await create_engine_def(body.model_dump(exclude_none=True))
+    except NameConflictError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+
+@studio_route("/engine-defs/{def_id}", method="GET", area="engine-defs", name="get_engine_def")
+async def get_engine_def_route(def_id: str) -> dict[str, Any]:
+    data = await get_engine_def(def_id)
+    if data is None:
+        raise HTTPException(status_code=404, detail=f"Engine definition '{def_id}' not found")
+    return data
+
+
+@studio_route("/engine-defs/{def_id}", method="PUT", area="engine-defs", name="update_engine_def")
+async def update_engine_def_route(def_id: str, body: UpdateEngineDefRequest) -> dict[str, Any]:
+    fields = body.model_dump(exclude_none=True)
+    try:
+        ok = await update_engine_def(def_id, fields)
+    except NameConflictError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    if not ok:
+        raise HTTPException(status_code=404, detail=f"Engine definition '{def_id}' not found")
+    return {"ok": True}
+
+
+@studio_route(
+    "/engine-defs/{def_id}", method="DELETE", area="engine-defs", name="delete_engine_def"
+)
+async def delete_engine_def_route(def_id: str) -> dict[str, Any]:
+    ok = await delete_engine_def(def_id)
+    if not ok:
+        raise HTTPException(status_code=404, detail=f"Engine definition '{def_id}' not found")
+    return {"ok": True}

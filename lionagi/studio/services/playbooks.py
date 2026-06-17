@@ -1,12 +1,16 @@
 from __future__ import annotations
 
-from typing import Any
+from functools import partial
+from typing import Annotated, Any
 
+import anyio
 import yaml
+from fastapi import Body, HTTPException
 
 from lionagi._paths import LIONAGI_HOME
 from lionagi.service.providers import EFFORT_LEVELS as _VALID_EFFORT_LEVELS
 
+from ..registry import studio_route
 from ._path_safety import public_path, safe_path_join
 
 _PLAYBOOKS_ROOT = LIONAGI_HOME / "playbooks"
@@ -249,3 +253,57 @@ def validate_playbook(name: str, data: dict[str, Any]) -> dict[str, Any]:
             errors.append(f"link {i}: 'to' references unknown step '{to}'")
 
     return {"ok": len(errors) == 0, "errors": errors or None}
+
+
+@studio_route("/playbooks/", method="GET", area="playbooks", name="list_playbooks")
+async def list_playbooks_route() -> dict[str, Any]:
+    playbooks = await anyio.to_thread.run_sync(list_playbooks)
+    return {"playbooks": playbooks}
+
+
+@studio_route("/playbooks/{name}", method="GET", area="playbooks", name="get_playbook")
+async def get_playbook_route(name: str) -> dict[str, Any]:
+    pb = await anyio.to_thread.run_sync(partial(get_playbook, name))
+    if pb is None:
+        raise HTTPException(status_code=404, detail=f"Playbook '{name}' not found")
+    return pb
+
+
+@studio_route("/playbooks/{name}", method="POST", area="playbooks")
+async def create_playbook(name: str) -> dict[str, Any]:
+    # TODO(lift-backend-writes)
+    raise HTTPException(status_code=501, detail="Not implemented")
+
+
+@studio_route("/playbooks/{name}", method="PUT", area="playbooks", name="update_playbook")
+async def update_playbook_route(
+    name: str, body: Annotated[dict[str, Any], Body(...)]
+) -> dict[str, Any]:
+    try:
+        updated = await anyio.to_thread.run_sync(partial(update_playbook, name, body))
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    if updated is None:
+        raise HTTPException(status_code=404, detail=f"Playbook '{name}' not found")
+    return updated
+
+
+@studio_route("/playbooks/{name}", method="DELETE", area="playbooks")
+async def delete_playbook(name: str) -> dict[str, Any]:
+    # TODO(lift-backend-writes)
+    raise HTTPException(status_code=501, detail="Not implemented")
+
+
+@studio_route(
+    "/playbooks/{name}/validate", method="POST", area="playbooks", name="validate_playbook"
+)
+async def validate_playbook_route(
+    name: str, body: Annotated[dict[str, Any], Body(...)]
+) -> dict[str, Any]:
+    return validate_playbook(name, body)
+
+
+@studio_route("/playbooks/{name}/run", method="POST", area="playbooks")
+async def run_playbook(name: str) -> dict[str, Any]:
+    # TODO(lift-backend-writes)
+    raise HTTPException(status_code=501, detail="Not implemented")

@@ -43,7 +43,22 @@ _DEDUP_KEYS: set[tuple[str, str, str, str]] = set()
 # contractual order: casts, runs, engine_runs, sessions, definitions, agents,
 # playbooks, shows, skills, plugins, admin, teams, invocations, launches,
 # projects, schedules, engine_defs, stats.
-_STUDIO_ROUTE_MODULES: tuple[str, ...] = ()
+_STUDIO_ROUTE_MODULES: tuple[str, ...] = (
+    "lionagi.studio.services.casts",
+    "lionagi.studio.services.runs",
+    "lionagi.studio.services.engine_runs",
+    "lionagi.studio.services.definitions",
+    "lionagi.studio.services.agents",
+    "lionagi.studio.services.playbooks",
+    "lionagi.studio.services.shows",
+    "lionagi.studio.services.skills",
+    "lionagi.studio.services.plugins",
+    "lionagi.studio.services.teams",
+    "lionagi.studio.services.invocations",
+    "lionagi.studio.services.launches",
+    "lionagi.studio.services.projects",
+    "lionagi.studio.services.engine_defs",
+)
 
 
 def studio_route(

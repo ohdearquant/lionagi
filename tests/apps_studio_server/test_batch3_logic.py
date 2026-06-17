@@ -229,10 +229,19 @@ class TestUpdatePlaybookValidation:
         from fastapi import FastAPI
         from fastapi.testclient import TestClient
 
-        from lionagi.studio.routers.playbooks import router
+        import lionagi.studio.services.playbooks  # ensure routes registered
+        from lionagi.studio.registry import iter_studio_routes
 
         app = FastAPI()
-        app.include_router(router)
+        for route in iter_studio_routes(area="playbooks"):
+            app.add_api_route(
+                route.path,
+                route.handler,
+                methods=[route.method],
+                response_model=route.response_model,
+                status_code=route.status_code,
+                tags=list(route.tags),
+            )
         client = TestClient(app, raise_server_exceptions=False)
 
         resp = client.put(
@@ -293,10 +302,19 @@ class TestUpdatePlaybookSpecFieldValidation:
         from fastapi import FastAPI
         from fastapi.testclient import TestClient
 
-        from lionagi.studio.routers.playbooks import router
+        import lionagi.studio.services.playbooks  # ensure routes registered
+        from lionagi.studio.registry import iter_studio_routes
 
         app = FastAPI()
-        app.include_router(router)
+        for route in iter_studio_routes(area="playbooks"):
+            app.add_api_route(
+                route.path,
+                route.handler,
+                methods=[route.method],
+                response_model=route.response_model,
+                status_code=route.status_code,
+                tags=list(route.tags),
+            )
         client = TestClient(app, raise_server_exceptions=False)
 
         resp = client.put("/playbooks/pb-workers2", json={"workers": 999})

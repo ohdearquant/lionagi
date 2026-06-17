@@ -7,10 +7,13 @@ from pathlib import Path
 from typing import Any
 
 import anyio
+from fastapi import HTTPException, Query
+from pydantic import BaseModel
 
 from lionagi._paths import LIONAGI_HOME
 from lionagi.state.db import DEFAULT_DB_PATH
 
+from ..registry import studio_route
 from ._db import open_db as _open_db
 from ._path_safety import validate_name_component
 
@@ -359,3 +362,82 @@ def _find_definition_file(base: Path, name: str) -> Path | None:
                 return candidate
 
     return None
+
+
+class SaveBody(BaseModel):
+    content: str
+    message: str | None = None
+
+
+@studio_route("/definitions/", method="GET", area="definitions", name="list_definitions")
+async def list_definitions_route(
+    # ADR-0016: "skill" removed — KIND_DIRS excludes it and ADR-0016
+    # §"What is editable" explicitly marks skills as not editable/not in the
+    # definitions write path.
+    kind: str | None = Query(default=None, description="Filter by kind: agent, playbook"),
+) -> dict[str, Any]:
+    return {"definitions": await list_definitions(kind)}
+
+
+@studio_route("/definitions/{kind}/{name}", method="GET", area="definitions", name="get_definition")
+async def get_definition_route(kind: str, name: str) -> dict[str, Any]:
+    defn = await get_definition(kind, name)
+    if defn is None:
+        raise HTTPException(status_code=404, detail=f"Definition '{kind}/{name}' not found")
+    return defn
+
+
+@studio_route(
+    "/definitions/{kind}/{name}/versions/{version}",
+    method="GET",
+    area="definitions",
+    name="get_version",
+)
+async def get_version_route(kind: str, name: str, version: int) -> dict[str, Any]:
+    v = await get_version(kind, name, version)
+    if v is None:
+        raise HTTPException(
+            status_code=404, detail=f"Version {version} not found for {kind}/{name}"
+        )
+    return v
+
+
+# ADR-0016 §"Save semantics": POST /api/definitions/{kind}/{name}
+@studio_route(
+    "/definitions/{kind}/{name}", method="POST", area="definitions", name="save_definition"
+)
+async def save_definition_route(kind: str, name: str, body: SaveBody) -> dict[str, Any]:
+    # ADR-0016: unknown kind (e.g. "skill") raises ValueError in the
+    # service layer; catch it and return 422 instead of propagating a 500.
+    try:
+        return await save_definition(kind, name, body.content, body.message)
+    except ValueError as e:
+        raise HTTPException(status_code=422, detail=str(e)) from e
+
+
+# ADR-0016 §"Rollback semantics": version as query param, not path segment
+@studio_route(
+    "/definitions/{kind}/{name}/rollback",
+    method="POST",
+    area="definitions",
+    name="rollback_definition",
+)
+async def rollback_definition_route(
+    kind: str,
+    name: str,
+    version: int = Query(..., description="Target version to restore"),
+) -> dict[str, Any]:
+    result = await rollback_definition(kind, name, version)
+    if result is None:
+        raise HTTPException(
+            status_code=404, detail=f"Version {version} not found for {kind}/{name}"
+        )
+    return result
+
+
+@studio_route("/definitions/snapshot", method="POST", area="definitions", name="snapshot_current")
+async def snapshot_current_route(
+    kind: str | None = Query(default=None),
+) -> dict[str, Any]:
+    count = await snapshot_current(kind)
+    return {"snapshots_created": count}

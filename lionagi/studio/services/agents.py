@@ -1,13 +1,17 @@
 from __future__ import annotations
 
 import logging
-from typing import Any
+from functools import partial
+from typing import Annotated, Any
 
+import anyio
 import yaml
+from fastapi import Body, HTTPException
 
 from lionagi._paths import LIONAGI_HOME
 from lionagi.libs.frontmatter import parse_frontmatter as _parse_frontmatter
 
+from ..registry import studio_route
 from ._path_safety import public_path, safe_path_join
 
 _AGENTS_ROOT = LIONAGI_HOME / "agents"
@@ -163,3 +167,51 @@ def update_agent(name: str, data: dict[str, Any]) -> dict[str, Any] | None:
     path.write_text(new_text)
 
     return get_agent(name)
+
+
+@studio_route("/agents/", method="GET", area="agents", name="list_agents")
+async def list_agents_route() -> dict[str, Any]:
+    agents = await anyio.to_thread.run_sync(list_agents)
+    return {"agents": agents}
+
+
+@studio_route("/agents/{name}", method="GET", area="agents", name="get_agent")
+async def get_agent_route(name: str) -> dict[str, Any]:
+    agent = await anyio.to_thread.run_sync(partial(get_agent, name))
+    if agent is None:
+        raise HTTPException(status_code=404, detail=f"Agent '{name}' not found")
+    return agent
+
+
+@studio_route("/agents/{name}", method="POST", area="agents")
+async def create_agent(name: str) -> dict[str, Any]:
+    # TODO(lift-backend-writes)
+    raise HTTPException(status_code=501, detail="Not implemented")
+
+
+@studio_route("/agents/{name}", method="PUT", area="agents", name="update_agent")
+async def update_agent_route(
+    name: str, body: Annotated[dict[str, Any], Body(...)]
+) -> dict[str, Any]:
+    updated = await anyio.to_thread.run_sync(partial(update_agent, name, body))
+    if updated is None:
+        raise HTTPException(status_code=404, detail=f"Agent '{name}' not found")
+    return updated
+
+
+@studio_route("/agents/{name}", method="DELETE", area="agents")
+async def delete_agent(name: str) -> dict[str, Any]:
+    # TODO(lift-backend-writes)
+    raise HTTPException(status_code=501, detail="Not implemented")
+
+
+@studio_route("/agents/{name}/validate", method="POST", area="agents")
+async def validate_agent(name: str, body: Annotated[dict[str, Any], Body(...)]) -> dict[str, Any]:
+    errors: list[str] = []
+    if not (body.get("name") or "").strip():
+        errors.append("name is required")
+    if not (body.get("provider") or "").strip():
+        errors.append("provider is required")
+    if not (body.get("model") or "").strip():
+        errors.append("model is required")
+    return {"ok": not errors, "errors": errors or None}

@@ -1,10 +1,15 @@
 from __future__ import annotations
 
+from functools import partial
 from pathlib import Path
 from typing import Any
 
+import anyio
+from fastapi import HTTPException
+
 from lionagi.libs.frontmatter import parse_frontmatter as _parse_frontmatter
 
+from ..registry import studio_route
 from ._io import read_json_file as _read_json
 from ._path_safety import public_path, safe_path_join
 
@@ -326,3 +331,39 @@ def get_plugin_agent(plugin_name: str, agent_name: str) -> dict[str, Any] | None
         "path": public_path(agent_path),
         "content": body,
     }
+
+
+@studio_route("/plugins", method="GET", area="plugins")
+async def list_plugins_endpoint() -> dict[str, Any]:
+    plugins = await anyio.to_thread.run_sync(list_plugins)
+    return {"plugins": plugins}
+
+
+@studio_route("/plugins/{name}", method="GET", area="plugins")
+async def get_plugin_endpoint(name: str) -> dict[str, Any]:
+    plugin = await anyio.to_thread.run_sync(partial(get_plugin, name))
+    if not plugin:
+        raise HTTPException(status_code=404, detail=f"Plugin {name} not found")
+    return plugin
+
+
+@studio_route("/plugins/{plugin_name}/skills/{skill_name}", method="GET", area="plugins")
+async def get_plugin_skill_endpoint(plugin_name: str, skill_name: str) -> dict[str, Any]:
+    skill = await anyio.to_thread.run_sync(partial(get_plugin_skill, plugin_name, skill_name))
+    if not skill:
+        raise HTTPException(
+            status_code=404,
+            detail=f"Skill {skill_name} not found in plugin {plugin_name}",
+        )
+    return skill
+
+
+@studio_route("/plugins/{plugin_name}/agents/{agent_name}", method="GET", area="plugins")
+async def get_plugin_agent_endpoint(plugin_name: str, agent_name: str) -> dict[str, Any]:
+    agent = await anyio.to_thread.run_sync(partial(get_plugin_agent, plugin_name, agent_name))
+    if not agent:
+        raise HTTPException(
+            status_code=404,
+            detail=f"Agent {agent_name} not found in plugin {plugin_name}",
+        )
+    return agent

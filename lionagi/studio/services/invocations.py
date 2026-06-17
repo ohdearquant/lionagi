@@ -7,8 +7,11 @@ from __future__ import annotations
 import json
 from typing import Any
 
+from fastapi import HTTPException, Query
+
 from lionagi.state.db import DEFAULT_DB_PATH, StateDB
 
+from ..registry import studio_route
 from ._io import parse_json_col as _parse_json_col
 
 
@@ -139,3 +142,57 @@ async def get_artifact(artifact_id: str) -> dict[str, Any] | None:
     async with StateDB() as db:
         row = await db.get_artifact(artifact_id)
     return _serialize_artifact(row) if row else None
+
+
+@studio_route("/invocations/", method="GET", area="invocations", name="list_invocations")
+async def list_invocations_route(
+    skill: str | None = Query(default=None),
+    status: str | None = Query(default=None),
+    limit: int = Query(default=50, ge=1, le=200),
+    offset: int = Query(default=0, ge=0),
+) -> dict[str, Any]:
+    rows = await list_invocations(skill=skill, status=status, limit=limit, offset=offset)
+    return {
+        "invocations": rows,
+        "limit": limit,
+        "offset": offset,
+        # We don't compute total separately — the page is the slice the
+        # client asked for. Studio's pagination uses has_next instead of
+        # absolute totals.
+        "has_next": len(rows) == limit,
+    }
+
+
+@studio_route(
+    "/invocations/{invocation_id}", method="GET", area="invocations", name="get_invocation"
+)
+async def get_invocation_route(invocation_id: str) -> dict[str, Any]:
+    data = await get_invocation(invocation_id)
+    if data is None:
+        raise HTTPException(status_code=404, detail=f"Invocation '{invocation_id}' not found")
+    return data
+
+
+@studio_route(
+    "/artifacts/{artifact_id}",
+    method="GET",
+    area="invocations",
+    tags=["artifacts"],
+    name="get_artifact",
+)
+async def get_artifact_route(artifact_id: str) -> dict[str, Any]:
+    data = await get_artifact(artifact_id)
+    if data is None:
+        raise HTTPException(status_code=404, detail=f"Artifact '{artifact_id}' not found")
+    return data
+
+
+# Convenience: sessions don't have their own router-level artifacts endpoint
+# (sessions.router predates ADR-0021). This sub-route under /api/artifacts
+# keeps the artifact concern in one place.
+@studio_route(
+    "/artifacts/by-session/{session_id}", method="GET", area="invocations", tags=["artifacts"]
+)
+async def list_for_session(session_id: str) -> dict[str, Any]:
+    rows = await list_artifacts_for_session(session_id)
+    return {"artifacts": rows}
