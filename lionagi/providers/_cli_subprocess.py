@@ -192,6 +192,35 @@ def resolve_cli_workspace(repo: Path | None, workspace: str | None) -> Path:
     return result
 
 
+def validate_message_prompt(data: dict) -> dict:
+    """Extract prompt from a messages list when prompt is not already set.
+
+    Shared by Gemini, Pi, and Codex request models. Extracts non-system message
+    content into prompt; hoists the first system message into system_prompt.
+    """
+    from lionagi import ln
+
+    if data.get("prompt"):
+        return data
+
+    if not (msg := data.get("messages")):
+        raise ValueError("messages or prompt required")
+
+    prompts = []
+    for message in msg:
+        if message["role"] != "system":
+            content = message["content"]
+            if isinstance(content, dict | list):
+                prompts.append(ln.json_dumps(content))
+            else:
+                prompts.append(content)
+        elif message["role"] == "system" and not data.get("system_prompt"):
+            data["system_prompt"] = message["content"]
+
+    data["prompt"] = "\n".join(prompts)
+    return data
+
+
 def build_declarative_cli_args(model_instance: Any) -> list[str]:
     flagged: list[tuple[int, dict, Any]] = []
     for field_name, field_info in type(model_instance).model_fields.items():

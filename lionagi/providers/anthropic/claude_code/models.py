@@ -8,7 +8,6 @@ import json
 import logging
 import shutil
 from collections.abc import AsyncIterator, Callable
-from datetime import datetime, timezone
 from functools import partial
 from pathlib import Path
 from textwrap import shorten
@@ -597,7 +596,7 @@ def _pp_final(sess: CLISession, theme) -> None:
     usage = sess.usage or {}
     cost_str = f"${sess.total_cost_usd:.4f}" if sess.total_cost_usd is not None else "N/A"
     txt = (
-        f"### ✅ Session complete - {datetime.now(timezone.utc).isoformat(timespec='seconds')} UTC\n"
+        f"### ✅ Session complete - {ln.now_utc().isoformat(timespec='seconds')} UTC\n"
         f"**Result:**\n\n{sess.result or ''}\n\n"
         f"- cost: **{cost_str}**  \n"
         f"- turns: **{sess.num_turns}**  \n"

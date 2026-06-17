@@ -20,7 +20,6 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, Field, field_validator, model_validator
 
-from lionagi import ln
 from lionagi.libs.path_safety import (
     check_paths_safe,
 )
@@ -33,6 +32,7 @@ from lionagi.providers._cli_subprocess import (
     _INHERIT_STDIN,
     build_declarative_cli_args,
     ndjson_from_cli,
+    validate_message_prompt,
 )
 
 HAS_PI_CLI = False
@@ -252,25 +252,7 @@ class PiCodeRequest(BaseModel):
     @model_validator(mode="before")
     @classmethod
     def _validate_message_prompt(cls, data):
-        if data.get("prompt"):
-            return data
-
-        if not (msg := data.get("messages")):
-            raise ValueError("messages or prompt required")
-
-        prompts = []
-        for message in msg:
-            if message["role"] != "system":
-                content = message["content"]
-                if isinstance(content, dict | list):
-                    prompts.append(ln.json_dumps(content))
-                else:
-                    prompts.append(content)
-            elif message["role"] == "system" and not data.get("system_prompt"):
-                data["system_prompt"] = message["content"]
-
-        data["prompt"] = "\n".join(prompts)
-        return data
+        return validate_message_prompt(data)
 
     # ── CLI command builder ───────────────────────────────────────
 
