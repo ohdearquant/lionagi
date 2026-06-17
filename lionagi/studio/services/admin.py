@@ -4,11 +4,11 @@ import json
 import subprocess
 import time
 import uuid
-from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Literal
 
 from lionagi.cli._process import pid_alive as _pid_is_live
+from lionagi.ln import now_utc
 from lionagi.state.db import ADMIN_TRANSITION_TARGETS as _ADMIN_TRANSITION_TARGETS
 from lionagi.state.db import DEFAULT_DB_PATH
 from lionagi.state.reasons import SessionReasons
@@ -133,7 +133,7 @@ async def doctor(*, stale_hours: float = 1.0) -> dict[str, Any]:
     return {
         "phantom_sessions": await list_phantom_sessions(stale_hours=stale_hours),
         "db_health": db_health(),
-        "diagnostic_run_at": datetime.now(timezone.utc).isoformat(),
+        "diagnostic_run_at": now_utc().isoformat(),
     }
 
 
@@ -150,7 +150,7 @@ async def health_report() -> dict[str, Any]:
         return {
             "sessions": {"total": 0, "by_status": {}, "by_health": {}, "unhealthy": []},
             "db": db_health(),
-            "diagnostic_run_at": datetime.now(timezone.utc).isoformat(),
+            "diagnostic_run_at": now_utc().isoformat(),
         }
 
     now = time.time()
@@ -231,7 +231,7 @@ async def health_report() -> dict[str, Any]:
             "unhealthy": unhealthy,
         },
         "db": db_health(),
-        "diagnostic_run_at": datetime.now(timezone.utc).isoformat(),
+        "diagnostic_run_at": now_utc().isoformat(),
     }
 
 

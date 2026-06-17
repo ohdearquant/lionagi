@@ -5,16 +5,11 @@ from typing import Any
 import yaml
 
 from lionagi._paths import LIONAGI_HOME
+from lionagi.service.providers import EFFORT_LEVELS as _VALID_EFFORT_LEVELS
 
 from ._path_safety import public_path, safe_path_join
 
 _PLAYBOOKS_ROOT = LIONAGI_HOME / "playbooks"
-
-# Mirrors lionagi/cli/orchestrate/__init__.py::_validate_spec_fields() inline to avoid
-# importing the full orchestrate module into the web-server process.
-_VALID_EFFORT_LEVELS: frozenset[str] = frozenset(
-    {"none", "minimal", "low", "medium", "high", "xhigh", "max"}
-)
 
 # Keys that stay dashed per CLI convention (all others: hyphens → underscores).
 _PRESERVE_DASHED: frozenset[str] = frozenset({"argument-hint"})
