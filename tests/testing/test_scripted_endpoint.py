@@ -160,9 +160,8 @@ class TestBranchIntegration:
 
 
 class TestCopyIndependence:
-    """``iModel.copy()`` must yield independent cursors — otherwise positional
-    matching cross-contaminates between the original and the clone.
-    Regression for the codex-flagged P1-B."""
+    """iModel.copy() must yield independent cursors — otherwise positional
+    matching cross-contaminates between original and clone."""
 
     async def test_imodel_copy_yields_independent_cursors(self):
         original = scripted_imodel(
@@ -210,8 +209,7 @@ class TestCopyIndependence:
 
 
 class TestEmptyScriptWarning:
-    """Regression for codex-flagged P1-D — endpoint with no script + no env
-    var should warn at construction so the failure mode is obvious."""
+    """Endpoint with no script and no env var should warn at construction."""
 
     def test_empty_construction_warns(self, caplog, monkeypatch):
         import logging

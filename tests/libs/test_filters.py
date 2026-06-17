@@ -1,9 +1,7 @@
 # Copyright (c) 2023-2026, HaiyangLi <quantocean.li at gmail dot com>
 # SPDX-License-Identifier: Apache-2.0
 
-"""Filter DSL: TypeFilter scans payload fields by type; SpecFilter (built via
-Spec.q) matches a named field by value; both compose with & | ~.
-"""
+"""Tests for TypeFilter and SpecFilter composition operators."""
 
 from __future__ import annotations
 

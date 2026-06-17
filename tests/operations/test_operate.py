@@ -1,5 +1,3 @@
-# tests/branch_ops/test_operate.py
-
 import pytest
 from pydantic import BaseModel
 
@@ -110,14 +108,7 @@ async def test_operate_with_actions_preserves_response_data():
 
 
 async def test_operate_actions_only_invokes_tools_without_response_format():
-    """Regression (codex round-2): actions=True with NO caller response_format
-    must still invoke tools.
-
-    The single-construction refactor extracted model_class only from the
-    original chat_param.response_format; for action-only calls that left
-    model_class None, so action_requests on the generated operative BaseModel
-    were never extracted and act() was silently skipped.
-    """
+    """actions=True with no response_format must still invoke tools (action_requests extracted from generated operative)."""
 
     def add(a: int, b: int) -> int:
         """Add two numbers."""
@@ -152,11 +143,7 @@ async def test_operate_actions_only_invokes_tools_without_response_format():
 
 
 async def test_branch_operate_ignores_caller_supplied_operative():
-    """Regression (codex round-3): Branch.operate() discards a caller-supplied
-    operative, matching main's prepare-time `operative = None`.
-
-    Forwarding it would skip single construction and merge through a
-    mismatched model, silently dropping the requested response fields."""
+    """Branch.operate() discards a caller-supplied operative; forwarding it would skip single construction and drop requested response fields."""
     from lionagi.operations.operate.step import Step
 
     class ResponseModel(BaseModel):
@@ -311,11 +298,7 @@ def test_prepare_operate_kw_stream_persist_sets_run_param():
 
 
 def test_prepare_operate_kw_snapshot_dir_routes_to_run_param():
-    """snapshot_dir kwarg must be forwarded into the RunParam so the
-    branch snapshot can land in a separate dir from the stream buffer.
-    R5-A HIGH-1 regression — the resume hint pointed at branches_dir
-    but run.py wrote to persist_dir; snapshot_dir lets the caller split.
-    """
+    """snapshot_dir is forwarded into RunParam so snapshot and stream buffer can use separate directories."""
     from lionagi.operations.types import RunParam
 
     branch = Branch()
@@ -494,8 +477,7 @@ async def test_operate_with_field_models_builds_operative():
 
 
 # ---------------------------------------------------------------------------
-# Finding 3 replacement: TypeError raised at new boundary (_specs_from_fields)
-# before any model call is reached.
+# TypeError raised at new boundary (_specs_from_fields) before model call.
 # ---------------------------------------------------------------------------
 
 

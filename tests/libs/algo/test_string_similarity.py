@@ -1,8 +1,4 @@
-"""Tests for string similarity functions.
-
-This module provides comprehensive tests for all string similarity algorithms
-including edge cases, special characters, and Unicode handling.
-"""
+"""Tests for string similarity functions."""
 
 import pytest
 
@@ -18,7 +14,6 @@ from lionagi.ln.fuzzy._string_similarity import (
 )
 
 
-# Cosine Similarity Tests
 @pytest.mark.parametrize(
     "s1,s2,expected",
     [
@@ -26,9 +21,9 @@ from lionagi.ln.fuzzy._string_similarity import (
         ("", "", 0.0),
         ("hello", "", 0.0),
         ("abc", "def", 0.0),
-        ("python", "pytohn", 1.0),  # Same characters, different order
-        ("test", "tset", 1.0),  # Anagram
-        ("aaa", "aaa", 1.0),  # Repeated characters
+        ("python", "pytohn", 1.0),
+        ("test", "tset", 1.0),
+        ("aaa", "aaa", 1.0),
     ],
 )
 def test_cosine_similarity(s1: str, s2: str, expected: float) -> None:
@@ -36,17 +31,16 @@ def test_cosine_similarity(s1: str, s2: str, expected: float) -> None:
     assert pytest.approx(cosine_similarity(s1, s2), abs=1e-3) == expected
 
 
-# Hamming Similarity Tests
 @pytest.mark.parametrize(
     "s1,s2,expected",
     [
         ("hello", "hello", 1.0),
         ("hello", "hella", 0.8),
         ("", "", 0.0),
-        ("hello", "world", 0.2),  # Fixed value - 1 match out of 5
+        ("hello", "world", 0.2),
         ("abc", "abd", 0.667),
-        ("test", "pest", 0.75),  # Single character difference
-        ("11111", "11011", 0.8),  # Binary-like strings
+        ("test", "pest", 0.75),
+        ("11111", "11011", 0.8),
     ],
 )
 def test_hamming_similarity(s1: str, s2: str, expected: float) -> None:
@@ -54,7 +48,6 @@ def test_hamming_similarity(s1: str, s2: str, expected: float) -> None:
     assert pytest.approx(hamming_similarity(s1, s2), abs=1e-3) == expected
 
 
-# Jaro Distance Tests
 @pytest.mark.parametrize(
     "s1,s2,expected",
     [
@@ -65,9 +58,9 @@ def test_hamming_similarity(s1: str, s2: str, expected: float) -> None:
         ("abc", "", 0.0),
         ("", "xyz", 0.0),
         ("123456", "123", 0.8333),
-        ("martha", "marhta", 0.9444),  # Classic example
-        ("dixon", "dickson", 0.7905),  # Fixed value
-        ("jellyfish", "smellyfish", 0.8963),  # Prefix difference
+        ("martha", "marhta", 0.9444),
+        ("dixon", "dickson", 0.7905),
+        ("jellyfish", "smellyfish", 0.8963),
     ],
 )
 def test_jaro_distance(s1: str, s2: str, expected: float) -> None:
@@ -75,7 +68,6 @@ def test_jaro_distance(s1: str, s2: str, expected: float) -> None:
     assert pytest.approx(jaro_distance(s1, s2), abs=1e-3) == expected
 
 
-# Jaro-Winkler Similarity Tests
 @pytest.mark.parametrize(
     "s1,s2,expected,scaling",
     [
@@ -87,8 +79,8 @@ def test_jaro_distance(s1: str, s2: str, expected: float) -> None:
         ("", "xyz", 0.0, 0.1),
         ("123456", "123", 0.8833, 0.1),
         ("dwayne", "duane", 0.8578, 0.2),
-        ("MARTHA", "MARHTA", 0.9611, 0.1),  # Updated value
-        ("DIXON", "DICKSONX", 0.8133, 0.1),  # Updated value
+        ("MARTHA", "MARHTA", 0.9611, 0.1),
+        ("DIXON", "DICKSONX", 0.8133, 0.1),
     ],
 )
 def test_jaro_winkler_similarity_with_scaling(
@@ -104,7 +96,6 @@ def test_jaro_winkler_invalid_scaling() -> None:
         jaro_winkler_similarity("hello", "hello", scaling=0.5)
 
 
-# Levenshtein Distance Tests
 @pytest.mark.parametrize(
     "s1,s2,expected",
     [
@@ -118,8 +109,8 @@ def test_jaro_winkler_invalid_scaling() -> None:
         ("String", "string", 1),
         ("flaw", "lawn", 2),
         ("gumbo", "gambol", 2),
-        ("saturday", "sunday", 3),  # Classic example
-        ("pale", "bale", 1),  # Single substitution
+        ("saturday", "sunday", 3),
+        ("pale", "bale", 1),
     ],
 )
 def test_levenshtein_distance(s1: str, s2: str, expected: int) -> None:
@@ -127,7 +118,6 @@ def test_levenshtein_distance(s1: str, s2: str, expected: int) -> None:
     assert levenshtein_distance(s1, s2) == expected
 
 
-# Levenshtein Similarity Tests
 @pytest.mark.parametrize(
     "s1,s2,expected",
     [
@@ -138,8 +128,8 @@ def test_levenshtein_distance(s1: str, s2: str, expected: int) -> None:
         ("hello", "", 0.0),
         ("sitting", "kitten", 0.571),
         ("sunday", "saturday", 0.625),
-        ("pale", "bale", 0.75),  # Single character difference
-        ("pale", "bake", 0.5),  # Two character differences
+        ("pale", "bale", 0.75),
+        ("pale", "bake", 0.5),
     ],
 )
 def test_levenshtein_similarity(s1: str, s2: str, expected: float) -> None:
@@ -147,18 +137,17 @@ def test_levenshtein_similarity(s1: str, s2: str, expected: float) -> None:
     assert pytest.approx(levenshtein_similarity(s1, s2), abs=1e-3) == expected
 
 
-# General Algorithm Tests
 def test_similarity_algorithms_bounds() -> None:
     """Test that all similarity algorithms return values between 0 and 1."""
     test_cases = [
-        ("hello", "hello"),  # Same strings
-        ("hello", "world"),  # Different strings
-        ("", ""),  # Empty strings
-        ("a", ""),  # One empty string
-        ("", "a"),  # Other empty string
-        ("a", "a"),  # Single character
-        ("ab", "ba"),  # Same characters different order
-        ("aaa", "aaa"),  # Repeated characters
+        ("hello", "hello"),
+        ("hello", "world"),
+        ("", ""),
+        ("a", ""),
+        ("", "a"),
+        ("a", "a"),
+        ("ab", "ba"),
+        ("aaa", "aaa"),
     ]
 
     for algo_name, func in SIMILARITY_ALGO_MAP.items():
@@ -213,20 +202,14 @@ def custom_similarity(s1: str, s2: str) -> float:
     return 0.0
 
 
-# Basic functionality tests
 @pytest.mark.parametrize(
     "word,words,algorithm,expected",
     [
-        # Levenshtein similarity
         ("hello", ["hello", "world"], "levenshtein", "hello"),
         ("hellp", ["help", "hello"], "levenshtein", "help"),
-        # Jaro-Winkler similarity
         ("martha", ["marhta", "market"], "jaro_winkler", "marhta"),
-        # Cosine similarity
         ("python", ["pytohn", "perl"], "cosine", "pytohn"),
-        # Hamming similarity
-        ("hello", ["hellp", "help"], "hamming", "hellp"),  # Only equal length
-        # Sequence matcher
+        ("hello", ["hellp", "help"], "hamming", "hellp"),
         ("hello", ["helo", "hell"], "sequence_matcher", "helo"),
     ],
 )
@@ -236,7 +219,6 @@ def test_string_similarity_basic(word, words, algorithm, expected):
     assert result == expected
 
 
-# Test threshold filtering
 @pytest.mark.parametrize(
     "word,words,threshold,expected",
     [
@@ -251,7 +233,6 @@ def test_string_similarity_threshold(word, words, threshold, expected):
     assert result == expected
 
 
-# Test case sensitivity
 @pytest.mark.parametrize(
     "word,words,case_sensitive,expected",
     [
@@ -266,7 +247,6 @@ def test_string_similarity_case_sensitivity(word, words, case_sensitive, expecte
     assert result == expected
 
 
-# Test return_most_similar
 @pytest.mark.parametrize(
     "word,words,expected",
     [
@@ -290,7 +270,6 @@ def test_string_similarity_custom_function():
     assert result == ["hello", "world"]
 
 
-# Test error cases
 def test_string_similarity_errors():
     """Test error handling."""
     with pytest.raises(ValueError, match="correct_words must not be empty"):
@@ -308,10 +287,9 @@ def test_string_similarity_errors():
 
 def test_string_similarity_edge_cases():
     """Test edge cases and special inputs."""
-    # Empty strings
+
     assert string_similarity("", ["", "a"], return_most_similar=True) == ""
 
-    # Single character
     assert string_similarity("a", ["a", "b"], return_most_similar=True) == "a"
 
     # Unicode

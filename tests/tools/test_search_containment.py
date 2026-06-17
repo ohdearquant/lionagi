@@ -1,17 +1,9 @@
 # Copyright (c) 2023-2026, HaiyangLi <quantocean.li at gmail dot com>
 # SPDX-License-Identifier: Apache-2.0
 
-"""Attack-driven regression tests for SearchTool workspace path containment.
+"""Regression tests for SearchTool workspace path containment.
 
-These tests verify that path traversal attacks are rejected BEFORE the
-subprocess is ever constructed — the security boundary is in
-_validate_search_path(), called from handle_request() before any run_sync.
-
-Issue: Standalone SearchTool accepted untrusted filesystem paths without
-containment, allowing grep/find to traverse outside the project root.
-
-Fix: workspace_root parameter + _validate_search_path() resolves and
-asserts the path stays within the allowed root, failing closed.
+Verifies path traversal attacks are rejected before subprocess construction via _validate_search_path().
 """
 
 import pytest
@@ -212,12 +204,9 @@ class TestRelativePathResolvedAgainstRoot:
 
 
 class TestRelativeWorkspaceRootIsFrozen:
-    """A relative workspace_root must bind at construction, not move with cwd.
+    """Regression: workspace_root must be resolved at construction, not lazily at search time.
 
-    Regression: SearchTool stored the raw (possibly relative) root and resolved
-    it against the process cwd at search time. A later os.chdir() then moved the
-    containment boundary — a relative 'ws' would point at the NEW cwd's 'ws',
-    letting a search escape (or refuse legitimately-contained) the intended root.
+    A late os.chdir() must not shift the containment boundary.
     """
 
     @pytest.mark.anyio

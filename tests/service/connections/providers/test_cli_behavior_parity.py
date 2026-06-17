@@ -1,11 +1,6 @@
 """Regression tests for per-provider CLI subprocess behaviour parity.
 
-Covers three behaviour regressions introduced when the CLI subprocess loop was
-extracted into the shared ndjson_from_cli helper (PR #1355):
-
-  Finding 1 – Claude EOF JSON repair: a repairable tail must be yielded.
-  Finding 2 – Codex double-workspace: cwd= must NOT be passed to ndjson_from_cli.
-  Finding 3 – Gemini/Pi stdin: must be _INHERIT_STDIN, not DEVNULL.
+Three regressions from ndjson_from_cli extraction: Claude tail repair, Codex double-workspace, Gemini/Pi stdin inheritance.
 """
 
 from __future__ import annotations
@@ -18,7 +13,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 # ---------------------------------------------------------------------------
-# Finding 1 – Claude EOF JSON repair
+# Claude EOF JSON repair
 # ---------------------------------------------------------------------------
 
 
@@ -125,7 +120,7 @@ async def test_claude_ndjson_uses_repair_callback():
 
 
 # ---------------------------------------------------------------------------
-# Finding 2 – Codex does not double-apply workspace
+# Codex does not double-apply workspace
 # ---------------------------------------------------------------------------
 
 
@@ -173,7 +168,7 @@ def test_codex_as_cmd_args_contains_dash_c_flag():
 
 
 # ---------------------------------------------------------------------------
-# Finding 3 – Gemini and Pi inherit stdin (not DEVNULL)
+# Gemini and Pi inherit stdin (not DEVNULL)
 # ---------------------------------------------------------------------------
 
 

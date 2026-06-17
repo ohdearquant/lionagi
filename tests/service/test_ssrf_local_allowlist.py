@@ -1,35 +1,7 @@
 # Copyright (c) 2023-2026, HaiyangLi <quantocean.li at gmail dot com>
 # SPDX-License-Identifier: Apache-2.0
 
-"""Regression tests: SSRF guard local-address allowlist for loopback providers.
-
-Providers such as Ollama run on the local machine and use loopback addresses
-(e.g. http://localhost:11434).  The generic SSRF guard previously blocked all
-loopback traffic, making those providers unusable.
-
-The fix adds allow_local_network=True to EndpointConfig, which is propagated
-to is_ssrf_safe(allow_local=True).  When allow_local is set:
-
-  * Only the exact canonical loopback hostname literals are permitted:
-    localhost, 127.0.0.1, ::1, [::1].  The check is performed on the raw
-    hostname string BEFORE DNS resolution.
-
-  * Any other hostname — including external names that resolve to 127.0.0.1
-    (DNS rebinding) and alternate numeric encodings of the loopback address —
-    is rejected immediately.
-
-  * After DNS resolution, every resolved address is verified to be loopback.
-    A canonical hostname resolving to a public or non-loopback address is
-    rejected.
-
-  * Link-local and metadata addresses (169.254.0.0/16) remain blocked.
-
-  * All other blocked ranges (RFC 1918, CGN, IPv6 private) remain blocked.
-
-Attack model: a caller who sets allow_local_network=True on their endpoint
-must NOT gain the ability to reach metadata services, private ranges, or
-any host other than the canonical loopback literals.
-"""
+"""Regression tests: SSRF guard local-address allowlist for loopback providers (e.g. Ollama)."""
 
 from __future__ import annotations
 
@@ -47,13 +19,11 @@ from lionagi.service.connections.endpoint_config import EndpointConfig
 
 
 def _mock_getaddrinfo(ip_str: str):
-    """Return a getaddrinfo-shaped list for a single IP."""
     family = socket.AF_INET6 if ":" in ip_str else socket.AF_INET
     return [(family, socket.SOCK_STREAM, 6, "", (ip_str, 0))]
 
 
 def _make_endpoint_with_url(base_url: str, *, allow_local_network: bool = False):
-    """Create a minimal Endpoint whose full_url is base_url + /test."""
     from lionagi.service.connections.endpoint import Endpoint
 
     config = EndpointConfig(

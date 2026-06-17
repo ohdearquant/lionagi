@@ -6,7 +6,7 @@
 These tests verify that acreate_path refuses to create files outside the
 supplied base directory when filenames contain path-traversal components.
 
-Issue (LIONAGI-AUDIT-003): acreate_path only rejected backslashes. A
+Issue: acreate_path only rejected backslashes. A
 caller could pass filename='../escape.txt' or 'sub/../../../escape.txt'
 and receive or create paths outside the intended base directory.
 
@@ -24,7 +24,6 @@ class TestAcreatePathTraversalContainment:
 
     @pytest.mark.anyio
     async def test_dotdot_filename_raises_value_error(self, tmp_path):
-        """Classic '../escape.txt' traversal must be rejected."""
         base = tmp_path / "base"
         base.mkdir()
         with pytest.raises(ValueError, match=r"'\.\.'|escape|traversal"):
@@ -32,7 +31,6 @@ class TestAcreatePathTraversalContainment:
 
     @pytest.mark.anyio
     async def test_nested_dotdot_raises_value_error(self, tmp_path):
-        """Nested 'sub/../../../etc/passwd' traversal must be rejected."""
         base = tmp_path / "base"
         base.mkdir()
         with pytest.raises(ValueError):
@@ -40,7 +38,6 @@ class TestAcreatePathTraversalContainment:
 
     @pytest.mark.anyio
     async def test_double_dotdot_in_subdir_raises(self, tmp_path):
-        """'good/../../escape.txt' must be rejected (escapes base after subdir)."""
         base = tmp_path / "base"
         base.mkdir()
         with pytest.raises(ValueError):
@@ -48,7 +45,6 @@ class TestAcreatePathTraversalContainment:
 
     @pytest.mark.anyio
     async def test_dot_component_raises_value_error(self, tmp_path):
-        """Filename component '.' must be rejected."""
         base = tmp_path / "base"
         base.mkdir()
         with pytest.raises(ValueError, match=r"'\.'|'\.\.'"):
@@ -56,7 +52,6 @@ class TestAcreatePathTraversalContainment:
 
     @pytest.mark.anyio
     async def test_dotdot_standalone_raises(self, tmp_path):
-        """Bare '..' as filename must be rejected."""
         base = tmp_path / "base"
         base.mkdir()
         with pytest.raises(ValueError):
@@ -64,7 +59,6 @@ class TestAcreatePathTraversalContainment:
 
     @pytest.mark.anyio
     async def test_dot_standalone_raises(self, tmp_path):
-        """Bare '.' as filename must be rejected."""
         base = tmp_path / "base"
         base.mkdir()
         with pytest.raises(ValueError):
@@ -72,7 +66,6 @@ class TestAcreatePathTraversalContainment:
 
     @pytest.mark.anyio
     async def test_no_traversal_is_created_outside_base(self, tmp_path):
-        """Verify no file is created outside base even on traversal attempt."""
         base = tmp_path / "base"
         base.mkdir()
         escape_target = tmp_path / "escape.txt"
@@ -85,7 +78,6 @@ class TestAcreatePathTraversalContainment:
 
     @pytest.mark.anyio
     async def test_normal_subdir_filename_still_works(self, tmp_path):
-        """Legitimate subdirectory in filename continues to work."""
         base = tmp_path / "base"
         base.mkdir()
         result = await acreate_path(directory=base, filename="sub/file.txt")
@@ -96,7 +88,6 @@ class TestAcreatePathTraversalContainment:
 
     @pytest.mark.anyio
     async def test_backslash_still_rejected(self, tmp_path):
-        """Pre-existing backslash check is preserved."""
         base = tmp_path / "base"
         base.mkdir()
         with pytest.raises(ValueError, match="directory separators"):

@@ -1,5 +1,3 @@
-"""Tests for the TaskGroup implementation."""
-
 import pytest
 
 from lionagi.ln.concurrency.task import TaskGroup, create_task_group
@@ -7,14 +5,12 @@ from lionagi.ln.concurrency.task import TaskGroup, create_task_group
 
 @pytest.mark.asyncio
 async def test_task_group_creation():
-    """Test that task groups can be created."""
     async with create_task_group() as tg:
         assert isinstance(tg, TaskGroup)
 
 
 @pytest.mark.asyncio
 async def test_task_group_start_soon():
-    """Test that tasks can be started with start_soon."""
     results = []
 
     async def task(value):
@@ -31,7 +27,6 @@ async def test_task_group_start_soon():
 
 @pytest.mark.asyncio
 async def test_task_group_start():
-    """Test that tasks started with start_soon actually execute."""
     ran = []
 
     async def simple_task():
@@ -45,8 +40,6 @@ async def test_task_group_start():
 
 @pytest.mark.asyncio
 async def test_task_group_error_propagation():
-    """Test that errors in child tasks propagate to the parent."""
-
     async def raising_task():
         raise ValueError("propagated")
 
@@ -65,8 +58,6 @@ async def test_task_group_error_propagation():
 
 @pytest.mark.asyncio
 async def test_task_group_multiple_errors():
-    """Test that multiple errors are collected into an ExceptionGroup."""
-
     async def failing_task_1():
         raise ValueError("Task 1 failed")
 

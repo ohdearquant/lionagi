@@ -1,25 +1,7 @@
 # Copyright (c) 2023-2026, HaiyangLi <quantocean.li at gmail dot com>
 # SPDX-License-Identifier: Apache-2.0
 
-"""
-FK cascade behavior regressions for ``StateDB``.
-
-The schema (``lionagi/state/schema.sql``) declares two ``ON DELETE
-CASCADE`` relationships:
-
-* ``branches.session_id REFERENCES sessions(id) ON DELETE CASCADE``
-* ``plays.show_id REFERENCES shows(id) ON DELETE CASCADE``
-
-Other FKs (``sessions.progression_id``, ``branches.progression_id``,
-``branches.system_msg_id``, ``messages.lion_class``,
-``sessions.first_msg_id`` / ``last_msg_id``, ``plays.session_id``) are
-deliberately NOT cascaded — they reference shared content that may
-outlive its owner.
-
-These tests pin both groups: what cascades, what doesn't, and that
-``PRAGMA foreign_keys = ON`` (set by ``_apply_pragmas``) is actually
-in effect.
-"""
+"""FK cascade behavior regressions for StateDB — pins what cascades (branches, plays) and what doesn't (progressions, system_msg_id)."""
 
 from __future__ import annotations
 
@@ -43,9 +25,7 @@ async def db():
 
 
 async def test_pragma_foreign_keys_is_on(db: StateDB):
-    """If this fails, every cascade test below also fails — sanity guard
-    that ``_apply_pragmas`` actually enforced foreign_keys.
-    """
+    """Sanity guard: if PRAGMA foreign_keys is off, every cascade test would silently pass."""
     cur = await db.db.execute("PRAGMA foreign_keys")
     row = await cur.fetchone()
     assert row[0] == 1
@@ -55,8 +35,7 @@ async def test_pragma_foreign_keys_is_on(db: StateDB):
 
 
 async def test_delete_session_cascades_branches(db: StateDB):
-    """DELETE FROM sessions WHERE id = ? drops every branch with
-    matching session_id (ON DELETE CASCADE)."""
+    """Deleting a session drops all branches via ON DELETE CASCADE."""
     spid = str(uuid.uuid4())
     sid = str(uuid.uuid4())
     bpid1 = str(uuid.uuid4())
@@ -89,7 +68,6 @@ async def test_delete_session_cascades_branches(db: StateDB):
         }
     )
 
-    # Two branches before delete.
     cur = await db.db.execute(
         "SELECT COUNT(*) AS n FROM branches WHERE session_id = ?",
         (sid,),
@@ -99,7 +77,6 @@ async def test_delete_session_cascades_branches(db: StateDB):
     await db.db.execute("DELETE FROM sessions WHERE id = ?", (sid,))
     await db.db.commit()
 
-    # Zero branches after.
     cur = await db.db.execute(
         "SELECT COUNT(*) AS n FROM branches WHERE session_id = ?",
         (sid,),
@@ -108,11 +85,7 @@ async def test_delete_session_cascades_branches(db: StateDB):
 
 
 async def test_delete_session_does_not_cascade_progression(db: StateDB):
-    """``sessions.progression_id`` has NO cascade — the progression
-    row survives the session delete. This is intentional (R5-D notes
-    the leftover as a known gap), but it's a load-bearing detail for
-    the prune sweep semantics, so pin it here.
-    """
+    """sessions.progression_id has no cascade — the progression row survives a session delete (intentional; prune sweep handles cleanup)."""
     spid = str(uuid.uuid4())
     sid = str(uuid.uuid4())
     await db.create_progression(spid)
@@ -132,9 +105,7 @@ async def test_delete_session_does_not_cascade_progression(db: StateDB):
 
 
 async def test_delete_show_cascades_plays(db: StateDB):
-    """DELETE FROM shows WHERE id = ? drops every play with matching
-    show_id (ON DELETE CASCADE).
-    """
+    """Deleting a show drops all its plays via ON DELETE CASCADE."""
     show_id = str(uuid.uuid4())
     await db.create_show(
         {
@@ -196,11 +167,7 @@ async def test_delete_show_with_no_plays_succeeds(db: StateDB):
 
 
 async def test_delete_session_referenced_by_play_is_rejected(db: StateDB):
-    """``plays.session_id`` has no ``ON DELETE CASCADE`` and no
-    ``ON DELETE SET NULL``. With ``PRAGMA foreign_keys = ON``, SQLite
-    REJECTS a DELETE of a session that a play still references —
-    preventing dangling pointers in play history (ADR-0012).
-    """
+    """plays.session_id has no cascade — SQLite rejects deleting a session still referenced by a play (ADR-0012)."""
     import aiosqlite
 
     show_id = str(uuid.uuid4())
@@ -239,10 +206,7 @@ async def test_delete_session_referenced_by_play_is_rejected(db: StateDB):
 async def test_delete_message_does_not_cascade_to_branch_system_msg_id(
     db: StateDB,
 ):
-    """``branches.system_msg_id`` has NO ``ON DELETE CASCADE``.
-    Deleting the underlying message would orphan the branch's pointer
-    — we verify SQLite REJECTS the delete via FK enforcement instead.
-    """
+    """branches.system_msg_id has no cascade — SQLite rejects deleting a message still referenced as a system message."""
     import aiosqlite
 
     msg_id = str(uuid.uuid4())
@@ -272,8 +236,6 @@ async def test_delete_message_does_not_cascade_to_branch_system_msg_id(
         }
     )
 
-    # PRAGMA foreign_keys = ON: deleting a referenced message must
-    # raise IntegrityError (not silently break the pointer).
     with pytest.raises(aiosqlite.IntegrityError):
         await db.db.execute("DELETE FROM messages WHERE id = ?", (msg_id,))
         await db.db.commit()

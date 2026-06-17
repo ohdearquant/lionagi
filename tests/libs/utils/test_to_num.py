@@ -6,7 +6,6 @@ import pytest
 from lionagi.libs.validate.to_num import to_num
 
 
-# Basic numeric conversion tests
 @pytest.mark.parametrize(
     "input_val, expected",
     [
@@ -48,7 +47,6 @@ def test_basic_conversion(input_val, expected):
     assert to_num(input_val) == pytest.approx(expected)
 
 
-# Type conversion tests
 @pytest.mark.parametrize(
     "input_val, num_type, expected",
     [
@@ -70,7 +68,6 @@ def test_type_conversion(input_val, num_type, expected):
     assert to_num(input_val, num_type=num_type) == expected
 
 
-# Precision tests
 @pytest.mark.parametrize(
     "input_val, precision, expected",
     [
@@ -86,7 +83,6 @@ def test_precision(input_val, precision, expected):
     assert to_num(input_val, precision=precision) == pytest.approx(expected)
 
 
-# Bounds testing
 @pytest.mark.parametrize(
     "input_val, bounds, should_pass",
     [
@@ -112,7 +108,6 @@ def test_bounds(input_val, bounds, should_pass):
             to_num(input_val, **bounds)
 
 
-# Multiple number extraction tests
 @pytest.mark.parametrize(
     "input_val, num_count, expected",
     [
@@ -137,7 +132,6 @@ def test_multiple_numbers(input_val, num_count, expected):
         assert result == pytest.approx(expected)
 
 
-# Edge cases and special values
 @pytest.mark.parametrize(
     "input_val, expected",
     [
@@ -160,7 +154,6 @@ def test_edge_cases(input_val, expected):
         assert result == expected
 
 
-# Error cases
 @pytest.mark.parametrize(
     "input_val, error_type, error_match",
     [
@@ -193,7 +186,6 @@ def test_error_cases(input_val, error_type, error_match):
             to_num(input_val)
 
 
-# Parameter combination tests
 @pytest.mark.parametrize(
     "params",
     [
@@ -222,7 +214,6 @@ def test_parameter_combinations(params):
     assert result is not None
 
 
-# Whitespace handling tests
 @pytest.mark.parametrize(
     "input_val, expected",
     [
@@ -236,7 +227,6 @@ def test_whitespace_handling(input_val, expected):
     assert to_num(input_val) == expected
 
 
-# Non-string numeric input tests
 @pytest.mark.parametrize(
     "input_val, expected",
     [
@@ -250,7 +240,6 @@ def test_non_string_input(input_val, expected):
     assert to_num(input_val) == expected
 
 
-# Mixed format extraction tests
 @pytest.mark.parametrize(
     "input_val, num_count, expected",
     [

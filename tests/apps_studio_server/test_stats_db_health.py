@@ -1,4 +1,4 @@
-"""Tests for #1016 expanded stats DB health endpoint."""
+"""Tests for the expanded stats DB health endpoint."""
 
 from __future__ import annotations
 
@@ -92,14 +92,12 @@ def test_stats_db_health_missing_db_returns_zeroes(tmp_path, monkeypatch):
 
 
 # ---------------------------------------------------------------------------
-# Regression: Finding 4 — stats DB path delegation
-# When stats.DEFAULT_DB_PATH is patched to a small temp DB, size_bytes must
-# reflect THAT DB, not admin.DEFAULT_DB_PATH (which was the pre-fix bug).
+# stats DB path delegation: size_bytes must reflect stats.DEFAULT_DB_PATH
 # ---------------------------------------------------------------------------
 
 
 def test_stats_size_comes_from_stats_db_path(tmp_path, monkeypatch):
-    """size_bytes must come from stats.DEFAULT_DB_PATH, not admin.DEFAULT_DB_PATH."""
+    """size_bytes must reflect stats.DEFAULT_DB_PATH, not admin.DEFAULT_DB_PATH."""
     small_db = tmp_path / "small_state.db"
     _run(_seed_two_sessions(small_db))
 
@@ -129,9 +127,7 @@ def test_stats_size_comes_from_stats_db_path(tmp_path, monkeypatch):
 
 
 # ---------------------------------------------------------------------------
-# Regression: Finding 3 — invocation node_metadata parse failure -> None
-# _parse_json_col returns the raw string on JSONDecodeError; invocations must
-# convert that to None (matching origin/main behavior).
+# invocation node_metadata parse failure must return None, not the raw string
 # ---------------------------------------------------------------------------
 
 

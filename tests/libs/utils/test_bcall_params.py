@@ -3,7 +3,7 @@
 
 """Behavior tests for BcallParams.__call__.
 
-Issue (LIONAGI-AUDIT-002): BcallParams.__call__ failed in two ways:
+BcallParams.__call__ previously failed in two ways:
 1. bcall() is an async generator — you cannot await it directly.
 2. batch_size was passed both positionally (self.batch_size) and via
    default_kw() → TypeError: multiple values for argument 'batch_size'.

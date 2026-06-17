@@ -1,13 +1,9 @@
 # Copyright (c) 2025 - 2026, HaiyangLi <quantocean.li at gmail dot com>
 # SPDX-License-Identifier: Apache-2.0
 
-"""Phase 1 tests for lionagi.lndl.fuzzy.
+"""Phase 1 tests for lionagi.lndl.fuzzy (normalize_lndl_text only).
 
-Only :func:`normalize_lndl_text` is Phase 1.
-:func:`parse_lndl_fuzzy` requires Phase 2 modules (lexer/parser/ast/resolver)
-and is tested separately once those are ported.
-
-# TODO(lndl-phase-2): add TestParseLndlFuzzy once Phase 2 lands (see issue #966).
+# TODO(lndl-phase-2): add TestParseLndlFuzzy once Phase 2 lands.
 """
 
 import pytest

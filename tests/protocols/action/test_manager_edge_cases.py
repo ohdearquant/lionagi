@@ -1,9 +1,4 @@
-"""
-Coverage Boost Tests for ActionManager
-
-Targets specific uncovered functionality to improve test coverage from 53% to 80%+.
-Focuses on MCP support, dict tool registration, and edge cases.
-"""
+"""Coverage boost tests for ActionManager: MCP support, dict tool registration, edge cases."""
 
 from unittest.mock import AsyncMock, Mock, patch
 
@@ -15,10 +10,7 @@ from lionagi.protocols.messages.action_request import ActionRequest
 
 
 class TestActionManagerDictRegistration:
-    """Test dict-based tool registration (MCP config format)."""
-
     def test_register_tool_with_dict_config(self):
-        """Test registering tools using dict (MCP config) format."""
         manager = ActionManager()
 
         # Test MCP config dict registration
@@ -38,7 +30,6 @@ class TestActionManagerDictRegistration:
         assert tool.mcp_config == mcp_config
 
     def test_register_tool_dict_duplicate_error(self):
-        """Test error handling for duplicate dict tool registration."""
         manager = ActionManager()
 
         mcp_config = {"duplicate_tool": {"command": "python", "args": ["-m", "test"]}}
@@ -60,7 +51,6 @@ class TestActionManagerDictRegistration:
         assert "duplicate_tool" in manager.registry
 
     def test_register_tool_dict_with_update(self):
-        """Test updating existing dict tool with update=True."""
         manager = ActionManager()
 
         original_config = {"update_tool": {"command": "python", "args": ["-m", "original"]}}
@@ -74,7 +64,6 @@ class TestActionManagerDictRegistration:
         assert tool.mcp_config == updated_config
 
     def test_register_tool_invalid_type(self):
-        """Test error handling for invalid tool types."""
         manager = ActionManager()
 
         # Test with invalid types
@@ -85,7 +74,6 @@ class TestActionManagerDictRegistration:
             manager.register_tool(["not", "a", "tool"])
 
     def test_contains_with_dict_tools(self):
-        """Test __contains__ method with dict-registered tools."""
         manager = ActionManager()
 
         mcp_config = {"dict_tool": {"command": "test"}}
@@ -98,10 +86,7 @@ class TestActionManagerDictRegistration:
 
 
 class TestActionManagerMatchToolEdgeCases:
-    """Test edge cases in tool matching functionality."""
-
     def test_match_tool_with_dict_input(self):
-        """Test match_tool method with dict input."""
         manager = ActionManager()
 
         def test_func(x: int = 1) -> int:
@@ -117,14 +102,12 @@ class TestActionManagerMatchToolEdgeCases:
         assert function_calling.arguments == {"x": 5}
 
     def test_match_tool_unsupported_type_error(self):
-        """Test match_tool with unsupported input type."""
         manager = ActionManager()
 
         with pytest.raises(TypeError, match="Unsupported type"):
             manager.match_tool("invalid_input")
 
     def test_match_tool_unregistered_function_error(self):
-        """Test match_tool with unregistered function name."""
         manager = ActionManager()
 
         request = ActionRequest(content={"function": "nonexistent_func", "arguments": {}})
@@ -134,10 +117,7 @@ class TestActionManagerMatchToolEdgeCases:
 
 
 class TestActionManagerSchemaEdgeCases:
-    """Test edge cases in schema retrieval functionality."""
-
     def test_get_tool_schema_with_single_item_list(self):
-        """Test get_tool_schema with single-item list (gets unwrapped)."""
         manager = ActionManager()
 
         def test_func():
@@ -153,14 +133,12 @@ class TestActionManagerSchemaEdgeCases:
         assert result["tools"]["function"]["name"] == "test_func"
 
     def test_get_tool_schema_false_returns_empty_list(self):
-        """Test get_tool_schema with False returns empty list."""
         manager = ActionManager()
 
         result = manager.get_tool_schema(False)
         assert result == []
 
     def test_get_tool_schema_with_already_schema_dict(self):
-        """Test _get_tool_schema with dict that's already a schema."""
         manager = ActionManager()
 
         schema_dict = {
@@ -175,7 +153,6 @@ class TestActionManagerSchemaEdgeCases:
         assert result == schema_dict
 
     def test_get_tool_schema_with_tool_object(self):
-        """Test _get_tool_schema with Tool object input."""
         manager = ActionManager()
 
         def test_func():
@@ -189,7 +166,6 @@ class TestActionManagerSchemaEdgeCases:
         assert result["function"]["name"] == "test_func"
 
     def test_get_tool_schema_unregistered_string_error(self):
-        """Test _get_tool_schema with unregistered string name."""
         manager = ActionManager()
 
         with pytest.raises(ValueError, match="Tool unregistered_name is not registered"):
@@ -197,10 +173,7 @@ class TestActionManagerSchemaEdgeCases:
 
 
 class TestActionManagerInitialization:
-    """Test ActionManager initialization edge cases."""
-
     def test_init_with_args_and_kwargs(self):
-        """Test ActionManager initialization with both args and kwargs."""
 
         def func1():
             return "func1"
@@ -220,7 +193,6 @@ class TestActionManagerInitialization:
         assert len(manager.registry) == 3
 
     def test_init_with_none_values_filtered(self):
-        """Test that None values are filtered during initialization."""
 
         def valid_func():
             return "valid"
@@ -234,11 +206,8 @@ class TestActionManagerInitialization:
 
 
 class TestActionManagerMCPMethodStubs:
-    """Test MCP-related methods with mocked dependencies."""
-
     @pytest.mark.asyncio
     async def test_register_mcp_server_basic_structure(self):
-        """Test basic structure of register_mcp_server method."""
         manager = ActionManager()
 
         # Mock the MCP connection pool to avoid real MCP dependencies
@@ -262,7 +231,6 @@ class TestActionManagerMCPMethodStubs:
 
     @pytest.mark.asyncio
     async def test_load_mcp_config_basic_structure(self):
-        """Test basic structure of load_mcp_config method."""
         manager = ActionManager()
 
         # Mock the MCP connection pool
@@ -282,17 +250,13 @@ class TestActionManagerMCPMethodStubs:
 
 
 class TestLoadMCPToolsFunction:
-    """Test the standalone load_mcp_tools function."""
-
     @pytest.mark.asyncio
     async def test_load_mcp_tools_no_servers_error(self):
-        """Test load_mcp_tools raises error when no servers specified."""
         with pytest.raises(ValueError, match="Either provide server_names or config_path"):
             await load_mcp_tools()
 
     @pytest.mark.asyncio
     async def test_load_mcp_tools_with_server_names(self):
-        """Test load_mcp_tools with explicit server names."""
         # Mock the ActionManager and its methods
         with patch("lionagi.protocols.action.manager.ActionManager") as mock_manager_class:
             mock_manager = Mock()
@@ -311,10 +275,7 @@ class TestLoadMCPToolsFunction:
 
 
 class TestActionManagerValidation:
-    """Test ActionManager integration with validation helpers."""
-
     def test_action_manager_is_manager_subclass(self):
-        """Test that ActionManager follows Manager protocol."""
         manager = ActionManager()
 
         # ActionManager should have basic Manager characteristics
@@ -322,7 +283,6 @@ class TestActionManagerValidation:
         assert isinstance(manager.registry, dict)
 
     def test_registry_tools_are_valid_tools(self):
-        """Test that all registered tools are valid Tool objects."""
         manager = ActionManager()
 
         def test_func(x: int) -> int:

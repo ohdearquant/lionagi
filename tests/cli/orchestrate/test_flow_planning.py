@@ -1,16 +1,7 @@
 # Copyright (c) 2023-2026, HaiyangLi <quantocean.li at gmail dot com>
 # SPDX-License-Identifier: Apache-2.0
 
-"""Flow planning: TaskAssignment decomposition + #1236 loud-failure handling.
-
-The orchestrator's plan is a ``list[TaskAssignment]`` (casts emission), parsed
-by ``lionagi.orchestration.plan``. DAG topology validation lives in the
-orchestration lib (``build_dag_graph`` + the executor's acyclicity check) and is
-covered by ``tests/orchestration/test_patterns.py``. Here we cover the
-flow-level contract: an empty plan triggers ONE reinforced retry, and a still-
-empty plan fails LOUD (FlowPlanError, non-zero exit) instead of exiting 0 with
-no work done (#1236).
-"""
+"""Tests for flow planning: TaskAssignment decomposition and loud failure on empty plan."""
 
 from __future__ import annotations
 
@@ -81,7 +72,7 @@ async def test_no_plan_recovers_via_reinforced_retry(tmp_path):
 
 @pytest.mark.asyncio
 async def test_no_plan_after_retry_raises_flow_plan_error(tmp_path):
-    """Both attempts empty → fail loud, never exit 0 (#1236)."""
+    """Both attempts empty → fail loud, never exit 0."""
     orc = _FakeOrcBranch([SimpleNamespace(assignments=[]), SimpleNamespace(assignments=[])])
     with pytest.raises(FlowPlanError, match="no usable plan"):
         await _run_flow_inner("codex/gpt-5.5", "task", env=_env(tmp_path, orc), dry_run=True)
@@ -200,12 +191,7 @@ async def test_workers_override_shown_in_dry_run(tmp_path):
 
 @pytest.mark.asyncio
 async def test_workers_override_keeps_role_modes(tmp_path):
-    """Unlike --bare, --workers keeps each role's cognitive modes (ADR-0074).
-
-    The model is swapped to the pool spec, but the per-task modes are still
-    resolved through ``resolve_modes`` — proving the override touches only the
-    model, not the role's behavioural config.
-    """
+    """--workers swaps the model spec but preserves each role's cognitive modes (unlike --bare)."""
     orc = _FakeOrcBranch(
         [
             SimpleNamespace(
@@ -224,7 +210,7 @@ async def test_workers_override_keeps_role_modes(tmp_path):
     assert "adversarial" in out  # role behaviour preserved, not stripped like --bare
 
 
-# ── #1210 pack routing ────────────────────────────────────────────────────
+# ── pack routing ─────────────────────────────────────────────────────────
 
 
 def _pack_env(tmp_path, orc, pack_yaml: str) -> SimpleNamespace:
@@ -241,11 +227,7 @@ def _pack_env(tmp_path, orc, pack_yaml: str) -> SimpleNamespace:
 
 @pytest.mark.asyncio
 async def test_pack_routing_shown_in_dry_run(tmp_path):
-    """A pack with writer.model appears as (pack) in dry-run resolution.
-
-    Uses ``writer`` — a casts role that has no user-profile on disk, so the
-    pack's RoleConfig.model is the winning source (profile > pack > default).
-    """
+    """A pack with writer.model appears as (pack) in dry-run model resolution."""
     orc = _FakeOrcBranch(
         [SimpleNamespace(assignments=[TaskAssignment(task="draft docs", assignee="writer")])]
     )

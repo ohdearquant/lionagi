@@ -1,11 +1,9 @@
 # Copyright (c) 2023-2026, HaiyangLi <quantocean.li at gmail dot com>
 # SPDX-License-Identifier: Apache-2.0
 
-"""Tests for the empty-payload fallback in stream_codex_cli (issue #1397).
+"""Tests for the empty-payload fallback in stream_codex_cli.
 
-When a 'turn.failed' event has an empty error dict {}, the result must be a
-self-describing string rather than the useless str({}) == '{}' that the old
-code emitted.  The existing populated-message path must remain unchanged.
+turn.failed with err={} must produce a self-describing string, not the useless str({})=='{}'; populated-message path must remain unchanged.
 """
 
 from __future__ import annotations
@@ -45,8 +43,7 @@ async def _chunks_from_events(events: list[dict]) -> list[StreamChunk]:
 
 
 async def test_turn_failed_empty_payload_has_self_describing_content():
-    """turn.failed with err={} must NOT produce '{}' as content — it must be a
-    human-readable description indicating the event type."""
+    """turn.failed with err={} must NOT produce '{}' as content; must be a human-readable description naming the event type."""
     events = [{"type": "turn.failed", "error": {}}]
     chunks = await _chunks_from_events(events)
 
@@ -67,8 +64,7 @@ async def test_turn_failed_empty_payload_has_self_describing_content():
 
 
 async def test_error_event_empty_payload_benign_eos_still_applies():
-    """'error' event with err={} is the benign-EOS sentinel — the empty-payload
-    fallback must NOT override the benign_eos tagging path for this shape."""
+    """'error' event with err={} is the benign-EOS sentinel; the empty-payload fallback must NOT override the benign_eos tagging path."""
     events = [{"type": "error", "error": {}}]
     chunks = await _chunks_from_events(events)
 
@@ -100,8 +96,7 @@ async def test_turn_failed_populated_message_preserved():
 
 
 async def test_turn_failed_top_level_message_surfaced_when_no_nested():
-    """turn.failed with a top-level 'message' but no error.message must surface
-    the top-level message (fallback path)."""
+    """turn.failed with a top-level 'message' but no error.message must surface the top-level message (fallback path)."""
     msg = "Provider failure: model unavailable"
     events = [{"type": "turn.failed", "error": {}, "message": msg}]
     chunks = await _chunks_from_events(events)
@@ -132,8 +127,7 @@ async def test_error_event_top_level_message_preserved():
 
 
 async def test_turn_failed_error_null_has_self_describing_content():
-    """turn.failed with JSON 'error': null must NOT surface as the string 'None'.
-    It should produce the same self-describing message as an empty dict."""
+    """turn.failed with JSON 'error':null must NOT surface as the string 'None'; same self-describing fallback as empty dict."""
     # JSON {"type": "turn.failed", "error": null} → obj.get("error", {}) returns None
     events = [{"type": "turn.failed", "error": None}]
     chunks = await _chunks_from_events(events)
@@ -166,8 +160,7 @@ async def test_turn_failed_missing_error_key_is_self_describing():
 
 
 async def test_turn_failed_code_no_message_uses_str_repr():
-    """turn.failed with {'code': 'rate_limit'} but no 'message' key surfaces
-    str(err) which is informative, not the empty-payload fallback."""
+    """turn.failed with {'code':'rate_limit'} but no 'message' key surfaces str(err), not the empty-payload fallback."""
     events = [{"type": "turn.failed", "error": {"code": "rate_limit"}}]
     chunks = await _chunks_from_events(events)
 
@@ -188,8 +181,7 @@ async def test_turn_failed_code_no_message_uses_str_repr():
 
 
 async def test_turn_failed_non_dict_error_uses_obj_message_or_str():
-    """turn.failed with a non-dict error (e.g. a string) falls to
-    obj.get('message', str(err)) — the non-dict branch."""
+    """turn.failed with a non-dict error (e.g. a string) falls to obj.get('message', str(err)) — the non-dict branch."""
     events = [{"type": "turn.failed", "error": "process failed"}]
     chunks = await _chunks_from_events(events)
 

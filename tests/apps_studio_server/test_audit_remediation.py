@@ -32,25 +32,20 @@ def _make_client(monkeypatch, fake_db: Path | None = None) -> TestClient:
 
 
 # ---------------------------------------------------------------------------
-# LIONAGI-AUDIT-001 — Artifact GET routes bypass bearer auth
+# Artifact GET routes bearer auth guard
 # ---------------------------------------------------------------------------
 
 
 @pytest.mark.integration
 class TestArtifactAuthBypass:
-    """Regression: artifact GET routes must require bearer token when configured.
+    """Artifact GET routes must require bearer token when configured.
 
-    Before the fix, GET /api/artifacts/{id} and GET /api/artifacts/by-session/{sid}
-    returned non-401 responses (404 or 200) even without an Authorization header,
-    proving auth was bypassed.
-
-    Attack scenario: attacker obtains studio URL, guesses or enumerates an artifact
-    ID, and reads agent-produced content (model output, file excerpts, credentials)
-    without any credential.
+    Attack scenario: unauthenticated caller enumerates artifact IDs to read
+    agent-produced content (model output, file excerpts, credentials).
     """
 
     def test_get_artifact_no_token_returns_401(self, monkeypatch, tmp_path):
-        """GET /api/artifacts/{id} without Authorization header → 401 when token set."""
+        """GET /api/artifacts/{id} without Authorization returns 401 when token set."""
         monkeypatch.setenv("LIONAGI_STUDIO_AUTH_TOKEN", "test-artifact-secret")
         client = _make_client(monkeypatch, fake_db=tmp_path / "state.db")
 
@@ -119,25 +114,16 @@ class TestArtifactAuthBypass:
 
 
 # ---------------------------------------------------------------------------
-# LIONAGI-AUDIT-002 — Fire tasks must be tracked and cancelled on shutdown
+# Scheduler fire task lifecycle — tracking and cancellation on shutdown
 # ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
 class TestSchedulerFireTaskLifecycle:
-    """Regression: _fire tasks must be tracked so stop() can cancel them.
-
-    Before the fix, asyncio.create_task(self._fire(...)) was fire-and-forget.
-    After shutdown self._task was cancelled but outstanding _fire tasks continued
-    running, allowing orphaned subprocess waits after the scheduler stopped.
-    """
+    """_fire tasks must be tracked so stop() can cancel them on shutdown."""
 
     async def test_fire_tasks_tracked_and_removed_on_completion(self):
-        """_tracked_fire stores tasks in _fire_tasks and removes them on completion.
-
-        Regression for LIONAGI-AUDIT-002: fire-and-forget asyncio.create_task() calls
-        produced no tracking set — this test verifies the set grows and shrinks correctly.
-        """
+        """_tracked_fire stores tasks in _fire_tasks and removes them on completion."""
         from lionagi.studio.scheduler.engine import SchedulerEngine
 
         engine = SchedulerEngine()
@@ -167,10 +153,7 @@ class TestSchedulerFireTaskLifecycle:
         assert len(engine._fire_tasks) == 0, "Task handle must be removed on completion"
 
     async def test_stop_cancels_outstanding_fire_tasks(self):
-        """stop() must cancel and await all outstanding _fire tasks.
-
-        Regression for LIONAGI-AUDIT-002 (studio-standards 2026-06-06).
-        """
+        """stop() must cancel and await all outstanding _fire tasks."""
         from lionagi.studio.scheduler.engine import SchedulerEngine
 
         engine = SchedulerEngine()
@@ -204,7 +187,7 @@ class TestSchedulerFireTaskLifecycle:
 
 
 # ---------------------------------------------------------------------------
-# LIONAGI-AUDIT-003 — Schedule action kind validation
+# Schedule action kind validation
 # ---------------------------------------------------------------------------
 
 
@@ -219,12 +202,7 @@ class TestBuildArgvValidation:
             build_argv({"action_kind": "nonexistent"}, {})
 
     def test_playbook_alias_normalized_to_play(self):
-        """action_kind='playbook' (legacy CLI alias) normalizes to 'play'.
-
-        Regression for LIONAGI-AUDIT-003: 'playbook' was not recognized by
-        build_argv(), causing it to produce ['uv', 'run', 'li'] — an
-        underspecified command — instead of ['uv', 'run', 'li', 'play', ...].
-        """
+        """action_kind='playbook' (legacy CLI alias) normalizes to 'play'."""
         from lionagi.studio.scheduler.subprocess import build_argv
 
         argv, tmp_path = build_argv(
@@ -272,7 +250,7 @@ class TestBuildArgvValidation:
 
 
 # ---------------------------------------------------------------------------
-# Codex #1283 — orphaned subprocess on cancel + invalid-kind run recording
+# Orphaned subprocess on cancel + invalid-kind run recording
 # ---------------------------------------------------------------------------
 
 
@@ -292,10 +270,8 @@ def _interval_schedule(**over):
 
 
 class TestFireBuildFailureRecorded:
-    """Codex #1283 P2: an invalid action_kind raised inside _fire (build_argv)
-    before the schedule_run row existed, so the generic handler called
-    update_status() on a missing row (LookupError) and left the invocation
-    stuck `running`. The failure must be recorded deterministically instead."""
+    """An invalid action_kind raised inside _fire before the schedule_run row existed
+    must be recorded deterministically instead of leaving the invocation stuck running."""
 
     async def test_invalid_kind_records_failed_run_and_invocation(self, monkeypatch, tmp_path):
         monkeypatch.setattr("lionagi.state.db.DEFAULT_DB_PATH", tmp_path / "state.db")
@@ -326,9 +302,9 @@ class TestFireBuildFailureRecorded:
 
 
 class TestSpawnAndWaitCancellation:
-    """Codex #1283 P1: cancelling spawn_and_wait must terminate the spawned
-    PROCESS GROUP, not just the direct child — `uv run li` forks the real
-    worker, so signalling only the direct child orphans grandchildren."""
+    """Cancelling spawn_and_wait must terminate the process GROUP, not just the direct
+    child — `uv run li` forks the real worker, so signalling only the child orphans
+    grandchildren."""
 
     async def test_cancel_terminates_child_and_group(self, monkeypatch):
         from lionagi.studio.scheduler import subprocess as sp
@@ -424,8 +400,8 @@ class TestSpawnAndWaitCancellation:
 
 
 class TestFireCancellationRecorded:
-    """Codex #1283 P1: when stop() cancels an in-flight _fire, the run and
-    invocation must be recorded as cancelled, not left `running`."""
+    """When stop() cancels an in-flight _fire, the run and invocation must be
+    recorded as cancelled, not left running."""
 
     async def test_cancel_during_spawn_records_cancelled(self, monkeypatch, tmp_path):
         monkeypatch.setattr("lionagi.state.db.DEFAULT_DB_PATH", tmp_path / "state.db")
@@ -616,7 +592,7 @@ class TestSchedulePatchRouterValidation:
 
 
 # ---------------------------------------------------------------------------
-# CWE-88 argument injection — router-level 400 responses (closes #1404)
+# CWE-88 argument injection — router-level 400 responses
 # ---------------------------------------------------------------------------
 
 
@@ -761,22 +737,15 @@ class TestScheduleArgvInjectionRouterValidation:
 
 
 # ---------------------------------------------------------------------------
-# CWE-88 argument injection — real-service router tests (closes #1404, round 2)
+# CWE-88 argument injection — real-service router tests (round 2)
 #
-# These tests use the REAL service layer (no mock) with a temp SQLite DB.
-# They validate that flag-injection rejections in create_schedule propagate
-# through the router as HTTP 400 responses.  Codex concern: the mocked router
-# tests verify HTTP translation only, not the actual validation logic.
+# These tests use the REAL service layer (no mock) with a temp SQLite DB to
+# validate that flag-injection rejections propagate through the router as 400.
 # ---------------------------------------------------------------------------
 
 
 def _real_svc_client(monkeypatch, tmp_path: Path) -> TestClient:
-    """Return a TestClient backed by the real service layer + temp DB.
-
-    We monkeypatch DEFAULT_DB_PATH in both the state.db module and the
-    schedules service module so StateDB() uses an isolated temp file.
-    No mock is applied to create_schedule.
-    """
+    """Return a TestClient backed by the real service layer + temp DB."""
     from fastapi.testclient import TestClient
 
     import lionagi.state.db as state_db_mod
@@ -790,13 +759,7 @@ def _real_svc_client(monkeypatch, tmp_path: Path) -> TestClient:
 
 
 class TestScheduleArgvInjectionRealService:
-    """Router → REAL service → temp DB: each flag-injection field must return 400.
-
-    Codex's concern: the mocked router tests (TestScheduleArgvInjectionRouterValidation)
-    verify HTTP translation but not the actual validation logic.  These tests go through
-    the full stack (router → real create_schedule → real validators → DB write) with
-    only the DB path replaced by a temp file.
-    """
+    """Router → REAL service → temp DB: each flag-injection field must return 400."""
 
     def test_create_action_model_flag_real_svc_returns_400(self, monkeypatch, tmp_path) -> None:
         """POST action_model='--bypass' through real service → 400."""
@@ -900,10 +863,9 @@ class TestScheduleArgvInjectionRealService:
     def test_create_action_prompt_sentinel_real_svc_returns_400(
         self, monkeypatch, tmp_path
     ) -> None:
-        """POST action_prompt='--' through real service → 400 (codex round 2).
+        """POST action_prompt='--' through real service → 400.
 
-        The literal end-of-options token '--' is silently consumed by argparse;
-        the service must reject it with a descriptive error.
+        The end-of-options token '--' is silently consumed by argparse; reject it.
         """
         client = _real_svc_client(monkeypatch, tmp_path)
         r = client.post(
@@ -924,11 +886,7 @@ class TestScheduleArgvInjectionRealService:
 
 
 # ---------------------------------------------------------------------------
-# CWE-918 github_repo path manipulation — real-service router tests (closes #1413)
-#
-# These tests use the REAL service layer + temp SQLite DB (same pattern as
-# TestScheduleArgvInjectionRealService) to confirm that github_repo validation
-# propagates from service → router as HTTP 400 responses.
+# CWE-918 github_repo path manipulation — real-service router tests
 # ---------------------------------------------------------------------------
 
 

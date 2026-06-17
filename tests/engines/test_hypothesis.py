@@ -267,18 +267,13 @@ async def test_empty_findings_raises():
 
 
 # ---------------------------------------------------------------------------
-# Regression: #1361 — chain events must reach on_event exactly once
+# Chain events must reach on_event exactly once
 # ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
 async def test_chain_events_reach_on_event_exactly_once_no_double_delivery():
-    """Regression for #1361: every chain event collected by HypothesisRun must
-    reach on_event exactly once — regardless of whether it arrived via run.emit()
-    (seed FindingPosted) or the session bus (agent-emitted Q/E/H/etc.).
-
-    Contract: set(eids delivered to on_event) == set(eids in run store)
-    and no eid is delivered twice."""
+    """Every chain event must reach on_event exactly once, via run.emit or the session bus."""
     eng = HypothesisEngine()
     run = eng.new_run()
     # Mute all reactive stages so we control exactly which events land
@@ -333,9 +328,7 @@ async def test_chain_events_reach_on_event_exactly_once_no_double_delivery():
 
 @pytest.mark.asyncio
 async def test_seed_finding_no_double_delivery_via_run_emit():
-    """Seed FindingPosted goes through run.emit(); the emit() override must not
-    cause a second on_event call for the same event (regression: collect()
-    notifies once, emit() override skips its own call for ChainEvent)."""
+    """Seed FindingPosted via run.emit() must not trigger a second on_event call."""
     eng = HypothesisEngine()
     run = eng.new_run()
     _mute(eng, "extract")

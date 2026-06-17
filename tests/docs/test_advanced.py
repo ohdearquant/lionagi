@@ -1,11 +1,4 @@
-"""Tests for advanced documentation examples.
-
-Covers: performance.md, observability.md, error-handling.md,
-        flow-composition.md, custom-operations.md.
-
-All tests avoid real API calls by using LionAGIMockFactory or
-testing only construction/import semantics.
-"""
+"""Tests for advanced documentation examples (performance, observability, error-handling, flow-composition, custom-operations)."""
 
 import asyncio
 

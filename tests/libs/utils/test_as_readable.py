@@ -7,9 +7,7 @@ import pytest
 from lionagi.libs.schema.as_readable import as_readable
 
 
-# Updated test for list handling
 def test_as_readable_list():
-    """Test list conversion."""
     data = [{"a": 1}, {"b": 2}]
     result = as_readable(data)
 
@@ -23,9 +21,7 @@ def test_as_readable_list():
         assert parsed == expected
 
 
-# Updated empty input test
 def test_as_readable_empty():
-    """Test empty input handling."""
     # Empty dict returns empty object
     assert as_readable({}) == "{}"
     # Empty list returns empty string

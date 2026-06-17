@@ -1,27 +1,7 @@
 # Copyright (c) 2025 - 2026, HaiyangLi <quantocean.li at gmail dot com>
 # SPDX-License-Identifier: Apache-2.0
 
-"""Public-API smoke tests for top-level `lionagi` imports.
-
-Issue #1134 — regression guard for lionagi/__init__.py lazy-export table.
-
-Purpose
--------
-Every symbol listed here must be importable directly from ``lionagi``. A
-failure means the symbol is missing from ``_LAZY_MAP`` / ``__all__`` in
-``lionagi/__init__.py``, which breaks downstream code that relies on the
-documented public surface.
-
-Dependency on PR #1122
------------------------
-Tests in ``TestLndlPublicAPI`` and ``TestAdaptersPublicAPI`` will **fail**
-on a branch that has not merged PR #1122 (lndl + adapters export fix).
-This is intentional: the TDD red signal.  Once #1122 is merged the full
-suite goes green.
-
-The "sanity" group (``TestExistingPublicAPI``) and sub-module tests
-(``TestSubmoduleImportPaths``) must always pass regardless of #1122 status.
-"""
+"""Public-API smoke tests for top-level `lionagi` imports — regression guard for the lazy-export table."""
 
 import pytest
 
@@ -30,7 +10,7 @@ import pytest
 #
 # A broken lionagi/__init__.py must FAIL the entire test module, not skip it.
 # Using importorskip here would mask exactly the regressions this file guards
-# against (codex P1 on PR #1143).
+# against the regressions this file guards.
 # ---------------------------------------------------------------------------
 import lionagi as _lionagi  # noqa: E402 — must come after pytest import
 
@@ -40,11 +20,7 @@ import lionagi as _lionagi  # noqa: E402 — must come after pytest import
 
 
 class TestExistingPublicAPI:
-    """Sanity check — symbols exported before PR #1122.
-
-    These must pass on ANY branch.  A failure here indicates a regression
-    in the core export table.
-    """
+    """Sanity check for pre-existing symbols — must pass on any branch; failure indicates a core export regression."""
 
     @pytest.mark.parametrize(
         "symbol",
@@ -78,17 +54,12 @@ class TestExistingPublicAPI:
 
 
 # ---------------------------------------------------------------------------
-# New: LNDL public API (requires PR #1122)
+# New: LNDL public API
 # ---------------------------------------------------------------------------
 
 
 class TestLndlPublicAPI:
-    """Verify lndl symbols are importable from the top-level lionagi package.
-
-    All tests here will FAIL until PR #1122 (export fix) is merged into main.
-    That failure is the TDD red signal — do not skip or xfail these tests;
-    they must go green when #1122 lands.
-    """
+    """Verify lndl symbols are importable from the top-level lionagi package."""
 
     def test_lndloutput_importable(self) -> None:
         """LNDLOutput must be importable from lionagi."""
@@ -153,15 +124,12 @@ class TestLndlPublicAPI:
 
 
 # ---------------------------------------------------------------------------
-# New: Adapters public API (requires PR #1122)
+# New: Adapters public API
 # ---------------------------------------------------------------------------
 
 
 class TestAdaptersPublicAPI:
-    """Verify adapter symbols are importable from the top-level lionagi package.
-
-    All tests here will FAIL until PR #1122 (export fix) is merged into main.
-    """
+    """Verify adapter symbols are importable from the top-level lionagi package."""
 
     def test_adapterregistry_importable(self) -> None:
         from lionagi import AdapterRegistry  # noqa: F401
@@ -312,16 +280,12 @@ class TestAllConsistency:
 
 
 # ---------------------------------------------------------------------------
-# Sub-module import paths (always pass — does NOT require PR #1122)
+# Sub-module import paths (always pass)
 # ---------------------------------------------------------------------------
 
 
 class TestSubmoduleImportPaths:
-    """Verify lndl and adapters sub-packages are reachable via their own paths.
-
-    These do NOT go through the top-level lionagi.__init__ lazy table and
-    must always pass regardless of whether #1122 has merged.
-    """
+    """Verify lndl and adapters sub-packages are reachable via their own import paths."""
 
     def test_lndl_subpackage_importable(self) -> None:
         import lionagi.lndl as lndl_mod

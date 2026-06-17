@@ -136,7 +136,6 @@ def test_module_level_track_resource_defaults():
 
 @pytest.mark.anyio
 async def test_queue_buffered_behavior(anyio_backend):
-    """Test that buffered queue doesn't block put until full."""
     q = Queue.with_maxsize(3)
 
     # Should be able to put 3 items without blocking
@@ -162,7 +161,6 @@ async def test_queue_buffered_behavior(anyio_backend):
 
 @pytest.mark.anyio
 async def test_queue_get_nowait(anyio_backend):
-    """Test non-blocking get operations."""
     q = Queue.with_maxsize(2)
 
     # Empty queue should raise WouldBlock
@@ -184,7 +182,6 @@ async def test_queue_get_nowait(anyio_backend):
 
 @pytest.mark.anyio
 async def test_queue_lifecycle_with_context_manager(anyio_backend):
-    """Test queue cleanup with async context manager."""
     async with Queue.with_maxsize(1) as q:
         await q.put("test")
         assert await q.get() == "test"
@@ -197,7 +194,6 @@ async def test_queue_lifecycle_with_context_manager(anyio_backend):
 
 @pytest.mark.anyio
 async def test_lock_mutual_exclusion(anyio_backend):
-    """Test that Lock enforces mutual exclusion under contention."""
     lock = Lock()
     counter = 0
     TASKS = 10  # Further reduced
@@ -222,7 +218,6 @@ async def test_lock_mutual_exclusion(anyio_backend):
 
 @pytest.mark.anyio
 async def test_semaphore_strict_limit(anyio_backend):
-    """Test that Semaphore strictly enforces its limit."""
     sem = Semaphore(3)
     active = 0
     max_active = 0
@@ -248,7 +243,6 @@ async def test_semaphore_strict_limit(anyio_backend):
 
 @pytest.mark.anyio
 async def test_capacity_limiter_dynamic_adjustment(anyio_backend):
-    """Test dynamic capacity adjustment of CapacityLimiter."""
     limiter = CapacityLimiter(2)
 
     # Initially should allow 2 tokens
@@ -300,7 +294,6 @@ async def test_capacity_limiter_is_async_context_manager(anyio_backend):
 
 @pytest.mark.anyio
 async def test_event_signaling(anyio_backend):
-    """Test Event for task signaling."""
     event = Event()
     results = []
 
@@ -328,7 +321,6 @@ async def test_event_signaling(anyio_backend):
 
 @pytest.mark.anyio
 async def test_condition_notify_selective(anyio_backend):
-    """Test Condition variable for selective task notification."""
     lock = Lock()
     condition = Condition(lock)
     results = []
@@ -370,7 +362,6 @@ async def test_condition_notify_selective(anyio_backend):
 
 @pytest.mark.anyio
 async def test_condition_without_explicit_lock(anyio_backend):
-    """Test Condition with auto-created lock."""
     condition = Condition()  # Creates its own lock
     value = None
 
@@ -398,13 +389,11 @@ async def test_condition_without_explicit_lock(anyio_backend):
 
 
 def test_semaphore_negative_initial_value():
-    """Test that Semaphore raises ValueError for negative initial_value (line 63)."""
     with pytest.raises(ValueError, match="initial_value must be >= 0"):
         Semaphore(-1)
 
 
 def test_capacity_limiter_invalid_total_tokens():
-    """Test that CapacityLimiter raises ValueError for invalid total_tokens (line 102)."""
     with pytest.raises(ValueError, match="total_tokens must be > 0"):
         CapacityLimiter(0)
 
@@ -413,7 +402,6 @@ def test_capacity_limiter_invalid_total_tokens():
 
 
 def test_capacity_limiter_remaining_tokens_property():
-    """Test the deprecated remaining_tokens property (line 116)."""
     limiter = CapacityLimiter(5)
     # remaining_tokens is deprecated but should return available_tokens
     assert limiter.remaining_tokens == 5
@@ -421,7 +409,6 @@ def test_capacity_limiter_remaining_tokens_property():
 
 
 def test_capacity_limiter_invalid_total_tokens_setter():
-    """Test that setting invalid total_tokens raises ValueError (line 132)."""
     limiter = CapacityLimiter(5)
 
     with pytest.raises(ValueError, match="total_tokens must be > 0"):
@@ -433,7 +420,6 @@ def test_capacity_limiter_invalid_total_tokens_setter():
 
 @pytest.mark.anyio
 async def test_capacity_limiter_acquire_on_behalf_of(anyio_backend):
-    """Test acquire_on_behalf_of delegation method (line 153)."""
     limiter = CapacityLimiter(2)
 
     class Borrower:
@@ -458,7 +444,6 @@ async def test_capacity_limiter_acquire_on_behalf_of(anyio_backend):
 
 @pytest.mark.anyio
 async def test_capacity_limiter_release_on_behalf_of(anyio_backend):
-    """Test release_on_behalf_of delegation method (line 161)."""
     limiter = CapacityLimiter(3)
 
     borrower1 = object()
@@ -481,7 +466,6 @@ async def test_capacity_limiter_release_on_behalf_of(anyio_backend):
 
 @pytest.mark.anyio
 async def test_event_statistics(anyio_backend):
-    """Test Event.statistics() method (line 274)."""
     event = Event()
 
     # Get statistics - should not raise
@@ -514,7 +498,6 @@ async def test_event_statistics(anyio_backend):
 
 @pytest.mark.anyio
 async def test_condition_statistics(anyio_backend):
-    """Test Condition.statistics() method (line 331)."""
     condition = Condition()
 
     # Get statistics - should not raise

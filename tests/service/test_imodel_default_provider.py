@@ -1,12 +1,7 @@
 # Copyright (c) 2023-2025, HaiyangLi <quantocean.li at gmail dot com>
 # SPDX-License-Identifier: Apache-2.0
 
-"""Regression tests for iModel bare-model construction.
-
-When a caller supplies only `model=` without `provider=`, iModel must resolve
-the provider from the LIONAGI_CHAT_PROVIDER setting rather than raising an
-error.  Explicit provider= still takes precedence.
-"""
+"""Regression tests for iModel bare-model construction without explicit provider=."""
 
 from __future__ import annotations
 
@@ -19,29 +14,18 @@ class TestiModelDefaultProvider:
     """Bare iModel(model=...) resolves to the settings default provider."""
 
     def test_bare_model_does_not_raise(self):
-        """iModel(model='gpt-4o-mini') constructs without error.
-
-        Previously raised 'Provider must be provided' when no slash appeared
-        in the model name and provider= was omitted.
-        """
+        """iModel(model='gpt-4o-mini') constructs without error (previously raised 'Provider must be provided' when provider= was omitted)."""
         m = iModel(model="gpt-4o-mini", api_key="test-key")
         assert m is not None
 
     def test_bare_model_resolves_settings_provider(self):
-        """Provider falls back to LIONAGI_CHAT_PROVIDER when not supplied.
-
-        The default value of LIONAGI_CHAT_PROVIDER is 'openai', so the
-        resolved endpoint provider must equal that default.
-        """
+        """Provider falls back to LIONAGI_CHAT_PROVIDER (default 'openai') when not supplied."""
         m = iModel(model="gpt-4o-mini", api_key="test-key")
         # The endpoint config must have resolved a provider, not be empty.
         assert m.endpoint.config.provider  # truthy — some provider was set
 
     def test_bare_model_uses_env_override(self):
-        """LIONAGI_CHAT_PROVIDER env override is respected.
-
-        Patch the singleton so no real env var mutation is needed.
-        """
+        """LIONAGI_CHAT_PROVIDER env override is respected via patched settings singleton."""
         from lionagi import config as cfg
 
         original = cfg.settings
@@ -76,20 +60,10 @@ class TestiModelDefaultProvider:
 
 
 class TestiModelDefaultProviderAttackDriven:
-    """Ensures callers cannot bypass provider resolution with crafted model names.
-
-    The bare-model fallback must not allow a caller to inject an arbitrary
-    provider by embedding one in the model name without a slash separator.
-    The slash-split path is the only authorised provider-from-model-name form.
-    """
+    """Provider injection via crafted model name is blocked: slash-split is the only authorised provider-from-model-name form."""
 
     def test_no_slash_uses_settings_not_model_as_provider(self):
-        """A model name without '/' must not be treated as a provider name.
-
-        Regression guard: the old code raised ValueError; the fixed code falls
-        through to settings.  In neither case should the raw model string
-        become the provider.
-        """
+        """A model name without '/' must not be treated as a provider: raw model string must not become the provider."""
         m = iModel(model="gpt-4o-mini", api_key="test-key")
         # The provider must NOT equal the model name.
         assert m.endpoint.config.provider != "gpt-4o-mini"

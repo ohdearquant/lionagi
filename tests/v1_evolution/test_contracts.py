@@ -1,11 +1,7 @@
 # Copyright (c) 2023-2025, HaiyangLi <quantocean.li at gmail dot com>
 # SPDX-License-Identifier: Apache-2.0
 
-"""Tests for V1 Observable Protocol contract definition.
-
-Following TDD methodology - tests for protocol definition, runtime checkability,
-and structural typing behavior.
-"""
+"""Tests for V1 Observable Protocol contract: definition, runtime checkability, structural typing."""
 
 import inspect
 from typing import Protocol
@@ -14,11 +10,7 @@ import pytest
 
 
 class TestObservableProtocolDefinition:
-    """Test the V1 Observable Protocol contract and structure."""
-
     def test_observable_is_runtime_checkable_protocol(self):
-        """Verify Observable is a runtime-checkable Protocol."""
-        # Should not fail due to ImportError
         try:
             from lionagi.protocols.contracts import Observable
         except ImportError:
@@ -35,7 +27,6 @@ class TestObservableProtocolDefinition:
         assert is_checkable, "Observable must be @runtime_checkable"
 
     def test_observable_defines_id_property_permissive(self):
-        """Verify Observable defines 'id' property with permissive typing."""
         from lionagi.protocols.contracts import Observable
 
         # Check for the 'id' attribute
@@ -55,7 +46,6 @@ class TestObservableProtocolDefinition:
         )
 
     def test_observable_structural_typing(self):
-        """Test structural typing works with the Observable Protocol."""
         from lionagi.protocols.contracts import Observable
 
         class MockCompliant:
@@ -73,14 +63,12 @@ class TestObservableProtocolDefinition:
         assert not isinstance(MockNonCompliant(), Observable)
 
     def test_observable_alias_consistency(self):
-        """Test that Observable alias points to ObservableProto."""
         from lionagi.protocols.contracts import Observable, ObservableProto
 
         # They should be the same object
         assert Observable is ObservableProto, "Observable should be an alias for ObservableProto"
 
     def test_legacy_observable_import(self):
-        """Test that LegacyObservable can be imported from contracts."""
         try:
             from lionagi.protocols.contracts import LegacyObservable
         except ImportError:

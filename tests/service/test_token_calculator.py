@@ -1,12 +1,7 @@
 # Copyright (c) 2023-2025, HaiyangLi <quantocean.li at gmail dot com>
 # SPDX-License-Identifier: Apache-2.0
 
-"""Comprehensive unit tests for lionagi.service.token_calculator.
-
-tokenize() always resolves encoding_name first via get_encoding_name(),
-so both the tokenizer and decoder are created from a valid encoding even
-when a custom tokenizer is provided without an explicit decoder.
-"""
+"""Unit tests for lionagi.service.token_calculator (TokenCalculator and get_encoding_name)."""
 
 import pytest
 import tiktoken
@@ -19,8 +14,6 @@ from lionagi.service.token_calculator import TokenCalculator, get_encoding_name
 
 
 class TestGetEncodingName:
-    """Tests for the get_encoding_name helper function."""
-
     def test_valid_model_name_returns_encoding(self):
         """Known model names should resolve to their tiktoken encoding."""
         name = get_encoding_name("gpt-4o")
@@ -73,8 +66,6 @@ class TestGetEncodingName:
 
 
 class TestTokenize:
-    """Tests for TokenCalculator.tokenize."""
-
     def test_basic_string_returns_count(self):
         """Tokenizing a simple string returns an integer token count."""
         result = TokenCalculator.tokenize("hello world")
@@ -211,12 +202,7 @@ class TestTokenize:
 
 
 class TestCalculateChatitem:
-    """Tests for the internal _calculate_chatitem method.
-
-    _calculate_chatitem passes the raw tokenizer callable and model_name
-    to tokenize(). tokenize() always resolves encoding_name first, so
-    the decoder is created correctly and content is counted.
-    """
+    """_calculate_chatitem delegates to tokenize(), which resolves encoding_name first so decoder creation never fails."""
 
     @pytest.fixture()
     def tokenizer(self):
@@ -301,12 +287,7 @@ class TestCalculateChatitem:
 
 
 class TestCalculateEmbedItem:
-    """Tests for the internal _calculate_embed_item method.
-
-    tokenize() always resolves encoding_name first, so even when
-    _calculate_embed_item passes only tokenizer= (no encoding_name),
-    the decoder is created correctly from the fallback encoding.
-    """
+    """_calculate_embed_item always resolves encoding_name via tokenize(), so decoder creation never fails even with tokenizer-only calls."""
 
     @pytest.fixture()
     def tokenizer(self):
@@ -357,10 +338,7 @@ class TestCalculateEmbedItem:
 
 
 class TestCalculateMessageTokens:
-    """Tests for the top-level calculate_message_tokens static method.
-
-    Each message adds 4 tokens of overhead plus actual content tokens.
-    """
+    """calculate_message_tokens: each message adds 4 tokens overhead plus actual content tokens."""
 
     def test_single_message_with_content(self):
         """A single message returns overhead + content tokens."""
@@ -478,8 +456,6 @@ class TestCalculateMessageTokens:
 
 
 class TestCalculateEmbedToken:
-    """Tests for the top-level calculate_embed_token static method."""
-
     def test_single_string_input(self):
         """Single string in the list should return positive token count."""
         result = TokenCalculator.calculate_embed_token(["hello world"])
@@ -525,12 +501,7 @@ class TestCalculateEmbedToken:
 
 
 class TestTokenizeStandalone:
-    """Tests for tokenize when called directly (not via _calculate_*).
-
-    When called without a pre-built tokenizer, tokenize resolves
-    encoding_name via get_encoding_name and creates both tokenizer
-    and decoder from the resolved encoding. This path works correctly.
-    """
+    """tokenize() standalone: resolves encoding_name and creates both tokenizer and decoder from the resolved encoding."""
 
     def test_count_matches_token_list_length(self):
         """Length of token list should equal the int count."""

@@ -1,11 +1,7 @@
 # Copyright (c) 2023-2026, HaiyangLi <quantocean.li at gmail dot com>
 # SPDX-License-Identifier: Apache-2.0
 
-"""Regression tests for agent profile name validation (LIONAGI-AUDIT-002).
-
-Verify that _validate_bare_name rejects path traversal and separators
-so that load_agent_profile() fails closed on malicious names.
-"""
+"""Regression tests for _validate_bare_name: path-traversal + separator rejection."""
 
 from __future__ import annotations
 

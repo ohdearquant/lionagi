@@ -1,12 +1,7 @@
 # Copyright (c) 2023-2026, HaiyangLi <quantocean.li at gmail dot com>
 # SPDX-License-Identifier: Apache-2.0
 
-"""ADR-0021 outcome model tests.
-
-The outcomes package is the contract between skill producers and Studio
-consumers. These tests pin the public schema so any breaking change
-shows up here, not in a downstream serialization mismatch.
-"""
+"""ADR-0021 outcome model tests — pins the public schema contract for SkillOutcome, ReviewOutcome, GateVerdict, CIResult."""
 
 from __future__ import annotations
 
@@ -240,7 +235,7 @@ def test_finding_accepts_positive_line():
 
 
 def test_gate_verdict_defaults_passed_to_gate_passed_true():
-    """When passed is omitted, it defaults to gate_passed (LIONAGI-AUDIT-003)."""
+    """When passed is omitted, it defaults to gate_passed."""
     g = GateVerdict(gate_passed=True, summary="ok")
     assert g.passed is True
 

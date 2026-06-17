@@ -198,7 +198,7 @@ async def test_apply_schema_adds_missing_columns_on_old_db(tmp_path):
             # ADR-0029: new artifact columns must be reconciled on old DBs.
             "artifact_contract_json",
             "artifact_verification_json",
-            # #1235: live flow phase column for `li monitor`.
+            # live flow phase column for `li monitor`.
             "current_phase",
         ):
             assert must_have in cols, f"sessions.{must_have} not migrated"
@@ -409,7 +409,7 @@ async def test_update_session_rejects_bad_columns(db: StateDB):
 
 
 async def test_update_session_current_phase(db: StateDB):
-    """#1235: current_phase round-trips for the `li monitor` PHASE column."""
+    """current_phase round-trips for the `li monitor` PHASE column."""
     s = await _make_session(db, status="running")
     assert (await db.get_session(s["id"]))["current_phase"] is None
 
@@ -843,11 +843,11 @@ async def test_get_definition_missing(db: StateDB):
     assert result_versioned is None
 
 
-# ── Regression: PR #980 R4 SQL race + JSON roundtrip + provenance ────────────
+# ── Regression: SQL race + JSON roundtrip + provenance ────────────
 
 
 async def test_resolve_lion_class_concurrent_race(tmp_path):
-    """R4-C HIGH-1: SELECT-then-INSERT raced on UNIQUE(message_types.lion_class).
+    """SELECT-then-INSERT raced on UNIQUE(message_types.lion_class).
 
     The fix uses INSERT OR IGNORE + SELECT so concurrent writers for the same
     novel ``lion_class`` no longer collide. Drive 20 concurrent insert_message

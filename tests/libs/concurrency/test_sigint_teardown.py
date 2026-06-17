@@ -1,18 +1,6 @@
 # Copyright (c) 2025-2026, HaiyangLi <quantocean.li at gmail dot com>
 # SPDX-License-Identifier: Apache-2.0
-"""Integration tests for SIGINT-shielded teardown in run_async (issue #1055).
-
-These tests use a subprocess + real SIGINT signal to verify that when Ctrl-C
-arrives while run_async is blocking on thread.join():
-
-1. The inner coroutine's structured teardown (finally / CancelScope) RUNS.
-2. The subprocess exits with code 130 (128 + SIGINT signal number).
-3. The child thread is not left orphaned.
-
-We cannot test this in-process because installing a custom SIGINT handler in
-the test suite's main thread would interfere with pytest's own signal handling.
-The subprocess approach gives true OS-level signal delivery.
-"""
+"""Integration tests for SIGINT-shielded teardown in run_async."""
 
 from __future__ import annotations
 
@@ -73,14 +61,7 @@ def _run_subprocess_with_sigint(
     startup_timeout_s: float = 10.0,
     join_timeout_s: float = 15.0,
 ) -> int:
-    """Run ``script`` in a subprocess, wait for ready signal, send SIGINT, return exit code.
-
-    The script is expected to accept two arguments:
-    1. sentinel_path — file to create in the structured teardown (proves teardown ran).
-    2. ready_path    — file the script creates once it is inside the event loop and
-                       sleeping, so we know SIGINT will interrupt an actual coroutine
-                       rather than fire during import/startup.
-    """
+    """Run script in a subprocess, wait for ready signal, send SIGINT, return exit code."""
     proc = subprocess.Popen(
         [sys.executable, "-c", script, sentinel_path, ready_path],
         # Do NOT use PIPE for stdout/stderr — reading them with proc.wait()
@@ -145,7 +126,7 @@ def test_sigint_runs_shielded_teardown():
         assert os.path.exists(sentinel), (
             "Sentinel file was NOT written — shielded teardown did not run.  "
             "The inner coroutine's finally block was skipped, indicating the child "
-            "thread was orphaned by SIGINT (phantom-session regression, issue #1055)."
+            "thread was orphaned by SIGINT (phantom-session regression)."
         )
         with open(sentinel) as fh:
             content = fh.read()

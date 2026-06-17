@@ -23,8 +23,6 @@ class DummyProcessor(Processor):
 
 
 class TestProcessorBackpressure:
-    """Test Processor backpressure features."""
-
     def test_queue_full_unlimited(self):
         """max_queue_size=0 means unlimited — queue_full always False."""
         p = DummyProcessor(

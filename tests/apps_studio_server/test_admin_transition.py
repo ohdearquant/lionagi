@@ -1,11 +1,10 @@
 # Copyright (c) 2023-2026, HaiyangLi <quantocean.li at gmail dot com>
 # SPDX-License-Identifier: Apache-2.0
 
-"""Regression tests for #1056 — admin transition atomicity guard.
+"""Tests for admin transition atomicity guard.
 
-The transition_sessions() UPDATE WHERE must include timestamp snapshot conditions
-so a concurrent heartbeat between classify and UPDATE causes rowcount==0 (lost
-race → session goes to skipped, not transitioned).
+A concurrent heartbeat between classify and UPDATE causes rowcount==0 (lost race
+→ session goes to skipped, not transitioned).
 """
 
 from __future__ import annotations
@@ -27,7 +26,6 @@ async def _seed_stale_session(
     last_message_at: float | None = None,
     updated_at: float | None = None,
 ) -> None:
-    """Seed a running session that classify_session_health will mark STALE/ORPHANED."""
     from lionagi.state.db import StateDB
 
     async with StateDB(db_path) as db:
@@ -78,16 +76,9 @@ def _make_admin_client(tmp_path, monkeypatch, db_path):
 def test_transition_refused_when_heartbeat_changes_health(tmp_path, monkeypatch):
     """If last_message_at changes between classify and UPDATE, rowcount==0 → skipped.
 
-    We simulate this by:
-    1. Seeding a stale session with old timestamps.
-    2. Monkeypatching classify_session_health with a SYNCHRONOUS fake that bumps
-       last_message_at in the DB via a separate connection BEFORE returning
-       SessionHealth.STALE.  The sync constraint is load-bearing: transition_sessions()
-       calls classify_session_health() synchronously (line 338 admin.py); an async
-       fake would return an un-awaited coroutine — the bump would never fire and the
-       health guard would be skipped entirely.
-    3. Asserting the session ends up in skipped with reason='changed_since_snapshot'
-       (not transitioned), because last_message_at changed between snapshot and UPDATE.
+    Uses a synchronous fake classifier — load-bearing because transition_sessions()
+    calls classify_session_health() synchronously; an async fake would not fire before
+    the UPDATE and would silently skip the guard.
     """
     from lionagi.state.health import SessionHealth
 
@@ -97,10 +88,8 @@ def test_transition_refused_when_heartbeat_changes_health(tmp_path, monkeypatch)
 
     _run(_seed_stale_session(db_path, sid, last_message_at=old_ts, updated_at=old_ts))
 
-    # MAJOR 2 fix: patch BOTH admin.DEFAULT_DB_PATH and lionagi.state.db.DEFAULT_DB_PATH.
-    # transition_sessions() opens StateDB() which resolves lionagi.state.db.DEFAULT_DB_PATH
-    # at call time — patching only admin_mod.DEFAULT_DB_PATH leaves StateDB() pointing at
-    # the real default DB (a readonly path in CI).
+    # Patch BOTH admin.DEFAULT_DB_PATH and lionagi.state.db.DEFAULT_DB_PATH;
+    # transition_sessions() opens StateDB() which resolves the latter at call time.
     import lionagi.state.db as state_db_mod
     import lionagi.state.health as health_mod
     import lionagi.studio.services.admin as adm
@@ -109,15 +98,12 @@ def test_transition_refused_when_heartbeat_changes_health(tmp_path, monkeypatch)
     monkeypatch.setattr(adm, "DEFAULT_DB_PATH", db_path)
     monkeypatch.setattr(adm, "_DB", str(db_path))
 
-    # MAJOR 1 fix: synchronous fake classifier.  The fake bumps last_message_at
-    # via a direct sqlite3 (synchronous) connection — no second event loop needed.
-    # aiosqlite is just a thread-executor wrapper around sqlite3; we can open
-    # sqlite3 directly here because the write happens before the outer coroutine's
-    # UPDATE, and SQLite serialises concurrent writers automatically.
+    # Synchronous fake classifier bumps last_message_at via sqlite3 directly
+    # (aiosqlite is a thread-executor wrapper; sqlite3 write here is safe because
+    # SQLite serialises concurrent writers).
     import sqlite3
 
     def _sync_bump_and_classify(session, **kwargs):
-        """Bump last_message_at synchronously, then return STALE (simulates the race)."""
         new_ts = time.time()  # new timestamp that doesn't match snapshot
         con = sqlite3.connect(str(db_path))
         try:
@@ -142,8 +128,7 @@ def test_transition_refused_when_heartbeat_changes_health(tmp_path, monkeypatch)
         )
     )
 
-    # The session should be in skipped, NOT transitioned, because last_message_at
-    # changed between snapshot and UPDATE (WHERE clause fails → rowcount==0).
+    # last_message_at changed → WHERE clause fails → rowcount==0 → skipped, not transitioned.
     assert sid not in result["transitioned"], (
         "Session should not be transitioned when heartbeat changed last_message_at"
     )
@@ -152,9 +137,7 @@ def test_transition_refused_when_heartbeat_changes_health(tmp_path, monkeypatch)
         f"Session {sid} should be in skipped after heartbeat race; got {result}"
     )
 
-    # MEDIUM 1 fix: verify the reason is 'changed_since_snapshot' (not the
-    # misleading 'not_running:running' that the old code emitted when status
-    # was still 'running' but timestamps had changed).
+    # Verify the reason is 'changed_since_snapshot', not 'not_running:running'.
     skipped_entry = next(s for s in result["skipped"] if s["session_id"] == sid)
     assert skipped_entry["reason"] == "changed_since_snapshot", (
         f"Expected reason='changed_since_snapshot', got {skipped_entry['reason']!r}. "

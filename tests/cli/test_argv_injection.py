@@ -1,14 +1,7 @@
 # Copyright (c) 2023-2026, HaiyangLi <quantocean.li at gmail dot com>
 # SPDX-License-Identifier: Apache-2.0
 
-"""Tests for argument injection hardening in build_argv (CWE-88).
-
-Covers action_model and action_extra_args flag-injection rejection at:
-  1. The subprocess layer (build_argv defensive validation).
-  2. The service layer (create_schedule / update_schedule boundary).
-  3. action_agent / action_project / action_playbook identifier validation.
-  4. Structural: -- sentinel and flow_yaml prompt-drop assertions.
-"""
+"""Tests for argument injection hardening in build_argv (CWE-88): model, extra-args, identifiers, sentinel."""
 
 from __future__ import annotations
 
@@ -45,8 +38,6 @@ def _schedule(**kwargs) -> dict:
 
 
 class TestBuildArgvActionModelInjection:
-    """build_argv must reject action_model values that inject CLI flags."""
-
     def test_model_starting_with_dash_raises(self):
         """action_model starting with '-' must raise ValueError."""
         from lionagi.studio.scheduler.subprocess import build_argv
@@ -55,42 +46,36 @@ class TestBuildArgvActionModelInjection:
             build_argv(_schedule(action_model="--bypass"), {})
 
     def test_model_bypass_flag_raises(self):
-        """Literal --bypass must be rejected."""
         from lionagi.studio.scheduler.subprocess import build_argv
 
         with pytest.raises(ValueError, match="starts with '-'"):
             build_argv(_schedule(action_model="--bypass"), {})
 
     def test_model_yolo_flag_raises(self):
-        """Literal --yolo must be rejected."""
         from lionagi.studio.scheduler.subprocess import build_argv
 
         with pytest.raises(ValueError, match="starts with '-'"):
             build_argv(_schedule(action_model="--yolo"), {})
 
     def test_model_project_flag_raises(self):
-        """Literal --project must be rejected."""
         from lionagi.studio.scheduler.subprocess import build_argv
 
         with pytest.raises(ValueError, match="starts with '-'"):
             build_argv(_schedule(action_model="--project"), {})
 
     def test_model_short_flag_raises(self):
-        """Single-dash flag (-m) must be rejected."""
         from lionagi.studio.scheduler.subprocess import build_argv
 
         with pytest.raises(ValueError, match="starts with '-'"):
             build_argv(_schedule(action_model="-m"), {})
 
     def test_model_invalid_chars_raises(self):
-        """Semicolons and spaces in action_model must be rejected."""
         from lionagi.studio.scheduler.subprocess import build_argv
 
         with pytest.raises(ValueError, match="characters not allowed"):
             build_argv(_schedule(action_model="gpt-4; rm -rf /"), {})
 
     def test_model_empty_string_accepted(self):
-        """Empty action_model is allowed (means 'no model specified')."""
         from lionagi.studio.scheduler.subprocess import build_argv
 
         argv, tmp = build_argv(_schedule(action_model=""), {})
@@ -98,14 +83,12 @@ class TestBuildArgvActionModelInjection:
         assert "uv" in argv
 
     def test_model_none_accepted(self):
-        """None action_model is allowed."""
         from lionagi.studio.scheduler.subprocess import build_argv
 
         argv, tmp = build_argv(_schedule(action_model=None), {})
         assert tmp is None
 
     def test_model_valid_identifiers_accepted(self):
-        """Legitimate model identifiers must pass without error."""
         from lionagi.studio.scheduler.subprocess import build_argv
 
         valid_models = [
@@ -132,45 +115,37 @@ class TestBuildArgvActionModelInjection:
 
 
 class TestBuildArgvExtraArgsInjection:
-    """build_argv must reject action_extra_args elements that inject CLI flags."""
-
     def test_extra_bypass_flag_raises(self):
-        """'--bypass' in action_extra_args must raise ValueError."""
         from lionagi.studio.scheduler.subprocess import build_argv
 
         with pytest.raises(ValueError, match="starts with '-'"):
             build_argv(_schedule(action_extra_args=["--bypass"]), {})
 
     def test_extra_yolo_flag_raises(self):
-        """'--yolo' in action_extra_args must raise ValueError."""
         from lionagi.studio.scheduler.subprocess import build_argv
 
         with pytest.raises(ValueError, match="starts with '-'"):
             build_argv(_schedule(action_extra_args=["--yolo"]), {})
 
     def test_extra_short_flag_raises(self):
-        """'-v' in action_extra_args must raise ValueError."""
         from lionagi.studio.scheduler.subprocess import build_argv
 
         with pytest.raises(ValueError, match="starts with '-'"):
             build_argv(_schedule(action_extra_args=["-v"]), {})
 
     def test_extra_flag_in_mixed_list_raises(self):
-        """A flag mixed with legitimate tokens must be caught."""
         from lionagi.studio.scheduler.subprocess import build_argv
 
         with pytest.raises(ValueError, match="starts with '-'"):
             build_argv(_schedule(action_extra_args=["my-task", "--bypass", "arg2"]), {})
 
     def test_extra_names_the_offending_element(self):
-        """The error message must include the offending token."""
         from lionagi.studio.scheduler.subprocess import build_argv
 
         with pytest.raises(ValueError, match="--yolo"):
             build_argv(_schedule(action_extra_args=["ok-token", "--yolo"]), {})
 
     def test_extra_empty_list_accepted(self):
-        """Empty action_extra_args is valid."""
         from lionagi.studio.scheduler.subprocess import build_argv
 
         argv, tmp = build_argv(_schedule(action_extra_args=[]), {})
@@ -178,7 +153,6 @@ class TestBuildArgvExtraArgsInjection:
         assert tmp is None
 
     def test_extra_none_accepted(self):
-        """None action_extra_args is valid."""
         from lionagi.studio.scheduler.subprocess import build_argv
 
         argv, tmp = build_argv(_schedule(action_extra_args=None), {})
@@ -186,7 +160,6 @@ class TestBuildArgvExtraArgsInjection:
         assert tmp is None
 
     def test_extra_positional_tokens_accepted(self):
-        """Non-flag positional tokens must pass and appear in argv."""
         from lionagi.studio.scheduler.subprocess import build_argv
 
         tokens = ["my-playbook", "some_task", "123"]
@@ -202,24 +175,19 @@ class TestBuildArgvExtraArgsInjection:
 
 
 class TestBuildArgvIdentifierInjection:
-    """build_argv must reject leading-dash values in identifier fields."""
-
     def test_action_agent_dash_prefix_raises(self):
-        """action_agent starting with '-' must raise ValueError."""
         from lionagi.studio.scheduler.subprocess import build_argv
 
         with pytest.raises(ValueError, match="action_agent"):
             build_argv(_schedule(action_agent="--bypass"), {})
 
     def test_action_project_dash_prefix_raises(self):
-        """action_project starting with '-' must raise ValueError."""
         from lionagi.studio.scheduler.subprocess import build_argv
 
         with pytest.raises(ValueError, match="action_project"):
             build_argv(_schedule(action_project="--yolo"), {})
 
     def test_action_playbook_dash_prefix_raises(self):
-        """action_playbook starting with '-' must raise ValueError in play kind."""
         from lionagi.studio.scheduler.subprocess import build_argv
 
         with pytest.raises(ValueError, match="action_playbook"):
@@ -229,7 +197,6 @@ class TestBuildArgvIdentifierInjection:
             )
 
     def test_action_agent_valid_accepted(self):
-        """A valid agent name must pass."""
         from lionagi.studio.scheduler.subprocess import build_argv
 
         argv, tmp = build_argv(_schedule(action_agent="my-agent"), {})
@@ -237,7 +204,6 @@ class TestBuildArgvIdentifierInjection:
         assert tmp is None
 
     def test_action_project_valid_accepted(self):
-        """A valid project name must pass."""
         from lionagi.studio.scheduler.subprocess import build_argv
 
         argv, tmp = build_argv(_schedule(action_project="my-project"), {})
@@ -252,11 +218,7 @@ class TestBuildArgvIdentifierInjection:
 
 
 class TestBuildArgvSentinelStructure:
-    """build_argv must emit a '--' sentinel before positionals so freeform
-    prompt text cannot be parsed as CLI flags by argparse."""
-
     def test_agent_argv_has_sentinel_before_prompt(self):
-        """agent kind: '--' appears before the model and prompt positionals."""
         from lionagi.studio.scheduler.subprocess import build_argv
 
         argv, tmp = build_argv(_schedule(action_kind="agent", action_prompt="--bypass"), {})
@@ -270,7 +232,6 @@ class TestBuildArgvSentinelStructure:
         assert "--bypass" not in argv[:sentinel_idx]
 
     def test_flow_argv_has_sentinel_before_prompt(self):
-        """flow kind: '--' appears before model and prompt positionals."""
         from lionagi.studio.scheduler.subprocess import build_argv
 
         argv, tmp = build_argv(_schedule(action_kind="flow", action_prompt="--yolo"), {})
@@ -281,7 +242,6 @@ class TestBuildArgvSentinelStructure:
         assert "--yolo" not in argv[:sentinel_idx]
 
     def test_fanout_argv_has_sentinel_before_prompt(self):
-        """fanout kind: '--' appears before model and prompt positionals."""
         from lionagi.studio.scheduler.subprocess import build_argv
 
         argv, tmp = build_argv(_schedule(action_kind="fanout", action_prompt="--fast"), {})
@@ -292,11 +252,7 @@ class TestBuildArgvSentinelStructure:
         assert "--fast" not in argv[:sentinel_idx]
 
     def test_flow_yaml_has_no_prompt_positional(self):
-        """flow_yaml kind must NOT include the prompt as a positional in argv.
-
-        The YAML file supplies the prompt.  Including the prompt positional
-        would open a second injection surface for action_prompt.
-        """
+        """flow_yaml kind: prompt omitted from argv; YAML file supplies it instead."""
         import os
 
         from lionagi.studio.scheduler.subprocess import build_argv
@@ -327,7 +283,6 @@ class TestBuildArgvSentinelStructure:
                 os.unlink(tmp_path)
 
     def test_flow_yaml_named_flags_before_sentinel(self):
-        """flow_yaml: -f <path> must appear BEFORE the '--' sentinel."""
         import os
 
         from lionagi.studio.scheduler.subprocess import build_argv
@@ -370,13 +325,10 @@ class TestBuildArgvSentinelStructure:
 
 
 class TestCreateScheduleInjectionRejection:
-    """create_schedule must reject flag-injection in action_model and action_extra_args."""
-
     def _run(self, coro):
         return asyncio.run(coro)
 
     def test_create_with_model_flag_raises_value_error(self):
-        """create_schedule raises ValueError when action_model starts with '-'."""
         from lionagi.studio.services.schedules import create_schedule
 
         data = {
@@ -391,7 +343,6 @@ class TestCreateScheduleInjectionRejection:
             self._run(create_schedule(data))
 
     def test_create_with_yolo_model_raises(self):
-        """create_schedule rejects --yolo in action_model."""
         from lionagi.studio.services.schedules import create_schedule
 
         data = {
@@ -405,7 +356,6 @@ class TestCreateScheduleInjectionRejection:
             self._run(create_schedule(data))
 
     def test_create_with_extra_args_flag_raises_value_error(self):
-        """create_schedule raises ValueError when action_extra_args contains a flag."""
         from lionagi.studio.services.schedules import create_schedule
 
         data = {
@@ -420,7 +370,6 @@ class TestCreateScheduleInjectionRejection:
             self._run(create_schedule(data))
 
     def test_create_with_agent_flag_raises(self):
-        """create_schedule rejects action_agent starting with '-'."""
         from lionagi.studio.services.schedules import create_schedule
 
         data = {
@@ -435,7 +384,6 @@ class TestCreateScheduleInjectionRejection:
             self._run(create_schedule(data))
 
     def test_create_with_project_flag_raises(self):
-        """create_schedule rejects action_project starting with '-'."""
         from lionagi.studio.services.schedules import create_schedule
 
         data = {
@@ -450,7 +398,6 @@ class TestCreateScheduleInjectionRejection:
             self._run(create_schedule(data))
 
     def test_create_valid_model_and_extra_does_not_raise(self):
-        """create_schedule with safe values proceeds past validation."""
         with patch("lionagi.studio.services.schedules.StateDB") as MockDB:
             mock_db = AsyncMock()
             mock_db.create_schedule = AsyncMock()
@@ -478,10 +425,7 @@ class TestCreateScheduleInjectionRejection:
 
 
 class TestUpdateScheduleInjectionRejection:
-    """update_schedule must reject flag-injection in patched action_model and action_extra_args."""
-
     def _mock_db(self, existing: dict):
-        """Return a context-manager mock that returns *existing* from get_schedule."""
 
         class _MockDB:
             async def __aenter__(self_inner):
@@ -523,37 +467,30 @@ class TestUpdateScheduleInjectionRejection:
         return base
 
     def test_patch_model_flag_raises(self):
-        """PATCH action_model='--bypass' raises ValueError."""
         with pytest.raises(ValueError, match="starts with '-'"):
             self._run_update(self._existing(), {"action_model": "--bypass"})
 
     def test_patch_model_yolo_raises(self):
-        """PATCH action_model='--yolo' raises ValueError."""
         with pytest.raises(ValueError, match="starts with '-'"):
             self._run_update(self._existing(), {"action_model": "--yolo"})
 
     def test_patch_extra_args_flag_raises(self):
-        """PATCH action_extra_args=['--bypass'] raises ValueError."""
         with pytest.raises(ValueError, match="starts with '-'"):
             self._run_update(self._existing(), {"action_extra_args": ["--bypass"]})
 
     def test_patch_extra_args_yolo_raises(self):
-        """PATCH action_extra_args=['--yolo'] raises ValueError."""
         with pytest.raises(ValueError, match="starts with '-'"):
             self._run_update(self._existing(), {"action_extra_args": ["--yolo"]})
 
     def test_patch_agent_flag_raises(self):
-        """PATCH action_agent='--bypass' raises ValueError."""
         with pytest.raises(ValueError, match="action_agent"):
             self._run_update(self._existing(), {"action_agent": "--bypass"})
 
     def test_patch_project_flag_raises(self):
-        """PATCH action_project='--yolo' raises ValueError."""
         with pytest.raises(ValueError, match="action_project"):
             self._run_update(self._existing(), {"action_project": "--yolo"})
 
     def test_patch_valid_fields_does_not_raise(self):
-        """PATCH with safe values proceeds past validation."""
         result = self._run_update(
             self._existing(),
             {"action_model": "gpt-4", "action_extra_args": ["my-task"]},
@@ -600,7 +537,7 @@ class TestUpdateScheduleInjectionRejection:
 
 
 # ---------------------------------------------------------------------------
-# action_prompt == '--' sentinel rejection (codex round 2)
+# action_prompt == '--' sentinel rejection
 # ---------------------------------------------------------------------------
 
 
@@ -713,7 +650,7 @@ class TestBuildArgvPromptSentinelRejection:
 
 
 # ---------------------------------------------------------------------------
-# cli/main.py — pre-parse verbose scan must be sentinel-aware (codex round 2)
+# cli/main.py — pre-parse verbose scan must be sentinel-aware
 # ---------------------------------------------------------------------------
 
 
@@ -827,7 +764,7 @@ class TestMainVerboseScanSentinelAware:
 
 # ---------------------------------------------------------------------------
 # build_argv — template injection: rendered prompt must be validated post-render
-# (codex round 3 — order-of-operations bypass)
+# (order-of-operations bypass)
 # ---------------------------------------------------------------------------
 
 
@@ -906,7 +843,7 @@ class TestBuildArgvTemplateInjection:
 
 
 # ---------------------------------------------------------------------------
-# CWE-918 github_repo path manipulation — validator unit tests (closes #1413)
+# CWE-918 github_repo path manipulation — validator unit tests
 # ---------------------------------------------------------------------------
 
 
@@ -1038,7 +975,7 @@ class TestGithubRepoValidatorUnit:
 
 
 # ---------------------------------------------------------------------------
-# CWE-918 github_repo — service boundary (create and update) (closes #1413)
+# CWE-918 github_repo — service boundary (create and update)
 # ---------------------------------------------------------------------------
 
 

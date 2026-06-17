@@ -1,7 +1,7 @@
 # Copyright (c) 2023-2026, HaiyangLi <quantocean.li at gmail dot com>
 # SPDX-License-Identifier: Apache-2.0
 
-"""Regression tests for Batch 2 DB/Schema fixes: #989."""
+"""Tests for list_definitions: single DB connection for N definition files."""
 
 from __future__ import annotations
 
@@ -38,7 +38,7 @@ class _FakeDB:
 
 
 # ---------------------------------------------------------------------------
-# #989 — list_definitions uses ONE DB connection for N definition files
+# list_definitions uses ONE DB connection for N definition files
 # ---------------------------------------------------------------------------
 
 
@@ -70,8 +70,7 @@ class TestListDefinitionsNPlusOne:
         return defs_mod
 
     def test_single_db_connect_for_multiple_definitions(self, tmp_path, monkeypatch):
-        """list_definitions() must open exactly one DB connection regardless
-        of how many definition files exist on disk (#989 N+1 fix)."""
+        """list_definitions() must open exactly one DB connection regardless of file count."""
         defs_mod = self._setup(tmp_path, monkeypatch, n_agents=3)
 
         connect_count = 0
@@ -87,13 +86,11 @@ class TestListDefinitionsNPlusOne:
 
         assert len(result) == 3, f"Expected 3 definitions, got {len(result)}"
         assert connect_count == 1, (
-            f"Expected exactly 1 DB connection for {len(result)} definitions, "
-            f"got {connect_count} — #989 N+1 regression"
+            f"Expected exactly 1 DB connection for {len(result)} definitions, got {connect_count}"
         )
 
     def test_no_db_connect_when_no_definitions(self, tmp_path, monkeypatch):
-        """list_definitions() must not open any DB connection when there are
-        no definition files to enrich."""
+        """list_definitions() must not open any DB connection when no files exist."""
         defs_mod = self._setup(tmp_path, monkeypatch, n_agents=0)
 
         connect_count = 0

@@ -46,8 +46,6 @@ class TestSubclass:
 
 
 class TestSubscribe:
-    """Test Broadcaster.subscribe."""
-
     def test_subscribe_adds_callback(self):
         Evt, Bcst = _make_broadcaster()
         called = []
@@ -76,8 +74,6 @@ class TestSubscribe:
 
 
 class TestUnsubscribe:
-    """Test Broadcaster.unsubscribe."""
-
     def test_unsubscribe_removes_callback(self):
         Evt, Bcst = _make_broadcaster()
 
@@ -106,8 +102,6 @@ class TestUnsubscribe:
 
 
 class TestBroadcastSync:
-    """Test broadcasting to synchronous subscribers."""
-
     @pytest.mark.asyncio
     async def test_broadcast_calls_sync_subscriber(self):
         Evt, Bcst = _make_broadcaster()
@@ -144,8 +138,6 @@ class TestBroadcastSync:
 
 
 class TestBroadcastAsync:
-    """Test broadcasting to async subscribers."""
-
     @pytest.mark.asyncio
     async def test_broadcast_calls_async_subscriber(self):
         Evt, Bcst = _make_broadcaster()
@@ -227,8 +219,6 @@ class TestBroadcastExceptionSuppression:
 
 
 class TestGetSubscriberCount:
-    """Test Broadcaster.get_subscriber_count accuracy."""
-
     def test_count_zero(self):
         _, Bcst = _make_broadcaster()
         assert Bcst.get_subscriber_count() == 0

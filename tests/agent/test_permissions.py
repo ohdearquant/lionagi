@@ -173,7 +173,7 @@ def test_tool_aliases_normalized_at_init():
 
 
 # ---------------------------------------------------------------------------
-# A7: rules mode denies tool with no matching allow entry
+# Rules mode denies tool with no matching allow entry
 # ---------------------------------------------------------------------------
 
 
@@ -185,7 +185,7 @@ def test_permission_policy_rules_default_denies_unmatched_tool():
 
 
 # ---------------------------------------------------------------------------
-# A8: shell control operator denied even under wildcard allow
+# Shell control operator denied even under wildcard allow
 # ---------------------------------------------------------------------------
 
 

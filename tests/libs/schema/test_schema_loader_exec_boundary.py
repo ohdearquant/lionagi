@@ -3,11 +3,10 @@
 
 """Attack-driven tests for load_pydantic_model_from_schema exec boundary.
 
-Issue (LIONAGI-AUDIT-003): The schema loader fell back to
-datamodel-code-generator + exec_module() when create_model() could not
-handle a schema, regardless of whether the schema came from a trusted
-source. Caller-controlled schema data could reach dynamic Python module
-execution.
+The schema loader previously fell back to datamodel-code-generator + exec_module()
+when create_model() could not handle a schema, regardless of whether the schema
+came from a trusted source. Caller-controlled schema data could reach dynamic
+Python module execution.
 
 Fix: The codegen/exec fallback requires explicit allow_codegen=True.
 Default is allow_codegen=False — unsupported schemas raise RuntimeError

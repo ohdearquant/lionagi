@@ -43,7 +43,6 @@ class TestAPICalling:
         return Endpoint(config=config)
 
     def test_api_calling_initialization(self, sample_payload, sample_headers, mock_endpoint):
-        """Test APICalling initialization."""
         api_call = APICalling(
             payload=sample_payload,
             headers=sample_headers,
@@ -61,7 +60,6 @@ class TestAPICalling:
     def test_response_property_before_execution(
         self, sample_payload, sample_headers, mock_endpoint
     ):
-        """Test response property returns None before execution."""
         api_call = APICalling(
             payload=sample_payload,
             headers=sample_headers,
@@ -71,7 +69,6 @@ class TestAPICalling:
         assert api_call.response is None
 
     def test_response_property_after_execution(self, sample_payload, sample_headers, mock_endpoint):
-        """Test response property returns execution response."""
         api_call = APICalling(
             payload=sample_payload,
             headers=sample_headers,
@@ -89,7 +86,6 @@ class TestAPICalling:
     async def test_successful_execution(
         self, sample_payload, sample_headers, mock_endpoint, mock_response
     ):
-        """Test successful API call execution."""
         api_call = APICalling(
             payload=sample_payload,
             headers=sample_headers,
@@ -105,7 +101,7 @@ class TestAPICalling:
 
     @pytest.mark.asyncio
     async def test_execution_error_handling(self, sample_payload, sample_headers, mock_endpoint):
-        """Test error handling during execution — the error is captured as FAILED state."""
+        """Error is captured as FAILED state; invoke() does not re-raise."""
         api_call = APICalling(
             payload=sample_payload,
             headers=sample_headers,
@@ -122,8 +118,7 @@ class TestAPICalling:
 
     @pytest.mark.asyncio
     async def test_timeout_handling(self, sample_payload, sample_headers, mock_endpoint):
-        """Test timeout handling during execution — captured as FAILED state (a timeout
-        is a business failure, not cancellation)."""
+        """TimeoutError is a business failure; captured as FAILED state, not raised."""
         api_call = APICalling(
             payload=sample_payload,
             headers=sample_headers,
@@ -141,7 +136,6 @@ class TestAPICalling:
 
     @pytest.mark.asyncio
     async def test_streaming_execution(self, sample_payload, sample_headers, mock_endpoint):
-        """Test streaming API call execution."""
         sample_payload["stream"] = True
         api_call = APICalling(
             payload=sample_payload,
@@ -163,7 +157,6 @@ class TestAPICalling:
         assert api_call.status == EventStatus.COMPLETED
 
     def test_cache_control_handling(self, sample_payload, sample_headers, mock_endpoint):
-        """Test cache control parameter handling."""
         api_call = APICalling(
             payload=sample_payload,
             headers=sample_headers,
@@ -175,7 +168,6 @@ class TestAPICalling:
 
     @pytest.mark.asyncio
     async def test_concurrent_execution_isolation(self, sample_headers, mock_endpoint):
-        """Test that concurrent API calls don't interfere with each other."""
         payloads = [
             {
                 "model": "gpt-4.1-mini",
@@ -208,7 +200,7 @@ class TestAPICalling:
 
     @pytest.mark.asyncio
     async def test_error_propagation(self, sample_payload, sample_headers, mock_endpoint):
-        """Test that errors are properly propagated and not swallowed."""
+        """Errors are recorded on execution.error, not re-raised."""
         api_call = APICalling(
             payload=sample_payload,
             headers=sample_headers,
@@ -227,7 +219,6 @@ class TestAPICalling:
         assert "Custom API error" in str(api_call.execution.error)
 
     def test_include_token_usage_to_model(self, sample_payload, sample_headers, mock_endpoint):
-        """Test include_token_usage_to_model parameter."""
         api_call = APICalling(
             payload=sample_payload,
             headers=sample_headers,
@@ -239,7 +230,6 @@ class TestAPICalling:
 
     @pytest.mark.asyncio
     async def test_retry_logic(self, sample_payload, sample_headers, mock_endpoint):
-        """Test that retry calls can be made with fresh API calling objects."""
         responses = []
 
         # First call fails
@@ -272,7 +262,6 @@ class TestAPICalling:
 
     @pytest.mark.asyncio
     async def test_payload_immutability(self, sample_payload, sample_headers, mock_endpoint):
-        """Test that payload is not mutated during execution."""
         original_payload = sample_payload.copy()
         api_call = APICalling(
             payload=sample_payload,
@@ -287,7 +276,6 @@ class TestAPICalling:
         assert api_call.payload == original_payload
 
     def test_str_representation(self, sample_payload, sample_headers, mock_endpoint):
-        """Test string representation of APICalling."""
         api_call = APICalling(
             payload=sample_payload,
             headers=sample_headers,
@@ -330,21 +318,18 @@ class TestTokenUsageContentInjection:
             )
 
     def test_string_content_gets_token_msg_appended(self, token_endpoint):
-        """String content has token usage message appended (line 89-90)."""
         api_call = self._make_api_call("Hello", token_endpoint)
         result_content = api_call.payload["messages"][-1]["content"]
         assert "Estimated Current Token Usage" in result_content
         assert "99" in result_content
 
     def test_dict_content_with_text_key_gets_appended(self, token_endpoint):
-        """Dict content with 'text' key has token usage appended to that key (line 91-92)."""
         api_call = self._make_api_call({"type": "text", "text": "Hello"}, token_endpoint)
         result_content = api_call.payload["messages"][-1]["content"]
         assert isinstance(result_content, dict)
         assert "Estimated Current Token Usage" in result_content["text"]
 
     def test_list_content_finds_last_text_item(self, token_endpoint):
-        """List content scans reversed for a dict with 'text' and appends (lines 93-97)."""
         content = [
             {"type": "text", "text": "First"},
             {"type": "image_url", "image_url": "..."},
@@ -358,7 +343,6 @@ class TestTokenUsageContentInjection:
         assert "Estimated Current Token Usage" not in result_content[0]["text"]
 
     def test_model_in_token_limit_map_appends_limit(self, token_endpoint):
-        """When model matches a TOKEN_LIMITS key, the limit is appended with '/' (lines 81-86)."""
         from lionagi.service.token_calculator import TokenCalculator
 
         payload = {
@@ -413,7 +397,6 @@ class TestRequiredTokensProperty:
         return Endpoint(config=config)
 
     def test_required_tokens_none_when_requires_tokens_false(self, no_token_endpoint):
-        """required_tokens returns None when endpoint.config.requires_tokens is False (line 108-109)."""
         api_call = APICalling(
             payload={"model": "gpt-4", "messages": [{"role": "user", "content": "hi"}]},
             endpoint=no_token_endpoint,
@@ -421,7 +404,6 @@ class TestRequiredTokensProperty:
         assert api_call.required_tokens is None
 
     def test_required_tokens_input_string_format(self, token_endpoint):
-        """Input as plain string is converted to messages and token count returned (lines 120-121)."""
         from lionagi.service.token_calculator import TokenCalculator
 
         api_call = APICalling(
@@ -438,7 +420,6 @@ class TestRequiredTokensProperty:
         assert call_args[0]["content"] == "hello world"
 
     def test_required_tokens_input_list_with_strings(self, token_endpoint):
-        """Input as list of strings is converted to user messages (lines 123-127)."""
         from lionagi.service.token_calculator import TokenCalculator
 
         api_call = APICalling(
@@ -452,7 +433,6 @@ class TestRequiredTokensProperty:
         assert len(call_args) == 2
 
     def test_required_tokens_input_list_with_message_dicts(self, token_endpoint):
-        """Input as list with type='message' dicts is passed through (lines 129-131)."""
         from lionagi.service.token_calculator import TokenCalculator
 
         msg = {"type": "message", "role": "user", "content": "Hello"}
@@ -465,7 +445,6 @@ class TestRequiredTokensProperty:
         assert count == 4
 
     def test_required_tokens_input_non_string_non_list_returns_none(self, token_endpoint):
-        """Input that is neither str nor list results in None (line 133)."""
         api_call = APICalling(
             payload={"input": 12345, "model": "gpt-4"},
             endpoint=token_endpoint,
@@ -473,11 +452,7 @@ class TestRequiredTokensProperty:
         assert api_call.required_tokens is None
 
     def test_required_tokens_embed_endpoint(self, embed_endpoint):
-        """Embed endpoint calls calculate_embed_token (lines 136-137).
-
-        The embed branch is reached when neither 'messages' nor 'input' keys
-        are present in the payload, but the endpoint name contains 'embed'.
-        """
+        """Embed branch reached when payload has no 'messages'/'input' but endpoint name contains 'embed'."""
         from lionagi.service.token_calculator import TokenCalculator
 
         # Payload without "messages" or "input" keys triggers the embed branch

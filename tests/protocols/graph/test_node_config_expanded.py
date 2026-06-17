@@ -1,19 +1,7 @@
 # Copyright (c) 2023-2025, HaiyangLi <quantocean.li at gmail dot com>
 # SPDX-License-Identifier: Apache-2.0
 
-"""Tests for expanded NodeConfig fields, real Pydantic field generation in
-create_node(), and updated lifecycle methods that prefer real fields over
-metadata when available.
-
-Covers:
-- New NodeConfig fields (embedding_enabled, content_type, etc.)
-- create_node() generating real Pydantic fields for audit features
-- touch() using real fields when created with create_node()
-- touch() still using metadata when using plain Node with node_config
-- soft_delete()/restore() cycle with real fields
-- immutable_content config flag (config only, not enforced yet)
-- Backwards compatibility (existing tests still pass)
-"""
+"""Tests for expanded NodeConfig fields, create_node() audit field generation, and Node lifecycle with real Pydantic fields."""
 
 from __future__ import annotations
 
@@ -30,11 +18,6 @@ from lionagi.protocols.graph.node_factory import NodeConfig, create_node
 def _content_hash(content):
     """Wrapper for compute_hash matching the rehash() calling convention."""
     return compute_hash(content, none_as_valid=True)
-
-
-# ===================================================================
-# 1. New NodeConfig fields
-# ===================================================================
 
 
 class TestNodeConfigNewFields:
@@ -148,11 +131,6 @@ class TestNodeConfigNewFieldsImmutability:
         cfg = NodeConfig()
         with pytest.raises(FrozenInstanceError):
             cfg.immutable_content = True
-
-
-# ===================================================================
-# 2. create_node() generates real Pydantic fields
-# ===================================================================
 
 
 class TestCreateNodeRealFieldsVersioning:
@@ -288,11 +266,6 @@ class TestCreateNodeNewParams:
         assert cfg.immutable_content is True
 
 
-# ===================================================================
-# 3. touch() uses real fields when created with create_node()
-# ===================================================================
-
-
 class TestTouchRealFields:
     """touch() prefers real Pydantic fields over metadata when available."""
 
@@ -354,11 +327,6 @@ class TestTouchRealFields:
         assert inst.content_hash == _content_hash("data")
 
 
-# ===================================================================
-# 4. touch() still uses metadata on plain Node with node_config
-# ===================================================================
-
-
 class TestTouchMetadataFallback:
     """touch() uses metadata when the model has no real fields (manual subclass)."""
 
@@ -388,11 +356,6 @@ class TestTouchMetadataFallback:
         a.touch()
         # Falls back to metadata
         assert a.metadata["version"] == 1
-
-
-# ===================================================================
-# 5. soft_delete()/restore() cycle with real fields
-# ===================================================================
 
 
 class TestSoftDeleteRealFields:
@@ -484,11 +447,6 @@ class TestSoftDeleteRealFields:
         assert d.metadata.get("version") == 1
 
 
-# ===================================================================
-# 6. rehash() uses real field when available
-# ===================================================================
-
-
 class TestRehashRealFields:
     """rehash() stores in content_hash field when available."""
 
@@ -519,11 +477,6 @@ class TestRehashRealFields:
         assert d.metadata["content_hash"] == result
 
 
-# ===================================================================
-# 7. Immutable content config (config only, not enforced yet)
-# ===================================================================
-
-
 class TestImmutableContentConfig:
     """immutable_content flag is stored in config but not enforced yet."""
 
@@ -537,11 +490,6 @@ class TestImmutableContentConfig:
         inst = cls(content="original")
         inst.content = "modified"
         assert inst.content == "modified"
-
-
-# ===================================================================
-# 8. Backwards compatibility with real fields
-# ===================================================================
 
 
 class TestBackwardsCompatibilityWithRealFields:

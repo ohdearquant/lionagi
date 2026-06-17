@@ -1,16 +1,7 @@
 # Copyright (c) 2023-2026, HaiyangLi <quantocean.li at gmail dot com>
 # SPDX-License-Identifier: Apache-2.0
 
-"""End-to-end engine runs through the scripted provider — the REAL path.
-
-Unlike the reaction unit tests (which emit events directly), these drive
-``branch.operate`` against ``provider="scripted"``: the canned response text
-carries fenced ```json blocks, ``attempt_extract`` validates them against the
-capability grant, ``StructuredOutput`` bundles land on the session bus, and
-the engines' reactions fire off the unwrapped events. This is exactly how a
-live model (API, claude_code/codex CLI, or local) feeds the engines — so it
-catches the failure class unit mocks cannot (e.g. the by_type envelope bug).
-"""
+"""End-to-end engine runs through the scripted provider — exercises the live emission and capability-extraction path."""
 
 from __future__ import annotations
 
@@ -49,8 +40,7 @@ def _emit(payload: dict) -> str:
 
 
 def _write_script(tmp_path, monkeypatch, entries: list[dict]) -> None:
-    """Each engine agent constructs its own ScriptedEndpoint from this file —
-    fresh cursor per agent, ``when:`` matchers route stages by instruction."""
+    """Write scripted-provider responses; each engine agent gets a fresh cursor via when: matchers."""
     path = tmp_path / "script.yaml"
     path.write_text(yaml.safe_dump({"version": 1, "responses": entries}), encoding="utf-8")
     monkeypatch.setenv(ENV_SCRIPT_PATH, str(path))
@@ -185,8 +175,7 @@ async def test_hypothesis_engine_full_chain_e2e(tmp_path, monkeypatch):
 
 @pytest.mark.asyncio
 async def test_hypothesis_repair_recovers_weak_model_e2e(tmp_path, monkeypatch):
-    """First extraction response is prose (a classic weak-model failure); the
-    repair turn re-prompts and the second response emits validly."""
+    """Repair turn re-prompts after a prose-only first response and the second response emits validly."""
     _write_script(
         tmp_path,
         monkeypatch,
@@ -243,8 +232,7 @@ async def test_hypothesis_repair_recovers_weak_model_e2e(tmp_path, monkeypatch):
 
 @pytest.mark.asyncio
 async def test_research_engine_e2e_with_depth_spawn(tmp_path, monkeypatch):
-    """A high-novelty finding at depth 0 spawns a depth-1 node; synthesis reads
-    findings from the store through the (fixed) bundle-aware by_type."""
+    """High-novelty finding at depth 0 spawns depth-1 node; synthesis reads via bundle-aware by_type."""
     _write_script(
         tmp_path,
         monkeypatch,
@@ -288,8 +276,7 @@ async def test_research_engine_e2e_with_depth_spawn(tmp_path, monkeypatch):
 
 @pytest.mark.asyncio
 async def test_review_engine_e2e_with_adversarial_verify(tmp_path, monkeypatch):
-    """A critical issue spawns the adversarial verifier; the verdict stage
-    reads both from the store through bundle-aware by_type."""
+    """Critical issue spawns the adversarial verifier; verdict reads from store via bundle-aware by_type."""
     _write_script(
         tmp_path,
         monkeypatch,
@@ -333,9 +320,7 @@ async def test_review_engine_e2e_with_adversarial_verify(tmp_path, monkeypatch):
 
 @pytest.mark.asyncio
 async def test_review_repair_recovers_prose_reviewer_e2e(tmp_path, monkeypatch):
-    """The reviewer's first response is prose (a weak-model failure); the repair
-    turn re-prompts and the second response emits a valid issue through the real
-    fenced-JSON → bundle path. The verdict then reads it from the store."""
+    """Repair re-prompts after prose-only first response; second response emits valid issue through fenced-JSON bundle path."""
     _write_script(
         tmp_path,
         monkeypatch,
@@ -369,8 +354,7 @@ async def test_review_repair_recovers_prose_reviewer_e2e(tmp_path, monkeypatch):
 
 @pytest.mark.asyncio
 async def test_hypothesis_budget_degrades_gracefully_e2e(tmp_path, monkeypatch):
-    """With budget for only the extraction agent, expansion stops but the
-    exempt synthesizer still writes the report — the run never dies empty."""
+    """Expansion stops at budget, but the exempt synthesizer still writes the final report."""
     _write_script(
         tmp_path,
         monkeypatch,
@@ -399,11 +383,7 @@ async def test_hypothesis_budget_degrades_gracefully_e2e(tmp_path, monkeypatch):
 
 @pytest.mark.asyncio
 async def test_coding_engine_pass_path_e2e(tmp_path, monkeypatch):
-    """plan + implement emit through the real fenced-JSON -> bundle path; the
-    engine runs a trivial passing test command as ground truth, the critic
-    approves, and the run concludes passed=True. The implementer's coding tools
-    are granted but not exercised (the scripted provider returns canned JSON) —
-    what is under test is the live emission + the real subprocess gate."""
+    """plan+implement emit through fenced-JSON bundle path; real subprocess gate runs; critic approves."""
     _write_script(
         tmp_path,
         monkeypatch,

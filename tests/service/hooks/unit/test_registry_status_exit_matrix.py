@@ -13,7 +13,6 @@ from tests.service.hooks.conftest import FakeEvent, FakeEventType, MyCancelled
 
 @pytest.fixture(autouse=True)
 def patch_cancel(monkeypatch):
-    """Auto-patch cancellation class for all tests in this module."""
     from lionagi.service.hooks import hook_registry
 
     monkeypatch.setattr(hook_registry, "get_cancelled_exc_class", lambda: MyCancelled)
@@ -22,8 +21,6 @@ def patch_cancel(monkeypatch):
 
 
 class TestPreEventCreateMatrix:
-    """Test status/exit matrix for pre_event_create hook."""
-
     @pytest.mark.anyio
     async def test_pre_event_create_normal_completion(self):
         """Normal completion: should_exit=False, status=COMPLETED."""
@@ -75,8 +72,6 @@ class TestPreEventCreateMatrix:
 
 
 class TestPreInvocationMatrix:
-    """Test status/exit matrix for pre_invocation hook."""
-
     @pytest.mark.anyio
     async def test_pre_invocation_normal_completion(self):
         """Normal completion: should_exit=False, status=COMPLETED."""
@@ -128,8 +123,6 @@ class TestPreInvocationMatrix:
 
 
 class TestPostInvocationMatrix:
-    """Test status/exit matrix for post_invocation hook."""
-
     @pytest.mark.anyio
     async def test_post_invocation_normal_completion(self):
         """Normal completion: should_exit=False, status=COMPLETED."""
@@ -183,8 +176,6 @@ class TestPostInvocationMatrix:
 
 
 class TestStreamHandlerMatrix:
-    """Test status/exit matrix for stream handlers."""
-
     @pytest.mark.anyio
     async def test_stream_handler_normal_completion(self):
         """Normal completion: should_exit=False, status=None."""
@@ -238,8 +229,6 @@ class TestStreamHandlerMatrix:
 
 
 class TestMatrixParameterized:
-    """Parameterized tests for the complete status/exit matrix."""
-
     @pytest.mark.anyio
     @pytest.mark.parametrize(
         "hook_type",

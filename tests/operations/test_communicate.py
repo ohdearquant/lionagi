@@ -1,5 +1,3 @@
-# tests/branch_ops/test_communicate.py
-
 import pytest
 from pydantic import BaseModel
 

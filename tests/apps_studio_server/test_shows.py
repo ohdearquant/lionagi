@@ -103,14 +103,7 @@ def test_show_detail_has_meta(patched_app, show_with_play):
 
 
 def test_show_detail_status_source_is_filesystem_without_db(patched_app, show_with_play):
-    """GET /api/shows/{topic} must set status_source == 'filesystem' strictly
-    when no DB is available (H-BE-1 filesystem path).
-
-    ADR-0011 §"Show status provenance": the patched_app fixture forces a
-    non-existent fake DB path, so _db_available() returns False and the
-    filesystem fallback path is taken.  status_source must be exactly
-    "filesystem", not "sqlite" or any other value.
-    """
+    """status_source must be 'filesystem' when no DB is available (fake DB path → _db_available() False)."""
     r = patched_app.get(f"/api/shows/{show_with_play}")
     assert r.status_code == 200
     data = r.json()
@@ -151,17 +144,13 @@ def test_path_traversal_double_dotdot_shows(patched_app):
 
 
 # ---------------------------------------------------------------------------
-# MEDIUM: strict status_source provenance (H-BE-1)
+# strict status_source provenance
 # ---------------------------------------------------------------------------
 
 
 @pytest.fixture()
 def sqlite_patched_app(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
-    """Return a TestClient backed by a real SQLite DB with one show row.
-
-    The DB is populated with a row in the 'shows' table so that get_show()
-    takes the SQLite code path and sets status_source == 'sqlite'.
-    """
+    """TestClient backed by a real SQLite DB with one show row (status_source == 'sqlite' path)."""
     import lionagi.state.db as state_db_mod
     import lionagi.studio.config as config_mod
     import lionagi.studio.services.shows as shows_mod
@@ -183,8 +172,7 @@ def sqlite_patched_app(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     show_dir.mkdir(parents=True)
     (show_dir / "_show.md").write_text(f"# Show: {topic}\n\nA SQLite-backed test show.")
 
-    # Populate the DB schema and insert one show row so _db_available() returns
-    # True and the SELECT * FROM shows WHERE topic = ? query finds a row.
+    # Populate the DB schema and insert one show row so _db_available() returns True.
     async def _seed_db():
         async with state_db_mod.StateDB() as db:
             await db.db.execute(
@@ -216,12 +204,7 @@ def sqlite_patched_app(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
 
 
 def test_show_detail_status_source_is_sqlite_with_db(sqlite_patched_app):
-    """GET /api/shows/{topic} must set status_source == 'sqlite' strictly
-    when the show exists in SQLite (H-BE-1 SQLite path).
-
-    ADR-0011 §"Show status provenance": when the show row is found in the DB,
-    status_source must be exactly 'sqlite', not 'filesystem'.
-    """
+    """status_source must be 'sqlite' when the show row is found in the DB."""
     client, topic = sqlite_patched_app
     r = client.get(f"/api/shows/{topic}")
     assert r.status_code == 200, f"Expected 200, got {r.status_code}: {r.text}"

@@ -11,18 +11,15 @@ from tests.service.hooks.conftest import FakeEvent, FakeEventType
 
 
 class TestRegistrySelection:
-    """Test basic selection and error handling in registry dispatch."""
-
     @pytest.mark.anyio
     async def test_call_fails_when_no_hook_or_chunk_type(self):
-        """Test that call() fails when both hook_type and chunk_type are None."""
+        """call() raises when both hook_type and chunk_type are None."""
         registry = HookRegistry()
         with pytest.raises(ValueError, match="Either method or chunk_type must be provided"):
             await registry.call(FakeEvent())
 
     @pytest.mark.anyio
     async def test_internal_call_fails_when_both_none(self):
-        """Test that _call() fails when both ht_ and ct_ are None."""
         registry = HookRegistry()
         with pytest.raises(
             RuntimeError,
@@ -34,7 +31,6 @@ class TestRegistrySelection:
     async def test_internal_call_fails_when_hook_missing_and_no_chunk_type(
         self,
     ):
-        """Test that _call() fails when hook is missing and no chunk_type provided."""
         registry = HookRegistry()
         with pytest.raises(
             RuntimeError,
@@ -44,8 +40,6 @@ class TestRegistrySelection:
 
 
 class TestArgumentForwardingRegression:
-    """Critical regression tests for argument forwarding bugs."""
-
     @pytest.mark.anyio
     async def test_post_invocation_forwards_event_and_exit_and_meta(self):
         """REGRESSION GUARD: PostInvocation must receive event and exit parameters.
@@ -92,7 +86,6 @@ class TestArgumentForwardingRegression:
 
     @pytest.mark.anyio
     async def test_pre_invocation_forwards_event_and_exit_and_meta(self):
-        """Test that pre_invocation correctly forwards event and exit."""
         captured = {}
 
         async def pre_hook(ev, *, exit=False, **kw):
@@ -121,7 +114,6 @@ class TestArgumentForwardingRegression:
     async def test_pre_event_create_forwards_event_type_and_exit_and_meta(
         self,
     ):
-        """Test that pre_event_create correctly forwards event_type and exit."""
         captured = {}
 
         async def pre_create_hook(ev_type, *, exit=False, **kw):
@@ -147,7 +139,6 @@ class TestArgumentForwardingRegression:
 
     @pytest.mark.anyio
     async def test_stream_handler_forwards_exit(self):
-        """Test that handle_streaming_chunk forwards exit parameter."""
         captured = {}
 
         async def stream_handler(ev, ct, ch, *, exit=False, **kw):
@@ -173,11 +164,9 @@ class TestArgumentForwardingRegression:
 
 
 class TestMetadataContract:
-    """Test that metadata returned by call() conforms to AssociatedEventInfo."""
-
     @pytest.mark.anyio
     async def test_meta_uses_lion_class_not_event_type(self):
-        """REGRESSION GUARD: Ensure meta uses 'lion_class' key, not 'event_type'."""
+        """REGRESSION GUARD: meta uses 'lion_class' key, not the old 'event_type' key."""
 
         async def dummy_hook(ev, **kw):
             return "ok"
@@ -193,7 +182,6 @@ class TestMetadataContract:
 
     @pytest.mark.anyio
     async def test_meta_content_for_all_hook_types(self):
-        """Test metadata content for all hook types."""
 
         async def dummy_hook(ev, **kw):
             return "ok"
@@ -230,7 +218,7 @@ class TestMetadataContract:
 
 
 class TestDictConstructorStringKeys:
-    """HookDict is typed with string keys; the constructor must accept them."""
+    """HookRegistry constructor must accept string aliases, not only enum keys."""
 
     def test_constructor_accepts_documented_string_aliases(self):
         def dummy(*args, **kwargs):
@@ -248,7 +236,6 @@ class TestDictConstructorStringKeys:
         assert registry._hooks[HookEventTypes.PreEventCreate] is dummy
 
     def test_normalize_key_pre_event_create_without_hook_suffix(self):
-        """Constructor must accept 'pre_event_create' (no _hook suffix)."""
 
         def dummy(*args, **kwargs):
             return None
@@ -257,7 +244,6 @@ class TestDictConstructorStringKeys:
         assert registry._hooks[HookEventTypes.PreEventCreate] is dummy
 
     def test_decorator_overwrite_emits_warning(self):
-        """All three decorator methods must warn when overwriting an existing hook."""
 
         def first(*args, **kwargs):
             return "first"
@@ -287,7 +273,6 @@ class TestDictConstructorStringKeys:
 
     @pytest.mark.anyio
     async def test_stream_handler_missing_key_raises_runtime_error_not_validation(self):
-        """A missing stream handler key must raise RuntimeError, not ValidationError."""
         registry = HookRegistry()
         with pytest.raises(RuntimeError, match="No stream handler registered for missing"):
             await registry._call_stream_handler("missing", "data", None)
@@ -296,11 +281,7 @@ class TestDictConstructorStringKeys:
         def dummy(*args, **kwargs):
             return None
 
-        registry = HookRegistry(
-            {
-                HookEventTypes.PreInvocation.value: dummy,
-            }
-        )
+        registry = HookRegistry({HookEventTypes.PreInvocation.value: dummy})
         assert registry._hooks[HookEventTypes.PreInvocation] is dummy
 
     def test_constructor_still_accepts_enum_keys(self):

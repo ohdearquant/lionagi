@@ -16,8 +16,6 @@ from lionagi.service.hooks.hooked_event import HookedEvent
 
 
 class SimpleHooked(HookedEvent):
-    """Successful core implementation."""
-
     async def _core_invoke(self):
         return "core_result"
 
@@ -27,8 +25,6 @@ class SimpleHooked(HookedEvent):
 
 
 class FailingHooked(HookedEvent):
-    """Core that always raises."""
-
     async def _core_invoke(self):
         raise ValueError("core_failed")
 
@@ -47,8 +43,6 @@ def _fake_hook(
     should_exit: bool = False,
     exit_cause: BaseException | None = None,
 ):
-    """Return a lightweight HookEvent stand-in."""
-
     class _FakeHookEvent:
         def __init__(self):
             self.execution = SimpleNamespace(status=status, error=None)

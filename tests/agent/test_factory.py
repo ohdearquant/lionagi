@@ -272,7 +272,7 @@ async def test_post_hook_registered_on_tool():
 
 
 # ---------------------------------------------------------------------------
-# A5: model string parsed into provider / model / effort / yolo kwargs
+# Model string parsed into provider / model / effort / yolo kwargs
 # ---------------------------------------------------------------------------
 
 
@@ -303,7 +303,7 @@ async def test_create_agent_parses_model_provider_effort_and_yolo_kwargs(monkeyp
 
 
 # ---------------------------------------------------------------------------
-# A6: trust_project_settings=False prevents project settings from loading
+# trust_project_settings=False prevents project settings from loading
 # ---------------------------------------------------------------------------
 
 
@@ -329,7 +329,7 @@ async def test_create_agent_does_not_load_project_settings_without_trust(tmp_pat
 
 
 # ---------------------------------------------------------------------------
-# C9: _chain_post_hooks ignores non-dict hook returns; dict returns update result
+# _chain_post_hooks ignores non-dict hook returns; dict returns update result
 # ---------------------------------------------------------------------------
 
 

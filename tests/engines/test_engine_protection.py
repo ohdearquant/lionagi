@@ -1,8 +1,7 @@
 # Copyright (c) 2023-2026, HaiyangLi <quantocean.li at gmail dot com>
 # SPDX-License-Identifier: Apache-2.0
 
-"""Engine base protections — bundle-aware by_type, hard budgets, judge gate,
-emission repair, export. No LLM."""
+"""Engine base protections — bundle-aware by_type, hard budgets, judge gate, emission repair, export."""
 
 from __future__ import annotations
 
@@ -32,9 +31,7 @@ class _StubEngine(Engine):
 
 @pytest.mark.asyncio
 async def test_by_type_unwraps_capability_bundles():
-    """Agent emissions arrive as StructuredOutput bundles; by_type must return
-    the typed events, not the envelopes (this crashed research/review synthesis
-    in any real run)."""
+    """by_type must unwrap StructuredOutput bundles and return the typed events, not the envelopes."""
     run = _StubEngine().new_run()
     op = build_emission_operable((FindingEmitted,))
     bundle_model = op.create_model(include={"finding_emitted"})
@@ -173,7 +170,7 @@ async def test_judge_denied_when_budget_exhausted():
 
 
 class _ProseBranch:
-    """Emits nothing on the first call; emits on the repair call."""
+    """Emits nothing until the designated call index, then emits the given event."""
 
     name = "weak-agent"
 

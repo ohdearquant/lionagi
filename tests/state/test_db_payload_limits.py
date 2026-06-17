@@ -1,15 +1,7 @@
 # Copyright (c) 2023-2026, HaiyangLi <quantocean.li at gmail dot com>
 # SPDX-License-Identifier: Apache-2.0
 
-"""
-Payload-shape regression tests for ``StateDB.insert_message``.
-
-These tests pin the ADR-0009 NOT NULL invariants (content + role) and
-verify the layer can roundtrip large payloads up to a few MB. They do
-NOT enforce a hard size cap — that's a separate operational change
-(see R5-D HIGH-6) — but they make the current limits explicit so a
-regression that silently chunks or truncates content trips here.
-"""
+"""Payload-shape regression tests for StateDB.insert_message — pins ADR-0009 NOT NULL invariants and verifies large payload roundtrip up to ~1MB."""
 
 from __future__ import annotations
 
@@ -49,11 +41,7 @@ def _base_msg(**overrides) -> dict:
 
 
 async def test_insert_message_rejects_null_content(db: StateDB):
-    """ADR-0009: messages.content is NOT NULL. insert_message MUST
-    raise ``ValueError`` before reaching SQLite — otherwise INSERT OR
-    IGNORE would silently swallow the constraint violation and the
-    progression would reference a missing ID.
-    """
+    """ADR-0009: content is NOT NULL; ValueError raised before reaching SQLite to prevent INSERT OR IGNORE from silently swallowing the violation."""
     msg = _base_msg(content=None)
     with pytest.raises(ValueError, match="content is NOT NULL"):
         await db.insert_message(msg)
@@ -87,11 +75,7 @@ async def test_insert_message_roundtrips_large_content(
     db: StateDB,
     size_kb: int,
 ):
-    """Verify the layer can store up to ~1MB content without truncation
-    or encoding damage. SQLite's default ``SQLITE_MAX_LENGTH`` is 1GB
-    so 1MB is well within the engine limit; this guards against a
-    higher-level chunking regression.
-    """
+    """Content up to ~1MB must roundtrip without truncation or encoding damage."""
     payload = "x" * (size_kb * 1024)
     msg = _base_msg(content={"text": payload})
     await db.insert_message(msg)
@@ -99,17 +83,13 @@ async def test_insert_message_roundtrips_large_content(
     got = await db.get_message(msg["id"])
     assert got is not None
     content = got["content"]
-    # content is JSON-encoded in the DB; the runtime layer returns it
-    # as a string of JSON.
     if isinstance(content, str):
         content = json.loads(content)
     assert content["text"] == payload
 
 
 async def test_insert_message_handles_deep_nested_metadata(db: StateDB):
-    """``node_metadata`` is a JSON column. Deeply-nested values must
-    roundtrip without collapsing or escaping pathologies.
-    """
+    """Deeply-nested node_metadata must roundtrip without collapsing or escaping pathologies."""
     deep = {"level": 0}
     cursor = deep
     for i in range(1, 50):
@@ -137,15 +117,10 @@ async def test_insert_message_handles_deep_nested_metadata(db: StateDB):
 
 
 async def test_insert_message_re_fire_updates_content(db: StateDB):
-    """``ON CONFLICT(id) DO UPDATE`` — a re-fire of the hook with a
-    mutated message MUST overwrite the stored content, not silently
-    keep the old row. Closes the R5-B issue where ActionResponse
-    updates would land stale.
-    """
+    """ON CONFLICT DO UPDATE: a re-fire with a mutated message must overwrite the stored content, not silently keep the old row."""
     msg = _base_msg(content={"text": "first"})
     await db.insert_message(msg)
 
-    # Mutate and re-insert with the same ID.
     msg2 = dict(msg)
     msg2["content"] = {"text": "second"}
     msg2["sender"] = "different-sender"
@@ -158,7 +133,6 @@ async def test_insert_message_re_fire_updates_content(db: StateDB):
     assert content["text"] == "second"
     assert got["sender"] == "different-sender"
 
-    # Only one row — the conflict updated, not inserted.
     cur = await db.db.execute(
         "SELECT COUNT(*) AS n FROM messages WHERE id = ?",
         (msg["id"],),

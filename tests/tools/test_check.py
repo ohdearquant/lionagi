@@ -234,7 +234,7 @@ def test_as_text_format_matches_file_line_col(tmp_path):
 
 
 # ---------------------------------------------------------------------------
-# Boundary / security tests (Fix 3 — adversarial review finding)
+# Boundary / security tests
 # ---------------------------------------------------------------------------
 
 
@@ -325,12 +325,7 @@ def test_resolve_check_paths_non_python_file_graceful(tmp_path):
 
 
 def test_coding_toolkit_registers_code_check_with_workspace_root(tmp_path):
-    """(d) CodingToolkit.bind includes 'code_check' and passes the toolkit workspace_root.
-
-    Regression: CodeCheckTool was an orphan — not included in ALL_CODING_TOOLS or
-    DEFAULT_CODING_TOOLS, and bind() never instantiated it. An agent using the standard
-    toolkit had no access to code_check.
-    """
+    """(d) Regression: CodeCheckTool was an orphan not in DEFAULT_CODING_TOOLS; bind() never instantiated it."""
     from lionagi.session.branch import Branch
     from lionagi.tools.coding import ALL_CODING_TOOLS, DEFAULT_CODING_TOOLS, CodingToolkit
 

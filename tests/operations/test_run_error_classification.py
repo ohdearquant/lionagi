@@ -1,13 +1,7 @@
 # Copyright (c) 2023-2026, HaiyangLi <quantocean.li at gmail dot com>
 # SPDX-License-Identifier: Apache-2.0
 
-"""Tests for the run.py error-classification path (issue #1397).
-
-Verifies that a StreamChunk with type="error" whose content contains a
-provider-recognisable pattern raises the typed ProviderError subclass rather
-than a plain RuntimeError.  All subclasses remain RuntimeError-compatible so
-existing ``except RuntimeError`` callers are unaffected.
-"""
+"""Tests for run.py error-classification: StreamChunk type='error' raises typed ProviderError subclasses, all RuntimeError-compatible."""
 
 from __future__ import annotations
 
@@ -150,7 +144,7 @@ async def test_run_empty_error_chunk_uses_fallback_string():
 
 
 # ---------------------------------------------------------------------------
-# Finding #3: subprocess RuntimeError path → classified ProviderError
+# subprocess RuntimeError path → classified ProviderError
 # ---------------------------------------------------------------------------
 
 
@@ -239,20 +233,13 @@ async def test_run_already_classified_provider_error_not_double_wrapped():
 
 
 # ---------------------------------------------------------------------------
-# Round-3 regression: error:null chunk must NOT be swallowed as benign EOS
-# (codex round-2 finding: null normalised to {} matched the benign predicate)
+# Regression: error:null chunk must NOT be swallowed as benign EOS
+# (null normalised to {} matched the benign predicate before the fix)
 # ---------------------------------------------------------------------------
 
 
 async def test_run_raises_provider_error_for_null_error_payload_chunk():
-    """A StreamChunk from {"type":"error","error":null} must raise ProviderError
-    rather than completing silently.
-
-    Regression: after the null-normalisation fix (round 2), the null payload was
-    normalised to {} before the benign-EOS predicate, causing run() to treat it as
-    the resume-EOF sentinel and return a successful result.  The fix captures
-    _raw_err before normalising so null does NOT qualify as benign.
-    """
+    """StreamChunk(type='error', error=null) must raise ProviderError, not complete silently."""
     # This is the chunk that the adapter emits for {"type":"error","error":null}.
     # After the fix it is NOT benign_eos, so run() must raise ProviderError.
     # The self-describing content from the empty-payload branch matches the base

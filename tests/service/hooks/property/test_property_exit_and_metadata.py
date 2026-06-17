@@ -15,15 +15,12 @@ from tests.service.hooks.conftest import MyCancelled
 
 @pytest.fixture(autouse=True)
 def patch_cancel(monkeypatch):
-    """Auto-patch cancellation class for all tests in this module."""
     from lionagi.service.hooks import hook_registry
 
     monkeypatch.setattr(hook_registry, "get_cancelled_exc_class", lambda: MyCancelled)
 
 
 class FakeEventProperty:
-    """Property test event with arbitrary id and created_at."""
-
     def __init__(self, event_id, created_at):
         self.id = event_id
         self.created_at = created_at
@@ -34,16 +31,12 @@ class FakeEventProperty:
 
 
 class FakeEventTypeProperty:
-    """Property test event type."""
-
     @classmethod
     def class_name(cls, full: bool = False):
         return f"{cls.__module__}.{cls.__name__}" if full else cls.__name__
 
 
 class TestExitPropagationInvariants:
-    """Property-based tests for exit propagation invariants."""
-
     @given(
         exit_policy=st.booleans(),
         hook_type=st.sampled_from(
@@ -184,8 +177,6 @@ class TestExitPropagationInvariants:
 
 
 class TestMetadataInvariants:
-    """Property-based tests for metadata invariants."""
-
     @given(
         event_id=st.text(min_size=1, max_size=50),
         created_at=st.floats(
@@ -269,8 +260,6 @@ class TestMetadataInvariants:
 
 
 class TestSyncAsyncVariability:
-    """Property-based tests for sync/async handler equivalence."""
-
     @given(
         exit_policy=st.booleans(),
         return_value=st.text(min_size=1, max_size=20),
@@ -336,8 +325,6 @@ class TestSyncAsyncVariability:
 
 
 class TestExceptionVariability:
-    """Property-based tests for exception handling robustness."""
-
     @given(
         error_message=st.text(min_size=1, max_size=100),
         exit_policy=st.booleans(),

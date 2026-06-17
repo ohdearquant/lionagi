@@ -90,13 +90,9 @@ def test_private_ipv6_blocked(ip):
 
 
 def test_ipv6_link_local_scoped_blocked():
-    """fe80::1%lo0 — scoped link-local. Python strips the scope before parsing."""
-    # Python's ipaddress.ip_address strips the scope ID (e.g. %lo0) when
-    # socket.getaddrinfo returns the raw IP string. The raw IP returned by
-    # getaddrinfo on most platforms is the unscoped form ("fe80::1"), so we
-    # test that the unscoped form is correctly blocked. Scoped forms returned
-    # as "fe80::1%lo0" would cause ipaddress.ip_address to raise ValueError,
-    # which the guard's except-ValueError branch already handles (fail-closed).
+    """fe80::1%lo0 — scoped link-local; getaddrinfo returns unscoped form on most platforms."""
+    # Scoped forms ("fe80::1%lo0") cause ipaddress.ip_address to raise ValueError,
+    # which the guard's except-ValueError branch handles (fail-closed).
     with patch("socket.getaddrinfo", return_value=_mock_getaddrinfo("fe80::1")):
         assert is_ssrf_safe("link-local.example.com") is False
 
@@ -128,20 +124,16 @@ def test_ipv4_mapped_public_safe():
 
 
 # ---------------------------------------------------------------------------
-# 4b. IPv4-compatible IPv6 (::a.b.c.d) — CRITICAL: must return False (#1125)
+# 4b. IPv4-compatible IPv6 (::a.b.c.d) — must return False (CWE-918)
 # ---------------------------------------------------------------------------
-# IPv4-compatible IPv6 is the *deprecated* form where the IPv4 address is
-# embedded directly without the 0xffff marker.  ``::169.254.169.254`` is a
-# live IMDS bypass on IPv6-reachable cloud environments (CWE-918).
-# Python's ipaddress.IPv6Address.ipv4_mapped returns None for this form, so
-# the IPv4-mapped unmap path that covers ::ffff:a.b.c.d does NOT catch it.
-# These tests document the required behaviour after the fix.
+# Deprecated form without the 0xffff marker; ipv4_mapped returns None so the
+# ::ffff: unmap path does NOT catch it — separate fix required.
 
 
 @pytest.mark.parametrize(
     "ipv4_compat",
     [
-        "::169.254.169.254",  # AWS/GCP IMDS — the live IMDS bypass (issue #1125)
+        "::169.254.169.254",  # AWS/GCP IMDS — the live IMDS bypass
         "::10.0.0.1",  # RFC 1918 private via IPv4-compat
         "::192.168.1.1",  # RFC 1918 private via IPv4-compat
         "::127.0.0.1",  # Loopback via IPv4-compat

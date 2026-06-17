@@ -13,11 +13,8 @@ from tests.service.hooks.conftest import FakeEvent, MyCancelled
 
 
 class TestHookEventBasicBehavior:
-    """Test basic HookEvent behavior and state management."""
-
     @pytest.mark.anyio
     async def test_normal_hook_execution_sets_correct_state(self, patch_cancellation):
-        """Test that normal hook execution sets correct execution state."""
 
         async def successful_hook(ev, **kw):
             return "hook_result"
@@ -55,7 +52,6 @@ class TestHookEventBasicBehavior:
 
     @pytest.mark.anyio
     async def test_hook_exception_sets_error_state(self, patch_cancellation):
-        """Test that hook exceptions set proper error state."""
 
         async def failing_hook(ev, **kw):
             raise RuntimeError("hook failed")
@@ -84,7 +80,6 @@ class TestHookEventBasicBehavior:
 
     @pytest.mark.anyio
     async def test_hook_exception_with_exit_true_sets_should_exit(self, patch_cancellation):
-        """Test that hook exceptions with exit=True set should_exit=True."""
 
         async def failing_hook(ev, **kw):
             raise RuntimeError("hook failed")
@@ -106,7 +101,6 @@ class TestHookEventBasicBehavior:
 
     @pytest.mark.anyio
     async def test_hook_returns_exception_object(self, patch_cancellation):
-        """Test handling when hook returns an Exception object."""
         test_exception = RuntimeError("returned exception")
 
         async def hook_returning_exception(ev, **kw):
@@ -131,7 +125,6 @@ class TestHookEventBasicBehavior:
 
     @pytest.mark.anyio
     async def test_hook_returns_tuple_with_exception(self, patch_cancellation):
-        """Test handling when hook returns a tuple containing an exception."""
         test_exception = RuntimeError("tuple exception")
 
         async def hook_returning_tuple(ev, **kw):
@@ -156,11 +149,8 @@ class TestHookEventBasicBehavior:
 
 
 class TestHookEventCancellation:
-    """Test HookEvent cancellation and timeout behavior."""
-
     @pytest.mark.anyio
     async def test_cancellation_propagates(self, patch_cancellation):
-        """Test that cancellation exceptions propagate correctly."""
 
         async def cancelling_hook(ev, **kw):
             raise MyCancelled("test cancellation")
@@ -181,7 +171,6 @@ class TestHookEventCancellation:
 
     @pytest.mark.anyio
     async def test_timeout_cancellation(self, patch_cancellation, patch_timeout):
-        """Test that timeouts cause cancellation."""
 
         async def slow_hook(ev, **kw):
             # This won't actually run because patch_timeout immediately raises
@@ -203,11 +192,8 @@ class TestHookEventCancellation:
 
 
 class TestHookEventDispatchErrorPolicy:
-    """Test HookEvent behavior on registry/dispatch errors."""
-
     @pytest.mark.anyio
     async def test_dispatch_error_respects_exit_policy_false(self, patch_cancellation):
-        """Test that dispatch errors respect exit=False policy."""
         # Create registry without the hook to cause dispatch error
         registry = HookRegistry()
         hook_event = HookEvent(
@@ -228,7 +214,6 @@ class TestHookEventDispatchErrorPolicy:
 
     @pytest.mark.anyio
     async def test_dispatch_error_respects_exit_policy_true(self, patch_cancellation):
-        """Test that dispatch errors respect exit=True policy."""
         # Create registry without the hook to cause dispatch error
         registry = HookRegistry()
         hook_event = HookEvent(
@@ -249,11 +234,8 @@ class TestHookEventDispatchErrorPolicy:
 
 
 class TestHookEventMetadata:
-    """Test HookEvent metadata handling."""
-
     @pytest.mark.anyio
     async def test_metadata_populated_correctly(self, patch_cancellation):
-        """Test that associated_event_info is populated correctly."""
 
         async def dummy_hook(ev, **kw):
             return "ok"
@@ -283,7 +265,6 @@ class TestHookEventMetadata:
 
     @pytest.mark.anyio
     async def test_metadata_for_pre_event_create_type(self, patch_cancellation):
-        """Test metadata for pre_event_create (event type, not instance)."""
 
         async def dummy_hook(ev_type, **kw):
             return "ok"
@@ -309,10 +290,7 @@ class TestHookEventMetadata:
 
 
 class TestHookEventValidation:
-    """Test HookEvent validation and edge cases."""
-
     def test_exit_validation_converts_none_to_false(self):
-        """Test that exit field validation converts None to False."""
         registry = HookRegistry()
 
         # Test with None
@@ -350,7 +328,6 @@ class TestHookEventValidation:
 
     @pytest.mark.anyio
     async def test_params_forwarded_to_hook(self, patch_cancellation):
-        """Test that params are correctly forwarded to hooks."""
         captured_params = {}
 
         async def param_capturing_hook(ev, **kw):

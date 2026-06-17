@@ -243,11 +243,7 @@ class _DeferProc(Processor):
 
 
 class _DeferUntilProc(Processor):
-    """Denies the first ``deny_first`` permission checks, then allows.
-
-    Models a rate limit that replenishes: the event must survive the denials
-    (re-enqueued, not dropped) and dispatch once permission is granted.
-    """
+    """Denies the first ``deny_first`` checks then allows; models a replenishing rate limit."""
 
     event_type = _OkEvent
 
@@ -276,11 +272,7 @@ class TestProcessorDenial:
         assert p.queue.empty()
 
     async def test_deferred_denial_requeues_not_drops(self):
-        """A deferred event must stay in the queue (PENDING), never dropped.
-
-        Regression: process() used to dequeue a denied event and leave it
-        PENDING outside the queue, so rate-limited work was silently lost.
-        """
+        """Regression: process() used to dequeue a deferred event, silently losing rate-limited work."""
         p = _DeferProc(queue_capacity=10, capacity_refresh_time=0.01, concurrency_limit=2)
         event = _OkEvent()
         await p.enqueue(event)
@@ -290,8 +282,7 @@ class TestProcessorDenial:
         assert event.status == EventStatus.PENDING
 
     async def test_deferred_batch_does_not_busy_spin(self):
-        """When every queued event is deferred, process() returns promptly
-        once a full lap has been deferred (no infinite spin)."""
+        """process() must return promptly after a full lap of deferrals, not spin infinitely."""
         p = _DeferProc(queue_capacity=100, capacity_refresh_time=0.01, concurrency_limit=2)
         events = [_OkEvent() for _ in range(3)]
         for e in events:
@@ -302,8 +293,7 @@ class TestProcessorDenial:
         assert all(e.status == EventStatus.PENDING for e in events)
 
     async def test_deferred_then_granted_dispatches(self):
-        """A deferred event is dispatched on a later cycle once permission is
-        granted — proving deferral retries rather than dropping work."""
+        """A deferred event must retry and dispatch on a later cycle, not be dropped."""
         p = _DeferUntilProc(
             queue_capacity=10,
             capacity_refresh_time=0.01,
@@ -325,8 +315,7 @@ class TestProcessorDenial:
 
 
 class TestProcessorJoin:
-    """join() is a retained public API with corrected semantics: drain the
-    queue of processable work, looping process() until the queue is empty."""
+    """join() drains the queue by looping process() until empty."""
 
     async def test_join_empty_queue_returns_immediately(self):
         p = _proc()

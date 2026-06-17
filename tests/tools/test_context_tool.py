@@ -3,10 +3,7 @@
 
 """Tests for lionagi.tools.context.ContextTool.
 
-Contract: context engineering is NON-DESTRUCTIVE. evict/compact only curate the
-ACTIVE progression (``branch.progression``); the full message Pile
-(``branch.msgs.messages`` / ``branch.msgs.progression``) is never pruned, so
-hidden messages can be browsed (scope='all') and restored.
+evict/compact curate only the active progression; the full message Pile is never pruned.
 """
 
 from lionagi.session.branch import Branch

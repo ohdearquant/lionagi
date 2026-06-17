@@ -107,7 +107,6 @@ def test_exclude(sample_pile, sample_elements):
     assert sample_elements[3] not in sample_pile
     assert len(sample_pile) == 4
 
-    # Excluding non-existent item should not raise an error
     sample_pile.exclude(MockElement(value="nonexistent"))
 
 
@@ -167,7 +166,6 @@ def test_order_preservation():
     p = Pile(collections=elements)
     assert list(p.values()) == elements
 
-    # Test order after operations
     p.remove(elements[5])
     p.include(MockElement(value="new"))
     assert list(p.values())[:5] == elements[:5]
@@ -211,12 +209,10 @@ def test_memory_efficiency():
     elements = [MockElement(value=i) for i in range(100000)]
     p = Pile(elements)
 
-    # Calculate memory usage
     pile_size = sys.getsizeof(p)
     internal_size = sum(sys.getsizeof(item) for item in p.collections.values())
     total_size = pile_size + internal_size
 
-    # Check if memory usage is reasonable (less than 100MB for 100,000 elements)
     assert total_size < 100 * 1024 * 1024  # 100MB in bytes
 
 
@@ -343,9 +339,8 @@ def test_pile_scaling_performance(n):
         _ = p[random.randint(0, n - 1)]
     access_time = time.time() - start_time
 
-    # Asserting that creation and access times scale reasonably
-    assert creation_time < 0.15 * n / 1000  # Adjust as needed
-    assert access_time < 0.015 * n / 1000  # Adjust as needed
+    assert creation_time < 0.15 * n / 1000
+    assert access_time < 0.015 * n / 1000
 
 
 def test_pile_memory_leak():
@@ -363,7 +358,6 @@ def test_pile_memory_leak():
     del p
     gc.collect()
 
-    # Check if all elements have been properly garbage collected
     assert sum(ref() is not None for ref in refs) == 1
 
 
@@ -548,7 +542,6 @@ async def test_async_exclude(async_sample_pile):
     assert len(async_sample_) == 4
     assert element not in async_sample_
 
-    # Excluding non-existent element should not raise an error
     await async_sample_.aexclude(Node(content=100))
 
 

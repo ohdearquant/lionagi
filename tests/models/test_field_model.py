@@ -7,10 +7,7 @@ from lionagi.models import FieldModel
 
 
 class TestFieldModel:
-    """Test suite for FieldModel class."""
-
     def test_basic_field_creation(self):
-        """Test basic field creation and attributes."""
         field = FieldModel(
             name="test_field",
             default="default_value",
@@ -24,7 +21,6 @@ class TestFieldModel:
         assert field.description == "A test field"
 
     def test_field_info_generation(self):
-        """Test generation of Pydantic FieldInfo object."""
         field = FieldModel(
             name="test_field",
             default="default_value",
@@ -39,7 +35,6 @@ class TestFieldModel:
         assert field_info.description == "A test field"
 
     def test_field_with_annotation(self):
-        """Test field with type annotation."""
         field = FieldModel(name="test_field", annotation=int, default=42)
 
         field_info = field.create_field()
@@ -47,7 +42,6 @@ class TestFieldModel:
         assert field_info.default == 42
 
     def test_field_validator_configuration(self):
-        """Test field validator configuration."""
 
         def validate_positive(value: int) -> int:
             if value <= 0:
@@ -61,7 +55,6 @@ class TestFieldModel:
         assert "test_field_validator" in validator_dict
 
     def test_field_validator_with_kwargs(self):
-        """Test field validator with custom kwargs."""
 
         def validate_range(value: int) -> int:
             if not 0 <= value <= 100:
@@ -75,7 +68,6 @@ class TestFieldModel:
         assert "test_field_validator" in validator_dict
 
     def test_complex_field_configuration(self):
-        """Test complex field configuration with multiple attributes."""
         field = FieldModel(
             name="test_field",
             annotation=list[int],
@@ -97,7 +89,6 @@ class TestFieldModel:
         assert not field_info.exclude
 
     def test_field_with_alias(self):
-        """Test field with alias configuration."""
         field = FieldModel(name="test_field", alias="test_alias", alias_priority=2)
 
         field_info = field.create_field()
@@ -105,7 +96,6 @@ class TestFieldModel:
         assert field_info.alias_priority == 2
 
     def test_invalid_validator_configuration(self):
-        """Test invalid validator configurations."""
 
         def invalid_validator(value: int, unknown_param: str) -> int:
             return value
@@ -116,7 +106,6 @@ class TestFieldModel:
         assert isinstance(validator_dict, dict)
 
     def test_field_inheritance(self):
-        """Test field inheritance from SchemaModel."""
         field = FieldModel(name="test_field", default="test")
 
         # Test that extra fields are allowed
@@ -124,7 +113,6 @@ class TestFieldModel:
         assert hasattr(field_with_extra, "custom_attr")
 
     def test_field_metadata_dict(self):
-        """Test field serialization to dictionary via metadata_dict."""
         field = FieldModel(
             name="test_field",
             default="default_value",
@@ -138,7 +126,6 @@ class TestFieldModel:
         assert dict_repr["description"] == "A test field"
 
     def test_field_frozen_attribute(self):
-        """Test field frozen attribute."""
         field = FieldModel(name="test_field", frozen=True)
 
         field_info = field.create_field()
@@ -150,7 +137,6 @@ class TestFieldModel:
         assert not field_info.frozen
 
     def test_field_default_factory(self):
-        """Test field with default_factory."""
 
         def create_list():
             return [1, 2, 3]
@@ -162,14 +148,12 @@ class TestFieldModel:
         assert field_info.default_factory() == [1, 2, 3]
 
     def test_field_with_examples(self):
-        """Test field with examples."""
         field = FieldModel(name="test_field", examples=["example1", "example2"])
 
         field_info = field.create_field()
         assert field_info.examples == ["example1", "example2"]
 
     def test_field_with_description(self):
-        """Test field with description."""
         field = FieldModel(name="test_field", description="Test description")
 
         field_info = field.create_field()
@@ -177,10 +161,7 @@ class TestFieldModel:
 
 
 def test_both_default_and_default_factory():
-    """
-    Test that defining both `default` and `default_factory` at the same time
-    raises an error or is otherwise disallowed.
-    """
+    """Both default and default_factory at the same time must raise ValueError."""
 
     def factory_func():
         return "factory_value"
@@ -195,19 +176,13 @@ def test_both_default_and_default_factory():
 
 @pytest.mark.parametrize("invalid_value", [123, [lambda x: x, 123], object()])
 def test_invalid_validators_argument(invalid_value):
-    """
-    Test passing an invalid type or structure to `validators`.
-    Must raise ValueError stating "Validators must be a list of functions or a function".
-    """
+    """Invalid validator type must raise ValueError."""
     with pytest.raises(ValueError):
         FieldModel(name="bad_validators", validator=invalid_value)
 
 
 def test_exclude_field_behavior():
-    """
-    Test that if `exclude=True` is set, the FieldInfo reflects that field should be excluded
-    from serialization.
-    """
+    """exclude=True must be reflected in the created FieldInfo."""
     field = FieldModel(name="excluded_field", exclude=True)
     info = field.create_field()
     assert info.exclude is True, "Expected the field's FieldInfo to have exclude=True"
@@ -225,20 +200,8 @@ def test_exclude_field_behavior():
     ],
 )
 def test_type_mismatch_between_annotation_and_default(annotation, default_value):
-    """
-    Test providing a default value that doesn't match the annotation type
-    (e.g., str default for an int annotation).
-    Depending on usage, you might want to allow or disallow this scenario.
-    For demonstration, we expect Pydantic won't error at FieldModel creation time,
-    but it may cause an error once integrated in an actual Pydantic model.
-    We'll simply confirm the mismatch is stored or accepted at this step.
-    """
+    """Mismatched annotation/default is accepted at FieldModel creation; Pydantic validates later."""
     field = FieldModel(name="mismatch_field", annotation=annotation, default=default_value)
     info = field.create_field()
-    # The FieldInfo has the mismatch, but Pydantic doesn't strictly validate here in FieldModel alone.
-    # You might consider implementing your own check if you want to raise an error now.
     assert info.annotation == annotation
     assert info.default == default_value
-
-    # If you want to raise an error now, you'd do so in a custom validator here,
-    # e.g., if "not isinstance(default_value, annotation)" then error.

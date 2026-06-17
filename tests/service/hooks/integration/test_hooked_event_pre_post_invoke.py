@@ -16,8 +16,6 @@ from tests.service.hooks.conftest import MyCancelled
 
 
 class MockHookedEvent(HookedEvent):
-    """Test implementation of HookedEvent for testing."""
-
     model_config = ConfigDict(arbitrary_types_allowed=True, extra="allow")
 
     invoke_result: Any = Field(default="test_invoke_result")
@@ -35,12 +33,8 @@ class MockHookedEvent(HookedEvent):
 
 
 class TestHookedEventPreHookIntegration:
-    """Test pre-invocation hook integration."""
-
     @pytest.mark.anyio
     async def test_pre_hook_normal_allows_invoke(self, patch_cancellation, patch_logger):
-        """Test that normal pre-hook execution allows _core_invoke() to proceed."""
-
         async def pre_hook(ev, **kw):
             return "pre_ok"
 
@@ -118,12 +112,8 @@ class TestHookedEventPreHookIntegration:
 
 
 class TestHookedEventPostHookIntegration:
-    """Test post-invocation hook integration."""
-
     @pytest.mark.anyio
     async def test_post_hook_normal_completion(self, patch_cancellation, patch_logger):
-        """Test that normal post-hook execution completes successfully."""
-
         async def post_hook(ev, **kw):
             return "post_logged"
 
@@ -185,11 +175,8 @@ class TestHookedEventPostHookIntegration:
 
 
 class TestHookedEventBothHooks:
-    """Test HookedEvent with both pre and post hooks."""
-
     @pytest.mark.anyio
     async def test_both_hooks_normal_execution_order(self, patch_cancellation, patch_logger):
-        """Test that both hooks run in correct order: pre -> _core_invoke -> post."""
         execution_order = []
 
         async def pre_hook(ev, **kw):
@@ -257,7 +244,6 @@ class TestHookedEventBothHooks:
 
     @pytest.mark.anyio
     async def test_main_invoke_error_still_runs_post_hook(self, patch_cancellation, patch_logger):
-        """Test that _core_invoke errors still allow post-hook to run."""
         hooks_called = []
 
         async def pre_hook(ev, **kw):
@@ -291,11 +277,8 @@ class TestHookedEventBothHooks:
 
 
 class TestHookedEventParameterForwarding:
-    """Test parameter forwarding in HookedEvent hook creation."""
-
     @pytest.mark.anyio
     async def test_hook_params_forwarded_to_hook(self, patch_cancellation, patch_logger):
-        """Test that hook_params are forwarded to the hook function."""
         captured_params = {}
 
         async def param_hook(ev, **kw):
@@ -320,7 +303,6 @@ class TestHookedEventParameterForwarding:
 
     @pytest.mark.anyio
     async def test_hook_timeout_configuration(self, patch_cancellation):
-        """Test that hook timeout is properly configured."""
         registry = HookRegistry(hooks={HookEventTypes.PreInvocation: lambda ev, **kw: "ok"})
         event = MockHookedEvent()
         event.create_pre_invoke_hook(hook_registry=registry, exit_hook=True, hook_timeout=120.0)
@@ -331,7 +313,6 @@ class TestHookedEventParameterForwarding:
 
     @pytest.mark.anyio
     async def test_hook_creation_defaults(self, patch_cancellation):
-        """Test default values for hook creation parameters."""
         registry = HookRegistry(hooks={HookEventTypes.PostInvocation: lambda ev, **kw: "ok"})
         event = MockHookedEvent()
         event.create_post_invoke_hook(hook_registry=registry)
@@ -344,8 +325,6 @@ class TestHookedEventParameterForwarding:
 
 
 class TestHookedEventCancellationPropagation:
-    """Test cancellation propagation in HookedEvent."""
-
     @pytest.mark.anyio
     async def test_main_invoke_error_captured(self, patch_cancellation, patch_logger):
         """Exceptions in _core_invoke() are captured as FAILED state, not propagated."""

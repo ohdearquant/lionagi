@@ -14,18 +14,14 @@ from lionagi.service.connections.mcp_wrapper import (
 
 
 class TestMCPConnectionPoolContextManager:
-    """Test MCPConnectionPool context manager."""
-
     @pytest.mark.asyncio
     async def test_aenter_returns_self(self):
-        """Test __aenter__ returns self."""
         pool = MCPConnectionPool()
         result = await pool.__aenter__()
         assert result is pool
 
     @pytest.mark.asyncio
     async def test_aexit_calls_cleanup(self):
-        """Test __aexit__ calls cleanup."""
         pool = MCPConnectionPool()
 
         with patch.object(MCPConnectionPool, "cleanup", new_callable=AsyncMock) as mock_cleanup:
@@ -34,15 +30,11 @@ class TestMCPConnectionPoolContextManager:
 
 
 class TestMCPConnectionPoolLoadConfig:
-    """Test MCPConnectionPool.load_config method."""
-
     def test_load_config_file_not_found(self):
-        """Test raises FileNotFoundError if config file doesn't exist."""
         with pytest.raises(FileNotFoundError, match="MCP config file not found"):
             MCPConnectionPool.load_config("nonexistent.json")
 
     def test_load_config_invalid_json(self):
-        """Test raises JSONDecodeError for invalid JSON."""
         invalid_json = "{invalid json"
 
         with patch("builtins.open", mock_open(read_data=invalid_json)):
@@ -51,7 +43,6 @@ class TestMCPConnectionPoolLoadConfig:
                     MCPConnectionPool.load_config(".mcp.json")
 
     def test_load_config_not_dict(self):
-        """Test raises ValueError if config is not a dict."""
         json_data = "[]"  # Array instead of object
 
         with patch("builtins.open", mock_open(read_data=json_data)):
@@ -60,7 +51,6 @@ class TestMCPConnectionPoolLoadConfig:
                     MCPConnectionPool.load_config(".mcp.json")
 
     def test_load_config_mcpservers_not_dict(self):
-        """Test raises ValueError if mcpServers is not a dict."""
         json_data = json.dumps({"mcpServers": []})
 
         with patch("builtins.open", mock_open(read_data=json_data)):
@@ -69,7 +59,6 @@ class TestMCPConnectionPoolLoadConfig:
                     MCPConnectionPool.load_config(".mcp.json")
 
     def test_load_config_success(self):
-        """Test successfully loads config."""
         MCPConnectionPool._configs = {}  # Reset configs
 
         config_data = {"mcpServers": {"test_server": {"command": "python", "args": ["server.py"]}}}
@@ -84,11 +73,8 @@ class TestMCPConnectionPoolLoadConfig:
 
 
 class TestMCPConnectionPoolGetClient:
-    """Test MCPConnectionPool.get_client method."""
-
     @pytest.fixture(autouse=True)
     def reset_pool(self):
-        """Reset pool state before each test."""
         MCPConnectionPool._clients = {}
         MCPConnectionPool._configs = {}
         yield
@@ -97,7 +83,6 @@ class TestMCPConnectionPoolGetClient:
 
     @pytest.mark.asyncio
     async def test_get_client_with_server_reference_not_found(self):
-        """Test raises ValueError for unknown server reference."""
         server_config = {"server": "unknown_server"}
 
         with patch.object(MCPConnectionPool, "load_config") as mock_load:
@@ -108,7 +93,6 @@ class TestMCPConnectionPoolGetClient:
 
     @pytest.mark.asyncio
     async def test_get_client_with_server_reference_success(self):
-        """Test successfully gets client with server reference."""
         MCPConnectionPool._configs = {"test_server": {"command": "python", "args": ["server.py"]}}
 
         server_config = {"server": "test_server"}
@@ -124,7 +108,6 @@ class TestMCPConnectionPoolGetClient:
 
     @pytest.mark.asyncio
     async def test_get_client_with_inline_config(self):
-        """Test successfully gets client with inline config."""
         inline_config = {"command": "python", "args": ["server.py"]}
 
         mock_client = AsyncMock()
@@ -139,7 +122,6 @@ class TestMCPConnectionPoolGetClient:
 
     @pytest.mark.asyncio
     async def test_get_client_reuses_connected_client(self):
-        """Test reuses existing connected client from pool."""
         inline_config = {"command": "python", "args": ["server.py"]}
 
         # Pre-populate pool with connected client
@@ -155,7 +137,6 @@ class TestMCPConnectionPoolGetClient:
 
     @pytest.mark.asyncio
     async def test_get_client_removes_stale_client(self):
-        """Test removes stale disconnected client and creates new one."""
         inline_config = {"command": "python", "args": ["server.py"]}
 
         # Pre-populate pool with disconnected client
@@ -177,24 +158,19 @@ class TestMCPConnectionPoolGetClient:
 
 
 class TestMCPConnectionPoolCreateClient:
-    """Test MCPConnectionPool._create_client method."""
-
     @pytest.fixture(autouse=True)
     def reset_pool_security(self):
-        """Reset pool security config before each test."""
         original = MCPConnectionPool._security
         yield
         MCPConnectionPool._security = original
 
     @pytest.mark.asyncio
     async def test_create_client_invalid_config_type(self):
-        """Test raises ValueError for non-dict config."""
         with pytest.raises(ValueError, match="Config must be a dictionary"):
             await MCPConnectionPool._create_client("not a dict")
 
     @pytest.mark.asyncio
     async def test_create_client_missing_url_and_command(self):
-        """Test raises ValueError if neither url nor command provided."""
         config = {"some_other_key": "value"}
 
         with pytest.raises(ValueError, match="Config must have either 'url' or 'command'"):
@@ -218,7 +194,6 @@ class TestMCPConnectionPoolCreateClient:
 
     @pytest.mark.asyncio
     async def test_create_client_fastmcp_not_installed(self):
-        """Test raises ImportError if fastmcp not installed."""
         # Need allow_urls to get past the security gate to the import check
         MCPConnectionPool._security = MCPSecurityConfig(allow_urls=True)
         config = {"url": "https://api.example.com/mcp"}
@@ -229,7 +204,6 @@ class TestMCPConnectionPoolCreateClient:
 
     @pytest.mark.asyncio
     async def test_create_client_with_url(self):
-        """Test creates client with URL config when allow_urls=True."""
         MCPConnectionPool._security = MCPSecurityConfig(allow_urls=True)
         config = {"url": "https://api.example.com/mcp"}
 
@@ -244,7 +218,6 @@ class TestMCPConnectionPoolCreateClient:
 
     @pytest.mark.asyncio
     async def test_create_client_with_command(self):
-        """Test creates client with command config when allow_commands=True."""
         MCPConnectionPool._security = MCPSecurityConfig(allow_commands=True)
         config = {
             "command": "python",
@@ -274,7 +247,6 @@ class TestMCPConnectionPoolCreateClient:
 
     @pytest.mark.asyncio
     async def test_create_client_command_invalid_args(self):
-        """Test raises ValueError if args is not a list."""
         MCPConnectionPool._security = MCPSecurityConfig(allow_commands=True)
         config = {"command": "python", "args": "not_a_list"}  # Invalid
 
@@ -284,7 +256,6 @@ class TestMCPConnectionPoolCreateClient:
 
     @pytest.mark.asyncio
     async def test_create_client_command_debug_mode(self):
-        """Test debug mode doesn't suppress logging."""
         MCPConnectionPool._security = MCPSecurityConfig(allow_commands=True)
         config = {"command": "python", "args": [], "debug": True}
 
@@ -305,24 +276,19 @@ class TestMCPConnectionPoolCreateClient:
 
 
 class TestMCPConnectionPoolCleanup:
-    """Test MCPConnectionPool.cleanup method."""
-
     @pytest.fixture(autouse=True)
     def reset_pool(self):
-        """Reset pool state."""
         MCPConnectionPool._clients = {}
         yield
         MCPConnectionPool._clients = {}
 
     @pytest.mark.asyncio
     async def test_cleanup_empty_pool(self):
-        """Test cleanup with no clients."""
         await MCPConnectionPool.cleanup()
         assert len(MCPConnectionPool._clients) == 0
 
     @pytest.mark.asyncio
     async def test_cleanup_multiple_clients(self):
-        """Test cleanup calls __aexit__ on all clients."""
         mock_client1 = AsyncMock()
         mock_client2 = AsyncMock()
 
@@ -339,7 +305,6 @@ class TestMCPConnectionPoolCleanup:
 
     @pytest.mark.asyncio
     async def test_cleanup_continues_on_error(self):
-        """Test cleanup continues even if one client raises error."""
         mock_client1 = AsyncMock()
         mock_client1.__aexit__.side_effect = Exception("Cleanup error")
         mock_client2 = AsyncMock()
@@ -358,11 +323,8 @@ class TestMCPConnectionPoolCleanup:
 
 
 class TestCreateMCPTool:
-    """Test create_mcp_tool function."""
-
     @pytest.mark.asyncio
     async def test_create_mcp_tool_basic(self):
-        """Test creates callable MCP tool."""
         mcp_config = {"url": "http://localhost:8080"}
         tool_name = "test_tool"
 
@@ -374,7 +336,6 @@ class TestCreateMCPTool:
 
     @pytest.mark.asyncio
     async def test_mcp_tool_execution(self):
-        """Test MCP tool execution calls client.call_tool."""
         mcp_config = {"url": "http://localhost:8080"}
         tool_name = "test_tool"
 
@@ -392,7 +353,6 @@ class TestCreateMCPTool:
 
     @pytest.mark.asyncio
     async def test_mcp_tool_with_original_name_metadata(self):
-        """Test MCP tool uses _original_tool_name if present."""
         mcp_config = {
             "url": "http://localhost:8080",
             "_original_tool_name": "actual_name",
@@ -412,7 +372,6 @@ class TestCreateMCPTool:
 
     @pytest.mark.asyncio
     async def test_mcp_tool_result_with_dict_content(self):
-        """Test MCP tool handles dict result with text type."""
         mcp_config = {"url": "http://localhost:8080"}
         tool_name = "test_tool"
 
@@ -428,7 +387,6 @@ class TestCreateMCPTool:
 
     @pytest.mark.asyncio
     async def test_mcp_tool_result_passthrough(self):
-        """Test MCP tool returns result as-is if no text extraction."""
         mcp_config = {"url": "http://localhost:8080"}
         tool_name = "test_tool"
 

@@ -1,12 +1,4 @@
-"""pytest-based marketplace skill content validation (issue #1031).
-
-Parameterized over every .md file under marketplace/. Each test validates
-a different surface: MCP tool names, CLI subcommands, model identifiers,
-banned models, nohup usage, and lambda roster names.
-
-Run:
-    uv run pytest tests/marketplace_lint.py -v
-"""
+"""Marketplace skill content validation — parameterized over every .md file under marketplace/."""
 
 from __future__ import annotations
 

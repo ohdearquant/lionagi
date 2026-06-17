@@ -4,11 +4,9 @@ from collections import OrderedDict
 import pytest
 from pydantic import BaseModel
 
-# Import the functions to be tested
 from lionagi.utils import to_dict
 
 
-# Mock classes and functions for testing
 class MockModelWithModelDump:
     def model_dump(self):
         return {"key": "value"}
@@ -33,7 +31,6 @@ def mock_xml_parser(xml_string):
     return {"root": {"child": "value"}}
 
 
-# Test cases
 def test_to_dict_with_dict_input():
     input_dict = {"a": 1, "b": 2}
     assert to_dict(input_dict) == input_dict
@@ -129,7 +126,6 @@ def test_to_dict_with_suppress():
     assert to_dict("{invalid_json}", suppress=True) == {}
 
 
-# Additional edge cases and error handling tests
 def test_to_dict_with_empty_mapping():
     assert to_dict(OrderedDict()) == {}
 
@@ -149,7 +145,6 @@ def test_to_dict_with_custom_json_decoder():
     assert to_dict(json_string, cls=CustomDecoder) == {"custom": {"a": 1}}
 
 
-# Performance test (optional, depending on your needs)
 @pytest.mark.performance
 def test_to_dict_performance():
     import time

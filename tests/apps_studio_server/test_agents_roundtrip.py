@@ -1,14 +1,7 @@
 # Copyright (c) 2023-2026, HaiyangLi <quantocean.li at gmail dot com>
 # SPDX-License-Identifier: Apache-2.0
 
-"""Regression tests for #1010 — Studio agent frontmatter field completeness.
-
-Covers:
-1. yolo/fast_mode round-trip through get_agent().
-2. update_agent() writes yolo field to disk.
-3. reasoning_effort→effort migration in get_agent().
-4. model without provider prefix round-trips through update_agent().
-"""
+"""Tests for Studio agent frontmatter field completeness and round-trip."""
 
 from __future__ import annotations
 

@@ -299,7 +299,7 @@ async def test_to_tool_callable_executes(tmp_path):
 
 
 # ---------------------------------------------------------------------------
-# A12: grep timeout returns structured error
+# Grep timeout returns structured error
 # ---------------------------------------------------------------------------
 
 
@@ -323,7 +323,7 @@ async def test_search_tool_grep_timeout_returns_structured_error(monkeypatch):
 
 
 # ---------------------------------------------------------------------------
-# A13: find nonzero exit with stderr returns error response
+# Find nonzero exit with stderr returns error response
 # ---------------------------------------------------------------------------
 
 
@@ -494,8 +494,8 @@ def test_to_tool_custom_system_tool_name():
 
 # ---------------------------------------------------------------------------
 # Regression: rc=-1 (subprocess launch failure) must be success=False
-# (Finding 2: _subprocess_sync returns rc=-1 on launch error, old code
-# only checked rc==2, so rc==-1 fell through to success=True)
+# (_subprocess_sync returns rc=-1 on launch error; old code only checked
+# rc==2, so rc==-1 fell through to success=True)
 # ---------------------------------------------------------------------------
 
 

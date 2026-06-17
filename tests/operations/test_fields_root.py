@@ -1,12 +1,4 @@
-"""
-Test suite for lionagi/operations/fields.py
-
-Tests cover:
-- Class and function imports
-- Field constant generation via __getattr__
-- __all__ exports
-- Error handling for invalid imports
-"""
+"""Tests for lionagi.operations.fields imports, __getattr__ field generation, and __all__ exports."""
 
 import pytest
 

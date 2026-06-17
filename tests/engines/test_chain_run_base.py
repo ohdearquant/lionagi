@@ -1,19 +1,7 @@
 # Copyright (c) 2023-2026, HaiyangLi <quantocean.li at gmail dot com>
 # SPDX-License-Identifier: Apache-2.0
 
-"""Tests for ChainRun extraction (R1-1) and research per-stage repair uplift.
-
-Parity tests:
-- ChainRun is a proper base class that EngineRun subclasses.
-- CodingRun and HypothesisRun inherit collect/emit/find/events_of from ChainRun
-  rather than defining them directly.
-- Functional tests: collect+emit path works through the public engine for each
-  subclass.
-
-Research per-stage repair uplift:
-- A stage that returns malformed output gets repaired (per-stage, not
-  node-level only).
-"""
+"""Tests for ChainRun extraction: parity (collect/emit on base class) and per-stage repair uplift."""
 
 from __future__ import annotations
 
@@ -101,9 +89,7 @@ def test_hypothesis_run_subclasses_chain_run():
 
 
 def test_collect_implementation_lives_on_chain_run():
-    """The collect() body must reside on ChainRun, not be re-defined on
-    CodingRun or HypothesisRun as a full implementation (subclasses may have
-    typed thin wrappers, but the __qualname__ of the impl must be ChainRun)."""
+    """collect() must be defined on ChainRun, not re-implemented on subclasses."""
     # ChainRun itself defines the full implementation
     assert "collect" in ChainRun.__dict__
 
@@ -130,7 +116,7 @@ def test_events_of_implementation_lives_on_chain_run():
 
 @pytest.mark.asyncio
 async def test_coding_run_collect_stamps_eid_and_stores():
-    """collect() on a CodingRun must stamp an eid and store the event."""
+    """collect() stamps an eid and stores the event on a CodingRun."""
     eng = _stub_engine()
     run = CodingRun(eng)
     plan = WorkPlanned(approach="do the thing")
@@ -157,8 +143,7 @@ async def test_coding_run_collect_increments_eid_counter():
 
 @pytest.mark.asyncio
 async def test_coding_run_emit_no_duplicate_notify_for_chain_event():
-    """emit() on a CodingRun must NOT produce a duplicate on_event call for
-    a CodingChainEvent — collect() is the sole notify path for chain events."""
+    """emit() on a CodingRun must not duplicate on_event for CodingChainEvents."""
     eng = _stub_engine()
     events_seen: list[dict] = []
     run = CodingRun(eng, on_event=events_seen.append)
@@ -264,8 +249,7 @@ def test_hypothesis_run_chain_event_cls_is_chain_event():
 
 
 def test_coding_run_store_initialised_with_event_prefix_keys():
-    """store must be pre-populated from _event_prefix_map so existing callers
-    that iterate store.values() see all event types."""
+    """store must be pre-populated from _event_prefix_map on CodingRun init."""
     from lionagi.engines.coding import _EVENT_PREFIX
 
     eng = _stub_engine()
@@ -288,12 +272,7 @@ def test_hypothesis_run_store_initialised_with_event_prefix_keys():
 
 @pytest.mark.asyncio
 async def test_research_per_stage_repair_fires_when_stage_emits_nothing():
-    """A stage that returns prose with no finding must trigger operate_with_repair
-    for that stage (not just the node-level backstop).
-
-    The per-stage arrived() check is scoped to the stage's own window: we
-    instrument operate_with_repair on the run to track how many times repair
-    was triggered and for which branch."""
+    """A stage returning no finding must trigger operate_with_repair per stage, not just node backstop."""
     eng = ResearchEngine(repair_retries=1)
     run = eng.new_run()
     events: list[dict] = []
@@ -385,8 +364,7 @@ async def test_research_per_stage_repair_arriving_stage_needs_no_repair():
 
 @pytest.mark.asyncio
 async def test_research_node_level_backstop_fires_when_all_stages_fail():
-    """If all per-stage repair turns also fail, the node-level backstop must
-    still fire (operate_with_repair called with team[-1] as target)."""
+    """When all per-stage repairs fail, the node-level backstop must still fire."""
     eng = ResearchEngine(repair_retries=0)  # retries=0: per-stage tries once
     run = eng.new_run()
     events: list[dict] = []

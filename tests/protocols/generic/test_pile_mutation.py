@@ -1,13 +1,7 @@
 # Copyright (c) 2023-2025, HaiyangLi <quantocean.li at gmail dot com>
 # SPDX-License-Identifier: Apache-2.0
 
-"""Coverage tests for lionagi/protocols/generic/pile.py (~76% → 90%+ target).
-
-Targets uncovered lines: to_df, dump, filter_by_type, set ops (__ior__,
-__iand__, __ixor__, __or__, __and__, __xor__), __setitem__ by UUID/int,
-insert at boundaries, async edges, from_dict/to_dict roundtrip,
-is_homogenous, adapt_to/adapt_from, strict_type enforcement.
-"""
+"""Coverage tests for lionagi/protocols/generic/pile.py."""
 
 from __future__ import annotations
 
@@ -38,11 +32,7 @@ class OtherItem(Element):
 
 
 class TestIncludeFalsyElement:
-    """An empty Progression/Pile is a valid item whose len() is 0.
-
-    Regression for the `if not value: return {}` short-circuit in
-    _validate_collections that silently dropped any falsy Observable.
-    """
+    """Regression: falsy-but-valid Element (empty Pile/Progression) must not be dropped by _validate_collections."""
 
     def test_include_empty_progression(self):
         from lionagi.protocols.generic.progression import Progression
@@ -106,13 +96,8 @@ def pile_5(five_items):
 pandas_missing = importlib.util.find_spec("pandas") is None
 
 
-"""Tests for Pile mutation: set ops, filter, strict_type, setitem, insert."""
-
-
 class TestInPlaceSetOps:
-    """In-place set ops mutate self — |= / &= / ^= operate on self and
-    return self, distinct from the non-in-place __or__/__and__/__xor__
-    which return a fresh Pile."""
+    """|= / &= / ^= mutate self and return self; __or__/__and__/__xor__ return a fresh Pile."""
 
     def setup_method(self):
         self.a0, self.a1, self.a2 = Item(value=0), Item(value=1), Item(value=2)
@@ -191,34 +176,27 @@ class TestInPlaceSetOps:
 
 
 class TestNonInPlaceSetOps:
-    """__or__, __and__, __xor__ previously passed 'items=' instead of
-    'collections=' to Pile.__init__, causing ValidationError on every call.
-    These tests assert the corrected behaviour: set ops return a new Pile
-    with the expected membership."""
+    """__or__/__and__/__xor__ previously used 'items=' kwarg instead of 'collections=', causing ValidationError on every call."""
 
     def setup_method(self):
         self.a0, self.a1, self.a2 = Item(value=0), Item(value=1), Item(value=2)
 
     def test_or_raises_on_non_pile(self):
-        """TypeError is still raised for non-Pile operands."""
         p = Pile(collections=[self.a0])
         with pytest.raises(TypeError):
             _ = p | [self.a1]
 
     def test_and_raises_on_non_pile(self):
-        """TypeError is still raised for non-Pile operands."""
         p = Pile(collections=[self.a0])
         with pytest.raises(TypeError):
             _ = p & [self.a1]
 
     def test_xor_raises_on_non_pile(self):
-        """TypeError is still raised for non-Pile operands."""
         p = Pile(collections=[self.a0])
         with pytest.raises(TypeError):
             _ = p ^ [self.a1]
 
     def test_or_union_returns_new_pile(self):
-        """Non-in-place union produces a new Pile containing all unique items."""
         p1 = Pile(collections=[self.a0, self.a1])
         p2 = Pile(collections=[self.a1, self.a2])
         result = p1 | p2
@@ -229,28 +207,24 @@ class TestNonInPlaceSetOps:
         assert self.a2 in result
 
     def test_or_preserves_item_type(self):
-        """Union preserves item_type from the left operand."""
         p1 = Pile(collections=[self.a0], item_type={Item})
         p2 = Pile(collections=[self.a1])
         result = p1 | p2
         assert result.item_type == {Item}
 
     def test_or_disjoint(self):
-        """Union of disjoint piles contains all items."""
         p1 = Pile(collections=[self.a0])
         p2 = Pile(collections=[self.a1])
         result = p1 | p2
         assert len(result) == 2
 
     def test_or_no_duplicate(self):
-        """Union does not duplicate shared items."""
         p1 = Pile(collections=[self.a0, self.a1])
         p2 = Pile(collections=[self.a0])
         result = p1 | p2
         assert len(result) == 2
 
     def test_and_intersection_returns_new_pile(self):
-        """Non-in-place intersection produces a new Pile of shared items."""
         p1 = Pile(collections=[self.a0, self.a1])
         p2 = Pile(collections=[self.a1, self.a2])
         result = p1 & p2
@@ -261,21 +235,18 @@ class TestNonInPlaceSetOps:
         assert self.a2 not in result
 
     def test_and_empty_result(self):
-        """Intersection of disjoint piles is empty."""
         p1 = Pile(collections=[self.a0])
         p2 = Pile(collections=[self.a1])
         result = p1 & p2
         assert len(result) == 0
 
     def test_and_preserves_item_type(self):
-        """Intersection preserves item_type from the left operand."""
         p1 = Pile(collections=[self.a0, self.a1], item_type={Item})
         p2 = Pile(collections=[self.a1])
         result = p1 & p2
         assert result.item_type == {Item}
 
     def test_xor_symmetric_difference_returns_new_pile(self):
-        """Non-in-place symmetric difference excludes common items."""
         p1 = Pile(collections=[self.a0, self.a1])
         p2 = Pile(collections=[self.a1, self.a2])
         result = p1 ^ p2
@@ -286,21 +257,18 @@ class TestNonInPlaceSetOps:
         assert self.a1 not in result
 
     def test_xor_disjoint(self):
-        """Symmetric difference of disjoint piles contains all items."""
         p1 = Pile(collections=[self.a0])
         p2 = Pile(collections=[self.a1])
         result = p1 ^ p2
         assert len(result) == 2
 
     def test_xor_identical(self):
-        """Symmetric difference of identical piles is empty."""
         p1 = Pile(collections=[self.a0, self.a1])
         p2 = Pile(collections=[self.a0, self.a1])
         result = p1 ^ p2
         assert len(result) == 0
 
     def test_or_does_not_mutate_operands(self):
-        """Non-in-place ops must not mutate either operand."""
         p1 = Pile(collections=[self.a0])
         p2 = Pile(collections=[self.a1])
         _ = p1 | p2
@@ -316,17 +284,12 @@ class TestNonInPlaceSetOps:
 
 
 class TestSetOpsIntegrity:
-    """The non-in-place set ops must build the result from copies of self's
-    internal state — never alias the left operand's Progression, and never
-    silently relax a strict pile to non-strict."""
+    """Non-in-place set ops must not alias the left operand's Progression or silently relax strict_type."""
 
     def setup_method(self):
         self.a0, self.a1, self.a2 = Item(value=0), Item(value=1), Item(value=2)
 
     def test_or_does_not_alias_left_progression(self):
-        """``p1 | p2`` must not mutate p1's progression through the shared
-        order object — including p2's item only into the result, leaving p1
-        internally consistent (collections and progression stay in sync)."""
         p1 = Pile(collections=[self.a0])
         p2 = Pile(collections=[self.a1])
         before = list(p1.progression)
@@ -367,35 +330,30 @@ class TestSetOpsIntegrity:
 
 
 class TestMultiItemPop:
-    """_pop with a slice returning >1 item previously used 'items=' kwarg,
-    causing the same ValidationError as the set-op bug."""
+    """_pop with a slice previously used 'items=' kwarg, causing the same ValidationError as the set-op bug."""
 
     def setup_method(self):
         self.items = [Item(value=i) for i in range(5)]
         self.pile = Pile(collections=self.items)
 
     def test_pop_slice_multi_returns_pile(self):
-        """Popping a slice of 3 items returns a Pile, not an error."""
         result = self.pile.pop(slice(0, 3))
         assert isinstance(result, Pile)
         assert len(result) == 3
         assert len(self.pile) == 2
 
     def test_pop_slice_single_returns_item(self):
-        """Popping a slice of exactly 1 item returns the item directly."""
         result = self.pile.pop(slice(0, 1))
         assert isinstance(result, Item)
         assert len(self.pile) == 4
 
     def test_pop_slice_all_returns_pile(self):
-        """Popping all items returns a Pile."""
         result = self.pile.pop(slice(None))
         assert isinstance(result, Pile)
         assert len(result) == 5
         assert len(self.pile) == 0
 
     def test_pop_slice_preserves_item_type(self):
-        """Multi-item pop preserves the item_type of the parent pile."""
         p = Pile(collections=[Item(value=i) for i in range(3)], item_type={Item})
         result = p.pop(slice(0, 2))
         assert isinstance(result, Pile)

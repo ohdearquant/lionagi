@@ -1,22 +1,7 @@
 # Copyright (c) 2023-2026, HaiyangLi <quantocean.li at gmail dot com>
 # SPDX-License-Identifier: Apache-2.0
 
-"""
-Regression tests for ``lionagi.cli.agent._setup_live_persist`` and
-``_teardown_live_persist``.
-
-These tests target the CLI hang bug fixed in commit ``0d8027958``: the
-aiosqlite worker is a non-daemon thread; leaking it prevents the Python
-interpreter from shutting down. ``_setup_live_persist`` must close the
-DB on any failure, and ``_teardown_live_persist`` must close it in a
-dedicated ``finally`` so a bookmark-update failure cannot leak the
-worker.
-
-All tests use a temp file DB (NOT ``:memory:``) so the aiosqlite WAL
-mode and background thread match production. No real API calls are
-made — the ``Branch`` is constructed locally and the message hook is
-fired by hand or via ``branch.msgs.add_message``.
-"""
+"""Regression tests for setup_agent_persist / teardown_agent_persist: DB cleanup and no thread leaks."""
 
 from __future__ import annotations
 
@@ -36,11 +21,7 @@ from lionagi.state.db import StateDB
 
 @pytest.fixture
 def temp_db_path(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
-    """Point StateDB() at a per-test file DB.
-
-    File-backed (not ``:memory:``) so aiosqlite's WAL + non-daemon
-    worker thread path is exercised — the production hang scenario.
-    """
+    """File-backed per-test DB so aiosqlite WAL + non-daemon thread path is exercised."""
     db_path = tmp_path / "state.db"
     monkeypatch.setattr("lionagi.state.db.DEFAULT_DB_PATH", db_path)
     return db_path
@@ -61,9 +42,7 @@ def _aiosqlite_thread_count() -> int:
 async def test_setup_creates_session_branch_progression_rows(
     temp_db_path: Path,
 ):
-    """A fresh setup creates session, branch, and two progression rows
-    and registers the message hook on the branch.
-    """
+    """Fresh setup creates session, branch, and progression rows and registers the message hook."""
     branch = Branch(name="b1")
 
     ctx = await _setup_live_persist(branch, agent_name="reviewer")
@@ -102,9 +81,7 @@ async def test_setup_creates_session_branch_progression_rows(
 async def test_setup_persists_system_message_when_branch_has_one(
     temp_db_path: Path,
 ):
-    """If the Branch has a system message, setup must insert it and
-    point ``branches.system_msg_id`` at it.
-    """
+    """Branch system message is inserted and branches.system_msg_id points at it."""
     branch = Branch(name="b1", system="you are a unit test")
     assert branch.system is not None
     sys_id = str(branch.system.id)
@@ -129,13 +106,7 @@ async def test_setup_db_open_failure_disables_persist_no_thread_leak(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ):
-    """If ``db.open()`` itself raises, setup returns ``None`` and no
-    aiosqlite worker thread is left dangling.
-    """
-    # Point the default DB at a path inside a file (not a directory) so
-    # ``mkdir(parents=True, exist_ok=True)`` succeeds on the parent but
-    # downstream connect could still work — instead, patch ``open`` to
-    # raise directly to simulate I/O failure.
+    """db.open() raising → setup returns None and no aiosqlite worker thread leaks."""
     db_path = tmp_path / "state.db"
     monkeypatch.setattr("lionagi.state.db.DEFAULT_DB_PATH", db_path)
 
@@ -161,13 +132,7 @@ async def test_setup_create_session_failure_closes_db(
     temp_db_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ):
-    """If ``create_session`` fails mid-setup, the DB is closed and the
-    aiosqlite worker thread is reclaimed.
-
-    This is the failure mode the hang fix targets: prior to the fix,
-    a setup exception left the connection open and the non-daemon
-    worker prevented interpreter shutdown.
-    """
+    """create_session failure mid-setup closes the DB so the aiosqlite worker thread is reclaimed."""
     original_create = StateDB.create_session
 
     async def fail(self, session: dict):
@@ -205,10 +170,7 @@ async def test_setup_create_session_failure_closes_db(
 async def test_setup_resume_loads_existing_session_and_progression(
     temp_db_path: Path,
 ):
-    """If the branch already exists in the DB (resume case), setup
-    reuses its session_id / progression_id and seeds existing_msg_ids
-    from the prior progression so the hook can dedupe re-fires.
-    """
+    """Resume case: existing session/progression are reused and existing_msg_ids seeded for dedup."""
     branch = Branch(name="b1")
     ctx1 = await _setup_live_persist(branch)
     session_id_1 = ctx1["session_id"]
@@ -241,9 +203,7 @@ async def test_setup_resume_loads_existing_session_and_progression(
 async def test_hook_dedupes_existing_messages_on_resume(
     temp_db_path: Path,
 ):
-    """On resume, the hook must NOT re-append already-persisted message
-    IDs to the progression — that would silently double-count history.
-    """
+    """On resume the hook must not re-append already-persisted message IDs to the progression."""
     from lionagi.protocols.messages.manager import MessageManager
 
     branch = Branch(name="b1")
@@ -272,9 +232,7 @@ async def test_hook_swallows_db_write_failure(
     monkeypatch: pytest.MonkeyPatch,
     caplog: pytest.LogCaptureFixture,
 ):
-    """A DB write blip MUST NOT abort the user-facing turn. The hook
-    logs and continues — the in-memory message is still valid.
-    """
+    """DB write failure must not abort the turn; hook logs a WARNING and continues."""
     import logging
 
     from lionagi.protocols.messages.manager import MessageManager
@@ -308,10 +266,7 @@ async def test_hook_swallows_db_write_failure(
 async def test_hook_updates_system_msg_id_when_system_replaced(
     temp_db_path: Path,
 ):
-    """If the runtime replaces the system message mid-run, the hook
-    must update ``branches.system_msg_id`` so Studio's O(1) lookup
-    returns the current system, not the stale one.
-    """
+    """Hook must update branches.system_msg_id when the system message is replaced mid-run."""
     branch = Branch(name="b1", system="initial")
     ctx = await _setup_live_persist(branch)
     original_sys_id = str(branch.system.id)
@@ -369,10 +324,7 @@ async def test_teardown_updates_session_bookmarks_and_status(
 async def test_teardown_detaches_persistence_from_bus(
     temp_db_path: Path,
 ):
-    """Teardown detaches the persistence handler from the session hook bus and
-    the emit hook (_persist_via_bus) from the branch (ADR-0023b), so a closed-DB
-    handler cannot survive teardown and fire on later messages.
-    """
+    """Teardown removes the persistence handler from the bus so a closed-DB handler cannot fire later."""
     from lionagi.hooks.bus import HookPoint
 
     branch = Branch(name="b1")
@@ -391,10 +343,7 @@ async def test_teardown_closes_db_even_if_bookmark_update_fails(
     temp_db_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ):
-    """The hang fix invariant: db.close() lives in its own ``finally``.
-    If update_session raises, close STILL runs and the aiosqlite worker
-    is reclaimed.
-    """
+    """db.close() must run in finally even when update_session raises, so the aiosqlite worker is reclaimed."""
     branch = Branch(name="b1")
     ctx = await _setup_live_persist(branch)
     db = ctx["db"]

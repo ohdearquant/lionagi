@@ -1,8 +1,4 @@
-"""Regression: every `env.<attr>` reference in flow.py must match an actual
-``OrchestrationEnv`` field. Catches the `env.agent_profile` AttributeError that
-shipped in v0.26.x (ADR-0029 commit 2f08b8c5f) where the dataclass field is
-``orc_profile`` but two call sites referenced ``agent_profile``.
-"""
+"""Regression: every public env.<attr> in flow.py must match an OrchestrationEnv field."""
 
 from __future__ import annotations
 
@@ -16,10 +12,7 @@ _FLOW_PY = Path(__file__).resolve().parents[3] / "lionagi" / "cli" / "orchestrat
 
 
 def test_orchestration_env_has_no_agent_profile_field() -> None:
-    """If we ever rename ``orc_profile`` to ``agent_profile`` this test should
-    be deleted and the other test updated. Until then, ``agent_profile`` MUST
-    NOT be a field — its presence elsewhere is a typo.
-    """
+    """agent_profile must not be a field; the correct name is orc_profile."""
     fields = {f.name for f in dataclasses.fields(OrchestrationEnv)}
     assert "agent_profile" not in fields, (
         f"OrchestrationEnv has no agent_profile field; flow.py uses must reference "
@@ -29,14 +22,7 @@ def test_orchestration_env_has_no_agent_profile_field() -> None:
 
 
 def test_flow_py_env_public_attrs_exist_on_orchestration_env() -> None:
-    """Every PUBLIC ``env.<attr>`` access in flow.py must match a real field
-    or method on ``OrchestrationEnv``. Prevents typo regressions like
-    ``env.agent_profile`` when the field is actually ``orc_profile``.
-
-    Private attributes (starting with ``_``) are excluded — they are commonly
-    attached dynamically (e.g. ``env._finalize_extras``) and Python allows
-    setattr on dataclass instances without a declared field.
-    """
+    """All public env.<attr> accesses in flow.py must resolve to real OrchestrationEnv fields or methods."""
     fields = {f.name for f in dataclasses.fields(OrchestrationEnv)}
     methods = {n for n in dir(OrchestrationEnv) if not n.startswith("_")}
     valid = fields | methods

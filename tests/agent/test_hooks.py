@@ -85,18 +85,12 @@ async def test_guard_paths_allows_unrelated_path(tmp_path):
 
 
 # ---------------------------------------------------------------------------
-# LIONAGI-AUDIT-001 (agent-standards 2026-06-06): glob deny patterns
+# Glob deny patterns
 # ---------------------------------------------------------------------------
 
 
 async def test_guard_paths_glob_deny_blocks_key_file(tmp_path):
-    """'*.key' pattern must block /tmp/api.key (audit LIONAGI-AUDIT-001).
-
-    Before the fix, '*.key' was tested with raw substring containment
-    (``denied in raw_path or denied in resolved.name``).  The fnmatch-per-
-    component approach now used here correctly blocks files whose name matches
-    the glob pattern.
-    """
+    """'*.key' deny pattern must block files whose name matches via fnmatch component matching."""
     hook = guard_paths(denied_paths=["*.key"])
     with pytest.raises(PermissionError, match="deny rule"):
         await hook("reader", "read", {"path": str(tmp_path / "api.key")})
@@ -129,24 +123,13 @@ async def test_guard_paths_glob_deny_blocks_dotenv(tmp_path):
 
 
 # ---------------------------------------------------------------------------
-# Regression: GLOB_CHARS security (Finding 1)
-# The broad GLOB_CHARS = frozenset("*?[]{}~") was used to decide glob mode,
-# making "secret~" trigger fnmatch which does NOT match "mysecret~backup"
-# (fnmatch "secret~" only matches a literal string ending in ~, not substring).
-# Fix: hook uses narrow frozenset("*?[") so "secret~" stays in substring mode
-# and correctly denies "/tmp/mysecret~backup".
+# GLOB_CHARS security: only "*?[" trigger fnmatch; "~{}" stay in substring mode
+# so patterns like "secret~" correctly block "mysecret~backup" via containment.
 # ---------------------------------------------------------------------------
 
 
 async def test_guard_paths_tilde_deny_uses_substring_mode(tmp_path):
-    """'secret~' must be treated as a substring pattern, not fnmatch glob.
-
-    With the broad GLOB_CHARS = frozenset("*?[]{}~"), a deny string like
-    'secret~' triggers fnmatch mode. fnmatch('mysecret~backup', 'secret~')
-    is False (no wildcard expansion), so the path is wrongly ALLOWED.
-    The fix restores the narrow frozenset("*?[") so '~' stays in substring
-    mode: 'secret~' in 'mysecret~backup' is True -> correctly DENIED.
-    """
+    """'secret~' deny uses substring mode (not fnmatch), so it blocks paths containing 'secret~'."""
     hook = guard_paths(denied_paths=["secret~"])
     with pytest.raises(PermissionError, match="deny rule"):
         await hook("reader", "read", {"path": str(tmp_path / "mysecret~backup")})

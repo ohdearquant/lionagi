@@ -8,15 +8,12 @@ import asyncio
 import pytest
 
 # ---------------------------------------------------------------------------
-# LIONAGI-AUDIT-001 — AsyncTestHelpers 3.10 compatibility
+# AsyncTestHelpers Python 3.10 compatibility (no asyncio.timeout)
 # ---------------------------------------------------------------------------
 
 
 class TestAsyncTestHelpersPy310:
-    """All three helpers must work on Python 3.10 (no asyncio.timeout)."""
-
     async def test_collect_async_results_returns_items(self):
-        """collect_async_results works without asyncio.timeout."""
         from lionagi.testing.helpers import AsyncTestHelpers
 
         async def _gen():
@@ -27,7 +24,6 @@ class TestAsyncTestHelpersPy310:
         assert results == [0, 1, 2]
 
     async def test_collect_async_results_respects_limit(self):
-        """collect_async_results stops at limit."""
         from lionagi.testing.helpers import AsyncTestHelpers
 
         async def _gen():
@@ -38,7 +34,6 @@ class TestAsyncTestHelpersPy310:
         assert len(results) == 5
 
     async def test_collect_async_results_times_out_without_error(self):
-        """collect_async_results returns partial results when generator is slow."""
         from lionagi.testing.helpers import AsyncTestHelpers
 
         collected = []
@@ -54,7 +49,6 @@ class TestAsyncTestHelpersPy310:
         assert len(results) <= 2, f"Too many items collected before timeout: {results}"
 
     async def test_run_with_timeout_returns_result(self):
-        """run_with_timeout returns the coroutine result within the timeout."""
         from lionagi.testing.helpers import AsyncTestHelpers
 
         async def _fn():
@@ -64,7 +58,6 @@ class TestAsyncTestHelpersPy310:
         assert result == 42
 
     async def test_run_with_timeout_raises_on_expiry(self):
-        """run_with_timeout raises TimeoutError when the coroutine exceeds the deadline."""
         from lionagi.testing.helpers import AsyncTestHelpers
 
         async def _slow():
@@ -74,7 +67,6 @@ class TestAsyncTestHelpersPy310:
             await AsyncTestHelpers.run_with_timeout(_slow, timeout=0.05)
 
     async def test_wait_for_all_returns_results(self):
-        """wait_for_all returns results from all tasks."""
         from lionagi.testing.helpers import AsyncTestHelpers
 
         async def _one(n: int) -> int:
@@ -86,7 +78,6 @@ class TestAsyncTestHelpersPy310:
         assert sorted(results) == [0, 1, 2]
 
     async def test_wait_for_all_cancels_tasks_on_timeout(self):
-        """wait_for_all cancels pending tasks and raises TimeoutError on expiry."""
         from lionagi.testing.helpers import AsyncTestHelpers
 
         async def _forever() -> int:
@@ -103,20 +94,14 @@ class TestAsyncTestHelpersPy310:
 
 
 # ---------------------------------------------------------------------------
-# LIONAGI-AUDIT-002 — TestDataLoader path traversal
+# TestDataLoader path traversal boundary
 # ---------------------------------------------------------------------------
 
 
 class TestDataLoaderPathBoundary:
-    """Regression: TestDataLoader.load_json must not escape data_dir.
-
-    Attack scenario: caller passes '../../../benchmarks/baselines/fuzzy.json'
-    expecting the loader to read bundled fixtures, but the old implementation
-    silently traversed outside the package directory.
-    """
+    """TestDataLoader.load_json must not escape data_dir via path traversal."""
 
     def test_traversal_with_dotdot_is_rejected(self, tmp_path):
-        """'../../../outside' must be rejected before any filesystem access."""
         from lionagi.testing.loaders import TestDataLoader
 
         # Create a data dir inside tmp_path and a file outside it
@@ -131,7 +116,6 @@ class TestDataLoaderPathBoundary:
             loader.load_json("../secret")
 
     def test_absolute_path_is_rejected(self, tmp_path):
-        """An absolute path as filename must be rejected."""
         from lionagi.testing.loaders import TestDataLoader
 
         data_dir = tmp_path / "data"
@@ -143,7 +127,6 @@ class TestDataLoaderPathBoundary:
             loader.load_json("/etc/passwd")
 
     def test_forward_slash_in_name_is_rejected(self, tmp_path):
-        """A filename containing '/' must be rejected."""
         from lionagi.testing.loaders import TestDataLoader
 
         data_dir = tmp_path / "data"
@@ -154,7 +137,6 @@ class TestDataLoaderPathBoundary:
             loader.load_json("subdir/secret")
 
     def test_valid_filename_is_loaded(self, tmp_path):
-        """A plain filename inside data_dir loads correctly."""
         from lionagi.testing.loaders import TestDataLoader
 
         data_dir = tmp_path / "data"
@@ -167,7 +149,6 @@ class TestDataLoaderPathBoundary:
         assert result == {"key": "value"}
 
     def test_missing_file_raises_file_not_found(self, tmp_path):
-        """A valid plain name that doesn't exist raises FileNotFoundError."""
         from lionagi.testing.loaders import TestDataLoader
 
         data_dir = tmp_path / "data"

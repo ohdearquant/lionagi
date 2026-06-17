@@ -1,14 +1,7 @@
 # Copyright (c) 2023-2026, HaiyangLi <quantocean.li at gmail dot com>
 # SPDX-License-Identifier: Apache-2.0
 
-"""Tests for `li studio` CLI entry point (H-BE-2).
-
-Verifies that invoking the studio command without the explicit `start`
-subcommand does not raise AttributeError for missing --port / --host /
---frontend-mode / --no-frontend attributes on the argparse Namespace.
-
-uvicorn.run is mocked so the server is never actually started.
-"""
+"""Tests for `li studio` CLI entry point: bare invocation, start subcommand, port flags, and frontend build staleness."""
 
 from __future__ import annotations
 
@@ -19,16 +12,7 @@ from unittest.mock import patch
 
 @contextlib.contextmanager
 def _stubbed_serve():
-    """Patch the serve path's side effects for invocation tests.
-
-    _ensure_frontend_built would run a real npm install + vite build, and the
-    production branch then sets LIONAGI_STUDIO_FRONTEND_DIST in os.environ
-    (raw, not monkeypatched — uvicorn loads the app by import string, so the
-    real CLI must mutate the process env).  Left unguarded, that var leaks to
-    other test files on the same xdist worker, and any later fresh import of
-    lionagi.studio.app comes up SPA-enabled.  Restore both env vars to their
-    prior state on exit.
-    """
+    """Stub uvicorn.run and _ensure_frontend_built; restores env vars that the real CLI mutates (xdist isolation)."""
     saved = {k: os.environ.get(k) for k in ("LIONAGI_STUDIO_FRONTEND_DIST", "LIONAGI_STUDIO_HOST")}
     try:
         with (
@@ -45,12 +29,7 @@ def _stubbed_serve():
 
 
 def test_studio_bare_invocation_does_not_raise(monkeypatch):
-    """``main(["studio"])`` must not raise AttributeError (H-BE-2).
-
-    Without the explicit `start` subcommand, argparse never populates
-    --port, --host, --frontend-mode, or --no-frontend on the Namespace.
-    The fix uses getattr() with defaults so the dereference is safe.
-    """
+    """``main(["studio"])`` must not raise AttributeError when argparse omits --port/--host/--frontend-mode."""
     # Prevent the real uvicorn server (and a real frontend build) from starting.
     with _stubbed_serve() as mock_run:
         from lionagi.cli.main import main
@@ -98,7 +77,7 @@ def test_studio_bare_uses_default_port(monkeypatch):
     assert kwargs.get("port") == 8765
 
 
-# ─── #1201: studio cwd / module resolution fix ───
+# ─── studio cwd / module resolution ─────────────
 
 
 def test_find_repo_root_returns_path_from_source_checkout():

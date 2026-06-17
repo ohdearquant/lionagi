@@ -42,8 +42,6 @@ def _make_progression(nodes: list[Node], name: str | None = None) -> Progression
 
 
 class TestFlowCreation:
-    """Test empty/named Flow construction."""
-
     def test_empty_flow(self):
         flow = Flow()
         assert len(flow) == 0
@@ -63,13 +61,7 @@ class TestFlowCreation:
 
 
 class TestAddProgression:
-    """Test Flow.add_progression in various scenarios.
-
-    Note: Pile.include uses _validate_collections which treats falsy values
-    (including empty Progressions where __bool__==False) as no-ops.
-    Therefore all progressions added here reference at least one item so
-    that include succeeds.
-    """
+    """Empty Progressions (__bool__==False) are silently dropped by Pile.include; all test progressions reference at least one item."""
 
     def test_add_basic_progression(self):
         flow, nodes = _flow_with_items(2)
@@ -113,8 +105,6 @@ class TestAddProgression:
 
 
 class TestRemoveProgression:
-    """Test Flow.remove_progression by UUID and name."""
-
     def _setup(self):
         flow, nodes = _flow_with_items(2)
         prog = _make_progression(nodes, name="removeme")
@@ -153,8 +143,6 @@ class TestRemoveProgression:
 
 
 class TestGetProgression:
-    """Test Flow.get_progression lookups."""
-
     def _setup(self):
         flow, nodes = _flow_with_items(2)
         prog = _make_progression(nodes, name="named")
@@ -190,8 +178,6 @@ class TestGetProgression:
 
 
 class TestAddItem:
-    """Test Flow.add_item with optional progression assignment."""
-
     def test_add_item_basic(self):
         flow = Flow()
         node = Node(content="hello")
@@ -286,8 +272,6 @@ class TestRemoveItem:
 
 
 class TestFlowClear:
-    """Test Flow.clear empties everything."""
-
     def test_clear(self):
         flow, nodes = _flow_with_items(3)
         prog = _make_progression(nodes, name="clearme")
@@ -307,8 +291,6 @@ class TestFlowClear:
 
 
 class TestFlowReprLen:
-    """Test __repr__ and __len__ dunder methods."""
-
     def test_len_empty(self):
         assert len(Flow()) == 0
 

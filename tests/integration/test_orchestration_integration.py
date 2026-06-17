@@ -1,18 +1,7 @@
 # Copyright (c) 2023-2026, HaiyangLi <quantocean.li at gmail dot com>
 # SPDX-License-Identifier: Apache-2.0
 
-"""Integration tests for lionagi CLI orchestration paths.
-
-These tests exercise the ACTUAL integration between subsystems to catch
-regressions that unit tests miss. They use real Session/Branch/HookBus
-instances — no mocking of the subsystems under test.
-
-Bugs caught by this suite:
-- cancelled_exc_classes called outside event loop (NoEventLoopError)
-- aggregation_sources/aggregation_count placed in parameters instead of metadata
-- _on_bus_spawn was sync but observer.emit() awaits handler returns
-- HookBus not wired into Session/Branch on include_branches
-"""
+"""Integration tests for lionagi CLI orchestration paths — catches regressions unit tests miss."""
 
 from __future__ import annotations
 
@@ -25,13 +14,7 @@ import pytest
 
 
 def test_cancelled_exc_safe_outside_loop():
-    """Calling cancelled_exc_classes() from sync context must not raise.
-
-    The pre-fix code called get_cancelled_exc_class() (anyio) which needs a
-    running event loop and raises NoEventLoopError outside one.
-    cancelled_exc_classes() uses the populated cache or falls back to the
-    asyncio baseline — never calls anyio in a sync context.
-    """
+    """cancelled_exc_classes() must not raise when called from a sync context (no running event loop)."""
     from lionagi.ln.concurrency.errors import cancelled_exc_classes
 
     result = cancelled_exc_classes()
@@ -62,12 +45,7 @@ def test_is_cancelled_false_for_non_cancel():
 
 
 async def test_cancelled_exc_cache_populated_after_explicit_cache():
-    """cache_cancelled_exc_class() inside an event loop populates the module cache.
-
-    After caching, cancelled_exc_classes() returns the anyio backend type
-    (which equals asyncio.CancelledError for the asyncio backend) plus
-    asyncio.CancelledError, so the result is never empty.
-    """
+    """cache_cancelled_exc_class() inside an event loop populates the module cache."""
     from lionagi.ln.concurrency import errors as _err_mod
     from lionagi.ln.concurrency.errors import cache_cancelled_exc_class, cancelled_exc_classes
 
@@ -90,12 +68,7 @@ async def test_cancelled_exc_cache_populated_after_explicit_cache():
 
 
 def test_aggregation_params_in_metadata_not_parameters():
-    """build_fanout_graph must place aggregation keys in metadata, not parameters.
-
-    The pre-fix code put aggregation_sources and aggregation_count into the
-    parameters dict. Those get spread as **kwargs into branch.operate(), causing
-    TypeError: operate() got unexpected keyword argument 'aggregation_sources'.
-    """
+    """build_fanout_graph must place aggregation_sources/aggregation_count in metadata, not parameters."""
     from lionagi.casts.emission import TaskAssignment
     from lionagi.orchestration.patterns import build_fanout_graph
     from lionagi.session.branch import Branch
@@ -161,16 +134,7 @@ def test_aggregation_params_in_metadata_not_parameters():
 
 
 def test_on_bus_spawn_is_async():
-    """ReactiveExecutor._on_bus_spawn must be an async function.
-
-    The pre-fix code had a sync _on_bus_spawn. The observer's emit() calls
-    handler(matched, ctx) and then inspects the return for isawaitable —
-    a sync handler returning None is fine in that path, but the handler is
-    also registered with session.observe(), whose emit gathers coros. A sync
-    handler that does side effects (like calling _inject_request) appears to
-    work but actually executes in the wrong concurrency context, creating
-    subtle ordering bugs. The fix makes it async so await semantics are clear.
-    """
+    """ReactiveExecutor._on_bus_spawn must be async so session.observe() emit gathers it as a coro."""
     from lionagi.operations.flow import ReactiveExecutor
 
     assert inspect.iscoroutinefunction(ReactiveExecutor._on_bus_spawn), (
@@ -217,12 +181,7 @@ def test_session_hooks_identity_stable():
 
 
 def test_branch_gets_hooks_from_session():
-    """include_branches must propagate session._hooks to each added branch.
-
-    Pre-fix: Session.include_branches didn't check self._hooks; only _observer
-    was propagated. Branches therefore had no hooks bus and couldn't fire
-    hook-point events.
-    """
+    """include_branches must propagate session._hooks to each added branch."""
     from lionagi.hooks import HookBus
     from lionagi.session.branch import Branch
     from lionagi.session.session import Session
@@ -262,17 +221,7 @@ def test_branch_gets_hooks_when_added_after_bus_init():
 
 
 def test_reactive_executor_uses_private_observer_attr():
-    """ReactiveExecutor.execute() must access session._observer (the private
-    PrivateAttr), NOT session.observer (the lazy property).
-
-    The difference matters: ``session.observer`` (property) creates a
-    SessionObserver unconditionally, which has side-effects (wires the exchange,
-    attaches to the bus) even when no reactive spawn is needed. The executor
-    uses ``getattr(self.session, '_observer', None)`` so it only subscribes when
-    an observer already exists — no implicit observer creation.
-
-    This test confirms the source-level contract.
-    """
+    """ReactiveExecutor.execute() must use getattr(session, '_observer', None), not session.observer."""
     source = inspect.getsource(
         __import__(
             "lionagi.operations.flow", fromlist=["ReactiveExecutor"]

@@ -1,13 +1,7 @@
 # Copyright (c) 2023-2026, HaiyangLi <quantocean.li at gmail dot com>
 # SPDX-License-Identifier: Apache-2.0
 
-"""Tests for the session-signals SSE endpoint and service layer.
-
-Coverage targets:
-  - GET /api/sessions/{id}/signals  (404 on unknown session, ordering, auth)
-  - lionagi.studio.services.signals.get_signals_after  (empty, replay, ordering)
-  - lionagi.state.db.StateDB.insert_session_signal / get_session_signals_after
-"""
+"""Tests for the session-signals SSE endpoint and service layer."""
 
 from __future__ import annotations
 
@@ -232,12 +226,7 @@ async def test_service_get_signals_after_seq_filter(patched_signals_db):
 
 @pytest.fixture
 def patched_app(tmp_path, monkeypatch):
-    """Return (app, db_path, AsyncClient) with DB patched to tmp_path.
-
-    Skips automatically when the studio/httpx extras are not installed.
-    httpx >= 0.28 removed the ``app=`` shorthand from AsyncClient; use
-    ASGITransport explicitly.
-    """
+    """Return (app, db_path, AsyncClient) with DB patched to tmp_path (uses ASGITransport for httpx >= 0.28)."""
     pytest.importorskip("fastapi", reason="studio extra not installed")
     httpx = pytest.importorskip("httpx", reason="httpx not installed")
 
@@ -370,14 +359,7 @@ async def test_signals_endpoint_ordering_by_seq(patched_app):
 
 
 async def test_bind_db_persistence_production_path(tmp_path):
-    """End-to-end: bind via the production call pattern, emit real Signal rows.
-
-    Replicates exactly what setup_agent_persist / setup_orchestration_persist
-    do: open a StateDB, create a session row, call
-    observer.bind_db_persistence(session_id, db=db) with the live handle, then
-    emit signals via the observer.  Asserts rows land in session_signals and are
-    readable via get_session_signals_after().
-    """
+    """End-to-end: bind via the production call pattern and assert signals land in session_signals."""
     from lionagi.session.observer import SessionObserver
     from lionagi.session.session import Session
     from lionagi.session.signal import NodeCompleted, NodeStarted, RunStart
@@ -463,13 +445,7 @@ async def test_bind_db_persistence_unbind_stops_writes(tmp_path):
 
 
 async def test_setup_agent_persist_wires_signal_bind(tmp_path, monkeypatch):
-    """setup_agent_persist() calls bind_db_persistence so signals reach the DB.
-
-    Patches StateDB in lionagi.state.db to redirect the default DB path to
-    tmp_path, then calls the real setup_agent_persist function with a bare
-    Branch and verifies that emitting a Signal on the resulting session observer
-    writes a row to session_signals.
-    """
+    """setup_agent_persist() calls bind_db_persistence so emitted signals reach session_signals."""
     import lionagi.state.db as db_mod
 
     _real_StateDB = db_mod.StateDB
@@ -523,12 +499,7 @@ async def test_setup_agent_persist_wires_signal_bind(tmp_path, monkeypatch):
 
 
 async def test_concurrent_emit_all_rows_present(tmp_path):
-    """50 concurrent NodeStarted emits through the BOUND observer all land in DB.
-
-    Before the _write_lock fix, concurrent coroutines on the same aiosqlite
-    connection raced on BEGIN IMMEDIATE and produced 'cannot start a transaction
-    within a transaction' errors — all swallowed, leaving only ~1 row.
-    """
+    """50 concurrent NodeStarted emits through the bound observer all land in DB (regression: BEGIN IMMEDIATE race)."""
     from lionagi.session.observer import SessionObserver
     from lionagi.session.session import Session
     from lionagi.session.signal import NodeStarted
@@ -574,12 +545,7 @@ async def test_concurrent_emit_all_rows_present(tmp_path):
 
 
 async def test_payload_sanitizer_node_escalated_arbitrary_request(tmp_path):
-    """NodeEscalated with escalation_request=object() must persist (not be dropped).
-
-    Before the safe_fallback fix, the payload builder called _json_dumps on
-    escalation_request=object() without safe_fallback, raising TypeError.
-    The exception was swallowed → zero rows persisted.
-    """
+    """NodeEscalated with a non-serialisable escalation_request must persist, not be dropped."""
     from lionagi.session.observer import SessionObserver, _sanitize_signal_payload
     from lionagi.session.session import Session
     from lionagi.session.signal import NodeEscalated
@@ -744,11 +710,7 @@ async def test_payload_sanitizer_message_added_stores_ref_not_body(tmp_path):
 
 
 def test_signals_endpoint_requires_bearer_auth(tmp_path, monkeypatch):
-    """GET /api/sessions/{id}/signals returns 401 when auth token is set and absent.
-
-    Uses the synchronous TestClient (same pattern as test_audit_remediation.py)
-    so the test does not need an async streaming context.
-    """
+    """GET /api/sessions/{id}/signals returns 401 when auth token is set but absent from request."""
     pytest.importorskip("fastapi", reason="studio extra not installed")
     from fastapi.testclient import TestClient
 
@@ -795,15 +757,7 @@ def test_signals_endpoint_requires_bearer_auth(tmp_path, monkeypatch):
 
 
 async def test_signals_generator_cancellation_on_disconnect(tmp_path, monkeypatch):
-    """SSE generator exits cleanly when cancelled (simulates client disconnect).
-
-    We directly instantiate the ``generate()`` async-generator from the signals
-    router, schedule it as an asyncio task, cancel it after it starts running,
-    and assert it raises ``CancelledError`` — not any unhandled exception.
-    This approach avoids the httpx streaming-backpressure issue where
-    ``async with client.stream(...)`` waits for the server-side generator to
-    drain before the client context-manager exits.
-    """
+    """SSE generator exits cleanly when cancelled (simulates client disconnect via task cancellation)."""
     pytest.importorskip("fastapi", reason="studio extra not installed")
     pytest.importorskip("httpx", reason="httpx not installed")
 
@@ -875,13 +829,7 @@ async def test_signals_generator_cancellation_on_disconnect(tmp_path, monkeypatc
 
 
 async def test_concurrent_emit_and_update_status_no_failures(tmp_path):
-    """100 concurrent emits + 100 update_status calls on same DB → zero failures.
-
-    Before the connection-wide lock fix, update_status's unlocked BEGIN
-    IMMEDIATE raced with insert_session_signal's BEGIN IMMEDIATE, producing
-    'cannot start a transaction within a transaction' errors (Codex round-2
-    repro: 99/100 update_status calls failed).
-    """
+    """100 concurrent emits + 100 update_status calls on the same DB produce zero failures (regression: BEGIN IMMEDIATE race)."""
     from lionagi.session.session import Session
     from lionagi.session.signal import NodeStarted
     from lionagi.state.reasons import RunReasons
@@ -1052,15 +1000,7 @@ async def test_concurrent_emit_and_message_persist_no_failures(tmp_path):
 
 
 async def test_concurrent_emit_and_artifact_verification_no_failures(tmp_path):
-    """Bound emits racing update_artifact_verification on same DB → zero failures.
-
-    Codex round-3 repro: 100 direct insert_session_signal + 100
-    update_artifact_verification on the same StateDB → 1 transaction error,
-    99 rows, non-contiguous seq (update_artifact_verification's unlocked
-    UPDATE+commit raced the bound BEGIN IMMEDIATE).  After adding
-    _write_lock to update_artifact_verification, both paths serialize
-    correctly.
-    """
+    """Concurrent emits racing update_artifact_verification on the same DB → zero failures (regression: unlocked UPDATE race)."""
     from lionagi.session.session import Session
     from lionagi.session.signal import NodeStarted
 
@@ -1138,11 +1078,7 @@ async def test_payload_byte_cap_final_form_plain(tmp_path):
 
 
 async def test_payload_byte_cap_final_form_quotes(tmp_path):
-    """100 k double-quote chars: final _to_json_column size <= _PAYLOAD_BYTE_CAP.
-
-    JSON-escaping doubles each '"' to '\\"', so naive byte-clip produces
-    ~2× the intended cap.  The fix must account for escaping overhead.
-    """
+    """100k double-quote chars: final stored size must be <= _PAYLOAD_BYTE_CAP after JSON-escaping overhead."""
     from lionagi.session.observer import _PAYLOAD_BYTE_CAP, _sanitize_signal_payload
     from lionagi.session.signal import NodeCompleted
     from lionagi.state.db import _to_json_column
@@ -1160,11 +1096,7 @@ async def test_payload_byte_cap_final_form_quotes(tmp_path):
 
 
 async def test_payload_byte_cap_final_form_backslashes(tmp_path):
-    """100 k backslash chars: final _to_json_column size <= _PAYLOAD_BYTE_CAP.
-
-    JSON-escaping doubles each '\\' to '\\\\', so naive byte-clip produces
-    ~2× the intended cap.  The fix must account for escaping overhead.
-    """
+    """100k backslash chars: final stored size must be <= _PAYLOAD_BYTE_CAP after JSON-escaping overhead."""
     from lionagi.session.observer import _PAYLOAD_BYTE_CAP, _sanitize_signal_payload
     from lionagi.session.signal import NodeCompleted
     from lionagi.state.db import _to_json_column

@@ -120,7 +120,7 @@ class TestOperable:
             operable.get_specs(include={"field1", "invalid_field"})
 
     def test_field_ordering_preserved(self):
-        """Test that field ordering is preserved (Issue #1)."""
+        """Test that field ordering is preserved across tuple position."""
         specs = [
             Spec(str, name="field_a"),
             Spec(int, name="field_b"),

@@ -289,7 +289,6 @@ def test_progression_memory_usage():
     small_size = sys.getsizeof(small_prog)
     large_size = sys.getsizeof(large_prog)
     assert large_size >= small_size
-    # Ensure memory usage grows sub-linearly
     assert large_size <= small_size * 1000
 
 
@@ -346,10 +345,8 @@ def test_progression_remove_with_element():
 def test_progression_memory_efficiency():
     import sys
 
-    # Create a progression with a large number of elements
     p = Progression(order=[Element() for _ in range(1000000)])
 
-    # Calculate memory usage
     memory_usage = sys.getsizeof(p) + sum(sys.getsizeof(item) for item in p.order)
 
     # Check if memory usage is reasonable (less than 100MB for 1 million elements)

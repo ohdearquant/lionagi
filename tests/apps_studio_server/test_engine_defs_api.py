@@ -1,16 +1,7 @@
 # Copyright (c) 2023-2026, HaiyangLi <quantocean.li at gmail dot com>
 # SPDX-License-Identifier: Apache-2.0
 
-"""Tests for the engine_defs Studio API.
-
-Coverage:
-  - GET /api/engine-defs/          list, filter, empty
-  - POST /api/engine-defs/         create, bad kind, bad name, flag injection, name conflict
-  - GET /api/engine-defs/{id}      happy path, 404
-  - PUT /api/engine-defs/{id}      update semantics, 404
-  - DELETE /api/engine-defs/{id}   happy path, 404
-  - service: kind frozenset matches _KIND_META
-"""
+"""Tests for the engine_defs Studio API."""
 
 from __future__ import annotations
 

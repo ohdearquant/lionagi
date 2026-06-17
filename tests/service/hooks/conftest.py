@@ -15,7 +15,7 @@ class MyCancelled(Exception):
 
 
 class FakeEvent(Event):
-    """Minimal event double with attributes used by registry/meta."""
+    """Minimal Event double for registry/hook tests."""
 
     def __init__(self, eid="E1", created_at=123.0):
         super().__init__()
@@ -29,7 +29,7 @@ class FakeEvent(Event):
 
 
 class FakeEventType(Event):
-    """Minimal event type double for pre_event_create tests."""
+    """Minimal Event double for pre_event_create tests."""
 
     @classmethod
     def class_name(cls, full: bool = False):
@@ -38,7 +38,6 @@ class FakeEventType(Event):
 
 @pytest.fixture
 def patch_cancellation(monkeypatch):
-    """Monkeypatch get_cancelled_exc_class to return our test exception."""
     from lionagi.service.hooks import hook_event, hook_registry
 
     monkeypatch.setattr(hook_event, "get_cancelled_exc_class", lambda: MyCancelled)
@@ -48,7 +47,6 @@ def patch_cancellation(monkeypatch):
 
 @pytest.fixture
 def patch_logger(monkeypatch):
-    """Monkeypatch hook logger to capture log calls."""
     calls = []
 
     async def mock_alog(msg):
@@ -77,7 +75,6 @@ class FakeFailAfter:
 
 @pytest.fixture
 def patch_timeout(monkeypatch):
-    """Patch fail_after to immediately timeout for testing."""
     from lionagi.service.hooks import hook_event
 
     monkeypatch.setattr(hook_event, "fail_after", FakeFailAfter)

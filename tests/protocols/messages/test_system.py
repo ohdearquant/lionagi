@@ -5,10 +5,6 @@ import pytest
 from lionagi.protocols.messages.system import SystemContent
 from lionagi.protocols.types import MessageRole, System
 
-# ============================================================================
-# SystemContent Tests
-# ============================================================================
-
 
 def test_systemcontent_initialization():
     """Test basic initialization of SystemContent dataclass"""
@@ -32,10 +28,8 @@ def test_systemcontent_slots():
     """Test that SystemContent uses slots for memory efficiency"""
     content = SystemContent()
 
-    # Should not have __dict__ due to slots=True
     assert not hasattr(content, "__dict__")
 
-    # Should not be able to add arbitrary attributes
     with pytest.raises(AttributeError):
         content.new_attribute = "value"
 
@@ -76,8 +70,6 @@ def test_systemcontent_from_dict_with_datetime_true():
     assert content.system_message == "Test"
     assert content.system_datetime is not None
 
-    # Should be ISO format with minutes precision
-    # Parse to verify format
     dt = datetime.fromisoformat(content.system_datetime)
     assert isinstance(dt, datetime)
 
@@ -124,14 +116,8 @@ def test_systemcontent_from_dict_partial():
     data = {"system_datetime": "2024-01-01T12:00"}
     content = SystemContent.from_dict(data)
 
-    # Should use default system_message
     assert content.system_message == "You are a helpful AI assistant. Let's think step by step."
     assert content.system_datetime == "2024-01-01T12:00"
-
-
-# ============================================================================
-# System Message Tests
-# ============================================================================
 
 
 def test_system_initialization():
@@ -190,17 +176,14 @@ def test_system_update():
     """Test updating System message"""
     system = System(content={"system_message": "Initial message"})
 
-    # Update system message
     new_message = "Updated message"
     system.update(system_message=new_message)
     assert new_message in system.rendered
 
-    # Update sender and recipient
     system.update(sender="system", recipient="user")
     assert system.sender == MessageRole.SYSTEM
     assert system.recipient == MessageRole.USER
 
-    # Update with datetime
     system.update(system_message="Test", system_datetime=True)
     assert "System Time:" in system.rendered
     assert system.content.system_datetime is not None
@@ -326,11 +309,6 @@ def test_system_content_validator_with_invalid_type():
         System(content=123)
 
 
-# ============================================================================
-# Integration Tests
-# ============================================================================
-
-
 def test_system_complete_workflow():
     """Test complete workflow with System and SystemContent"""
     # Create system with datetime
@@ -341,22 +319,18 @@ def test_system_complete_workflow():
         }
     )
 
-    # Verify structure
     assert isinstance(system.content, SystemContent)
     assert system.content.system_message == "You are an expert Python developer."
     assert system.content.system_datetime is not None
 
-    # Verify rendering
     rendered = system.rendered
     assert "System Time:" in rendered
     assert "You are an expert Python developer." in rendered
 
-    # Verify chat format
     chat_msg = system.chat_msg
     assert chat_msg["role"] == "system"
     assert chat_msg["content"] == rendered
 
-    # Verify serialization
     serialized = system.model_dump()
     assert serialized["content"]["system_message"] == "You are an expert Python developer."
     assert serialized["content"]["system_datetime"] is not None

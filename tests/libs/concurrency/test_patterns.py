@@ -111,8 +111,6 @@ async def test_gather_empty_returns_empty(anyio_backend):
 
 @pytest.mark.anyio
 async def test_gather_return_exceptions_true(anyio_backend):
-    """Test gather with return_exceptions=True collects all results and exceptions."""
-
     async def success(x):
         await anyio.sleep(0.001 * x)  # Reduced timing
         return f"result_{x}"
@@ -135,8 +133,6 @@ async def test_gather_return_exceptions_true(anyio_backend):
 
 @pytest.mark.anyio
 async def test_gather_return_exceptions_preserves_order(anyio_backend):
-    """Test that gather preserves order even with varying completion times."""
-
     async def task(i):
         # Reverse sleep times to test order preservation
         await anyio.sleep(0.001 * (6 - i))  # Much reduced timing
@@ -163,7 +159,6 @@ async def test_bounded_map_empty_and_large_limit(anyio_backend):
 
 @pytest.mark.anyio
 async def test_bounded_map_respects_limit(anyio_backend):
-    """Test that bounded_map strictly enforces concurrency limit."""
     LIMIT = 3
     TASKS = 10  # Reduced from 20
     current_concurrency = 0
@@ -186,8 +181,6 @@ async def test_bounded_map_respects_limit(anyio_backend):
 
 @pytest.mark.anyio
 async def test_bounded_map_with_return_exceptions(anyio_backend):
-    """Test bounded_map with return_exceptions=True."""
-
     async def worker(x):
         await anyio.sleep(0.001)
         if x % 3 == 0:
@@ -235,7 +228,6 @@ async def test_race_single_and_loser_cancelled(anyio_backend):
 
 @pytest.mark.anyio
 async def test_race_first_failure_propagates(anyio_backend):
-    """Test that race propagates the first completion even if it's a failure."""
     cancelled = []
 
     async def fast_failure():
@@ -271,8 +263,6 @@ async def test_race_first_failure_propagates(anyio_backend):
 
 @pytest.mark.anyio
 async def test_race_all_failures_returns_first(anyio_backend):
-    """Test that when all tasks fail, race returns the first failure."""
-
     async def fail1():
         await anyio.sleep(0.01)
         raise ValueError("first")
@@ -359,7 +349,6 @@ async def test_retry_with_and_without_jitter(anyio_backend):
 
 @pytest.mark.anyio
 async def test_retry_eventual_success(anyio_backend):
-    """Test that retry returns result if a later attempt succeeds."""
     attempts = {"count": 0}
 
     async def flaky():
@@ -376,7 +365,6 @@ async def test_retry_eventual_success(anyio_backend):
 
 @pytest.mark.anyio
 async def test_retry_exception_filtering(anyio_backend):
-    """Test that retry fails immediately on non-retryable exceptions."""
     attempts = {"count": 0}
 
     async def raises_wrong_exception():
@@ -403,7 +391,6 @@ async def test_retry_exception_filtering(anyio_backend):
 
 @pytest.mark.anyio
 async def test_retry_mixed_exceptions(anyio_backend):
-    """Test retry with mixture of retryable and non-retryable exceptions."""
     attempts = {"count": 0}
 
     async def mixed_failures():
@@ -437,8 +424,6 @@ async def test_retry_mixed_exceptions(anyio_backend):
 
 @pytest.mark.anyio
 async def test_bounded_map_invalid_limit(anyio_backend):
-    """Test bounded_map() line 141: raises ValueError when limit <= 0."""
-
     async def dummy(x):
         return x
 
@@ -451,12 +436,8 @@ async def test_bounded_map_invalid_limit(anyio_backend):
         await bounded_map(dummy, [1, 2, 3], limit=-1)
 
 
-# (Line 168 covered by same note as line 82 above)
-
-
 @pytest.mark.anyio
 async def test_retry_deadline_expired_immediately(anyio_backend):
-    """Test retry() line 299: raises when deadline already expired (remaining <= 0)."""
     calls = {"n": 0}
 
     async def always_fail():
@@ -554,7 +535,8 @@ async def test_retry_backoff_factor_exactly_one_accepted(anyio_backend):
 
 
 @pytest.mark.anyio
-async def test_retry_backoff_factor_below_one_rejected(anyio_backend):
+@pytest.mark.parametrize("bad_factor", [0.5, 0, -2.0])
+async def test_retry_backoff_factor_invalid_rejected(bad_factor, anyio_backend):
     """backoff_factor < 1.0 must raise ValueError immediately."""
 
     async def noop():
@@ -566,43 +548,7 @@ async def test_retry_backoff_factor_below_one_rejected(anyio_backend):
             attempts=3,
             base_delay=1.0,
             max_delay=100.0,
-            backoff_factor=0.5,
-            retry_on=(TimeoutError,),
-        )
-
-
-@pytest.mark.anyio
-async def test_retry_backoff_factor_zero_rejected(anyio_backend):
-    """backoff_factor=0 must raise ValueError."""
-
-    async def noop():
-        return "never called"  # pragma: no cover
-
-    with pytest.raises(ValueError, match="backoff_factor must be >= 1.0"):
-        await retry(
-            noop,
-            attempts=3,
-            base_delay=1.0,
-            max_delay=100.0,
-            backoff_factor=0,
-            retry_on=(TimeoutError,),
-        )
-
-
-@pytest.mark.anyio
-async def test_retry_backoff_factor_negative_rejected(anyio_backend):
-    """Negative backoff_factor must raise ValueError."""
-
-    async def noop():
-        return "never called"  # pragma: no cover
-
-    with pytest.raises(ValueError, match="backoff_factor must be >= 1.0"):
-        await retry(
-            noop,
-            attempts=3,
-            base_delay=1.0,
-            max_delay=100.0,
-            backoff_factor=-2.0,
+            backoff_factor=bad_factor,
             retry_on=(TimeoutError,),
         )
 

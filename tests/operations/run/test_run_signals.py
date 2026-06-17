@@ -1,16 +1,7 @@
 # Copyright (c) 2023-2026, HaiyangLi <quantocean.li at gmail dot com>
 # SPDX-License-Identifier: Apache-2.0
 
-"""Per-message stream emission: the run loop raises each streamed message onto
-the session bus as a ``MessageAdded`` signal — every message, observable by
-payload type (``observe(ActionRequest)``) — plus a StructuredOutput bundle when
-an assistant message carries capability emissions.
-
-A capability is a named typed ``Spec``; the agent's grant is an ``Operable``.
-The bundle preserves field names, so observers can react by type (``Finding``)
-or by named field+value (``flower.q == "rose"``). A response may carry two or
-more capabilities → one bundle satisfying several observers.
-"""
+"""Tests for per-message stream emission onto the session bus and capability bundle extraction."""
 
 from __future__ import annotations
 

@@ -1,14 +1,6 @@
 # Copyright (c) 2023-2026, HaiyangLi <quantocean.li at gmail dot com>
 # SPDX-License-Identifier: Apache-2.0
-"""Tests for DEBT-04 fix: get_run() reads from StateDB, not dead flat-file path.
-
-Coverage targets:
-  - lionagi.studio.services.runs.get_run  (DB-backed, async)
-  - 404 path for missing run id
-  - Correct key contract: run_id, status, worker_name, started_at,
-    finished_at, model, graph, branches, steps, artifact_contract_json,
-    artifact_verification_json, error, cwd, manifest, state_root, artifact_root
-"""
+"""Tests for get_run() reading from StateDB with correct key contract."""
 
 from __future__ import annotations
 
