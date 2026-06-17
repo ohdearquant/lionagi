@@ -22,6 +22,7 @@ from lionagi.libs.path_safety import (
 )
 from lionagi.libs.path_safety import (
     check_path_safe,
+    contain_and_resolve,
 )
 from lionagi.libs.path_safety import (
     contain_paths_in_root as contain_paths_in_repo,
@@ -445,18 +446,7 @@ class ClaudeCodeRequest(BaseModel):
         if ".." in ws_path.parts:
             raise ValueError(f"Directory traversal detected in workspace path: {self.ws}")
 
-        repo_resolved = self.repo.resolve()
-        result = (self.repo / ws_path).resolve()
-
-        try:
-            result.relative_to(repo_resolved)
-        except ValueError:
-            raise ValueError(
-                f"Workspace path escapes repository bounds. "
-                f"Repository: {repo_resolved}, Workspace: {result}"
-            ) from None
-
-        return result
+        return contain_and_resolve(ws_path, self.repo)
 
     # ── CLI command builder ───────────────────────────────────────
 

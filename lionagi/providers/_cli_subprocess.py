@@ -14,6 +14,8 @@ from collections.abc import AsyncIterator, Callable
 from pathlib import Path
 from typing import Any
 
+from lionagi.libs.path_safety import contain_and_resolve
+
 log = logging.getLogger(__name__)
 
 # Sentinel that means "do not pass stdin to create_subprocess_exec at all"
@@ -178,18 +180,7 @@ def resolve_cli_workspace(repo: Path | None, workspace: str | None) -> Path:
     if ".." in ws_path.parts:
         raise ValueError(f"Directory traversal detected in workspace path: {workspace}")
 
-    repo_resolved = repo.resolve()
-    result = (repo / ws_path).resolve()
-
-    try:
-        result.relative_to(repo_resolved)
-    except ValueError:
-        raise ValueError(
-            f"Workspace path escapes repository bounds. "
-            f"Repository: {repo_resolved}, Workspace: {result}"
-        ) from None
-
-    return result
+    return contain_and_resolve(ws_path, repo)
 
 
 def build_declarative_cli_args(model_instance: Any) -> list[str]:
