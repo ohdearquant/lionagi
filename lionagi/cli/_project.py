@@ -9,6 +9,8 @@ import subprocess
 from pathlib import Path
 from typing import Any
 
+from lionagi._paths import _find_git_root
+
 _SOURCE_CONFIG_TOML = "config_toml"
 _SOURCE_GLOBAL_OVERRIDE = "global_override"
 _SOURCE_GIT_REMOTE = "git_remote"
@@ -98,22 +100,6 @@ def _from_global_overrides(cwd: Path, remote_slug: str | None) -> tuple[str | No
             return (str(project_name), _SOURCE_GLOBAL_OVERRIDE)
 
     return (None, None)
-
-
-def _find_git_root(cwd: Path) -> Path | None:
-    try:
-        result = subprocess.run(
-            ["git", "rev-parse", "--show-toplevel"],  # noqa: S607
-            capture_output=True,
-            text=True,
-            cwd=str(cwd),
-            timeout=5,
-        )
-        if result.returncode == 0:
-            return Path(result.stdout.strip())
-    except Exception:  # noqa: S110
-        return None
-    return None
 
 
 def _git_remote_slug(git_root: Path) -> str | None:
