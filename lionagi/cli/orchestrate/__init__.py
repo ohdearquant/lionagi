@@ -13,11 +13,11 @@ from lionagi.ln.concurrency import is_cancelled, run_async
 
 from .._lifecycle import EXIT_CODE_BY_STATUS
 from .._logging import hint, log_error
-from .._providers import add_common_cli_args  # noqa: F401  (re-exported for type stubs)
+from .._providers import add_common_cli_args
 from .fanout import _run_fanout
 from .flow import FlowPlanError, _run_flow
 
-# ── _spec helpers (inlined from _spec.py) ────────────────────────────────────
+# ── flow-spec helpers ────────────────────────────────────────────────────────
 
 
 def _scan_argv_for_playbook_name(argv: list[str]) -> str | None:

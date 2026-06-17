@@ -39,7 +39,7 @@ __all__ = [
 ]
 
 
-# ── _state_db_import helpers ──────────────────────────────────────────────────
+# ── run/team import helpers ───────────────────────────────────────────────────
 
 
 def _mtime_as_float(path: Path) -> float:
@@ -285,7 +285,7 @@ async def _import_one_run(
     return 1, total_branches, total_messages
 
 
-# ── _state_db_ops helpers ─────────────────────────────────────────────────────
+# ── DB maintenance helpers ────────────────────────────────────────────────────
 
 
 def _format_bytes(n: int) -> str:
