@@ -14,6 +14,13 @@ fastapi = pytest.importorskip("fastapi", reason="studio extra not installed")
 # a worker that first encounters a live-app test would import app.py AFTER the
 # fixture cleared _ROUTES, resulting in an empty registry and missing routes.
 from lionagi.studio.app import app as _live_app  # noqa: E402
+from lionagi.studio.registry import iter_studio_routes as _iter_at_import  # noqa: E402
+
+# Snapshot the populated registry at import time. app.py calls
+# load_studio_route_modules() during the _live_app import above, so every
+# migrated area is registered now — before the autouse fixture clears _ROUTES.
+_AREAS_AT_IMPORT = {r.area for r in _iter_at_import()}
+_KEYS_AT_IMPORT = [(r.path, r.method) for r in _iter_at_import()]
 
 # ---------------------------------------------------------------------------
 # Fixtures
@@ -220,30 +227,45 @@ def test_dedup_same_path_different_method_allowed():
 
 
 # ---------------------------------------------------------------------------
-# 5. load_studio_route_modules registers all 14 areas (phase 1+)
+# 5. load_studio_route_modules registers every migrated area (phase 1+)
 # ---------------------------------------------------------------------------
 
+_MIGRATED_AREAS = {
+    "casts",
+    "runs",
+    "engine-runs",
+    "definitions",
+    "agents",
+    "playbooks",
+    "shows",
+    "skills",
+    "plugins",
+    "teams",
+    "invocations",
+    "launches",
+    "projects",
+    "engine-defs",
+}
 
-def test_load_studio_route_modules_noop_in_phase0():
-    # Phase 1: registry is populated with routes from 14 migrated areas.
-    # The _isolated_registry fixture clears _ROUTES before this test runs;
-    # after load_studio_route_modules() the routes must be present again
-    # (de-dup key reset by fixture means re-import won't fire decorators,
-    # but the registry is already populated by the fixture teardown restore).
-    # Simplest assertion: calling load_studio_route_modules() does not raise.
+
+def test_load_studio_route_modules_registers_all_areas():
+    # Asserted against the import-time snapshot: the autouse fixture clears
+    # _ROUTES in the test body and the area modules are already cached, so a
+    # re-import here is a no-op. The contract that matters is that importing
+    # the app wired every migrated area onto the registry.
+    assert _AREAS_AT_IMPORT == _MIGRATED_AREAS, (
+        f"registered areas drifted: missing={_MIGRATED_AREAS - _AREAS_AT_IMPORT}, "
+        f"unexpected={_AREAS_AT_IMPORT - _MIGRATED_AREAS}"
+    )
+
+
+def test_loaded_registry_has_no_duplicate_routes():
+    # Re-invoking load is idempotent (module caching + _DEDUP_KEYS); the
+    # observable invariant is that no (path, method) pair is registered twice.
     from lionagi.studio.registry import load_studio_route_modules
 
-    load_studio_route_modules()  # must not raise
-
-
-def test_load_studio_route_modules_idempotent():
-    # Calling load_studio_route_modules() multiple times must not raise even
-    # when the dedup set was cleared; module-level decorator re-registration
-    # is guarded by _DEDUP_KEYS being repopulated on first call.
-    from lionagi.studio.registry import load_studio_route_modules
-
-    load_studio_route_modules()
-    load_studio_route_modules()  # must not raise
+    load_studio_route_modules()  # must not raise on a second call
+    assert len(_KEYS_AT_IMPORT) == len(set(_KEYS_AT_IMPORT)), "duplicate (path, method) in registry"
 
 
 # ---------------------------------------------------------------------------
