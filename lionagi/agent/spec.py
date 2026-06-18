@@ -18,6 +18,20 @@ if TYPE_CHECKING:
 
 __all__ = ("AgentSpec", "HooksMixin")
 
+_LEAN_TOOL_CLASSES: dict[str, tuple[str, ...]] = {
+    "edit": ("reader", "editor"),
+    "run": ("bash",),
+    "search": ("reader", "search"),
+    "refactor": ("reader", "editor", "bash"),
+}
+
+_LEAN_TASK_PROMPTS: dict[str, str] = {
+    "edit": "Read files with reader, apply precise edits with editor. Preserve existing style.",
+    "run": "Execute commands with bash. Prefer non-destructive flags. Check exit codes.",
+    "search": "Use search to locate symbols/patterns, reader to inspect content.",
+    "refactor": "Read context first, apply edits, verify with bash. Minimal change surface.",
+}
+
 
 class HooksMixin:
     """Shared hook-registration helpers for agent spec dataclasses."""
@@ -126,6 +140,46 @@ class AgentSpec(HooksMixin):
             cwd=cwd,
             **kwargs,
         )
+        if secure:
+            _wire_secure_guards(spec, cwd)
+        return spec
+
+    @classmethod
+    def lean_coding(
+        cls,
+        *,
+        task_class: str = "edit",
+        model: str | None = None,
+        effort: str | None = None,
+        system_prompt: str | None = None,
+        cwd: str | None = None,
+        secure: bool = True,
+        **kwargs: Any,
+    ) -> AgentSpec:
+        """Minimal-overhead coding agent: no LION preamble, task-scoped tools.
+
+        ``task_class`` selects the tool subset:
+        - ``"edit"``    → reader + editor
+        - ``"run"``     → bash only
+        - ``"search"``  → reader + search
+        - ``"refactor"`` → reader + editor + bash
+        """
+        tools = _LEAN_TOOL_CLASSES.get(task_class)
+        if tools is None:
+            raise ValueError(
+                f"Unknown task_class {task_class!r}. Valid: {sorted(_LEAN_TOOL_CLASSES)}"
+            )
+        extra = system_prompt or _LEAN_TASK_PROMPTS[task_class]
+        spec = cls.compose(
+            "implementer",
+            model=model,
+            effort=effort,
+            tools=list(tools),
+            system_prompt=extra,
+            cwd=cwd,
+            **kwargs,
+        )
+        spec.lion_system = False
         if secure:
             _wire_secure_guards(spec, cwd)
         return spec
