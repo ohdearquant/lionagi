@@ -154,9 +154,7 @@ def test_log_tool_use_emits_deprecation_warning():
 
     with warnings.catch_warnings(record=True) as caught:
         warnings.simplefilter("always")
-        asyncio.get_event_loop().run_until_complete(
-            log_tool_use(tool_name="bash", action="run", args={"command": "ls"})
-        )
+        asyncio.run(log_tool_use(tool_name="bash", action="run", args={"command": "ls"}))
 
     dep_warnings = [w for w in caught if issubclass(w.category, DeprecationWarning)]
     assert len(dep_warnings) == 1
@@ -169,9 +167,7 @@ def test_agent_log_tool_use_emits_deprecation_warning():
 
     with warnings.catch_warnings(record=True) as caught:
         warnings.simplefilter("always")
-        asyncio.get_event_loop().run_until_complete(
-            log_tool_use("bash", "run", {}, {"success": True})
-        )
+        asyncio.run(log_tool_use("bash", "run", {}, {"success": True}))
 
     dep_warnings = [w for w in caught if issubclass(w.category, DeprecationWarning)]
     assert len(dep_warnings) == 1
