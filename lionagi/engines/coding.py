@@ -582,6 +582,8 @@ class CodingEngine(Engine):
 
         tests = await self._test(run, change, round_no=0)
         change, tests = await self._fix_loop(run, plan, change, tests)
+        if run._aborted:
+            return await self._conclude(run, plan, passed=False, caveat="stage aborted by watchdog")
         await self._verify(run, plan, change, tests)
         return await self._conclude(run, plan, passed=tests.passed)
 

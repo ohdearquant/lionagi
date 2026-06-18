@@ -56,7 +56,7 @@ class _ScriptedBranch:
 
 
 # ---------------------------------------------------------------------------
-# Issue #1380 — bounded cancel_active timeout
+# bounded cancel_active timeout
 # ---------------------------------------------------------------------------
 
 
@@ -105,7 +105,7 @@ async def test_cancel_active_noop_when_empty():
 
 
 # ---------------------------------------------------------------------------
-# Issue #1436 — turn-level timeout into repair loop
+# turn-level timeout into repair loop
 # ---------------------------------------------------------------------------
 
 
@@ -202,7 +202,7 @@ async def test_turn_timeout_all_rounds_concludes_failed(tmp_path, monkeypatch):
 
 
 # ---------------------------------------------------------------------------
-# Issue #1426 — spec lint
+# spec lint
 # ---------------------------------------------------------------------------
 
 
@@ -312,7 +312,7 @@ async def test_spec_lint_strict_raises_before_run(tmp_path, monkeypatch):
 
 
 # ---------------------------------------------------------------------------
-# Issue #1424 — worker heartbeat + activity events
+# worker heartbeat + activity events
 # ---------------------------------------------------------------------------
 
 
@@ -522,7 +522,7 @@ async def test_heartbeat_events_not_in_judge_context(tmp_path, monkeypatch):
 
 
 # ---------------------------------------------------------------------------
-# Issue #1429 — stage watchdog + partial export on abort
+# stage watchdog + partial export on abort
 # ---------------------------------------------------------------------------
 
 
@@ -627,4 +627,68 @@ async def test_no_watchdog_progress_aborts_implement(tmp_path, monkeypatch):
 
     assert result.passed is False
     assert any(e["type"] == "WorkAborted" for e in events)
+    assert (export_dir / "report.md").exists()
+
+
+@pytest.mark.asyncio
+async def test_hanging_fix_round_aborts_with_caveat(tmp_path, monkeypatch):
+    """A fix round hung past the watchdog must abort with a caveat and skip verify, not be reported as a plain exhausted-fix-loop failure."""
+    import sys
+
+    eng = CodingEngine(repair_retries=0, max_fix_rounds=1, stage_timeout_s=0.2)
+    run = eng.new_run()
+    plan_ev = WorkPlanned(approach="implement then stall on fix")
+
+    class _FixHangsBranch:
+        name = "implement"
+
+        def __init__(self):
+            self.calls = 0
+
+        async def operate(self, *, instruction, **kw):
+            self.calls += 1
+            if self.calls == 1:
+                await run.emit(ChangeProposed(summary="initial change"))
+                return "ok"
+            await asyncio.sleep(60)  # fix round hangs -> watchdog aborts
+            return "never"
+
+    branches = {
+        "plan": _ScriptedBranch(run, [plan_ev], name="plan"),
+        "implement": _FixHangsBranch(),
+    }
+
+    async def fake_make(role, *, name=None, **kw):
+        return branches.get(name, _ScriptedBranch(run, [], name=name))
+
+    verify_calls: list[int] = []
+    orig_verify = eng._verify
+
+    async def spy_verify(*a, **kw):
+        verify_calls.append(1)
+        return await orig_verify(*a, **kw)
+
+    monkeypatch.setattr(run, "make_agent", fake_make)
+    monkeypatch.setattr(eng, "_verify", spy_verify)
+    monkeypatch.setattr(eng, "_capture_diff", lambda r: _async(""))
+
+    export_dir = tmp_path / "export"
+    events: list[dict] = []
+    run.on_event = events.append
+
+    result = await eng._run(
+        run,
+        "implement then stall on fix",
+        test_cmd=[sys.executable, "-c", "exit(1)"],  # fails -> enters fix loop
+        workspace=str(tmp_path),
+        export_dir=export_dir,
+    )
+
+    aborted = [e for e in events if e["type"] == "WorkAborted"]
+    assert aborted, f"WorkAborted not found in {[e['type'] for e in events]}"
+    assert aborted[0].get("stage") == "fix-1"
+
+    assert result.passed is False
+    assert "stage aborted by watchdog" in result.caveats
+    assert verify_calls == [], "verify must not run after a watchdog abort"
     assert (export_dir / "report.md").exists()
