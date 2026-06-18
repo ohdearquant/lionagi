@@ -17,6 +17,7 @@ if TYPE_CHECKING:
     from lionagi.casts.pack import Pack
 
 from lionagi import Branch, Session
+from lionagi._errors import ConfigurationError
 from lionagi.agent import AgentSpec, create_agent
 from lionagi.operations.builder import OperationGraphBuilder
 from lionagi.protocols.generic.log import DataLoggerConfig
@@ -340,7 +341,9 @@ async def setup_orchestration(
             fast = True
 
     if not model_spec:
-        raise ValueError("Provide a model spec or use -a/--agent to load a profile with a model.")
+        raise ConfigurationError(
+            "Provide a model spec or use -a/--agent to load a profile with a model."
+        )
 
     orc_imodel = build_imodel_from_spec(
         model_spec,

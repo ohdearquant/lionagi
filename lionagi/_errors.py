@@ -79,7 +79,7 @@ class LionError(Exception):
         return cls(message=message, details=details, cause=cause)
 
 
-class ValidationError(LionError):
+class ValidationError(LionError, ValueError):
     """Exception raised when validation fails."""
 
     default_message = "Validation failed"
@@ -133,11 +133,11 @@ class RelationError(LionError):
     pass
 
 
-class OperationError(LionError):
+class OperationError(LionError, ValueError):
     pass
 
 
-class ExecutionError(LionError):
+class ExecutionError(LionError, RuntimeError):
     pass
 
 
@@ -149,7 +149,7 @@ class AccessError(LionError):
     __slots__ = ()
 
 
-class ConfigurationError(LionError):
+class ConfigurationError(LionError, ValueError):
     """Exception raised when configuration is invalid."""
 
     default_message = "Invalid configuration"

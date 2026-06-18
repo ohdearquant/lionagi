@@ -4,6 +4,7 @@ from uuid import UUID
 
 from pydantic import BaseModel, Field, PrivateAttr
 
+from lionagi._errors import ExecutionError, OperationError
 from lionagi.protocols.types import ID, Event, Node
 
 BranchOperations = Literal[
@@ -74,14 +75,14 @@ class Operation(Node, Event):
         """Execute the operation on the pre-set branch; called by Event.invoke()."""
         branch = self._branch
         if branch is None:
-            raise RuntimeError(
+            raise ExecutionError(
                 "Operation._branch must be set before invoke(). "
                 "Use operation._branch = branch before calling invoke()."
             )
 
         meth = branch.get_operation(self.operation)
         if meth is None:
-            raise ValueError(f"Unsupported operation type: {self.operation}")
+            raise OperationError(f"Unsupported operation type: {self.operation}")
 
         self.branch_id = branch.id
 
