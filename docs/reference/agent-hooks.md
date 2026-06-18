@@ -58,7 +58,8 @@ keep their defaults.
 | `persist_branch_provenance` | `BRANCH_CREATE` |
 | `persist_message` | `MESSAGE_ADD` |
 | `log_api_metrics` | (name-addressable; not in DEFAULT_HOOKS) |
-| `log_tool_use` | (name-addressable; not in DEFAULT_HOOKS) |
+| `log_tool_call` | (name-addressable; not in DEFAULT_HOOKS) |
+| `log_tool_use` | (name-addressable; not in DEFAULT_HOOKS; deprecated — use `log_tool_call`) |
 
 All handlers are name-addressable via the loader registry and can be referenced
 as strings in agent YAML profiles.

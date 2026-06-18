@@ -7,12 +7,14 @@ from __future__ import annotations
 
 import logging
 import re
+import warnings
 from pathlib import Path
 
 __all__ = (
     "auto_format_python",
     "guard_destructive",
     "guard_paths",
+    "log_tool_call",
     "log_tool_use",
 )
 
@@ -95,11 +97,22 @@ def guard_paths(
     return _guard
 
 
-async def log_tool_use(tool_name: str, action: str, args: dict, result: dict) -> dict | None:
-    """Post-hook: log tool usage for observability."""
+async def log_tool_call(tool_name: str, action: str, args: dict, result: dict) -> dict | None:
+    """Post-hook: log tool call for observability."""
     success = result.get("success", result.get("return_code") == 0)
     logger.info("tool=%s action=%s success=%s", tool_name, action, success)
     return None
+
+
+async def log_tool_use(tool_name: str, action: str, args: dict, result: dict) -> dict | None:
+    """Deprecated: use log_tool_call instead."""
+    warnings.warn(
+        "log_tool_use is deprecated and will be removed in a future minor release. "
+        "Use log_tool_call instead.",
+        DeprecationWarning,
+        stacklevel=2,
+    )
+    return await log_tool_call(tool_name, action, args, result)
 
 
 async def auto_format_python(tool_name: str, action: str, args: dict, result: dict) -> dict | None:

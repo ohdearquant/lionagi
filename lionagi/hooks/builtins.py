@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import logging
 import time
+import warnings
 from typing import Any
 
 logger = logging.getLogger("lionagi.hooks.builtins")
@@ -16,6 +17,7 @@ __all__ = (
     "persist_branch_provenance",
     "persist_message",
     "log_api_metrics",
+    "log_tool_call",
     "log_tool_use",
 )
 
@@ -147,7 +149,7 @@ async def log_api_metrics(
         )
 
 
-async def log_tool_use(
+async def log_tool_call(
     *,
     tool_name: str,
     action: str | None = None,
@@ -161,3 +163,20 @@ async def log_tool_use(
         action,
         list(args.keys()) if args else [],
     )
+
+
+async def log_tool_use(
+    *,
+    tool_name: str,
+    action: str | None = None,
+    args: dict[str, Any] | None = None,
+    **_unused: Any,
+) -> None:
+    """Deprecated: use log_tool_call instead."""
+    warnings.warn(
+        "log_tool_use is deprecated and will be removed in a future minor release. "
+        "Use log_tool_call instead.",
+        DeprecationWarning,
+        stacklevel=2,
+    )
+    await log_tool_call(tool_name=tool_name, action=action, args=args)
