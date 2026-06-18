@@ -905,3 +905,206 @@ class TestCLIEndpointDeprecation:
         from lionagi.service.connections import AgenticEndpoint, CLIEndpoint
 
         assert CLIEndpoint is AgenticEndpoint
+
+
+# ---------------------------------------------------------------------------
+# Single-retry-path parity tests (collapse of backoff dual-retry layer)
+# ---------------------------------------------------------------------------
+
+
+class TestSingleRetryPathParity:
+    """Verify the native-only retry path preserves the giveup-except-429 rule."""
+
+    def _make_endpoint(self, max_retries: int = 3) -> Endpoint:
+        config = EndpointConfig(
+            name="test",
+            provider="test",
+            endpoint="v1/chat",
+            base_url="https://api.test.com",
+            auth_type="bearer",
+            api_key="test-key",
+            max_retries=max_retries,
+        )
+        return Endpoint(config=config)
+
+    def _make_mock_session(self, responses):
+        """Build a mock session that returns responses in sequence."""
+        mock_session = AsyncMock(spec=aiohttp.ClientSession)
+        mock_session.__aenter__ = AsyncMock(return_value=mock_session)
+        mock_session.__aexit__ = AsyncMock(return_value=False)
+
+        calls = iter(responses)
+
+        async def _request(*args, **kwargs):
+            return next(calls)
+
+        mock_session.request = _request
+        return mock_session
+
+    def _make_ok_response(self, body: dict | None = None):
+        r = AsyncMock(spec=aiohttp.ClientResponse)
+        r.status = 200
+        r.closed = False
+        r.release = MagicMock()
+        r.json = AsyncMock(return_value=body or {"ok": True})
+        return r
+
+    def _make_error_response(self, status: int):
+        r = AsyncMock(spec=aiohttp.ClientResponse)
+        r.status = status
+        r.closed = False
+        r.release = MagicMock()
+        r.request_info = MagicMock()
+        r.history = []
+        r.headers = {}
+        r.json = AsyncMock(return_value={"error": f"status {status}"})
+
+        def _raise_for_status():
+            raise aiohttp.ClientResponseError(
+                request_info=r.request_info,
+                history=r.history,
+                status=status,
+                message=f"status {status}",
+                headers=r.headers,
+            )
+
+        r.raise_for_status = _raise_for_status
+        return r
+
+    @pytest.mark.asyncio
+    async def test_200_ok_no_retry(self):
+        endpoint = self._make_endpoint()
+        ok = self._make_ok_response({"choices": []})
+        session = self._make_mock_session([ok])
+        with patch("lionagi.ln._ssrf.is_ssrf_safe", return_value=True):
+            with patch.object(endpoint, "_create_http_session", return_value=session):
+                result = await endpoint._call_aiohttp({}, {})
+        assert result == {"choices": []}
+        assert ok.release.call_count == 1
+
+    @pytest.mark.asyncio
+    async def test_429_is_retried(self):
+        """429 must be retried; succeeds on second attempt."""
+        endpoint = self._make_endpoint(max_retries=3)
+        r429 = self._make_error_response(429)
+        ok = self._make_ok_response({"retried": True})
+
+        attempt = 0
+
+        def _make_new_session(*args, **kwargs):
+            nonlocal attempt
+            attempt += 1
+            if attempt == 1:
+                return self._make_mock_session([r429])
+            return self._make_mock_session([ok])
+
+        with patch("lionagi.ln._ssrf.is_ssrf_safe", return_value=True):
+            with patch.object(endpoint, "_create_http_session", side_effect=_make_new_session):
+                with patch("lionagi.ln.concurrency.patterns.anyio.sleep", AsyncMock()):
+                    result = await endpoint._call_aiohttp({}, {})
+        assert result == {"retried": True}
+        assert attempt == 2
+
+    @pytest.mark.asyncio
+    async def test_400_gives_up_immediately(self):
+        """400 client error must not be retried; raises aiohttp.ClientResponseError."""
+        endpoint = self._make_endpoint(max_retries=3)
+        r400 = self._make_error_response(400)
+
+        call_count = 0
+
+        def _make_new_session(*args, **kwargs):
+            nonlocal call_count
+            call_count += 1
+            return self._make_mock_session([r400])
+
+        with patch("lionagi.ln._ssrf.is_ssrf_safe", return_value=True):
+            with patch.object(endpoint, "_create_http_session", side_effect=_make_new_session):
+                with pytest.raises(aiohttp.ClientResponseError) as exc_info:
+                    await endpoint._call_aiohttp({}, {})
+        assert exc_info.value.status == 400
+        assert call_count == 1
+
+    @pytest.mark.asyncio
+    async def test_401_gives_up_immediately(self):
+        """401 must not be retried."""
+        endpoint = self._make_endpoint(max_retries=3)
+        r401 = self._make_error_response(401)
+        call_count = 0
+
+        def _make_new_session(*args, **kwargs):
+            nonlocal call_count
+            call_count += 1
+            return self._make_mock_session([r401])
+
+        with patch("lionagi.ln._ssrf.is_ssrf_safe", return_value=True):
+            with patch.object(endpoint, "_create_http_session", side_effect=_make_new_session):
+                with pytest.raises(aiohttp.ClientResponseError) as exc_info:
+                    await endpoint._call_aiohttp({}, {})
+        assert exc_info.value.status == 401
+        assert call_count == 1
+
+    @pytest.mark.asyncio
+    async def test_403_gives_up_immediately(self):
+        """403 must not be retried."""
+        endpoint = self._make_endpoint(max_retries=3)
+        r403 = self._make_error_response(403)
+        call_count = 0
+
+        def _make_new_session(*args, **kwargs):
+            nonlocal call_count
+            call_count += 1
+            return self._make_mock_session([r403])
+
+        with patch("lionagi.ln._ssrf.is_ssrf_safe", return_value=True):
+            with patch.object(endpoint, "_create_http_session", side_effect=_make_new_session):
+                with pytest.raises(aiohttp.ClientResponseError) as exc_info:
+                    await endpoint._call_aiohttp({}, {})
+        assert exc_info.value.status == 403
+        assert call_count == 1
+
+    @pytest.mark.asyncio
+    async def test_500_is_retried_up_to_max(self):
+        """500 server error must be retried up to max_retries attempts."""
+        endpoint = self._make_endpoint(max_retries=2)
+
+        call_count = 0
+
+        def _make_new_session(*args, **kwargs):
+            nonlocal call_count
+            call_count += 1
+            return self._make_mock_session([self._make_error_response(500)])
+
+        with patch("lionagi.ln._ssrf.is_ssrf_safe", return_value=True):
+            with patch.object(endpoint, "_create_http_session", side_effect=_make_new_session):
+                with patch("lionagi.ln.concurrency.patterns.anyio.sleep", AsyncMock()):
+                    with pytest.raises(aiohttp.ClientResponseError) as exc_info:
+                        await endpoint._call_aiohttp({}, {})
+        assert exc_info.value.status == 500
+        # max_retries=2 means 3 total attempts (initial + 2 retries)
+        assert call_count == 3
+
+    @pytest.mark.asyncio
+    async def test_network_timeout_is_retried(self):
+        """asyncio.TimeoutError must be retried."""
+        endpoint = self._make_endpoint(max_retries=2)
+
+        call_count = 0
+
+        async def _raise_timeout(*args, **kwargs):
+            nonlocal call_count
+            call_count += 1
+            raise asyncio.TimeoutError()
+
+        mock_session = AsyncMock(spec=aiohttp.ClientSession)
+        mock_session.__aenter__ = AsyncMock(return_value=mock_session)
+        mock_session.__aexit__ = AsyncMock(return_value=False)
+        mock_session.request = _raise_timeout
+
+        with patch("lionagi.ln._ssrf.is_ssrf_safe", return_value=True):
+            with patch.object(endpoint, "_create_http_session", return_value=mock_session):
+                with patch("lionagi.ln.concurrency.patterns.anyio.sleep", AsyncMock()):
+                    with pytest.raises(asyncio.TimeoutError):
+                        await endpoint._call_aiohttp({}, {})
+        # max_retries=2 → 3 total attempts
+        assert call_count == 3

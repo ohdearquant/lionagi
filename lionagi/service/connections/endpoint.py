@@ -16,6 +16,19 @@ from lionagi.service.types.stream_chunk import StreamChunk
 from .endpoint_config import EndpointConfig
 from .header_factory import HeaderFactory
 
+
+class _NonRetryableClientError(Exception):
+    """Sentinel: 4xx (non-429) client error that must not be retried.
+
+    Wraps the original aiohttp.ClientResponseError so callers can inspect it
+    via the __cause__ chain while the retry engine sees an excluded type.
+    """
+
+    def __init__(self, original: Exception):
+        super().__init__(str(original))
+        self.original = original
+
+
 logger = logging.getLogger(__name__)
 
 
@@ -219,9 +232,8 @@ class Endpoint:
         self._assert_ssrf_safe_url()
 
         import aiohttp
-        import backoff
 
-        async def _make_request_with_backoff():
+        async def _make_request():
             async with self._create_http_session() as session:
                 response = None
                 try:
@@ -234,7 +246,7 @@ class Endpoint:
                     )
 
                     if response.status == 429 or response.status >= 500:
-                        response.raise_for_status()  # This will be caught by backoff
+                        response.raise_for_status()
                     elif response.status != 200:
                         try:
                             error_body = await response.json()
@@ -244,13 +256,16 @@ class Endpoint:
                         except Exception:
                             error_message = f"Request failed with status {response.status}"
 
-                        raise aiohttp.ClientResponseError(
+                        original = aiohttp.ClientResponseError(
                             request_info=response.request_info,
                             history=response.history,
                             status=response.status,
                             message=error_message,
                             headers=response.headers,
                         )
+                        # 4xx (non-429): wrap in sentinel so the native retry layer
+                        # gives up immediately, preserving the original error on __cause__.
+                        raise _NonRetryableClientError(original) from original
 
                     return await response.json()
                 finally:
@@ -259,26 +274,28 @@ class Endpoint:
                     if response is not None and not response.closed:
                         response.release()
 
-        # When retry_config is set, the outer call() already wraps this method in
-        # retry_with_backoff. Skip the internal backoff layer to prevent double-retry.
+        # When retry_config is set, the outer call() already wraps _call in retry_with_backoff.
+        # _call delegates here, so just run the raw request — no extra retry layer.
         if self.retry_config:
-            return await _make_request_with_backoff()
+            return await _make_request()
 
-        def giveup_on_client_error(e):
-            # Don't retry on 4xx except 429 (rate limit)
-            if isinstance(e, aiohttp.ClientResponseError):
-                return 400 <= e.status < 500 and e.status != 429
-            return False
-
-        backoff_handler = backoff.on_exception(
-            backoff.expo,
-            (aiohttp.ClientError, asyncio.TimeoutError),
-            max_tries=self.config.max_retries,
-            giveup=giveup_on_client_error,
-            jitter=backoff.full_jitter,
-        )
-
-        return await backoff_handler(_make_request_with_backoff)()
+        # No RetryConfig: use the native retry path with aiohttp transport errors.
+        # _NonRetryableClientError is in exclude_exceptions so 4xx non-429 gives up immediately.
+        # Re-raise the wrapped original so callers see aiohttp.ClientResponseError.
+        try:
+            return await retry_with_backoff(
+                _make_request,
+                retry_exceptions=(aiohttp.ClientError, asyncio.TimeoutError),
+                exclude_exceptions=(_NonRetryableClientError,),
+                max_retries=self.config.max_retries,
+                base_delay=1.0,
+                max_delay=60.0,
+                backoff_factor=2.0,
+                jitter=True,
+                jitter_factor=0.5,
+            )
+        except _NonRetryableClientError as exc:
+            raise exc.original from exc.__cause__
 
     async def stream(
         self,
