@@ -1,7 +1,12 @@
 # Copyright (c) 2023-2026, HaiyangLi <quantocean.li at gmail dot com>
 # SPDX-License-Identifier: Apache-2.0
 
-"""Test infrastructure for the Lion ecosystem: scripted endpoints, mock factories, and pytest fixtures."""
+"""Supported public testing surface for lionagi downstream projects.
+
+Provides scripted endpoints, mock factories, pytest fixtures, async helpers,
+and test-data loaders. Register ``lionagi.testing.pytest_plugin`` in your
+conftest (or ``pytest_plugins``) to get the bundled fixtures automatically.
+"""
 
 from __future__ import annotations
 
