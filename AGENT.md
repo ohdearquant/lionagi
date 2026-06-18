@@ -34,7 +34,7 @@ CI tests Python 3.10 and 3.14 on PRs, and 3.10-3.14 on `main`/`develop` pushes. 
 - `lionagi/service/` — iModel, provider connections, rate limiting
 - `lionagi/ln/` — concurrency utils (alcall, bcall), fuzzy JSON, sentinels
 - `lionagi/tools/` — tool interfaces and built-ins
-- `lionagi/cli/` — `li` command; `cli/orchestrate/` (flow, fanout); `cli/_runs.py` (RunDir); `cli/_logging.py`; `cli/team.py`; `cli/schedule.py` (`li schedule`); `cli/_project.py` (project detection)
+- `lionagi/cli/` — `li` command; `cli/orchestrate/` (flow, fanout); `cli/_runs.py` (RunDir); `cli/_logging.py`; `cli/team.py`; `cli/_project.py` (project detection). `li studio` / `li schedule` live in `lionagi/studio/cli.py`.
 - `tests/` — mirrors package structure
 - `benchmarks/` — micro-benchmark runners and baselines
 
@@ -175,7 +175,7 @@ This is separate from `settings.yaml` (which is gitignored/local). The detection
 
 Lion Studio can fire agent work on a schedule. The scheduler engine runs in-process inside the Studio server (`apps/studio/server/scheduler/engine.py`) and ticks every 30 seconds.
 
-**CLI** (`lionagi/cli/schedule.py`):
+**CLI** (`lionagi/studio/cli.py`):
 
 ```bash
 li schedule list                                      # List all schedules
