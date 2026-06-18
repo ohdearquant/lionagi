@@ -17,7 +17,7 @@ def _stubbed_serve():
     try:
         with (
             patch("uvicorn.run") as mock_run,
-            patch("lionagi.cli.studio._ensure_frontend_built", return_value=False),
+            patch("lionagi.studio.cli._ensure_frontend_built", return_value=False),
         ):
             yield mock_run
     finally:
@@ -82,7 +82,7 @@ def test_studio_bare_uses_default_port(monkeypatch):
 
 def test_find_repo_root_returns_path_from_source_checkout():
     """_find_repo_root returns a path when run from the source tree."""
-    from lionagi.cli.studio import _find_repo_root
+    from lionagi.studio.cli import _find_repo_root
 
     root = _find_repo_root()
     # In CI / source checkout the apps/studio dir exists → root is not None.
@@ -93,7 +93,7 @@ def test_find_repo_root_returns_path_from_source_checkout():
 
 def test_ensure_apps_importable_from_non_repo_cwd(tmp_path, monkeypatch):
     """_ensure_apps_importable returns False when outside the repo (no apps/ dir)."""
-    import lionagi.cli.studio as studio_mod
+    import lionagi.studio.cli as studio_mod
 
     # Fake _find_repo_root to return None (simulating installed wheel).
     monkeypatch.setattr(studio_mod, "_find_repo_root", lambda: None)
@@ -105,7 +105,7 @@ def test_ensure_apps_importable_adds_repo_root_to_sys_path(monkeypatch):
     """_ensure_apps_importable adds repo root to sys.path when in source tree."""
     import sys
 
-    import lionagi.cli.studio as studio_mod
+    import lionagi.studio.cli as studio_mod
 
     fake_root = monkeypatch.getfixturevalue("tmp_path") if False else None
     # Use a real Path-like object to avoid monkeypatching Path.
@@ -139,7 +139,7 @@ def _write_marker(frontend_dir):
 
 def test_is_build_stale_returns_true_when_dist_absent(tmp_path):
     """dist/index.html absent → stale (no prior build)."""
-    from lionagi.cli.studio import _is_build_stale
+    from lionagi.studio.cli import _is_build_stale
 
     assert _is_build_stale(tmp_path) is True
 
@@ -148,7 +148,7 @@ def test_is_build_stale_returns_false_when_no_source_newer_than_marker(tmp_path)
     """All source files older than dist/index.html → not stale."""
     import time
 
-    from lionagi.cli.studio import _is_build_stale
+    from lionagi.studio.cli import _is_build_stale
 
     # Create source files first (older).
     (tmp_path / "package.json").write_text("{}")
@@ -166,7 +166,7 @@ def test_is_build_stale_returns_true_when_source_file_newer_than_marker(tmp_path
     """A source file newer than dist/index.html → stale."""
     import time
 
-    from lionagi.cli.studio import _is_build_stale
+    from lionagi.studio.cli import _is_build_stale
 
     _write_marker(tmp_path)
 
@@ -182,7 +182,7 @@ def test_is_build_stale_detects_nested_source_change(tmp_path):
     """A file nested under src/ that is newer than dist/index.html → stale."""
     import time
 
-    from lionagi.cli.studio import _is_build_stale
+    from lionagi.studio.cli import _is_build_stale
 
     _write_marker(tmp_path)
 
@@ -200,7 +200,7 @@ def test_is_build_stale_ignores_unrelated_directories(tmp_path):
     """Files outside tracked source trees don't trigger a rebuild."""
     import time
 
-    from lionagi.cli.studio import _is_build_stale
+    from lionagi.studio.cli import _is_build_stale
 
     _write_marker(tmp_path)
 
@@ -218,7 +218,7 @@ def test_is_build_stale_vite_config_change_triggers_rebuild(tmp_path):
     """vite.config.mts newer than the marker → stale."""
     import time
 
-    from lionagi.cli.studio import _is_build_stale
+    from lionagi.studio.cli import _is_build_stale
 
     _write_marker(tmp_path)
 
@@ -233,7 +233,7 @@ def test_is_build_stale_package_lock_change_triggers_rebuild(tmp_path):
     """package-lock.json newer than the marker → stale."""
     import time
 
-    from lionagi.cli.studio import _is_build_stale
+    from lionagi.studio.cli import _is_build_stale
 
     _write_marker(tmp_path)
     time.sleep(0.02)
@@ -246,7 +246,7 @@ def test_is_build_stale_tsconfig_change_triggers_rebuild(tmp_path):
     """tsconfig.json newer than the marker → stale."""
     import time
 
-    from lionagi.cli.studio import _is_build_stale
+    from lionagi.studio.cli import _is_build_stale
 
     _write_marker(tmp_path)
     time.sleep(0.02)
@@ -259,7 +259,7 @@ def test_is_build_stale_tailwind_config_triggers_rebuild(tmp_path):
     """tailwind.config.ts newer than the marker → stale."""
     import time
 
-    from lionagi.cli.studio import _is_build_stale
+    from lionagi.studio.cli import _is_build_stale
 
     _write_marker(tmp_path)
     time.sleep(0.02)
@@ -272,7 +272,7 @@ def test_is_build_stale_postcss_config_triggers_rebuild(tmp_path):
     """postcss.config.cjs newer than the marker → stale."""
     import time
 
-    from lionagi.cli.studio import _is_build_stale
+    from lionagi.studio.cli import _is_build_stale
 
     _write_marker(tmp_path)
     time.sleep(0.02)
@@ -286,14 +286,14 @@ def test_is_build_stale_postcss_config_triggers_rebuild(tmp_path):
 
 def test_needs_npm_install_when_node_modules_absent(tmp_path):
     """node_modules/ absent → install required."""
-    from lionagi.cli.studio import _needs_npm_install
+    from lionagi.studio.cli import _needs_npm_install
 
     assert _needs_npm_install(tmp_path) is True
 
 
 def test_needs_npm_install_when_vite_bin_absent(tmp_path):
     """node_modules/ present but .bin/vite absent → install required."""
-    from lionagi.cli.studio import _needs_npm_install
+    from lionagi.studio.cli import _needs_npm_install
 
     (tmp_path / "node_modules").mkdir()
     (tmp_path / "node_modules" / ".bin").mkdir()
@@ -306,7 +306,7 @@ def test_needs_npm_install_false_when_up_to_date(tmp_path):
     """node_modules/ with vite + package.json older than install marker → no install."""
     import time
 
-    from lionagi.cli.studio import _needs_npm_install
+    from lionagi.studio.cli import _needs_npm_install
 
     # Create package.json first (older)
     (tmp_path / "package.json").write_text("{}")
@@ -327,7 +327,7 @@ def test_needs_npm_install_when_package_json_newer(tmp_path):
     """package.json newer than install marker → install required."""
     import time
 
-    from lionagi.cli.studio import _needs_npm_install
+    from lionagi.studio.cli import _needs_npm_install
 
     # Create install marker first (older)
     nm = tmp_path / "node_modules"
@@ -349,7 +349,7 @@ def test_needs_npm_install_when_package_lock_newer(tmp_path):
     """package-lock.json newer than install marker → install required."""
     import time
 
-    from lionagi.cli.studio import _needs_npm_install
+    from lionagi.studio.cli import _needs_npm_install
 
     nm = tmp_path / "node_modules"
     nm.mkdir()
@@ -369,7 +369,7 @@ def test_ensure_frontend_built_installs_when_vite_missing(tmp_path, monkeypatch)
     """_ensure_frontend_built triggers npm install when .bin/vite is absent."""
     from unittest.mock import MagicMock, patch
 
-    import lionagi.cli.studio as studio_mod
+    import lionagi.studio.cli as studio_mod
 
     # Set up a node_modules without vite (triggers _needs_npm_install)
     nm = tmp_path / "node_modules"

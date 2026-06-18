@@ -18,7 +18,6 @@ from lionagi.protocols.generic.log import DataLoggerConfig
 from lionagi.state import provenance as _provenance
 from lionagi.state.artifact_verifier import resolve_artifact_contract
 
-from ._lifecycle import EXIT_CODE_BY_STATUS, classify_exception
 from ._logging import hint, log_error
 from ._providers import (
     PROVIDER_BYPASS_KWARGS,
@@ -40,6 +39,7 @@ from ._runs import (
     setup_agent_persist,
     teardown_agent_persist,
 )
+from ._util import EXIT_CODE_BY_STATUS, classify_exception
 
 # ---------------------------------------------------------------------------
 # Preset names supported by --preset

@@ -10,8 +10,8 @@ import uuid
 from pathlib import Path
 from typing import Any
 
-from ._lifecycle import EXIT_CODE_BY_STATUS
 from ._runs import RUNS_ROOT
+from ._util import EXIT_CODE_BY_STATUS
 
 __all__ = [
     # import helpers

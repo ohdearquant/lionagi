@@ -13,9 +13,9 @@ from typing import Any
 import psutil
 
 from ._logging import log_error, warn
-from ._process import _TABLE_TO_ENTITY_TYPE
-from ._process import pid_alive as _pid_alive
-from ._process import resolve_entity as _resolve_entity
+from ._util import _TABLE_TO_ENTITY_TYPE
+from ._util import pid_alive as _pid_alive
+from ._util import resolve_entity as _resolve_entity
 
 
 def _read_pid_from_entity(entity: dict[str, Any]) -> int | None:

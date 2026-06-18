@@ -15,7 +15,7 @@ from typing import Any, Literal
 from fastapi import HTTPException, Query
 from pydantic import BaseModel, ConfigDict, Field
 
-from lionagi.cli._process import pid_alive as _pid_is_live
+from lionagi.cli._util import pid_alive as _pid_is_live
 from lionagi.ln import now_utc
 from lionagi.state.db import ADMIN_TRANSITION_TARGETS as _ADMIN_TRANSITION_TARGETS
 from lionagi.state.db import DEFAULT_DB_PATH

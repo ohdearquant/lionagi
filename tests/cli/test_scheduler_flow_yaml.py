@@ -249,7 +249,7 @@ def test_cli_flow_yaml_choice_accepted():
     """--action-kind flow_yaml is a recognized choice."""
     import argparse
 
-    from lionagi.cli.schedule import add_schedule_subparser
+    from lionagi.studio.cli import add_schedule_subparser
 
     parser = argparse.ArgumentParser()
     sub = parser.add_subparsers(dest="cmd")

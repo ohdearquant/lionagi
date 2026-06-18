@@ -11,9 +11,9 @@ from lionagi._errors import TimeoutError as LionTimeoutError
 from lionagi.libs.path_safety import validate_path_component as validate_path_component
 from lionagi.ln.concurrency import is_cancelled, run_async
 
-from .._lifecycle import EXIT_CODE_BY_STATUS
 from .._logging import hint, log_error
 from .._providers import add_common_cli_args
+from .._util import EXIT_CODE_BY_STATUS
 from .fanout import _run_fanout
 from .flow import FlowPlanError, _run_flow
 
