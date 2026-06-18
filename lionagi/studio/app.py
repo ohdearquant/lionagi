@@ -16,8 +16,6 @@ from .registry import iter_studio_routes, load_studio_route_modules
 from .routers import (
     admin,
     schedules,
-    sessions,
-    signals,
 )
 from .services import stats as stats_svc
 
@@ -155,8 +153,6 @@ for _route in iter_studio_routes():
         include_in_schema=_route.include_in_schema,
     )
 
-app.include_router(sessions.router, prefix="/api")
-app.include_router(signals.router, prefix="/api")
 app.include_router(admin.router, prefix="/api")
 app.include_router(schedules.router, prefix="/api")
 

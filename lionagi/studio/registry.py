@@ -58,6 +58,7 @@ _STUDIO_ROUTE_MODULES: tuple[str, ...] = (
     "lionagi.studio.services.launches",
     "lionagi.studio.services.projects",
     "lionagi.studio.services.engine_defs",
+    "lionagi.studio.services.sessions",
 )
 
 
