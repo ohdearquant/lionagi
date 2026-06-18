@@ -16,8 +16,10 @@ from ._json_dump import (
     json_lines_iter,
     make_options,
 )
+from ._lazy_init import LazyInit, lazy_import
 from ._list_call import lcall
 from ._proc import aterminate_process_group, terminate_process_group
+from ._ssrf import is_ssrf_safe
 from ._to_list import ToListParams, to_list
 from ._utils import (
     acreate_path,
@@ -58,7 +60,37 @@ from .fuzzy import (
     string_similarity,
     to_dict,
 )
-from .types import is_sentinel, not_sentinel
+from .types import (
+    CommonMeta,
+    DataClass,
+    Enum,
+    FieldRef,
+    Filter,
+    KeysDict,
+    KeysLike,
+    MaybeSentinel,
+    MaybeUndefined,
+    MaybeUnset,
+    Meta,
+    ModelConfig,
+    Operable,
+    Params,
+    RoleFilter,
+    SingletonType,
+    Spec,
+    SpecFilter,
+    T,
+    TypeFilter,
+    Undefined,
+    UndefinedType,
+    Unset,
+    UnsetType,
+    all_of,
+    as_filter,
+    is_sentinel,
+    not_sentinel,
+    resolve_path,
+)
 
 __all__ = (
     "alcall",
@@ -118,4 +150,36 @@ __all__ = (
     "MAX_JSON_INPUT_SIZE",
     "terminate_process_group",
     "aterminate_process_group",
+    # ln.types
+    "Undefined",
+    "Unset",
+    "MaybeUndefined",
+    "MaybeUnset",
+    "MaybeSentinel",
+    "SingletonType",
+    "UndefinedType",
+    "UnsetType",
+    "ModelConfig",
+    "Enum",
+    "Params",
+    "DataClass",
+    "Meta",
+    "KeysDict",
+    "KeysLike",
+    "T",
+    "Spec",
+    "CommonMeta",
+    "Operable",
+    "Filter",
+    "TypeFilter",
+    "SpecFilter",
+    "FieldRef",
+    "RoleFilter",
+    "as_filter",
+    "all_of",
+    "resolve_path",
+    # is_ssrf_safe, lazy_import
+    "is_ssrf_safe",
+    "LazyInit",
+    "lazy_import",
 )

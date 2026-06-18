@@ -9,7 +9,7 @@ from urllib.parse import urlparse
 
 from pydantic import BaseModel, Field
 
-from lionagi.ln._ssrf import is_ssrf_safe
+from lionagi.ln import is_ssrf_safe
 
 logger = logging.getLogger(__name__)
 

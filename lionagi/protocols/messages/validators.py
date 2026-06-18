@@ -5,7 +5,7 @@
 
 from urllib.parse import urlparse
 
-from lionagi.ln._ssrf import is_ssrf_safe
+from lionagi.ln import is_ssrf_safe
 
 __all__ = ("validate_image_url",)
 

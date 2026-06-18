@@ -11,7 +11,7 @@ from urllib.parse import urlparse
 from pydantic import BaseModel, Field
 
 from lionagi.libs.path_safety import resolve_workspace_path as _resolve_workspace_path
-from lionagi.ln._ssrf import is_ssrf_safe
+from lionagi.ln import is_ssrf_safe
 from lionagi.ln.concurrency import run_sync
 from lionagi.protocols.action.tool import Tool
 
