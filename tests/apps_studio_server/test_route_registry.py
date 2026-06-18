@@ -9,6 +9,18 @@ import pytest
 
 fastapi = pytest.importorskip("fastapi", reason="studio extra not installed")
 
+# Import app at module level so the lifespan routes (added by app.py at import
+# time) are registered before the _isolated_registry fixture runs. Without this,
+# a worker that first encounters a live-app test would import app.py AFTER the
+# fixture cleared _ROUTES, resulting in an empty registry and missing routes.
+from lionagi.studio.app import app as _live_app  # noqa: E402
+from lionagi.studio.registry import iter_studio_routes as _iter_at_import  # noqa: E402
+
+# Snapshot the populated registry at import time. app.py calls
+# load_studio_route_modules() during the _live_app import above, so every
+# migrated area is registered now — before the autouse fixture clears _ROUTES.
+_AREAS_AT_IMPORT = {r.area for r in _iter_at_import()}
+_KEYS_AT_IMPORT = [(r.path, r.method) for r in _iter_at_import()]
 
 # ---------------------------------------------------------------------------
 # Fixtures
@@ -215,23 +227,45 @@ def test_dedup_same_path_different_method_allowed():
 
 
 # ---------------------------------------------------------------------------
-# 5. load_studio_route_modules is callable and leaves registry empty (phase 0)
+# 5. load_studio_route_modules registers every migrated area (phase 1+)
 # ---------------------------------------------------------------------------
 
+_MIGRATED_AREAS = {
+    "casts",
+    "runs",
+    "engine-runs",
+    "definitions",
+    "agents",
+    "playbooks",
+    "shows",
+    "skills",
+    "plugins",
+    "teams",
+    "invocations",
+    "launches",
+    "projects",
+    "engine-defs",
+}
 
-def test_load_studio_route_modules_noop_in_phase0():
-    from lionagi.studio.registry import _ROUTES, load_studio_route_modules
 
-    load_studio_route_modules()
-    assert len(_ROUTES) == 0
+def test_load_studio_route_modules_registers_all_areas():
+    # Asserted against the import-time snapshot: the autouse fixture clears
+    # _ROUTES in the test body and the area modules are already cached, so a
+    # re-import here is a no-op. The contract that matters is that importing
+    # the app wired every migrated area onto the registry.
+    assert _AREAS_AT_IMPORT == _MIGRATED_AREAS, (
+        f"registered areas drifted: missing={_MIGRATED_AREAS - _AREAS_AT_IMPORT}, "
+        f"unexpected={_AREAS_AT_IMPORT - _MIGRATED_AREAS}"
+    )
 
 
-def test_load_studio_route_modules_idempotent():
-    from lionagi.studio.registry import _ROUTES, load_studio_route_modules
+def test_loaded_registry_has_no_duplicate_routes():
+    # Re-invoking load is idempotent (module caching + _DEDUP_KEYS); the
+    # observable invariant is that no (path, method) pair is registered twice.
+    from lionagi.studio.registry import load_studio_route_modules
 
-    load_studio_route_modules()
-    load_studio_route_modules()
-    assert len(_ROUTES) == 0
+    load_studio_route_modules()  # must not raise on a second call
+    assert len(_KEYS_AT_IMPORT) == len(set(_KEYS_AT_IMPORT)), "duplicate (path, method) in registry"
 
 
 # ---------------------------------------------------------------------------
@@ -240,28 +274,20 @@ def test_load_studio_route_modules_idempotent():
 
 
 def test_live_app_health_route_present():
-    from lionagi.studio.app import app
-
-    paths = {getattr(r, "path", None) for r in app.routes}
+    paths = {getattr(r, "path", None) for r in _live_app.routes}
     assert "/health" in paths
 
 
 def test_live_app_stats_route_present():
-    from lionagi.studio.app import app
-
-    paths = {getattr(r, "path", None) for r in app.routes}
+    paths = {getattr(r, "path", None) for r in _live_app.routes}
     assert "/api/stats" in paths
 
 
 def test_live_app_projects_route_present():
-    from lionagi.studio.app import app
-
-    paths = {getattr(r, "path", None) for r in app.routes}
+    paths = {getattr(r, "path", None) for r in _live_app.routes}
     assert "/api/projects/" in paths
 
 
 def test_live_app_sessions_signals_route_present():
-    from lionagi.studio.app import app
-
-    paths = {getattr(r, "path", None) for r in app.routes}
+    paths = {getattr(r, "path", None) for r in _live_app.routes}
     assert "/api/sessions/{session_id}/signals" in paths

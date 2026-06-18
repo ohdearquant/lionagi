@@ -15,24 +15,9 @@ from .config import CORS_ORIGINS, HOST
 from .registry import iter_studio_routes, load_studio_route_modules
 from .routers import (
     admin,
-    agents,
-    artifacts,
-    casts,
-    definitions,
-    engine_defs,
-    engine_runs,
-    invocations,
-    launches,
-    playbooks,
-    plugins,
-    projects,
-    runs,
     schedules,
     sessions,
-    shows,
     signals,
-    skills,
-    teams,
 )
 from .services import stats as stats_svc
 
@@ -158,37 +143,22 @@ for _route in iter_studio_routes():
         f"/api{_route.path}",
         _route.handler,
         methods=[_route.method],
-        response_model=_route.response_model,
+        **({"response_model": _route.response_model} if _route.response_model is not None else {}),
         dependencies=list(_route.dependencies),
         status_code=_route.status_code,
         tags=list(_route.tags),
         name=_route.name,
         summary=_route.summary,
         description=_route.description,
-        response_class=_route.response_class,
+        **({"response_class": _route.response_class} if _route.response_class is not None else {}),
         responses=dict(_route.responses) if _route.responses is not None else None,
         include_in_schema=_route.include_in_schema,
     )
 
-app.include_router(casts.router, prefix="/api")
-app.include_router(runs.router, prefix="/api")
-app.include_router(engine_runs.router, prefix="/api")
 app.include_router(sessions.router, prefix="/api")
 app.include_router(signals.router, prefix="/api")
-app.include_router(definitions.router, prefix="/api")
-app.include_router(agents.router, prefix="/api")
-app.include_router(playbooks.router, prefix="/api")
-app.include_router(shows.router, prefix="/api")
-app.include_router(skills.router, prefix="/api")
-app.include_router(plugins.router, prefix="/api")
 app.include_router(admin.router, prefix="/api")
-app.include_router(teams.router, prefix="/api")
-app.include_router(invocations.router, prefix="/api")
-app.include_router(launches.router, prefix="/api")
-app.include_router(artifacts.router, prefix="/api")
-app.include_router(projects.router, prefix="/api")
 app.include_router(schedules.router, prefix="/api")
-app.include_router(engine_defs.router, prefix="/api")
 
 
 @app.get("/health")
