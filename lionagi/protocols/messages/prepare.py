@@ -79,24 +79,7 @@ def _build_round_notification(
     """Build system notification block for agent grounding between rounds."""
     ts = int(time.time())
 
-    capabilities: set[str] = set()
-    resources: set[str] = set()
-
-    # Branch is session-layer; import lazily to avoid circular dependency.
-    try:
-        from lionagi.beta.session.session import Branch  # type: ignore[import]
-
-        if isinstance(progression, Branch):
-            capabilities = getattr(progression, "capabilities", set())
-            resources = getattr(progression, "resources", set())
-    except ImportError:
-        pass
-
     parts = [f'<system round="{round_num}" time="{ts}">']
-    if capabilities:
-        parts.append(f"  tools: [{', '.join(sorted(capabilities))}]")
-    if resources:
-        parts.append(f"  resources: [{', '.join(sorted(resources))}]")
     parts.append(f"  context: {msg_count} msgs | round {round_num}")
     if scratchpad:
         scratch_lines = ["  scratchpad:"]
