@@ -1,0 +1,61 @@
+name: Type Check (advisory)
+
+on:
+  push:
+    branches: [ main, develop ]
+    paths-ignore:
+      - '**/*.ipynb'
+  pull_request:
+    branches: [ main, develop ]
+    paths-ignore:
+      - '**/*.ipynb'
+
+permissions:
+  contents: read
+
+jobs:
+  pyright:
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v6
+
+    - name: Set up Python
+      uses: actions/setup-python@v6
+      with:
+        python-version: "3.10"
+
+    - name: Install uv
+      run: |
+        curl -LsSf https://astral.sh/uv/install.sh | sh
+        echo "$HOME/.cargo/bin" >> $GITHUB_PATH
+
+    - name: Cache uv downloads
+      uses: actions/cache@v5
+      with:
+        path: ~/.cache/uv
+        key: uv-${{ runner.os }}-py3.10-typecheck-${{ hashFiles('uv.lock') }}
+        restore-keys: |
+          uv-${{ runner.os }}-py3.10-typecheck-
+
+    - name: Install dependencies
+      run: |
+        uv venv --python 3.10
+        uv sync --all-extras
+
+    - name: Run pyright
+      run: uvx pyright==1.1.402 --outputjson > /tmp/pyright_output.json || true
+
+    - name: Check against baseline (advisory)
+      continue-on-error: true
+      run: uv run python scripts/check_pyright_baseline.py /tmp/pyright_output.json
+
+    - name: Report summary
+      if: always()
+      run: |
+        ERRORS=$(python3 -c "import json; d=json.load(open('/tmp/pyright_output.json')); print(d['summary']['errorCount'])" 2>/dev/null || echo "N/A")
+        BASELINE=$(cat .github/pyright-baseline.txt)
+        echo "### Pyright type-check summary" >> $GITHUB_STEP_SUMMARY
+        echo "| | Count |" >> $GITHUB_STEP_SUMMARY
+        echo "|---|---|" >> $GITHUB_STEP_SUMMARY
+        echo "| Current errors | $ERRORS |" >> $GITHUB_STEP_SUMMARY
+        echo "| Baseline | $BASELINE |" >> $GITHUB_STEP_SUMMARY
