@@ -1,9 +1,9 @@
 # Copyright (c) 2023-2025, HaiyangLi <quantocean.li at gmail dot com>
 # SPDX-License-Identifier: Apache-2.0
 
+from lionagi.ln import is_same_dtype
 from lionagi.ln.concurrency import gather
 from lionagi.protocols._concepts import Manager
-from lionagi.utils import is_same_dtype
 
 from .imodel import iModel
 

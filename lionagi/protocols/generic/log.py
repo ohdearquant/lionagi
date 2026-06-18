@@ -10,8 +10,9 @@ from typing import Any
 
 from pydantic import BaseModel, Field, PrivateAttr, field_validator
 
+from lionagi.ln import create_path
 from lionagi.models.hashable_model import HashableModel
-from lionagi.utils import create_path, to_dict
+from lionagi.utils import to_dict
 
 from .element import Element
 from .pile import Pile

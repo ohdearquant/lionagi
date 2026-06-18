@@ -3,7 +3,8 @@
 
 from pydantic import BaseModel, JsonValue
 
-from lionagi.utils import UNDEFINED, copy, to_list
+from lionagi.ln import copy
+from lionagi.utils import UNDEFINED, to_list
 
 from .validate_boolean import validate_boolean
 

@@ -6,7 +6,7 @@ from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field, field_serializer, field_validator
 
-from lionagi.utils import is_same_dtype
+from lionagi.ln import is_same_dtype
 
 from .._concepts import Condition, Relational
 from ..generic.element import ID, Element

@@ -7,8 +7,8 @@ from typing import Any, ClassVar
 
 from pydantic import BaseModel, Field, JsonValue
 
+from lionagi.ln import is_same_dtype
 from lionagi.ln.fuzzy import string_similarity
-from lionagi.utils import is_same_dtype
 
 
 class SelectionModel(BaseModel):

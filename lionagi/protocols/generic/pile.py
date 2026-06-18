@@ -15,16 +15,11 @@ from typing_extensions import Self, override
 
 from lionagi._errors import ItemExistsError, ItemNotFoundError, ValidationError
 from lionagi.adapters._base import Adaptable, AsyncAdaptable
+from lionagi.ln import is_same_dtype, is_union_type, union_members
 from lionagi.ln._utils import async_synchronized, synchronized
 from lionagi.ln.concurrency import Lock as ConcurrencyLock
 from lionagi.ln.concurrency import sleep as _concurrency_sleep
-from lionagi.utils import (
-    UNDEFINED,
-    is_same_dtype,
-    is_union_type,
-    to_list,
-    union_members,
-)
+from lionagi.utils import UNDEFINED, to_list
 
 from .._concepts import Observable
 from .element import ID, Collective, E, Element, validate_order

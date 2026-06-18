@@ -9,7 +9,8 @@ from pydantic.fields import FieldInfo
 from pydantic_core import PydanticUndefined
 from typing_extensions import Self, override
 
-from lionagi.utils import UNDEFINED, is_same_dtype
+from lionagi.ln import is_same_dtype
+from lionagi.utils import UNDEFINED
 
 from ._build_model import build_model_type
 from .field_model import FieldModel
