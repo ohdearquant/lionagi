@@ -13,7 +13,6 @@ from starlette.staticfiles import StaticFiles
 
 from .config import CORS_ORIGINS, HOST
 from .registry import iter_studio_routes, load_studio_route_modules
-from .services import stats as stats_svc
 
 _log = logging.getLogger(__name__)
 
@@ -155,14 +154,6 @@ async def health() -> dict[str, Any]:
     return {"status": "ok"}
 
 
-@app.get("/api/stats")
-async def get_stats() -> dict[str, Any]:
-    # ADR-0012 §10: "runs" count must come from SQLite sessions so the dashboard
-    # matches the Runs list page; runs_svc.list_runs() reads filesystem dirs and
-    # returns a different count than the sessions-backed list endpoint.
-    return await stats_svc.get_stats()
-
-
 def _resolve_frontend_dist() -> Path | None:
     """Return the dist/ directory to serve, or None if absent.
 
@@ -217,8 +208,8 @@ _dist = _resolve_frontend_dist()
 if _dist is not None:
     _mount_spa(app, _dist)
 
-# CORS middleware is registered LAST — after every router and the two direct
-# @app.get endpoints above and the optional SPA mount — so the method allowlist
+# CORS middleware is registered LAST — after every router and the one direct
+# @app.get endpoint above and the optional SPA mount — so the method allowlist
 # is derived from the complete route table (see _collect_cors_methods).  Added
 # last, it sits outermost in the middleware stack, the correct position for
 # CORS: preflight is answered before the bearer-token gate (which already lets

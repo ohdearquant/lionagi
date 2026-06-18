@@ -4,6 +4,7 @@ from typing import Any
 
 from lionagi.state.db import DEFAULT_DB_PATH
 
+from ..registry import studio_route
 from . import agents as agents_svc
 from . import playbooks as playbooks_svc
 from . import plugins as plugins_svc
@@ -138,3 +139,11 @@ async def get_stats() -> dict[str, Any]:
         "db": await get_db_stats(),
         "phantom_count": await get_phantom_count(),
     }
+
+
+@studio_route("/stats", method="GET", area="stats", tags=[], name="get_stats")
+async def get_stats_route() -> dict[str, Any]:
+    # ADR-0012 §10: "runs" count must come from SQLite sessions so the dashboard
+    # matches the Runs list page; runs_svc.list_runs() reads filesystem dirs and
+    # returns a different count than the sessions-backed list endpoint.
+    return await get_stats()
