@@ -468,11 +468,13 @@ def _launch_vite_dev(
 
 # --- `li schedule` — manage lionagi Studio schedules from the CLI ---
 
-_DEFAULT_BASE = "http://127.0.0.1:8765"
-
 
 def _base_url() -> str:
-    return os.environ.get("LIONAGI_STUDIO_URL", _DEFAULT_BASE).rstrip("/")
+    if url := os.environ.get("LIONAGI_STUDIO_URL"):
+        return url.rstrip("/")
+    host = os.environ.get("LIONAGI_STUDIO_HOST", "127.0.0.1")
+    port = os.environ.get("LIONAGI_STUDIO_PORT", "8765")
+    return f"http://{host}:{port}"
 
 
 def _api(path: str, method: str = "GET", body: dict | None = None) -> Any:
