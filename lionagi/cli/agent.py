@@ -21,7 +21,6 @@ from lionagi.state.artifact_verifier import resolve_artifact_contract
 from ._agents import build_deadline_preamble, load_agent_profile
 from ._lifecycle import EXIT_CODE_BY_STATUS, classify_exception
 from ._logging import hint, log_error
-from ._persist import setup_agent_persist, teardown_agent_persist
 from ._providers import (
     PROVIDER_BYPASS_KWARGS,
     PROVIDER_EFFORT_KWARG,
@@ -32,7 +31,14 @@ from ._providers import (
     parse_model_spec,
     resolve_persisted_effort,
 )
-from ._runs import allocate_run, find_branch, load_last_branch, save_last_branch_pointer
+from ._runs import (
+    allocate_run,
+    find_branch,
+    load_last_branch,
+    save_last_branch_pointer,
+    setup_agent_persist,
+    teardown_agent_persist,
+)
 
 # ---------------------------------------------------------------------------
 # Preset names supported by --preset

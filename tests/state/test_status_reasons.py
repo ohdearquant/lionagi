@@ -373,7 +373,7 @@ class TestTeardownReasonResolution:
     """
 
     def test_each_terminal_status_maps_to_a_valid_reason_code(self):
-        from lionagi.cli._persist import resolve_run_reason as _resolve_run_reason
+        from lionagi.cli._runs import resolve_run_reason as _resolve_run_reason
 
         cases = [
             ("completed", None),
@@ -395,7 +395,7 @@ class TestTeardownReasonResolution:
             assert isinstance(summary, str) and summary, "summary must be non-empty"
 
     def test_failed_with_exception_embeds_class_name(self):
-        from lionagi.cli._persist import resolve_run_reason as _resolve_run_reason
+        from lionagi.cli._runs import resolve_run_reason as _resolve_run_reason
 
         _, summary, _ = _resolve_run_reason(
             status="failed",
