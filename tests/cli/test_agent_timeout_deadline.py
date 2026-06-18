@@ -10,7 +10,7 @@ import time
 
 import pytest
 
-from lionagi.cli._agents import build_deadline_preamble
+from lionagi.cli._providers import build_deadline_preamble
 
 # ── build_deadline_preamble unit tests ────────────────────────────────────────
 

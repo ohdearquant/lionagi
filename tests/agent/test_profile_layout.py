@@ -9,7 +9,7 @@ from pathlib import Path
 
 import pytest
 
-from lionagi.cli._agents import _resolve_profile_path, list_agents, load_agent_profile
+from lionagi.cli._providers import _resolve_profile_path, list_agents, load_agent_profile
 
 # ── _resolve_profile_path ────────────────────────────────────────────
 

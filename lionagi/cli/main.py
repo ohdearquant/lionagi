@@ -114,7 +114,7 @@ def _handle_play_check(argv: list[str]) -> int:
     agent_name = spec.get("agent")
     if agent_name:
         try:
-            from lionagi.cli._agents import load_agent_profile
+            from lionagi.cli._providers import load_agent_profile
 
             profile = load_agent_profile(agent_name)
             agent_defaults = getattr(profile, "artifact_defaults", None)
