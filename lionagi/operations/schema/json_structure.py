@@ -9,7 +9,6 @@ from typing import Any
 import orjson
 from pydantic import BaseModel
 
-from lionagi.ln import extract_json, fuzzy_validate_mapping, to_list
 from lionagi.ln.fuzzy import FuzzyMatchKeysParams
 
 from .structure import Structure
@@ -79,47 +78,12 @@ class JsonStructure(Structure):
             "No triple backticks. Escape all quotes and special characters."
         ).strip()
 
-    # ------------------------------------------------------------------
-    # Canonical parsing — copied from operations/parse
-    # ------------------------------------------------------------------
-
     @staticmethod
     def _validate_dict_or_model(
         text: str,
         response_format: type[BaseModel] | dict | Any,
         fuzzy_match_params: FuzzyMatchKeysParams | dict = None,
     ):
-        try:
-            if isinstance(fuzzy_match_params, dict):
-                fuzzy_match_params = FuzzyMatchKeysParams(**fuzzy_match_params)
+        from lionagi.operations.parse.parse import _validate_dict_or_model
 
-            d_ = extract_json(text, fuzzy_parse=True, return_one_if_single=False)
-            dict_, keys_ = None, None
-            if d_:
-                dict_ = to_list(d_, flatten=True)[0]
-            if isinstance(fuzzy_match_params, FuzzyMatchKeysParams):
-                keys_ = (
-                    response_format.model_fields
-                    if isinstance(response_format, type)
-                    else response_format
-                )
-                dict_ = fuzzy_validate_mapping(dict_, keys_, **fuzzy_match_params.to_dict())
-            elif fuzzy_match_params:
-                keys_ = (
-                    response_format.model_fields
-                    if isinstance(response_format, type)
-                    else response_format
-                )
-                dict_ = fuzzy_validate_mapping(
-                    dict_,
-                    keys_,
-                    handle_unmatched="force",
-                    fill_value=None,
-                    strict=False,
-                )
-            if isinstance(response_format, type) and issubclass(response_format, BaseModel):
-                return response_format.model_validate(dict_)
-            return dict_
-
-        except Exception as e:
-            raise ValueError(f"Failed to parse text: {e}") from e
+        return _validate_dict_or_model(text, response_format, fuzzy_match_params)
