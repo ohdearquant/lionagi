@@ -644,7 +644,19 @@ async def list_runs_route(
 
 @studio_route("/runs/{run_id}", method="GET", area="runs", name="get_run")
 async def get_run_route(run_id: str) -> dict[str, Any]:
+    # get_run reads from StateDB (same source as list_runs); no thread offload needed.
     run = await get_run(run_id)
     if run is None:
         raise HTTPException(status_code=404, detail=f"Run '{run_id}' not found")
     return run
+
+
+# ADR-0008: removed /api/runs/{id}/events SSE route — it read
+# stream/*.buffer.jsonl files forbidden by ADR-0004.  Live monitoring uses
+# /api/sessions/{id}/stream instead.
+#
+# ADR-0008 Write Policy: removed POST /{run_id}/rerun and
+# DELETE /{run_id} stub routes.  Run data is explicitly read-only per
+# ADR-0008.  Re-running requires switching to the terminal (`li play ...`).
+# If re-run support is ever reconsidered, it requires an ADR-0008 amendment
+# before the route is added back.

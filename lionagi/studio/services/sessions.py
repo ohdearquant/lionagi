@@ -6,7 +6,7 @@ import time
 from typing import Any
 
 import aiosqlite
-from fastapi import HTTPException
+from fastapi import HTTPException  # used for 404 guards
 
 from lionagi.state.db import DEFAULT_DB_PATH, SESSION_TERMINAL_STATUSES
 
