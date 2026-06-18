@@ -28,6 +28,7 @@ def test_builtins_resolvable_by_name():
         "persist_branch_provenance",
         "persist_message",
         "log_api_metrics",
+        "log_tool_call",
         "log_tool_use",
     ):
         assert callable(resolve_handler(name)), f"{name!r} not registered"
@@ -116,7 +117,7 @@ def test_build_session_bus_empty_list_disables_default():
 
 def test_build_session_bus_adds_handlers_for_non_default_points():
     """Profile may register handlers on points that have no default."""
-    bus = build_session_bus({"api.post_call": ["log_api_metrics"], "tool.pre": ["log_tool_use"]})
+    bus = build_session_bus({"api.post_call": ["log_api_metrics"], "tool.pre": ["log_tool_call"]})
     assert len(bus.handlers_for(HookPoint.API_POST_CALL)) == 1
     assert len(bus.handlers_for(HookPoint.TOOL_PRE)) == 1
 
@@ -138,3 +139,40 @@ def test_build_session_bus_returns_fresh_instance_each_call():
     assert a is not b
     assert isinstance(a, HookBus)
     assert isinstance(b, HookBus)
+
+
+# ── Deprecation alias ─────────────────────────────────────────────────────────
+
+
+import asyncio
+import warnings
+
+
+def test_log_tool_use_emits_deprecation_warning():
+    """log_tool_use must emit DeprecationWarning and delegate to log_tool_call."""
+    from lionagi.hooks.builtins import log_tool_use
+
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        asyncio.get_event_loop().run_until_complete(
+            log_tool_use(tool_name="bash", action="run", args={"command": "ls"})
+        )
+
+    dep_warnings = [w for w in caught if issubclass(w.category, DeprecationWarning)]
+    assert len(dep_warnings) == 1
+    assert "log_tool_call" in str(dep_warnings[0].message)
+
+
+def test_agent_log_tool_use_emits_deprecation_warning():
+    """lionagi.agent.hooks.log_tool_use must emit DeprecationWarning."""
+    from lionagi.agent.hooks import log_tool_use
+
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        asyncio.get_event_loop().run_until_complete(
+            log_tool_use("bash", "run", {}, {"success": True})
+        )
+
+    dep_warnings = [w for w in caught if issubclass(w.category, DeprecationWarning)]
+    assert len(dep_warnings) == 1
+    assert "log_tool_call" in str(dep_warnings[0].message)

@@ -170,6 +170,19 @@ class TestHookSignatures:
         assert "allowed_paths" in param_names
         assert "allowed" not in param_names
 
+    def test_log_tool_call_is_async(self):
+        from lionagi.agent.hooks import log_tool_call
+
+        assert inspect.iscoroutinefunction(log_tool_call)
+
+    def test_log_tool_call_no_sink_param(self):
+        """log_tool_call is a plain function, not a factory with a sink param."""
+        from lionagi.agent.hooks import log_tool_call
+
+        sig = inspect.signature(log_tool_call)
+        param_names = set(sig.parameters.keys())
+        assert "sink" not in param_names
+
     def test_log_tool_use_is_async(self):
         from lionagi.agent.hooks import log_tool_use
 

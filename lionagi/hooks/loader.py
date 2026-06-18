@@ -36,6 +36,7 @@ _REGISTRY: dict[str, HookHandler] = {
     "persist_branch_provenance": _builtins.persist_branch_provenance,
     "persist_message": _builtins.persist_message,
     "log_api_metrics": _builtins.log_api_metrics,
+    "log_tool_call": _builtins.log_tool_call,
     "log_tool_use": _builtins.log_tool_use,
 }
 
