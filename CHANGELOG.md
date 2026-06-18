@@ -6,6 +6,10 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+### Deprecated
+
+- `CLIEndpoint` in `lionagi.service.connections` — use `AgenticEndpoint` instead. The alias now emits `DeprecationWarning` at import. Will be removed in a future minor release.
+
 ### Removed
 
 - `request_fields` phantom param dropped from `MessageManager.create_instruction`, `create_message`, and `add_message` (was accepted but silently ignored); `parse_lndl_fuzzy` removed from `lndl.__all__` (Phase-2 feature, not yet shipped).

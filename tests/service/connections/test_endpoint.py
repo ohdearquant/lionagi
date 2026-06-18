@@ -878,3 +878,30 @@ class TestProviderCallOverrideSSRFGuard:
         with patch("lionagi.ln._ssrf.is_ssrf_safe", return_value=False):
             with pytest.raises(PermissionError, match="SSRF guard"):
                 await endpoint._call(payload={"model": "whisper-large-v3"}, headers={})
+
+
+# ---------------------------------------------------------------------------
+# CLIEndpoint deprecation bridge
+# ---------------------------------------------------------------------------
+
+
+class TestCLIEndpointDeprecation:
+    """CLIEndpoint is a deprecated alias for AgenticEndpoint."""
+
+    def test_cli_endpoint_emits_deprecation_warning(self):
+        import sys
+
+        import lionagi.service.connections as _conn_mod
+
+        # Clear the cached attribute so __getattr__ fires fresh.
+        _conn_mod.__dict__.pop("CLIEndpoint", None)
+        try:
+            with pytest.warns(DeprecationWarning, match="CLIEndpoint is deprecated"):
+                from lionagi.service.connections import CLIEndpoint  # noqa: F401
+        finally:
+            _conn_mod.__dict__.pop("CLIEndpoint", None)
+
+    def test_cli_endpoint_resolves_to_agentic_endpoint(self):
+        from lionagi.service.connections import AgenticEndpoint, CLIEndpoint
+
+        assert CLIEndpoint is AgenticEndpoint

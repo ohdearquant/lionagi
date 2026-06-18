@@ -13,7 +13,7 @@ from pydantic import BaseModel
 from lionagi.ln import is_coro_func, now_utc
 from lionagi.protocols.generic import ID, Event, EventStatus, Log
 
-from .connections import APICalling, CLIEndpoint, Endpoint, match_endpoint
+from .connections import AgenticEndpoint, APICalling, Endpoint, match_endpoint
 from .hooks import (
     HookedEvent,
     HookEvent,
@@ -185,7 +185,7 @@ class iModel:  # noqa: N801
         """Construct an APICalling from endpoint-specific payload."""
         # Auto-inject session_id for CLI endpoint resume
         if (
-            isinstance(self.endpoint, CLIEndpoint)
+            isinstance(self.endpoint, AgenticEndpoint)
             and "resume" not in kwargs
             and "session_id" not in kwargs
             and self.endpoint.session_id
@@ -301,7 +301,7 @@ class iModel:  # noqa: N801
 
             completed_call = self.executor.pile.pop(api_call.id)
             if (
-                isinstance(self.endpoint, CLIEndpoint)
+                isinstance(self.endpoint, AgenticEndpoint)
                 and completed_call
                 and completed_call.response
             ):
@@ -345,8 +345,8 @@ class iModel:  # noqa: N801
         self.endpoint.copy_runtime_state_to(new_endpoint)
         if (
             share_session
-            and isinstance(new_endpoint, CLIEndpoint)
-            and isinstance(self.endpoint, CLIEndpoint)
+            and isinstance(new_endpoint, AgenticEndpoint)
+            and isinstance(self.endpoint, AgenticEndpoint)
         ):
             new_endpoint.session_id = self.endpoint.session_id
         return iModel(
