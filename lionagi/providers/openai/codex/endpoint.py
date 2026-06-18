@@ -21,8 +21,6 @@ CONTEXT_WINDOWS: dict[str, int] = {
     "codex-mini": 200_000,
     "o4-mini": 200_000,
     "o3": 200_000,
-    "gpt-4.1": 1_047_576,
-    "gpt-5.5": 1_047_576,
 }
 
 _CODEX_HANDLER_PARAMS = (
