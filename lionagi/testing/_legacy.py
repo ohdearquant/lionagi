@@ -45,10 +45,6 @@ def oai_chat_endpoint_config(
     )
 
 
-# Back-compat alias for code that imported the private helper directly.
-_get_oai_config = oai_chat_endpoint_config
-
-
 class LionAGIMockFactory:
     """Centralized factory for AsyncMock-based test branches and iModels. Prefer ``TestBranch`` for new tests."""
 
@@ -129,7 +125,7 @@ class LionAGIMockFactory:
         endpoint_config: dict[str, Any] | None = None,
     ) -> APICalling:
         if endpoint_config is None:
-            endpoint_config = _get_oai_config(
+            endpoint_config = oai_chat_endpoint_config(
                 name="oai_chat",
                 endpoint="chat/completions",
                 request_options=OpenAIChatCompletionsRequest,
