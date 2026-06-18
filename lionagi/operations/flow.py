@@ -855,33 +855,3 @@ def cleanup_flow_results(result: dict[str, Any], keep_only: list[str] = None) ->
         result["completed_operations"] = []
 
     return result
-
-
-async def flow_with_cleanup(
-    session: "Session",
-    graph: "Graph",
-    context: dict[str, Any] | None = None,
-    parallel: bool = True,
-    max_concurrent: int = 5,
-    verbose: bool = False,
-    branch: "Branch" = None,
-    alcall_params: AlcallParams | None = None,
-    cleanup_results: bool = True,
-    keep_only: list[str] = None,
-) -> dict[str, Any]:
-    """Execute flow with optional post-run cleanup."""
-    result = await flow(
-        session=session,
-        graph=graph,
-        context=context,
-        parallel=parallel,
-        max_concurrent=max_concurrent,
-        verbose=verbose,
-        branch=branch,
-        alcall_params=alcall_params,
-    )
-
-    if cleanup_results:
-        result = cleanup_flow_results(result, keep_only=keep_only)
-
-    return result

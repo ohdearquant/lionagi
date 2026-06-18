@@ -164,64 +164,36 @@ async def ReAct_v1(  # noqa: N802  # public name preserves the ReAct acronym
     """Collect all ReActStream outputs; return list of analyses when return_analysis=True, else the final result."""
     outs = []
 
-    if verbose_analysis:
-        async for i in ReActStream(
-            branch=branch,
-            instruction=instruction,
-            chat_param=chat_param,
-            action_param=action_param,
-            parse_param=parse_param,
-            intp_param=intp_param,
-            resp_ctx=resp_ctx,
-            reasoning_effort=reasoning_effort,
-            reason=reason,
-            field_models=field_models,
-            handle_validation=handle_validation,
-            invoke_actions=invoke_actions,
-            clear_messages=clear_messages,
-            intermediate_response_options=intermediate_response_options,
-            intermediate_listable=intermediate_listable,
-            intermediate_nullable=intermediate_nullable,
-            max_extensions=max_extensions,
-            extension_allowed=extension_allowed,
-            verbose_analysis=verbose_analysis,
-            display_as=display_as,
-            verbose_length=verbose_length,
-            continue_after_failed_response=continue_after_failed_response,
-            between_rounds=between_rounds,
-        ):
+    async for i in ReActStream(
+        branch=branch,
+        instruction=instruction,
+        chat_param=chat_param,
+        action_param=action_param,
+        parse_param=parse_param,
+        intp_param=intp_param,
+        resp_ctx=resp_ctx,
+        reasoning_effort=reasoning_effort,
+        reason=reason,
+        field_models=field_models,
+        handle_validation=handle_validation,
+        invoke_actions=invoke_actions,
+        clear_messages=clear_messages,
+        intermediate_response_options=intermediate_response_options,
+        intermediate_listable=intermediate_listable,
+        intermediate_nullable=intermediate_nullable,
+        max_extensions=max_extensions,
+        extension_allowed=extension_allowed,
+        verbose_analysis=verbose_analysis,
+        display_as=display_as,
+        verbose_length=verbose_length,
+        continue_after_failed_response=continue_after_failed_response,
+        between_rounds=between_rounds,
+    ):
+        if verbose_analysis:
             analysis, str_ = i
-            as_readable(
-                str_,
-                md=True,
-                display_str=True,
-            )
+            as_readable(str_, md=True, display_str=True)
             outs.append(analysis)
-    else:
-        async for i in ReActStream(
-            branch=branch,
-            instruction=instruction,
-            chat_param=chat_param,
-            action_param=action_param,
-            parse_param=parse_param,
-            intp_param=intp_param,
-            resp_ctx=resp_ctx,
-            reasoning_effort=reasoning_effort,
-            reason=reason,
-            field_models=field_models,
-            handle_validation=handle_validation,
-            invoke_actions=invoke_actions,
-            clear_messages=clear_messages,
-            intermediate_response_options=intermediate_response_options,
-            intermediate_listable=intermediate_listable,
-            intermediate_nullable=intermediate_nullable,
-            max_extensions=max_extensions,
-            extension_allowed=extension_allowed,
-            display_as=display_as,
-            verbose_length=verbose_length,
-            continue_after_failed_response=continue_after_failed_response,
-            between_rounds=between_rounds,
-        ):
+        else:
             outs.append(i)
 
     if return_analysis:
