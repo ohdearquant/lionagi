@@ -317,9 +317,11 @@ def list_agents() -> list[str]:
         agents_dir = d / "agents"
         if not agents_dir.is_dir():
             continue
+        # Directory layout
         for child in agents_dir.iterdir():
             if child.is_dir() and (child / f"{child.name}.md").is_file():
                 seen.add(child.name)
+        # Flat legacy layout
         for p in agents_dir.glob("*.md"):
             if p.is_file():
                 seen.add(p.stem)
@@ -353,7 +355,7 @@ def _parse_profile(name: str, text: str) -> AgentProfile:
     frontmatter, body = _parse_frontmatter(text)
 
     lion_system = bool(frontmatter.get("lion_system", True))
-    raw_body = body
+    raw_body = body  # always the body as written, before any expansion
     if lion_system:
         from lionagi.session.prompts import LION_SYSTEM_MESSAGE
 
