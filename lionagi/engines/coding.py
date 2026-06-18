@@ -33,6 +33,7 @@ __all__ = (
     "TestsRan",
     "VerifyResult",
     "CodeResultRecorded",
+    "WorkAborted",
     "WorkerHeartbeat",
     "WorkerActivity",
     "CodingRun",
@@ -155,8 +156,16 @@ _REF_ATTRS = (
 
 
 # ---------------------------------------------------------------------------
-# Worker observability events (heartbeat + activity)
+# Worker observability events (abort + heartbeat + activity)
 # ---------------------------------------------------------------------------
+
+
+class WorkAborted(EngineEvent):
+    """Emitted when a stage is aborted by the stage watchdog."""
+
+    stage: str = Field(default="")
+    reason: str = Field(default="")
+    elapsed_s: float = Field(default=0.0)
 
 
 class WorkerHeartbeat(EngineEvent):
@@ -339,6 +348,7 @@ class CodingRun(ChainRun):
         # Paths newly changed/added since the baseline (populated by _run).
         self._ws_delta: list[str] = []
         self._spec_lint_warnings: list[str] = []
+        self._aborted: bool = False
 
     # -- typed overrides (narrower signatures than the Any base) ---------------
 
@@ -451,6 +461,7 @@ class CodingEngine(Engine):
         turn_timeout_s: float | None = 600.0,
         strict_spec: bool = False,
         heartbeat_interval_s: float | None = 30.0,
+        stage_timeout_s: float | None = None,
         **kwargs: Any,
     ) -> None:
         super().__init__(**kwargs)
@@ -465,6 +476,7 @@ class CodingEngine(Engine):
         self.turn_timeout_s = turn_timeout_s
         self.strict_spec = strict_spec
         self.heartbeat_interval_s = heartbeat_interval_s
+        self.stage_timeout_s = stage_timeout_s
 
     # -- lifecycle ------------------------------------------------------------
 
@@ -532,6 +544,8 @@ class CodingEngine(Engine):
         # implement check computes a delta, not an absolute status read.
         run._ws_baseline = await self._capture_ws_baseline(run)
         change = await self._implement(run, plan)
+        if run._aborted:
+            return await self._conclude(run, plan, passed=False, caveat="stage aborted by watchdog")
         if change is None:
             # Emission is metadata; the workspace delta is ground truth.  Three
             # outcomes after _implement returns None:
@@ -613,13 +627,14 @@ class CodingEngine(Engine):
             wrapped = self._wrap_turn_timeout(agent, run)
             heartbeat_task = self._start_heartbeat(run, stage="implement")
             try:
-                await run.operate_with_repair(
+                stage_coro = run.operate_with_repair(
                     wrapped,
                     _implement_instruction(plan, run.task_text, run.workspace),
                     arrived=lambda: len(run.events_of(ChangeProposed)) > before,
                     emits=emits,
                     retries=self.repair_retries,
                 )
+                await self._run_stage_with_watchdog(run, stage_coro, "implement")
             finally:
                 if heartbeat_task is not None and not heartbeat_task.done():
                     heartbeat_task.cancel()
@@ -666,13 +681,16 @@ class CodingEngine(Engine):
                 break
             before = len(run.events_of(ChangeProposed))
             async with run._sem:
-                await run.operate_with_repair(
+                stage_coro = run.operate_with_repair(
                     agent,
                     _fix_instruction(tests, plan, round_no, self.max_fix_rounds),
                     arrived=lambda n=before: len(run.events_of(ChangeProposed)) > n,
                     emits=(ChangeProposed,),
                     retries=self.repair_retries,
                 )
+                await self._run_stage_with_watchdog(run, stage_coro, f"fix-{round_no}")
+            if run._aborted:
+                break
             new_change = run.last(ChangeProposed)
             if new_change is change:
                 run.notify("fix_no_change", round=round_no)
@@ -821,6 +839,29 @@ class CodingEngine(Engine):
                     logger.debug("heartbeat mtime poll failed", exc_info=True)
 
         return asyncio.ensure_future(_loop())
+
+    async def _run_stage_with_watchdog(
+        self, run: CodingRun, stage_coro: Any, stage_name: str
+    ) -> None:
+        """Run *stage_coro* bounded by stage_timeout_s; on timeout emit WorkAborted and set run._aborted."""
+        if self.stage_timeout_s is None:
+            await stage_coro
+            return
+        t0 = monotonic()
+        try:
+            await asyncio.wait_for(stage_coro, timeout=self.stage_timeout_s)
+        except asyncio.TimeoutError:
+            elapsed = round(monotonic() - t0, 1)
+            reason = f"stage '{stage_name}' exceeded {self.stage_timeout_s}s wall-clock limit"
+            run.notify("WorkAborted", stage=stage_name, reason=reason, elapsed_s=elapsed)
+            run._aborted = True
+
+    async def _partial_export(
+        self, run: CodingRun, *args: Any, **kwargs: Any
+    ) -> CodeResultRecorded:  # type: ignore[override]
+        """Write results.json and report.md even when the run is aborted mid-stage."""
+        plan = run.last(WorkPlanned) or WorkPlanned(approach="(aborted)")
+        return await self._conclude(run, plan, passed=False, caveat="run aborted")
 
     # -- ground-truth helpers -------------------------------------------------
 
