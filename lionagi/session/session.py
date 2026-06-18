@@ -31,7 +31,7 @@ from .._errors import ItemNotFoundError
 from ..ln import lcall
 from ..protocols.generic import Flow
 from ..protocols.messages import Message
-from .branch import ActionManager, Branch, OperationManager, Tool
+from .branch import Branch, OperationManager, Tool
 from .exchange import Exchange
 
 
@@ -182,8 +182,6 @@ class Session(Node, Relational):
         user: SenderRecipient = None,
         name: str | None = None,
         messages: Pile[RoledMessage] = None,
-        progress: Progression = None,
-        tool_manager: ActionManager = None,
         tools: Tool | Callable | list = None,
         as_default_branch: bool = False,
         **kwargs,
