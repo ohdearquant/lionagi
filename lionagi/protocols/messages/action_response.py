@@ -73,10 +73,12 @@ class ActionResponseContent(MessageContent):
             function = resp.get("function", "")
             arguments = resp.get("arguments", {})
             output = resp.get("output")
+            error = resp.get("error")
         else:
             function = data.get("function", "")
             arguments = data.get("arguments", {})
             output = data.get("output")
+            error = data.get("error")
 
         action_request_id = data.get("action_request_id")
         if action_request_id:
@@ -87,6 +89,7 @@ class ActionResponseContent(MessageContent):
             arguments=arguments,
             output=output,
             action_request_id=action_request_id,
+            error=error,
         )
 
 

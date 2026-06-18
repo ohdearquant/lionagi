@@ -464,3 +464,33 @@ def test_action_response_content_rendered_is_always_string():
         rendered = content.rendered
         assert isinstance(rendered, str)
         assert len(rendered) > 0  # Should not be empty string
+
+
+def test_error_field_round_trips_through_to_dict_from_dict():
+    """Error and success must survive a to_dict/from_dict round-trip."""
+    original = ActionResponseContent(
+        function="call_tool",
+        arguments={"x": 1},
+        output=None,
+        action_request_id="req-1",
+        error="timeout after 30s",
+    )
+    assert not original.success
+
+    restored = ActionResponseContent.from_dict(original.to_dict())
+    assert restored.error == original.error
+    assert not restored.success
+
+
+def test_success_true_round_trips_through_to_dict_from_dict():
+    """A successful (error=None) response must remain successful after round-trip."""
+    original = ActionResponseContent(
+        function="call_tool",
+        arguments={},
+        output={"ok": True},
+    )
+    assert original.success
+
+    restored = ActionResponseContent.from_dict(original.to_dict())
+    assert restored.error is None
+    assert restored.success
