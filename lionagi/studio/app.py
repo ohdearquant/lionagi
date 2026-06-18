@@ -125,11 +125,9 @@ async def require_studio_bearer_token(request: Request, call_next):
     return await call_next(request)
 
 
-# Mount routes registered via the @studio_route decorator. In phase 0 the
-# registry is empty (_STUDIO_ROUTE_MODULES = ()), so this loop adds nothing
-# and observable behavior is unchanged. Future phases append area modules to
-# _STUDIO_ROUTE_MODULES so their routes are registered here instead of via
-# include_router.
+# Mount routes registered via the @studio_route decorator. Area modules listed
+# in _STUDIO_ROUTE_MODULES are imported here so their @studio_route decorators
+# fire and populate _ROUTES before the loop below adds each route to the app.
 load_studio_route_modules()
 for _route in iter_studio_routes():
     app.add_api_route(
