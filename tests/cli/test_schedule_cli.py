@@ -103,3 +103,46 @@ def test_schedule_list_api_error_returns_1(monkeypatch):
     args = parser.parse_args(["schedule", "list"])
     result = run_schedule(args)
     assert result == 1
+
+
+def test_base_url_default(monkeypatch):
+    """_base_url returns the default when no env vars are set."""
+    monkeypatch.delenv("LIONAGI_STUDIO_URL", raising=False)
+    monkeypatch.delenv("LIONAGI_STUDIO_HOST", raising=False)
+    monkeypatch.delenv("LIONAGI_STUDIO_PORT", raising=False)
+
+    from lionagi.studio.cli import _base_url
+
+    assert _base_url() == "http://127.0.0.1:8765"
+
+
+def test_base_url_respects_studio_port(monkeypatch):
+    """_base_url reflects LIONAGI_STUDIO_PORT when set."""
+    monkeypatch.delenv("LIONAGI_STUDIO_URL", raising=False)
+    monkeypatch.delenv("LIONAGI_STUDIO_HOST", raising=False)
+    monkeypatch.setenv("LIONAGI_STUDIO_PORT", "9000")
+
+    from lionagi.studio.cli import _base_url
+
+    assert _base_url() == "http://127.0.0.1:9000"
+
+
+def test_base_url_respects_studio_host(monkeypatch):
+    """_base_url reflects LIONAGI_STUDIO_HOST when set."""
+    monkeypatch.delenv("LIONAGI_STUDIO_URL", raising=False)
+    monkeypatch.setenv("LIONAGI_STUDIO_HOST", "0.0.0.0")
+    monkeypatch.setenv("LIONAGI_STUDIO_PORT", "8765")
+
+    from lionagi.studio.cli import _base_url
+
+    assert _base_url() == "http://0.0.0.0:8765"
+
+
+def test_base_url_studio_url_takes_precedence(monkeypatch):
+    """LIONAGI_STUDIO_URL wins over host/port env vars."""
+    monkeypatch.setenv("LIONAGI_STUDIO_URL", "https://studio.example.com/")
+    monkeypatch.setenv("LIONAGI_STUDIO_PORT", "9999")
+
+    from lionagi.studio.cli import _base_url
+
+    assert _base_url() == "https://studio.example.com"
