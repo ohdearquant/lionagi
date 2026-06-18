@@ -16,7 +16,7 @@ def agent_definition_hash(agent_name: str | None) -> str | None:
     if not agent_name:
         return None
     from lionagi._paths import find_lionagi_dirs
-    from lionagi.cli._agents import _resolve_profile_path
+    from lionagi.cli._providers import _resolve_profile_path
 
     for d in find_lionagi_dirs():
         path = _resolve_profile_path(d / "agents", agent_name)

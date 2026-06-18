@@ -18,7 +18,6 @@ from lionagi.protocols.generic.log import DataLoggerConfig
 from lionagi.state import provenance as _provenance
 from lionagi.state.artifact_verifier import resolve_artifact_contract
 
-from ._agents import build_deadline_preamble, load_agent_profile
 from ._lifecycle import EXIT_CODE_BY_STATUS, classify_exception
 from ._logging import hint, log_error
 from ._providers import (
@@ -28,6 +27,8 @@ from ._providers import (
     PROVIDER_YOLO_KWARGS,
     add_common_cli_args,
     build_chat_model,
+    build_deadline_preamble,
+    load_agent_profile,
     parse_model_spec,
     resolve_persisted_effort,
 )

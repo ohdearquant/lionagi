@@ -12,9 +12,9 @@ import argparse
 
 import pytest
 
-from lionagi.cli._agents import _parse_profile
 from lionagi.cli._providers import (
     PROVIDER_FAST_KWARGS,
+    _parse_profile,
     add_common_cli_args,
     build_imodel_from_spec,
 )

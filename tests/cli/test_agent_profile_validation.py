@@ -7,7 +7,7 @@ from __future__ import annotations
 
 import pytest
 
-from lionagi.cli._agents import _validate_bare_name, load_agent_profile
+from lionagi.cli._providers import _validate_bare_name, load_agent_profile
 
 
 class TestValidateBareName:
