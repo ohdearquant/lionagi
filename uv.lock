@@ -3106,7 +3106,6 @@ dependencies = [
     { name = "aiosqlite" },
     { name = "anyio" },
     { name = "backoff" },
-    { name = "croniter" },
     { name = "json-repair" },
     { name = "msgspec" },
     { name = "orjson" },
@@ -3179,14 +3178,10 @@ sqlite = [
     { name = "aiosqlite" },
 ]
 studio = [
-    { name = "aiosqlite" },
+    { name = "croniter" },
     { name = "fastapi" },
-    { name = "pyyaml" },
     { name = "starlette" },
     { name = "uvicorn" },
-]
-testing = [
-    { name = "pyyaml" },
 ]
 xml = [
     { name = "xmltodict" },
@@ -3238,11 +3233,10 @@ requires-dist = [
     { name = "aiohttp", specifier = ">=3.14.1" },
     { name = "aiosqlite", specifier = ">=0.21.0" },
     { name = "aiosqlite", marker = "extra == 'sqlite'", specifier = ">=0.21.0" },
-    { name = "aiosqlite", marker = "extra == 'studio'", specifier = ">=0.21.0" },
     { name = "anyio", specifier = ">=4.10.0" },
     { name = "asyncpg", marker = "extra == 'postgres'", specifier = ">=0.27.0" },
     { name = "backoff", specifier = ">=2.1.0" },
-    { name = "croniter", specifier = ">=1.4" },
+    { name = "croniter", marker = "extra == 'studio'", specifier = ">=1.4" },
     { name = "datamodel-code-generator", marker = "extra == 'schema'", specifier = ">=0.31.2" },
     { name = "daytona", marker = "extra == 'sandbox'", specifier = ">=0.171.0" },
     { name = "docling", marker = "extra == 'reader'", specifier = ">=2.91.0" },
@@ -3271,8 +3265,6 @@ requires-dist = [
     { name = "pydapter", extras = ["postgres"], marker = "extra == 'postgres'", specifier = ">=1.3.2" },
     { name = "python-dotenv", specifier = ">=1.2.2" },
     { name = "pyyaml", specifier = ">=6.0" },
-    { name = "pyyaml", marker = "extra == 'studio'", specifier = ">=6.0" },
-    { name = "pyyaml", marker = "extra == 'testing'", specifier = ">=6.0" },
     { name = "rich", marker = "extra == 'rich'", specifier = ">=13.0.0" },
     { name = "sqlalchemy", extras = ["asyncio"], marker = "extra == 'postgres'", specifier = ">=2.0.0" },
     { name = "starlette", marker = "extra == 'mcp'", specifier = ">=1.3.1" },
