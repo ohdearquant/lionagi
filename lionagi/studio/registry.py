@@ -39,10 +39,7 @@ class StudioRoute:
 _ROUTES: list[StudioRoute] = []
 _DEDUP_KEYS: set[tuple[str, str, str, str]] = set()
 
-# Area modules are appended here as each area migrates in later phases, in this
-# contractual order: casts, runs, engine_runs, sessions, definitions, agents,
-# playbooks, shows, skills, plugins, admin, teams, invocations, launches,
-# projects, schedules, engine_defs, stats.
+# Area modules imported at startup; order controls route registration sequence.
 _STUDIO_ROUTE_MODULES: tuple[str, ...] = (
     "lionagi.studio.services.casts",
     "lionagi.studio.services.runs",
