@@ -13,7 +13,7 @@ from .errors import (
     TypeMismatchError,
 )
 from .extract import extract_lndl_blocks
-from .fuzzy import normalize_lndl_text, parse_lndl_fuzzy
+from .fuzzy import normalize_lndl_text
 from .prompt import LNDL_SYSTEM_PROMPT, get_lndl_system_prompt
 from .types import (
     ActionCall,
@@ -53,7 +53,6 @@ __all__ = (
     "get_lndl_system_prompt",
     # Extract
     "extract_lndl_blocks",
-    # Fuzzy (Phase 1: normalize only; parse_lndl_fuzzy raises until Phase 2)
+    # Fuzzy (Phase 1: normalize only)
     "normalize_lndl_text",
-    "parse_lndl_fuzzy",
 )
