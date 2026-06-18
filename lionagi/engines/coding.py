@@ -5,6 +5,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import os
@@ -383,6 +384,7 @@ class CodingEngine(Engine):
         max_fix_rounds: int = 3,
         test_timeout_s: float = 600.0,
         repair_retries: int = 1,
+        turn_timeout_s: float | None = 600.0,
         **kwargs: Any,
     ) -> None:
         super().__init__(**kwargs)
@@ -394,6 +396,7 @@ class CodingEngine(Engine):
         self.max_fix_rounds = max_fix_rounds
         self.test_timeout_s = test_timeout_s
         self.repair_retries = repair_retries
+        self.turn_timeout_s = turn_timeout_s
 
     # -- lifecycle ------------------------------------------------------------
 
@@ -533,14 +536,15 @@ class CodingEngine(Engine):
                 cwd=run.workspace,
                 emits=emits,
             )
+            wrapped = self._wrap_turn_timeout(agent, run)
             await run.operate_with_repair(
-                agent,
+                wrapped,
                 _implement_instruction(plan, run.task_text, run.workspace),
                 arrived=lambda: len(run.events_of(ChangeProposed)) > before,
                 emits=emits,
                 retries=self.repair_retries,
             )
-        run._implementer = agent  # reused by the fix loop — same branch, more turns
+        run._implementer = wrapped  # reused by the fix loop — same branch, more turns
         return run.last(ChangeProposed)
 
     async def _test(self, run: CodingRun, change: ChangeProposed, *, round_no: int) -> TestsRan:
@@ -666,6 +670,35 @@ class CodingEngine(Engine):
             paths = run.export(run.export_dir, report=report)
             run.notify("exported", **paths)
         return result
+
+    # -- worker helpers -------------------------------------------------------
+
+    def _wrap_turn_timeout(self, agent: Any, run: CodingRun) -> Any:
+        """Return a proxy whose operate() is bounded by turn_timeout_s.
+
+        On TimeoutError the proxy emits a turn_timeout notification and returns
+        None so operate_with_repair sees arrived()=False and enters the fix path.
+        """
+        if self.turn_timeout_s is None:
+            return agent
+        timeout_s = self.turn_timeout_s
+
+        class _Proxy:
+            name = getattr(agent, "name", "")
+            chat_model = getattr(agent, "chat_model", None)
+            capabilities = getattr(agent, "capabilities", None)
+
+            async def operate(self_, *, instruction: str, **kw: Any) -> Any:
+                try:
+                    return await asyncio.wait_for(
+                        agent.operate(instruction=instruction, **kw),
+                        timeout=timeout_s,
+                    )
+                except asyncio.TimeoutError:
+                    run.notify("turn_timeout", stage=self_.name, timeout_s=timeout_s)
+                    return None  # operate_with_repair sees arrived()=False → fix path
+
+        return _Proxy()
 
     # -- ground-truth helpers -------------------------------------------------
 
