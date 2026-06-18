@@ -13,9 +13,6 @@ from starlette.staticfiles import StaticFiles
 
 from .config import CORS_ORIGINS, HOST
 from .registry import iter_studio_routes, load_studio_route_modules
-from .routers import (
-    schedules,
-)
 from .services import stats as stats_svc
 
 _log = logging.getLogger(__name__)
@@ -151,8 +148,6 @@ for _route in iter_studio_routes():
         responses=dict(_route.responses) if _route.responses is not None else None,
         include_in_schema=_route.include_in_schema,
     )
-
-app.include_router(schedules.router, prefix="/api")
 
 
 @app.get("/health")
