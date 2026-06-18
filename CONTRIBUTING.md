@@ -74,7 +74,13 @@ guidelines and instructions for contributing to this project.
    `from __future__ import annotations`, and an `__all__` tuple for public
    surface. This is an async-first SDK — no blocking I/O in async paths.
 
-4. **Reuse before you create**: prefer existing abstractions
+4. **Public-surface changes**: removing or renaming anything in `__all__`,
+   documented hook names, CLI flags, or provider identifiers requires the
+   deprecation path (alias + `DeprecationWarning` + CHANGELOG entry, minimum
+   one minor release before removal). See
+   [docs/governance/standards/deprecation-policy.md](docs/governance/standards/deprecation-policy.md).
+
+5. **Reuse before you create**: prefer existing abstractions
    (`lionagi.ln` utilities, `Pile`/`Progression`/`Element`, `iModel`) over
    introducing parallel ones. Prefer LionAGI-native primitives over naked
    stdlib/third-party calls when a local helper exists (`alcall`/`bcall` over
