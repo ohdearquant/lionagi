@@ -9,6 +9,7 @@ import asyncio
 import json
 import logging
 import os
+import re
 import shlex
 from pathlib import Path
 from typing import Any
@@ -32,6 +33,7 @@ __all__ = (
     "CodeResultRecorded",
     "CodingRun",
     "CodingEngine",
+    "_lint_spec",
 )
 
 
@@ -146,6 +148,44 @@ _REF_ATTRS = (
     "change_ref",
     "plan_ref",
 )
+
+
+# ---------------------------------------------------------------------------
+# Spec lint
+# ---------------------------------------------------------------------------
+
+_RE_ACCEPTANCE = re.compile(r"acceptance.{0,20}criteria|acceptance:", re.IGNORECASE)
+_RE_TEST_CMD = re.compile(r"test_cmd\s*:", re.IGNORECASE)
+_RE_COUNT_ASSERT = re.compile(r"\d+\s*(test|case|item|assert|pass)", re.IGNORECASE)
+_RE_FILE_PATH = re.compile(r"(?:^|[\s(\"'])(/[\w/.\-]+\.[\w]+)", re.MULTILINE)
+
+
+def _lint_spec(
+    spec: str | dict[str, Any],
+    *,
+    workspace: str | Path | None = None,
+    strict: bool = False,
+) -> list[str]:
+    """Return a list of warning strings for common spec deficiencies.
+
+    Pass *strict=True* to raise ValueError on the first warning instead.
+    """
+    text = spec if isinstance(spec, str) else json.dumps(spec)
+    warnings: list[str] = []
+    if not _RE_ACCEPTANCE.search(text):
+        warnings.append("spec has no acceptance criteria — add an 'acceptance criteria:' section")
+    if _RE_TEST_CMD.search(text) and not _RE_COUNT_ASSERT.search(text):
+        warnings.append(
+            "spec has a test_cmd but no count assertion (e.g. '3 tests pass') — hard to verify"
+        )
+    if workspace is not None:
+        for m in _RE_FILE_PATH.finditer(text):
+            candidate = Path(m.group(1))
+            if candidate.is_absolute() and not candidate.exists():
+                warnings.append(f"referenced path does not exist: {candidate}")
+    if strict and warnings:
+        raise ValueError(warnings[0])
+    return warnings
 
 
 # ---------------------------------------------------------------------------
@@ -275,6 +315,7 @@ class CodingRun(ChainRun):
         self._ws_baseline: dict[str, str] | None = {}
         # Paths newly changed/added since the baseline (populated by _run).
         self._ws_delta: list[str] = []
+        self._spec_lint_warnings: list[str] = []
 
     # -- typed overrides (narrower signatures than the Any base) ---------------
 
@@ -385,6 +426,7 @@ class CodingEngine(Engine):
         test_timeout_s: float = 600.0,
         repair_retries: int = 1,
         turn_timeout_s: float | None = 600.0,
+        strict_spec: bool = False,
         **kwargs: Any,
     ) -> None:
         super().__init__(**kwargs)
@@ -397,6 +439,7 @@ class CodingEngine(Engine):
         self.test_timeout_s = test_timeout_s
         self.repair_retries = repair_retries
         self.turn_timeout_s = turn_timeout_s
+        self.strict_spec = strict_spec
 
     # -- lifecycle ------------------------------------------------------------
 
@@ -452,6 +495,12 @@ class CodingEngine(Engine):
         # Collector first: stamps eids before anything reads them. The pipeline
         # is sequential (no reactive spawning), so observers only stamp + store.
         run.observe(CodingChainEvent, lambda e, _c: run.collect(e))
+
+        lint_warnings = _lint_spec(task_text, workspace=run.workspace, strict=self.strict_spec)
+        for w in lint_warnings:
+            run.notify("spec_lint_warning", warning=w)
+        if lint_warnings:
+            run._spec_lint_warnings = lint_warnings
 
         plan = await self._plan(run)
         # Snapshot workspace state before the implementer runs so the post-
@@ -655,6 +704,8 @@ class CodingEngine(Engine):
                 {f for c in run.events_of(ChangeProposed) for f in c.files_touched}
             ),
         }
+        if run._spec_lint_warnings:
+            measurements["spec_lint_warnings"] = run._spec_lint_warnings
         result = CodeResultRecorded(
             passed=passed,
             measurements=measurements,
