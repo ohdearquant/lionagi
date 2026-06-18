@@ -6,12 +6,14 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
 import logging
 import os
 import re
 import shlex
 from pathlib import Path
+from time import monotonic
 from typing import Any
 
 from pydantic import BaseModel, Field
@@ -31,6 +33,8 @@ __all__ = (
     "TestsRan",
     "VerifyResult",
     "CodeResultRecorded",
+    "WorkerHeartbeat",
+    "WorkerActivity",
     "CodingRun",
     "CodingEngine",
     "_lint_spec",
@@ -148,6 +152,25 @@ _REF_ATTRS = (
     "change_ref",
     "plan_ref",
 )
+
+
+# ---------------------------------------------------------------------------
+# Worker observability events (heartbeat + activity)
+# ---------------------------------------------------------------------------
+
+
+class WorkerHeartbeat(EngineEvent):
+    """Periodic liveness ping emitted while a stage is running."""
+
+    elapsed_s: float = Field(description="Seconds since the run started.")
+    stage: str = Field(default="implement")
+
+
+class WorkerActivity(EngineEvent):
+    """Emitted when a file in the workspace is written during a stage."""
+
+    path: str = Field(description="Workspace-relative path that changed.")
+    elapsed_s: float = Field(description="Seconds since the run started.")
 
 
 # ---------------------------------------------------------------------------
@@ -427,6 +450,7 @@ class CodingEngine(Engine):
         repair_retries: int = 1,
         turn_timeout_s: float | None = 600.0,
         strict_spec: bool = False,
+        heartbeat_interval_s: float | None = 30.0,
         **kwargs: Any,
     ) -> None:
         super().__init__(**kwargs)
@@ -440,6 +464,7 @@ class CodingEngine(Engine):
         self.repair_retries = repair_retries
         self.turn_timeout_s = turn_timeout_s
         self.strict_spec = strict_spec
+        self.heartbeat_interval_s = heartbeat_interval_s
 
     # -- lifecycle ------------------------------------------------------------
 
@@ -586,13 +611,20 @@ class CodingEngine(Engine):
                 emits=emits,
             )
             wrapped = self._wrap_turn_timeout(agent, run)
-            await run.operate_with_repair(
-                wrapped,
-                _implement_instruction(plan, run.task_text, run.workspace),
-                arrived=lambda: len(run.events_of(ChangeProposed)) > before,
-                emits=emits,
-                retries=self.repair_retries,
-            )
+            heartbeat_task = self._start_heartbeat(run, stage="implement")
+            try:
+                await run.operate_with_repair(
+                    wrapped,
+                    _implement_instruction(plan, run.task_text, run.workspace),
+                    arrived=lambda: len(run.events_of(ChangeProposed)) > before,
+                    emits=emits,
+                    retries=self.repair_retries,
+                )
+            finally:
+                if heartbeat_task is not None and not heartbeat_task.done():
+                    heartbeat_task.cancel()
+                    with contextlib.suppress(asyncio.CancelledError):
+                        await heartbeat_task
         run._implementer = wrapped  # reused by the fix loop — same branch, more turns
         return run.last(ChangeProposed)
 
@@ -750,6 +782,45 @@ class CodingEngine(Engine):
                     return None  # operate_with_repair sees arrived()=False → fix path
 
         return _Proxy()
+
+    def _start_heartbeat(self, run: CodingRun, *, stage: str) -> asyncio.Task | None:
+        """Start a background task that emits WorkerHeartbeat at the configured interval.
+
+        Also emits WorkerActivity whenever a file in the workspace changes mtime.
+        Returns None when heartbeat_interval_s is None (disabled).
+        """
+        if self.heartbeat_interval_s is None:
+            return None
+        t0 = run._t0
+        ws = Path(run.workspace)
+        # Snapshot existing files so only NEW writes trigger WorkerActivity.
+        last_mtime: dict[str, float] = {}
+        try:
+            for p in ws.rglob("*"):
+                if p.is_file():
+                    last_mtime[str(p)] = p.stat().st_mtime
+        except Exception:
+            logger.debug("heartbeat baseline snapshot failed", exc_info=True)
+
+        async def _loop() -> None:
+            while True:
+                await asyncio.sleep(self.heartbeat_interval_s)
+                elapsed = round(monotonic() - t0, 1)
+                run.notify("WorkerHeartbeat", elapsed_s=elapsed, stage=stage)
+                try:
+                    for p in ws.rglob("*"):
+                        if p.is_file():
+                            key = str(p)
+                            mt = p.stat().st_mtime
+                            prev = last_mtime.get(key)
+                            if prev != mt:
+                                rel = str(p.relative_to(ws)) if p.is_relative_to(ws) else key
+                                run.notify("WorkerActivity", path=rel, elapsed_s=elapsed)
+                                last_mtime[key] = mt
+                except Exception:
+                    logger.debug("heartbeat mtime poll failed", exc_info=True)
+
+        return asyncio.ensure_future(_loop())
 
     # -- ground-truth helpers -------------------------------------------------
 
