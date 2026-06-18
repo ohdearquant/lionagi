@@ -16,10 +16,10 @@ from lionagi.state.db import DEFAULT_DB_PATH
 
 from ..config import SHOWS_ROOT
 from ..registry import studio_route
-from ..routers._sse import sse_response
 from ._db import open_db as _open_db
 from ._io import read_json_file as _read_json
 from ._path_safety import public_path, safe_path_join
+from ._sse import sse_response
 
 _log = __import__("logging").getLogger(__name__)
 

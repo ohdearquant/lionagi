@@ -468,7 +468,7 @@ async def stream_session_route(session_id: str):
 
             await asyncio.sleep(0.5)
 
-    from ..routers._sse import sse_response
+    from ._sse import sse_response
 
     return sse_response(generate())
 
@@ -520,6 +520,6 @@ async def stream_signals(session_id: str) -> Any:
 
             await asyncio.sleep(0.5)
 
-    from ..routers._sse import sse_response
+    from ._sse import sse_response
 
     return sse_response(generate())

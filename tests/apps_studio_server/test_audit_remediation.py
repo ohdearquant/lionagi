@@ -527,7 +527,7 @@ class TestInvocationReasonAggregation:
 # ---------------------------------------------------------------------------
 # Codex round-2 Low — router-level PATCH validation (HTTP 400 for invalid
 # flow_yaml transitions), covering the ValueError→HTTPException translation
-# added to routers/schedules.py.
+# added to services/schedules.py.
 # ---------------------------------------------------------------------------
 
 
