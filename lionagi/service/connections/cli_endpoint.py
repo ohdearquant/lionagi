@@ -1,7 +1,18 @@
 # Copyright (c) 2023-2026, HaiyangLi <quantocean.li at gmail dot com>
 # SPDX-License-Identifier: Apache-2.0
 
-# Re-export from agentic_endpoint for backward compatibility.
-from .agentic_endpoint import AgenticEndpoint as CLIEndpoint
+import warnings
 
-__all__ = ("CLIEndpoint",)
+from .agentic_endpoint import AgenticEndpoint
+
+
+def __getattr__(name: str):
+    if name == "CLIEndpoint":
+        warnings.warn(
+            "CLIEndpoint is deprecated and will be removed in a future release. "
+            "Use AgenticEndpoint from lionagi.service.connections instead.",
+            DeprecationWarning,
+            stacklevel=2,
+        )
+        return AgenticEndpoint
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
