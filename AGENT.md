@@ -67,7 +67,7 @@ CLI has no dedicated unit test suite.
 - Keep code async-safe; avoid blocking calls in async execution paths.
 - Follow existing typing patterns; add type hints on new/changed public APIs.
 - Keep changes surgical: do not refactor unrelated modules in the same patch.
-- Preserve backward compatibility unless the request explicitly allows breaking changes.
+- Preserve backward compatibility unless the request explicitly allows breaking changes. Removing or renaming a public name (`__all__` export, hook name, CLI flag, provider identifier) requires an alias, a `DeprecationWarning`, and a CHANGELOG entry before removal. See [docs/governance/standards/deprecation-policy.md](docs/governance/standards/deprecation-policy.md).
 
 ## Common Pitfalls
 
