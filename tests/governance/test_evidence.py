@@ -138,3 +138,18 @@ class TestChainVerifier:
         v = chain.verify()
         assert not v.valid
         assert v.violation_type == "tamper"
+
+    def test_detects_tier_downgrade(self):
+        chain = EvidenceChain()
+        chain.append({"x": 1}, tier=LogTier.IMMUTABLE)
+        node = chain.nodes()[0]
+        # Flip tier IMMUTABLE -> MUTABLE while keeping the stored node_hash.
+        object.__setattr__(node, "tier", LogTier.MUTABLE.value)
+        v = chain.verify()
+        assert not v.valid
+        assert v.violation_type == "tamper"
+
+    def test_tier_is_part_of_hash(self):
+        immutable = compute_node_hash({"x": 1}, GENESIS_HASH, LogTier.IMMUTABLE)
+        mutable = compute_node_hash({"x": 1}, GENESIS_HASH, LogTier.MUTABLE)
+        assert immutable != mutable

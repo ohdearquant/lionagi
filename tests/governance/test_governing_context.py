@@ -96,6 +96,16 @@ class TestGoverningContext:
         assert cert.grade == CertificateGrade.FULL
         assert cert.ops_allowed == 5
 
+    def test_complete_flags_tampered_chain(self):
+        ctx = GoverningContext("t1", [_allow_policy("t")])
+        ctx.check("t")
+        # Tamper with the recorded evidence after the fact.
+        node = ctx.evidence_chain.nodes()[0]
+        object.__setattr__(node, "tier", "MUTABLE")
+        cert = ctx.complete()
+        assert cert.chain_verified is False
+        assert cert.grade == CertificateGrade.FAILED
+
     def test_gate_tally_in_cert(self):
         policies = [
             GatePolicy(

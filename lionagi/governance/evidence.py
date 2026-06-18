@@ -28,6 +28,12 @@ __all__ = [
 GENESIS_HASH = "0" * 64
 
 
+class LogTier(str, Enum):
+    MUTABLE = "MUTABLE"
+    PROTECTED = "PROTECTED"
+    IMMUTABLE = "IMMUTABLE"
+
+
 def _canonical_json(content: dict[str, Any]) -> str:
     return json.dumps(content, sort_keys=True, separators=(",", ":"))
 
@@ -36,14 +42,13 @@ def _sha256_hex(payload: str) -> str:
     return hashlib.sha256(payload.encode("utf-8")).hexdigest()
 
 
-def compute_node_hash(content: dict[str, Any], previous_hash: str) -> str:
-    return _sha256_hex(_canonical_json(content) + "|" + previous_hash)
-
-
-class LogTier(str, Enum):
-    MUTABLE = "MUTABLE"
-    PROTECTED = "PROTECTED"
-    IMMUTABLE = "IMMUTABLE"
+def compute_node_hash(
+    content: dict[str, Any],
+    previous_hash: str,
+    tier: LogTier | str = LogTier.IMMUTABLE,
+) -> str:
+    tier_value = getattr(tier, "value", tier)
+    return _sha256_hex(_canonical_json(content) + "|" + previous_hash + "|" + str(tier_value))
 
 
 class EvidenceNode(Element):
@@ -64,11 +69,13 @@ class EvidenceNode(Element):
         super().model_post_init(__context)
         if not self.node_hash:
             object.__setattr__(
-                self, "node_hash", compute_node_hash(self.content, self.previous_hash)
+                self,
+                "node_hash",
+                compute_node_hash(self.content, self.previous_hash, self.tier),
             )
 
     def verify_hash(self) -> bool:
-        return self.node_hash == compute_node_hash(self.content, self.previous_hash)
+        return self.node_hash == compute_node_hash(self.content, self.previous_hash, self.tier)
 
 
 class ChainVerification(BaseModel):
@@ -143,7 +150,7 @@ class ChainVerifier:
                     violation_type="reorder",
                     message="Previous hash does not match predecessor.",
                 )
-            expected_node_hash = compute_node_hash(node.content, node.previous_hash)
+            expected_node_hash = compute_node_hash(node.content, node.previous_hash, node.tier)
             if node.node_hash != expected_node_hash:
                 return ChainVerification(
                     valid=False,

@@ -39,6 +39,7 @@ class TaskCertificate(Element):
     ops_allowed: int = 0
     ops_denied: int = 0
     ops_advisory: int = 0
+    chain_verified: bool = True
     gate_results_summary: dict[str, int] = Field(default_factory=dict)
 
     @classmethod
@@ -53,9 +54,10 @@ class TaskCertificate(Element):
         ops_allowed: int,
         ops_denied: int,
         ops_advisory: int,
+        chain_verified: bool = True,
         gate_results_summary: dict[str, int] | None = None,
     ) -> TaskCertificate:
-        if ops_denied > 0:
+        if not chain_verified or ops_denied > 0:
             grade = CertificateGrade.FAILED
         elif ops_advisory > 0:
             grade = CertificateGrade.PARTIAL
@@ -71,5 +73,6 @@ class TaskCertificate(Element):
             ops_allowed=ops_allowed,
             ops_denied=ops_denied,
             ops_advisory=ops_advisory,
+            chain_verified=chain_verified,
             gate_results_summary=gate_results_summary or {},
         )

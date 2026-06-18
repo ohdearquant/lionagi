@@ -47,6 +47,16 @@ class TestCertificateGrade:
         cert = _mint(op_count=3, ops_allowed=1, ops_denied=1, ops_advisory=1)
         assert cert.grade == CertificateGrade.FAILED
 
+    def test_unverified_chain_forces_failed(self):
+        cert = _mint(op_count=3, ops_allowed=3, chain_verified=False)
+        assert cert.grade == CertificateGrade.FAILED
+        assert cert.chain_verified is False
+
+    def test_verified_chain_defaults_true(self):
+        cert = _mint(op_count=1, ops_allowed=1)
+        assert cert.chain_verified is True
+        assert cert.grade == CertificateGrade.FULL
+
     def test_fields_stored(self):
         t0 = _now()
         t1 = _now()

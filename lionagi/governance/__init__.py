@@ -3,14 +3,12 @@
 
 """lionagi.governance — minimal gates, evidence chain, and TaskCertificate.
 
-Public surface (in scope):
+Public surface:
   - GatePolicy / GateExecutor / GateVerdict / GateResult / Enforcement
   - EvidenceChain / EvidenceNode / ChainVerification / ChainVerifier
   - TaskCertificate / CertificateGrade
   - GoverningContext  (binds the above into one per-run handle)
   - GovernanceViolationError
-
-Out of scope at library level: charter DSL, SoD, JIT grants, break-glass.
 """
 
 from lionagi.governance.certificate import CertificateGrade, TaskCertificate

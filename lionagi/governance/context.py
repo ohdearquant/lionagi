@@ -94,6 +94,7 @@ class GoverningContext:
             ops_allowed=self._ops_allowed,
             ops_denied=self._ops_denied,
             ops_advisory=self._ops_advisory,
+            chain_verified=self._chain.verify().valid,
             gate_results_summary=dict(self._gate_tally),
         )
 
