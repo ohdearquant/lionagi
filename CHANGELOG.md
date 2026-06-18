@@ -4,6 +4,12 @@
 All notable changes to lionagi are documented here.
 Format follows [Keep a Changelog](https://keepachangelog.com/).
 
+## [Unreleased]
+
+### Removed
+
+- `request_fields` phantom param dropped from `MessageManager.create_instruction`, `create_message`, and `add_message` (was accepted but silently ignored); `to_list_type`, `LogManager`, `LogManagerConfig` removed from `protocols.types.__all__`; `parse_lndl_fuzzy` removed from `lndl.__all__` (Phase-2 feature, not yet shipped).
+
 ## [0.27.1] - 2026-06-16
 
 The studio desktop substrate (Vite SPA + Tauri 2 macOS shell), custom engine
