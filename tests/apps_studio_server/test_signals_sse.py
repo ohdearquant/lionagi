@@ -460,12 +460,12 @@ async def test_setup_agent_persist_wires_signal_bind(tmp_path, monkeypatch):
             super().__init__(path if path is not None else db_path)
 
     monkeypatch.setattr(db_mod, "StateDB", _PatchedStateDB)
-    # Also patch the import inside _persist.py (function-local import).
-    import lionagi.cli._persist as persist_mod
+    # Also patch the import inside _runs.py (function-local import).
+    import lionagi.cli._runs as persist_mod
 
     monkeypatch.setattr(persist_mod, "StateDB", _PatchedStateDB, raising=False)
 
-    from lionagi.cli._persist import setup_agent_persist, teardown_persist
+    from lionagi.cli._runs import setup_agent_persist, teardown_persist
     from lionagi.session.signal import RunStart
 
     try:
@@ -787,8 +787,8 @@ async def test_signals_generator_cancellation_on_disconnect(tmp_path, monkeypatc
     monkeypatch.setattr(signals_svc, "_DB", str(db_path))
     monkeypatch.setattr(signals_svc, "DEFAULT_DB_PATH", db_path)
 
-    # Import the router's generate factory directly.
-    from lionagi.studio.routers.signals import stream_signals
+    # Import the handler directly from the service module.
+    from lionagi.studio.services.sessions import stream_signals
 
     # The endpoint function builds a StreamingResponse whose body is the
     # generate() async-generator.  We call it directly to get the generator.

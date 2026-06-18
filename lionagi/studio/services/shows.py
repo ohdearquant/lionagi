@@ -9,13 +9,17 @@ from collections.abc import AsyncGenerator
 from pathlib import Path
 from typing import Any
 
+from fastapi import HTTPException
+
 from lionagi.libs.path_safety import safe_join
 from lionagi.state.db import DEFAULT_DB_PATH
 
 from ..config import SHOWS_ROOT
+from ..registry import studio_route
 from ._db import open_db as _open_db
 from ._io import read_json_file as _read_json
 from ._path_safety import public_path, safe_path_join
+from ._sse import sse_response
 
 _log = __import__("logging").getLogger(__name__)
 
@@ -592,3 +596,35 @@ async def watch_show(topic: str) -> AsyncGenerator[str]:
                 return
 
         await asyncio.sleep(0.5)
+
+
+@studio_route("/shows/", method="GET", area="shows", name="list_shows")
+async def list_shows_route() -> list[dict[str, Any]]:
+    return await list_shows()
+
+
+# ADR-0011 §"Migration": import_shows is a state-mutating operation
+# (INSERT OR IGNORE into shows + plays); it must use POST, not GET.
+# ADR-0011 specifies this as a CLI maintenance command (`li state import-shows`).
+# The POST endpoint is retained as a Studio convenience trigger.
+@studio_route(
+    "/shows/import", method="POST", area="shows", tags=["shows", "shows"], name="import_shows"
+)
+async def import_shows_route() -> dict[str, int]:
+    return await import_shows()
+
+
+@studio_route("/shows/{topic}", method="GET", area="shows", name="get_show")
+async def get_show_route(topic: str) -> dict[str, Any]:
+    show = await get_show(topic)
+    if show is None:
+        raise HTTPException(status_code=404, detail=f"Show '{topic}' not found")
+    return show
+
+
+@studio_route("/shows/{topic}/stream", method="GET", area="shows")
+async def stream_show(topic: str):
+    """SSE stream of file changes under one show directory."""
+    if await get_show(topic) is None:
+        raise HTTPException(status_code=404, detail=f"Show '{topic}' not found")
+    return sse_response(watch_show(topic))

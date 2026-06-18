@@ -11,9 +11,9 @@ from lionagi.ln.concurrency import CancelScope, move_on_after
 from lionagi.orchestration import plan
 from lionagi.orchestration.prompts import SYNTHESIS_INSTRUCTION
 
-from .._lifecycle import classify_exception
 from .._logging import log_error, progress
 from .._providers import parse_model_spec
+from .._util import classify_exception
 from ._common import (
     _create_fanout_team,
     _format_result_json,

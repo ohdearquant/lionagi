@@ -1,23 +1,75 @@
+# Copyright (c) 2023-2026, HaiyangLi <quantocean.li at gmail dot com>
+# SPDX-License-Identifier: Apache-2.0
+
 from __future__ import annotations
 
 import json
+import logging
+import sqlite3
 import subprocess
 import time
 import uuid
 from pathlib import Path
 from typing import Any, Literal
 
-from lionagi.cli._process import pid_alive as _pid_is_live
+from fastapi import HTTPException, Query
+from pydantic import BaseModel, ConfigDict, Field
+
+from lionagi.cli._util import pid_alive as _pid_is_live
 from lionagi.ln import now_utc
 from lionagi.state.db import ADMIN_TRANSITION_TARGETS as _ADMIN_TRANSITION_TARGETS
 from lionagi.state.db import DEFAULT_DB_PATH
-from lionagi.state.reasons import SessionReasons
+from lionagi.state.reasons import RunReasons, SessionReasons, validate_reason_code
 
+from ..registry import studio_route
 from ._db import open_db as _open_db
 
 _DB = str(DEFAULT_DB_PATH)
+_log = logging.getLogger(__name__)
+
+# Fallback mapping for deprecated 'reason' field without reason_code.
+_LEGACY_ADMIN_REASON_CODES: dict[str, str] = {
+    "failed": RunReasons.FAILED_EXCEPTION,
+    "aborted": RunReasons.ABORTED_USER,
+    "cancelled": RunReasons.CANCELLED_SYSTEM,
+}
 
 PhantomReason = Literal["process_dead", "missing_artifacts", "stale_lock"]
+
+
+class MaintenanceBody(BaseModel):
+    """Request body for POST /api/admin/maintenance."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    action: Literal["vacuum", "checkpoint", "prune"] = Field(
+        ...,
+        description="DB maintenance action: 'vacuum', 'checkpoint', or 'prune'.",
+    )
+
+
+class PruneBody(BaseModel):
+    session_ids: list[str] | None = None
+    all_phantom: bool = False
+
+
+class PruneOldDataBody(BaseModel):
+    keep_days: int | None = Field(
+        default=None, ge=1, description="Retain sessions newer than this many days"
+    )
+
+
+class TransitionBody(BaseModel):
+    """ADR-0024/ADR-0028 admin session transition; reason_code preferred over deprecated reason field."""
+
+    session_ids: list[str] = Field(..., min_length=1)
+    target_status: Literal["failed", "aborted", "cancelled"]
+    reason_code: str | None = None
+    reason_summary: str = ""
+    evidence_refs: list[dict] = Field(default_factory=list)
+    # Deprecated; kept for backwards compatibility.
+    reason: str | None = Field(default=None, max_length=500)
+    actor: str = Field(default="admin", max_length=64)
 
 
 def db_health() -> dict[str, int]:
@@ -510,3 +562,143 @@ async def prune_phantom_sessions(*, stale_hours: float = 1.0) -> int:
     from lionagi.studio.services.lifecycle import reap_phantom_sessions
 
     return await reap_phantom_sessions(stale_hours=stale_hours, actor="admin_prune")
+
+
+# ---------------------------------------------------------------------------
+# Route handlers — admin area
+# ---------------------------------------------------------------------------
+
+
+@studio_route("/admin/doctor", method="GET", area="admin", name="doctor")
+async def doctor_route(
+    stale_hours: float = Query(default=1.0, gt=0),
+) -> dict[str, Any]:
+    return await doctor(stale_hours=stale_hours)
+
+
+@studio_route("/admin/health", method="GET", area="admin", name="health")
+async def health_route() -> dict[str, Any]:
+    """ADR-0024 §B: composite session health report."""
+    return await health_report()
+
+
+@studio_route("/admin/transition", method="POST", area="admin", name="transition")
+async def transition_route(body: TransitionBody) -> dict[str, Any]:
+    """ADR-0024/ADR-0028: mark running sessions terminal with a reason code."""
+    reason_code = body.reason_code
+    reason_summary = body.reason_summary
+
+    if reason_code is not None:
+        try:
+            reason_code = validate_reason_code(reason_code)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+    elif body.reason:
+        reason_code = _LEGACY_ADMIN_REASON_CODES[body.target_status]
+        reason_summary = body.reason
+        _log.warning(
+            "Deprecated admin transition field 'reason' used without reason_code; "
+            "mapped target_status=%s to reason_code=%s",
+            body.target_status,
+            reason_code,
+        )
+    else:
+        raise HTTPException(status_code=400, detail="reason_code is required")
+
+    try:
+        return await transition_sessions(
+            body.session_ids,
+            target_status=body.target_status,
+            reason_code=reason_code,
+            reason_summary=reason_summary,
+            evidence_refs=body.evidence_refs,
+            actor=body.actor,
+            legacy_reason=body.reason,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+
+@studio_route("/admin/events", method="GET", area="admin", name="admin_events")
+async def admin_events_route(
+    action: str | None = Query(default=None),
+    target_id: str | None = Query(default=None),
+    limit: int = Query(default=100, ge=1, le=1000),
+) -> dict[str, Any]:
+    events = await list_admin_events(action=action, target_id=target_id, limit=limit)
+    return {"events": events}
+
+
+@studio_route(
+    "/admin/prune-old-data",
+    method="POST",
+    area="admin",
+    name="prune_old_data",
+)
+async def prune_old_data_route(body: PruneOldDataBody) -> dict[str, int]:
+    """Remove terminal sessions/runs older than keep_days (default from config)."""
+    from ..services.db_maintenance import prune_old_data as _prune
+
+    return await _prune(keep_days=body.keep_days, actor="admin")
+
+
+@studio_route(
+    "/admin/maintenance",
+    method="POST",
+    area="admin",
+    name="run_maintenance",
+)
+async def run_maintenance_route(body: MaintenanceBody) -> dict[str, Any]:
+    """Run a DB maintenance action (vacuum | checkpoint | prune).
+
+    Returns 409 when SQLite cannot acquire the write lock (busy/locked); this is
+    intentional policy so the operator sees a retryable error instead of a generic 500.
+    """
+    from ..services.db_maintenance import (
+        checkpoint_state_db,
+        prune_old_data,
+        vacuum_state_db,
+    )
+
+    try:
+        if body.action == "vacuum":
+            result = await vacuum_state_db(actor="admin")
+            return {"action": "vacuum", **result}
+
+        if body.action == "checkpoint":
+            result = await checkpoint_state_db(actor="admin")
+            return {"action": "checkpoint", **result}
+
+        # action == "prune"
+        result = await prune_old_data(actor="admin")
+        return {"action": "prune", **result}
+
+    except sqlite3.OperationalError as exc:
+        # Only genuine lock/busy contention is retry-able. Open/path failures
+        # ("unable to open database file") are configuration problems and must
+        # not tell the operator to retry shortly — let them surface as 500.
+        msg = str(exc).lower()
+        if "locked" in msg or "in progress" in msg:
+            raise HTTPException(
+                status_code=409,
+                detail="State database is busy — another writer holds the lock. Try again shortly.",
+            ) from exc
+        raise
+
+
+@studio_route("/admin/prune", method="POST", area="admin", name="prune")
+async def prune_route(body: PruneBody) -> dict[str, int]:
+    has_ids = bool(body.session_ids)
+    has_all = body.all_phantom
+    if not has_ids and not has_all:
+        raise HTTPException(status_code=422, detail="Provide session_ids or all_phantom")
+    if has_ids and has_all:
+        raise HTTPException(
+            status_code=422,
+            detail="Provide either session_ids or all_phantom, not both",
+        )
+    if has_all:
+        count = await prune_phantom_sessions()
+    else:
+        count = await prune_sessions(body.session_ids or [])
+    return {"pruned": count}

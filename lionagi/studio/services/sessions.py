@@ -1,12 +1,16 @@
 from __future__ import annotations
 
+import asyncio
 import json
+import time
 from typing import Any
 
 import aiosqlite
+from fastapi import HTTPException  # used for 404 guards
 
 from lionagi.state.db import DEFAULT_DB_PATH, SESSION_TERMINAL_STATUSES
 
+from ..registry import studio_route
 from ._db import open_db as _open_db
 from ._io import parse_json_col as _parse_json_col
 
@@ -404,3 +408,118 @@ def is_session_stream_done(state: dict[str, Any] | None, *, now: float) -> bool:
         state.get("status") in SESSION_TERMINAL_STATUSES
         and now - float(state.get("updated_at") or 0.0) > SESSION_DONE_STABLE_SECS
     )
+
+
+# ---------------------------------------------------------------------------
+# Route handlers — sessions area
+# ---------------------------------------------------------------------------
+
+
+@studio_route("/sessions/", method="GET", area="sessions", name="list_sessions")
+async def list_sessions_route() -> dict[str, Any]:
+    return {"sessions": await list_sessions()}
+
+
+@studio_route("/sessions/{session_id}", method="GET", area="sessions", name="get_session")
+async def get_session_route(session_id: str) -> dict[str, Any]:
+    session = await get_session(session_id)
+    if session is None:
+        raise HTTPException(status_code=404, detail=f"Session '{session_id}' not found")
+    return session
+
+
+@studio_route(
+    "/sessions/{session_id}/stream",
+    method="GET",
+    area="sessions",
+    name="stream_session",
+    response_class=None,
+)
+async def stream_session_route(session_id: str):
+    # ADR-0006: pre-flight 404 guard before opening the stream.
+    # Without this, a non-existent session silently returns no messages and
+    # then waits 60s before emitting done — client hangs with no indication.
+    # The shows router already does this at shows.py:34-35; we mirror that pattern.
+    if not await session_exists(session_id):
+        raise HTTPException(status_code=404, detail=f"Session '{session_id}' not found")
+
+    async def generate():
+        after_ts: float = 0.0
+        last_heartbeat = time.monotonic()
+
+        while True:
+            messages = await get_session_messages_after(session_id, after_ts)
+
+            if messages:
+                for msg in messages:
+                    yield f"data: {json.dumps(msg)}\n\n"
+                    ts = msg.get("timestamp") or msg.get("created_at")
+                    if ts and ts > after_ts:
+                        after_ts = ts
+                last_heartbeat = time.monotonic()
+            elif time.monotonic() - last_heartbeat >= 5.0:
+                yield 'data: {"type":"heartbeat"}\n\n'
+                last_heartbeat = time.monotonic()
+
+            state = await get_session_stream_state(session_id)
+            if is_session_stream_done(state, now=time.time()):
+                yield 'data: {"type":"done"}\n\n'
+                return
+
+            await asyncio.sleep(0.5)
+
+    from ._sse import sse_response
+
+    return sse_response(generate())
+
+
+# ---------------------------------------------------------------------------
+# Route handlers — signals area (lives here; both areas share this module)
+# ---------------------------------------------------------------------------
+
+
+@studio_route(
+    "/sessions/{session_id}/signals",
+    method="GET",
+    area="sessions",
+    name="stream_signals",
+    response_class=None,
+)
+async def stream_signals(session_id: str) -> Any:
+    # Pre-flight 404 guard before opening the stream — mirrors the pattern
+    # at sessions.py:35-36 (ADR-0006).
+    if not await session_exists(session_id):
+        raise HTTPException(status_code=404, detail=f"Session '{session_id}' not found")
+
+    from . import signals as signals_svc
+
+    async def generate():
+        after_seq: int = 0
+        last_heartbeat = time.monotonic()
+
+        while True:
+            rows = await signals_svc.get_signals_after(session_id, after_seq)
+
+            if rows:
+                for row in rows:
+                    # _PAYLOAD_BYTE_CAP (16 KiB, defined in session/observer.py) caps the
+                    # payload column only, not the full SSE frame; the row envelope adds
+                    # ~176 bytes of fixed metadata overhead, so frames can exceed that cap.
+                    yield f"data: {json.dumps(row)}\n\n"
+                    if row["seq"] > after_seq:
+                        after_seq = row["seq"]
+                last_heartbeat = time.monotonic()
+            elif time.monotonic() - last_heartbeat >= 5.0:
+                yield 'data: {"type":"heartbeat"}\n\n'
+                last_heartbeat = time.monotonic()
+
+            state = await get_session_stream_state(session_id)
+            if is_session_stream_done(state, now=time.time()):
+                yield 'data: {"type":"done"}\n\n'
+                return
+
+            await asyncio.sleep(0.5)
+
+    from ._sse import sse_response
+
+    return sse_response(generate())

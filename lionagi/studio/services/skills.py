@@ -1,10 +1,15 @@
 from __future__ import annotations
 
+from functools import partial
 from typing import Any
+
+import anyio
+from fastapi import HTTPException
 
 from lionagi._paths import LIONAGI_HOME
 from lionagi.libs.frontmatter import parse_frontmatter as _parse_frontmatter
 
+from ..registry import studio_route
 from ._path_safety import public_path, safe_path_join
 
 SKILLS_ROOT = LIONAGI_HOME / "skills"
@@ -92,3 +97,17 @@ def get_skill(name: str) -> dict[str, Any] | None:
         "allowed_tools": allowed_tools,
         "content": body,
     }
+
+
+@studio_route("/skills/", method="GET", area="skills", name="list_skills")
+async def list_skills_route() -> dict[str, Any]:
+    skills = await anyio.to_thread.run_sync(list_skills)
+    return {"skills": skills}
+
+
+@studio_route("/skills/{name}", method="GET", area="skills", name="get_skill")
+async def get_skill_route(name: str) -> dict[str, Any]:
+    skill = await anyio.to_thread.run_sync(partial(get_skill, name))
+    if skill is None:
+        raise HTTPException(status_code=404, detail=f"Skill '{name}' not found")
+    return skill

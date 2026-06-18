@@ -22,7 +22,7 @@ def test_schedule_subparser_registered():
 
 def test_schedule_list_subcommand_registered():
     """li schedule list must be a recognized subcommand."""
-    from lionagi.cli.schedule import add_schedule_subparser
+    from lionagi.studio.cli import add_schedule_subparser
 
     parser = argparse.ArgumentParser()
     sub = parser.add_subparsers(dest="command")
@@ -33,7 +33,7 @@ def test_schedule_list_subcommand_registered():
 
 def test_schedule_create_subcommand_args():
     """li schedule create parses name + optional flags."""
-    from lionagi.cli.schedule import add_schedule_subparser
+    from lionagi.studio.cli import add_schedule_subparser
 
     parser = argparse.ArgumentParser()
     sub = parser.add_subparsers(dest="command")
@@ -49,7 +49,7 @@ def test_schedule_create_subcommand_args():
 
 def test_schedule_enable_disable_trigger_delete_accept_id():
     """enable/disable/trigger/delete all take an id positional arg."""
-    from lionagi.cli.schedule import add_schedule_subparser
+    from lionagi.studio.cli import add_schedule_subparser
 
     parser = argparse.ArgumentParser()
     sub = parser.add_subparsers(dest="command")
@@ -62,7 +62,7 @@ def test_schedule_enable_disable_trigger_delete_accept_id():
 
 def test_schedule_runs_subcommand():
     """li schedule runs <id> parses correctly."""
-    from lionagi.cli.schedule import add_schedule_subparser
+    from lionagi.studio.cli import add_schedule_subparser
 
     parser = argparse.ArgumentParser()
     sub = parser.add_subparsers(dest="command")
@@ -74,12 +74,12 @@ def test_schedule_runs_subcommand():
 
 def test_schedule_list_dispatches_to_api(monkeypatch):
     """run_schedule list calls _api('/') and prints schedules."""
-    import lionagi.cli.schedule as sched_mod
+    import lionagi.studio.cli as sched_mod
 
     fake_schedules = [{"id": "s1", "name": "daily", "enabled": True, "trigger_type": "cron"}]
     monkeypatch.setattr(sched_mod, "_api", lambda path, **kw: {"schedules": fake_schedules})
 
-    from lionagi.cli.schedule import add_schedule_subparser, run_schedule
+    from lionagi.studio.cli import add_schedule_subparser, run_schedule
 
     parser = argparse.ArgumentParser()
     sub = parser.add_subparsers(dest="command")
@@ -91,11 +91,11 @@ def test_schedule_list_dispatches_to_api(monkeypatch):
 
 def test_schedule_list_api_error_returns_1(monkeypatch):
     """When _api returns None (network error), run_schedule returns 1."""
-    import lionagi.cli.schedule as sched_mod
+    import lionagi.studio.cli as sched_mod
 
     monkeypatch.setattr(sched_mod, "_api", lambda path, **kw: None)
 
-    from lionagi.cli.schedule import add_schedule_subparser, run_schedule
+    from lionagi.studio.cli import add_schedule_subparser, run_schedule
 
     parser = argparse.ArgumentParser()
     sub = parser.add_subparsers(dest="command")

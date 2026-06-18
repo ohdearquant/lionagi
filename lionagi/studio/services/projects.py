@@ -6,8 +6,12 @@ from __future__ import annotations
 import time
 from typing import Any
 
+from fastapi import HTTPException
+from pydantic import BaseModel
+
 from lionagi.state.db import DEFAULT_DB_PATH
 
+from ..registry import studio_route
 from ._db import open_db as _open_db
 
 _DB = str(DEFAULT_DB_PATH)
@@ -244,3 +248,83 @@ async def delete_project(name: str) -> bool:
         )
         await db.commit()
         return cur.rowcount > 0
+
+
+class CreateProjectRequest(BaseModel):
+    name: str
+    github: str | None = None
+    description: str | None = None
+    path: str | None = None
+
+
+class UpdateProjectRequest(BaseModel):
+    github: str | None = None
+    description: str | None = None
+    path: str | None = None
+
+
+class AssignProjectRequest(BaseModel):
+    session_ids: list[str] | None = None
+    all_unassigned: bool = False
+
+
+@studio_route("/projects/", method="GET", area="projects", name="list_projects")
+async def list_projects_route() -> dict[str, Any]:
+    return await list_projects()
+
+
+@studio_route("/projects/{name}", method="GET", area="projects", name="get_project")
+async def get_project_route(name: str) -> dict[str, Any]:
+    project = await get_project(name)
+    if project is None:
+        raise HTTPException(status_code=404, detail=f"Project '{name}' not found")
+    return project
+
+
+@studio_route("/projects/", method="POST", area="projects", status_code=201, name="create_project")
+async def create_project_route(body: CreateProjectRequest) -> dict[str, Any]:
+    try:
+        return await create_project(
+            body.name,
+            github=body.github,
+            description=body.description,
+            path=body.path,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except Exception as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+
+@studio_route("/projects/{name}", method="PUT", area="projects", name="update_project")
+async def update_project_route(name: str, body: UpdateProjectRequest) -> dict[str, Any]:
+    fields = body.model_dump(exclude_none=True)
+    ok = await update_project(name, fields)
+    if not ok:
+        raise HTTPException(
+            status_code=404,
+            detail=f"Project '{name}' not found or no changes",
+        )
+    return {"ok": True}
+
+
+@studio_route("/projects/{name}/assign", method="POST", area="projects")
+async def assign_project(name: str, body: AssignProjectRequest) -> dict[str, Any]:
+    """Assign sessions to a project. Use session_ids for specific ones, or all_unassigned=true."""
+    count = await assign_sessions_to_project(
+        name,
+        session_ids=body.session_ids,
+        all_unassigned=body.all_unassigned,
+    )
+    return {"assigned": count, "project": name}
+
+
+@studio_route("/projects/{name}", method="DELETE", area="projects", name="delete_project")
+async def delete_project_route(name: str) -> dict[str, Any]:
+    ok = await delete_project(name)
+    if not ok:
+        raise HTTPException(
+            status_code=403,
+            detail="Only Studio-managed projects can be deleted",
+        )
+    return {"ok": True}

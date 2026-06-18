@@ -8,6 +8,13 @@ import argparse
 import signal
 import sys
 
+from lionagi.studio.cli import (
+    add_schedule_subparser,
+    add_studio_subparser,
+    run_schedule,
+    run_studio,
+)
+
 from ._logging import configure_cli_logging, log_error
 from .agent import add_agent_subparser, run_agent
 from .casts import add_casts_subparser, run_casts
@@ -20,10 +27,8 @@ from .orchestrate import (
     inject_playbook_schema_into_parser,
     run_orchestrate,
 )
-from .schedule import add_schedule_subparser, run_schedule
 from .skill import run_skill
 from .state import add_state_subparser, run_state
-from .studio import add_studio_subparser, run_studio
 from .team import add_team_subparser, run_team
 
 
@@ -114,7 +119,7 @@ def _handle_play_check(argv: list[str]) -> int:
     agent_name = spec.get("agent")
     if agent_name:
         try:
-            from lionagi.cli._agents import load_agent_profile
+            from lionagi.cli._providers import load_agent_profile
 
             profile = load_agent_profile(agent_name)
             agent_defaults = getattr(profile, "artifact_defaults", None)

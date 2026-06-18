@@ -16,7 +16,7 @@ class TestIsMountAllowed:
     """Direct tests for _is_mount_allowed."""
 
     def test_path_inside_allowed_root_is_permitted(self, tmp_path):
-        from lionagi.cli.studio import _is_mount_allowed
+        from lionagi.studio.cli import _is_mount_allowed
 
         root = tmp_path / "safe"
         root.mkdir()
@@ -24,14 +24,14 @@ class TestIsMountAllowed:
         assert _is_mount_allowed(target, [root]) is True
 
     def test_path_at_allowed_root_itself_is_permitted(self, tmp_path):
-        from lionagi.cli.studio import _is_mount_allowed
+        from lionagi.studio.cli import _is_mount_allowed
 
         root = tmp_path / "safe"
         root.mkdir()
         assert _is_mount_allowed(root, [root]) is True
 
     def test_path_outside_allowed_root_is_rejected(self, tmp_path):
-        from lionagi.cli.studio import _is_mount_allowed
+        from lionagi.studio.cli import _is_mount_allowed
 
         allowed = tmp_path / "allowed"
         allowed.mkdir()
@@ -40,7 +40,7 @@ class TestIsMountAllowed:
 
     def test_root_prefix_does_not_match_sibling_dir(self, tmp_path):
         """Allowlist /home/user must not match /home/username."""
-        from lionagi.cli.studio import _is_mount_allowed
+        from lionagi.studio.cli import _is_mount_allowed
 
         user_root = tmp_path / "user"
         user_root.mkdir()
@@ -51,13 +51,13 @@ class TestIsMountAllowed:
         assert _is_mount_allowed(target, [user_root]) is False
 
     def test_empty_allowed_roots_rejects_everything(self, tmp_path):
-        from lionagi.cli.studio import _is_mount_allowed
+        from lionagi.studio.cli import _is_mount_allowed
 
         assert _is_mount_allowed(tmp_path / "anything", []) is False
 
     def test_second_allowed_root_permits_path(self, tmp_path):
         """A path may be permitted by any root in the list."""
-        from lionagi.cli.studio import _is_mount_allowed
+        from lionagi.studio.cli import _is_mount_allowed
 
         root_a = tmp_path / "a"
         root_a.mkdir()
@@ -68,14 +68,14 @@ class TestIsMountAllowed:
 
     def test_system_path_outside_home_is_rejected(self):
         """/etc/passwd resolves outside a user home — must be rejected."""
-        from lionagi.cli.studio import _is_mount_allowed
+        from lionagi.studio.cli import _is_mount_allowed
 
         home = Path.home().resolve()
         assert _is_mount_allowed(Path("/etc/passwd"), [home]) is False
 
     def test_proc_path_is_rejected(self):
         """/proc is outside the user home — must be rejected."""
-        from lionagi.cli.studio import _is_mount_allowed
+        from lionagi.studio.cli import _is_mount_allowed
 
         home = Path.home().resolve()
         assert _is_mount_allowed(Path("/proc/1/mem"), [home]) is False
@@ -93,7 +93,7 @@ class TestSymlinkEscapeIsRejected:
 
         configure_cli_logging(verbose=False)
 
-        import lionagi.cli.studio as studio_mod
+        import lionagi.studio.cli as studio_mod
 
         lionagi_home = tmp_path / ".lionagi"
         agents_dir = lionagi_home / "agents"
@@ -189,14 +189,14 @@ class TestMountAllowedRoots:
     """_mount_allowed_roots returns expected safe roots."""
 
     def test_home_is_always_in_roots(self):
-        from lionagi.cli.studio import _mount_allowed_roots
+        from lionagi.studio.cli import _mount_allowed_roots
 
         roots = _mount_allowed_roots()
         home = Path.home().resolve()
         assert home in roots
 
     def test_xdg_config_home_is_included_when_set(self, tmp_path, monkeypatch):
-        from lionagi.cli.studio import _mount_allowed_roots
+        from lionagi.studio.cli import _mount_allowed_roots
 
         xdg = tmp_path / "xdg-config"
         xdg.mkdir()
@@ -206,7 +206,7 @@ class TestMountAllowedRoots:
 
     def test_xdg_config_home_not_duplicated_if_equals_home(self, monkeypatch):
         """When XDG_CONFIG_HOME == home, it must not appear twice."""
-        from lionagi.cli.studio import _mount_allowed_roots
+        from lionagi.studio.cli import _mount_allowed_roots
 
         home = Path.home().resolve()
         monkeypatch.setenv("XDG_CONFIG_HOME", str(home))
@@ -214,7 +214,7 @@ class TestMountAllowedRoots:
         assert roots.count(home) == 1
 
     def test_no_xdg_env_gives_only_home(self, monkeypatch):
-        from lionagi.cli.studio import _mount_allowed_roots
+        from lionagi.studio.cli import _mount_allowed_roots
 
         monkeypatch.delenv("XDG_CONFIG_HOME", raising=False)
         roots = _mount_allowed_roots()

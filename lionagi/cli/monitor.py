@@ -11,8 +11,8 @@ import time
 from pathlib import Path
 from typing import Any
 
-from ._process import pid_alive as _pid_alive_int
 from ._runs import RUNS_ROOT
+from ._util import pid_alive as _pid_alive_int
 
 __all__ = (
     "add_monitor_subparser",

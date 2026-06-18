@@ -12,28 +12,7 @@ from starlette.responses import FileResponse, JSONResponse
 from starlette.staticfiles import StaticFiles
 
 from .config import CORS_ORIGINS, HOST
-from .routers import (
-    admin,
-    agents,
-    artifacts,
-    casts,
-    definitions,
-    engine_defs,
-    engine_runs,
-    invocations,
-    launches,
-    playbooks,
-    plugins,
-    projects,
-    runs,
-    schedules,
-    sessions,
-    shows,
-    signals,
-    skills,
-    teams,
-)
-from .services import stats as stats_svc
+from .registry import iter_studio_routes, load_studio_route_modules
 
 _log = logging.getLogger(__name__)
 
@@ -146,38 +125,33 @@ async def require_studio_bearer_token(request: Request, call_next):
     return await call_next(request)
 
 
-app.include_router(casts.router, prefix="/api")
-app.include_router(runs.router, prefix="/api")
-app.include_router(engine_runs.router, prefix="/api")
-app.include_router(sessions.router, prefix="/api")
-app.include_router(signals.router, prefix="/api")
-app.include_router(definitions.router, prefix="/api")
-app.include_router(agents.router, prefix="/api")
-app.include_router(playbooks.router, prefix="/api")
-app.include_router(shows.router, prefix="/api")
-app.include_router(skills.router, prefix="/api")
-app.include_router(plugins.router, prefix="/api")
-app.include_router(admin.router, prefix="/api")
-app.include_router(teams.router, prefix="/api")
-app.include_router(invocations.router, prefix="/api")
-app.include_router(launches.router, prefix="/api")
-app.include_router(artifacts.router, prefix="/api")
-app.include_router(projects.router, prefix="/api")
-app.include_router(schedules.router, prefix="/api")
-app.include_router(engine_defs.router, prefix="/api")
+# Mount routes registered via the @studio_route decorator. In phase 0 the
+# registry is empty (_STUDIO_ROUTE_MODULES = ()), so this loop adds nothing
+# and observable behavior is unchanged. Future phases append area modules to
+# _STUDIO_ROUTE_MODULES so their routes are registered here instead of via
+# include_router.
+load_studio_route_modules()
+for _route in iter_studio_routes():
+    app.add_api_route(
+        f"/api{_route.path}",
+        _route.handler,
+        methods=[_route.method],
+        **({"response_model": _route.response_model} if _route.response_model is not None else {}),
+        dependencies=list(_route.dependencies),
+        status_code=_route.status_code,
+        tags=list(_route.tags),
+        name=_route.name,
+        summary=_route.summary,
+        description=_route.description,
+        **({"response_class": _route.response_class} if _route.response_class is not None else {}),
+        responses=dict(_route.responses) if _route.responses is not None else None,
+        include_in_schema=_route.include_in_schema,
+    )
 
 
 @app.get("/health")
 async def health() -> dict[str, Any]:
     return {"status": "ok"}
-
-
-@app.get("/api/stats")
-async def get_stats() -> dict[str, Any]:
-    # ADR-0012 §10: "runs" count must come from SQLite sessions so the dashboard
-    # matches the Runs list page; runs_svc.list_runs() reads filesystem dirs and
-    # returns a different count than the sessions-backed list endpoint.
-    return await stats_svc.get_stats()
 
 
 def _resolve_frontend_dist() -> Path | None:
@@ -234,8 +208,8 @@ _dist = _resolve_frontend_dist()
 if _dist is not None:
     _mount_spa(app, _dist)
 
-# CORS middleware is registered LAST — after every router and the two direct
-# @app.get endpoints above and the optional SPA mount — so the method allowlist
+# CORS middleware is registered LAST — after every router and the one direct
+# @app.get endpoint above and the optional SPA mount — so the method allowlist
 # is derived from the complete route table (see _collect_cors_methods).  Added
 # last, it sits outermost in the middleware stack, the correct position for
 # CORS: preflight is answered before the bearer-token gate (which already lets

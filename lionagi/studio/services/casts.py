@@ -7,13 +7,11 @@ from __future__ import annotations
 
 from typing import Any
 
-from fastapi import APIRouter
-
 from lionagi.casts.catalog import build_catalog
 
-router = APIRouter(prefix="/casts", tags=["casts"])
+from ..registry import studio_route
 
 
-@router.get("/")
+@studio_route("/casts/", method="GET", area="casts")
 async def get_casts() -> dict[str, Any]:
     return build_catalog()
