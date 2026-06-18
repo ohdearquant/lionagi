@@ -32,18 +32,19 @@ __all__ = (
 class HookPoint(str, Enum):
     """Closed vocabulary of session lifecycle hook points (see docs/reference/agent-hooks.md)."""
 
+    # not-yet-wired: no emit() call in the codebase; handlers registered but never invoked
     SESSION_START = "session.start"
     SESSION_END = "session.end"
-
     BRANCH_CREATE = "branch.create"
+    # not-yet-wired: no emit() call in the codebase
     API_PRE_CALL = "api.pre_call"
     API_POST_CALL = "api.post_call"
     API_STREAM_CHUNK = "api.stream_chunk"
-    TOOL_PRE = "tool.pre"
-    TOOL_POST = "tool.post"
-    TOOL_ERROR = "tool.error"
-    MESSAGE_ADD = "message.add"
-    ARTIFACT_CREATED = "artifact.created"
+    TOOL_PRE = "tool.pre"  # not-yet-wired: blocking_emit routing exists but no call site
+    TOOL_POST = "tool.post"  # not-yet-wired
+    TOOL_ERROR = "tool.error"  # not-yet-wired
+    MESSAGE_ADD = "message.add"  # live: emitted in session/branch.py
+    ARTIFACT_CREATED = "artifact.created"  # not-yet-wired
 
 
 HookHandler = Callable[..., Awaitable[Any] | Any]
