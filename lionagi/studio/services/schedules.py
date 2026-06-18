@@ -8,8 +8,13 @@ import time
 import uuid
 from typing import Any
 
+from fastapi import HTTPException, Query
+from pydantic import BaseModel
+
 from lionagi.service.providers import EFFORT_LEVELS as _VALID_EFFORT_LEVELS
 from lionagi.state.db import DEFAULT_DB_PATH, StateDB
+
+from ..registry import studio_route
 
 _PRESERVE_DASHED: frozenset[str] = frozenset({"argument-hint"})
 
@@ -376,3 +381,197 @@ async def get_schedule_run(run_id: str) -> dict[str, Any] | None:
             rows = await cur.fetchall()
             run["chain_children"] = [db._row_to_dict(r) for r in rows]
     return run
+
+
+# ---------------------------------------------------------------------------
+# Request/response models
+# ---------------------------------------------------------------------------
+
+
+class CreateScheduleRequest(BaseModel):
+    name: str
+    description: str | None = None
+    trigger_type: str
+    cron_expr: str | None = None
+    interval_sec: int | None = None
+    github_repo: str | None = None
+    github_filter: dict | None = None
+    poll_interval_sec: int | None = None
+    action_kind: str
+    action_model: str | None = None
+    action_prompt: str | None = None
+    action_agent: str | None = None
+    action_playbook: str | None = None
+    action_flow_yaml: str | None = None
+    action_project: str | None = None
+    action_extra_args: list[str] | None = None
+    on_success: dict | None = None
+    on_fail: dict | None = None
+    missed_fire_policy: str = "skip"
+    overlap_policy: str = "skip"
+    project: str | None = None
+
+
+class UpdateScheduleRequest(BaseModel):
+    name: str | None = None
+    description: str | None = None
+    trigger_type: str | None = None
+    cron_expr: str | None = None
+    interval_sec: int | None = None
+    github_repo: str | None = None
+    github_filter: dict | None = None
+    poll_interval_sec: int | None = None
+    action_kind: str | None = None
+    action_model: str | None = None
+    action_prompt: str | None = None
+    action_agent: str | None = None
+    action_playbook: str | None = None
+    action_flow_yaml: str | None = None
+    action_project: str | None = None
+    action_extra_args: list[str] | None = None
+    on_success: dict | None = None
+    on_fail: dict | None = None
+    missed_fire_policy: str | None = None
+    overlap_policy: str | None = None
+    project: str | None = None
+
+
+# ---------------------------------------------------------------------------
+# Route handlers — schedules area
+# ---------------------------------------------------------------------------
+
+
+@studio_route("/schedules/", method="GET", area="schedules", name="list_schedules")
+async def list_schedules_route(
+    enabled: bool | None = Query(default=None),
+    trigger_type: str | None = Query(default=None),
+    project: str | None = Query(default=None),
+) -> dict[str, Any]:
+    rows = await list_schedules(enabled=enabled, trigger_type=trigger_type, project=project)
+    return {"schedules": rows}
+
+
+@studio_route("/schedules/{schedule_id}", method="GET", area="schedules", name="get_schedule")
+async def get_schedule_route(schedule_id: str) -> dict[str, Any]:
+    data = await get_schedule(schedule_id)
+    if data is None:
+        raise HTTPException(status_code=404, detail=f"Schedule '{schedule_id}' not found")
+    return data
+
+
+@studio_route(
+    "/schedules/",
+    method="POST",
+    area="schedules",
+    status_code=201,
+    name="create_schedule",
+)
+async def create_schedule_route(body: CreateScheduleRequest) -> dict[str, Any]:
+    try:
+        return await create_schedule(body.model_dump(exclude_none=True))
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except Exception as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+
+@studio_route(
+    "/schedules/{schedule_id}",
+    method="PATCH",
+    area="schedules",
+    name="update_schedule",
+)
+async def update_schedule_route(schedule_id: str, body: UpdateScheduleRequest) -> dict[str, Any]:
+    fields = body.model_dump(exclude_none=True)
+    try:
+        ok = await update_schedule(schedule_id, fields)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    if not ok:
+        raise HTTPException(status_code=404, detail=f"Schedule '{schedule_id}' not found")
+    return {"ok": True}
+
+
+@studio_route(
+    "/schedules/{schedule_id}",
+    method="DELETE",
+    area="schedules",
+    name="delete_schedule",
+)
+async def delete_schedule_route(schedule_id: str) -> dict[str, Any]:
+    ok = await delete_schedule(schedule_id)
+    if not ok:
+        raise HTTPException(status_code=404, detail=f"Schedule '{schedule_id}' not found")
+    return {"ok": True}
+
+
+@studio_route(
+    "/schedules/{schedule_id}/enable",
+    method="POST",
+    area="schedules",
+    name="enable_schedule",
+)
+async def enable_schedule_route(schedule_id: str) -> dict[str, Any]:
+    ok = await enable_schedule(schedule_id)
+    if not ok:
+        raise HTTPException(status_code=404, detail=f"Schedule '{schedule_id}' not found")
+    return {"ok": True, "enabled": True}
+
+
+@studio_route(
+    "/schedules/{schedule_id}/disable",
+    method="POST",
+    area="schedules",
+    name="disable_schedule",
+)
+async def disable_schedule_route(schedule_id: str) -> dict[str, Any]:
+    ok = await disable_schedule(schedule_id)
+    if not ok:
+        raise HTTPException(status_code=404, detail=f"Schedule '{schedule_id}' not found")
+    return {"ok": True, "enabled": False}
+
+
+@studio_route(
+    "/schedules/{schedule_id}/trigger",
+    method="POST",
+    area="schedules",
+    name="trigger_schedule",
+)
+async def trigger_schedule_route(schedule_id: str) -> dict[str, Any]:
+    from ..scheduler.engine import scheduler
+
+    run_id = await scheduler.fire_now(schedule_id)
+    if run_id is None:
+        raise HTTPException(status_code=404, detail=f"Schedule '{schedule_id}' not found")
+    return {"ok": True, "run_id": run_id}
+
+
+@studio_route(
+    "/schedules/{schedule_id}/runs",
+    method="GET",
+    area="schedules",
+    name="list_schedule_runs",
+)
+async def list_schedule_runs_route(
+    schedule_id: str,
+    status: str | None = Query(default=None),
+    limit: int = Query(default=50, ge=1, le=200),
+    offset: int = Query(default=0, ge=0),
+) -> dict[str, Any]:
+    rows = await list_schedule_runs(schedule_id, status=status, limit=limit, offset=offset)
+    return {"runs": rows, "limit": limit, "offset": offset, "has_next": len(rows) == limit}
+
+
+# Top-level schedule-runs endpoint for looking up a single run by ID
+@studio_route(
+    "/schedules/runs/{run_id}",
+    method="GET",
+    area="schedules",
+    tags=["schedules", "schedule-runs"],
+    name="get_schedule_run",
+)
+async def get_schedule_run_route(run_id: str) -> dict[str, Any]:
+    data = await get_schedule_run(run_id)
+    if data is None:
+        raise HTTPException(status_code=404, detail=f"Schedule run '{run_id}' not found")
+    return data

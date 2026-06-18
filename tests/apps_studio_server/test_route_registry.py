@@ -245,6 +245,10 @@ _MIGRATED_AREAS = {
     "launches",
     "projects",
     "engine-defs",
+    "sessions",
+    "admin",
+    "schedules",
+    "stats",
 }
 
 

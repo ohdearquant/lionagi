@@ -787,8 +787,8 @@ async def test_signals_generator_cancellation_on_disconnect(tmp_path, monkeypatc
     monkeypatch.setattr(signals_svc, "_DB", str(db_path))
     monkeypatch.setattr(signals_svc, "DEFAULT_DB_PATH", db_path)
 
-    # Import the router's generate factory directly.
-    from lionagi.studio.routers.signals import stream_signals
+    # Import the handler directly from the service module.
+    from lionagi.studio.services.sessions import stream_signals
 
     # The endpoint function builds a StreamingResponse whose body is the
     # generate() async-generator.  We call it directly to get the generator.
