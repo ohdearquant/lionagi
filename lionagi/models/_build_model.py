@@ -10,7 +10,7 @@ import inspect
 from pydantic import BaseModel, ConfigDict, create_model
 from pydantic.fields import FieldInfo
 
-from lionagi.utils import copy
+from lionagi.ln import copy
 
 from .field_model import FieldModel
 

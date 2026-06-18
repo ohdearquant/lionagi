@@ -9,8 +9,8 @@ from pydantic import BaseModel, ConfigDict, Field, field_serializer
 from typing_extensions import override
 
 from lionagi.libs.nested import deep_update, flatten, nget, npop, nset, unflatten
-from lionagi.ln import is_sentinel, to_dict
-from lionagi.utils import UNDEFINED, copy
+from lionagi.ln import copy, is_sentinel, to_dict
+from lionagi.utils import UNDEFINED
 
 IndicesType = str | int | tuple[str | int, ...]
 

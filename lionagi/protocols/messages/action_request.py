@@ -7,7 +7,8 @@ from typing import Any, ClassVar
 
 from pydantic import field_validator
 
-from lionagi.utils import copy, to_dict
+from lionagi.ln import copy
+from lionagi.utils import to_dict
 
 from .message import Message, MessageContent, MessageRole
 
