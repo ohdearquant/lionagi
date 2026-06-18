@@ -255,6 +255,26 @@ exclude = [
     "logs/*"
 ]
 
+[tool.pyright]
+include = ["lionagi"]
+exclude = [
+    "tests",
+    "apps/studio/frontend",
+    "**/__pycache__",
+    "**/node_modules",
+    ".venv",
+    "dist",
+    "build",
+]
+typeCheckingMode = "basic"
+pythonVersion = "3.10"
+reportMissingImports = "warning"
+reportMissingModuleSource = "none"
+reportUnknownMemberType = "none"
+reportUnknownArgumentType = "none"
+reportUnknownVariableType = "none"
+reportUnknownParameterType = "none"
+
 [tool.uv]
 # Force minimum versions for transitive deps with known vulnerabilities
 constraint-dependencies = [
