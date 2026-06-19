@@ -289,7 +289,9 @@ class FieldModel(Params):
 
         if current_metadata:
             args = [actual_type] + list(current_metadata)
-            result = Annotated.__class_getitem__(tuple(args))  # type: ignore
+            # Subscription (not the __class_getitem__ attribute, which 3.14
+            # removed from special forms). Annotated[(a, b, c)] == Annotated[a, b, c].
+            result = Annotated[tuple(args)]  # type: ignore
         else:
             result = actual_type  # type: ignore[misc]
 
