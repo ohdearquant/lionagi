@@ -75,6 +75,23 @@ async def test_service_get_returns_none_when_db_absent(patched_engine_runs_svc):
     assert result is None
 
 
+async def test_service_list_returns_empty_on_fresh_db(patched_engine_runs_svc):
+    """Fresh DB file with no rows → service returns [] without raising."""
+    svc, db_path = patched_engine_runs_svc
+    # Touch the file so the exists() guard passes; StateDB creates schema on open.
+    db_path.touch()
+    result = await svc.list_engine_runs()
+    assert result == []
+
+
+async def test_service_get_returns_none_on_fresh_db(patched_engine_runs_svc):
+    """Fresh DB file with no rows → get returns None without raising."""
+    svc, db_path = patched_engine_runs_svc
+    db_path.touch()
+    result = await svc.get_engine_run("any-id")
+    assert result is None
+
+
 async def test_service_list_returns_seeded_rows(patched_engine_runs_svc):
     svc, db_path = patched_engine_runs_svc
     rid1 = await _seed_engine_run(db_path, kind="research", started_at=1000.0)
