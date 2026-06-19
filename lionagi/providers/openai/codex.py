@@ -71,10 +71,7 @@ CodexReasoningEffort = Literal[
     "xhigh",
 ]
 
-__all__ = (
-    "CodexCodeRequest",
-    "stream_codex_cli",
-)
+__all__ = ("CodexCodeRequest", "stream_codex_cli", "CodexCLIEndpoint")
 
 
 # --------------------------------------------------------------------------- flag metadata

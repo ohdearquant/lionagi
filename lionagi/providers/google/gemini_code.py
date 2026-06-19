@@ -51,6 +51,7 @@ __all__ = (
     "GeminiCodeRequest",
     "GeminiSession",
     "stream_gemini_cli",
+    "GeminiCLIEndpoint",
 )
 
 

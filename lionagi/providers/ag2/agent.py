@@ -20,11 +20,7 @@ from ._config import AG2Configs
 
 logger = logging.getLogger(__name__)
 
-__all__ = [
-    "AG2AgentRequest",
-    "AgentConfig",
-    "run_beta_agent",
-]
+__all__ = ["AG2AgentRequest", "AgentConfig", "run_beta_agent", "AG2BetaEndpoint"]
 
 
 class AgentConfig(BaseModel):

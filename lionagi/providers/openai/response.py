@@ -51,7 +51,7 @@ class OpenAIResponsesRequest(BaseModel):
     parallel_tool_calls: bool | None = None
 
 
-__all__ = ("OpenAIResponsesRequest",)
+__all__ = ("OpenAIResponsesRequest", "OpenaiResponseEndpoint")
 
 
 @OpenAIConfigs.RESPONSE.register

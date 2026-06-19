@@ -68,10 +68,7 @@ ClaudeOutputFormat = Literal["text", "json", "stream-json"]
 ClaudeInputFormat = Literal["text", "stream-json"]
 
 
-__all__ = (
-    "ClaudeCodeRequest",
-    "stream_claude_code_cli",
-)
+__all__ = ("ClaudeCodeRequest", "stream_claude_code_cli", "ClaudeCodeCLIEndpoint")
 
 
 # --------------------------------------------------------------------------- flag metadata

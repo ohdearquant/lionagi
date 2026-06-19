@@ -10,6 +10,8 @@ from lionagi.service.connections.endpoint_config import EndpointConfig
 
 from ._config import FirecrawlConfigs
 
+__all__ = ("FirecrawlMapRequest", "FirecrawlMapEndpoint")
+
 
 class FirecrawlMapRequest(BaseModel):
     model_config = ConfigDict(

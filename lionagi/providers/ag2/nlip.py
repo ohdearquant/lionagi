@@ -21,11 +21,7 @@ from ._config import AG2Configs
 
 logger = logging.getLogger(__name__)
 
-__all__ = [
-    "AG2NlipRequest",
-    "_assert_nlip_url_safe",
-    "call_nlip_remote",
-]
+__all__ = ["AG2NlipRequest", "_assert_nlip_url_safe", "call_nlip_remote", "AG2NlipEndpoint"]
 
 
 class AG2NlipRequest(BaseModel):

@@ -28,6 +28,7 @@ __all__ = [
     "AG2GroupChatRequest",
     "build_group_chat",
     "stream_group_chat",
+    "AG2GroupChatEndpoint",
 ]
 
 

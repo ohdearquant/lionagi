@@ -5,6 +5,8 @@ from lionagi.service.connections.endpoint import Endpoint
 
 from ._config import GroqConfigs
 
+__all__ = ("GroqChatEndpoint",)
+
 CONTEXT_WINDOWS: dict[str, int] = {
     "llama-3.3-70b-versatile": 128_000,
     "llama-3.1-8b-instant": 128_000,

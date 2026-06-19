@@ -27,7 +27,7 @@ class NvidiaNimEmbeddingRequest(BaseModel):
     user: str | None = Field(default=None)
 
 
-__all__ = ("NvidiaNimEmbeddingRequest",)
+__all__ = ("NvidiaNimEmbeddingRequest", "NvidiaNimEmbedEndpoint")
 
 
 @NvidiaNimConfigs.EMBED.register

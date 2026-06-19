@@ -6,7 +6,7 @@ from lionagi.service.connections.endpoint import Endpoint
 
 from ._config import GeminiChatConfigs
 
-__all__ = ("OpenAIChatCompletionsRequest",)
+__all__ = ("OpenAIChatCompletionsRequest", "GeminiChatEndpoint")
 
 
 CONTEXT_WINDOWS: dict[str, int] = {

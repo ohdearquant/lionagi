@@ -7,6 +7,8 @@ from lionagi.service.connections.endpoint import Endpoint
 
 from ._config import GroqConfigs
 
+__all__ = ("GroqAudioTranscriptionEndpoint",)
+
 
 @GroqConfigs.AUDIO_TRANSCRIPTION.register
 class GroqAudioTranscriptionEndpoint(Endpoint):

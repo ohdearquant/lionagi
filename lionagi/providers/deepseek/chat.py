@@ -14,6 +14,8 @@ from lionagi.service.connections.endpoint import Endpoint
 
 from ._config import DeepSeekConfigs
 
+__all__ = ("DeepseekChatCompletionsRequest", "DeepseekChatEndpoint")
+
 DeepseekThinkingType = Literal["enabled", "disabled"]
 DeepseekReasoningEffort = Literal["low", "medium", "high", "xhigh", "max"]
 

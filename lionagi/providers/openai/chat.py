@@ -15,6 +15,8 @@ from lionagi.service.connections.endpoint import Endpoint
 
 from ._config import OpenAIConfigs
 
+__all__ = ("OpenAIChatCompletionsRequest", "OpenaiChatEndpoint")
+
 warnings.filterwarnings("ignore", category=UserWarning, module="pydantic")
 
 

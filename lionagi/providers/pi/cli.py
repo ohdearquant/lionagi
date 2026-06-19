@@ -61,12 +61,7 @@ PiThinkingLevel = Literal[
     "xhigh",
 ]
 
-__all__ = (
-    "PiChunk",
-    "PiCodeRequest",
-    "PiSession",
-    "stream_pi_cli",
-)
+__all__ = ("PiChunk", "PiCodeRequest", "PiSession", "stream_pi_cli", "PiCLIEndpoint")
 
 # Model name prefix → pi --provider value.
 # Longest prefixes first to avoid false matches.

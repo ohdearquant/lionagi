@@ -34,7 +34,7 @@ class OpenAIEmbeddingRequest(BaseModel):
     )
 
 
-__all__ = ("OpenAIEmbeddingRequest",)
+__all__ = ("OpenAIEmbeddingRequest", "OpenaiEmbedEndpoint")
 
 
 @OpenAIConfigs.EMBED.register

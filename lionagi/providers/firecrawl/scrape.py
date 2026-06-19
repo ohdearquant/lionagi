@@ -12,6 +12,8 @@ from lionagi.service.connections.endpoint_config import EndpointConfig
 
 from ._config import FirecrawlConfigs
 
+__all__ = ("FirecrawlScrapeRequest", "FirecrawlScrapeEndpoint")
+
 
 class OutputFormat(str, Enum):
     markdown = "markdown"
