@@ -282,12 +282,14 @@ class Endpoint:
         # No RetryConfig: use the native retry path with aiohttp transport errors.
         # _NonRetryableClientError is in exclude_exceptions so 4xx non-429 gives up immediately.
         # Re-raise the wrapped original so callers see aiohttp.ClientResponseError.
+        # config.max_retries is a total-attempt cap (it was backoff's max_tries); retry_with_backoff
+        # runs max_retries+1 attempts, so subtract one to preserve the same total attempt count.
         try:
             return await retry_with_backoff(
                 _make_request,
                 retry_exceptions=(aiohttp.ClientError, asyncio.TimeoutError),
                 exclude_exceptions=(_NonRetryableClientError,),
-                max_retries=self.config.max_retries,
+                max_retries=max(0, self.config.max_retries - 1),
                 base_delay=1.0,
                 max_delay=60.0,
                 backoff_factor=2.0,

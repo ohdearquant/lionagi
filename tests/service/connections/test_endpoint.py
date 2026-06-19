@@ -1081,8 +1081,8 @@ class TestSingleRetryPathParity:
                     with pytest.raises(aiohttp.ClientResponseError) as exc_info:
                         await endpoint._call_aiohttp({}, {})
         assert exc_info.value.status == 500
-        # max_retries=2 means 3 total attempts (initial + 2 retries)
-        assert call_count == 3
+        # max_retries is a total-attempt cap (was backoff's max_tries): 2 → 2 attempts
+        assert call_count == 2
 
     @pytest.mark.asyncio
     async def test_network_timeout_is_retried(self):
@@ -1106,5 +1106,5 @@ class TestSingleRetryPathParity:
                 with patch("lionagi.ln.concurrency.patterns.anyio.sleep", AsyncMock()):
                     with pytest.raises(asyncio.TimeoutError):
                         await endpoint._call_aiohttp({}, {})
-        # max_retries=2 → 3 total attempts
-        assert call_count == 3
+        # max_retries is a total-attempt cap (was backoff's max_tries): 2 → 2 attempts
+        assert call_count == 2
