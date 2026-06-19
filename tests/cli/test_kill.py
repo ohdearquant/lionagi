@@ -286,6 +286,24 @@ def test_identity_accepts_li_entrypoint(monkeypatch: pytest.MonkeyPatch):
     assert _check_pid_identity(42, "lionagi") is True
 
 
+def test_identity_accepts_shebang_launched_li(monkeypatch: pytest.MonkeyPatch):
+    """Shebang-launched li: argv[0]=python3, argv[1]=.../bin/li — must be accepted."""
+    _mock_psutil(
+        monkeypatch,
+        cmdline=["/opt/.venv/bin/python3", "/opt/.venv/bin/li", "play", "abc123"],
+    )
+    assert _check_pid_identity(42, "lionagi") is True
+
+
+def test_identity_rejects_foreign_script_with_li_in_path(monkeypatch: pytest.MonkeyPatch):
+    """A non-lionagi script whose path contains 'li' must not be accepted."""
+    _mock_psutil(
+        monkeypatch,
+        cmdline=["/usr/bin/python3", "/usr/local/bin/olia-tool", "run"],
+    )
+    assert _check_pid_identity(42, "lionagi") is False
+
+
 def test_identity_session_marker_match(monkeypatch: pytest.MonkeyPatch):
     """A matching LIONAGI_SESSION_ID env marker is a definitive match."""
     _mock_psutil(
