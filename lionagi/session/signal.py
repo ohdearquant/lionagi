@@ -1,7 +1,25 @@
 # Copyright (c) 2023-2026, HaiyangLi <quantocean.li at gmail dot com>
 # SPDX-License-Identifier: Apache-2.0
 
-"""Signal types and per-node lifecycle projection for the reactive bus (ADR-0083)."""
+"""Signal types and per-node lifecycle projection for the reactive bus (ADR-0083).
+
+Payload contract (schema_version=1):
+  RunStart        — no payload fields
+  RunEnd          — input_tokens, output_tokens, total_cost_usd, num_turns, duration_ms
+  RunFailed       — data: exception
+  NodeSpawned     — op_id, parent_id, independent, assignee, instruction
+  NodeQueued      — op_id, name, elapsed, parent_id, depends_on
+  NodeStarted     — op_id, name, elapsed, parent_id, depends_on
+  NodeCompleted   — op_id, name, elapsed, parent_id, depends_on
+  NodeFailed      — op_id, name, elapsed, parent_id, depends_on
+  NodeAwaitingApproval — op_id, name, reason
+  NodeEscalated   — op_id, name, reason, route, escalation_request
+  GateDenied      — data: any
+  MessageAdded    — data: RoledMessage (stored as message_ref in payload)
+
+Version policy: schema_version is bumped on any breaking field removal or rename.
+Adding nullable fields is non-breaking and does not bump the version.
+"""
 
 from __future__ import annotations
 
@@ -18,6 +36,7 @@ __all__ = (
     "RunStart",
     "RunEnd",
     "RunFailed",
+    "NodeSpawned",
     "NodeStarted",
     "NodeCompleted",
     "NodeFailed",
@@ -28,7 +47,11 @@ __all__ = (
     "MessageAdded",
     "NodeLifecycleState",
     "lane_for",
+    "build_run_end",
+    "SIGNAL_SCHEMA_VERSION",
 )
+
+SIGNAL_SCHEMA_VERSION: int = 1
 
 
 class Signal(Element):
@@ -36,6 +59,7 @@ class Signal(Element):
 
     data: Any = None
     emitter_role: str | None = None
+    schema_version: int = SIGNAL_SCHEMA_VERSION
 
 
 class StructuredOutput(Signal):
@@ -49,11 +73,27 @@ class RunStart(Signal):
 
 
 class RunEnd(Signal):
-    """Run lifecycle: completed. data is the result."""
+    """Run lifecycle: completed. Usage fields are populated when available."""
+
+    input_tokens: int = 0
+    output_tokens: int = 0
+    total_cost_usd: float = 0.0
+    num_turns: int = 0
+    duration_ms: float = 0.0
 
 
 class RunFailed(Signal):
     """Run lifecycle: raised. data is the exception."""
+
+
+class NodeSpawned(Signal):
+    """A DAG node was accepted into the running graph (reactive spawn)."""
+
+    op_id: str = ""
+    parent_id: str | None = None
+    independent: bool = False
+    assignee: str | None = None
+    instruction: str | None = None
 
 
 class NodeStarted(Signal):
@@ -62,6 +102,8 @@ class NodeStarted(Signal):
     op_id: str = ""
     name: str = ""
     elapsed: float = 0.0
+    parent_id: str | None = None
+    depends_on: list[str] = []
 
 
 class NodeCompleted(Signal):
@@ -70,6 +112,8 @@ class NodeCompleted(Signal):
     op_id: str = ""
     name: str = ""
     elapsed: float = 0.0
+    parent_id: str | None = None
+    depends_on: list[str] = []
 
 
 class NodeFailed(Signal):
@@ -78,6 +122,8 @@ class NodeFailed(Signal):
     op_id: str = ""
     name: str = ""
     elapsed: float = 0.0
+    parent_id: str | None = None
+    depends_on: list[str] = []
 
 
 class GateDenied(Signal):
@@ -102,6 +148,8 @@ class NodeQueued(Signal):
     op_id: str = ""
     name: str = ""
     elapsed: float = 0.0
+    parent_id: str | None = None
+    depends_on: list[str] = []
 
 
 class NodeAwaitingApproval(Signal):
@@ -169,3 +217,47 @@ def lane_for(signals: Iterable[Signal | Any]) -> NodeLifecycleState:
         state = new
         in_terminal = state in _TERMINAL
     return state
+
+
+def _collect_branch_usage(branch: Any) -> dict[str, Any]:
+    """Sum provider-reported usage across all AssistantResponse messages on branch.
+
+    Returns dict with keys: input_tokens, output_tokens, total_cost_usd, num_turns.
+    All zero when no provider data is available (subscription runs, tests).
+    """
+    input_tokens = 0
+    output_tokens = 0
+    total_cost_usd = 0.0
+    num_turns = 0
+
+    try:
+        messages = list(branch.msgs.messages)
+    except Exception:  # noqa: BLE001
+        return {"input_tokens": 0, "output_tokens": 0, "total_cost_usd": 0.0, "num_turns": 0}
+
+    for msg in messages:
+        mr = (
+            getattr(msg, "metadata", {}).get("model_response") if hasattr(msg, "metadata") else None
+        )
+        if not isinstance(mr, dict):
+            continue
+        usage = mr.get("usage") if isinstance(mr.get("usage"), dict) else mr
+        input_tokens += int(usage.get("input_tokens", usage.get("prompt_tokens", 0)) or 0)
+        output_tokens += int(usage.get("output_tokens", usage.get("completion_tokens", 0)) or 0)
+        cost = mr.get("total_cost_usd") or mr.get("cost")
+        if isinstance(cost, (int, float)):
+            total_cost_usd += float(cost)
+        num_turns += int(mr.get("num_turns", 0) or 0)
+
+    return {
+        "input_tokens": input_tokens,
+        "output_tokens": output_tokens,
+        "total_cost_usd": total_cost_usd,
+        "num_turns": num_turns,
+    }
+
+
+def build_run_end(branch: Any, *, duration_ms: float = 0.0, result: Any = None) -> RunEnd:
+    """Build a RunEnd signal with usage populated from branch message history."""
+    usage = _collect_branch_usage(branch)
+    return RunEnd(data=result, duration_ms=duration_ms, **usage)

@@ -77,9 +77,14 @@ async def persist_session_end(
     session_id: str,
     status: str = "completed",
     error: str | None = None,
+    input_tokens: int | None = None,
+    output_tokens: int | None = None,
+    total_cost_usd: float | None = None,
+    num_turns: int | None = None,
+    duration_ms: float | None = None,
     **_unused: Any,
 ) -> None:
-    """Stamp the terminal status + ended_at on the session row."""
+    """Stamp the terminal status + ended_at on the session row, with optional usage."""
     from lionagi.state.db import SESSION_TERMINAL_STATUSES
     from lionagi.state.reasons import RunReasons
 
@@ -99,6 +104,16 @@ async def persist_session_end(
     fields: dict[str, Any] = {"ended_at": time.time()}
     if error is not None:
         fields["node_metadata"] = {"error": error}
+    if input_tokens is not None:
+        fields["input_tokens"] = input_tokens
+    if output_tokens is not None:
+        fields["output_tokens"] = output_tokens
+    if total_cost_usd is not None:
+        fields["total_cost_usd"] = total_cost_usd
+    if num_turns is not None:
+        fields["num_turns"] = num_turns
+    if duration_ms is not None:
+        fields["duration_ms"] = duration_ms
     await db.update_session(
         session_id,
         reason_code=_status_reason_map.get(status, RunReasons.FAILED_EXCEPTION),

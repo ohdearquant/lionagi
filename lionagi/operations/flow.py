@@ -723,11 +723,42 @@ class ReactiveExecutor(DependencyAwareExecutor):
             self._spawned_ids.add(child.id)
 
         if newly_added:
+            # Store edge info in metadata so on_progress callbacks can attach it
+            # to node lifecycle signals.
+            if emitter_id is not None and not independent:
+                child.metadata["parent_id"] = str(emitter_id)
             self._assign_injected_branch(child, emitter_id, independent)
+            self._emit_node_spawned(child, emitter_id, independent)
             if self.on_progress:
                 _name = child.metadata.get("reference_id", str(child.id)[:8])
                 self.on_progress(str(child.id), _name, "queued", 0.0)
         return True
+
+    def _emit_node_spawned(self, child: Operation, emitter_id: Any, independent: bool) -> None:
+        """Fire-and-forget NodeSpawned onto the session bus."""
+        try:
+            from lionagi.session.signal import NodeSpawned  # noqa: PLC0415
+
+            instr = None
+            params = child.parameters
+            if isinstance(params, dict):
+                instr = params.get("instruction")
+            elif hasattr(params, "instruction"):
+                instr = getattr(params, "instruction", None)
+
+            sig = NodeSpawned(
+                op_id=str(child.id),
+                parent_id=str(emitter_id) if emitter_id is not None else None,
+                independent=independent,
+                assignee=child.metadata.get("assignee"),
+                instruction=str(instr)[:512] if instr is not None else None,
+            )
+            loop = asyncio.get_running_loop()
+            loop.create_task(self.session.emit(sig))
+        except RuntimeError:
+            pass  # no running loop — tests / sync contexts
+        except Exception:  # noqa: BLE001, S110
+            pass  # best-effort; never break the acceptance path
 
     def _assign_injected_branch(self, child: Operation, emitter_id: Any, independent: bool) -> None:
         base = None

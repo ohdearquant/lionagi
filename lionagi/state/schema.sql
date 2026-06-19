@@ -169,7 +169,13 @@ CREATE TABLE IF NOT EXISTS sessions (
   -- Resolved contract snapshot written at session creation and verifier
   -- result written at teardown. NULL contract means verification skipped.
   artifact_contract_json      JSON,
-  artifact_verification_json  JSON
+  artifact_verification_json  JSON,
+  -- ── Run usage (populated at RunEnd) ───────────────────────────────────
+  input_tokens    INTEGER,   -- prompt tokens (uncached)
+  output_tokens   INTEGER,   -- completion tokens
+  total_cost_usd  REAL,      -- 0 for subscription runs
+  num_turns       INTEGER,   -- LLM turns in the run
+  duration_ms     REAL       -- wall-clock run duration in milliseconds
 );
 
 CREATE INDEX IF NOT EXISTS idx_sessions_updated

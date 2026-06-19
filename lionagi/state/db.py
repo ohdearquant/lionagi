@@ -103,6 +103,11 @@ _SESSION_COLUMNS = frozenset(
         "agent_hash",
         "project",
         "project_source",
+        "input_tokens",
+        "output_tokens",
+        "total_cost_usd",
+        "num_turns",
+        "duration_ms",
     }
 )
 
@@ -410,7 +415,12 @@ class StateDB:
                   status_reason_summary  TEXT,
                   status_evidence_refs   JSON,
                   artifact_contract_json      JSON,
-                  artifact_verification_json  JSON
+                  artifact_verification_json  JSON,
+                  input_tokens    INTEGER,
+                  output_tokens   INTEGER,
+                  total_cost_usd  REAL,
+                  num_turns       INTEGER,
+                  duration_ms     REAL
                 )
                 """
             )

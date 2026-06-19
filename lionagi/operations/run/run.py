@@ -78,6 +78,8 @@ async def run(
             "The 'gemini' prefix routes to the REST API, not the local Gemini CLI."
         )
 
+    import time as _time  # noqa: PLC0415
+
     ins, kw = _prepare_run_kwargs(branch, instruction, param)
     await branch.msgs.a_add_message(instruction=ins)
 
@@ -88,6 +90,7 @@ async def run(
 
     _run_exc: BaseException | None = None
     _terminal_emitted: bool = False
+    _t0_run = _time.monotonic()
 
     if has_observer:
         from lionagi.session.signal import RunStart
@@ -310,9 +313,10 @@ async def run(
         if has_observer and not _terminal_emitted:
             _terminal_emitted = True
             try:
-                from lionagi.session.signal import RunEnd
+                from lionagi.session.signal import build_run_end
 
-                await branch.emit(RunEnd())
+                duration_ms = (_time.monotonic() - _t0_run) * 1000.0
+                await branch.emit(build_run_end(branch, duration_ms=duration_ms))
             except Exception:
                 logger.exception("run: observer raised during RunEnd emission on GeneratorExit")
         raise
@@ -324,9 +328,10 @@ async def run(
             _terminal_emitted = True
             try:
                 if _run_exc is None:
-                    from lionagi.session.signal import RunEnd
+                    from lionagi.session.signal import build_run_end
 
-                    await branch.emit(RunEnd())
+                    duration_ms = (_time.monotonic() - _t0_run) * 1000.0
+                    await branch.emit(build_run_end(branch, duration_ms=duration_ms))
                 else:
                     from lionagi.session.signal import RunFailed
 

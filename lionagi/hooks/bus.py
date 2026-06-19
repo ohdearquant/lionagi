@@ -127,7 +127,11 @@ class HookBus:
                 break
             except Exception:  # noqa: BLE001 — hook isolation invariant
                 logger.exception("Hook failed: %s", point.value)
-        await self._record(point, kwargs)
+        # MESSAGE_ADD is represented on the signal bus by MessageAdded (emitted
+        # directly via on_message_added); a redundant HookSignal here would
+        # duplicate every message event on the observable stream.
+        if point is not HookPoint.MESSAGE_ADD:
+            await self._record(point, kwargs)
 
 
 # ── Decorator for user-defined handlers ───────────────────────────────────────
