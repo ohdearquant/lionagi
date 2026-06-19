@@ -342,13 +342,36 @@ class EngineRun:
             task.add_done_callback(self._active.discard)
 
     async def cancel_active(self) -> None:
-        """Cancel and await all in-flight spawned tasks."""
+        """Cancel and await all in-flight spawned tasks.
+
+        Waits up to ``engine.cancel_timeout_s`` for tasks to finish after
+        cancellation is requested.  Tasks that do not settle within that window
+        (e.g. they catch CancelledError and loop) are abandoned: a loud warning
+        is logged naming the count, and cancel_active() returns so the caller's
+        lifetime guarantee is preserved.  Cooperative tasks that finish before
+        the deadline are awaited normally — the timeout path only fires when at
+        least one task remains after the window expires.
+        """
         if not self._active:
             return
-        for t in list(self._active):
+        tasks = list(self._active)
+        for t in tasks:
             t.cancel()
-        await gather(*list(self._active), return_exceptions=True)
-        # Callbacks remove tasks from _active as they settle.
+        timeout = self.engine.cancel_timeout_s
+        done, pending = await asyncio.wait(tasks, timeout=timeout)
+        if pending:
+            count = len(pending)
+            names = [t.get_name() if hasattr(t, "get_name") else repr(t) for t in pending]
+            logger.warning(
+                "cancel_active: %d task(s) did not finish within %.1fs and were abandoned: %s",
+                count,
+                timeout,
+                names,
+            )
+            # Issue a final cancel so the loop can GC them eventually.
+            for t in pending:
+                t.cancel()
+        # Callbacks will discard done tasks; clear the rest explicitly.
         self._active.clear()
 
     async def _deadline_watchdog(self) -> None:
@@ -516,6 +539,7 @@ class Engine:
         deadline_s: float | None = None,
         judge_model: str | None = None,
         judge_role: str = "critic",
+        cancel_timeout_s: float = 30.0,
     ) -> None:
         self.model = model
         self.models = dict(models) if models else {}
@@ -525,6 +549,7 @@ class Engine:
         self.deadline_s = deadline_s
         self.judge_model = judge_model
         self.judge_role = judge_role
+        self.cancel_timeout_s = cancel_timeout_s
 
     def model_for(self, stage: str) -> str | None:
         return self.models.get(stage) or self.model
