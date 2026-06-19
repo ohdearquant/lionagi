@@ -2374,9 +2374,22 @@ async def close_shared_db() -> None:
     global _SHARED_OPEN_LOCK  # noqa: PLW0603
     import contextlib
 
-    instances = list(_SHARED.values())
-    _SHARED.clear()
-    _SHARED_OPEN_LOCK = None
-    for db in instances:
-        with contextlib.suppress(Exception):
-            await db.close()
+    lock = _SHARED_OPEN_LOCK
+    if lock is None:
+        # No open ever happened in this loop (opens create the lock first).
+        instances = list(_SHARED.values())
+        _SHARED.clear()
+        for db in instances:
+            with contextlib.suppress(Exception):
+                await db.close()
+        return
+    # Hold the open lock so an in-flight get_shared_db()/register_shared_db()
+    # cannot repopulate _SHARED after the sweep; null it last so a later event
+    # loop lazily recreates a fresh lock.
+    async with lock:
+        instances = list(_SHARED.values())
+        _SHARED.clear()
+        for db in instances:
+            with contextlib.suppress(Exception):
+                await db.close()
+        _SHARED_OPEN_LOCK = None

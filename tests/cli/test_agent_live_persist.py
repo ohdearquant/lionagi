@@ -244,6 +244,47 @@ async def test_register_shared_db_closes_displaced_instance(temp_db_path: Path):
     assert _aiosqlite_thread_count() == before
 
 
+async def test_close_shared_db_sweeps_inflight_open(
+    temp_db_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    """close_shared_db() must serialize with an in-flight get_shared_db() open so the
+    just-opened connection is swept, not orphaned past teardown."""
+    from lionagi.state.db import _SHARED, close_shared_db, get_shared_db
+
+    before = _aiosqlite_thread_count()
+    opened = asyncio.Event()
+    release = asyncio.Event()
+    real_open = StateDB.open
+
+    async def slow_open(self):
+        await real_open(self)  # real aiosqlite worker spawned
+        opened.set()  # get_shared_db holds the open lock; db open, not yet stored
+        await release.wait()
+
+    monkeypatch.setattr(StateDB, "open", slow_open)
+
+    opener = asyncio.create_task(get_shared_db(temp_db_path))
+    await asyncio.wait_for(opened.wait(), timeout=5)
+
+    closer = asyncio.create_task(close_shared_db())
+    await asyncio.sleep(0.1)
+    assert not closer.done(), "close_shared_db() did not wait for the in-flight open"
+
+    release.set()
+    opened_db = await asyncio.wait_for(opener, timeout=5)
+    await asyncio.wait_for(closer, timeout=5)
+
+    assert temp_db_path not in _SHARED
+    assert opened_db._db is None, "in-flight-opened StateDB survived close_shared_db()"
+    for _ in range(20):
+        if _aiosqlite_thread_count() == before:
+            break
+        await asyncio.sleep(0.05)
+    assert _aiosqlite_thread_count() == before, (
+        "in-flight-opened aiosqlite worker leaked past close_shared_db()"
+    )
+
+
 # ── Resume path ───────────────────────────────────────────────────────────────
 
 
