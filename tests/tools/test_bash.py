@@ -318,6 +318,10 @@ async def test_bash_tool_timeout_mock_pid_calls_kill_not_killpg(monkeypatch):
     # Set pid to a MagicMock object — isinstance(pid, int) returns False,
     # so the guard routes to proc.kill() instead of os.killpg().
     mock_proc.pid = MagicMock()
+    # EOF on read() so _subprocess_sync's drain threads exit instead of
+    # busy-spinning forever on a bare-mock stream (saturates CPU on CI).
+    mock_proc.stdout.read.return_value = b""
+    mock_proc.stderr.read.return_value = b""
     mock_proc.wait.side_effect = [subprocess.TimeoutExpired("cmd", 0.01), None]
     mock_proc.kill = MagicMock()
 
@@ -353,6 +357,10 @@ async def test_bash_tool_timeout_invalid_pid_calls_kill_not_killpg(monkeypatch, 
 
     mock_proc = MagicMock()
     mock_proc.pid = invalid_pid
+    # EOF on read() so _subprocess_sync's drain threads exit instead of
+    # busy-spinning forever on a bare-mock stream (saturates CPU on CI).
+    mock_proc.stdout.read.return_value = b""
+    mock_proc.stderr.read.return_value = b""
     mock_proc.wait.side_effect = [subprocess.TimeoutExpired("cmd", 0.01), None]
     mock_proc.kill = MagicMock()
 
