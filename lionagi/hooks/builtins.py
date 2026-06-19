@@ -11,6 +11,13 @@ from typing import Any
 
 logger = logging.getLogger("lionagi.hooks.builtins")
 
+
+async def _db():
+    from lionagi.state.db import get_shared_db
+
+    return await get_shared_db()
+
+
 __all__ = (
     "persist_session_start",
     "persist_session_end",
@@ -34,27 +41,35 @@ async def persist_session_start(
     **_unused: Any,
 ) -> None:
     """Write the ADR-0022 provenance set + open the lifecycle window."""
-    from lionagi.state.db import StateDB
+    from lionagi.state.db import SESSION_TERMINAL_STATUSES
     from lionagi.state.reasons import RunReasons
 
-    async with StateDB() as db:
-        await db.update_session(
-            session_id,
-            # status="running" routes through update_status(), which requires
-            # a reason_code — pass it explicitly so the transition records a
-            # canonical "started" cause instead of tripping the deprecation
-            # shim (which would raise on the running status and be swallowed by
-            # the bus, silently dropping all the provenance fields above).
-            reason_code=RunReasons.STARTED_OK,
-            model=model,
-            provider=provider,
-            effort=effort,
-            agent_name=agent_name,
-            agent_hash=agent_hash,
-            invocation_id=invocation_id,
-            status="running",
-            started_at=time.time(),
-        )
+    db = await _db()
+    row = await db.get_session(session_id)
+    if row is None:
+        return
+    current_status = row.get("status")
+    if current_status in SESSION_TERMINAL_STATUSES:
+        return
+    if row.get("status_reason_code") == RunReasons.STARTED_OK:
+        return
+    await db.update_session(
+        session_id,
+        # status="running" routes through update_status(), which requires
+        # a reason_code — pass it explicitly so the transition records a
+        # canonical "started" cause instead of tripping the deprecation
+        # shim (which would raise on the running status and be swallowed by
+        # the bus, silently dropping all the provenance fields above).
+        reason_code=RunReasons.STARTED_OK,
+        model=model,
+        provider=provider,
+        effort=effort,
+        agent_name=agent_name,
+        agent_hash=agent_hash,
+        invocation_id=invocation_id,
+        status="running",
+        started_at=time.time(),
+    )
 
 
 async def persist_session_end(
@@ -65,15 +80,31 @@ async def persist_session_end(
     **_unused: Any,
 ) -> None:
     """Stamp the terminal status + ended_at on the session row."""
-    from lionagi.state.db import StateDB
+    from lionagi.state.db import SESSION_TERMINAL_STATUSES
+    from lionagi.state.reasons import RunReasons
 
-    fields: dict[str, Any] = {"status": status, "ended_at": time.time()}
+    db = await _db()
+    row = await db.get_session(session_id)
+    if row is None:
+        return
+    if row.get("status") in SESSION_TERMINAL_STATUSES:
+        return
+    _status_reason_map: dict[str, str] = {
+        "completed": RunReasons.COMPLETED_OK,
+        "failed": RunReasons.FAILED_EXCEPTION,
+        "timed_out": RunReasons.TIMED_OUT_DEADLINE,
+        "aborted": RunReasons.ABORTED_USER,
+        "cancelled": RunReasons.CANCELLED_SYSTEM,
+    }
+    fields: dict[str, Any] = {"ended_at": time.time()}
     if error is not None:
-        # node_metadata is JSON — overwriting is destructive, so keep the
-        # error in a dedicated field and let the caller merge if needed.
         fields["node_metadata"] = {"error": error}
-    async with StateDB() as db:
-        await db.update_session(session_id, **fields)
+    await db.update_session(
+        session_id,
+        reason_code=_status_reason_map.get(status, RunReasons.FAILED_EXCEPTION),
+        status=status,
+        **fields,
+    )
 
 
 async def persist_branch_provenance(
@@ -85,15 +116,13 @@ async def persist_branch_provenance(
     **_unused: Any,
 ) -> None:
     """ADR-0022 per-branch model / provider / agent_name."""
-    from lionagi.state.db import StateDB
-
-    async with StateDB() as db:
-        await db.update_branch(
-            branch_id,
-            model=model,
-            provider=provider,
-            agent_name=agent_name,
-        )
+    db = await _db()
+    await db.update_branch(
+        branch_id,
+        model=model,
+        provider=provider,
+        agent_name=agent_name,
+    )
 
 
 async def persist_message(
@@ -108,19 +137,17 @@ async def persist_message(
     **_unused: Any,
 ) -> None:
     """ADR-0019 + ADR-0009 message persistence; ``progression_id`` is a legacy alias."""
-    from lionagi.state.db import StateDB
-
     effective_branch_prog = branch_progression_id or progression_id
 
-    async with StateDB() as db:
-        await db.insert_message(message)
-        if effective_branch_prog is not None:
-            await db.append_to_progression(effective_branch_prog, message["id"])
-        if session_progression_id is not None:
-            await db.append_to_progression(session_progression_id, message["id"])
-        if message.get("role") == "system" and branch_id is not None:
-            await db.update_branch(branch_id, system_msg_id=message["id"])
-        await db.touch_session_activity(session_id)
+    db = await _db()
+    await db.insert_message(message)
+    if effective_branch_prog is not None:
+        await db.append_to_progression(effective_branch_prog, message["id"])
+    if session_progression_id is not None:
+        await db.append_to_progression(session_progression_id, message["id"])
+    if message.get("role") == "system" and branch_id is not None:
+        await db.update_branch(branch_id, system_msg_id=message["id"])
+    await db.touch_session_activity(session_id)
 
 
 async def log_api_metrics(

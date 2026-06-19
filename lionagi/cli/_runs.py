@@ -380,6 +380,7 @@ async def teardown_persist(
         )
 
         from lionagi.hooks import unroute_message_persistence
+        from lionagi.hooks.bus import HookPoint
 
         hook = ctx.get("hook")
         if hook is not None:
@@ -387,9 +388,18 @@ async def teardown_persist(
         for branch, h in ctx.get("hooks", []):
             unroute_message_persistence(branch, h)
 
+        session_obj = ctx.get("session")
+        if session_obj is not None:
+            err_str = str(exception) if exception is not None else None
+            await session_obj.hooks.emit(
+                HookPoint.SESSION_END,
+                session_id=ctx["session_id"],
+                status=final_status,
+                error=err_str,
+            )
+
         # Detach signal persistence so the observer handler cannot fire after
         # teardown (the db handle is about to be closed in the finally block).
-        session_obj = ctx.get("session")
         if session_obj is not None:
             try:
                 session_obj.observer.unbind_db_persistence()
@@ -522,6 +532,26 @@ async def setup_agent_persist(
                     "provider": provider,
                     "agent_name": agent_name,
                 }
+            )
+
+            from lionagi.hooks.bus import HookPoint
+
+            await session.hooks.emit(
+                HookPoint.SESSION_START,
+                session_id=session_id,
+                model=model,
+                provider=provider,
+                effort=effort,
+                agent_name=agent_name,
+                agent_hash=_provenance.agent_definition_hash(agent_name),
+                invocation_id=invocation_id,
+            )
+            await session.hooks.emit(
+                HookPoint.BRANCH_CREATE,
+                branch_id=branch_id,
+                model=model,
+                provider=provider,
+                agent_name=agent_name,
             )
 
         ctx = {

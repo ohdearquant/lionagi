@@ -32,7 +32,7 @@ __all__ = (
 class HookPoint(str, Enum):
     """Closed vocabulary of session lifecycle hook points (see docs/reference/agent-hooks.md)."""
 
-    # not-yet-wired: no emit() call in the codebase; handlers registered but never invoked
+    # emitted in lionagi/cli/_runs.py setup_agent_persist / teardown_persist
     SESSION_START = "session.start"
     SESSION_END = "session.end"
     BRANCH_CREATE = "branch.create"
