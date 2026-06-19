@@ -37,8 +37,8 @@ def _tool_fn(tools, name):
 def test_bind_returns_lean_default(tmp_path):
     _, _, tools = _make_toolkit(tmp_path)
     assert (
-        len(tools) == 5
-    )  # reader/editor/bash/search/code_check; context/sandbox/subagent are opt-in
+        len(tools) == 7
+    )  # reader/editor/bash/search/code_check/code_nav/ast_search; context/sandbox/subagent are opt-in
 
 
 def test_bind_all_tools_async(tmp_path):
@@ -58,6 +58,8 @@ def test_bind_tool_names(tmp_path):
         "bash",
         "search",
         "code_check",
+        "code_nav",
+        "ast_search",
     }
 
 
