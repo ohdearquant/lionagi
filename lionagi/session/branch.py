@@ -336,11 +336,14 @@ class Branch(Element, Relational):
 
     async def _observed_run(self, coro: Any) -> Any:
         """Wrap an operation with RunStart/RunEnd lifecycle + signal drain."""
+        import time as _time  # noqa: PLC0415
+
         has_observer = self._observer is not None
         if has_observer:
             from .signal import RunStart
 
             await self._safe_emit(RunStart())
+        _t0 = _time.monotonic()
         try:
             result = await coro
         except BaseException as exc:
@@ -352,9 +355,10 @@ class Branch(Element, Relational):
             raise
         await self.drain_signals()
         if has_observer:
-            from .signal import RunEnd
+            from .signal import build_run_end
 
-            await self._safe_emit(RunEnd(data=result))
+            duration_ms = (_time.monotonic() - _t0) * 1000.0
+            await self._safe_emit(build_run_end(self, duration_ms=duration_ms, result=result))
         return result
 
     async def emit_and_log(self, event: Any) -> list[Any]:
@@ -835,6 +839,8 @@ class Branch(Element, Relational):
         # ReActStream were ever wrapped with its own _observed_run, the outer
         # wrapper here would produce N+1 RunStart events.  Inlining the
         # emission removes that coupling.
+        import time as _time  # noqa: PLC0415
+
         has_observer = self._observer is not None
         if has_observer:
             from .signal import RunStart
@@ -845,6 +851,7 @@ class Branch(Element, Relational):
         # branch are never affected — each asyncio task carries its own copy.
         from ._lifecycle_ctx import suppress_lifecycle_var
 
+        _t0_react = _time.monotonic()
         _token = suppress_lifecycle_var.set(True)
         try:
             result = await ReAct(
@@ -885,9 +892,10 @@ class Branch(Element, Relational):
         suppress_lifecycle_var.reset(_token)
         await self.drain_signals()
         if has_observer:
-            from .signal import RunEnd
+            from .signal import build_run_end
 
-            await self._safe_emit(RunEnd(data=result))
+            _dur_react = (_time.monotonic() - _t0_react) * 1000.0
+            await self._safe_emit(build_run_end(self, duration_ms=_dur_react, result=result))
         return result
 
     async def ReActStream(  # noqa: N802

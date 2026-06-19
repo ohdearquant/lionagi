@@ -449,17 +449,53 @@ class EngineRun:
         verbose: bool = False,
     ) -> dict[str, Any]:
         """Execute a prebuilt operation DAG on the run's session and return operation results."""
+        from lionagi.operations.node import Operation  # noqa: PLC0415
+
         emits: list[asyncio.Future] = []
 
+        # Build a live lookup of op_id → {parent_id, depends_on} from graph
+        # edges.  Populated at start from the static graph, then updated as
+        # reactive spawns add new nodes (they write parent_id into metadata).
+        node_edge_meta: dict[str, dict] = {}
+        for node in graph.internal_nodes.values():
+            if not isinstance(node, Operation):
+                continue
+            preds = [
+                str(e.head) for e in graph.internal_edges.values() if str(e.tail) == str(node.id)
+            ]
+            node_edge_meta[str(node.id)] = {
+                "parent_id": preds[0] if len(preds) == 1 else None,
+                "depends_on": preds,
+            }
+
         def _on_progress(op_id: str, name: str, status: str, elapsed: float) -> None:
+            meta = node_edge_meta.get(op_id) or {}
+            parent_id = meta.get("parent_id")
+            depends_on = meta.get("depends_on", [])
             if status == "queued":
-                sig: Any = NodeQueued(op_id=op_id, name=name)
+                sig: Any = NodeQueued(
+                    op_id=op_id, name=name, parent_id=parent_id, depends_on=depends_on
+                )
             elif status == "started":
-                sig = NodeStarted(op_id=op_id, name=name)
+                sig = NodeStarted(
+                    op_id=op_id, name=name, parent_id=parent_id, depends_on=depends_on
+                )
             elif status == "completed":
-                sig = NodeCompleted(op_id=op_id, name=name, elapsed=elapsed)
+                sig = NodeCompleted(
+                    op_id=op_id,
+                    name=name,
+                    elapsed=elapsed,
+                    parent_id=parent_id,
+                    depends_on=depends_on,
+                )
             elif status == "failed":
-                sig = NodeFailed(op_id=op_id, name=name, elapsed=elapsed)
+                sig = NodeFailed(
+                    op_id=op_id,
+                    name=name,
+                    elapsed=elapsed,
+                    parent_id=parent_id,
+                    depends_on=depends_on,
+                )
             else:
                 return
             # on_progress is sync (called from inside the executor); fan the
@@ -469,16 +505,32 @@ class EngineRun:
             with contextlib.suppress(RuntimeError):
                 emits.append(asyncio.ensure_future(self.session.emit(sig)))
 
-        result = await self.session.flow(
-            graph,
-            reactive=reactive,
-            spawn_type=spawn_type,
-            node_builder=node_builder,
-            max_spawn=max_spawn,
-            max_concurrent=max_concurrent,
-            verbose=verbose,
-            on_progress=_on_progress,
-        )
+        # Intercept NodeSpawned to update node_edge_meta for newly spawned nodes.
+        def _on_spawned(sig: Any, _ctx: Any) -> None:
+            if sig.op_id and sig.parent_id is not None:
+                node_edge_meta[sig.op_id] = {
+                    "parent_id": sig.parent_id,
+                    "depends_on": [sig.parent_id],
+                }
+            elif sig.op_id:
+                node_edge_meta.setdefault(sig.op_id, {"parent_id": None, "depends_on": []})
+
+        from lionagi.session.signal import NodeSpawned  # noqa: PLC0415
+
+        self.session.observe(NodeSpawned, handler=_on_spawned)
+        try:
+            result = await self.session.flow(
+                graph,
+                reactive=reactive,
+                spawn_type=spawn_type,
+                node_builder=node_builder,
+                max_spawn=max_spawn,
+                max_concurrent=max_concurrent,
+                verbose=verbose,
+                on_progress=_on_progress,
+            )
+        finally:
+            self.session.observer.unobserve(_on_spawned)
         if emits:
             await gather(*emits, return_exceptions=True)
         return result

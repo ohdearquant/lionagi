@@ -391,11 +391,21 @@ async def teardown_persist(
         session_obj = ctx.get("session")
         if session_obj is not None:
             err_str = str(exception) if exception is not None else None
+            _usage: dict = {}
+            _branch = ctx.get("branch")
+            if _branch is not None:
+                try:
+                    from lionagi.session.signal import _collect_branch_usage
+
+                    _usage = _collect_branch_usage(_branch)
+                except Exception:  # noqa: BLE001, S110
+                    pass
             await session_obj.hooks.emit(
                 HookPoint.SESSION_END,
                 session_id=ctx["session_id"],
                 status=final_status,
                 error=err_str,
+                **_usage,
             )
 
         # Detach signal persistence so the observer handler cannot fire after

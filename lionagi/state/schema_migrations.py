@@ -39,6 +39,12 @@ MIGRATION_COLUMNS: dict[str, list[tuple[str, str]]] = {
         # ADR-0029: resolved artifact contract and teardown result.
         ("artifact_contract_json", "JSON"),
         ("artifact_verification_json", "JSON"),
+        # Run usage populated at RunEnd.
+        ("input_tokens", "INTEGER"),
+        ("output_tokens", "INTEGER"),
+        ("total_cost_usd", "REAL"),
+        ("num_turns", "INTEGER"),
+        ("duration_ms", "REAL"),
     ],
     "branches": [
         ("system_msg_id", "TEXT"),
