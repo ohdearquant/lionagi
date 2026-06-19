@@ -48,6 +48,7 @@ class EndpointConfig(BaseModel):
     kwargs: dict = Field(default_factory=dict)
     client_kwargs: dict = Field(default_factory=dict)
     allow_local_network: bool = False
+    serialize_by_alias: bool = False
     _api_key: str | None = PrivateAttr(None)
 
     @model_validator(mode="before")
@@ -135,19 +136,14 @@ class EndpointConfig(BaseModel):
                 self.kwargs[key] = value
 
     def validate_payload(self, data: dict[str, Any]) -> dict[str, Any]:
-        """Validate payload data against the request_options model.
-
-        Args:
-            data: The payload data to validate
-
-        Returns:
-            The validated data
-        """
+        """Validate payload data against the request_options model."""
         if not self.request_options:
             return data
 
         try:
-            self.request_options.model_validate(data)
+            obj = self.request_options.model_validate(data)
+            if self.serialize_by_alias:
+                return obj.model_dump(by_alias=True, exclude_none=True)
             return data
         except Exception as e:
             raise ValueError("Invalid payload") from e
