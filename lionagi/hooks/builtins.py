@@ -41,9 +41,18 @@ async def persist_session_start(
     **_unused: Any,
 ) -> None:
     """Write the ADR-0022 provenance set + open the lifecycle window."""
+    from lionagi.state.db import SESSION_TERMINAL_STATUSES
     from lionagi.state.reasons import RunReasons
 
     db = await _db()
+    row = await db.get_session(session_id)
+    if row is None:
+        return
+    current_status = row.get("status")
+    if current_status in SESSION_TERMINAL_STATUSES:
+        return
+    if row.get("status_reason_code") == RunReasons.STARTED_OK:
+        return
     await db.update_session(
         session_id,
         # status="running" routes through update_status(), which requires
@@ -71,13 +80,31 @@ async def persist_session_end(
     **_unused: Any,
 ) -> None:
     """Stamp the terminal status + ended_at on the session row."""
-    fields: dict[str, Any] = {"status": status, "ended_at": time.time()}
-    if error is not None:
-        # node_metadata is JSON — overwriting is destructive, so keep the
-        # error in a dedicated field and let the caller merge if needed.
-        fields["node_metadata"] = {"error": error}
+    from lionagi.state.db import SESSION_TERMINAL_STATUSES
+    from lionagi.state.reasons import RunReasons
+
     db = await _db()
-    await db.update_session(session_id, **fields)
+    row = await db.get_session(session_id)
+    if row is None:
+        return
+    if row.get("status") in SESSION_TERMINAL_STATUSES:
+        return
+    _status_reason_map: dict[str, str] = {
+        "completed": RunReasons.COMPLETED_OK,
+        "failed": RunReasons.FAILED_EXCEPTION,
+        "timed_out": RunReasons.TIMED_OUT_DEADLINE,
+        "aborted": RunReasons.ABORTED_USER,
+        "cancelled": RunReasons.CANCELLED_SYSTEM,
+    }
+    fields: dict[str, Any] = {"ended_at": time.time()}
+    if error is not None:
+        fields["node_metadata"] = {"error": error}
+    await db.update_session(
+        session_id,
+        reason_code=_status_reason_map.get(status, RunReasons.FAILED_EXCEPTION),
+        status=status,
+        **fields,
+    )
 
 
 async def persist_branch_provenance(
