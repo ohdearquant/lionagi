@@ -16,8 +16,6 @@ from lionagi.service.hooks.hooked_event import HookedEvent
 
 
 class SimpleHooked(HookedEvent):
-    """Successful core implementation."""
-
     async def _core_invoke(self):
         return "core_result"
 
@@ -27,8 +25,6 @@ class SimpleHooked(HookedEvent):
 
 
 class FailingHooked(HookedEvent):
-    """Core that always raises."""
-
     async def _core_invoke(self):
         raise ValueError("core_failed")
 
@@ -47,7 +43,6 @@ def _fake_hook(
     should_exit: bool = False,
     exit_cause: BaseException | None = None,
 ):
-    """Return a lightweight HookEvent stand-in."""
 
     class _FakeHookEvent:
         def __init__(self):
@@ -68,7 +63,6 @@ def _fake_hook(
 
 @pytest.mark.asyncio
 async def test_invoke_no_hooks_returns_core_result():
-    """With no hooks attached, _invoke returns _core_invoke result."""
     h = SimpleHooked()
     result = await h._invoke()
     assert result == "core_result"
@@ -76,7 +70,6 @@ async def test_invoke_no_hooks_returns_core_result():
 
 @pytest.mark.asyncio
 async def test_invoke_no_hooks_core_error_propagates():
-    """Core errors propagate when no hooks are set."""
     h = FailingHooked()
     with pytest.raises(ValueError, match="core_failed"):
         await h._invoke()
@@ -89,7 +82,6 @@ async def test_invoke_no_hooks_core_error_propagates():
 
 @pytest.mark.asyncio
 async def test_invoke_pre_hook_completed_runs_core():
-    """COMPLETED pre-hook runs; core result is returned."""
     h = SimpleHooked()
     h._pre_invoke_hook_event = _fake_hook(EventStatus.COMPLETED)
     result = await h._invoke()

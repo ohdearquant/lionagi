@@ -83,8 +83,6 @@ class TestGetContextWindow:
 
 
 class TestTokenBudgetBoundaries:
-    """Boundary conditions for is_warning and is_critical."""
-
     def test_is_critical_exactly_at_90_pct(self):
         budget = TokenBudget(used=90, limit=100)
         assert budget.is_critical is True
@@ -130,54 +128,45 @@ from lionagi.service.token_budget import (
 
 class TestLookupContextWindow:
     def test_known_openai_model_returns_nondefault(self):
-        """gpt-4 is in the openai CONTEXT_WINDOWS dict."""
         result = lookup_context_window("gpt-4", provider="openai")
         # Any positive non-default value is acceptable; must be > 0
         assert result > 0
 
     def test_unknown_model_and_provider_returns_default(self):
-        """Completely unknown model + provider returns 128_000."""
         result = lookup_context_window("totally-made-up-model-xyz", provider="xyz_provider")
         assert result == 128_000
 
     def test_unknown_model_no_provider_returns_default(self):
-        """Unknown model without provider hint falls through to default."""
         result = lookup_context_window("nonexistent-model-zzz")
         assert result == 128_000
 
     def test_provider_specific_lookup_before_all_providers(self):
-        """Provider hint is tried first; result same or consistent as without hint."""
         with_hint = lookup_context_window("gpt-4", provider="openai")
         without_hint = lookup_context_window("gpt-4")
         # Both resolve to same value
         assert with_hint == without_hint
 
     def test_get_provider_windows_unknown_provider(self):
-        """Unknown provider returns None."""
         result = _get_provider_windows("completely_unknown_xyz")
         assert result is None
 
     def test_get_provider_windows_caches_result(self):
-        """Second call for same provider returns cached result."""
         # openai is a known provider
         first = _get_provider_windows("openai")
         second = _get_provider_windows("openai")
         assert first is second  # same object (cached)
 
     def test_longest_prefix_match_returns_best_match(self):
-        """_longest_prefix_match picks the longest matching prefix."""
         windows = {"gpt-4": 8192, "gpt-4-turbo": 128000, "gpt-3": 4096}
         result = _longest_prefix_match("gpt-4-turbo-preview", windows)
         assert result == 128000  # "gpt-4-turbo" is longer than "gpt-4"
 
     def test_longest_prefix_match_no_match_returns_none(self):
-        """_longest_prefix_match returns None when no prefix matches."""
         windows = {"gpt-4": 8192, "claude": 100000}
         result = _longest_prefix_match("llama-3", windows)
         assert result is None
 
     def test_get_provider_windows_import_error_returns_none(self):
-        """_get_provider_windows returns None when module raises ImportError (lines 55-58)."""
         import lionagi.service.token_budget as tb
 
         original = tb._PROVIDER_MODULES.copy()
@@ -191,7 +180,6 @@ class TestLookupContextWindow:
             tb._provider_cache.pop("_bad_test_provider", None)
 
     def test_all_provider_windows_skips_import_error(self):
-        """_all_provider_windows continues past ImportError providers (lines 75-76)."""
         import lionagi.service.token_budget as tb
         from lionagi.service.token_budget import _all_provider_windows
 
@@ -210,7 +198,6 @@ class TestLookupContextWindow:
 
 class TestGetContextWindowModelLookup:
     def test_resolves_model_from_kwargs(self):
-        """get_context_window reads model from config.kwargs (line 148, 153)."""
 
         class FakeBranch:
             class chat_model:
@@ -226,7 +213,6 @@ class TestGetContextWindowModelLookup:
         assert result > 0
 
     def test_resolves_model_from_params_fallback(self):
-        """get_context_window falls back to config.params when kwargs model is empty (line 150)."""
 
         class FakeBranch:
             class chat_model:
@@ -243,7 +229,6 @@ class TestGetContextWindowModelLookup:
         assert result > 0
 
     def test_unknown_model_in_kwargs_returns_default(self):
-        """get_context_window returns default when model name is not in any provider dict."""
 
         class FakeBranch:
             class chat_model:
@@ -261,7 +246,6 @@ class TestGetContextWindowModelLookup:
 
 class TestGetTokenBudget:
     def test_returns_token_budget_instance(self):
-        """get_token_budget returns TokenBudget with non-negative used and positive limit."""
         from lionagi.session.branch import Branch
 
         branch = Branch()
@@ -271,7 +255,6 @@ class TestGetTokenBudget:
         assert budget.limit > 0
 
     def test_used_increases_after_message_added(self):
-        """get_token_budget counts tokens for messages in the progression."""
         from lionagi.session.branch import Branch
 
         branch = Branch()
@@ -281,7 +264,6 @@ class TestGetTokenBudget:
         assert after.used >= before.used
 
     def test_model_field_from_chat_model_endpoint(self):
-        """get_token_budget extracts model name from branch.chat_model.endpoint.config.kwargs."""
         from lionagi.session.branch import Branch
 
         branch = Branch()

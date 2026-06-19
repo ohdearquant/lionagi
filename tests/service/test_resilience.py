@@ -1,4 +1,4 @@
-"""Tests for lionagi.service.resilience module - Circuit breakers, retry logic, timeouts."""
+"""Tests for lionagi.service.resilience — circuit breakers, retry logic, timeouts."""
 
 import asyncio
 from unittest.mock import patch
@@ -18,10 +18,7 @@ from lionagi.service.resilience import (
 
 
 class TestAPIClientError:
-    """Test APIClientError exception."""
-
     def test_init_basic(self):
-        """Test basic APIClientError initialization."""
         error = APIClientError("Test error")
 
         assert error.message == "Test error"
@@ -31,7 +28,6 @@ class TestAPIClientError:
         assert str(error) == "Test error"
 
     def test_init_with_all_params(self):
-        """Test APIClientError with all parameters."""
         headers = {"Content-Type": "application/json"}
         response_data = {"error": "details"}
 
@@ -48,27 +44,18 @@ class TestAPIClientError:
 
 
 class TestCircuitBreakerOpenError:
-    """Test CircuitBreakerOpenError exception."""
-
     def test_init_basic(self):
-        """Test basic CircuitBreakerOpenError initialization."""
         error = CircuitBreakerOpenError("Circuit open")
-
         assert error.message == "Circuit open"
         assert error.retry_after is None
 
     def test_init_with_retry_after(self):
-        """Test CircuitBreakerOpenError with retry_after."""
         error = CircuitBreakerOpenError("Circuit open", retry_after=30.0)
-
         assert error.retry_after == 30.0
 
 
 class TestCircuitBreakerInit:
-    """Test CircuitBreaker initialization."""
-
     def test_init_defaults(self):
-        """Test CircuitBreaker with default parameters."""
         cb = CircuitBreaker()
 
         assert cb.failure_threshold == 5
@@ -80,7 +67,6 @@ class TestCircuitBreakerInit:
         assert cb.failure_count == 0
 
     def test_init_custom_params(self):
-        """Test CircuitBreaker with custom parameters."""
         excluded = {ValueError, TypeError}
 
         cb = CircuitBreaker(
@@ -98,16 +84,13 @@ class TestCircuitBreakerInit:
         assert cb.name == "test_cb"
 
     def test_metrics_property(self):
-        """Test metrics property returns copy."""
         cb = CircuitBreaker()
         metrics1 = cb.metrics
         metrics2 = cb.metrics
-
         assert metrics1 == metrics2
-        assert metrics1 is not metrics2  # Should be a copy
+        assert metrics1 is not metrics2
 
     def test_to_dict(self):
-        """Test to_dict method."""
         cb = CircuitBreaker(
             failure_threshold=10,
             recovery_time=60.0,
@@ -124,11 +107,8 @@ class TestCircuitBreakerInit:
 
 
 class TestCircuitBreakerExecution:
-    """Test CircuitBreaker execute method."""
-
     @pytest.mark.asyncio
     async def test_execute_success_closed_state(self):
-        """Test successful execution in closed state."""
         cb = CircuitBreaker(failure_threshold=3)
 
         async def success_func():
@@ -143,7 +123,6 @@ class TestCircuitBreakerExecution:
 
     @pytest.mark.asyncio
     async def test_execute_with_args_kwargs(self):
-        """Test execute passes args and kwargs correctly."""
         cb = CircuitBreaker()
 
         async def func_with_params(a, b, c=None):
@@ -155,7 +134,6 @@ class TestCircuitBreakerExecution:
 
     @pytest.mark.asyncio
     async def test_execute_failure_increments_count(self):
-        """Test failure increments failure count."""
         cb = CircuitBreaker(failure_threshold=3)
 
         async def failing_func():
@@ -170,7 +148,6 @@ class TestCircuitBreakerExecution:
 
     @pytest.mark.asyncio
     async def test_execute_opens_circuit_after_threshold(self):
-        """Test circuit opens after reaching failure threshold."""
         cb = CircuitBreaker(failure_threshold=3)
 
         async def failing_func():
@@ -186,7 +163,6 @@ class TestCircuitBreakerExecution:
 
     @pytest.mark.asyncio
     async def test_execute_rejects_when_open(self):
-        """Test circuit rejects calls when open."""
         cb = CircuitBreaker(failure_threshold=2, recovery_time=10.0)
 
         async def failing_func():
@@ -208,7 +184,6 @@ class TestCircuitBreakerExecution:
 
     @pytest.mark.asyncio
     async def test_execute_excluded_exceptions_dont_count(self):
-        """Test excluded exceptions don't increment failure count."""
         cb = CircuitBreaker(failure_threshold=2, excluded_exceptions={KeyError})
 
         async def func_with_excluded_error():
@@ -225,7 +200,6 @@ class TestCircuitBreakerExecution:
 
     @pytest.mark.asyncio
     async def test_execute_transitions_to_half_open(self):
-        """Test circuit transitions to half-open after recovery time."""
         cb = CircuitBreaker(failure_threshold=2, recovery_time=0.1)
 
         async def failing_func():
@@ -253,7 +227,6 @@ class TestCircuitBreakerExecution:
 
     @pytest.mark.asyncio
     async def test_execute_half_open_success_closes_circuit(self):
-        """Test successful call in half-open state closes circuit."""
         cb = CircuitBreaker(failure_threshold=1, recovery_time=0.1)
 
         async def failing_func():
@@ -277,7 +250,6 @@ class TestCircuitBreakerExecution:
 
     @pytest.mark.asyncio
     async def test_execute_half_open_failure_reopens_circuit(self):
-        """Test failure in half-open state reopens circuit."""
         cb = CircuitBreaker(failure_threshold=1, recovery_time=0.1)
 
         async def failing_func():
@@ -298,10 +270,7 @@ class TestCircuitBreakerExecution:
 
 
 class TestRetryConfig:
-    """Test RetryConfig class."""
-
     def test_init_defaults(self):
-        """Test RetryConfig with default values."""
         config = RetryConfig()
 
         assert config.max_retries == 3
@@ -312,7 +281,6 @@ class TestRetryConfig:
         assert config.jitter_factor == 0.2
 
     def test_init_custom_values(self):
-        """Test RetryConfig with custom values."""
         config = RetryConfig(
             max_retries=5,
             base_delay=2.0,
@@ -330,16 +298,13 @@ class TestRetryConfig:
         assert config.jitter_factor == 0.5
 
     def test_to_dict(self):
-        """Test to_dict method."""
         config = RetryConfig(max_retries=5, base_delay=2.0)
         result = config.to_dict()
-
         assert result["max_retries"] == 5
         assert result["base_delay"] == 2.0
-        assert "retry_exceptions" not in result  # Not in to_dict
+        assert "retry_exceptions" not in result
 
     def test_as_kwargs(self):
-        """Test as_kwargs method."""
         config = RetryConfig(
             max_retries=5,
             retry_exceptions=(ValueError,),
@@ -353,33 +318,25 @@ class TestRetryConfig:
         assert kwargs["exclude_exceptions"] == (KeyError,)
 
     def test_backoff_factor_exactly_one_accepted(self):
-        """backoff_factor=1.0 (boundary) must be accepted."""
         config = RetryConfig(backoff_factor=1.0)
         assert config.backoff_factor == 1.0
 
     def test_backoff_factor_below_one_rejected(self):
-        """backoff_factor < 1.0 must raise ValueError."""
         with pytest.raises(ValueError, match="backoff_factor must be >= 1.0"):
             RetryConfig(backoff_factor=0.5)
 
     def test_backoff_factor_zero_rejected(self):
-        """backoff_factor=0 must raise ValueError."""
         with pytest.raises(ValueError, match="backoff_factor must be >= 1.0"):
             RetryConfig(backoff_factor=0)
 
     def test_backoff_factor_negative_rejected(self):
-        """Negative backoff_factor must raise ValueError."""
         with pytest.raises(ValueError, match="backoff_factor must be >= 1.0"):
             RetryConfig(backoff_factor=-2.0)
 
 
 class TestRetryWithBackoff:
-    """Test retry_with_backoff function."""
-
     @pytest.mark.asyncio
     async def test_retry_success_first_attempt(self):
-        """Test retry succeeds on first attempt."""
-
         async def success_func():
             return "success"
 
@@ -389,7 +346,6 @@ class TestRetryWithBackoff:
 
     @pytest.mark.asyncio
     async def test_retry_success_after_failures(self):
-        """Test retry succeeds after some failures."""
         attempts = {"count": 0}
 
         async def flaky_func():
@@ -405,8 +361,6 @@ class TestRetryWithBackoff:
 
     @pytest.mark.asyncio
     async def test_retry_exhausts_attempts(self):
-        """Test retry gives up after max attempts."""
-
         async def always_fails():
             raise ConnectionError("Permanent error")
 
@@ -415,7 +369,6 @@ class TestRetryWithBackoff:
 
     @pytest.mark.asyncio
     async def test_retry_with_exclude_exceptions(self):
-        """Test excluded exceptions are not retried."""
         attempts = {"count": 0}
 
         async def func_with_excluded_error():
@@ -430,12 +383,10 @@ class TestRetryWithBackoff:
                 base_delay=0.01,
             )
 
-        # Should only have tried once
         assert attempts["count"] == 1
 
     @pytest.mark.asyncio
     async def test_retry_with_specific_exceptions(self):
-        """Test only specified exceptions trigger retry."""
         attempts = {"count": 0}
 
         async def func_with_different_error():
@@ -452,12 +403,10 @@ class TestRetryWithBackoff:
                 base_delay=0.01,
             )
 
-        # Should have retried ValueError once, then raised TypeError
         assert attempts["count"] == 2
 
     @pytest.mark.asyncio
     async def test_retry_backoff_increases_delay(self):
-        """Test backoff increases delay between retries."""
         delays = []
 
         async def func_that_tracks_delays():
@@ -476,7 +425,6 @@ class TestRetryWithBackoff:
                     jitter=False,
                 )
 
-        # Delays should increase: 1.0, 2.0, 4.0
         assert len(delays) == 3
         assert delays[0] == 1.0
         assert delays[1] == 2.0
@@ -484,7 +432,6 @@ class TestRetryWithBackoff:
 
     @pytest.mark.asyncio
     async def test_retry_respects_max_delay(self):
-        """Test max_delay caps the backoff."""
         delays = []
 
         async def failing_func():
@@ -504,7 +451,6 @@ class TestRetryWithBackoff:
                     jitter=False,
                 )
 
-        # All delays should be capped at max_delay
         assert all(d <= 15.0 for d in delays)
 
     @pytest.mark.asyncio
@@ -539,12 +485,8 @@ class TestRetryWithBackoff:
 
 
 class TestCircuitBreakerDecorator:
-    """Test circuit_breaker decorator."""
-
     @pytest.mark.asyncio
     async def test_decorator_basic_usage(self):
-        """Test circuit_breaker decorator on function."""
-
         @circuit_breaker(failure_threshold=2, recovery_time=0.1)
         async def decorated_func():
             return "success"
@@ -554,8 +496,6 @@ class TestCircuitBreakerDecorator:
 
     @pytest.mark.asyncio
     async def test_decorator_opens_circuit_after_failures(self):
-        """Test decorator opens circuit after threshold."""
-
         @circuit_breaker(failure_threshold=2, recovery_time=1.0)
         async def failing_func():
             raise ValueError("Error")
@@ -571,8 +511,6 @@ class TestCircuitBreakerDecorator:
 
     @pytest.mark.asyncio
     async def test_decorator_with_custom_name(self):
-        """Test decorator with custom circuit name."""
-
         @circuit_breaker(name="custom_circuit")
         async def func():
             return "test"
@@ -582,12 +520,8 @@ class TestCircuitBreakerDecorator:
 
 
 class TestWithRetryDecorator:
-    """Test with_retry decorator."""
-
     @pytest.mark.asyncio
     async def test_decorator_basic_usage(self):
-        """Test with_retry decorator on function."""
-
         @with_retry(max_retries=3, base_delay=0.01)
         async def decorated_func():
             return "success"
@@ -597,7 +531,6 @@ class TestWithRetryDecorator:
 
     @pytest.mark.asyncio
     async def test_decorator_retries_on_failure(self):
-        """Test decorator retries failed calls."""
         attempts = {"count": 0}
 
         @with_retry(max_retries=3, base_delay=0.01)
@@ -613,7 +546,6 @@ class TestWithRetryDecorator:
 
     @pytest.mark.asyncio
     async def test_decorator_with_exclude_exceptions(self):
-        """Test decorator doesn't retry excluded exceptions."""
         attempts = {"count": 0}
 
         @with_retry(max_retries=3, exclude_exceptions=(KeyError,), base_delay=0.01)

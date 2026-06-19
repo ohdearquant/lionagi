@@ -10,29 +10,21 @@ from lionagi.service.broadcaster import Broadcaster
 
 
 class SampleEvent(Event):
-    """Sample event class for broadcaster tests."""
-
     event_type: str = "test_event"
 
 
 class TestBroadcaster:
-    """Test suite for Broadcaster class."""
-
     @pytest.fixture(autouse=True)
     def reset_broadcaster(self):
-        """Reset broadcaster state before each test."""
-        # Clear subscribers before each test
         Broadcaster._subscribers.clear()
         Broadcaster._instance = None
         yield
-        # Clean up after test
         Broadcaster._subscribers.clear()
         Broadcaster._instance = None
 
     def test_broadcaster_singleton(self):
-        """Test that Broadcaster follows singleton pattern."""
+        """Broadcaster follows singleton pattern."""
 
-        # Create a subclass for testing
         class TestBroadcaster(Broadcaster):
             _event_type = SampleEvent
 
@@ -43,8 +35,6 @@ class TestBroadcaster:
         assert TestBroadcaster._instance is broadcaster1
 
     def test_subscribe_adds_callback(self):
-        """Test that subscribe adds callback to subscribers list."""
-
         class TestBroadcaster(Broadcaster):
             _event_type = SampleEvent
 
@@ -55,8 +45,6 @@ class TestBroadcaster:
         assert TestBroadcaster.get_subscriber_count() == 1
 
     def test_subscribe_prevents_duplicates(self):
-        """Test that subscribing same callback twice doesn't duplicate."""
-
         class TestBroadcaster(Broadcaster):
             _event_type = SampleEvent
 
@@ -68,8 +56,6 @@ class TestBroadcaster:
         assert TestBroadcaster.get_subscriber_count() == 1
 
     def test_unsubscribe_removes_callback(self):
-        """Test that unsubscribe removes callback from subscribers."""
-
         class TestBroadcaster(Broadcaster):
             _event_type = SampleEvent
 
@@ -82,21 +68,15 @@ class TestBroadcaster:
         assert TestBroadcaster.get_subscriber_count() == 0
 
     def test_unsubscribe_nonexistent_callback_no_error(self):
-        """Test that unsubscribing nonexistent callback doesn't raise error."""
-
         class TestBroadcaster(Broadcaster):
             _event_type = SampleEvent
 
         callback = MagicMock()
-
-        # Should not raise error
         TestBroadcaster.unsubscribe(callback)
         assert TestBroadcaster.get_subscriber_count() == 0
 
     @pytest.mark.asyncio
     async def test_broadcast_calls_sync_callback(self):
-        """Test that broadcast calls synchronous callbacks."""
-
         class TestBroadcaster(Broadcaster):
             _event_type = SampleEvent
 
@@ -110,8 +90,6 @@ class TestBroadcaster:
 
     @pytest.mark.asyncio
     async def test_broadcast_calls_async_callback(self):
-        """Test that broadcast awaits asynchronous callbacks."""
-
         class TestBroadcaster(Broadcaster):
             _event_type = SampleEvent
 
@@ -125,8 +103,6 @@ class TestBroadcaster:
 
     @pytest.mark.asyncio
     async def test_broadcast_calls_multiple_subscribers(self):
-        """Test that broadcast calls all registered subscribers."""
-
         class TestBroadcaster(Broadcaster):
             _event_type = SampleEvent
 
@@ -147,8 +123,6 @@ class TestBroadcaster:
 
     @pytest.mark.asyncio
     async def test_broadcast_validates_event_type(self):
-        """Test that broadcast raises error for wrong event type."""
-
         class SpecificBroadcaster(Broadcaster):
             _event_type = SampleEvent
 
@@ -163,12 +137,11 @@ class TestBroadcaster:
         with pytest.raises(ValueError, match="Event must be of type SampleEvent"):
             await SpecificBroadcaster.broadcast(wrong_event)
 
-        # Callback should not have been called
         callback.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_broadcast_handles_callback_exception(self):
-        """Test that broadcast catches and logs callback exceptions."""
+        """Exceptions in one callback are caught; remaining callbacks still run."""
 
         class TestBroadcaster(Broadcaster):
             _event_type = SampleEvent
@@ -180,16 +153,14 @@ class TestBroadcaster:
         TestBroadcaster.subscribe(failing_callback)
         TestBroadcaster.subscribe(successful_callback)
 
-        # Should not raise, but log the error
         await TestBroadcaster.broadcast(event)
 
-        # Both callbacks should be attempted
         failing_callback.assert_called_once_with(event)
         successful_callback.assert_called_once_with(event)
 
     @pytest.mark.asyncio
     async def test_broadcast_handles_async_callback_exception(self):
-        """Test that broadcast catches and logs async callback exceptions."""
+        """Exceptions in async callbacks are caught; remaining callbacks still run."""
 
         class TestBroadcaster(Broadcaster):
             _event_type = SampleEvent
@@ -201,29 +172,21 @@ class TestBroadcaster:
         TestBroadcaster.subscribe(failing_callback)
         TestBroadcaster.subscribe(successful_callback)
 
-        # Should not raise, but log the error
         await TestBroadcaster.broadcast(event)
 
-        # Both callbacks should be attempted
         assert failing_callback.await_count == 1
         successful_callback.assert_awaited_once_with(event)
 
     @pytest.mark.asyncio
     async def test_broadcast_with_no_subscribers(self):
-        """Test that broadcasting with no subscribers doesn't error."""
-
         class TestBroadcaster(Broadcaster):
             _event_type = SampleEvent
 
         event = SampleEvent()
-
-        # Should not raise error
         await TestBroadcaster.broadcast(event)
         assert TestBroadcaster.get_subscriber_count() == 0
 
     def test_get_subscriber_count_accuracy(self):
-        """Test that get_subscriber_count returns accurate count."""
-
         class TestBroadcaster(Broadcaster):
             _event_type = SampleEvent
 
@@ -244,8 +207,6 @@ class TestBroadcaster:
         assert TestBroadcaster.get_subscriber_count() == 2
 
     def test_multiple_broadcaster_subclasses_independent(self):
-        """Test that different Broadcaster subclasses maintain independent state."""
-
         class BroadcasterA(Broadcaster):
             _event_type = SampleEvent
             _subscribers = []
@@ -270,8 +231,6 @@ class TestBroadcaster:
 
     @pytest.mark.asyncio
     async def test_broadcast_mixed_sync_async_callbacks(self):
-        """Test broadcasting to mix of sync and async callbacks."""
-
         class TestBroadcaster(Broadcaster):
             _event_type = SampleEvent
 
@@ -297,12 +256,10 @@ class TestBroadcaster:
 
 
 class TestBroadcasterCoroutineOnlyRegression:
-    """Verify that broadcast only awaits coroutines, not Tasks or other awaitables.
+    """Regression: broadcast must await coroutines only, not Tasks or other awaitables.
 
-    origin/main used `if asyncio.iscoroutine(result): await result`.
-    The refactor replaced this with `await maybe_await(callback(event))`, which
-    uses inspect.isawaitable and would also await Tasks/Futures.  These tests
-    confirm the narrow coroutine-only semantics are restored.
+    A refactor swapped asyncio.iscoroutine for inspect.isawaitable, which would
+    also await Tasks/Futures and change fire-and-return to fire-and-wait.
     """
 
     @pytest.fixture(autouse=True)

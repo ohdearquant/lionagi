@@ -18,10 +18,7 @@ from lionagi.service.connections.mcp_wrapper import (
 
 
 class TestMCPSecurityConfig:
-    """Test MCPSecurityConfig dataclass."""
-
     def test_default_config(self):
-        """Default config denies all transports and filters sensitive env."""
         config = MCPSecurityConfig()
         assert config.allow_commands is False  # fail-closed
         assert config.allow_urls is False  # fail-closed
@@ -32,23 +29,18 @@ class TestMCPSecurityConfig:
         assert len(config.env_denylist_patterns) > 0
 
     def test_custom_allowlist(self):
-        """Custom allowlist restricts commands."""
         config = MCPSecurityConfig(command_allowlist=frozenset({"node", "python"}))
         assert "node" in config.command_allowlist
         assert "python" in config.command_allowlist
 
     def test_frozen(self):
-        """Config is immutable."""
         config = MCPSecurityConfig()
         with pytest.raises(AttributeError):
             config.filter_sensitive_env = False
 
 
 class TestFilterEnv:
-    """Test environment variable filtering."""
-
     def test_filters_sensitive_keys(self):
-        """Known sensitive patterns are filtered."""
         config = MCPSecurityConfig()
         env = {
             "PATH": "/usr/bin",
@@ -68,7 +60,6 @@ class TestFilterEnv:
         assert "DATABASE_URL" not in filtered
 
     def test_no_filter_when_disabled(self):
-        """All env vars pass when filtering is disabled."""
         config = MCPSecurityConfig(filter_sensitive_env=False)
         env = {"OPENAI_API_KEY": "sk-secret", "PATH": "/usr/bin"}
         filtered = _filter_env(env, config)
@@ -77,7 +68,6 @@ class TestFilterEnv:
         assert "PATH" in filtered
 
     def test_custom_deny_patterns(self):
-        """Custom deny patterns are respected."""
         config = MCPSecurityConfig(env_denylist_patterns=frozenset({"CUSTOM_SECRET"}))
         env = {
             "CUSTOM_SECRET_KEY": "hidden",
@@ -89,7 +79,6 @@ class TestFilterEnv:
         assert "PATH" in filtered
 
     def test_case_insensitive_matching(self):
-        """Filtering is case-insensitive."""
         config = MCPSecurityConfig()
         env = {"openai_api_key": "sk-secret"}
         filtered = _filter_env(env, config)
@@ -128,20 +117,17 @@ class TestValidateCommand:
     # --- Explicit allow without allowlist ---
 
     def test_allow_commands_no_allowlist_permits_bare(self):
-        """allow_commands=True with no allowlist permits any bare command."""
         config = MCPSecurityConfig(allow_commands=True, command_allowlist=None)
         assert _validate_command("node", config) is None
         assert _validate_command("python", config) is None
 
     def test_allow_commands_no_allowlist_permits_paths(self):
-        """allow_commands=True with no allowlist permits path commands."""
         config = MCPSecurityConfig(allow_commands=True, command_allowlist=None)
         assert _validate_command("/usr/bin/node", config) is None
 
     # --- Allowlist enforcement when allow_commands=True ---
 
     def test_allowlist_blocks_unlisted(self):
-        """Commands not in allowlist are blocked even when allow_commands=True."""
         config = MCPSecurityConfig(
             allow_commands=True, command_allowlist=frozenset({"node", "python"})
         )
@@ -149,7 +135,6 @@ class TestValidateCommand:
             _validate_command("bash", config)
 
     def test_allowlist_permits_listed(self):
-        """Commands in allowlist are allowed when allow_commands=True."""
         config = MCPSecurityConfig(
             allow_commands=True, command_allowlist=frozenset({"node", "python"})
         )
@@ -189,28 +174,23 @@ class TestValidateUrl:
             _validate_url("http://api.example.com/mcp", config)
 
     def test_allow_urls_https_accepted(self):
-        """allow_urls=True with https URL is permitted."""
         config = MCPSecurityConfig(allow_urls=True)
         assert _validate_url("https://api.example.com/mcp", config) is None
 
     def test_allow_urls_wss_accepted(self):
-        """allow_urls=True with wss URL is permitted."""
         config = MCPSecurityConfig(allow_urls=True)
         assert _validate_url("wss://api.example.com/mcp", config) is None
 
     def test_allow_urls_http_blocked(self):
-        """allow_urls=True still blocks non-https/wss scheme."""
         config = MCPSecurityConfig(allow_urls=True)
         with pytest.raises(ValueError, match="https or wss scheme"):
             _validate_url("http://api.example.com/mcp", config)
 
     def test_allow_urls_with_allowlist_permits_listed(self):
-        """URL host in allowlist is permitted when allow_urls=True."""
         config = MCPSecurityConfig(allow_urls=True, url_allowlist=frozenset({"api.example.com"}))
         assert _validate_url("https://api.example.com/mcp", config) is None
 
     def test_allow_urls_with_allowlist_blocks_unlisted(self):
-        """URL host not in allowlist is blocked even when allow_urls=True."""
         config = MCPSecurityConfig(allow_urls=True, url_allowlist=frozenset({"api.example.com"}))
         with pytest.raises(ValueError, match="not in allowlist"):
             _validate_url("https://evil.example.org/mcp", config)
@@ -254,7 +234,7 @@ class TestMCPConnectionPoolFailClosed:
 
 
 class TestLoadMcpConfigTrustedLoad:
-    """load_mcp_config must restore normal .mcp.json usage (Finding 1).
+    """load_mcp_config must restore normal .mcp.json usage.
 
     The fail-closed transport default is correct for untrusted paths, but an
     explicit load_mcp_config() call is a trust action — it must default to an
@@ -307,7 +287,7 @@ class TestLoadMcpConfigTrustedLoad:
             await mgr.load_mcp_config(str(cfg), mcp_security=MCPSecurityConfig())
 
     async def test_load_does_not_mutate_global_security_scope(self, tmp_path, monkeypatch):
-        """The permissive policy is threaded as an arg, not set on the global (Finding 3/1).
+        """The permissive policy is threaded as an arg, not set on the global.
 
         Mutating the process-global default — even with save/restore around the
         awaiting registration loop — broadens trust to any client a CONCURRENT
@@ -343,8 +323,8 @@ class TestLoadMcpConfigTrustedLoad:
     async def test_concurrent_loads_do_not_cross_contaminate(self, monkeypatch):
         """Two concurrent loads with different policies must not see each other's.
 
-        Regression (Finding 1): bracketing the awaiting registration loop by
-        mutating the shared ``_security`` class var let a restrictive load
+        Bracketing the awaiting registration loop by mutating the shared
+        ``_security`` class var let a restrictive load
         observe a permissive load's policy (and vice versa) when they
         interleaved. Threading the policy makes each load see only its own.
         """
@@ -414,7 +394,7 @@ class TestLoadMcpConfigTrustedLoad:
             MCPConnectionPool._clients.clear()
 
     async def test_load_mcp_tools_helper_trusted_and_loud(self, tmp_path, monkeypatch):
-        """Standalone load_mcp_tools mirrors load_mcp_config semantics (Finding 2):
+        """Standalone load_mcp_tools mirrors load_mcp_config semantics:
         trusted-allow threaded into the load, global untouched, denial raised loudly.
         """
         import json
@@ -458,8 +438,7 @@ class TestLoadMcpConfigTrustedLoad:
 
 
 class TestPerServerPolicyPersistence:
-    """Codex #1279: the authorized policy must reach the stored tool-call path,
-    not only the discovery client.
+    """The authorized policy must reach the stored tool-call path, not only the discovery client.
 
     A trusted load records the per-server policy; every later client creation
     for that server — the lazy first invocation of a tool_names-registered tool,
@@ -561,10 +540,10 @@ class TestPerServerPolicyPersistence:
             self._reset()
 
     async def test_shared_command_different_args_do_not_share_policy(self, monkeypatch):
-        """Codex follow-up: the inline policy key must fingerprint the WHOLE
-        transport, not just the command/url. A trusted
-        ``{command: python, args: [safe.py]}`` must NOT authorize a different
-        ``{command: python, args: [-c, ...]}`` that merely shares the executable.
+        """The policy key must fingerprint the WHOLE transport, not just the command/url.
+
+        A trusted ``{command: python, args: [safe.py]}`` must NOT authorize a
+        different ``{command: python, args: [-c, ...]}`` that merely shares the executable.
         """
         self._reset()
         seen = []
