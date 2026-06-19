@@ -248,6 +248,8 @@ class EngineRun:
         cwd: str | None = None,
         secure: bool = True,
         exempt: bool = False,
+        mcp_servers: list[str] | None = None,
+        extra_prompt: str | None = None,
     ) -> Branch:
         # ``exempt`` is for terminal stages (synthesis/verdict) that must run
         # even when the expansion budget is gone — degrade, don't lose the run.
@@ -265,7 +267,10 @@ class EngineRun:
             permissions=permissions,
             emits=tuple(emits) if emits else None,
             cwd=cwd,
+            system_prompt=extra_prompt,
         )
+        if mcp_servers is not None:
+            spec.mcp_servers = mcp_servers
         if secure and tools:
             from lionagi.agent.spec import _wire_secure_guards
 

@@ -33,6 +33,7 @@ __all__ = (
     "TestsRan",
     "VerifyResult",
     "CodeResultRecorded",
+    "AutoRepairApplied",
     "WorkAborted",
     "WorkerHeartbeat",
     "WorkerActivity",
@@ -180,6 +181,24 @@ class WorkerActivity(EngineEvent):
 
     path: str = Field(description="Workspace-relative path that changed.")
     elapsed_s: float = Field(description="Seconds since the run started.")
+
+
+class AutoRepairApplied(EngineEvent):
+    """Emitted when the harness auto-applies a repair command before a test gate.
+
+    Distinct from a worker fix round: the worker produced the change; the harness
+    normalized it mechanically (e.g. ``cargo fmt --all``).  The dataset records
+    both so analysis can separate worker-produced vs harness-normalized diffs.
+    """
+
+    cmd: str = Field(description="The auto-repair command that was run.")
+    files: list[str] = Field(
+        default_factory=list,
+        description="Workspace-relative paths whose mtime changed after the command.",
+    )
+    round: int = Field(
+        default=0, description="Fix-loop round this repair belongs to (0 = first pass)."
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -462,6 +481,13 @@ class CodingEngine(Engine):
         strict_spec: bool = False,
         heartbeat_interval_s: float | None = 30.0,
         stage_timeout_s: float | None = None,
+        # per-stage tool grants (worker only; judge/plan/verify excluded)
+        worker_extra_tools: tuple[str, ...] = (),
+        worker_mcp_servers: list[str] | None = None,
+        worker_extra_prompt: str | None = None,
+        # mechanical-repair efficiency
+        auto_repair_cmds: list[str] | None = None,
+        fast_test_cmd: str | list[str] | None = None,
         **kwargs: Any,
     ) -> None:
         super().__init__(**kwargs)
@@ -477,6 +503,11 @@ class CodingEngine(Engine):
         self.strict_spec = strict_spec
         self.heartbeat_interval_s = heartbeat_interval_s
         self.stage_timeout_s = stage_timeout_s
+        self.worker_extra_tools = tuple(worker_extra_tools)
+        self.worker_mcp_servers = list(worker_mcp_servers) if worker_mcp_servers else None
+        self.worker_extra_prompt = worker_extra_prompt
+        self.auto_repair_cmds = list(auto_repair_cmds) if auto_repair_cmds else []
+        self.fast_test_cmd = fast_test_cmd
 
     # -- lifecycle ------------------------------------------------------------
 
@@ -616,15 +647,18 @@ class CodingEngine(Engine):
     async def _implement(self, run: CodingRun, plan: WorkPlanned) -> ChangeProposed | None:
         emits = (ChangeProposed,)
         before = len(run.events_of(ChangeProposed))
+        all_worker_tools = self.coding_tools + self.worker_extra_tools
         async with run._sem:
             agent = await run.make_agent(
                 self.implement_role,
                 name="implement",
                 model=self.model_for("implement"),
-                tools=self.coding_tools,
-                permissions=self.implement_permissions if self.coding_tools else None,
+                tools=all_worker_tools,
+                permissions=self.implement_permissions if all_worker_tools else None,
                 cwd=run.workspace,
                 emits=emits,
+                mcp_servers=self.worker_mcp_servers,
+                extra_prompt=self.worker_extra_prompt,
             )
             wrapped = self._wrap_turn_timeout(agent, run)
             heartbeat_task = self._start_heartbeat(run, stage="implement")
@@ -645,8 +679,55 @@ class CodingEngine(Engine):
         run._implementer = wrapped  # reused by the fix loop — same branch, more turns
         return run.last(ChangeProposed)
 
+    async def _apply_auto_repairs(
+        self, run: CodingRun, *, round_no: int
+    ) -> list[AutoRepairApplied]:
+        """Run each auto_repair_cmd in sequence; emit AutoRepairApplied per command.
+
+        Returns the list of events emitted.  Errors are notified but never raise
+        — a failed auto-repair command is surfaced as a notification, not a crash.
+        """
+        if not self.auto_repair_cmds:
+            return []
+        applied: list[AutoRepairApplied] = []
+        ws = Path(run.workspace)
+        for raw_cmd in self.auto_repair_cmds:
+            # Snapshot mtimes before running so we can report changed files.
+            before_mtimes: dict[str, float] = {}
+            try:
+                for p in ws.rglob("*"):
+                    if p.is_file():
+                        before_mtimes[str(p)] = p.stat().st_mtime
+            except Exception:  # noqa: BLE001
+                logger.debug("auto_repair mtime snapshot failed", exc_info=True)
+            cmd, shell = _resolve_cmd(raw_cmd)
+            result = await run_sync(_subprocess_sync, cmd, shell, 120.0, run.workspace)
+            if int(result.get("returncode", -1)) != 0:
+                run.notify(
+                    "auto_repair_failed",
+                    cmd=raw_cmd,
+                    returncode=result.get("returncode"),
+                    round=round_no,
+                )
+                continue
+            changed: list[str] = []
+            try:
+                for p in ws.rglob("*"):
+                    if p.is_file():
+                        key = str(p)
+                        if before_mtimes.get(key) != p.stat().st_mtime:
+                            rel = str(p.relative_to(ws)) if p.is_relative_to(ws) else key
+                            changed.append(rel)
+            except Exception:  # noqa: BLE001
+                logger.debug("auto_repair changed-file scan failed", exc_info=True)
+            ev = AutoRepairApplied(cmd=raw_cmd, files=sorted(changed), round=round_no)
+            await run.emit(ev)
+            applied.append(ev)
+        return applied
+
     async def _test(self, run: CodingRun, change: ChangeProposed, *, round_no: int) -> TestsRan:
         """Run the declared test command as a subprocess; passed is the process exit code, never a model claim."""
+        await self._apply_auto_repairs(run, round_no=round_no)
         cmd, shell = _resolve_cmd(run.test_cmd)
         cmd_str = run.test_cmd if isinstance(run.test_cmd, str) else " ".join(run.test_cmd)
         run.notify("testing", change=change.eid, round=round_no, cmd=cmd_str)
@@ -669,35 +750,103 @@ class CodingEngine(Engine):
         await run.emit(tests)
         return run.last(TestsRan)
 
+    async def _fast_test(
+        self, run: CodingRun, change: ChangeProposed, *, round_no: int
+    ) -> TestsRan | None:
+        """Run fast_test_cmd as an incremental gate for intermediate fix rounds.
+
+        Returns None when fast_test_cmd is not configured.  Auto-repair is NOT
+        run here — it fires in _test() which is always the authoritative leg.
+        """
+        if self.fast_test_cmd is None:
+            return None
+        cmd, shell = _resolve_cmd(self.fast_test_cmd)
+        cmd_str = (
+            self.fast_test_cmd
+            if isinstance(self.fast_test_cmd, str)
+            else " ".join(self.fast_test_cmd)
+        )
+        run.notify("fast_testing", change=change.eid, round=round_no, cmd=cmd_str)
+        result = await run_sync(_subprocess_sync, cmd, shell, self.test_timeout_s, run.workspace)
+        combined = (result.get("stdout", "") + result.get("stderr", "")).rstrip()
+        returncode = int(result.get("returncode", -1))
+        timed_out = bool(result.get("timed_out", False))
+        passed = returncode == 0 and not timed_out
+        output_file = self._write_output(run, combined)
+        tests = TestsRan(
+            change_ref=change.eid,
+            cmd=cmd_str,
+            passed=passed,
+            returncode=returncode,
+            timed_out=timed_out,
+            round=round_no,
+            output_tail=_tail(combined),
+            output_file=output_file,
+        )
+        await run.emit(tests)
+        return run.last(TestsRan)
+
     async def _fix_loop(
         self, run: CodingRun, plan: WorkPlanned, change: ChangeProposed, tests: TestsRan
     ) -> tuple[ChangeProposed, TestsRan]:
-        """Re-prompt the implementer on failure and re-test, bounded by max_fix_rounds; judge gate fires before each round."""
+        """Re-prompt the implementer on failure and re-test, bounded by max_fix_rounds.
+
+        Mechanical rounds (failure attributable solely to fmt/lint output, satisfied
+        after auto-repair) skip the judge gate.  Substantive rounds pass through the
+        judge as before.  When fast_test_cmd is configured, intermediate rounds gate
+        on it first; the full test_cmd is always the final ground-truth leg.
+        """
         agent = getattr(run, "_implementer", None)
         round_no = 0
         while not tests.passed and round_no < self.max_fix_rounds and agent is not None:
             round_no += 1
-            subject = f"fix round {round_no}: test `{tests.cmd}` failed (exit {tests.returncode})"
-            if not await self.judge(run, f"fix-{round_no}", subject):
-                run.notify("fix_gated", round=round_no)
-                break
-            before = len(run.events_of(ChangeProposed))
-            async with run._sem:
-                stage_coro = run.operate_with_repair(
-                    agent,
-                    _fix_instruction(tests, plan, round_no, self.max_fix_rounds),
-                    arrived=lambda n=before: len(run.events_of(ChangeProposed)) > n,
-                    emits=(ChangeProposed,),
-                    retries=self.repair_retries,
+            # Classify: mechanical if auto-repair commands are configured and the
+            # previous failure looks like a pure fmt/lint failure.
+            is_mechanical = bool(self.auto_repair_cmds) and _looks_mechanical(tests)
+            if is_mechanical:
+                run.notify("fix_mechanical", round=round_no)
+            else:
+                subject = (
+                    f"fix round {round_no}: test `{tests.cmd}` failed (exit {tests.returncode})"
                 )
-                await self._run_stage_with_watchdog(run, stage_coro, f"fix-{round_no}")
-            if run._aborted:
-                break
-            new_change = run.last(ChangeProposed)
-            if new_change is change:
-                run.notify("fix_no_change", round=round_no)
-                break
-            change = new_change
+                if not await self.judge(run, f"fix-{round_no}", subject):
+                    run.notify("fix_gated", round=round_no)
+                    break
+            before = len(run.events_of(ChangeProposed))
+            if is_mechanical:
+                # Mechanical rounds skip re-prompting the worker: auto_repair_cmds
+                # already corrected the workspace.  Re-test directly.
+                pass
+            else:
+                async with run._sem:
+                    stage_coro = run.operate_with_repair(
+                        agent,
+                        _fix_instruction(tests, plan, round_no, self.max_fix_rounds),
+                        arrived=lambda n=before: len(run.events_of(ChangeProposed)) > n,
+                        emits=(ChangeProposed,),
+                        retries=self.repair_retries,
+                    )
+                    await self._run_stage_with_watchdog(run, stage_coro, f"fix-{round_no}")
+                if run._aborted:
+                    break
+                new_change = run.last(ChangeProposed)
+                if new_change is change:
+                    run.notify("fix_no_change", round=round_no)
+                    break
+                change = new_change
+            # Incremental gate: fast_test_cmd for intermediate substantive rounds;
+            # always run the full test_cmd as the final ground-truth leg.
+            if (
+                not is_mechanical
+                and self.fast_test_cmd is not None
+                and round_no < self.max_fix_rounds
+            ):
+                fast = await self._fast_test(run, change, round_no=round_no)
+                if fast is not None and not fast.passed:
+                    # Fast gate failed — update tests for the fix instruction but
+                    # do not count this as the authoritative result yet.
+                    tests = fast
+                    continue
             tests = await self._test(run, change, round_no=round_no)
         if not tests.passed:
             run.notify("fix_exhausted", rounds=round_no, passed=False)
@@ -758,6 +907,16 @@ class CodingEngine(Engine):
         }
         if run._spec_lint_warnings:
             measurements["spec_lint_warnings"] = run._spec_lint_warnings
+        # Record active tool grants so dataset consumers can correlate grant
+        # configuration with outcome — worker grants only, judge context excluded.
+        if self.worker_extra_tools or self.worker_mcp_servers:
+            measurements["worker_grants"] = {
+                "extra_tools": list(self.worker_extra_tools),
+                "mcp_servers": self.worker_mcp_servers or [],
+            }
+        auto_repairs = run.by_type(AutoRepairApplied)
+        if auto_repairs:
+            measurements["auto_repair_rounds"] = len(auto_repairs)
         result = CodeResultRecorded(
             passed=passed,
             measurements=measurements,
@@ -974,6 +1133,33 @@ class CodingEngine(Engine):
         path = run.export_dir / f"test_output_{run._test_runs}.txt"
         path.write_text(output, encoding="utf-8")
         return str(path)
+
+
+# Patterns that suggest a test failure is purely mechanical (fmt/lint).
+_RE_MECHANICAL = re.compile(
+    r"(?:rustfmt|cargo fmt|black|ruff format|clang-format|gofmt|prettier|"
+    r"isort|yapf|autopep8|scalafmt|ktlint)\b.*(?:would reformat|check|error|diff)",
+    re.IGNORECASE,
+)
+
+
+def _looks_mechanical(tests: TestsRan) -> bool:
+    """Return True when the test failure output looks like a pure fmt/lint failure.
+
+    Heuristic only — used to skip the judge gate for mechanical rounds; the
+    authoritative result is always the full test_cmd exit code.
+    """
+    if tests.passed:
+        return False
+    tail = tests.output_tail
+    if not tail:
+        return False
+    lines = tail.splitlines()
+    # If every non-empty line matches a formatter/linter pattern, call it mechanical.
+    non_empty = [ln for ln in lines if ln.strip()]
+    if not non_empty:
+        return False
+    return all(_RE_MECHANICAL.search(ln) for ln in non_empty)
 
 
 def _parse_porcelain(output: str) -> dict[str, str]:
