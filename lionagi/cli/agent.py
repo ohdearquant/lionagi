@@ -8,6 +8,7 @@ import argparse
 import json
 
 from lionagi import Branch
+from lionagi._errors import ConfigurationError
 from lionagi._errors import TimeoutError as LionTimeoutError
 from lionagi.ln.concurrency import (
     cache_cancelled_exc_class,
@@ -199,9 +200,9 @@ async def _run_agent(
 ) -> tuple[str, str, str, str]:
     """Execute one agent turn; returns (result, provider, branch_id, terminal_status)."""
     if resume and continue_last:
-        raise ValueError("--resume / -r and --continue-last / -c are mutually exclusive.")
+        raise ConfigurationError("--resume / -r and --continue-last / -c are mutually exclusive.")
     if preset and (resume or continue_last):
-        raise ValueError(
+        raise ConfigurationError(
             "--preset only applies to new branches; cannot combine with --resume / --continue-last."
         )
 

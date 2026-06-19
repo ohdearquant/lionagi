@@ -6,6 +6,7 @@ from typing import TYPE_CHECKING, Literal
 
 from pydantic import BaseModel
 
+from lionagi._errors import ConfigurationError
 from lionagi.ln import AlcallParams
 from lionagi.protocols.messages import ActionRequest, ActionResponse
 
@@ -186,7 +187,7 @@ async def act(
                 verbose_action=action_param.verbose_action,
             )
         case _:
-            raise ValueError("Invalid strategy. Choose 'concurrent' or 'sequential'.")
+            raise ConfigurationError("Invalid strategy. Choose 'concurrent' or 'sequential'.")
 
 
 async def _concurrent_act(

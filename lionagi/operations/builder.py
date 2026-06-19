@@ -6,6 +6,7 @@
 from enum import Enum
 from typing import Any
 
+from lionagi._errors import OperationError
 from lionagi.models.note import Note
 from lionagi.operations.node import create_operation
 from lionagi.protocols.graph.edge import Edge
@@ -88,7 +89,7 @@ class OperationGraphBuilder:
         **shared_params,
     ) -> list[str]:
         if source_node_id not in self._operations:
-            raise ValueError(f"Source node {source_node_id} not found")
+            raise OperationError(f"Source node {source_node_id} not found")
 
         new_node_ids = []
 
@@ -150,7 +151,7 @@ class OperationGraphBuilder:
     ) -> str:
         sources = source_node_ids or self._current_heads
         if not sources:
-            raise ValueError("No source nodes for aggregation")
+            raise OperationError("No source nodes for aggregation")
 
         agg_params = {
             "aggregation_sources": [str(s) for s in sources],

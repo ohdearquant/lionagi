@@ -6,6 +6,7 @@
 import pytest
 
 from lionagi._errors import (
+    ConfigurationError,
     ExecutionError,
     ExistsError,
     ItemExistsError,
@@ -137,9 +138,10 @@ class TestValidationError:
         assert error.message == "Invalid input"
 
     def test_inheritance(self):
-        """Test ValidationError inherits from LionError."""
+        """Test ValidationError inherits from LionError and ValueError."""
         error = ValidationError()
         assert isinstance(error, LionError)
+        assert isinstance(error, ValueError)
         assert isinstance(error, Exception)
 
 
@@ -271,9 +273,10 @@ class TestOperationError:
         assert error.message == "LionAGI error"
 
     def test_inheritance(self):
-        """Test OperationError inherits from LionError."""
+        """Test OperationError inherits from LionError and ValueError."""
         error = OperationError()
         assert isinstance(error, LionError)
+        assert isinstance(error, ValueError)
 
 
 class TestExecutionError:
@@ -290,9 +293,25 @@ class TestExecutionError:
         assert error.message == "LionAGI error"
 
     def test_inheritance(self):
-        """Test ExecutionError inherits from LionError."""
+        """Test ExecutionError inherits from LionError and RuntimeError."""
         error = ExecutionError()
         assert isinstance(error, LionError)
+        assert isinstance(error, RuntimeError)
+
+
+class TestConfigurationError:
+    """Tests for ConfigurationError class."""
+
+    def test_default_message(self):
+        error = ConfigurationError()
+        assert error.message == "Invalid configuration"
+        assert error.status_code == 500
+
+    def test_inheritance(self):
+        """Test ConfigurationError inherits from LionError and ValueError."""
+        error = ConfigurationError("bad config")
+        assert isinstance(error, LionError)
+        assert isinstance(error, ValueError)
 
 
 class TestAliases:

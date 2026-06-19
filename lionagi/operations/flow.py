@@ -16,6 +16,7 @@ from uuid import UUID
 
 import anyio
 
+from lionagi._errors import ExecutionError, OperationError
 from lionagi.ln import AlcallParams
 from lionagi.ln.concurrency import (
     CapacityLimiter,
@@ -96,7 +97,7 @@ class DependencyAwareExecutor:
 
     async def execute(self) -> dict[str, Any]:
         if not self.graph.is_acyclic():
-            raise ValueError("Graph must be acyclic for flow execution")
+            raise OperationError("Graph must be acyclic for flow execution")
 
         self._validate_edge_conditions()
         await self._preallocate_all_branches()
@@ -452,7 +453,7 @@ class DependencyAwareExecutor:
 
         overlap = completed & skipped
         if overlap:
-            raise RuntimeError(
+            raise ExecutionError(
                 f"Operations {overlap} appear in both completed and skipped lists! "
                 "This indicates a bug in edge condition handling."
             )
@@ -525,7 +526,7 @@ class ReactiveExecutor(DependencyAwareExecutor):
 
     async def execute(self) -> dict[str, Any]:
         if not self.graph.is_acyclic():
-            raise ValueError("Graph must be acyclic for flow execution")
+            raise OperationError("Graph must be acyclic for flow execution")
         self._validate_edge_conditions()
         await self._preallocate_all_branches()
 
@@ -567,7 +568,7 @@ class ReactiveExecutor(DependencyAwareExecutor):
     async def execute_stream(self):
         """Yield a FlowEvent the instant each operation completes."""
         if not self.graph.is_acyclic():
-            raise ValueError("Graph must be acyclic for flow execution")
+            raise OperationError("Graph must be acyclic for flow execution")
         self._validate_edge_conditions()
         await self._preallocate_all_branches()
 
