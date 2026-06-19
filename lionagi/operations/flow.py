@@ -535,9 +535,8 @@ class ReactiveExecutor(DependencyAwareExecutor):
 
         initial = [n for n in self.graph.internal_nodes.values() if isinstance(n, Operation)]
         self._running = True
-        observer = getattr(self.session, "_observer", None)
-        if observer is not None:
-            self.session.observe(self.spawn_type, self._on_bus_spawn)
+        observer = self.session.observer
+        self.session.observe(self.spawn_type, self._on_bus_spawn)
         try:
             async with create_task_group() as tg:
                 self._tg = tg
@@ -549,8 +548,7 @@ class ReactiveExecutor(DependencyAwareExecutor):
         finally:
             self._running = False
             self._tg = None
-            if observer is not None:
-                observer.unobserve(self._on_bus_spawn)
+            observer.unobserve(self._on_bus_spawn)
 
         completed_ops = [
             op_id for op_id in self.results.keys() if op_id not in self.skipped_operations
@@ -578,9 +576,8 @@ class ReactiveExecutor(DependencyAwareExecutor):
         self._result_sink = send
 
         initial = [n for n in self.graph.internal_nodes.values() if isinstance(n, Operation)]
-        observer = getattr(self.session, "observer", None)
-        if observer is not None:
-            self.session.observe(self.spawn_type, self._on_bus_spawn)
+        observer = self.session.observer
+        self.session.observe(self.spawn_type, self._on_bus_spawn)
         self._running = True
 
         async def _driver():
@@ -613,8 +610,7 @@ class ReactiveExecutor(DependencyAwareExecutor):
             self._running = False
             self._tg = None
             self._result_sink = None
-            if observer is not None:
-                observer.unobserve(self._on_bus_spawn)
+            observer.unobserve(self._on_bus_spawn)
             if not driver.done():  # early break / consumer close: tear down
                 driver.cancel()
                 with contextlib.suppress(asyncio.CancelledError, Exception):

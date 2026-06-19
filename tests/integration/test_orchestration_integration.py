@@ -217,34 +217,50 @@ def test_branch_gets_hooks_when_added_after_bus_init():
     assert b2._hooks is bus
 
 
-# ── Test 7: executor uses _observer private attr, not .observer property ──────
+# ── Test 7: both execute() and execute_stream() use the public observer property ──
 
 
-def test_reactive_executor_uses_private_observer_attr():
-    """ReactiveExecutor.execute() must use getattr(session, '_observer', None), not session.observer."""
-    source = inspect.getsource(
+def test_reactive_executor_uses_public_observer_property():
+    """ReactiveExecutor.execute() must use session.observer (public property), not _observer.
+
+    The private _observer PrivateAttr is None until first accessed; relying on
+    it in execute() would silently drop reactive spawns when the observer hasn't
+    been pre-initialised. Both execute() and execute_stream() must use the
+    lazy-init public property instead.
+    """
+    source_execute = inspect.getsource(
         __import__(
             "lionagi.operations.flow", fromlist=["ReactiveExecutor"]
         ).ReactiveExecutor.execute
     )
-
-    # Must use the private attribute access pattern
-    assert '"_observer"' in source or "'_observer'" in source, (
-        "ReactiveExecutor.execute() must access session._observer via getattr "
-        "(the private PrivateAttr), not session.observer (the lazy property)"
+    source_stream = inspect.getsource(
+        __import__(
+            "lionagi.operations.flow", fromlist=["ReactiveExecutor"]
+        ).ReactiveExecutor.execute_stream
     )
 
-    # Must NOT call the property directly (self.session.observer without getattr)
-    # Allow 'self.session.observer' only in comments, not as a bare attribute access
-    non_comment_lines = [
-        (i + 1, line)
-        for i, line in enumerate(source.splitlines())
-        if "session.observer" in line and not line.strip().startswith("#") and "getattr" not in line
-    ]
-    assert not non_comment_lines, (
-        f"ReactiveExecutor.execute() must not call session.observer (lazy property). "
-        f"Found bare access at lines: {non_comment_lines}"
-    )
+    for method_name, source in (("execute", source_execute), ("execute_stream", source_stream)):
+        # Must NOT access the private _observer attribute via getattr
+        private_lines = [
+            (i + 1, line)
+            for i, line in enumerate(source.splitlines())
+            if '"_observer"' in line or "'_observer'" in line
+        ]
+        assert not private_lines, (
+            f"ReactiveExecutor.{method_name}() must not access session._observer "
+            f"(private PrivateAttr). Found at lines: {private_lines}"
+        )
+
+        # Must use the public property (self.session.observer)
+        public_lines = [
+            line
+            for line in source.splitlines()
+            if "session.observer" in line and not line.strip().startswith("#")
+        ]
+        assert public_lines, (
+            f"ReactiveExecutor.{method_name}() must access session.observer "
+            f"(public lazy-init property) to ensure the observer is always initialised"
+        )
 
 
 # ── Test 8: _wait_for_dependencies reads aggregation_sources from metadata ────

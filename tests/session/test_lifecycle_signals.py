@@ -403,57 +403,59 @@ async def test_skipped_node_projects_to_failed_lane():
 
 
 @pytest.mark.asyncio
-async def test_execute_stream_uses_public_observer_property(monkeypatch):
-    """execute_stream subscribes spawn handling via the public 'observer' property.
+async def test_execute_stream_subscribes_spawn_via_public_observer(monkeypatch):
+    """execute_stream receives SpawnRequests even when _observer was None before run.
 
-    The public property is a lazy-init that always returns a SessionObserver.
-    Using the private _observer attribute would return None when the session
-    was created without prior observer access, silently dropping reactive
-    spawns. This test pins that the subscription goes through the public path.
+    The public observer property is a lazy-init that always returns a SessionObserver.
+    If execute_stream used the private _observer attribute it would return None when
+    the session was built without prior observer access, silently dropping reactive
+    spawns. This test verifies the spawn is received via a behavioral check.
     """
-    from lionagi.operations.flow import ReactiveExecutor
-    from lionagi.protocols.graph.graph import Graph
+    from lionagi.casts.emission import SpawnRequest
+    from lionagi.operations import flow_stream
+    from lionagi.operations.builder import OperationGraphBuilder
+    from lionagi.operations.node import Operation, create_operation
+    from lionagi.session.branch import Branch
     from lionagi.session.session import Session
 
-    observer_accesses: list[str] = []
-    original_getattr = getattr
+    executed: list[str] = []
 
-    real_session = Session()
+    async def spawner(**kw):
+        executed.append("spawner")
+        return SpawnRequest(instruction="follow-up", independent=True)
 
-    def tracking_getattr(obj, name, *args):
-        if obj is real_session and name in ("observer", "_observer"):
-            observer_accesses.append(name)
-        return original_getattr(obj, name, *args)
+    async def follow_up(**kw):
+        executed.append("follow_up")
+        return "done"
 
-    monkeypatch.setattr("builtins.getattr", tracking_getattr)
+    session = Session()
+    branch = Branch(name="root")
+    session.include_branches(branch)
+    session.default_branch = branch
+    session.register_operation("spawner", spawner)
+    session.register_operation("follow_up", follow_up)
 
-    from lionagi.operations.node import Operation
+    # Forcibly clear _observer to simulate an uninitialised private attr.
+    # getattr(session, '_observer', None) would return None here; but
+    # session.observer (the property) lazily recreates it — the correct path.
+    session._observer = None
 
-    async def noop(**kw):
-        return None
+    def node_builder(req: SpawnRequest, emitter: Operation) -> Operation:
+        return create_operation("follow_up", parameters={})
 
-    real_session.register_operation("noop", noop)
-    from lionagi.session.branch import Branch
-
-    b = Branch(name="b")
-    real_session.include_branches(b)
-    real_session.default_branch = b
-
-    op = Operation(operation="noop", parameters={})
-    g = Graph()
-    g.add_node(op)
+    builder = OperationGraphBuilder()
+    builder.add_operation("spawner")
+    graph = builder.get_graph()
 
     events = []
-    async for ev in real_session.flow_stream(g):
+    async for ev in flow_stream(session, graph, node_builder=node_builder):
         events.append(ev)
 
-    assert "observer" in observer_accesses, (
-        "execute_stream must access session.observer (public property), "
-        f"not session._observer — accesses seen: {observer_accesses}"
+    assert "follow_up" in executed, (
+        "execute_stream did not receive the SpawnRequest — "
+        "it may have fallen back to _observer (None) instead of the public property"
     )
-    assert "_observer" not in observer_accesses or "observer" in observer_accesses, (
-        "execute_stream fell back to _observer instead of public observer property"
-    )
+    assert any(e.spawned for e in events)
 
 
 # ---------------------------------------------------------------------------
