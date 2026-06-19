@@ -473,7 +473,9 @@ class TestInvocationReasonAggregation:
         monkeypatch.setattr("lionagi.state.db.DEFAULT_DB_PATH", tmp_path / "state.db")
         from lionagi.state.db import StateDB
         from lionagi.state.reasons import RunReasons
-        from lionagi.studio.scheduler.engine import _resolve_invocation_terminal
+        from lionagi.studio.services.scheduler_state import (
+            resolve_invocation_terminal as _resolve_invocation_terminal,
+        )
 
         async with StateDB() as db:
             await self._seed_aborted_child(
@@ -491,7 +493,9 @@ class TestInvocationReasonAggregation:
         monkeypatch.setattr("lionagi.state.db.DEFAULT_DB_PATH", tmp_path / "state.db")
         from lionagi.state.db import StateDB
         from lionagi.state.reasons import RunReasons
-        from lionagi.studio.scheduler.engine import _resolve_invocation_terminal
+        from lionagi.studio.services.scheduler_state import (
+            resolve_invocation_terminal as _resolve_invocation_terminal,
+        )
 
         async with StateDB() as db:
             await self._seed_aborted_child(
@@ -510,7 +514,9 @@ class TestInvocationReasonAggregation:
         monkeypatch.setattr("lionagi.state.db.DEFAULT_DB_PATH", tmp_path / "state.db")
         from lionagi.state.db import StateDB
         from lionagi.state.reasons import RunReasons
-        from lionagi.studio.scheduler.engine import _resolve_invocation_terminal
+        from lionagi.studio.services.scheduler_state import (
+            resolve_invocation_terminal as _resolve_invocation_terminal,
+        )
 
         async with StateDB() as db:
             await db.create_invocation(
