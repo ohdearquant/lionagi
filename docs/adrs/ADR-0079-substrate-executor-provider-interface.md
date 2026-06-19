@@ -191,6 +191,11 @@ class ExecutorProvider(EndpointProvider, Protocol):
     ) -> AsyncIterator[StreamChunk]: ...
 ```
 
+> *Historical paths:* the citations below predate a later refactor that merged
+> each `lionagi/providers/{company}/{endpoint}/{endpoint.py, models.py}` pair into
+> a single `lionagi/providers/{company}/{endpoint}.py` module — drop the trailing
+> `/endpoint.py` to locate the current file; the `:NN` line numbers predate the merge.
+
 `Endpoint` already satisfies the `EndpointProvider` shape: it declares
 `is_cli=False` at `lionagi/service/connections/endpoint.py:23`, implements
 `create_payload()` at `lionagi/service/connections/endpoint.py:80`, `call()` at
@@ -399,7 +404,7 @@ fake process provider without launching Claude/Codex.
 - `lionagi/service/connections/registry.py`
 - `lionagi/service/connections/agentic_endpoint.py`
 - `lionagi/service/types/stream_chunk.py`
-- `lionagi/providers/openai/codex/endpoint.py`
-- `lionagi/providers/anthropic/claude_code/endpoint.py`
+- `lionagi/providers/openai/codex.py`
+- `lionagi/providers/anthropic/claude_code.py`
 - `lionagi/operations/operate/operate.py`
 - `lionagi/operations/run/run.py`
