@@ -288,3 +288,51 @@ class TestGetTokenBudget:
         budget = get_token_budget(branch)
         # model may be None or a string — just check the type
         assert budget.model is None or isinstance(budget.model, str)
+
+
+class TestCanonicalContextWindowRegistry:
+    """Pin representative model→context-length lookups through the canonical registry.
+
+    These values must stay consistent as provider registries evolve.
+    Changing a value here requires a deliberate update with justification.
+    """
+
+    def test_gpt_4_1_canonical_value_is_openai(self):
+        """gpt-4.1 from the openai provider must match openai/_config.py (primary path)."""
+        result = lookup_context_window("gpt-4.1", provider="openai")
+        assert result == 1_000_000
+
+    def test_gpt_5_5_canonical_value_is_openai(self):
+        """gpt-5.5 from the openai provider must match openai/_config.py (primary path)."""
+        result = lookup_context_window("gpt-5.5", provider="openai")
+        assert result == 1_000_000
+
+    def test_codex_mini_resolves_from_codex_provider(self):
+        """codex-mini is codex-provider-only; not in openai/_config.py."""
+        result = lookup_context_window("codex-mini", provider="codex")
+        assert result == 200_000
+
+    def test_gpt_4_1_cross_provider_matches_openai(self):
+        """Without a provider hint, gpt-4.1 resolves to the openai value (openai wins iteration)."""
+        openai_val = lookup_context_window("gpt-4.1", provider="openai")
+        cross_val = lookup_context_window("gpt-4.1")
+        assert openai_val == cross_val
+
+    def test_gpt_5_5_no_conflict_between_providers(self):
+        """gpt-5.5 removed from codex registry; only openai/_config.py returns a value."""
+        openai_val = lookup_context_window("gpt-5.5", provider="openai")
+        codex_val = lookup_context_window("gpt-5.5", provider="codex")
+        # codex no longer has gpt-5.5; falls back to cross-provider search → finds openai
+        assert openai_val == codex_val
+
+    def test_claude_sonnet_4_6_anthropic(self):
+        result = lookup_context_window("claude-sonnet-4-6", provider="anthropic")
+        assert result == 1_000_000
+
+    def test_gemini_2_5_flash_google(self):
+        result = lookup_context_window("gemini-2.5-flash", provider="gemini")
+        assert result == 1_048_576
+
+    def test_deepseek_r1_resolves(self):
+        result = lookup_context_window("deepseek-r1", provider="deepseek")
+        assert result == 64_000
