@@ -4,10 +4,12 @@
 
 from __future__ import annotations
 
+import asyncio as _asyncio
 import contextlib
 import json
 import logging
 import time
+from dataclasses import dataclass, field
 
 from lionagi._errors import LionError
 from lionagi._errors import TimeoutError as LionTimeoutError
@@ -221,6 +223,528 @@ def _flow_header_fn(w: dict, i: int, n: int) -> list[str]:
     return [f"  {w['id']} ({w['name']}){tag}  [{w['model']}]{dep_str}"]
 
 
+# ── Phase data containers ─────────────────────────────────────────────────────
+
+
+@dataclass
+class _PlanResult:
+    """Planning output: resolved assignments and per-agent metadata."""
+
+    assignments: list
+    agent_ids: list[str]
+    dep_indices: list[list[int]]
+    pool: list[str]
+    budget_preambles: dict[int, str]
+
+
+@dataclass
+class _DagState:
+    """Graph construction output: wired builder nodes and worker metadata."""
+
+    node_ids: list[str]
+    known_nodes: set[str]
+    deps_by_node: dict[str, list[str]]
+    reactive: bool
+    spawn_roles: set[str] | None
+    role_base: dict[str, object]
+    worker_models: list[str]
+    op_segments: list[dict] = field(default_factory=list)
+
+
+@dataclass
+class _ExecResult:
+    """Execution output: collected agent responses and spawn count."""
+
+    agent_results: list[dict]
+    n_spawned: int
+    t_exec_elapsed: float
+
+
+# ── Phase 1: build DAG ────────────────────────────────────────────────────────
+
+
+async def _build_dag(
+    env: OrchestrationEnv,
+    prompt: str,
+    plan_result: _PlanResult,
+    *,
+    reactive_spec: str,
+) -> _DagState:
+    """Wire worker branches into the operation graph builder and snapshot to Studio."""
+    assignments = plan_result.assignments
+    agent_ids = plan_result.agent_ids
+    dep_indices = plan_result.dep_indices
+    pool = plan_result.pool
+    budget_preambles = plan_result.budget_preambles
+
+    reactive, spawn_roles = _parse_reactive(reactive_spec)
+
+    def _may_spawn(role: str) -> bool:
+        return reactive and (spawn_roles is None or role in spawn_roles)
+
+    worker_models: list[str] = []
+    node_ids: list[str] = []
+    role_base: dict[str, object] = {}
+
+    for i, ta in enumerate(assignments):
+        w_branch, w_model, w_profile = await build_worker_branch(
+            env,
+            agent_id=agent_ids[i],
+            role=ta.assignee,
+            model_override=pool[i % len(pool)] if pool else None,
+            explicit_name=agent_ids[i],
+            grant_spawn=_may_spawn(ta.assignee),
+            modes=ta.modes or None,
+        )
+        worker_models.append(w_model)
+        role_base.setdefault(ta.assignee, w_branch)
+
+        ctx: list = [{"original_task": prompt}]
+        artifact_note = (
+            f"Your artifact directory: {env.run.agent_artifact_dir(agent_ids[i])}/ — "
+            "write output files here."
+        )
+        if dep_indices[i]:
+            ups = "; ".join(
+                f"step {j + 1} ({agent_ids[j]}): {env.run.agent_artifact_dir(agent_ids[j])}/"
+                for j in dep_indices[i]
+            )
+            artifact_note += f" Upstream deps: {ups}."
+        ctx.append({"artifact_instructions": artifact_note})
+        if env.team_data:
+            ctx.append(
+                {
+                    "team": {
+                        "id": env.team_data["id"],
+                        "name": env.team_data["name"],
+                        "your_name": agent_ids[i],
+                    }
+                }
+            )
+        w_effort = env.effort
+        if not env.bare and w_profile and w_profile.effort:
+            w_effort = w_profile.effort
+        if w_effort:
+            ctx.append({"effort_guidance": EFFORT_MAP.get(w_effort, "")})
+
+        instruction = budget_preambles.get(i, "") + ta.task
+        dep_nodes = [node_ids[j] for j in dep_indices[i]]
+        node = env.builder.add_operation(
+            "operate",
+            branch=w_branch,
+            depends_on=dep_nodes or None,
+            instruction=instruction,
+            context=ctx,
+        )
+        node_ids.append(node)
+
+    known_nodes = set(node_ids)
+    deps_by_node = {
+        node_ids[i]: [str(j + 1) for j in dep_indices[i]] for i in range(len(assignments))
+    }
+
+    # Early DAG snapshot for Studio.
+    early_graph = {
+        "agents": [
+            {"id": agent_ids[i], "name": agent_ids[i], "model": worker_models[i]}
+            for i in range(len(assignments))
+        ],
+        "operations": [
+            {
+                "id": agent_ids[i],
+                "agent_id": agent_ids[i],
+                "control": False,
+                "depends_on": [str(j + 1) for j in dep_indices[i]],
+            }
+            for i in range(len(assignments))
+        ],
+    }
+    env._finalize_extras = early_graph
+    ctx_lp = getattr(env, "_live_persist", None)
+    if ctx_lp and ctx_lp.get("db"):
+        with contextlib.suppress(Exception):
+            _markers = ctx_lp.get("identity_markers") or {}
+            await ctx_lp["db"].update_session(
+                ctx_lp["session_id"], node_metadata=json.dumps({**early_graph, **_markers})
+            )
+
+    return _DagState(
+        node_ids=node_ids,
+        known_nodes=known_nodes,
+        deps_by_node=deps_by_node,
+        reactive=reactive,
+        spawn_roles=spawn_roles,
+        role_base=role_base,
+        worker_models=worker_models,
+    )
+
+
+# ── Phase 2: execution ────────────────────────────────────────────────────────
+
+
+async def _execute_dag(
+    env: OrchestrationEnv,
+    plan_result: _PlanResult,
+    dag_state: _DagState,
+    *,
+    max_concurrent: int,
+    max_ops: int,
+) -> _ExecResult:
+    """Drive the planning engine over the DAG and collect per-agent results."""
+    assignments = plan_result.assignments
+    agent_ids = plan_result.agent_ids
+
+    reactive = dag_state.reactive
+    spawn_roles = dag_state.spawn_roles
+    node_ids = dag_state.node_ids
+    known_nodes = dag_state.known_nodes
+    deps_by_node = dag_state.deps_by_node
+    worker_models = dag_state.worker_models
+    role_base = dag_state.role_base
+    _op_segments = dag_state.op_segments
+
+    await _persist_session_phase(env, "executing")
+    if reactive:
+        scope = "all workers" if spawn_roles is None else f"roles {sorted(spawn_roles)}"
+        progress(f"Executing reactive DAG: {len(assignments)} assignments (spawn: {scope})...")
+    else:
+        progress(f"Executing DAG (reactive off): {len(assignments)} assignments...")
+    conc = max_concurrent if max_concurrent > 0 else max(len(assignments), 1)
+    # Spawn budget: when --max-ops is set, the initial plan + spawns share it.
+    # Otherwise fall back to a conservative default so an un-capped reactive run
+    # cannot quietly fan out to dozens of (costly) child agents.
+    max_spawn = max(0, max_ops - len(assignments)) if max_ops > 0 else 20
+
+    heartbeat_interval = 60
+    max_idle_seconds = 600
+
+    def _persist_segments():
+        ctx = getattr(env, "_live_persist", None)
+        if not ctx or not ctx.get("db"):
+            return
+        extras = getattr(env, "_finalize_extras", {}) or {}
+        extras["segments"] = _op_segments
+        env._finalize_extras = extras
+
+        async def _do():
+            with contextlib.suppress(Exception):
+                # Merge kill-identity markers last so segment writes keep the PID.
+                _markers = ctx.get("identity_markers") or {}
+                await ctx["db"].update_session(
+                    ctx["session_id"], node_metadata=json.dumps({**extras, **_markers})
+                )
+
+        _asyncio.ensure_future(_do())
+
+    def _update_branch_status(branch_name: str, new_status: str):
+        ctx = getattr(env, "_live_persist", None)
+        if not ctx or not ctx.get("db"):
+            return
+        branch = next((b for b in env.session.branches if b.name == branch_name), None)
+        if not branch:
+            return
+
+        async def _do():
+            with contextlib.suppress(Exception):
+                kw = {"status": new_status}
+                if new_status == "running":
+                    kw["started_at"] = time.time()
+                elif new_status in ("completed", "failed"):
+                    kw["ended_at"] = time.time()
+                await ctx["db"].update_branch(str(branch.id), **kw)
+
+        _asyncio.ensure_future(_do())
+
+    def _record_segment(op_id: str, branch_name: str, new_status: str):
+        branch = next((b for b in env.session.branches if b.name == branch_name), None)
+        branch_id = str(branch.id) if branch else ""
+        now = time.time()
+        if new_status == "running":
+            _op_segments.append(
+                {
+                    "op_id": op_id,
+                    "branch_id": branch_id,
+                    "branch_name": branch_name,
+                    "status": "running",
+                    "started_at": now,
+                    "ended_at": None,
+                    "last_heartbeat_at": None,
+                }
+            )
+        else:
+            for seg in reversed(_op_segments):
+                if seg["op_id"] == op_id:
+                    seg["status"] = new_status
+                    seg["ended_at"] = now
+                    break
+        _persist_segments()
+
+    def _on_node_started(sig, _ctx):
+        progress(f"  ▶ {sig.name} started")
+        _update_branch_status(sig.name, "running")
+        _record_segment(sig.op_id, sig.name, "running")
+
+    def _on_node_completed(sig, _ctx):
+        progress(f"  ✓ {sig.name} done ({sig.elapsed:.1f}s)")
+        _update_branch_status(sig.name, "completed")
+        _record_segment(sig.op_id, sig.name, "completed")
+
+    def _on_node_failed(sig, _ctx):
+        progress(f"  ✗ {sig.name} FAILED ({sig.elapsed:.1f}s)")
+        _update_branch_status(sig.name, "failed")
+        _record_segment(sig.op_id, sig.name, "failed")
+
+    # ADR-0075 §4: run_dag drives the session bus; observers above consume the signals.
+    async def _heartbeat_loop() -> None:
+        while True:
+            await _asyncio.sleep(heartbeat_interval)
+            _now = time.time()
+            for _seg in _op_segments:
+                if _seg["status"] != "running":
+                    continue
+                _elapsed = _now - _seg.get("started_at", _now)
+                _seg["last_heartbeat_at"] = _now
+                progress(f"  · {_seg['branch_name']} heartbeat {_elapsed / 60:.0f}m")
+                if _elapsed > max_idle_seconds:
+                    progress(
+                        f"  ⚠ IDLE STALL: {_seg['branch_name']} running {_elapsed:.0f}s "
+                        "with no completion — possible hung child process"
+                    )
+
+    from lionagi.engines import PlanningEngine
+    from lionagi.session.signal import NodeCompleted, NodeFailed, NodeStarted
+
+    env.session.observe(NodeStarted, handler=_on_node_started)
+    env.session.observe(NodeCompleted, handler=_on_node_completed)
+    env.session.observe(NodeFailed, handler=_on_node_failed)
+    eng_run = PlanningEngine().new_run(session=env.session)
+
+    t_exec = time.monotonic()
+    _hb_task = _asyncio.ensure_future(_heartbeat_loop())
+    try:
+        dag_result = await eng_run.run_dag(
+            env.builder.get_graph(),
+            reactive=reactive,
+            spawn_type=SpawnRequest if reactive else None,
+            node_builder=role_node_builder(role_base) if reactive else None,
+            max_spawn=max_spawn,
+            max_concurrent=conc,
+            verbose=env.verbose,
+        )
+    finally:
+        _hb_task.cancel()
+        with contextlib.suppress(_asyncio.CancelledError):
+            await _hb_task
+    t_exec_elapsed = time.monotonic() - t_exec
+
+    op_results = dag_result.get("operation_results", {})
+    n_spawned = dag_result.get("spawned_operations", 0)
+
+    agent_results: list[dict] = []
+
+    def _record_result(result: dict) -> None:
+        agent_results.append(result)
+        with contextlib.suppress(OSError):
+            agent_dir = env.run.agent_artifact_dir(result["agent_id"])
+            agent_dir.mkdir(parents=True, exist_ok=True)
+            (agent_dir / f"{result['id']}.md").write_text(result["response"])
+
+    for i in range(len(assignments)):
+        nid = node_ids[i]
+        res = op_results.get(nid)
+        _record_result(
+            {
+                "id": agent_ids[i],
+                "agent_id": agent_ids[i],
+                "name": agent_ids[i],
+                "model": worker_models[i],
+                "depends_on": deps_by_node[nid],
+                "spawned": False,
+                "response": str(res) if res is not None else "(no response)",
+                "time_ms": t_exec_elapsed * 1000,
+            }
+        )
+
+    # Reactively spawned nodes are in the result map but not in our plan.
+    spawn_idx = 0
+    for nid, res in op_results.items():
+        if nid in known_nodes:
+            continue
+        spawn_idx += 1
+        sid = f"spawn-{spawn_idx}"
+        _record_result(
+            {
+                "id": sid,
+                "agent_id": sid,
+                "name": "spawned",
+                "model": "",
+                "depends_on": [],
+                "spawned": True,
+                "response": str(res) if res is not None else "(no response)",
+                "time_ms": t_exec_elapsed * 1000,
+            }
+        )
+
+    spawn_note = f" (+{n_spawned} spawned)" if n_spawned else ""
+    progress(f"DAG done ({t_exec_elapsed:.1f}s){spawn_note}.")
+
+    return _ExecResult(
+        agent_results=agent_results,
+        n_spawned=n_spawned,
+        t_exec_elapsed=t_exec_elapsed,
+    )
+
+
+# ── Phase 3: synthesis ────────────────────────────────────────────────────────
+
+
+async def _synthesize(
+    env: OrchestrationEnv,
+    prompt: str,
+    plan_result: _PlanResult,
+    dag_state: _DagState,
+    exec_result: _ExecResult,
+    *,
+    synthesis_model: str | None,
+    model_spec: str,
+) -> dict | None:
+    """Synthesize leaf-node outputs via the orchestrator branch; returns result dict or None."""
+    agent_results = exec_result.agent_results
+    if not agent_results:
+        return None
+
+    assignments = plan_result.assignments
+    dep_indices = plan_result.dep_indices
+    agent_ids = plan_result.agent_ids
+    node_ids = dag_state.node_ids
+
+    synth_spec = synthesis_model or model_spec
+    synth_label = str(parse_model_spec(synth_spec))
+    await _persist_session_phase(env, "synthesizing")
+    progress(f"Synthesis [{synth_label}]...")
+
+    # Leaf nodes = those nothing else depends on.
+    depended: set[str] = set()
+    for i in range(len(assignments)):
+        for j in dep_indices[i]:
+            depended.add(node_ids[j])
+    leaf_nodes = [n for n in node_ids if n not in depended] or list(node_ids)
+
+    artifacts = [f"[{r['id']} via {r['name']}]: {r['response']}" for r in agent_results]
+    adirs = [str(env.run.agent_artifact_dir(a)) for a in agent_ids]
+    team_synth_note = ""
+    if env.team_data:
+        team_synth_note = (
+            f"\n\nTEAM MESSAGES: Review inter-agent messages (team {env.team_data['id']}) "
+            "for coordination context not captured in artifacts."
+        )
+
+    synth_node = env.builder.add_operation(
+        "operate",
+        branch=env.orc_branch,
+        depends_on=leaf_nodes,
+        instruction=(
+            f"Synthesize all op outputs into a final cohesive deliverable.\n\n"
+            f"Original task: {prompt}\n\n"
+            "Your synthesis must:\n"
+            "1. RECONCILE: When ops disagree, present both views with evidence.\n"
+            "2. FILL GAPS: Name what no op covered.\n"
+            "3. TRACE: Show how work flowed through the DAG, including any "
+            "reactively spawned follow-ups.\n"
+            "4. RESUME: End with branch IDs so the user can follow up with any agent."
+            f"\n\nARTIFACT CHAIN: Read ALL files in: {', '.join(adirs)}."
+            f"{team_synth_note}"
+        ),
+        context=artifacts,
+    )
+    t_synth = time.monotonic()
+    synth_result_raw = await env.session.flow(env.builder.get_graph(), verbose=env.verbose)
+    t_synth_elapsed = time.monotonic() - t_synth
+    synth_res = synth_result_raw.get("operation_results", {}).get(synth_node)
+    synthesis_result = {
+        "model": synth_label,
+        "response": str(synth_res) if synth_res is not None else "(no response)",
+        "time_ms": t_synth_elapsed * 1000,
+    }
+    progress(f"Synthesis done ({t_synth_elapsed:.1f}s).")
+    return synthesis_result
+
+
+# ── Phase 4: finalize ─────────────────────────────────────────────────────────
+
+
+def _finalize_flow(
+    env: OrchestrationEnv,
+    prompt: str,
+    plan_result: _PlanResult,
+    dag_state: _DagState,
+    exec_result: _ExecResult,
+    synthesis_result: dict | None,
+    *,
+    output_format: str,
+    show_graph: bool,
+) -> str:
+    """Format output, write synthesis artifact, post team messages, and finalize run."""
+    agent_results = exec_result.agent_results
+    n_spawned = exec_result.n_spawned
+    assignments = plan_result.assignments
+    agent_ids = plan_result.agent_ids
+    worker_models = dag_state.worker_models
+
+    if output_format == "json":
+        output = _format_result_json(agent_results, synthesis_result)
+    else:
+        output = _format_result_text(agent_results, synthesis_result, header_fn=_flow_header_fn)
+
+    if synthesis_result:
+        env.run.synthesis_path.write_text(synthesis_result["response"])
+
+    if env.team_data:
+        _post_results_to_team(env.team_data, agent_results, agent_ids, synthesis_result)
+
+    finalize_orchestration(
+        env,
+        kind="flow",
+        prompt=prompt,
+        extras={
+            "agents": [
+                {
+                    "id": agent_ids[i],
+                    "name": agent_ids[i],
+                    "model": worker_models[i],
+                    "artifact_dir": str(env.run.agent_artifact_dir(agent_ids[i])),
+                }
+                for i in range(len(assignments))
+            ],
+            "operations": [
+                {
+                    "id": r["id"],
+                    "agent_id": r["agent_id"],
+                    "control": False,
+                    "spawned": r.get("spawned", False),
+                    "depends_on": r.get("depends_on") or [],
+                }
+                for r in agent_results
+            ],
+        },
+    )
+
+    if show_graph:
+        from lionagi.operations._visualize_graph import visualize_graph
+
+        with contextlib.suppress(Exception):
+            visualize_graph(
+                env.builder,
+                title=f"Flow DAG — {len(assignments)} assignments (+{n_spawned} spawned)",
+                save_path=str(env.run.dag_image_path),
+            )
+
+    return output
+
+
+# ── Public entry points ───────────────────────────────────────────────────────
+
+
 async def _run_flow(
     model_spec: str,
     prompt: str,
@@ -403,11 +927,8 @@ async def _run_flow_inner(
     show_graph: bool = False,
     reactive_spec: str = "all",
 ) -> str:
-    """Inner flow logic without timeout wrapper."""
+    """Sequence the flow phases: plan → [dry-run] → build → execute → synthesize → finalize."""
     t0 = time.monotonic()
-    run = env.run
-    session = env.session
-    builder = env.builder
 
     roster = available_roles()
     budget_note = ""
@@ -522,7 +1043,6 @@ async def _run_flow_inner(
     elif team_name:
         env.team_data = _create_fanout_team(team_name, agent_ids)
         progress(f"Team '{team_name}' created ({env.team_data['id']})")
-    team_data = env.team_data
 
     budget_preambles: dict[int, str] = {}
     if env.total_budget and assignments:
@@ -536,390 +1056,42 @@ async def _run_flow_inner(
                 deadline_epoch=deadline,
             )
 
-    reactive, spawn_roles = _parse_reactive(reactive_spec)
-
-    def _may_spawn(role: str) -> bool:
-        return reactive and (spawn_roles is None or role in spawn_roles)
-
-    # role_base: a branch per role that the reactive node_builder clones for follow-ups.
-    worker_models: list[str] = []
-    node_ids: list[str] = []
-    role_base: dict[str, object] = {}
-
-    for i, ta in enumerate(assignments):
-        w_branch, w_model, w_profile = await build_worker_branch(
-            env,
-            agent_id=agent_ids[i],
-            role=ta.assignee,
-            model_override=pool[i % len(pool)] if pool else None,
-            explicit_name=agent_ids[i],
-            grant_spawn=_may_spawn(ta.assignee),
-            modes=ta.modes or None,
-        )
-        worker_models.append(w_model)
-        role_base.setdefault(ta.assignee, w_branch)
-
-        ctx: list = [{"original_task": prompt}]
-        artifact_note = (
-            f"Your artifact directory: {run.agent_artifact_dir(agent_ids[i])}/ — "
-            "write output files here."
-        )
-        if dep_indices[i]:
-            ups = "; ".join(
-                f"step {j + 1} ({agent_ids[j]}): {run.agent_artifact_dir(agent_ids[j])}/"
-                for j in dep_indices[i]
-            )
-            artifact_note += f" Upstream deps: {ups}."
-        ctx.append({"artifact_instructions": artifact_note})
-        if team_data:
-            ctx.append(
-                {
-                    "team": {
-                        "id": team_data["id"],
-                        "name": team_data["name"],
-                        "your_name": agent_ids[i],
-                    }
-                }
-            )
-        w_effort = env.effort
-        if not env.bare and w_profile and w_profile.effort:
-            w_effort = w_profile.effort
-        if w_effort:
-            ctx.append({"effort_guidance": EFFORT_MAP.get(w_effort, "")})
-
-        instruction = budget_preambles.get(i, "") + ta.task
-        dep_nodes = [node_ids[j] for j in dep_indices[i]]
-        node = builder.add_operation(
-            "operate",
-            branch=w_branch,
-            depends_on=dep_nodes or None,
-            instruction=instruction,
-            context=ctx,
-        )
-        node_ids.append(node)
-
-    known_nodes = set(node_ids)
-    deps_by_node = {
-        node_ids[i]: [str(j + 1) for j in dep_indices[i]] for i in range(len(assignments))
-    }
-
-    # ── Early DAG snapshot for Studio ─────────────────────────────────
-    early_graph = {
-        "agents": [
-            {"id": agent_ids[i], "name": agent_ids[i], "model": worker_models[i]}
-            for i in range(len(assignments))
-        ],
-        "operations": [
-            {
-                "id": agent_ids[i],
-                "agent_id": agent_ids[i],
-                "control": False,
-                "depends_on": [str(j + 1) for j in dep_indices[i]],
-            }
-            for i in range(len(assignments))
-        ],
-    }
-    env._finalize_extras = early_graph
-    ctx_lp = getattr(env, "_live_persist", None)
-    if ctx_lp and ctx_lp.get("db"):
-        with contextlib.suppress(Exception):
-            # Merge kill-identity markers last so this DAG write keeps the PID.
-            _markers = ctx_lp.get("identity_markers") or {}
-            await ctx_lp["db"].update_session(
-                ctx_lp["session_id"], node_metadata=json.dumps({**early_graph, **_markers})
-            )
-
-    # Studio segment handlers observe the session bus; not a threaded on_progress callback.
-    _op_segments: list[dict] = []
-
-    def _on_node_started(sig, _ctx):
-        progress(f"  ▶ {sig.name} started")
-        _update_branch_status(sig.name, "running")
-        _record_segment(sig.op_id, sig.name, "running")
-
-    def _on_node_completed(sig, _ctx):
-        progress(f"  ✓ {sig.name} done ({sig.elapsed:.1f}s)")
-        _update_branch_status(sig.name, "completed")
-        _record_segment(sig.op_id, sig.name, "completed")
-
-    def _on_node_failed(sig, _ctx):
-        progress(f"  ✗ {sig.name} FAILED ({sig.elapsed:.1f}s)")
-        _update_branch_status(sig.name, "failed")
-        _record_segment(sig.op_id, sig.name, "failed")
-
-    def _record_segment(op_id: str, branch_name: str, new_status: str):
-        branch = next((b for b in env.session.branches if b.name == branch_name), None)
-        branch_id = str(branch.id) if branch else ""
-        now = time.time()
-        if new_status == "running":
-            _op_segments.append(
-                {
-                    "op_id": op_id,
-                    "branch_id": branch_id,
-                    "branch_name": branch_name,
-                    "status": "running",
-                    "started_at": now,
-                    "ended_at": None,
-                    "last_heartbeat_at": None,
-                }
-            )
-        else:
-            for seg in reversed(_op_segments):
-                if seg["op_id"] == op_id:
-                    seg["status"] = new_status
-                    seg["ended_at"] = now
-                    break
-        _persist_segments()
-
-    def _persist_segments():
-        ctx = getattr(env, "_live_persist", None)
-        if not ctx or not ctx.get("db"):
-            return
-        extras = getattr(env, "_finalize_extras", {}) or {}
-        extras["segments"] = _op_segments
-        env._finalize_extras = extras
-        import asyncio as _aio
-
-        async def _do():
-            with contextlib.suppress(Exception):
-                # Merge kill-identity markers last so segment writes keep the PID.
-                _markers = ctx.get("identity_markers") or {}
-                await ctx["db"].update_session(
-                    ctx["session_id"], node_metadata=json.dumps({**extras, **_markers})
-                )
-
-        _aio.ensure_future(_do())
-
-    def _update_branch_status(branch_name: str, new_status: str):
-        ctx = getattr(env, "_live_persist", None)
-        if not ctx or not ctx.get("db"):
-            return
-        branch = next((b for b in env.session.branches if b.name == branch_name), None)
-        if not branch:
-            return
-        import asyncio as _aio
-
-        async def _do():
-            with contextlib.suppress(Exception):
-                kw = {"status": new_status}
-                if new_status == "running":
-                    kw["started_at"] = time.time()
-                elif new_status in ("completed", "failed"):
-                    kw["ended_at"] = time.time()
-                await ctx["db"].update_branch(str(branch.id), **kw)
-
-        _aio.ensure_future(_do())
-
-    await _persist_session_phase(env, "executing")
-    if reactive:
-        scope = "all workers" if spawn_roles is None else f"roles {sorted(spawn_roles)}"
-        progress(f"Executing reactive DAG: {len(assignments)} assignments (spawn: {scope})...")
-    else:
-        progress(f"Executing DAG (reactive off): {len(assignments)} assignments...")
-    conc = max_concurrent if max_concurrent > 0 else max(len(assignments), 1)
-    # Spawn budget: when --max-ops is set, the initial plan + spawns share it.
-    # Otherwise fall back to a conservative default so an un-capped reactive run
-    # cannot quietly fan out to dozens of (costly) child agents.
-    max_spawn = max(0, max_ops - len(assignments)) if max_ops > 0 else 20
-
-    import asyncio as _asyncio
-
-    heartbeat_interval = 60
-    max_idle_seconds = 600
-
-    async def _heartbeat_loop() -> None:
-        while True:
-            await _asyncio.sleep(heartbeat_interval)
-            _now = time.time()
-            for _seg in _op_segments:
-                if _seg["status"] != "running":
-                    continue
-                _elapsed = _now - _seg.get("started_at", _now)
-                _seg["last_heartbeat_at"] = _now
-                progress(f"  · {_seg['branch_name']} heartbeat {_elapsed / 60:.0f}m")
-                if _elapsed > max_idle_seconds:
-                    progress(
-                        f"  ⚠ IDLE STALL: {_seg['branch_name']} running {_elapsed:.0f}s "
-                        "with no completion — possible hung child process"
-                    )
-
-    # ADR-0075 §4: run_dag drives the session bus; observers above consume the signals.
-    from lionagi.engines import PlanningEngine
-    from lionagi.session.signal import NodeCompleted, NodeFailed, NodeStarted
-
-    session.observe(NodeStarted, handler=_on_node_started)
-    session.observe(NodeCompleted, handler=_on_node_completed)
-    session.observe(NodeFailed, handler=_on_node_failed)
-    eng_run = PlanningEngine().new_run(session=session)
-
-    t_exec = time.monotonic()
-    _hb_task = _asyncio.ensure_future(_heartbeat_loop())
-    try:
-        dag_result = await eng_run.run_dag(
-            builder.get_graph(),
-            reactive=reactive,
-            spawn_type=SpawnRequest if reactive else None,
-            node_builder=role_node_builder(role_base) if reactive else None,
-            max_spawn=max_spawn,
-            max_concurrent=conc,
-            verbose=env.verbose,
-        )
-    finally:
-        _hb_task.cancel()
-        with contextlib.suppress(_asyncio.CancelledError):
-            await _hb_task
-    t_exec_elapsed = time.monotonic() - t_exec
-
-    op_results = dag_result.get("operation_results", {})
-    n_spawned = dag_result.get("spawned_operations", 0)
-
-    agent_results: list[dict] = []
-
-    def _record_result(result: dict) -> None:
-        agent_results.append(result)
-        with contextlib.suppress(OSError):
-            agent_dir = run.agent_artifact_dir(result["agent_id"])
-            agent_dir.mkdir(parents=True, exist_ok=True)
-            (agent_dir / f"{result['id']}.md").write_text(result["response"])
-
-    for i in range(len(assignments)):
-        nid = node_ids[i]
-        res = op_results.get(nid)
-        _record_result(
-            {
-                "id": agent_ids[i],
-                "agent_id": agent_ids[i],
-                "name": agent_ids[i],
-                "model": worker_models[i],
-                "depends_on": deps_by_node[nid],
-                "spawned": False,
-                "response": str(res) if res is not None else "(no response)",
-                "time_ms": t_exec_elapsed * 1000,
-            }
-        )
-
-    # Reactively spawned nodes are in the result map but not in our plan.
-    spawn_idx = 0
-    for nid, res in op_results.items():
-        if nid in known_nodes:
-            continue
-        spawn_idx += 1
-        sid = f"spawn-{spawn_idx}"
-        _record_result(
-            {
-                "id": sid,
-                "agent_id": sid,
-                "name": "spawned",
-                "model": "",
-                "depends_on": [],
-                "spawned": True,
-                "response": str(res) if res is not None else "(no response)",
-                "time_ms": t_exec_elapsed * 1000,
-            }
-        )
-
-    spawn_note = f" (+{n_spawned} spawned)" if n_spawned else ""
-    progress(f"DAG done ({t_exec_elapsed:.1f}s){spawn_note}.")
-
-    synthesis_result = None
-    if (with_synthesis or n_spawned) and agent_results:
-        synth_spec = synthesis_model or model_spec
-        synth_label = str(parse_model_spec(synth_spec))
-        await _persist_session_phase(env, "synthesizing")
-        progress(f"Synthesis [{synth_label}]...")
-
-        # Leaf nodes = those nothing else depends on.
-        depended: set[str] = set()
-        for i in range(len(assignments)):
-            for j in dep_indices[i]:
-                depended.add(node_ids[j])
-        leaf_nodes = [n for n in node_ids if n not in depended] or list(node_ids)
-
-        artifacts = [f"[{r['id']} via {r['name']}]: {r['response']}" for r in agent_results]
-        adirs = [str(run.agent_artifact_dir(a)) for a in agent_ids]
-        team_synth_note = ""
-        if team_data:
-            team_synth_note = (
-                f"\n\nTEAM MESSAGES: Review inter-agent messages (team {team_data['id']}) "
-                "for coordination context not captured in artifacts."
-            )
-
-        synth_node = builder.add_operation(
-            "operate",
-            branch=env.orc_branch,
-            depends_on=leaf_nodes,
-            instruction=(
-                f"Synthesize all op outputs into a final cohesive deliverable.\n\n"
-                f"Original task: {prompt}\n\n"
-                "Your synthesis must:\n"
-                "1. RECONCILE: When ops disagree, present both views with evidence.\n"
-                "2. FILL GAPS: Name what no op covered.\n"
-                "3. TRACE: Show how work flowed through the DAG, including any "
-                "reactively spawned follow-ups.\n"
-                "4. RESUME: End with branch IDs so the user can follow up with any agent."
-                f"\n\nARTIFACT CHAIN: Read ALL files in: {', '.join(adirs)}."
-                f"{team_synth_note}"
-            ),
-            context=artifacts,
-        )
-        t_synth = time.monotonic()
-        synth_result = await session.flow(builder.get_graph(), verbose=env.verbose)
-        t_synth_elapsed = time.monotonic() - t_synth
-        synth_res = synth_result.get("operation_results", {}).get(synth_node)
-        synthesis_result = {
-            "model": synth_label,
-            "response": str(synth_res) if synth_res is not None else "(no response)",
-            "time_ms": t_synth_elapsed * 1000,
-        }
-        progress(f"Synthesis done ({t_synth_elapsed:.1f}s).")
-
-    if output_format == "json":
-        output = _format_result_json(agent_results, synthesis_result)
-    else:
-        output = _format_result_text(agent_results, synthesis_result, header_fn=_flow_header_fn)
-
-    if synthesis_result:
-        run.synthesis_path.write_text(synthesis_result["response"])
-
-    if team_data:
-        _post_results_to_team(team_data, agent_results, agent_ids, synthesis_result)
-
-    finalize_orchestration(
-        env,
-        kind="flow",
-        prompt=prompt,
-        extras={
-            "agents": [
-                {
-                    "id": agent_ids[i],
-                    "name": agent_ids[i],
-                    "model": worker_models[i],
-                    "artifact_dir": str(run.agent_artifact_dir(agent_ids[i])),
-                }
-                for i in range(len(assignments))
-            ],
-            "operations": [
-                {
-                    "id": r["id"],
-                    "agent_id": r["agent_id"],
-                    "control": False,
-                    "spawned": r.get("spawned", False),
-                    "depends_on": r.get("depends_on") or [],
-                }
-                for r in agent_results
-            ],
-        },
+    plan_result = _PlanResult(
+        assignments=assignments,
+        agent_ids=agent_ids,
+        dep_indices=dep_indices,
+        pool=pool,
+        budget_preambles=budget_preambles,
     )
 
-    if show_graph:
-        from lionagi.operations._visualize_graph import visualize_graph
+    dag_state = await _build_dag(env, prompt, plan_result, reactive_spec=reactive_spec)
 
-        with contextlib.suppress(Exception):
-            visualize_graph(
-                builder,
-                title=f"Flow DAG — {len(assignments)} assignments (+{n_spawned} spawned)",
-                save_path=str(run.dag_image_path),
-            )
+    exec_result = await _execute_dag(
+        env, plan_result, dag_state, max_concurrent=max_concurrent, max_ops=max_ops
+    )
+
+    synthesis_result = None
+    if (with_synthesis or exec_result.n_spawned) and exec_result.agent_results:
+        synthesis_result = await _synthesize(
+            env,
+            prompt,
+            plan_result,
+            dag_state,
+            exec_result,
+            synthesis_model=synthesis_model,
+            model_spec=model_spec,
+        )
+
+    output = _finalize_flow(
+        env,
+        prompt,
+        plan_result,
+        dag_state,
+        exec_result,
+        synthesis_result,
+        output_format=output_format,
+        show_graph=show_graph,
+    )
 
     t_total = time.monotonic() - t0
     progress(f"\nTotal: {t_total:.1f}s")
