@@ -13,7 +13,7 @@ import uuid
 from typing import Any
 
 from lionagi.state.reasons import RunReasons, ScheduleReasons
-from lionagi.studio.scheduler.subprocess import build_argv, spawn_and_wait
+from lionagi.studio.scheduler import subprocess as _subprocess
 from lionagi.studio.services.scheduler_state import (
     SchedulerStateService,
     create_skipped_run,
@@ -249,7 +249,7 @@ class SchedulerEngine:
         )
 
         try:
-            argv, _tmp_path = build_argv(schedule, trigger_context)
+            argv, _tmp_path = _subprocess.build_argv(schedule, trigger_context)
         except Exception as exc:
             _log.exception("Invalid schedule action for %s (run %s)", schedule.get("name"), run_id)
             _end_time = time.time()
@@ -345,7 +345,9 @@ class SchedulerEngine:
                 "Firing schedule %s (run %s, chain_depth=%d)", schedule["name"], run_id, chain_depth
             )
 
-            exit_code, stderr_tail = await spawn_and_wait(argv, inv_id, tmp_path=_tmp_path)
+            exit_code, stderr_tail = await _subprocess.spawn_and_wait(
+                argv, inv_id, tmp_path=_tmp_path
+            )
             end_time = time.time()
             status = "completed" if exit_code == 0 else "failed"
             reason_code = (

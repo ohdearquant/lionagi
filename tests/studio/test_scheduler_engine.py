@@ -160,11 +160,11 @@ async def test_fire_happy_path_records_invocation_and_run():
 
     with (
         patch(
-            "lionagi.studio.scheduler.engine.build_argv",
+            "lionagi.studio.scheduler.subprocess.build_argv",
             return_value=(["uv", "run", "li", "agent", "ping"], None),
         ),
         patch(
-            "lionagi.studio.scheduler.engine.spawn_and_wait",
+            "lionagi.studio.scheduler.subprocess.spawn_and_wait",
             new=AsyncMock(return_value=(0, "")),
         ),
     ):
@@ -190,11 +190,11 @@ async def test_fire_nonzero_exit_records_failed_status():
 
     with (
         patch(
-            "lionagi.studio.scheduler.engine.build_argv",
+            "lionagi.studio.scheduler.subprocess.build_argv",
             return_value=(["uv", "run", "li", "agent", "ping"], None),
         ),
         patch(
-            "lionagi.studio.scheduler.engine.spawn_and_wait",
+            "lionagi.studio.scheduler.subprocess.spawn_and_wait",
             new=AsyncMock(return_value=(1, "error text")),
         ),
     ):
@@ -220,11 +220,11 @@ async def test_fire_build_argv_exception_records_failed_run():
 
     with (
         patch(
-            "lionagi.studio.scheduler.engine.build_argv",
+            "lionagi.studio.scheduler.subprocess.build_argv",
             side_effect=ValueError("bad action_kind"),
         ),
         patch(
-            "lionagi.studio.scheduler.engine.spawn_and_wait",
+            "lionagi.studio.scheduler.subprocess.spawn_and_wait",
             new=AsyncMock(),
         ) as mock_spawn,
     ):
@@ -249,11 +249,11 @@ async def test_fire_cancellation_records_cancelled_run():
 
     with (
         patch(
-            "lionagi.studio.scheduler.engine.build_argv",
+            "lionagi.studio.scheduler.subprocess.build_argv",
             return_value=(["uv", "run", "li", "agent", "ping"], None),
         ),
         patch(
-            "lionagi.studio.scheduler.engine.spawn_and_wait",
+            "lionagi.studio.scheduler.subprocess.spawn_and_wait",
             new=AsyncMock(side_effect=asyncio.CancelledError()),
         ),
     ):
@@ -278,11 +278,11 @@ async def test_fire_inner_exception_records_failed_and_does_not_reraise():
 
     with (
         patch(
-            "lionagi.studio.scheduler.engine.build_argv",
+            "lionagi.studio.scheduler.subprocess.build_argv",
             return_value=(["uv", "run", "li", "agent", "ping"], None),
         ),
         patch(
-            "lionagi.studio.scheduler.engine.spawn_and_wait",
+            "lionagi.studio.scheduler.subprocess.spawn_and_wait",
             new=AsyncMock(side_effect=RuntimeError("unexpected")),
         ),
     ):
@@ -307,11 +307,11 @@ async def test_fire_chain_depth_0_tracks_running():
 
     with (
         patch(
-            "lionagi.studio.scheduler.engine.build_argv",
+            "lionagi.studio.scheduler.subprocess.build_argv",
             return_value=(["uv", "run", "li", "agent", "ping"], None),
         ),
         patch(
-            "lionagi.studio.scheduler.engine.spawn_and_wait",
+            "lionagi.studio.scheduler.subprocess.spawn_and_wait",
             new=AsyncMock(return_value=(0, "")),
         ),
     ):
@@ -331,11 +331,11 @@ async def test_fire_chain_depth_nonzero_does_not_track_running():
 
     with (
         patch(
-            "lionagi.studio.scheduler.engine.build_argv",
+            "lionagi.studio.scheduler.subprocess.build_argv",
             return_value=(["uv", "run", "li", "agent", "ping"], None),
         ),
         patch(
-            "lionagi.studio.scheduler.engine.spawn_and_wait",
+            "lionagi.studio.scheduler.subprocess.spawn_and_wait",
             new=AsyncMock(return_value=(0, "")),
         ),
     ):
@@ -376,11 +376,11 @@ async def test_fire_on_success_chain_fires():
 
     with (
         patch(
-            "lionagi.studio.scheduler.engine.build_argv",
+            "lionagi.studio.scheduler.subprocess.build_argv",
             return_value=(["uv", "run", "li", "agent", "ping"], None),
         ),
         patch(
-            "lionagi.studio.scheduler.engine.spawn_and_wait",
+            "lionagi.studio.scheduler.subprocess.spawn_and_wait",
             new=AsyncMock(return_value=(0, "")),
         ),
     ):
