@@ -2,11 +2,11 @@ import pytest
 from pydantic import BaseModel
 
 from lionagi.operations.fields import ActionResponseModel
+from lionagi.protocols.generic.log import LogManagerConfig
 from lionagi.protocols.types import (
     ActionRequest,
     AssistantResponse,
     Instruction,
-    LogManagerConfig,
     MessageRole,
 )
 from lionagi.service.manager import iModel

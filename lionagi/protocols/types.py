@@ -15,8 +15,8 @@ from ._concepts import Observable as LegacyObservable
 from .contracts import Observable, ObservableProto
 from .generic.element import ID, Element, validate_order
 from .generic.event import Event, EventStatus, Execution
-from .generic.log import DataLogger, DataLoggerConfig, Log, LogManager, LogManagerConfig
-from .generic.pile import Pile, to_list_type
+from .generic.log import DataLogger, DataLoggerConfig, Log
+from .generic.pile import Pile
 from .generic.processor import Executor, Processor
 from .generic.progression import Progression, prog
 from .graph.edge import EdgeCondition
@@ -60,10 +60,7 @@ __all__ = (
     "EventStatus",
     "Execution",
     "Log",
-    "LogManager",
-    "LogManagerConfig",
     "Pile",
-    "to_list_type",
     "Executor",
     "Processor",
     "Progression",
