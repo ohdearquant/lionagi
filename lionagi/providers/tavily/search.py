@@ -78,7 +78,12 @@ class TavilyExtractRequest(BaseModel):
     urls: list[str] = Field(..., description="List of URLs to extract content from.")
 
 
-__all__ = ("TavilySearchEndpoint", "TavilyExtractEndpoint")
+__all__ = (
+    "TavilySearchRequest",
+    "TavilyExtractRequest",
+    "TavilySearchEndpoint",
+    "TavilyExtractEndpoint",
+)
 
 
 @TavilyConfigs.SEARCH.register

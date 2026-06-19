@@ -9,6 +9,7 @@ _LAZY_MAP: dict[str, tuple[str, str | None]] = {
     "ExaFindSimilarEndpoint": ("find_similar", None),
     "ExaFindSimilarRequest": ("find_similar", None),
     "ExaSearchEndpoint": ("search", None),
+    "ExaSearchRequest": ("search", None),
 }
 
 

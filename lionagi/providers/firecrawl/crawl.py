@@ -7,7 +7,7 @@ from __future__ import annotations
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from lionagi.providers.firecrawl.scrape import OutputFormat
+from lionagi.providers.firecrawl._schemas import OutputFormat
 from lionagi.service.connections.endpoint import Endpoint
 from lionagi.service.connections.endpoint_config import EndpointConfig
 

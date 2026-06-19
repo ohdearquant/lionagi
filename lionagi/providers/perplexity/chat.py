@@ -65,7 +65,7 @@ CONTEXT_WINDOWS: dict[str, int] = {
     "sonar": 128_000,
 }
 
-__all__ = ("PerplexityChatEndpoint",)
+__all__ = ("PerplexityChatRequest", "PerplexityChatEndpoint")
 
 
 @PerplexityConfigs.CHAT.register

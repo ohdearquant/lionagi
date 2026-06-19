@@ -117,8 +117,8 @@ async for chunk in endpoint.stream({"prompt": "Build a Fibonacci function"}):
 
 ## Provider folder structure
 
-Each provider is a directory under `lionagi/providers/{company}/`. The subdirectories are
-capabilities — the directory listing is the capability map.
+Each provider is a directory under `lionagi/providers/{company}/`. The endpoint files
+(one `{endpoint}.py` per capability) are the capability map — the file listing names the capabilities.
 
 ```text
 lionagi/providers/

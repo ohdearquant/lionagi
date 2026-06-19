@@ -3,24 +3,15 @@
 
 from __future__ import annotations
 
-from enum import Enum
-
 from pydantic import BaseModel, ConfigDict, Field
 
 from lionagi.service.connections.endpoint import Endpoint
 from lionagi.service.connections.endpoint_config import EndpointConfig
 
 from ._config import FirecrawlConfigs
+from ._schemas import OutputFormat
 
 __all__ = ("FirecrawlScrapeRequest", "FirecrawlScrapeEndpoint")
-
-
-class OutputFormat(str, Enum):
-    markdown = "markdown"
-    html = "html"
-    raw_html = "rawHtml"
-    links = "links"
-    screenshot = "screenshot"
 
 
 class FirecrawlScrapeRequest(BaseModel):

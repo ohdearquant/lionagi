@@ -5,7 +5,9 @@ from lionagi.ln._lazy_init import lazy_import
 
 _LAZY_MAP: dict[str, tuple[str, str | None]] = {
     "TavilyExtractEndpoint": ("search", None),
+    "TavilyExtractRequest": ("search", None),
     "TavilySearchEndpoint": ("search", None),
+    "TavilySearchRequest": ("search", None),
 }
 
 

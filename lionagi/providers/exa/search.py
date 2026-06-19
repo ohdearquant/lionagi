@@ -5,12 +5,13 @@ from __future__ import annotations
 
 from enum import Enum
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import Field
 
 from lionagi.service.connections.endpoint import Endpoint
 from lionagi.service.connections.endpoint_config import EndpointConfig
 
 from ._config import ExaConfigs
+from ._schemas import Contents, _ExaBase
 
 
 class SearchCategory(str, Enum):
@@ -25,62 +26,10 @@ class SearchCategory(str, Enum):
     financial_report = "financial report"
 
 
-class LivecrawlType(str, Enum):
-    never = "never"
-    fallback = "fallback"
-    always = "always"
-
-
 class SearchType(str, Enum):
     keyword = "keyword"
     neural = "neural"
     auto = "auto"
-
-
-class _ExaBase(BaseModel):
-    model_config = ConfigDict(
-        populate_by_name=True,
-        serialize_by_alias=True,
-    )
-
-
-class ContentsText(_ExaBase):
-    include_html_tags: bool | None = Field(default=False, alias="includeHtmlTags")
-    max_characters: int | None = Field(default=None, alias="maxCharacters")
-
-
-class ContentsHighlights(_ExaBase):
-    highlights_per_url: int | None = Field(default=1, alias="highlightsPerUrl")
-    num_sentences: int | None = Field(default=5, alias="numSentences")
-    query: None | str = Field(default=None)
-
-
-class ContentsSummary(_ExaBase):
-    query: None | str = Field(default=None)
-
-
-class ContentsExtras(_ExaBase):
-    links: int | None = Field(default=None)
-    image_links: int | None = Field(default=None, alias="imageLinks")
-
-
-class Contents(_ExaBase):
-    text: None | ContentsText = Field(default=None)
-    highlights: None | ContentsHighlights = Field(default=None)
-    summary: None | ContentsSummary = Field(default=None)
-    livecrawl: None | LivecrawlType = Field(default=LivecrawlType.never)
-    livecrawl_timeout: int | None = Field(
-        default=10000,
-        alias="livecrawlTimeout",
-        description="Timeout in ms for livecrawling.",
-    )
-    subpages: int | None = Field(default=None)
-    subpage_target: None | str | list[str] = Field(
-        default=None,
-        alias="subpageTarget",
-        description="Target subpage(s) to crawl, e.g. 'cited papers'.",
-    )
-    extras: None | ContentsExtras = Field(default=None)
 
 
 class ExaSearchRequest(_ExaBase):
@@ -116,7 +65,7 @@ class ExaSearchRequest(_ExaBase):
     contents: None | Contents = Field(default=None)
 
 
-__all__ = ("ExaSearchEndpoint",)
+__all__ = ("ExaSearchRequest", "ExaSearchEndpoint")
 
 
 @ExaConfigs.SEARCH.register
