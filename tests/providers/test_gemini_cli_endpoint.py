@@ -13,7 +13,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from lionagi.providers.google.gemini_code.models import (
+from lionagi.providers.google.gemini_code import (
     GeminiCodeRequest,
     GeminiSession,
     stream_gemini_cli,
@@ -30,7 +30,7 @@ class TestTrustEnvInjection:
     @pytest.mark.asyncio
     async def test_trust_env_injected_into_subprocess(self, monkeypatch, tmp_path):
         """_ndjson_from_cli must pass GEMINI_CLI_TRUST_WORKSPACE=true to ndjson_from_cli."""
-        import lionagi.providers.google.gemini_code.models as gemini_models
+        import lionagi.providers.google.gemini_code as gemini_models
 
         monkeypatch.setattr(gemini_models, "GEMINI_CLI", "/fake/gemini")
 
@@ -59,7 +59,7 @@ class TestTrustEnvInjection:
     @pytest.mark.asyncio
     async def test_trust_env_inherits_parent_env(self, monkeypatch, tmp_path):
         """Subprocess env must include all parent env vars, not just the trust flag."""
-        import lionagi.providers.google.gemini_code.models as gemini_models
+        import lionagi.providers.google.gemini_code as gemini_models
 
         monkeypatch.setattr(gemini_models, "GEMINI_CLI", "/fake/gemini")
         monkeypatch.setenv("SOME_PARENT_VAR", "parent_value")
@@ -97,7 +97,7 @@ class TestSubprocessErrorSurfacing:
     @pytest.mark.asyncio
     async def test_nonzero_exit_raises_runtime_error_with_stderr(self, monkeypatch, tmp_path):
         """ndjson_from_cli raises RuntimeError with stderr text on nonzero exit."""
-        import lionagi.providers.google.gemini_code.models as gemini_models
+        import lionagi.providers.google.gemini_code as gemini_models
         from lionagi.providers._cli_subprocess import ndjson_from_cli
 
         monkeypatch.setattr(gemini_models, "GEMINI_CLI", "/bin/sh")
@@ -133,7 +133,7 @@ class TestNoiseTolerance:
     @pytest.mark.asyncio
     async def test_stream_gemini_cli_tolerates_noise_before_json(self, monkeypatch):
         """stream_gemini_cli must work even if the first stdout lines are not valid JSON."""
-        import lionagi.providers.google.gemini_code.models as gemini_models
+        import lionagi.providers.google.gemini_code as gemini_models
 
         # Simulate: noise line appears in events list as would happen if ndjson_from_cli
         # managed to yield a dict after skipping the noise. The underlying

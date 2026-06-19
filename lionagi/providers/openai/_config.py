@@ -12,7 +12,7 @@ class OpenAIConfigs(ProviderConfig, Enum):
         "chat/completions",
         ["chat"],
         EndpointType.API,
-        LazyType("lionagi.providers.openai.chat.models:OpenAIChatCompletionsRequest"),
+        LazyType("lionagi.providers.openai.chat:OpenAIChatCompletionsRequest"),
         "https://api.openai.com/v1",
         "bearer",
     )
@@ -20,7 +20,7 @@ class OpenAIConfigs(ProviderConfig, Enum):
         "responses",
         ["response"],
         EndpointType.API,
-        LazyType("lionagi.providers.openai.response.models:OpenAIResponsesRequest"),
+        LazyType("lionagi.providers.openai.response:OpenAIResponsesRequest"),
         "https://api.openai.com/v1",
         "bearer",
     )
@@ -28,7 +28,7 @@ class OpenAIConfigs(ProviderConfig, Enum):
         "embeddings",
         ["embed"],
         EndpointType.API,
-        LazyType("lionagi.providers.openai.embed.models:OpenAIEmbeddingRequest"),
+        LazyType("lionagi.providers.openai.embed:OpenAIEmbeddingRequest"),
         "https://api.openai.com/v1",
         "bearer",
     )
@@ -36,7 +36,7 @@ class OpenAIConfigs(ProviderConfig, Enum):
         "audio/speech",
         ["tts"],
         EndpointType.API,
-        LazyType("lionagi.providers.openai.audio.models:AudioSpeechRequest"),
+        LazyType("lionagi.providers.openai.audio:AudioSpeechRequest"),
         "https://api.openai.com/v1",
         "bearer",
     )
@@ -44,7 +44,7 @@ class OpenAIConfigs(ProviderConfig, Enum):
         "audio/transcriptions",
         ["stt", "whisper"],
         EndpointType.API,
-        LazyType("lionagi.providers.openai.audio.models:AudioTranscriptionRequest"),
+        LazyType("lionagi.providers.openai.audio:AudioTranscriptionRequest"),
         "https://api.openai.com/v1",
         "bearer",
     )
@@ -52,7 +52,7 @@ class OpenAIConfigs(ProviderConfig, Enum):
         "images/generations",
         ["dalle", "image"],
         EndpointType.API,
-        LazyType("lionagi.providers.openai.images.models:ImageGenerationRequest"),
+        LazyType("lionagi.providers.openai.images:ImageGenerationRequest"),
         "https://api.openai.com/v1",
         "bearer",
     )
@@ -60,7 +60,7 @@ class OpenAIConfigs(ProviderConfig, Enum):
         "images/edits",
         ["image_edit"],
         EndpointType.API,
-        LazyType("lionagi.providers.openai.images.models:ImageEditRequest"),
+        LazyType("lionagi.providers.openai.images:ImageEditRequest"),
         "https://api.openai.com/v1",
         "bearer",
     )
@@ -76,7 +76,7 @@ class CodexConfigs(ProviderConfig, Enum):
         "query_cli",
         ["cli", "code"],
         EndpointType.AGENTIC,
-        LazyType("lionagi.providers.openai.codex.models:CodexCodeRequest"),
+        LazyType("lionagi.providers.openai.codex:CodexCodeRequest"),
     )
 
 

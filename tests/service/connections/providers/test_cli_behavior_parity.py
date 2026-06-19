@@ -93,8 +93,8 @@ async def test_ndjson_from_cli_no_tail_repair_drops_bad_tail(caplog):
 @pytest.mark.asyncio
 async def test_claude_ndjson_uses_repair_callback():
     """_ndjson_from_cli in Claude models passes tail_repair to ndjson_from_cli."""
+    from lionagi.providers.anthropic import claude_code as cc_models
     from lionagi.providers.anthropic import claude_code as cc_pkg
-    from lionagi.providers.anthropic.claude_code import models as cc_models
 
     call_kwargs: list[dict] = []
 
@@ -131,7 +131,7 @@ async def test_codex_ndjson_does_not_pass_cwd():
     The Codex CLI already receives the workspace via '-C <repo>' in as_cmd_args().
     Passing cwd= as well causes a relative repo path to be resolved twice.
     """
-    from lionagi.providers.openai.codex import models as codex_models
+    from lionagi.providers.openai import codex as codex_models
 
     call_kwargs: list[dict] = []
 
@@ -157,7 +157,7 @@ async def test_codex_ndjson_does_not_pass_cwd():
 
 def test_codex_as_cmd_args_contains_dash_c_flag():
     """Codex as_cmd_args() emits '-C <repo>' so the CLI handles the workspace itself."""
-    from lionagi.providers.openai.codex.models import CodexCodeRequest
+    from lionagi.providers.openai.codex import CodexCodeRequest
 
     req = CodexCodeRequest(prompt="hello", repo=Path("my_repo"))
     args = req.as_cmd_args()
@@ -176,7 +176,7 @@ def test_codex_as_cmd_args_contains_dash_c_flag():
 async def test_gemini_ndjson_passes_inherit_stdin():
     """Gemini _ndjson_from_cli must pass stdin=_INHERIT_STDIN to ndjson_from_cli."""
     from lionagi.providers._cli_subprocess import _INHERIT_STDIN
-    from lionagi.providers.google.gemini_code import models as gemini_models
+    from lionagi.providers.google import gemini_code as gemini_models
 
     call_kwargs: list[dict] = []
 
@@ -206,7 +206,7 @@ async def test_gemini_ndjson_passes_inherit_stdin():
 async def test_pi_ndjson_passes_inherit_stdin():
     """Pi _ndjson_from_cli must pass stdin=_INHERIT_STDIN to ndjson_from_cli."""
     from lionagi.providers._cli_subprocess import _INHERIT_STDIN
-    from lionagi.providers.pi.cli import models as pi_models
+    from lionagi.providers.pi import cli as pi_models
 
     call_kwargs: list[dict] = []
 

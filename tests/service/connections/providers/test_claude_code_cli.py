@@ -1,4 +1,4 @@
-"""Tests for lionagi.providers.anthropic.claude_code.endpoint module."""
+"""Tests for lionagi.providers.anthropic.claude_code module."""
 
 from unittest.mock import MagicMock, patch
 
@@ -10,7 +10,7 @@ class TestClaudeCodeCLIConfiguration:
     """Test Claude Code CLI endpoint configuration."""
 
     def test_endpoint_init_default_config(self):
-        from lionagi.providers.anthropic.claude_code.endpoint import (
+        from lionagi.providers.anthropic.claude_code import (
             ClaudeCodeCLIEndpoint,
         )
 
@@ -22,7 +22,7 @@ class TestClaudeCodeCLIConfiguration:
         assert endpoint.config.timeout >= 3600
 
     def test_endpoint_init_custom_config(self):
-        from lionagi.providers.anthropic.claude_code.endpoint import (
+        from lionagi.providers.anthropic.claude_code import (
             ClaudeCodeCLIEndpoint,
             EndpointConfig,
         )
@@ -45,7 +45,7 @@ class TestHandlerValidation:
     """Test handler validation logic."""
 
     def test_validate_handlers_valid_dict(self):
-        from lionagi.providers.anthropic.claude_code.endpoint import ClaudeCodeCLIEndpoint
+        from lionagi.providers.anthropic.claude_code import ClaudeCodeCLIEndpoint
 
         endpoint = ClaudeCodeCLIEndpoint()
         handlers = {
@@ -59,14 +59,14 @@ class TestHandlerValidation:
         assert result is None
 
     def test_validate_handlers_invalid_type(self):
-        from lionagi.providers.anthropic.claude_code.endpoint import ClaudeCodeCLIEndpoint
+        from lionagi.providers.anthropic.claude_code import ClaudeCodeCLIEndpoint
 
         endpoint = ClaudeCodeCLIEndpoint()
         with pytest.raises(ValueError, match="Handlers must be a dictionary"):
             endpoint._validate_handlers("not a dict")
 
     def test_validate_handlers_invalid_key(self):
-        from lionagi.providers.anthropic.claude_code.endpoint import ClaudeCodeCLIEndpoint
+        from lionagi.providers.anthropic.claude_code import ClaudeCodeCLIEndpoint
 
         endpoint = ClaudeCodeCLIEndpoint()
         handlers = {"invalid_handler": lambda x: None}
@@ -75,7 +75,7 @@ class TestHandlerValidation:
             endpoint._validate_handlers(handlers)
 
     def test_validate_handlers_invalid_value(self):
-        from lionagi.providers.anthropic.claude_code.endpoint import ClaudeCodeCLIEndpoint
+        from lionagi.providers.anthropic.claude_code import ClaudeCodeCLIEndpoint
 
         endpoint = ClaudeCodeCLIEndpoint()
         handlers = {"on_thinking": "not callable"}
@@ -84,7 +84,7 @@ class TestHandlerValidation:
             endpoint._validate_handlers(handlers)
 
     def test_validate_handlers_allows_none(self):
-        from lionagi.providers.anthropic.claude_code.endpoint import ClaudeCodeCLIEndpoint
+        from lionagi.providers.anthropic.claude_code import ClaudeCodeCLIEndpoint
 
         endpoint = ClaudeCodeCLIEndpoint()
         handlers = {
@@ -101,7 +101,7 @@ class TestClaudeHandlers:
     """Test claude_handlers property and updates."""
 
     def test_claude_handlers_default(self):
-        from lionagi.providers.anthropic.claude_code.endpoint import (
+        from lionagi.providers.anthropic.claude_code import (
             ClaudeCodeCLIEndpoint,
         )
 
@@ -115,7 +115,7 @@ class TestClaudeHandlers:
         assert handlers["on_thinking"] is None
 
     def test_claude_handlers_setter_valid(self):
-        from lionagi.providers.anthropic.claude_code.endpoint import (
+        from lionagi.providers.anthropic.claude_code import (
             ClaudeCodeCLIEndpoint,
         )
 
@@ -135,7 +135,7 @@ class TestClaudeHandlers:
         assert endpoint.claude_handlers == new_handlers
 
     def test_claude_handlers_setter_invalid(self):
-        from lionagi.providers.anthropic.claude_code.endpoint import (
+        from lionagi.providers.anthropic.claude_code import (
             ClaudeCodeCLIEndpoint,
         )
 
@@ -147,7 +147,7 @@ class TestClaudeHandlers:
             endpoint.claude_handlers = invalid_handlers
 
     def test_update_handlers_merges_correctly(self):
-        from lionagi.providers.anthropic.claude_code.endpoint import (
+        from lionagi.providers.anthropic.claude_code import (
             ClaudeCodeCLIEndpoint,
         )
 
@@ -162,7 +162,7 @@ class TestClaudeHandlers:
         assert handlers["on_text"] == on_text_handler
 
     def test_update_handlers_invalid_raises(self):
-        from lionagi.providers.anthropic.claude_code.endpoint import (
+        from lionagi.providers.anthropic.claude_code import (
             ClaudeCodeCLIEndpoint,
         )
 
@@ -176,7 +176,7 @@ class TestPayloadCreation:
     """Test payload creation for Claude Code CLI."""
 
     def test_create_payload_basic(self):
-        from lionagi.providers.anthropic.claude_code.endpoint import (
+        from lionagi.providers.anthropic.claude_code import (
             ClaudeCodeCLIEndpoint,
         )
 
@@ -194,7 +194,7 @@ class TestPayloadCreation:
         assert payload["request"] is not None
 
     def test_create_payload_with_basemodel(self):
-        from lionagi.providers.anthropic.claude_code.endpoint import (
+        from lionagi.providers.anthropic.claude_code import (
             ClaudeCodeCLIEndpoint,
         )
 
@@ -212,7 +212,7 @@ class TestPayloadCreation:
         assert headers == {}
 
     def test_create_payload_merges_kwargs(self):
-        from lionagi.providers.anthropic.claude_code.endpoint import (
+        from lionagi.providers.anthropic.claude_code import (
             ClaudeCodeCLIEndpoint,
         )
 
@@ -232,14 +232,12 @@ class TestStreamMethod:
 
     @pytest.mark.asyncio
     async def test_stream_yields_chunks(self):
-        from lionagi.providers.anthropic.claude_code.endpoint import (
+        from lionagi.providers.anthropic.claude_code import (
             ClaudeCodeCLIEndpoint,
         )
         from lionagi.service.types.stream_chunk import StreamChunk
 
-        with patch(
-            "lionagi.providers.anthropic.claude_code.endpoint.stream_claude_code_cli"
-        ) as mock_stream:
+        with patch("lionagi.providers.anthropic.claude_code.stream_claude_code_cli") as mock_stream:
             chunk1 = StreamChunk(type="text", content="hello")
             chunk2 = StreamChunk(type="text", content="world")
 
@@ -267,13 +265,11 @@ class TestStreamMethod:
 
     @pytest.mark.asyncio
     async def test_stream_with_kwargs(self):
-        from lionagi.providers.anthropic.claude_code.endpoint import (
+        from lionagi.providers.anthropic.claude_code import (
             ClaudeCodeCLIEndpoint,
         )
 
-        with patch(
-            "lionagi.providers.anthropic.claude_code.endpoint.stream_claude_code_cli"
-        ) as mock_stream:
+        with patch("lionagi.providers.anthropic.claude_code.stream_claude_code_cli") as mock_stream:
 
             async def async_gen(*args, **kwargs):
                 yield MagicMock()
@@ -299,13 +295,11 @@ class TestCallMethod:
 
     @pytest.mark.asyncio
     async def test_call_basic_flow(self):
-        from lionagi.providers.anthropic.claude_code.endpoint import (
+        from lionagi.providers.anthropic.claude_code import (
             ClaudeCodeCLIEndpoint,
         )
 
-        with patch(
-            "lionagi.providers.anthropic.claude_code.endpoint.stream_claude_code_cli"
-        ) as mock_stream:
+        with patch("lionagi.providers.anthropic.claude_code.stream_claude_code_cli") as mock_stream:
             mock_session = MagicMock()
             mock_session.session_id = "test-session"
             mock_session.chunks = []
@@ -337,13 +331,11 @@ class TestCallMethod:
 
     @pytest.mark.asyncio
     async def test_call_with_auto_finish(self):
-        from lionagi.providers.anthropic.claude_code.endpoint import (
+        from lionagi.providers.anthropic.claude_code import (
             ClaudeCodeCLIEndpoint,
         )
 
-        with patch(
-            "lionagi.providers.anthropic.claude_code.endpoint.stream_claude_code_cli"
-        ) as mock_stream:
+        with patch("lionagi.providers.anthropic.claude_code.stream_claude_code_cli") as mock_stream:
             mock_session = MagicMock()
             mock_session.session_id = "test-session"
             mock_session.chunks = []
@@ -390,7 +382,7 @@ class TestCallMethod:
 
 class TestModuleLevelConfig:
     def test_endpoint_config_exists(self):
-        from lionagi.providers.anthropic.claude_code.endpoint import (
+        from lionagi.providers.anthropic.claude_code import (
             ClaudeCodeCLIEndpoint,
         )
 

@@ -12,7 +12,7 @@ class NvidiaNimConfigs(ProviderConfig, Enum):
         "chat/completions",
         ["chat"],
         EndpointType.API,
-        LazyType("lionagi.providers.openai.chat.models:OpenAIChatCompletionsRequest"),
+        LazyType("lionagi.providers.openai.chat:OpenAIChatCompletionsRequest"),
         "https://integrate.api.nvidia.com/v1",
         "bearer",
     )
@@ -20,7 +20,7 @@ class NvidiaNimConfigs(ProviderConfig, Enum):
         "embeddings",
         ["embed"],
         EndpointType.API,
-        LazyType("lionagi.providers.nvidia_nim.embed.models:NvidiaNimEmbeddingRequest"),
+        LazyType("lionagi.providers.nvidia_nim.embed:NvidiaNimEmbeddingRequest"),
         "https://integrate.api.nvidia.com/v1",
         "bearer",
     )

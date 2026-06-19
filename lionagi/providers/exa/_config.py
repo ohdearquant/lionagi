@@ -12,7 +12,7 @@ class ExaConfigs(ProviderConfig, Enum):
         "search",
         [],
         EndpointType.API,
-        LazyType("lionagi.providers.exa.search.models:ExaSearchRequest"),
+        LazyType("lionagi.providers.exa.search:ExaSearchRequest"),
         "https://api.exa.ai",
         "x-api-key",
     )
@@ -20,7 +20,7 @@ class ExaConfigs(ProviderConfig, Enum):
         "contents",
         ["get_contents"],
         EndpointType.API,
-        LazyType("lionagi.providers.exa.contents.models:ExaContentsRequest"),
+        LazyType("lionagi.providers.exa.contents:ExaContentsRequest"),
         "https://api.exa.ai",
         "x-api-key",
     )
@@ -28,7 +28,7 @@ class ExaConfigs(ProviderConfig, Enum):
         "findSimilar",
         ["similar", "find_similar"],
         EndpointType.API,
-        LazyType("lionagi.providers.exa.find_similar.models:ExaFindSimilarRequest"),
+        LazyType("lionagi.providers.exa.find_similar:ExaFindSimilarRequest"),
         "https://api.exa.ai",
         "x-api-key",
     )

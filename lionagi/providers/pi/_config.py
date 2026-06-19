@@ -12,7 +12,7 @@ class PiConfigs(ProviderConfig, Enum):
         "query_cli",
         ["cli", "code"],
         EndpointType.AGENTIC,
-        LazyType("lionagi.providers.pi.cli.models:PiCodeRequest"),
+        LazyType("lionagi.providers.pi.cli:PiCodeRequest"),
     )
 
 

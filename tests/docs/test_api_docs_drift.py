@@ -23,7 +23,7 @@ class TestIModelDocs:
 
     def test_gemini_endpoint_uses_gemini_api_key(self):
         """The Google/Gemini chat endpoint references GEMINI_API_KEY."""
-        from lionagi.providers.google.chat.endpoint import GeminiChatEndpoint
+        from lionagi.providers.google.chat import GeminiChatEndpoint
 
         src = Path(GeminiChatEndpoint.__module__.replace(".", "/") + ".py")
         # If we can't read source, fall back to checking the config field exists

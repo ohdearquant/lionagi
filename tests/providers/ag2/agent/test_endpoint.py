@@ -10,7 +10,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from lionagi.providers.ag2.agent.models import AG2AgentRequest, AgentConfig
+from lionagi.providers.ag2.agent import AG2AgentRequest, AgentConfig
 
 # ---------------------------------------------------------------------------
 # Helpers / fixtures
@@ -84,7 +84,7 @@ class TestRunBetaAgentRouting:
 
     @pytest.mark.asyncio
     async def test_neither_agent_nor_config_raises(self):
-        from lionagi.providers.ag2.agent.models import run_beta_agent
+        from lionagi.providers.ag2.agent import run_beta_agent
 
         with pytest.raises(ValueError, match="requires either a pre-built"):
             async for _ in run_beta_agent(config=None, message="hi", llm_config=None, agent=None):
@@ -95,7 +95,7 @@ class TestRunBetaAgentRouting:
         """When both are supplied the pre-built agent wins and a log is emitted."""
         import logging
 
-        from lionagi.providers.ag2.agent import models as agent_models
+        from lionagi.providers.ag2 import agent as agent_models
 
         fake = _make_fake_agent()
         cfg = AgentConfig(name="ignored")
@@ -139,7 +139,7 @@ class TestRunBetaAgentRouting:
             te_mod.ToolCallsEvent = MagicMock
             te_mod.ToolResultEvent = MagicMock
 
-            with caplog.at_level(logging.INFO, logger="lionagi.providers.ag2.agent.models"):
+            with caplog.at_level(logging.INFO, logger="lionagi.providers.ag2.agent"):
                 results = []
                 async for ev in agent_models.run_beta_agent(
                     config=cfg,
@@ -163,7 +163,7 @@ class TestAG2BetaEndpointStream:
     """Test stream() with pre-built agent, using mocked run_beta_agent."""
 
     def _make_endpoint(self, with_llm_config: bool = False):
-        from lionagi.providers.ag2.agent.endpoint import AG2BetaEndpoint
+        from lionagi.providers.ag2.agent import AG2BetaEndpoint
         from lionagi.service.connections import EndpointConfig
 
         cfg = EndpointConfig(
@@ -199,7 +199,7 @@ class TestAG2BetaEndpointStream:
                 "typed_result": None,
             }
 
-        with patch("lionagi.providers.ag2.agent.models.run_beta_agent", side_effect=mock_run):
+        with patch("lionagi.providers.ag2.agent.run_beta_agent", side_effect=mock_run):
             endpoint = self._make_endpoint()
             chunks = []
             async for chunk in endpoint.stream({"prompt": "hello", "agent": fake_agent}):
@@ -224,7 +224,7 @@ class TestAG2BetaEndpointStream:
                 "typed_result": None,
             }
 
-        with patch("lionagi.providers.ag2.agent.models.run_beta_agent", side_effect=mock_run):
+        with patch("lionagi.providers.ag2.agent.run_beta_agent", side_effect=mock_run):
             endpoint = self._make_endpoint()
 
             # First call
@@ -257,7 +257,7 @@ class TestAG2BetaEndpointStream:
                 "typed_result": None,
             }
 
-        with patch("lionagi.providers.ag2.agent.models.run_beta_agent", side_effect=mock_run):
+        with patch("lionagi.providers.ag2.agent.run_beta_agent", side_effect=mock_run):
             endpoint = self._make_endpoint()
             async for _ in endpoint.stream(
                 {"prompt": "test", "agent": fake_agent, "agent_config": cfg}
@@ -281,7 +281,7 @@ class TestAG2BetaEndpointStream:
                 "typed_result": None,
             }
 
-        with patch("lionagi.providers.ag2.agent.models.run_beta_agent", side_effect=mock_run):
+        with patch("lionagi.providers.ag2.agent.run_beta_agent", side_effect=mock_run):
             endpoint = self._make_endpoint()
             # Override _agent_config so create_payload yields no config either
             endpoint._agent_config = {}
@@ -308,11 +308,11 @@ class TestAG2BetaEndpointStream:
 
         with (
             patch(
-                "lionagi.providers.ag2.agent.models.run_beta_agent",
+                "lionagi.providers.ag2.agent.run_beta_agent",
                 side_effect=mock_run,
             ),
             patch(
-                "lionagi.providers.ag2.agent.endpoint._resolve_model_config",
+                "lionagi.providers.ag2.agent._resolve_model_config",
                 return_value=mock_model_cfg,
             ),
         ):
@@ -340,7 +340,7 @@ class TestAG2BetaEndpointStream:
                 "typed_result": None,
             }
 
-        with patch("lionagi.providers.ag2.agent.models.run_beta_agent", side_effect=mock_run):
+        with patch("lionagi.providers.ag2.agent.run_beta_agent", side_effect=mock_run):
             endpoint = self._make_endpoint()
             chunks = []
             async for chunk in endpoint.stream({"prompt": "hi", "agent": fake_agent}):

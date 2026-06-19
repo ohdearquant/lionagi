@@ -11,7 +11,7 @@ from lionagi.operations.node import Operation
 from lionagi.protocols.generic.event import EventStatus
 from lionagi.protocols.graph.edge import Edge
 from lionagi.protocols.graph.graph import Graph
-from lionagi.providers.openai.chat.models import OpenAIChatCompletionsRequest
+from lionagi.providers.openai.chat import OpenAIChatCompletionsRequest
 from lionagi.service.connections.api_calling import APICalling
 from lionagi.service.connections.endpoint import Endpoint
 from lionagi.service.connections.endpoint_config import EndpointConfig

@@ -12,7 +12,7 @@ class OllamaConfigs(ProviderConfig, Enum):
         "chat/completions",
         ["chat"],
         EndpointType.API,
-        LazyType("lionagi.providers.ollama.chat.models:OpenAIChatCompletionsRequest"),
+        LazyType("lionagi.providers.ollama.chat:OpenAIChatCompletionsRequest"),
         "http://localhost:11434/v1",
         "none",
     )
@@ -20,7 +20,7 @@ class OllamaConfigs(ProviderConfig, Enum):
         "embeddings",
         ["embed"],
         EndpointType.API,
-        LazyType("lionagi.providers.ollama.embed.models:OllamaEmbedRequest"),
+        LazyType("lionagi.providers.ollama.embed:OllamaEmbedRequest"),
         "http://localhost:11434/api",
         "none",
     )
@@ -28,7 +28,7 @@ class OllamaConfigs(ProviderConfig, Enum):
         "generate",
         ["generate", "completion"],
         EndpointType.API,
-        LazyType("lionagi.providers.ollama.generate.models:OllamaGenerateRequest"),
+        LazyType("lionagi.providers.ollama.generate:OllamaGenerateRequest"),
         "http://localhost:11434/api",
         "none",
     )

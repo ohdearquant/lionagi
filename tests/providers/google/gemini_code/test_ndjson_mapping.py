@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import pytest
 
-from lionagi.providers.google.gemini_code.models import (
+from lionagi.providers.google.gemini_code import (
     GeminiCodeRequest,
     GeminiSession,
     stream_gemini_cli,
@@ -32,7 +32,7 @@ async def _run_events(events: list[dict]) -> GeminiSession:
 
     session = None
     with patch(
-        "lionagi.providers.google.gemini_code.models.stream_gemini_cli_events",
+        "lionagi.providers.google.gemini_code.stream_gemini_cli_events",
         side_effect=fake_events,
     ):
         async for item in stream_gemini_cli(_make_request()):

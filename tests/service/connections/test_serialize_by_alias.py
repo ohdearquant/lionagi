@@ -37,8 +37,7 @@ def _new_flag_payload(endpoint: Endpoint, request: dict):
 
 class TestExaSearchPayloadParity:
     def test_basic_query(self):
-        from lionagi.providers.exa.search.endpoint import ExaSearchEndpoint
-        from lionagi.providers.exa.search.models import ExaSearchRequest
+        from lionagi.providers.exa.search import ExaSearchEndpoint, ExaSearchRequest
 
         ep = ExaSearchEndpoint()
         req = {"query": "lionagi framework", "num_results": 5}
@@ -49,7 +48,7 @@ class TestExaSearchPayloadParity:
         assert got == expected
 
     def test_alias_fields_present(self):
-        from lionagi.providers.exa.search.endpoint import ExaSearchEndpoint
+        from lionagi.providers.exa.search import ExaSearchEndpoint
 
         ep = ExaSearchEndpoint()
         req = {"query": "test", "num_results": 3}
@@ -59,7 +58,7 @@ class TestExaSearchPayloadParity:
         assert "num_results" not in payload
 
     def test_none_fields_excluded(self):
-        from lionagi.providers.exa.search.endpoint import ExaSearchEndpoint
+        from lionagi.providers.exa.search import ExaSearchEndpoint
 
         ep = ExaSearchEndpoint()
         req = {"query": "test"}
@@ -75,8 +74,7 @@ class TestExaSearchPayloadParity:
 
 class TestExaContentsPayloadParity:
     def test_basic_ids(self):
-        from lionagi.providers.exa.contents.endpoint import ExaContentsEndpoint
-        from lionagi.providers.exa.contents.models import ExaContentsRequest
+        from lionagi.providers.exa.contents import ExaContentsEndpoint, ExaContentsRequest
 
         ep = ExaContentsEndpoint()
         req = {"ids": ["https://example.com"]}
@@ -87,7 +85,7 @@ class TestExaContentsPayloadParity:
         assert got == expected
 
     def test_alias_fields_present(self):
-        from lionagi.providers.exa.contents.endpoint import ExaContentsEndpoint
+        from lionagi.providers.exa.contents import ExaContentsEndpoint
 
         ep = ExaContentsEndpoint()
         req = {"ids": ["https://example.com"]}
@@ -102,8 +100,7 @@ class TestExaContentsPayloadParity:
 
 class TestExaFindSimilarPayloadParity:
     def test_basic_url(self):
-        from lionagi.providers.exa.find_similar.endpoint import ExaFindSimilarEndpoint
-        from lionagi.providers.exa.find_similar.models import ExaFindSimilarRequest
+        from lionagi.providers.exa.find_similar import ExaFindSimilarEndpoint, ExaFindSimilarRequest
 
         ep = ExaFindSimilarEndpoint()
         req = {"url": "https://example.com"}
@@ -114,7 +111,7 @@ class TestExaFindSimilarPayloadParity:
         assert got == expected
 
     def test_alias_fields_present(self):
-        from lionagi.providers.exa.find_similar.endpoint import ExaFindSimilarEndpoint
+        from lionagi.providers.exa.find_similar import ExaFindSimilarEndpoint
 
         ep = ExaFindSimilarEndpoint()
         req = {"url": "https://example.com", "num_results": 5}
@@ -130,8 +127,10 @@ class TestExaFindSimilarPayloadParity:
 
 class TestFirecrawlScrapePayloadParity:
     def test_basic_url(self):
-        from lionagi.providers.firecrawl.scrape.endpoint import FirecrawlScrapeEndpoint
-        from lionagi.providers.firecrawl.scrape.models import FirecrawlScrapeRequest
+        from lionagi.providers.firecrawl.scrape import (
+            FirecrawlScrapeEndpoint,
+            FirecrawlScrapeRequest,
+        )
 
         ep = FirecrawlScrapeEndpoint()
         req = {"url": "https://example.com"}
@@ -142,7 +141,7 @@ class TestFirecrawlScrapePayloadParity:
         assert got == expected
 
     def test_alias_fields_present(self):
-        from lionagi.providers.firecrawl.scrape.endpoint import FirecrawlScrapeEndpoint
+        from lionagi.providers.firecrawl.scrape import FirecrawlScrapeEndpoint
 
         ep = FirecrawlScrapeEndpoint()
         req = {"url": "https://example.com", "only_main_content": True}
@@ -151,7 +150,7 @@ class TestFirecrawlScrapePayloadParity:
         assert "only_main_content" not in payload
 
     def test_none_fields_excluded(self):
-        from lionagi.providers.firecrawl.scrape.endpoint import FirecrawlScrapeEndpoint
+        from lionagi.providers.firecrawl.scrape import FirecrawlScrapeEndpoint
 
         ep = FirecrawlScrapeEndpoint()
         req = {"url": "https://example.com"}
@@ -167,8 +166,7 @@ class TestFirecrawlScrapePayloadParity:
 
 class TestFirecrawlMapPayloadParity:
     def test_basic_url(self):
-        from lionagi.providers.firecrawl.map.endpoint import FirecrawlMapEndpoint
-        from lionagi.providers.firecrawl.map.models import FirecrawlMapRequest
+        from lionagi.providers.firecrawl.map import FirecrawlMapEndpoint, FirecrawlMapRequest
 
         ep = FirecrawlMapEndpoint()
         req = {"url": "https://example.com"}
@@ -186,8 +184,7 @@ class TestFirecrawlMapPayloadParity:
 
 class TestFirecrawlCrawlPayloadParity:
     def test_basic_url(self):
-        from lionagi.providers.firecrawl.crawl.endpoint import FirecrawlCrawlEndpoint
-        from lionagi.providers.firecrawl.crawl.models import FirecrawlCrawlRequest
+        from lionagi.providers.firecrawl.crawl import FirecrawlCrawlEndpoint, FirecrawlCrawlRequest
 
         ep = FirecrawlCrawlEndpoint()
         req = {"url": "https://example.com"}
@@ -198,7 +195,7 @@ class TestFirecrawlCrawlPayloadParity:
         assert got == expected
 
     def test_alias_fields_present(self):
-        from lionagi.providers.firecrawl.crawl.endpoint import FirecrawlCrawlEndpoint
+        from lionagi.providers.firecrawl.crawl import FirecrawlCrawlEndpoint
 
         ep = FirecrawlCrawlEndpoint()
         req = {"url": "https://example.com", "max_depth": 3}
@@ -245,12 +242,12 @@ class TestSerializeByAliasDefault:
         assert "maxTokens" not in payload
 
     def test_flag_endpoint_configs_are_true(self):
-        from lionagi.providers.exa.contents.endpoint import ExaContentsEndpoint
-        from lionagi.providers.exa.find_similar.endpoint import ExaFindSimilarEndpoint
-        from lionagi.providers.exa.search.endpoint import ExaSearchEndpoint
-        from lionagi.providers.firecrawl.crawl.endpoint import FirecrawlCrawlEndpoint
-        from lionagi.providers.firecrawl.map.endpoint import FirecrawlMapEndpoint
-        from lionagi.providers.firecrawl.scrape.endpoint import FirecrawlScrapeEndpoint
+        from lionagi.providers.exa.contents import ExaContentsEndpoint
+        from lionagi.providers.exa.find_similar import ExaFindSimilarEndpoint
+        from lionagi.providers.exa.search import ExaSearchEndpoint
+        from lionagi.providers.firecrawl.crawl import FirecrawlCrawlEndpoint
+        from lionagi.providers.firecrawl.map import FirecrawlMapEndpoint
+        from lionagi.providers.firecrawl.scrape import FirecrawlScrapeEndpoint
 
         for cls in (
             ExaSearchEndpoint,
