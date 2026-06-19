@@ -14,6 +14,7 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
 ### Changed
 
 - The CLI, studio, and operations boundaries now raise typed `LionError` subclasses (`ConfigurationError`, `OperationError`, `ExecutionError`) instead of bare `ValueError`/`RuntimeError`. These subclasses also inherit from the corresponding builtin, so existing `except ValueError` / `except RuntimeError` handlers keep working.
+- `lionagi.hooks.builtins` persistence handlers now share a single open `StateDB` connection per DB path (via `get_shared_db()`) instead of opening a fresh connection on every hook firing, eliminating the per-firing connect + pragma + schema-check cost.
 
 ### Deprecated
 
