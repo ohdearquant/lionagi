@@ -28,9 +28,6 @@ class AnthropicMessagesEndpoint(Endpoint):
         **kwargs,
     ):
         if config is None:
-            from lionagi.config import settings
-
-            kwargs.setdefault("api_key", settings.ANTHROPIC_API_KEY or "dummy-key-for-testing")
             kwargs.setdefault("default_headers", {"anthropic-version": "2023-06-01"})
         super().__init__(config, **kwargs)
 

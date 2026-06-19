@@ -36,5 +36,6 @@ class FirecrawlConfigs(ProviderConfig, Enum):
 
 FirecrawlConfigs._PROVIDER = "firecrawl"
 FirecrawlConfigs._PROVIDER_ALIASES = []
+FirecrawlConfigs._API_KEY_ENV = "FIRECRAWL_API_KEY"
 
 __all__ = ("FirecrawlConfigs",)

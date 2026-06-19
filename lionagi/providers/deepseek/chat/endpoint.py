@@ -24,9 +24,6 @@ CONTEXT_WINDOWS: dict[str, int] = {
 class DeepseekChatEndpoint(Endpoint):
     def __init__(self, config=None, **kwargs):
         if config is None:
-            from lionagi.config import settings
-
-            kwargs.setdefault("api_key", settings.DEEPSEEK_API_KEY or "dummy-key-for-testing")
             kwargs.setdefault("kwargs", {"model": "deepseek-chat"})
             kwargs.setdefault("requires_tokens", True)
         super().__init__(config, **kwargs)

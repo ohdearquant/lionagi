@@ -20,5 +20,6 @@ class OpenRouterConfigs(ProviderConfig, Enum):
 
 OpenRouterConfigs._PROVIDER = "openrouter"
 OpenRouterConfigs._PROVIDER_ALIASES = ["open-router"]
+OpenRouterConfigs._API_KEY_ENV = "OPENROUTER_API_KEY"
 
 __all__ = ("OpenRouterConfigs",)

@@ -20,6 +20,7 @@ class AnthropicConfigs(ProviderConfig, Enum):
 
 AnthropicConfigs._PROVIDER = "anthropic"
 AnthropicConfigs._PROVIDER_ALIASES = []
+AnthropicConfigs._API_KEY_ENV = "ANTHROPIC_API_KEY"
 
 
 class ClaudeCodeConfigs(ProviderConfig, Enum):

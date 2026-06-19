@@ -28,5 +28,6 @@ class TavilyConfigs(ProviderConfig, Enum):
 
 TavilyConfigs._PROVIDER = "tavily"
 TavilyConfigs._PROVIDER_ALIASES = []
+TavilyConfigs._API_KEY_ENV = "TAVILY_API_KEY"
 
 __all__ = ("TavilyConfigs",)

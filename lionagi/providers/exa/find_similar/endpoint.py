@@ -19,9 +19,6 @@ class ExaFindSimilarEndpoint(Endpoint):
 
     def __init__(self, config: EndpointConfig = None, **kwargs):
         if config is None:
-            from lionagi.config import settings
-
-            kwargs.setdefault("api_key", settings.EXA_API_KEY or "dummy-key-for-testing")
             kwargs.setdefault("serialize_by_alias", True)
             kwargs.setdefault("timeout", 120)
             kwargs.setdefault("max_retries", 3)

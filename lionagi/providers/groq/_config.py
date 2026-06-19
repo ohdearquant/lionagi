@@ -25,3 +25,4 @@ class GroqConfigs(ProviderConfig, Enum):
 
 GroqConfigs._PROVIDER = "groq"
 GroqConfigs._PROVIDER_ALIASES = []
+GroqConfigs._API_KEY_ENV = "GROQ_API_KEY"
