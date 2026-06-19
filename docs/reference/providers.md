@@ -101,7 +101,7 @@ AG2GroupChatEndpoint is stream-only — it yields `StreamChunk` events for each 
 
 ```python
 # requires: pip install lionagi[ag2]
-from lionagi.providers.ag2.groupchat.endpoint import AG2GroupChatEndpoint
+from lionagi.providers.ag2 import AG2GroupChatEndpoint
 
 endpoint = AG2GroupChatEndpoint(
     agent_configs=[
@@ -117,76 +117,89 @@ async for chunk in endpoint.stream({"prompt": "Build a Fibonacci function"}):
 
 ## Provider folder structure
 
-Each provider is a directory under `lionagi/providers/{company}/`. The subdirectories are
-capabilities — the directory listing is the capability map.
+Each provider is a directory under `lionagi/providers/{company}/`. The endpoint files
+(one `{endpoint}.py` per capability) are the capability map — the file listing names the capabilities.
 
 ```text
 lionagi/providers/
 ├── openai/
 │   ├── _config.py          # OpenAIConfigs + CodexConfigs enums
-│   ├── chat/               # chat/completions endpoint
-│   │   ├── endpoint.py
-│   │   └── models.py
-│   ├── codex/              # Codex CLI endpoint
-│   ├── audio/              # speech + transcription
-│   ├── embed/
-│   ├── images/
-│   └── response/           # Responses API
+│   ├── chat.py             # chat/completions endpoint
+│   ├── codex.py            # Codex CLI endpoint
+│   ├── audio.py            # speech + transcription
+│   ├── embed.py
+│   ├── images.py
+│   └── response.py         # Responses API
 ├── anthropic/
 │   ├── _config.py          # AnthropicConfigs + ClaudeCodeConfigs enums
-│   ├── messages/
-│   └── claude_code/        # CLI endpoint
+│   ├── messages.py
+│   └── claude_code.py      # CLI endpoint
 ├── google/
 │   ├── _config.py          # GeminiChatConfigs + GeminiCodeConfigs enums
-│   ├── chat/
-│   └── gemini_code/        # CLI endpoint
+│   ├── chat.py
+│   └── gemini_code.py      # CLI endpoint
 ├── deepseek/
 │   ├── _config.py
-│   └── chat/
+│   └── chat.py
 ├── ollama/
 │   ├── _config.py
-│   ├── chat/
-│   ├── embed/
-│   └── generate/
+│   ├── chat.py
+│   ├── embed.py
+│   └── generate.py
 ├── nvidia_nim/
 │   ├── _config.py
-│   ├── chat/
-│   └── embed/
+│   ├── chat.py
+│   └── embed.py
 ├── perplexity/
 │   ├── _config.py
-│   └── chat/
+│   └── chat.py
 ├── groq/
 │   ├── _config.py
-│   ├── chat/
-│   └── audio_transcription/
+│   ├── chat.py
+│   └── audio_transcription.py
 ├── openrouter/
 │   ├── _config.py
-│   └── chat/
+│   └── chat.py
 ├── exa/
 │   ├── _config.py
-│   ├── search/
-│   ├── contents/
-│   └── find_similar/
+│   ├── search.py
+│   ├── contents.py
+│   └── find_similar.py
 ├── firecrawl/
 │   ├── _config.py
-│   ├── scrape/
-│   ├── map/
-│   └── crawl/
+│   ├── scrape.py
+│   ├── map.py
+│   └── crawl.py
 ├── tavily/
 │   ├── _config.py
-│   └── search/
+│   └── search.py
 ├── pi/
 │   ├── _config.py
-│   └── cli/
+│   └── cli.py
 └── ag2/
     ├── _config.py          # AG2Configs enum
-    └── groupchat/
+    ├── agent.py
+    ├── groupchat.py
+    ├── nlip.py
+    └── sandbox.py          # shared worktree helpers
 ```
 
-Each leaf directory contains `endpoint.py` (the `Endpoint` subclass) and `models.py`
-(Pydantic request/response schemas). The `_config.py` at the provider root declares
+Each endpoint is a single file `{endpoint}.py` containing both the `Endpoint` subclass
+and its Pydantic request/response schemas. The `_config.py` at the provider root declares
 one or more `ProviderConfig` enums; each member carries the endpoint path, aliases,
 type, options class, base URL, and auth type.
+
+Each provider's `__init__.py` lazily re-exports every endpoint and request class, so the
+import collapses to two layers and loads nothing until first access:
+
+```python
+from lionagi.providers.openai import OpenaiChatEndpoint
+from lionagi.providers.anthropic import AnthropicMessagesEndpoint
+```
+
+Touching a name imports only that endpoint's module (plus the provider `_config`); the
+other endpoints in the folder stay unloaded. `dir(lionagi.providers.openai)` lists the
+full export set without triggering any import.
 
 ## Adding a new provider
 
@@ -194,10 +207,9 @@ type, options class, base URL, and auth type.
 
 ```text
 lionagi/providers/{name}/
+    __init__.py     # lazy re-export map (see existing providers)
     _config.py
-    {endpoint_type}/
-        endpoint.py
-        models.py
+    chat.py         # one file per endpoint: Endpoint subclass + request/response models
 ```
 
 **Step 2 — declare the config enum in `_config.py`**
@@ -212,7 +224,7 @@ class MyProviderConfigs(ProviderConfig, Enum):
         "chat/completions",          # endpoint path
         ["chat"],                    # aliases
         EndpointType.API,
-        LazyType("lionagi.providers.myprovider.chat.models:MyChatRequest"),
+        LazyType("lionagi.providers.myprovider.chat:MyChatRequest"),
         "https://api.myprovider.com/v1",
         "bearer",                    # auth_type
     )
@@ -221,16 +233,21 @@ MyProviderConfigs._PROVIDER = "myprovider"
 MyProviderConfigs._PROVIDER_ALIASES = ["my-provider"]
 ```
 
-**Step 3 — write `endpoint.py` using the `@register` decorator**
+**Step 3 — write `chat.py` using the `@register` decorator**
 
 ```python
 from lionagi.service.connections import Endpoint, EndpointConfig
 from ._config import MyProviderConfigs  # noqa: F401 — side effect: registers
 
+__all__ = ("MyProviderChatEndpoint", "MyChatRequest")
+
 @MyProviderConfigs.CHAT.register
 class MyProviderChatEndpoint(Endpoint):
     pass  # config is auto-created from _ENDPOINT_META injected by the decorator
 ```
+
+List the endpoint and request classes in `__all__` — the `__init__.py` lazy map derives
+its export set from each module's `__all__`.
 
 **Step 4 — add the import to `registry.py`**
 
@@ -244,7 +261,7 @@ def _import_all_providers():
     _modules: list[str] = [
         # ... existing entries ...
         "lionagi.providers.myprovider._config",
-        "lionagi.providers.myprovider.chat.endpoint",
+        "lionagi.providers.myprovider.chat",
     ]
     for mod in _modules:
         try:

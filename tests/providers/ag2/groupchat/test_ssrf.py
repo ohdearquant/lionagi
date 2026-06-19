@@ -39,30 +39,30 @@ class TestAssertNlipUrlSafe:
     """Direct tests for the shared SSRF guard helper."""
 
     def test_private_ip_raises_permission_error(self):
-        from lionagi.providers.ag2.nlip.models import _assert_nlip_url_safe
+        from lionagi.providers.ag2.nlip import _assert_nlip_url_safe
 
-        with patch("lionagi.providers.ag2.nlip.models.is_ssrf_safe", return_value=False):
+        with patch("lionagi.providers.ag2.nlip.is_ssrf_safe", return_value=False):
             with pytest.raises(PermissionError, match="SSRF guard"):
                 _assert_nlip_url_safe("http://169.254.169.254/")
 
     def test_loopback_raises_permission_error(self):
-        from lionagi.providers.ag2.nlip.models import _assert_nlip_url_safe
+        from lionagi.providers.ag2.nlip import _assert_nlip_url_safe
 
-        with patch("lionagi.providers.ag2.nlip.models.is_ssrf_safe", return_value=False):
+        with patch("lionagi.providers.ag2.nlip.is_ssrf_safe", return_value=False):
             with pytest.raises(PermissionError, match="SSRF guard"):
                 _assert_nlip_url_safe("http://127.0.0.1/")
 
     def test_bad_scheme_raises_value_error(self):
-        from lionagi.providers.ag2.nlip.models import _assert_nlip_url_safe
+        from lionagi.providers.ag2.nlip import _assert_nlip_url_safe
 
         with pytest.raises(ValueError, match="unsupported scheme"):
             _assert_nlip_url_safe("ftp://example.com/")
 
     def test_public_url_passes(self):
-        from lionagi.providers.ag2.nlip.models import _assert_nlip_url_safe
+        from lionagi.providers.ag2.nlip import _assert_nlip_url_safe
 
         # Patch where the name is actually looked up: in the nlip models module
-        with patch("lionagi.providers.ag2.nlip.models.is_ssrf_safe", return_value=True):
+        with patch("lionagi.providers.ag2.nlip.is_ssrf_safe", return_value=True):
             # Must not raise
             _assert_nlip_url_safe("https://nlip.example.com/")
 
@@ -76,7 +76,7 @@ class TestBuildGroupChatNlipUrlSSRF:
     """build_group_chat() must reject private nlip_url before NlipRemoteAgent is constructed."""
 
     def _make_spec(self, nlip_url: str):
-        from lionagi.providers.ag2.groupchat.models import AgentSpec, GroupChatSpec
+        from lionagi.providers.ag2.groupchat import AgentSpec, GroupChatSpec
 
         return GroupChatSpec(
             name="test_chat",
@@ -92,43 +92,43 @@ class TestBuildGroupChatNlipUrlSSRF:
 
     def test_metadata_ip_blocked_before_nlip_remote_agent(self):
         """169.254.169.254 (AWS IMDS) must raise PermissionError before NlipRemoteAgent is reached."""
-        from lionagi.providers.ag2.groupchat.models import build_group_chat
+        from lionagi.providers.ag2.groupchat import build_group_chat
 
         spec = self._make_spec("http://169.254.169.254/")
 
         with patch.dict(sys.modules, _autogen_stubs()):
-            with patch("lionagi.providers.ag2.nlip.models.is_ssrf_safe", return_value=False):
+            with patch("lionagi.providers.ag2.nlip.is_ssrf_safe", return_value=False):
                 with pytest.raises(PermissionError, match="SSRF guard"):
                     build_group_chat(spec, llm_config=None)
 
     def test_rfc1918_blocked(self):
-        from lionagi.providers.ag2.groupchat.models import build_group_chat
+        from lionagi.providers.ag2.groupchat import build_group_chat
 
         spec = self._make_spec("http://10.0.0.1/")
 
         with patch.dict(sys.modules, _autogen_stubs()):
-            with patch("lionagi.providers.ag2.nlip.models.is_ssrf_safe", return_value=False):
+            with patch("lionagi.providers.ag2.nlip.is_ssrf_safe", return_value=False):
                 with pytest.raises(PermissionError, match="SSRF guard"):
                     build_group_chat(spec, llm_config=None)
 
     def test_loopback_blocked(self):
-        from lionagi.providers.ag2.groupchat.models import build_group_chat
+        from lionagi.providers.ag2.groupchat import build_group_chat
 
         spec = self._make_spec("http://127.0.0.1:8080/")
 
         with patch.dict(sys.modules, _autogen_stubs()):
-            with patch("lionagi.providers.ag2.nlip.models.is_ssrf_safe", return_value=False):
+            with patch("lionagi.providers.ag2.nlip.is_ssrf_safe", return_value=False):
                 with pytest.raises(PermissionError, match="SSRF guard"):
                     build_group_chat(spec, llm_config=None)
 
     def test_public_nlip_url_proceeds_past_guard(self):
         """A public nlip_url passes the guard; downstream errors from missing autogen install are acceptable."""
-        from lionagi.providers.ag2.groupchat.models import build_group_chat
+        from lionagi.providers.ag2.groupchat import build_group_chat
 
         spec = self._make_spec("https://nlip.example.com/")
 
         with patch.dict(sys.modules, _autogen_stubs()):
-            with patch("lionagi.providers.ag2.nlip.models.is_ssrf_safe", return_value=True):
+            with patch("lionagi.providers.ag2.nlip.is_ssrf_safe", return_value=True):
                 try:
                     build_group_chat(spec, llm_config=None)
                 except PermissionError:
@@ -148,7 +148,7 @@ class TestAG2GroupChatEndpointNlipUrlSSRF:
     """Caller-supplied agent_configs[*].nlip_url must be SSRF-checked before NlipRemoteAgent is constructed."""
 
     def _make_endpoint(self):
-        from lionagi.providers.ag2.groupchat.endpoint import AG2GroupChatEndpoint
+        from lionagi.providers.ag2.groupchat import AG2GroupChatEndpoint
         from lionagi.service.connections import EndpointConfig
 
         cfg = EndpointConfig(
@@ -174,7 +174,7 @@ class TestAG2GroupChatEndpointNlipUrlSSRF:
         ]
 
         with patch.dict(sys.modules, _autogen_stubs()):
-            with patch("lionagi.providers.ag2.nlip.models.is_ssrf_safe", return_value=False):
+            with patch("lionagi.providers.ag2.nlip.is_ssrf_safe", return_value=False):
                 with pytest.raises((PermissionError, ValueError), match="SSRF"):
                     async for _ in endpoint.stream(
                         request={"prompt": "test"},
@@ -196,7 +196,7 @@ class TestAG2GroupChatEndpointNlipUrlSSRF:
 
         with patch.dict(sys.modules, _autogen_stubs()):
             with patch(
-                "lionagi.providers.ag2.nlip.models._assert_nlip_url_safe",
+                "lionagi.providers.ag2.nlip._assert_nlip_url_safe",
                 side_effect=PermissionError("SSRF guard: blocked"),
             ) as mock_guard:
                 with pytest.raises(PermissionError, match="SSRF guard"):

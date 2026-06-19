@@ -8,7 +8,7 @@ from unittest.mock import patch
 import pytest
 
 from lionagi.protocols.generic.event import EventStatus
-from lionagi.providers.google.chat.endpoint import GeminiChatEndpoint
+from lionagi.providers.google.chat import GeminiChatEndpoint
 from lionagi.service.connections.endpoint_config import EndpointConfig
 from lionagi.service.connections.match_endpoint import match_endpoint
 from lionagi.service.imodel import iModel

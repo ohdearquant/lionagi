@@ -17,17 +17,17 @@ _provider_cache: dict[str, dict[str, int]] = {}
 
 _PROVIDER_MODULES: dict[str, str] = {
     "openai": "lionagi.providers.openai._config",
-    "anthropic": "lionagi.providers.anthropic.messages.endpoint",
-    "claude_code": "lionagi.providers.anthropic.claude_code.endpoint",
-    "codex": "lionagi.providers.openai.codex.endpoint",
-    "deepseek": "lionagi.providers.deepseek.chat.endpoint",
-    "nvidia_nim": "lionagi.providers.nvidia_nim.chat.endpoint",
-    "perplexity": "lionagi.providers.perplexity.chat.endpoint",
-    "gemini_code": "lionagi.providers.google.gemini_code.endpoint",
-    "pi": "lionagi.providers.pi.cli.endpoint",
-    "groq": "lionagi.providers.groq.chat.endpoint",
-    "gemini": "lionagi.providers.google.chat.endpoint",
-    "openrouter": "lionagi.providers.openrouter.chat.endpoint",
+    "anthropic": "lionagi.providers.anthropic.messages",
+    "claude_code": "lionagi.providers.anthropic.claude_code",
+    "codex": "lionagi.providers.openai.codex",
+    "deepseek": "lionagi.providers.deepseek.chat",
+    "nvidia_nim": "lionagi.providers.nvidia_nim.chat",
+    "perplexity": "lionagi.providers.perplexity.chat",
+    "gemini_code": "lionagi.providers.google.gemini_code",
+    "pi": "lionagi.providers.pi.cli",
+    "groq": "lionagi.providers.groq.chat",
+    "gemini": "lionagi.providers.google.chat",
+    "openrouter": "lionagi.providers.openrouter.chat",
 }
 
 

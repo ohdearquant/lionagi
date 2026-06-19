@@ -218,13 +218,13 @@ class TestCLIProviderRequestModels:
 
     def test_claude_code_request_import(self):
         """ClaudeCodeRequest model should be importable."""
-        from lionagi.providers.anthropic.claude_code.models import ClaudeCodeRequest
+        from lionagi.providers.anthropic.claude_code import ClaudeCodeRequest
 
         assert ClaudeCodeRequest is not None
 
     def test_claude_code_request_fields(self):
         """ClaudeCodeRequest should have documented fields."""
-        from lionagi.providers.anthropic.claude_code.models import ClaudeCodeRequest
+        from lionagi.providers.anthropic.claude_code import ClaudeCodeRequest
 
         fields = ClaudeCodeRequest.model_fields
         for field in (
@@ -247,7 +247,7 @@ class TestCLIProviderRequestModels:
 
     def test_claude_code_request_as_cmd_args(self):
         """ClaudeCodeRequest.as_cmd_args() builds CLI argument list."""
-        from lionagi.providers.anthropic.claude_code.models import ClaudeCodeRequest
+        from lionagi.providers.anthropic.claude_code import ClaudeCodeRequest
 
         req = ClaudeCodeRequest(prompt="hello")
         args = req.as_cmd_args()
@@ -258,13 +258,13 @@ class TestCLIProviderRequestModels:
 
     def test_gemini_code_request_import(self):
         """GeminiCodeRequest model should be importable."""
-        from lionagi.providers.google.gemini_code.models import GeminiCodeRequest
+        from lionagi.providers.google.gemini_code import GeminiCodeRequest
 
         assert GeminiCodeRequest is not None
 
     def test_gemini_code_request_fields(self):
         """GeminiCodeRequest should have documented fields."""
-        from lionagi.providers.google.gemini_code.models import GeminiCodeRequest
+        from lionagi.providers.google.gemini_code import GeminiCodeRequest
 
         fields = GeminiCodeRequest.model_fields
         for field in (
@@ -281,7 +281,7 @@ class TestCLIProviderRequestModels:
 
     def test_gemini_code_request_as_cmd_args(self):
         """GeminiCodeRequest.as_cmd_args() builds CLI argument list."""
-        from lionagi.providers.google.gemini_code.models import GeminiCodeRequest
+        from lionagi.providers.google.gemini_code import GeminiCodeRequest
 
         req = GeminiCodeRequest(prompt="analyze")
         args = req.as_cmd_args()
@@ -291,13 +291,13 @@ class TestCLIProviderRequestModels:
 
     def test_codex_code_request_import(self):
         """CodexCodeRequest model should be importable."""
-        from lionagi.providers.openai.codex.models import CodexCodeRequest
+        from lionagi.providers.openai.codex import CodexCodeRequest
 
         assert CodexCodeRequest is not None
 
     def test_codex_code_request_fields(self):
         """CodexCodeRequest should have documented fields."""
-        from lionagi.providers.openai.codex.models import CodexCodeRequest
+        from lionagi.providers.openai.codex import CodexCodeRequest
 
         fields = CodexCodeRequest.model_fields
         for field in (
@@ -316,7 +316,7 @@ class TestCLIProviderRequestModels:
 
     def test_codex_code_request_as_cmd_args(self):
         """CodexCodeRequest.as_cmd_args() builds CLI argument list."""
-        from lionagi.providers.openai.codex.models import CodexCodeRequest
+        from lionagi.providers.openai.codex import CodexCodeRequest
 
         req = CodexCodeRequest(prompt="fix tests")
         args = req.as_cmd_args()
@@ -330,7 +330,7 @@ class TestCLIProviderEndpoints:
 
     def test_claude_code_cli_endpoint_import(self):
         """ClaudeCodeCLIEndpoint should be importable."""
-        from lionagi.providers.anthropic.claude_code.endpoint import (
+        from lionagi.providers.anthropic.claude_code import (
             ClaudeCodeCLIEndpoint,
         )
 
@@ -338,7 +338,7 @@ class TestCLIProviderEndpoints:
 
     def test_claude_code_endpoint_constructs(self):
         """ClaudeCodeCLIEndpoint constructs with default config."""
-        from lionagi.providers.anthropic.claude_code.endpoint import (
+        from lionagi.providers.anthropic.claude_code import (
             ClaudeCodeCLIEndpoint,
         )
 
@@ -352,7 +352,7 @@ class TestCLIProviderEndpoints:
 
     def test_claude_code_endpoint_handlers(self):
         """ClaudeCodeCLIEndpoint exposes claude_handlers property."""
-        from lionagi.providers.anthropic.claude_code.endpoint import (
+        from lionagi.providers.anthropic.claude_code import (
             ClaudeCodeCLIEndpoint,
         )
 
@@ -371,7 +371,7 @@ class TestCLIProviderEndpoints:
 
     def test_claude_code_update_handlers(self):
         """update_handlers merges new handler callbacks."""
-        from lionagi.providers.anthropic.claude_code.endpoint import (
+        from lionagi.providers.anthropic.claude_code import (
             ClaudeCodeCLIEndpoint,
         )
 
@@ -382,13 +382,13 @@ class TestCLIProviderEndpoints:
 
     def test_gemini_cli_endpoint_import(self):
         """GeminiCLIEndpoint should be importable."""
-        from lionagi.providers.google.gemini_code.endpoint import GeminiCLIEndpoint
+        from lionagi.providers.google.gemini_code import GeminiCLIEndpoint
 
         assert GeminiCLIEndpoint is not None
 
     def test_gemini_cli_endpoint_constructs(self):
         """GeminiCLIEndpoint constructs with default config."""
-        from lionagi.providers.google.gemini_code.endpoint import GeminiCLIEndpoint
+        from lionagi.providers.google.gemini_code import GeminiCLIEndpoint
 
         ep = GeminiCLIEndpoint()
         assert ep.config.provider == "gemini_code"
@@ -396,7 +396,7 @@ class TestCLIProviderEndpoints:
 
     def test_gemini_cli_endpoint_handlers(self):
         """GeminiCLIEndpoint exposes gemini_handlers with correct keys."""
-        from lionagi.providers.google.gemini_code.endpoint import GeminiCLIEndpoint
+        from lionagi.providers.google.gemini_code import GeminiCLIEndpoint
 
         ep = GeminiCLIEndpoint()
         handlers = ep.gemini_handlers
@@ -406,13 +406,13 @@ class TestCLIProviderEndpoints:
 
     def test_codex_cli_endpoint_import(self):
         """CodexCLIEndpoint should be importable."""
-        from lionagi.providers.openai.codex.endpoint import CodexCLIEndpoint
+        from lionagi.providers.openai.codex import CodexCLIEndpoint
 
         assert CodexCLIEndpoint is not None
 
     def test_codex_cli_endpoint_constructs(self):
         """CodexCLIEndpoint constructs with default config."""
-        from lionagi.providers.openai.codex.endpoint import CodexCLIEndpoint
+        from lionagi.providers.openai.codex import CodexCLIEndpoint
 
         ep = CodexCLIEndpoint()
         assert ep.config.provider == "codex"
@@ -420,7 +420,7 @@ class TestCLIProviderEndpoints:
 
     def test_codex_cli_endpoint_handlers(self):
         """CodexCLIEndpoint exposes codex_handlers with correct keys."""
-        from lionagi.providers.openai.codex.endpoint import CodexCLIEndpoint
+        from lionagi.providers.openai.codex import CodexCLIEndpoint
 
         ep = CodexCLIEndpoint()
         handlers = ep.codex_handlers

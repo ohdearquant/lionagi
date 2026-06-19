@@ -12,7 +12,7 @@ class PerplexityConfigs(ProviderConfig, Enum):
         "chat/completions",
         ["chat"],
         EndpointType.API,
-        LazyType("lionagi.providers.perplexity.chat.models:PerplexityChatRequest"),
+        LazyType("lionagi.providers.perplexity.chat:PerplexityChatRequest"),
         "https://api.perplexity.ai",
         "bearer",
     )

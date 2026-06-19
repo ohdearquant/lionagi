@@ -12,7 +12,7 @@ class FirecrawlConfigs(ProviderConfig, Enum):
         "v1/scrape",
         ["scrape"],
         EndpointType.API,
-        LazyType("lionagi.providers.firecrawl.scrape.models:FirecrawlScrapeRequest"),
+        LazyType("lionagi.providers.firecrawl.scrape:FirecrawlScrapeRequest"),
         "https://api.firecrawl.dev",
         "bearer",
     )
@@ -20,7 +20,7 @@ class FirecrawlConfigs(ProviderConfig, Enum):
         "v1/map",
         ["map"],
         EndpointType.API,
-        LazyType("lionagi.providers.firecrawl.map.models:FirecrawlMapRequest"),
+        LazyType("lionagi.providers.firecrawl.map:FirecrawlMapRequest"),
         "https://api.firecrawl.dev",
         "bearer",
     )
@@ -28,7 +28,7 @@ class FirecrawlConfigs(ProviderConfig, Enum):
         "v1/crawl",
         ["crawl"],
         EndpointType.API,
-        LazyType("lionagi.providers.firecrawl.crawl.models:FirecrawlCrawlRequest"),
+        LazyType("lionagi.providers.firecrawl.crawl:FirecrawlCrawlRequest"),
         "https://api.firecrawl.dev",
         "bearer",
     )

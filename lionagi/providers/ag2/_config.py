@@ -12,21 +12,21 @@ class AG2Configs(ProviderConfig, Enum):
         "group_chat",
         ["groupchat", "chat"],
         EndpointType.AGENTIC,
-        LazyType("lionagi.providers.ag2.groupchat.models:AG2GroupChatRequest"),
+        LazyType("lionagi.providers.ag2.groupchat:AG2GroupChatRequest"),
     )
 
     AGENT = (
         "agent",
         ["beta", "ask"],
         EndpointType.AGENTIC,
-        LazyType("lionagi.providers.ag2.agent.models:AG2AgentRequest"),
+        LazyType("lionagi.providers.ag2.agent:AG2AgentRequest"),
     )
 
     NLIP = (
         "nlip",
         ["nlip_remote", "remote"],
         EndpointType.AGENTIC,
-        LazyType("lionagi.providers.ag2.nlip.models:AG2NlipRequest"),
+        LazyType("lionagi.providers.ag2.nlip:AG2NlipRequest"),
     )
 
 

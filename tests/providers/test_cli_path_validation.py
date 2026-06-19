@@ -103,83 +103,83 @@ class TestCodexPathValidation:
     # add_dir — read-grant field: absolute paths allowed, traversal rejected
     def test_add_dir_absolute_allowed(self):
         """Absolute add_dir paths are deliberate read grants and must be accepted."""
-        from lionagi.providers.openai.codex.models import CodexCodeRequest
+        from lionagi.providers.openai.codex import CodexCodeRequest
 
         req = CodexCodeRequest(prompt="hi", add_dir=["/home/user/projects"])
         assert req.add_dir == ["/home/user/projects"]
 
     def test_add_dir_traversal_rejected(self):
-        from lionagi.providers.openai.codex.models import CodexCodeRequest
+        from lionagi.providers.openai.codex import CodexCodeRequest
 
         with pytest.raises(Exception, match="traversal"):
             CodexCodeRequest(prompt="hi", add_dir=["../../etc"])
 
     def test_add_dir_valid_relative_accepted(self):
-        from lionagi.providers.openai.codex.models import CodexCodeRequest
+        from lionagi.providers.openai.codex import CodexCodeRequest
 
         req = CodexCodeRequest(prompt="hi", add_dir=["subdir/work"])
         assert req.add_dir == ["subdir/work"]
 
     # images attacks
     def test_images_absolute_rejected(self):
-        from lionagi.providers.openai.codex.models import CodexCodeRequest
+        from lionagi.providers.openai.codex import CodexCodeRequest
 
         with pytest.raises(Exception, match="absolute path"):
             CodexCodeRequest(prompt="hi", images=["/etc/passwd"])
 
     def test_images_traversal_rejected(self):
-        from lionagi.providers.openai.codex.models import CodexCodeRequest
+        from lionagi.providers.openai.codex import CodexCodeRequest
 
         with pytest.raises(Exception, match="traversal"):
             CodexCodeRequest(prompt="hi", images=["../../secret.png"])
 
     def test_images_valid_accepted(self):
-        from lionagi.providers.openai.codex.models import CodexCodeRequest
+        from lionagi.providers.openai.codex import CodexCodeRequest
 
         req = CodexCodeRequest(prompt="hi", images=["assets/screenshot.png"])
         assert req.images == ["assets/screenshot.png"]
 
     # output_schema attacks
     def test_output_schema_absolute_rejected(self):
-        from lionagi.providers.openai.codex.models import CodexCodeRequest
+        from lionagi.providers.openai.codex import CodexCodeRequest
 
         with pytest.raises(Exception, match="absolute path"):
             CodexCodeRequest(prompt="hi", output_schema="/tmp/schema.json")
 
     def test_output_schema_traversal_rejected(self):
-        from lionagi.providers.openai.codex.models import CodexCodeRequest
+        from lionagi.providers.openai.codex import CodexCodeRequest
 
         with pytest.raises(Exception, match="traversal"):
             CodexCodeRequest(prompt="hi", output_schema="../../schema.json")
 
     def test_output_schema_valid_accepted(self):
-        from lionagi.providers.openai.codex.models import CodexCodeRequest
+        from lionagi.providers.openai.codex import CodexCodeRequest
 
         req = CodexCodeRequest(prompt="hi", output_schema="schemas/output.json")
         assert str(req.output_schema) == "schemas/output.json"
 
     # output_last_message attacks
     def test_output_last_message_absolute_rejected(self):
-        from lionagi.providers.openai.codex.models import CodexCodeRequest
+        from lionagi.providers.openai.codex import CodexCodeRequest
 
         with pytest.raises(Exception, match="absolute path"):
             CodexCodeRequest(prompt="hi", output_last_message="/tmp/out.txt")
 
     def test_output_last_message_traversal_rejected(self):
-        from lionagi.providers.openai.codex.models import CodexCodeRequest
+        from lionagi.providers.openai.codex import CodexCodeRequest
 
         with pytest.raises(Exception, match="traversal"):
             CodexCodeRequest(prompt="hi", output_last_message="../../out.txt")
 
     def test_output_last_message_valid_accepted(self):
-        from lionagi.providers.openai.codex.models import CodexCodeRequest
+        from lionagi.providers.openai.codex import CodexCodeRequest
 
         req = CodexCodeRequest(prompt="hi", output_last_message="results/last.txt")
         assert str(req.output_last_message) == "results/last.txt"
 
     def test_add_dir_orchestration_regression(self, tmp_path):
         """Regression: repo=artifact_dir with add_dir=[project_root] must succeed; orchestration sets add_dir to the project root outside the per-agent artifact dir."""
-        from lionagi.providers.openai.codex.models import CodexCodeRequest
+        from lionagi.providers.openai.codex import CodexCodeRequest
 
         project_root = tmp_path / "project"
         project_root.mkdir()
@@ -214,76 +214,76 @@ class TestClaudeCodePathValidation:
 
     # system_prompt_file attacks
     def test_system_prompt_file_absolute_rejected(self):
-        from lionagi.providers.anthropic.claude_code.models import ClaudeCodeRequest
+        from lionagi.providers.anthropic.claude_code import ClaudeCodeRequest
 
         with pytest.raises(Exception, match="absolute path"):
             ClaudeCodeRequest(prompt="hi", system_prompt_file="/etc/passwd")
 
     def test_system_prompt_file_traversal_rejected(self):
-        from lionagi.providers.anthropic.claude_code.models import ClaudeCodeRequest
+        from lionagi.providers.anthropic.claude_code import ClaudeCodeRequest
 
         with pytest.raises(Exception, match="traversal"):
             ClaudeCodeRequest(prompt="hi", system_prompt_file="../../secret.txt")
 
     def test_system_prompt_file_valid_accepted(self):
-        from lionagi.providers.anthropic.claude_code.models import ClaudeCodeRequest
+        from lionagi.providers.anthropic.claude_code import ClaudeCodeRequest
 
         req = ClaudeCodeRequest(prompt="hi", system_prompt_file="prompts/system.md")
         assert str(req.system_prompt_file) == "prompts/system.md"
 
     # append_system_prompt_file attacks
     def test_append_system_prompt_file_absolute_rejected(self):
-        from lionagi.providers.anthropic.claude_code.models import ClaudeCodeRequest
+        from lionagi.providers.anthropic.claude_code import ClaudeCodeRequest
 
         with pytest.raises(Exception, match="absolute path"):
             ClaudeCodeRequest(prompt="hi", append_system_prompt_file="/tmp/extra.md")
 
     def test_append_system_prompt_file_traversal_rejected(self):
-        from lionagi.providers.anthropic.claude_code.models import ClaudeCodeRequest
+        from lionagi.providers.anthropic.claude_code import ClaudeCodeRequest
 
         with pytest.raises(Exception, match="traversal"):
             ClaudeCodeRequest(prompt="hi", append_system_prompt_file="../../extra.md")
 
     def test_append_system_prompt_file_valid_accepted(self):
-        from lionagi.providers.anthropic.claude_code.models import ClaudeCodeRequest
+        from lionagi.providers.anthropic.claude_code import ClaudeCodeRequest
 
         req = ClaudeCodeRequest(prompt="hi", append_system_prompt_file="prompts/extra.md")
         assert str(req.append_system_prompt_file) == "prompts/extra.md"
 
     # mcp_config attacks
     def test_mcp_config_absolute_rejected(self):
-        from lionagi.providers.anthropic.claude_code.models import ClaudeCodeRequest
+        from lionagi.providers.anthropic.claude_code import ClaudeCodeRequest
 
         with pytest.raises(Exception, match="absolute path"):
             ClaudeCodeRequest(prompt="hi", mcp_config="/home/user/.config/mcp.json")
 
     def test_mcp_config_traversal_rejected(self):
-        from lionagi.providers.anthropic.claude_code.models import ClaudeCodeRequest
+        from lionagi.providers.anthropic.claude_code import ClaudeCodeRequest
 
         with pytest.raises(Exception, match="traversal"):
             ClaudeCodeRequest(prompt="hi", mcp_config="../../mcp.json")
 
     def test_mcp_config_valid_accepted(self):
-        from lionagi.providers.anthropic.claude_code.models import ClaudeCodeRequest
+        from lionagi.providers.anthropic.claude_code import ClaudeCodeRequest
 
         req = ClaudeCodeRequest(prompt="hi", mcp_config=".mcp/config.json")
         assert str(req.mcp_config) == ".mcp/config.json"
 
     # settings attacks
     def test_settings_absolute_rejected(self):
-        from lionagi.providers.anthropic.claude_code.models import ClaudeCodeRequest
+        from lionagi.providers.anthropic.claude_code import ClaudeCodeRequest
 
         with pytest.raises(Exception, match="absolute path"):
             ClaudeCodeRequest(prompt="hi", settings="/etc/claude-settings.json")
 
     def test_settings_traversal_rejected(self):
-        from lionagi.providers.anthropic.claude_code.models import ClaudeCodeRequest
+        from lionagi.providers.anthropic.claude_code import ClaudeCodeRequest
 
         with pytest.raises(Exception, match="traversal"):
             ClaudeCodeRequest(prompt="hi", settings="../../settings.json")
 
     def test_settings_valid_accepted(self):
-        from lionagi.providers.anthropic.claude_code.models import ClaudeCodeRequest
+        from lionagi.providers.anthropic.claude_code import ClaudeCodeRequest
 
         req = ClaudeCodeRequest(prompt="hi", settings=".claude/settings.json")
         assert str(req.settings) == ".claude/settings.json"
@@ -291,26 +291,26 @@ class TestClaudeCodePathValidation:
     # add_dir — read-grant field: absolute paths allowed, traversal rejected
     def test_add_dir_absolute_allowed(self):
         """Absolute add_dir paths are deliberate read grants and must be accepted."""
-        from lionagi.providers.anthropic.claude_code.models import ClaudeCodeRequest
+        from lionagi.providers.anthropic.claude_code import ClaudeCodeRequest
 
         req = ClaudeCodeRequest(prompt="hi", add_dir=["/home/user/projects"])
         assert req.add_dir == ["/home/user/projects"]
 
     def test_add_dir_traversal_rejected(self):
-        from lionagi.providers.anthropic.claude_code.models import ClaudeCodeRequest
+        from lionagi.providers.anthropic.claude_code import ClaudeCodeRequest
 
         with pytest.raises(Exception, match="traversal"):
             ClaudeCodeRequest(prompt="hi", add_dir=["../../tmp/work"])
 
     def test_add_dir_valid_relative_accepted(self):
-        from lionagi.providers.anthropic.claude_code.models import ClaudeCodeRequest
+        from lionagi.providers.anthropic.claude_code import ClaudeCodeRequest
 
         req = ClaudeCodeRequest(prompt="hi", add_dir=["workspace/subdir"])
         assert req.add_dir == ["workspace/subdir"]
 
     def test_add_dir_orchestration_regression(self, tmp_path):
         """Regression: repo=artifact_dir with add_dir=[project_root] must succeed; orchestration sets add_dir to the project root outside the per-agent artifact dir."""
-        from lionagi.providers.anthropic.claude_code.models import ClaudeCodeRequest
+        from lionagi.providers.anthropic.claude_code import ClaudeCodeRequest
 
         project_root = tmp_path / "project"
         project_root.mkdir()
@@ -334,7 +334,7 @@ class TestClaudeCodePathValidation:
 
     def test_mcp_config_symlink_escape_rejected(self, tmp_path):
         """A symlinked mcp_config that resolves outside the repo must be rejected."""
-        from lionagi.providers.anthropic.claude_code.models import ClaudeCodeRequest
+        from lionagi.providers.anthropic.claude_code import ClaudeCodeRequest
 
         outside = tmp_path / "outside"
         outside.mkdir()
@@ -356,26 +356,26 @@ class TestGeminiPathValidation:
     """include_directories in GeminiCodeRequest must be validated before argv."""
 
     def test_include_directories_absolute_rejected(self):
-        from lionagi.providers.google.gemini_code.models import GeminiCodeRequest
+        from lionagi.providers.google.gemini_code import GeminiCodeRequest
 
         with pytest.raises(Exception, match="absolute path"):
             GeminiCodeRequest(prompt="hi", include_directories=["/etc"])
 
     def test_include_directories_traversal_rejected(self):
-        from lionagi.providers.google.gemini_code.models import GeminiCodeRequest
+        from lionagi.providers.google.gemini_code import GeminiCodeRequest
 
         with pytest.raises(Exception, match="traversal"):
             GeminiCodeRequest(prompt="hi", include_directories=["../../secrets"])
 
     def test_include_directories_valid_accepted(self):
-        from lionagi.providers.google.gemini_code.models import GeminiCodeRequest
+        from lionagi.providers.google.gemini_code import GeminiCodeRequest
 
         req = GeminiCodeRequest(prompt="hi", include_directories=["src", "tests"])
         assert req.include_directories == ["src", "tests"]
 
     def test_include_directories_mixed_rejected(self):
         """Even one bad entry in the list must reject the whole request."""
-        from lionagi.providers.google.gemini_code.models import GeminiCodeRequest
+        from lionagi.providers.google.gemini_code import GeminiCodeRequest
 
         with pytest.raises(Exception):
             GeminiCodeRequest(
@@ -385,7 +385,7 @@ class TestGeminiPathValidation:
 
     def test_include_directories_symlink_escape_rejected(self, tmp_path):
         """A symlinked directory that resolves outside the repo must be rejected."""
-        from lionagi.providers.google.gemini_code.models import GeminiCodeRequest
+        from lionagi.providers.google.gemini_code import GeminiCodeRequest
 
         outside = tmp_path / "outside"
         outside.mkdir()
@@ -406,37 +406,37 @@ class TestPiExtensionSkillValidation:
     """extension and skill path fields in PiCodeRequest must be validated."""
 
     def test_extension_absolute_rejected(self):
-        from lionagi.providers.pi.cli.models import PiCodeRequest
+        from lionagi.providers.pi.cli import PiCodeRequest
 
         with pytest.raises(Exception, match="absolute path"):
             PiCodeRequest(prompt="hi", extension=["/home/user/.config/ext.js"])
 
     def test_extension_traversal_rejected(self):
-        from lionagi.providers.pi.cli.models import PiCodeRequest
+        from lionagi.providers.pi.cli import PiCodeRequest
 
         with pytest.raises(Exception, match="traversal"):
             PiCodeRequest(prompt="hi", extension=["../../evil-ext.js"])
 
     def test_extension_valid_accepted(self):
-        from lionagi.providers.pi.cli.models import PiCodeRequest
+        from lionagi.providers.pi.cli import PiCodeRequest
 
         req = PiCodeRequest(prompt="hi", extension=["extensions/my-ext.js"])
         assert req.extension == ["extensions/my-ext.js"]
 
     def test_skill_absolute_rejected(self):
-        from lionagi.providers.pi.cli.models import PiCodeRequest
+        from lionagi.providers.pi.cli import PiCodeRequest
 
         with pytest.raises(Exception, match="absolute path"):
             PiCodeRequest(prompt="hi", skill=["/etc/passwd"])
 
     def test_skill_traversal_rejected(self):
-        from lionagi.providers.pi.cli.models import PiCodeRequest
+        from lionagi.providers.pi.cli import PiCodeRequest
 
         with pytest.raises(Exception, match="traversal"):
             PiCodeRequest(prompt="hi", skill=["../../evil-skill"])
 
     def test_skill_valid_accepted(self):
-        from lionagi.providers.pi.cli.models import PiCodeRequest
+        from lionagi.providers.pi.cli import PiCodeRequest
 
         req = PiCodeRequest(prompt="hi", skill=["skills/my-skill"])
         assert req.skill == ["skills/my-skill"]

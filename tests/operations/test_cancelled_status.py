@@ -11,7 +11,7 @@ from anyio import get_cancelled_exc_class
 
 from lionagi.operations.node import Operation
 from lionagi.protocols.generic.event import EventStatus
-from lionagi.providers.openai.chat.models import OpenAIChatCompletionsRequest
+from lionagi.providers.openai.chat import OpenAIChatCompletionsRequest
 from lionagi.service.connections.api_calling import APICalling
 from lionagi.service.connections.endpoint import Endpoint
 from lionagi.testing import oai_chat_endpoint_config

@@ -65,7 +65,7 @@ def create_mock_branch(name: str = "TestBranch") -> Branch:
     plumbing; only the instruction-tracking wrapper stays local to this test.
     """
     from lionagi.protocols.generic.event import EventStatus
-    from lionagi.providers.openai.chat.models import OpenAIChatCompletionsRequest
+    from lionagi.providers.openai.chat import OpenAIChatCompletionsRequest
     from lionagi.testing import LionAGIMockFactory
 
     branch = Branch(user="test_user", name=name)
