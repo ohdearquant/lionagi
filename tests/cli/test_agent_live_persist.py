@@ -8,6 +8,7 @@ from __future__ import annotations
 import asyncio
 import threading
 from pathlib import Path
+from unittest import mock
 
 import pytest
 
@@ -283,6 +284,44 @@ async def test_close_shared_db_sweeps_inflight_open(
     assert _aiosqlite_thread_count() == before, (
         "in-flight-opened aiosqlite worker leaked past close_shared_db()"
     )
+
+
+async def test_close_shared_db_rejects_stale_waiter(temp_db_path: Path):
+    """A get_shared_db() that waited on a lock a concurrent close swept must refuse to
+    resurrect the singleton (raise), not open a fresh worker that survives teardown."""
+    from lionagi.state.db import _SHARED, close_shared_db, get_shared_db
+
+    before = _aiosqlite_thread_count()
+    await get_shared_db(temp_db_path)  # give the sweep something to slow-close
+
+    entered = asyncio.Event()
+    release = asyncio.Event()
+    real_close = StateDB.close
+
+    async def slow_close(self):
+        entered.set()  # close now holds the open lock, mid-sweep
+        await release.wait()
+        await real_close(self)
+
+    with mock.patch.object(StateDB, "close", slow_close):
+        closer = asyncio.create_task(close_shared_db())
+        await asyncio.wait_for(entered.wait(), timeout=5)
+
+        getter = asyncio.create_task(get_shared_db(temp_db_path))
+        await asyncio.sleep(0.1)
+        assert not getter.done(), "getter should block on the lock the close holds"
+
+        release.set()
+        await asyncio.wait_for(closer, timeout=5)
+        with pytest.raises(RuntimeError):
+            await asyncio.wait_for(getter, timeout=5)
+
+    assert temp_db_path not in _SHARED
+    for _ in range(20):
+        if _aiosqlite_thread_count() == before:
+            break
+        await asyncio.sleep(0.05)
+    assert _aiosqlite_thread_count() == before, "stale-waiter open leaked an aiosqlite worker"
 
 
 # ── Resume path ───────────────────────────────────────────────────────────────

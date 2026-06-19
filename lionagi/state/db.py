@@ -2329,6 +2329,13 @@ _SHARED: dict[Path, StateDB] = {}
 # Guards the lazy-open window; created on first async call (anyio.Lock
 # must be instantiated inside an active backend task context).
 _SHARED_OPEN_LOCK: Lock | None = None
+# Bumped by every close_shared_db() sweep so a get_shared_db()/register_shared_db()
+# that waited on a now-abandoned lock can detect it raced a teardown.
+_SHARED_CLOSE_GEN: int = 0
+_SHARED_TEARDOWN_RACE = (
+    "shared StateDB was torn down while this call was pending; quiesce "
+    "get_shared_db()/register_shared_db() callers before close_shared_db()"
+)
 
 
 async def get_shared_db(path: str | Path | None = None) -> StateDB:
@@ -2339,7 +2346,13 @@ async def get_shared_db(path: str | Path | None = None) -> StateDB:
         return _SHARED[resolved]
     if _SHARED_OPEN_LOCK is None:
         _SHARED_OPEN_LOCK = Lock()
-    async with _SHARED_OPEN_LOCK:
+    lock = _SHARED_OPEN_LOCK
+    gen = _SHARED_CLOSE_GEN
+    async with lock:
+        # A close_shared_db() swept the registry while we waited on this lock;
+        # refuse to resurrect the singleton rather than leak a fresh worker.
+        if _SHARED_CLOSE_GEN != gen:
+            raise RuntimeError(_SHARED_TEARDOWN_RACE)
         # Double-checked: another coroutine may have opened it while we waited.
         if resolved not in _SHARED:
             db = StateDB(resolved)
@@ -2355,7 +2368,11 @@ async def register_shared_db(db: StateDB) -> None:
 
     if _SHARED_OPEN_LOCK is None:
         _SHARED_OPEN_LOCK = Lock()
-    async with _SHARED_OPEN_LOCK:
+    lock = _SHARED_OPEN_LOCK
+    gen = _SHARED_CLOSE_GEN
+    async with lock:
+        if _SHARED_CLOSE_GEN != gen:
+            raise RuntimeError(_SHARED_TEARDOWN_RACE)
         existing = _SHARED.get(db.path)
         if existing is not None and existing is not db:
             with contextlib.suppress(Exception):
@@ -2370,8 +2387,8 @@ def unregister_shared_db(db: StateDB) -> None:
 
 
 async def close_shared_db() -> None:
-    """Close and forget every shared StateDB (frees its aiosqlite worker thread)."""
-    global _SHARED_OPEN_LOCK  # noqa: PLW0603
+    """Close and forget every shared StateDB; callers must quiesce get_shared_db() first."""
+    global _SHARED_OPEN_LOCK, _SHARED_CLOSE_GEN  # noqa: PLW0603
     import contextlib
 
     lock = _SHARED_OPEN_LOCK
@@ -2379,17 +2396,20 @@ async def close_shared_db() -> None:
         # No open ever happened in this loop (opens create the lock first).
         instances = list(_SHARED.values())
         _SHARED.clear()
+        _SHARED_CLOSE_GEN += 1
         for db in instances:
             with contextlib.suppress(Exception):
                 await db.close()
         return
     # Hold the open lock so an in-flight get_shared_db()/register_shared_db()
-    # cannot repopulate _SHARED after the sweep; null it last so a later event
-    # loop lazily recreates a fresh lock.
+    # cannot repopulate _SHARED after the sweep; bump the generation and null
+    # the lock last so a waiter that raced this close refuses to resurrect it
+    # and a later event loop lazily recreates a fresh lock.
     async with lock:
         instances = list(_SHARED.values())
         _SHARED.clear()
         for db in instances:
             with contextlib.suppress(Exception):
                 await db.close()
+        _SHARED_CLOSE_GEN += 1
         _SHARED_OPEN_LOCK = None
