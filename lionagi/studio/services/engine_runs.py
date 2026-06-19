@@ -8,8 +8,9 @@ from __future__ import annotations
 import json
 from typing import Any
 
-from fastapi import HTTPException, Query
+from fastapi import Query
 
+from lionagi._errors import NotFoundError
 from lionagi.state.db import DEFAULT_DB_PATH, StateDB
 
 from ..registry import studio_route
@@ -89,5 +90,5 @@ async def get_engine_run_route(run_id: str) -> dict[str, Any]:
     """Return a single engine run row by id."""
     row = await get_engine_run(run_id)
     if row is None:
-        raise HTTPException(status_code=404, detail=f"Engine run '{run_id}' not found")
+        raise NotFoundError(f"Engine run '{run_id}' not found")
     return row

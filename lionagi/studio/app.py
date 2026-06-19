@@ -11,6 +11,8 @@ from starlette.middleware.cors import CORSMiddleware
 from starlette.responses import FileResponse, JSONResponse
 from starlette.staticfiles import StaticFiles
 
+from lionagi._errors import LionError
+
 from .config import CORS_ORIGINS, HOST
 from .registry import iter_studio_routes, load_studio_route_modules
 
@@ -96,6 +98,15 @@ async def lifespan(app_instance):
 
 
 app = FastAPI(title="Lion Studio Server", lifespan=lifespan)
+
+
+@app.exception_handler(LionError)
+async def _lion_error_handler(request: Request, exc: LionError) -> JSONResponse:
+    """Translate domain errors raised by service logic into HTTP responses."""
+    return JSONResponse(
+        status_code=exc.status_code,
+        content={"detail": exc.message},
+    )
 
 
 @app.middleware("http")

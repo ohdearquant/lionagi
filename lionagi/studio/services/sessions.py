@@ -6,8 +6,8 @@ import time
 from typing import Any
 
 import aiosqlite
-from fastapi import HTTPException  # used for 404 guards
 
+from lionagi._errors import NotFoundError
 from lionagi.state.db import DEFAULT_DB_PATH, SESSION_TERMINAL_STATUSES
 
 from ..registry import studio_route
@@ -424,7 +424,7 @@ async def list_sessions_route() -> dict[str, Any]:
 async def get_session_route(session_id: str) -> dict[str, Any]:
     session = await get_session(session_id)
     if session is None:
-        raise HTTPException(status_code=404, detail=f"Session '{session_id}' not found")
+        raise NotFoundError(f"Session '{session_id}' not found")
     return session
 
 
@@ -441,7 +441,7 @@ async def stream_session_route(session_id: str):
     # then waits 60s before emitting done — client hangs with no indication.
     # The shows router already does this at shows.py:34-35; we mirror that pattern.
     if not await session_exists(session_id):
-        raise HTTPException(status_code=404, detail=f"Session '{session_id}' not found")
+        raise NotFoundError(f"Session '{session_id}' not found")
 
     async def generate():
         after_ts: float = 0.0
@@ -489,7 +489,7 @@ async def stream_signals(session_id: str) -> Any:
     # Pre-flight 404 guard before opening the stream — mirrors the pattern
     # at sessions.py:35-36 (ADR-0006).
     if not await session_exists(session_id):
-        raise HTTPException(status_code=404, detail=f"Session '{session_id}' not found")
+        raise NotFoundError(f"Session '{session_id}' not found")
 
     from . import signals as signals_svc
 
