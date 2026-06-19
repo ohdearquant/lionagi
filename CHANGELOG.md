@@ -27,7 +27,7 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
 
 - `request_fields` phantom param dropped from `MessageManager.create_instruction`, `create_message`, and `add_message` (was accepted but silently ignored); `parse_lndl_fuzzy` removed from `lndl.__all__` (Phase-2 feature, not yet shipped).
 - Internal `_get_oai_config` alias in `lionagi.testing._legacy` removed (was never public; callers within the module now call `oai_chat_endpoint_config` directly).
-- `LogManager`, `LogManagerConfig`, and `to_list_type` removed from `lionagi.protocols.types.__all__` (back-compat aliases and an internal Pile helper that inflated the curated public surface); they remain importable from `lionagi.protocols.generic.log` and `lionagi.protocols.generic.pile` respectively.
+- `LogManager`, `LogManagerConfig`, and `to_list_type` removed from the public `lionagi.protocols.types` surface (back-compat aliases and an internal Pile helper that inflated the curated re-export set); import them from their canonical modules `lionagi.protocols.generic.log` and `lionagi.protocols.generic.pile` instead.
 
 ## [0.27.1] - 2026-06-16
 
