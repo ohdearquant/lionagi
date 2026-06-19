@@ -2305,3 +2305,44 @@ class StateDB:
                 except (json.JSONDecodeError, TypeError):
                     pass
         return d
+
+
+# ── Shared singleton accessor ─────────────────────────────────────────────────
+# One open StateDB connection is reused across all hook firings for a given
+# DB path.  This avoids the per-firing connect + pragma + schema-check cost
+# and is the prerequisite for session-lifecycle hook wiring.
+#
+# Async-safety argument:
+#   aiosqlite routes every command through a single background thread, so
+#   SQLite serialises all operations at the C layer.  Concurrent coroutines
+#   sharing the same StateDB instance are further serialised by the instance's
+#   own _write_lock (anyio.Lock) for every mutating path that uses BEGIN
+#   IMMEDIATE or needs atomic execute+commit.  A shared instance therefore
+#   cannot produce "cannot start a transaction within a transaction" races —
+#   that was already the guarantee provided by _write_lock for the CLI paths
+#   that pass an open StateDB to bind_db_persistence().
+#
+# Key by resolved Path so tests that redirect DEFAULT_DB_PATH to a tmp_path
+# get their own isolated instance.
+
+_SHARED: dict[Path, StateDB] = {}
+# Guards the lazy-open window; created on first async call (anyio.Lock
+# must be instantiated inside an active backend task context).
+_SHARED_OPEN_LOCK: Lock | None = None
+
+
+async def get_shared_db(path: str | Path | None = None) -> StateDB:
+    """Return the process-wide open StateDB for *path* (default: DEFAULT_DB_PATH)."""
+    global _SHARED_OPEN_LOCK  # noqa: PLW0603
+    resolved = Path(path) if path else DEFAULT_DB_PATH
+    if resolved in _SHARED:
+        return _SHARED[resolved]
+    if _SHARED_OPEN_LOCK is None:
+        _SHARED_OPEN_LOCK = Lock()
+    async with _SHARED_OPEN_LOCK:
+        # Double-checked: another coroutine may have opened it while we waited.
+        if resolved not in _SHARED:
+            db = StateDB(resolved)
+            await db.open()
+            _SHARED[resolved] = db
+    return _SHARED[resolved]

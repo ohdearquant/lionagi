@@ -5,23 +5,20 @@
 
 from __future__ import annotations
 
-from unittest.mock import AsyncMock, MagicMock, patch
+import asyncio
+from unittest.mock import AsyncMock, patch
 
 import pytest
 
 from lionagi.hooks.builtins import persist_message
 
-# StateDB is imported lazily inside persist_message, so we patch the module
-# it lives in — not lionagi.hooks.builtins.
-_STATEDB_PATH = "lionagi.state.db.StateDB"
+# get_shared_db is the singleton accessor used by every hook in builtins;
+# patching it controls which db instance the hooks operate on.
+_GET_SHARED_DB = "lionagi.state.db.get_shared_db"
 
 
-def _make_mock_db_ctx():
-    mock_db = AsyncMock()
-    mock_ctx = MagicMock()
-    mock_ctx.__aenter__ = AsyncMock(return_value=mock_db)
-    mock_ctx.__aexit__ = AsyncMock(return_value=None)
-    return mock_db, mock_ctx
+def _make_mock_db():
+    return AsyncMock()
 
 
 # ── persist_message: dual progressions ───────────────────────────────────────
@@ -29,9 +26,9 @@ def _make_mock_db_ctx():
 
 async def test_persist_message_appends_to_branch_progression():
     msg = {"id": "msg1", "role": "user", "content": "hi"}
-    mock_db, mock_ctx = _make_mock_db_ctx()
+    mock_db = _make_mock_db()
 
-    with patch(_STATEDB_PATH, return_value=mock_ctx):
+    with patch(_GET_SHARED_DB, return_value=mock_db):
         await persist_message(
             message=msg,
             session_id="sess1",
@@ -45,9 +42,9 @@ async def test_persist_message_appends_to_branch_progression():
 
 async def test_persist_message_appends_to_session_progression():
     msg = {"id": "msg2", "role": "user", "content": "hi"}
-    mock_db, mock_ctx = _make_mock_db_ctx()
+    mock_db = _make_mock_db()
 
-    with patch(_STATEDB_PATH, return_value=mock_ctx):
+    with patch(_GET_SHARED_DB, return_value=mock_db):
         await persist_message(
             message=msg,
             session_id="sess1",
@@ -59,9 +56,9 @@ async def test_persist_message_appends_to_session_progression():
 
 async def test_persist_message_appends_to_both_progressions():
     msg = {"id": "msg3", "role": "assistant", "content": "reply"}
-    mock_db, mock_ctx = _make_mock_db_ctx()
+    mock_db = _make_mock_db()
 
-    with patch(_STATEDB_PATH, return_value=mock_ctx):
+    with patch(_GET_SHARED_DB, return_value=mock_db):
         await persist_message(
             message=msg,
             session_id="sess1",
@@ -77,9 +74,9 @@ async def test_persist_message_appends_to_both_progressions():
 
 async def test_persist_message_updates_system_msg_id_for_system_role():
     msg = {"id": "sys1", "role": "system", "content": "You are helpful."}
-    mock_db, mock_ctx = _make_mock_db_ctx()
+    mock_db = _make_mock_db()
 
-    with patch(_STATEDB_PATH, return_value=mock_ctx):
+    with patch(_GET_SHARED_DB, return_value=mock_db):
         await persist_message(
             message=msg,
             session_id="sess1",
@@ -91,9 +88,9 @@ async def test_persist_message_updates_system_msg_id_for_system_role():
 
 async def test_persist_message_no_system_msg_update_for_non_system_role():
     msg = {"id": "usr1", "role": "user", "content": "hello"}
-    mock_db, mock_ctx = _make_mock_db_ctx()
+    mock_db = _make_mock_db()
 
-    with patch(_STATEDB_PATH, return_value=mock_ctx):
+    with patch(_GET_SHARED_DB, return_value=mock_db):
         await persist_message(
             message=msg,
             session_id="sess1",
@@ -106,9 +103,9 @@ async def test_persist_message_no_system_msg_update_for_non_system_role():
 async def test_persist_message_legacy_progression_id_still_works():
     """Backward compat: progression_id acts as branch_progression_id."""
     msg = {"id": "msg_legacy", "role": "user", "content": "hi"}
-    mock_db, mock_ctx = _make_mock_db_ctx()
+    mock_db = _make_mock_db()
 
-    with patch(_STATEDB_PATH, return_value=mock_ctx):
+    with patch(_GET_SHARED_DB, return_value=mock_db):
         await persist_message(
             message=msg,
             session_id="sess1",
@@ -127,13 +124,19 @@ class TestPersistSessionStartReasonCode:
     async def test_persist_session_start_persists_provenance_with_reason(
         self, monkeypatch, tmp_path
     ):
-        monkeypatch.setattr("lionagi.state.db.DEFAULT_DB_PATH", tmp_path / "state.db")
+        import lionagi.state.db as _db_module
+
+        monkeypatch.setattr(_db_module, "DEFAULT_DB_PATH", tmp_path / "state.db")
+        # Reset the singleton cache so this test gets its own isolated DB.
+        monkeypatch.setitem(_db_module._SHARED, tmp_path / "state.db", None)
+        _db_module._SHARED.pop(tmp_path / "state.db", None)
+
         from lionagi.hooks.builtins import persist_session_start
         from lionagi.state.db import StateDB
         from lionagi.state.reasons import RunReasons
 
         sid = "sess-start-1"
-        async with StateDB() as db:
+        async with StateDB(tmp_path / "state.db") as db:
             await db.create_progression("prog-start-1")
             await db.create_session(
                 {
@@ -152,8 +155,12 @@ class TestPersistSessionStartReasonCode:
             agent_name="reviewer",
         )
 
-        async with StateDB() as db:
-            row = await db.get_session(sid)
+        shared = _db_module._SHARED.get(tmp_path / "state.db")
+        if shared is not None:
+            row = await shared.get_session(sid)
+        else:
+            async with StateDB(tmp_path / "state.db") as db:
+                row = await db.get_session(sid)
 
         assert row is not None
         assert row["status"] == "running"
@@ -163,3 +170,77 @@ class TestPersistSessionStartReasonCode:
         assert row["provider"] == "openai"
         # A canonical "started" reason was recorded, not the deprecation default.
         assert row["status_reason_code"] == RunReasons.STARTED_OK
+
+
+# ── Singleton reuse: same instance returned across multiple firings ───────────
+
+
+async def test_shared_db_returns_same_instance(tmp_path, monkeypatch):
+    """get_shared_db() for the same path must return the identical StateDB instance."""
+    import lionagi.state.db as _db_module
+
+    monkeypatch.setattr(_db_module, "DEFAULT_DB_PATH", tmp_path / "state.db")
+    _db_module._SHARED.pop(tmp_path / "state.db", None)
+    _db_module._SHARED_OPEN_LOCK = None
+
+    from lionagi.state.db import get_shared_db
+
+    db1 = await get_shared_db()
+    db2 = await get_shared_db()
+    assert db1 is db2, "get_shared_db() must return the same instance on repeated calls"
+
+    # Cleanup
+    await db1.close()
+    _db_module._SHARED.pop(tmp_path / "state.db", None)
+
+
+async def test_shared_db_connection_open_once(tmp_path, monkeypatch):
+    """StateDB.open() is called exactly once even when get_shared_db() is called N times."""
+    import lionagi.state.db as _db_module
+
+    monkeypatch.setattr(_db_module, "DEFAULT_DB_PATH", tmp_path / "state.db")
+    _db_module._SHARED.pop(tmp_path / "state.db", None)
+    _db_module._SHARED_OPEN_LOCK = None
+
+    open_count = 0
+    original_open = _db_module.StateDB.open
+
+    async def counting_open(self):
+        nonlocal open_count
+        open_count += 1
+        return await original_open(self)
+
+    monkeypatch.setattr(_db_module.StateDB, "open", counting_open)
+
+    from lionagi.state.db import get_shared_db
+
+    # Call 5 times; open() must be called exactly once.
+    for _ in range(5):
+        await get_shared_db()
+
+    assert open_count == 1, f"StateDB.open() called {open_count} times; expected 1"
+
+    # Cleanup
+    db = _db_module._SHARED.pop(tmp_path / "state.db", None)
+    if db is not None:
+        await db.close()
+
+
+async def test_concurrent_hook_firings_use_same_instance(tmp_path, monkeypatch):
+    """Concurrent get_shared_db() calls must all resolve to the same instance without error."""
+    import lionagi.state.db as _db_module
+
+    monkeypatch.setattr(_db_module, "DEFAULT_DB_PATH", tmp_path / "state.db")
+    _db_module._SHARED.pop(tmp_path / "state.db", None)
+    _db_module._SHARED_OPEN_LOCK = None
+
+    from lionagi.state.db import get_shared_db
+
+    # Fire 20 concurrent calls.
+    results = await asyncio.gather(*[get_shared_db() for _ in range(20)])
+    first = results[0]
+    assert all(r is first for r in results), "All concurrent calls must return the same instance"
+
+    # Cleanup
+    await first.close()
+    _db_module._SHARED.pop(tmp_path / "state.db", None)
