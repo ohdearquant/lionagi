@@ -9,7 +9,7 @@ class GroqConfigs(ProviderConfig, Enum):
         "chat/completions",
         ["chat"],
         EndpointType.API,
-        LazyType("lionagi.providers.openai.chat:OpenAIChatCompletionsRequest"),
+        LazyType("lionagi.providers.openai._chat_schemas:OpenAIChatCompletionsRequest"),
         "https://api.groq.com/openai/v1",
         "bearer",
     )
@@ -17,7 +17,7 @@ class GroqConfigs(ProviderConfig, Enum):
         "audio/transcriptions",
         ["whisper", "stt"],
         EndpointType.API,
-        LazyType("lionagi.providers.openai.audio:AudioTranscriptionRequest"),
+        LazyType("lionagi.providers.openai._audio_schemas:AudioTranscriptionRequest"),
         "https://api.groq.com/openai/v1",
         "bearer",
     )

@@ -8,7 +8,7 @@ import logging
 from pydantic import BaseModel
 
 from lionagi.ln.concurrency import run_sync
-from lionagi.providers.openai.chat import OpenAIChatCompletionsRequest
+from lionagi.providers.openai._chat_schemas import OpenAIChatCompletionsRequest
 from lionagi.service.connections.endpoint import Endpoint
 from lionagi.utils import is_import_installed
 

@@ -1,7 +1,7 @@
 # Copyright (c) 2023-2026, HaiyangLi <quantocean.li at gmail dot com>
 # SPDX-License-Identifier: Apache-2.0
 
-from lionagi.providers.openai.chat import OpenAIChatCompletionsRequest
+from lionagi.providers.openai._chat_schemas import OpenAIChatCompletionsRequest
 from lionagi.service.connections.endpoint import Endpoint
 
 from ._config import GeminiChatConfigs

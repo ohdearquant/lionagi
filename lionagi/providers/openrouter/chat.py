@@ -9,7 +9,7 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, Field
 
-from lionagi.providers.openai.chat import OpenAIChatCompletionsRequest
+from lionagi.providers.openai._chat_schemas import OpenAIChatCompletionsRequest
 from lionagi.service.connections.endpoint import Endpoint
 from lionagi.service.connections.endpoint_config import EndpointConfig
 

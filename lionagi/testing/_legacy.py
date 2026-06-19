@@ -9,7 +9,7 @@ from typing import Any
 from unittest.mock import AsyncMock
 
 from lionagi.protocols.generic.event import EventStatus
-from lionagi.providers.openai.chat import OpenAIChatCompletionsRequest
+from lionagi.providers.openai._chat_schemas import OpenAIChatCompletionsRequest
 from lionagi.service.connections.api_calling import APICalling
 from lionagi.service.connections.endpoint import Endpoint
 from lionagi.service.connections.endpoint_config import EndpointConfig

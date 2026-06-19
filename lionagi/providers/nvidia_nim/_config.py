@@ -12,7 +12,7 @@ class NvidiaNimConfigs(ProviderConfig, Enum):
         "chat/completions",
         ["chat"],
         EndpointType.API,
-        LazyType("lionagi.providers.openai.chat:OpenAIChatCompletionsRequest"),
+        LazyType("lionagi.providers.openai._chat_schemas:OpenAIChatCompletionsRequest"),
         "https://integrate.api.nvidia.com/v1",
         "bearer",
     )
