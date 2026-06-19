@@ -2346,3 +2346,21 @@ async def get_shared_db(path: str | Path | None = None) -> StateDB:
             await db.open()
             _SHARED[resolved] = db
     return _SHARED[resolved]
+
+
+def register_shared_db(db: StateDB) -> None:
+    """Adopt a caller-owned StateDB as the shared instance so hooks reuse it."""
+    _SHARED[db.path] = db
+
+
+async def close_shared_db() -> None:
+    """Close and forget every shared StateDB (frees its aiosqlite worker thread)."""
+    global _SHARED_OPEN_LOCK  # noqa: PLW0603
+    import contextlib
+
+    instances = list(_SHARED.values())
+    _SHARED.clear()
+    _SHARED_OPEN_LOCK = None
+    for db in instances:
+        with contextlib.suppress(Exception):
+            await db.close()

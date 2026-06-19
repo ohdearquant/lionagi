@@ -164,6 +164,38 @@ async def test_setup_create_session_failure_closes_db(
     monkeypatch.setattr(StateDB, "create_session", original_create)
 
 
+# ── Shared-db reuse + teardown cleanup (lifecycle-hook leak guard) ────────────
+
+
+async def test_lifecycle_hooks_reuse_owned_db_no_shared_leak(temp_db_path: Path):
+    """SESSION_START/BRANCH_CREATE hooks reuse the owned connection, and teardown
+    leaves no shared StateDB whose non-daemon aiosqlite worker would block exit."""
+    from lionagi.state.db import _SHARED, get_shared_db
+
+    before = _aiosqlite_thread_count()
+    branch = Branch(name="b1")
+
+    ctx = await _setup_live_persist(branch, agent_name="reviewer")
+    assert ctx is not None
+
+    # The lifecycle hooks reach the db via get_shared_db(); setup registered the
+    # owned connection, so they reuse it instead of opening a second one.
+    assert await get_shared_db() is ctx["db"]
+    assert _SHARED.get(ctx["db"].path) is ctx["db"]
+
+    await _teardown_live_persist(ctx, status="completed")
+
+    # Registry swept — nothing left to leak its aiosqlite worker thread.
+    assert ctx["db"].path not in _SHARED
+    for _ in range(20):
+        if _aiosqlite_thread_count() == before:
+            break
+        await asyncio.sleep(0.05)
+    assert _aiosqlite_thread_count() == before, (
+        "shared StateDB survived teardown — aiosqlite worker thread leaked"
+    )
+
+
 # ── Resume path ───────────────────────────────────────────────────────────────
 
 
