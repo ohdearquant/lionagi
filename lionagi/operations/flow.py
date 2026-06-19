@@ -523,6 +523,7 @@ class ReactiveExecutor(DependencyAwareExecutor):
         self._seen_reqs: set[int] = set()
         self._spawned_ids: set[Any] = set()
         self._result_sink: Any = None
+        self._escalated_ids: set[Any] = set()
 
     async def execute(self) -> dict[str, Any]:
         if not self.graph.is_acyclic():
@@ -536,7 +537,10 @@ class ReactiveExecutor(DependencyAwareExecutor):
         initial = [n for n in self.graph.internal_nodes.values() if isinstance(n, Operation)]
         self._running = True
         observer = self.session.observer
+        from lionagi.casts.emission import EscalationRequest  # noqa: PLC0415
+
         self.session.observe(self.spawn_type, self._on_bus_spawn)
+        self.session.observe(EscalationRequest, self._on_bus_escalation)
         try:
             async with create_task_group() as tg:
                 self._tg = tg
@@ -549,6 +553,7 @@ class ReactiveExecutor(DependencyAwareExecutor):
             self._running = False
             self._tg = None
             observer.unobserve(self._on_bus_spawn)
+            observer.unobserve(self._on_bus_escalation)
 
         completed_ops = [
             op_id for op_id in self.results.keys() if op_id not in self.skipped_operations
@@ -559,6 +564,7 @@ class ReactiveExecutor(DependencyAwareExecutor):
             "final_context": self.context.content,
             "skipped_operations": list(self.skipped_operations),
             "spawned_operations": self._spawn_count,
+            "escalated_operations": list(self._escalated_ids),
         }
         self._validate_execution_results(result)
         return result
@@ -577,7 +583,10 @@ class ReactiveExecutor(DependencyAwareExecutor):
 
         initial = [n for n in self.graph.internal_nodes.values() if isinstance(n, Operation)]
         observer = self.session.observer
+        from lionagi.casts.emission import EscalationRequest  # noqa: PLC0415
+
         self.session.observe(self.spawn_type, self._on_bus_spawn)
+        self.session.observe(EscalationRequest, self._on_bus_escalation)
         self._running = True
 
         async def _driver():
@@ -611,6 +620,7 @@ class ReactiveExecutor(DependencyAwareExecutor):
             self._tg = None
             self._result_sink = None
             observer.unobserve(self._on_bus_spawn)
+            observer.unobserve(self._on_bus_escalation)
             if not driver.done():  # early break / consumer close: tear down
                 driver.cancel()
                 with contextlib.suppress(asyncio.CancelledError, Exception):
@@ -624,8 +634,12 @@ class ReactiveExecutor(DependencyAwareExecutor):
             _CURRENT_OP.reset(token)
         if self._result_sink is not None:
             self._result_sink.send_nowait(self._make_event(node))
+        from lionagi.casts.emission import EscalationRequest  # noqa: PLC0415
+
         for req in _extract_spawn_requests(self.results.get(node.id), self.spawn_type):
             self._inject_request(req, emitter=node)
+        for req in _extract_spawn_requests(self.results.get(node.id), EscalationRequest):
+            self._schedule_escalation(req, emitter=node)
 
     def _make_event(self, node: Operation) -> FlowEvent:
         if node.id in self.skipped_operations:
@@ -646,6 +660,64 @@ class ReactiveExecutor(DependencyAwareExecutor):
         if not self._running:
             return
         self._inject_request(req, emitter=_CURRENT_OP.get())
+
+    async def _on_bus_escalation(self, req: Any, _ctx: Any) -> None:
+        if not self._running:
+            return
+        self._schedule_escalation(req, emitter=_CURRENT_OP.get())
+
+    def _schedule_escalation(self, req: Any, *, emitter: Operation | None) -> None:
+        """Consume an EscalationRequest: higher_tier re-spawns the op; give_up just signals."""
+        if id(req) in self._seen_reqs:
+            return
+        self._seen_reqs.add(id(req))
+
+        context = getattr(req, "context", {}) or {}
+        route = context.get("route", "higher_tier")
+
+        reason = getattr(req, "reason", "")
+        emitter_id = emitter.id if emitter is not None else None
+        op_id = str(emitter_id) if emitter_id is not None else ""
+        name = emitter.metadata.get("reference_id", op_id[:8]) if emitter is not None else ""
+
+        self._emit_node_escalated(op_id, name, reason, route, req)
+
+        if route == "higher_tier" and emitter is not None and self._tg is not None:
+            params = emitter.parameters if isinstance(emitter.parameters, dict) else {}
+            original_instr = params.get("instruction", "")
+            escalation_instr = f"[escalation] {reason}\nOriginal: {original_instr}"
+            child_params = {
+                **{k: v for k, v in params.items() if k != "instruction"},
+                "instruction": escalation_instr,
+            }
+            child = create_operation(emitter.operation, parameters=child_params)
+            child.metadata["escalated_from"] = op_id
+            if self._accept_node(child, emitter_id=emitter_id, independent=True):
+                self._escalated_ids.add(emitter_id)
+        else:
+            if emitter_id is not None:
+                self._escalated_ids.add(emitter_id)
+
+    def _emit_node_escalated(
+        self, op_id: str, name: str, reason: str, route: str, req: Any
+    ) -> None:
+        """Fire-and-forget NodeEscalated onto the session bus."""
+        try:
+            from lionagi.session.signal import NodeEscalated  # noqa: PLC0415
+
+            sig = NodeEscalated(
+                op_id=op_id,
+                name=name,
+                reason=reason,
+                route=route,
+                escalation_request=req,
+            )
+            loop = asyncio.get_running_loop()
+            loop.create_task(self.session.emit(sig))
+        except RuntimeError:
+            pass  # no running loop — tests / sync contexts
+        except Exception:  # noqa: BLE001, S110
+            pass  # best-effort; never break the escalation path
 
     def _inject_request(self, req: Any, *, emitter: Operation | None) -> bool:
         if id(req) in self._seen_reqs:
