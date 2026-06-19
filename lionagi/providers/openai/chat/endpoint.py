@@ -12,7 +12,9 @@ from .._config import OpenAIConfigs
 class OpenaiChatEndpoint(Endpoint):
     def __init__(self, config=None, **kwargs):
         if config is None:
-            kwargs.setdefault("kwargs", {"model": "gpt-4.1-mini"})
+            from lionagi.config import settings
+
+            kwargs.setdefault("kwargs", {"model": settings.OPENAI_DEFAULT_MODEL})
             kwargs.setdefault("requires_tokens", True)
         super().__init__(config, **kwargs)
 
