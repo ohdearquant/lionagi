@@ -2348,9 +2348,25 @@ async def get_shared_db(path: str | Path | None = None) -> StateDB:
     return _SHARED[resolved]
 
 
-def register_shared_db(db: StateDB) -> None:
-    """Adopt a caller-owned StateDB as the shared instance so hooks reuse it."""
-    _SHARED[db.path] = db
+async def register_shared_db(db: StateDB) -> None:
+    """Adopt a caller-owned StateDB as the shared instance, closing any prior one for its path."""
+    global _SHARED_OPEN_LOCK  # noqa: PLW0603
+    import contextlib
+
+    if _SHARED_OPEN_LOCK is None:
+        _SHARED_OPEN_LOCK = Lock()
+    async with _SHARED_OPEN_LOCK:
+        existing = _SHARED.get(db.path)
+        if existing is not None and existing is not db:
+            with contextlib.suppress(Exception):
+                await existing.close()
+        _SHARED[db.path] = db
+
+
+def unregister_shared_db(db: StateDB) -> None:
+    """Drop *db* from the shared registry iff it is the registered instance."""
+    if _SHARED.get(db.path) is db:
+        del _SHARED[db.path]
 
 
 async def close_shared_db() -> None:

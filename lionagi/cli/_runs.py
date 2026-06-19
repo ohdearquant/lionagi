@@ -452,7 +452,7 @@ async def setup_agent_persist(
         # rather than opening a second one whose aiosqlite worker thread leaks.
         from lionagi.state.db import register_shared_db
 
-        register_shared_db(db)
+        await register_shared_db(db)
 
         session = Session(name="agent", default_branch=branch)
         session_id = str(session.id)
@@ -618,4 +618,8 @@ async def setup_agent_persist(
                 await db.close()
             except Exception as close_exc:
                 _log.warning("fallback db.close after setup failure also failed: %s", close_exc)
+            # Drop the now-closed handle so get_shared_db() can't hand it out.
+            from lionagi.state.db import unregister_shared_db
+
+            unregister_shared_db(db)
         return None

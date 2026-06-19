@@ -28,12 +28,19 @@ def temp_db_path(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
 
 
 def _aiosqlite_thread_count() -> int:
-    """Number of live threads whose name starts with 'sqlite_'.
+    """Live aiosqlite connection-worker threads — a leaked connection shows up here.
 
-    aiosqlite spawns a worker per connection with names like
-    ``sqlite_/path/to/db``. A leaked connection shows up here.
+    Matched by the worker's run target ``_connection_worker_thread`` (stable across
+    aiosqlite versions; current builds surface it in the auto thread name, and the
+    ``_target`` qualname is the fallback) plus the legacy ``sqlite_<path>`` name prefix.
     """
-    return sum(1 for t in threading.enumerate() if t.name.startswith("sqlite"))
+    return sum(
+        1
+        for t in threading.enumerate()
+        if "_connection_worker_thread" in t.name
+        or t.name.startswith("sqlite")
+        or getattr(getattr(t, "_target", None), "__name__", "") == "_connection_worker_thread"
+    )
 
 
 # ── _setup_live_persist: happy path + invariants ──────────────────────────────
@@ -194,6 +201,47 @@ async def test_lifecycle_hooks_reuse_owned_db_no_shared_leak(temp_db_path: Path)
     assert _aiosqlite_thread_count() == before, (
         "shared StateDB survived teardown — aiosqlite worker thread leaked"
     )
+
+
+async def test_register_shared_db_closes_displaced_instance(temp_db_path: Path):
+    """Re-registering a path must close the prior instance, not orphan its worker thread."""
+    from lionagi.state.db import (
+        _SHARED,
+        close_shared_db,
+        register_shared_db,
+        unregister_shared_db,
+    )
+
+    before = _aiosqlite_thread_count()
+    db1 = StateDB(temp_db_path)
+    await db1.open()
+    await register_shared_db(db1)
+
+    db2 = StateDB(temp_db_path)
+    await db2.open()
+    await register_shared_db(db2)  # displaces db1 → must close it
+
+    assert _SHARED.get(temp_db_path) is db2
+    assert db1._db is None, "displaced StateDB was orphaned instead of closed"
+    for _ in range(20):
+        if _aiosqlite_thread_count() == before + 1:
+            break
+        await asyncio.sleep(0.05)
+    assert _aiosqlite_thread_count() == before + 1, (
+        "displaced connection's aiosqlite worker thread leaked"
+    )
+
+    # unregister is identity-guarded: dropping a stale handle must not evict the live one.
+    unregister_shared_db(db1)
+    assert _SHARED.get(temp_db_path) is db2
+
+    await close_shared_db()
+    await db2.close()
+    for _ in range(20):
+        if _aiosqlite_thread_count() == before:
+            break
+        await asyncio.sleep(0.05)
+    assert _aiosqlite_thread_count() == before
 
 
 # ── Resume path ───────────────────────────────────────────────────────────────
