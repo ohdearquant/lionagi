@@ -53,6 +53,10 @@ jobs:
       matrix:
         # PRs: oldest + newest only (60% faster). Full matrix on main/develop pushes.
         python-version: ${{ fromJSON(github.event_name == 'pull_request' && '["3.10","3.14"]' || '["3.10","3.11","3.12","3.13","3.14"]') }}
+    # Force every `uv` call (venv, sync, run) onto the matrix interpreter; the
+    # repo's .python-version (3.10) otherwise pins all legs to 3.10.
+    env:
+      UV_PYTHON: ${{ matrix.python-version }}
     steps:
     - uses: actions/checkout@v6
     - name: Set up Python ${{ matrix.python-version }}
