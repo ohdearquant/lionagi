@@ -199,3 +199,88 @@ async def test_no_spawn_behaves_like_normal_flow():
     assert ran == ["plain"]
     assert result["spawned_operations"] == 0
     assert len(result["completed_operations"]) == 1
+
+
+# ---------------------------------------------------------------------------
+# Regression: execute() must subscribe via the public observer property
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_execute_subscribes_via_public_observer_not_private():
+    """ReactiveExecutor.execute() must reach the bus via session.observer (public property).
+
+    Strategy: after normal session construction (which initialises _observer via
+    the model_validator), we forcibly clear _observer back to None to simulate
+    the scenario where the private attr is uninitialised.  If execute() still
+    used getattr(session, '_observer', None) it would see None and skip
+    subscribing, causing SpawnRequests to be silently dropped.  With the fix,
+    execute() calls session.observer (the property) which re-creates the
+    observer and the spawn is received.
+    """
+    executed: list[str] = []
+
+    async def spawner(**kw):
+        executed.append("spawner")
+        return SpawnRequest(instruction="follow-up", independent=True)
+
+    async def follow_up(**kw):
+        executed.append("follow_up")
+        return "done"
+
+    session = _session_with_ops(spawner=spawner, follow_up=follow_up)
+
+    # Forcibly clear the private attr to simulate the fragile pre-fix state.
+    # After this, getattr(session, '_observer', None) returns None,
+    # but session.observer (the property) will lazily recreate it.
+    session._observer = None
+
+    def node_builder(req: SpawnRequest, emitter: Operation) -> Operation:
+        return create_operation("follow_up", parameters={})
+
+    builder = OperationGraphBuilder()
+    builder.add_operation("spawner")
+    graph = builder.get_graph()
+
+    result = await flow(session, graph, reactive=True, node_builder=node_builder)
+
+    # Without the fix, follow_up would never be scheduled (spawn silently dropped).
+    assert "follow_up" in executed, (
+        "follow_up did not run — execute() did not subscribe via the public observer property"
+    )
+    assert result["spawned_operations"] == 1
+
+
+@pytest.mark.asyncio
+async def test_execute_stream_subscribes_via_public_observer_not_private():
+    """flow_stream() must also subscribe via session.observer when _observer is None."""
+    from lionagi.operations import flow_stream
+
+    executed: list[str] = []
+
+    async def spawner(**kw):
+        executed.append("spawner")
+        return SpawnRequest(instruction="follow-up", independent=True)
+
+    async def follow_up(**kw):
+        executed.append("follow_up")
+        return "done"
+
+    session = _session_with_ops(spawner=spawner, follow_up=follow_up)
+    session._observer = None  # simulate uninitialised private attr
+
+    def node_builder(req: SpawnRequest, emitter: Operation) -> Operation:
+        return create_operation("follow_up", parameters={})
+
+    builder = OperationGraphBuilder()
+    builder.add_operation("spawner")
+    graph = builder.get_graph()
+
+    events = []
+    async for event in flow_stream(session, graph, node_builder=node_builder):
+        events.append(event)
+
+    assert "follow_up" in executed, (
+        "follow_up did not run — execute_stream() did not subscribe via the public observer property"
+    )
+    assert any(e.spawned for e in events)
