@@ -415,6 +415,11 @@ async def teardown_persist(
             await db.close()
         except Exception as exc:
             _log.warning("live persist db.close failed: %s", exc, exc_info=True)
+        # Sweep the shared-db registry (our connection plus any stray a hook
+        # opened) so no non-daemon aiosqlite worker thread blocks process exit.
+        from lionagi.state.db import close_shared_db
+
+        await close_shared_db()
 
 
 # Keep old names as aliases so callers don't break.
@@ -442,6 +447,12 @@ async def setup_agent_persist(
     try:
         db = StateDB()
         await db.open()
+        # Lifecycle hooks (SESSION_START/END, BRANCH_CREATE) reach a db via
+        # get_shared_db(); register ours so they reuse this owned connection
+        # rather than opening a second one whose aiosqlite worker thread leaks.
+        from lionagi.state.db import register_shared_db
+
+        await register_shared_db(db)
 
         session = Session(name="agent", default_branch=branch)
         session_id = str(session.id)
@@ -607,4 +618,8 @@ async def setup_agent_persist(
                 await db.close()
             except Exception as close_exc:
                 _log.warning("fallback db.close after setup failure also failed: %s", close_exc)
+            # Drop the now-closed handle so get_shared_db() can't hand it out.
+            from lionagi.state.db import unregister_shared_db
+
+            unregister_shared_db(db)
         return None
