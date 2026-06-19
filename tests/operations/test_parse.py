@@ -18,22 +18,13 @@ from lionagi.operations.types import ParseParam
 
 # Test models (not pytest test classes - don't start with "Test")
 class SampleModel(BaseModel):
-    """Sample model for parse tests."""
-
     name: str
     age: int
     email: str | None = None
 
 
 class OutputModel(BaseModel):
-    """Output model for LLM fallback."""
-
     summary: str
-
-
-# ============================================================================
-# P0 - Critical Coverage Tests
-# ============================================================================
 
 
 async def parse(branch, **kws):
@@ -42,8 +33,6 @@ async def parse(branch, **kws):
 
 
 class TestBasicParsing:
-    """P0: Core parsing functionality."""
-
     @pytest.mark.asyncio
     async def test_parse_with_basemodel_direct_validation(self, make_mocked_branch_for_parse):
         """Test immediate successful validation without LLM call."""
@@ -228,14 +217,7 @@ class TestBasicParsing:
                 assert result == text
 
 
-# ============================================================================
-# P1 - Important Feature Coverage
-# ============================================================================
-
-
 class TestAdvancedFeatures:
-    """P1: Advanced features and parameters."""
-
     @pytest.mark.asyncio
     async def test_parse_return_res_message_success(self, make_mocked_branch_for_parse):
         """Test return_res_message returns tuple on direct validation."""
@@ -327,14 +309,8 @@ class TestAdvancedFeatures:
         assert call1 is call2  # Same object
 
 
-# ============================================================================
-# Fixtures
-# ============================================================================
-
-
 @pytest.fixture
 def make_mocked_branch_for_parse(make_mocked_branch):
-    """Adapter over the canonical ``make_mocked_branch`` factory."""
 
     def _make_branch():
         return make_mocked_branch(
@@ -343,11 +319,6 @@ def make_mocked_branch_for_parse(make_mocked_branch):
         )
 
     return _make_branch
-
-
-# ---------------------------------------------------------------------------
-# D11 – parse propagates cancellation without retry
-# ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio

@@ -1,8 +1,6 @@
 # Copyright (c) 2023-2025, HaiyangLi <quantocean.li at gmail dot com>
 # SPDX-License-Identifier: Apache-2.0
 
-"""Streaming reactive flow — yields each op as it completes, no LLM."""
-
 from __future__ import annotations
 
 import anyio

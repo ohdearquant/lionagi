@@ -1,15 +1,6 @@
 # Copyright (c) 2023-2025, HaiyangLi <quantocean.li at gmail dot com>
 # SPDX-License-Identifier: Apache-2.0
 
-"""
-Regression tests for edge condition handling in flow execution.
-
-These tests ensure that edge conditions control path traversal correctly:
-- Operations with false edge conditions are SKIPPED, not FAILED
-- Skipped operations don't appear in completed_operations
-- Edge conditions use edge.check_condition() for consistent behavior
-"""
-
 import pytest
 
 from lionagi.operations.flow import flow
@@ -22,26 +13,18 @@ from lionagi.session.session import Session
 
 
 class CustomCondition(EdgeCondition):
-    """Custom condition that checks for a specific value."""
-
     def __init__(self, expected_value):
         super().__init__()
         self.expected_value = expected_value
 
     async def apply(self, context: dict) -> bool:
-        """Check if context matches expected value."""
         exec_context = context.get("context", {})
         return exec_context.get("test_value") == self.expected_value
 
 
 @pytest.mark.asyncio
 async def test_edge_condition_controls_traversal():
-    """
-    REGRESSION TEST: Edge conditions should control path traversal.
-
-    Previously, false edge conditions would cause operations to fail with error.
-    Now, they should be skipped without executing.
-    """
+    """False edge conditions skip operations (not fail); SKIPPED status is set."""
     # Create operations
     start = Operation(operation="chat", parameters={"instruction": "Start"})
     path_true = Operation(operation="chat", parameters={"instruction": "True path"})
@@ -93,11 +76,7 @@ async def test_edge_condition_controls_traversal():
 
 @pytest.mark.asyncio
 async def test_no_overlap_completed_skipped():
-    """
-    REGRESSION TEST: Operations cannot be both completed and skipped.
-
-    The validation should ensure no operation appears in both lists.
-    """
+    """No operation appears in both completed_operations and skipped_operations."""
     # Create simple conditional graph
     op1 = Operation(operation="chat", parameters={"instruction": "Op1"})
     op2 = Operation(operation="chat", parameters={"instruction": "Op2"})
@@ -130,11 +109,7 @@ async def test_no_overlap_completed_skipped():
 
 @pytest.mark.asyncio
 async def test_cascading_skip():
-    """
-    REGRESSION TEST: Skipped operations should cascade to their dependents.
-
-    If A->B->C and A->B has false condition, both B and C should be skipped.
-    """
+    """If A->B has false condition, both B and its dependent C are skipped."""
     op_a = Operation(operation="chat", parameters={"instruction": "A"})
     op_b = Operation(operation="chat", parameters={"instruction": "B"})
     op_c = Operation(operation="chat", parameters={"instruction": "C"})
@@ -175,11 +150,7 @@ async def test_cascading_skip():
 
 @pytest.mark.asyncio
 async def test_none_condition_always_traverses():
-    """
-    REGRESSION TEST: Edges with None condition should always be traversed.
-
-    Using edge.check_condition() ensures None conditions return True.
-    """
+    """Edges with condition=None are always traversed."""
     op1 = Operation(operation="chat", parameters={"instruction": "Op1"})
     op2 = Operation(operation="chat", parameters={"instruction": "Op2"})
 
@@ -205,9 +176,7 @@ async def test_none_condition_always_traverses():
 
 @pytest.mark.asyncio
 async def test_validation_catches_invalid_conditions():
-    """
-    REGRESSION TEST: Invalid edge conditions should be caught during validation.
-    """
+    """Non-EdgeCondition condition type raises TypeError during flow validation."""
     op1 = Operation(operation="chat", parameters={"instruction": "Op1"})
     op2 = Operation(operation="chat", parameters={"instruction": "Op2"})
 
@@ -229,7 +198,3 @@ async def test_validation_catches_invalid_conditions():
     # Should raise TypeError during validation
     with pytest.raises(TypeError, match="invalid condition type"):
         await flow(session, graph, verbose=False)
-
-
-if __name__ == "__main__":
-    pytest.main([__file__, "-v"])

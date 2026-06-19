@@ -8,7 +8,7 @@ from lionagi.testing import LionAGIMockFactory
 
 
 def make_mocked_branch_for_communicate():
-    """Returns a Branch whose chat_model.invoke yields a JSON string response."""
+    """Branch whose chat_model.invoke yields a JSON string response."""
     return LionAGIMockFactory.create_mocked_branch(
         name="BranchForTests_Communicate",
         user="tester_fixture",
@@ -19,23 +19,18 @@ def make_mocked_branch_for_communicate():
 
 @pytest.mark.asyncio
 async def test_communicate_no_validation():
-    """
-    If skip_validation=True, branch.communicate(...) should directly return the raw string.
-    """
+    """skip_validation=True returns the raw string."""
     branch = make_mocked_branch_for_communicate()
 
     result = await branch.communicate(instruction="User says hi", skip_validation=True)
     assert result == '{"data":"mocked_response_string"}'
 
-    # If your updated code doesn't store messages, or does so differently, adjust accordingly:
     assert len(branch.messages) == 2
 
 
 @pytest.mark.asyncio
 async def test_communicate_with_model_validation():
-    """
-    If we provide a request_model, the final response is parsed into that model.
-    """
+    """response_format causes the response to be parsed into the model."""
 
     class MySimpleModel(BaseModel):
         data: str = "default_data"
@@ -46,7 +41,6 @@ async def test_communicate_with_model_validation():
         instruction="Send typed output",
         response_format=MySimpleModel,
     )
-    # We'll assume your code sets parsed.data = "mocked_response_string"
     assert parsed.data == "mocked_response_string"
     assert len(branch.messages) == 2
 
@@ -62,7 +56,6 @@ async def test_communicate_wraps_parse_value_error_with_context(monkeypatch):
 
     branch = make_mocked_branch_for_communicate()
 
-    # parse is imported locally inside communicate(); patch at source module
     with patch(
         "lionagi.operations.parse.parse.parse",
         new=AsyncMock(side_effect=ValueError("bad parse")),
@@ -90,13 +83,8 @@ async def test_communicate_clear_messages_clears_before_turn():
         skip_validation=True,
     )
 
-    # After clear + 1 turn: exactly instruction + assistant_response = 2
     assert len(branch.messages) == 2
 
-
-# ---------------------------------------------------------------------------
-# Coverage gap tests for communicate.py lines 48, 60, 71-76, 158-160, 169-178
-# ---------------------------------------------------------------------------
 
 import warnings
 
@@ -108,17 +96,16 @@ class SomeModel(BaseModel):
 
 
 def test_prepare_communicate_kw_high_retries_capped():
-    """Lines 71-76: num_parse_retries > 5 → UserWarning and capped to 5."""
+    """num_parse_retries > 5 raises UserWarning and is capped to 5."""
     branch = make_mocked_branch_for_communicate()
     with pytest.warns(UserWarning, match="num_parse_retries"):
         kw = prepare_communicate_kw(branch, num_parse_retries=10, response_format=SomeModel)
-    # parse_param should be set (response_format provided)
     assert kw["parse_param"] is not None
 
 
 @pytest.mark.asyncio
 async def test_communicate_updates_metadata_when_res2_is_assistant_response():
-    """Lines 158-160: parse returns (out, AssistantResponse) → metadata updated."""
+    """When parse returns (out, AssistantResponse), metadata is updated."""
     from unittest.mock import AsyncMock, patch
 
     from lionagi.protocols.messages.assistant_response import AssistantResponse
@@ -140,9 +127,8 @@ async def test_communicate_updates_metadata_when_res2_is_assistant_response():
 
 @pytest.mark.asyncio
 async def test_communicate_with_request_fields_returns_dict():
-    """Lines 169-178: request_fields path → fuzzy_validate_mapping → dict."""
+    """request_fields path uses fuzzy_validate_mapping and returns dict."""
     branch = make_mocked_branch_for_communicate()
-    # Mocked response is '{"data":"mocked_response_string"}'
     result = await branch.communicate(
         instruction="give me data",
         request_fields={"data": str},
@@ -153,7 +139,7 @@ async def test_communicate_with_request_fields_returns_dict():
 
 @pytest.mark.asyncio
 async def test_communicate_plain_returns_raw_response():
-    """Line 178: no response_format, no request_fields → return res.response."""
+    """No response_format, no request_fields returns raw response string."""
     branch = make_mocked_branch_for_communicate()
     result = await branch.communicate(instruction="hello")
     assert result == '{"data":"mocked_response_string"}'

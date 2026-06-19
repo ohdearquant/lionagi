@@ -8,11 +8,7 @@ from lionagi.testing import LionAGIMockFactory
 
 
 def make_mocked_branch_for_operate():
-    """Branch backed by ``LionAGIMockFactory``; returns a JSON string response.
-
-    Kept as a regular function (not a fixture) so the legacy callsites below
-    keep working — the boilerplate now lives in ``lionagi.testing``.
-    """
+    """Branch backed by LionAGIMockFactory; returns a JSON string response."""
     return LionAGIMockFactory.create_mocked_branch(
         name="BranchForTests_Operate",
         user="tester_fixture",
@@ -23,9 +19,7 @@ def make_mocked_branch_for_operate():
 
 @pytest.mark.asyncio
 async def test_operate_no_actions_no_validation():
-    """
-    branch.operate(...) with invoke_actions=False and skip_validation=True => returns raw string.
-    """
+    """invoke_actions=False and skip_validation=True returns raw string."""
     branch = make_mocked_branch_for_operate()
     final = await branch.operate(
         instruction="Just a test", invoke_actions=False, skip_validation=True
@@ -36,9 +30,7 @@ async def test_operate_no_actions_no_validation():
 
 @pytest.mark.asyncio
 async def test_operate_with_validation():
-    """
-    If we pass a response_format, it should parse "mocked_response_string" into that model.
-    """
+    """response_format causes the response to be parsed into the model."""
 
     class ExampleModel(BaseModel):
         foo: str
@@ -56,12 +48,7 @@ async def test_operate_with_validation():
 
 @pytest.mark.asyncio
 async def test_operate_with_actions_preserves_response_data():
-    """
-    Regression test: when operate() returns a structured response with actions,
-    the action_responses should be merged with the original response data.
-
-    Previously, only action_responses were returned, losing original data.
-    """
+    """When operate() returns a structured response with actions, action_responses merge with the original data."""
 
     class ResponseModel(BaseModel):
         answer: str
@@ -95,7 +82,6 @@ async def test_operate_with_actions_preserves_response_data():
         invoke_actions=True,
     )
 
-    # CRITICAL: Result should have BOTH original response data AND action_responses
     assert hasattr(result, "answer"), "Original 'answer' field missing"
     assert hasattr(result, "confidence"), "Original 'confidence' field missing"
     assert hasattr(result, "action_responses"), "action_responses field missing"
@@ -110,13 +96,10 @@ async def test_operate_with_actions_preserves_response_data():
 
 
 async def test_operate_actions_only_invokes_tools_without_response_format():
-    """Regression (codex round-2): actions=True with NO caller response_format
-    must still invoke tools.
+    """actions=True with no response_format must still invoke tools.
 
-    The single-construction refactor extracted model_class only from the
-    original chat_param.response_format; for action-only calls that left
-    model_class None, so action_requests on the generated operative BaseModel
-    were never extracted and act() was silently skipped.
+    Previously, action_requests were never extracted for action-only calls,
+    causing act() to be silently skipped.
     """
 
     def add(a: int, b: int) -> int:
@@ -142,21 +125,18 @@ async def test_operate_actions_only_invokes_tools_without_response_format():
         invoke_actions=True,
     )
 
-    assert hasattr(result, "action_responses"), (
-        "action_responses missing — act() was skipped for the "
-        "actions-only (no response_format) path"
-    )
+    assert hasattr(result, "action_responses"), "action_responses missing for actions-only path"
     assert len(result.action_responses) == 1
     assert result.action_responses[0].function == "add"
     assert result.action_responses[0].output == 3
 
 
 async def test_branch_operate_ignores_caller_supplied_operative():
-    """Regression (codex round-3): Branch.operate() discards a caller-supplied
-    operative, matching main's prepare-time `operative = None`.
+    """Branch.operate() discards a caller-supplied operative.
 
-    Forwarding it would skip single construction and merge through a
-    mismatched model, silently dropping the requested response fields."""
+    Forwarding it would skip single construction and silently drop the
+    requested response fields via a mismatched model merge.
+    """
     from lionagi.operations.operate.step import Step
 
     class ResponseModel(BaseModel):
@@ -190,27 +170,22 @@ async def test_branch_operate_ignores_caller_supplied_operative():
         operative=mismatched,
     )
 
-    # The requested response shape wins; the mismatched operative is ignored.
     assert result.answer == "42"
     assert len(result.action_responses) == 1
     assert result.action_responses[0].output == 3
 
 
 # ---------------------------------------------------------------------------
-# Edge cases for prepare_operate_kw (P0)
+# Edge cases for prepare_operate_kw
 # ---------------------------------------------------------------------------
 
 from lionagi.operations.operate.operate import prepare_operate_kw
 
 
 def test_prepare_operate_kw_rejects_invalid_field_model_entry():
-    """field_models containing a non-FieldModel/Spec is passed through to
-    operate() where _specs_from_fields raises TypeError. prepare_operate_kw
-    no longer validates field_models itself (single-construction path is in
-    operate()). Verify the invalid entry is forwarded in the returned dict."""
+    """Non-FieldModel/Spec in field_models is forwarded unchanged; error surfaces in operate()."""
     branch = Branch()
     result = prepare_operate_kw(branch, field_models=[object()])
-    # field_models is forwarded unchanged; error surfaces later in operate()
     assert result["field_models"] is not None
     assert len(result["field_models"]) == 1
 
@@ -251,19 +226,16 @@ from lionagi.models import FieldModel
 
 
 def test_prepare_operate_kw_instruct_as_dict():
-    """instruct=dict is converted to Instruct (line 107)."""
+    """instruct=dict is converted to Instruct."""
     branch = Branch()
     result = prepare_operate_kw(branch, instruct={"instruction": "hello"})
     assert result["instruction"] == "hello"
 
 
 def test_prepare_operate_kw_reason_flag_sets_instruct_reason():
-    """reason=True is forwarded to operate() via the return dict (reason key)
-    so the single construction path in operate() can build the Operative.
-    prepare_operate_kw no longer constructs the Operative itself."""
+    """reason=True is forwarded in the return dict; Operative construction is deferred."""
     branch = Branch()
     result = prepare_operate_kw(branch, reason=True)
-    # operative construction is deferred to operate(); reason is forwarded
     assert result["reason"] is True
     assert result["operative"] is None
 
@@ -311,11 +283,7 @@ def test_prepare_operate_kw_stream_persist_sets_run_param():
 
 
 def test_prepare_operate_kw_snapshot_dir_routes_to_run_param():
-    """snapshot_dir kwarg must be forwarded into the RunParam so the
-    branch snapshot can land in a separate dir from the stream buffer.
-    R5-A HIGH-1 regression — the resume hint pointed at branches_dir
-    but run.py wrote to persist_dir; snapshot_dir lets the caller split.
-    """
+    """snapshot_dir is forwarded into RunParam; keeps stream buffer and branch snapshot in separate dirs."""
     from lionagi.operations.types import RunParam
 
     branch = Branch()
@@ -354,7 +322,7 @@ from lionagi.operations.types import ChatParam
 
 @pytest.mark.asyncio
 async def test_operate_return_none_on_validation_failure():
-    """handle_validation='return_none' returns None when result is not model (line 341)."""
+    """handle_validation='return_none' returns None when result is not model."""
 
     class ExpectedModel(BaseModel):
         value: str
@@ -379,7 +347,7 @@ async def test_operate_return_none_on_validation_failure():
 
 @pytest.mark.asyncio
 async def test_operate_skip_validation_returns_raw():
-    """skip_validation=True returns raw middle result without model check (line 335)."""
+    """skip_validation=True returns raw middle result without model check."""
     branch = Branch()
 
     async def fake_middle(b, ins, cctx, pctx, clear, **kw):
@@ -399,7 +367,7 @@ async def test_operate_skip_validation_returns_raw():
 
 @pytest.mark.asyncio
 async def test_operate_dict_result_with_no_action_requests_returns_result():
-    """Dict result with no action_requests is returned unchanged (line 374)."""
+    """Dict result with no action_requests is returned unchanged."""
     branch = Branch()
 
     async def fake_middle(b, ins, cctx, pctx, clear, **kw):
@@ -494,8 +462,7 @@ async def test_operate_with_field_models_builds_operative():
 
 
 # ---------------------------------------------------------------------------
-# Finding 3 replacement: TypeError raised at new boundary (_specs_from_fields)
-# before any model call is reached.
+# TypeError raised at _specs_from_fields boundary before any model call.
 # ---------------------------------------------------------------------------
 
 

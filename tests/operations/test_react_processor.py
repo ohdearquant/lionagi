@@ -1,5 +1,3 @@
-"""ReAct operation tests from coverage improvement."""
-
 from __future__ import annotations
 
 import asyncio

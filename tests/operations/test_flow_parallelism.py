@@ -1,16 +1,6 @@
 # Copyright (c) 2023-2025, HaiyangLi <quantocean.li at gmail dot com>
 # SPDX-License-Identifier: Apache-2.0
 
-"""
-Tests for flow parallelism and incremental execution patterns.
-
-These tests ensure that:
-1. Operations run truly in parallel without locking bottlenecks
-2. Completed operations are not re-executed
-3. Flows can be expanded and re-run incrementally
-4. Context handling works correctly with various types
-"""
-
 import asyncio
 from unittest.mock import AsyncMock, MagicMock
 from uuid import uuid4
@@ -85,7 +75,6 @@ async def test_flow_incremental_execution():
     execution_count = {}
 
     async def counting_operation(**kwargs):
-        """Count how many times each operation is executed."""
         op_name = kwargs.get("name", "unknown")
         execution_count[op_name] = execution_count.get(op_name, 0) + 1
         return f"Result from {op_name}"
@@ -176,7 +165,6 @@ async def test_flow_context_type_handling():
     """Test that context handles both string and dict types correctly."""
 
     async def context_checker(**kwargs):
-        """Verify context is properly formatted."""
         context = kwargs.get("context")
         if isinstance(context, str):
             return {"context_was": "string", "value": context}
@@ -252,7 +240,6 @@ async def test_flow_dynamic_branch_allocation():
     branch_creation_count = 0
 
     def counting_clone(sender=None):
-        """Count branch clones."""
         nonlocal branch_creation_count
         branch_creation_count += 1
 
@@ -322,7 +309,6 @@ async def test_flow_aggregation_pattern():
     """Test the aggregation pattern with dynamic fan-out."""
 
     async def list_generator(**kwargs):
-        """Generate a list of sub-tasks."""
         # Create a mock result that has instruct_model attribute
         result = MagicMock()
         result.instruct_model = [
@@ -333,12 +319,10 @@ async def test_flow_aggregation_pattern():
         return result
 
     async def researcher(**kwargs):
-        """Simulate research operation."""
         instruction = kwargs.get("instruction", "")
         return f"Research results for: {instruction}"
 
     async def synthesizer(**kwargs):
-        """Synthesize results from multiple sources."""
         sources = kwargs.get("aggregation_sources", [])
         # In real implementation, this would access results from sources
         return f"Synthesized {len(sources)} research results"
@@ -487,7 +471,6 @@ async def test_flow_error_recovery_with_parallelism():
     """Test that errors in parallel operations don't break the flow."""
 
     async def flaky_operation(**kwargs):
-        """Operation that fails for specific inputs."""
         op_id = kwargs.get("op_id")
         if "fail" in op_id:
             raise ValueError(f"Simulated failure in {op_id}")
@@ -569,7 +552,3 @@ async def test_flow_error_recovery_with_parallelism():
 
     # Mixed dependency should succeed since it only depends on successful ops
     assert "Success mixed_dependency" in result["operation_results"][mixed_dep.id]
-
-
-if __name__ == "__main__":
-    pytest.main([__file__, "-v"])

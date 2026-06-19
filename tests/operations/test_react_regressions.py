@@ -9,14 +9,11 @@ from lionagi.session.branch import Branch
 
 
 class CustomAnswer(BaseModel):
-    """Test model for response format validation."""
-
     result: float
     explanation: str
 
 
 def multiply(a: float, b: float) -> float:
-    """Test tool that multiplies two numbers."""
     return a * b
 
 
@@ -203,10 +200,6 @@ async def test_operate_filters_none_action_responses():
     assert len(filtered) == 1, "Should filter out None values"
     assert filtered[0].function == "multiply"
     assert filtered[0].output == 15
-
-
-if __name__ == "__main__":
-    pytest.main([__file__, "-xvs"])
 
 
 def test_react_analysis_optional_analysis_field():

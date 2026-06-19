@@ -1,19 +1,6 @@
 # Copyright (c) 2023-2025, HaiyangLi <quantocean.li at gmail dot com>
 # SPDX-License-Identifier: Apache-2.0
 
-"""
-Test-Driven Development (TDD) suite for edge conditions in flow execution.
-
-This test suite establishes the EXPECTED behavior for edge conditions:
-1. Edge conditions control path traversal, not operation failure
-2. Operations with unsatisfied conditions should be SKIPPED, not FAILED
-3. Skipped operations should not appear in completed_operations
-4. Edge conditions should use edge.check_condition() for consistency
-5. Operations should not retain state between graph executions
-
-These tests serve as regression guards and specification for correct behavior.
-"""
-
 from typing import Any
 from unittest.mock import AsyncMock
 from uuid import uuid4
@@ -28,21 +15,14 @@ from lionagi.protocols.graph.graph import Graph
 from lionagi.session.branch import Branch
 from lionagi.session.session import Session
 
-# ============================================================================
-# TEST FIXTURES AND HELPERS
-# ============================================================================
-
 
 class ConditionalEdge(EdgeCondition):
-    """Edge condition that checks for a specific value in context."""
-
     def __init__(self, key: str, expected_value: Any):
         super().__init__()
         self.key = key
         self.expected_value = expected_value
 
     async def apply(self, context: dict) -> bool:
-        """Check if context[key] equals expected_value."""
         # Handle both result context and execution context
         if "result" in context:
             # This is from a predecessor operation
@@ -56,25 +36,16 @@ class ConditionalEdge(EdgeCondition):
 
 
 class AlwaysTrueCondition(EdgeCondition):
-    """Condition that always returns True."""
-
     async def apply(self, context: dict) -> bool:
         return True
 
 
 class AlwaysFalseCondition(EdgeCondition):
-    """Condition that always returns False."""
-
     async def apply(self, context: dict) -> bool:
         return False
 
 
 def create_mock_branch(name: str = "TestBranch") -> Branch:
-    """Branch with execution-history tracking on every chat call.
-
-    Uses ``LionAGIMockFactory.create_api_calling_mock`` for the canned response
-    plumbing; only the instruction-tracking wrapper stays local to this test.
-    """
     from lionagi.protocols.generic.event import EventStatus
     from lionagi.providers.openai.chat.models import OpenAIChatCompletionsRequest
     from lionagi.testing import LionAGIMockFactory
@@ -99,17 +70,9 @@ def create_mock_branch(name: str = "TestBranch") -> Branch:
     return branch
 
 
-# ============================================================================
-# SPECIFICATION TESTS - Define Expected Behavior
-# ============================================================================
-
-
 @pytest.mark.asyncio
 async def test_spec_edge_condition_controls_traversal():
-    """
-    SPECIFICATION: Edge conditions control whether a path is traversed.
-    When an edge condition is False, the downstream operation should NOT execute.
-    """
+    """False edge conditions prevent downstream operations from executing."""
     # Setup
     start = Operation(operation="chat", parameters={"instruction": "Start"})
     path_a = Operation(operation="chat", parameters={"instruction": "Path A"})
@@ -176,10 +139,7 @@ async def test_spec_edge_condition_controls_traversal():
 
 @pytest.mark.asyncio
 async def test_spec_multiple_conditions_any_satisfied():
-    """
-    SPECIFICATION: When multiple edges lead to an operation,
-    it should execute if ANY edge condition is satisfied (OR logic).
-    """
+    """Target executes if any incoming edge condition is True (OR logic)."""
     source_a = Operation(operation="chat", parameters={"instruction": "Source A"})
     source_b = Operation(operation="chat", parameters={"instruction": "Source B"})
     target = Operation(operation="chat", parameters={"instruction": "Target"})
@@ -224,10 +184,7 @@ async def test_spec_multiple_conditions_any_satisfied():
 
 @pytest.mark.asyncio
 async def test_spec_all_conditions_must_fail_to_skip():
-    """
-    SPECIFICATION: An operation is skipped only when ALL incoming
-    edge conditions are False (no valid paths exist).
-    """
+    """Operation is skipped only when ALL incoming edge conditions are False."""
     source = Operation(operation="chat", parameters={"instruction": "Source"})
     target = Operation(operation="chat", parameters={"instruction": "Target"})
 
@@ -254,9 +211,7 @@ async def test_spec_all_conditions_must_fail_to_skip():
 
 @pytest.mark.asyncio
 async def test_spec_no_condition_means_always_traverse():
-    """
-    SPECIFICATION: Edges without conditions should always be traversed.
-    """
+    """Edges without conditions are always traversed."""
     source = Operation(operation="chat", parameters={"instruction": "Source"})
     target = Operation(operation="chat", parameters={"instruction": "Target"})
 
@@ -283,10 +238,7 @@ async def test_spec_no_condition_means_always_traverse():
 
 @pytest.mark.asyncio
 async def test_spec_operation_state_reset_between_executions():
-    """
-    SPECIFICATION: Operations should not retain execution state
-    between different flow executions.
-    """
+    """Operations execute correctly in a second flow run (no state carryover)."""
     op = Operation(operation="chat", parameters={"instruction": "Stateless Op"})
 
     graph = Graph()
@@ -317,11 +269,7 @@ async def test_spec_operation_state_reset_between_executions():
 
 @pytest.mark.asyncio
 async def test_spec_cascading_skip_propagation():
-    """
-    SPECIFICATION: When an operation is skipped due to conditions,
-    its downstream operations should also be skipped (unless they have
-    other valid paths).
-    """
+    """Skipped operations cascade: their dependents are also skipped unless reachable via another path."""
     start = Operation(operation="chat", parameters={"instruction": "Start"})
     middle = Operation(operation="chat", parameters={"instruction": "Middle"})
     end = Operation(operation="chat", parameters={"instruction": "End"})
@@ -353,17 +301,9 @@ async def test_spec_cascading_skip_propagation():
     )
 
 
-# ============================================================================
-# GUARD TESTS - Prevent Specific Regressions
-# ============================================================================
-
-
 @pytest.mark.asyncio
 async def test_guard_against_error_on_false_condition():
-    """
-    GUARD: Ensure False conditions don't cause ValueError exceptions.
-    Regression: Previously, False conditions raised "Edge condition not satisfied" errors.
-    """
+    """False conditions must not raise ValueError; the operation is silently skipped."""
     source = Operation(operation="chat", parameters={"instruction": "Source"})
     target = Operation(operation="chat", parameters={"instruction": "Target"})
 
@@ -396,10 +336,7 @@ async def test_guard_against_error_on_false_condition():
 
 @pytest.mark.asyncio
 async def test_guard_edge_check_condition_usage():
-    """
-    GUARD: Ensure edge.check_condition() is used instead of edge.condition.apply().
-    This ensures None conditions are handled properly.
-    """
+    """edge.check_condition() is used so None conditions default to True."""
     source = Operation(operation="chat", parameters={"instruction": "Source"})
     target = Operation(operation="chat", parameters={"instruction": "Target"})
 
@@ -426,10 +363,7 @@ async def test_guard_edge_check_condition_usage():
 
 @pytest.mark.asyncio
 async def test_guard_conditional_aggregation():
-    """
-    GUARD: Ensure aggregation operations handle conditional inputs correctly.
-    Some inputs might be skipped, aggregation should only process completed ones.
-    """
+    """Aggregator completes even when some source edges have false conditions."""
     source_a = Operation(operation="chat", parameters={"instruction": "Source A"})
     source_b = Operation(operation="chat", parameters={"instruction": "Source B"})
     source_c = Operation(operation="chat", parameters={"instruction": "Source C"})
@@ -477,16 +411,9 @@ async def test_guard_conditional_aggregation():
     )
 
 
-# ============================================================================
-# VALIDATION TESTS - Ensure Proper Error Handling
-# ============================================================================
-
-
 @pytest.mark.asyncio
 async def test_validation_invalid_edge_condition_type():
-    """
-    VALIDATION: Non-EdgeCondition objects should be rejected during edge creation.
-    """
+    """Non-EdgeCondition objects are rejected at Edge construction time."""
 
     # Use valid node IDs
     node1_id = uuid4()
@@ -502,9 +429,7 @@ async def test_validation_invalid_edge_condition_type():
 
 @pytest.mark.asyncio
 async def test_validation_circular_conditional_dependency():
-    """
-    VALIDATION: Detect and handle circular dependencies with conditions.
-    """
+    """Cyclic graphs with conditions raise ValueError('Graph must be acyclic')."""
     op_a = Operation(operation="chat", parameters={"instruction": "A"})
     op_b = Operation(operation="chat", parameters={"instruction": "B"})
 
@@ -526,23 +451,9 @@ async def test_validation_circular_conditional_dependency():
         await flow(session, graph, verbose=False)
 
 
-# ============================================================================
-# BEHAVIORAL TESTS - Complex Scenarios
-# ============================================================================
-
-
 @pytest.mark.asyncio
 async def test_behavior_diamond_pattern_with_conditions():
-    """
-    BEHAVIOR: Test diamond pattern where paths converge after conditional branches.
-    
-    Graph structure:
-        START
-        /   \
-       A     B  (conditional branches)
-        \\   /
-        END
-    """
+    """Diamond graph: only the chosen conditional branch runs; convergence node runs after."""
     start = Operation(operation="chat", parameters={"instruction": "Start"})
     path_a = Operation(operation="chat", parameters={"instruction": "Path A"})
     path_b = Operation(operation="chat", parameters={"instruction": "Path B"})
@@ -605,18 +516,7 @@ async def test_behavior_diamond_pattern_with_conditions():
 
 @pytest.mark.asyncio
 async def test_behavior_multi_level_conditions():
-    """
-    BEHAVIOR: Test multi-level conditional execution.
-
-    Graph structure:
-        START
-          |
-        GATE1 (condition: level >= 1)
-          |
-        GATE2 (condition: level >= 2)
-          |
-        GATE3 (condition: level >= 3)
-    """
+    """Multi-level conditions: gate_N executes only when context level >= N."""
     start = Operation(operation="chat", parameters={"instruction": "Start"})
     gate1 = Operation(operation="chat", parameters={"instruction": "Gate 1"})
     gate2 = Operation(operation="chat", parameters={"instruction": "Gate 2"})
@@ -675,17 +575,9 @@ async def test_behavior_multi_level_conditions():
                 )
 
 
-# ============================================================================
-# PERFORMANCE TESTS - Ensure Efficiency
-# ============================================================================
-
-
 @pytest.mark.asyncio
 async def test_performance_skip_expensive_operations():
-    """
-    PERFORMANCE: Operations with a false edge condition should not execute.
-    Uses an event-backed approach — no timing assertions.
-    """
+    """Operations with false edge conditions are never invoked (call_count stays 0)."""
     call_count = {"expensive": 0}
 
     async def expensive_operation(**kwargs):
@@ -734,8 +626,3 @@ async def test_performance_skip_expensive_operations():
     assert expensive.id not in result["completed_operations"], (
         "Expensive operation should be skipped"
     )
-
-
-if __name__ == "__main__":
-    # Run tests with pytest
-    pytest.main([__file__, "-v"])

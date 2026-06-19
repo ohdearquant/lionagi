@@ -10,14 +10,8 @@ from lionagi.operations.types import ChatParam
 from lionagi.protocols.messages.assistant_response import AssistantResponse
 from lionagi.protocols.messages.instruction import Instruction
 
-# ============================================================================
-# P0 - Critical Coverage Tests
-# ============================================================================
-
 
 class TestAssistantResponseConsolidation:
-    """Test consolidation of consecutive AssistantResponse messages."""
-
     @pytest.mark.asyncio
     async def test_chat_consolidates_consecutive_assistant_responses(
         self, make_mocked_branch_for_chat
@@ -120,8 +114,6 @@ class TestAssistantResponseConsolidation:
 
 
 class TestSystemMessageHandling:
-    """Test system message integration into instructions."""
-
     @pytest.mark.asyncio
     async def test_chat_system_message_with_empty_progression(self, make_mocked_branch_for_chat):
         """Verify system message handling with no prior messages."""
@@ -229,8 +221,6 @@ class TestSystemMessageHandling:
 
 
 class TestActionResponseIntegration:
-    """Test ActionResponse context extension."""
-
     @pytest.mark.asyncio
     async def test_chat_extends_instruction_context_with_action_responses(
         self, make_mocked_branch_for_chat
@@ -349,17 +339,7 @@ class TestActionResponseIntegration:
         assert isinstance(result, str)
 
 
-class TestStreamModeHandling:
-    """Test stream vs invoke selection."""
-
-    # Removed: test_chat_uses_stream_when_kwarg_set was an xfail stub.
-    # chat() no longer has a streaming path — streaming is now in run().
-    # See tests/operations/run/test_run.py for the new streaming coverage.
-
-
 class TestReturnFormats:
-    """Test return_ins_res_message flag behavior."""
-
     @pytest.mark.asyncio
     async def test_chat_returns_tuple_when_return_ins_res_message_true(
         self, make_mocked_branch_for_chat
@@ -422,14 +402,7 @@ class TestReturnFormats:
         assert not isinstance(result, tuple)
 
 
-# ============================================================================
-# P1 - Important Parameter Coverage
-# ============================================================================
-
-
 class TestChatContextParameters:
-    """Test ChatContext parameter handling and fallbacks."""
-
     @pytest.mark.asyncio
     async def test_chat_sender_recipient_fallback_logic(self, make_mocked_branch_for_chat):
         """Verify sender/recipient default resolution."""
@@ -485,20 +458,9 @@ class TestChatContextParameters:
         assert isinstance(result, str)
 
 
-# ============================================================================
-# Fixtures
-# ============================================================================
-
-
 @pytest.fixture
 def make_mocked_branch_for_chat(make_mocked_branch):
-    """Adapter over the canonical ``make_mocked_branch`` factory.
-
-    Test methods take ``make_mocked_branch_for_chat`` and call ``()`` with
-    optional ``system=``. The factory is shared across the operations
-    test suite via ``lionagi.testing.pytest_plugin`` — no per-file
-    ``_fake_invoke`` definitions.
-    """
+    """Adapter over make_mocked_branch; accepts optional system= kwarg."""
 
     def _make_branch(system=None):
         branch = make_mocked_branch(

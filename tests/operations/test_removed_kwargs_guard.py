@@ -1,15 +1,6 @@
 # Copyright (c) 2023-2026, HaiyangLi <quantocean.li at gmail dot com>
 # SPDX-License-Identifier: Apache-2.0
 
-"""Removed operation aliases must fail loudly, not get swallowed by **kwargs.
-
-The operation helpers forward unrecognized kwargs to the provider as
-``imodel_kw``. Without an explicit guard, a removed parameter name is silently
-packed into the outgoing payload (or dropped) instead of raising — changing
-behavior with no signal. These tests lock the loud-failure contract while
-confirming genuine provider kwargs still flow through.
-"""
-
 import pytest
 from pydantic import BaseModel
 

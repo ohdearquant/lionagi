@@ -16,10 +16,7 @@ def make_mocked_branch_for_interpret():
 
 @pytest.mark.asyncio
 async def test_interpret_basic():
-    """
-    branch.interpret(...) => calls branch.communicate(...) with skip_validation,
-    returning 'mocked_response_string'.
-    """
+    """branch.interpret() calls communicate with skip_validation and returns raw response."""
     branch = make_mocked_branch_for_interpret()
 
     refined_prompt = await branch.interpret(

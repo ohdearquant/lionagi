@@ -1,19 +1,7 @@
-"""
-Test suite for lionagi/operations/fields.py
-
-Tests cover:
-- Class and function imports
-- Field constant generation via __getattr__
-- __all__ exports
-- Error handling for invalid imports
-"""
-
 import pytest
 
 
 class TestImports:
-    """Test that all exports are importable."""
-
     def test_action_request_model_import(self):
         from lionagi.operations.fields import ActionRequestModel
 
@@ -83,8 +71,6 @@ class TestImports:
 
 
 class TestExports:
-    """Test __all__ exports."""
-
     def test_all_exports_present(self):
         import lionagi.operations.fields as fields_module
 
@@ -112,8 +98,6 @@ class TestExports:
 
 
 class TestErrorHandling:
-    """Test error handling for invalid imports."""
-
     def test_invalid_attribute_raises_attribute_error(self):
         import lionagi.operations.fields as fields_module
 
@@ -134,8 +118,6 @@ class TestErrorHandling:
 
 
 class TestFieldGeneration:
-    """Test dynamic field generation using get_default_field."""
-
     def test_action_requests_field_uses_correct_params(self):
         from lionagi.operations.fields import ACTION_REQUESTS_FIELD, get_default_field
 
@@ -185,7 +167,3 @@ class TestFieldGeneration:
         assert isinstance(Instruct, type)
         assert isinstance(Reason, type)
         assert callable(get_default_field)
-
-
-if __name__ == "__main__":
-    pytest.main([__file__, "-v"])

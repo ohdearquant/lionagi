@@ -1,16 +1,6 @@
 # Copyright (c) 2023-2025, HaiyangLi <quantocean.li at gmail dot com>
 # SPDX-License-Identifier: Apache-2.0
 
-"""
-Extended test coverage for ReAct operations.
-
-Tests cover:
-1. Tool execution flows (single, multiple, error handling)
-2. Multi-step reasoning (context accumulation, max extensions)
-3. Integration scenarios (real tools, branch state, message history)
-4. Edge cases (tool not found, invalid responses, concurrent execution)
-"""
-
 from unittest.mock import AsyncMock, patch
 
 import pytest
@@ -20,13 +10,8 @@ from lionagi.operations.ReAct.utils import Analysis, ReActAnalysis
 from lionagi.session.branch import Branch
 from lionagi.testing import LionAGIMockFactory
 
-# ============================================================================
-# Helper Functions and Fixtures
-# ============================================================================
-
 
 def make_mocked_branch_for_react():
-    """Create a mocked Branch for ReAct testing."""
     return LionAGIMockFactory.create_mocked_branch(
         name="ReActTestBranch",
         user="tester",
@@ -37,42 +22,25 @@ def make_mocked_branch_for_react():
 
 # Test tools
 def multiply(a: float, b: float) -> float:
-    """Multiply two numbers."""
     return a * b
 
 
 def divide(a: float, b: float) -> float:
-    """Divide two numbers."""
     if b == 0:
         raise ValueError("Division by zero")
     return a / b
 
 
 def get_weather(city: str) -> dict:
-    """Get weather for a city."""
     return {"city": city, "temp": 72, "condition": "sunny"}
 
 
 async def async_search(query: str) -> str:
-    """Async search tool."""
     return f"Search results for: {query}"
-
-
-# ============================================================================
-# 1. Tool Execution Flows
-# ============================================================================
-
-
-"""Tests for ReAct error handling, edge cases, and finalization behavior."""
-
-# ============================================================================
-# 4. Edge Cases
-# ============================================================================
 
 
 @pytest.mark.asyncio
 async def test_invalid_tool_response_handling():
-    """Test handling of invalid/malformed tool responses."""
     branch = make_mocked_branch_for_react()
     branch.acts.register_tool(multiply)
 
@@ -102,7 +70,6 @@ async def test_invalid_tool_response_handling():
 
 @pytest.mark.asyncio
 async def test_all_none_response_recovery():
-    """Test recovery from response with all None values using continue_after_failed_response."""
     branch = make_mocked_branch_for_react()
 
     with patch("lionagi.operations.operate.operate.operate") as mock_operate:
@@ -129,7 +96,6 @@ async def test_all_none_response_recovery():
 
 @pytest.mark.asyncio
 async def test_continue_after_failed_response():
-    """Test that continue_after_failed_response allows continuation."""
     branch = make_mocked_branch_for_react()
 
     with patch("lionagi.operations.operate.operate.operate") as mock_operate:
@@ -158,7 +124,6 @@ async def test_continue_after_failed_response():
 
 @pytest.mark.asyncio
 async def test_empty_planned_actions():
-    """Test ReAct when analysis has no planned actions."""
     branch = make_mocked_branch_for_react()
 
     with (
@@ -186,11 +151,8 @@ async def test_empty_planned_actions():
 
 @pytest.mark.asyncio
 async def test_react_with_custom_response_format():
-    """Test ReAct with custom response format for final answer."""
 
     class CustomResult(BaseModel):
-        """Custom response format."""
-
         calculation: float
         explanation: str
 
@@ -221,7 +183,6 @@ async def test_react_with_custom_response_format():
 
 @pytest.mark.asyncio
 async def test_return_analysis_parameter():
-    """Test return_analysis parameter returns all intermediate analyses."""
     branch = make_mocked_branch_for_react()
 
     with patch("lionagi.operations.operate.operate.operate") as mock_operate:
@@ -247,7 +208,6 @@ async def test_return_analysis_parameter():
 
 @pytest.mark.asyncio
 async def test_reasoning_effort_parameter():
-    """Test reasoning_effort parameter affects guidance."""
     branch = make_mocked_branch_for_react()
 
     with patch("lionagi.operations.operate.operate.operate") as mock_operate:
@@ -274,7 +234,6 @@ async def test_reasoning_effort_parameter():
 
 @pytest.mark.asyncio
 async def test_verbose_analysis_output():
-    """Test verbose_analysis parameter for debugging output."""
     branch = make_mocked_branch_for_react()
 
     with patch("lionagi.operations.operate.operate.operate") as mock_operate:
@@ -296,14 +255,8 @@ async def test_verbose_analysis_output():
         assert result == "Final answer"
 
 
-# ============================================================================
-# Performance and Stress Tests
-# ============================================================================
-
-
 @pytest.mark.asyncio
 async def test_react_with_many_extensions():
-    """Test ReAct with multiple reasoning rounds."""
     branch = make_mocked_branch_for_react()
 
     with patch("lionagi.operations.operate.operate.operate") as mock_operate:
@@ -333,7 +286,6 @@ async def test_react_with_many_extensions():
 
 @pytest.mark.asyncio
 async def test_react_with_many_tools():
-    """Test ReAct with many registered tools."""
     branch = make_mocked_branch_for_react()
 
     # Register multiple tools
@@ -359,7 +311,3 @@ async def test_react_with_many_tools():
         )
 
         assert "Done with tools" in result
-
-
-if __name__ == "__main__":
-    pytest.main([__file__, "-xvs"])

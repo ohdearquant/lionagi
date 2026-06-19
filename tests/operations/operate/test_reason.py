@@ -1,11 +1,8 @@
-"""Tests for the reason module."""
-
 from lionagi.operations.fields import Reason
 
 
 class TestValidateConfidenceScore:
     def test_valid_numeric_inputs(self):
-        """Test validation of valid numeric confidence scores."""
         test_cases = [
             (0.5, 0.5),  # Direct float
             (1, 1.0),  # Integer to float
@@ -18,7 +15,6 @@ class TestValidateConfidenceScore:
             assert Reason._validate_confidence(input_val) == expected
 
     def test_invalid_inputs(self):
-        """Test validation of invalid confidence scores."""
         invalid_inputs = [
             "invalid",  # Non-numeric string
             {},  # Dict
@@ -33,7 +29,6 @@ class TestValidateConfidenceScore:
         assert Reason._validate_confidence(None) is None
 
     def test_precision_handling(self):
-        """Test that confidence scores are rounded to 3 decimal places."""
         test_cases = [
             (0.12345, 0.123),
             (0.9999, 1.0),
@@ -46,14 +41,12 @@ class TestValidateConfidenceScore:
 
 class TestReason:
     def test_default_values(self):
-        """Test default values for Reason."""
         model = Reason()
         assert model.title is None
         assert model.content is None
         assert model.confidence_score is None
 
     def test_valid_values(self):
-        """Test Reason with valid values."""
         data = {
             "title": "Test Reason",
             "content": "This is a test reason content",
@@ -65,7 +58,6 @@ class TestReason:
         assert model.confidence_score == data["confidence_score"]
 
     def test_confidence_score_validation(self):
-        """Test confidence score validation in Reason."""
         # Valid cases
         valid_scores = [0.5, 1.0, 0.0, "0.75"]
         for score in valid_scores:
@@ -81,7 +73,6 @@ class TestReason:
                 assert model.confidence_score == -1
 
     def test_partial_initialization(self):
-        """Test Reason with partial field initialization."""
         # Only title
         model = Reason(title="Test")
         assert model.title == "Test"

@@ -1,16 +1,6 @@
 # Copyright (c) 2023-2025, HaiyangLi <quantocean.li at gmail dot com>
 # SPDX-License-Identifier: Apache-2.0
 
-"""
-Extended test coverage for ReAct operations.
-
-Tests cover:
-1. Tool execution flows (single, multiple, error handling)
-2. Multi-step reasoning (context accumulation, max extensions)
-3. Integration scenarios (real tools, branch state, message history)
-4. Edge cases (tool not found, invalid responses, concurrent execution)
-"""
-
 from unittest.mock import AsyncMock, patch
 
 import pytest
@@ -19,13 +9,8 @@ from lionagi.operations.ReAct.utils import Analysis, ReActAnalysis
 from lionagi.session.branch import Branch
 from lionagi.testing import LionAGIMockFactory
 
-# ============================================================================
-# Helper Functions and Fixtures
-# ============================================================================
-
 
 def make_mocked_branch_for_react():
-    """Create a mocked Branch for ReAct testing."""
     return LionAGIMockFactory.create_mocked_branch(
         name="ReActTestBranch",
         user="tester",
@@ -36,38 +21,25 @@ def make_mocked_branch_for_react():
 
 # Test tools
 def multiply(a: float, b: float) -> float:
-    """Multiply two numbers."""
     return a * b
 
 
 def divide(a: float, b: float) -> float:
-    """Divide two numbers."""
     if b == 0:
         raise ValueError("Division by zero")
     return a / b
 
 
 def get_weather(city: str) -> dict:
-    """Get weather for a city."""
     return {"city": city, "temp": 72, "condition": "sunny"}
 
 
 async def async_search(query: str) -> str:
-    """Async search tool."""
     return f"Search results for: {query}"
-
-
-# ============================================================================
-# 1. Tool Execution Flows
-# ============================================================================
-
-
-"""Tests for ReAct tool execution flows and initial invocation."""
 
 
 @pytest.mark.asyncio
 async def test_single_tool_invocation():
-    """Test ReAct with single tool call - verifies tool integration."""
     branch = make_mocked_branch_for_react()
     branch.acts.register_tool(multiply)
 
@@ -96,7 +68,6 @@ async def test_single_tool_invocation():
 
 @pytest.mark.asyncio
 async def test_multiple_tool_calls_sequential_strategy():
-    """Test ReAct specifying sequential action strategy."""
     branch = make_mocked_branch_for_react()
 
     with patch("lionagi.operations.operate.operate.operate") as mock_operate:
@@ -135,7 +106,6 @@ async def test_multiple_tool_calls_sequential_strategy():
 
 @pytest.mark.asyncio
 async def test_concurrent_action_strategy():
-    """Test ReAct with concurrent action strategy specification."""
     branch = make_mocked_branch_for_react()
 
     with patch("lionagi.operations.operate.operate.operate") as mock_operate:
@@ -161,7 +131,6 @@ async def test_concurrent_action_strategy():
 
 @pytest.mark.asyncio
 async def test_planned_actions_structure():
-    """Test that PlannedAction structure is properly handled."""
     branch = make_mocked_branch_for_react()
 
     with patch("lionagi.operations.operate.operate.operate") as mock_operate:
@@ -188,7 +157,6 @@ async def test_planned_actions_structure():
 
 @pytest.mark.asyncio
 async def test_tools_parameter_variations():
-    """Test different ways to specify tools parameter."""
     branch = make_mocked_branch_for_react()
     branch.acts.register_tool(multiply)
 

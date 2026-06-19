@@ -1,10 +1,6 @@
 # Copyright (c) 2023-2025, HaiyangLi <quantocean.li at gmail dot com>
 # SPDX-License-Identifier: Apache-2.0
 
-"""
-Test that cancelled operations and API calls use EventStatus.CANCELLED.
-"""
-
 import asyncio
 from unittest.mock import AsyncMock, MagicMock
 
@@ -139,7 +135,3 @@ async def test_cancelled_vs_failed_status():
 
     # Verify they are different
     assert op_failed.execution.status != op_cancelled.execution.status
-
-
-if __name__ == "__main__":
-    pytest.main([__file__, "-v"])

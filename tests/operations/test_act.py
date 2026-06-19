@@ -1,7 +1,7 @@
 # Copyright (c) 2023-2026, HaiyangLi <quantocean.li at gmail dot com>
 # SPDX-License-Identifier: Apache-2.0
 
-"""Tests for lionagi.operations.act.act — _act, act, prepare_act_kw, strategies."""
+"""Tests for lionagi.operations.act — _act, act, prepare_act_kw, strategies."""
 
 from unittest.mock import AsyncMock, patch
 
@@ -25,7 +25,7 @@ from lionagi.session.branch import Branch
 
 
 def _make_branch_with_tool(tool_fn=None):
-    """Branch with one registered tool."""
+    """Return a Branch with one registered tool."""
     branch = Branch()
     if tool_fn is None:
 
@@ -45,7 +45,7 @@ def _make_branch_with_tool(tool_fn=None):
 
 @pytest.mark.asyncio
 async def test_act_dict_request_success():
-    """_act() with a plain dict {function, arguments} returns ActionResponseModel."""
+    """Plain dict {function, arguments} returns ActionResponseModel."""
     branch = _make_branch_with_tool()
     req = {"function": "add", "arguments": {"a": 3, "b": 4}}
     result = await _act(branch, req)
@@ -56,7 +56,7 @@ async def test_act_dict_request_success():
 
 @pytest.mark.asyncio
 async def test_act_action_request_instance():
-    """_act() with ActionRequest instance converts it to dict (line 31)."""
+    """ActionRequest instance is converted to dict before invocation."""
     branch = _make_branch_with_tool()
     ar = ActionRequest(
         content={"function": "add", "arguments": {"a": 1, "b": 1}},
@@ -70,7 +70,7 @@ async def test_act_action_request_instance():
 
 @pytest.mark.asyncio
 async def test_act_basemodel_with_function_and_arguments():
-    """_act() accepts a BaseModel with 'function' and 'arguments' fields (lines 35-41)."""
+    """BaseModel with 'function' and 'arguments' fields is accepted."""
     from pydantic import BaseModel
 
     class FuncCall(BaseModel):
@@ -90,7 +90,7 @@ async def test_act_basemodel_with_function_and_arguments():
 
 @pytest.mark.asyncio
 async def test_act_invalid_request_missing_keys_raises():
-    """_act() raises ValueError when dict lacks 'function' and 'arguments' (line 45)."""
+    """Dict lacking 'function' and 'arguments' raises ValueError."""
     branch = Branch()
     with pytest.raises(ValueError, match="action_request must be"):
         await _act(branch, {"x": "bad"})
@@ -98,7 +98,7 @@ async def test_act_invalid_request_missing_keys_raises():
 
 @pytest.mark.asyncio
 async def test_act_suppress_errors_returns_error_response():
-    """_act() with suppress_errors=True returns ActionResponseModel when action_manager raises."""
+    """suppress_errors=True returns ActionResponseModel when action_manager raises."""
     branch = Branch()
     req = {"function": "bad_tool", "arguments": {"x": 1}}
     with patch.object(
@@ -114,7 +114,7 @@ async def test_act_suppress_errors_returns_error_response():
 
 @pytest.mark.asyncio
 async def test_act_suppress_errors_adds_messages_to_history():
-    """_act() with suppress_errors=True records ActionRequest+ActionResponse in branch.messages."""
+    """suppress_errors=True records ActionRequest+ActionResponse in branch.messages."""
     branch = Branch()
     req = {"function": "bad_tool", "arguments": {"x": 1}}
     with patch.object(
@@ -188,7 +188,7 @@ async def test_act_suppress_errors_with_action_request_instance():
 
 @pytest.mark.asyncio
 async def test_act_suppress_errors_false_reraises():
-    """_act() with suppress_errors=False re-raises when action_manager raises (line 82)."""
+    """suppress_errors=False re-raises when action_manager raises."""
     branch = Branch()
     req = {"function": "exploding_tool", "arguments": {"x": 1}}
     with patch.object(
@@ -202,7 +202,7 @@ async def test_act_suppress_errors_false_reraises():
 
 @pytest.mark.asyncio
 async def test_act_verbose_logging(caplog):
-    """verbose_action=True emits debug log lines (lines 52-54, 57-60)."""
+    """verbose_action=True emits debug log lines."""
     import logging
 
     branch = _make_branch_with_tool()
@@ -220,7 +220,7 @@ async def test_act_verbose_logging(caplog):
 
 @pytest.mark.asyncio
 async def test_act_concurrent_strategy():
-    """act() with strategy='concurrent' returns list of ActionResponseModel."""
+    """strategy='concurrent' returns list of ActionResponseModel."""
     branch = _make_branch_with_tool()
     requests = [
         {"function": "add", "arguments": {"a": 1, "b": 1}},
@@ -240,12 +240,12 @@ async def test_act_concurrent_strategy():
 
 @pytest.mark.asyncio
 async def test_act_sequential_strategy():
-    """act() with strategy='sequential' runs actions one-by-one (lines 147-155, 185-192)."""
+    """strategy='sequential' runs actions one-by-one in order."""
     branch = _make_branch_with_tool()
     order: list[int] = []
 
     def tracked_add(a: int, b: int) -> int:
-        """Add with side effect."""
+        """Add with order-tracking side effect."""
         order.append(a)
         return a + b
 
@@ -267,7 +267,7 @@ async def test_act_sequential_strategy():
 
 @pytest.mark.asyncio
 async def test_act_invalid_strategy_raises():
-    """act() with unsupported strategy raises ValueError (line 155)."""
+    """Unsupported strategy raises ValueError."""
     branch = Branch()
     action_param = ActionParam(
         action_call_params=_get_default_call_params(),
@@ -284,7 +284,7 @@ async def test_act_invalid_strategy_raises():
 
 
 def test_prepare_act_kw_returns_correct_structure():
-    """prepare_act_kw returns dict with action_request and action_param (lines 118-125)."""
+    """Returns dict with action_request and action_param keys."""
     branch = Branch()
     req = {"function": "add", "arguments": {"a": 1, "b": 2}}
     kw = prepare_act_kw(branch, req, strategy="sequential", suppress_errors=False)
@@ -310,7 +310,7 @@ def test_prepare_act_kw_defaults():
 
 @pytest.mark.asyncio
 async def test_sequential_act_single_request():
-    """_sequential_act() wraps a non-list request in a list."""
+    """Non-list request is wrapped in a list."""
     branch = _make_branch_with_tool()
     result = await _sequential_act(branch, {"function": "add", "arguments": {"a": 7, "b": 3}})
     assert len(result) == 1

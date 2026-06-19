@@ -1,8 +1,6 @@
 # Copyright (c) 2023-2026, HaiyangLi <quantocean.li at gmail dot com>
 # SPDX-License-Identifier: Apache-2.0
 
-"""Tests for lionagi.operations.run.run — the CLI streaming operation."""
-
 from __future__ import annotations
 
 import types
@@ -23,14 +21,8 @@ from lionagi.service.imodel import iModel
 from lionagi.service.types.stream_chunk import StreamChunk
 from lionagi.session.branch import Branch
 
-# ---------------------------------------------------------------------------
-# Helpers
-# ---------------------------------------------------------------------------
-
 
 def _make_fake_cli_model(chunks: list[StreamChunk], session_id: str | None = None):
-    """Return (model, captured_kwargs_dict) where model is an iModel patched to
-    behave as a CLI endpoint yielding *chunks* from its stream() method."""
     m = iModel(provider="openai", model="gpt-4.1-mini", api_key="test_key")
     endpoint_ns = types.SimpleNamespace(
         is_cli=True,
@@ -57,16 +49,10 @@ def _make_fake_cli_model(chunks: list[StreamChunk], session_id: str | None = Non
 
 
 async def _collect(gen) -> list:
-    """Drain an async generator into a list."""
     results = []
     async for item in gen:
         results.append(item)
     return results
-
-
-# ---------------------------------------------------------------------------
-# P0 tests — run()
-# ---------------------------------------------------------------------------
 
 
 async def test_run_rejects_non_cli_chat_model():
@@ -248,11 +234,7 @@ async def test_run_stream_persist_writes_final_state_and_removes_buffer(tmp_path
 async def test_run_stream_persist_snapshot_dir_routes_snapshot_separately(
     tmp_path,
 ):
-    """R5-A HIGH-1: snapshot_dir routes the branch snapshot JSON to a
-    different directory than the streaming buffer. Used by the CLI so
-    the snapshot lands in branches_dir (where find_branch looks) while
-    the .buffer.jsonl stays in stream_dir.
-    """
+    """snapshot_dir routes the branch snapshot JSON to a different directory than the streaming buffer."""
     stream_dir = tmp_path / "stream"
     branches_dir = tmp_path / "branches"
     stream_dir.mkdir()
@@ -281,9 +263,7 @@ async def test_run_stream_persist_snapshot_dir_routes_snapshot_separately(
 async def test_run_stream_persist_snapshot_dir_default_falls_back_to_persist_dir(
     tmp_path,
 ):
-    """When snapshot_dir is None (default), the snapshot lands in
-    persist_dir — backwards-compatible behavior for non-CLI callers.
-    """
+    """When snapshot_dir is None (default), the snapshot lands in persist_dir."""
     model, _ = _make_fake_cli_model([StreamChunk(type="text", content="done")])
     branch = Branch()
     branch.chat_model = model
@@ -294,11 +274,6 @@ async def test_run_stream_persist_snapshot_dir_default_falls_back_to_persist_dir
 
     # Snapshot is in persist_dir
     assert list(tmp_path.glob("*.json"))
-
-
-# ---------------------------------------------------------------------------
-# P0/P1 tests — run_and_collect()
-# ---------------------------------------------------------------------------
 
 
 async def test_run_and_collect_clears_messages_and_joins_assistant_text(monkeypatch):
@@ -378,18 +353,9 @@ async def test_run_and_collect_parses_when_response_format_is_set(monkeypatch):
     assert parse_calls[0] == '{"value": 42}'
 
 
-# ---------------------------------------------------------------------------
-# Timeout enforcement tests — regression for the "timeout silently ignored"
-# bug where ``branch.operate(timeout=N)`` / ``li agent --timeout N`` flowed
-# through ``imodel_kw`` into ``model.create_event(**kw)`` but the streaming
-# loop never wrapped the consumer with ``anyio.fail_after``, so CLI
-# subprocesses (codex, claude_code) ran unbounded.
-# ---------------------------------------------------------------------------
-
-
+# Timeout regression: branch.operate(timeout=N) must wrap the stream consumer with
+# anyio.fail_after; previously the loop ran unbounded even when timeout was passed.
 def _make_slow_cli_model(chunk_delay: float, n_chunks: int = 100):
-    """A CLI iModel whose stream sleeps between each chunk. Use a long delay
-    + many chunks so the total runtime exceeds any test timeout."""
     import anyio
 
     from lionagi.service.types.stream_chunk import StreamChunk
@@ -421,9 +387,7 @@ def _make_slow_cli_model(chunk_delay: float, n_chunks: int = 100):
 
 
 async def test_run_honors_caller_timeout_on_slow_stream():
-    """When the caller passes ``timeout=N`` via imodel_kw, the stream loop
-    raises TimeoutError once N seconds elapse, even if the upstream provider
-    would otherwise stream forever."""
+    """timeout=N via imodel_kw raises TimeoutError once N seconds elapse."""
     import time
 
     # chunk_delay is large so that timeout (0.15s) fires before ANY chunk
@@ -458,8 +422,7 @@ async def test_run_honors_caller_timeout_on_slow_stream():
 
 
 async def test_run_no_timeout_when_kwarg_absent():
-    """Back-compat: callers that don't supply timeout get the legacy
-    unbounded behaviour (subject to chunk count, not wall clock)."""
+    """Callers without timeout kwarg are not bounded by wall clock."""
 
     model, _ = _make_slow_cli_model(chunk_delay=0.0, n_chunks=3)
     branch = Branch()
@@ -473,9 +436,7 @@ async def test_run_no_timeout_when_kwarg_absent():
 
 
 async def test_run_strips_timeout_from_create_event_kwargs():
-    """The provider does NOT consume ``timeout``; verify it is popped from
-    kw before create_event sees it (otherwise codex would receive an
-    unexpected kwarg and may crash)."""
+    """timeout is popped from kw before create_event sees it."""
 
     model, captured = _make_slow_cli_model(chunk_delay=0.0, n_chunks=1)
     branch = Branch()
@@ -485,15 +446,8 @@ async def test_run_strips_timeout_from_create_event_kwargs():
     assert "timeout" not in captured, f"timeout leaked into create_event kwargs: {captured!r}"
 
 
-# ---------------------------------------------------------------------------
-# Regression: Branch.operate() must flatten **kwargs so timeout reaches run()
-# ---------------------------------------------------------------------------
-
-
 async def test_branch_operate_forwards_timeout_to_run(monkeypatch):
-    """Branch.operate(**kwargs) must flatten kwargs before passing to
-    prepare_operate_kw, otherwise timeout arrives as a nested dict
-    {"kwargs": {"timeout": N}} and run() never sees it."""
+    """Branch.operate(**kwargs) must flatten kwargs so timeout reaches run()."""
     received_timeout = []
 
     original_run = run
@@ -538,14 +492,8 @@ async def test_branch_operate_forwards_extra_kwargs_to_run(monkeypatch):
     assert received_kw.get("repo") == "/tmp/test"
 
 
-# ---------------------------------------------------------------------------
-# Regression: iModel.stream() must not yield in finally (swallows cancellation)
-# ---------------------------------------------------------------------------
-
-
 async def test_imodel_stream_propagates_cancellation():
-    """iModel.stream() must propagate CancelledError from the inner stream,
-    not swallow it via a yield-in-finally."""
+    """iModel.stream() must propagate CancelledError, not swallow it via yield-in-finally."""
     import anyio
 
     from lionagi.protocols.generic.event import EventStatus

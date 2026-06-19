@@ -3,7 +3,6 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 
-# We'll import or define the ReActAnalysis class to create a real instance:
 from lionagi.operations.ReAct.utils import ReActAnalysis
 from lionagi.testing import LionAGIMockFactory
 
@@ -19,10 +18,7 @@ def make_mocked_branch_for_react():
 
 @pytest.mark.asyncio
 async def test_react_basic_flow():
-    """
-    ReAct(...) => calls branch.operate for analysis, then for final answer.
-    We'll patch branch.operate to yield a real ReActAnalysis -> Analysis object.
-    """
+    """branch.ReAct() calls operate twice: first for ReActAnalysis, then for final answer."""
     from lionagi.operations.ReAct.utils import Analysis
 
     branch = make_mocked_branch_for_react()

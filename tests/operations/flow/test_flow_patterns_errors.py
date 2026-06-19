@@ -1,16 +1,6 @@
 # Copyright (c) 2023-2025, HaiyangLi <quantocean.li at gmail dot com>
 # SPDX-License-Identifier: Apache-2.0
 
-"""
-Tests for specific flow execution patterns and edge cases.
-
-These tests ensure complex patterns work correctly:
-1. Dynamic fan-out based on results
-2. Context inheritance between operations
-3. Branch management without locking
-4. Multi-phase execution patterns
-"""
-
 from unittest.mock import AsyncMock, MagicMock
 from uuid import uuid4
 
@@ -24,7 +14,6 @@ from lionagi.testing import MockClaudeCode
 
 
 def create_mock_branch(branch_id: str, **operation_mocks):
-    """Create a properly configured mock branch with all required attributes."""
     branch = MagicMock()
     branch.id = branch_id
 
@@ -50,9 +39,6 @@ def create_mock_branch(branch_id: str, **operation_mocks):
     branch.clone = MagicMock(side_effect=clone_func)
 
     return branch
-
-
-"""Tests for flow edge cases and complex execution patterns."""
 
 
 @pytest.mark.asyncio
@@ -235,7 +221,3 @@ async def test_flow_with_existing_graph():
         fix_result = result["operation_results"][op]
         assert "fix_applied" in fix_result
         assert fix_result["fix_applied"] is True
-
-
-if __name__ == "__main__":
-    pytest.main([__file__, "-v"])

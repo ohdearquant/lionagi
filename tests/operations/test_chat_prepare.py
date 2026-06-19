@@ -1,15 +1,9 @@
 # Copyright (c) 2023-2025, HaiyangLi <quantocean.li at gmail dot com>
 # SPDX-License-Identifier: Apache-2.0
 
-"""Tests for lionagi/operations/chat/_prepare.py::_prepare_run_kwargs."""
-
 from lionagi.operations.chat._prepare import _prepare_run_kwargs
 from lionagi.operations.types import ChatParam
 from lionagi.session.branch import Branch
-
-# ---------------------------------------------------------------------------
-# D10 – _prepare_run_kwargs merges consecutive AssistantResponse messages
-# ---------------------------------------------------------------------------
 
 
 def test_prepare_run_kwargs_collapses_consecutive_assistant_messages():

@@ -1,14 +1,6 @@
 # Copyright (c) 2023-2026, HaiyangLi <quantocean.li at gmail dot com>
 # SPDX-License-Identifier: Apache-2.0
 
-"""Tests for the run.py error-classification path (issue #1397).
-
-Verifies that a StreamChunk with type="error" whose content contains a
-provider-recognisable pattern raises the typed ProviderError subclass rather
-than a plain RuntimeError.  All subclasses remain RuntimeError-compatible so
-existing ``except RuntimeError`` callers are unaffected.
-"""
-
 from __future__ import annotations
 
 import types
@@ -29,7 +21,6 @@ from lionagi.session.branch import Branch
 
 
 def _make_fake_cli_model(chunks: list[StreamChunk]):
-    """Return an iModel patched to behave as a CLI endpoint yielding *chunks*."""
     m = iModel(provider="openai", model="gpt-4.1-mini", api_key="test_key")
     endpoint_ns = types.SimpleNamespace(
         is_cli=True,
@@ -149,16 +140,8 @@ async def test_run_empty_error_chunk_uses_fallback_string():
         await _drain(run(branch, "do something", RunParam()))
 
 
-# ---------------------------------------------------------------------------
-# Finding #3: subprocess RuntimeError path → classified ProviderError
-# ---------------------------------------------------------------------------
-
-
 async def test_run_subprocess_runtime_error_is_classified():
-    """A plain RuntimeError raised by the stream iterator (e.g. from
-    ndjson_from_cli on nonzero exit) must be caught, classified, and
-    re-raised as the appropriate ProviderError subclass with the original
-    exception as __cause__."""
+    """RuntimeError from the stream iterator must be classified as ProviderError with original as __cause__."""
     quota_stderr = "usage limit reached. try again at 9:00 PM"
     branch = Branch()
 
@@ -200,8 +183,7 @@ async def test_run_subprocess_runtime_error_is_classified():
 
 
 async def test_run_already_classified_provider_error_not_double_wrapped():
-    """A ProviderError raised by the stream iterator must NOT be re-wrapped
-    — it must propagate unchanged (no double classification)."""
+    """ProviderError from stream iterator must propagate unchanged without double-wrapping."""
     original_exc = ProviderQuotaError("usage limit reached. try again at 9:00 PM")
     branch = Branch()
 
@@ -238,20 +220,11 @@ async def test_run_already_classified_provider_error_not_double_wrapped():
     )
 
 
-# ---------------------------------------------------------------------------
-# Round-3 regression: error:null chunk must NOT be swallowed as benign EOS
-# (codex round-2 finding: null normalised to {} matched the benign predicate)
-# ---------------------------------------------------------------------------
-
-
 async def test_run_raises_provider_error_for_null_error_payload_chunk():
-    """A StreamChunk from {"type":"error","error":null} must raise ProviderError
-    rather than completing silently.
+    """StreamChunk(type='error', error=null) must raise ProviderError, not complete silently.
 
-    Regression: after the null-normalisation fix (round 2), the null payload was
-    normalised to {} before the benign-EOS predicate, causing run() to treat it as
-    the resume-EOF sentinel and return a successful result.  The fix captures
-    _raw_err before normalising so null does NOT qualify as benign.
+    Regression: null payload normalised to {} matched the benign-EOS predicate; fix captures
+    _raw_err before normalising so null does not qualify as benign.
     """
     # This is the chunk that the adapter emits for {"type":"error","error":null}.
     # After the fix it is NOT benign_eos, so run() must raise ProviderError.

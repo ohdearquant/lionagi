@@ -1,13 +1,6 @@
 # Copyright (c) 2023-2025, HaiyangLi <quantocean.li at gmail dot com>
 # SPDX-License-Identifier: Apache-2.0
 
-"""
-Test UUID JSON serialization in flow operations.
-
-This test ensures that UUID objects are properly serialized to strings
-when passed as parameters to operations, preventing JSON serialization errors.
-"""
-
 import json
 
 import pytest
@@ -18,12 +11,7 @@ from lionagi.session.session import Session
 
 @pytest.mark.asyncio
 async def test_aggregation_with_UUID_serialization():
-    """
-    Test that aggregation operations properly serialize UUID objects.
-
-    Previously, aggregation_sources contained UUID objects that caused
-    JSON serialization errors when passed to API calls.
-    """
+    """aggregation_sources must be JSON-serializable strings, not UUID objects."""
     # Create session and builder
     session = Session()
     builder = OperationGraphBuilder(session)
@@ -71,11 +59,7 @@ async def test_aggregation_with_UUID_serialization():
 
 @pytest.mark.asyncio
 async def test_context_with_UUID_keys():
-    """
-    Test that predecessor context uses string keys for UUID objects.
-
-    Previously, pred.id was used directly as a key, which could cause issues.
-    """
+    """Predecessor context must use string keys, not UUID objects."""
     from lionagi.operations.node import Operation
     from lionagi.protocols.graph.edge import Edge
     from lionagi.protocols.graph.graph import Graph
@@ -171,7 +155,3 @@ def test_full_aggregation_flow():
             json.dumps(op.parameters)
     except TypeError as e:
         pytest.fail(f"Operation parameters should be JSON serializable: {e}")
-
-
-if __name__ == "__main__":
-    pytest.main([__file__, "-v"])

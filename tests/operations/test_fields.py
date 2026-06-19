@@ -1,9 +1,6 @@
 # Copyright (c) 2023-2026, HaiyangLi <quantocean.li at gmail dot com>
 # SPDX-License-Identifier: Apache-2.0
 
-"""Tests for lionagi.operations.fields — covering Instruct.handle, ActionRequestModel.create,
-and _get_default_fields listable/nullable chaining."""
-
 import pytest
 from pydantic import BaseModel
 
@@ -12,10 +9,6 @@ from lionagi.operations.fields import (
     Instruct,
     get_default_field,
 )
-
-# ---------------------------------------------------------------------------
-# Instruct.handle — lines 119-137
-# ---------------------------------------------------------------------------
 
 
 class TestInstructHandle:
@@ -66,11 +59,6 @@ class TestInstructHandle:
         """Return value is always an Instruct object."""
         result = Instruct.handle()
         assert isinstance(result, Instruct)
-
-
-# ---------------------------------------------------------------------------
-# ActionRequestModel.create — lines 235-297
-# ---------------------------------------------------------------------------
 
 
 class TestActionRequestModelCreate:
@@ -146,11 +134,6 @@ class TestActionRequestModelCreate:
         """Exception inside create is caught and empty list returned."""
         result = ActionRequestModel.create(None)
         assert result == []
-
-
-# ---------------------------------------------------------------------------
-# _get_default_fields listable/nullable chaining — lines 387-401
-# ---------------------------------------------------------------------------
 
 
 class TestGetDefaultFieldChaining:

@@ -14,23 +14,17 @@ from lionagi.protocols.generic.event import EventStatus
 from lionagi.session.branch import Branch
 
 
-# Test fixtures and utilities
 class OpParams(BaseModel):
-    """Test BaseModel for parameters."""
-
     instruction: str
     count: int = 1
     enabled: bool = True
 
 
 def _set_branch(op: Operation, branch) -> None:
-    """Helper to set branch on operation (new invoke pattern)."""
     op._branch = branch
 
 
-# Test Operation creation and properties
 def test_operation_creation():
-    """Test creating an Operation with various parameter types."""
     # Test with dict parameters
     op1 = Operation(
         operation="chat",
@@ -54,7 +48,6 @@ def test_operation_creation():
 
 
 def test_operation_branch_id():
-    """Test branch_id property getter and setter."""
     op = Operation(operation="chat")
 
     # Test setting with valid UUID string
@@ -75,7 +68,6 @@ def test_operation_branch_id():
 
 
 def test_operation_graph_id():
-    """Test graph_id property getter and setter."""
     op = Operation(operation="chat")
 
     # Test setting with valid UUID string
@@ -96,7 +88,6 @@ def test_operation_graph_id():
 
 
 def test_operation_request_property():
-    """Test request property with different parameter types."""
     # Test with dict parameters
     op1 = Operation(operation="chat", parameters={"key": "value"})
     assert op1.request == {"key": "value"}
@@ -116,7 +107,6 @@ def test_operation_request_property():
 
 
 def test_operation_response_property():
-    """Test response property."""
     op = Operation(operation="chat")
 
     # Initially no response
@@ -127,10 +117,8 @@ def test_operation_response_property():
     assert op.response == "test_response"
 
 
-# Test async operations
 @pytest.mark.asyncio
 async def test_operation_invoke_chat():
-    """Test invoking a chat operation."""
     op = Operation(operation="chat", parameters={"instruction": "Hello, how are you?"})
 
     # Create a mock branch
@@ -166,7 +154,6 @@ async def test_operation_invoke_chat():
 
 @pytest.mark.asyncio
 async def test_operation_invoke_with_basemodel_params():
-    """Test invoking an operation with BaseModel parameters."""
     params = OpParams(instruction="Complex task", count=3, enabled=False)
     op = Operation(operation="operate", parameters=params)
 
@@ -199,7 +186,6 @@ async def test_operation_invoke_with_basemodel_params():
 
 @pytest.mark.asyncio
 async def test_operation_invoke_streaming():
-    """Test invoking a streaming operation (ReActStream)."""
     op = Operation(operation="ReActStream", parameters={"query": "stream test"})
 
     # Create a mock branch
@@ -207,7 +193,6 @@ async def test_operation_invoke_streaming():
     branch.id = "12345678-1234-4678-9234-567812345678"
 
     async def mock_stream(**kwargs):
-        """Mock streaming operation."""
         for i in range(3):
             yield f"stream_chunk_{i}"
 
@@ -235,7 +220,6 @@ async def test_operation_invoke_streaming():
 
 @pytest.mark.asyncio
 async def test_operation_invoke_all_operations():
-    """Test invoking all supported operation types."""
     # Create a mock branch
     branch = MagicMock()
     branch.id = "12345678-1234-4678-9234-567812345678"
@@ -290,7 +274,6 @@ async def test_operation_invoke_all_operations():
 
 @pytest.mark.asyncio
 async def test_operation_invoke_invalid_operation():
-    """Test invoking an operation with invalid operation type."""
     # Create a proper Branch instance so getattr works correctly
     branch = Branch(user="test_user", name="TestBranch")
 
@@ -308,7 +291,6 @@ async def test_operation_invoke_invalid_operation():
 
 @pytest.mark.asyncio
 async def test_operation_invoke_exception_handling():
-    """Test exception handling during operation invocation."""
     # Create a mock branch
     branch = MagicMock()
     branch.id = "12345678-1234-4678-9234-567812345678"
@@ -341,7 +323,6 @@ async def test_operation_invoke_exception_handling():
 @pytest.mark.slow
 @pytest.mark.asyncio
 async def test_operation_invoke_cancellation():
-    """Test handling of operation cancellation using an event gate."""
     branch = MagicMock()
     branch.id = "12345678-1234-4678-9234-567812345678"
 
@@ -376,7 +357,6 @@ async def test_operation_invoke_cancellation():
 
 
 def test_operation_inheritance():
-    """Test that Operation properly inherits from Node and Event."""
     op = Operation(operation="chat")
 
     # Test Node properties
@@ -395,7 +375,6 @@ def test_operation_inheritance():
 
 
 def test_operation_serialization():
-    """Test serialization of Operation with different parameter types."""
     # Test with dict parameters
     op1 = Operation(
         operation="chat",
@@ -415,7 +394,6 @@ def test_operation_serialization():
 
 @pytest.mark.asyncio
 async def test_operation_concurrent_invocations():
-    """Test multiple operations can be invoked concurrently."""
     # Create a mock branch
     branch = MagicMock()
     branch.id = "12345678-1234-4678-9234-567812345678"
@@ -452,7 +430,6 @@ async def test_operation_concurrent_invocations():
 
 @pytest.mark.asyncio
 async def test_operation_idempotent_invoke():
-    """Test that invoking a completed operation is a no-op."""
     branch = MagicMock()
     branch.id = "12345678-1234-4678-9234-567812345678"
 
@@ -480,7 +457,6 @@ async def test_operation_idempotent_invoke():
 
 
 def test_operation_metadata_persistence():
-    """Test that metadata persists through operation lifecycle."""
     op = Operation(
         operation="chat",
         parameters={"instruction": "Test"},

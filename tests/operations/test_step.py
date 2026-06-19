@@ -1,8 +1,6 @@
 # Copyright (c) 2023-2026, HaiyangLi <quantocean.li at gmail dot com>
 # SPDX-License-Identifier: Apache-2.0
 
-"""Tests for lionagi.operations.operate.step — Step factory methods."""
-
 from lionagi.ln.types import Spec
 from lionagi.models import FieldModel
 from lionagi.operations.operate.step import Step

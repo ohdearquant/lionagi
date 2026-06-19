@@ -15,10 +15,7 @@ from lionagi.session.session import Session
 from lionagi.testing import LionAGIMockFactory
 
 
-# Test Fixtures
 class ValueCondition(EdgeCondition):
-    """Test condition that checks for a specific value in context."""
-
     def __init__(self, expected_value: str):
         super().__init__()
         self.expected_value = expected_value
@@ -30,21 +27,16 @@ class ValueCondition(EdgeCondition):
 
 
 class AlwaysTrueCondition(EdgeCondition):
-    """Test condition that always returns True."""
-
     async def apply(self, context: dict) -> bool:
         return True
 
 
 class AlwaysFalseCondition(EdgeCondition):
-    """Test condition that always returns False."""
-
     async def apply(self, context: dict) -> bool:
         return False
 
 
 def make_mock_branch(name: str = "TestBranch") -> Branch:
-    """Create a Branch with mocked iModel for testing."""
     return LionAGIMockFactory.create_mocked_branch(
         name=name,
         user="test_user",
