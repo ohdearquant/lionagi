@@ -40,9 +40,9 @@ class HookPoint(str, Enum):
     API_PRE_CALL = "api.pre_call"
     API_POST_CALL = "api.post_call"
     API_STREAM_CHUNK = "api.stream_chunk"
-    TOOL_PRE = "tool.pre"  # not-yet-wired: blocking_emit routing exists but no call site
-    TOOL_POST = "tool.post"  # not-yet-wired
-    TOOL_ERROR = "tool.error"  # not-yet-wired
+    TOOL_PRE = "tool.pre"  # emitted in operations/act/act.py before tool invocation
+    TOOL_POST = "tool.post"  # emitted in operations/act/act.py on successful invocation
+    TOOL_ERROR = "tool.error"  # emitted in operations/act/act.py on invocation error
     MESSAGE_ADD = "message.add"  # live: emitted in session/branch.py
     ARTIFACT_CREATED = "artifact.created"  # not-yet-wired
 

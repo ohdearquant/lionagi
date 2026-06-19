@@ -2,6 +2,7 @@
 # SPDX-License-Identifier: Apache-2.0
 
 import logging
+import uuid
 from typing import TYPE_CHECKING, Literal
 
 from pydantic import BaseModel
@@ -65,6 +66,21 @@ async def _act(
         )
         return ActionResponseModel(function=_request["function"], arguments=_args, output=denial)
 
+    _hooks = branch._hooks
+    _tool_name = _request["function"]
+    _call_id = str(uuid.uuid4())
+    _args_summary = str(_request["arguments"])[:200]
+
+    if _hooks is not None:
+        from lionagi.hooks.bus import HookPoint
+
+        await _hooks.emit(
+            HookPoint.TOOL_PRE,
+            tool_name=_tool_name,
+            call_id=_call_id,
+            args_summary=_args_summary,
+        )
+
     try:
         if verbose_action:
             args_ = str(_request["arguments"])
@@ -75,7 +91,30 @@ async def _act(
         if verbose_action:
             logger.debug("Action %s invoked, status: %s.", _request["function"], func_call.status)
 
+        if _hooks is not None:
+            from lionagi.hooks.bus import HookPoint
+
+            _result_summary = str(func_call.response)[:200]
+            await _hooks.emit(
+                HookPoint.TOOL_POST,
+                call_id=_call_id,
+                tool_name=_tool_name,
+                result_summary=_result_summary,
+                duration=func_call.execution.duration,
+            )
+
     except Exception as e:
+        if _hooks is not None:
+            from lionagi.hooks.bus import HookPoint
+
+            await _hooks.emit(
+                HookPoint.TOOL_ERROR,
+                call_id=_call_id,
+                tool_name=_tool_name,
+                error=e,
+                duration=None,
+            )
+
         content = {
             "error": str(e),
             "function": _request.get("function"),
