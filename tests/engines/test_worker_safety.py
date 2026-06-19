@@ -73,8 +73,9 @@ async def test_cancel_active_returns_within_timeout_when_task_swallows_cancelled
             await asyncio.sleep(60)  # second indefinite wait
 
     run.spawn(stubborn())
+    run.engine.cancel_timeout_s = 0.2
     t0 = time.monotonic()
-    await run.cancel_active(timeout=0.2)
+    await run.cancel_active()
     elapsed = time.monotonic() - t0
     # Must finish within 2s; no hang
     assert elapsed < 2.0, f"cancel_active hung for {elapsed:.2f}s"
@@ -91,8 +92,9 @@ async def test_cancel_active_returns_fast_when_tasks_cooperate():
 
     run.spawn(cooperative())
     run.spawn(cooperative())
+    run.engine.cancel_timeout_s = 5.0
     t0 = time.monotonic()
-    await run.cancel_active(timeout=5.0)
+    await run.cancel_active()
     elapsed = time.monotonic() - t0
     assert elapsed < 1.0
     assert not run._active
