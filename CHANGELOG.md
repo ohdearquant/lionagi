@@ -32,6 +32,16 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
 - Internal `_get_oai_config` alias in `lionagi.testing._legacy` removed (was never public; callers within the module now call `oai_chat_endpoint_config` directly).
 - `LogManager`, `LogManagerConfig`, and `to_list_type` removed from the public `lionagi.protocols.types` surface (back-compat aliases and an internal Pile helper that inflated the curated re-export set); import them from their canonical modules `lionagi.protocols.generic.log` and `lionagi.protocols.generic.pile` instead.
 
+### Fixed
+
+- Python 3.14 compatibility: `FieldModel.annotated()` and `Spec` materialized `Annotated` types via the `Annotated.__class_getitem__` attribute, which 3.14 removed from typing special forms (raising `AttributeError: __class_getitem__`). Both now use canonical subscription `Annotated[tuple(args)]`, valid on 3.10–3.14.
+- CI now tests every Python version in the matrix. A committed `.python-version` was overriding the matrix interpreter for `uv venv`/`uv sync`/`uv run`, so every leg silently ran on 3.10; the `test` job now sets `UV_PYTHON` to the matrix version.
+- `ReactiveExecutor.execute()` / `execute_stream()` subscribe to the bus via the public `session.observer` property instead of the private `_observer` attribute, which is `None` until first accessed — reactive `SpawnRequest` events were liable to be silently dropped.
+- `Engine.cancel_active()` now bounds task cleanup with a configurable `cancel_timeout_s` (default 30s): non-cooperative tasks that ignore cancellation are abandoned with a warning instead of hanging the run indefinitely.
+- `li kill` recognizes shebang-launched console-script runs (where `argv[0]` is the Python interpreter and `argv[1]` is the `li` script path).
+- `li agent --resume` fails loudly (non-zero exit) when a resume produces an empty stream — typically an expired session — instead of exiting `0` silently.
+- Studio `PUT /engine-defs/{id}` returns `404` only when the definition is absent, not when the request body is empty (an empty patch is now a no-op that returns the existing definition).
+
 ## [0.27.1] - 2026-06-16
 
 The studio desktop substrate (Vite SPA + Tauri 2 macOS shell), custom engine
