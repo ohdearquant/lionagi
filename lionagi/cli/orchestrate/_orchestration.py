@@ -596,12 +596,15 @@ async def setup_orchestration_persist(
     project: str | None = None,
     branches: list[Any] | None = None,
 ) -> dict | None:
-    from lionagi.state.db import StateDB
+    from lionagi.state.db import StateDB, register_shared_db
 
     db = None
     try:
         db = StateDB()
         await db.open()
+        # Lifecycle hooks reuse this owned connection via get_shared_db()
+        # instead of opening a second, never-closed one (see _runs.py).
+        await register_shared_db(db)
 
         session_id = str(session.id)
         session_dict = session.to_dict(mode="db")
@@ -673,6 +676,10 @@ async def setup_orchestration_persist(
                 _log_orch.warning(
                     "fallback db.close after setup failure also failed: %s", close_exc
                 )
+            # Drop the now-closed handle so get_shared_db() can't hand it out.
+            from lionagi.state.db import unregister_shared_db
+
+            unregister_shared_db(db)
         return None
 
 

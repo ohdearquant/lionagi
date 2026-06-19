@@ -8,6 +8,7 @@ from __future__ import annotations
 import asyncio
 import threading
 from pathlib import Path
+from unittest import mock
 
 import pytest
 
@@ -28,12 +29,19 @@ def temp_db_path(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
 
 
 def _aiosqlite_thread_count() -> int:
-    """Number of live threads whose name starts with 'sqlite_'.
+    """Live aiosqlite connection-worker threads — a leaked connection shows up here.
 
-    aiosqlite spawns a worker per connection with names like
-    ``sqlite_/path/to/db``. A leaked connection shows up here.
+    Matched by the worker's run target ``_connection_worker_thread`` (stable across
+    aiosqlite versions; current builds surface it in the auto thread name, and the
+    ``_target`` qualname is the fallback) plus the legacy ``sqlite_<path>`` name prefix.
     """
-    return sum(1 for t in threading.enumerate() if t.name.startswith("sqlite"))
+    return sum(
+        1
+        for t in threading.enumerate()
+        if "_connection_worker_thread" in t.name
+        or t.name.startswith("sqlite")
+        or getattr(getattr(t, "_target", None), "__name__", "") == "_connection_worker_thread"
+    )
 
 
 # ── _setup_live_persist: happy path + invariants ──────────────────────────────
@@ -162,6 +170,158 @@ async def test_setup_create_session_failure_closes_db(
 
     # Restore so other tests run clean.
     monkeypatch.setattr(StateDB, "create_session", original_create)
+
+
+# ── Shared-db reuse + teardown cleanup (lifecycle-hook leak guard) ────────────
+
+
+async def test_lifecycle_hooks_reuse_owned_db_no_shared_leak(temp_db_path: Path):
+    """SESSION_START/BRANCH_CREATE hooks reuse the owned connection, and teardown
+    leaves no shared StateDB whose non-daemon aiosqlite worker would block exit."""
+    from lionagi.state.db import _SHARED, get_shared_db
+
+    before = _aiosqlite_thread_count()
+    branch = Branch(name="b1")
+
+    ctx = await _setup_live_persist(branch, agent_name="reviewer")
+    assert ctx is not None
+
+    # The lifecycle hooks reach the db via get_shared_db(); setup registered the
+    # owned connection, so they reuse it instead of opening a second one.
+    assert await get_shared_db() is ctx["db"]
+    assert _SHARED.get(ctx["db"].path) is ctx["db"]
+
+    await _teardown_live_persist(ctx, status="completed")
+
+    # Registry swept — nothing left to leak its aiosqlite worker thread.
+    assert ctx["db"].path not in _SHARED
+    for _ in range(20):
+        if _aiosqlite_thread_count() == before:
+            break
+        await asyncio.sleep(0.05)
+    assert _aiosqlite_thread_count() == before, (
+        "shared StateDB survived teardown — aiosqlite worker thread leaked"
+    )
+
+
+async def test_register_shared_db_closes_displaced_instance(temp_db_path: Path):
+    """Re-registering a path must close the prior instance, not orphan its worker thread."""
+    from lionagi.state.db import (
+        _SHARED,
+        close_shared_db,
+        register_shared_db,
+        unregister_shared_db,
+    )
+
+    before = _aiosqlite_thread_count()
+    db1 = StateDB(temp_db_path)
+    await db1.open()
+    await register_shared_db(db1)
+
+    db2 = StateDB(temp_db_path)
+    await db2.open()
+    await register_shared_db(db2)  # displaces db1 → must close it
+
+    assert _SHARED.get(temp_db_path) is db2
+    assert db1._db is None, "displaced StateDB was orphaned instead of closed"
+    for _ in range(20):
+        if _aiosqlite_thread_count() == before + 1:
+            break
+        await asyncio.sleep(0.05)
+    assert _aiosqlite_thread_count() == before + 1, (
+        "displaced connection's aiosqlite worker thread leaked"
+    )
+
+    # unregister is identity-guarded: dropping a stale handle must not evict the live one.
+    unregister_shared_db(db1)
+    assert _SHARED.get(temp_db_path) is db2
+
+    await close_shared_db()
+    await db2.close()
+    for _ in range(20):
+        if _aiosqlite_thread_count() == before:
+            break
+        await asyncio.sleep(0.05)
+    assert _aiosqlite_thread_count() == before
+
+
+async def test_close_shared_db_sweeps_inflight_open(
+    temp_db_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    """close_shared_db() must serialize with an in-flight get_shared_db() open so the
+    just-opened connection is swept, not orphaned past teardown."""
+    from lionagi.state.db import _SHARED, close_shared_db, get_shared_db
+
+    before = _aiosqlite_thread_count()
+    opened = asyncio.Event()
+    release = asyncio.Event()
+    real_open = StateDB.open
+
+    async def slow_open(self):
+        await real_open(self)  # real aiosqlite worker spawned
+        opened.set()  # get_shared_db holds the open lock; db open, not yet stored
+        await release.wait()
+
+    monkeypatch.setattr(StateDB, "open", slow_open)
+
+    opener = asyncio.create_task(get_shared_db(temp_db_path))
+    await asyncio.wait_for(opened.wait(), timeout=5)
+
+    closer = asyncio.create_task(close_shared_db())
+    await asyncio.sleep(0.1)
+    assert not closer.done(), "close_shared_db() did not wait for the in-flight open"
+
+    release.set()
+    opened_db = await asyncio.wait_for(opener, timeout=5)
+    await asyncio.wait_for(closer, timeout=5)
+
+    assert temp_db_path not in _SHARED
+    assert opened_db._db is None, "in-flight-opened StateDB survived close_shared_db()"
+    for _ in range(20):
+        if _aiosqlite_thread_count() == before:
+            break
+        await asyncio.sleep(0.05)
+    assert _aiosqlite_thread_count() == before, (
+        "in-flight-opened aiosqlite worker leaked past close_shared_db()"
+    )
+
+
+async def test_close_shared_db_rejects_stale_waiter(temp_db_path: Path):
+    """A get_shared_db() that waited on a lock a concurrent close swept must refuse to
+    resurrect the singleton (raise), not open a fresh worker that survives teardown."""
+    from lionagi.state.db import _SHARED, close_shared_db, get_shared_db
+
+    before = _aiosqlite_thread_count()
+    await get_shared_db(temp_db_path)  # give the sweep something to slow-close
+
+    entered = asyncio.Event()
+    release = asyncio.Event()
+    real_close = StateDB.close
+
+    async def slow_close(self):
+        entered.set()  # close now holds the open lock, mid-sweep
+        await release.wait()
+        await real_close(self)
+
+    with mock.patch.object(StateDB, "close", slow_close):
+        closer = asyncio.create_task(close_shared_db())
+        await asyncio.wait_for(entered.wait(), timeout=5)
+
+        getter = asyncio.create_task(get_shared_db(temp_db_path))
+        await asyncio.sleep(0.1)
+        assert not getter.done(), "getter should block on the lock the close holds"
+
+        release.set()
+        await asyncio.wait_for(closer, timeout=5)
+        with pytest.raises(RuntimeError):
+            await asyncio.wait_for(getter, timeout=5)
+
+    assert temp_db_path not in _SHARED
+    for _ in range(20):
+        if _aiosqlite_thread_count() == before:
+            break
+        await asyncio.sleep(0.05)
+    assert _aiosqlite_thread_count() == before, "stale-waiter open leaked an aiosqlite worker"
 
 
 # ── Resume path ───────────────────────────────────────────────────────────────
