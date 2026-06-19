@@ -5,11 +5,15 @@
 
 from __future__ import annotations
 
+import asyncio
+import contextlib
 import json
 import logging
 import os
+import re
 import shlex
 from pathlib import Path
+from time import monotonic
 from typing import Any
 
 from pydantic import BaseModel, Field
@@ -29,8 +33,12 @@ __all__ = (
     "TestsRan",
     "VerifyResult",
     "CodeResultRecorded",
+    "WorkAborted",
+    "WorkerHeartbeat",
+    "WorkerActivity",
     "CodingRun",
     "CodingEngine",
+    "_lint_spec",
 )
 
 
@@ -145,6 +153,71 @@ _REF_ATTRS = (
     "change_ref",
     "plan_ref",
 )
+
+
+# ---------------------------------------------------------------------------
+# Worker observability events (abort + heartbeat + activity)
+# ---------------------------------------------------------------------------
+
+
+class WorkAborted(EngineEvent):
+    """Emitted when a stage is aborted by the stage watchdog."""
+
+    stage: str = Field(default="")
+    reason: str = Field(default="")
+    elapsed_s: float = Field(default=0.0)
+
+
+class WorkerHeartbeat(EngineEvent):
+    """Periodic liveness ping emitted while a stage is running."""
+
+    elapsed_s: float = Field(description="Seconds since the run started.")
+    stage: str = Field(default="implement")
+
+
+class WorkerActivity(EngineEvent):
+    """Emitted when a file in the workspace is written during a stage."""
+
+    path: str = Field(description="Workspace-relative path that changed.")
+    elapsed_s: float = Field(description="Seconds since the run started.")
+
+
+# ---------------------------------------------------------------------------
+# Spec lint
+# ---------------------------------------------------------------------------
+
+_RE_ACCEPTANCE = re.compile(r"acceptance.{0,20}criteria|acceptance:", re.IGNORECASE)
+_RE_TEST_CMD = re.compile(r"test_cmd\s*:", re.IGNORECASE)
+_RE_COUNT_ASSERT = re.compile(r"\d+\s*(test|case|item|assert|pass)", re.IGNORECASE)
+_RE_FILE_PATH = re.compile(r"(?:^|[\s(\"'])(/[\w/.\-]+\.[\w]+)", re.MULTILINE)
+
+
+def _lint_spec(
+    spec: str | dict[str, Any],
+    *,
+    workspace: str | Path | None = None,
+    strict: bool = False,
+) -> list[str]:
+    """Return a list of warning strings for common spec deficiencies.
+
+    Pass *strict=True* to raise ValueError on the first warning instead.
+    """
+    text = spec if isinstance(spec, str) else json.dumps(spec)
+    warnings: list[str] = []
+    if not _RE_ACCEPTANCE.search(text):
+        warnings.append("spec has no acceptance criteria — add an 'acceptance criteria:' section")
+    if _RE_TEST_CMD.search(text) and not _RE_COUNT_ASSERT.search(text):
+        warnings.append(
+            "spec has a test_cmd but no count assertion (e.g. '3 tests pass') — hard to verify"
+        )
+    if workspace is not None:
+        for m in _RE_FILE_PATH.finditer(text):
+            candidate = Path(m.group(1))
+            if candidate.is_absolute() and not candidate.exists():
+                warnings.append(f"referenced path does not exist: {candidate}")
+    if strict and warnings:
+        raise ValueError(warnings[0])
+    return warnings
 
 
 # ---------------------------------------------------------------------------
@@ -274,6 +347,8 @@ class CodingRun(ChainRun):
         self._ws_baseline: dict[str, str] | None = {}
         # Paths newly changed/added since the baseline (populated by _run).
         self._ws_delta: list[str] = []
+        self._spec_lint_warnings: list[str] = []
+        self._aborted: bool = False
 
     # -- typed overrides (narrower signatures than the Any base) ---------------
 
@@ -383,6 +458,10 @@ class CodingEngine(Engine):
         max_fix_rounds: int = 3,
         test_timeout_s: float = 600.0,
         repair_retries: int = 1,
+        turn_timeout_s: float | None = 600.0,
+        strict_spec: bool = False,
+        heartbeat_interval_s: float | None = 30.0,
+        stage_timeout_s: float | None = None,
         **kwargs: Any,
     ) -> None:
         super().__init__(**kwargs)
@@ -394,6 +473,10 @@ class CodingEngine(Engine):
         self.max_fix_rounds = max_fix_rounds
         self.test_timeout_s = test_timeout_s
         self.repair_retries = repair_retries
+        self.turn_timeout_s = turn_timeout_s
+        self.strict_spec = strict_spec
+        self.heartbeat_interval_s = heartbeat_interval_s
+        self.stage_timeout_s = stage_timeout_s
 
     # -- lifecycle ------------------------------------------------------------
 
@@ -450,11 +533,19 @@ class CodingEngine(Engine):
         # is sequential (no reactive spawning), so observers only stamp + store.
         run.observe(CodingChainEvent, lambda e, _c: run.collect(e))
 
+        lint_warnings = _lint_spec(task_text, workspace=run.workspace, strict=self.strict_spec)
+        for w in lint_warnings:
+            run.notify("spec_lint_warning", warning=w)
+        if lint_warnings:
+            run._spec_lint_warnings = lint_warnings
+
         plan = await self._plan(run)
         # Snapshot workspace state before the implementer runs so the post-
         # implement check computes a delta, not an absolute status read.
         run._ws_baseline = await self._capture_ws_baseline(run)
         change = await self._implement(run, plan)
+        if run._aborted:
+            return await self._conclude(run, plan, passed=False, caveat="stage aborted by watchdog")
         if change is None:
             # Emission is metadata; the workspace delta is ground truth.  Three
             # outcomes after _implement returns None:
@@ -491,6 +582,8 @@ class CodingEngine(Engine):
 
         tests = await self._test(run, change, round_no=0)
         change, tests = await self._fix_loop(run, plan, change, tests)
+        if run._aborted:
+            return await self._conclude(run, plan, passed=False, caveat="stage aborted by watchdog")
         await self._verify(run, plan, change, tests)
         return await self._conclude(run, plan, passed=tests.passed)
 
@@ -533,14 +626,23 @@ class CodingEngine(Engine):
                 cwd=run.workspace,
                 emits=emits,
             )
-            await run.operate_with_repair(
-                agent,
-                _implement_instruction(plan, run.task_text, run.workspace),
-                arrived=lambda: len(run.events_of(ChangeProposed)) > before,
-                emits=emits,
-                retries=self.repair_retries,
-            )
-        run._implementer = agent  # reused by the fix loop — same branch, more turns
+            wrapped = self._wrap_turn_timeout(agent, run)
+            heartbeat_task = self._start_heartbeat(run, stage="implement")
+            try:
+                stage_coro = run.operate_with_repair(
+                    wrapped,
+                    _implement_instruction(plan, run.task_text, run.workspace),
+                    arrived=lambda: len(run.events_of(ChangeProposed)) > before,
+                    emits=emits,
+                    retries=self.repair_retries,
+                )
+                await self._run_stage_with_watchdog(run, stage_coro, "implement")
+            finally:
+                if heartbeat_task is not None and not heartbeat_task.done():
+                    heartbeat_task.cancel()
+                    with contextlib.suppress(asyncio.CancelledError):
+                        await heartbeat_task
+        run._implementer = wrapped  # reused by the fix loop — same branch, more turns
         return run.last(ChangeProposed)
 
     async def _test(self, run: CodingRun, change: ChangeProposed, *, round_no: int) -> TestsRan:
@@ -581,13 +683,16 @@ class CodingEngine(Engine):
                 break
             before = len(run.events_of(ChangeProposed))
             async with run._sem:
-                await run.operate_with_repair(
+                stage_coro = run.operate_with_repair(
                     agent,
                     _fix_instruction(tests, plan, round_no, self.max_fix_rounds),
                     arrived=lambda n=before: len(run.events_of(ChangeProposed)) > n,
                     emits=(ChangeProposed,),
                     retries=self.repair_retries,
                 )
+                await self._run_stage_with_watchdog(run, stage_coro, f"fix-{round_no}")
+            if run._aborted:
+                break
             new_change = run.last(ChangeProposed)
             if new_change is change:
                 run.notify("fix_no_change", round=round_no)
@@ -651,6 +756,8 @@ class CodingEngine(Engine):
                 {f for c in run.events_of(ChangeProposed) for f in c.files_touched}
             ),
         }
+        if run._spec_lint_warnings:
+            measurements["spec_lint_warnings"] = run._spec_lint_warnings
         result = CodeResultRecorded(
             passed=passed,
             measurements=measurements,
@@ -666,6 +773,97 @@ class CodingEngine(Engine):
             paths = run.export(run.export_dir, report=report)
             run.notify("exported", **paths)
         return result
+
+    # -- worker helpers -------------------------------------------------------
+
+    def _wrap_turn_timeout(self, agent: Any, run: CodingRun) -> Any:
+        """Return a proxy whose operate() is bounded by turn_timeout_s.
+
+        On TimeoutError the proxy emits a turn_timeout notification and returns
+        None so operate_with_repair sees arrived()=False and enters the fix path.
+        """
+        if self.turn_timeout_s is None:
+            return agent
+        timeout_s = self.turn_timeout_s
+
+        class _Proxy:
+            name = getattr(agent, "name", "")
+            chat_model = getattr(agent, "chat_model", None)
+            capabilities = getattr(agent, "capabilities", None)
+
+            async def operate(self_, *, instruction: str, **kw: Any) -> Any:
+                try:
+                    return await asyncio.wait_for(
+                        agent.operate(instruction=instruction, **kw),
+                        timeout=timeout_s,
+                    )
+                except asyncio.TimeoutError:
+                    run.notify("turn_timeout", stage=self_.name, timeout_s=timeout_s)
+                    return None  # operate_with_repair sees arrived()=False → fix path
+
+        return _Proxy()
+
+    def _start_heartbeat(self, run: CodingRun, *, stage: str) -> asyncio.Task | None:
+        """Start a background task that emits WorkerHeartbeat at the configured interval.
+
+        Also emits WorkerActivity whenever a file in the workspace changes mtime.
+        Returns None when heartbeat_interval_s is None (disabled).
+        """
+        if self.heartbeat_interval_s is None:
+            return None
+        t0 = run._t0
+        ws = Path(run.workspace)
+        # Snapshot existing files so only NEW writes trigger WorkerActivity.
+        last_mtime: dict[str, float] = {}
+        try:
+            for p in ws.rglob("*"):
+                if p.is_file():
+                    last_mtime[str(p)] = p.stat().st_mtime
+        except Exception:
+            logger.debug("heartbeat baseline snapshot failed", exc_info=True)
+
+        async def _loop() -> None:
+            while True:
+                await asyncio.sleep(self.heartbeat_interval_s)
+                elapsed = round(monotonic() - t0, 1)
+                run.notify("WorkerHeartbeat", elapsed_s=elapsed, stage=stage)
+                try:
+                    for p in ws.rglob("*"):
+                        if p.is_file():
+                            key = str(p)
+                            mt = p.stat().st_mtime
+                            prev = last_mtime.get(key)
+                            if prev != mt:
+                                rel = str(p.relative_to(ws)) if p.is_relative_to(ws) else key
+                                run.notify("WorkerActivity", path=rel, elapsed_s=elapsed)
+                                last_mtime[key] = mt
+                except Exception:
+                    logger.debug("heartbeat mtime poll failed", exc_info=True)
+
+        return asyncio.ensure_future(_loop())
+
+    async def _run_stage_with_watchdog(
+        self, run: CodingRun, stage_coro: Any, stage_name: str
+    ) -> None:
+        """Run *stage_coro* bounded by stage_timeout_s; on timeout emit WorkAborted and set run._aborted."""
+        if self.stage_timeout_s is None:
+            await stage_coro
+            return
+        t0 = monotonic()
+        try:
+            await asyncio.wait_for(stage_coro, timeout=self.stage_timeout_s)
+        except asyncio.TimeoutError:
+            elapsed = round(monotonic() - t0, 1)
+            reason = f"stage '{stage_name}' exceeded {self.stage_timeout_s}s wall-clock limit"
+            run.notify("WorkAborted", stage=stage_name, reason=reason, elapsed_s=elapsed)
+            run._aborted = True
+
+    async def _partial_export(
+        self, run: CodingRun, *args: Any, **kwargs: Any
+    ) -> CodeResultRecorded:  # type: ignore[override]
+        """Write results.json and report.md even when the run is aborted mid-stage."""
+        plan = run.last(WorkPlanned) or WorkPlanned(approach="(aborted)")
+        return await self._conclude(run, plan, passed=False, caveat="run aborted")
 
     # -- ground-truth helpers -------------------------------------------------
 
