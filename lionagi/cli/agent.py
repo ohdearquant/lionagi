@@ -425,6 +425,14 @@ async def _run_agent(
                 _terminal_status = effective_status
             await branch.mdls.shutdown()
 
+    is_resume = bool(resume or continue_last)
+    if is_resume and _terminal_status == "completed" and not (res or "").strip():
+        log_error(
+            f"resume produced empty stream — session may be expired; "
+            f"re-run without -r (resume target: {resume or 'last'})"
+        )
+        _terminal_status = "failed"
+
     save_last_branch_pointer(run.run_id, branch_id)
 
     return res or "", provider, branch_id, _terminal_status
