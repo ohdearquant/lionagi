@@ -20,5 +20,6 @@ class PerplexityConfigs(ProviderConfig, Enum):
 
 PerplexityConfigs._PROVIDER = "perplexity"
 PerplexityConfigs._PROVIDER_ALIASES = []
+PerplexityConfigs._API_KEY_ENV = "PERPLEXITY_API_KEY"
 
 __all__ = ("PerplexityConfigs",)

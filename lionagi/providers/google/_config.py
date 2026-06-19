@@ -20,6 +20,7 @@ class GeminiChatConfigs(ProviderConfig, Enum):
 
 GeminiChatConfigs._PROVIDER = "gemini"
 GeminiChatConfigs._PROVIDER_ALIASES = ["gemini-api"]
+GeminiChatConfigs._API_KEY_ENV = "GEMINI_API_KEY"
 
 
 class GeminiCodeConfigs(ProviderConfig, Enum):

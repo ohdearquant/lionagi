@@ -94,6 +94,11 @@ class ProviderConfig:
     def provider_aliases(self) -> list[str]:
         return type(self)._PROVIDER_ALIASES
 
+    @property
+    def api_key_env(self) -> str | None:
+        """Settings attribute name for this provider's API key; None for providers with no key."""
+        return getattr(type(self), "_API_KEY_ENV", None)
+
     # --- Registry integration ---
 
     def as_registry_kwargs(self) -> dict[str, Any]:
@@ -107,6 +112,7 @@ class ProviderConfig:
             "base_url": self.base_url,
             "auth_type": self.auth_type,
             "content_type": self.content_type,
+            "api_key_env": self.api_key_env,
         }
 
     def register(self, cls=None):

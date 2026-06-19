@@ -13,9 +13,6 @@ CONTEXT_WINDOWS: dict[str, int] = {
 class GeminiChatEndpoint(Endpoint):
     def __init__(self, config=None, **kwargs):
         if config is None:
-            from lionagi.config import settings
-
-            kwargs.setdefault("api_key", settings.GEMINI_API_KEY or "dummy-key-for-testing")
             kwargs.setdefault("kwargs", {"model": "gemini-2.5-flash"})
             kwargs.setdefault("requires_tokens", True)
         super().__init__(config, **kwargs)

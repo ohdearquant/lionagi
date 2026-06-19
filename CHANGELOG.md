@@ -15,6 +15,7 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
 ### Changed
 
 - `EndpointConfig` gains a `serialize_by_alias` flag (default `False`); the Exa and Firecrawl endpoints set it to `True`, removing six identical per-file `create_payload` overrides whose only purpose was alias-serialization.
+- Provider endpoint files no longer resolve `api_key` individually; `EndpointMeta.create_config` reads the appropriate settings field automatically when `api_key_env` is declared on the provider config, removing 21 identical boilerplate blocks while preserving per-provider env-var names and the Ollama no-key path.
 - Studio engine-runs service (`lionagi.studio.services.engine_runs`) now delegates to `StateDB.list_engine_runs` / `StateDB.get_engine_run` instead of duplicating raw SQL; fresh-DB empty-list behaviour is preserved by an upfront path-existence guard.
 - The CLI, studio, and operations boundaries now raise typed `LionError` subclasses (`ConfigurationError`, `OperationError`, `ExecutionError`) instead of bare `ValueError`/`RuntimeError`. These subclasses also inherit from the corresponding builtin, so existing `except ValueError` / `except RuntimeError` handlers keep working.
 - Studio services `engine_runs`, `sessions`, and `invocations` no longer import `fastapi.HTTPException` in their logic functions; not-found conditions raise `NotFoundError` (status 404) instead, and the `app`-level `LionError` exception handler translates domain errors to HTTP responses at the route edge.

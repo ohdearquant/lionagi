@@ -37,17 +37,26 @@ class EndpointMeta:
     base_url: str | None = None
     auth_type: str | None = None
     content_type: str | None = None
+    api_key_env: str | None = None
 
     def create_config(self, **overrides: Any):
         from .endpoint_config import EndpointConfig
 
         is_agentic = self.endpoint_type == EndpointType.AGENTIC
+        api_key: Any = "internal" if is_agentic else None
+        if not is_agentic and self.api_key_env and "api_key" not in overrides:
+            from lionagi.config import settings
+
+            raw = getattr(settings, self.api_key_env, None)
+            # Pass SecretStr directly so _validate_api_key uses its dedicated branch;
+            # None means the env var is unset, fall back to the testing sentinel.
+            api_key = raw if raw is not None else "dummy-key-for-testing"
         defaults = dict(
             name=f"{self.provider}_{self.endpoint}",
             provider=self.provider,
             base_url=self.base_url or ("internal" if is_agentic else ""),
             endpoint=self.endpoint,
-            api_key="internal" if is_agentic else None,
+            api_key=api_key,
             request_options=self.options,
             timeout=3600 if is_agentic else 600,
             auth_type=self.auth_type or ("bearer" if not is_agentic else "bearer"),
@@ -83,6 +92,7 @@ class EndpointRegistry:
         base_url: str | None = None,
         auth_type: str | None = None,
         content_type: str | None = None,
+        api_key_env: str | None = None,
     ):
         def decorator(endpoint_cls: type) -> type:
             meta = EndpointMeta(
@@ -95,6 +105,7 @@ class EndpointRegistry:
                 base_url=base_url,
                 auth_type=auth_type,
                 content_type=content_type,
+                api_key_env=api_key_env,
             )
             endpoint_cls._ENDPOINT_META = meta
             cls._entries.append(_RegistryEntry(meta=meta, cls=endpoint_cls))
@@ -179,6 +190,7 @@ def register_endpoint(
     base_url: str | None = None,
     auth_type: str | None = None,
     content_type: str | None = None,
+    api_key_env: str | None = None,
 ):
     """Decorator that registers an endpoint and injects ``_ENDPOINT_META``."""
     return EndpointRegistry.register(
@@ -191,6 +203,7 @@ def register_endpoint(
         base_url=base_url,
         auth_type=auth_type,
         content_type=content_type,
+        api_key_env=api_key_env,
     )
 
 

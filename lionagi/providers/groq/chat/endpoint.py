@@ -14,9 +14,6 @@ CONTEXT_WINDOWS: dict[str, int] = {
 class GroqChatEndpoint(Endpoint):
     def __init__(self, config=None, **kwargs):
         if config is None:
-            from lionagi.config import settings
-
-            kwargs.setdefault("api_key", settings.GROQ_API_KEY or "dummy-key-for-testing")
             kwargs.setdefault("kwargs", {"model": "llama-3.3-70b-versatile"})
             kwargs.setdefault("requires_tokens", True)
         super().__init__(config, **kwargs)

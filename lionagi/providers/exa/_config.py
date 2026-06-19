@@ -36,5 +36,6 @@ class ExaConfigs(ProviderConfig, Enum):
 
 ExaConfigs._PROVIDER = "exa"
 ExaConfigs._PROVIDER_ALIASES = []
+ExaConfigs._API_KEY_ENV = "EXA_API_KEY"
 
 __all__ = ("ExaConfigs",)

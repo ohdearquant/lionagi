@@ -20,5 +20,6 @@ class DeepSeekConfigs(ProviderConfig, Enum):
 
 DeepSeekConfigs._PROVIDER = "deepseek"
 DeepSeekConfigs._PROVIDER_ALIASES = []
+DeepSeekConfigs._API_KEY_ENV = "DEEPSEEK_API_KEY"
 
 __all__ = ("DeepSeekConfigs",)

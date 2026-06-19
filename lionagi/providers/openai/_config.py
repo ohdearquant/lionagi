@@ -68,6 +68,7 @@ class OpenAIConfigs(ProviderConfig, Enum):
 
 OpenAIConfigs._PROVIDER = "openai"
 OpenAIConfigs._PROVIDER_ALIASES = []
+OpenAIConfigs._API_KEY_ENV = "OPENAI_API_KEY"
 
 
 class CodexConfigs(ProviderConfig, Enum):
