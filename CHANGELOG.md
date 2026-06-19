@@ -8,6 +8,7 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
 
 ### Added
 
+- `SESSION_START`, `SESSION_END`, and `BRANCH_CREATE` hook emissions wired in `lionagi/cli/_runs.py`. The built-in handlers in `lionagi.hooks.builtins` (`persist_session_start`, `persist_session_end`, `persist_branch_provenance`) are now called at the correct lifecycle moments. Both `persist_session_start` and `persist_session_end` guard against double-fire: a second emit for an already-started or already-terminal session is a no-op and does not insert a duplicate `status_transitions` row.
 - `log_tool_call` in `lionagi.agent.hooks` and `lionagi.hooks.builtins` — canonical name for the tool-call observability post-hook, replacing `log_tool_use`. Also name-addressable via `lionagi.hooks.loader` registry as `"log_tool_call"`.
 - `lionagi.testing` is now documented as a supported public surface. Register `lionagi.testing.pytest_plugin` in your `pytest_plugins` to get the bundled fixtures.
 
