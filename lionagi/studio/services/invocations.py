@@ -7,8 +7,9 @@ from __future__ import annotations
 import json
 from typing import Any
 
-from fastapi import HTTPException, Query
+from fastapi import Query
 
+from lionagi._errors import NotFoundError
 from lionagi.state.db import DEFAULT_DB_PATH, StateDB
 
 from ..registry import studio_route
@@ -169,7 +170,7 @@ async def list_invocations_route(
 async def get_invocation_route(invocation_id: str) -> dict[str, Any]:
     data = await get_invocation(invocation_id)
     if data is None:
-        raise HTTPException(status_code=404, detail=f"Invocation '{invocation_id}' not found")
+        raise NotFoundError(f"Invocation '{invocation_id}' not found")
     return data
 
 
@@ -183,7 +184,7 @@ async def get_invocation_route(invocation_id: str) -> dict[str, Any]:
 async def get_artifact_route(artifact_id: str) -> dict[str, Any]:
     data = await get_artifact(artifact_id)
     if data is None:
-        raise HTTPException(status_code=404, detail=f"Artifact '{artifact_id}' not found")
+        raise NotFoundError(f"Artifact '{artifact_id}' not found")
     return data
 
 
