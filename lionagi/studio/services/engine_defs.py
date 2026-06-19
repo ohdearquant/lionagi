@@ -158,13 +158,13 @@ async def create_engine_def(data: dict[str, Any]) -> dict[str, Any]:
     return {"id": def_id, "name": name, "created_at": now}
 
 
-async def update_engine_def(def_id: str, fields: dict[str, Any]) -> bool:
-    if not fields:
-        return False
+async def update_engine_def(def_id: str, fields: dict[str, Any]) -> dict[str, Any] | bool:
     async with StateDB() as db:
         existing = await db.get_engine_def(def_id)
         if not existing:
             return False
+        if not fields:
+            return existing
 
         if "name" in fields:
             _svc_validate_identifier(fields["name"], "name")
