@@ -5,6 +5,7 @@
 from __future__ import annotations
 
 import json
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import pytest
@@ -12,12 +13,14 @@ import pytest
 from lionagi.cli.mirror import (
     _FileState,
     _first_prompt,
+    _one_pass,
     _parse_window,
     _read_new_events,
 )
 from lionagi.state.claude_mirror import (
     messages_for_event,
     mirror_session,
+    reconcile_session_status,
     session_db_id,
 )
 from lionagi.state.db import StateDB
@@ -241,16 +244,33 @@ async def test_mirror_session_is_idempotent(temp_db_path: Path) -> None:
 
 
 @pytest.mark.asyncio
-async def test_mirror_session_running_then_completed_flips(temp_db_path: Path) -> None:
-    events = _conversation()
+async def test_reconcile_flips_running_to_completed_when_idle(temp_db_path: Path) -> None:
     async with StateDB() as db:
-        await mirror_session(db, session_uid=SID, events=events, tool_names={}, status="running")
+        await mirror_session(
+            db, session_uid=SID, events=_conversation(), tool_names={}, status="running"
+        )
         before = await db.get_session(session_db_id(SID))
-        # A later idle pass with no new events still flips the status.
-        await mirror_session(db, session_uid=SID, events=[], tool_names={}, status="completed")
+        # Wall-clock well past the last message -> idle -> completed.
+        await reconcile_session_status(db, SID, now=before["updated_at"] + 10_000, live_window=300)
         after = await db.get_session(session_db_id(SID))
     assert before["status"] == "running"
     assert after["status"] == "completed"
+
+
+@pytest.mark.asyncio
+async def test_reconcile_reactivates_completed_when_fresh(temp_db_path: Path) -> None:
+    # A mirror session's "completed" is dormant, not terminal: when the transcript
+    # resumes, reconcile brings it back to running (green check -> live spinner).
+    async with StateDB() as db:
+        await mirror_session(
+            db, session_uid=SID, events=_conversation(), tool_names={}, status="completed"
+        )
+        before = await db.get_session(session_db_id(SID))
+        # "now" within the live window of the last message -> running.
+        await reconcile_session_status(db, SID, now=before["updated_at"] + 1, live_window=300)
+        after = await db.get_session(session_db_id(SID))
+    assert before["status"] == "completed"
+    assert after["status"] == "running"
 
 
 @pytest.mark.asyncio
@@ -260,6 +280,74 @@ async def test_mirror_session_empty_no_session(temp_db_path: Path) -> None:
         row = await db.get_session(session_db_id(SID))
     assert n == 0
     assert row is None
+
+
+# ── watcher passes: session-level liveness across multiple files ─────────────
+
+
+def _iso(dt: datetime) -> str:
+    return dt.strftime("%Y-%m-%dT%H:%M:%S.%f")[:-3] + "Z"
+
+
+def _write_session_file(path: Path, uid: str, *, age_secs: float) -> None:
+    """One transcript file for `uid` whose messages are `age_secs` old."""
+    ts = _iso(datetime.now(timezone.utc) - timedelta(seconds=age_secs))
+    stem = path.stem
+    events = [
+        {
+            "type": "user",
+            "uuid": f"{stem}-u",
+            "timestamp": ts,
+            "sessionId": uid,
+            "message": {"role": "user", "content": [{"type": "text", "text": f"prompt {stem}"}]},
+        },
+        {
+            "type": "assistant",
+            "uuid": f"{stem}-a",
+            "timestamp": ts,
+            "sessionId": uid,
+            "message": {
+                "role": "assistant",
+                "model": "claude-opus-4-8",
+                "content": [{"type": "text", "text": "ok"}],
+            },
+        },
+    ]
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text("\n".join(json.dumps(e) for e in events) + "\n")
+
+
+@pytest.mark.asyncio
+async def test_multifile_session_stays_running_when_any_file_is_fresh(
+    temp_db_path: Path, tmp_path: Path
+) -> None:
+    # A resumed session spans two transcript files sharing one sessionId: one old,
+    # one with a recent message. The merged session must read as live (running) —
+    # the regression guard against a per-file status decision burying an active one.
+    root = tmp_path / "projects"
+    uid = "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"
+    _write_session_file(root / "-work-acme" / "old.jsonl", uid, age_secs=7200)
+    _write_session_file(root / "-work-acme" / "fresh.jsonl", uid, age_secs=5)
+    async with StateDB() as db:
+        await _one_pass(db, root, {}, {}, since=None, live_window=300)
+        row = await db.get_session(session_db_id(uid))
+    assert row is not None
+    assert row["status"] == "running"
+
+
+@pytest.mark.asyncio
+async def test_multifile_session_completes_when_all_files_idle(
+    temp_db_path: Path, tmp_path: Path
+) -> None:
+    root = tmp_path / "projects"
+    uid = "11112222-3333-4444-5555-666677778888"
+    _write_session_file(root / "-work-acme" / "a.jsonl", uid, age_secs=7200)
+    _write_session_file(root / "-work-acme" / "b.jsonl", uid, age_secs=3600)
+    async with StateDB() as db:
+        await _one_pass(db, root, {}, {}, since=None, live_window=300)
+        row = await db.get_session(session_db_id(uid))
+    assert row is not None
+    assert row["status"] == "completed"
 
 
 # ── watcher helpers: tailing + parsing ───────────────────────────────────────

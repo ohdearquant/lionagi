@@ -18,8 +18,9 @@ from ._logging import hint, log_error, progress, warn
 CLAUDE_PROJECTS_DIR = Path.home() / ".claude" / "projects"
 _OFFSETS_PATH = LIONAGI_HOME / "mirror" / "offsets.json"
 
-# A transcript whose file changed within this window is treated as a live run.
-_DEFAULT_LIVE_WINDOW = 120.0
+# A session whose newest message is within this window counts as live (running);
+# past it, the next pass flips it to completed.
+_DEFAULT_LIVE_WINDOW = 300.0
 
 
 def add_mirror_subparser(subparsers: argparse._SubParsersAction) -> None:
@@ -62,7 +63,7 @@ def add_mirror_subparser(subparsers: argparse._SubParsersAction) -> None:
         type=float,
         default=_DEFAULT_LIVE_WINDOW,
         metavar="SECS",
-        help="Idle gap after which a session is marked completed (default 120).",
+        help="Idle gap since the last message after which a session is marked completed (default 300).",
     )
 
 
@@ -78,7 +79,6 @@ class _FileState:
     model: str | None = None
     name: str | None = None
     created: bool = False
-    completed: bool = False
 
 
 def _load_offsets() -> dict[str, int]:
@@ -165,6 +165,29 @@ def _derive_metadata(state: _FileState, events: list[dict[str, Any]]) -> None:
             state.name = prompt[:72]
 
 
+def _peek_session_uid(path: Path) -> str:
+    """Recover a transcript's sessionId from its head without consuming the tail.
+
+    Needed for idle files after a restart: with no new events to read, the session
+    id is otherwise unknown, and the liveness sweep would never flip it completed.
+    """
+    try:
+        with path.open("rb") as fh:
+            for _ in range(20):
+                line = fh.readline()
+                if not line:
+                    break
+                try:
+                    ev = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                if ev.get("sessionId"):
+                    return str(ev["sessionId"])
+    except OSError:
+        pass
+    return path.stem
+
+
 def _first_prompt(events: list[dict[str, Any]]) -> str | None:
     for e in events:
         if e.get("type") != "user" or e.get("isMeta"):
@@ -186,22 +209,20 @@ def _first_prompt(events: list[dict[str, Any]]) -> str | None:
     return None
 
 
-async def _mirror_one(db, path: Path, state: _FileState, *, live_window: float) -> int:
+async def _mirror_one(db, path: Path, state: _FileState) -> int:
     from lionagi.state.claude_mirror import mirror_session
 
     events = _read_new_events(path, state)
-    if not events and state.completed:
+    if not events:
         return 0
 
-    if events and not state.session_uid:
-        state.session_uid = next((e["sessionId"] for e in events if e.get("sessionId")), path.stem)
     if not state.session_uid:
-        state.session_uid = path.stem
+        state.session_uid = next((e["sessionId"] for e in events if e.get("sessionId")), path.stem)
     _derive_metadata(state, events)
 
-    idle = (time.time() - path.stat().st_mtime) > live_window
-    status = "completed" if idle else "running"
-
+    # Always created/kept running; the session-level idle sweep (after the whole
+    # pass) is what flips it to completed, so a fresh transcript anywhere in a
+    # multi-file session keeps the whole session live.
     written = await mirror_session(
         db,
         session_uid=state.session_uid,
@@ -211,19 +232,18 @@ async def _mirror_one(db, path: Path, state: _FileState, *, live_window: float) 
         project_source=state.project_source,
         model=state.model,
         name=state.name,
-        status=status,
+        status="running",
     )
     if written and not state.created:
         state.created = True
         progress(f"  mirror: {state.name or state.session_uid[:8]} (+{written} msgs)")
-    if status == "completed":
-        state.completed = True
     return written
 
 
 async def _one_pass(db, root: Path, states, offsets, *, since, live_window) -> int:
     now = time.time()
     total = 0
+    seen: set[str] = set()
     for path in sorted(root.glob("*/*.jsonl")):
         try:
             if since is not None and (now - path.stat().st_mtime) > since:
@@ -233,12 +253,19 @@ async def _one_pass(db, root: Path, states, offsets, *, since, live_window) -> i
             if state is None:
                 state = _FileState(session_uid="", offset=offsets.get(key, 0))
                 states[key] = state
-            total += await _mirror_one(db, path, state, live_window=live_window)
+            total += await _mirror_one(db, path, state)
             offsets[key] = state.offset
+            if not state.session_uid:  # idle file after a restart — recover from head
+                state.session_uid = _peek_session_uid(path)
+            seen.add(state.session_uid)
         except FileNotFoundError:
             continue
         except Exception as exc:  # one bad transcript must not kill the tail
             log_error(f"mirror failed for {path.name}: {exc}")
+    from lionagi.state.claude_mirror import reconcile_session_status
+
+    for uid in seen:
+        await reconcile_session_status(db, uid, now=now, live_window=live_window)
     return total
 
 

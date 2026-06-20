@@ -222,7 +222,8 @@ async def mirror_session(
     Re-calling with already-seen events is a no-op: message ids are deterministic
     (upsert), and progression appends dedupe. Creates the session/branch on first
     call with a rich row (project, model, agent_name) so it groups correctly in
-    the runs explorer; flips ``running`` → ``completed`` when ``status`` says so.
+    the runs explorer, with ``status`` as the initial status. Live/idle transitions
+    are owned by ``reconcile_session_status``, not this writer.
     """
     sid = session_db_id(session_uid)
     branch_id = _det(session_uid, "branch")
@@ -280,13 +281,36 @@ async def mirror_session(
     if messages:
         await db.touch_session_activity(sid, at=max(m.created_at for m in messages))
 
-    if status == "completed" and (existing is None or existing.get("status") == "running"):
-        from lionagi.state.reasons import RunReasons
-
-        await db.update_session(
-            sid,
-            status="completed",
-            reason_code=RunReasons.COMPLETED_OK,
-        )
-
     return len(messages)
+
+
+async def reconcile_session_status(
+    db: StateDB,
+    session_uid: str,
+    *,
+    now: float,
+    live_window: float,
+) -> None:
+    """Align a mirrored session's status with its live/idle state — both directions.
+
+    A mirror session's ``completed`` means dormant, not terminal: when the
+    transcript resumes, the next reconcile brings it back to ``running``. Liveness
+    is judged by the session's last message time (the same ``updated_at`` the
+    studio SSE reader and the phantom reaper read), so an idle session converges
+    to ``completed`` before the reaper can mark it failed, and an active one shows
+    ``running`` (a live spinner in studio and the VS Code extension).
+    """
+    from lionagi.state.reasons import RunReasons
+
+    existing = await db.get_session(session_db_id(session_uid))
+    if not existing:
+        return
+    live = (now - float(existing.get("updated_at") or 0.0)) <= live_window
+    desired = "running" if live else "completed"
+    if existing.get("status") == desired:
+        return
+    await db.update_session(
+        session_db_id(session_uid),
+        status=desired,
+        reason_code=RunReasons.STARTED_OK if desired == "running" else RunReasons.COMPLETED_OK,
+    )
