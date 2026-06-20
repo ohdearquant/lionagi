@@ -13,24 +13,24 @@ export function registerStatusBar(
   function update(state: BackendState): void {
     switch (state) {
       case "stopped":
-        item.text = "$(circle-slash) Lion Studio";
-        item.tooltip = "Lion Studio: not running. Click to start.";
-        item.command = "lionStudio.startBackend";
+        item.text = "$(circle-slash) Den";
+        item.tooltip = "Den: not running. Click to start.";
+        item.command = "den.startBackend";
         break;
       case "starting":
-        item.text = "$(loading~spin) Lion Studio…";
-        item.tooltip = "Lion Studio: starting…";
+        item.text = "$(loading~spin) Den…";
+        item.tooltip = "Den: starting…";
         item.command = undefined;
         break;
       case "running":
-        item.text = "$(check) Lion Studio";
-        item.tooltip = "Lion Studio: running. Click to open panel.";
-        item.command = "lionStudio.refreshRuns";
+        item.text = "$(check) Den";
+        item.tooltip = "Den: running. Click to open panel.";
+        item.command = "den.refreshRuns";
         break;
       case "error":
-        item.text = "$(error) Lion Studio";
-        item.tooltip = "Lion Studio: error. Click to retry.";
-        item.command = "lionStudio.startBackend";
+        item.text = "$(error) Den";
+        item.tooltip = "Den: error. Click to retry.";
+        item.command = "den.startBackend";
         break;
     }
   }

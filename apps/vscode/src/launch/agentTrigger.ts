@@ -62,11 +62,11 @@ export function registerAgentTrigger(
   deps: StudioDeps
 ): void {
   context.subscriptions.push(
-    vscode.commands.registerCommand("lionStudio.runAgent", async () => {
+    vscode.commands.registerCommand("den.runAgent", async () => {
       // 1. Ensure backend is running
       if (!deps.backend.isRunning()) {
         const choice = await vscode.window.showWarningMessage(
-          "Lion Studio backend is not running. Start it?",
+          "Den backend is not running. Start it?",
           "Start"
         );
         if (choice !== "Start") {
@@ -75,7 +75,7 @@ export function registerAgentTrigger(
         await deps.backend.start();
         if (!deps.backend.isRunning()) {
           void vscode.window.showErrorMessage(
-            "Backend failed to start. Check the Lion Studio output channel."
+            "Backend failed to start. Check the Den output channel."
           );
           return;
         }
@@ -83,7 +83,7 @@ export function registerAgentTrigger(
 
       // 2. Collect prompt (required)
       const actionPrompt = await vscode.window.showInputBox({
-        title: "Lion Studio: Run Agent",
+        title: "Den: Run Agent",
         prompt:
           "Enter the instruction or task for the agent. Press Enter to launch.",
         placeHolder:
@@ -101,7 +101,7 @@ export function registerAgentTrigger(
 
       // 3. Collect optional agent name
       const agentNameInput = await vscode.window.showInputBox({
-        title: "Lion Studio: Agent name (optional)",
+        title: "Den: Agent name (optional)",
         prompt:
           "Specify a named agent profile, or leave blank to use the default.",
         placeHolder: "e.g. reviewer (leave blank to skip)",
@@ -138,7 +138,7 @@ export function registerAgentTrigger(
       }
 
       // Refresh the Runs tree regardless of what happens next
-      void vscode.commands.executeCommand("lionStudio.refreshRuns");
+      void vscode.commands.executeCommand("den.refreshRuns");
 
       // 5. Poll until the run record appears, then stream it
       const pollAbort = new AbortController();
@@ -171,7 +171,7 @@ export function registerAgentTrigger(
       openLaunchStreamPanel(context, run.run_id, actionPrompt, deps);
 
       // Refresh again now that we have a run_id confirmed
-      void vscode.commands.executeCommand("lionStudio.refreshRuns");
+      void vscode.commands.executeCommand("den.refreshRuns");
     })
   );
 }

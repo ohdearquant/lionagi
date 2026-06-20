@@ -1,7 +1,7 @@
 import * as vscode from "vscode";
 
 function cfg(): vscode.WorkspaceConfiguration {
-  return vscode.workspace.getConfiguration("lionStudio");
+  return vscode.workspace.getConfiguration("den");
 }
 
 export function getUrl(): string {

@@ -64,7 +64,7 @@ export function openLaunchStreamPanel(
   deps: StudioDeps
 ): void {
   const panel = vscode.window.createWebviewPanel(
-    "lionStudio.agentStream",
+    "den.agentStream",
     truncateTitle(prompt),
     vscode.ViewColumn.Beside,
     {

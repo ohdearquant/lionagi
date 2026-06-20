@@ -42,14 +42,14 @@ export function activate(context: vscode.ExtensionContext): void {
   // Set initial context key and track all state changes.
   void vscode.commands.executeCommand(
     "setContext",
-    "lionStudio.backendState",
+    "den.backendState",
     bm.state
   );
   context.subscriptions.push(
     bm.onDidChangeState((state) => {
       void vscode.commands.executeCommand(
         "setContext",
-        "lionStudio.backendState",
+        "den.backendState",
         state
       );
     })
@@ -60,11 +60,16 @@ export function activate(context: vscode.ExtensionContext): void {
   registerAgentTrigger(context, deps);
 
   context.subscriptions.push(
-    vscode.commands.registerCommand("lionStudio.startBackend", () => {
+    vscode.commands.registerCommand("den.startBackend", () => {
       void bm.start();
     }),
-    vscode.commands.registerCommand("lionStudio.stopBackend", () => {
+    vscode.commands.registerCommand("den.stopBackend", () => {
       bm.stop();
+    }),
+    vscode.commands.registerCommand("den.starOnGitHub", () => {
+      void vscode.env.openExternal(
+        vscode.Uri.parse("https://github.com/ohdearquant/lionagi")
+      );
     })
   );
 

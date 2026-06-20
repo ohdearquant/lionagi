@@ -1,4 +1,4 @@
-// Lion Studio — Run Detail webview script
+// Den — Run Detail webview script
 // Runs inside the restricted webview context (no module system, strict CSP).
 // Receives postMessage from the extension host.
 

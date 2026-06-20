@@ -4,6 +4,15 @@ import type { ProjectGroup, Run } from "../api/types.js";
 /** Display + group key for runs that have no detected project. */
 export const NO_PROJECT = "(no project)";
 
+/**
+ * Stable identifier for a run. Mirrored sessions (e.g. Claude transcripts) are
+ * returned with `id` set but no `run_id`, so always resolve through both rather
+ * than touching `run.run_id` directly (which would throw on those rows).
+ */
+export function runId(run: Run): string {
+  return run.run_id ?? run.id ?? "";
+}
+
 const TERMINAL_STATUSES = new Set([
   "succeeded",
   "completed",
@@ -138,7 +147,7 @@ function pickLabel(run: Run): string {
   if (proj) {
     return proj;
   }
-  const id = run.run_id ?? run.id ?? "";
+  const id = runId(run);
   return kind ? `${kind} ${id.slice(0, 6)}`.trim() : id.slice(0, 8) || "run";
 }
 
@@ -178,7 +187,7 @@ export class RunItem extends vscode.TreeItem {
     this.contextValue = "run";
     this.tooltip = buildTooltip(run);
     this.command = {
-      command: "lionStudio.openRun",
+      command: "den.openRun",
       title: "Open Run",
       arguments: [run],
     };
@@ -239,7 +248,7 @@ export class LoadMoreItem extends vscode.TreeItem {
     // id encodes the loaded count so the node re-renders as the group grows.
     this.id = `loadmore:${key}:${loaded}`;
     this.command = {
-      command: "lionStudio.loadMoreRuns",
+      command: "den.loadMoreRuns",
       title: "Load more runs",
       arguments: [key],
     };
@@ -252,7 +261,7 @@ function buildTooltip(run: Run): vscode.MarkdownString {
   md.supportHtml = false;
 
   const title =
-    run.name ?? run.playbook_name ?? run.agent_name ?? run.run_id.slice(0, 8);
+    run.name ?? run.playbook_name ?? run.agent_name ?? runId(run).slice(0, 8);
   md.appendMarkdown(`### ${title}\n\n`);
 
   if (run.invocation_kind) {

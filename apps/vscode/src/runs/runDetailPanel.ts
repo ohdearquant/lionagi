@@ -5,7 +5,7 @@ import type { StudioDeps } from "../extension.js";
 import type { Run, StudioEvent } from "../api/types.js";
 import { streamSession } from "../api/sse.js";
 import { getAuthToken } from "../config.js";
-import { isTerminal } from "./runItem.js";
+import { isTerminal, runId } from "./runItem.js";
 
 // A single reusable run-detail panel, re-targeted as you click different runs —
 // clicking never spawns a second panel.
@@ -21,10 +21,10 @@ export class RunDetailPanel {
     private run: Run,
     column: vscode.ViewColumn
   ) {
-    const title = run.name ?? run.playbook_name ?? run.agent_name ?? run.run_id.slice(0, 8);
+    const title = run.name ?? run.playbook_name ?? run.agent_name ?? runId(run).slice(0, 8);
 
     this.panel = vscode.window.createWebviewPanel(
-      "lionStudio.runDetail",
+      "den.runDetail",
       `Run: ${title}`,
       { viewColumn: column, preserveFocus: true },
       {
@@ -65,7 +65,7 @@ export class RunDetailPanel {
 
   /** Re-point the existing panel at another run without opening a new one. */
   private retarget(run: Run): void {
-    if (run.run_id === this.run.run_id) {
+    if (runId(run) === runId(this.run)) {
       this.panel.reveal(undefined, true); // same run — just bring it forward
       return;
     }
@@ -73,7 +73,7 @@ export class RunDetailPanel {
     this.ac = new AbortController();
     this.run = run;
     this.panel.title = `Run: ${
-      run.name ?? run.playbook_name ?? run.agent_name ?? run.run_id.slice(0, 8)
+      run.name ?? run.playbook_name ?? run.agent_name ?? runId(run).slice(0, 8)
     }`;
     this.panel.reveal(undefined, true);
     void this.initialize();
@@ -91,7 +91,7 @@ export class RunDetailPanel {
 
   private async loadTerminal(): Promise<void> {
     try {
-      const run = await this.deps.client.getRun(this.run.run_id);
+      const run = await this.deps.client.getRun(runId(this.run));
       this.run = run;
 
       // Refresh header with final metadata.
@@ -132,7 +132,7 @@ export class RunDetailPanel {
     try {
       await streamSession(
         this.deps.backend.baseUrl,
-        this.run.run_id,
+        runId(this.run),
         getAuthToken() || undefined,
         (e: StudioEvent) => {
           if (e.type === "heartbeat") {
@@ -174,7 +174,7 @@ export class RunDetailPanel {
 
     const run = this.run;
     const title =
-      run.name ?? run.playbook_name ?? run.agent_name ?? run.run_id.slice(0, 8);
+      run.name ?? run.playbook_name ?? run.agent_name ?? runId(run).slice(0, 8);
 
     const statusClass = statusCssClass(run.status);
     const modelBadge = run.model

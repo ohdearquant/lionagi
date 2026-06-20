@@ -85,7 +85,7 @@ class RunsProvider implements vscode.TreeDataProvider<RunNode> {
     const { projects, total } = groupsRes.value;
     void vscode.commands.executeCommand(
       "setContext",
-      "lionStudio.hasRuns",
+      "den.hasRuns",
       total > 0
     );
     this._groupItems.clear();
@@ -171,7 +171,7 @@ class RunsProvider implements vscode.TreeDataProvider<RunNode> {
     ) {
       this._authErrorShown = true;
       void vscode.window.showErrorMessage(
-        "Lion Studio: authentication failed — check the lionStudio.authToken setting."
+        "Den: authentication failed — check the den.authToken setting."
       );
     }
   }
@@ -183,7 +183,7 @@ export function registerRunsExplorer(
 ): void {
   const provider = new RunsProvider(deps);
 
-  const treeView = vscode.window.createTreeView("lionStudio.runs", {
+  const treeView = vscode.window.createTreeView("den.runs", {
     treeDataProvider: provider,
     showCollapseAll: true,
   });
@@ -261,21 +261,21 @@ export function registerRunsExplorer(
   });
 
   const refreshCmd = vscode.commands.registerCommand(
-    "lionStudio.refreshRuns",
+    "den.refreshRuns",
     () => {
       onRefresh();
     }
   );
 
   const openRunCmd = vscode.commands.registerCommand(
-    "lionStudio.openRun",
+    "den.openRun",
     (run: Run) => {
       RunDetailPanel.open(context, deps, run);
     }
   );
 
   const loadMoreCmd = vscode.commands.registerCommand(
-    "lionStudio.loadMoreRuns",
+    "den.loadMoreRuns",
     (key: string) => {
       provider.loadMore(key);
     }

@@ -1,14 +1,23 @@
-# Lion Studio VS Code Extension
+# Den
 
-A native VS Code client for the Lion Studio FastAPI backend. Manage and observe
-`lionagi` agent runs directly from your editor, without leaving the IDE.
+Watch your agents work. Den is a native VS Code client that shows your
+`lionagi` agent runs and Claude Code sessions live in the editor, as they
+happen.
 
 ## What It Is
 
-This extension talks to the public Lion Studio API (`/api/*` + SSE) over a
-local HTTP connection. It does **not** embed the Studio web SPA. All UI is
-native VS Code: tree views, commands, webviews, codicons. The backend stays on
-your machine; no data leaves your workstation.
+Den runs a small local backend (`python -m lionagi.studio`) and talks to it
+over `localhost` (`/api/*` + SSE). Everything you see is native VS Code: a tree
+of runs in the activity bar, commands, and webview panels that stream output
+live. There is no web app and no SPA embedded. The backend stays on your
+machine and nothing leaves your workstation.
+
+Two things show up in the Runs tree:
+
+- **lionagi runs** — anything you launch with `li agent`, `li o`, or the
+  **Den: Run Agent…** command, grouped by project and streamed live.
+- **Claude Code sessions** — your local Claude Code transcripts, mirrored into
+  the same tree so every agent you run lands in one place.
 
 ## Requirements
 
@@ -21,36 +30,42 @@ pip install 'lionagi[studio]'
 
 ## Quick Start
 
-1. Install the extension from the Marketplace (or Open VSX).
-2. Open the Lion Studio panel in the activity bar (left sidebar).
-3. The extension auto-starts the backend on activation (configurable).
-4. Use **Lion Studio: Run Agent...** to trigger a run, then watch it live in
-   the Runs tree.
+1. Install Den from the Marketplace (or Open VSX).
+2. Open the **Den** panel in the activity bar (left sidebar).
+3. Den auto-starts the local backend on activation (configurable).
+4. Use **Den: Run Agent…** to trigger a run, then watch it live in the Runs
+   tree. Claude Code sessions appear automatically as you use them.
 
 ## Settings
 
 | Setting | Default | Description |
 |---|---|---|
-| `lionStudio.url` | `""` | Attach URL for an already-running backend. Leave empty to auto-spawn. |
-| `lionStudio.pythonPath` | `"python3"` | Python interpreter path. |
-| `lionStudio.port` | `8765` | Backend port when spawning. |
-| `lionStudio.host` | `"127.0.0.1"` | Backend host when spawning. |
-| `lionStudio.autoStart` | `true` | Spawn the backend on extension activation. |
-| `lionStudio.authToken` | `""` | Bearer token (`LIONAGI_STUDIO_AUTH_TOKEN`). |
+| `den.url` | `""` | Attach URL for an already-running backend. Leave empty to auto-spawn. |
+| `den.pythonPath` | `""` | Python interpreter path. Leave empty to auto-detect (workspace `.venv`, then `uv`, then `python3`). |
+| `den.port` | `8765` | Backend port when spawning. |
+| `den.host` | `"127.0.0.1"` | Backend host when spawning. |
+| `den.autoStart` | `true` | Spawn the backend on extension activation. |
+| `den.authToken` | `""` | Bearer token (`LIONAGI_STUDIO_AUTH_TOKEN`). |
 
-## v0 Features
+## Features
 
 - **Backend lifecycle**: auto-spawns `python -m lionagi.studio` on activation,
   health-checks `/health`, surfaces state (stopped / starting / running / error)
   in the status bar.
-- **Attach mode**: set `lionStudio.url` to skip spawning and connect to an
-  existing instance.
-- **Runs explorer**: tree view over `GET /api/runs/` (paginated).
+- **Attach mode**: set `den.url` to skip spawning and connect to an existing
+  instance.
+- **Runs explorer**: tree view over `GET /api/runs/`, grouped by project with a
+  pinned **Active** group for everything currently running.
 - **Run Agent**: command palette / toolbar button that POSTs to
   `POST /api/launches/` with `action_kind: "agent"`.
-- **Live streaming**: run detail view subscribes to the session SSE
-  (`GET /api/sessions/{id}/stream`) for live output.
+- **Live streaming**: the run detail panel subscribes to the session SSE
+  (`GET /api/sessions/{id}/stream`) and streams output as it arrives.
+- **Claude Code mirror**: local Claude Code sessions are mirrored into the Runs
+  tree and reconciled live.
 
 ## License
 
 Apache 2.0
+
+Den is part of [lionagi](https://github.com/ohdearquant/lionagi). If it is
+useful to you, a ⭐ on the repo helps.

@@ -96,7 +96,7 @@ export class BackendManager implements vscode.Disposable {
     private readonly getHost: () => string,
     private readonly getToken: () => string
   ) {
-    this._output = vscode.window.createOutputChannel("Lion Studio");
+    this._output = vscode.window.createOutputChannel("Den");
   }
 
   get state(): BackendState {
@@ -201,8 +201,8 @@ export class BackendManager implements vscode.Disposable {
       spawnFailed = true;
       this.setState("error");
       void vscode.window.showErrorMessage(
-        `Lion Studio: failed to start backend — ${err.message}. ` +
-          `Check the lionStudio.pythonPath setting.`
+        `Den: failed to start backend — ${err.message}. ` +
+          `Check the den.pythonPath setting.`
       );
     });
 
@@ -213,10 +213,10 @@ export class BackendManager implements vscode.Disposable {
         spawnFailed = true;
         this.setState("error");
         void vscode.window.showErrorMessage(
-          `Lion Studio: backend exited (code ${code}) before becoming healthy. ` +
+          `Den: backend exited (code ${code}) before becoming healthy. ` +
             `The Python at ${spec.command} may not have lionagi installed — ` +
-            `set lionStudio.pythonPath or run 'uv pip install lionagi'. ` +
-            `See the Lion Studio output channel.`
+            `set den.pythonPath or run 'uv pip install lionagi'. ` +
+            `See the Den output channel.`
         );
       } else if (this._state !== "stopped") {
         this.setState("error");
