@@ -97,7 +97,9 @@ export function relativeTime(
 }
 
 /** Last path segment of a project ref: "ohdearquant/lattice" → "lattice". */
-function shortProject(project: string | null | undefined): string | undefined {
+export function shortProject(
+  project: string | null | undefined
+): string | undefined {
   if (!project) {
     return undefined;
   }
@@ -177,6 +179,26 @@ export class RunItem extends vscode.TreeItem {
       title: "Open Run",
       arguments: [run],
     };
+  }
+}
+
+/** A collapsible parent grouping a project's runs in the tree. */
+export class ProjectGroupItem extends vscode.TreeItem {
+  constructor(
+    public readonly projectKey: string,
+    public readonly runs: Run[]
+  ) {
+    super(
+      shortProject(projectKey) ?? projectKey,
+      vscode.TreeItemCollapsibleState.Expanded
+    );
+    const n = runs.length;
+    this.description = `${n}`;
+    this.contextValue = "runGroup";
+    this.iconPath = new vscode.ThemeIcon("repo");
+    this.tooltip = `${projectKey} · ${n} run${n === 1 ? "" : "s"}`;
+    // Stable id so manual expand/collapse survives the 4s poll refreshes.
+    this.id = `group:${projectKey}`;
   }
 }
 

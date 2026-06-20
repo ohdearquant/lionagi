@@ -2,16 +2,34 @@ import * as vscode from "vscode";
 import type { StudioDeps } from "../extension.js";
 import type { Run } from "../api/types.js";
 import { StudioApiError } from "../api/client.js";
-import { RunItem, isTerminal, toMillis } from "./runItem.js";
+import { RunItem, ProjectGroupItem, isTerminal, toMillis } from "./runItem.js";
 import { RunDetailPanel } from "./runDetailPanel.js";
 
 const POLL_INTERVAL_MS = 4_000;
+const NO_PROJECT = "(no project)";
 
-class RunsProvider implements vscode.TreeDataProvider<RunItem> {
+type RunNode = ProjectGroupItem | RunItem;
+
+/** Bucket runs by project, preserving the time-desc order so groups list most-recently-active first. */
+function buildProjectGroups(runs: Run[]): ProjectGroupItem[] {
+  const groups = new Map<string, Run[]>();
+  for (const run of runs) {
+    const key = run.project ?? NO_PROJECT;
+    const bucket = groups.get(key);
+    if (bucket) {
+      bucket.push(run);
+    } else {
+      groups.set(key, [run]);
+    }
+  }
+  return [...groups.entries()].map(([key, rs]) => new ProjectGroupItem(key, rs));
+}
+
+class RunsProvider implements vscode.TreeDataProvider<RunNode> {
   private _runs: Run[] = [];
   private _authErrorShown = false;
   private readonly _onDidChangeTreeData =
-    new vscode.EventEmitter<RunItem | undefined | null | void>();
+    new vscode.EventEmitter<RunNode | undefined | null | void>();
   readonly onDidChangeTreeData = this._onDidChangeTreeData.event;
 
   constructor(private readonly deps: StudioDeps) {}
@@ -20,11 +38,20 @@ class RunsProvider implements vscode.TreeDataProvider<RunItem> {
     this._onDidChangeTreeData.fire();
   }
 
-  getTreeItem(element: RunItem): RunItem {
+  getTreeItem(element: RunNode): vscode.TreeItem {
     return element;
   }
 
-  async getChildren(): Promise<RunItem[]> {
+  async getChildren(element?: RunNode): Promise<RunNode[]> {
+    // Leaf runs have no children.
+    if (element instanceof RunItem) {
+      return [];
+    }
+    // A project group lists its runs (already time-sorted at fetch).
+    if (element instanceof ProjectGroupItem) {
+      return element.runs.map((r) => new RunItem(r));
+    }
+    // Root: fetch all runs, then group by project.
     if (!this.deps.backend.isRunning()) {
       this._runs = [];
       return [];
@@ -43,7 +70,7 @@ class RunsProvider implements vscode.TreeDataProvider<RunItem> {
         "lionStudio.hasRuns",
         sorted.length > 0
       );
-      return sorted.map((r) => new RunItem(r));
+      return buildProjectGroups(sorted);
     } catch (err) {
       this._runs = [];
       if (
@@ -77,7 +104,7 @@ export function registerRunsExplorer(
 
   const treeView = vscode.window.createTreeView("lionStudio.runs", {
     treeDataProvider: provider,
-    showCollapseAll: false,
+    showCollapseAll: true,
   });
 
   let pollTimer: ReturnType<typeof setInterval> | undefined;
