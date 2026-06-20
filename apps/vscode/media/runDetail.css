@@ -1,0 +1,247 @@
+/* Lion Studio — Run Detail Panel */
+/* All colors use VS Code theme variables so the panel matches any theme. */
+
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+}
+
+body {
+  font-family: var(--vscode-font-family);
+  font-size: var(--vscode-font-size, 13px);
+  color: var(--vscode-foreground);
+  background: var(--vscode-editor-background);
+  height: 100vh;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+/* ── Header ── */
+
+.header {
+  flex-shrink: 0;
+  padding: 12px 16px 8px;
+  border-bottom: 1px solid var(--vscode-panel-border);
+  background: var(--vscode-editor-background);
+  position: sticky;
+  top: 0;
+  z-index: 10;
+}
+
+.header__title {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin-bottom: 6px;
+}
+
+.header__title h1 {
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--vscode-foreground);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 60%;
+}
+
+.header__meta {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+/* ── Status dot ── */
+
+.status-dot {
+  display: inline-block;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+
+.status-dot--running {
+  background: var(--vscode-charts-blue);
+  animation: pulse 1.5s ease-in-out infinite;
+}
+
+.status-dot--success {
+  background: var(--vscode-charts-green);
+}
+
+.status-dot--error {
+  background: var(--vscode-charts-red);
+}
+
+.status-dot--cancelled {
+  background: var(--vscode-descriptionForeground);
+}
+
+.status-dot--pending {
+  background: var(--vscode-charts-yellow);
+}
+
+.status-dot--unknown {
+  background: var(--vscode-descriptionForeground);
+}
+
+@keyframes pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.4; }
+}
+
+/* ── Badges ── */
+
+.badge {
+  display: inline-flex;
+  align-items: center;
+  font-size: 11px;
+  font-weight: 500;
+  padding: 1px 6px;
+  border-radius: 3px;
+  background: var(--vscode-badge-background);
+  color: var(--vscode-badge-foreground);
+  white-space: nowrap;
+}
+
+.badge--status.badge--running {
+  background: color-mix(in srgb, var(--vscode-charts-blue) 20%, transparent);
+  color: var(--vscode-charts-blue);
+}
+
+.badge--status.badge--success {
+  background: color-mix(in srgb, var(--vscode-charts-green) 20%, transparent);
+  color: var(--vscode-charts-green);
+}
+
+.badge--status.badge--error {
+  background: color-mix(in srgb, var(--vscode-charts-red) 20%, transparent);
+  color: var(--vscode-charts-red);
+}
+
+.badge--status.badge--cancelled {
+  background: color-mix(in srgb, var(--vscode-descriptionForeground) 20%, transparent);
+  color: var(--vscode-descriptionForeground);
+}
+
+.badge--status.badge--pending {
+  background: color-mix(in srgb, var(--vscode-charts-yellow) 20%, transparent);
+  color: var(--vscode-charts-yellow);
+}
+
+.badge--status.badge--unknown {
+  background: var(--vscode-badge-background);
+  color: var(--vscode-badge-foreground);
+}
+
+.badge--kind {
+  background: color-mix(in srgb, var(--vscode-textLink-foreground) 15%, transparent);
+  color: var(--vscode-textLink-foreground);
+}
+
+.badge--project {
+  background: color-mix(in srgb, var(--vscode-charts-orange, var(--vscode-charts-yellow)) 15%, transparent);
+  color: var(--vscode-charts-orange, var(--vscode-charts-yellow));
+}
+
+.meta-item {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  font-size: 11px;
+  color: var(--vscode-descriptionForeground);
+}
+
+/* ── Log ── */
+
+.log-container {
+  flex: 1;
+  overflow-y: auto;
+  padding: 8px 0;
+  font-family: var(--vscode-editor-font-family, monospace);
+  font-size: var(--vscode-editor-font-size, 12px);
+}
+
+.log__empty {
+  padding: 32px 16px;
+  color: var(--vscode-descriptionForeground);
+  text-align: center;
+  font-family: var(--vscode-font-family);
+}
+
+.log-row {
+  padding: 3px 16px;
+  border-bottom: 1px solid color-mix(in srgb, var(--vscode-panel-border) 40%, transparent);
+  line-height: 1.5;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.log-row:last-child {
+  border-bottom: none;
+}
+
+.log-row--done {
+  color: var(--vscode-descriptionForeground);
+  font-style: italic;
+  font-family: var(--vscode-font-family);
+  font-size: var(--vscode-font-size, 13px);
+  padding: 8px 16px;
+}
+
+.log-row--error {
+  color: var(--vscode-charts-red);
+  font-family: var(--vscode-font-family);
+  font-size: var(--vscode-font-size, 13px);
+  padding: 6px 16px;
+}
+
+.log-row .event-type {
+  font-size: 10px;
+  font-weight: 600;
+  color: var(--vscode-descriptionForeground);
+  font-family: var(--vscode-font-family);
+  margin-right: 8px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  vertical-align: middle;
+}
+
+.log-row .event-content {
+  color: var(--vscode-foreground);
+}
+
+.log-row .event-content--assistant {
+  color: var(--vscode-textLink-foreground);
+}
+
+.log-row .event-content--tool {
+  color: var(--vscode-charts-yellow);
+}
+
+.event-block {
+  background: var(--vscode-textCodeBlock-background);
+  border-radius: 3px;
+  padding: 6px 10px;
+  margin: 2px 0;
+  font-size: 11px;
+  overflow-x: auto;
+}
+
+/* ── Footer ── */
+
+.footer {
+  flex-shrink: 0;
+  padding: 4px 16px;
+  border-top: 1px solid var(--vscode-panel-border);
+  font-size: 11px;
+  color: var(--vscode-descriptionForeground);
+  background: var(--vscode-editor-background);
+}

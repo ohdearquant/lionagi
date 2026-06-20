@@ -1,0 +1,156 @@
+import * as vscode from "vscode";
+import type { Run } from "../api/types.js";
+
+const TERMINAL_STATUSES = new Set([
+  "succeeded",
+  "completed",
+  "failed",
+  "error",
+  "cancelled",
+  "done",
+]);
+
+export function isTerminal(run: Run): boolean {
+  return TERMINAL_STATUSES.has(run.status?.toLowerCase() ?? "");
+}
+
+export function statusIcon(run: Run): vscode.ThemeIcon {
+  const s = (run.status ?? "").toLowerCase();
+  const h = (run.effective_health ?? "").toLowerCase();
+
+  if (s === "running" || s === "active" || s === "starting") {
+    return new vscode.ThemeIcon(
+      "loading~spin",
+      new vscode.ThemeColor("charts.blue")
+    );
+  }
+  if (s === "succeeded" || s === "completed" || h === "healthy") {
+    return new vscode.ThemeIcon(
+      "pass",
+      new vscode.ThemeColor("charts.green")
+    );
+  }
+  if (s === "failed" || s === "error") {
+    return new vscode.ThemeIcon(
+      "error",
+      new vscode.ThemeColor("charts.red")
+    );
+  }
+  if (s === "cancelled") {
+    return new vscode.ThemeIcon(
+      "circle-slash",
+      new vscode.ThemeColor("descriptionForeground")
+    );
+  }
+  if (s === "queued" || s === "pending") {
+    return new vscode.ThemeIcon(
+      "clock",
+      new vscode.ThemeColor("charts.yellow")
+    );
+  }
+  return new vscode.ThemeIcon("circle-outline");
+}
+
+export function relativeTime(iso: string | null | undefined): string {
+  if (!iso) {
+    return "";
+  }
+  const diffMs = Date.now() - new Date(iso).getTime();
+  if (diffMs < 0) {
+    return "just now";
+  }
+  const secs = Math.floor(diffMs / 1000);
+  if (secs < 60) {
+    return `${secs}s ago`;
+  }
+  const mins = Math.floor(secs / 60);
+  if (mins < 60) {
+    return `${mins}m ago`;
+  }
+  const hrs = Math.floor(mins / 60);
+  if (hrs < 24) {
+    return `${hrs}h ago`;
+  }
+  const days = Math.floor(hrs / 24);
+  return `${days}d ago`;
+}
+
+export class RunItem extends vscode.TreeItem {
+  constructor(public readonly run: Run) {
+    const label =
+      run.name ??
+      run.playbook_name ??
+      run.agent_name ??
+      run.run_id.slice(0, 8);
+
+    super(label, vscode.TreeItemCollapsibleState.None);
+
+    const ts = run.started_at ?? run.created_at;
+    const rel = relativeTime(ts);
+    const statusPart = run.status ?? "unknown";
+    const modelPart = run.model ? ` · ${run.model}` : "";
+    this.description = rel
+      ? `${statusPart} · ${rel}${modelPart}`
+      : `${statusPart}${modelPart}`;
+
+    this.iconPath = statusIcon(run);
+    this.contextValue = "run";
+    this.tooltip = buildTooltip(run);
+    this.command = {
+      command: "lionStudio.openRun",
+      title: "Open Run",
+      arguments: [run],
+    };
+  }
+}
+
+function buildTooltip(run: Run): vscode.MarkdownString {
+  const md = new vscode.MarkdownString("", true);
+  md.isTrusted = true;
+  md.supportHtml = false;
+
+  const title =
+    run.name ?? run.playbook_name ?? run.agent_name ?? run.run_id.slice(0, 8);
+  md.appendMarkdown(`### ${title}\n\n`);
+
+  if (run.invocation_kind) {
+    md.appendMarkdown(`**Kind:** ${run.invocation_kind}\n\n`);
+  }
+  if (run.model || run.provider) {
+    const parts = [run.model, run.provider].filter(Boolean).join(" / ");
+    md.appendMarkdown(`**Model:** ${parts}\n\n`);
+  }
+  if (run.effort) {
+    md.appendMarkdown(`**Effort:** ${run.effort}\n\n`);
+  }
+  if (run.project) {
+    md.appendMarkdown(`**Project:** ${run.project}`);
+    if (run.project_source) {
+      md.appendMarkdown(` _(${run.project_source})_`);
+    }
+    md.appendMarkdown("\n\n");
+  }
+  md.appendMarkdown(
+    `**Branches / Messages:** ${run.branch_count} / ${run.message_count}\n\n`
+  );
+  if (run.started_at) {
+    md.appendMarkdown(`**Started:** ${formatTs(run.started_at)}\n\n`);
+  }
+  if (run.ended_at) {
+    md.appendMarkdown(`**Ended:** ${formatTs(run.ended_at)}\n\n`);
+  }
+  md.appendMarkdown(`**Status:** ${run.status}`);
+  if (run.effective_health) {
+    md.appendMarkdown(` · health: ${run.effective_health}`);
+  }
+
+  return md;
+}
+
+function formatTs(iso: string): string {
+  try {
+    return new Date(iso).toLocaleString();
+  } catch {
+    return iso;
+  }
+}
