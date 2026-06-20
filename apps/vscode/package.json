@@ -2,7 +2,7 @@
   "name": "lion-studio",
   "displayName": "Lion Studio",
   "description": "Native VS Code client for the Lion Studio FastAPI backend.",
-  "version": "0.0.6",
+  "version": "0.0.7",
   "publisher": "lionagi",
   "icon": "media/icon.png",
   "repository": {
@@ -13,10 +13,20 @@
   "engines": {
     "vscode": "^1.90.0"
   },
-  "categories": ["Other"],
-  "keywords": ["lionagi", "agent", "orchestration", "ai", "llm"],
+  "categories": [
+    "Other"
+  ],
+  "keywords": [
+    "lionagi",
+    "agent",
+    "orchestration",
+    "ai",
+    "llm"
+  ],
   "main": "./out/extension.js",
-  "activationEvents": ["onStartupFinished"],
+  "activationEvents": [
+    "onStartupFinished"
+  ],
   "contributes": {
     "viewsContainers": {
       "activitybar": [
@@ -38,8 +48,18 @@
     "viewsWelcome": [
       {
         "view": "lionStudio.runs",
-        "contents": "Lion Studio backend is not running.\n[Start Backend](command:lionStudio.startBackend)",
-        "when": "lionStudio.backendState != 'running'"
+        "contents": "$(loading~spin) Starting Lion Studio…",
+        "when": "lionStudio.backendState == 'starting' || (lionStudio.backendState == 'stopped' && config.lionStudio.autoStart)"
+      },
+      {
+        "view": "lionStudio.runs",
+        "contents": "Lion Studio backend is stopped.\n[Start Backend](command:lionStudio.startBackend)",
+        "when": "lionStudio.backendState == 'stopped' && !config.lionStudio.autoStart"
+      },
+      {
+        "view": "lionStudio.runs",
+        "contents": "Lion Studio couldn't start. See the Lion Studio output channel for details.\n[Retry](command:lionStudio.startBackend)",
+        "when": "lionStudio.backendState == 'error'"
       },
       {
         "view": "lionStudio.runs",

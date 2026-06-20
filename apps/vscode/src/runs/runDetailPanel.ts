@@ -7,24 +7,26 @@ import { streamSession } from "../api/sse.js";
 import { getAuthToken } from "../config.js";
 import { isTerminal } from "./runItem.js";
 
-// One panel per run_id.
-const openPanels = new Map<string, RunDetailPanel>();
+// A single reusable run-detail panel, re-targeted as you click different runs —
+// clicking never spawns a second panel.
+let currentPanel: RunDetailPanel | undefined;
 
 export class RunDetailPanel {
   private readonly panel: vscode.WebviewPanel;
-  private readonly ac: AbortController;
+  private ac: AbortController;
 
   private constructor(
     private readonly context: vscode.ExtensionContext,
     private readonly deps: StudioDeps,
-    private run: Run
+    private run: Run,
+    column: vscode.ViewColumn
   ) {
     const title = run.name ?? run.playbook_name ?? run.agent_name ?? run.run_id.slice(0, 8);
 
     this.panel = vscode.window.createWebviewPanel(
       "lionStudio.runDetail",
       `Run: ${title}`,
-      vscode.ViewColumn.Beside,
+      { viewColumn: column, preserveFocus: true },
       {
         enableScripts: true,
         retainContextWhenHidden: true,
@@ -38,7 +40,9 @@ export class RunDetailPanel {
 
     this.panel.onDidDispose(() => {
       this.ac.abort();
-      openPanels.delete(run.run_id);
+      if (currentPanel === this) {
+        currentPanel = undefined;
+      }
     });
 
     void this.initialize();
@@ -49,14 +53,30 @@ export class RunDetailPanel {
     deps: StudioDeps,
     run: Run
   ): RunDetailPanel {
-    const existing = openPanels.get(run.run_id);
-    if (existing) {
-      existing.panel.reveal(vscode.ViewColumn.Beside);
-      return existing;
+    if (currentPanel) {
+      // Reuse the one panel — clicking a different run re-targets it in place.
+      currentPanel.retarget(run);
+      return currentPanel;
     }
-    const inst = new RunDetailPanel(context, deps, run);
-    openPanels.set(run.run_id, inst);
+    const inst = new RunDetailPanel(context, deps, run, pickDetailColumn());
+    currentPanel = inst;
     return inst;
+  }
+
+  /** Re-point the existing panel at another run without opening a new one. */
+  private retarget(run: Run): void {
+    if (run.run_id === this.run.run_id) {
+      this.panel.reveal(undefined, true); // same run — just bring it forward
+      return;
+    }
+    this.ac.abort();
+    this.ac = new AbortController();
+    this.run = run;
+    this.panel.title = `Run: ${
+      run.name ?? run.playbook_name ?? run.agent_name ?? run.run_id.slice(0, 8)
+    }`;
+    this.panel.reveal(undefined, true);
+    void this.initialize();
   }
 
   private async initialize(): Promise<void> {
@@ -208,6 +228,15 @@ export class RunDetailPanel {
 </body>
 </html>`;
   }
+}
+
+/**
+ * Where the first detail panel opens: split Beside when the editor shows a single
+ * group, otherwise reuse the active group so we never keep adding splits.
+ */
+function pickDetailColumn(): vscode.ViewColumn {
+  const groups = vscode.window.tabGroups?.all.length ?? 1;
+  return groups <= 1 ? vscode.ViewColumn.Beside : vscode.ViewColumn.Active;
 }
 
 function esc(s: string): string {
