@@ -15,6 +15,7 @@ from lionagi.cli.mirror import (
     _fallback_project,
     _FileState,
     _first_prompt,
+    _Lineage,
     _one_pass,
     _parse_window,
     _read_new_events,
@@ -467,7 +468,7 @@ async def test_mirror_session_backfills_missing_project(temp_db_path: Path) -> N
     assert after["updated_at"] == before["updated_at"]
 
 
-# ── idle-session attribution backfill ────────────────────────────────────────
+# ── conversation-lineage detector ────────────────────────────────────────────
 
 
 def _lineage_event(uid: str, euid: str, parent: str | None, role: str, text: str) -> dict:
@@ -488,6 +489,92 @@ def _lineage_event(uid: str, euid: str, parent: str | None, role: str, text: str
 def _write_lineage_file(path: Path, events: list[dict]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text("\n".join(json.dumps(e) for e in events) + "\n")
+
+
+@pytest.mark.asyncio
+async def test_lineage_links_continued_session(temp_db_path: Path, tmp_path: Path) -> None:
+    # Session B's first message points (parentUuid) at session A's last message:
+    # B continues A. The mirror records that as a lineage link on B.
+    root = tmp_path / "projects"
+    a, b = "aaaaaaaa-0000-0000-0000-000000000001", "bbbbbbbb-0000-0000-0000-000000000002"
+    _write_lineage_file(
+        root / "-w-proj" / f"{a}.jsonl",
+        [
+            _lineage_event(a, "a-1", None, "user", "start the work"),
+            _lineage_event(a, "a-leaf", "a-1", "assistant", "done, ending here"),
+        ],
+    )
+    _write_lineage_file(
+        root / "-w-proj" / f"{b}.jsonl",
+        [
+            _lineage_event(b, "b-1", "a-leaf", "user", "continuing from before"),
+            _lineage_event(b, "b-2", "b-1", "assistant", "picking it up"),
+        ],
+    )
+    async with StateDB() as db:
+        await _one_pass(db, root, {}, {}, since=None, live_window=300)
+        child = await db.get_session(session_db_id(b))
+    lineage = child["node_metadata"]["lineage"]
+    assert lineage["parent_session_id"] == session_db_id(a)
+    assert lineage["parent_session_uid"] == a
+    assert lineage["parent_event_uuid"] == "a-leaf"
+
+
+@pytest.mark.asyncio
+async def test_no_lineage_for_self_rooted_session(temp_db_path: Path, tmp_path: Path) -> None:
+    root = tmp_path / "projects"
+    s = "cccccccc-0000-0000-0000-000000000003"
+    _write_lineage_file(
+        root / "-w-proj" / f"{s}.jsonl",
+        [
+            _lineage_event(s, "c-1", None, "user", "fresh start"),
+            _lineage_event(s, "c-2", "c-1", "assistant", "ok"),
+        ],
+    )
+    async with StateDB() as db:
+        await _one_pass(db, root, {}, {}, since=None, live_window=300)
+        row = await db.get_session(session_db_id(s))
+    assert "lineage" not in (row["node_metadata"] or {})
+
+
+@pytest.mark.asyncio
+async def test_no_lineage_for_same_session_across_files(temp_db_path: Path, tmp_path: Path) -> None:
+    # Two files share one sessionId (a resumed session). File 2's head points at
+    # file 1's leaf — same session, so it is NOT cross-session lineage.
+    root = tmp_path / "projects"
+    s = "dddddddd-0000-0000-0000-000000000004"
+    _write_lineage_file(
+        root / "-w-proj" / f"{s}-1.jsonl",
+        [
+            _lineage_event(s, "d-1", None, "user", "part one"),
+            _lineage_event(s, "d-mid", "d-1", "assistant", "more"),
+        ],
+    )
+    _write_lineage_file(
+        root / "-w-proj" / f"{s}-2.jsonl",
+        [
+            _lineage_event(s, "d-3", "d-mid", "user", "part two same session"),
+            _lineage_event(s, "d-4", "d-3", "assistant", "ok"),
+        ],
+    )
+    async with StateDB() as db:
+        await _one_pass(db, root, {}, {}, since=None, live_window=300)
+        row = await db.get_session(session_db_id(s))
+    assert "lineage" not in (row["node_metadata"] or {})
+
+
+def test_lineage_resolve_skips_unindexed_and_same_session() -> None:
+    lin = _Lineage()
+    lin.leaf_owner = {"leaf-A": "sessA"}
+    lin.pending = {
+        "sessB": "leaf-A",  # resolves to a different session -> link
+        "sessC": "unknown-leaf",  # parent not indexed -> stays pending
+        "sessA": "leaf-A",  # resolves to itself -> not lineage
+    }
+    links = lin.resolve()
+    assert links == [("sessB", "sessA", "leaf-A")]
+    assert lin.pending == {"sessC": "unknown-leaf"}  # unresolved stays for next pass
+    assert "sessB" in lin.linked
 
 
 @pytest.mark.asyncio

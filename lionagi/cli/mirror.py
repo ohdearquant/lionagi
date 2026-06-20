@@ -83,7 +83,65 @@ class _FileState:
     model: str | None = None
     name: str | None = None
     created: bool = False
+    leaf_uuid: str | None = None  # this file's newest event uuid (lineage index)
+    head_checked: bool = False  # whether the file's root parentUuid was examined
     attr_peeked: bool = False  # whether idle project attribution was attempted
+
+
+@dataclass
+class _Lineage:
+    """Cross-session conversation-lineage detector, kept across poll passes.
+
+    A continued conversation (after compaction, ``--resume``, or a new window that
+    resumes an earlier thread) opens a fresh transcript whose first message points
+    — via ``parentUuid`` — at the last message of the session it continues. We
+    index each file's current leaf uuid and, when a file's root parent resolves to
+    a *different* session's leaf, record a provenance link. It almost never fires
+    on today's transcripts (continuations are rare), so it is insurance + the
+    substrate for showing conversation provenance, not a hot path.
+    """
+
+    leaf_owner: dict[str, str] = field(default_factory=dict)  # event uuid -> session_uid
+    pending: dict[str, str] = field(default_factory=dict)  # child session_uid -> parent uuid
+    linked: set[str] = field(default_factory=set)  # child session_uids already linked
+
+    def note_leaf(self, state: _FileState, events: list[dict[str, Any]]) -> None:
+        """Index this file's newest event uuid as a candidate continuation point."""
+        last = next((str(e["uuid"]) for e in reversed(events) if e.get("uuid")), None)
+        if not last:
+            return
+        prev = state.leaf_uuid
+        if prev and self.leaf_owner.get(prev) == state.session_uid:
+            self.leaf_owner.pop(prev, None)  # only the current leaf stays indexed
+        self.leaf_owner[last] = state.session_uid
+        state.leaf_uuid = last
+
+    def note_head(self, state: _FileState, events: list[dict[str, Any]]) -> None:
+        """If the file's thread root has a parent, queue it for cross-session resolution."""
+        if state.head_checked or state.session_uid in self.linked:
+            return
+        for e in events:
+            if "parentUuid" not in e:  # summary/file-history events have no parent
+                continue
+            state.head_checked = True
+            parent = e.get("parentUuid")
+            if parent:  # null parent == self-rooted, no lineage
+                self.pending[state.session_uid] = str(parent)
+            return
+
+    def resolve(self) -> list[tuple[str, str, str]]:
+        """Match pending roots against indexed leaves; return new (child, parent, uuid) links."""
+        links: list[tuple[str, str, str]] = []
+        for child, parent_uuid in list(self.pending.items()):
+            owner = self.leaf_owner.get(parent_uuid)
+            if owner is None:
+                continue  # parent not yet indexed (older pass, or outside the window)
+            del self.pending[child]
+            if owner == child:
+                continue  # same session spread across files — not cross-session lineage
+            self.linked.add(child)
+            links.append((child, owner, parent_uuid))
+        return links
 
 
 def _fallback_project(cwd: str) -> tuple[str, str]:
@@ -260,7 +318,7 @@ def _first_prompt(events: list[dict[str, Any]]) -> str | None:
     return None
 
 
-async def _mirror_one(db, path: Path, state: _FileState) -> int:
+async def _mirror_one(db, path: Path, state: _FileState, lineage: _Lineage) -> int:
     from lionagi.state.claude_mirror import mirror_session
 
     events = _read_new_events(path, state)
@@ -270,6 +328,8 @@ async def _mirror_one(db, path: Path, state: _FileState) -> int:
     if not state.session_uid:
         state.session_uid = next((e["sessionId"] for e in events if e.get("sessionId")), path.stem)
     _derive_metadata(state, events)
+    lineage.note_head(state, events)
+    lineage.note_leaf(state, events)
 
     # Always created/kept running; the session-level idle sweep (after the whole
     # pass) is what flips it to completed, so a fresh transcript anywhere in a
@@ -291,10 +351,12 @@ async def _mirror_one(db, path: Path, state: _FileState) -> int:
     return written
 
 
-async def _one_pass(db, root: Path, states, offsets, *, since, live_window) -> int:
+async def _one_pass(db, root: Path, states, offsets, *, since, live_window, lineage=None) -> int:
     now = time.time()
     total = 0
     seen: set[str] = set()
+    if lineage is None:
+        lineage = _Lineage()
     for path in sorted(root.glob("*/*.jsonl")):
         if "_precompact_" in path.name:
             continue  # PreCompact-hook backups duplicate the live transcript (same sessionId)
@@ -306,7 +368,7 @@ async def _one_pass(db, root: Path, states, offsets, *, since, live_window) -> i
             if state is None:
                 state = _FileState(session_uid="", offset=offsets.get(key, 0))
                 states[key] = state
-            total += await _mirror_one(db, path, state)
+            total += await _mirror_one(db, path, state, lineage)
             offsets[key] = state.offset
             # Idle/already-read files have no streamed events to derive from: peek
             # the head once to recover the session id and (one-time) attribute the
@@ -324,10 +386,15 @@ async def _one_pass(db, root: Path, states, offsets, *, since, live_window) -> i
             continue
         except Exception as exc:  # one bad transcript must not kill the tail
             log_error(f"mirror failed for {path.name}: {exc}")
-    from lionagi.state.claude_mirror import reconcile_session_status
+    from lionagi.state.claude_mirror import link_session_lineage, reconcile_session_status
 
     for uid in seen:
         await reconcile_session_status(db, uid, now=now, live_window=live_window)
+    for child_uid, parent_uid, parent_event_uuid in lineage.resolve():
+        await link_session_lineage(
+            db, child_uid=child_uid, parent_uid=parent_uid, parent_event_uuid=parent_event_uuid
+        )
+        progress(f"  mirror: {child_uid[:8]} continues {parent_uid[:8]} (lineage)")
     return total
 
 
@@ -353,11 +420,18 @@ async def mirror_forever(
     since_secs = _parse_window(since) if since else None
     offsets = _load_offsets()
     states: dict[str, _FileState] = {}
+    lineage = _Lineage()
     async with StateDB() as db:
         while not stop.is_set():
             try:
                 await _one_pass(
-                    db, root, states, offsets, since=since_secs, live_window=live_window
+                    db,
+                    root,
+                    states,
+                    offsets,
+                    since=since_secs,
+                    live_window=live_window,
+                    lineage=lineage,
                 )
                 _save_offsets(offsets)
             except Exception:  # a single bad pass must never kill the tail
@@ -381,6 +455,7 @@ async def _run(args: argparse.Namespace) -> int:
     since = _parse_window(args.since) if args.since else None
     offsets = _load_offsets()
     states: dict[str, _FileState] = {}
+    lineage = _Lineage()
 
     mode = "catch-up pass" if args.once else f"tailing (every {args.interval:g}s)"
     hint(f"li mirror: {mode} over {root}")
@@ -388,7 +463,13 @@ async def _run(args: argparse.Namespace) -> int:
     async with StateDB() as db:
         while True:
             n = await _one_pass(
-                db, root, states, offsets, since=since, live_window=args.live_window
+                db,
+                root,
+                states,
+                offsets,
+                since=since,
+                live_window=args.live_window,
+                lineage=lineage,
             )
             _save_offsets(offsets)
             if n:

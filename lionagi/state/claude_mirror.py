@@ -320,3 +320,34 @@ async def reconcile_session_status(
         status=desired,
         reason_code=RunReasons.STARTED_OK if desired == "running" else RunReasons.COMPLETED_OK,
     )
+
+
+async def link_session_lineage(
+    db: StateDB,
+    *,
+    child_uid: str,
+    parent_uid: str,
+    parent_event_uuid: str,
+) -> None:
+    """Record that one Claude session continues another (conversation lineage).
+
+    A continued conversation (after compaction, ``--resume``, or a fresh window
+    that picks up an earlier thread) starts a new transcript whose first message
+    points, via ``parentUuid``, at the last message of the session it continues.
+    When the mirror resolves that pointer to a different session it calls this to
+    store a ``lineage`` link on the child's node_metadata, so studio and the VS
+    Code extension can show the provenance and walk the chain back. Written
+    without moving the liveness clock; idempotent (re-linking rewrites the same
+    value).
+    """
+    child_sid = session_db_id(child_uid)
+    existing = await db.get_session(child_sid)
+    if existing is None:
+        return
+    meta = dict(existing.get("node_metadata") or {})
+    meta["lineage"] = {
+        "parent_session_id": session_db_id(parent_uid),
+        "parent_session_uid": parent_uid,
+        "parent_event_uuid": parent_event_uuid,
+    }
+    await db.set_session_provenance(child_sid, node_metadata=meta)
