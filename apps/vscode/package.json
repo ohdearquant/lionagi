@@ -1,0 +1,154 @@
+{
+  "name": "lion-studio",
+  "displayName": "Lion Studio",
+  "description": "Native VS Code client for the Lion Studio FastAPI backend.",
+  "version": "0.0.1",
+  "publisher": "lionagi",
+  "engines": {
+    "vscode": "^1.90.0"
+  },
+  "categories": ["Other"],
+  "main": "./out/extension.js",
+  "activationEvents": ["onStartupFinished"],
+  "contributes": {
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "lionStudio",
+          "title": "Lion Studio",
+          "icon": "media/lion.svg"
+        }
+      ]
+    },
+    "views": {
+      "lionStudio": [
+        {
+          "id": "lionStudio.runs",
+          "name": "Runs"
+        }
+      ]
+    },
+    "viewsWelcome": [
+      {
+        "view": "lionStudio.runs",
+        "contents": "Lion Studio backend is not running.\n[Start Backend](command:lionStudio.startBackend)",
+        "when": "lionStudio.backendState != 'running'"
+      },
+      {
+        "view": "lionStudio.runs",
+        "contents": "No runs yet. Trigger one to get started.\n[Run Agent…](command:lionStudio.runAgent)",
+        "when": "lionStudio.backendState == 'running' && !lionStudio.hasRuns"
+      }
+    ],
+    "commands": [
+      {
+        "command": "lionStudio.startBackend",
+        "title": "Lion Studio: Start Backend",
+        "icon": "$(play)"
+      },
+      {
+        "command": "lionStudio.stopBackend",
+        "title": "Lion Studio: Stop Backend",
+        "icon": "$(debug-stop)"
+      },
+      {
+        "command": "lionStudio.refreshRuns",
+        "title": "Lion Studio: Refresh Runs",
+        "icon": "$(refresh)"
+      },
+      {
+        "command": "lionStudio.runAgent",
+        "title": "Lion Studio: Run Agent…",
+        "icon": "$(rocket)"
+      },
+      {
+        "command": "lionStudio.openRun",
+        "title": "Lion Studio: Open Run"
+      }
+    ],
+    "menus": {
+      "view/title": [
+        {
+          "command": "lionStudio.refreshRuns",
+          "when": "view == lionStudio.runs",
+          "group": "navigation"
+        },
+        {
+          "command": "lionStudio.runAgent",
+          "when": "view == lionStudio.runs",
+          "group": "navigation"
+        }
+      ],
+      "view/item/context": [
+        {
+          "command": "lionStudio.openRun",
+          "when": "view == lionStudio.runs && viewItem == run",
+          "group": "inline"
+        }
+      ],
+      "commandPalette": [
+        {
+          "command": "lionStudio.startBackend"
+        },
+        {
+          "command": "lionStudio.stopBackend"
+        },
+        {
+          "command": "lionStudio.refreshRuns"
+        },
+        {
+          "command": "lionStudio.runAgent"
+        }
+      ]
+    },
+    "configuration": {
+      "title": "Lion Studio",
+      "properties": {
+        "lionStudio.url": {
+          "type": "string",
+          "default": "",
+          "description": "Attach to a running studio backend instead of spawning one. Leave empty to auto-spawn."
+        },
+        "lionStudio.pythonPath": {
+          "type": "string",
+          "default": "python3",
+          "description": "Path to the Python interpreter used to spawn the backend."
+        },
+        "lionStudio.port": {
+          "type": "number",
+          "default": 8765,
+          "description": "Port the spawned backend will listen on."
+        },
+        "lionStudio.host": {
+          "type": "string",
+          "default": "127.0.0.1",
+          "description": "Host the spawned backend will bind to."
+        },
+        "lionStudio.autoStart": {
+          "type": "boolean",
+          "default": true,
+          "description": "Automatically start the backend when the extension activates."
+        },
+        "lionStudio.authToken": {
+          "type": "string",
+          "default": "",
+          "description": "Bearer token for LIONAGI_STUDIO_AUTH_TOKEN (optional)."
+        }
+      }
+    }
+  },
+  "scripts": {
+    "compile": "node esbuild.js",
+    "watch": "node esbuild.js --watch",
+    "vscode:prepublish": "node esbuild.js --minify",
+    "typecheck": "tsc --noEmit",
+    "package": "vsce package"
+  },
+  "devDependencies": {
+    "@types/node": "^20.0.0",
+    "@types/vscode": "^1.90.0",
+    "@vscode/vsce": "^3.0.0",
+    "esbuild": "^0.21.0",
+    "typescript": "^5.5.0"
+  }
+}

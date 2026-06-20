@@ -1,0 +1,8 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="24" height="24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+  <!-- Λ (Lambda / Lion mark) -->
+  <path d="M4 20 L12 4 L20 20" />
+  <path d="M8 20 L16 20" />
+  <!-- mane accent lines flanking the peak -->
+  <path d="M10 8 Q8 6 7 8" />
+  <path d="M14 8 Q16 6 17 8" />
+</svg>
