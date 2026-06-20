@@ -259,24 +259,41 @@ async def reap_phantom_sessions(
                     continue
                 if current.get("ended_at") is None:
                     await db.update_session(sid, ended_at=now)
-                transitioned = await db.update_status(
-                    "session",
-                    sid,
-                    new_status="failed",
-                    reason_code=reason_code,
-                    reason_summary="phantom_reaped",
-                    evidence_refs=[
-                        {
-                            "kind": "phantom_classification",
-                            "reason": phantom_reason,
-                            "session_id": sid,
-                        }
-                    ],
-                    source="system",
-                    actor=actor,
-                    metadata={"phantom_reaped": True, "phantom_reason": phantom_reason},
-                    expected_statuses={"running"},
-                )
+                if current.get("agent_name") == "claude-code":
+                    # A mirrored external session has no lionagi process, so the
+                    # phantom model misfires: an idle transcript is a normal
+                    # completion, not a crash. Reap it to completed (the same
+                    # reason its own idle-reconcile uses), never to failed.
+                    transitioned = await db.update_status(
+                        "session",
+                        sid,
+                        new_status="completed",
+                        reason_code=RunReasons.COMPLETED_OK,
+                        reason_summary="mirror_idle_reaped",
+                        source="system",
+                        actor=actor,
+                        metadata={"mirror_idle_reaped": True},
+                        expected_statuses={"running"},
+                    )
+                else:
+                    transitioned = await db.update_status(
+                        "session",
+                        sid,
+                        new_status="failed",
+                        reason_code=reason_code,
+                        reason_summary="phantom_reaped",
+                        evidence_refs=[
+                            {
+                                "kind": "phantom_classification",
+                                "reason": phantom_reason,
+                                "session_id": sid,
+                            }
+                        ],
+                        source="system",
+                        actor=actor,
+                        metadata={"phantom_reaped": True, "phantom_reason": phantom_reason},
+                        expected_statuses={"running"},
+                    )
             if transitioned:
                 _log.info("Phantom session %s reaped (reason=%s)", sid, phantom_reason)
                 reaped += 1
