@@ -226,6 +226,23 @@ body {
   color: var(--vscode-charts-yellow);
 }
 
+.log-row .event-toggle {
+  display: block;
+  margin: 3px 0 1px;
+  padding: 0;
+  border: none;
+  background: none;
+  color: var(--vscode-textLink-foreground);
+  font-family: var(--vscode-font-family);
+  font-size: 11px;
+  cursor: pointer;
+}
+
+.log-row .event-toggle:hover {
+  text-decoration: underline;
+  color: var(--vscode-textLink-activeForeground, var(--vscode-textLink-foreground));
+}
+
 .event-block {
   background: var(--vscode-textCodeBlock-background);
   border-radius: 3px;

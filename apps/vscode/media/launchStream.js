@@ -7,6 +7,10 @@
 
   let autoScroll = true;
 
+  // Action output is collapsed by default when it exceeds this many lines.
+  const COLLAPSE_MIN_LINES = 5;
+  const COLLAPSE_VISIBLE = 4;
+
   logEl.addEventListener("scroll", () => {
     const atBottom =
       logEl.scrollHeight - logEl.scrollTop - logEl.clientHeight < 40;
@@ -16,11 +20,44 @@
   function appendRow(text, cls) {
     const row = document.createElement("div");
     row.className = "log-row " + (cls || "content");
-    row.textContent = text;
+    const full = String(text).replace(/\n+$/, "");
+    const lines = full.split("\n");
+    if (cls === "tool" && lines.length > COLLAPSE_MIN_LINES) {
+      attachCollapse(row, full, lines);
+    } else {
+      row.textContent = text;
+    }
     logEl.appendChild(row);
     if (autoScroll) {
       logEl.scrollTop = logEl.scrollHeight;
     }
+  }
+
+  // Show the first COLLAPSE_VISIBLE lines with an expand/collapse toggle.
+  function attachCollapse(row, full, lines) {
+    const head = lines.slice(0, COLLAPSE_VISIBLE).join("\n");
+    const hidden = lines.length - COLLAPSE_VISIBLE;
+    let collapsed = true;
+
+    const textEl = document.createElement("span");
+    textEl.className = "log-text";
+    const toggle = document.createElement("button");
+    toggle.type = "button";
+    toggle.className = "log-toggle";
+
+    function sync() {
+      textEl.textContent = collapsed ? head : full;
+      toggle.textContent = collapsed
+        ? "▾ Show " + hidden + " more line" + (hidden === 1 ? "" : "s")
+        : "▴ Show less";
+    }
+    toggle.addEventListener("click", function () {
+      collapsed = !collapsed;
+      sync();
+    });
+    sync();
+    row.appendChild(textEl);
+    row.appendChild(toggle);
   }
 
   function setBadge(label, cls) {

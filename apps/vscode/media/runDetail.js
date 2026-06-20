@@ -46,6 +46,10 @@
     eventCount++;
   }
 
+  // Action output is collapsed by default when it exceeds this many lines.
+  const COLLAPSE_MIN_LINES = 5;
+  const COLLAPSE_VISIBLE = 4;
+
   function renderEvent(event) {
     const row = document.createElement("div");
     row.className = "log-row";
@@ -60,12 +64,7 @@
     typeSpan.className = "event-type";
     typeSpan.textContent = type;
 
-    const contentSpan = document.createElement("span");
-    contentSpan.className = "event-content " + contentClass;
-
-    if (typeof content === "string" && content.length > 0) {
-      contentSpan.textContent = content;
-    } else {
+    if (typeof content !== "string" || content.length === 0) {
       // Fall back to a compact JSON block for structured events.
       const block = document.createElement("div");
       block.className = "event-block";
@@ -76,9 +75,46 @@
       return;
     }
 
+    const contentSpan = document.createElement("span");
+    contentSpan.className = "event-content " + contentClass;
     row.appendChild(typeSpan);
     row.appendChild(contentSpan);
+
+    // Action output can be very long — collapse it to a few lines by default.
+    const isAction = contentClass.indexOf("--tool") !== -1;
+    const text = content.replace(/\n+$/, "");
+    const lines = text.split("\n");
+    if (isAction && lines.length > COLLAPSE_MIN_LINES) {
+      attachCollapse(row, contentSpan, text, lines);
+    } else {
+      contentSpan.textContent = content;
+    }
+
     addRow(row);
+  }
+
+  // Show the first COLLAPSE_VISIBLE lines with an expand/collapse toggle.
+  function attachCollapse(row, contentSpan, full, lines) {
+    const head = lines.slice(0, COLLAPSE_VISIBLE).join("\n");
+    const hidden = lines.length - COLLAPSE_VISIBLE;
+    let collapsed = true;
+
+    const toggle = document.createElement("button");
+    toggle.type = "button";
+    toggle.className = "event-toggle";
+
+    function sync() {
+      contentSpan.textContent = collapsed ? head : full;
+      toggle.textContent = collapsed
+        ? "▾ Show " + hidden + " more line" + (hidden === 1 ? "" : "s")
+        : "▴ Show less";
+    }
+    toggle.addEventListener("click", function () {
+      collapsed = !collapsed;
+      sync();
+    });
+    sync();
+    row.appendChild(toggle);
   }
 
   function extractContent(event) {

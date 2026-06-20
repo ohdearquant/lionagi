@@ -114,3 +114,24 @@ body {
 .log-row.tool {
   color: var(--vscode-descriptionForeground);
 }
+
+.log-text {
+  white-space: inherit;
+}
+
+.log-toggle {
+  display: block;
+  margin-top: 3px;
+  padding: 0;
+  border: none;
+  background: none;
+  color: var(--vscode-textLink-foreground);
+  font-family: var(--vscode-font-family);
+  font-size: 11px;
+  cursor: pointer;
+}
+
+.log-toggle:hover {
+  text-decoration: underline;
+  color: var(--vscode-textLink-activeForeground, var(--vscode-textLink-foreground));
+}
