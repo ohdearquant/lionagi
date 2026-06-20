@@ -77,25 +77,26 @@ export class RunDetailPanel {
       // Refresh header with final metadata.
       this.postMessage({ type: "meta", run });
 
-      // The Run object may have a 'messages' array if the backend embeds them.
-      // Cast to access possible extended fields returned by the detail endpoint.
+      // Backend returns steps[].messages[] — flatten into individual message events.
       const extended = run as Run & {
-        messages?: unknown[];
-        steps?: unknown[];
-        events?: unknown[];
+        steps?: Array<{
+          step?: string;
+          status?: string;
+          messages?: Array<Record<string, unknown>>;
+          timestamp?: string;
+        }>;
+        branches?: unknown[];
       };
 
-      const rows =
-        extended.messages ??
-        extended.steps ??
-        extended.events ??
-        [];
+      const messages = (extended.steps ?? []).flatMap(
+        (s) => s.messages ?? []
+      );
 
-      if (rows.length === 0) {
+      if (messages.length === 0) {
         this.postMessage({ type: "empty" });
       } else {
-        for (const row of rows) {
-          this.postMessage({ type: "event", event: row });
+        for (const msg of messages) {
+          this.postMessage({ type: "event", event: msg });
         }
         this.postMessage({ type: "done" });
       }
@@ -188,14 +189,8 @@ export class RunDetailPanel {
     </div>
     <div class="header__meta" id="headerMeta">
       ${kindBadge}${modelBadge}${providerBadge}${projectBadge}
-      <span class="meta-item" id="branchCount">
-        <span class="codicon codicon-git-branch"></span>
-        ${run.branch_count}
-      </span>
-      <span class="meta-item" id="msgCount">
-        <span class="codicon codicon-comment"></span>
-        ${run.message_count}
-      </span>
+      <span class="meta-item" id="branchCount">branches: ${run.branch_count ?? 0}</span>
+      <span class="meta-item" id="msgCount">messages: ${run.message_count ?? 0}</span>
     </div>
   </div>
 

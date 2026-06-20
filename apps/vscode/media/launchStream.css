@@ -69,8 +69,9 @@ body {
 }
 
 #status-badge.error {
-  background: #c72e0f;
-  color: #fff;
+  background: var(--vscode-inputValidation-errorBackground, var(--vscode-errorForeground));
+  color: var(--vscode-inputValidation-errorForeground, var(--vscode-editor-background));
+  border: 1px solid var(--vscode-inputValidation-errorBorder, transparent);
 }
 
 #log {

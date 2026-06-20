@@ -4,10 +4,17 @@
   "description": "Native VS Code client for the Lion Studio FastAPI backend.",
   "version": "0.0.1",
   "publisher": "lionagi",
+  "icon": "media/icon.png",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/ohdearquant/lionagi.git",
+    "directory": "apps/vscode"
+  },
   "engines": {
     "vscode": "^1.90.0"
   },
   "categories": ["Other"],
+  "keywords": ["lionagi", "agent", "orchestration", "ai", "llm"],
   "main": "./out/extension.js",
   "activationEvents": ["onStartupFinished"],
   "contributes": {

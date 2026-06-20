@@ -50,7 +50,7 @@
     const row = document.createElement("div");
     row.className = "log-row";
 
-    const type = (event.type || "event").toLowerCase();
+    const type = (event.role || event.type || "event").toLowerCase();
 
     // Extract the most useful text from the event object.
     const content = extractContent(event);
@@ -85,6 +85,29 @@
     // Walk common field names in priority order.
     if (typeof event.content === "string" && event.content) {
       return event.content;
+    }
+    // lionagi structured message content (dict keyed by message type).
+    if (event.content && typeof event.content === "object") {
+      const c = event.content;
+      if (typeof c.assistant_response === "string") {
+        return c.assistant_response;
+      }
+      if (typeof c.instruction === "string") {
+        return c.instruction;
+      }
+      if (typeof c.output === "string") {
+        return c.function ? c.function + " → " + c.output : c.output;
+      }
+      if (typeof c.function === "string") {
+        const args =
+          c.arguments && typeof c.arguments === "object"
+            ? JSON.stringify(c.arguments)
+            : c.arguments || "";
+        return c.function + "(" + args + ")";
+      }
+      if (typeof c.system === "string") {
+        return c.system;
+      }
     }
     if (typeof event.text === "string" && event.text) {
       return event.text;
@@ -123,6 +146,7 @@
       return "event-content--assistant";
     }
     if (
+      type === "action" ||
       type === "tool_call" ||
       type === "tool_result" ||
       type === "action_request" ||
@@ -147,8 +171,7 @@
 
     const countEl = document.getElementById("msgCount");
     if (countEl && run.message_count !== undefined) {
-      countEl.innerHTML =
-        '<span class="codicon codicon-comment"></span> ' + run.message_count;
+      countEl.textContent = "messages: " + run.message_count;
     }
   }
 

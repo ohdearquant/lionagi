@@ -29,14 +29,12 @@
   }
 
   function rowClassForEvent(ev) {
-    if (!ev || !ev.type) {
-      return "content";
-    }
-    const t = String(ev.type).toLowerCase();
+    const t = String((ev && (ev.role || ev.type)) || "").toLowerCase();
     if (t === "assistant" || t === "assistant_response") {
       return "assistant";
     }
     if (
+      t === "action" ||
       t === "action_request" ||
       t === "action_response" ||
       t === "tool_call" ||
@@ -50,6 +48,29 @@
   function formatEvent(ev) {
     if (!ev || typeof ev !== "object") {
       return String(ev);
+    }
+    // lionagi structured message content (dict keyed by message type).
+    if (ev.content && typeof ev.content === "object") {
+      const c = ev.content;
+      if (typeof c.assistant_response === "string") {
+        return c.assistant_response.trim();
+      }
+      if (typeof c.instruction === "string") {
+        return c.instruction.trim();
+      }
+      if (typeof c.output === "string") {
+        return (c.function ? c.function + " → " + c.output : c.output).trim();
+      }
+      if (typeof c.function === "string") {
+        const args =
+          c.arguments && typeof c.arguments === "object"
+            ? JSON.stringify(c.arguments)
+            : c.arguments || "";
+        return c.function + "(" + args + ")";
+      }
+      if (typeof c.system === "string") {
+        return c.system.trim();
+      }
     }
     // Try to surface a meaningful text payload
     const candidates = [

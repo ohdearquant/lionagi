@@ -65,7 +65,7 @@ export async function streamSession(
           continue;
         }
 
-        const raw = dataLines.join("");
+        const raw = dataLines.join("\n");
         let event: StudioEvent;
         try {
           event = JSON.parse(raw) as StudioEvent;

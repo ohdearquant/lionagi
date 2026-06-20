@@ -1,6 +1,7 @@
 import * as vscode from "vscode";
 import type { StudioDeps } from "../extension.js";
 import type { Run } from "../api/types.js";
+import { StudioApiError } from "../api/client.js";
 import { RunItem, isTerminal } from "./runItem.js";
 import { RunDetailPanel } from "./runDetailPanel.js";
 
@@ -8,6 +9,7 @@ const POLL_INTERVAL_MS = 4_000;
 
 class RunsProvider implements vscode.TreeDataProvider<RunItem> {
   private _runs: Run[] = [];
+  private _authErrorShown = false;
   private readonly _onDidChangeTreeData =
     new vscode.EventEmitter<RunItem | undefined | null | void>();
   readonly onDidChangeTreeData = this._onDidChangeTreeData.event;
@@ -35,9 +37,25 @@ class RunsProvider implements vscode.TreeDataProvider<RunItem> {
         return new Date(tb).getTime() - new Date(ta).getTime();
       });
       this._runs = sorted;
+      this._authErrorShown = false;
+      void vscode.commands.executeCommand(
+        "setContext",
+        "lionStudio.hasRuns",
+        sorted.length > 0
+      );
       return sorted.map((r) => new RunItem(r));
-    } catch {
+    } catch (err) {
       this._runs = [];
+      if (
+        err instanceof StudioApiError &&
+        err.status === 401 &&
+        !this._authErrorShown
+      ) {
+        this._authErrorShown = true;
+        void vscode.window.showErrorMessage(
+          "Lion Studio: authentication failed — check the lionStudio.authToken setting."
+        );
+      }
       return [];
     }
   }

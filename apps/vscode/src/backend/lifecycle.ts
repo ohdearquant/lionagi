@@ -73,6 +73,8 @@ export class BackendManager implements vscode.Disposable {
       `[lifecycle] spawning: ${pythonPath} -m lionagi.studio (port=${port}, host=${host})`
     );
 
+    let spawnFailed = false;
+
     const child = child_process.spawn(
       pythonPath,
       ["-m", "lionagi.studio"],
@@ -89,7 +91,11 @@ export class BackendManager implements vscode.Disposable {
     });
     child.on("error", (err) => {
       this._output.appendLine(`[lifecycle] spawn error: ${err.message}`);
+      spawnFailed = true;
       this.setState("error");
+      void vscode.window.showErrorMessage(
+        `Lion Studio: failed to start backend — ${err.message}. Check the lionStudio.pythonPath setting.`
+      );
     });
     child.on("exit", (code) => {
       this._output.appendLine(`[lifecycle] exited with code ${code}`);
@@ -98,10 +104,12 @@ export class BackendManager implements vscode.Disposable {
       }
     });
 
-    const ok = await this._pollHealth(30_000);
-    if (!ok && this._state !== "error") {
+    const ok = await this._pollHealth(30_000, () => spawnFailed);
+    if (spawnFailed) {
+      // error already set in the error handler above
+    } else if (!ok) {
       this.setState("error");
-    } else if (ok) {
+    } else {
       this.setState("running");
     }
   }
@@ -112,18 +120,32 @@ export class BackendManager implements vscode.Disposable {
       this._pollTimer = undefined;
     }
     if (this._child) {
-      this._child.kill();
+      const child = this._child;
       this._child = undefined;
+      child.kill();
+      // Escalate to SIGKILL if the process does not exit within 3s.
+      const killTimer = setTimeout(() => {
+        if (child.exitCode === null && child.signalCode === null) {
+          child.kill("SIGKILL");
+        }
+      }, 3_000);
+      child.once("exit", () => clearTimeout(killTimer));
     }
     this.setState("stopped");
   }
 
-  /** Poll GET /health until it returns true or the timeout elapses. */
-  private async _pollHealth(timeoutMs: number): Promise<boolean> {
+  /** Poll GET /health until it returns true, timeout elapses, or shouldAbort() is true. */
+  private async _pollHealth(
+    timeoutMs: number,
+    shouldAbort?: () => boolean
+  ): Promise<boolean> {
     const deadline = Date.now() + timeoutMs;
     const interval = 1_000;
 
     while (Date.now() < deadline) {
+      if (shouldAbort?.()) {
+        return false;
+      }
       try {
         const res = await fetch(`${this.getBaseUrl()}/health`);
         if (res.ok) {

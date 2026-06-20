@@ -41,6 +41,22 @@ export function activate(context: vscode.ExtensionContext): void {
 
   const deps: StudioDeps = { client, backend: bm };
 
+  // Set initial context key and track all state changes.
+  void vscode.commands.executeCommand(
+    "setContext",
+    "lionStudio.backendState",
+    bm.state
+  );
+  context.subscriptions.push(
+    bm.onDidChangeState((state) => {
+      void vscode.commands.executeCommand(
+        "setContext",
+        "lionStudio.backendState",
+        state
+      );
+    })
+  );
+
   registerStatusBar(context, bm);
   registerRunsExplorer(context, deps);
   registerAgentTrigger(context, deps);

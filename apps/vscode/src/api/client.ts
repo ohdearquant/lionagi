@@ -62,19 +62,6 @@ export class StudioClient {
     return res.json() as Promise<T>;
   }
 
-  async health(): Promise<boolean> {
-    try {
-      const res = await fetch(this.url("/health"), { method: "GET" });
-      if (!res.ok) {
-        return false;
-      }
-      const body = (await res.json()) as { status?: string };
-      return body.status === "ok";
-    } catch {
-      return false;
-    }
-  }
-
   async listRuns(opts: ListRunsOptions = {}): Promise<RunsPage> {
     const params = new URLSearchParams();
     if (opts.page !== undefined) {
