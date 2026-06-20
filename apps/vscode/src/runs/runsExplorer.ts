@@ -4,6 +4,7 @@ import type { Run } from "../api/types.js";
 import { StudioApiError } from "../api/client.js";
 import {
   RunItem,
+  ActiveGroupItem,
   ProjectGroupItem,
   LoadMoreItem,
   isTerminal,
@@ -13,8 +14,10 @@ import { RunDetailPanel } from "./runDetailPanel.js";
 
 const POLL_INTERVAL_MS = 4_000;
 const PAGE_SIZE = 50;
+// Upper bound on running sessions shown in the pinned Active band (one fetch).
+const ACTIVE_LIMIT = 100;
 
-type RunNode = ProjectGroupItem | RunItem | LoadMoreItem;
+type RunNode = ActiveGroupItem | ProjectGroupItem | RunItem | LoadMoreItem;
 
 function newestFirst(runs: Run[]): Run[] {
   return [...runs].sort((a, b) => {
@@ -30,6 +33,8 @@ class RunsProvider implements vscode.TreeDataProvider<RunNode> {
   private readonly _depth = new Map<string, number>();
   // Latest runs fetched per group — drives active-run detection between renders.
   private readonly _runsByGroup = new Map<string, Run[]>();
+  // Currently-running sessions across all projects — backs the pinned Active group.
+  private _activeRuns: Run[] = [];
   // Current group node instances, so "Load more" can refresh one group in place.
   private readonly _groupItems = new Map<string, ProjectGroupItem>();
   private readonly _onDidChangeTreeData =
@@ -54,32 +59,57 @@ class RunsProvider implements vscode.TreeDataProvider<RunNode> {
       this._reset();
       return [];
     }
+    if (element instanceof ActiveGroupItem) {
+      // Flat, cross-project; project shows in each row's description.
+      return this._activeRuns.map((r) => new RunItem(r));
+    }
     if (element instanceof ProjectGroupItem) {
       return this._loadGroup(element);
     }
     return this._loadGroups();
   }
 
-  // Root: cheap per-project counts only, no runs loaded. Most-recent project expands.
+  // Root: a pinned Active group (running sessions) over cheap per-project counts.
   private async _loadGroups(): Promise<RunNode[]> {
-    try {
-      const { projects, total } = await this.deps.client.listProjectGroups();
-      this._authErrorShown = false;
-      void vscode.commands.executeCommand(
-        "setContext",
-        "lionStudio.hasRuns",
-        total > 0
-      );
-      this._groupItems.clear();
-      return projects.map((g, i) => {
-        const item = new ProjectGroupItem(g, i === 0);
-        this._groupItems.set(item.key, item);
-        return item;
-      });
-    } catch (err) {
-      this._handleError(err);
+    // Band is best-effort: a hiccup fetching it must not blank the archive.
+    const [groupsRes, activeRes] = await Promise.allSettled([
+      this.deps.client.listProjectGroups(),
+      this._loadActiveRuns(),
+    ]);
+    if (groupsRes.status === "rejected") {
+      this._handleError(groupsRes.reason);
       return [];
     }
+    this._authErrorShown = false;
+    this._activeRuns = activeRes.status === "fulfilled" ? activeRes.value : [];
+    const { projects, total } = groupsRes.value;
+    void vscode.commands.executeCommand(
+      "setContext",
+      "lionStudio.hasRuns",
+      total > 0
+    );
+    this._groupItems.clear();
+    const nodes: RunNode[] = [];
+    if (this._activeRuns.length > 0) {
+      nodes.push(new ActiveGroupItem(this._activeRuns.length));
+    }
+    projects.forEach((g, i) => {
+      const item = new ProjectGroupItem(g, i === 0);
+      this._groupItems.set(item.key, item);
+      nodes.push(item);
+    });
+    return nodes;
+  }
+
+  // Every running session, newest first. Server-side status filter (no DB paging)
+  // so a long-running session with an old started_at is never paged out of the band.
+  private async _loadActiveRuns(): Promise<Run[]> {
+    const page = await this.deps.client.listRuns({
+      status: "running",
+      page: 1,
+      per_page: ACTIVE_LIMIT,
+    });
+    return newestFirst(page.runs);
   }
 
   // A group's children: its loaded runs (re-fetched fresh each render) + a Load more leaf.
@@ -115,6 +145,9 @@ class RunsProvider implements vscode.TreeDataProvider<RunNode> {
   }
 
   hasActiveRuns(): boolean {
+    if (this._activeRuns.length > 0) {
+      return true;
+    }
     for (const runs of this._runsByGroup.values()) {
       if (runs.some((r) => !isTerminal(r))) {
         return true;
@@ -127,6 +160,7 @@ class RunsProvider implements vscode.TreeDataProvider<RunNode> {
     this._depth.clear();
     this._runsByGroup.clear();
     this._groupItems.clear();
+    this._activeRuns = [];
   }
 
   private _handleError(err: unknown): void {

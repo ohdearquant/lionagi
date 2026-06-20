@@ -212,6 +212,20 @@ export class ProjectGroupItem extends vscode.TreeItem {
   }
 }
 
+/** Pinned top-of-tree group: every currently-running session, flat and cross-project. */
+export class ActiveGroupItem extends vscode.TreeItem {
+  constructor(count: number) {
+    super("Active", vscode.TreeItemCollapsibleState.Expanded);
+    this.description = `${count}`;
+    this.contextValue = "activeGroup";
+    this.iconPath = new vscode.ThemeIcon("zap", new vscode.ThemeColor("charts.blue"));
+    const noun = count === 1 ? "session" : "sessions";
+    this.tooltip = `${count} running ${noun} across all projects`;
+    // Stable id so the group's expanded state survives the 4s poll refreshes.
+    this.id = "group:__active__";
+  }
+}
+
 /** Leaf that pages the next slice of a project's runs when clicked. */
 export class LoadMoreItem extends vscode.TreeItem {
   constructor(
