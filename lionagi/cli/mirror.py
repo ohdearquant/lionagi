@@ -83,6 +83,32 @@ class _FileState:
     model: str | None = None
     name: str | None = None
     created: bool = False
+    attr_peeked: bool = False  # whether idle project attribution was attempted
+
+
+def _fallback_project(cwd: str) -> tuple[str, str]:
+    """Attribute a cwd that detect_project couldn't place to a project.
+
+    Bucket it by the cwd's own folder name, or "others" when that directory no
+    longer exists (e.g. a transcript mirrored from a machine/path that is gone).
+    """
+    p = Path(cwd)
+    if p.is_dir():
+        return p.name, "cwd_dir"
+    return "others", "cwd_missing"
+
+
+def _resolve_project(cwd: str) -> tuple[str, str]:
+    """Project + source for a cwd: detect_project, else the folder-name fallback."""
+    from ._project import detect_project
+
+    try:
+        project, source = detect_project(Path(cwd))
+    except Exception:  # detection is best-effort; never block the mirror
+        project, source = None, None
+    if not project:
+        return _fallback_project(cwd)
+    return project, source
 
 
 def _load_offsets() -> dict[str, int]:
@@ -143,18 +169,12 @@ _COMMAND_NOISE = ("<command-", "<local-command-")
 
 def _derive_metadata(state: _FileState, events: list[dict[str, Any]]) -> None:
     """Fill project/model/name from the transcript the first time we see them."""
-    from ._project import detect_project
-
     if state.project is None:
         cwd = next((e.get("cwd") for e in events if e.get("cwd")), None)
         if cwd:
-            try:
-                state.project, state.project_source = detect_project(Path(cwd))
-            except Exception:  # detection is best-effort; never block the mirror
-                state.project, state.project_source = None, None
+            state.project, state.project_source = _resolve_project(cwd)
             if state.name is None:
-                base = state.project.split("/")[-1] if state.project else Path(cwd).name
-                state.name = f"Claude · {base}"
+                state.name = f"Claude · {state.project.split('/')[-1]}"
     if state.model is None:
         for e in events:
             if e.get("type") == "assistant" and isinstance(e.get("message"), dict):
@@ -169,12 +189,15 @@ def _derive_metadata(state: _FileState, events: list[dict[str, Any]]) -> None:
             state.name = prompt[:72]
 
 
-def _peek_session_uid(path: Path) -> str:
-    """Recover a transcript's sessionId from its head without consuming the tail.
+def _peek_head(path: Path) -> tuple[str, str | None]:
+    """Recover (sessionId, cwd) from a transcript's head without consuming the tail.
 
     Needed for idle files after a restart: with no new events to read, the session
-    id is otherwise unknown, and the liveness sweep would never flip it completed.
+    id is otherwise unknown (the liveness sweep would never flip it completed) and
+    the cwd needed to attribute it to a project is otherwise unavailable.
     """
+    uid = ""
+    cwd: str | None = None
     try:
         with path.open("rb") as fh:
             for _ in range(20):
@@ -185,11 +208,35 @@ def _peek_session_uid(path: Path) -> str:
                     ev = json.loads(line)
                 except json.JSONDecodeError:
                     continue
-                if ev.get("sessionId"):
-                    return str(ev["sessionId"])
+                if not uid and ev.get("sessionId"):
+                    uid = str(ev["sessionId"])
+                if cwd is None and ev.get("cwd"):
+                    cwd = str(ev["cwd"])
+                if uid and cwd is not None:
+                    break
     except OSError:
         pass
-    return path.stem
+    return uid or path.stem, cwd
+
+
+async def _attribute_idle(db, state: _FileState, cwd: str) -> None:
+    """Attribute an idle/already-read transcript and backfill its session row.
+
+    The activity path attributes a project from streamed events, but a session
+    fully mirrored before project attribution existed (or before its cwd could be
+    placed) has no new events to trigger that. This derives the project from the
+    head cwd and backfills the existing row — without moving the liveness clock.
+    """
+    from lionagi.state.claude_mirror import session_db_id
+
+    state.project, state.project_source = _resolve_project(cwd)
+    row = await db.get_session(session_db_id(state.session_uid))
+    if row is not None and not row.get("project"):
+        await db.set_session_provenance(
+            session_db_id(state.session_uid),
+            project=state.project,
+            project_source=state.project_source,
+        )
 
 
 def _first_prompt(events: list[dict[str, Any]]) -> str | None:
@@ -249,6 +296,8 @@ async def _one_pass(db, root: Path, states, offsets, *, since, live_window) -> i
     total = 0
     seen: set[str] = set()
     for path in sorted(root.glob("*/*.jsonl")):
+        if "_precompact_" in path.name:
+            continue  # PreCompact-hook backups duplicate the live transcript (same sessionId)
         try:
             if since is not None and (now - path.stat().st_mtime) > since:
                 continue
@@ -259,8 +308,17 @@ async def _one_pass(db, root: Path, states, offsets, *, since, live_window) -> i
                 states[key] = state
             total += await _mirror_one(db, path, state)
             offsets[key] = state.offset
-            if not state.session_uid:  # idle file after a restart — recover from head
-                state.session_uid = _peek_session_uid(path)
+            # Idle/already-read files have no streamed events to derive from: peek
+            # the head once to recover the session id and (one-time) attribute the
+            # project, backfilling a row left as "(no project)" by an earlier pass.
+            if not state.session_uid or (state.project is None and not state.attr_peeked):
+                uid, cwd = _peek_head(path)
+                if not state.session_uid:
+                    state.session_uid = uid
+                if state.project is None and not state.attr_peeked:
+                    state.attr_peeked = True
+                    if cwd:
+                        await _attribute_idle(db, state, cwd)
             seen.add(state.session_uid)
         except FileNotFoundError:
             continue

@@ -64,21 +64,27 @@ def test_mirror_forever_writes_session_then_stops(tmp_path, monkeypatch):
     sid = session_db_id(uid)
 
     async def _body() -> dict | None:
-        stop = asyncio.Event()
-        task = asyncio.create_task(
-            mirror_mod.mirror_forever(stop, root=root, since=None, interval=0.02)
-        )
-        row = None
-        try:
-            for _ in range(300):
-                async with StateDB(db_path) as db:
+        # Open one poll connection up front so it performs the one-time WAL +
+        # schema init alone, then start the tail against the already-initialised
+        # file. This mirrors studio (a shared connection established at startup,
+        # the mirror tail joining later) and avoids two cold connections racing
+        # the WAL-mode promotion. Re-polling the same connection still observes
+        # the tail's commits — each get_session opens a fresh read transaction.
+        async with StateDB(db_path) as db:
+            stop = asyncio.Event()
+            task = asyncio.create_task(
+                mirror_mod.mirror_forever(stop, root=root, since=None, interval=0.02)
+            )
+            row = None
+            try:
+                for _ in range(300):
                     row = await db.get_session(sid)
-                if row is not None:
-                    break
-                await asyncio.sleep(0.01)
-        finally:
-            stop.set()
-            await asyncio.wait_for(task, timeout=5)
+                    if row is not None:
+                        break
+                    await asyncio.sleep(0.01)
+            finally:
+                stop.set()
+                await asyncio.wait_for(task, timeout=5)
         return row
 
     row = run_async(_body())

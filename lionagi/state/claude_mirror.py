@@ -271,6 +271,12 @@ async def mirror_session(
                 "agent_name": "claude-code",
             }
         )
+    elif project and not existing.get("project"):
+        # Backfill attribution for a session first mirrored before its cwd could
+        # be attributed to a project. INSERT OR IGNORE never updates an existing
+        # row, so without this an already-seen "(no project)" session stays that
+        # way forever; this writes it without disturbing the liveness clock.
+        await db.set_session_provenance(sid, project=project, project_source=project_source)
 
     for m in messages:
         md = m.to_dict(mode="db")

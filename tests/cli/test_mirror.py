@@ -11,6 +11,8 @@ from pathlib import Path
 import pytest
 
 from lionagi.cli.mirror import (
+    _derive_metadata,
+    _fallback_project,
     _FileState,
     _first_prompt,
     _one_pass,
@@ -405,3 +407,109 @@ def test_first_prompt_skips_meta_and_command_noise() -> None:
 )
 def test_parse_window(spec: str, expected: float | None) -> None:
     assert _parse_window(spec) == expected
+
+
+# ── project attribution fallback ─────────────────────────────────────────────
+
+
+def test_fallback_project_uses_folder_name_when_dir_exists(tmp_path: Path) -> None:
+    work = tmp_path / "my-workspace"
+    work.mkdir()
+    assert _fallback_project(str(work)) == ("my-workspace", "cwd_dir")
+
+
+def test_fallback_project_uses_others_when_dir_missing() -> None:
+    assert _fallback_project("/no/such/dir/anymore") == ("others", "cwd_missing")
+
+
+def test_derive_metadata_falls_back_to_folder_name(tmp_path: Path) -> None:
+    # A cwd that detect_project can't place (no git remote / config / override)
+    # is bucketed by its own folder name rather than left unattributed.
+    work = tmp_path / "loose-scripts"
+    work.mkdir()
+    state = _FileState(session_uid=SID)
+    _derive_metadata(
+        state, [_user_text("u1", "hi", ts="2026-06-20T00:00:00.000Z") | {"cwd": str(work)}]
+    )
+    assert state.project == "loose-scripts"
+    assert state.project_source == "cwd_dir"
+
+
+def test_derive_metadata_others_when_cwd_gone() -> None:
+    state = _FileState(session_uid=SID)
+    _derive_metadata(state, [_user_text("u1", "hi") | {"cwd": "/gone/missing/path"}])
+    assert state.project == "others"
+    assert state.project_source == "cwd_missing"
+
+
+@pytest.mark.asyncio
+async def test_mirror_session_backfills_missing_project(temp_db_path: Path) -> None:
+    # A session first mirrored with no project must be backfilled on a later pass
+    # once a project is derived — without disturbing updated_at (the liveness clock).
+    events = _conversation()
+    async with StateDB() as db:
+        await mirror_session(db, session_uid=SID, events=events, tool_names={}, project=None)
+        before = await db.get_session(session_db_id(SID))
+        assert before["project"] is None
+
+        await mirror_session(
+            db,
+            session_uid=SID,
+            events=events,
+            tool_names={},
+            project="acme/widget",
+            project_source="cwd_dir",
+        )
+        after = await db.get_session(session_db_id(SID))
+    assert after["project"] == "acme/widget"
+    assert after["project_source"] == "cwd_dir"
+    # Provenance backfill is not activity: the liveness clock must not move.
+    assert after["updated_at"] == before["updated_at"]
+
+
+# ── idle-session attribution backfill ────────────────────────────────────────
+
+
+def _lineage_event(uid: str, euid: str, parent: str | None, role: str, text: str) -> dict:
+    ev = {
+        "type": role,
+        "uuid": euid,
+        "parentUuid": parent,
+        "timestamp": _iso(datetime.now(timezone.utc)),
+        "sessionId": uid,
+        "cwd": "/tmp",
+        "message": {"role": role, "content": [{"type": "text", "text": text}]},
+    }
+    if role == "assistant":
+        ev["message"]["model"] = "claude-opus-4-8"
+    return ev
+
+
+def _write_lineage_file(path: Path, events: list[dict]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text("\n".join(json.dumps(e) for e in events) + "\n")
+
+
+@pytest.mark.asyncio
+async def test_idle_session_backfilled_with_project(temp_db_path: Path, tmp_path: Path) -> None:
+    # A session fully mirrored before attribution (row has no project) and now
+    # idle (file at EOF, no new events) is still backfilled from its head cwd.
+    work = tmp_path / "ghost-proj"
+    work.mkdir()
+    uid = "eeeeeeee-0000-0000-0000-000000000005"
+    root = tmp_path / "projects"
+    path = root / "-w-proj" / f"{uid}.jsonl"
+    events = [
+        _lineage_event(uid, "e-1", None, "user", "hi") | {"cwd": str(work)},
+        _lineage_event(uid, "e-2", "e-1", "assistant", "ok"),
+    ]
+    _write_lineage_file(path, events)
+    async with StateDB() as db:
+        await mirror_session(db, session_uid=uid, events=events, tool_names={}, project=None)
+        assert (await db.get_session(session_db_id(uid)))["project"] is None
+        # Idle pass: file already fully read (offset at EOF) -> no streamed events.
+        offsets = {str(path): path.stat().st_size}
+        await _one_pass(db, root, {}, offsets, since=None, live_window=300)
+        row = await db.get_session(session_db_id(uid))
+    assert row["project"] == "ghost-proj"
+    assert row["project_source"] == "cwd_dir"
