@@ -119,6 +119,18 @@ body {
   white-space: inherit;
 }
 
+/* Collapsed = clamp to ~4 lines and scroll; the content is always present. */
+.log-text.collapsible {
+  display: block;
+}
+
+.log-text.collapsed {
+  max-height: 6em;
+  overflow-y: auto;
+  border-left: 2px solid color-mix(in srgb, var(--vscode-panel-border) 70%, transparent);
+  padding-left: 8px;
+}
+
 .log-toggle {
   display: block;
   margin-top: 3px;

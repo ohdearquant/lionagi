@@ -46,9 +46,18 @@
     eventCount++;
   }
 
-  // Action output is collapsed by default when it exceeds this many lines.
+  // Action output is collapsed (clamped to a scrollable box) by default when it
+  // is long — by line count OR by character count, so a single very long line
+  // (e.g. a tool call's arguments JSON) collapses too.
   const COLLAPSE_MIN_LINES = 5;
-  const COLLAPSE_VISIBLE = 4;
+  const COLLAPSE_CHAR_LIMIT = 320;
+
+  function isLong(text) {
+    return (
+      text.split("\n").length > COLLAPSE_MIN_LINES ||
+      text.length > COLLAPSE_CHAR_LIMIT
+    );
+  }
 
   function renderEvent(event) {
     const row = document.createElement("div");
@@ -65,12 +74,17 @@
     typeSpan.textContent = type;
 
     if (typeof content !== "string" || content.length === 0) {
-      // Fall back to a compact JSON block for structured events.
+      // Fall back to a compact JSON block for structured events. These dumps
+      // (e.g. tool results with a dict output) are often long, so clamp them too.
       const block = document.createElement("div");
       block.className = "event-block";
-      block.textContent = JSON.stringify(event, null, 2);
+      const dump = JSON.stringify(event, null, 2);
+      block.textContent = dump;
       row.appendChild(typeSpan);
       row.appendChild(block);
+      if (isLong(dump)) {
+        makeCollapsible(row, block);
+      }
       addRow(row);
       return;
     }
@@ -80,37 +94,34 @@
     row.appendChild(typeSpan);
     row.appendChild(contentSpan);
 
-    // Action output can be very long — collapse it to a few lines by default.
+    // Action output can be very long — clamp it to a scrollable box by default.
+    // The full text always stays in the DOM; collapse only limits its height.
     const isAction = contentClass.indexOf("--tool") !== -1;
-    const text = content.replace(/\n+$/, "");
-    const lines = text.split("\n");
-    if (isAction && lines.length > COLLAPSE_MIN_LINES) {
-      attachCollapse(row, contentSpan, text, lines);
-    } else {
-      contentSpan.textContent = content;
+    contentSpan.textContent = content;
+    if (isAction && isLong(content)) {
+      makeCollapsible(row, contentSpan);
     }
 
     addRow(row);
   }
 
-  // Show the first COLLAPSE_VISIBLE lines with an expand/collapse toggle.
-  function attachCollapse(row, contentSpan, full, lines) {
-    const head = lines.slice(0, COLLAPSE_VISIBLE).join("\n");
-    const hidden = lines.length - COLLAPSE_VISIBLE;
-    let collapsed = true;
+  // Clamp a long element to a scrollable box with an expand/collapse toggle.
+  // "Collapsed" contains the content (max-height + scroll) — it is never removed
+  // from the DOM, so nothing is hidden and expand always restores the full height.
+  function makeCollapsible(row, el) {
+    el.classList.add("collapsible", "collapsed");
 
     const toggle = document.createElement("button");
     toggle.type = "button";
     toggle.className = "event-toggle";
 
     function sync() {
-      contentSpan.textContent = collapsed ? head : full;
-      toggle.textContent = collapsed
-        ? "▾ Show " + hidden + " more line" + (hidden === 1 ? "" : "s")
-        : "▴ Show less";
+      toggle.textContent = el.classList.contains("collapsed")
+        ? "▾ Expand"
+        : "▴ Collapse";
     }
     toggle.addEventListener("click", function () {
-      collapsed = !collapsed;
+      el.classList.toggle("collapsed");
       sync();
     });
     sync();

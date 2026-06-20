@@ -7,9 +7,18 @@
 
   let autoScroll = true;
 
-  // Action output is collapsed by default when it exceeds this many lines.
+  // Action output is collapsed (clamped to a scrollable box) by default when it
+  // is long — by line count OR character count, so a single very long line
+  // (e.g. a tool call's arguments JSON) collapses too.
   const COLLAPSE_MIN_LINES = 5;
-  const COLLAPSE_VISIBLE = 4;
+  const COLLAPSE_CHAR_LIMIT = 320;
+
+  function isLong(text) {
+    return (
+      text.split("\n").length > COLLAPSE_MIN_LINES ||
+      text.length > COLLAPSE_CHAR_LIMIT
+    );
+  }
 
   logEl.addEventListener("scroll", () => {
     const atBottom =
@@ -21,9 +30,8 @@
     const row = document.createElement("div");
     row.className = "log-row " + (cls || "content");
     const full = String(text).replace(/\n+$/, "");
-    const lines = full.split("\n");
-    if (cls === "tool" && lines.length > COLLAPSE_MIN_LINES) {
-      attachCollapse(row, full, lines);
+    if (cls === "tool" && isLong(full)) {
+      attachCollapse(row, full);
     } else {
       row.textContent = text;
     }
@@ -33,26 +41,24 @@
     }
   }
 
-  // Show the first COLLAPSE_VISIBLE lines with an expand/collapse toggle.
-  function attachCollapse(row, full, lines) {
-    const head = lines.slice(0, COLLAPSE_VISIBLE).join("\n");
-    const hidden = lines.length - COLLAPSE_VISIBLE;
-    let collapsed = true;
-
+  // Clamp long output to a scrollable box; the text always stays in the DOM
+  // (never hidden) and expand just removes the height clamp.
+  function attachCollapse(row, full) {
     const textEl = document.createElement("span");
-    textEl.className = "log-text";
+    textEl.className = "log-text collapsible collapsed";
+    textEl.textContent = full;
+
     const toggle = document.createElement("button");
     toggle.type = "button";
     toggle.className = "log-toggle";
 
     function sync() {
-      textEl.textContent = collapsed ? head : full;
-      toggle.textContent = collapsed
-        ? "▾ Show " + hidden + " more line" + (hidden === 1 ? "" : "s")
-        : "▴ Show less";
+      toggle.textContent = textEl.classList.contains("collapsed")
+        ? "▾ Expand"
+        : "▴ Collapse";
     }
     toggle.addEventListener("click", function () {
-      collapsed = !collapsed;
+      textEl.classList.toggle("collapsed");
       sync();
     });
     sync();

@@ -226,6 +226,18 @@ body {
   color: var(--vscode-charts-yellow);
 }
 
+/* Collapsed = clamp to ~4 lines and scroll; the content is always present. */
+.log-row .collapsible {
+  display: block;
+}
+
+.log-row .collapsible.collapsed {
+  max-height: 6em;
+  overflow-y: auto;
+  border-left: 2px solid color-mix(in srgb, var(--vscode-panel-border) 70%, transparent);
+  padding-left: 8px;
+}
+
 .log-row .event-toggle {
   display: block;
   margin: 3px 0 1px;
