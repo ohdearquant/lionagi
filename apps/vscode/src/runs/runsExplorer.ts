@@ -2,32 +2,36 @@ import * as vscode from "vscode";
 import type { StudioDeps } from "../extension.js";
 import type { Run } from "../api/types.js";
 import { StudioApiError } from "../api/client.js";
-import { RunItem, ProjectGroupItem, isTerminal, toMillis } from "./runItem.js";
+import {
+  RunItem,
+  ProjectGroupItem,
+  LoadMoreItem,
+  isTerminal,
+  toMillis,
+} from "./runItem.js";
 import { RunDetailPanel } from "./runDetailPanel.js";
 
 const POLL_INTERVAL_MS = 4_000;
-const NO_PROJECT = "(no project)";
+const PAGE_SIZE = 50;
 
-type RunNode = ProjectGroupItem | RunItem;
+type RunNode = ProjectGroupItem | RunItem | LoadMoreItem;
 
-/** Bucket runs by project, preserving the time-desc order so groups list most-recently-active first. */
-function buildProjectGroups(runs: Run[]): ProjectGroupItem[] {
-  const groups = new Map<string, Run[]>();
-  for (const run of runs) {
-    const key = run.project ?? NO_PROJECT;
-    const bucket = groups.get(key);
-    if (bucket) {
-      bucket.push(run);
-    } else {
-      groups.set(key, [run]);
-    }
-  }
-  return [...groups.entries()].map(([key, rs]) => new ProjectGroupItem(key, rs));
+function newestFirst(runs: Run[]): Run[] {
+  return [...runs].sort((a, b) => {
+    const ta = toMillis(a.started_at ?? a.created_at) ?? 0;
+    const tb = toMillis(b.started_at ?? b.created_at) ?? 0;
+    return tb - ta;
+  });
 }
 
 class RunsProvider implements vscode.TreeDataProvider<RunNode> {
-  private _runs: Run[] = [];
   private _authErrorShown = false;
+  // How many pages each project group has loaded (grows on "Load more").
+  private readonly _depth = new Map<string, number>();
+  // Latest runs fetched per group — drives active-run detection between renders.
+  private readonly _runsByGroup = new Map<string, Run[]>();
+  // Current group node instances, so "Load more" can refresh one group in place.
+  private readonly _groupItems = new Map<string, ProjectGroupItem>();
   private readonly _onDidChangeTreeData =
     new vscode.EventEmitter<RunNode | undefined | null | void>();
   readonly onDidChangeTreeData = this._onDidChangeTreeData.event;
@@ -43,56 +47,99 @@ class RunsProvider implements vscode.TreeDataProvider<RunNode> {
   }
 
   async getChildren(element?: RunNode): Promise<RunNode[]> {
-    // Leaf runs have no children.
-    if (element instanceof RunItem) {
+    if (element instanceof RunItem || element instanceof LoadMoreItem) {
       return [];
     }
-    // A project group lists its runs (already time-sorted at fetch).
-    if (element instanceof ProjectGroupItem) {
-      return element.runs.map((r) => new RunItem(r));
-    }
-    // Root: fetch all runs, then group by project.
     if (!this.deps.backend.isRunning()) {
-      this._runs = [];
+      this._reset();
       return [];
     }
+    if (element instanceof ProjectGroupItem) {
+      return this._loadGroup(element);
+    }
+    return this._loadGroups();
+  }
+
+  // Root: cheap per-project counts only, no runs loaded. Most-recent project expands.
+  private async _loadGroups(): Promise<RunNode[]> {
     try {
-      const page = await this.deps.client.listRuns({ per_page: 50 });
-      const sorted = [...page.runs].sort((a, b) => {
-        const ta = toMillis(a.started_at ?? a.created_at) ?? 0;
-        const tb = toMillis(b.started_at ?? b.created_at) ?? 0;
-        return tb - ta;
-      });
-      this._runs = sorted;
+      const { projects, total } = await this.deps.client.listProjectGroups();
       this._authErrorShown = false;
       void vscode.commands.executeCommand(
         "setContext",
         "lionStudio.hasRuns",
-        sorted.length > 0
+        total > 0
       );
-      return buildProjectGroups(sorted);
+      this._groupItems.clear();
+      return projects.map((g, i) => {
+        const item = new ProjectGroupItem(g, i === 0);
+        this._groupItems.set(item.key, item);
+        return item;
+      });
     } catch (err) {
-      this._runs = [];
-      if (
-        err instanceof StudioApiError &&
-        err.status === 401 &&
-        !this._authErrorShown
-      ) {
-        this._authErrorShown = true;
-        void vscode.window.showErrorMessage(
-          "Lion Studio: authentication failed — check the lionStudio.authToken setting."
-        );
-      }
+      this._handleError(err);
       return [];
     }
   }
 
-  hasActiveRuns(): boolean {
-    return this._runs.some((r) => !isTerminal(r));
+  // A group's children: its loaded runs (re-fetched fresh each render) + a Load more leaf.
+  private async _loadGroup(item: ProjectGroupItem): Promise<RunNode[]> {
+    const perPage = (this._depth.get(item.key) ?? 1) * PAGE_SIZE;
+    const filter =
+      item.group.project === null
+        ? { project_null: true }
+        : { project: item.group.project };
+    try {
+      const page = await this.deps.client.listRuns({
+        ...filter,
+        page: 1,
+        per_page: perPage,
+      });
+      const runs = newestFirst(page.runs);
+      this._runsByGroup.set(item.key, runs);
+      const nodes: RunNode[] = runs.map((r) => new RunItem(r));
+      if (page.has_next) {
+        nodes.push(new LoadMoreItem(item.key, runs.length, item.group.count));
+      }
+      return nodes;
+    } catch (err) {
+      this._handleError(err);
+      return [];
+    }
   }
 
-  getRuns(): Run[] {
-    return this._runs;
+  // Grow a group by one page and re-render just that group.
+  loadMore(key: string): void {
+    this._depth.set(key, (this._depth.get(key) ?? 1) + 1);
+    this._onDidChangeTreeData.fire(this._groupItems.get(key));
+  }
+
+  hasActiveRuns(): boolean {
+    for (const runs of this._runsByGroup.values()) {
+      if (runs.some((r) => !isTerminal(r))) {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  private _reset(): void {
+    this._depth.clear();
+    this._runsByGroup.clear();
+    this._groupItems.clear();
+  }
+
+  private _handleError(err: unknown): void {
+    if (
+      err instanceof StudioApiError &&
+      err.status === 401 &&
+      !this._authErrorShown
+    ) {
+      this._authErrorShown = true;
+      void vscode.window.showErrorMessage(
+        "Lion Studio: authentication failed — check the lionStudio.authToken setting."
+      );
+    }
   }
 }
 
@@ -193,10 +240,18 @@ export function registerRunsExplorer(
     }
   );
 
+  const loadMoreCmd = vscode.commands.registerCommand(
+    "lionStudio.loadMoreRuns",
+    (key: string) => {
+      provider.loadMore(key);
+    }
+  );
+
   context.subscriptions.push(
     treeView,
     refreshCmd,
     openRunCmd,
+    loadMoreCmd,
     stateListener,
     visibilityListener,
     dataChangeListener,

@@ -1,4 +1,10 @@
-import type { LaunchRequest, LaunchResult, Run, RunsPage } from "./types.js";
+import type {
+  LaunchRequest,
+  LaunchResult,
+  ProjectGroupsPage,
+  Run,
+  RunsPage,
+} from "./types.js";
 
 export class StudioApiError extends Error {
   constructor(
@@ -16,6 +22,7 @@ export interface ListRunsOptions {
   status?: string;
   playbook?: string;
   project?: string;
+  project_null?: boolean;
 }
 
 export class StudioClient {
@@ -79,8 +86,15 @@ export class StudioClient {
     if (opts.project) {
       params.set("project", opts.project);
     }
+    if (opts.project_null) {
+      params.set("project_null", "true");
+    }
     const qs = params.toString();
     return this.request<RunsPage>("GET", `/api/runs/${qs ? `?${qs}` : ""}`);
+  }
+
+  async listProjectGroups(): Promise<ProjectGroupsPage> {
+    return this.request<ProjectGroupsPage>("GET", "/api/runs/projects");
   }
 
   async getRun(runId: string): Promise<Run> {

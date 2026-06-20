@@ -1,5 +1,8 @@
 import * as vscode from "vscode";
-import type { Run } from "../api/types.js";
+import type { ProjectGroup, Run } from "../api/types.js";
+
+/** Display + group key for runs that have no detected project. */
+export const NO_PROJECT = "(no project)";
 
 const TERMINAL_STATUSES = new Set([
   "succeeded",
@@ -182,23 +185,50 @@ export class RunItem extends vscode.TreeItem {
   }
 }
 
-/** A collapsible parent grouping a project's runs in the tree. */
+/** A collapsible project parent. Runs load lazily when it is expanded. */
 export class ProjectGroupItem extends vscode.TreeItem {
+  readonly key: string;
   constructor(
-    public readonly projectKey: string,
-    public readonly runs: Run[]
+    public readonly group: ProjectGroup,
+    expanded: boolean
   ) {
     super(
-      shortProject(projectKey) ?? projectKey,
-      vscode.TreeItemCollapsibleState.Expanded
+      shortProject(group.project) ?? NO_PROJECT,
+      expanded
+        ? vscode.TreeItemCollapsibleState.Expanded
+        : vscode.TreeItemCollapsibleState.Collapsed
     );
-    const n = runs.length;
-    this.description = `${n}`;
+    this.key = group.project ?? NO_PROJECT;
+    this.description = `${group.count}`;
     this.contextValue = "runGroup";
     this.iconPath = new vscode.ThemeIcon("repo");
-    this.tooltip = `${projectKey} · ${n} run${n === 1 ? "" : "s"}`;
+    const rel = relativeTime(group.last_activity);
+    const noun = group.count === 1 ? "run" : "runs";
+    this.tooltip =
+      `${group.project ?? NO_PROJECT} · ${group.count} ${noun}` +
+      (rel ? ` · ${rel}` : "");
     // Stable id so manual expand/collapse survives the 4s poll refreshes.
-    this.id = `group:${projectKey}`;
+    this.id = `group:${this.key}`;
+  }
+}
+
+/** Leaf that pages the next slice of a project's runs when clicked. */
+export class LoadMoreItem extends vscode.TreeItem {
+  constructor(
+    public readonly key: string,
+    loaded: number,
+    total: number
+  ) {
+    super(`Load more · ${loaded} of ${total}`, vscode.TreeItemCollapsibleState.None);
+    this.contextValue = "loadMore";
+    this.iconPath = new vscode.ThemeIcon("ellipsis");
+    // id encodes the loaded count so the node re-renders as the group grows.
+    this.id = `loadmore:${key}:${loaded}`;
+    this.command = {
+      command: "lionStudio.loadMoreRuns",
+      title: "Load more runs",
+      arguments: [key],
+    };
   }
 }
 

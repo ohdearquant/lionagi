@@ -471,6 +471,7 @@ async def list_runs(
     playbook: str | None = None,
     status: str | list[str] | None = None,
     project: str | None = None,
+    project_null: bool = False,
 ) -> list[dict[str, Any]]:
     from lionagi.state.health import SessionHealth, classify_session_health
 
@@ -481,7 +482,10 @@ async def list_runs(
     for s in sessions:
         if playbook and playbook.lower() not in (s.get("playbook_name") or "").lower():
             continue
-        if project and s.get("project") != project:
+        if project_null:
+            if s.get("project") is not None:
+                continue
+        elif project and s.get("project") != project:
             continue
         if status_set and s.get("status") not in status_set:
             continue
@@ -637,9 +641,21 @@ async def list_runs_route(
         default=None, description="Case-insensitive playbook contains filter"
     ),
     project: str | None = Query(default=None, description="Exact project name filter (ADR-0026)"),
+    project_null: bool = Query(default=False, description="Filter to runs with no project"),
 ) -> dict[str, Any]:
-    runs = await list_runs(playbook=playbook, status=status, project=project)
+    runs = await list_runs(
+        playbook=playbook, status=status, project=project, project_null=project_null
+    )
     return paginate_runs(runs, page=page, per_page=per_page)
+
+
+# Registered before /runs/{run_id} so the literal path is not captured as a run id.
+@studio_route("/runs/projects", method="GET", area="runs", name="list_run_projects")
+async def list_run_projects_route() -> dict[str, Any]:
+    counts = await _sessions_svc.list_project_counts()
+    counts.sort(key=lambda c: c.get("last_activity") or 0, reverse=True)
+    total = sum(c["count"] for c in counts)
+    return {"projects": counts, "total": total}
 
 
 @studio_route("/runs/{run_id}", method="GET", area="runs", name="get_run")

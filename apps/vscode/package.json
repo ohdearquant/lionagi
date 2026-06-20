@@ -2,7 +2,7 @@
   "name": "lion-studio",
   "displayName": "Lion Studio",
   "description": "Native VS Code client for the Lion Studio FastAPI backend.",
-  "version": "0.0.4",
+  "version": "0.0.5",
   "publisher": "lionagi",
   "icon": "media/icon.png",
   "repository": {

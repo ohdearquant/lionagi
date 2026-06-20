@@ -34,6 +34,19 @@ export interface RunsPage {
   has_prev: boolean;
 }
 
+/** One project bucket from GET /api/runs/projects (count without loading rows). */
+export interface ProjectGroup {
+  project: string | null;
+  count: number;
+  last_activity: number | null;
+}
+
+/** Response from GET /api/runs/projects. */
+export interface ProjectGroupsPage {
+  projects: ProjectGroup[];
+  total: number;
+}
+
 /** Body for POST /api/launches/. All fields optional except action_kind. */
 export interface LaunchRequest {
   action_kind: "agent" | "flow" | "fanout" | "play" | "engine";
