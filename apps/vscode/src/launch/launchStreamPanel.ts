@@ -3,7 +3,8 @@ import * as path from "path";
 import * as vscode from "vscode";
 import { streamSession } from "../api/sse.js";
 import type { StudioEvent } from "../api/types.js";
-import { getAuthToken, studioBaseUrl } from "../config.js";
+import type { StudioDeps } from "../extension.js";
+import { getAuthToken } from "../config.js";
 
 function generateNonce(): string {
   return crypto.randomBytes(16).toString("base64");
@@ -59,7 +60,8 @@ function buildHtml(
 export function openLaunchStreamPanel(
   context: vscode.ExtensionContext,
   sessionId: string,
-  prompt: string
+  prompt: string,
+  deps: StudioDeps
 ): void {
   const panel = vscode.window.createWebviewPanel(
     "lionStudio.agentStream",
@@ -95,7 +97,7 @@ export function openLaunchStreamPanel(
   post({ kind: "meta", text: `Session: ${sessionId}` });
 
   void streamSession(
-    studioBaseUrl(),
+    deps.backend.baseUrl,
     sessionId,
     getAuthToken() || undefined,
     (ev: StudioEvent) => {

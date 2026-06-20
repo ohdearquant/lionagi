@@ -118,8 +118,8 @@
         },
         "lionStudio.pythonPath": {
           "type": "string",
-          "default": "python3",
-          "description": "Path to the Python interpreter used to spawn the backend."
+          "default": "",
+          "description": "Python interpreter for the spawned backend. Leave empty to auto-detect (workspace .venv, then uv, then python3)."
         },
         "lionStudio.port": {
           "type": "number",

@@ -1,20 +1,95 @@
 import * as child_process from "child_process";
+import * as fs from "fs";
+import * as os from "os";
+import * as path from "path";
 import * as vscode from "vscode";
 
 export type BackendState = "stopped" | "starting" | "running" | "error";
+
+interface SpawnSpec {
+  command: string;
+  args: string[];
+  cwd?: string;
+}
+
+function workspaceRoot(): string | undefined {
+  return vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
+}
+
+function resolveUv(): string | undefined {
+  const candidates = [
+    path.join(os.homedir(), ".local", "bin", "uv"),
+    "/opt/homebrew/bin/uv",
+    "/usr/local/bin/uv",
+  ];
+  return candidates.find((p) => fs.existsSync(p));
+}
+
+/** Resolve the Python interpreter or uv run spec for spawning the backend. */
+function resolveSpawnSpec(explicitPython: string): SpawnSpec {
+  const ws = workspaceRoot();
+
+  // 1. Explicitly configured path.
+  if (explicitPython.trim() !== "") {
+    return { command: explicitPython, args: ["-m", "lionagi.studio"] };
+  }
+
+  // 2. Workspace venv.
+  if (ws) {
+    const unix = path.join(ws, ".venv", "bin", "python");
+    const win = path.join(ws, ".venv", "Scripts", "python.exe");
+    if (fs.existsSync(unix)) {
+      return { command: unix, args: ["-m", "lionagi.studio"] };
+    }
+    if (fs.existsSync(win)) {
+      return { command: win, args: ["-m", "lionagi.studio"] };
+    }
+  }
+
+  // 3. uv run (if uv and pyproject.toml are present).
+  if (ws) {
+    const uv = resolveUv();
+    if (uv && fs.existsSync(path.join(ws, "pyproject.toml"))) {
+      return {
+        command: uv,
+        args: ["run", "python", "-m", "lionagi.studio"],
+        cwd: ws,
+      };
+    }
+  }
+
+  // 4. System python3 fallback.
+  return { command: "python3", args: ["-m", "lionagi.studio"] };
+}
+
+/** Single-shot health probe with a short timeout. Returns true on success. */
+async function probeHealth(url: string): Promise<boolean> {
+  try {
+    const res = await fetch(`${url}/health`, {
+      signal: AbortSignal.timeout(1500),
+    });
+    if (!res.ok) {
+      return false;
+    }
+    const body = (await res.json()) as { status?: string };
+    return body.status === "ok";
+  } catch {
+    return false;
+  }
+}
 
 export class BackendManager implements vscode.Disposable {
   private _state: BackendState = "stopped";
   private _child: child_process.ChildProcess | undefined;
   private _output: vscode.OutputChannel;
   private _pollTimer: ReturnType<typeof setTimeout> | undefined;
+  private _effectiveBaseUrl: string | undefined;
 
   private readonly _onDidChangeState =
     new vscode.EventEmitter<BackendState>();
   readonly onDidChangeState = this._onDidChangeState.event;
 
   constructor(
-    private readonly getBaseUrl: () => string,
     private readonly getPythonPath: () => string,
     private readonly getConfiguredUrl: () => string,
     private readonly getPort: () => number,
@@ -26,6 +101,18 @@ export class BackendManager implements vscode.Disposable {
 
   get state(): BackendState {
     return this._state;
+  }
+
+  /** The live base URL (attached or spawned). Falls back to config-derived default. */
+  get baseUrl(): string {
+    if (this._effectiveBaseUrl) {
+      return this._effectiveBaseUrl;
+    }
+    const configured = this.getConfiguredUrl().trim().replace(/\/$/, "");
+    if (configured) {
+      return configured;
+    }
+    return `http://${this.getHost()}:${this.getPort()}`;
   }
 
   isRunning(): boolean {
@@ -44,22 +131,44 @@ export class BackendManager implements vscode.Disposable {
       return;
     }
 
-    // ATTACH mode: configured URL set — do not spawn, just health-check.
-    if (this.getConfiguredUrl().trim()) {
-      this.setState("starting");
-      const ok = await this._pollHealth(30_000);
-      this.setState(ok ? "running" : "error");
-      return;
-    }
-
-    // SPAWN mode.
     this.setState("starting");
 
-    const pythonPath = this.getPythonPath();
-    const port = this.getPort();
+    // --- A. Discovery phase ---
     const host = this.getHost();
-    const token = this.getToken();
+    const port = this.getPort();
+    const configuredUrl = this.getConfiguredUrl().trim().replace(/\/$/, "");
+    const defaultUrl = `http://${host}:${port}`;
 
+    // Build de-duplicated candidate list: configured URL first, then default.
+    const candidates: string[] = [];
+    if (configuredUrl) {
+      candidates.push(configuredUrl);
+    }
+    if (!candidates.includes(defaultUrl)) {
+      candidates.push(defaultUrl);
+    }
+
+    for (const candidate of candidates) {
+      const found = await probeHealth(candidate);
+      if (found) {
+        this._effectiveBaseUrl = candidate;
+        this.setState("running");
+        this._output.appendLine(
+          `[lifecycle] attached to existing backend at ${candidate}`
+        );
+        return;
+      }
+    }
+
+    // --- B. Spawn phase ---
+    const spec = resolveSpawnSpec(this.getPythonPath());
+    this._effectiveBaseUrl = defaultUrl;
+
+    this._output.appendLine(
+      `[lifecycle] spawning via ${spec.command} ${spec.args.join(" ")}`
+    );
+
+    const token = this.getToken();
     const env: NodeJS.ProcessEnv = {
       ...process.env,
       LIONAGI_STUDIO_PORT: String(port),
@@ -69,17 +178,14 @@ export class BackendManager implements vscode.Disposable {
       env["LIONAGI_STUDIO_AUTH_TOKEN"] = token;
     }
 
-    this._output.appendLine(
-      `[lifecycle] spawning: ${pythonPath} -m lionagi.studio (port=${port}, host=${host})`
-    );
-
     let spawnFailed = false;
+    let earlyExit = false;
 
-    const child = child_process.spawn(
-      pythonPath,
-      ["-m", "lionagi.studio"],
-      { env, stdio: ["ignore", "pipe", "pipe"] }
-    );
+    const child = child_process.spawn(spec.command, spec.args, {
+      env,
+      cwd: spec.cwd,
+      stdio: ["ignore", "pipe", "pipe"],
+    });
 
     this._child = child;
 
@@ -89,24 +195,37 @@ export class BackendManager implements vscode.Disposable {
     child.stderr?.on("data", (data: Buffer) => {
       this._output.append(data.toString());
     });
+
     child.on("error", (err) => {
       this._output.appendLine(`[lifecycle] spawn error: ${err.message}`);
       spawnFailed = true;
       this.setState("error");
       void vscode.window.showErrorMessage(
-        `Lion Studio: failed to start backend — ${err.message}. Check the lionStudio.pythonPath setting.`
+        `Lion Studio: failed to start backend — ${err.message}. ` +
+          `Check the lionStudio.pythonPath setting.`
       );
     });
+
     child.on("exit", (code) => {
       this._output.appendLine(`[lifecycle] exited with code ${code}`);
-      if (this._state !== "stopped") {
+      if (this._state === "starting" && code !== null && code !== 0) {
+        earlyExit = true;
+        spawnFailed = true;
+        this.setState("error");
+        void vscode.window.showErrorMessage(
+          `Lion Studio: backend exited (code ${code}) before becoming healthy. ` +
+            `The Python at ${spec.command} may not have lionagi installed — ` +
+            `set lionStudio.pythonPath or run 'uv pip install lionagi'. ` +
+            `See the Lion Studio output channel.`
+        );
+      } else if (this._state !== "stopped") {
         this.setState("error");
       }
     });
 
     const ok = await this._pollHealth(30_000, () => spawnFailed);
-    if (spawnFailed) {
-      // error already set in the error handler above
+    if (spawnFailed || earlyExit) {
+      // error state already set above
     } else if (!ok) {
       this.setState("error");
     } else {
@@ -131,6 +250,7 @@ export class BackendManager implements vscode.Disposable {
       }, 3_000);
       child.once("exit", () => clearTimeout(killTimer));
     }
+    this._effectiveBaseUrl = undefined;
     this.setState("stopped");
   }
 
@@ -147,7 +267,7 @@ export class BackendManager implements vscode.Disposable {
         return false;
       }
       try {
-        const res = await fetch(`${this.getBaseUrl()}/health`);
+        const res = await fetch(`${this.baseUrl}/health`);
         if (res.ok) {
           const body = (await res.json()) as { status?: string };
           if (body.status === "ok") {

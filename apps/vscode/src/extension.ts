@@ -8,7 +8,6 @@ import {
   getPythonPath,
   getPort,
   getUrl,
-  studioBaseUrl,
 } from "./config.js";
 import { registerAgentTrigger } from "./launch/agentTrigger.js";
 import { registerRunsExplorer } from "./runs/runsExplorer.js";
@@ -24,7 +23,6 @@ let backend: BackendManager | undefined;
 
 export function activate(context: vscode.ExtensionContext): void {
   const bm = new BackendManager(
-    () => studioBaseUrl(),
     () => getPythonPath(),
     () => getUrl(),
     () => getPort(),
@@ -35,7 +33,7 @@ export function activate(context: vscode.ExtensionContext): void {
   context.subscriptions.push(bm);
 
   const client = new StudioClient(
-    () => studioBaseUrl(),
+    () => bm.baseUrl,
     () => getAuthToken() || undefined
   );
 

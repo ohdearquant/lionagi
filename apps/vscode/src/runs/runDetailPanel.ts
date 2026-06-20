@@ -4,7 +4,7 @@ import * as crypto from "crypto";
 import type { StudioDeps } from "../extension.js";
 import type { Run, StudioEvent } from "../api/types.js";
 import { streamSession } from "../api/sse.js";
-import { studioBaseUrl, getAuthToken } from "../config.js";
+import { getAuthToken } from "../config.js";
 import { isTerminal } from "./runItem.js";
 
 // One panel per run_id.
@@ -111,7 +111,7 @@ export class RunDetailPanel {
   private async streamLive(): Promise<void> {
     try {
       await streamSession(
-        studioBaseUrl(),
+        this.deps.backend.baseUrl,
         this.run.run_id,
         getAuthToken() || undefined,
         (e: StudioEvent) => {

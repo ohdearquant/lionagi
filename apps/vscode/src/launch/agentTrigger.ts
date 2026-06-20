@@ -168,7 +168,7 @@ export function registerAgentTrigger(
       }
 
       // 6. Open the streaming panel
-      openLaunchStreamPanel(context, run.run_id, actionPrompt);
+      openLaunchStreamPanel(context, run.run_id, actionPrompt, deps);
 
       // Refresh again now that we have a run_id confirmed
       void vscode.commands.executeCommand("lionStudio.refreshRuns");

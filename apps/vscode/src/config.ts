@@ -9,7 +9,7 @@ export function getUrl(): string {
 }
 
 export function getPythonPath(): string {
-  return cfg().get<string>("pythonPath", "python3");
+  return cfg().get<string>("pythonPath", "");
 }
 
 export function getPort(): number {
@@ -26,13 +26,4 @@ export function getAutoStart(): boolean {
 
 export function getAuthToken(): string {
   return cfg().get<string>("authToken", "");
-}
-
-/** Returns the base URL: configured attach URL or http://{host}:{port}. */
-export function studioBaseUrl(): string {
-  const configured = getUrl().trim();
-  if (configured) {
-    return configured.replace(/\/$/, "");
-  }
-  return `http://${getHost()}:${getPort()}`;
 }
