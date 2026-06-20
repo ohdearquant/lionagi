@@ -26,7 +26,7 @@ export function statusIcon(run: Run): vscode.ThemeIcon {
   }
   if (s === "succeeded" || s === "completed" || h === "healthy") {
     return new vscode.ThemeIcon(
-      "pass",
+      "pass-filled",
       new vscode.ThemeColor("charts.green")
     );
   }
@@ -96,24 +96,79 @@ export function relativeTime(
   return `${days}d ago`;
 }
 
+/** Last path segment of a project ref: "ohdearquant/lattice" → "lattice". */
+function shortProject(project: string | null | undefined): string | undefined {
+  if (!project) {
+    return undefined;
+  }
+  const seg = project.split("/").pop()?.trim();
+  return seg || project;
+}
+
+/** A name is useful only if set and not just echoing the invocation kind ("agent"). */
+function meaningful(
+  v: string | null | undefined,
+  kind: string | null | undefined
+): v is string {
+  const s = v?.trim();
+  if (!s) {
+    return false;
+  }
+  return !kind || s.toLowerCase() !== kind.toLowerCase();
+}
+
+/** The most identifying label available — never the bare invocation kind. */
+function pickLabel(run: Run): string {
+  const kind = run.invocation_kind;
+  if (meaningful(run.name, kind)) {
+    return run.name.trim();
+  }
+  if (meaningful(run.agent_name, kind)) {
+    return run.agent_name.trim();
+  }
+  if (meaningful(run.playbook_name, kind)) {
+    return run.playbook_name.trim();
+  }
+  const proj = shortProject(run.project);
+  if (proj) {
+    return proj;
+  }
+  const id = run.run_id ?? run.id ?? "";
+  return kind ? `${kind} ${id.slice(0, 6)}`.trim() : id.slice(0, 8) || "run";
+}
+
+const SUCCESS_STATUSES = new Set(["completed", "succeeded", "done"]);
+
+/** Compact detail line: project · size · model · time, with non-success status surfaced. */
+function buildDescription(run: Run, label: string): string {
+  const parts: string[] = [];
+  const proj = shortProject(run.project);
+  if (proj && proj !== label) {
+    parts.push(proj);
+  }
+  if (typeof run.message_count === "number" && run.message_count > 0) {
+    parts.push(`${run.message_count} msg`);
+  }
+  if (run.model) {
+    parts.push(run.model);
+  }
+  const rel = relativeTime(run.started_at ?? run.created_at);
+  if (rel) {
+    parts.push(rel);
+  }
+  const s = (run.status ?? "").toLowerCase();
+  if (s && !SUCCESS_STATUSES.has(s)) {
+    parts.push(s);
+  }
+  return parts.join(" · ");
+}
+
 export class RunItem extends vscode.TreeItem {
   constructor(public readonly run: Run) {
-    const label =
-      run.name ??
-      run.playbook_name ??
-      run.agent_name ??
-      run.run_id.slice(0, 8);
-
+    const label = pickLabel(run);
     super(label, vscode.TreeItemCollapsibleState.None);
 
-    const ts = run.started_at ?? run.created_at;
-    const rel = relativeTime(ts);
-    const statusPart = run.status ?? "unknown";
-    const modelPart = run.model ? ` · ${run.model}` : "";
-    this.description = rel
-      ? `${statusPart} · ${rel}${modelPart}`
-      : `${statusPart}${modelPart}`;
-
+    this.description = buildDescription(run, label);
     this.iconPath = statusIcon(run);
     this.contextValue = "run";
     this.tooltip = buildTooltip(run);
