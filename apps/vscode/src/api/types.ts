@@ -10,11 +10,11 @@ export interface Run {
   provider: string | null;
   effort: string | null;
   status: string;
-  started_at: string | null;
-  ended_at: string | null;
-  created_at: string;
-  updated_at: string | null;
-  last_message_at: string | null;
+  started_at: number | null;
+  ended_at: number | null;
+  created_at: number;
+  updated_at: number | null;
+  last_message_at: number | null;
   effective_health: string | null;
   branch_count: number;
   message_count: number;

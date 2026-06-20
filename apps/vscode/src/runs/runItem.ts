@@ -51,11 +51,32 @@ export function statusIcon(run: Run): vscode.ThemeIcon {
   return new vscode.ThemeIcon("circle-outline");
 }
 
-export function relativeTime(iso: string | null | undefined): string {
-  if (!iso) {
+/** Normalize an API timestamp (epoch seconds, epoch ms, or ISO string) to epoch ms. */
+export function toMillis(
+  v: number | string | null | undefined
+): number | undefined {
+  if (v === null || v === undefined) {
+    return undefined;
+  }
+  if (typeof v === "number") {
+    if (!Number.isFinite(v)) {
+      return undefined;
+    }
+    // The backend sends epoch seconds (~1.7e9); guard against ms (~1.7e12).
+    return v < 1e11 ? v * 1000 : v;
+  }
+  const ms = Date.parse(v);
+  return Number.isNaN(ms) ? undefined : ms;
+}
+
+export function relativeTime(
+  ts: number | string | null | undefined
+): string {
+  const ms = toMillis(ts);
+  if (ms === undefined) {
     return "";
   }
-  const diffMs = Date.now() - new Date(iso).getTime();
+  const diffMs = Date.now() - ms;
   if (diffMs < 0) {
     return "just now";
   }
@@ -147,10 +168,10 @@ function buildTooltip(run: Run): vscode.MarkdownString {
   return md;
 }
 
-function formatTs(iso: string): string {
-  try {
-    return new Date(iso).toLocaleString();
-  } catch {
-    return iso;
+function formatTs(ts: number | string): string {
+  const ms = toMillis(ts);
+  if (ms === undefined) {
+    return String(ts);
   }
+  return new Date(ms).toLocaleString();
 }

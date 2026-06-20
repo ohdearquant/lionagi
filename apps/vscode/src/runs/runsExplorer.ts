@@ -2,7 +2,7 @@ import * as vscode from "vscode";
 import type { StudioDeps } from "../extension.js";
 import type { Run } from "../api/types.js";
 import { StudioApiError } from "../api/client.js";
-import { RunItem, isTerminal } from "./runItem.js";
+import { RunItem, isTerminal, toMillis } from "./runItem.js";
 import { RunDetailPanel } from "./runDetailPanel.js";
 
 const POLL_INTERVAL_MS = 4_000;
@@ -32,9 +32,9 @@ class RunsProvider implements vscode.TreeDataProvider<RunItem> {
     try {
       const page = await this.deps.client.listRuns({ per_page: 50 });
       const sorted = [...page.runs].sort((a, b) => {
-        const ta = a.started_at ?? a.created_at;
-        const tb = b.started_at ?? b.created_at;
-        return new Date(tb).getTime() - new Date(ta).getTime();
+        const ta = toMillis(a.started_at ?? a.created_at) ?? 0;
+        const tb = toMillis(b.started_at ?? b.created_at) ?? 0;
+        return tb - ta;
       });
       this._runs = sorted;
       this._authErrorShown = false;
