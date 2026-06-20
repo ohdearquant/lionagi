@@ -46,3 +46,13 @@ CHECKPOINT_INTERVAL_SECONDS: int = int(
 )
 # Sessions/runs older than this many days (with terminal status) will be pruned.
 PRUNE_KEEP_DAYS: int = int(os.environ.get("LIONAGI_STUDIO_PRUNE_KEEP_DAYS", "30"))
+
+# ── Ambient Claude Code mirror ────────────────────────────────────────────────
+# When on, studio tails ~/.claude/projects in-process so Claude Code sessions show
+# up (and stream live) without a separate `li mirror`. Bounded by the window below,
+# so startup catches up the recent window only and never backfills full history.
+MIRROR_CLAUDE_ENABLED: bool = os.environ.get(
+    "LIONAGI_STUDIO_MIRROR_CLAUDE", "1"
+).strip().lower() not in ("0", "false", "no", "off", "")
+MIRROR_CLAUDE_SINCE: str = os.environ.get("LIONAGI_STUDIO_MIRROR_CLAUDE_SINCE", "24h")
+MIRROR_CLAUDE_INTERVAL: float = float(os.environ.get("LIONAGI_STUDIO_MIRROR_CLAUDE_INTERVAL", "5"))

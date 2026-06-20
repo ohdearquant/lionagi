@@ -5,7 +5,9 @@
 from __future__ import annotations
 
 import argparse
+import asyncio
 import json
+import logging
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -21,6 +23,8 @@ _OFFSETS_PATH = LIONAGI_HOME / "mirror" / "offsets.json"
 # A session whose newest message is within this window counts as live (running);
 # past it, the next pass flips it to completed.
 _DEFAULT_LIVE_WINDOW = 300.0
+
+_log = logging.getLogger(__name__)
 
 
 def add_mirror_subparser(subparsers: argparse._SubParsersAction) -> None:
@@ -267,6 +271,43 @@ async def _one_pass(db, root: Path, states, offsets, *, since, live_window) -> i
     for uid in seen:
         await reconcile_session_status(db, uid, now=now, live_window=live_window)
     return total
+
+
+async def mirror_forever(
+    stop: asyncio.Event,
+    *,
+    root: Path | None = None,
+    since: str | None = "24h",
+    interval: float = 5.0,
+    live_window: float = _DEFAULT_LIVE_WINDOW,
+) -> None:
+    """Tail recent Claude transcripts into StateDB until ``stop`` is set.
+
+    ``since`` bounds the scan to the recent window, so it catches up and tails
+    live without ever backfilling full history. Studio's in-process entry point;
+    ``li mirror`` keeps its own loop in ``_run``.
+    """
+    from lionagi.state.db import StateDB
+
+    root = Path(root).expanduser() if root else CLAUDE_PROJECTS_DIR
+    if not root.exists():
+        return
+    since_secs = _parse_window(since) if since else None
+    offsets = _load_offsets()
+    states: dict[str, _FileState] = {}
+    async with StateDB() as db:
+        while not stop.is_set():
+            try:
+                await _one_pass(
+                    db, root, states, offsets, since=since_secs, live_window=live_window
+                )
+                _save_offsets(offsets)
+            except Exception:  # a single bad pass must never kill the tail
+                _log.exception("claude mirror pass failed")
+            try:
+                await asyncio.wait_for(stop.wait(), timeout=interval)
+            except (asyncio.TimeoutError, TimeoutError):
+                pass
 
 
 async def _run(args: argparse.Namespace) -> int:
