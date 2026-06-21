@@ -49,7 +49,7 @@ export interface ProjectGroupsPage {
 
 /** Body for POST /api/launches/. All fields optional except action_kind. */
 export interface LaunchRequest {
-  action_kind: "agent" | "flow" | "fanout" | "play" | "engine";
+  action_kind: "agent" | "flow" | "flow_yaml" | "fanout" | "play" | "engine";
   action_model?: string;
   action_prompt?: string;
   action_agent?: string;

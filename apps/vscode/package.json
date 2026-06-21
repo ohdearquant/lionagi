@@ -119,6 +119,12 @@
         "title": "Den: Retry Run",
         "category": "Den",
         "icon": "$(debug-restart)"
+      },
+      {
+        "command": "den.runFlowFromYaml",
+        "title": "Den: Run Flow from YAML",
+        "category": "Den",
+        "icon": "$(run-all)"
       }
     ],
     "menus": {
@@ -135,6 +141,11 @@
         },
         {
           "command": "den.run",
+          "when": "view == den.runs",
+          "group": "navigation"
+        },
+        {
+          "command": "den.runFlowFromYaml",
           "when": "view == den.runs",
           "group": "navigation"
         },
@@ -181,6 +192,9 @@
         },
         {
           "command": "den.run"
+        },
+        {
+          "command": "den.runFlowFromYaml"
         },
         {
           "command": "den.starOnGitHub"

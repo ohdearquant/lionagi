@@ -1,3 +1,4 @@
+import * as path from "path";
 import * as vscode from "vscode";
 import { StudioApiError } from "../api/client.js";
 import type { StudioDeps } from "../extension.js";
@@ -146,6 +147,115 @@ async function collectFlowParams(): Promise<
   };
 }
 
+/** Shared post-launch tail: refresh, poll for session, open panel, offer tree. */
+async function attachLaunchedRun(
+  context: vscode.ExtensionContext,
+  deps: StudioDeps,
+  invocationId: string,
+  panelTitle: string
+): Promise<void> {
+  void vscode.commands.executeCommand("den.refreshRuns");
+
+  // 4. Poll the invocation until a child session id appears.
+  const pollAbort = new AbortController();
+  let sessionId: string | undefined;
+
+  try {
+    sessionId = await vscode.window.withProgress(
+      {
+        location: vscode.ProgressLocation.Notification,
+        title: "Waiting for run to start…",
+        cancellable: true,
+      },
+      async (_progress, token) => {
+        token.onCancellationRequested(() => pollAbort.abort());
+        return pollForSessionId(deps, invocationId, pollAbort.signal);
+      }
+    );
+  } catch {
+    // poll threw; leave sessionId undefined
+  }
+
+  if (!sessionId) {
+    void vscode.window.showInformationMessage(
+      "Launched. Open it from the Runs view once it appears."
+    );
+    return;
+  }
+
+  // 5. Attach the streaming panel.
+  openLaunchStreamPanel(context, sessionId, panelTitle, deps);
+  void vscode.commands.executeCommand("den.refreshRuns");
+
+  // 6. Non-intrusive offer to open the run tree alongside the stream panel.
+  void vscode.window.showInformationMessage("Run started.", "View Run Tree").then((choice) => {
+    if (choice === "View Run Tree") {
+      RunTreePanel.open(context, deps, sessionId, panelTitle);
+    }
+  });
+}
+
+/** Read YAML from the active editor or from a file picker. */
+async function collectFlowYaml(): Promise<{ yaml: string; title: string } | undefined> {
+  const editor = vscode.window.activeTextEditor;
+  if (editor) {
+    const text = editor.document.getText().trim();
+    if (text) {
+      const fsPath = editor.document.uri.fsPath;
+      const title = fsPath ? path.basename(fsPath) : "Flow from YAML";
+      return { yaml: text, title };
+    }
+  }
+
+  const uris = await vscode.window.showOpenDialog({
+    canSelectMany: false,
+    filters: { YAML: ["yaml", "yml"], "All files": ["*"] },
+    title: "Den: Run Flow from YAML — pick a flow spec",
+  });
+  if (uris && uris[0]) {
+    const bytes = await vscode.workspace.fs.readFile(uris[0]);
+    const yaml = Buffer.from(bytes).toString("utf8").trim();
+    if (yaml) {
+      return { yaml, title: path.basename(uris[0].fsPath) };
+    }
+  }
+
+  void vscode.window.showInformationMessage(
+    "Open a flow YAML file in the editor, or pick one, to run it."
+  );
+  return undefined;
+}
+
+/** Collect model + optional project for a flow_yaml launch (no prompt — YAML is the spec). */
+async function collectFlowYamlParams(): Promise<
+  { action_model: string; action_project?: string } | undefined
+> {
+  const model = await vscode.window.showInputBox({
+    title: "Den: Run Flow from YAML — Model",
+    prompt: "Model string for the flow.",
+    placeHolder: "openai/gpt-4.1-mini",
+    ignoreFocusOut: true,
+  });
+  if (model === undefined) {
+    return undefined;
+  }
+
+  const project = await vscode.window.showInputBox({
+    title: "Den: Run Flow from YAML — Project (optional)",
+    prompt: "Project label. Leave blank to skip.",
+    placeHolder: "e.g. ohdearquant/lionagi",
+    ignoreFocusOut: true,
+  });
+  if (project === undefined) {
+    return undefined;
+  }
+
+  return {
+    action_model: model.trim() || "openai/gpt-4.1-mini",
+    action_project: project.trim() || undefined,
+  };
+}
+
 export function registerRunCommand(
   context: vscode.ExtensionContext,
   deps: StudioDeps
@@ -240,45 +350,68 @@ export function registerRunCommand(
         }
       }
 
-      void vscode.commands.executeCommand("den.refreshRuns");
+      await attachLaunchedRun(context, deps, invocationId, panelTitle);
+    })
+  );
 
-      // 4. Poll the invocation until a child session id appears.
-      const pollAbort = new AbortController();
-      let sessionId: string | undefined;
-
-      try {
-        sessionId = await vscode.window.withProgress(
-          {
-            location: vscode.ProgressLocation.Notification,
-            title: "Waiting for run to start…",
-            cancellable: true,
-          },
-          async (_progress, token) => {
-            token.onCancellationRequested(() => pollAbort.abort());
-            return pollForSessionId(deps, invocationId, pollAbort.signal);
-          }
+  context.subscriptions.push(
+    vscode.commands.registerCommand("den.runFlowFromYaml", async () => {
+      // 1. Ensure backend is running.
+      if (!deps.backend.isRunning()) {
+        const choice = await vscode.window.showWarningMessage(
+          "Den backend is not running. Start it?",
+          "Start"
         );
-      } catch {
-        // poll threw; leave sessionId undefined
+        if (choice !== "Start") {
+          return;
+        }
+        await deps.backend.start();
+        if (!deps.backend.isRunning()) {
+          void vscode.window.showErrorMessage(
+            "Backend failed to start. Check the Den output channel."
+          );
+          return;
+        }
       }
 
-      if (!sessionId) {
-        void vscode.window.showInformationMessage(
-          "Launched. Open it from the Runs view once it appears."
-        );
+      // 2. Collect YAML source.
+      const src = await collectFlowYaml();
+      if (!src) {
         return;
       }
 
-      // 5. Attach the streaming panel.
-      openLaunchStreamPanel(context, sessionId, panelTitle, deps);
-      void vscode.commands.executeCommand("den.refreshRuns");
+      // 3. Collect model and project.
+      const params = await collectFlowYamlParams();
+      if (!params) {
+        return;
+      }
 
-      // 6. Non-intrusive offer to open the run tree alongside the stream panel.
-      void vscode.window.showInformationMessage("Run started.", "View Run Tree").then((choice) => {
-        if (choice === "View Run Tree") {
-          RunTreePanel.open(context, deps, sessionId, panelTitle);
-        }
-      });
+      // 4. Build and launch.
+      const req = {
+        action_kind: "flow_yaml" as const,
+        action_model: params.action_model,
+        action_flow_yaml: src.yaml,
+        action_project: params.action_project,
+      };
+      let invocationId: string;
+      try {
+        const result = await vscode.window.withProgress(
+          {
+            location: vscode.ProgressLocation.Notification,
+            title: "Launching flow from YAML…",
+            cancellable: false,
+          },
+          () => deps.client.launch(req)
+        );
+        invocationId = result.invocation_id;
+        rememberLaunch(result.invocation_id, req);
+      } catch (err) {
+        handleLaunchError(err);
+        return;
+      }
+
+      // 5. Attach run panel.
+      await attachLaunchedRun(context, deps, invocationId, src.title);
     })
   );
 }
