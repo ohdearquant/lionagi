@@ -227,8 +227,8 @@ export class BackendManager implements vscode.Disposable {
         this.setState("error");
         void vscode.window.showErrorMessage(
           `Den: backend exited (code ${code}) before becoming healthy. ` +
-            `The Python at ${spec.command} may not have lionagi installed — ` +
-            `set den.pythonPath or run 'uv pip install lionagi'. ` +
+            `The Python at ${spec.command} may be missing the studio server — ` +
+            `set den.pythonPath, or install it with 'pip install "lionagi[studio]"'. ` +
             `See the Den output channel.`
         );
       } else if (this._state !== "stopped") {
