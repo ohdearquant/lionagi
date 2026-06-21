@@ -1,4 +1,5 @@
 import * as vscode from "vscode";
+import { StudioClient } from "./api/client.js";
 import { BackendManager } from "./backend/lifecycle.js";
 import {
   getAuthToken,
@@ -8,7 +9,14 @@ import {
   getPort,
   getUrl,
 } from "./config.js";
+import { registerRunsExplorer } from "./runs/runsExplorer.js";
 import { registerStatusBar } from "./statusBar.js";
+
+/** Shared dependencies injected into every feature module. */
+export interface StudioDeps {
+  client: StudioClient;
+  backend: BackendManager;
+}
 
 let backend: BackendManager | undefined;
 
@@ -22,6 +30,13 @@ export function activate(context: vscode.ExtensionContext): void {
   );
   backend = bm;
   context.subscriptions.push(bm);
+
+  const client = new StudioClient(
+    () => bm.baseUrl,
+    () => getAuthToken() || undefined
+  );
+
+  const deps: StudioDeps = { client, backend: bm };
 
   // Set initial context key and track all state changes.
   void vscode.commands.executeCommand(
@@ -40,6 +55,7 @@ export function activate(context: vscode.ExtensionContext): void {
   );
 
   registerStatusBar(context, bm);
+  registerRunsExplorer(context, deps);
 
   context.subscriptions.push(
     vscode.commands.registerCommand("den.startBackend", () => {

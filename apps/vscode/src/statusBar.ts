@@ -24,8 +24,8 @@ export function registerStatusBar(
         break;
       case "running":
         item.text = "$(check) Den";
-        item.tooltip = "Den: running.";
-        item.command = undefined;
+        item.tooltip = "Den: running. Click to open panel.";
+        item.command = "den.refreshRuns";
         break;
       case "error":
         item.text = "$(error) Den";
