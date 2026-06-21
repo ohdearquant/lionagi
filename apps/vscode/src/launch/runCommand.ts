@@ -1,6 +1,7 @@
 import * as vscode from "vscode";
 import { StudioApiError } from "../api/client.js";
 import type { StudioDeps } from "../extension.js";
+import { rememberLaunch } from "./launchStore.js";
 import { openLaunchStreamPanel } from "./launchStreamPanel.js";
 import { RunTreePanel } from "../runs/runTreePanel.js";
 
@@ -189,6 +190,12 @@ export function registerRunCommand(
           return;
         }
         panelTitle = params.action_prompt;
+        const req = {
+          action_kind: "agent" as const,
+          action_model: params.action_model,
+          action_prompt: params.action_prompt,
+          action_project: params.action_project,
+        };
         try {
           const result = await vscode.window.withProgress(
             {
@@ -196,15 +203,10 @@ export function registerRunCommand(
               title: "Launching agent…",
               cancellable: false,
             },
-            () =>
-              deps.client.launch({
-                action_kind: "agent",
-                action_model: params.action_model,
-                action_prompt: params.action_prompt,
-                action_project: params.action_project,
-              })
+            () => deps.client.launch(req)
           );
           invocationId = result.invocation_id;
+          rememberLaunch(result.invocation_id, req);
         } catch (err) {
           handleLaunchError(err);
           return;
@@ -215,6 +217,12 @@ export function registerRunCommand(
           return;
         }
         panelTitle = params.action_prompt;
+        const req = {
+          action_kind: "flow" as const,
+          action_model: params.action_model,
+          action_prompt: params.action_prompt,
+          action_project: params.action_project,
+        };
         try {
           const result = await vscode.window.withProgress(
             {
@@ -222,15 +230,10 @@ export function registerRunCommand(
               title: "Launching flow…",
               cancellable: false,
             },
-            () =>
-              deps.client.launch({
-                action_kind: "flow",
-                action_model: params.action_model,
-                action_prompt: params.action_prompt,
-                action_project: params.action_project,
-              })
+            () => deps.client.launch(req)
           );
           invocationId = result.invocation_id;
+          rememberLaunch(result.invocation_id, req);
         } catch (err) {
           handleLaunchError(err);
           return;

@@ -67,9 +67,11 @@ def _fresh_launch_state():
 
     svc._launch_semaphore = None
     svc._detached_tasks.clear()
+    svc._user_cancelled.clear()
     yield
     svc._launch_semaphore = None
     svc._detached_tasks.clear()
+    svc._user_cancelled.clear()
 
 
 # ---------------------------------------------------------------------------
@@ -1101,3 +1103,47 @@ class TestCodingKindRequiresTestCmd:
         assert resp.status_code == 422, resp.text
         assert "test_cmd" in resp.json()["detail"]
         mock_db.create_invocation.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+# cancel_launch — POST /api/invocations/{id}/cancel
+# ---------------------------------------------------------------------------
+
+
+class TestCancelLaunch:
+    """cancel_launch() cancels an in-flight task and raises 404 for unknown ids."""
+
+    def test_cancel_returns_cancelling(self):
+        """cancel_launch returns {invocation_id, status:'cancelling'} for an in-flight task."""
+        import contextlib
+
+        import lionagi.studio.services.launches as svc
+
+        async def _run():
+            svc._detached_tasks.clear()
+            svc._user_cancelled.clear()
+            task = asyncio.create_task(asyncio.sleep(3600), name="launch-TESTINV")
+            svc._detached_tasks.add(task)
+            result = await svc.cancel_launch("TESTINV")
+            assert result == {"invocation_id": "TESTINV", "status": "cancelling"}
+            with contextlib.suppress(asyncio.CancelledError):
+                await task
+            assert task.cancelled()
+            svc._detached_tasks.discard(task)
+            svc._user_cancelled.discard("TESTINV")
+
+        asyncio.run(_run())
+
+    def test_cancel_missing_raises_404(self):
+        """cancel_launch raises HTTPException(404) for an unknown invocation_id."""
+        from fastapi import HTTPException
+
+        import lionagi.studio.services.launches as svc
+
+        async def _run():
+            svc._detached_tasks.clear()
+            with pytest.raises(HTTPException) as exc_info:
+                await svc.cancel_launch("missing")
+            assert exc_info.value.status_code == 404
+
+        asyncio.run(_run())

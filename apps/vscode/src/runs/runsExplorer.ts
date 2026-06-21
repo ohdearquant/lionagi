@@ -2,6 +2,7 @@ import * as vscode from "vscode";
 import type { StudioDeps } from "../extension.js";
 import type { Run } from "../api/types.js";
 import { StudioApiError } from "../api/client.js";
+import { recallLaunch, rememberLaunch } from "../launch/launchStore.js";
 import {
   RunItem,
   ActiveGroupItem,
@@ -300,12 +301,65 @@ export function registerRunsExplorer(
     }
   );
 
+  const cancelRunCmd = vscode.commands.registerCommand(
+    "den.cancelRun",
+    async (run: Run) => {
+      if (!run.invocation_id) {
+        void vscode.window.showInformationMessage("No invocation to cancel for this run.");
+        return;
+      }
+      const choice = await vscode.window.showWarningMessage(
+        "Cancel this in-flight run?",
+        { modal: true },
+        "Cancel Run"
+      );
+      if (choice !== "Cancel Run") {
+        return;
+      }
+      try {
+        await deps.client.cancelLaunch(run.invocation_id);
+      } catch (err) {
+        const msg = err instanceof StudioApiError && err.status === 404
+          ? "Run is no longer in-flight."
+          : err instanceof Error ? err.message : String(err);
+        void vscode.window.showErrorMessage(msg);
+        return;
+      }
+      void vscode.commands.executeCommand("den.refreshRuns");
+    }
+  );
+
+  const retryRunCmd = vscode.commands.registerCommand(
+    "den.retryRun",
+    async (run: Run) => {
+      const req = recallLaunch(run.invocation_id ?? "");
+      if (!req) {
+        void vscode.window.showInformationMessage(
+          "Retry needs the original launch parameters, which are only cached for runs launched in this session."
+        );
+        return;
+      }
+      try {
+        const result = await deps.client.launch(req);
+        rememberLaunch(result.invocation_id, req);
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        void vscode.window.showErrorMessage(`Retry failed: ${msg}`);
+        return;
+      }
+      void vscode.commands.executeCommand("den.refreshRuns");
+      void vscode.window.showInformationMessage("Retry launched.");
+    }
+  );
+
   context.subscriptions.push(
     treeView,
     refreshCmd,
     openRunCmd,
     openRunTreeCmd,
     loadMoreCmd,
+    cancelRunCmd,
+    retryRunCmd,
     stateListener,
     visibilityListener,
     dataChangeListener,

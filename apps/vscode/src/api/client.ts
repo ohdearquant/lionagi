@@ -112,4 +112,8 @@ export class StudioClient {
       `/api/invocations/${encodeURIComponent(invocationId)}`
     );
   }
+
+  async cancelLaunch(invocationId: string): Promise<void> {
+    await this.request<unknown>("POST", `/api/invocations/${encodeURIComponent(invocationId)}/cancel`);
+  }
 }

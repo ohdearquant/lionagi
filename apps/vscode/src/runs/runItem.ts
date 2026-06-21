@@ -184,7 +184,7 @@ export class RunItem extends vscode.TreeItem {
 
     this.description = buildDescription(run, label);
     this.iconPath = statusIcon(run);
-    this.contextValue = "run";
+    this.contextValue = isTerminal(run) ? "runTerminal" : "runActive";
     this.tooltip = buildTooltip(run);
     // Only attach an open command when a stable id is available; rows without
     // one are display-only and must not trigger API calls with an empty id.

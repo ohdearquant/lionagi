@@ -2,7 +2,7 @@
   "name": "den",
   "displayName": "Den",
   "description": "Watch and launch your lionagi agent runs and Claude Code sessions live in VS Code.",
-  "version": "0.0.9",
+  "version": "0.0.10",
   "publisher": "lionagi",
   "icon": "media/icon.png",
   "repository": {
@@ -107,6 +107,18 @@
         "command": "den.starOnGitHub",
         "title": "Den: Star lionagi on GitHub",
         "icon": "$(github-inverted)"
+      },
+      {
+        "command": "den.cancelRun",
+        "title": "Den: Cancel Run",
+        "category": "Den",
+        "icon": "$(stop-circle)"
+      },
+      {
+        "command": "den.retryRun",
+        "title": "Den: Retry Run",
+        "category": "Den",
+        "icon": "$(debug-restart)"
       }
     ],
     "menus": {
@@ -135,12 +147,22 @@
       "view/item/context": [
         {
           "command": "den.openRun",
-          "when": "view == den.runs && viewItem == run",
+          "when": "view == den.runs && viewItem =~ /^run(Active|Terminal)$/",
           "group": "inline"
         },
         {
           "command": "den.openRunTree",
-          "when": "view == den.runs && viewItem == run",
+          "when": "view == den.runs && viewItem =~ /^run(Active|Terminal)$/",
+          "group": "inline"
+        },
+        {
+          "command": "den.cancelRun",
+          "when": "view == den.runs && viewItem == runActive",
+          "group": "inline"
+        },
+        {
+          "command": "den.retryRun",
+          "when": "view == den.runs && viewItem == runTerminal",
           "group": "inline"
         }
       ],
