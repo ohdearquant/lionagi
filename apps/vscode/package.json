@@ -1,0 +1,190 @@
+{
+  "name": "den",
+  "displayName": "Den",
+  "description": "Watch your lionagi agent runs and Claude Code sessions live in VS Code.",
+  "version": "0.0.23",
+  "publisher": "lionagi",
+  "icon": "media/icon.png",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/ohdearquant/lionagi.git",
+    "directory": "apps/vscode"
+  },
+  "engines": {
+    "vscode": "^1.90.0"
+  },
+  "categories": [
+    "Other"
+  ],
+  "keywords": [
+    "lionagi",
+    "agent",
+    "orchestration",
+    "ai",
+    "llm"
+  ],
+  "main": "./out/extension.js",
+  "activationEvents": [
+    "onStartupFinished"
+  ],
+  "contributes": {
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "den",
+          "title": "Den",
+          "icon": "media/lion.svg"
+        }
+      ]
+    },
+    "views": {
+      "den": [
+        {
+          "id": "den.runs",
+          "name": "Runs"
+        }
+      ]
+    },
+    "viewsWelcome": [
+      {
+        "view": "den.runs",
+        "contents": "$(loading~spin) Starting Den…",
+        "when": "den.backendState == 'starting' || (den.backendState == 'stopped' && config.den.autoStart)"
+      },
+      {
+        "view": "den.runs",
+        "contents": "Den backend is stopped.\n[Start Backend](command:den.startBackend)",
+        "when": "den.backendState == 'stopped' && !config.den.autoStart"
+      },
+      {
+        "view": "den.runs",
+        "contents": "Den couldn't start. See the Den output channel for details.\n[Retry](command:den.startBackend)",
+        "when": "den.backendState == 'error'"
+      },
+      {
+        "view": "den.runs",
+        "contents": "No runs yet. Den watches your lionagi agent runs and Claude Code sessions — start one from your terminal and it appears here.\n[Star lionagi on GitHub](command:den.starOnGitHub)",
+        "when": "den.backendState == 'running' && !den.hasRuns"
+      }
+    ],
+    "commands": [
+      {
+        "command": "den.startBackend",
+        "title": "Den: Start Backend",
+        "icon": "$(play)"
+      },
+      {
+        "command": "den.stopBackend",
+        "title": "Den: Stop Backend",
+        "icon": "$(debug-stop)"
+      },
+      {
+        "command": "den.refreshRuns",
+        "title": "Den: Refresh Runs",
+        "icon": "$(refresh)"
+      },
+      {
+        "command": "den.openRunTree",
+        "title": "Den: View Run Tree",
+        "category": "Den",
+        "icon": "$(type-hierarchy-sub)"
+      },
+      {
+        "command": "den.starOnGitHub",
+        "title": "Den: Star lionagi on GitHub",
+        "icon": "$(github-inverted)"
+      }
+    ],
+    "menus": {
+      "view/title": [
+        {
+          "command": "den.refreshRuns",
+          "when": "view == den.runs",
+          "group": "navigation"
+        },
+        {
+          "command": "den.starOnGitHub",
+          "when": "view == den.runs",
+          "group": "navigation@9"
+        }
+      ],
+      "view/item/context": [
+        {
+          "command": "den.openRunTree",
+          "when": "view == den.runs && viewItem =~ /^run(Active|Terminal)Tree$/",
+          "group": "inline"
+        }
+      ],
+      "commandPalette": [
+        {
+          "command": "den.startBackend"
+        },
+        {
+          "command": "den.stopBackend"
+        },
+        {
+          "command": "den.refreshRuns"
+        },
+        {
+          "command": "den.starOnGitHub"
+        },
+        {
+          "command": "den.openRunTree",
+          "when": "false"
+        }
+      ]
+    },
+    "configuration": {
+      "title": "Den",
+      "properties": {
+        "den.url": {
+          "type": "string",
+          "default": "",
+          "description": "Attach to a running studio backend instead of spawning one. Leave empty to auto-spawn."
+        },
+        "den.pythonPath": {
+          "type": "string",
+          "default": "",
+          "description": "Python interpreter for the spawned backend. Leave empty to auto-detect: workspace .venv, then a uv project (installs the studio backend on first run), then python3."
+        },
+        "den.port": {
+          "type": "number",
+          "default": 8765,
+          "description": "Port the spawned backend will listen on."
+        },
+        "den.host": {
+          "type": "string",
+          "default": "127.0.0.1",
+          "description": "Host the spawned backend will bind to."
+        },
+        "den.autoStart": {
+          "type": "boolean",
+          "default": true,
+          "description": "Automatically start the backend when the extension activates."
+        },
+        "den.authToken": {
+          "type": "string",
+          "default": "",
+          "description": "Bearer token for LIONAGI_STUDIO_AUTH_TOKEN (optional)."
+        }
+      }
+    }
+  },
+  "scripts": {
+    "compile": "node esbuild.js",
+    "watch": "node esbuild.js --watch",
+    "vscode:prepublish": "node esbuild.js --minify",
+    "typecheck": "tsc --noEmit",
+    "package": "vsce package",
+    "test": "vitest run"
+  },
+  "devDependencies": {
+    "@types/node": "^20.0.0",
+    "@types/vscode": "^1.90.0",
+    "@vscode/vsce": "^3.0.0",
+    "esbuild": "^0.21.0",
+    "jsdom": "^29.1.1",
+    "typescript": "^5.5.0",
+    "vitest": "^2.0.0"
+  }
+}
