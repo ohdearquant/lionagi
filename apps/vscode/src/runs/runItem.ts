@@ -26,6 +26,17 @@ export function isTerminal(run: Run): boolean {
   return TERMINAL_STATUSES.has(run.status?.toLowerCase() ?? "");
 }
 
+// Multi-agent kinds (the backend's 12h staleness tier); single-agent ("agent"/"play") and observed runs are not.
+const MULTI_AGENT_KINDS = new Set(["flow", "fanout", "show-play"]);
+
+/** Whether a run has a meaningful run tree: a multi-agent kind, or any run that spawned >1 branch. */
+export function hasRunTree(run: Run): boolean {
+  if (run.invocation_kind && MULTI_AGENT_KINDS.has(run.invocation_kind)) {
+    return true;
+  }
+  return (run.branch_count ?? 0) > 1;
+}
+
 export function statusIcon(run: Run): vscode.ThemeIcon {
   const s = (run.status ?? "").toLowerCase();
   const h = (run.effective_health ?? "").toLowerCase();
@@ -184,7 +195,9 @@ export class RunItem extends vscode.TreeItem {
 
     this.description = buildDescription(run, label);
     this.iconPath = statusIcon(run);
-    this.contextValue = isTerminal(run) ? "runTerminal" : "runActive";
+    const base = isTerminal(run) ? "runTerminal" : "runActive";
+    // The run-tree button is gated on this suffix (see package.json view/item/context).
+    this.contextValue = hasRunTree(run) ? `${base}Tree` : base;
     this.tooltip = buildTooltip(run);
     // Only attach an open command when a stable id is available; rows without
     // one are display-only and must not trigger API calls with an empty id.

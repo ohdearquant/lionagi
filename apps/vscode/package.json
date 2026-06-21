@@ -2,7 +2,7 @@
   "name": "den",
   "displayName": "Den",
   "description": "Watch and launch your lionagi agent runs and Claude Code sessions live in VS Code.",
-  "version": "0.0.12",
+  "version": "0.0.13",
   "publisher": "lionagi",
   "icon": "media/icon.png",
   "repository": {
@@ -142,7 +142,7 @@
       "view/item/context": [
         {
           "command": "den.openRunTree",
-          "when": "view == den.runs && viewItem =~ /^run(Active|Terminal)$/",
+          "when": "view == den.runs && viewItem =~ /^run(Active|Terminal)Tree$/",
           "group": "inline"
         }
       ],
