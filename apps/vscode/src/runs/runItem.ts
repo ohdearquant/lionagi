@@ -37,6 +37,17 @@ export function hasRunTree(run: Run): boolean {
   return (run.branch_count ?? 0) > 1;
 }
 
+/**
+ * Merge a GET /api/runs/{id} detail response onto the list row it refreshes.
+ * The detail route is a superset of the list Run, but a partial/legacy response
+ * must never erase list-row fields (e.g. invocation_id, which gates the failure
+ * reason banner) — so keys absent from the detail keep the original value while
+ * fresher detail fields (status, branches) win.
+ */
+export function mergeRunDetail(base: Run, detail: Run): Run {
+  return { ...base, ...detail };
+}
+
 export function statusIcon(run: Run): vscode.ThemeIcon {
   const s = (run.status ?? "").toLowerCase();
   const h = (run.effective_health ?? "").toLowerCase();
@@ -197,7 +208,9 @@ export class RunItem extends vscode.TreeItem {
     this.iconPath = statusIcon(run);
     const base = isTerminal(run) ? "runTerminal" : "runActive";
     // The run-tree button is gated on this suffix (see package.json view/item/context).
-    this.contextValue = hasRunTree(run) ? `${base}Tree` : base;
+    // Require a stable id too: a malformed row with no run_id/id must never expose
+    // a button that would open /api/sessions//signals with an empty id.
+    this.contextValue = runId(run) && hasRunTree(run) ? `${base}Tree` : base;
     this.tooltip = buildTooltip(run);
     // Only attach an open command when a stable id is available; rows without
     // one are display-only and must not trigger API calls with an empty id.

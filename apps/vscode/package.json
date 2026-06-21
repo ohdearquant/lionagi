@@ -2,7 +2,7 @@
   "name": "den",
   "displayName": "Den",
   "description": "Watch and launch your lionagi agent runs and Claude Code sessions live in VS Code.",
-  "version": "0.0.14",
+  "version": "0.0.15",
   "publisher": "lionagi",
   "icon": "media/icon.png",
   "repository": {

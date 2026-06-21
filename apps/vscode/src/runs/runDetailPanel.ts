@@ -5,7 +5,7 @@ import type { StudioDeps } from "../extension.js";
 import type { Run, StudioEvent, InvocationDetail } from "../api/types.js";
 import { streamSession } from "../api/sse.js";
 import { getAuthToken } from "../config.js";
-import { isTerminal, runId } from "./runItem.js";
+import { isTerminal, mergeRunDetail, runId } from "./runItem.js";
 
 // A single reusable run-detail panel, re-targeted as you click different runs —
 // clicking never spawns a second panel.
@@ -97,10 +97,12 @@ export class RunDetailPanel {
     }
     try {
       const run = await this.deps.client.getRun(id);
-      this.run = run;
+      // Merge, don't replace: a partial detail response must not erase list-row
+      // fields the banner logic below depends on (invocation_id especially).
+      this.run = mergeRunDetail(this.run, run);
 
       // Refresh header with final metadata.
-      this.postMessage({ type: "meta", run });
+      this.postMessage({ type: "meta", run: this.run });
 
       // Fetch the reason only for non-success terminal runs — skip the call for
       // green runs so a succeeded run never even loads a (red-toned) banner.

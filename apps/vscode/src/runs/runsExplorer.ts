@@ -294,6 +294,10 @@ export function registerRunsExplorer(
         return;
       }
       const id = runId(run);
+      if (!id) {
+        // No stable id — nothing to stream (guards against /api/sessions//signals).
+        return;
+      }
       const title = run.name ?? run.agent_name ?? id.slice(0, 8);
       RunTreePanel.open(context, deps, id, title);
     }

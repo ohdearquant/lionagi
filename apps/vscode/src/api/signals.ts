@@ -43,7 +43,11 @@ export async function streamSignals(
     while (true) {
       const { done, value } = await reader.read();
       if (done) {
-        break;
+        // Transport EOF reached without ever seeing a `done` event below —
+        // a dropped connection, backend restart, or proxy close. Surface it so
+        // the caller can show an error / reconnect rather than silently freezing
+        // on the last snapshot. (A clean finish returns from inside the loop.)
+        throw new Error("Signal stream closed before completion");
       }
       buffer += decoder.decode(value, { stream: true });
 

@@ -93,67 +93,110 @@ export class RunTreePanel {
   }
 
   private async stream(): Promise<void> {
-    const state = createRunTreeState();
-    // Coalesce rapid-fire initial replay rows: schedule a single flush rather
-    // than posting on every row during the replay phase.
-    let flushScheduled = false;
-    let flushTimer: ReturnType<typeof setTimeout> | undefined;
+    // Capture this run's controller. A mid-stream retarget() swaps this.ac, so
+    // the loop must check the controller it started with — otherwise a dropped
+    // connection would reconnect the old session against the new controller.
+    const ac = this.ac;
+    const MAX_RETRIES = 3;
 
-    const flush = (): void => {
-      flushScheduled = false;
-      flushTimer = undefined;
-      this.postMessage({
-        type: "snapshot",
-        forest: toForest(state),
-        runState: state.runState,
-        usage: state.usage,
-      });
-    };
+    for (let attempt = 0; ; attempt++) {
+      // Fresh state each attempt: the signals endpoint replays from seq 0, so a
+      // reconnect rebuilds the snapshot rather than appending onto a stale one.
+      const state = createRunTreeState();
+      // Coalesce rapid-fire initial replay rows: schedule a single flush rather
+      // than posting on every row during the replay phase.
+      let flushScheduled = false;
+      let flushTimer: ReturnType<typeof setTimeout> | undefined;
 
-    const scheduleFlush = (): void => {
-      if (!flushScheduled) {
-        flushScheduled = true;
-        flushTimer = setTimeout(flush, 50);
-      }
-    };
+      const flush = (): void => {
+        flushScheduled = false;
+        flushTimer = undefined;
+        this.postMessage({
+          type: "snapshot",
+          forest: toForest(state),
+          runState: state.runState,
+          usage: state.usage,
+        });
+      };
 
-    try {
-      await streamSignals(
-        this.deps.backend.baseUrl,
-        this.sessionId,
-        getAuthToken() || undefined,
-        (e: SignalStreamEvent) => {
-          if ("type" in e) {
-            if (e.type === "heartbeat") {
-              return;
-            }
-            if (e.type === "done") {
-              // Flush any pending snapshot before signalling done.
-              if (flushScheduled) {
-                if (flushTimer) {
-                  clearTimeout(flushTimer);
-                }
-                flush();
+      const scheduleFlush = (): void => {
+        if (!flushScheduled) {
+          flushScheduled = true;
+          flushTimer = setTimeout(flush, 50);
+        }
+      };
+
+      try {
+        await streamSignals(
+          this.deps.backend.baseUrl,
+          this.sessionId,
+          getAuthToken() || undefined,
+          (e: SignalStreamEvent) => {
+            if ("type" in e) {
+              if (e.type === "heartbeat") {
+                return;
               }
-              this.postMessage({ type: "done" });
-              return;
+              if (e.type === "done") {
+                // Flush any pending snapshot before signalling done.
+                if (flushScheduled) {
+                  if (flushTimer) {
+                    clearTimeout(flushTimer);
+                  }
+                  flush();
+                }
+                this.postMessage({ type: "done" });
+                return;
+              }
             }
-          }
-          // Data row: has seq and kind fields.
-          applySignalRow(state, e as SignalRow);
-          scheduleFlush();
-        },
-        this.ac.signal
-      );
-    } catch (err) {
-      if (this.ac.signal.aborted) {
+            // Data row: has seq and kind fields.
+            applySignalRow(state, e as SignalRow);
+            scheduleFlush();
+          },
+          ac.signal
+        );
+        // streamSignals only resolves after a `done` event — a clean finish.
+        return;
+      } catch (err) {
+        if (flushTimer) {
+          clearTimeout(flushTimer);
+        }
+        if (ac.signal.aborted) {
+          return;
+        }
+        if (attempt >= MAX_RETRIES) {
+          this.postMessage({
+            type: "error",
+            message: err instanceof Error ? err.message : String(err),
+          });
+          return;
+        }
+        // Transient drop (EOF before done): back off (1s, 2s, 4s) and reconnect.
+        const delayMs = Math.min(4000, 1000 * 2 ** attempt);
+        if (!(await this.abortableDelay(delayMs, ac.signal))) {
+          return;
+        }
+      }
+    }
+  }
+
+  /** Resolve true after ms, or false immediately if the signal aborts first. */
+  private abortableDelay(ms: number, signal: AbortSignal): Promise<boolean> {
+    return new Promise((resolve) => {
+      if (signal.aborted) {
+        resolve(false);
         return;
       }
-      this.postMessage({
-        type: "error",
-        message: err instanceof Error ? err.message : String(err),
-      });
-    }
+      let timer: ReturnType<typeof setTimeout>;
+      const onAbort = (): void => {
+        clearTimeout(timer);
+        resolve(false);
+      };
+      timer = setTimeout(() => {
+        signal.removeEventListener("abort", onAbort);
+        resolve(true);
+      }, ms);
+      signal.addEventListener("abort", onAbort, { once: true });
+    });
   }
 
   private postMessage(msg: unknown): void {
