@@ -47,25 +47,6 @@ export interface ProjectGroupsPage {
   total: number;
 }
 
-/** Body for POST /api/launches/. All fields optional except action_kind. */
-export interface LaunchRequest {
-  action_kind: "agent" | "flow" | "flow_yaml" | "fanout" | "play" | "engine";
-  action_model?: string;
-  action_prompt?: string;
-  action_agent?: string;
-  action_playbook?: string;
-  action_project?: string;
-  action_flow_yaml?: string;
-  action_engine_def?: string;
-  action_extra_args?: string[];
-}
-
-/** Response body from POST /api/launches/ (202 Accepted). */
-export interface LaunchResult {
-  invocation_id: string;
-  action_kind: string;
-}
-
 /** Child session summary returned inside GET /api/invocations/{id}. */
 export interface InvocationSession {
   id: string;

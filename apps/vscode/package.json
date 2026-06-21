@@ -1,8 +1,8 @@
 {
   "name": "den",
   "displayName": "Den",
-  "description": "Watch and launch your lionagi agent runs and Claude Code sessions live in VS Code.",
-  "version": "0.0.16",
+  "description": "Watch your lionagi agent runs and Claude Code sessions live in VS Code.",
+  "version": "0.0.17",
   "publisher": "lionagi",
   "icon": "media/icon.png",
   "repository": {
@@ -63,7 +63,7 @@
       },
       {
         "view": "den.runs",
-        "contents": "No runs yet. Trigger one to get started.\n[Run Agent…](command:den.runAgent)",
+        "contents": "No runs yet. Den watches your lionagi agent runs and Claude Code sessions — start one from your terminal and it appears here.\n[Star lionagi on GitHub](command:den.starOnGitHub)",
         "when": "den.backendState == 'running' && !den.hasRuns"
       }
     ],
@@ -84,16 +84,6 @@
         "icon": "$(refresh)"
       },
       {
-        "command": "den.runAgent",
-        "title": "Den: Run Agent…",
-        "icon": "$(rocket)"
-      },
-      {
-        "command": "den.run",
-        "title": "Den: Run",
-        "icon": "$(run)"
-      },
-      {
         "command": "den.openRunTree",
         "title": "Den: View Run Tree",
         "category": "Den",
@@ -103,33 +93,12 @@
         "command": "den.starOnGitHub",
         "title": "Den: Star lionagi on GitHub",
         "icon": "$(github-inverted)"
-      },
-      {
-        "command": "den.runFlowFromYaml",
-        "title": "Den: Run Flow from YAML",
-        "category": "Den",
-        "icon": "$(run-all)"
       }
     ],
     "menus": {
       "view/title": [
         {
           "command": "den.refreshRuns",
-          "when": "view == den.runs",
-          "group": "navigation"
-        },
-        {
-          "command": "den.runAgent",
-          "when": "view == den.runs",
-          "group": "navigation"
-        },
-        {
-          "command": "den.run",
-          "when": "view == den.runs",
-          "group": "navigation"
-        },
-        {
-          "command": "den.runFlowFromYaml",
           "when": "view == den.runs",
           "group": "navigation"
         },
@@ -155,15 +124,6 @@
         },
         {
           "command": "den.refreshRuns"
-        },
-        {
-          "command": "den.runAgent"
-        },
-        {
-          "command": "den.run"
-        },
-        {
-          "command": "den.runFlowFromYaml"
         },
         {
           "command": "den.starOnGitHub"

@@ -12,23 +12,23 @@ of runs in the activity bar, commands, and webview panels that stream output
 live. There is no web app and no SPA embedded. The backend stays on your
 machine and nothing leaves your workstation.
 
-Two things show up in the Runs tree:
+Den is read-only observability. You start runs the way you already do — `li
+agent`, `li o`, or Claude Code — and Den watches them. Two things show up in
+the Runs tree:
 
-- **lionagi runs** — anything you launch with `li agent`, `li o`, or the
-  **Den: Run Agent…** command, grouped by project and streamed live.
+- **lionagi runs** — anything you start with `li agent` or `li o`, grouped by
+  project and streamed live.
 - **Claude Code sessions** — your local Claude Code transcripts, mirrored into
   the same tree so every agent you run lands in one place.
 
-## The three surfaces
+## The two surfaces
 
-Den is built around three things you do with a run, all without leaving the editor:
+Den is built around two ways to look at a run, both without leaving the editor:
 
-1. **Launch** — start an Agent or an orchestrated Flow from **Den: Run**; the live
-   output attaches in a panel as the run starts.
-2. **Observe** — open **Den: View Run Tree** on any run to see its branch/agent
+1. **Observe** — the run detail panel attaches to any run and streams its output
+   live over SSE as it happens.
+2. **Trace** — open **Den: View Run Tree** on any run to see its branch/agent
    DAG with typed nodes and per-run cost, refreshed as it progresses.
-3. **Control** — cancel an in-flight run, or retry a finished one with its original
-   parameters, straight from the inline buttons on each run row.
 
 ## Requirements
 
@@ -44,8 +44,9 @@ pip install 'lionagi[studio]'
 1. Install Den from the Marketplace (or Open VSX).
 2. Open the **Den** panel in the activity bar (left sidebar).
 3. Den auto-starts the local backend on activation (configurable).
-4. Use **Den: Run Agent…** to trigger a run, then watch it live in the Runs
-   tree. Claude Code sessions appear automatically as you use them.
+4. Start a run however you normally do — `li agent`, `li o`, or Claude Code —
+   and watch it live in the Runs tree. Claude Code sessions appear
+   automatically as you use them.
 
 ## Settings
 
@@ -67,16 +68,11 @@ pip install 'lionagi[studio]'
   instance.
 - **Runs explorer**: tree view over `GET /api/runs/`, grouped by project with a
   pinned **Active** group for everything currently running.
-- **Launch**: **Den: Run** POSTs to `POST /api/launches/` with
-  `action_kind: "agent"` or `"flow"`, then attaches the live panel.
 - **Live streaming**: the run detail panel subscribes to the session SSE
   (`GET /api/sessions/{id}/stream`) and streams output as it arrives.
 - **Run Tree**: **Den: View Run Tree** subscribes to the session signal stream
   (`GET /api/sessions/{id}/signals`) and renders the run's branch/agent DAG with
   typed nodes and per-run cost.
-- **Cancel / Retry**: inline buttons on each run row — cancel an in-flight run via
-  `POST /api/invocations/{id}/cancel`, or retry a finished one by re-POSTing its
-  original launch request. Retry parameters are cached per session.
 - **Claude Code mirror**: local Claude Code sessions are mirrored into the Runs
   tree and reconciled live.
 

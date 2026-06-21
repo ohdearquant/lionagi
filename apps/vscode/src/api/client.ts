@@ -1,7 +1,5 @@
 import type {
   InvocationDetail,
-  LaunchRequest,
-  LaunchResult,
   ProjectGroupsPage,
   Run,
   RunsPage,
@@ -102,18 +100,10 @@ export class StudioClient {
     return this.request<Run>("GET", `/api/runs/${runId}`);
   }
 
-  async launch(req: LaunchRequest): Promise<LaunchResult> {
-    return this.request<LaunchResult>("POST", "/api/launches/", req);
-  }
-
   async getInvocation(invocationId: string): Promise<InvocationDetail> {
     return this.request<InvocationDetail>(
       "GET",
       `/api/invocations/${encodeURIComponent(invocationId)}`
     );
-  }
-
-  async cancelLaunch(invocationId: string): Promise<void> {
-    await this.request<unknown>("POST", `/api/invocations/${encodeURIComponent(invocationId)}/cancel`);
   }
 }
