@@ -223,4 +223,13 @@ export const workspace = {
   fs: {
     readFile: vi.fn<[uri: unknown], Promise<Uint8Array>>(),
   },
+  // Plain stub (not vi.fn) so __resetVscodeMock never wipes it. `den` config
+  // accessors (config.ts) call .get(key, default); echo the default so tests
+  // that hit the live-stream path (getAuthToken etc.) get clean empty values.
+  getConfiguration: (_section?: string) => ({
+    get: (_key: string, defaultValue?: unknown) => defaultValue,
+    has: () => false,
+    inspect: () => undefined,
+    update: async () => undefined,
+  }),
 };
