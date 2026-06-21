@@ -251,6 +251,11 @@
 
     switch (msg.type) {
       case "event": {
+        // A malformed host message (missing/null event) must not throw inside
+        // renderEvent and wedge the listener — skip it, like the meta/reason cases.
+        if (!msg.event || typeof msg.event !== "object") {
+          break;
+        }
         renderEvent(msg.event);
         setFooter(eventCount + " event" + (eventCount === 1 ? "" : "s"));
         break;

@@ -162,6 +162,11 @@ export class RunDetailPanel {
       this.postMessage({ type: "error", message: "Run has no stable identifier." });
       return;
     }
+    // Capture this run's controller. A mid-stream retarget() swaps this.ac, so
+    // the catch must test the controller this stream started with — otherwise an
+    // abort-induced throw from the old run would read the new run's live signal
+    // as not-aborted and post a spurious error onto the freshly targeted run.
+    const ac = this.ac;
     try {
       await streamSession(
         this.deps.backend.baseUrl,
@@ -177,10 +182,10 @@ export class RunDetailPanel {
           }
           this.postMessage({ type: "event", event: e });
         },
-        this.ac.signal
+        ac.signal
       );
     } catch (err) {
-      if (this.ac.signal.aborted) {
+      if (ac.signal.aborted) {
         return;
       }
       this.postMessage({

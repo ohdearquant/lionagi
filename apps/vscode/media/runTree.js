@@ -131,7 +131,10 @@
       treeEl.removeChild(existing);
     }
 
-    if (!forest || forest.length === 0) {
+    // A malformed snapshot (non-array forest) is treated as empty rather than
+    // crashing the later forest.slice()/index loop — the status/usage header
+    // above still updates, so a corrupt forest never wedges the whole panel.
+    if (!Array.isArray(forest) || forest.length === 0) {
       if (emptyState) {
         emptyState.style.display = "";
       }
@@ -188,7 +191,7 @@
   });
 
   function countNodes(forest) {
-    if (!forest || forest.length === 0) {
+    if (!Array.isArray(forest) || forest.length === 0) {
       return 0;
     }
     var count = 0;

@@ -80,3 +80,31 @@ describe("runDetail.js reason banner", () => {
     ).toBe("second");
   });
 });
+
+describe("runDetail.js malformed event messages", () => {
+  // renderEvent dereferences event.role/event.type, so a null/undefined event
+  // threw and the throw was swallowed by dispatchEvent. jsdom surfaces it as a
+  // synchronous, catchable window "error" event — assert none fires.
+  function dispatchAndCaptureErrors(data: Record<string, unknown>): string[] {
+    const errors: string[] = [];
+    const onErr = (ev: Event): void => {
+      const e = ev as ErrorEvent;
+      errors.push(String(e.error?.message ?? e.message ?? e));
+    };
+    window.addEventListener("error", onErr);
+    try {
+      window.dispatchEvent(new MessageEvent("message", { data }));
+    } finally {
+      window.removeEventListener("error", onErr);
+    }
+    return errors;
+  }
+
+  it("does not throw on an event message with a null event", () => {
+    expect(dispatchAndCaptureErrors({ type: "event", event: null })).toEqual([]);
+  });
+
+  it("does not throw on an event message with no event field", () => {
+    expect(dispatchAndCaptureErrors({ type: "event" })).toEqual([]);
+  });
+});
