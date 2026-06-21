@@ -22,8 +22,8 @@ the backend lifecycle on the user's behalf.
 
 The studio backend already exposes a **read** API over the same local StateDB
 the web app reads, and it lives in the **public** `lionagi` repository. The read
-model is `$LIONAGI_DATA_ROOT/state.db` (a SQLite StateDB); the HTTP surface is a
-projection of it:
+model is `$LIONAGI_HOME/state.db` (a SQLite StateDB; `LIONAGI_HOME` defaults to
+`~/.lionagi`); the HTTP surface is a projection of it:
 
 - Observe: `GET /api/runs/` (paginated), `GET /api/runs/{run_id}` — served from
   StateDB.
@@ -62,9 +62,11 @@ that embeds the SPA.
 
 3. **The extension owns the backend lifecycle.** On activation it discovers a
    Python interpreter and spawns the **bare** studio API as
-   `python -m lionagi.studio` (the `lionagi/studio/__main__.py` entry point,
-   `uvicorn.run(app)` with no SPA) on a loopback port, health-checks
-   `GET /health`, and surfaces state in the status bar. It deliberately does
+   `python -m lionagi.studio` (the `lionagi/studio/__main__.py` entry point; it
+   calls `uvicorn.run(app)` and serves the API only by default, because it does
+   not set `LIONAGI_STUDIO_FRONTEND_DIST`, the variable that would otherwise
+   mount the SPA) on a loopback port, health-checks `GET /health`, and surfaces
+   state in the status bar. It deliberately does
    **not** use Docker: Den is the UI, and a VS Code extension must not require a
    container runtime. It can attach to an already-running backend instead of
    spawning, via the `den.url` setting (point it at a running `li studio` on
