@@ -15,19 +15,24 @@ help:         ## Show this help
 install:      ## Install npm dependencies
 	npm install
 
-typecheck:    ## Type-check, no emit (tsc --noEmit)
+# File target: runs only when node_modules is absent, so the dogfood path
+# (package / install-vsix) bootstraps deps on a fresh checkout (e.g. Codespaces).
+node_modules:
+	npm install
+
+typecheck: node_modules ## Type-check, no emit (tsc --noEmit)
 	npm run typecheck
 
-test:         ## Run unit tests (vitest)
+test: node_modules ## Run unit tests (vitest)
 	npm run test
 
-compile:      ## Bundle to out/ (esbuild)
+compile: node_modules ## Bundle to out/ (esbuild)
 	npm run compile
 
-watch:        ## Rebuild on change (esbuild --watch)
+watch: node_modules ## Rebuild on change (esbuild --watch)
 	npm run watch
 
-package: typecheck test ## Build the installable VSIX (gated on typecheck + test)
+package: node_modules typecheck test ## Build the installable VSIX (gated on typecheck + test)
 	npm run package
 	@echo "built $(VSIX)"
 
