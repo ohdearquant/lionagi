@@ -37,6 +37,7 @@ async def _seed_session(
     started_at: float | None = None,
     updated_at: float | None = None,
     artifacts_path: str | None = None,
+    agent_name: str | None = None,
 ) -> str:
     sid = session_id or str(uuid.uuid4())
     now = time.time()
@@ -50,6 +51,7 @@ async def _seed_session(
                 "name": "test-session",
                 "status": status,
                 "started_at": started_at or now,
+                "agent_name": agent_name,
             }
         )
         updates: dict = {}
@@ -378,6 +380,49 @@ def test_reap_phantom_sessions_missing_artifacts(tmp_path, monkeypatch):
 
     reason = run_async(_get_reason(db_path, sid))
     assert reason == "phantom_reaped"
+
+
+def test_reap_phantom_sessions_completes_mirrored_claude_session(tmp_path, monkeypatch):
+    """A mirrored Claude session (agent_name='claude-code') is reaped to completed, not failed.
+
+    It has no lionagi process, so the phantom model must not brand it failed/process_dead —
+    an idle transcript is a normal completion. Guards the reaper's mirror-session branch.
+    """
+    db_path = tmp_path / "state.db"
+    _monkey_db(monkeypatch, db_path)
+
+    missing_dir = str(tmp_path / "ghost_claude_artifacts")
+    stale_time = time.time() - 7200
+    sid = run_async(
+        _seed_session(
+            db_path,
+            status="running",
+            agent_name="claude-code",
+            started_at=stale_time,
+            updated_at=stale_time,
+            artifacts_path=missing_dir,
+        )
+    )
+
+    from lionagi.studio.services.lifecycle import reap_phantom_sessions
+
+    count = run_async(reap_phantom_sessions(stale_hours=1.0))
+    assert count == 1
+
+    sess = run_async(_get_session(db_path, sid))
+    assert sess is not None
+    assert sess["status"] == "completed"  # NOT failed
+    assert sess["ended_at"] is not None
+
+    async def _get_reason(db_path: Path, sid: str) -> str | None:
+        async with StateDB(db_path) as db:
+            cur = await db.db.execute(
+                "SELECT status_reason_summary FROM sessions WHERE id = ?", (sid,)
+            )
+            row = await cur.fetchone()
+            return row["status_reason_summary"] if row else None
+
+    assert run_async(_get_reason(db_path, sid)) == "mirror_idle_reaped"
 
 
 def test_reap_phantom_sessions_skips_already_terminal(tmp_path, monkeypatch):
