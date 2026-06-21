@@ -88,6 +88,7 @@ export interface InvocationDetail {
   status: string;
   status_reason_code: string | null;
   status_reason_summary: string | null;
+  status_evidence_refs: Array<Record<string, unknown>> | null;
   sessions: InvocationSession[];
 }
 

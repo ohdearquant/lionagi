@@ -319,6 +319,21 @@
           codeSpan.textContent = msg.code;
           banner.appendChild(codeSpan);
         }
+        var existingEvidence = banner.querySelector(".reason-banner__evidence");
+        if (Array.isArray(msg.evidenceRefs) && msg.evidenceRefs.length) {
+          var evidenceSpan = existingEvidence || document.createElement("span");
+          evidenceSpan.className = "reason-banner__evidence";
+          evidenceSpan.textContent =
+            "· " +
+            msg.evidenceRefs.length +
+            " evidence ref" +
+            (msg.evidenceRefs.length === 1 ? "" : "s");
+          if (!existingEvidence) {
+            banner.appendChild(evidenceSpan);
+          }
+        } else if (existingEvidence) {
+          existingEvidence.textContent = "";
+        }
         break;
       }
 

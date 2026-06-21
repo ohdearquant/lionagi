@@ -42,6 +42,7 @@ async def test_get_invocation_returns_reason_fields_when_set(tmp_path, monkeypat
             ended_at=time.time(),
             reason_code=RunReasons.FAILED_EXCEPTION,
             reason_summary="RuntimeError: boom",
+            evidence_refs=[{"kind": "session", "id": "s-1"}],
         )
 
     result = await invocations_mod.get_invocation(inv_id)
@@ -49,6 +50,7 @@ async def test_get_invocation_returns_reason_fields_when_set(tmp_path, monkeypat
     assert result is not None
     assert result["status_reason_code"] == RunReasons.FAILED_EXCEPTION
     assert result["status_reason_summary"] == "RuntimeError: boom"
+    assert result["status_evidence_refs"] == [{"kind": "session", "id": "s-1"}]
 
 
 async def test_get_invocation_returns_none_reason_fields_when_unset(tmp_path, monkeypatch):
@@ -66,6 +68,7 @@ async def test_get_invocation_returns_none_reason_fields_when_unset(tmp_path, mo
     assert result is not None
     assert result["status_reason_code"] is None
     assert result["status_reason_summary"] is None
+    assert result["status_evidence_refs"] is None
 
 
 async def test_list_invocations_includes_reason_fields(tmp_path, monkeypatch):
@@ -83,6 +86,7 @@ async def test_list_invocations_includes_reason_fields(tmp_path, monkeypatch):
             ended_at=time.time(),
             reason_code=RunReasons.FAILED_EXCEPTION,
             reason_summary="RuntimeError: boom",
+            evidence_refs=[{"kind": "session", "id": "s-a"}],
         )
         inv_b = await _create_invocation(db)
         # Leave inv_b as running — reason columns stay NULL.
@@ -94,7 +98,9 @@ async def test_list_invocations_includes_reason_fields(tmp_path, monkeypatch):
     assert inv_a in by_id, "row A must appear in list"
     assert by_id[inv_a]["status_reason_code"] == RunReasons.FAILED_EXCEPTION
     assert by_id[inv_a]["status_reason_summary"] == "RuntimeError: boom"
+    assert by_id[inv_a]["status_evidence_refs"] == [{"kind": "session", "id": "s-a"}]
 
     assert inv_b in by_id, "row B must appear in list"
     assert by_id[inv_b]["status_reason_code"] is None
     assert by_id[inv_b]["status_reason_summary"] is None
+    assert by_id[inv_b]["status_evidence_refs"] is None

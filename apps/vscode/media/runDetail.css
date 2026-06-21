@@ -294,6 +294,15 @@ body {
   font-family: var(--vscode-editor-font-family, monospace);
 }
 
+.reason-banner__evidence {
+  font-size: 10px;
+  color: var(--vscode-descriptionForeground);
+  flex-shrink: 0;
+  font-family: var(--vscode-editor-font-family, monospace);
+  margin-left: 4px;
+  opacity: 0.75;
+}
+
 /* ── Footer ── */
 
 .footer {

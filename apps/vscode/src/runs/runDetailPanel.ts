@@ -112,7 +112,7 @@ export class RunDetailPanel {
         try {
           const inv = await this.deps.client.getInvocation(this.run.invocation_id);
           if (inv.status_reason_summary || inv.status_reason_code) {
-            this.postMessage({ type: "reason", code: inv.status_reason_code, summary: inv.status_reason_summary });
+            this.postMessage({ type: "reason", code: inv.status_reason_code, summary: inv.status_reason_summary, evidenceRefs: inv.status_evidence_refs });
           }
         } catch {
           // reason is best-effort; never block the log on it
