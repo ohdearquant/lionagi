@@ -89,6 +89,11 @@
         "icon": "$(rocket)"
       },
       {
+        "command": "den.run",
+        "title": "Den: Run",
+        "icon": "$(run)"
+      },
+      {
         "command": "den.openRun",
         "title": "Den: Open Run"
       },
@@ -107,6 +112,11 @@
         },
         {
           "command": "den.runAgent",
+          "when": "view == den.runs",
+          "group": "navigation"
+        },
+        {
+          "command": "den.run",
           "when": "view == den.runs",
           "group": "navigation"
         },
@@ -135,6 +145,9 @@
         },
         {
           "command": "den.runAgent"
+        },
+        {
+          "command": "den.run"
         },
         {
           "command": "den.starOnGitHub"

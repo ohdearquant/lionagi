@@ -10,6 +10,7 @@ import {
   getUrl,
 } from "./config.js";
 import { registerAgentTrigger } from "./launch/agentTrigger.js";
+import { registerRunCommand } from "./launch/runCommand.js";
 import { registerRunsExplorer } from "./runs/runsExplorer.js";
 import { registerStatusBar } from "./statusBar.js";
 
@@ -58,6 +59,7 @@ export function activate(context: vscode.ExtensionContext): void {
   registerStatusBar(context, bm);
   registerRunsExplorer(context, deps);
   registerAgentTrigger(context, deps);
+  registerRunCommand(context, deps);
 
   context.subscriptions.push(
     vscode.commands.registerCommand("den.startBackend", () => {

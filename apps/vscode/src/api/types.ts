@@ -66,6 +66,29 @@ export interface LaunchResult {
   action_kind: string;
 }
 
+/** Child session summary returned inside GET /api/invocations/{id}. */
+export interface InvocationSession {
+  id: string;
+  name: string | null;
+  agent_name: string | null;
+  playbook_name: string | null;
+  invocation_kind: string | null;
+  status: string | null;
+  model: string | null;
+  effort: string | null;
+  started_at: number | null;
+  ended_at: number | null;
+  last_message_at: number | null;
+}
+
+/** Response from GET /api/invocations/{invocation_id}. */
+export interface InvocationDetail {
+  id: string;
+  skill: string | null;
+  status: string;
+  sessions: InvocationSession[];
+}
+
 /** Discriminated union for SSE event objects from GET /api/sessions/{id}/stream. */
 export type StudioEvent =
   | { type: "heartbeat" }

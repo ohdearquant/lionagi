@@ -1,4 +1,5 @@
 import type {
+  InvocationDetail,
   LaunchRequest,
   LaunchResult,
   ProjectGroupsPage,
@@ -103,5 +104,12 @@ export class StudioClient {
 
   async launch(req: LaunchRequest): Promise<LaunchResult> {
     return this.request<LaunchResult>("POST", "/api/launches/", req);
+  }
+
+  async getInvocation(invocationId: string): Promise<InvocationDetail> {
+    return this.request<InvocationDetail>(
+      "GET",
+      `/api/invocations/${encodeURIComponent(invocationId)}`
+    );
   }
 }
