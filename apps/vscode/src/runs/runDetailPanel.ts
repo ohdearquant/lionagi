@@ -2,7 +2,7 @@ import * as vscode from "vscode";
 import * as path from "path";
 import * as crypto from "crypto";
 import type { StudioDeps } from "../extension.js";
-import type { Run, StudioEvent } from "../api/types.js";
+import type { Run, StudioEvent, InvocationDetail } from "../api/types.js";
 import { streamSession } from "../api/sse.js";
 import { getAuthToken } from "../config.js";
 import { isTerminal, runId } from "./runItem.js";
@@ -102,17 +102,21 @@ export class RunDetailPanel {
       // Refresh header with final metadata.
       this.postMessage({ type: "meta", run });
 
-      // Surface the invocation's "why" for non-success terminal runs (best-effort).
-      // Completed/succeeded runs also carry a reason, but the banner is error-toned,
-      // so only show it for failures/cancellations — the whole point is the failure why.
+      // Fetch the reason only for non-success terminal runs — skip the call for
+      // green runs so a succeeded run never even loads a (red-toned) banner.
       const terminalStatus = (this.run.status ?? "").toLowerCase();
       const isNonSuccess =
         terminalStatus !== "succeeded" && terminalStatus !== "completed";
       if (isNonSuccess && this.run.invocation_id) {
         try {
           const inv = await this.deps.client.getInvocation(this.run.invocation_id);
-          if (inv.status_reason_summary || inv.status_reason_code) {
-            this.postMessage({ type: "reason", code: inv.status_reason_code, summary: inv.status_reason_summary, evidenceRefs: inv.status_evidence_refs });
+          const reasonMsg = reasonBannerMessage(
+            this.run.status,
+            this.run.invocation_id,
+            inv
+          );
+          if (reasonMsg) {
+            this.postMessage(reasonMsg);
           }
         } catch {
           // reason is best-effort; never block the log on it
@@ -255,6 +259,44 @@ export class RunDetailPanel {
 </body>
 </html>`;
   }
+}
+
+/** Payload posted to the webview to render the non-success reason banner. */
+export interface ReasonBannerMessage {
+  type: "reason";
+  code: string | null;
+  summary: string | null;
+  evidenceRefs: Array<Record<string, unknown>> | null;
+}
+
+// A non-success terminal run whose invocation carries a reason → banner payload;
+// succeeded/completed (or no reason at all) → null, so a green run never shows a red banner.
+export function reasonBannerMessage(
+  status: string | null | undefined,
+  invocationId: string | null | undefined,
+  inv:
+    | Pick<
+        InvocationDetail,
+        "status_reason_code" | "status_reason_summary" | "status_evidence_refs"
+      >
+    | null
+    | undefined
+): ReasonBannerMessage | null {
+  const terminalStatus = (status ?? "").toLowerCase();
+  const isNonSuccess =
+    terminalStatus !== "succeeded" && terminalStatus !== "completed";
+  if (!isNonSuccess || !invocationId || !inv) {
+    return null;
+  }
+  if (!inv.status_reason_summary && !inv.status_reason_code) {
+    return null;
+  }
+  return {
+    type: "reason",
+    code: inv.status_reason_code,
+    summary: inv.status_reason_summary,
+    evidenceRefs: inv.status_evidence_refs,
+  };
 }
 
 /**

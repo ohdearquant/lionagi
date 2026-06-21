@@ -250,6 +250,7 @@
     "@types/vscode": "^1.90.0",
     "@vscode/vsce": "^3.0.0",
     "esbuild": "^0.21.0",
+    "jsdom": "^29.1.1",
     "typescript": "^5.5.0",
     "vitest": "^2.0.0"
   }
