@@ -124,6 +124,12 @@ export class BackendManager implements vscode.Disposable {
   private _supervisorTimer: ReturnType<typeof setInterval> | undefined;
   private _reconciling = false;
   private _missedHealthChecks = 0;
+  // Bumped by every start()/stop(); a start() that finds its captured value
+  // stale was superseded mid-flight and must not write state. Guards the
+  // "user clicks Stop while start() is parked on an await" resurrection race.
+  private _epoch = 0;
+  // True when attached to a backend Den did not spawn (so stop() can't kill it).
+  private _attachedUnmanaged = false;
 
   private readonly _onDidChangeState =
     new vscode.EventEmitter<BackendState>();
@@ -174,6 +180,9 @@ export class BackendManager implements vscode.Disposable {
       return;
     }
 
+    // Claim this start generation. Any later start()/stop() bumps _epoch; a
+    // stale generation must not write state after its awaits resolve.
+    const epoch = ++this._epoch;
     this.setState("starting");
     // Supervise from the first start so even a failed start self-recovers when
     // the backend becomes reachable, without the manual status-bar click.
@@ -193,6 +202,9 @@ export class BackendManager implements vscode.Disposable {
         timeoutMs: 2500,
         retries: 2,
       });
+      if (this._superseded(epoch)) {
+        return;
+      }
       if (found) {
         this._effectiveBaseUrl = configuredUrl;
         this.setState("running");
@@ -214,8 +226,16 @@ export class BackendManager implements vscode.Disposable {
 
     // No configured URL: probe the default local address before spawning.
     // Tolerant retry so a slow-but-alive backend is attached, not respawned.
-    if (await probeHealth(defaultUrl, { timeoutMs: 2500, retries: 2 })) {
+    const alreadyServing = await probeHealth(defaultUrl, {
+      timeoutMs: 2500,
+      retries: 2,
+    });
+    if (this._superseded(epoch)) {
+      return;
+    }
+    if (alreadyServing) {
       this._effectiveBaseUrl = defaultUrl;
+      this._attachedUnmanaged = true;
       this.setState("running");
       this._output.appendLine(
         `[lifecycle] attached to existing backend at ${defaultUrl}`
@@ -231,6 +251,9 @@ export class BackendManager implements vscode.Disposable {
     // works zero-config; later starts find the synced .venv and skip this.
     if (spec.provision) {
       const provisioned = await this._provision(spec.provision);
+      if (this._superseded(epoch)) {
+        return;
+      }
       if (!provisioned) {
         return;
       }
@@ -261,6 +284,7 @@ export class BackendManager implements vscode.Disposable {
     });
 
     this._child = child;
+    this._attachedUnmanaged = false;
 
     child.stdout?.on("data", (data: Buffer) => {
       this._output.append(data.toString());
@@ -270,12 +294,18 @@ export class BackendManager implements vscode.Disposable {
     });
 
     child.on("error", (err) => {
+      if (child !== this._child) {
+        return; // stale child from a superseded start()
+      }
       this._output.appendLine(`[lifecycle] spawn error: ${err.message}`);
       spawnFailed = true;
       spawnErr = err.message;
     });
 
     child.on("exit", (code) => {
+      if (child !== this._child) {
+        return; // stale child from a superseded start()
+      }
       this._output.appendLine(`[lifecycle] exited with code ${code}`);
       if (code !== 0) {
         // Non-zero exit during start — commonly EADDRINUSE when another backend
@@ -284,16 +314,30 @@ export class BackendManager implements vscode.Disposable {
         spawnFailed = true;
         exitCode = code;
       }
-      // If the child dies after we were already running, reconcile promptly so
-      // a genuine crash surfaces fast — while an orphan still holding the port
-      // keeps us running rather than flapping to "error".
+      // The child died after we were already running. The process we own is
+      // gone, so count it as one confirmed miss: a dead port then condemns on
+      // the very next probe (fast), while an orphan still serving the port
+      // resets the counter and keeps us running rather than flapping to "error".
       if (this._state === "running") {
         this._child = undefined;
+        this._missedHealthChecks = 1;
         void this.reconcile();
       }
     });
 
-    const ok = await this._pollHealth(30_000, () => spawnFailed);
+    const ok = await this._pollHealth(
+      30_000,
+      () => spawnFailed || this._superseded(epoch)
+    );
+    if (this._superseded(epoch)) {
+      // Superseded mid-spawn (a Stop or a newer start ran). Reap only the child
+      // WE spawned — never whatever the current generation now owns.
+      if (this._child === child) {
+        this._child = undefined;
+      }
+      this._killChild(child);
+      return;
+    }
     if (ok) {
       this.setState("running");
       return;
@@ -305,12 +349,15 @@ export class BackendManager implements vscode.Disposable {
     // manually-started backend). If one is healthy, attach instead of flapping
     // to "error". Reap our own losing/unhealthy child first so it cannot linger.
     this._reapChild();
-    if (
-      await probeHealth(this._effectiveBaseUrl ?? defaultUrl, {
-        timeoutMs: 2500,
-        retries: 2,
-      })
-    ) {
+    const orphanHealthy = await probeHealth(
+      this._effectiveBaseUrl ?? defaultUrl,
+      { timeoutMs: 2500, retries: 2 }
+    );
+    if (this._superseded(epoch)) {
+      return;
+    }
+    if (orphanHealthy) {
+      this._attachedUnmanaged = true;
       this._output.appendLine(
         "[lifecycle] spawn did not win the port, but a backend is healthy — attached"
       );
@@ -336,6 +383,11 @@ export class BackendManager implements vscode.Disposable {
         "Den: backend did not become healthy in time. See the Den output channel."
       );
     }
+  }
+
+  /** True if a newer start()/stop() has superseded this start() generation. */
+  private _superseded(epoch: number): boolean {
+    return epoch !== this._epoch;
   }
 
   /** Install backend deps (uv sync) with a progress notification before spawning. */
@@ -394,22 +446,37 @@ export class BackendManager implements vscode.Disposable {
   }
 
   stop(): void {
+    // Invalidate any in-flight start() so its awaits cannot resurrect state.
+    this._epoch++;
     if (this._pollTimer !== undefined) {
       clearTimeout(this._pollTimer);
       this._pollTimer = undefined;
+    }
+    if (this._attachedUnmanaged) {
+      // We attached to a backend we did not spawn — there is no child to kill,
+      // so it keeps serving the port. Say so rather than implying it stopped.
+      this._output.appendLine(
+        `[lifecycle] detached from ${this.baseUrl} (not started by Den; it is still running)`
+      );
+      this._attachedUnmanaged = false;
     }
     this._reapChild();
     this._effectiveBaseUrl = undefined;
     this.setState("stopped");
   }
 
-  /** Detach and terminate the child we spawned, if any (SIGKILL escalation). */
+  /** Detach and terminate the child we currently own, if any. */
   private _reapChild(): void {
     const child = this._child;
     if (!child) {
       return;
     }
     this._child = undefined;
+    this._killChild(child);
+  }
+
+  /** Terminate a specific child process, escalating to SIGKILL if it lingers. */
+  private _killChild(child: child_process.ChildProcess): void {
     child.kill();
     const killTimer = setTimeout(() => {
       if (child.exitCode === null && child.signalCode === null) {
