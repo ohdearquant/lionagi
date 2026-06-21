@@ -415,11 +415,15 @@ async def _run_agent(
         # rate-limit replenisher tasks that hang anyio.run forever).
         import anyio
 
+        _claude_uid = getattr(getattr(branch.chat_model, "endpoint", None), "session_id", None)
+        _teardown_extras = {"claude_session_id": _claude_uid} if _claude_uid else None
+
         with anyio.CancelScope(shield=True):
             effective_status = await teardown_agent_persist(
                 live,
                 status=_terminal_status,
                 exception=_terminal_exc,
+                extras=_teardown_extras,
             )
             if effective_status != _terminal_status:
                 _terminal_status = effective_status
