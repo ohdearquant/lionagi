@@ -293,6 +293,8 @@ def _peek_head(path: Path) -> tuple[str, str | None]:
                     ev = json.loads(line)
                 except json.JSONDecodeError:
                     continue
+                if not isinstance(ev, dict):  # non-dict JSON (e.g. `[]`) — skip, don't .get()
+                    continue
                 if not uid and ev.get("sessionId"):
                     uid = str(ev["sessionId"])
                 if cwd is None and ev.get("cwd"):

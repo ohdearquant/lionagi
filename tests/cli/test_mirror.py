@@ -721,3 +721,26 @@ async def test_idle_session_backfilled_with_project(temp_db_path: Path, tmp_path
         row = await db.get_session(session_db_id(uid))
     assert row["project"] == "ghost-proj"
     assert row["project_source"] == "cwd_dir"
+
+
+@pytest.mark.asyncio
+async def test_peek_head_skips_non_dict_head_line(temp_db_path: Path, tmp_path: Path) -> None:
+    # A valid-JSON-but-non-dict head line (e.g. `[]`) must not wedge the idle
+    # reconcile path: _peek_head must skip it like _read_new_events, so an
+    # already-mirrored, now-idle session still reconciles to completed instead of
+    # being left stuck at running by an AttributeError swallowed mid-pass.
+    root = tmp_path / "projects"
+    uid = "abababab-0000-0000-0000-0000000000cd"
+    path = root / "-w-proj" / f"{uid}.jsonl"
+    _write_session_file(path, uid, age_secs=7200)  # idle -> should become completed
+    events = [json.loads(line) for line in path.read_text().splitlines() if line.strip()]
+    path.write_text("[]\n" + path.read_text())  # prepend a non-dict JSON head line
+    async with StateDB() as db:
+        await mirror_session(db, session_uid=uid, events=events, tool_names={}, status="running")
+        assert (await db.get_session(session_db_id(uid)))["status"] == "running"
+        # Idle pass: file already fully read (offset at EOF) -> no streamed events,
+        # so _peek_head scans the head and hits the `[]` line.
+        offsets = {str(path): path.stat().st_size}
+        await _one_pass(db, root, {}, offsets, since=None, live_window=300)
+        row = await db.get_session(session_db_id(uid))
+    assert row["status"] == "completed"
