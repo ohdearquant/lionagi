@@ -824,8 +824,10 @@ class StateDB:
 
         Project bucketing and conversation lineage describe where a session came
         from, not whether it is live, so they must never move the liveness clock
-        (which reconcile_session_status and the phantom reaper read). Each given
-        field is written; project also upserts the projects registry.
+        (which reconcile_session_status and the phantom reaper read). project and
+        project_source are written together (the source is meaningless alone).
+        The session update and the projects-registry upsert run as one locked
+        write so neither can commit without the other.
         """
         sets: list[str] = []
         vals: list[Any] = []
@@ -845,9 +847,9 @@ class StateDB:
                 f"UPDATE sessions SET {', '.join(sets)} WHERE id = ?",  # noqa: S608
                 vals,
             )
+            if project:
+                await self._upsert_project_stmt(project, project_source or "cwd_dir")
             await self.db.commit()
-        if project:
-            await self.register_project(project, project_source or "cwd_dir")
 
     # ── Status reason model ───────────────────────────────────────────
 
@@ -1031,7 +1033,7 @@ class StateDB:
 
     # ── Projects ──────────────────────────────────────────────────────
 
-    async def register_project(
+    async def _upsert_project_stmt(
         self,
         name: str,
         source: str,
@@ -1039,7 +1041,7 @@ class StateDB:
         path: str | None = None,
         github: str | None = None,
     ) -> None:
-        """Upsert a project entry; bumps last_seen_at on conflict."""
+        """Projects-registry upsert statement only; caller owns the lock and commit."""
         now = time.time()
         await self.db.execute(
             """INSERT INTO projects
@@ -1057,6 +1059,17 @@ class StateDB:
                    github = COALESCE(excluded.github, projects.github)""",
             (name, source, path, github, now, now, now),
         )
+
+    async def register_project(
+        self,
+        name: str,
+        source: str,
+        *,
+        path: str | None = None,
+        github: str | None = None,
+    ) -> None:
+        """Upsert a project entry; bumps last_seen_at on conflict."""
+        await self._upsert_project_stmt(name, source, path=path, github=github)
         await self.db.commit()
 
     async def create_project(
