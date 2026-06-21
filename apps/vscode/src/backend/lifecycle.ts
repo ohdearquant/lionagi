@@ -119,7 +119,6 @@ export class BackendManager implements vscode.Disposable {
   private _state: BackendState = "stopped";
   private _child: child_process.ChildProcess | undefined;
   private _output: vscode.OutputChannel;
-  private _pollTimer: ReturnType<typeof setTimeout> | undefined;
   private _effectiveBaseUrl: string | undefined;
   private _supervisorTimer: ReturnType<typeof setInterval> | undefined;
   private _reconciling = false;
@@ -255,6 +254,12 @@ export class BackendManager implements vscode.Disposable {
         return;
       }
       if (!provisioned) {
+        this.setState("error");
+        void vscode.window.showErrorMessage(
+          "Den: could not prepare the studio backend automatically. " +
+            "See the Den output channel, or set den.pythonPath to a Python with " +
+            '"lionagi[studio]" installed.'
+        );
         return;
       }
     }
@@ -434,24 +439,12 @@ export class BackendManager implements vscode.Disposable {
           });
         })
     );
-    if (!ok) {
-      this.setState("error");
-      void vscode.window.showErrorMessage(
-        "Den: could not prepare the studio backend automatically. " +
-          "See the Den output channel, or set den.pythonPath to a Python with " +
-          '"lionagi[studio]" installed.'
-      );
-    }
     return ok;
   }
 
   stop(): void {
     // Invalidate any in-flight start() so its awaits cannot resurrect state.
     this._epoch++;
-    if (this._pollTimer !== undefined) {
-      clearTimeout(this._pollTimer);
-      this._pollTimer = undefined;
-    }
     if (this._attachedUnmanaged) {
       // We attached to a backend we did not spawn — there is no child to kill,
       // so it keeps serving the port. Say so rather than implying it stopped.
