@@ -158,15 +158,16 @@ class TestLaunchInvalidKind:
         resp = client.post("/api/launches", json={"action_kind": "magic"})
         assert resp.status_code == 422, resp.text
 
-    def test_flow_yaml_kind_rejected(self, tmp_path, monkeypatch):
-        """flow_yaml is not supported for on-demand launches — must return 422."""
+    def test_flow_yaml_without_spec_rejected(self, tmp_path, monkeypatch):
+        """flow_yaml without action_flow_yaml must return 422."""
         client = _make_client(monkeypatch, fake_db=tmp_path / "state.db")
 
         resp = client.post(
             "/api/launches",
-            json={"action_kind": "flow_yaml", "action_flow_yaml": "prompt: hi\n"},
+            json={"action_kind": "flow_yaml", "action_model": "sonnet"},
         )
         assert resp.status_code == 422, resp.text
+        assert "action_flow_yaml" in resp.json()["detail"]
 
     def test_missing_action_kind_returns_422(self, tmp_path, monkeypatch):
         """Missing action_kind must return 422 (Pydantic required field)."""
@@ -391,12 +392,24 @@ class TestLaunchArgvPath:
         with pytest.raises(ValueError, match="not supported"):
             _validate_request({"action_kind": "unknown"})
 
-    def test_validate_request_rejects_flow_yaml_kind(self):
-        """_validate_request must reject flow_yaml action_kind."""
+    def test_validate_request_rejects_flow_yaml_without_spec(self):
+        """_validate_request must reject flow_yaml when action_flow_yaml is absent."""
         from lionagi.studio.services.launches import _validate_request
 
-        with pytest.raises(ValueError, match="not supported"):
+        with pytest.raises(ValueError, match="required"):
             _validate_request({"action_kind": "flow_yaml"})
+
+    def test_validate_request_accepts_valid_flow_yaml(self):
+        """_validate_request must not raise for a valid flow_yaml request."""
+        from lionagi.studio.services.launches import _validate_request
+
+        _validate_request(
+            {
+                "action_kind": "flow_yaml",
+                "action_flow_yaml": "prompt: hi\n",
+                "action_model": "sonnet",
+            }
+        )
 
     def test_validate_request_accepts_valid_agent(self):
         """_validate_request must not raise for a clean agent request."""
@@ -1238,3 +1251,83 @@ class TestLaunchCancelRetrySmoke:
                     await task2
 
         asyncio.run(_run())
+
+
+# ---------------------------------------------------------------------------
+# flow_yaml kind — YAML-driven flow launch
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.integration
+class TestLaunchFlowYamlKind:
+    def test_launch_flow_yaml_returns_202(self, tmp_path, monkeypatch):
+        """POST /api/launches with action_kind=flow_yaml and a YAML spec must return 202."""
+        _stub_db_and_spawn(monkeypatch)
+        # Real build_argv runs here (only spawn is stubbed) and writes the spec to a
+        # temp file the stubbed spawn never cleans up — land it in tmp_path so it is
+        # auto-removed instead of leaking into the system temp dir.
+        monkeypatch.setattr("tempfile.tempdir", str(tmp_path))
+        client = _make_client(monkeypatch, fake_db=tmp_path / "state.db")
+
+        resp = client.post(
+            "/api/launches",
+            json={
+                "action_kind": "flow_yaml",
+                "action_flow_yaml": "prompt: hi\n",
+                "action_model": "sonnet",
+            },
+        )
+        assert resp.status_code == 202, resp.text
+        data = resp.json()
+        assert "invocation_id" in data
+        assert data["action_kind"] == "flow_yaml"
+
+    def test_launch_flow_yaml_missing_spec_422(self, tmp_path, monkeypatch):
+        """POST /api/launches with action_kind=flow_yaml but no spec must return 422."""
+        client = _make_client(monkeypatch, fake_db=tmp_path / "state.db")
+
+        resp = client.post(
+            "/api/launches",
+            json={"action_kind": "flow_yaml", "action_model": "sonnet"},
+        )
+        assert resp.status_code == 422, resp.text
+        assert "action_flow_yaml" in resp.json()["detail"]
+
+    def test_flow_yaml_schedule_carries_yaml(self, monkeypatch):
+        """launch() must forward action_flow_yaml into the schedule dict passed to build_argv."""
+        import lionagi.studio.services.launches as svc
+
+        captured = {}
+
+        def _fake_build_argv(schedule, ctx):
+            captured["schedule"] = schedule
+            return (
+                ["uv", "run", "li", "o", "flow", "-f", "/tmp/x.yaml", "--", "sonnet"],
+                "/tmp/x.yaml",
+            )
+
+        def _consume(coro, **kw):
+            coro.close()
+            return MagicMock()
+
+        with (
+            patch("lionagi.studio.services.launches.build_argv", side_effect=_fake_build_argv),
+            patch("lionagi.studio.services.launches.StateDB") as MockDB,
+            patch("lionagi.studio.services.launches.asyncio.create_task", side_effect=_consume),
+        ):
+            mock_db = AsyncMock()
+            mock_db.create_invocation = AsyncMock()
+            MockDB.return_value.__aenter__ = AsyncMock(return_value=mock_db)
+            MockDB.return_value.__aexit__ = AsyncMock(return_value=False)
+            asyncio.run(
+                svc.launch(
+                    {
+                        "action_kind": "flow_yaml",
+                        "action_flow_yaml": "prompt: hi\n",
+                        "action_model": "sonnet",
+                    }
+                )
+            )
+
+        assert captured["schedule"]["action_kind"] == "flow_yaml"
+        assert captured["schedule"]["action_flow_yaml"] == "prompt: hi\n"

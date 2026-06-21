@@ -27,7 +27,7 @@ from ..services.schedules import (
 
 _log = logging.getLogger(__name__)
 
-_LAUNCH_VALID_KINDS = frozenset({"agent", "flow", "fanout", "play", "engine"})
+_LAUNCH_VALID_KINDS = frozenset({"agent", "flow", "fanout", "play", "flow_yaml", "engine"})
 
 _detached_tasks: set[asyncio.Task] = set()
 _user_cancelled: set[str] = set()
@@ -70,6 +70,10 @@ def _validate_request(data: dict[str, Any]) -> None:
         if not (data.get("action_prompt") or "").strip():
             raise ValueError("action_prompt (the engine spec) is required for engine launches")
         _svc_validate_identifier(data.get("action_engine_def"), "action_engine_def")
+    if kind == "flow_yaml" and not (data.get("action_flow_yaml") or "").strip():
+        raise ValueError(
+            "action_flow_yaml (the inline flow spec) is required for flow_yaml launches"
+        )
 
 
 async def launch(data: dict[str, Any]) -> dict[str, Any]:
@@ -89,6 +93,7 @@ async def launch(data: dict[str, Any]) -> dict[str, Any]:
         "action_playbook": data.get("action_playbook"),
         "action_project": data.get("action_project"),
         "action_extra_args": data.get("action_extra_args") or [],
+        "action_flow_yaml": data.get("action_flow_yaml"),
     }
     if data["action_kind"] == "engine":
         defn = await _resolve_engine_def(data["action_engine_def"])
