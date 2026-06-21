@@ -1,84 +1,65 @@
-# Den
+<p align="center">
+  <img src="media/icon.png" width="80" alt="Den" />
+</p>
 
-Watch your agents work. Den is a native VS Code client that shows your
-`lionagi` agent runs and Claude Code sessions live in the editor, as they
-happen.
+<h1 align="center">Den</h1>
 
-## What It Is
+<p align="center">
+  <b>Mission control for every agent on your machine.</b>
+</p>
 
-Den runs a small local backend (`python -m lionagi.studio`) and talks to it
-over `localhost` (`/api/*` + SSE). Everything you see is native VS Code: a tree
-of runs in the activity bar, commands, and webview panels that stream output
-live. There is no web app and no SPA embedded. The backend stays on your
-machine and nothing leaves your workstation.
+<p align="center">
+  Watch your <code>lionagi</code> runs and Claude Code sessions live, without leaving VS Code.
+</p>
 
-Den is read-only observability. You start runs the way you already do — `li
-agent`, `li o`, or Claude Code — and Den watches them. Two things show up in
-the Runs tree:
+<p align="center">
+  <img src="https://img.shields.io/badge/VS%20Code-1.90+-007ACC?logo=visualstudiocode&logoColor=white" alt="VS Code 1.90+" />
+  <img src="https://img.shields.io/badge/license-Apache%202.0-blue" alt="Apache 2.0" />
+  <img src="https://img.shields.io/badge/part%20of-lionagi-6E56CF" alt="part of lionagi" />
+</p>
 
-- **lionagi runs** — anything you start with `li agent` or `li o`, grouped by
-  project and streamed live.
-- **Claude Code sessions** — your local Claude Code transcripts, mirrored into
-  the same tree so every agent you run lands in one place.
+---
 
-## The two surfaces
+## Why Den
 
-Den is built around two ways to look at a run, both without leaving the editor:
+Every agent you run (`li agent`, `li o`, Claude Code) lands in **one live tree**, grouped by project and streamed as it happens. No web app, no dashboard tab to babysit, and nothing leaves your machine. Den runs a small local backend (`python -m lionagi.studio`) over `localhost` and renders everything as native VS Code.
 
-1. **Observe** — the run detail panel attaches to any run and streams its output
-   live over SSE as it happens.
-2. **Trace** — open **Den: View Run Tree** on any run to see its branch/agent
-   DAG with typed nodes and per-run cost, refreshed as it progresses.
+It is **read-only observability**: you start runs the way you already do, and Den watches them.
 
-## Requirements
+## What shows up
 
-- VS Code 1.90 or later (or Cursor / VSCodium / Windsurf with Open VSX)
-- Python 3.10+ with `lionagi[studio]` installed:
+| What | Description |
+|---|---|
+| **lionagi runs** | Everything from `li agent` and `li o`, grouped by project and streamed live. |
+| **Claude Code sessions** | Your local Claude Code transcripts, mirrored into the same tree. |
+| **Active band** | A pinned group at the top with everything running right now, across every project. |
+
+## Two ways to look at a run
+
+- **Observe**: the run detail panel attaches to any run and streams its output live over SSE.
+- **Trace**: **Den: View Run Tree** draws the run's branch and agent DAG with typed nodes and per-run cost, refreshed as it progresses.
+
+## Get started
 
 ```bash
 pip install 'lionagi[studio]'
 ```
 
-## Quick Start
-
-1. Install Den from the Marketplace (or Open VSX).
-2. Open the **Den** panel in the activity bar (left sidebar).
-3. Den auto-starts the local backend on activation (configurable).
-4. Start a run however you normally do — `li agent`, `li o`, or Claude Code —
-   and watch it live in the Runs tree. Claude Code sessions appear
-   automatically as you use them.
+1. Install Den from the Marketplace, or from Open VSX for Cursor / VSCodium / Windsurf.
+2. Open the **Den** panel in the activity bar.
+3. Den auto-starts the local backend (configurable). Start a run from your terminal or Claude Code, and it appears in the tree live.
 
 ## Settings
 
 | Setting | Default | Description |
 |---|---|---|
-| `den.url` | `""` | Attach URL for an already-running backend. Leave empty to auto-spawn. |
-| `den.pythonPath` | `""` | Python interpreter path. Leave empty to auto-detect (workspace `.venv`, then `uv`, then `python3`). |
-| `den.port` | `8765` | Backend port when spawning. |
-| `den.host` | `"127.0.0.1"` | Backend host when spawning. |
-| `den.autoStart` | `true` | Spawn the backend on extension activation. |
+| `den.url` | `""` | Attach to an already-running backend. Empty means auto-spawn. |
+| `den.pythonPath` | `""` | Python interpreter. Empty means auto-detect (`.venv`, then `uv`, then `python3`). |
+| `den.port` | `8765` | Port when spawning the backend. |
+| `den.host` | `"127.0.0.1"` | Host when spawning the backend. |
+| `den.autoStart` | `true` | Spawn the backend when the extension activates. |
 | `den.authToken` | `""` | Bearer token (`LIONAGI_STUDIO_AUTH_TOKEN`). |
-
-## Features
-
-- **Backend lifecycle**: auto-spawns `python -m lionagi.studio` on activation,
-  health-checks `/health`, surfaces state (stopped / starting / running / error)
-  in the status bar.
-- **Attach mode**: set `den.url` to skip spawning and connect to an existing
-  instance.
-- **Runs explorer**: tree view over `GET /api/runs/`, grouped by project with a
-  pinned **Active** group for everything currently running.
-- **Live streaming**: the run detail panel subscribes to the session SSE
-  (`GET /api/sessions/{id}/stream`) and streams output as it arrives.
-- **Run Tree**: **Den: View Run Tree** subscribes to the session signal stream
-  (`GET /api/sessions/{id}/signals`) and renders the run's branch/agent DAG with
-  typed nodes and per-run cost.
-- **Claude Code mirror**: local Claude Code sessions are mirrored into the Runs
-  tree and reconciled live.
 
 ## License
 
-Apache 2.0
-
-Den is part of [lionagi](https://github.com/ohdearquant/lionagi). If it is
-useful to you, a ⭐ on the repo helps.
+Apache 2.0, part of [lionagi](https://github.com/ohdearquant/lionagi). If Den is useful to you, a ⭐ on the repo helps.

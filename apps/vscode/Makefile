@@ -31,7 +31,8 @@ package: typecheck test ## Build the installable VSIX (gated on typecheck + test
 	npm run package
 	@echo "built $(VSIX)"
 
-install-vsix: ## Install the already-built VSIX into VS Code
+install-vsix: ## Install the VSIX into VS Code, building it first if absent
+	@test -f $(VSIX) || $(MAKE) package
 	code --install-extension $(VSIX) --force
 
 reinstall: package install-vsix ## Rebuild the VSIX and (re)install it into VS Code
