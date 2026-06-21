@@ -731,15 +731,6 @@ class StateDB:
         row = await cur.fetchone()
         return self._row_to_dict(row) if row else None
 
-    async def get_session_by_claude_session_id(self, claude_uid: str) -> dict[str, Any] | None:
-        """Return the session row that claims the given Claude session UUID, or None."""
-        cur = await self.db.execute(
-            "SELECT * FROM sessions WHERE json_extract(node_metadata, '$.claude_session_id') = ?",
-            (claude_uid,),
-        )
-        row = await cur.fetchone()
-        return self._row_to_dict(row) if row else None
-
     async def touch_session_activity(self, session_id: str, *, at: float | None = None) -> None:
         """Bump last_message_at and updated_at for staleness detection."""
         ts = at if at is not None else time.time()

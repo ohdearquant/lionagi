@@ -225,12 +225,6 @@ async def mirror_session(
     the runs explorer, with ``status`` as the initial status. Live/idle transitions
     are owned by ``reconcile_session_status``, not this writer.
     """
-    # Skip when a lionagi-owned session already claims this Claude run — that
-    # session was written by the CLI's own persistence path and contains the
-    # identical conversation; creating a second row here would duplicate it.
-    if await db.get_session_by_claude_session_id(session_uid):
-        return 0
-
     sid = session_db_id(session_uid)
     branch_id = _det(session_uid, "branch")
     bprog = _det(session_uid, "bprog")

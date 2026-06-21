@@ -285,56 +285,6 @@ async def test_mirror_session_empty_no_session(temp_db_path: Path) -> None:
     assert row is None
 
 
-@pytest.mark.asyncio
-async def test_mirror_skips_when_lionagi_session_claims_claude_uid(temp_db_path: Path) -> None:
-    # Simulate the lionagi-owned session written by _runs.py: it holds the claude
-    # UID in node_metadata["claude_session_id"].  The mirror must skip creating a
-    # second row for the same Claude run.
-    lionagi_session_id = "aaaaaaaa-0000-1111-2222-333333333333"
-    async with StateDB() as db:
-        await db.create_progression("prog-a")
-        await db.create_session(
-            {
-                "id": lionagi_session_id,
-                "created_at": 1_000_000.0,
-                "progression_id": "prog-a",
-                "name": "owned by lionagi",
-                "status": "completed",
-                "invocation_kind": "agent",
-                "node_metadata": {"claude_session_id": SID},
-            }
-        )
-        n = await mirror_session(
-            db,
-            session_uid=SID,
-            events=_conversation(),
-            tool_names={},
-            status="completed",
-        )
-        # The mirror-keyed row must NOT exist.
-        mirror_row = await db.get_session(session_db_id(SID))
-    assert n == 0
-    assert mirror_row is None
-
-
-@pytest.mark.asyncio
-async def test_mirror_creates_session_when_no_lionagi_owner(temp_db_path: Path) -> None:
-    # A direct-Claude session (no lionagi ownership) must be mirrored normally.
-    DIRECT_UID = "99999999-8888-7777-6666-555555555555"
-    async with StateDB() as db:
-        n = await mirror_session(
-            db,
-            session_uid=DIRECT_UID,
-            events=_conversation(),
-            tool_names={},
-            status="completed",
-        )
-        row = await db.get_session(session_db_id(DIRECT_UID))
-    assert n > 0
-    assert row is not None
-    assert row["agent_name"] == "claude-code"
-
-
 # ── watcher passes: session-level liveness across multiple files ─────────────
 
 
