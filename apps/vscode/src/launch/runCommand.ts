@@ -35,7 +35,7 @@ function handleLaunchError(err: unknown): void {
 }
 
 /** Poll GET /api/invocations/{id} until a child session id appears or timeout. */
-async function pollForSessionId(
+export async function pollForSessionId(
   deps: StudioDeps,
   invocationId: string,
   signal: AbortSignal
