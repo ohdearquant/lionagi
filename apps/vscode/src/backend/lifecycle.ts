@@ -10,6 +10,8 @@ interface SpawnSpec {
   command: string;
   args: string[];
   cwd?: string;
+  /** One-time dependency install to run (with progress) before spawning. */
+  provision?: { command: string; args: string[]; cwd: string };
 }
 
 function workspaceRoot(): string | undefined {
@@ -17,48 +19,60 @@ function workspaceRoot(): string | undefined {
 }
 
 function resolveUv(): string | undefined {
-  const candidates = [
-    path.join(os.homedir(), ".local", "bin", "uv"),
-    "/opt/homebrew/bin/uv",
-    "/usr/local/bin/uv",
+  const exe = process.platform === "win32" ? "uv.exe" : "uv";
+  const pathDirs = (process.env.PATH ?? "").split(path.delimiter);
+  const knownDirs = [
+    path.join(os.homedir(), ".local", "bin"),
+    path.join(os.homedir(), ".cargo", "bin"),
+    "/usr/local/bin",
+    "/opt/homebrew/bin",
   ];
-  return candidates.find((p) => fs.existsSync(p));
+  for (const dir of [...pathDirs, ...knownDirs]) {
+    if (dir && fs.existsSync(path.join(dir, exe))) {
+      return path.join(dir, exe);
+    }
+  }
+  return undefined;
 }
 
-/** Resolve the Python interpreter or uv run spec for spawning the backend. */
+/** Resolve the Python interpreter (and any provisioning step) for the backend. */
 function resolveSpawnSpec(explicitPython: string): SpawnSpec {
   const ws = workspaceRoot();
+  const venvPython = ws
+    ? process.platform === "win32"
+      ? path.join(ws, ".venv", "Scripts", "python.exe")
+      : path.join(ws, ".venv", "bin", "python")
+    : undefined;
 
   // 1. Explicitly configured path.
   if (explicitPython.trim() !== "") {
     return { command: explicitPython, args: ["-m", "lionagi.studio"] };
   }
 
-  // 2. Workspace venv.
-  if (ws) {
-    const unix = path.join(ws, ".venv", "bin", "python");
-    const win = path.join(ws, ".venv", "Scripts", "python.exe");
-    if (fs.existsSync(unix)) {
-      return { command: unix, args: ["-m", "lionagi.studio"] };
-    }
-    if (fs.existsSync(win)) {
-      return { command: win, args: ["-m", "lionagi.studio"] };
-    }
+  // 2. Existing workspace venv (already provisioned).
+  if (venvPython && fs.existsSync(venvPython)) {
+    return { command: venvPython, args: ["-m", "lionagi.studio"] };
   }
 
-  // 3. uv run (if uv and pyproject.toml are present).
-  if (ws) {
+  // 3. uv-managed source checkout (e.g. Codespaces): sync the studio extra
+  //    into .venv first, then run that interpreter. Zero-config from source.
+  if (ws && venvPython && fs.existsSync(path.join(ws, "pyproject.toml"))) {
     const uv = resolveUv();
-    if (uv && fs.existsSync(path.join(ws, "pyproject.toml"))) {
+    if (uv) {
       return {
-        command: uv,
-        args: ["run", "python", "-m", "lionagi.studio"],
+        command: venvPython,
+        args: ["-m", "lionagi.studio"],
         cwd: ws,
+        provision: {
+          command: uv,
+          args: ["sync", "--extra", "studio"],
+          cwd: ws,
+        },
       };
     }
   }
 
-  // 4. System python3 fallback.
+  // 4. System python3 fallback (expects `pip install "lionagi[studio]"`).
   return { command: "python3", args: ["-m", "lionagi.studio"] };
 }
 
@@ -177,6 +191,15 @@ export class BackendManager implements vscode.Disposable {
     const spec = resolveSpawnSpec(this.getPythonPath());
     this._effectiveBaseUrl = defaultUrl;
 
+    // First run on a source checkout installs the studio backend deps so Den
+    // works zero-config; later starts find the synced .venv and skip this.
+    if (spec.provision) {
+      const provisioned = await this._provision(spec.provision);
+      if (!provisioned) {
+        return;
+      }
+    }
+
     this._output.appendLine(
       `[lifecycle] spawning via ${spec.command} ${spec.args.join(" ")}`
     );
@@ -258,6 +281,61 @@ export class BackendManager implements vscode.Disposable {
     } else {
       this.setState("running");
     }
+  }
+
+  /** Install backend deps (uv sync) with a progress notification before spawning. */
+  private async _provision(p: {
+    command: string;
+    args: string[];
+    cwd: string;
+  }): Promise<boolean> {
+    this._output.appendLine(
+      `[lifecycle] provisioning backend: ${p.command} ${p.args.join(" ")}`
+    );
+    const ok = await vscode.window.withProgress(
+      {
+        location: vscode.ProgressLocation.Notification,
+        title:
+          "Den: preparing the studio backend (first run installs dependencies)…",
+      },
+      () =>
+        new Promise<boolean>((resolve) => {
+          const proc = child_process.spawn(p.command, p.args, {
+            cwd: p.cwd,
+            stdio: ["ignore", "pipe", "pipe"],
+          });
+          proc.stdout?.on("data", (d: Buffer) =>
+            this._output.append(d.toString())
+          );
+          proc.stderr?.on("data", (d: Buffer) =>
+            this._output.append(d.toString())
+          );
+          const timer = setTimeout(() => {
+            proc.kill();
+            resolve(false);
+          }, 180_000);
+          proc.on("error", (err) => {
+            clearTimeout(timer);
+            this._output.appendLine(
+              `[lifecycle] provision error: ${err.message}`
+            );
+            resolve(false);
+          });
+          proc.on("exit", (code) => {
+            clearTimeout(timer);
+            resolve(code === 0);
+          });
+        })
+    );
+    if (!ok) {
+      this.setState("error");
+      void vscode.window.showErrorMessage(
+        "Den: could not prepare the studio backend automatically. " +
+          "See the Den output channel, or set den.pythonPath to a Python with " +
+          '"lionagi[studio]" installed.'
+      );
+    }
+    return ok;
   }
 
   stop(): void {

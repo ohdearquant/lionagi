@@ -2,7 +2,7 @@
   "name": "den",
   "displayName": "Den",
   "description": "Watch your lionagi agent runs and Claude Code sessions live in VS Code.",
-  "version": "0.0.19",
+  "version": "0.0.20",
   "publisher": "lionagi",
   "icon": "media/icon.png",
   "repository": {
@@ -145,7 +145,7 @@
         "den.pythonPath": {
           "type": "string",
           "default": "",
-          "description": "Python interpreter for the spawned backend. Leave empty to auto-detect (workspace .venv, then uv, then python3)."
+          "description": "Python interpreter for the spawned backend. Leave empty to auto-detect: workspace .venv, then a uv project (installs the studio backend on first run), then python3."
         },
         "den.port": {
           "type": "number",
