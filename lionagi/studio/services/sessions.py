@@ -209,7 +209,8 @@ async def get_session(session_id: str) -> dict[str, Any] | None:
                       artifact_contract_json, artifact_verification_json,
                       source_kind, status, started_at, ended_at,
                       model, provider, effort, agent_hash, invocation_id,
-                      node_metadata, project, project_source
+                      node_metadata, project, project_source,
+                      status_reason_code, status_reason_summary, status_evidence_refs
                FROM sessions WHERE id = ?""",
             (session_id,),
         )
@@ -327,6 +328,10 @@ async def get_session(session_id: str) -> dict[str, Any] | None:
         # ADR-0026: project detection.
         "project": session_row["project"],
         "project_source": session_row["project_source"],
+        # ADR-0028: status reason surfaced on detail (drives the failure banner).
+        "status_reason_code": session_row["status_reason_code"],
+        "status_reason_summary": session_row["status_reason_summary"],
+        "status_evidence_refs": _parse_json_col(session_row["status_evidence_refs"]),
         "graph": _graph_from_metadata(session_row["node_metadata"]),
         "segments": (_parse_metadata(session_row["node_metadata"]) or {}).get("segments"),
     }

@@ -619,6 +619,10 @@ async def get_run(run_id: str) -> dict[str, Any] | None:
         "graph": session.get("graph"),
         "manifest": {},
         "branches": branches,
+        # Failure-reason contract consumed by the run-detail panel's banner.
+        "status_reason_code": session.get("status_reason_code"),
+        "status_reason_summary": session.get("status_reason_summary"),
+        "status_evidence_refs": session.get("status_evidence_refs"),
     }
 
 

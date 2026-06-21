@@ -14,6 +14,7 @@ aiosqlite = pytest.importorskip("aiosqlite", reason="aiosqlite not installed")
 fastapi = pytest.importorskip("fastapi", reason="studio extra not installed")
 
 from lionagi.state.db import StateDB  # noqa: E402
+from lionagi.state.reasons import RunReasons  # noqa: E402
 
 # ---------------------------------------------------------------------------
 # Shared seed helpers (mirror test_sessions_detail.py idioms)
@@ -357,6 +358,9 @@ _RUN_CONTRACT_KEYS = {
     "project",
     "project_source",
     "invocation_id",
+    "status_reason_code",
+    "status_reason_summary",
+    "status_evidence_refs",
 }
 
 
@@ -383,3 +387,38 @@ async def test_get_run_satisfies_run_list_contract(patched_runs_svc):
     assert result["invocation_kind"] == "flow"
     # branch_count / message_count derive from the hydrated branches, not the JOIN.
     assert result["branch_count"] == 2
+
+
+async def test_get_run_surfaces_status_reason(patched_runs_svc):
+    """ADR-0028: a failed run surfaces the reason fields the detail banner reads."""
+    svc, db_path = patched_runs_svc
+
+    # A run transitioned to failed with a reason round-trips all three fields.
+    sid = str(uuid.uuid4())
+    await seed_session(db_path, session_id=sid, status="running")
+    evidence = [{"type": "log", "path": "/tmp/run.log"}]
+    async with StateDB(db_path) as db:
+        await db.update_status(
+            "session",
+            sid,
+            new_status="failed",
+            reason_code=RunReasons.FAILED_EXIT_NONZERO,
+            reason_summary="worker exited with code 1",
+            evidence_refs=evidence,
+        )
+
+    failed = await svc.get_run(sid)
+    assert failed is not None
+    assert failed["status"] == "failed"
+    assert failed["status_reason_code"] == RunReasons.FAILED_EXIT_NONZERO
+    assert failed["status_reason_summary"] == "worker exited with code 1"
+    assert failed["status_evidence_refs"] == evidence
+
+    # A run with no recorded reason returns the fields as None, not missing.
+    sid2 = str(uuid.uuid4())
+    await seed_session(db_path, session_id=sid2, status="completed")
+    ok = await svc.get_run(sid2)
+    assert ok is not None
+    assert ok["status_reason_code"] is None
+    assert ok["status_reason_summary"] is None
+    assert ok["status_evidence_refs"] is None
