@@ -19,8 +19,10 @@ from lionagi.cli.mirror import (
     _one_pass,
     _parse_window,
     _read_new_events,
+    _since_window,
 )
 from lionagi.state.claude_mirror import (
+    _det,
     messages_for_event,
     mirror_session,
     reconcile_session_status,
@@ -277,6 +279,58 @@ async def test_reconcile_reactivates_completed_when_fresh(temp_db_path: Path) ->
 
 
 @pytest.mark.asyncio
+async def test_reconcile_idle_session_stays_completed_across_passes(temp_db_path: Path) -> None:
+    # The status write bumps updated_at; liveness must key off last_message_at
+    # instead. Otherwise a just-completed idle session reads as fresh on the next
+    # pass (its own status write moved updated_at) and oscillates back to running.
+    async with StateDB() as db:
+        await mirror_session(
+            db, session_uid=SID, events=_conversation(), tool_names={}, status="running"
+        )
+        row = await db.get_session(session_db_id(SID))
+        lm = row["last_message_at"]
+        await reconcile_session_status(db, SID, now=lm + 10_000, live_window=300)
+        first = await db.get_session(session_db_id(SID))
+        # last_message_at is the liveness clock; the status write must not touch it.
+        assert first["last_message_at"] == lm
+        # Second pass a moment later must NOT resurrect the still-idle session.
+        await reconcile_session_status(db, SID, now=lm + 10_001, live_window=300)
+        second = await db.get_session(session_db_id(SID))
+    assert first["status"] == "completed"
+    assert second["status"] == "completed"
+
+
+@pytest.mark.asyncio
+async def test_mirror_session_repairs_partial_scaffold(
+    temp_db_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # If branch creation fails after the session row commits, a later pass must
+    # repair the missing branch — not skip scaffolding just because the session
+    # row now exists. (Idempotent INSERT OR IGNORE scaffold, run every call.)
+    events = _conversation()
+    branch_id = _det(SID, "branch")
+    async with StateDB() as db:
+        real_create_branch = db.create_branch
+
+        async def _boom(*_a, **_k):
+            raise RuntimeError("branch write failed")
+
+        monkeypatch.setattr(db, "create_branch", _boom)
+        with pytest.raises(RuntimeError, match="branch write failed"):
+            await mirror_session(
+                db, session_uid=SID, events=events, tool_names={}, status="running"
+            )
+        # Session row committed but the branch is missing — a partial scaffold.
+        assert await db.get_session(session_db_id(SID)) is not None
+        assert await db.get_branch(branch_id) is None
+
+        # Next pass with the write restored repairs the scaffold.
+        monkeypatch.setattr(db, "create_branch", real_create_branch)
+        await mirror_session(db, session_uid=SID, events=events, tool_names={}, status="running")
+        assert await db.get_branch(branch_id) is not None
+
+
+@pytest.mark.asyncio
 async def test_mirror_session_empty_no_session(temp_db_path: Path) -> None:
     async with StateDB() as db:
         n = await mirror_session(db, session_uid=SID, events=[], tool_names={}, status="running")
@@ -353,6 +407,45 @@ async def test_multifile_session_completes_when_all_files_idle(
     assert row["status"] == "completed"
 
 
+@pytest.mark.asyncio
+async def test_one_pass_reprocesses_batch_when_write_fails(
+    temp_db_path: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # A failed mirror write must not advance the persisted cursor past the
+    # unmirrored events: the next pass re-reads and mirrors them (at-least-once +
+    # idempotent), so a transient DB error never silently drops a batch.
+    root = tmp_path / "projects"
+    uid = "ffffffff-0000-0000-0000-00000000000a"
+    _write_session_file(root / "-w-proj" / f"{uid}.jsonl", uid, age_secs=5)
+
+    from lionagi.state import claude_mirror as cm
+
+    real_mirror_session = cm.mirror_session
+    fail = {"on": True}
+
+    async def _maybe_fail(*a, **k):
+        if fail["on"]:
+            raise RuntimeError("db down")
+        return await real_mirror_session(*a, **k)
+
+    monkeypatch.setattr("lionagi.state.claude_mirror.mirror_session", _maybe_fail)
+
+    offsets: dict[str, int] = {}
+    async with StateDB() as db:
+        # Pass 1: the write fails; the cursor must NOT be persisted past the batch.
+        await _one_pass(db, root, {}, offsets, since=None, live_window=300)
+        assert await db.get_session(session_db_id(uid)) is None
+        assert offsets == {}  # cursor never advanced past the unmirrored batch
+
+        # Pass 2: write restored; the same batch is mirrored, not lost.
+        fail["on"] = False
+        await _one_pass(db, root, {}, offsets, since=None, live_window=300)
+        row = await db.get_session(session_db_id(uid))
+        msgs = await db.get_progression(row["progression_id"])
+    assert row is not None
+    assert len(msgs) == 2  # both events survived the earlier failure
+
+
 # ── watcher helpers: tailing + parsing ───────────────────────────────────────
 
 
@@ -360,12 +453,13 @@ def test_read_new_events_buffers_partial_line(tmp_path: Path) -> None:
     path = tmp_path / "t.jsonl"
     path.write_text('{"a":1}\n{"a":2}\n{"a":3')  # last line incomplete
     state = _FileState(session_uid="x")
-    first = _read_new_events(path, state)
+    first, new_offset = _read_new_events(path, state)
     assert [e["a"] for e in first] == [1, 2]
+    state.offset = new_offset  # caller commits the cursor only after a durable mirror
     # Complete the dangling line; the next read picks up only the new event.
     with path.open("a") as fh:
         fh.write("}\n")
-    second = _read_new_events(path, state)
+    second, _ = _read_new_events(path, state)
     assert [e["a"] for e in second] == [3]
 
 
@@ -373,7 +467,7 @@ def test_read_new_events_resets_on_truncation(tmp_path: Path) -> None:
     path = tmp_path / "t.jsonl"
     path.write_text('{"a":1}\n')
     state = _FileState(session_uid="x", offset=9999)  # offset past EOF
-    out = _read_new_events(path, state)
+    out, _ = _read_new_events(path, state)
     assert [e["a"] for e in out] == [1]
 
 
@@ -381,7 +475,18 @@ def test_read_new_events_skips_corrupt_lines(tmp_path: Path) -> None:
     path = tmp_path / "t.jsonl"
     path.write_text('{"a":1}\nnot json\n{"a":2}\n')
     state = _FileState(session_uid="x")
-    out = _read_new_events(path, state)
+    out, _ = _read_new_events(path, state)
+    assert [e["a"] for e in out] == [1, 2]
+
+
+def test_read_new_events_skips_non_dict_json_without_losing_followers(tmp_path: Path) -> None:
+    # Valid JSON of the wrong shape (a bare list / scalar) must be dropped as
+    # malformed, not handed downstream as an event, and must not swallow the
+    # valid events that follow it on later lines.
+    path = tmp_path / "t.jsonl"
+    path.write_text('[]\n{"a":1}\n42\n{"a":2}\n')
+    state = _FileState(session_uid="x")
+    out, _ = _read_new_events(path, state)
     assert [e["a"] for e in out] == [1, 2]
 
 
@@ -404,10 +509,26 @@ def test_first_prompt_skips_meta_and_command_noise() -> None:
 
 @pytest.mark.parametrize(
     ("spec", "expected"),
-    [("30m", 1800.0), ("12h", 43200.0), ("7d", 604800.0), ("120", 120.0), ("bad", None)],
+    [("30m", 1800.0), ("12h", 43200.0), ("7d", 604800.0), ("120", 120.0), ("", None)],
 )
 def test_parse_window(spec: str, expected: float | None) -> None:
     assert _parse_window(spec) == expected
+
+
+def test_parse_window_raises_on_malformed() -> None:
+    # A bad spec must fail loudly, not silently become an unbounded (None) scan.
+    with pytest.raises(ValueError, match="unrecognized --since window"):
+        _parse_window("bad")
+
+
+def test_since_window_argparse_type() -> None:
+    import argparse
+
+    assert _since_window("12h") == 43200.0
+    with pytest.raises(argparse.ArgumentTypeError):
+        _since_window("nonsense")
+    with pytest.raises(argparse.ArgumentTypeError):
+        _since_window("")  # empty is rejected at the CLI boundary (default=None handles "all")
 
 
 # ── project attribution fallback ─────────────────────────────────────────────

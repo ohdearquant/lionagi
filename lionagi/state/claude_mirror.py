@@ -235,18 +235,25 @@ async def mirror_session(
         messages.extend(messages_for_event(ev, session_uid, tool_names))
 
     existing = await db.get_session(sid)
+    if existing is None and not messages:
+        return 0
 
+    first_ts = min((m.created_at for m in messages), default=None)
+    last_ts = max((m.created_at for m in messages), default=None)
+    created_at = (existing.get("created_at") if existing is not None else None) or first_ts
+
+    # Ensure the full scaffold (progressions -> session -> branch) exists on every
+    # call, in dependency order. Each write is INSERT OR IGNORE, so once present
+    # this is a no-op; if an earlier pass died mid-scaffold (e.g. the branch write
+    # raised after the session row committed) the next pass repairs the partial
+    # instead of skipping scaffolding just because the session row now exists.
+    await db.create_progression(sprog)
+    await db.create_progression(bprog)
     if existing is None:
-        if not messages:
-            return 0
-        first_ts = min(m.created_at for m in messages)
-        last_ts = max(m.created_at for m in messages)
-        await db.create_progression(sprog)
-        await db.create_progression(bprog)
         await db.create_session(
             {
                 "id": sid,
-                "created_at": first_ts,
+                "created_at": created_at,
                 "progression_id": sprog,
                 "name": name or "Claude Code session",
                 "status": status,
@@ -260,23 +267,23 @@ async def mirror_session(
                 "updated_at": last_ts,
             }
         )
-        await db.create_branch(
-            {
-                "id": branch_id,
-                "created_at": first_ts,
-                "session_id": sid,
-                "progression_id": bprog,
-                "model": model,
-                "provider": provider,
-                "agent_name": "claude-code",
-            }
-        )
     elif project and not existing.get("project"):
         # Backfill attribution for a session first mirrored before its cwd could
         # be attributed to a project. INSERT OR IGNORE never updates an existing
         # row, so without this an already-seen "(no project)" session stays that
         # way forever; this writes it without disturbing the liveness clock.
         await db.set_session_provenance(sid, project=project, project_source=project_source)
+    await db.create_branch(
+        {
+            "id": branch_id,
+            "created_at": created_at,
+            "session_id": sid,
+            "progression_id": bprog,
+            "model": model,
+            "provider": provider,
+            "agent_name": "claude-code",
+        }
+    )
 
     for m in messages:
         md = m.to_dict(mode="db")
@@ -285,7 +292,7 @@ async def mirror_session(
         await db.append_to_progression(sprog, md["id"])
 
     if messages:
-        await db.touch_session_activity(sid, at=max(m.created_at for m in messages))
+        await db.touch_session_activity(sid, at=last_ts)
 
     return len(messages)
 
@@ -301,17 +308,20 @@ async def reconcile_session_status(
 
     A mirror session's ``completed`` means dormant, not terminal: when the
     transcript resumes, the next reconcile brings it back to ``running``. Liveness
-    is judged by the session's last message time (the same ``updated_at`` the
-    studio SSE reader and the phantom reaper read), so an idle session converges
-    to ``completed`` before the reaper can mark it failed, and an active one shows
-    ``running`` (a live spinner in studio and the VS Code extension).
+    is judged by ``last_message_at`` — the timestamp of the newest mirrored
+    message — so an idle session converges to ``completed`` before the reaper can
+    mark it failed, and an active one shows ``running`` (a live spinner in studio
+    and the VS Code extension). It must NOT read ``updated_at``: the status write
+    below bumps ``updated_at``, so keying liveness off it would let a just-marked
+    ``completed`` session read as fresh again on the next pass and oscillate back
+    to ``running``.
     """
     from lionagi.state.reasons import RunReasons
 
     existing = await db.get_session(session_db_id(session_uid))
     if not existing:
         return
-    live = (now - float(existing.get("updated_at") or 0.0)) <= live_window
+    live = (now - float(existing.get("last_message_at") or 0.0)) <= live_window
     desired = "running" if live else "completed"
     if existing.get("status") == desired:
         return

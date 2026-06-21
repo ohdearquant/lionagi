@@ -52,6 +52,7 @@ def add_mirror_subparser(subparsers: argparse._SubParsersAction) -> None:
     )
     p.add_argument(
         "--since",
+        type=_since_window,
         default=None,
         metavar="WINDOW",
         help="Only mirror transcripts modified within this window (e.g. 12h, 7d). Default: all.",
@@ -187,6 +188,11 @@ _WINDOW_UNITS = {"m": 60, "h": 3600, "d": 86400}
 
 
 def _parse_window(spec: str) -> float | None:
+    """Seconds for a window like '30m'/'12h'/'7d', or bare seconds; None if empty.
+
+    Raises ValueError on a non-empty but unparseable spec so callers fail loudly
+    instead of silently falling back to an unbounded scan.
+    """
     spec = spec.strip().lower()
     if not spec:
         return None
@@ -195,12 +201,31 @@ def _parse_window(spec: str) -> float | None:
             return float(spec[:-1]) * _WINDOW_UNITS[spec[-1]]
         return float(spec)
     except ValueError:
-        warn(f"unrecognized --since window {spec!r}; ignoring")
-        return None
+        raise ValueError(
+            f"unrecognized --since window {spec!r} (expected e.g. 30m, 12h, 7d, or seconds)"
+        ) from None
 
 
-def _read_new_events(path: Path, state: _FileState) -> list[dict[str, Any]]:
-    """Read complete JSONL lines past the cursor; advance the cursor past them."""
+def _since_window(spec: str) -> float:
+    """argparse type for --since: parse to seconds, or reject with a clean CLI error."""
+    try:
+        secs = _parse_window(spec)
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError(str(exc)) from None
+    if secs is None:
+        raise argparse.ArgumentTypeError("--since must be a non-empty window, e.g. 30m, 12h, 7d")
+    return secs
+
+
+def _read_new_events(path: Path, state: _FileState) -> tuple[list[dict[str, Any]], int]:
+    """Read complete JSONL lines past the cursor; return (events, new_offset).
+
+    The cursor is NOT advanced here — the caller sets ``state.offset`` to the
+    returned offset only after the batch is durably mirrored, so a write failure
+    re-reads the same lines next pass instead of skipping them. Non-object JSON (a
+    bare ``[]`` or a scalar) is dropped as malformed rather than handed on as an
+    event.
+    """
     size = path.stat().st_size
     if state.offset > size:  # file truncated/rotated — re-read from the top.
         state.offset = 0
@@ -208,18 +233,20 @@ def _read_new_events(path: Path, state: _FileState) -> list[dict[str, Any]]:
         fh.seek(state.offset)
         chunk = fh.read()
     if b"\n" not in chunk:
-        return []
+        return [], state.offset
     body, _, _ = chunk.rpartition(b"\n")
-    state.offset += len(body) + 1
+    new_offset = state.offset + len(body) + 1
     events = []
     for raw in body.split(b"\n"):
         if not raw.strip():
             continue
         try:
-            events.append(json.loads(raw))
+            obj = json.loads(raw)
         except json.JSONDecodeError:
             continue
-    return events
+        if isinstance(obj, dict):
+            events.append(obj)
+    return events, new_offset
 
 
 _COMMAND_NOISE = ("<command-", "<local-command-")
@@ -321,8 +348,9 @@ def _first_prompt(events: list[dict[str, Any]]) -> str | None:
 async def _mirror_one(db, path: Path, state: _FileState, lineage: _Lineage) -> int:
     from lionagi.state.claude_mirror import mirror_session
 
-    events = _read_new_events(path, state)
+    events, new_offset = _read_new_events(path, state)
     if not events:
+        state.offset = new_offset  # advance past blank/malformed-only lines
         return 0
 
     if not state.session_uid:
@@ -345,6 +373,10 @@ async def _mirror_one(db, path: Path, state: _FileState, lineage: _Lineage) -> i
         name=state.name,
         status="running",
     )
+    # Advance the cursor only after the batch is durably mirrored: if the write
+    # above raised, state.offset is unchanged and the batch is re-read (idempotently)
+    # next pass rather than silently lost.
+    state.offset = new_offset
     if written and not state.created:
         state.created = True
         progress(f"  mirror: {state.name or state.session_uid[:8]} (+{written} msgs)")
@@ -452,7 +484,7 @@ async def _run(args: argparse.Namespace) -> int:
         warn(f"no Claude projects directory at {root}")
         return 1
 
-    since = _parse_window(args.since) if args.since else None
+    since = args.since  # argparse already parsed --since to seconds (or None)
     offsets = _load_offsets()
     states: dict[str, _FileState] = {}
     lineage = _Lineage()
