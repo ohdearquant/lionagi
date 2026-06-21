@@ -467,13 +467,61 @@ def _adapt_detail(
     }
 
 
+def _run_row(s: dict[str, Any], now: float) -> dict[str, Any]:
+    """The canonical Run row shape. Shared by the list and detail routes so the
+    two can never drift out of contract (the detail route used to drop fields the
+    list route emits, e.g. invocation_id). Caller supplies a session dict carrying
+    branch_count / message_count / last_message_at.
+    """
+    from lionagi.state.health import SessionHealth, classify_session_health
+
+    health = classify_session_health(
+        s,
+        now=now,
+        process_alive=True,
+        has_artifacts=bool(s.get("artifacts_path")),
+        has_stale_locks=False,
+    )
+    effective_health = (
+        SessionHealth.STALE.value if health == SessionHealth.UNRESPONSIVE else health.value
+    )
+    return {
+        "run_id": s["id"],
+        "id": s["id"],
+        "name": s.get("name"),
+        "playbook_name": s.get("playbook_name"),
+        "agent_name": s.get("agent_name"),
+        "invocation_kind": s.get("invocation_kind"),
+        "show_topic": s.get("show_topic"),
+        "show_play_name": s.get("show_play_name"),
+        "source_kind": s.get("source_kind", "live"),
+        "artifact_contract_json": s.get("artifact_contract_json"),
+        "artifact_verification_json": s.get("artifact_verification_json"),
+        "invocation_id": s.get("invocation_id"),
+        "model": s.get("model"),
+        "provider": s.get("provider"),
+        "effort": s.get("effort"),
+        "agent_hash": s.get("agent_hash"),
+        "status": s.get("status", "completed"),
+        "started_at": s.get("started_at"),
+        "ended_at": s.get("ended_at"),
+        "created_at": s.get("created_at"),
+        "updated_at": s.get("updated_at"),
+        "last_message_at": s.get("last_message_at"),
+        "effective_health": effective_health,
+        "branch_count": s.get("branch_count", 0),
+        "message_count": s.get("message_count", 0),
+        "project": s.get("project"),
+        "project_source": s.get("project_source"),
+    }
+
+
 async def list_runs(
     playbook: str | None = None,
     status: str | list[str] | None = None,
     project: str | None = None,
+    project_null: bool = False,
 ) -> list[dict[str, Any]]:
-    from lionagi.state.health import SessionHealth, classify_session_health
-
     sessions = await _sessions_svc.list_sessions()
     status_set = _normalize_status_filter(status)
     now = time.time()
@@ -481,51 +529,14 @@ async def list_runs(
     for s in sessions:
         if playbook and playbook.lower() not in (s.get("playbook_name") or "").lower():
             continue
-        if project and s.get("project") != project:
+        if project_null:
+            if s.get("project") is not None:
+                continue
+        elif project and s.get("project") != project:
             continue
         if status_set and s.get("status") not in status_set:
             continue
-        health = classify_session_health(
-            s,
-            now=now,
-            process_alive=True,
-            has_artifacts=bool(s.get("artifacts_path")),
-            has_stale_locks=False,
-        )
-        effective_health = (
-            SessionHealth.STALE.value if health == SessionHealth.UNRESPONSIVE else health.value
-        )
-        out.append(
-            {
-                "run_id": s["id"],
-                "id": s["id"],
-                "name": s.get("name"),
-                "playbook_name": s.get("playbook_name"),
-                "agent_name": s.get("agent_name"),
-                "invocation_kind": s.get("invocation_kind"),
-                "show_topic": s.get("show_topic"),
-                "show_play_name": s.get("show_play_name"),
-                "source_kind": s.get("source_kind", "live"),
-                "artifact_contract_json": s.get("artifact_contract_json"),
-                "artifact_verification_json": s.get("artifact_verification_json"),
-                "invocation_id": s.get("invocation_id"),
-                "model": s.get("model"),
-                "provider": s.get("provider"),
-                "effort": s.get("effort"),
-                "agent_hash": s.get("agent_hash"),
-                "status": s.get("status", "completed"),
-                "started_at": s.get("started_at"),
-                "ended_at": s.get("ended_at"),
-                "created_at": s.get("created_at"),
-                "updated_at": s.get("updated_at"),
-                "last_message_at": s.get("last_message_at"),
-                "effective_health": effective_health,
-                "branch_count": s.get("branch_count", 0),
-                "message_count": s.get("message_count", 0),
-                "project": s.get("project"),
-                "project_source": s.get("project_source"),
-            }
-        )
+        out.append(_run_row(s, now))
     return out
 
 
@@ -553,8 +564,11 @@ def paginate_runs(
 async def get_run(run_id: str) -> dict[str, Any] | None:
     """Return run detail from StateDB; flat-file run.json path was removed (write_manifest had zero callers).
 
-    Fields absent from DB (state_root, artifact_root, task, error, cwd, manifest) return None/""/{}
-    to keep the frontend contract unchanged.
+    The response is a superset of the list Run row (via _run_row) plus detail-only
+    fields. get_session() omits the JOIN aggregates (branch_count / message_count /
+    last_message_at), so they are derived from the hydrated branches here.
+    Fields absent from DB (state_root, artifact_root, task, error, cwd, manifest)
+    return None/""/{} to keep the frontend contract unchanged.
     """
     session = await _sessions_svc.get_session(run_id)
     if session is None:
@@ -568,29 +582,43 @@ async def get_run(run_id: str) -> dict[str, Any] | None:
 
     state_root: Path | None = artifact_root.parent if artifact_root else None
 
-    summary: dict[str, Any] = {
-        "run_id": run_id,
+    message_count = sum(len(b.get("messages") or []) for b in branches if isinstance(b, dict))
+    last_message_at = max(
+        (
+            m.get("timestamp")
+            for b in branches
+            if isinstance(b, dict)
+            for m in (b.get("messages") or [])
+            if isinstance(m, dict) and m.get("timestamp") is not None
+        ),
+        default=None,
+    )
+
+    row = _run_row(
+        {
+            **session,
+            "branch_count": len(branches),
+            "message_count": message_count,
+            "last_message_at": last_message_at,
+        },
+        time.time(),
+    )
+
+    return {
+        **row,
+        # Detail-only fields layered on top of the shared Run row.
         "state_root": public_path(state_root) if state_root else None,
         "artifact_root": public_path(artifact_root) if artifact_root else None,
         "worker_name": session.get("agent_name") or session.get("playbook_name") or "",
         "task": "",
-        "status": session.get("status") or "completed",
         "step_count": step_count,
-        "started_at": session.get("started_at"),
         "finished_at": session.get("ended_at"),
-        "model": session.get("model") or "",
-    }
-
-    return {
-        **summary,
         "error": None,
         "cwd": None,
         "steps": _build_steps_from_db(branches),
         "graph": session.get("graph"),
         "manifest": {},
         "branches": branches,
-        "artifact_contract_json": session.get("artifact_contract_json"),
-        "artifact_verification_json": session.get("artifact_verification_json"),
     }
 
 
@@ -637,9 +665,21 @@ async def list_runs_route(
         default=None, description="Case-insensitive playbook contains filter"
     ),
     project: str | None = Query(default=None, description="Exact project name filter (ADR-0026)"),
+    project_null: bool = Query(default=False, description="Filter to runs with no project"),
 ) -> dict[str, Any]:
-    runs = await list_runs(playbook=playbook, status=status, project=project)
+    runs = await list_runs(
+        playbook=playbook, status=status, project=project, project_null=project_null
+    )
     return paginate_runs(runs, page=page, per_page=per_page)
+
+
+# Registered before /runs/{run_id} so the literal path is not captured as a run id.
+@studio_route("/runs/projects", method="GET", area="runs", name="list_run_projects")
+async def list_run_projects_route() -> dict[str, Any]:
+    counts = await _sessions_svc.list_project_counts()
+    counts.sort(key=lambda c: c.get("last_activity") or 0, reverse=True)
+    total = sum(c["count"] for c in counts)
+    return {"projects": counts, "total": total}
 
 
 @studio_route("/runs/{run_id}", method="GET", area="runs", name="get_run")

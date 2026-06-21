@@ -5,6 +5,18 @@ from __future__ import annotations
 import pytest
 
 
+@pytest.fixture(autouse=True)
+def _disable_claude_mirror(monkeypatch):
+    """Keep studio's in-process Claude mirror tail off in tests.
+
+    Enabled by default in production, it would read the real ~/.claude/projects
+    and spin a background task that leaks writes into the temp DB and slows tests.
+    """
+    import lionagi.studio.config as config_mod
+
+    monkeypatch.setattr(config_mod, "MIRROR_CLAUDE_ENABLED", False)
+
+
 @pytest.fixture()
 def studio_client():
     """Return a TestClient wired to the studio app with no additional patching."""

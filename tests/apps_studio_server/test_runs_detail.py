@@ -326,3 +326,60 @@ def test_get_run_endpoint_returns_404_for_missing(tmp_path, monkeypatch):
     client = TestClient(app)
     r = client.get(f"/api/runs/{uuid.uuid4()}")
     assert r.status_code == 404
+
+
+# ---------------------------------------------------------------------------
+# Test 11 — detail route satisfies the list Run contract (no field drift)
+# ---------------------------------------------------------------------------
+
+# The fields the extension's `Run` TS interface (apps/vscode/src/api/types.ts)
+# requires from GET /api/runs/{id}. The detail route once dropped these (e.g.
+# invocation_id), which erased the failure-reason banner after a detail refresh.
+_RUN_CONTRACT_KEYS = {
+    "run_id",
+    "id",
+    "name",
+    "playbook_name",
+    "agent_name",
+    "invocation_kind",
+    "model",
+    "provider",
+    "effort",
+    "status",
+    "started_at",
+    "ended_at",
+    "created_at",
+    "updated_at",
+    "last_message_at",
+    "effective_health",
+    "branch_count",
+    "message_count",
+    "project",
+    "project_source",
+    "invocation_id",
+}
+
+
+async def test_get_run_satisfies_run_list_contract(patched_runs_svc):
+    svc, db_path = patched_runs_svc
+    sid = str(uuid.uuid4())
+    await seed_session(
+        db_path,
+        session_id=sid,
+        status="failed",
+        agent_name="researcher",
+        invocation_kind="flow",
+    )
+    await seed_branch(db_path, branch_id=f"{sid}-br1", session_id=sid, name="alpha")
+    await seed_branch(db_path, branch_id=f"{sid}-br2", session_id=sid, name="beta")
+
+    result = await svc.get_run(sid)
+
+    assert result is not None
+    missing = _RUN_CONTRACT_KEYS - result.keys()
+    assert not missing, f"detail route drifted from Run contract; missing: {missing}"
+    # The field whose absence suppressed the reason banner must round-trip.
+    assert "invocation_id" in result
+    assert result["invocation_kind"] == "flow"
+    # branch_count / message_count derive from the hydrated branches, not the JOIN.
+    assert result["branch_count"] == 2

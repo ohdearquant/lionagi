@@ -170,6 +170,31 @@ async def list_sessions() -> list[dict[str, Any]]:
     ]
 
 
+async def list_project_counts() -> list[dict[str, Any]]:
+    """Per-project run counts via a cheap GROUP BY (no branch/message join)."""
+    if not DEFAULT_DB_PATH.exists():
+        return []
+    async with _open_db(_DB) as db:
+        cur = await db.execute(
+            """
+            SELECT project,
+                   COUNT(*) AS count,
+                   MAX(updated_at) AS last_activity
+            FROM sessions
+            GROUP BY project
+            """
+        )
+        rows = await cur.fetchall()
+    return [
+        {
+            "project": row["project"],
+            "count": row["count"],
+            "last_activity": row["last_activity"],
+        }
+        for row in rows
+    ]
+
+
 async def get_session(session_id: str) -> dict[str, Any] | None:
     if not DEFAULT_DB_PATH.exists():
         return None
