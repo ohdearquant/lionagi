@@ -86,6 +86,8 @@ export interface InvocationDetail {
   id: string;
   skill: string | null;
   status: string;
+  status_reason_code: string | null;
+  status_reason_summary: string | null;
   sessions: InvocationSession[];
 }
 

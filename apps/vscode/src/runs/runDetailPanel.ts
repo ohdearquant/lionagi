@@ -102,6 +102,23 @@ export class RunDetailPanel {
       // Refresh header with final metadata.
       this.postMessage({ type: "meta", run });
 
+      // Surface the invocation's "why" for non-success terminal runs (best-effort).
+      // Completed/succeeded runs also carry a reason, but the banner is error-toned,
+      // so only show it for failures/cancellations — the whole point is the failure why.
+      const terminalStatus = (this.run.status ?? "").toLowerCase();
+      const isNonSuccess =
+        terminalStatus !== "succeeded" && terminalStatus !== "completed";
+      if (isNonSuccess && this.run.invocation_id) {
+        try {
+          const inv = await this.deps.client.getInvocation(this.run.invocation_id);
+          if (inv.status_reason_summary || inv.status_reason_code) {
+            this.postMessage({ type: "reason", code: inv.status_reason_code, summary: inv.status_reason_summary });
+          }
+        } catch {
+          // reason is best-effort; never block the log on it
+        }
+      }
+
       // Backend returns steps[].messages[] — flatten into individual message events.
       const extended = run as Run & {
         steps?: Array<{

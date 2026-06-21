@@ -264,6 +264,36 @@ body {
   overflow-x: auto;
 }
 
+/* ── Reason banner ── */
+
+.reason-banner {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  margin-top: 6px;
+  padding: 4px 8px;
+  border-left: 3px solid var(--vscode-charts-red);
+  background: color-mix(in srgb, var(--vscode-charts-red) 8%, transparent);
+  border-radius: 0 3px 3px 0;
+  font-size: 12px;
+}
+
+.reason-banner__summary {
+  color: var(--vscode-foreground);
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.reason-banner__code {
+  font-size: 10px;
+  color: var(--vscode-descriptionForeground);
+  flex-shrink: 0;
+  font-family: var(--vscode-editor-font-family, monospace);
+}
+
 /* ── Footer ── */
 
 .footer {

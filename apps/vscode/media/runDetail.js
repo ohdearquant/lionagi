@@ -295,6 +295,33 @@
         break;
       }
 
+      case "reason": {
+        var banner = document.getElementById("reasonBanner");
+        if (!banner) {
+          banner = document.createElement("div");
+          banner.id = "reasonBanner";
+          banner.className = "reason-banner";
+          var header = document.getElementById("header");
+          if (header) {
+            header.appendChild(banner);
+          }
+        }
+        banner.textContent = "";
+        if (msg.summary) {
+          var summarySpan = document.createElement("span");
+          summarySpan.className = "reason-banner__summary";
+          summarySpan.textContent = msg.summary;
+          banner.appendChild(summarySpan);
+        }
+        if (msg.code) {
+          var codeSpan = document.createElement("span");
+          codeSpan.className = "reason-banner__code";
+          codeSpan.textContent = msg.code;
+          banner.appendChild(codeSpan);
+        }
+        break;
+      }
+
       default:
         break;
     }
