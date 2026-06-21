@@ -843,13 +843,18 @@ class StateDB:
             return
         vals.append(session_id)
         async with self._write_lock:
-            await self.db.execute(
-                f"UPDATE sessions SET {', '.join(sets)} WHERE id = ?",  # noqa: S608
-                vals,
-            )
-            if project:
-                await self._upsert_project_stmt(project, project_source or "cwd_dir")
-            await self.db.commit()
+            await self.db.execute("BEGIN IMMEDIATE")
+            try:
+                await self.db.execute(
+                    f"UPDATE sessions SET {', '.join(sets)} WHERE id = ?",  # noqa: S608
+                    vals,
+                )
+                if project:
+                    await self._upsert_project_stmt(project, project_source or "cwd_dir")
+                await self.db.commit()
+            except BaseException:
+                await self.db.rollback()
+                raise
 
     # ── Status reason model ───────────────────────────────────────────
 
