@@ -98,11 +98,6 @@
     "menus": {
       "view/title": [
         {
-          "command": "den.refreshRuns",
-          "when": "view == den.runs",
-          "group": "navigation"
-        },
-        {
           "command": "den.starOnGitHub",
           "when": "view == den.runs",
           "group": "navigation@9"
@@ -123,7 +118,8 @@
           "command": "den.stopBackend"
         },
         {
-          "command": "den.refreshRuns"
+          "command": "den.refreshRuns",
+          "when": "false"
         },
         {
           "command": "den.starOnGitHub"
