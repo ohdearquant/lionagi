@@ -90,8 +90,13 @@ export class RunDetailPanel {
   }
 
   private async loadTerminal(): Promise<void> {
+    const id = runId(this.run);
+    if (!id) {
+      this.postMessage({ type: "error", message: "Run has no stable identifier." });
+      return;
+    }
     try {
-      const run = await this.deps.client.getRun(runId(this.run));
+      const run = await this.deps.client.getRun(id);
       this.run = run;
 
       // Refresh header with final metadata.
@@ -129,10 +134,15 @@ export class RunDetailPanel {
   }
 
   private async streamLive(): Promise<void> {
+    const id = runId(this.run);
+    if (!id) {
+      this.postMessage({ type: "error", message: "Run has no stable identifier." });
+      return;
+    }
     try {
       await streamSession(
         this.deps.backend.baseUrl,
-        runId(this.run),
+        id,
         getAuthToken() || undefined,
         (e: StudioEvent) => {
           if (e.type === "heartbeat") {

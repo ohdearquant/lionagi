@@ -139,25 +139,38 @@ export class BackendManager implements vscode.Disposable {
     const configuredUrl = this.getConfiguredUrl().trim().replace(/\/$/, "");
     const defaultUrl = `http://${host}:${port}`;
 
-    // Build de-duplicated candidate list: configured URL first, then default.
-    const candidates: string[] = [];
+    // When den.url is explicitly configured, attach-only: probe that URL and
+    // surface an error if it is unreachable rather than silently falling back
+    // to spawning a local backend that the user did not ask for.
     if (configuredUrl) {
-      candidates.push(configuredUrl);
-    }
-    if (!candidates.includes(defaultUrl)) {
-      candidates.push(defaultUrl);
-    }
-
-    for (const candidate of candidates) {
-      const found = await probeHealth(candidate);
+      const found = await probeHealth(configuredUrl);
       if (found) {
-        this._effectiveBaseUrl = candidate;
+        this._effectiveBaseUrl = configuredUrl;
         this.setState("running");
         this._output.appendLine(
-          `[lifecycle] attached to existing backend at ${candidate}`
+          `[lifecycle] attached to existing backend at ${configuredUrl}`
         );
         return;
       }
+      this._output.appendLine(
+        `[lifecycle] configured backend at ${configuredUrl} is unreachable`
+      );
+      this.setState("error");
+      void vscode.window.showErrorMessage(
+        `Den: cannot reach configured backend at ${configuredUrl}. ` +
+          `Check the den.url setting or clear it to let Den manage a local backend.`
+      );
+      return;
+    }
+
+    // No configured URL: probe the default local address before spawning.
+    if (await probeHealth(defaultUrl)) {
+      this._effectiveBaseUrl = defaultUrl;
+      this.setState("running");
+      this._output.appendLine(
+        `[lifecycle] attached to existing backend at ${defaultUrl}`
+      );
+      return;
     }
 
     // --- B. Spawn phase ---
@@ -225,8 +238,22 @@ export class BackendManager implements vscode.Disposable {
 
     const ok = await this._pollHealth(30_000, () => spawnFailed);
     if (spawnFailed || earlyExit) {
-      // error state already set above
+      // error state already set above via the child event handlers
     } else if (!ok) {
+      // Health-check timed out: kill the child so it does not linger as an
+      // orphan, then transition to error so a retry spawns a fresh process
+      // rather than racing the still-running unhealthy one.
+      if (this._child) {
+        const child = this._child;
+        this._child = undefined;
+        child.kill();
+        const killTimer = setTimeout(() => {
+          if (child.exitCode === null && child.signalCode === null) {
+            child.kill("SIGKILL");
+          }
+        }, 3_000);
+        child.once("exit", () => clearTimeout(killTimer));
+      }
       this.setState("error");
     } else {
       this.setState("running");

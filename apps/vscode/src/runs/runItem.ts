@@ -186,11 +186,15 @@ export class RunItem extends vscode.TreeItem {
     this.iconPath = statusIcon(run);
     this.contextValue = "run";
     this.tooltip = buildTooltip(run);
-    this.command = {
-      command: "den.openRun",
-      title: "Open Run",
-      arguments: [run],
-    };
+    // Only attach an open command when a stable id is available; rows without
+    // one are display-only and must not trigger API calls with an empty id.
+    if (runId(run)) {
+      this.command = {
+        command: "den.openRun",
+        title: "Open Run",
+        arguments: [run],
+      };
+    }
   }
 }
 
@@ -255,29 +259,38 @@ export class LoadMoreItem extends vscode.TreeItem {
   }
 }
 
+/** Escape characters that carry Markdown link/command semantics. */
+function escapeMd(s: string): string {
+  // Escape backslash first, then the characters that form Markdown constructs
+  // ([, ], (, ), *, _, ~, `, #) so that user-controlled run data cannot form
+  // clickable links or other active Markdown when rendered in the tooltip.
+  return s.replace(/\\/g, "\\\\").replace(/[[\]()!*_~`#|>]/g, (c) => `\\${c}`);
+}
+
 function buildTooltip(run: Run): vscode.MarkdownString {
   const md = new vscode.MarkdownString("", true);
-  md.isTrusted = true;
+  // isTrusted remains false (the default) so that any command: URI appearing
+  // in run-supplied data is rendered as inert text rather than a clickable link.
   md.supportHtml = false;
 
   const title =
     run.name ?? run.playbook_name ?? run.agent_name ?? runId(run).slice(0, 8);
-  md.appendMarkdown(`### ${title}\n\n`);
+  md.appendMarkdown(`### ${escapeMd(title)}\n\n`);
 
   if (run.invocation_kind) {
-    md.appendMarkdown(`**Kind:** ${run.invocation_kind}\n\n`);
+    md.appendMarkdown(`**Kind:** ${escapeMd(run.invocation_kind)}\n\n`);
   }
   if (run.model || run.provider) {
-    const parts = [run.model, run.provider].filter(Boolean).join(" / ");
+    const parts = [run.model, run.provider].filter(Boolean).map((v) => escapeMd(v!)).join(" / ");
     md.appendMarkdown(`**Model:** ${parts}\n\n`);
   }
   if (run.effort) {
-    md.appendMarkdown(`**Effort:** ${run.effort}\n\n`);
+    md.appendMarkdown(`**Effort:** ${escapeMd(run.effort)}\n\n`);
   }
   if (run.project) {
-    md.appendMarkdown(`**Project:** ${run.project}`);
+    md.appendMarkdown(`**Project:** ${escapeMd(run.project)}`);
     if (run.project_source) {
-      md.appendMarkdown(` _(${run.project_source})_`);
+      md.appendMarkdown(` _(${escapeMd(run.project_source)})_`);
     }
     md.appendMarkdown("\n\n");
   }
@@ -290,9 +303,9 @@ function buildTooltip(run: Run): vscode.MarkdownString {
   if (run.ended_at) {
     md.appendMarkdown(`**Ended:** ${formatTs(run.ended_at)}\n\n`);
   }
-  md.appendMarkdown(`**Status:** ${run.status}`);
+  md.appendMarkdown(`**Status:** ${escapeMd(run.status)}`);
   if (run.effective_health) {
-    md.appendMarkdown(` · health: ${run.effective_health}`);
+    md.appendMarkdown(` · health: ${escapeMd(run.effective_health)}`);
   }
 
   return md;

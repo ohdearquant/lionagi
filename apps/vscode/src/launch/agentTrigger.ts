@@ -2,6 +2,7 @@ import * as vscode from "vscode";
 import { StudioApiError } from "../api/client.js";
 import type { Run } from "../api/types.js";
 import type { StudioDeps } from "../extension.js";
+import { runId } from "../runs/runItem.js";
 import { openLaunchStreamPanel } from "./launchStreamPanel.js";
 
 const POLL_INTERVAL_MS = 1_000;
@@ -168,7 +169,14 @@ export function registerAgentTrigger(
       }
 
       // 6. Open the streaming panel
-      openLaunchStreamPanel(context, run.run_id, actionPrompt, deps);
+      const id = runId(run);
+      if (!id) {
+        void vscode.window.showInformationMessage(
+          "Agent launched but run has no identifier yet. Open it from the Runs view."
+        );
+        return;
+      }
+      openLaunchStreamPanel(context, id, actionPrompt, deps);
 
       // Refresh again now that we have a run_id confirmed
       void vscode.commands.executeCommand("den.refreshRuns");

@@ -164,16 +164,24 @@ class RunsProvider implements vscode.TreeDataProvider<RunNode> {
   }
 
   private _handleError(err: unknown): void {
-    if (
-      err instanceof StudioApiError &&
-      err.status === 401 &&
-      !this._authErrorShown
-    ) {
-      this._authErrorShown = true;
-      void vscode.window.showErrorMessage(
-        "Den: authentication failed — check the den.authToken setting."
-      );
+    if (err instanceof StudioApiError) {
+      if (err.status === 401 && !this._authErrorShown) {
+        this._authErrorShown = true;
+        void vscode.window.showErrorMessage(
+          "Den: authentication failed — check the den.authToken setting."
+        );
+      } else if (err.status !== 401) {
+        void vscode.window.showErrorMessage(
+          `Den: backend returned an error (${err.status}) — ${err.detail}`
+        );
+      }
+      return;
     }
+    // Network-level failure (backend down, ECONNREFUSED, etc.)
+    const msg = err instanceof Error ? err.message : String(err);
+    void vscode.window.showErrorMessage(
+      `Den: cannot reach backend — ${msg}`
+    );
   }
 }
 
