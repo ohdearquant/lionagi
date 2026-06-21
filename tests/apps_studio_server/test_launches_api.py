@@ -1147,3 +1147,94 @@ class TestCancelLaunch:
             assert exc_info.value.status_code == 404
 
         asyncio.run(_run())
+
+
+# ---------------------------------------------------------------------------
+# End-to-end smoke — the control loop the Den extension drives
+# ---------------------------------------------------------------------------
+
+
+class TestLaunchCancelRetrySmoke:
+    """launch -> observe -> cancel -> retry, through the real launch/cancel service
+    layer and task lifecycle. Only the subprocess (spawn_and_wait), the argv builder,
+    and StateDB are stubbed, so no process spawns and no real DB is touched; the run
+    admission, detached-task naming, user-cancel marking, and cancelled terminal row
+    are all exercised for real. (argv construction has its own coverage above.)"""
+
+    def test_launch_cancel_retry_end_to_end(self):
+        import contextlib
+
+        import lionagi.studio.services.launches as svc
+        from lionagi.state.reasons import RunReasons
+
+        terminal_rows: list[dict] = []
+
+        mock_db = AsyncMock()
+        mock_db.create_invocation = AsyncMock()
+        mock_db.update_invocation = AsyncMock()
+
+        async def _capture_status(entity_type, entity_id, **kw):
+            terminal_rows.append({"id": entity_id, **kw})
+
+        mock_db.update_status = _capture_status
+
+        async def _blocking_spawn(argv, inv_id, *, tmp_path=None):
+            await asyncio.sleep(999)  # block until the task is cancelled
+            return (0, "")
+
+        req = {"action_kind": "agent", "action_model": "sonnet", "action_prompt": "hi"}
+
+        def _named_task(name: str) -> asyncio.Task:
+            return next(t for t in svc._detached_tasks if t.get_name() == name)
+
+        async def _run():
+            with (
+                patch(
+                    "lionagi.studio.services.launches.build_argv",
+                    return_value=(["uv", "run", "li", "agent", "--", "sonnet", "hi"], None),
+                ),
+                patch("lionagi.studio.services.launches.StateDB") as MockDB,
+                patch(
+                    "lionagi.studio.scheduler.subprocess.spawn_and_wait",
+                    side_effect=_blocking_spawn,
+                ),
+            ):
+                MockDB.return_value.__aenter__ = AsyncMock(return_value=mock_db)
+                MockDB.return_value.__aexit__ = AsyncMock(return_value=False)
+
+                # 1. LAUNCH — the run goes in-flight and becomes observable.
+                first = await svc.launch(dict(req))
+                inv1 = first["invocation_id"]
+                assert len(inv1) == 12
+                await asyncio.sleep(0)  # let the detached task reach spawn_and_wait
+                task1 = _named_task(f"launch-{inv1}")
+                assert not task1.done()  # live == what the Run Tree observes
+
+                # 2. CANCEL — user-initiated stop of the in-flight run.
+                cancelled = await svc.cancel_launch(inv1)
+                assert cancelled == {"invocation_id": inv1, "status": "cancelling"}
+                assert inv1 in svc._user_cancelled
+                with contextlib.suppress(asyncio.CancelledError):
+                    await task1
+                assert task1.cancelled()
+                # the cancelled terminal row is what the tree then renders.
+                row = next(r for r in terminal_rows if r["id"] == inv1)
+                assert row["new_status"] == "cancelled"
+                assert row["reason_code"] == RunReasons.CANCELLED_SYSTEM
+                assert row["reason_summary"] == "Launch cancelled by user."
+
+                # 3. RETRY — re-launching the same request yields a fresh invocation.
+                await asyncio.sleep(0)  # flush done-callbacks (semaphore release)
+                second = await svc.launch(dict(req))
+                inv2 = second["invocation_id"]
+                assert inv2 != inv1
+                await asyncio.sleep(0)
+                task2 = _named_task(f"launch-{inv2}")
+                assert not task2.done()
+
+                # cleanup: cancel the retry task so the loop closes with no stragglers.
+                task2.cancel()
+                with contextlib.suppress(asyncio.CancelledError):
+                    await task2
+
+        asyncio.run(_run())

@@ -19,6 +19,17 @@ Two things show up in the Runs tree:
 - **Claude Code sessions** — your local Claude Code transcripts, mirrored into
   the same tree so every agent you run lands in one place.
 
+## The three surfaces
+
+Den is built around three things you do with a run, all without leaving the editor:
+
+1. **Launch** — start an Agent or an orchestrated Flow from **Den: Run**; the live
+   output attaches in a panel as the run starts.
+2. **Observe** — open **Den: View Run Tree** on any run to see its branch/agent
+   DAG with typed nodes and per-run cost, refreshed as it progresses.
+3. **Control** — cancel an in-flight run, or retry a finished one with its original
+   parameters, straight from the inline buttons on each run row.
+
 ## Requirements
 
 - VS Code 1.90 or later (or Cursor / VSCodium / Windsurf with Open VSX)
@@ -56,10 +67,16 @@ pip install 'lionagi[studio]'
   instance.
 - **Runs explorer**: tree view over `GET /api/runs/`, grouped by project with a
   pinned **Active** group for everything currently running.
-- **Run Agent**: command palette / toolbar button that POSTs to
-  `POST /api/launches/` with `action_kind: "agent"`.
+- **Launch**: **Den: Run** POSTs to `POST /api/launches/` with
+  `action_kind: "agent"` or `"flow"`, then attaches the live panel.
 - **Live streaming**: the run detail panel subscribes to the session SSE
   (`GET /api/sessions/{id}/stream`) and streams output as it arrives.
+- **Run Tree**: **Den: View Run Tree** subscribes to the session signal stream
+  (`GET /api/sessions/{id}/signals`) and renders the run's branch/agent DAG with
+  typed nodes and per-run cost.
+- **Cancel / Retry**: inline buttons on each run row — cancel an in-flight run via
+  `POST /api/invocations/{id}/cancel`, or retry a finished one by re-POSTing its
+  original launch request. Retry parameters are cached per session.
 - **Claude Code mirror**: local Claude Code sessions are mirrored into the Runs
   tree and reconciled live.
 
