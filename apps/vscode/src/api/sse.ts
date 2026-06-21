@@ -42,7 +42,12 @@ export async function streamSession(
     while (true) {
       const { done, value } = await reader.read();
       if (done) {
-        break;
+        // Transport EOF reached without ever seeing a `done` event below —
+        // a dropped connection, backend restart, or proxy close. Surface it so
+        // the caller can show an error rather than silently freezing the live log
+        // on the last received output. (A clean finish returns from inside the
+        // loop on the `done` event; the backend always emits it before closing.)
+        throw new Error("Session stream closed before completion");
       }
       buffer += decoder.decode(value, { stream: true });
 
