@@ -151,7 +151,8 @@ async function attachLaunchedRun(
   context: vscode.ExtensionContext,
   deps: StudioDeps,
   invocationId: string,
-  panelTitle: string
+  panelTitle: string,
+  offerTree: boolean
 ): Promise<void> {
   void vscode.commands.executeCommand("den.refreshRuns");
 
@@ -186,12 +187,14 @@ async function attachLaunchedRun(
   openLaunchStreamPanel(context, sessionId, panelTitle, deps);
   void vscode.commands.executeCommand("den.refreshRuns");
 
-  // 6. Non-intrusive offer to open the run tree alongside the stream panel.
-  void vscode.window.showInformationMessage("Run started.", "View Run Tree").then((choice) => {
-    if (choice === "View Run Tree") {
-      RunTreePanel.open(context, deps, sessionId, panelTitle);
-    }
-  });
+  // 6. Non-intrusive offer to open the run tree — only multi-agent launches have one.
+  if (offerTree) {
+    void vscode.window.showInformationMessage("Run started.", "View Run Tree").then((choice) => {
+      if (choice === "View Run Tree") {
+        RunTreePanel.open(context, deps, sessionId, panelTitle);
+      }
+    });
+  }
 }
 
 /** Read YAML from the active editor or from a file picker. */
@@ -347,7 +350,7 @@ export function registerRunCommand(
         }
       }
 
-      await attachLaunchedRun(context, deps, invocationId, panelTitle);
+      await attachLaunchedRun(context, deps, invocationId, panelTitle, kind === "Flow");
     })
   );
 
@@ -407,7 +410,7 @@ export function registerRunCommand(
       }
 
       // 5. Attach run panel.
-      await attachLaunchedRun(context, deps, invocationId, src.title);
+      await attachLaunchedRun(context, deps, invocationId, src.title, true);
     })
   );
 }
