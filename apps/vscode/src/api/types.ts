@@ -100,3 +100,35 @@ export interface MessageEvent {
   type?: string;
   [key: string]: unknown;
 }
+
+/** Lifecycle state of a DAG node in a session's signal stream. */
+export type NodeLifecycleState =
+  | "queued"
+  | "running"
+  | "awaiting_approval"
+  | "succeeded"
+  | "failed"
+  | "escalated";
+
+/**
+ * Signal row envelope from GET /api/sessions/{id}/signals.
+ * The `kind` field names the signal class; `payload` holds the typed fields.
+ */
+export interface SignalRow {
+  id: string;
+  session_id: string;
+  seq: number;
+  kind: string;
+  op_id: string;
+  ts: number;
+  payload: Record<string, unknown>;
+}
+
+/**
+ * Discriminated union for SSE event objects from GET /api/sessions/{id}/signals.
+ * Control frames carry a `type` field; data frames carry `seq` and `kind`.
+ */
+export type SignalStreamEvent =
+  | { type: "heartbeat" }
+  | { type: "done" }
+  | SignalRow;

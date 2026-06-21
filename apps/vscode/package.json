@@ -2,7 +2,7 @@
   "name": "den",
   "displayName": "Den",
   "description": "Watch and launch your lionagi agent runs and Claude Code sessions live in VS Code.",
-  "version": "0.0.8",
+  "version": "0.0.9",
   "publisher": "lionagi",
   "icon": "media/icon.png",
   "repository": {
@@ -98,6 +98,12 @@
         "title": "Den: Open Run"
       },
       {
+        "command": "den.openRunTree",
+        "title": "Den: View Run Tree",
+        "category": "Den",
+        "icon": "$(type-hierarchy-sub)"
+      },
+      {
         "command": "den.starOnGitHub",
         "title": "Den: Star lionagi on GitHub",
         "icon": "$(github-inverted)"
@@ -129,6 +135,11 @@
       "view/item/context": [
         {
           "command": "den.openRun",
+          "when": "view == den.runs && viewItem == run",
+          "group": "inline"
+        },
+        {
+          "command": "den.openRunTree",
           "when": "view == den.runs && viewItem == run",
           "group": "inline"
         }

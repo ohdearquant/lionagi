@@ -2,6 +2,7 @@ import * as vscode from "vscode";
 import { StudioApiError } from "../api/client.js";
 import type { StudioDeps } from "../extension.js";
 import { openLaunchStreamPanel } from "./launchStreamPanel.js";
+import { RunTreePanel } from "../runs/runTreePanel.js";
 
 const POLL_INTERVAL_MS = 1_000;
 const POLL_TIMEOUT_MS = 30_000;
@@ -268,6 +269,13 @@ export function registerRunCommand(
       // 5. Attach the streaming panel.
       openLaunchStreamPanel(context, sessionId, panelTitle, deps);
       void vscode.commands.executeCommand("den.refreshRuns");
+
+      // 6. Non-intrusive offer to open the run tree alongside the stream panel.
+      void vscode.window.showInformationMessage("Run started.", "View Run Tree").then((choice) => {
+        if (choice === "View Run Tree") {
+          RunTreePanel.open(context, deps, sessionId, panelTitle);
+        }
+      });
     })
   );
 }

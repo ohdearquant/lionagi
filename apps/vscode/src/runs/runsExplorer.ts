@@ -9,8 +9,10 @@ import {
   LoadMoreItem,
   isTerminal,
   toMillis,
+  runId,
 } from "./runItem.js";
 import { RunDetailPanel } from "./runDetailPanel.js";
+import { RunTreePanel } from "./runTreePanel.js";
 
 const POLL_INTERVAL_MS = 4_000;
 const PAGE_SIZE = 50;
@@ -282,6 +284,15 @@ export function registerRunsExplorer(
     }
   );
 
+  const openRunTreeCmd = vscode.commands.registerCommand(
+    "den.openRunTree",
+    (run: Run) => {
+      const id = runId(run);
+      const title = run.name ?? run.agent_name ?? id.slice(0, 8);
+      RunTreePanel.open(context, deps, id, title);
+    }
+  );
+
   const loadMoreCmd = vscode.commands.registerCommand(
     "den.loadMoreRuns",
     (key: string) => {
@@ -293,6 +304,7 @@ export function registerRunsExplorer(
     treeView,
     refreshCmd,
     openRunCmd,
+    openRunTreeCmd,
     loadMoreCmd,
     stateListener,
     visibilityListener,
