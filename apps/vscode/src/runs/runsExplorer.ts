@@ -281,6 +281,9 @@ export function registerRunsExplorer(
   const openRunCmd = vscode.commands.registerCommand(
     "den.openRun",
     (run: Run) => {
+      if (!run) {
+        return;
+      }
       RunDetailPanel.open(context, deps, run);
     }
   );
@@ -288,6 +291,9 @@ export function registerRunsExplorer(
   const openRunTreeCmd = vscode.commands.registerCommand(
     "den.openRunTree",
     (run: Run) => {
+      if (!run) {
+        return;
+      }
       const id = runId(run);
       const title = run.name ?? run.agent_name ?? id.slice(0, 8);
       RunTreePanel.open(context, deps, id, title);
@@ -304,7 +310,7 @@ export function registerRunsExplorer(
   const cancelRunCmd = vscode.commands.registerCommand(
     "den.cancelRun",
     async (run: Run) => {
-      if (!run.invocation_id) {
+      if (!run?.invocation_id) {
         void vscode.window.showInformationMessage("No invocation to cancel for this run.");
         return;
       }
@@ -332,7 +338,7 @@ export function registerRunsExplorer(
   const retryRunCmd = vscode.commands.registerCommand(
     "den.retryRun",
     async (run: Run) => {
-      const req = recallLaunch(run.invocation_id ?? "");
+      const req = recallLaunch(run?.invocation_id ?? "");
       if (!req) {
         void vscode.window.showInformationMessage(
           "Retry needs the original launch parameters, which are only cached for runs launched in this session."
