@@ -2,7 +2,6 @@ import * as path from "path";
 import * as vscode from "vscode";
 import { StudioApiError } from "../api/client.js";
 import type { StudioDeps } from "../extension.js";
-import { rememberLaunch } from "./launchStore.js";
 import { openLaunchStreamPanel } from "./launchStreamPanel.js";
 import { RunTreePanel } from "../runs/runTreePanel.js";
 
@@ -316,7 +315,6 @@ export function registerRunCommand(
             () => deps.client.launch(req)
           );
           invocationId = result.invocation_id;
-          rememberLaunch(result.invocation_id, req);
         } catch (err) {
           handleLaunchError(err);
           return;
@@ -343,7 +341,6 @@ export function registerRunCommand(
             () => deps.client.launch(req)
           );
           invocationId = result.invocation_id;
-          rememberLaunch(result.invocation_id, req);
         } catch (err) {
           handleLaunchError(err);
           return;
@@ -404,7 +401,6 @@ export function registerRunCommand(
           () => deps.client.launch(req)
         );
         invocationId = result.invocation_id;
-        rememberLaunch(result.invocation_id, req);
       } catch (err) {
         handleLaunchError(err);
         return;
