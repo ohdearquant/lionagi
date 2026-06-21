@@ -31,6 +31,7 @@ function newestFirst(runs: Run[]): Run[] {
 
 class RunsProvider implements vscode.TreeDataProvider<RunNode> {
   private _authErrorShown = false;
+  private _networkErrorShown = false;
   // How many pages each project group has loaded (grows on "Load more").
   private readonly _depth = new Map<string, number>();
   // Latest runs fetched per group — drives active-run detection between renders.
@@ -83,6 +84,7 @@ class RunsProvider implements vscode.TreeDataProvider<RunNode> {
       return [];
     }
     this._authErrorShown = false;
+    this._networkErrorShown = false;
     this._activeRuns = activeRes.status === "fulfilled" ? activeRes.value : [];
     const { projects, total } = groupsRes.value;
     void vscode.commands.executeCommand(
@@ -179,7 +181,13 @@ class RunsProvider implements vscode.TreeDataProvider<RunNode> {
       }
       return;
     }
-    // Network-level failure (backend down, ECONNREFUSED, etc.)
+    // Network-level failure (backend down, ECONNREFUSED, etc.). Debounce: the
+    // supervisor recovers the connection on its own, so show this at most once
+    // per outage rather than once per 4s poll.
+    if (this._networkErrorShown) {
+      return;
+    }
+    this._networkErrorShown = true;
     const msg = err instanceof Error ? err.message : String(err);
     void vscode.window.showErrorMessage(
       `Den: cannot reach backend — ${msg}`

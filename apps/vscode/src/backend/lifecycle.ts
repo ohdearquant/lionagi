@@ -76,21 +76,44 @@ function resolveSpawnSpec(explicitPython: string): SpawnSpec {
   return { command: "python3", args: ["-m", "lionagi.studio"] };
 }
 
-/** Single-shot health probe with a short timeout. Returns true on success. */
-async function probeHealth(url: string): Promise<boolean> {
-  try {
-    const res = await fetch(`${url}/health`, {
-      signal: AbortSignal.timeout(1500),
-    });
-    if (!res.ok) {
+function delay(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+/**
+ * Health probe with optional retries. Tolerant by default so a transient
+ * backend slowdown is not mistaken for "no backend" — which would otherwise
+ * trigger a doomed respawn against the still-bound port (EADDRINUSE).
+ */
+async function probeHealth(
+  url: string,
+  opts: { timeoutMs?: number; retries?: number } = {}
+): Promise<boolean> {
+  const timeoutMs = opts.timeoutMs ?? 1500;
+  const retries = opts.retries ?? 0;
+  for (let attempt = 0; ; attempt++) {
+    try {
+      const res = await fetch(`${url}/health`, {
+        signal: AbortSignal.timeout(timeoutMs),
+      });
+      if (res.ok) {
+        const body = (await res.json()) as { status?: string };
+        if (body.status === "ok") {
+          return true;
+        }
+      }
+    } catch {
+      // not reachable on this attempt
+    }
+    if (attempt >= retries) {
       return false;
     }
-    const body = (await res.json()) as { status?: string };
-    return body.status === "ok";
-  } catch {
-    return false;
+    await delay(250);
   }
 }
+
+// How often the supervisor reconciles Den's state against a live health probe.
+const SUPERVISE_INTERVAL_MS = 8_000;
 
 export class BackendManager implements vscode.Disposable {
   private _state: BackendState = "stopped";
@@ -98,6 +121,9 @@ export class BackendManager implements vscode.Disposable {
   private _output: vscode.OutputChannel;
   private _pollTimer: ReturnType<typeof setTimeout> | undefined;
   private _effectiveBaseUrl: string | undefined;
+  private _supervisorTimer: ReturnType<typeof setInterval> | undefined;
+  private _reconciling = false;
+  private _missedHealthChecks = 0;
 
   private readonly _onDidChangeState =
     new vscode.EventEmitter<BackendState>();
@@ -134,6 +160,9 @@ export class BackendManager implements vscode.Disposable {
   }
 
   private setState(s: BackendState): void {
+    if (s === "running") {
+      this._missedHealthChecks = 0;
+    }
     if (this._state !== s) {
       this._state = s;
       this._onDidChangeState.fire(s);
@@ -146,6 +175,9 @@ export class BackendManager implements vscode.Disposable {
     }
 
     this.setState("starting");
+    // Supervise from the first start so even a failed start self-recovers when
+    // the backend becomes reachable, without the manual status-bar click.
+    this._startSupervisor();
 
     // --- A. Discovery phase ---
     const host = this.getHost();
@@ -157,7 +189,10 @@ export class BackendManager implements vscode.Disposable {
     // surface an error if it is unreachable rather than silently falling back
     // to spawning a local backend that the user did not ask for.
     if (configuredUrl) {
-      const found = await probeHealth(configuredUrl);
+      const found = await probeHealth(configuredUrl, {
+        timeoutMs: 2500,
+        retries: 2,
+      });
       if (found) {
         this._effectiveBaseUrl = configuredUrl;
         this.setState("running");
@@ -178,7 +213,8 @@ export class BackendManager implements vscode.Disposable {
     }
 
     // No configured URL: probe the default local address before spawning.
-    if (await probeHealth(defaultUrl)) {
+    // Tolerant retry so a slow-but-alive backend is attached, not respawned.
+    if (await probeHealth(defaultUrl, { timeoutMs: 2500, retries: 2 })) {
       this._effectiveBaseUrl = defaultUrl;
       this.setState("running");
       this._output.appendLine(
@@ -215,7 +251,8 @@ export class BackendManager implements vscode.Disposable {
     }
 
     let spawnFailed = false;
-    let earlyExit = false;
+    let spawnErr: string | undefined;
+    let exitCode: number | null = null;
 
     const child = child_process.spawn(spec.command, spec.args, {
       env,
@@ -235,51 +272,69 @@ export class BackendManager implements vscode.Disposable {
     child.on("error", (err) => {
       this._output.appendLine(`[lifecycle] spawn error: ${err.message}`);
       spawnFailed = true;
-      this.setState("error");
-      void vscode.window.showErrorMessage(
-        `Den: failed to start backend — ${err.message}. ` +
-          `Check the den.pythonPath setting.`
-      );
+      spawnErr = err.message;
     });
 
     child.on("exit", (code) => {
       this._output.appendLine(`[lifecycle] exited with code ${code}`);
-      if (this._state === "starting" && code !== null && code !== 0) {
-        earlyExit = true;
+      if (code !== 0) {
+        // Non-zero exit during start — commonly EADDRINUSE when another backend
+        // already holds the port. Record it; the tail decides whether to attach
+        // to that existing backend or surface a real error.
         spawnFailed = true;
-        this.setState("error");
-        void vscode.window.showErrorMessage(
-          `Den: backend exited (code ${code}) before becoming healthy. ` +
-            `The Python at ${spec.command} may be missing the studio server — ` +
-            `set den.pythonPath, or install it with 'pip install "lionagi[studio]"'. ` +
-            `See the Den output channel.`
-        );
-      } else if (this._state !== "stopped") {
-        this.setState("error");
+        exitCode = code;
+      }
+      // If the child dies after we were already running, reconcile promptly so
+      // a genuine crash surfaces fast — while an orphan still holding the port
+      // keeps us running rather than flapping to "error".
+      if (this._state === "running") {
+        this._child = undefined;
+        void this.reconcile();
       }
     });
 
     const ok = await this._pollHealth(30_000, () => spawnFailed);
-    if (spawnFailed || earlyExit) {
-      // error state already set above via the child event handlers
-    } else if (!ok) {
-      // Health-check timed out: kill the child so it does not linger as an
-      // orphan, then transition to error so a retry spawns a fresh process
-      // rather than racing the still-running unhealthy one.
-      if (this._child) {
-        const child = this._child;
-        this._child = undefined;
-        child.kill();
-        const killTimer = setTimeout(() => {
-          if (child.exitCode === null && child.signalCode === null) {
-            child.kill("SIGKILL");
-          }
-        }, 3_000);
-        child.once("exit", () => clearTimeout(killTimer));
-      }
-      this.setState("error");
-    } else {
+    if (ok) {
       this.setState("running");
+      return;
+    }
+
+    // The spawn did not become healthy. Before erroring, check whether a
+    // backend is already serving the port: the spawn may have lost an
+    // EADDRINUSE race against an orphan from a previous session (or a
+    // manually-started backend). If one is healthy, attach instead of flapping
+    // to "error". Reap our own losing/unhealthy child first so it cannot linger.
+    this._reapChild();
+    if (
+      await probeHealth(this._effectiveBaseUrl ?? defaultUrl, {
+        timeoutMs: 2500,
+        retries: 2,
+      })
+    ) {
+      this._output.appendLine(
+        "[lifecycle] spawn did not win the port, but a backend is healthy — attached"
+      );
+      this.setState("running");
+      return;
+    }
+
+    this.setState("error");
+    if (spawnErr) {
+      void vscode.window.showErrorMessage(
+        `Den: failed to start backend — ${spawnErr}. ` +
+          `Check the den.pythonPath setting.`
+      );
+    } else if (exitCode !== null) {
+      void vscode.window.showErrorMessage(
+        `Den: backend exited (code ${exitCode}) before becoming healthy. ` +
+          `The Python at ${spec.command} may be missing the studio server — ` +
+          `set den.pythonPath, or install it with 'pip install "lionagi[studio]"'. ` +
+          `See the Den output channel.`
+      );
+    } else {
+      void vscode.window.showErrorMessage(
+        "Den: backend did not become healthy in time. See the Den output channel."
+      );
     }
   }
 
@@ -343,20 +398,80 @@ export class BackendManager implements vscode.Disposable {
       clearTimeout(this._pollTimer);
       this._pollTimer = undefined;
     }
-    if (this._child) {
-      const child = this._child;
-      this._child = undefined;
-      child.kill();
-      // Escalate to SIGKILL if the process does not exit within 3s.
-      const killTimer = setTimeout(() => {
-        if (child.exitCode === null && child.signalCode === null) {
-          child.kill("SIGKILL");
-        }
-      }, 3_000);
-      child.once("exit", () => clearTimeout(killTimer));
-    }
+    this._reapChild();
     this._effectiveBaseUrl = undefined;
     this.setState("stopped");
+  }
+
+  /** Detach and terminate the child we spawned, if any (SIGKILL escalation). */
+  private _reapChild(): void {
+    const child = this._child;
+    if (!child) {
+      return;
+    }
+    this._child = undefined;
+    child.kill();
+    const killTimer = setTimeout(() => {
+      if (child.exitCode === null && child.signalCode === null) {
+        child.kill("SIGKILL");
+      }
+    }, 3_000);
+    child.once("exit", () => clearTimeout(killTimer));
+  }
+
+  private _startSupervisor(): void {
+    if (this._supervisorTimer !== undefined) {
+      return;
+    }
+    this._supervisorTimer = setInterval(() => {
+      void this.reconcile();
+    }, SUPERVISE_INTERVAL_MS);
+  }
+
+  /**
+   * Reconcile Den's tracked state against a live health probe. Recovers from a
+   * spurious "error" — the backend is actually reachable, e.g. a spawned helper
+   * died while an orphan kept serving the port — without the manual status-bar
+   * click, and conversely marks "error" when a backend that was running stops
+   * responding. Hysteresis (two consecutive misses) avoids flapping on a single
+   * slow probe. Intentional stops and in-flight starts are left alone.
+   */
+  async reconcile(): Promise<void> {
+    if (this._reconciling) {
+      return;
+    }
+    const s = this._state;
+    if (s === "stopped" || s === "starting") {
+      return;
+    }
+    this._reconciling = true;
+    try {
+      const healthy = await probeHealth(this.baseUrl, {
+        timeoutMs: 2500,
+        retries: 1,
+      });
+      if (healthy) {
+        this._missedHealthChecks = 0;
+        if (this._state === "error") {
+          this._output.appendLine(
+            "[lifecycle] backend reachable again — recovered to running"
+          );
+          this.setState("running");
+        }
+        return;
+      }
+      if (this._state === "running") {
+        this._missedHealthChecks += 1;
+        if (this._missedHealthChecks >= 2) {
+          this._output.appendLine(
+            "[lifecycle] backend stopped responding — marking error"
+          );
+          this.setState("error");
+        }
+      }
+    } finally {
+      this._reconciling = false;
+    }
   }
 
   /** Poll GET /health until it returns true, timeout elapses, or shouldAbort() is true. */
@@ -391,6 +506,10 @@ export class BackendManager implements vscode.Disposable {
   }
 
   dispose(): void {
+    if (this._supervisorTimer !== undefined) {
+      clearInterval(this._supervisorTimer);
+      this._supervisorTimer = undefined;
+    }
     this.stop();
     this._onDidChangeState.dispose();
     this._output.dispose();

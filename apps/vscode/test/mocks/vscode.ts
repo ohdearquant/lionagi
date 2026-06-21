@@ -126,6 +126,18 @@ export const window = {
   showOpenDialog: vi.fn<[options?: unknown], Promise<unknown[] | undefined>>(),
   withProgress: vi.fn<[opts: unknown, task: (progress: unknown, token: unknown) => Promise<unknown>], Promise<unknown>>(),
   createTreeView: vi.fn<[viewId: string, opts: unknown], unknown>(),
+  // Plain stub (not vi.fn) so __resetVscodeMock never wipes its implementation —
+  // BackendManager grabs the output channel once in its constructor.
+  createOutputChannel: (name: string) => ({
+    name,
+    append() {},
+    appendLine() {},
+    clear() {},
+    show() {},
+    hide() {},
+    replace() {},
+    dispose() {},
+  }),
   activeTextEditor: undefined as
     | { document: { getText(): string; uri: { fsPath: string } } }
     | undefined,
