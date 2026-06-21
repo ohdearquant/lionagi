@@ -170,18 +170,51 @@ def _resolve_project(cwd: str) -> tuple[str, str]:
     return project, source
 
 
-def _load_offsets() -> dict[str, int]:
+def _load_states() -> dict[str, _FileState]:
+    # Persist tool_names + leaf_uuid alongside the byte offset so a restart resumes
+    # mid-conversation without dropping a later tool_result's function name or
+    # losing cross-session lineage — both live only in process memory otherwise.
+    # Legacy {path: int} caches (offset only) load as bare cursors, then upgrade.
     try:
-        return json.loads(_OFFSETS_PATH.read_text())
+        raw = json.loads(_OFFSETS_PATH.read_text())
     except (FileNotFoundError, json.JSONDecodeError):
         return {}
+    states: dict[str, _FileState] = {}
+    for key, val in raw.items():
+        if isinstance(val, int):
+            states[key] = _FileState(session_uid="", offset=val)
+        elif isinstance(val, dict):
+            states[key] = _FileState(
+                session_uid=val.get("session_uid") or "",
+                offset=val.get("offset", 0),
+                tool_names=dict(val.get("tool_names") or {}),
+                leaf_uuid=val.get("leaf_uuid"),
+            )
+    return states
 
 
-def _save_offsets(offsets: dict[str, int]) -> None:
+def _save_states(states: dict[str, _FileState]) -> None:
     _OFFSETS_PATH.parent.mkdir(parents=True, exist_ok=True)
+    payload = {
+        key: {
+            "offset": st.offset,
+            "session_uid": st.session_uid,
+            "tool_names": st.tool_names,
+            "leaf_uuid": st.leaf_uuid,
+        }
+        for key, st in states.items()
+    }
     tmp = _OFFSETS_PATH.with_suffix(".json.tmp")
-    tmp.write_text(json.dumps(offsets))
+    tmp.write_text(json.dumps(payload))
     tmp.replace(_OFFSETS_PATH)
+
+
+def _seed_lineage(lineage: _Lineage, states: dict[str, _FileState]) -> None:
+    # Re-index persisted leaves so a continuation opened after a restart still
+    # resolves its parent, whose transcript is now at EOF and streams no events.
+    for st in states.values():
+        if st.leaf_uuid and st.session_uid:
+            lineage.leaf_owner[st.leaf_uuid] = st.session_uid
 
 
 _WINDOW_UNITS = {"m": 60, "h": 3600, "d": 86400}
@@ -452,9 +485,10 @@ async def mirror_forever(
     if not root.exists():
         return
     since_secs = _parse_window(since) if since else None
-    offsets = _load_offsets()
-    states: dict[str, _FileState] = {}
+    states = _load_states()
+    offsets = {key: st.offset for key, st in states.items()}  # _one_pass new-file seed
     lineage = _Lineage()
+    _seed_lineage(lineage, states)
     async with StateDB() as db:
         while not stop.is_set():
             try:
@@ -467,7 +501,7 @@ async def mirror_forever(
                     live_window=live_window,
                     lineage=lineage,
                 )
-                _save_offsets(offsets)
+                _save_states(states)
             except Exception:  # a single bad pass must never kill the tail
                 _log.exception("claude mirror pass failed")
             try:
@@ -487,9 +521,10 @@ async def _run(args: argparse.Namespace) -> int:
         return 1
 
     since = args.since  # argparse already parsed --since to seconds (or None)
-    offsets = _load_offsets()
-    states: dict[str, _FileState] = {}
+    states = _load_states()
+    offsets = {key: st.offset for key, st in states.items()}  # _one_pass new-file seed
     lineage = _Lineage()
+    _seed_lineage(lineage, states)
 
     mode = "catch-up pass" if args.once else f"tailing (every {args.interval:g}s)"
     hint(f"li mirror: {mode} over {root}")
@@ -505,7 +540,7 @@ async def _run(args: argparse.Namespace) -> int:
                 live_window=args.live_window,
                 lineage=lineage,
             )
-            _save_offsets(offsets)
+            _save_states(states)
             if n:
                 progress(f"  mirrored {n} new message(s)")
             if args.once:

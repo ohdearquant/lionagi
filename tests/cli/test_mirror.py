@@ -16,9 +16,12 @@ from lionagi.cli.mirror import (
     _FileState,
     _first_prompt,
     _Lineage,
+    _load_states,
     _one_pass,
     _parse_window,
     _read_new_events,
+    _save_states,
+    _seed_lineage,
     _since_window,
 )
 from lionagi.state.claude_mirror import (
@@ -744,3 +747,93 @@ async def test_peek_head_skips_non_dict_head_line(temp_db_path: Path, tmp_path: 
         await _one_pass(db, root, {}, offsets, since=None, live_window=300)
         row = await db.get_session(session_db_id(uid))
     assert row["status"] == "completed"
+
+
+# ── restart durability: derived state persisted with the cursor ──────────────
+
+
+@pytest.mark.asyncio
+async def test_tool_name_survives_restart_between_use_and_result(
+    temp_db_path: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # A restart between a tool_use and its tool_result must not drop the response's
+    # function name. tool_names is rebuilt from the persisted per-file state, so the
+    # ActionResponse still labels the call instead of falling back to "".
+    monkeypatch.setattr("lionagi.cli.mirror._OFFSETS_PATH", tmp_path / "offsets.json")
+    root = tmp_path / "projects"
+    path = root / "-w-proj" / f"{SID}.jsonl"
+    _write_lineage_file(
+        path,
+        [
+            _user_text("u1", "run it"),
+            _assistant("a1", [{"type": "tool_use", "id": "tool_1", "name": "Bash", "input": {}}]),
+        ],
+    )
+    async with StateDB() as db:
+        # Pass 1: mirror the tool_use, persist the cursor + tool_names, then drop
+        # all in-memory state — a restart.
+        states1: dict[str, _FileState] = {}
+        await _one_pass(db, root, states1, {}, since=None, live_window=300)
+        _save_states(states1)
+
+        # Restart: state comes back from disk only.
+        states2 = _load_states()
+        offsets2 = {k: s.offset for k, s in states2.items()}
+
+        # The tool_result lands after the restart.
+        with path.open("a") as fh:
+            fh.write(json.dumps(_tool_result("u2", "tool_1", "total 0")) + "\n")
+        await _one_pass(db, root, states2, offsets2, since=None, live_window=300)
+
+        row = await db.get_session(session_db_id(SID))
+        contents = []
+        for mid in await db.get_progression(row["progression_id"]):
+            c = (await db.get_message(mid))["content"]
+            contents.append(json.loads(c) if isinstance(c, str) else c)
+    resp = next(c for c in contents if "action_request_id" in c)
+    assert resp["function"] == "Bash"  # recovered from persisted tool_names, not ""
+
+
+@pytest.mark.asyncio
+async def test_lineage_resolves_after_restart(
+    temp_db_path: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # The parent transcript is mirrored, then state is dropped (restart) before the
+    # continuation arrives. Its leaf is re-indexed from persisted state on reload,
+    # so the child still links to it instead of losing the cross-session lineage.
+    monkeypatch.setattr("lionagi.cli.mirror._OFFSETS_PATH", tmp_path / "offsets.json")
+    root = tmp_path / "projects"
+    a = "a1a1a1a1-0000-0000-0000-000000000aaa"
+    b = "b2b2b2b2-0000-0000-0000-000000000bbb"
+    _write_lineage_file(
+        root / "-w-proj" / f"{a}.jsonl",
+        [
+            _lineage_event(a, "a-1", None, "user", "start the work"),
+            _lineage_event(a, "a-leaf", "a-1", "assistant", "done, ending here"),
+        ],
+    )
+    async with StateDB() as db:
+        # Pass 1: mirror only the parent; persist its leaf index, then restart.
+        states1: dict[str, _FileState] = {}
+        await _one_pass(db, root, states1, {}, since=None, live_window=300)
+        _save_states(states1)
+
+        # Restart: rebuild states + re-seed the leaf index from disk only.
+        states2 = _load_states()
+        offsets2 = {k: s.offset for k, s in states2.items()}
+        lineage2 = _Lineage()
+        _seed_lineage(lineage2, states2)
+
+        # The continuation opens after the restart, pointing at the parent's leaf.
+        _write_lineage_file(
+            root / "-w-proj" / f"{b}.jsonl",
+            [
+                _lineage_event(b, "b-1", "a-leaf", "user", "continuing from before"),
+                _lineage_event(b, "b-2", "b-1", "assistant", "picking it up"),
+            ],
+        )
+        await _one_pass(db, root, states2, offsets2, since=None, live_window=300, lineage=lineage2)
+        child = await db.get_session(session_db_id(b))
+    lineage = child["node_metadata"]["lineage"]
+    assert lineage["parent_session_uid"] == a
+    assert lineage["parent_event_uuid"] == "a-leaf"
