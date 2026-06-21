@@ -117,6 +117,65 @@ export const ProgressLocation = {
   Window: 10,
 } as const;
 
+// ViewColumn enum (RunDetailPanel.open / pickDetailColumn).
+export const ViewColumn = {
+  Active: -1,
+  Beside: -2,
+  One: 1,
+  Two: 2,
+  Three: 3,
+} as const;
+
+// ---------------------------------------------------------------------------
+// Webview panel — minimal stub for RunDetailPanel host tests. createWebviewPanel
+// returns a fresh panel each call; __lastWebviewPanel points at the latest so a
+// test can inspect postMessage calls and fire disposal (clearing the module
+// singleton) for isolation.
+// ---------------------------------------------------------------------------
+
+export interface MockWebviewPanel {
+  viewType: string;
+  title: string;
+  webview: {
+    html: string;
+    cspSource: string;
+    asWebviewUri: (u: unknown) => unknown;
+    postMessage: ReturnType<typeof vi.fn>;
+    onDidReceiveMessage: () => { dispose(): void };
+  };
+  onDidDispose: (cb: () => void) => { dispose(): void };
+  reveal: () => void;
+  dispose: () => void;
+  /** Test helper: run the registered onDidDispose callback. */
+  __fireDispose: () => void;
+}
+
+export let __lastWebviewPanel: MockWebviewPanel | undefined;
+
+function createWebviewPanelStub(viewType: string, title: string): MockWebviewPanel {
+  let disposeCb: (() => void) | undefined;
+  const panel: MockWebviewPanel = {
+    viewType,
+    title,
+    webview: {
+      html: "",
+      cspSource: "vscode-webview://test",
+      asWebviewUri: (u: unknown) => u,
+      postMessage: vi.fn(async () => true),
+      onDidReceiveMessage: () => ({ dispose() {} }),
+    },
+    onDidDispose: (cb: () => void) => {
+      disposeCb = cb;
+      return { dispose() {} };
+    },
+    reveal: () => {},
+    dispose: () => disposeCb?.(),
+    __fireDispose: () => disposeCb?.(),
+  };
+  __lastWebviewPanel = panel;
+  return panel;
+}
+
 export const window = {
   showInputBox: vi.fn<[options?: unknown], Promise<string | undefined>>(),
   showQuickPick: vi.fn<[items: unknown, options?: unknown], Promise<string | undefined>>(),
@@ -126,6 +185,13 @@ export const window = {
   showOpenDialog: vi.fn<[options?: unknown], Promise<unknown[] | undefined>>(),
   withProgress: vi.fn<[opts: unknown, task: (progress: unknown, token: unknown) => Promise<unknown>], Promise<unknown>>(),
   createTreeView: vi.fn<[viewId: string, opts: unknown], unknown>(),
+  // Plain stub (not vi.fn) so __resetVscodeMock never wipes its implementation.
+  createWebviewPanel: (
+    viewType: string,
+    title: string,
+    _showOptions?: unknown,
+    _options?: unknown
+  ): MockWebviewPanel => createWebviewPanelStub(viewType, title),
   // Plain stub (not vi.fn) so __resetVscodeMock never wipes its implementation —
   // BackendManager grabs the output channel once in its constructor.
   createOutputChannel: (name: string) => ({

@@ -104,12 +104,15 @@ export class RunDetailPanel {
       // Refresh header with final metadata.
       this.postMessage({ type: "meta", run: this.run });
 
-      // Fetch the reason only for non-success terminal runs — skip the call for
-      // green runs so a succeeded run never even loads a (red-toned) banner.
-      const terminalStatus = (this.run.status ?? "").toLowerCase();
-      const isNonSuccess =
-        terminalStatus !== "succeeded" && terminalStatus !== "completed";
-      if (isNonSuccess && this.run.invocation_id) {
+      // Failure-reason banner. Prefer the run-detail's own reason fields
+      // (GET /api/runs/{id}) — the session-specific cause, and the only source
+      // when a run has no parent invocation. Fall back to the parent invocation
+      // only when the run-detail carries none. Both skip green runs, so a
+      // succeeded run never even loads a (red-toned) banner.
+      const ownReason = runReasonBannerMessage(this.run);
+      if (ownReason) {
+        this.postMessage(ownReason);
+      } else if (isNonSuccessStatus(this.run.status) && this.run.invocation_id) {
         try {
           const inv = await this.deps.client.getInvocation(this.run.invocation_id);
           const reasonMsg = reasonBannerMessage(
@@ -276,8 +279,41 @@ export interface ReasonBannerMessage {
   evidenceRefs: Array<Record<string, unknown>> | null;
 }
 
-// A non-success terminal run whose invocation carries a reason → banner payload;
-// succeeded/completed (or no reason at all) → null, so a green run never shows a red banner.
+/** Terminal status that is not a clean success (so it may carry a failure reason). */
+function isNonSuccessStatus(status: string | null | undefined): boolean {
+  const s = (status ?? "").toLowerCase();
+  return s !== "succeeded" && s !== "completed";
+}
+
+// A non-success run whose own GET /api/runs/{id} reason fields carry a code or
+// summary → banner payload; succeeded/completed (or no reason at all) → null, so
+// a green run never shows a red banner. This is the primary, session-specific
+// source and the only one available when a run has no parent invocation.
+export function runReasonBannerMessage(
+  run: Pick<
+    Run,
+    "status" | "status_reason_code" | "status_reason_summary" | "status_evidence_refs"
+  >
+): ReasonBannerMessage | null {
+  if (!isNonSuccessStatus(run.status)) {
+    return null;
+  }
+  const code = run.status_reason_code ?? null;
+  const summary = run.status_reason_summary ?? null;
+  if (!summary && !code) {
+    return null;
+  }
+  return {
+    type: "reason",
+    code,
+    summary,
+    evidenceRefs: run.status_evidence_refs ?? null,
+  };
+}
+
+// A non-success run whose parent invocation carries a reason → banner payload;
+// succeeded/completed (or no reason at all) → null. Fallback used only when the
+// run-detail itself carries no reason (see runReasonBannerMessage).
 export function reasonBannerMessage(
   status: string | null | undefined,
   invocationId: string | null | undefined,
@@ -289,10 +325,7 @@ export function reasonBannerMessage(
     | null
     | undefined
 ): ReasonBannerMessage | null {
-  const terminalStatus = (status ?? "").toLowerCase();
-  const isNonSuccess =
-    terminalStatus !== "succeeded" && terminalStatus !== "completed";
-  if (!isNonSuccess || !invocationId || !inv) {
+  if (!isNonSuccessStatus(status) || !invocationId || !inv) {
     return null;
   }
   if (!inv.status_reason_summary && !inv.status_reason_code) {

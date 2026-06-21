@@ -21,6 +21,10 @@ export interface Run {
   project: string | null;
   project_source: string | null;
   invocation_id: string | null;
+  // Detail-only (GET /api/runs/{id}); absent on list rows. Drive the failure banner.
+  status_reason_code?: string | null;
+  status_reason_summary?: string | null;
+  status_evidence_refs?: Array<Record<string, unknown>> | null;
 }
 
 /** Paginated response from GET /api/runs/. */
