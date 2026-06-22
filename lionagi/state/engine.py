@@ -13,6 +13,10 @@ from urllib.parse import urlparse, urlunparse
 
 from lionagi._paths import LIONAGI_HOME
 
+# sqlite busy_timeout (ms) applied to every connection. Tunable so tests that
+# deliberately hold a write lock fail fast instead of waiting the full default.
+_SQLITE_BUSY_TIMEOUT_MS = 5000
+
 
 def _json_serializer(obj):
     if isinstance(obj, uuid.UUID):
@@ -112,7 +116,7 @@ def make_engine(url: str, **overrides):
 
         def _apply_pragmas(dbapi_conn, _connection_record):
             cursor = dbapi_conn.cursor()
-            cursor.execute("PRAGMA busy_timeout = 5000")
+            cursor.execute(f"PRAGMA busy_timeout = {_SQLITE_BUSY_TIMEOUT_MS}")
             cursor.execute("PRAGMA journal_mode = WAL")
             cursor.execute("PRAGMA synchronous = NORMAL")
             cursor.execute("PRAGMA foreign_keys = ON")

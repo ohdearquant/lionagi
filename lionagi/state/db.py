@@ -398,6 +398,37 @@ class StateDB:
     def transaction(self):
         return self._tx()
 
+    async def _raw_sqlite_exec(self, sql: str, *, fetch: bool = False):
+        # Run maintenance SQL on sqlite's raw driver connection for true
+        # autocommit. SQLAlchemy's AUTOCOMMIT option does not clear the aiosqlite
+        # adapter's implicit transaction, which blocks VACUUM and wal_checkpoint
+        # ("cannot VACUUM"/"database table is locked").
+        async with self._engine.connect() as conn:
+            driver = (await conn.get_raw_connection()).driver_connection
+            cur = await driver.execute(sql)
+            row = await cur.fetchone() if fetch else None
+            await driver.commit()
+            return row
+
+    async def vacuum(self) -> None:
+        if self.dialect == "sqlite":
+            await self._raw_sqlite_exec("VACUUM")
+        else:
+            async with self._read() as conn:
+                await conn.execute(text("VACUUM"))
+
+    async def checkpoint(self, mode: str = "PASSIVE") -> tuple[int, int, int] | None:
+        # WAL checkpoint is sqlite-only maintenance; like VACUUM it must bypass
+        # the adapter's implicit transaction. Returns (busy, log_pages,
+        # checkpointed); None on postgresql (no WAL checkpoint concept).
+        if self.dialect != "sqlite":
+            return None
+        mode = mode.upper()
+        if mode not in {"PASSIVE", "FULL", "RESTART", "TRUNCATE"}:
+            raise ValueError(f"invalid wal_checkpoint mode: {mode!r}")
+        row = await self._raw_sqlite_exec(f"PRAGMA wal_checkpoint({mode})", fetch=True)
+        return tuple(row) if row is not None else None
+
     # ── Schema management ──────────────────────────────────────────────
 
     async def _apply_schema(self) -> None:
@@ -3014,7 +3045,10 @@ _SHARED_TEARDOWN_RACE = (
 async def get_shared_db(path: str | Path | None = None) -> StateDB:
     """Return the process-wide open StateDB for *path* (default: DEFAULT_DB_PATH)."""
     global _SHARED_OPEN_LOCK  # noqa: PLW0603
-    key = normalize_state_db_url(path)
+    # Resolve the key through StateDB's own cascade (None → LIONAGI_STATE_DB_URL
+    # → DEFAULT_DB_PATH) so a monkeypatched DEFAULT_DB_PATH is honored; calling
+    # normalize_state_db_url(None) directly would bypass it to the real home db.
+    key = StateDB(path).url
     if key in _SHARED:
         return _SHARED[key]
     if _SHARED_OPEN_LOCK is None:
