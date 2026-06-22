@@ -144,9 +144,8 @@ async def _query_running_sessions(
         query += " AND invocation_kind = ?"
         params.append(invocation_kind)
     query += " ORDER BY started_at DESC"
-    cur = await db.db.execute(query, params)
-    rows = await cur.fetchall()
-    return [dict(r) for r in rows]
+    rows = await db.fetch_all(query, params)
+    return rows
 
 
 async def _query_running_invocations(
@@ -160,9 +159,8 @@ async def _query_running_invocations(
         query += " AND updated_at >= ?"
         params.append(since)
     query += " ORDER BY started_at DESC"
-    cur = await db.db.execute(query, params)
-    rows = await cur.fetchall()
-    return [dict(r) for r in rows]
+    rows = await db.fetch_all(query, params)
+    return rows
 
 
 async def _query_active_shows(
@@ -176,9 +174,8 @@ async def _query_active_shows(
         query += " AND updated_at >= ?"
         params.append(since)
     query += " ORDER BY updated_at DESC"
-    cur = await db.db.execute(query, params)
-    rows = await cur.fetchall()
-    return [dict(r) for r in rows]
+    rows = await db.fetch_all(query, params)
+    return rows
 
 
 async def _query_running_plays(
@@ -198,18 +195,16 @@ async def _query_running_plays(
         query += " AND updated_at >= ?"
         params.append(since)
     query += " ORDER BY updated_at DESC"
-    cur = await db.db.execute(query, params)
-    rows = await cur.fetchall()
-    return [dict(r) for r in rows]
+    rows = await db.fetch_all(query, params)
+    return rows
 
 
 async def _query_plays_for_show(db: Any, show_id: str) -> list[dict[str, Any]]:
-    cur = await db.db.execute(
+    rows = await db.fetch_all(
         "SELECT * FROM plays WHERE show_id = ? ORDER BY sort_order, created_at",
         (show_id,),
     )
-    rows = await cur.fetchall()
-    return [dict(r) for r in rows]
+    return rows
 
 
 async def _find_entity(db: Any, entity_id: str) -> tuple[str, dict[str, Any]] | None:
@@ -222,21 +217,19 @@ async def _find_entity(db: Any, entity_id: str) -> tuple[str, dict[str, Any]] | 
     ]
     for entity_type, table in searches:
         # Exact match
-        cur = await db.db.execute(
+        row = await db.fetch_one(
             f"SELECT * FROM {table} WHERE id = ?",  # noqa: S608
             (entity_id,),
         )
-        row = await cur.fetchone()
         if row:
-            return entity_type, dict(row)
+            return entity_type, row
         # Prefix match (user might type short prefix)
-        cur = await db.db.execute(
+        row = await db.fetch_one(
             f"SELECT * FROM {table} WHERE id LIKE ?",  # noqa: S608
             (entity_id + "%",),
         )
-        row = await cur.fetchone()
         if row:
-            return entity_type, dict(row)
+            return entity_type, row
     return None
 
 
@@ -442,10 +435,9 @@ async def _detail_session(db: Any, sess: dict[str, Any]) -> str:
         lines.append(f"  last_msg:  {time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(last_msg))}")
 
     # Branch count
-    cur = await db.db.execute(
+    row = await db.fetch_one(
         "SELECT COUNT(*) AS n FROM branches WHERE session_id = ?", (sess["id"],)
     )
-    row = await cur.fetchone()
     lines.append(f"  branches:  {row['n'] if row else 0}")
 
     # Stream tail from run dir
@@ -483,11 +475,10 @@ async def _detail_invocation(db: Any, inv: dict[str, Any]) -> str:
         )
 
     # List child sessions
-    cur = await db.db.execute(
+    child_rows = await db.fetch_all(
         "SELECT id, status, model, started_at FROM sessions WHERE invocation_id = ? ORDER BY created_at",
         (inv["id"],),
     )
-    child_rows = await cur.fetchall()
     if child_rows:
         lines.append("")
         lines.append(_dim("  -- child sessions --"))
@@ -557,11 +548,10 @@ async def _detail_play(db: Any, play: dict[str, Any]) -> str:
     # Linked session details
     session_id = play.get("session_id")
     if session_id:
-        cur = await db.db.execute(
+        srow = await db.fetch_one(
             "SELECT status, model, provider, effort FROM sessions WHERE id = ?",
             (session_id,),
         )
-        srow = await cur.fetchone()
         if srow:
             lines.append("")
             lines.append(_dim("  -- linked session --"))

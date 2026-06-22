@@ -461,35 +461,20 @@ async def _print_stats() -> None:
 
 
 async def _checkpoint(mode: str) -> str:
-    from sqlalchemy import text
-
     from lionagi.state.db import StateDB
 
     async with StateDB() as db:
-        async with db._read() as conn:
-            row = (await conn.execute(text(f"PRAGMA wal_checkpoint({mode})"))).first()
-        if not row:
-            return "(no result)"
+        row = await db.checkpoint(mode)
+        if row is None:
+            return "(not applicable on this backend)"
         return f"busy={row[0]}, log_pages={row[1]}, checkpointed={row[2]}"
 
 
 async def _vacuum() -> None:
-    from sqlalchemy import text
-
     from lionagi.state.db import StateDB
 
     async with StateDB() as db:
-        # VACUUM cannot run inside a transaction. On sqlite the aiosqlite adapter
-        # keeps an implicit transaction that survives SQLAlchemy's AUTOCOMMIT
-        # option, so reach the raw driver connection (real autocommit) for it.
-        if db.dialect == "sqlite":
-            async with db._engine.connect() as conn:
-                driver = (await conn.get_raw_connection()).driver_connection
-                await driver.execute("VACUUM")
-                await driver.commit()
-        else:
-            async with db._read() as conn:
-                await conn.execute(text("VACUUM"))
+        await db.vacuum()
 
 
 async def _prune(
