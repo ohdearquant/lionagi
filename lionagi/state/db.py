@@ -1913,17 +1913,25 @@ class StateDB:
         limit: int = 100,
         offset: int = 0,
     ) -> list[dict[str, Any]]:
+        # Per invocation, take project/project_source from its latest-updated
+        # session. ROW_NUMBER() is portable; the old SQLite idiom (bare columns
+        # under HAVING MAX(updated_at)) is rejected by PostgreSQL.
         query = (
             "SELECT inv.*, "
             "  sq.project        AS project, "
             "  sq.project_source AS project_source "
             "FROM invocations inv "
             "LEFT JOIN ( "
-            "  SELECT invocation_id, project, project_source "
-            "  FROM sessions "
-            "  WHERE invocation_id IS NOT NULL "
-            "  GROUP BY invocation_id "
-            "  HAVING MAX(updated_at) "
+            "  SELECT invocation_id, project, project_source FROM ( "
+            "    SELECT invocation_id, project, project_source, "
+            "           ROW_NUMBER() OVER ( "
+            "             PARTITION BY invocation_id "
+            "             ORDER BY COALESCE(updated_at, 0) DESC "
+            "           ) AS rn "
+            "    FROM sessions "
+            "    WHERE invocation_id IS NOT NULL "
+            "  ) ranked "
+            "  WHERE rn = 1 "
             ") sq ON sq.invocation_id = inv.id"
         )
         conds: list[str] = []

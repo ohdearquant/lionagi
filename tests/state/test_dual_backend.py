@@ -171,6 +171,45 @@ async def _run_parity_suite(db: StateDB) -> None:
         p0 = _json.loads(p0)
     assert p0 == {"a": 1}, f"signal payload roundtrip failed: {p0!r}"
 
+    # 8. list_invocations takes project from the latest-updated session (the
+    #    ROW_NUMBER path that replaced a SQLite-only GROUP BY ... HAVING MAX),
+    #    and list_projects groups by the projects PK. Both are PG-strict.
+    inv_id = _uid()
+    await db.create_invocation({"id": inv_id, "skill": "parity", "started_at": now})
+    prog2 = _uid()
+    await db.create_progression(prog2)
+    await db.create_session(
+        {
+            "id": _uid(),
+            "progression_id": prog2,
+            "status": "running",
+            "created_at": now,
+            "updated_at": now,
+            "invocation_id": inv_id,
+            "project": "proj-old",
+        }
+    )
+    await db.create_session(
+        {
+            "id": _uid(),
+            "progression_id": prog2,
+            "status": "running",
+            "created_at": now,
+            "updated_at": now + 100,  # newer → its project must win
+            "invocation_id": inv_id,
+            "project": "proj-new",
+        }
+    )
+    mine = [r for r in await db.list_invocations() if r["id"] == inv_id]
+    assert len(mine) == 1, f"invocation must appear exactly once: {mine!r}"
+    assert mine[0]["project"] == "proj-new", f"latest session's project must win: {mine[0]!r}"
+
+    # create_session upserts each session's project (register_project), so
+    # list_projects exercises the GROUP BY p.name (projects PK) path on PG here
+    # without a redundant create_project insert.
+    listed = {p["name"] for p in await db.list_projects()}
+    assert {"proj-old", "proj-new"} <= listed, f"both projects must be listed: {listed!r}"
+
 
 # ── SQLite leg (always runs) ──────────────────────────────────────────────────
 

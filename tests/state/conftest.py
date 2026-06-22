@@ -5,6 +5,7 @@
 
 from __future__ import annotations
 
+import contextlib
 import os
 
 import pytest
@@ -36,7 +37,10 @@ def pg_url():
     try:
         pg = PostgresContainer("postgres:16-alpine", driver="asyncpg")
         pg.start()
-    except Exception as exc:  # Docker daemon down / image pull failed
+    except Exception as exc:  # Docker down / image pull / readiness failure
+        if pg is not None:  # container may have started before readiness failed
+            with contextlib.suppress(Exception):
+                pg.stop()
         _unavailable(f"could not start Postgres container: {exc}")
 
     try:
