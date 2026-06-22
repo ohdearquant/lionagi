@@ -479,8 +479,17 @@ async def _vacuum() -> None:
     from lionagi.state.db import StateDB
 
     async with StateDB() as db:
-        async with db._tx() as conn:
-            await conn.execute(text("VACUUM"))
+        # VACUUM cannot run inside a transaction. On sqlite the aiosqlite adapter
+        # keeps an implicit transaction that survives SQLAlchemy's AUTOCOMMIT
+        # option, so reach the raw driver connection (real autocommit) for it.
+        if db.dialect == "sqlite":
+            async with db._engine.connect() as conn:
+                driver = (await conn.get_raw_connection()).driver_connection
+                await driver.execute("VACUUM")
+                await driver.commit()
+        else:
+            async with db._read() as conn:
+                await conn.execute(text("VACUUM"))
 
 
 async def _prune(

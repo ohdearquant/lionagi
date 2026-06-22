@@ -350,6 +350,54 @@ class StateDB:
             async with self._engine.begin() as conn:
                 yield conn
 
+    # ── Public query surface (portable across both dialects) ───────────
+    # Replaces direct `db.db.execute(...)` access from CLI/studio consumers.
+    # Accepts the legacy qmark (?) form with a sequence of params, or named
+    # (:name) SQL with a dict; SQLAlchemy translates the paramstyle per dialect.
+    # Rows are returned as plain dicts (JSON columns left as stored — str on
+    # sqlite, native on pg — so callers keep their own decode, guarded by
+    # isinstance(str) for pg). For multi-statement atomic work use transaction().
+
+    @staticmethod
+    def _to_named(sql: str, params: Any) -> tuple[str, dict[str, Any]]:
+        if params is None:
+            return sql, {}
+        if isinstance(params, dict):
+            return sql, params
+        seq = list(params)
+        out: list[str] = []
+        i = 0
+        for ch in sql:
+            if ch == "?":
+                out.append(f":p{i}")
+                i += 1
+            else:
+                out.append(ch)
+        if i != len(seq):
+            raise ValueError(f"param count mismatch: {i} placeholders, {len(seq)} params")
+        return "".join(out), {f"p{j}": v for j, v in enumerate(seq)}
+
+    async def fetch_all(self, sql: str, params: Any = None) -> list[dict[str, Any]]:
+        sql, p = self._to_named(sql, params)
+        async with self._read() as conn:
+            result = await conn.execute(text(sql), p)
+            return [dict(r) for r in result.mappings().all()]
+
+    async def fetch_one(self, sql: str, params: Any = None) -> dict[str, Any] | None:
+        sql, p = self._to_named(sql, params)
+        async with self._read() as conn:
+            result = await conn.execute(text(sql), p)
+            row = result.mappings().first()
+            return dict(row) if row is not None else None
+
+    async def execute(self, sql: str, params: Any = None) -> None:
+        sql, p = self._to_named(sql, params)
+        async with self._tx() as conn:
+            await conn.execute(text(sql), p)
+
+    def transaction(self):
+        return self._tx()
+
     # ── Schema management ──────────────────────────────────────────────
 
     async def _apply_schema(self) -> None:
@@ -759,8 +807,8 @@ class StateDB:
                 text(
                     "INSERT INTO progressions (id, created_at, collection) VALUES (:id, :ca, :col) "
                     "ON CONFLICT (id) DO NOTHING"
-                ).bindparams(bindparam("col", type_=JSON)),
-                {"id": progression_id, "ca": time.time(), "col": collection or []},
+                ),
+                {"id": progression_id, "ca": time.time(), "col": json.dumps(collection or [])},
             )
 
     async def get_progression(self, progression_id: str) -> list[str]:
@@ -778,7 +826,8 @@ class StateDB:
         if not row:
             return []
         val = row["collection"]
-        # asyncpg returns native list; aiosqlite may return str
+        # collection is a TEXT column holding a JSON array string; both drivers
+        # return it as str, so decode here.
         if isinstance(val, str):
             val = json.loads(val)
         return val
@@ -793,11 +842,12 @@ class StateDB:
                 "(SELECT 1 FROM json_each(progressions.collection) WHERE value=:v)"
             )
         else:
+            # collection is a TEXT column; cast to jsonb at use-site to append.
             sql = (
                 "UPDATE progressions "
-                "SET collection = collection || to_jsonb(:v::text) "
+                "SET collection = (collection::jsonb || to_jsonb(:v::text))::text "
                 "WHERE id=:id AND NOT EXISTS "
-                "(SELECT 1 FROM jsonb_array_elements_text(collection) WHERE value=:v)"
+                "(SELECT 1 FROM jsonb_array_elements_text(collection::jsonb) WHERE value=:v)"
             )
         async with self._tx() as conn:
             await conn.execute(text(sql), {"v": message_id, "id": progression_id})

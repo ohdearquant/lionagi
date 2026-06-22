@@ -56,6 +56,13 @@ async def _run_parity_suite(db: StateDB) -> None:
     assert row["status"] == "running"
     assert row["id"] == session_id
 
+    # 1b. append_to_progression is ordered and idempotent (the json-array path)
+    await db.append_to_progression(prog_id, "m-a")
+    await db.append_to_progression(prog_id, "m-b")
+    await db.append_to_progression(prog_id, "m-a")  # duplicate must be a no-op
+    coll = await db.get_progression(prog_id)
+    assert coll == ["m-a", "m-b"], f"progression append/idempotency failed: {coll!r}"
+
     # 2. insert_message + get_message roundtrip
     msg_id = _uid()
     await db.insert_message(
@@ -122,6 +129,23 @@ async def _run_parity_suite(db: StateDB) -> None:
     # 6. schema_version is '1'
     ver = await db.schema_version()
     assert ver == "1", f"schema_version must be '1', got {ver!r}"
+
+    # 7. insert_session_signal assigns sequential seq (MAX+1 path / PG advisory lock)
+    s1 = await db.insert_session_signal(
+        session_id=session_id, kind="started", ts=now, payload={"a": 1}
+    )
+    s2 = await db.insert_session_signal(
+        session_id=session_id, kind="progress", ts=now + 1, payload={"b": 2}
+    )
+    assert (s1, s2) == (1, 2), f"signal seq must be 1,2; got {(s1, s2)}"
+    sigs = await db.get_session_signals_after(session_id, 0)
+    assert [s["seq"] for s in sigs] == [1, 2], f"signals must be ordered: {sigs!r}"
+    p0 = sigs[0]["payload"]
+    if isinstance(p0, str):
+        import json as _json
+
+        p0 = _json.loads(p0)
+    assert p0 == {"a": 1}, f"signal payload roundtrip failed: {p0!r}"
 
 
 # ── SQLite leg (always runs) ──────────────────────────────────────────────────
