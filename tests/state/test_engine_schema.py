@@ -5,7 +5,6 @@
 
 from __future__ import annotations
 
-import os
 import sqlite3
 from pathlib import Path
 
@@ -303,17 +302,12 @@ async def test_metadata_unique_enforcement_present(sqlite_meta_engine):
         assert key in found, f"missing unique enforcement: {key}; found={found}"
 
 
-# ── Postgres leg (gated by LIONAGI_TEST_PG_URL) ───────────────────────────────
-
-_PG_URL = os.environ.get("LIONAGI_TEST_PG_URL")
-pg_skip = pytest.mark.skipif(not _PG_URL, reason="LIONAGI_TEST_PG_URL not set")
+# ── Postgres leg (pg_url fixture: testcontainers, or LIONAGI_TEST_PG_URL) ─────
 
 
-@pg_skip
-async def test_metadata_create_all_postgres():
+async def test_metadata_create_all_postgres(pg_url):
     """metadata.create_all() succeeds against a live Postgres instance."""
-    assert _PG_URL is not None
-    engine = create_async_engine(_PG_URL, echo=False)
+    engine = create_async_engine(pg_url, echo=False)
     try:
         # Use an isolated schema to avoid polluting the default public schema.
         test_schema = "lionagi_test_pass1"

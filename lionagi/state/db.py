@@ -315,6 +315,10 @@ class StateDB:
     async def open(self) -> None:
         if self._engine is not None:
             return
+        if self.dialect == "sqlite":
+            p = self.path
+            if p is not None and str(p) != ":memory:":
+                p.parent.mkdir(parents=True, exist_ok=True)
         self._engine = make_engine(self.url)
         if self.dialect == "sqlite":
             _install_begin_immediate(self._engine.sync_engine)
@@ -367,12 +371,28 @@ class StateDB:
         seq = list(params)
         out: list[str] = []
         i = 0
-        for ch in sql:
-            if ch == "?":
+        in_str = False  # inside a '...' SQL string literal — leave ? untranslated
+        k = 0
+        n = len(sql)
+        while k < n:
+            ch = sql[k]
+            if in_str:
+                out.append(ch)
+                if ch == "'":
+                    if k + 1 < n and sql[k + 1] == "'":  # '' escape — stays in literal
+                        out.append("'")
+                        k += 2
+                        continue
+                    in_str = False
+            elif ch == "'":
+                in_str = True
+                out.append(ch)
+            elif ch == "?":
                 out.append(f":p{i}")
                 i += 1
             else:
                 out.append(ch)
+            k += 1
         if i != len(seq):
             raise ValueError(f"param count mismatch: {i} placeholders, {len(seq)} params")
         return "".join(out), {f"p{j}": v for j, v in enumerate(seq)}
@@ -450,9 +470,10 @@ class StateDB:
             )
             await conn.execute(
                 text(
-                    "INSERT INTO schema_meta (key, value) VALUES ('created_at', CAST(strftime('%s', 'now') AS TEXT)) "
+                    "INSERT INTO schema_meta (key, value) VALUES ('created_at', :created_at) "
                     "ON CONFLICT (key) DO NOTHING"
-                )
+                ),
+                {"created_at": str(int(time.time()))},
             )
             await conn.execute(
                 text(
@@ -863,25 +884,32 @@ class StateDB:
             val = json.loads(val)
         return val
 
-    async def append_to_progression(self, progression_id: str, message_id: str) -> None:
-        """Idempotent append of message_id to the progression JSON array."""
-        if self.dialect == "sqlite":
-            sql = (
+    @staticmethod
+    def _progression_append_sql(dialect: str) -> str:
+        if dialect == "sqlite":
+            return (
                 "UPDATE progressions "
                 "SET collection = json_insert(collection,'$[#]',:v) "
                 "WHERE id=:id AND NOT EXISTS "
                 "(SELECT 1 FROM json_each(progressions.collection) WHERE value=:v)"
             )
-        else:
-            # collection is a TEXT column; cast to jsonb at use-site to append.
-            sql = (
-                "UPDATE progressions "
-                "SET collection = (collection::jsonb || to_jsonb(:v::text))::text "
-                "WHERE id=:id AND NOT EXISTS "
-                "(SELECT 1 FROM jsonb_array_elements_text(collection::jsonb) WHERE value=:v)"
-            )
+        # collection is a TEXT column; cast to jsonb at use-site to append.
+        # CAST(:v AS text) not :v::text — text() does not bind a param immediately
+        # followed by '::', so the postgres-cast form would leave :v unbound.
+        return (
+            "UPDATE progressions "
+            "SET collection = (collection::jsonb || to_jsonb(CAST(:v AS text)))::text "
+            "WHERE id=:id AND NOT EXISTS "
+            "(SELECT 1 FROM jsonb_array_elements_text(collection::jsonb) WHERE value=:v)"
+        )
+
+    async def append_to_progression(self, progression_id: str, message_id: str) -> None:
+        """Idempotent append of message_id to the progression JSON array."""
         async with self._tx() as conn:
-            await conn.execute(text(sql), {"v": message_id, "id": progression_id})
+            await conn.execute(
+                text(self._progression_append_sql(self.dialect)),
+                {"v": message_id, "id": progression_id},
+            )
 
     # ── Sessions ───────────────────────────────────────────────────────
 
@@ -903,7 +931,7 @@ class StateDB:
         async with self._tx() as conn:
             result = await conn.execute(
                 text(
-                    """INSERT INTO sessions (id, created_at, node_metadata, name, user,
+                    """INSERT INTO sessions (id, created_at, node_metadata, name, "user",
                        progression_id, first_msg_id, last_msg_id, updated_at,
                        playbook_name, agent_name, invocation_kind, show_topic,
                        show_play_name, artifacts_path, artifact_contract_json,
@@ -990,17 +1018,30 @@ class StateDB:
             )
         return self._row_to_dict(row) if row else None
 
+    @staticmethod
+    def _touch_activity_sql(dialect: str) -> str:
+        # SQLite MAX(a,b) is a scalar greatest; Postgres MAX() is an aggregate,
+        # so the 2-arg scalar form must be GREATEST() there.
+        if dialect == "sqlite":
+            return (
+                "UPDATE sessions "
+                "SET last_message_at = MAX(COALESCE(last_message_at, 0), :ts), "
+                "    updated_at      = MAX(COALESCE(updated_at, 0), :ts) "
+                "WHERE id = :id"
+            )
+        return (
+            "UPDATE sessions "
+            "SET last_message_at = GREATEST(COALESCE(last_message_at, 0), :ts), "
+            "    updated_at      = GREATEST(COALESCE(updated_at, 0), :ts) "
+            "WHERE id = :id"
+        )
+
     async def touch_session_activity(self, session_id: str, *, at: float | None = None) -> None:
         """Bump last_message_at and updated_at for staleness detection."""
         ts = at if at is not None else time.time()
         async with self._tx() as conn:
             await conn.execute(
-                text(
-                    "UPDATE sessions "
-                    "SET last_message_at = MAX(COALESCE(last_message_at, 0), :ts), "
-                    "    updated_at      = MAX(COALESCE(updated_at, 0), :ts) "
-                    "WHERE id = :id"
-                ),
+                text(self._touch_activity_sql(self.dialect)),
                 {"ts": ts, "id": session_id},
             )
 
@@ -1048,7 +1089,7 @@ class StateDB:
 
         if fields:
             fields["updated_at"] = time.time()
-            sets = ", ".join(f"{k} = :{k}" for k in fields)
+            sets = ", ".join(f'"{k}" = :{k}' for k in fields)
             params = dict(fields)
             params["_id"] = session_id
             async with self._tx() as conn:
@@ -1440,7 +1481,7 @@ class StateDB:
         if not fields:
             return False
         fields["updated_at"] = time.time()
-        sets = ", ".join(f"{k} = :{k}" for k in fields)
+        sets = ", ".join(f'"{k}" = :{k}' for k in fields)
         params = dict(fields)
         params["_name"] = name
         async with self._tx() as conn:
@@ -1615,7 +1656,7 @@ class StateDB:
         sets_parts = []
         bind_params = []
         for k in fields:
-            sets_parts.append(f"{k} = :{k}")
+            sets_parts.append(f'"{k}" = :{k}')
             if k in json_fields:
                 bind_params.append(bindparam(k, type_=JSON))
         params = dict(fields)
@@ -1702,7 +1743,7 @@ class StateDB:
         )
 
         if fields:
-            sets = ", ".join(f"{k} = :{k}" for k in fields)
+            sets = ", ".join(f'"{k}" = :{k}' for k in fields)
             params = dict(fields)
             params["_id"] = run_id
             async with self._tx() as conn:
@@ -1839,7 +1880,7 @@ class StateDB:
             sets_parts = []
             bind_params = []
             for k in fields:
-                sets_parts.append(f"{k} = :{k}")
+                sets_parts.append(f'"{k}" = :{k}')
                 if k in json_fields:
                     bind_params.append(bindparam(k, type_=JSON))
             params = dict(fields)
@@ -2112,7 +2153,7 @@ class StateDB:
         async with self._tx() as conn:
             await conn.execute(
                 text(
-                    """INSERT INTO branches (id, created_at, node_metadata, user, name,
+                    """INSERT INTO branches (id, created_at, node_metadata, "user", name,
                        session_id, progression_id, system_msg_id, model, provider, agent_name)
                        VALUES (:id, :created_at, :node_metadata, :user, :name,
                                :session_id, :progression_id, :system_msg_id, :model, :provider, :agent_name)
@@ -2155,7 +2196,7 @@ class StateDB:
         sets_parts = []
         bind_params = []
         for k in fields:
-            sets_parts.append(f"{k} = :{k}")
+            sets_parts.append(f'"{k}" = :{k}')
             if k in json_fields:
                 bind_params.append(bindparam(k, type_=JSON))
         params = dict(fields)
@@ -2380,7 +2421,7 @@ class StateDB:
 
         if fields:
             fields["updated_at"] = time.time()
-            sets = ", ".join(f"{k} = :{k}" for k in fields)
+            sets = ", ".join(f'"{k}" = :{k}' for k in fields)
             params = dict(fields)
             params["_id"] = show_id
             async with self._tx() as conn:
@@ -2508,7 +2549,7 @@ class StateDB:
             sets_parts = []
             bind_params = []
             for k in fields:
-                sets_parts.append(f"{k} = :{k}")
+                sets_parts.append(f'"{k}" = :{k}')
                 if k in json_fields:
                     bind_params.append(bindparam(k, type_=JSON))
             params = dict(fields)
@@ -2974,7 +3015,7 @@ class StateDB:
         sets_parts = []
         bind_params = []
         for k in fields:
-            sets_parts.append(f"{k} = :{k}")
+            sets_parts.append(f'"{k}" = :{k}')
             if k in json_fields:
                 bind_params.append(bindparam(k, type_=JSON))
         params = dict(fields)

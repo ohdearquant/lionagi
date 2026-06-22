@@ -1,16 +1,19 @@
 # Copyright (c) 2023-2026, HaiyangLi <quantocean.li at gmail dot com>
 # SPDX-License-Identifier: Apache-2.0
 
-"""Dual-backend parity tests: SQLite (in-memory) + PostgreSQL (gated).
+"""Dual-backend parity tests: SQLite (in-memory) + PostgreSQL.
 
-SQLite leg always runs; Postgres leg requires LIONAGI_TEST_PG_URL env var.
+SQLite leg always runs. The Postgres leg uses LIONAGI_TEST_PG_URL when set,
+otherwise it auto-provisions a throwaway Postgres via testcontainers (Docker).
+It is skipped locally only when neither is available, and is required to run in
+CI (a missing backend there is a hard failure, never a silent skip).
+
 Both legs run the same contract: create session, insert messages, check
 progression, run update_status with reason, verify transition row written.
 """
 
 from __future__ import annotations
 
-import os
 import time
 import uuid
 
@@ -18,11 +21,6 @@ import pytest
 
 from lionagi.state.db import StateDB
 from lionagi.state.reasons import RunReasons
-
-# ── Postgres gating ───────────────────────────────────────────────────────────
-
-_PG_URL = os.environ.get("LIONAGI_TEST_PG_URL")
-pg_skip = pytest.mark.skipif(not _PG_URL, reason="LIONAGI_TEST_PG_URL not set")
 
 # ── Shared helpers ────────────────────────────────────────────────────────────
 
@@ -62,6 +60,32 @@ async def _run_parity_suite(db: StateDB) -> None:
     await db.append_to_progression(prog_id, "m-a")  # duplicate must be a no-op
     coll = await db.get_progression(prog_id)
     assert coll == ["m-a", "m-b"], f"progression append/idempotency failed: {coll!r}"
+
+    # 1c. touch_session_activity is monotonic (GREATEST on pg / scalar MAX on sqlite)
+    await db.touch_session_activity(session_id, at=now + 1000)
+    bumped = (await db.get_session(session_id))["last_message_at"]
+    await db.touch_session_activity(session_id, at=now - 1000)  # older ts must not regress
+    held = (await db.get_session(session_id))["last_message_at"]
+    assert held == bumped, "touch_session_activity must be monotonic"
+
+    # 1d. update a reserved-word column ("user") through the dynamic SET builder.
+    # PostgreSQL rejects an unquoted `user` identifier; the builder must quote it.
+    await db.update_session(session_id, user="alice")
+    assert (await db.get_session(session_id))["user"] == "alice"
+
+    # 1e. create_branch + get_branch round-trip (branches INSERT also names "user")
+    branch_id = _uid()
+    await db.create_branch(
+        {
+            "id": branch_id,
+            "session_id": session_id,
+            "progression_id": prog_id,
+            "user": "alice",
+            "name": "main",
+        }
+    )
+    br = await db.get_branch(branch_id)
+    assert br is not None and br["user"] == "alice" and br["name"] == "main"
 
     # 2. insert_message + get_message roundtrip
     msg_id = _uid()
@@ -223,14 +247,12 @@ async def test_sqlite_concurrent_writes(tmp_path):
         await db.close()
 
 
-# ── Postgres leg (gated by LIONAGI_TEST_PG_URL) ───────────────────────────────
+# ── Postgres leg (pg_url fixture: testcontainers, or LIONAGI_TEST_PG_URL) ─────
 
 
-@pg_skip
-async def test_postgres_parity():
+async def test_postgres_parity(pg_url):
     """Full parity suite against a live PostgreSQL instance."""
-    assert _PG_URL is not None
-    db = StateDB(url=_PG_URL)
+    db = StateDB(url=pg_url)
     await db.open()
     try:
         assert db.dialect == "postgresql"
@@ -239,13 +261,11 @@ async def test_postgres_parity():
         await db.close()
 
 
-@pg_skip
-async def test_postgres_schema_creates_all_tables():
+async def test_postgres_schema_creates_all_tables(pg_url):
     """metadata.create_all() produces the expected set of tables in Postgres."""
     import sqlalchemy as sa
 
-    assert _PG_URL is not None
-    db = StateDB(url=_PG_URL)
+    db = StateDB(url=pg_url)
     await db.open()
     try:
         async with db._read() as conn:
@@ -266,3 +286,60 @@ async def test_postgres_schema_creates_all_tables():
         assert not missing, f"Postgres missing tables: {missing}"
     finally:
         await db.close()
+
+
+# ── Dialect SQL correctness (static — no live connection, always runs) ─────────
+# Guards the Postgres-breaking SQL forms that the gated live leg above would only
+# catch when LIONAGI_TEST_PG_URL is set.
+
+
+def test_pg_progression_append_binds_v():
+    """to_jsonb(CAST(:v AS text)) keeps :v bindable; :v::text would not."""
+    from sqlalchemy import text
+
+    sql = StateDB._progression_append_sql("postgresql")
+    assert ":v::" not in sql, "':v::' prevents text() from binding :v"
+    binds = text(sql).compile().params
+    assert "v" in binds and "id" in binds, f"binds not recognized: {binds}"
+
+
+def test_sqlite_progression_append_uses_json_insert():
+    sql = StateDB._progression_append_sql("sqlite")
+    assert "json_insert" in sql and "json_each" in sql
+
+
+def test_pg_touch_activity_uses_greatest():
+    """Postgres timestamp-monotonic update must use GREATEST, not scalar MAX()."""
+    pg = StateDB._touch_activity_sql("postgresql")
+    assert "GREATEST(" in pg and "MAX(" not in pg
+    sqlite = StateDB._touch_activity_sql("sqlite")
+    assert "MAX(" in sqlite and "GREATEST(" not in sqlite
+
+
+def test_to_named_skips_question_mark_in_string_literal():
+    sql, params = StateDB._to_named("SELECT '?' AS q, ? AS v", ["x"])
+    assert sql == "SELECT '?' AS q, :p0 AS v"
+    assert params == {"p0": "x"}
+
+
+def test_to_named_skips_question_mark_in_like_pattern():
+    sql, params = StateDB._to_named("SELECT * FROM t WHERE name LIKE '%?%' AND id = ?", [5])
+    assert sql == "SELECT * FROM t WHERE name LIKE '%?%' AND id = :p0"
+    assert params == {"p0": 5}
+
+
+def test_to_named_doubled_quote_escape():
+    sql, params = StateDB._to_named("SELECT 'a''?b', ?", ["v"])
+    assert sql == "SELECT 'a''?b', :p0"
+    assert params == {"p0": "v"}
+
+
+def test_to_named_count_mismatch_raises():
+    with pytest.raises(ValueError, match="param count mismatch"):
+        StateDB._to_named("SELECT ?, ?", [1])
+
+
+def test_to_named_named_dict_passthrough():
+    sql, params = StateDB._to_named("SELECT :a", {"a": 1})
+    assert sql == "SELECT :a"
+    assert params == {"a": 1}
