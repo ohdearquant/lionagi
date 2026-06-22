@@ -2,11 +2,11 @@ name: Continuous Integration
 
 on:
   push:
-    branches: [ main, develop, feat/vscode-integration ]
+    branches: [ main, develop ]
     paths-ignore:
       - '**/*.ipynb'
   pull_request:
-    branches: [ main, develop, feat/vscode-integration ]
+    branches: [ main, develop ]
     paths-ignore:
       - '**/*.ipynb'
 
