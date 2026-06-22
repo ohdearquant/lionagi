@@ -5,11 +5,23 @@
 
 from __future__ import annotations
 
+import json
 import re
+import uuid
 from pathlib import Path
 from urllib.parse import urlparse, urlunparse
 
 from lionagi._paths import LIONAGI_HOME
+
+
+def _json_serializer(obj):
+    if isinstance(obj, uuid.UUID):
+        return str(obj)
+    raise TypeError(f"Object of type {type(obj).__name__} is not JSON serializable")
+
+
+def _dumps_with_uuid(value):
+    return json.dumps(value, default=_json_serializer)
 
 
 def normalize_state_db_url(value: str | Path | None) -> str:
@@ -22,6 +34,10 @@ def normalize_state_db_url(value: str | Path | None) -> str:
         return f"sqlite+aiosqlite:///{value.resolve()}"
 
     s = str(value)
+
+    # Special-case SQLite in-memory shorthand.
+    if s == ":memory:":
+        return "sqlite+aiosqlite:///:memory:"
 
     # Bare filesystem path — no scheme detected.
     if "://" not in s:
@@ -90,7 +106,7 @@ def make_engine(url: str, **overrides):
     dialect = dialect_of(url)
 
     if dialect == "sqlite":
-        kwargs: dict = {"echo": False}
+        kwargs: dict = {"echo": False, "json_serializer": _dumps_with_uuid}
         kwargs.update(overrides)
         engine = create_async_engine(url, **kwargs)
 
@@ -128,7 +144,7 @@ def make_engine(url: str, **overrides):
             # Strip sslmode from url so asyncpg does not receive an unknown param.
             url = re.sub(r"[?&]sslmode=[^&]*", "", url).rstrip("?")
 
-    kwargs = {"pool_pre_ping": True, "echo": False}
+    kwargs = {"pool_pre_ping": True, "echo": False, "json_serializer": _dumps_with_uuid}
     if connect_args:
         kwargs["connect_args"] = connect_args
     kwargs.update(overrides)
