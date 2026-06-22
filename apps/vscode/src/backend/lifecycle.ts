@@ -56,6 +56,10 @@ function resolveSpawnSpec(explicitPython: string): SpawnSpec {
 
   // 3. uv-managed source checkout (e.g. Codespaces): sync the studio extra
   //    into .venv first, then run that interpreter. Zero-config from source.
+  //    --no-dev skips the dev group (sphinx, mkdocs, pyarrow, jupyter, the
+  //    pytest suite, profilers) the studio server never imports — the studio
+  //    extra itself is four light deps, so this is most of the first-run wait.
+  //    uv re-adds the dev group on demand if the user later runs the test suite.
   if (ws && venvPython && fs.existsSync(path.join(ws, "pyproject.toml"))) {
     const uv = resolveUv();
     if (uv) {
@@ -65,7 +69,7 @@ function resolveSpawnSpec(explicitPython: string): SpawnSpec {
         cwd: ws,
         provision: {
           command: uv,
-          args: ["sync", "--extra", "studio"],
+          args: ["sync", "--extra", "studio", "--no-dev"],
           cwd: ws,
         },
       };
@@ -540,7 +544,9 @@ export class BackendManager implements vscode.Disposable {
     shouldAbort?: () => boolean
   ): Promise<boolean> {
     const deadline = Date.now() + timeoutMs;
-    const interval = 1_000;
+    // Tight cadence so Den attaches within a few hundred ms of the spawned
+    // backend going live, instead of waiting up to a full second on the gap.
+    const interval = 400;
 
     while (Date.now() < deadline) {
       if (shouldAbort?.()) {
