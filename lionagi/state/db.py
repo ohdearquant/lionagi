@@ -314,10 +314,14 @@ class StateDB:
         return self._db
 
     async def _apply_pragmas(self) -> None:
+        # busy_timeout MUST be first: the journal_mode=WAL switch below takes a
+        # momentary exclusive lock, so when a second connection initialises the
+        # same file concurrently (the mirror is "just another writer") it must
+        # wait out the timeout rather than fail instantly with "database is locked".
+        await self.db.execute("PRAGMA busy_timeout = 5000")
         await self.db.execute("PRAGMA journal_mode = WAL")
         await self.db.execute("PRAGMA synchronous = NORMAL")
         await self.db.execute("PRAGMA foreign_keys = ON")
-        await self.db.execute("PRAGMA busy_timeout = 5000")
         await self.db.execute("PRAGMA cache_size = -64000")
         await self.db.execute("PRAGMA wal_autocheckpoint = 1000")
 
@@ -808,6 +812,50 @@ class StateDB:
             )
             await self.db.commit()
 
+    async def set_session_provenance(
+        self,
+        session_id: str,
+        *,
+        node_metadata: dict[str, Any] | None = None,
+        project: str | None = None,
+        project_source: str | None = None,
+    ) -> None:
+        """Write attribution/provenance fields without touching updated_at.
+
+        Project bucketing and conversation lineage describe where a session came
+        from, not whether it is live, so they must never move the liveness clock
+        (which reconcile_session_status and the phantom reaper read). project and
+        project_source are written together (the source is meaningless alone).
+        The session update and the projects-registry upsert run as one locked
+        write so neither can commit without the other.
+        """
+        sets: list[str] = []
+        vals: list[Any] = []
+        if node_metadata is not None:
+            sets.append("node_metadata = ?")
+            vals.append(_to_json_column(node_metadata))
+        if project is not None:
+            sets.append("project = ?")
+            vals.append(project)
+            sets.append("project_source = ?")
+            vals.append(project_source)
+        if not sets:
+            return
+        vals.append(session_id)
+        async with self._write_lock:
+            await self.db.execute("BEGIN IMMEDIATE")
+            try:
+                await self.db.execute(
+                    f"UPDATE sessions SET {', '.join(sets)} WHERE id = ?",  # noqa: S608
+                    vals,
+                )
+                if project:
+                    await self._upsert_project_stmt(project, project_source or "cwd_dir")
+                await self.db.commit()
+            except BaseException:
+                await self.db.rollback()
+                raise
+
     # ── Status reason model ───────────────────────────────────────────
 
     async def _route_status_change(
@@ -990,7 +1038,7 @@ class StateDB:
 
     # ── Projects ──────────────────────────────────────────────────────
 
-    async def register_project(
+    async def _upsert_project_stmt(
         self,
         name: str,
         source: str,
@@ -998,7 +1046,7 @@ class StateDB:
         path: str | None = None,
         github: str | None = None,
     ) -> None:
-        """Upsert a project entry; bumps last_seen_at on conflict."""
+        """Projects-registry upsert statement only; caller owns the lock and commit."""
         now = time.time()
         await self.db.execute(
             """INSERT INTO projects
@@ -1016,6 +1064,17 @@ class StateDB:
                    github = COALESCE(excluded.github, projects.github)""",
             (name, source, path, github, now, now, now),
         )
+
+    async def register_project(
+        self,
+        name: str,
+        source: str,
+        *,
+        path: str | None = None,
+        github: str | None = None,
+    ) -> None:
+        """Upsert a project entry; bumps last_seen_at on conflict."""
+        await self._upsert_project_stmt(name, source, path=path, github=github)
         await self.db.commit()
 
     async def create_project(

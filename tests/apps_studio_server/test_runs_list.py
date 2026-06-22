@@ -28,16 +28,20 @@ async def _seed_sessions(db_path: Path, sessions: list[dict]) -> None:
         for s in sessions:
             pid = str(uuid.uuid4())
             await db.create_progression(pid)
-            await db.create_session(
-                {
-                    "id": s.get("id", str(uuid.uuid4())),
-                    "progression_id": pid,
-                    "name": s.get("name"),
-                    "status": s.get("status", "completed"),
-                    "playbook_name": s.get("playbook_name"),
-                    "started_at": s.get("started_at", time.time()),
-                }
-            )
+            payload = {
+                "id": s.get("id", str(uuid.uuid4())),
+                "progression_id": pid,
+                "name": s.get("name"),
+                "status": s.get("status", "completed"),
+                "playbook_name": s.get("playbook_name"),
+                "started_at": s.get("started_at", time.time()),
+                "project": s.get("project"),
+            }
+            # Only forward updated_at when set — create_session treats a present
+            # key as authoritative and would otherwise write a NULL timestamp.
+            if "updated_at" in s:
+                payload["updated_at"] = s["updated_at"]
+            await db.create_session(payload)
 
 
 def _make_client(tmp_path, monkeypatch, db_path: Path) -> TestClient:
@@ -113,6 +117,58 @@ def test_runs_list_invalid_page_rejected(tmp_path, monkeypatch):
     client = _make_client(tmp_path, monkeypatch, db_path)
     r = client.get("/api/runs?page=0")
     assert r.status_code == 422
+
+
+# ─── GET /api/runs/projects — per-project counts for the lazy runs explorer ───
+
+
+def test_runs_projects_groups_counts_and_sorted(tmp_path, monkeypatch):
+    db_path = tmp_path / "state.db"
+    base = time.time()
+    sessions = (
+        [
+            {"id": str(uuid.uuid4()), "project": "org/alpha", "updated_at": base - 100}
+            for _ in range(3)
+        ]
+        + [
+            {"id": str(uuid.uuid4()), "project": "org/beta", "updated_at": base - 10}
+            for _ in range(2)
+        ]
+        + [{"id": str(uuid.uuid4()), "project": None, "updated_at": base - 50}]
+    )
+    _run(_seed_sessions(db_path, sessions))
+    client = _make_client(tmp_path, monkeypatch, db_path)
+
+    r = client.get("/api/runs/projects")
+    assert r.status_code == 200
+    data = r.json()
+    assert data["total"] == 6
+    counts = {g["project"]: g["count"] for g in data["projects"]}
+    assert counts == {"org/alpha": 3, "org/beta": 2, None: 1}
+    # Sorted by last_activity desc → beta (newest) first; never shadowed by /runs/{id}.
+    order = [g["project"] for g in data["projects"]]
+    assert order[0] == "org/beta"
+    activities = [g["last_activity"] for g in data["projects"]]
+    assert activities == sorted(activities, reverse=True)
+
+
+def test_runs_list_project_null_filter(tmp_path, monkeypatch):
+    db_path = tmp_path / "state.db"
+    sessions = [{"id": str(uuid.uuid4()), "project": "org/alpha"} for _ in range(2)] + [
+        {"id": str(uuid.uuid4()), "project": None} for _ in range(3)
+    ]
+    _run(_seed_sessions(db_path, sessions))
+    client = _make_client(tmp_path, monkeypatch, db_path)
+
+    r = client.get("/api/runs?project_null=true")
+    assert r.status_code == 200
+    data = r.json()
+    assert data["total"] == 3
+    assert all(run["project"] is None for run in data["runs"])
+
+    # A positive project filter returns only that project's runs.
+    r2 = client.get("/api/runs?project=org/alpha")
+    assert r2.json()["total"] == 2
 
 
 # ─── ADR-0024/FIX-1: UNRESPONSIVE maps to 'stale' in runs list ───────────────

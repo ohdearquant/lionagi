@@ -67,9 +67,11 @@ def _fresh_launch_state():
 
     svc._launch_semaphore = None
     svc._detached_tasks.clear()
+    svc._user_cancelled.clear()
     yield
     svc._launch_semaphore = None
     svc._detached_tasks.clear()
+    svc._user_cancelled.clear()
 
 
 # ---------------------------------------------------------------------------
@@ -156,15 +158,16 @@ class TestLaunchInvalidKind:
         resp = client.post("/api/launches", json={"action_kind": "magic"})
         assert resp.status_code == 422, resp.text
 
-    def test_flow_yaml_kind_rejected(self, tmp_path, monkeypatch):
-        """flow_yaml is not supported for on-demand launches — must return 422."""
+    def test_flow_yaml_without_spec_rejected(self, tmp_path, monkeypatch):
+        """flow_yaml without action_flow_yaml must return 422."""
         client = _make_client(monkeypatch, fake_db=tmp_path / "state.db")
 
         resp = client.post(
             "/api/launches",
-            json={"action_kind": "flow_yaml", "action_flow_yaml": "prompt: hi\n"},
+            json={"action_kind": "flow_yaml", "action_model": "sonnet"},
         )
         assert resp.status_code == 422, resp.text
+        assert "action_flow_yaml" in resp.json()["detail"]
 
     def test_missing_action_kind_returns_422(self, tmp_path, monkeypatch):
         """Missing action_kind must return 422 (Pydantic required field)."""
@@ -389,12 +392,24 @@ class TestLaunchArgvPath:
         with pytest.raises(ValueError, match="not supported"):
             _validate_request({"action_kind": "unknown"})
 
-    def test_validate_request_rejects_flow_yaml_kind(self):
-        """_validate_request must reject flow_yaml action_kind."""
+    def test_validate_request_rejects_flow_yaml_without_spec(self):
+        """_validate_request must reject flow_yaml when action_flow_yaml is absent."""
         from lionagi.studio.services.launches import _validate_request
 
-        with pytest.raises(ValueError, match="not supported"):
+        with pytest.raises(ValueError, match="required"):
             _validate_request({"action_kind": "flow_yaml"})
+
+    def test_validate_request_accepts_valid_flow_yaml(self):
+        """_validate_request must not raise for a valid flow_yaml request."""
+        from lionagi.studio.services.launches import _validate_request
+
+        _validate_request(
+            {
+                "action_kind": "flow_yaml",
+                "action_flow_yaml": "prompt: hi\n",
+                "action_model": "sonnet",
+            }
+        )
 
     def test_validate_request_accepts_valid_agent(self):
         """_validate_request must not raise for a clean agent request."""
@@ -1101,3 +1116,218 @@ class TestCodingKindRequiresTestCmd:
         assert resp.status_code == 422, resp.text
         assert "test_cmd" in resp.json()["detail"]
         mock_db.create_invocation.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+# cancel_launch — POST /api/invocations/{id}/cancel
+# ---------------------------------------------------------------------------
+
+
+class TestCancelLaunch:
+    """cancel_launch() cancels an in-flight task and raises 404 for unknown ids."""
+
+    def test_cancel_returns_cancelling(self):
+        """cancel_launch returns {invocation_id, status:'cancelling'} for an in-flight task."""
+        import contextlib
+
+        import lionagi.studio.services.launches as svc
+
+        async def _run():
+            svc._detached_tasks.clear()
+            svc._user_cancelled.clear()
+            task = asyncio.create_task(asyncio.sleep(3600), name="launch-TESTINV")
+            svc._detached_tasks.add(task)
+            result = await svc.cancel_launch("TESTINV")
+            assert result == {"invocation_id": "TESTINV", "status": "cancelling"}
+            with contextlib.suppress(asyncio.CancelledError):
+                await task
+            assert task.cancelled()
+            svc._detached_tasks.discard(task)
+            svc._user_cancelled.discard("TESTINV")
+
+        asyncio.run(_run())
+
+    def test_cancel_missing_raises_404(self):
+        """cancel_launch raises HTTPException(404) for an unknown invocation_id."""
+        from fastapi import HTTPException
+
+        import lionagi.studio.services.launches as svc
+
+        async def _run():
+            svc._detached_tasks.clear()
+            with pytest.raises(HTTPException) as exc_info:
+                await svc.cancel_launch("missing")
+            assert exc_info.value.status_code == 404
+
+        asyncio.run(_run())
+
+
+# ---------------------------------------------------------------------------
+# End-to-end smoke — the control loop the Den extension drives
+# ---------------------------------------------------------------------------
+
+
+class TestLaunchCancelRetrySmoke:
+    """launch -> observe -> cancel -> retry, through the real launch/cancel service
+    layer and task lifecycle. Only the subprocess (spawn_and_wait), the argv builder,
+    and StateDB are stubbed, so no process spawns and no real DB is touched; the run
+    admission, detached-task naming, user-cancel marking, and cancelled terminal row
+    are all exercised for real. (argv construction has its own coverage above.)"""
+
+    def test_launch_cancel_retry_end_to_end(self):
+        import contextlib
+
+        import lionagi.studio.services.launches as svc
+        from lionagi.state.reasons import RunReasons
+
+        terminal_rows: list[dict] = []
+
+        mock_db = AsyncMock()
+        mock_db.create_invocation = AsyncMock()
+        mock_db.update_invocation = AsyncMock()
+
+        async def _capture_status(entity_type, entity_id, **kw):
+            terminal_rows.append({"id": entity_id, **kw})
+
+        mock_db.update_status = _capture_status
+
+        async def _blocking_spawn(argv, inv_id, *, tmp_path=None):
+            await asyncio.sleep(999)  # block until the task is cancelled
+            return (0, "")
+
+        req = {"action_kind": "agent", "action_model": "sonnet", "action_prompt": "hi"}
+
+        def _named_task(name: str) -> asyncio.Task:
+            return next(t for t in svc._detached_tasks if t.get_name() == name)
+
+        async def _run():
+            with (
+                patch(
+                    "lionagi.studio.services.launches.build_argv",
+                    return_value=(["uv", "run", "li", "agent", "--", "sonnet", "hi"], None),
+                ),
+                patch("lionagi.studio.services.launches.StateDB") as MockDB,
+                patch(
+                    "lionagi.studio.scheduler.subprocess.spawn_and_wait",
+                    side_effect=_blocking_spawn,
+                ),
+            ):
+                MockDB.return_value.__aenter__ = AsyncMock(return_value=mock_db)
+                MockDB.return_value.__aexit__ = AsyncMock(return_value=False)
+
+                # 1. LAUNCH — the run goes in-flight and becomes observable.
+                first = await svc.launch(dict(req))
+                inv1 = first["invocation_id"]
+                assert len(inv1) == 12
+                await asyncio.sleep(0)  # let the detached task reach spawn_and_wait
+                task1 = _named_task(f"launch-{inv1}")
+                assert not task1.done()  # live == what the Run Tree observes
+
+                # 2. CANCEL — user-initiated stop of the in-flight run.
+                cancelled = await svc.cancel_launch(inv1)
+                assert cancelled == {"invocation_id": inv1, "status": "cancelling"}
+                assert inv1 in svc._user_cancelled
+                with contextlib.suppress(asyncio.CancelledError):
+                    await task1
+                assert task1.cancelled()
+                # the cancelled terminal row is what the tree then renders.
+                row = next(r for r in terminal_rows if r["id"] == inv1)
+                assert row["new_status"] == "cancelled"
+                assert row["reason_code"] == RunReasons.CANCELLED_SYSTEM
+                assert row["reason_summary"] == "Launch cancelled by user."
+
+                # 3. RETRY — re-launching the same request yields a fresh invocation.
+                await asyncio.sleep(0)  # flush done-callbacks (semaphore release)
+                second = await svc.launch(dict(req))
+                inv2 = second["invocation_id"]
+                assert inv2 != inv1
+                await asyncio.sleep(0)
+                task2 = _named_task(f"launch-{inv2}")
+                assert not task2.done()
+
+                # cleanup: cancel the retry task so the loop closes with no stragglers.
+                task2.cancel()
+                with contextlib.suppress(asyncio.CancelledError):
+                    await task2
+
+        asyncio.run(_run())
+
+
+# ---------------------------------------------------------------------------
+# flow_yaml kind — YAML-driven flow launch
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.integration
+class TestLaunchFlowYamlKind:
+    def test_launch_flow_yaml_returns_202(self, tmp_path, monkeypatch):
+        """POST /api/launches with action_kind=flow_yaml and a YAML spec must return 202."""
+        _stub_db_and_spawn(monkeypatch)
+        # Real build_argv runs here (only spawn is stubbed) and writes the spec to a
+        # temp file the stubbed spawn never cleans up — land it in tmp_path so it is
+        # auto-removed instead of leaking into the system temp dir.
+        monkeypatch.setattr("tempfile.tempdir", str(tmp_path))
+        client = _make_client(monkeypatch, fake_db=tmp_path / "state.db")
+
+        resp = client.post(
+            "/api/launches",
+            json={
+                "action_kind": "flow_yaml",
+                "action_flow_yaml": "prompt: hi\n",
+                "action_model": "sonnet",
+            },
+        )
+        assert resp.status_code == 202, resp.text
+        data = resp.json()
+        assert "invocation_id" in data
+        assert data["action_kind"] == "flow_yaml"
+
+    def test_launch_flow_yaml_missing_spec_422(self, tmp_path, monkeypatch):
+        """POST /api/launches with action_kind=flow_yaml but no spec must return 422."""
+        client = _make_client(monkeypatch, fake_db=tmp_path / "state.db")
+
+        resp = client.post(
+            "/api/launches",
+            json={"action_kind": "flow_yaml", "action_model": "sonnet"},
+        )
+        assert resp.status_code == 422, resp.text
+        assert "action_flow_yaml" in resp.json()["detail"]
+
+    def test_flow_yaml_schedule_carries_yaml(self, monkeypatch):
+        """launch() must forward action_flow_yaml into the schedule dict passed to build_argv."""
+        import lionagi.studio.services.launches as svc
+
+        captured = {}
+
+        def _fake_build_argv(schedule, ctx):
+            captured["schedule"] = schedule
+            return (
+                ["uv", "run", "li", "o", "flow", "-f", "/tmp/x.yaml", "--", "sonnet"],
+                "/tmp/x.yaml",
+            )
+
+        def _consume(coro, **kw):
+            coro.close()
+            return MagicMock()
+
+        with (
+            patch("lionagi.studio.services.launches.build_argv", side_effect=_fake_build_argv),
+            patch("lionagi.studio.services.launches.StateDB") as MockDB,
+            patch("lionagi.studio.services.launches.asyncio.create_task", side_effect=_consume),
+        ):
+            mock_db = AsyncMock()
+            mock_db.create_invocation = AsyncMock()
+            MockDB.return_value.__aenter__ = AsyncMock(return_value=mock_db)
+            MockDB.return_value.__aexit__ = AsyncMock(return_value=False)
+            asyncio.run(
+                svc.launch(
+                    {
+                        "action_kind": "flow_yaml",
+                        "action_flow_yaml": "prompt: hi\n",
+                        "action_model": "sonnet",
+                    }
+                )
+            )
+
+        assert captured["schedule"]["action_kind"] == "flow_yaml"
+        assert captured["schedule"]["action_flow_yaml"] == "prompt: hi\n"

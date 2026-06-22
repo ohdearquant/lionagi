@@ -1,0 +1,13 @@
+src/**
+esbuild.js
+tsconfig.json
+.vscode/**
+**/*.map
+node_modules/**
+.gitignore
+**/*.ts
+!out/**
+!media/**
+!package.json
+!README.md
+!LICENSE

@@ -2,11 +2,11 @@ name: Continuous Integration
 
 on:
   push:
-    branches: [ main, develop ]
+    branches: [ main, develop, feat/vscode-integration ]
     paths-ignore:
       - '**/*.ipynb'
   pull_request:
-    branches: [ main, develop ]
+    branches: [ main, develop, feat/vscode-integration ]
     paths-ignore:
       - '**/*.ipynb'
 
@@ -121,6 +121,27 @@ jobs:
         npm run typecheck
     - name: Build
       run: npm run build
+
+  vscode:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: apps/vscode
+    steps:
+    - uses: actions/checkout@v6
+    - uses: actions/setup-node@v6
+      with:
+        node-version: '22'
+        cache: 'npm'
+        cache-dependency-path: apps/vscode/package-lock.json
+    - name: Install dependencies
+      run: npm ci
+    - name: Typecheck
+      run: npm run typecheck
+    - name: Build
+      run: npm run compile
+    - name: Test
+      run: npm run test
 
   marketplace:
     runs-on: ubuntu-latest
