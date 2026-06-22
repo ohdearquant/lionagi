@@ -163,9 +163,9 @@ describe("BackendManager spawn pre-flight", () => {
     probeExits: number[]; // exit code per `-c` import probe, in order
     syncExit?: number; // exit code for the `uv sync` repair
     serverHealthy?: boolean; // flip the backend healthy when the server spawns
-  }): { probes: number; sync: number; server: number } {
-    const calls = { probes: 0, sync: 0, server: 0 };
-    spawnMock.mockImplementation((_cmd: string, args?: readonly string[]) => {
+  }): { probes: number; sync: number; server: number; serverCmd: string } {
+    const calls = { probes: 0, sync: 0, server: 0, serverCmd: "" };
+    spawnMock.mockImplementation((cmd: string, args?: readonly string[]) => {
       const argv = args ?? [];
       if (argv[0] === "-c") {
         calls.probes++;
@@ -177,6 +177,7 @@ describe("BackendManager spawn pre-flight", () => {
       }
       if (argv[0] === "-m") {
         calls.server++;
+        calls.serverCmd = cmd;
         if (opts.serverHealthy) {
           healthy = true;
         }
@@ -200,20 +201,28 @@ describe("BackendManager spawn pre-flight", () => {
 
   // Make resolveSpawnSpec land on the existing-.venv case (2) with a uv repair:
   // a workspace folder, a present .venv python + pyproject.toml, and a uv binary.
-  function stubUvWorkspaceVenv(): void {
+  // Mirror production's platform-specific interpreter and uv names exactly so this
+  // still selects case 2 on Windows (Scripts/python.exe + uv.exe), not the case-3
+  // source-checkout fallback. Returns the resolved venv interpreter for assertions.
+  function stubUvWorkspaceVenv(): string {
     const ws = "/ws";
     (mockWorkspace as { workspaceFolders?: unknown }).workspaceFolders = [
       { uri: { fsPath: ws } },
     ];
-    const venvPython = path.join(ws, ".venv", "bin", "python");
+    const venvPython =
+      process.platform === "win32"
+        ? path.join(ws, ".venv", "Scripts", "python.exe")
+        : path.join(ws, ".venv", "bin", "python");
+    const uvLeaf = process.platform === "win32" ? "uv.exe" : "uv";
     existsSyncMock.mockImplementation((p: fs.PathLike) => {
       const s = String(p);
       return (
         s === venvPython ||
         s === path.join(ws, "pyproject.toml") ||
-        s.endsWith(`${path.sep}uv`)
+        s.endsWith(`${path.sep}${uvLeaf}`)
       );
     });
+    return venvPython;
   }
 
   beforeEach(() => {
@@ -248,6 +257,7 @@ describe("BackendManager spawn pre-flight", () => {
     bm = makeSpawnManager("");
     await bm.start();
     expect(bm.state).toBe("error");
+    expect(calls.probes).toBe(1); // one preflight probe, no repair to re-probe
     expect(calls.server).toBe(0);
     expect(mockWindow.showErrorMessage).toHaveBeenCalled();
   });
@@ -257,17 +267,20 @@ describe("BackendManager spawn pre-flight", () => {
     bm = makeSpawnManager("");
     await bm.start();
     expect(bm.state).toBe("running");
+    expect(calls.probes).toBe(1); // single preflight probe passes, no repair
     expect(calls.server).toBe(1);
   });
 
   it("repairs a studio-less workspace .venv in place, then runs", async () => {
-    stubUvWorkspaceVenv();
+    const venvPython = stubUvWorkspaceVenv();
     mockWindow.withProgress.mockImplementation(
       (_opts: unknown, task: (p: unknown, t: unknown) => Promise<unknown>) =>
         task(undefined, undefined)
     );
     // First import probe fails (studio missing) → uv sync repairs → second probe
-    // passes → server spawns.
+    // passes → server spawns. probes===2 proves the re-probe after repair ran:
+    // this is case 2 (preflight + repair), not a case-3 fall-through that would
+    // skip preflight entirely (0 probes). serverCmd pins the venv interpreter.
     const calls = installRouter({
       probeExits: [1, 0],
       syncExit: 0,
@@ -276,8 +289,10 @@ describe("BackendManager spawn pre-flight", () => {
     bm = makeSpawnManager("");
     await bm.start();
     expect(bm.state).toBe("running");
+    expect(calls.probes).toBe(2);
     expect(calls.sync).toBe(1);
     expect(calls.server).toBe(1);
+    expect(calls.serverCmd).toBe(venvPython);
   });
 
   it("a failed repair still errors without spawning the server", async () => {
@@ -290,6 +305,7 @@ describe("BackendManager spawn pre-flight", () => {
     bm = makeSpawnManager("");
     await bm.start();
     expect(bm.state).toBe("error");
+    expect(calls.probes).toBe(1); // failed repair is not re-probed
     expect(calls.sync).toBe(1);
     expect(calls.server).toBe(0);
     expect(mockWindow.showErrorMessage).toHaveBeenCalled();
