@@ -1,0 +1,46 @@
+# LionAGI
+
+> LionAGI is an Intelligence Operating System for orchestrating multi-agent AI workflows from the command line or Python. It wraps any LLM provider behind a uniform Branch and Session API, with structured output, tool calling, ReAct loops, and DAG-based multi-agent flows.
+
+When generating code that uses LionAGI, prefer these current APIs:
+
+- `branch.operate(instruction=..., response_format=..., tools=...)` is the universal Python LLM turn: it handles tool calls, structured output, and streaming, and routes automatically to API or CLI backends. Use `branch.chat()` for raw message objects and `branch.run()` for live stream chunks. `branch.instruct()` was removed in 0.22.6.
+- `Session` orchestrates multiple branches and executes DAGs via `Session.flow()`.
+- The command-line entrypoint is `li`, with subcommands `agent` (one-shot subagent), `team` (inter-agent messaging), and `orchestrate` / `o` (multi-agent patterns).
+- Install with `pip install lionagi` or `uv add lionagi`. Requires Python 3.10+.
+
+## Docs
+- [Install](https://lionagi.ai/getting-started/install/): install LionAGI and the `li` CLI
+- [First Flow](https://lionagi.ai/getting-started/first-flow/): a minimal end-to-end example
+- [Concepts](https://lionagi.ai/concepts/): Branch, Session, operate, providers, and the mental model
+- [CLI Reference](https://lionagi.ai/cli-reference/): full `li agent`, `li team`, and `li orchestrate` reference
+
+## API
+- [Branch](https://lionagi.ai/api/branch/): the primary conversation and agent surface
+- [Session](https://lionagi.ai/api/session/): multi-branch orchestration and `flow()`
+- [Operations](https://lionagi.ai/api/operations/): operate, chat, parse, ReAct, select, communicate
+- [iModel](https://lionagi.ai/api/imodel/): provider wrapper and endpoint routing
+- [Flow](https://lionagi.ai/api/flow/): DAG and multi-agent execution
+- [Team](https://lionagi.ai/api/team/): inter-agent messaging
+
+## Cookbook
+- [Codebase Audit](https://lionagi.ai/cookbook/codebase-audit/)
+- [Research Synthesis](https://lionagi.ai/cookbook/research-synthesis/)
+- [Multi-Model Pipeline](https://lionagi.ai/cookbook/multi-model-pipeline/)
+- [Team Coordination](https://lionagi.ai/cookbook/team-coordination/)
+- [Resumable Background](https://lionagi.ai/cookbook/resumable-background/)
+
+## Optional
+- [Providers](https://lionagi.ai/reference/providers/): supported LLM providers and configuration
+- [Protocols (core)](https://lionagi.ai/reference/protocols-core/): Element, Pile, Progression, and Graph primitives
+- [Agent & Hooks](https://lionagi.ai/reference/agent-hooks/): agent specs, factory, and lifecycle hooks
+- [Operations & Service](https://lionagi.ai/reference/operations-service/)
+- [Engines](https://lionagi.ai/reference/engines/)
+- [Casts](https://lionagi.ai/reference/casts/)
+- [Outcomes & Work](https://lionagi.ai/reference/outcomes-work/)
+- [Testing, State & Session](https://lionagi.ai/reference/testing-state-session/)
+- [Advanced](https://lionagi.ai/reference/advanced/)
+- [Troubleshooting](https://lionagi.ai/reference/troubleshooting/)
+- [Migration: 0.22.5 to 0.22.6](https://lionagi.ai/migration/0.22.5-to-0.22.6/)
+- [Contributing](https://lionagi.ai/contributing/): development setup and guidelines
+- [Source on GitHub](https://github.com/khive-ai/lionagi): code, issues, and releases
