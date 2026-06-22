@@ -198,7 +198,7 @@
               "markdown": "media/walkthrough/install.md"
             },
             "completionEvents": [
-              "onCommand:den.startBackend"
+              "onContext:den.backendState == 'running'"
             ]
           },
           {
