@@ -374,12 +374,11 @@ async def get_schedule_run(run_id: str) -> dict[str, Any] | None:
             return None
         # Include chain children
         if run.get("chain_depth", 0) == 0:
-            cur = await db.db.execute(
+            rows = await db.fetch_all(
                 "SELECT * FROM schedule_runs WHERE chain_parent_id = ? ORDER BY chain_depth, fired_at",
                 (run_id,),
             )
-            rows = await cur.fetchall()
-            run["chain_children"] = [db._row_to_dict(r) for r in rows]
+            run["chain_children"] = rows
     return run
 
 

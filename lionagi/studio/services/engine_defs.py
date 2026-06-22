@@ -12,6 +12,7 @@ from typing import Any
 
 from fastapi import HTTPException, Query
 from pydantic import BaseModel
+from sqlalchemy.exc import IntegrityError as SAIntegrityError
 
 from lionagi.state.db import DEFAULT_DB_PATH, StateDB
 
@@ -153,7 +154,7 @@ async def create_engine_def(data: dict[str, Any]) -> dict[str, Any]:
     async with StateDB() as db:
         try:
             await db.create_engine_def(defn)
-        except sqlite3.IntegrityError as exc:
+        except (sqlite3.IntegrityError, SAIntegrityError) as exc:
             raise NameConflictError(f"Engine definition name {name!r} already exists") from exc
     return {"id": def_id, "name": name, "created_at": now}
 
@@ -192,7 +193,7 @@ async def update_engine_def(def_id: str, fields: dict[str, Any]) -> dict[str, An
 
         try:
             await db.update_engine_def(def_id, **fields)
-        except sqlite3.IntegrityError as exc:
+        except (sqlite3.IntegrityError, SAIntegrityError) as exc:
             raise NameConflictError(
                 f"Engine definition name {fields.get('name')!r} already exists"
             ) from exc
