@@ -12,6 +12,19 @@ interface SpawnSpec {
   cwd?: string;
   /** One-time dependency install to run (with progress) before spawning. */
   provision?: { command: string; args: string[]; cwd: string };
+  /**
+   * Verify the studio server imports before spawning. Set for interpreters
+   * whose provisioning Den does not control (an explicit den.pythonPath, an
+   * already-present .venv, or system python3); not set when `provision` already
+   * guarantees the deps.
+   */
+  preflight?: boolean;
+  /**
+   * Repair step to run if the preflight import check fails and Den can fix this
+   * interpreter in place (a uv-managed workspace .venv that is missing the
+   * studio extra). Same sync the source-checkout path uses.
+   */
+  repair?: { command: string; args: string[]; cwd: string };
 }
 
 function workspaceRoot(): string | undefined {
@@ -46,12 +59,34 @@ function resolveSpawnSpec(explicitPython: string): SpawnSpec {
 
   // 1. Explicitly configured path.
   if (explicitPython.trim() !== "") {
-    return { command: explicitPython, args: ["-m", "lionagi.studio"] };
+    return {
+      command: explicitPython,
+      args: ["-m", "lionagi.studio"],
+      preflight: true,
+    };
   }
 
-  // 2. Existing workspace venv (already provisioned).
+  // 2. Existing workspace venv (assumed provisioned). Pre-flight it: a .venv the
+  //    user created without the studio extra would otherwise spawn-and-fail. If
+  //    this is a uv-managed project, offer an in-place repair (same sync as the
+  //    source-checkout path) so a studio-less .venv self-heals.
   if (venvPython && fs.existsSync(venvPython)) {
-    return { command: venvPython, args: ["-m", "lionagi.studio"] };
+    const spec: SpawnSpec = {
+      command: venvPython,
+      args: ["-m", "lionagi.studio"],
+      preflight: true,
+    };
+    if (ws && fs.existsSync(path.join(ws, "pyproject.toml"))) {
+      const uv = resolveUv();
+      if (uv) {
+        spec.repair = {
+          command: uv,
+          args: ["sync", "--extra", "studio", "--no-dev"],
+          cwd: ws,
+        };
+      }
+    }
+    return spec;
   }
 
   // 3. uv-managed source checkout (e.g. Codespaces): sync the studio extra
@@ -77,7 +112,7 @@ function resolveSpawnSpec(explicitPython: string): SpawnSpec {
   }
 
   // 4. System python3 fallback (expects `pip install "lionagi[studio]"`).
-  return { command: "python3", args: ["-m", "lionagi.studio"] };
+  return { command: "python3", args: ["-m", "lionagi.studio"], preflight: true };
 }
 
 function delay(ms: number): Promise<void> {
@@ -268,6 +303,43 @@ export class BackendManager implements vscode.Disposable {
       }
     }
 
+    // Pre-flight: for an interpreter whose provisioning Den does not control,
+    // verify the studio server is importable before spawning. A doomed spawn
+    // otherwise costs a process exit plus a multi-second orphan probe before it
+    // can error; this fails fast with an actionable message — and self-heals a
+    // studio-less workspace .venv in place when uv can repair it.
+    if (spec.preflight) {
+      let importable = await this._canImportStudio(spec.command);
+      if (this._superseded(epoch)) {
+        return;
+      }
+      if (!importable && spec.repair) {
+        this._output.appendLine(
+          `[lifecycle] studio server not importable — repairing via ` +
+            `${spec.repair.command} ${spec.repair.args.join(" ")}`
+        );
+        const repaired = await this._provision(spec.repair);
+        if (this._superseded(epoch)) {
+          return;
+        }
+        if (repaired) {
+          importable = await this._canImportStudio(spec.command);
+          if (this._superseded(epoch)) {
+            return;
+          }
+        }
+      }
+      if (!importable) {
+        this.setState("error");
+        void vscode.window.showErrorMessage(
+          `Den: the studio server is not installed for ${spec.command}. ` +
+            `Install it with 'pip install "lionagi[studio]"', set den.pythonPath ` +
+            `to a Python that has it, or set den.url to attach to a running backend.`
+        );
+        return;
+      }
+    }
+
     this._output.appendLine(
       `[lifecycle] spawning via ${spec.command} ${spec.args.join(" ")}`
     );
@@ -444,6 +516,40 @@ export class BackendManager implements vscode.Disposable {
         })
     );
     return ok;
+  }
+
+  /**
+   * Whether `python` can import the studio server. Uses importlib.util.find_spec
+   * (resolves the module spec without executing it) so the happy path does not
+   * pay the full studio import cost twice — once here and again in the spawned
+   * `-m lionagi.studio`. Resolves false on a missing dep, a non-runnable
+   * interpreter (spawn error), or a probe that overruns 5s.
+   */
+  private _canImportStudio(python: string): Promise<boolean> {
+    const code =
+      "import importlib.util as u, sys; " +
+      "sys.exit(0 if u.find_spec('lionagi') and u.find_spec('fastapi') " +
+      "and u.find_spec('uvicorn') else 1)";
+    return new Promise<boolean>((resolve) => {
+      let done = false;
+      const finish = (ok: boolean) => {
+        if (done) {
+          return;
+        }
+        done = true;
+        clearTimeout(timer);
+        resolve(ok);
+      };
+      const probe = child_process.spawn(python, ["-c", code], {
+        stdio: "ignore",
+      });
+      const timer = setTimeout(() => {
+        probe.kill();
+        finish(false);
+      }, 5_000);
+      probe.on("error", () => finish(false));
+      probe.on("exit", (exitCode) => finish(exitCode === 0));
+    });
   }
 
   stop(): void {
