@@ -43,6 +43,13 @@ class RunsProvider implements vscode.TreeDataProvider<RunNode> {
   private readonly _onDidChangeTreeData =
     new vscode.EventEmitter<RunNode | undefined | null | void>();
   readonly onDidChangeTreeData = this._onDidChangeTreeData.event;
+  // Fires AFTER a root load completes and _activeRuns is fresh. Distinct from
+  // onDidChangeTreeData, which fires when a refresh is *requested* — i.e. before
+  // getChildren() has actually loaded the data. Polling bootstrap must key off
+  // this, or hasActiveRuns() reads the stale-empty set that exists in the gap
+  // between refresh() and the load, and live polling never starts.
+  private readonly _onDidLoad = new vscode.EventEmitter<void>();
+  readonly onDidLoad = this._onDidLoad.event;
 
   constructor(private readonly deps: StudioDeps) {}
 
@@ -102,6 +109,9 @@ class RunsProvider implements vscode.TreeDataProvider<RunNode> {
       this._groupItems.set(item.key, item);
       nodes.push(item);
     });
+    // _activeRuns is now fresh: signal so the bootstrap can (re)evaluate polling
+    // against real data rather than the empty set seen at refresh() time.
+    this._onDidLoad.fire();
     return nodes;
   }
 
@@ -278,6 +288,23 @@ export function registerRunsExplorer(
     }
   });
 
+  // The reliable bootstrap: re-evaluate polling once a load has actually
+  // populated _activeRuns. Opening the view while the backend is already
+  // running — or any first load slower than the 500ms onRefresh window — used to
+  // leave a frozen snapshot because every other trigger checks hasActiveRuns()
+  // before the data arrives. This fires after, so live polling starts.
+  const loadListener = provider.onDidLoad(() => {
+    if (
+      treeView.visible &&
+      deps.backend.isRunning() &&
+      provider.hasActiveRuns()
+    ) {
+      startPolling();
+    } else if (!provider.hasActiveRuns()) {
+      stopPolling();
+    }
+  });
+
   const refreshCmd = vscode.commands.registerCommand(
     "den.refreshRuns",
     () => {
@@ -327,6 +354,7 @@ export function registerRunsExplorer(
     stateListener,
     visibilityListener,
     dataChangeListener,
+    loadListener,
     { dispose: stopPolling }
   );
 }
