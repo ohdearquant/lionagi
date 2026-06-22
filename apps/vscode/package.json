@@ -2,18 +2,31 @@
   "name": "den",
   "displayName": "Den",
   "description": "Watch your lionagi agent runs and Claude Code sessions live in VS Code.",
-  "version": "0.0.24",
+  "version": "0.1.0",
   "publisher": "lionagi",
+  "license": "Apache-2.0",
   "icon": "media/icon.png",
+  "galleryBanner": {
+    "color": "#1E1B2E",
+    "theme": "dark"
+  },
+  "pricing": "Free",
+  "qna": "marketplace",
+  "homepage": "https://github.com/ohdearquant/lionagi/tree/main/apps/vscode#readme",
   "repository": {
     "type": "git",
     "url": "https://github.com/ohdearquant/lionagi.git",
     "directory": "apps/vscode"
   },
+  "bugs": {
+    "url": "https://github.com/ohdearquant/lionagi/issues"
+  },
   "engines": {
     "vscode": "^1.90.0"
   },
   "categories": [
+    "AI",
+    "Visualization",
     "Other"
   ],
   "keywords": [
@@ -21,7 +34,9 @@
     "agent",
     "orchestration",
     "ai",
-    "llm"
+    "llm",
+    "claude code",
+    "observability"
   ],
   "main": "./out/extension.js",
   "activationEvents": [
@@ -168,7 +183,60 @@
           "description": "Bearer token for LIONAGI_STUDIO_AUTH_TOKEN (optional)."
         }
       }
-    }
+    },
+    "walkthroughs": [
+      {
+        "id": "den.gettingStarted",
+        "title": "Get started with Den",
+        "description": "Watch your lionagi runs and Claude Code sessions live, without leaving VS Code.",
+        "steps": [
+          {
+            "id": "den.install",
+            "title": "Install the studio backend",
+            "description": "Den renders a small local backend. Install it once with `pip install 'lionagi[studio]'`, or let Den auto-detect your workspace `.venv` or `uv` project.\n[Open a terminal](command:workbench.action.terminal.new)",
+            "media": {
+              "markdown": "media/walkthrough/install.md"
+            },
+            "completionEvents": [
+              "onContext:den.backendState == 'running'"
+            ]
+          },
+          {
+            "id": "den.open",
+            "title": "Open the Den panel",
+            "description": "Click the lion in the activity bar. Den auto-starts the backend and shows your live run tree.\n[Open Den](command:den.runs.focus)",
+            "media": {
+              "markdown": "media/walkthrough/open.md"
+            },
+            "completionEvents": [
+              "onView:den.runs"
+            ]
+          },
+          {
+            "id": "den.run",
+            "title": "Start your first run",
+            "description": "Start any run from your terminal and it appears in the tree live. `li agent`, `li o`, and Claude Code sessions all land here.\n[Open a terminal](command:workbench.action.terminal.new)",
+            "media": {
+              "markdown": "media/walkthrough/run.md"
+            },
+            "completionEvents": [
+              "onContext:den.hasRuns"
+            ]
+          },
+          {
+            "id": "den.trace",
+            "title": "Trace a run",
+            "description": "Click a run to stream its output live, or right-click and choose View Run Tree to see its branch and agent graph with per-run cost.",
+            "media": {
+              "markdown": "media/walkthrough/trace.md"
+            },
+            "completionEvents": [
+              "onCommand:den.openRunTree"
+            ]
+          }
+        ]
+      }
+    ]
   },
   "scripts": {
     "compile": "node esbuild.js",
