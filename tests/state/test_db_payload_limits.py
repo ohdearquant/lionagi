@@ -133,11 +133,20 @@ async def test_insert_message_re_fire_updates_content(db: StateDB):
     assert content["text"] == "second"
     assert got["sender"] == "different-sender"
 
-    cur = await db.db.execute(
-        "SELECT COUNT(*) AS n FROM messages WHERE id = ?",
-        (msg["id"],),
-    )
-    assert (await cur.fetchone())["n"] == 1
+    from sqlalchemy import text
+
+    async with db._read() as conn:
+        row = (
+            (
+                await conn.execute(
+                    text("SELECT COUNT(*) AS n FROM messages WHERE id = :id"),
+                    {"id": msg["id"]},
+                )
+            )
+            .mappings()
+            .first()
+        )
+    assert row["n"] == 1
 
 
 # ── Unicode + binary embedding ───────────────────────────────────────────────

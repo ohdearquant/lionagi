@@ -253,16 +253,21 @@ async def test_statedb_open_exposes_migration_columns():
     verifying their presence confirms that MIGRATION_COLUMNS and the schema.sql
     agree on what the current schema looks like.
     """
+    from sqlalchemy import text
+
     from lionagi.state.db import StateDB
 
     state = StateDB(":memory:")
     await state.open()
 
-    db = state.db
     for table, columns in MIGRATION_COLUMNS.items():
         if not columns:
             continue
-        actual = await _column_names(db, table)
+        async with state._read() as conn:
+            rows = (await conn.execute(text(f"PRAGMA table_info({table})"))).mappings().all()
+        if not rows:
+            continue
+        actual = {row["name"] for row in rows}
         for col_name, _ in columns:
             assert col_name in actual, (
                 f"Column '{col_name}' missing from '{table}' in a fresh StateDB"

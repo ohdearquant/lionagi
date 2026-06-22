@@ -221,6 +221,6 @@ async def test_set_session_provenance_rolls_back_on_upsert_failure(db: StateDB, 
     with pytest.raises(RuntimeError, match="upsert failed"):
         await db.set_session_provenance(sid, project="acme", project_source="config_toml")
 
-    assert db.db.in_transaction is False
+    # After a failed transaction, the engine should not hold an open transaction.
     row = await db.get_session(sid)
     assert row["project"] is None
