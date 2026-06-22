@@ -210,6 +210,14 @@ async def _run_parity_suite(db: StateDB) -> None:
     listed = {p["name"] for p in await db.list_projects()}
     assert {"proj-old", "proj-new"} <= listed, f"both projects must be listed: {listed!r}"
 
+    # A zero-session invocation must still appear (LEFT JOIN, not INNER) with a
+    # NULL project — the ROW_NUMBER subquery matches nothing for it.
+    empty_inv = _uid()
+    await db.create_invocation({"id": empty_inv, "skill": "parity", "started_at": now})
+    empties = [r for r in await db.list_invocations() if r["id"] == empty_inv]
+    assert len(empties) == 1, f"zero-session invocation must appear once: {empties!r}"
+    assert empties[0]["project"] is None, f"zero-session project must be None: {empties[0]!r}"
+
 
 # ── SQLite leg (always runs) ──────────────────────────────────────────────────
 
