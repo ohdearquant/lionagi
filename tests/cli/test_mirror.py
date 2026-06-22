@@ -449,6 +449,55 @@ async def test_one_pass_reprocesses_batch_when_write_fails(
     assert len(msgs) == 2  # both events survived the earlier failure
 
 
+@pytest.mark.asyncio
+async def test_mirror_forever_retries_after_connection_open_failure(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # A transient failure to OPEN the StateDB connection — e.g. a locked or
+    # half-migrated state.db during first-run startup, when the studio creates the
+    # schema and checkpoints on another connection — must be retried, not silently
+    # end the in-process tail for the whole life of the studio process. Regression
+    # guard: the connection used to be opened once outside the loop, so the first
+    # transient open error killed the tail permanently and invisibly.
+    import asyncio
+
+    import lionagi.cli.mirror as mirror_mod
+    import lionagi.state.db as dbmod
+
+    monkeypatch.setattr(dbmod, "DEFAULT_DB_PATH", tmp_path / "state.db")
+    monkeypatch.setattr(mirror_mod, "_OFFSETS_PATH", tmp_path / "mirror" / "offsets.json")
+
+    attempts = {"open": 0}
+    real_open = dbmod.StateDB.open
+
+    async def _flaky_open(self) -> None:
+        attempts["open"] += 1
+        if attempts["open"] == 1:
+            raise OSError("database is locked (simulated first-run race)")
+        await real_open(self)
+
+    monkeypatch.setattr(dbmod.StateDB, "open", _flaky_open)
+
+    stop = asyncio.Event()
+    # root is an empty dir: passes find no transcripts, so this isolates the
+    # connection-lifecycle behaviour from any mirroring work.
+    task = asyncio.create_task(
+        mirror_mod.mirror_forever(stop, root=tmp_path, since="24h", interval=0.05)
+    )
+    try:
+        for _ in range(100):  # let it fail the first open, back off, and reconnect
+            if attempts["open"] >= 2:
+                break
+            await asyncio.sleep(0.02)
+        alive = not task.done()
+    finally:
+        stop.set()
+        await asyncio.wait_for(task, timeout=5)
+
+    assert attempts["open"] >= 2, "open was not retried after the first failure"
+    assert alive, "tail died on a transient open failure instead of retrying"
+
+
 # ── watcher helpers: tailing + parsing ───────────────────────────────────────
 
 

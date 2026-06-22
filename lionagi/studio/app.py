@@ -91,6 +91,19 @@ def _start_claude_mirror() -> tuple[asyncio.Event, asyncio.Task] | tuple[None, N
         mirror_forever(stop, since=MIRROR_CLAUDE_SINCE, interval=MIRROR_CLAUDE_INTERVAL),
         name="claude-mirror-tail",
     )
+
+    def _log_unexpected_exit(t: asyncio.Task) -> None:
+        # The task handle is retained (returned, awaited only at shutdown), so a
+        # task that raises never triggers asyncio's "exception was never
+        # retrieved" warning — its failure is otherwise completely silent and the
+        # studio runs on with no live mirroring. Surface it loudly here instead.
+        if t.cancelled():
+            return
+        exc = t.exception()
+        if exc is not None:
+            _log.error("Claude mirror tail exited unexpectedly", exc_info=exc)
+
+    task.add_done_callback(_log_unexpected_exit)
     _log.info("Claude Code mirror tail started (since=%s)", MIRROR_CLAUDE_SINCE)
     return stop, task
 

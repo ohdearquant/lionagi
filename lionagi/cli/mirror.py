@@ -489,21 +489,35 @@ async def mirror_forever(
     offsets = {key: st.offset for key, st in states.items()}  # _one_pass new-file seed
     lineage = _Lineage()
     _seed_lineage(lineage, states)
-    async with StateDB() as db:
-        while not stop.is_set():
-            try:
-                await _one_pass(
-                    db,
-                    root,
-                    states,
-                    offsets,
-                    since=since_secs,
-                    live_window=live_window,
-                    lineage=lineage,
-                )
-                _save_states(states)
-            except Exception:  # a single bad pass must never kill the tail
-                _log.exception("claude mirror pass failed")
+    # The connection lives inside the supervise loop so a failure to OPEN it —
+    # e.g. a locked or half-migrated state.db during first-run startup, when the
+    # studio is creating the schema and checkpointing on another connection — is
+    # retried, not fatal. Opening it once outside the loop meant a single
+    # transient open error silently ended the in-process mirror for the whole
+    # life of the studio process.
+    while not stop.is_set():
+        try:
+            async with StateDB() as db:
+                while not stop.is_set():
+                    try:
+                        await _one_pass(
+                            db,
+                            root,
+                            states,
+                            offsets,
+                            since=since_secs,
+                            live_window=live_window,
+                            lineage=lineage,
+                        )
+                        _save_states(states)
+                    except Exception:  # a single bad pass must never kill the tail
+                        _log.exception("claude mirror pass failed")
+                    try:
+                        await asyncio.wait_for(stop.wait(), timeout=interval)
+                    except (asyncio.TimeoutError, TimeoutError):
+                        pass
+        except Exception:  # connection open/teardown failed — retry, never die
+            _log.exception("claude mirror connection failed; retrying")
             try:
                 await asyncio.wait_for(stop.wait(), timeout=interval)
             except (asyncio.TimeoutError, TimeoutError):
