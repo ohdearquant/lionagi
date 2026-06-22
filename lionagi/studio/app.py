@@ -125,19 +125,19 @@ async def _stop_claude_mirror(stop: asyncio.Event | None, task: asyncio.Task | N
 
 
 async def _startup_warmup() -> None:
-    """Startup work that need not gate readiness: stale-session reconciliation
-    then the WAL checkpoint. Deferring these to a background task lets the API
-    serve the instant uvicorn binds, and keeps the startup checkpoint from
-    contending with the mirror's first connection open on a cold first-run DB.
-    """
-    from .services.db_maintenance import checkpoint_state_db
-    from .services.lifecycle import run_startup_reconciliation
+    """Deferred startup maintenance that must not gate readiness: the WAL
+    checkpoint. Kept off the critical path so /health serves the instant uvicorn
+    binds, and so the checkpoint does not block readiness while contending with
+    the mirror's first connection open on a cold first-run DB. The whole body
+    (including the import) is guarded so an unexpected failure is logged, not
+    silently dropped when the task is finalized at shutdown.
 
+    Stale-session reconciliation is deliberately NOT deferred — it runs pre-yield
+    in lifespan() because stateful /api routes read the session rows it corrects.
+    """
     try:
-        await run_startup_reconciliation()
-    except Exception:  # noqa: BLE001
-        _log.warning("Startup reconciliation failed (non-fatal)", exc_info=True)
-    try:
+        from .services.db_maintenance import checkpoint_state_db
+
         await checkpoint_state_db(actor="startup")
     except Exception:  # noqa: BLE001
         _log.warning("Startup WAL checkpoint failed (non-fatal)", exc_info=True)
@@ -145,24 +145,34 @@ async def _startup_warmup() -> None:
 
 async def _finalize_warmup(task: asyncio.Task | None) -> None:
     """Settle the background warmup task before shutdown proceeds: cancel it if
-    still running, then await so it never leaks as a pending/un-retrieved task."""
+    still running, then await so it is retrieved (never a pending/un-retrieved
+    task warning). An unexpected failure is logged rather than silently dropped."""
     if task is None:
         return
     if not task.done():
         task.cancel()
-    with suppress(asyncio.CancelledError, Exception):
+    try:
         await task
+    except asyncio.CancelledError:
+        pass
+    except Exception:  # noqa: BLE001
+        _log.warning("Startup warmup task failed (non-fatal)", exc_info=True)
 
 
 @asynccontextmanager
 async def lifespan(app_instance):
     from .scheduler.engine import scheduler
+    from .services.lifecycle import run_startup_reconciliation
 
     _emit_startup_warnings()
     await scheduler.start()
+    # Reconciliation corrects phantom / stale-status session and invocation rows
+    # that stateful /api routes (sessions, runs, stats) read directly, so it must
+    # complete before we serve — keep it pre-yield.
+    await run_startup_reconciliation()
     mirror_stop, mirror_task = _start_claude_mirror()
-    # Reconciliation + the startup checkpoint do not gate readiness — defer them
-    # to a background task so /health (and the API) serve the moment uvicorn binds.
+    # The WAL checkpoint is pure maintenance and the main first-run cost; defer it
+    # to a background task so readiness is not gated on it.
     warmup_task = asyncio.create_task(_startup_warmup(), name="studio-startup-warmup")
     yield
     from .services.launches import shutdown_launches

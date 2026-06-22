@@ -1,14 +1,22 @@
-"""Startup warmup is backgrounded: readiness must not wait on reconciliation.
+"""The startup WAL checkpoint is deferred off the readiness path; reconciliation
+is not.
 
-The studio lifespan defers stale-session reconciliation and the WAL checkpoint
-to a background task so /health serves the instant uvicorn binds. These tests
-pin that contract from both ends — readiness doesn't block, the deferred work
-still runs, and a shutdown landing mid-warmup cancels it cleanly.
+The studio lifespan keeps stale-session reconciliation pre-yield (stateful /api
+routes read the rows it corrects) but defers the WAL checkpoint to a background
+task so /health serves the instant uvicorn binds. These tests pin both halves of
+that contract, that the deferred checkpoint still runs with actor='startup', that
+a shutdown landing mid-checkpoint cancels it cleanly, and that a checkpoint
+failure is logged rather than silently dropped.
+
+The real scheduler is patched out: its first tick runs the same maintenance
+functions (and spawns aiosqlite workers), which would otherwise pollute these
+assertions and leave a worker posting to a closed loop at teardown.
 """
 
 from __future__ import annotations
 
 import asyncio
+import logging
 import threading
 
 import pytest
@@ -19,17 +27,25 @@ from fastapi.testclient import TestClient
 
 from lionagi.studio.app import app
 
+_SCHED = "lionagi.studio.scheduler.engine.scheduler"
 _RECON = "lionagi.studio.services.lifecycle.run_startup_reconciliation"
 _CKPT = "lionagi.studio.services.db_maintenance.checkpoint_state_db"
+
+
+class _FakeScheduler:
+    async def start(self) -> None:
+        pass
+
+    async def stop(self) -> None:
+        pass
 
 
 class _Gate:
     """A cross-thread, cancellable park point.
 
-    The lifespan runs in TestClient's portal thread; the test thread releases
-    via the captured loop. Parking on an asyncio.Event (not a thread-pool
-    blocking wait) keeps the park cancellable, so a shutdown can tear it down.
-    """
+    The lifespan runs in TestClient's portal thread; the test thread releases via
+    the captured loop. Parking on an asyncio.Event (not a thread-pool blocking
+    wait) keeps the park cancellable, so a shutdown can tear it down."""
 
     def __init__(self) -> None:
         self.entered = threading.Event()
@@ -47,80 +63,110 @@ class _Gate:
             try:
                 self._loop.call_soon_threadsafe(self._event.set)
             except RuntimeError:
-                pass  # loop already closed — warmup already settled
+                pass  # loop already closed — checkpoint already settled
 
 
-def test_health_serves_before_reconciliation_completes(monkeypatch):
-    """/health answers while reconciliation is still parked — readiness did not
-    wait on it. Reverting the defer (awaiting reconciliation before yield) makes
-    TestClient entry hang here, so this is the regression guard."""
+def _isolate(monkeypatch) -> threading.Event:
+    """Replace the lifespan's side-effecting collaborators so a warmup test sees
+    only the checkpoint defer: no real scheduler, and reconciliation a fast no-op
+    that records that it ran (pre-yield)."""
+    monkeypatch.setattr(_SCHED, _FakeScheduler())
+    recon_ran = threading.Event()
+
+    async def _recon():
+        recon_ran.set()
+        return {}
+
+    monkeypatch.setattr(_RECON, _recon)
+    return recon_ran
+
+
+def test_health_serves_before_checkpoint_completes(monkeypatch):
+    """/health answers 200 while the WAL checkpoint is still parked, and
+    reconciliation has already run. RED if the checkpoint defer is reverted: an
+    inline await would hang TestClient entry on the gate."""
+    recon_ran = _isolate(monkeypatch)
     gate = _Gate()
 
-    async def _blocking_reconcile():
+    async def _blocking_ckpt(actor=None):
         await gate.wait()
-        return {"reconciled": 0}
 
-    async def _noop_ckpt(actor=None):
-        return None
-
-    monkeypatch.setattr(_RECON, _blocking_reconcile)
-    monkeypatch.setattr(_CKPT, _noop_ckpt)
+    monkeypatch.setattr(_CKPT, _blocking_ckpt)
 
     try:
         with TestClient(app) as client:
-            assert gate.entered.wait(timeout=5), "warmup never started reconciliation"
+            assert gate.entered.wait(timeout=5), "warmup never started the checkpoint"
+            assert recon_ran.is_set(), "reconciliation must run pre-yield, before serving"
             resp = client.get("/health")
             assert resp.status_code == 200
             assert resp.json() == {"status": "ok"}
-            gate.release()  # let warmup finish so shutdown is a no-op
+            gate.release()  # let the checkpoint finish before shutdown
     finally:
         gate.release()
 
 
-def test_warmup_runs_reconciliation_then_checkpoint(monkeypatch):
-    """The deferred work still happens: reconciliation runs, then the WAL
-    checkpoint with actor='startup'."""
-    recon_called = threading.Event()
-    ckpt_called = threading.Event()
-    order: list[str] = []
+def test_warmup_runs_checkpoint_with_startup_actor(monkeypatch):
+    """The deferred checkpoint still runs, with actor='startup', and
+    reconciliation ran pre-yield."""
+    recon_ran = _isolate(monkeypatch)
+    ckpt_done = threading.Event()
     seen: dict[str, object] = {}
 
-    async def _spy_recon():
-        order.append("reconcile")
-        recon_called.set()
-        return {"reconciled": 0}
-
     async def _spy_ckpt(actor=None):
-        order.append("checkpoint")
         seen["actor"] = actor
-        ckpt_called.set()
+        ckpt_done.set()
 
-    monkeypatch.setattr(_RECON, _spy_recon)
     monkeypatch.setattr(_CKPT, _spy_ckpt)
 
     with TestClient(app) as client:
         assert client.get("/health").status_code == 200
-        assert recon_called.wait(timeout=5), "reconciliation did not run"
-        assert ckpt_called.wait(timeout=5), "checkpoint did not run"
+        assert recon_ran.is_set()
+        assert ckpt_done.wait(timeout=5), "deferred checkpoint did not run"
 
     assert seen["actor"] == "startup"
-    assert order[:2] == ["reconcile", "checkpoint"]
 
 
-def test_shutdown_cancels_pending_warmup(monkeypatch):
-    """A shutdown landing while warmup is parked cancels it and returns — no
-    hang, no leaked task. The park is never released, so only cancellation can
+def test_shutdown_cancels_pending_checkpoint(monkeypatch):
+    """A shutdown landing while the checkpoint is parked cancels it and returns —
+    no hang, no leaked task. The park is never released, so only cancellation can
     let the context manager exit."""
+    _isolate(monkeypatch)
     gate = _Gate()
 
-    async def _never_finishes():
+    async def _never(actor=None):
         await gate.wait()
-        return {"reconciled": 0}
 
-    monkeypatch.setattr(_RECON, _never_finishes)
+    monkeypatch.setattr(_CKPT, _never)
 
     with TestClient(app) as client:
-        assert gate.entered.wait(timeout=5), "warmup never started reconciliation"
+        assert gate.entered.wait(timeout=5), "warmup never started the checkpoint"
         assert client.get("/health").status_code == 200
-    # Exiting the context ran shutdown while reconciliation was still parked.
-    # Reaching here at all means _finalize_warmup cancelled it cleanly.
+    # Exiting the context ran shutdown while the checkpoint was still parked.
+    # Reaching here means _finalize_warmup cancelled it cleanly.
+
+
+def test_checkpoint_failure_is_logged_not_fatal(monkeypatch):
+    """An unexpected checkpoint failure is logged (not silently swallowed) and
+    does not break startup or shutdown."""
+    _isolate(monkeypatch)
+    logged = threading.Event()
+
+    class _SpyHandler(logging.Handler):
+        def emit(self, record: logging.LogRecord) -> None:
+            if "checkpoint" in record.getMessage().lower():
+                logged.set()
+
+    async def _boom(actor=None):
+        raise RuntimeError("checkpoint boom")
+
+    monkeypatch.setattr(_CKPT, _boom)
+
+    spy = _SpyHandler()
+    logger = logging.getLogger("lionagi.studio.app")
+    logger.addHandler(spy)
+    try:
+        with TestClient(app) as client:
+            assert client.get("/health").status_code == 200
+            assert logged.wait(timeout=5), "checkpoint failure was not logged"
+    finally:
+        logger.removeHandler(spy)
