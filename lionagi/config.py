@@ -73,6 +73,8 @@ class AppSettings(BaseSettings, frozen=True):
     LIONAGI_QDRANT_URL: str = "http://localhost:6333"
     LIONAGI_DEFAULT_QDRANT_COLLECTION: str = "event_logs"
 
+    LIONAGI_STATE_DB_URL: str | None = None
+
     LOG_PERSIST_DIR: str = "./data/logs"
     LOG_SUBFOLDER: str | None = None
     LOG_CAPACITY: int = 50
