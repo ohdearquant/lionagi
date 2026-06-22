@@ -3,7 +3,8 @@ is not.
 
 The studio lifespan keeps stale-session reconciliation pre-yield (stateful /api
 routes read the rows it corrects) but defers the WAL checkpoint to a background
-task so /health serves the instant uvicorn binds. These tests pin both halves of
+task so /health serves as soon as reconciliation completes, without waiting on
+the checkpoint. These tests pin both halves of
 that contract, that the deferred checkpoint still runs with actor='startup', that
 a shutdown landing mid-checkpoint cancels it cleanly, and that a checkpoint
 failure is logged rather than silently dropped.

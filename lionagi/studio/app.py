@@ -126,9 +126,10 @@ async def _stop_claude_mirror(stop: asyncio.Event | None, task: asyncio.Task | N
 
 async def _startup_warmup() -> None:
     """Deferred startup maintenance that must not gate readiness: the WAL
-    checkpoint. Kept off the critical path so /health serves the instant uvicorn
-    binds, and so the checkpoint does not block readiness while contending with
-    the mirror's first connection open on a cold first-run DB. The whole body
+    checkpoint. Kept off the critical path so /health serves as soon as
+    reconciliation completes (not waiting on the checkpoint), and so the
+    checkpoint does not block readiness while contending with the mirror's
+    first connection open on a cold first-run DB. The whole body
     (including the import) is guarded so an unexpected failure is logged, not
     silently dropped when the task is finalized at shutdown.
 
