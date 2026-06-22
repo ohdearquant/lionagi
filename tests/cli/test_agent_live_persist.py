@@ -144,9 +144,9 @@ async def test_setup_create_session_failure_closes_db(
     original_create = StateDB.create_session
 
     async def fail(self, session: dict):
-        # Touch the DB once so the worker thread is actually spawned,
+        # Touch the DB once so the engine is actually open,
         # then fail. Mirrors a real partial-failure scenario.
-        await self.db.execute("SELECT 1")
+        await self.execute("SELECT 1")
         raise RuntimeError("simulated mid-setup failure")
 
     monkeypatch.setattr(StateDB, "create_session", fail)
@@ -189,12 +189,12 @@ async def test_lifecycle_hooks_reuse_owned_db_no_shared_leak(temp_db_path: Path)
     # The lifecycle hooks reach the db via get_shared_db(); setup registered the
     # owned connection, so they reuse it instead of opening a second one.
     assert await get_shared_db() is ctx["db"]
-    assert _SHARED.get(ctx["db"].path) is ctx["db"]
+    assert _SHARED.get(ctx["db"].url) is ctx["db"]
 
     await _teardown_live_persist(ctx, status="completed")
 
     # Registry swept — nothing left to leak its aiosqlite worker thread.
-    assert ctx["db"].path not in _SHARED
+    assert ctx["db"].url not in _SHARED
     for _ in range(20):
         if _aiosqlite_thread_count() == before:
             break
@@ -222,8 +222,8 @@ async def test_register_shared_db_closes_displaced_instance(temp_db_path: Path):
     await db2.open()
     await register_shared_db(db2)  # displaces db1 → must close it
 
-    assert _SHARED.get(temp_db_path) is db2
-    assert db1._db is None, "displaced StateDB was orphaned instead of closed"
+    assert _SHARED.get(db2.url) is db2
+    assert db1._engine is None, "displaced StateDB was orphaned instead of closed"
     for _ in range(20):
         if _aiosqlite_thread_count() == before + 1:
             break
@@ -234,7 +234,7 @@ async def test_register_shared_db_closes_displaced_instance(temp_db_path: Path):
 
     # unregister is identity-guarded: dropping a stale handle must not evict the live one.
     unregister_shared_db(db1)
-    assert _SHARED.get(temp_db_path) is db2
+    assert _SHARED.get(db2.url) is db2
 
     await close_shared_db()
     await db2.close()
@@ -275,8 +275,8 @@ async def test_close_shared_db_sweeps_inflight_open(
     opened_db = await asyncio.wait_for(opener, timeout=5)
     await asyncio.wait_for(closer, timeout=5)
 
-    assert temp_db_path not in _SHARED
-    assert opened_db._db is None, "in-flight-opened StateDB survived close_shared_db()"
+    assert opened_db.url not in _SHARED
+    assert opened_db._engine is None, "in-flight-opened StateDB survived close_shared_db()"
     for _ in range(20):
         if _aiosqlite_thread_count() == before:
             break
@@ -518,7 +518,7 @@ async def test_teardown_closes_db_even_if_bookmark_update_fails(
     await _teardown_live_persist(ctx, status="completed")
 
     # The connection was closed even though update_session failed.
-    assert db._db is None
+    assert db._engine is None
     for _ in range(20):
         if _aiosqlite_thread_count() <= before:
             break
@@ -584,11 +584,11 @@ async def _legacy_db_with_nullable_progression(
     state = StateDB(db_path)
     await state.open()
     # Drop FK enforcement for the rebuild (we'll re-enable after).
-    await state.db.execute("PRAGMA foreign_keys = OFF")
+    await state.execute("PRAGMA foreign_keys = OFF")
     # Recreate branches with NULLABLE progression_id.
-    await state.db.executescript(
+    await state.execute("DROP TABLE IF EXISTS branches")
+    await state.execute(
         """
-        DROP TABLE IF EXISTS branches;
         CREATE TABLE branches (
           id TEXT PRIMARY KEY,
           created_at REAL NOT NULL,
@@ -598,8 +598,12 @@ async def _legacy_db_with_nullable_progression(
           session_id TEXT NOT NULL,
           progression_id TEXT,
           system_msg_id TEXT
-        );
-        DROP TABLE IF EXISTS sessions;
+        )
+        """
+    )
+    await state.execute("DROP TABLE IF EXISTS sessions")
+    await state.execute(
+        """
         CREATE TABLE sessions (
           id TEXT PRIMARY KEY,
           created_at REAL NOT NULL,
@@ -620,11 +624,10 @@ async def _legacy_db_with_nullable_progression(
           status TEXT,
           started_at REAL,
           ended_at REAL
-        );
+        )
         """
     )
-    await state.db.execute("PRAGMA foreign_keys = ON")
-    await state.db.commit()
+    await state.execute("PRAGMA foreign_keys = ON")
     return state
 
 
@@ -652,17 +655,16 @@ async def test_setup_resume_repairs_null_branch_progression_id(
     legacy_db = await _legacy_db_with_nullable_progression(temp_db_path)
     try:
         await legacy_db.create_progression(sess_prog)
-        await legacy_db.db.execute(
+        await legacy_db.execute(
             "INSERT INTO sessions (id, created_at, progression_id, "
             "updated_at, status) VALUES (?, ?, ?, ?, ?)",
             (session_id, 0.0, sess_prog, 0.0, "completed"),
         )
-        await legacy_db.db.execute(
+        await legacy_db.execute(
             "INSERT INTO branches (id, created_at, session_id, "
             "progression_id) VALUES (?, ?, ?, NULL)",
             (branch_id, 0.0, session_id),
         )
-        await legacy_db.db.commit()
     finally:
         await legacy_db.close()
 
@@ -710,16 +712,15 @@ async def test_repair_branch_progression_returns_existing_id_under_race(
         session_id = str(uuid.uuid4())
         sess_prog = str(uuid.uuid4())
         await legacy_db.create_progression(sess_prog)
-        await legacy_db.db.execute(
+        await legacy_db.execute(
             "INSERT INTO sessions (id, created_at, progression_id, updated_at) VALUES (?, ?, ?, ?)",
             (session_id, 0.0, sess_prog, 0.0),
         )
-        await legacy_db.db.execute(
+        await legacy_db.execute(
             "INSERT INTO branches (id, created_at, session_id, "
             "progression_id) VALUES (?, ?, ?, NULL)",
             (branch_id, 0.0, session_id),
         )
-        await legacy_db.db.commit()
     finally:
         await legacy_db.close()
 
@@ -753,12 +754,11 @@ async def test_repair_session_progression_returns_existing_id_under_race(
     session_id = str(uuid.uuid4())
     legacy_db = await _legacy_db_with_nullable_progression(temp_db_path)
     try:
-        await legacy_db.db.execute(
+        await legacy_db.execute(
             "INSERT INTO sessions (id, created_at, progression_id, "
             "updated_at) VALUES (?, ?, NULL, ?)",
             (session_id, 0.0, 0.0),
         )
-        await legacy_db.db.commit()
     finally:
         await legacy_db.close()
 
@@ -801,17 +801,16 @@ async def test_setup_resume_repairs_null_session_progression_id(
     try:
         await legacy_db.create_progression(branch_prog)
         # Session row with NULL progression_id.
-        await legacy_db.db.execute(
+        await legacy_db.execute(
             "INSERT INTO sessions (id, created_at, progression_id, "
             "updated_at) VALUES (?, ?, NULL, ?)",
             (session_id, 0.0, 0.0),
         )
         # Branch row with a valid branch progression.
-        await legacy_db.db.execute(
+        await legacy_db.execute(
             "INSERT INTO branches (id, created_at, session_id, progression_id) VALUES (?, ?, ?, ?)",
             (branch_id, 0.0, session_id, branch_prog),
         )
-        await legacy_db.db.commit()
     finally:
         await legacy_db.close()
 

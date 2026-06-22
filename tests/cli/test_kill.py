@@ -411,8 +411,9 @@ async def test_do_kill_identity_mismatch_reports_failure(
     assert rc == 1, "blocked kill must return non-zero"
 
     async with StateDB() as db:
-        cur = await db.db.execute("SELECT status FROM sessions WHERE id = ?", (sid,))
-        assert (await cur.fetchone())["status"] == "running", "must not cancel an unverified PID"
+        assert (await db.fetch_one("SELECT status FROM sessions WHERE id = ?", (sid,)))[
+            "status"
+        ] == "running", "must not cancel an unverified PID"
 
 
 def test_identity_create_time_mismatch_rejected(monkeypatch: pytest.MonkeyPatch):
@@ -481,14 +482,13 @@ async def test_kill_one_skips_recycled_pid_via_create_time(
             create_time=999.0,
         )
 
-        row = db._row_to_dict(
-            await (await db.db.execute("SELECT * FROM sessions WHERE id = ?", (sid,))).fetchone()
-        )
+        row = db._row_to_dict(await db.fetch_one("SELECT * FROM sessions WHERE id = ?", (sid,)))
         result = await _kill_one(db, "session", sid, row, user_reason="")
         assert result["signal"] == "identity_mismatch"
 
-        cur = await db.db.execute("SELECT status FROM sessions WHERE id = ?", (sid,))
-        assert (await cur.fetchone())["status"] == "running", "must not cancel a recycled PID"
+        assert (await db.fetch_one("SELECT status FROM sessions WHERE id = ?", (sid,)))[
+            "status"
+        ] == "running", "must not cancel a recycled PID"
 
 
 # ── _resolve_entity ────────────────────────────────────────────────────────────
@@ -556,8 +556,7 @@ async def test_persist_cancel_sets_status_cancelled(temp_db_path: Path):
             evidence={"signal": "sigterm", "pid": 42},
         )
 
-        cur = await db.db.execute("SELECT status FROM sessions WHERE id = ?", (sid,))
-        row = await cur.fetchone()
+        row = await db.fetch_one("SELECT status FROM sessions WHERE id = ?", (sid,))
         assert row["status"] == "cancelled"
 
 
@@ -574,8 +573,7 @@ async def test_persist_cancel_inserts_status_transition(temp_db_path: Path):
             evidence={"signal": "sigterm", "pid": 99},
         )
 
-        cur = await db.db.execute("SELECT * FROM status_transitions WHERE entity_id = ?", (sid,))
-        row = await cur.fetchone()
+        row = await db.fetch_one("SELECT * FROM status_transitions WHERE entity_id = ?", (sid,))
         assert row is not None
         assert row["reason_code"] == RunReasons.CANCELLED_MANUAL_KILL
         assert row["source"] == "admin"  # CLI kill is an admin action (ADR-0028)
@@ -599,8 +597,7 @@ async def test_persist_cancel_skips_already_terminal(temp_db_path: Path):
         )
 
         # Status must remain "completed", not overwritten.
-        cur = await db.db.execute("SELECT status FROM sessions WHERE id = ?", (sid,))
-        row = await cur.fetchone()
+        row = await db.fetch_one("SELECT status FROM sessions WHERE id = ?", (sid,))
         assert row["status"] == "completed"
 
 
@@ -617,8 +614,7 @@ async def test_persist_cancel_show_sets_aborted(temp_db_path: Path):
             evidence={"signal": "sigterm", "pid": None},
         )
 
-        cur = await db.db.execute("SELECT status FROM shows WHERE id = ?", (show_id,))
-        row = await cur.fetchone()
+        row = await db.fetch_one("SELECT status FROM shows WHERE id = ?", (show_id,))
         assert row["status"] == "aborted"
 
 
@@ -636,8 +632,9 @@ async def test_kill_one_no_pid(temp_db_path: Path):
         result = await _kill_one(db, "session", sid, row, user_reason="test")
         assert result["signal"] == "no_pid"
 
-        cur = await db.db.execute("SELECT status FROM sessions WHERE id = ?", (sid,))
-        assert (await cur.fetchone())["status"] == "cancelled"
+        assert (await db.fetch_one("SELECT status FROM sessions WHERE id = ?", (sid,)))[
+            "status"
+        ] == "cancelled"
 
 
 async def test_kill_one_with_dead_pid(temp_db_path: Path, monkeypatch: pytest.MonkeyPatch):
@@ -654,8 +651,9 @@ async def test_kill_one_with_dead_pid(temp_db_path: Path, monkeypatch: pytest.Mo
         result = await _kill_one(db, "session", sid, row, user_reason="")
         assert result["signal"] == "already_dead"
 
-        cur2 = await db.db.execute("SELECT status FROM sessions WHERE id = ?", (sid,))
-        assert (await cur2.fetchone())["status"] == "cancelled"
+        assert (await db.fetch_one("SELECT status FROM sessions WHERE id = ?", (sid,)))[
+            "status"
+        ] == "cancelled"
 
 
 async def test_kill_one_force_kill_uses_force_kill_reason(
@@ -672,10 +670,9 @@ async def test_kill_one_force_kill_uses_force_kill_reason(
 
         await _kill_one(db, "session", sid, row, user_reason="")
 
-        cur2 = await db.db.execute(
+        tr = await db.fetch_one(
             "SELECT reason_code FROM status_transitions WHERE entity_id = ?", (sid,)
         )
-        tr = await cur2.fetchone()
         assert tr["reason_code"] == RunReasons.CANCELLED_FORCE_KILL
 
 
@@ -692,8 +689,9 @@ async def test_do_kill_by_full_id(temp_db_path: Path, monkeypatch: pytest.Monkey
     assert rc == 0
 
     async with StateDB() as db:
-        cur = await db.db.execute("SELECT status FROM sessions WHERE id = ?", (sid,))
-        assert (await cur.fetchone())["status"] == "cancelled"
+        assert (await db.fetch_one("SELECT status FROM sessions WHERE id = ?", (sid,)))[
+            "status"
+        ] == "cancelled"
 
 
 async def test_do_kill_by_prefix(temp_db_path: Path, monkeypatch: pytest.MonkeyPatch):
@@ -739,8 +737,9 @@ async def test_do_kill_all_stale_cancels_dead_pid(
     assert rc == 0
 
     async with StateDB() as db:
-        cur = await db.db.execute("SELECT status FROM sessions WHERE id = ?", (sid,))
-        assert (await cur.fetchone())["status"] == "cancelled"
+        assert (await db.fetch_one("SELECT status FROM sessions WHERE id = ?", (sid,)))[
+            "status"
+        ] == "cancelled"
 
 
 async def test_do_kill_all_stale_skips_live_pid(
@@ -757,8 +756,9 @@ async def test_do_kill_all_stale_skips_live_pid(
     assert rc == 0
 
     async with StateDB() as db:
-        cur = await db.db.execute("SELECT status FROM sessions WHERE id = ?", (sid,))
-        assert (await cur.fetchone())["status"] == "running"
+        assert (await db.fetch_one("SELECT status FROM sessions WHERE id = ?", (sid,)))[
+            "status"
+        ] == "running"
 
 
 async def test_do_kill_all_stale_skips_recent(temp_db_path: Path, monkeypatch: pytest.MonkeyPatch):
@@ -773,8 +773,9 @@ async def test_do_kill_all_stale_skips_recent(temp_db_path: Path, monkeypatch: p
     assert rc == 0
 
     async with StateDB() as db:
-        cur = await db.db.execute("SELECT status FROM sessions WHERE id = ?", (sid,))
-        assert (await cur.fetchone())["status"] == "running"
+        assert (await db.fetch_one("SELECT status FROM sessions WHERE id = ?", (sid,)))[
+            "status"
+        ] == "running"
 
 
 async def test_do_kill_all_stale_dry_run_does_not_write(
@@ -791,8 +792,9 @@ async def test_do_kill_all_stale_dry_run_does_not_write(
     assert rc == 0
 
     async with StateDB() as db:
-        cur = await db.db.execute("SELECT status FROM sessions WHERE id = ?", (sid,))
-        assert (await cur.fetchone())["status"] == "running"
+        assert (await db.fetch_one("SELECT status FROM sessions WHERE id = ?", (sid,)))[
+            "status"
+        ] == "running"
 
 
 async def test_do_kill_all_stale_uses_stale_auto_reason(
@@ -808,10 +810,9 @@ async def test_do_kill_all_stale_uses_stale_auto_reason(
     await _do_kill_all_stale(threshold_seconds=3600, dry_run=False)
 
     async with StateDB() as db:
-        cur = await db.db.execute(
+        row = await db.fetch_one(
             "SELECT reason_code FROM status_transitions WHERE entity_id = ?", (sid,)
         )
-        row = await cur.fetchone()
         assert row is not None
         assert row["reason_code"] == RunReasons.CANCELLED_STALE_AUTO
 
@@ -835,8 +836,9 @@ async def test_do_kill_recursive_kills_child_invocations(
     assert rc == 0
 
     async with StateDB() as db:
-        cur = await db.db.execute("SELECT status FROM sessions WHERE id = ?", (sid,))
-        assert (await cur.fetchone())["status"] == "cancelled"
+        assert (await db.fetch_one("SELECT status FROM sessions WHERE id = ?", (sid,)))[
+            "status"
+        ] == "cancelled"
 
 
 # ── CLI wiring smoke test ──────────────────────────────────────────────────────
@@ -899,30 +901,27 @@ async def test_do_kill_all_stale_does_NOT_touch_show_at_all(
     async with StateDB() as db:
         show_id = await _seed_show(db, status="active")
         # Backdate so the show looks stale by age threshold.
-        await db.db.execute(
+        await db.execute(
             "UPDATE shows SET updated_at = ?, created_at = ? WHERE id = ?",
             (old_time, old_time, show_id),
         )
         # Seed a child play so we also verify plays are not swept.
         play_id = await _seed_play(db, show_id, status="running")
-        await db.db.execute(
+        await db.execute(
             "UPDATE plays SET started_at = ? WHERE id = ?",
             (old_time, play_id),
         )
-        await db.db.commit()
 
     rc = await _do_kill_all_stale(threshold_seconds=3600, dry_run=False)
     assert rc == 0
 
     async with StateDB() as db:
-        cur = await db.db.execute("SELECT status FROM shows WHERE id = ?", (show_id,))
-        row = await cur.fetchone()
+        row = await db.fetch_one("SELECT status FROM shows WHERE id = ?", (show_id,))
         assert row is not None
         # Show must remain active — the sweep must not have touched it.
         assert row["status"] == "active"
 
-        cur2 = await db.db.execute("SELECT status FROM plays WHERE id = ?", (play_id,))
-        row2 = await cur2.fetchone()
+        row2 = await db.fetch_one("SELECT status FROM plays WHERE id = ?", (play_id,))
         assert row2 is not None
         # Play must also remain running — the sweep must not have touched it.
         assert row2["status"] == "running"
@@ -945,18 +944,16 @@ async def test_do_kill_all_stale_does_NOT_touch_play_at_all(
         show_id = await _seed_show(db, status="active")
         play_id = await _seed_play(db, show_id, status="running")
         # Backdate so the play is well outside the stale threshold.
-        await db.db.execute(
+        await db.execute(
             "UPDATE plays SET started_at = ? WHERE id = ?",
             (old_start, play_id),
         )
-        await db.db.commit()
 
     rc = await _do_kill_all_stale(threshold_seconds=3600, dry_run=False)
     assert rc == 0
 
     async with StateDB() as db:
-        cur = await db.db.execute("SELECT status FROM plays WHERE id = ?", (play_id,))
-        row = await cur.fetchone()
+        row = await db.fetch_one("SELECT status FROM plays WHERE id = ?", (play_id,))
         assert row is not None
         # Play must remain running — the sweep must not have touched it.
         assert row["status"] == "running"

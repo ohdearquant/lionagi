@@ -17,12 +17,11 @@ from lionagi.state.reasons import RunReasons
 async def _create_invocation(db: StateDB, *, status: str = "running") -> str:
     inv_id = uuid.uuid4().hex[:12]
     now = time.time()
-    await db.db.execute(
+    await db.execute(
         "INSERT INTO invocations (id, skill, status, created_at, started_at, updated_at) "
         "VALUES (?, ?, ?, ?, ?, ?)",
         (inv_id, "test:skill", status, now, now, now),
     )
-    await db.db.commit()
     return inv_id
 
 

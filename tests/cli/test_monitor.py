@@ -427,11 +427,10 @@ async def test_gather_table_rows_since_filter(temp_db_path: Path) -> None:
         sid_old = await _make_session(db)
         # Force updated_at to be in the past
         cutoff_past = time.time() - 3600
-        await db.db.execute(
+        await db.execute(
             "UPDATE sessions SET updated_at = ? WHERE id = ?",
             (cutoff_past - 10, sid_old),
         )
-        await db.db.commit()
 
         sid_new = await _make_session(db)
         since = time.time() - 60  # last minute only
@@ -689,19 +688,18 @@ async def test_session_agents_column_reflects_branch_count(temp_db_path: Path) -
         sid = await _make_session(db)
         # Insert two branches for this session
         pid1, pid2 = uuid.uuid4().hex, uuid.uuid4().hex
-        await db.db.execute(
+        await db.execute(
             "INSERT INTO progressions(id, created_at) VALUES (?, ?)", (pid1, time.time())
         )
-        await db.db.execute(
+        await db.execute(
             "INSERT INTO progressions(id, created_at) VALUES (?, ?)", (pid2, time.time())
         )
         b1_id, b2_id = uuid.uuid4().hex, uuid.uuid4().hex
         for bid, pid in ((b1_id, pid1), (b2_id, pid2)):
-            await db.db.execute(
+            await db.execute(
                 "INSERT INTO branches(id, created_at, session_id, progression_id) VALUES (?,?,?,?)",
                 (bid, time.time(), sid, pid),
             )
-        await db.db.commit()
 
         rows = await _gather_table_rows(db, since=None, entity_type=None, project=None)
 
@@ -730,20 +728,17 @@ async def test_play_agents_column_reflects_branch_count(temp_db_path: Path) -> N
         play_session_id = await _make_session(db, status="running")
         play_id = await _make_play(db, show_id, status="running")
         # Link the play to the session
-        await db.db.execute(
-            "UPDATE plays SET session_id = ? WHERE id = ?", (play_session_id, play_id)
-        )
+        await db.execute("UPDATE plays SET session_id = ? WHERE id = ?", (play_session_id, play_id))
         # Add a branch on the play's session
         pid = uuid.uuid4().hex
-        await db.db.execute(
+        await db.execute(
             "INSERT INTO progressions(id, created_at) VALUES (?, ?)", (pid, time.time())
         )
         bid = uuid.uuid4().hex
-        await db.db.execute(
+        await db.execute(
             "INSERT INTO branches(id, created_at, session_id, progression_id) VALUES (?,?,?,?)",
             (bid, time.time(), play_session_id, pid),
         )
-        await db.db.commit()
 
         rows = await _gather_table_rows(db, since=None, entity_type="play", project=None)
 

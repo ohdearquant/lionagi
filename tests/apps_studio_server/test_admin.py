@@ -39,11 +39,10 @@ async def _seed_running_session(
             }
         )
         if artifacts_path is not None:
-            await db.db.execute(
+            await db.execute(
                 "UPDATE sessions SET artifacts_path = ? WHERE id = ?",
                 (artifacts_path, session_id),
             )
-            await db.db.commit()
 
 
 def _make_client(tmp_path, monkeypatch, db_path: Path) -> TestClient:
@@ -274,11 +273,10 @@ def test_admin_transition_guard_re_evaluates_health_per_call(tmp_path, monkeypat
     # idle_seconds=2h > IDLE_THRESHOLD(1h) but < 6h → IDLE → refused.
     async def _set_idle():
         async with StateDB(db_path) as db:
-            await db.db.execute(
+            await db.execute(
                 "UPDATE sessions SET last_message_at = ?, invocation_kind = ? WHERE id = ?",
                 (time.time() - 7200, "agent", sid),
             )
-            await db.db.commit()
 
     _run(_set_idle())
 
@@ -295,11 +293,10 @@ def test_admin_transition_guard_re_evaluates_health_per_call(tmp_path, monkeypat
     # Bump last_message_at past the 6h agent threshold → UNRESPONSIVE → allowed.
     async def _bump_past_threshold():
         async with StateDB(db_path) as db:
-            await db.db.execute(
+            await db.execute(
                 "UPDATE sessions SET last_message_at = ? WHERE id = ?",
                 (time.time() - 7 * 3600, sid),
             )
-            await db.db.commit()
 
     _run(_bump_past_threshold())
 
@@ -354,8 +351,7 @@ def test_admin_transition_with_reason_code_succeeds(tmp_path, monkeypatch):
             async with StateDB(db_path) as db:
                 row = await db.get_session(sid)
                 if row and row["status"] != "running":
-                    await db.db.execute("UPDATE sessions SET status='running' WHERE id=?", (sid,))
-                    await db.db.commit()
+                    await db.execute("UPDATE sessions SET status='running' WHERE id=?", (sid,))
 
         _run(_ensure_running())
         r = client.post(
@@ -379,12 +375,11 @@ def test_admin_transition_with_reason_code_succeeds(tmp_path, monkeypatch):
             assert row["status"] == "failed"
             assert row["status_reason_code"] == "session.stale.no_heartbeat"
             assert row["status_reason_summary"] == "Operator forced failure after alert."
-            cur = await db.db.execute(
+            rows = await db.fetch_all(
                 "SELECT reason_code, previous_status, status, evidence_refs "
                 "FROM status_transitions WHERE entity_id = ?",
                 (sid,),
             )
-            rows = await cur.fetchall()
             assert len(rows) == 1
             assert rows[0]["reason_code"] == "session.stale.no_heartbeat"
             assert rows[0]["previous_status"] == "running"
@@ -447,11 +442,10 @@ def test_admin_transition_phantom_classifier_override(
             )
             import json as _json
 
-            cur = await db.db.execute(
+            row_t = await db.fetch_one(
                 "SELECT evidence_refs FROM status_transitions WHERE entity_id = ?",
                 (sid,),
             )
-            row_t = await cur.fetchone()
             refs = _json.loads(row_t["evidence_refs"] or "[]")
             assert any(r.get("kind") == expected_evidence_kind for r in refs), (
                 f"evidence missing {expected_evidence_kind} kind: {refs}"

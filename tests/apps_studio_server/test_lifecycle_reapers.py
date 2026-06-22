@@ -60,20 +60,18 @@ async def _seed_session(
         if artifacts_path is not None:
             updates["artifacts_path"] = artifacts_path
         if status is None:
-            # Force null status via raw SQL — update_session validates non-null.
-            await db.db.execute("UPDATE sessions SET status = NULL WHERE id = ?", (sid,))
-            await db.db.commit()
+            # Force null status via direct SQL — update_session validates non-null.
+            await db.execute("UPDATE sessions SET status = NULL WHERE id = ?", (sid,))
             updates.pop("status", None)
         if updates:
-            # updated_at / artifacts_path must go through raw SQL when status is NULL
+            # updated_at / artifacts_path must go through direct SQL when status is NULL
             # because update_session touches updated_at internally.
             sets = ", ".join(f"{k} = ?" for k in updates)
             vals = list(updates.values()) + [sid]
-            await db.db.execute(
+            await db.execute(
                 f"UPDATE sessions SET {sets} WHERE id = ?",  # noqa: S608
                 vals,
             )
-            await db.db.commit()
     return sid
 
 
@@ -99,10 +97,9 @@ async def _seed_invocation(
             }
         )
         if updated_at is not None:
-            await db.db.execute(
+            await db.execute(
                 "UPDATE invocations SET updated_at = ? WHERE id = ?", (updated_at, iid)
             )
-            await db.db.commit()
     return iid
 
 
@@ -118,10 +115,9 @@ async def _get_invocation(db_path: Path, iid: str) -> dict | None:
 
 async def _count_transitions(db_path: Path, entity_id: str) -> int:
     async with StateDB(db_path) as db:
-        cur = await db.db.execute(
+        row = await db.fetch_one(
             "SELECT COUNT(*) AS n FROM status_transitions WHERE entity_id = ?", (entity_id,)
         )
-        row = await cur.fetchone()
         return row["n"] if row else 0
 
 
@@ -372,10 +368,9 @@ def test_reap_phantom_sessions_missing_artifacts(tmp_path, monkeypatch):
     # Reason summary should be phantom_reaped.
     async def _get_reason(db_path: Path, sid: str) -> str | None:
         async with StateDB(db_path) as db:
-            cur = await db.db.execute(
+            row = await db.fetch_one(
                 "SELECT status_reason_summary FROM sessions WHERE id = ?", (sid,)
             )
-            row = await cur.fetchone()
             return row["status_reason_summary"] if row else None
 
     reason = run_async(_get_reason(db_path, sid))
@@ -416,10 +411,9 @@ def test_reap_phantom_sessions_completes_mirrored_claude_session(tmp_path, monke
 
     async def _get_reason(db_path: Path, sid: str) -> str | None:
         async with StateDB(db_path) as db:
-            cur = await db.db.execute(
+            row = await db.fetch_one(
                 "SELECT status_reason_summary FROM sessions WHERE id = ?", (sid,)
             )
-            row = await cur.fetchone()
             return row["status_reason_summary"] if row else None
 
     assert run_async(_get_reason(db_path, sid)) == "mirror_idle_reaped"

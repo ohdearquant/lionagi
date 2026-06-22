@@ -18,6 +18,7 @@ import uuid
 from pathlib import Path
 
 import pytest
+from sqlalchemy import text
 
 from lionagi.state.db import StateDB
 
@@ -50,8 +51,7 @@ async def _make_session(db_path: Path, *, status: str | None = "running") -> str
             }
         )
         if status is None:
-            await db.db.execute("UPDATE sessions SET status = NULL WHERE id = ?", (sid,))
-            await db.db.commit()
+            await db.execute("UPDATE sessions SET status = NULL WHERE id = ?", (sid,))
     return sid
 
 
@@ -74,11 +74,10 @@ async def _make_invocation(db_path: Path, *, status: str = "running") -> str:
 async def _get_status(db_path: Path, entity_type: str, entity_id: str) -> str | None:
     table = "sessions" if entity_type == "session" else "invocations"
     async with StateDB(db_path) as db:
-        cur = await db.db.execute(
+        row = await db.fetch_one(
             f"SELECT status FROM {table} WHERE id = ?",  # noqa: S608
             (entity_id,),
         )
-        row = await cur.fetchone()
     return row["status"] if row else None
 
 
@@ -86,11 +85,10 @@ async def _flip_status(db_path: Path, entity_type: str, entity_id: str, new_stat
     """Simulate a concurrent process writing a terminal status directly."""
     table = "sessions" if entity_type == "session" else "invocations"
     async with StateDB(db_path) as db:
-        await db.db.execute(
+        await db.execute(
             f"UPDATE {table} SET status = ?, updated_at = ? WHERE id = ?",  # noqa: S608
             (new_status, time.time(), entity_id),
         )
-        await db.db.commit()
 
 
 # ── FAIL-before: phantom session race ─────────────────────────────────────────
@@ -367,7 +365,7 @@ def test_prune_cleans_orphaned_messages_and_progressions(tmp_path, monkeypatch):
             old_msg1 = str(uuid.uuid4())
             old_msg2 = str(uuid.uuid4())
             for mid in (old_msg1, old_msg2):
-                await db.db.execute(
+                await db.execute(
                     "INSERT INTO messages (id, content, created_at, role, lion_class)"
                     " VALUES (?, ?, ?, ?, ?)",
                     (mid, '{"content":"hi"}', old_ts, "user", 2),
@@ -375,11 +373,10 @@ def test_prune_cleans_orphaned_messages_and_progressions(tmp_path, monkeypatch):
             import json
 
             old_collection = json.dumps([old_msg1, old_msg2])
-            await db.db.execute(
+            await db.execute(
                 "UPDATE progressions SET collection = ? WHERE id = ?",
                 (old_collection, old_pid),
             )
-            await db.db.commit()
 
             # ── recent session (must survive) ─────────────────────────────
             recent_pid = str(uuid.uuid4())
@@ -397,17 +394,16 @@ def test_prune_cleans_orphaned_messages_and_progressions(tmp_path, monkeypatch):
             recent_msg1 = str(uuid.uuid4())
             recent_msg2 = str(uuid.uuid4())
             for mid in (recent_msg1, recent_msg2):
-                await db.db.execute(
+                await db.execute(
                     "INSERT INTO messages (id, content, created_at, role, lion_class)"
                     " VALUES (?, ?, ?, ?, ?)",
                     (mid, '{"content":"hello"}', recent_ts, "assistant", 3),
                 )
             recent_collection = json.dumps([recent_msg1, recent_msg2])
-            await db.db.execute(
+            await db.execute(
                 "UPDATE progressions SET collection = ? WHERE id = ?",
                 (recent_collection, recent_pid),
             )
-            await db.db.commit()
 
         return old_sid, recent_sid, [old_msg1, old_msg2], [recent_msg1, recent_msg2]
 
@@ -415,9 +411,8 @@ def test_prune_cleans_orphaned_messages_and_progressions(tmp_path, monkeypatch):
 
     async def _count(table: str) -> int:
         async with StateDB(db_path) as db:
-            cur = await db.db.execute(f"SELECT COUNT(*) FROM {table}")  # noqa: S608
-            row = await cur.fetchone()
-            return row[0]
+            row = await db.fetch_one(f"SELECT COUNT(*) AS n FROM {table}")  # noqa: S608
+            return row["n"]
 
     # Before prune: 2 progressions, 4 messages.
     assert run_async(_count("progressions")) == 2
@@ -433,15 +428,13 @@ def test_prune_cleans_orphaned_messages_and_progressions(tmp_path, monkeypatch):
     # Confirm the survivor is the recent session's progression/messages.
     async def _get_prog_ids() -> set[str]:
         async with StateDB(db_path) as db:
-            cur = await db.db.execute("SELECT id FROM progressions")
-            rows = await cur.fetchall()
-            return {r[0] for r in rows}
+            rows = await db.fetch_all("SELECT id FROM progressions")
+            return {r["id"] for r in rows}
 
     async def _get_msg_ids() -> set[str]:
         async with StateDB(db_path) as db:
-            cur = await db.db.execute("SELECT id FROM messages")
-            rows = await cur.fetchall()
-            return {r[0] for r in rows}
+            rows = await db.fetch_all("SELECT id FROM messages")
+            return {r["id"] for r in rows}
 
     remaining_progs = run_async(_get_prog_ids())
     remaining_msgs = run_async(_get_msg_ids())
@@ -472,20 +465,18 @@ def _seed_unguarded_global_delete(db_path: Path) -> tuple[str, str]:
             # Progression committed (matches create_progression commit order).
             await db.create_progression(orphan_prog_id)
             # Message committed (matches insert_message commit order).
-            await db.db.execute(
+            await db.execute(
                 "INSERT INTO messages (id, content, created_at, role, lion_class)"
                 " VALUES (?, ?, ?, ?, ?)",
                 (orphan_msg_id, '{"content":"newborn"}', time.time(), "user", 2),
             )
-            await db.db.commit()
             # Append to collection to simulate mid-startup hook write.
             import json
 
-            await db.db.execute(
+            await db.execute(
                 "UPDATE progressions SET collection = ? WHERE id = ?",
                 (json.dumps([orphan_msg_id]), orphan_prog_id),
             )
-            await db.db.commit()
         # No create_session() call — simulates the gap between progression
         # commit and session commit in setup_agent_persist().
         return orphan_prog_id, orphan_msg_id
@@ -496,24 +487,23 @@ def _seed_unguarded_global_delete(db_path: Path) -> tuple[str, str]:
 async def _run_global_delete(db_path: Path) -> None:
     """Reproduce the old (buggy) global-delete SQL without the scope fix."""
     async with StateDB(db_path) as db:
-        await db.db.execute("BEGIN IMMEDIATE")
-        try:
-            await db.db.execute(
-                "DELETE FROM progressions WHERE id NOT IN ("
-                "  SELECT progression_id FROM sessions"
-                "  UNION"
-                "  SELECT progression_id FROM branches"
-                ")"
+        async with db.transaction() as conn:
+            await conn.execute(
+                text(
+                    "DELETE FROM progressions WHERE id NOT IN ("
+                    "  SELECT progression_id FROM sessions"
+                    "  UNION"
+                    "  SELECT progression_id FROM branches"
+                    ")"
+                )
             )
-            await db.db.execute(
-                "DELETE FROM messages WHERE id NOT IN ("
-                "  SELECT value FROM progressions, json_each(progressions.collection)"
-                ")"
+            await conn.execute(
+                text(
+                    "DELETE FROM messages WHERE id NOT IN ("
+                    "  SELECT value FROM progressions, json_each(progressions.collection)"
+                    ")"
+                )
             )
-            await db.db.commit()
-        except BaseException:
-            await db.db.rollback()
-            raise
 
 
 def test_newborn_orphan_global_delete_destroys_progression(tmp_path, monkeypatch):
@@ -555,13 +545,13 @@ def test_newborn_orphan_global_delete_destroys_progression(tmp_path, monkeypatch
     # Verify they exist before the buggy delete.
     async def _exists_prog(pid: str) -> bool:
         async with StateDB(db_path) as db:
-            cur = await db.db.execute("SELECT id FROM progressions WHERE id = ?", (pid,))
-            return await cur.fetchone() is not None
+            row = await db.fetch_one("SELECT id FROM progressions WHERE id = ?", (pid,))
+            return row is not None
 
     async def _exists_msg(mid: str) -> bool:
         async with StateDB(db_path) as db:
-            cur = await db.db.execute("SELECT id FROM messages WHERE id = ?", (mid,))
-            return await cur.fetchone() is not None
+            row = await db.fetch_one("SELECT id FROM messages WHERE id = ?", (mid,))
+            return row is not None
 
     assert run_async(_exists_prog(orphan_prog_id)), "Newborn progression must exist before delete"
     assert run_async(_exists_msg(orphan_msg_id)), "Newborn message must exist before delete"
@@ -616,13 +606,13 @@ def test_newborn_orphan_scoped_delete_preserves_progression(tmp_path, monkeypatc
 
     async def _exists_prog(pid: str) -> bool:
         async with StateDB(db_path) as db:
-            cur = await db.db.execute("SELECT id FROM progressions WHERE id = ?", (pid,))
-            return await cur.fetchone() is not None
+            row = await db.fetch_one("SELECT id FROM progressions WHERE id = ?", (pid,))
+            return row is not None
 
     async def _exists_msg(mid: str) -> bool:
         async with StateDB(db_path) as db:
-            cur = await db.db.execute("SELECT id FROM messages WHERE id = ?", (mid,))
-            return await cur.fetchone() is not None
+            row = await db.fetch_one("SELECT id FROM messages WHERE id = ?", (mid,))
+            return row is not None
 
     # Run the fixed prune_old_data (scoped delete).
     result = run_async(maint.prune_old_data(keep_days=30, actor="test"))
@@ -679,28 +669,25 @@ def test_null_in_collection_does_not_stall_message_cleanup(tmp_path, monkeypatch
                 }
             )
             # Insert a real message.
-            await db.db.execute(
+            await db.execute(
                 "INSERT INTO messages (id, content, created_at, role, lion_class)"
                 " VALUES (?, ?, ?, ?, ?)",
                 (real_msg_id, '{"content":"msg"}', old_ts, "user", 2),
             )
-            await db.db.commit()
             # Collection contains both a valid id AND a JSON null.
             bad_collection = json.dumps([real_msg_id, None])
-            await db.db.execute(
+            await db.execute(
                 "UPDATE progressions SET collection = ? WHERE id = ?",
                 (bad_collection, pid),
             )
-            await db.db.commit()
         return sid, pid, real_msg_id
 
     sid, pid, real_msg_id = run_async(_seed())
 
     async def _count_msgs() -> int:
         async with StateDB(db_path) as db:
-            cur = await db.db.execute("SELECT COUNT(*) FROM messages")
-            row = await cur.fetchone()
-            return row[0]
+            row = await db.fetch_one("SELECT COUNT(*) AS n FROM messages")
+            return row["n"]
 
     assert run_async(_count_msgs()) == 1  # One message before prune.
 
@@ -754,21 +741,19 @@ async def _seed_shared_message_scenario(db_path: Path) -> tuple[str, str, str, s
     async with StateDB(db_path) as db:
         # ── shared message ─────────────────────────────────────────────────
         shared_msg_id = str(uuid.uuid4())
-        await db.db.execute(
+        await db.execute(
             "INSERT INTO messages (id, content, created_at, role, lion_class)"
             " VALUES (?, ?, ?, ?, ?)",
             (shared_msg_id, '{"content":"shared"}', old_ts, "user", 2),
         )
-        await db.db.commit()
 
         # ── unshared message (only in pruned progression) ──────────────────
         unshared_msg_id = str(uuid.uuid4())
-        await db.db.execute(
+        await db.execute(
             "INSERT INTO messages (id, content, created_at, role, lion_class)"
             " VALUES (?, ?, ?, ?, ?)",
             (unshared_msg_id, '{"content":"unshared"}', old_ts, "user", 2),
         )
-        await db.db.commit()
 
         # ── pruned session ─────────────────────────────────────────────────
         pruned_pid = str(uuid.uuid4())
@@ -784,11 +769,10 @@ async def _seed_shared_message_scenario(db_path: Path) -> tuple[str, str, str, s
             }
         )
         # Both shared and unshared messages in the pruned progression.
-        await db.db.execute(
+        await db.execute(
             "UPDATE progressions SET collection = ? WHERE id = ?",
             (json.dumps([shared_msg_id, unshared_msg_id]), pruned_pid),
         )
-        await db.db.commit()
 
         # ── surviving session + branch — system_msg_id = shared_msg ───────
         surviving_pid = str(uuid.uuid4())
@@ -806,13 +790,12 @@ async def _seed_shared_message_scenario(db_path: Path) -> tuple[str, str, str, s
         branch_pid = str(uuid.uuid4())
         branch_id = str(uuid.uuid4())
         await db.create_progression(branch_pid)
-        await db.db.execute(
+        await db.execute(
             "INSERT INTO branches"
             " (id, session_id, progression_id, system_msg_id, created_at, started_at)"
             " VALUES (?, ?, ?, ?, ?, ?)",
             (branch_id, surviving_sid, branch_pid, shared_msg_id, recent_ts, recent_ts),
         )
-        await db.db.commit()
 
     return pruned_sid, surviving_sid, shared_msg_id, unshared_msg_id
 
@@ -841,36 +824,41 @@ def test_shared_message_collection_only_check_deletes_it(tmp_path, monkeypatch):
     async def _old_cleanup_fk_off(db_path: Path, candidate_msg_ids: list[str]) -> None:
         """Reproduce the old collection-only NOT IN check with FK enforcement off."""
         async with StateDB(db_path) as db:
-            # Disable FK enforcement to expose the logic bug, not the constraint.
-            await db.db.execute("PRAGMA foreign_keys = OFF")
-            # Delete the pruned session (and orphan its progression).
-            await db.db.execute("DELETE FROM sessions WHERE status = 'completed'")
-            await db.db.execute(
-                "DELETE FROM progressions WHERE id NOT IN ("
-                "  SELECT progression_id FROM sessions"
-                "  UNION SELECT progression_id FROM branches"
-                ")"
-            )
-            # Old cleanup: only checks collection, not system_msg_id.
-            if candidate_msg_ids:
-                ph = ", ".join("?" * len(candidate_msg_ids))
-                await db.db.execute(
-                    f"DELETE FROM messages WHERE id IN ({ph})"  # noqa: S608
-                    " AND id NOT IN ("
-                    "  SELECT value FROM progressions, json_each(progressions.collection)"
-                    "  WHERE value IS NOT NULL"
-                    ")",
-                    candidate_msg_ids,
+            # PRAGMA foreign_keys is a no-op inside a transaction, so drive the
+            # raw sqlite connection directly (autocommit) to toggle enforcement —
+            # exposing the logic bug rather than the FK constraint.
+            async with db._engine.connect() as conn:
+                driver = (await conn.get_raw_connection()).driver_connection
+                # Disable FK enforcement to expose the logic bug, not the constraint.
+                await driver.execute("PRAGMA foreign_keys = OFF")
+                # Delete the pruned session (and orphan its progression).
+                await driver.execute("DELETE FROM sessions WHERE status = 'completed'")
+                await driver.execute(
+                    "DELETE FROM progressions WHERE id NOT IN ("
+                    "  SELECT progression_id FROM sessions"
+                    "  UNION SELECT progression_id FROM branches"
+                    ")"
                 )
-            await db.db.commit()
-            await db.db.execute("PRAGMA foreign_keys = ON")
+                # Old cleanup: only checks collection, not system_msg_id.
+                if candidate_msg_ids:
+                    ph = ", ".join("?" * len(candidate_msg_ids))
+                    await driver.execute(
+                        f"DELETE FROM messages WHERE id IN ({ph})"  # noqa: S608
+                        " AND id NOT IN ("
+                        "  SELECT value FROM progressions, json_each(progressions.collection)"
+                        "  WHERE value IS NOT NULL"
+                        ")",
+                        candidate_msg_ids,
+                    )
+                await driver.commit()
+                await driver.execute("PRAGMA foreign_keys = ON")
 
     run_async(_old_cleanup_fk_off(db_path, [shared_msg_id, unshared_msg_id]))
 
     async def _exists_msg(mid: str) -> bool:
         async with StateDB(db_path) as db:
-            cur = await db.db.execute("SELECT id FROM messages WHERE id = ?", (mid,))
-            return await cur.fetchone() is not None
+            row = await db.fetch_one("SELECT id FROM messages WHERE id = ?", (mid,))
+            return row is not None
 
     # FAIL-before: shared message is spuriously deleted because system_msg_id
     # was not in the survivor subquery.
@@ -903,8 +891,8 @@ def test_shared_message_fk_survivor_check_preserves_it(tmp_path, monkeypatch):
 
     async def _exists_msg(mid: str) -> bool:
         async with StateDB(db_path) as db:
-            cur = await db.db.execute("SELECT id FROM messages WHERE id = ?", (mid,))
-            return await cur.fetchone() is not None
+            row = await db.fetch_one("SELECT id FROM messages WHERE id = ?", (mid,))
+            return row is not None
 
     # PASS-after: shared message survives because surviving_branch.system_msg_id holds it.
     assert run_async(_exists_msg(shared_msg_id)), (

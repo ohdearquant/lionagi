@@ -125,18 +125,27 @@ class TestPersistSessionStartReasonCode:
         self, monkeypatch, tmp_path
     ):
         import lionagi.state.db as _db_module
+        from lionagi.state.db import StateDB, get_shared_db, register_shared_db
+        from lionagi.state.engine import normalize_state_db_url
 
-        monkeypatch.setattr(_db_module, "DEFAULT_DB_PATH", tmp_path / "state.db")
-        # Reset the singleton cache so this test gets its own isolated DB.
-        monkeypatch.setitem(_db_module._SHARED, tmp_path / "state.db", None)
-        _db_module._SHARED.pop(tmp_path / "state.db", None)
+        db_path = tmp_path / "state.db"
+        db_url = normalize_state_db_url(db_path)
+        null_url = normalize_state_db_url(None)
+        monkeypatch.setattr(_db_module, "DEFAULT_DB_PATH", db_path)
+        _db_module._SHARED.pop(db_url, None)
+        _db_module._SHARED.pop(null_url, None)
 
         from lionagi.hooks.builtins import persist_session_start
-        from lionagi.state.db import StateDB
         from lionagi.state.reasons import RunReasons
 
         sid = "sess-start-1"
-        async with StateDB(tmp_path / "state.db") as db:
+        # Keep the db open so get_shared_db() (no-arg) finds it in _SHARED.
+        db = StateDB(db_path)
+        await db.open()
+        # Register under both the test URL and the null-arg key.
+        await register_shared_db(db)
+        _db_module._SHARED[null_url] = db
+        try:
             await db.create_progression("prog-start-1")
             await db.create_session(
                 {
@@ -146,21 +155,20 @@ class TestPersistSessionStartReasonCode:
                 }
             )
 
-        # Must NOT raise (the bug raised ValueError, swallowed by the bus).
-        await persist_session_start(
-            session_id=sid,
-            model="gpt-5.4-mini",
-            provider="openai",
-            effort="high",
-            agent_name="reviewer",
-        )
+            # Must NOT raise (the bug raised ValueError, swallowed by the bus).
+            await persist_session_start(
+                session_id=sid,
+                model="gpt-5.4-mini",
+                provider="openai",
+                effort="high",
+                agent_name="reviewer",
+            )
 
-        shared = _db_module._SHARED.get(tmp_path / "state.db")
-        if shared is not None:
-            row = await shared.get_session(sid)
-        else:
-            async with StateDB(tmp_path / "state.db") as db:
-                row = await db.get_session(sid)
+            row = await db.get_session(sid)
+        finally:
+            await db.close()
+            _db_module._SHARED.pop(db_url, None)
+            _db_module._SHARED.pop(null_url, None)
 
         assert row is not None
         assert row["status"] == "running"
@@ -178,9 +186,12 @@ class TestPersistSessionStartReasonCode:
 async def test_shared_db_returns_same_instance(tmp_path, monkeypatch):
     """get_shared_db() for the same path must return the identical StateDB instance."""
     import lionagi.state.db as _db_module
+    from lionagi.state.engine import normalize_state_db_url
 
-    monkeypatch.setattr(_db_module, "DEFAULT_DB_PATH", tmp_path / "state.db")
-    _db_module._SHARED.pop(tmp_path / "state.db", None)
+    db_path = tmp_path / "state.db"
+    db_url = normalize_state_db_url(db_path)
+    monkeypatch.setattr(_db_module, "DEFAULT_DB_PATH", db_path)
+    _db_module._SHARED.pop(db_url, None)
     _db_module._SHARED_OPEN_LOCK = None
 
     from lionagi.state.db import get_shared_db
@@ -191,15 +202,21 @@ async def test_shared_db_returns_same_instance(tmp_path, monkeypatch):
 
     # Cleanup
     await db1.close()
-    _db_module._SHARED.pop(tmp_path / "state.db", None)
+    _db_module._SHARED.pop(db_url, None)
 
 
 async def test_shared_db_connection_open_once(tmp_path, monkeypatch):
     """StateDB.open() is called exactly once even when get_shared_db() is called N times."""
     import lionagi.state.db as _db_module
+    from lionagi.state.engine import normalize_state_db_url
 
-    monkeypatch.setattr(_db_module, "DEFAULT_DB_PATH", tmp_path / "state.db")
-    _db_module._SHARED.pop(tmp_path / "state.db", None)
+    db_path = tmp_path / "state.db"
+    db_url = normalize_state_db_url(db_path)
+    # get_shared_db() with no arg uses normalize_state_db_url(None) = null_url.
+    null_url = normalize_state_db_url(None)
+    monkeypatch.setattr(_db_module, "DEFAULT_DB_PATH", db_path)
+    _db_module._SHARED.pop(db_url, None)
+    _db_module._SHARED.pop(null_url, None)
     _db_module._SHARED_OPEN_LOCK = None
 
     open_count = 0
@@ -214,14 +231,14 @@ async def test_shared_db_connection_open_once(tmp_path, monkeypatch):
 
     from lionagi.state.db import get_shared_db
 
-    # Call 5 times; open() must be called exactly once.
+    # Call 5 times with the test URL so open() is invoked exactly once.
     for _ in range(5):
-        await get_shared_db()
+        await get_shared_db(db_path)
 
     assert open_count == 1, f"StateDB.open() called {open_count} times; expected 1"
 
     # Cleanup
-    db = _db_module._SHARED.pop(tmp_path / "state.db", None)
+    db = _db_module._SHARED.pop(db_url, None)
     if db is not None:
         await db.close()
 
@@ -229,9 +246,12 @@ async def test_shared_db_connection_open_once(tmp_path, monkeypatch):
 async def test_concurrent_hook_firings_use_same_instance(tmp_path, monkeypatch):
     """Concurrent get_shared_db() calls must all resolve to the same instance without error."""
     import lionagi.state.db as _db_module
+    from lionagi.state.engine import normalize_state_db_url
 
-    monkeypatch.setattr(_db_module, "DEFAULT_DB_PATH", tmp_path / "state.db")
-    _db_module._SHARED.pop(tmp_path / "state.db", None)
+    db_path = tmp_path / "state.db"
+    db_url = normalize_state_db_url(db_path)
+    monkeypatch.setattr(_db_module, "DEFAULT_DB_PATH", db_path)
+    _db_module._SHARED.pop(db_url, None)
     _db_module._SHARED_OPEN_LOCK = None
 
     from lionagi.state.db import get_shared_db
@@ -243,27 +263,38 @@ async def test_concurrent_hook_firings_use_same_instance(tmp_path, monkeypatch):
 
     # Cleanup
     await first.close()
-    _db_module._SHARED.pop(tmp_path / "state.db", None)
+    _db_module._SHARED.pop(db_url, None)
 
 
 # ── Lifecycle hook emission: SESSION_START / SESSION_END / BRANCH_CREATE ──────
 
 
 def _redirect_shared_db(monkeypatch, tmp_path):
-    """Redirect the singleton to tmp_path and return the path key."""
+    """Redirect the singleton to tmp_path and return the URL key used by _SHARED."""
     import lionagi.state.db as _db_module
+    from lionagi.state.engine import normalize_state_db_url
 
     db_path = tmp_path / "lifecycle.db"
+    db_url = normalize_state_db_url(db_path)
+    null_url = normalize_state_db_url(None)
     monkeypatch.setattr(_db_module, "DEFAULT_DB_PATH", db_path)
-    _db_module._SHARED.pop(db_path, None)
+    _db_module._SHARED.pop(db_url, None)
+    _db_module._SHARED.pop(null_url, None)
     _db_module._SHARED_OPEN_LOCK = None
-    return db_path
+    return db_url
 
 
-async def _shared(db_path):
-    from lionagi.state.db import get_shared_db
+async def _shared(db_url):
+    from lionagi.state.db import _SHARED, get_shared_db
+    from lionagi.state.engine import normalize_state_db_url
 
-    return await get_shared_db(db_path)
+    db = await get_shared_db(db_url)
+    # Also register under the no-arg key so that _db() in builtins (which
+    # calls get_shared_db() without a path) resolves to the same test instance
+    # rather than opening the real LIONAGI_HOME/state.db.
+    null_key = normalize_state_db_url(None)
+    _SHARED[null_key] = db
+    return db
 
 
 async def _seed_session(db, sid, prog_id, status="running"):
@@ -277,11 +308,10 @@ async def _seed_branch(db, bid, sid, prog_id):
 
 
 async def _transition_count(db, entity_id, reason_code):
-    cur = await db.db.execute(
+    row = await db.fetch_one(
         "SELECT COUNT(*) AS n FROM status_transitions WHERE entity_id = ? AND reason_code = ?",
         (entity_id, reason_code),
     )
-    row = await cur.fetchone()
     return row["n"]
 
 
@@ -318,8 +348,10 @@ class TestSessionStartEmission:
         finally:
             await db.close()
             import lionagi.state.db as _m
+            from lionagi.state.engine import normalize_state_db_url
 
             _m._SHARED.pop(db_path, None)
+            _m._SHARED.pop(normalize_state_db_url(None), None)
 
     async def test_double_emit_is_idempotent(self, monkeypatch, tmp_path):
         from lionagi.hooks.builtins import persist_session_start
@@ -348,8 +380,10 @@ class TestSessionStartEmission:
         finally:
             await db.close()
             import lionagi.state.db as _m
+            from lionagi.state.engine import normalize_state_db_url
 
             _m._SHARED.pop(db_path, None)
+            _m._SHARED.pop(normalize_state_db_url(None), None)
 
     async def test_uses_shared_db_singleton(self, monkeypatch, tmp_path):
         from lionagi.hooks.builtins import persist_session_start
@@ -401,8 +435,10 @@ class TestSessionEndEmission:
         finally:
             await db.close()
             import lionagi.state.db as _m
+            from lionagi.state.engine import normalize_state_db_url
 
             _m._SHARED.pop(db_path, None)
+            _m._SHARED.pop(normalize_state_db_url(None), None)
 
     async def test_double_emit_is_idempotent(self, monkeypatch, tmp_path):
         from lionagi.hooks.builtins import persist_session_end
@@ -430,8 +466,10 @@ class TestSessionEndEmission:
         finally:
             await db.close()
             import lionagi.state.db as _m
+            from lionagi.state.engine import normalize_state_db_url
 
             _m._SHARED.pop(db_path, None)
+            _m._SHARED.pop(normalize_state_db_url(None), None)
 
     async def test_already_terminal_skips_write(self, monkeypatch, tmp_path):
         from lionagi.hooks.builtins import persist_session_end
@@ -455,8 +493,10 @@ class TestSessionEndEmission:
         finally:
             await db.close()
             import lionagi.state.db as _m
+            from lionagi.state.engine import normalize_state_db_url
 
             _m._SHARED.pop(db_path, None)
+            _m._SHARED.pop(normalize_state_db_url(None), None)
 
 
 class TestBranchCreateEmission:
@@ -493,8 +533,10 @@ class TestBranchCreateEmission:
         finally:
             await db.close()
             import lionagi.state.db as _m
+            from lionagi.state.engine import normalize_state_db_url
 
             _m._SHARED.pop(db_path, None)
+            _m._SHARED.pop(normalize_state_db_url(None), None)
 
     async def test_double_emit_is_idempotent(self, monkeypatch, tmp_path):
         from lionagi.hooks.builtins import persist_branch_provenance
@@ -521,8 +563,10 @@ class TestBranchCreateEmission:
         finally:
             await db.close()
             import lionagi.state.db as _m
+            from lionagi.state.engine import normalize_state_db_url
 
             _m._SHARED.pop(db_path, None)
+            _m._SHARED.pop(normalize_state_db_url(None), None)
 
 
 class TestDefaultHookBusEmissions:
@@ -549,8 +593,10 @@ class TestDefaultHookBusEmissions:
         finally:
             await db.close()
             import lionagi.state.db as _m
+            from lionagi.state.engine import normalize_state_db_url
 
             _m._SHARED.pop(db_path, None)
+            _m._SHARED.pop(normalize_state_db_url(None), None)
 
     async def test_session_end_handler_wired_in_default_bus(self, monkeypatch, tmp_path):
         from lionagi.hooks.bus import HookPoint
@@ -573,8 +619,10 @@ class TestDefaultHookBusEmissions:
         finally:
             await db.close()
             import lionagi.state.db as _m
+            from lionagi.state.engine import normalize_state_db_url
 
             _m._SHARED.pop(db_path, None)
+            _m._SHARED.pop(normalize_state_db_url(None), None)
 
     async def test_branch_create_handler_wired_in_default_bus(self, monkeypatch, tmp_path):
         from lionagi.hooks.bus import HookPoint
@@ -599,5 +647,7 @@ class TestDefaultHookBusEmissions:
         finally:
             await db.close()
             import lionagi.state.db as _m
+            from lionagi.state.engine import normalize_state_db_url
 
             _m._SHARED.pop(db_path, None)
+            _m._SHARED.pop(normalize_state_db_url(None), None)

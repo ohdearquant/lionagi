@@ -193,7 +193,7 @@ def sqlite_patched_app(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     # Populate the DB schema and insert one show row so _db_available() returns True.
     async def _seed_db():
         async with state_db_mod.StateDB() as db:
-            await db.db.execute(
+            await db.execute(
                 """INSERT INTO shows (id, topic, goal, status, show_dir, created_at, updated_at)
                    VALUES (?, ?, ?, ?, ?, ?, ?)""",
                 (
@@ -206,7 +206,6 @@ def sqlite_patched_app(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
                     0.0,
                 ),
             )
-            await db.db.commit()
 
     # Python 3.10+: asyncio.get_event_loop() raises in a fresh thread.
     # CI xdist workers start without a loop. Use a fresh loop per fixture.
@@ -267,7 +266,7 @@ def docker_patched_app(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
 
     async def _seed_db():
         async with state_db_mod.StateDB() as db:
-            await db.db.execute(
+            await db.execute(
                 """INSERT INTO shows (id, topic, goal, status, show_dir, created_at, updated_at)
                    VALUES (?, ?, ?, ?, ?, ?, ?)""",
                 (
@@ -280,7 +279,6 @@ def docker_patched_app(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
                     0.0,
                 ),
             )
-            await db.db.commit()
 
     _loop = asyncio.new_event_loop()
     try:

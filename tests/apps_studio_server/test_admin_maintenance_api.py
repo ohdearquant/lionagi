@@ -309,7 +309,7 @@ def test_maintenance_checkpoint_db_absent(tmp_path, monkeypatch):
 @pytest.mark.parametrize("action", ["vacuum", "checkpoint", "prune"])
 def test_maintenance_lock_contention_returns_409(tmp_path, monkeypatch, action):
     """All three actions return 409 when another writer holds the DB lock (busy_timeout=100ms)."""
-    from lionagi.state.db import StateDB
+    import lionagi.state.engine as engine_mod
 
     # _make_client patches everything to tmp_path/"state.db".
     client, db_path = _make_client(tmp_path, monkeypatch)
@@ -317,14 +317,9 @@ def test_maintenance_lock_contention_returns_409(tmp_path, monkeypatch, action):
     # Initialize the schema so the DB file exists and is in WAL mode.
     asyncio.run(_async_init_db(db_path))
 
-    # Patch _apply_pragmas to use a short busy_timeout so the test is fast.
-    original_apply_pragmas = StateDB._apply_pragmas
-
-    async def _fast_pragmas(self):
-        await original_apply_pragmas(self)
-        await self.db.execute("PRAGMA busy_timeout = 100")
-
-    monkeypatch.setattr(StateDB, "_apply_pragmas", _fast_pragmas)
+    # Shorten the per-connection busy_timeout so the contended open/write fails
+    # fast (every pooled connection reads this at connect time).
+    monkeypatch.setattr(engine_mod, "_SQLITE_BUSY_TIMEOUT_MS", 100)
 
     # Hold an exclusive write lock with a raw sqlite3 connection.
     lock_conn = sqlite3.connect(str(db_path), timeout=0)

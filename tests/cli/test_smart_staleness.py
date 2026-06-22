@@ -60,8 +60,7 @@ async def _seed_play(db: StateDB, show_id: str, *, status: str = "running") -> s
 
 
 async def _link_play_session(db: StateDB, play_id: str, session_id: str) -> None:
-    await db.db.execute("UPDATE plays SET session_id = ? WHERE id = ?", (session_id, play_id))
-    await db.db.commit()
+    await db.execute("UPDATE plays SET session_id = ? WHERE id = ?", (session_id, play_id))
 
 
 # ── _play_child_stale ─────────────────────────────────────────────────────────
@@ -72,8 +71,7 @@ async def test_play_child_stale_no_session_id(temp_db_path: Path):
     async with StateDB() as db:
         show_id = await _seed_show(db)
         play_id = await _seed_play(db, show_id, status="running")
-        cur = await db.db.execute("SELECT * FROM plays WHERE id = ?", (play_id,))
-        row = db._row_to_dict(await cur.fetchone())
+        row = await db.fetch_one("SELECT * FROM plays WHERE id = ?", (play_id,))
         assert not await _play_child_stale(db, row)
 
 
@@ -84,8 +82,7 @@ async def test_play_child_stale_with_running_session(temp_db_path: Path):
         play_id = await _seed_play(db, show_id, status="running")
         session_id = await _seed_session(db, status="running")
         await _link_play_session(db, play_id, session_id)
-        cur = await db.db.execute("SELECT * FROM plays WHERE id = ?", (play_id,))
-        row = db._row_to_dict(await cur.fetchone())
+        row = await db.fetch_one("SELECT * FROM plays WHERE id = ?", (play_id,))
         assert not await _play_child_stale(db, row)
 
 
@@ -96,8 +93,7 @@ async def test_play_child_stale_with_completed_session(temp_db_path: Path):
         play_id = await _seed_play(db, show_id, status="running")
         session_id = await _seed_session(db, status="completed")
         await _link_play_session(db, play_id, session_id)
-        cur = await db.db.execute("SELECT * FROM plays WHERE id = ?", (play_id,))
-        row = db._row_to_dict(await cur.fetchone())
+        row = await db.fetch_one("SELECT * FROM plays WHERE id = ?", (play_id,))
         assert await _play_child_stale(db, row)
 
 
@@ -108,8 +104,7 @@ async def test_play_child_stale_with_failed_session(temp_db_path: Path):
         play_id = await _seed_play(db, show_id, status="running")
         session_id = await _seed_session(db, status="failed")
         await _link_play_session(db, play_id, session_id)
-        cur = await db.db.execute("SELECT * FROM plays WHERE id = ?", (play_id,))
-        row = db._row_to_dict(await cur.fetchone())
+        row = await db.fetch_one("SELECT * FROM plays WHERE id = ?", (play_id,))
         assert await _play_child_stale(db, row)
 
 
@@ -165,15 +160,13 @@ async def test_do_kill_all_stale_sweeps_play_with_dead_session(
         session_id = await _seed_session(db, status="cancelled")
         await _link_play_session(db, play_id, session_id)
         # Backdate the play so it exceeds threshold
-        await db.db.execute("UPDATE plays SET started_at = ? WHERE id = ?", (old_time, play_id))
-        await db.db.commit()
+        await db.execute("UPDATE plays SET started_at = ? WHERE id = ?", (old_time, play_id))
 
     rc = await _do_kill_all_stale(threshold_seconds=3600, dry_run=False)
     assert rc == 0
 
     async with StateDB() as db:
-        cur = await db.db.execute("SELECT status FROM plays WHERE id = ?", (play_id,))
-        row = await cur.fetchone()
+        row = await db.fetch_one("SELECT status FROM plays WHERE id = ?", (play_id,))
         assert row["status"] == "blocked"  # _persist_cancel maps play → "blocked"
 
 
@@ -205,15 +198,14 @@ async def test_do_kill_all_stale_does_not_sweep_play_with_live_session(
             }
         )
         await _link_play_session(db, play_id, sid)
-        await db.db.execute("UPDATE plays SET started_at = ? WHERE id = ?", (old_time, play_id))
-        await db.db.commit()
+        await db.execute("UPDATE plays SET started_at = ? WHERE id = ?", (old_time, play_id))
 
     rc = await _do_kill_all_stale(threshold_seconds=3600, dry_run=False)
     assert rc == 0
 
     async with StateDB() as db:
-        cur = await db.db.execute("SELECT status FROM plays WHERE id = ?", (play_id,))
-        assert (await cur.fetchone())["status"] == "running"
+        row = await db.fetch_one("SELECT status FROM plays WHERE id = ?", (play_id,))
+        assert row["status"] == "running"
 
 
 async def test_do_kill_all_stale_does_not_sweep_play_without_session(
@@ -226,15 +218,14 @@ async def test_do_kill_all_stale_does_not_sweep_play_without_session(
     async with StateDB() as db:
         show_id = await _seed_show(db)
         play_id = await _seed_play(db, show_id, status="running")
-        await db.db.execute("UPDATE plays SET started_at = ? WHERE id = ?", (old_time, play_id))
-        await db.db.commit()
+        await db.execute("UPDATE plays SET started_at = ? WHERE id = ?", (old_time, play_id))
 
     rc = await _do_kill_all_stale(threshold_seconds=3600, dry_run=False)
     assert rc == 0
 
     async with StateDB() as db:
-        cur = await db.db.execute("SELECT status FROM plays WHERE id = ?", (play_id,))
-        assert (await cur.fetchone())["status"] == "running"
+        row = await db.fetch_one("SELECT status FROM plays WHERE id = ?", (play_id,))
+        assert row["status"] == "running"
 
 
 async def test_do_kill_all_stale_sweeps_show_with_all_terminal_plays(
@@ -249,18 +240,17 @@ async def test_do_kill_all_stale_sweeps_show_with_all_terminal_plays(
         await _seed_play(db, show_id, status="merged")
         await _seed_play(db, show_id, status="blocked")
         # Backdate the show
-        await db.db.execute(
+        await db.execute(
             "UPDATE shows SET updated_at = ?, created_at = ? WHERE id = ?",
             (old_time, old_time, show_id),
         )
-        await db.db.commit()
 
     rc = await _do_kill_all_stale(threshold_seconds=3600, dry_run=False)
     assert rc == 0
 
     async with StateDB() as db:
-        cur = await db.db.execute("SELECT status FROM shows WHERE id = ?", (show_id,))
-        assert (await cur.fetchone())["status"] == "aborted"
+        row = await db.fetch_one("SELECT status FROM shows WHERE id = ?", (show_id,))
+        assert row["status"] == "aborted"
 
 
 async def test_do_kill_all_stale_does_not_sweep_show_with_active_play(
@@ -274,18 +264,17 @@ async def test_do_kill_all_stale_does_not_sweep_show_with_active_play(
         show_id = await _seed_show(db, status="active")
         await _seed_play(db, show_id, status="merged")
         await _seed_play(db, show_id, status="running")  # still active
-        await db.db.execute(
+        await db.execute(
             "UPDATE shows SET updated_at = ?, created_at = ? WHERE id = ?",
             (old_time, old_time, show_id),
         )
-        await db.db.commit()
 
     rc = await _do_kill_all_stale(threshold_seconds=3600, dry_run=False)
     assert rc == 0
 
     async with StateDB() as db:
-        cur = await db.db.execute("SELECT status FROM shows WHERE id = ?", (show_id,))
-        assert (await cur.fetchone())["status"] == "active"
+        row = await db.fetch_one("SELECT status FROM shows WHERE id = ?", (show_id,))
+        assert row["status"] == "active"
 
 
 async def test_do_kill_all_stale_does_not_sweep_show_with_no_plays(
@@ -297,18 +286,17 @@ async def test_do_kill_all_stale_does_not_sweep_show_with_no_plays(
     old_time = time.time() - 7200
     async with StateDB() as db:
         show_id = await _seed_show(db, status="active")
-        await db.db.execute(
+        await db.execute(
             "UPDATE shows SET updated_at = ?, created_at = ? WHERE id = ?",
             (old_time, old_time, show_id),
         )
-        await db.db.commit()
 
     rc = await _do_kill_all_stale(threshold_seconds=3600, dry_run=False)
     assert rc == 0
 
     async with StateDB() as db:
-        cur = await db.db.execute("SELECT status FROM shows WHERE id = ?", (show_id,))
-        assert (await cur.fetchone())["status"] == "active"
+        row = await db.fetch_one("SELECT status FROM shows WHERE id = ?", (show_id,))
+        assert row["status"] == "active"
 
 
 async def test_do_kill_all_stale_dry_run_child_derived(
@@ -323,12 +311,11 @@ async def test_do_kill_all_stale_dry_run_child_derived(
         play_id = await _seed_play(db, show_id, status="running")
         session_id = await _seed_session(db, status="cancelled")
         await _link_play_session(db, play_id, session_id)
-        await db.db.execute("UPDATE plays SET started_at = ? WHERE id = ?", (old_time, play_id))
-        await db.db.commit()
+        await db.execute("UPDATE plays SET started_at = ? WHERE id = ?", (old_time, play_id))
 
     rc = await _do_kill_all_stale(threshold_seconds=3600, dry_run=True)
     assert rc == 0
 
     async with StateDB() as db:
-        cur = await db.db.execute("SELECT status FROM plays WHERE id = ?", (play_id,))
-        assert (await cur.fetchone())["status"] == "running"  # unchanged
+        row = await db.fetch_one("SELECT status FROM plays WHERE id = ?", (play_id,))
+        assert row["status"] == "running"  # unchanged
