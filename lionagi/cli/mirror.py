@@ -157,7 +157,7 @@ def _fallback_project(cwd: str) -> tuple[str, str]:
     return "others", "cwd_missing"
 
 
-def _resolve_project(cwd: str) -> tuple[str, str]:
+def _resolve_project_for_mirror(cwd: str) -> tuple[str, str]:
     """Project + source for a cwd: detect_project, else the folder-name fallback."""
     from ._project import detect_project
 
@@ -290,7 +290,7 @@ def _derive_metadata(state: _FileState, events: list[dict[str, Any]]) -> None:
     if state.project is None:
         cwd = next((e.get("cwd") for e in events if e.get("cwd")), None)
         if cwd:
-            state.project, state.project_source = _resolve_project(cwd)
+            state.project, state.project_source = _resolve_project_for_mirror(cwd)
             if state.name is None:
                 state.name = f"Claude · {state.project.split('/')[-1]}"
     if state.model is None:
@@ -349,7 +349,7 @@ async def _attribute_idle(db, state: _FileState, cwd: str) -> None:
     """
     from lionagi.state.claude_mirror import session_db_id
 
-    state.project, state.project_source = _resolve_project(cwd)
+    state.project, state.project_source = _resolve_project_for_mirror(cwd)
     row = await db.get_session(session_db_id(state.session_uid))
     if row is not None and not row.get("project"):
         await db.set_session_provenance(

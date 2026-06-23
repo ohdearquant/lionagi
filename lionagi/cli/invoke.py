@@ -6,11 +6,10 @@ from __future__ import annotations
 
 import argparse
 import json
-import sys
 import time
 import uuid
 
-from ._logging import log_error
+from ._logging import hint, log_error
 
 # ── async helpers ─────────────────────────────────────────────────────────────
 
@@ -193,7 +192,7 @@ def run_invoke(args: argparse.Namespace) -> int:
     if args.invoke_command == "list":
         rows = run_async(_list_invocations(skill=args.skill, status=args.status, limit=args.limit))
         if not rows:
-            print("(no invocations)", file=sys.stderr)
+            hint("(no invocations)")
             return 0
         for r in rows:
             prompt = (r.get("prompt") or "").replace("\n", " ")[:60]
