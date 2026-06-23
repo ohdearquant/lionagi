@@ -34,6 +34,8 @@ from .._providers import (
 )
 from .._runs import (
     RunDir,
+    _make_message_handler,
+    _open_shared_db,
     _resolve_project,
     allocate_run,
     save_last_branch_pointer,
@@ -328,6 +330,10 @@ async def setup_orchestration(
     pack: str | None = None,
 ) -> OrchestrationEnv:
     """Resolve orchestrator config, allocate run, build branch+session."""
+    from lionagi.ln.concurrency.errors import cache_cancelled_exc_class
+
+    cache_cancelled_exc_class()
+
     orc_profile: AgentProfile | None = None
     if agent_name:
         orc_profile = load_agent_profile(agent_name)
@@ -596,15 +602,9 @@ async def setup_orchestration_persist(
     project: str | None = None,
     branches: list[Any] | None = None,
 ) -> dict | None:
-    from lionagi.state.db import StateDB, register_shared_db
-
     db = None
     try:
-        db = StateDB()
-        await db.open()
-        # Lifecycle hooks reuse this owned connection via get_shared_db()
-        # instead of opening a second, never-closed one (see _runs.py).
-        await register_shared_db(db)
+        db = await _open_shared_db()
 
         session_id = str(session.id)
         session_dict = session.to_dict(mode="db")
@@ -748,24 +748,14 @@ def register_branch_hook(ctx: dict[str, Any], branch: Any) -> None:
             )
             initialized["done"] = True
 
-    async def _on_message(msg):
-        try:
-            await _ensure_branch_row()
-            msg_dict = msg.to_dict(mode="db")
-            msg_id = msg_dict["id"]
-            await db.insert_message(msg_dict)
-            await db.append_to_progression(branch_prog_id, msg_id)
-            await db.append_to_progression(session_prog_id, msg_id)
-            await db.touch_session_activity(session_id, at=msg_dict.get("created_at"))
-            if msg_dict.get("role") == "system":
-                await db.update_branch(branch_id, system_msg_id=msg_id)
-        except Exception as exc:
-            _log_orch.warning(
-                "live persist write failed for branch %s: %s",
-                branch_id,
-                exc,
-                exc_info=True,
-            )
+    _on_message = _make_message_handler(
+        db,
+        branch_id,
+        session_id,
+        branch_prog_id,
+        session_prog_id,
+        on_first_msg=_ensure_branch_row,
+    )
 
     from lionagi.hooks import route_message_persistence
 

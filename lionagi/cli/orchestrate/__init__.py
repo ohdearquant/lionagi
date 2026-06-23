@@ -636,6 +636,31 @@ def add_orchestrate_subparser(
     return {"fanout": fo, "flow": fl}
 
 
+def _run_orch_command(coro, *, verbose: bool, extra_handlers: tuple = ()) -> tuple[any, int]:
+    """Run an orchestration coroutine, map shared exceptions to exit codes.
+
+    Returns (result, exit_code).  extra_handlers is a tuple of (ExcType, exit_code)
+    pairs checked before the shared map, allowing callers to handle pattern-specific
+    exceptions without repeating the common mapping.
+    """
+    try:
+        result = run_async(coro)
+    except (TimeoutError, LionTimeoutError) as e:
+        log_error(str(e))
+        return None, EXIT_CODE_BY_STATUS["timed_out"]
+    except KeyboardInterrupt:
+        return None, EXIT_CODE_BY_STATUS["aborted"]
+    except BaseException as exc:
+        for exc_type, code in extra_handlers:
+            if isinstance(exc, exc_type):
+                log_error(str(exc))
+                return None, code
+        if is_cancelled(exc):
+            return None, EXIT_CODE_BY_STATUS["cancelled"]
+        raise
+    return result, 0
+
+
 def run_orchestrate(args: argparse.Namespace) -> int:
     if args.orch_command == "fanout":
         has_model = args.model is not None or args.agent is not None
@@ -647,44 +672,37 @@ def run_orchestrate(args: argparse.Namespace) -> int:
         with_synthesis = synth is not False
         synthesis_model = synth if isinstance(synth, str) else None
 
-        try:
-            output = run_async(
-                _run_fanout(
-                    model_spec=args.model or "",
-                    prompt=args.prompt,
-                    num_workers=args.num_workers,
-                    workers_str=args.workers,
-                    with_synthesis=with_synthesis,
-                    synthesis_model=synthesis_model,
-                    synthesis_prompt=args.synthesis_prompt,
-                    max_concurrent=args.max_concurrent,
-                    yolo=args.yolo,
-                    bypass=getattr(args, "bypass", False),
-                    verbose=args.verbose,
-                    effort=args.effort,
-                    theme=args.theme,
-                    output_format=args.output,
-                    save_dir=args.save,
-                    team_name=args.team_mode,
-                    cwd=args.cwd,
-                    timeout=args.timeout,
-                    agent_name=args.agent,
-                    fast=getattr(args, "fast", False),
-                    playbook_name=getattr(args, "playbook", None),
-                    invocation_id=getattr(args, "invocation", None),
-                    project=getattr(args, "project", None),
-                    pack=getattr(args, "pack", None),
-                )
-            )
-        except (TimeoutError, LionTimeoutError) as e:
-            log_error(str(e))
-            return EXIT_CODE_BY_STATUS["timed_out"]
-        except KeyboardInterrupt:
-            return EXIT_CODE_BY_STATUS["aborted"]
-        except BaseException as exc:
-            if is_cancelled(exc):
-                return EXIT_CODE_BY_STATUS["cancelled"]
-            raise
+        output, rc = _run_orch_command(
+            _run_fanout(
+                model_spec=args.model or "",
+                prompt=args.prompt,
+                num_workers=args.num_workers,
+                workers_str=args.workers,
+                with_synthesis=with_synthesis,
+                synthesis_model=synthesis_model,
+                synthesis_prompt=args.synthesis_prompt,
+                max_concurrent=args.max_concurrent,
+                yolo=args.yolo,
+                bypass=getattr(args, "bypass", False),
+                verbose=args.verbose,
+                effort=args.effort,
+                theme=args.theme,
+                output_format=args.output,
+                save_dir=args.save,
+                team_name=args.team_mode,
+                cwd=args.cwd,
+                timeout=args.timeout,
+                agent_name=args.agent,
+                fast=getattr(args, "fast", False),
+                playbook_name=getattr(args, "playbook", None),
+                invocation_id=getattr(args, "invocation", None),
+                project=getattr(args, "project", None),
+                pack=getattr(args, "pack", None),
+            ),
+            verbose=args.verbose,
+        )
+        if rc != 0:
+            return rc
         if not args.verbose:
             print(output)
         return 0
@@ -844,53 +862,45 @@ def run_orchestrate(args: argparse.Namespace) -> int:
         with_synthesis = synth is not False
         synthesis_model = synth if isinstance(synth, str) else None
 
-        try:
-            output, terminal_status = run_async(
-                _run_flow(
-                    model_spec=args.model or "",
-                    prompt=args.prompt,
-                    with_synthesis=with_synthesis,
-                    synthesis_model=synthesis_model,
-                    max_concurrent=args.max_concurrent,
-                    yolo=args.yolo,
-                    bypass=getattr(args, "bypass", False),
-                    verbose=args.verbose,
-                    effort=args.effort,
-                    theme=args.theme,
-                    output_format=args.output,
-                    save_dir=args.save,
-                    team_name=args.team_mode,
-                    team_attach=getattr(args, "team_attach", None),
-                    cwd=args.cwd,
-                    timeout=args.timeout,
-                    agent_name=args.agent,
-                    bare=args.bare,
-                    workers_str=args.workers,
-                    max_ops=args.max_ops,
-                    dry_run=args.dry_run,
-                    show_graph=getattr(args, "show_graph", False),
-                    reactive_spec=getattr(args, "reactive", None) or "all",
-                    fast=getattr(args, "fast", False),
-                    playbook_name=playbook_name,
-                    playbook_artifacts=playbook_artifacts,
-                    invocation_id=getattr(args, "invocation", None),
-                    project=getattr(args, "project", None),
-                    pack=getattr(args, "pack", None),
-                )
-            )
-        except (TimeoutError, LionTimeoutError) as e:
-            log_error(str(e))
-            return EXIT_CODE_BY_STATUS["timed_out"]
-        except KeyboardInterrupt:
-            return EXIT_CODE_BY_STATUS["aborted"]
-        except FlowPlanError as e:
+        flow_result, rc = _run_orch_command(
+            _run_flow(
+                model_spec=args.model or "",
+                prompt=args.prompt,
+                with_synthesis=with_synthesis,
+                synthesis_model=synthesis_model,
+                max_concurrent=args.max_concurrent,
+                yolo=args.yolo,
+                bypass=getattr(args, "bypass", False),
+                verbose=args.verbose,
+                effort=args.effort,
+                theme=args.theme,
+                output_format=args.output,
+                save_dir=args.save,
+                team_name=args.team_mode,
+                team_attach=getattr(args, "team_attach", None),
+                cwd=args.cwd,
+                timeout=args.timeout,
+                agent_name=args.agent,
+                bare=args.bare,
+                workers_str=args.workers,
+                max_ops=args.max_ops,
+                dry_run=args.dry_run,
+                show_graph=getattr(args, "show_graph", False),
+                reactive_spec=getattr(args, "reactive", None) or "all",
+                fast=getattr(args, "fast", False),
+                playbook_name=playbook_name,
+                playbook_artifacts=playbook_artifacts,
+                invocation_id=getattr(args, "invocation", None),
+                project=getattr(args, "project", None),
+                pack=getattr(args, "pack", None),
+            ),
+            verbose=args.verbose,
             # planning produced no usable DAG — fail loud with actionable message
-            log_error(str(e))
-            return EXIT_CODE_BY_STATUS["failed"]
-        except BaseException as exc:
-            if is_cancelled(exc):
-                return EXIT_CODE_BY_STATUS["cancelled"]
-            raise
+            extra_handlers=((FlowPlanError, EXIT_CODE_BY_STATUS["failed"]),),
+        )
+        if rc != 0:
+            return rc
+        output, terminal_status = flow_result
         if not args.verbose:
             print(output)
         return EXIT_CODE_BY_STATUS.get(terminal_status, 0)

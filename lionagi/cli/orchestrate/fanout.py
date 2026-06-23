@@ -61,10 +61,6 @@ async def _run_fanout(
     pack: str | None = None,
 ) -> str:
     """Three-phase fan-out: decompose → fan out → synthesize."""
-    from lionagi.ln.concurrency.errors import cache_cancelled_exc_class
-
-    cache_cancelled_exc_class()
-
     env = await setup_orchestration(
         pattern_name="Fanout",
         model_spec=model_spec,

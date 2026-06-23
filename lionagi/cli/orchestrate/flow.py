@@ -786,10 +786,6 @@ async def _run_flow(
     if legacy_kwargs:
         raise TypeError(f"_run_flow() got unexpected keyword arguments: {list(legacy_kwargs)}")
 
-    from lionagi.ln.concurrency.errors import cache_cancelled_exc_class
-
-    cache_cancelled_exc_class()
-
     env = await setup_orchestration(
         pattern_name="Flow",
         model_spec=model_spec,
