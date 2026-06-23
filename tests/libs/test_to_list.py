@@ -345,9 +345,7 @@ class TestToListParams:
         assert params.unique is True
 
     def test_to_list_params_call(self):
-        """Test lines 209-210: __call__ method of ToListParams."""
-        from unittest.mock import Mock
-
+        """__call__ delegates to to_list using the configured params."""
         params = ToListParams(
             flatten=True,
             dropna=True,
@@ -356,26 +354,12 @@ class TestToListParams:
             flatten_tuple_set=False,
         )
 
-        # Add as_partial method dynamically to test __call__
-        mock_partial_func = Mock(return_value=[1, 2, 3])
+        data = [[1, None, 2], [3, None]]
+        # flatten -> [1, None, 2, 3, None]; dropna -> [1, 2, 3]
+        assert params(data) == [1, 2, 3]
 
-        # Temporarily add the method to the class
-        original_as_partial = getattr(ToListParams, "as_partial", None)
-        try:
-            ToListParams.as_partial = lambda self: mock_partial_func
-
-            data = [[1, None, 2], [3, None]]
-            result = params(data)
-
-            # Verify the result
-            assert result == [1, 2, 3]
-            assert mock_partial_func.called
-        finally:
-            # Restore original state
-            if original_as_partial is None:
-                delattr(ToListParams, "as_partial")
-            else:
-                ToListParams.as_partial = original_as_partial
+        # call-time kwargs override the configured params
+        assert params(data, dropna=False) == [1, None, 2, 3, None]
 
     def test_to_list_params_to_dict(self):
         """Test to_dict method works correctly."""
