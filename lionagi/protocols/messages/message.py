@@ -42,8 +42,21 @@ class Message(Node, Sendable):
     """Base class for all messages; subclasses fix their role via _role ClassVar."""
 
     _role: ClassVar[MessageRole] = MessageRole.UNSET
+    _content_type: ClassVar[type] = MessageContent
 
     content: Any = None
+
+    @field_validator("content", mode="before")
+    @classmethod
+    def _validate_content(cls, v: Any) -> Any:
+        t = cls._content_type
+        if v is None:
+            return t()
+        if isinstance(v, dict):
+            return t.from_dict(v)
+        if isinstance(v, t):
+            return v
+        raise TypeError(f"content must be dict or {t.__name__} instance")
 
     def __init__(self, **kwargs):
         kwargs.pop("role", None)

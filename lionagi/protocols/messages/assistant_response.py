@@ -4,7 +4,7 @@
 from dataclasses import dataclass
 from typing import Any, ClassVar
 
-from pydantic import BaseModel, field_validator
+from pydantic import BaseModel
 
 from .base import SenderRecipient
 from .message import Message, MessageContent, MessageRole
@@ -103,18 +103,9 @@ class AssistantResponse(Message):
     """Message representing an AI assistant's reply; raw model output in metadata["model_response"]."""
 
     _role: ClassVar[MessageRole] = MessageRole.ASSISTANT
+    _content_type: ClassVar[type] = AssistantResponseContent
     content: AssistantResponseContent
     recipient: SenderRecipient | None = MessageRole.USER
-
-    @field_validator("content", mode="before")
-    def _validate_content(cls, v):
-        if v is None:
-            return AssistantResponseContent()
-        if isinstance(v, dict):
-            return AssistantResponseContent.from_dict(v)
-        if isinstance(v, AssistantResponseContent):
-            return v
-        raise TypeError("content must be dict or AssistantResponseContent instance")
 
     @property
     def response(self) -> str:

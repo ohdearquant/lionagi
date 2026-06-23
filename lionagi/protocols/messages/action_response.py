@@ -4,8 +4,7 @@
 from dataclasses import dataclass, field
 from typing import Any, ClassVar
 
-from pydantic import field_validator
-
+from .base import _coerce_id_field, _unwrap_action_data
 from .message import Message, MessageContent, MessageRole
 
 
@@ -67,28 +66,23 @@ class ActionResponseContent(MessageContent):
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> "ActionResponseContent":
         """Construct ActionResponseContent from a dict; handles legacy nested action_response key."""
-        # Handle nested structure from old format
+        function, arguments = _unwrap_action_data(data, "action_response")
+
+        # output and error are only in the response variant; pull from the same
+        # source (inner or outer) that function/arguments came from.
         if "action_response" in data:
-            resp = data["action_response"]
-            function = resp.get("function", "")
-            arguments = resp.get("arguments", {})
-            output = resp.get("output")
-            error = resp.get("error")
+            inner = data["action_response"]
+            output = inner.get("output")
+            error = inner.get("error")
         else:
-            function = data.get("function", "")
-            arguments = data.get("arguments", {})
             output = data.get("output")
             error = data.get("error")
-
-        action_request_id = data.get("action_request_id")
-        if action_request_id:
-            action_request_id = str(action_request_id)
 
         return cls(
             function=function,
             arguments=arguments,
             output=output,
-            action_request_id=action_request_id,
+            action_request_id=_coerce_id_field(data, "action_request_id"),
             error=error,
         )
 
@@ -97,17 +91,8 @@ class ActionResponse(Message):
     """Message carrying the result of an executed action/function."""
 
     _role: ClassVar[MessageRole] = MessageRole.ACTION
+    _content_type: ClassVar[type] = ActionResponseContent
     content: ActionResponseContent
-
-    @field_validator("content", mode="before")
-    def _validate_content(cls, v):
-        if v is None:
-            return ActionResponseContent()
-        if isinstance(v, dict):
-            return ActionResponseContent.from_dict(v)
-        if isinstance(v, ActionResponseContent):
-            return v
-        raise TypeError("content must be dict or ActionResponseContent instance")
 
     @property
     def function(self) -> str:
