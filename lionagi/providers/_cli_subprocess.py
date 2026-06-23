@@ -7,11 +7,14 @@ import asyncio
 import codecs
 import json
 import logging
+import shutil
 from collections.abc import AsyncIterator, Callable
+from functools import partial
 from pathlib import Path
 from typing import Any
 
 from lionagi.libs.path_safety import contain_and_resolve
+from lionagi.libs.schema.as_readable import as_readable
 from lionagi.ln._proc import aterminate_process_group
 
 log = logging.getLogger(__name__)
@@ -236,3 +239,28 @@ def build_declarative_cli_args(model_instance: Any) -> list[str]:
             args.extend([flag, str(val)])
 
     return args
+
+
+def discover_cli(binary: str) -> tuple[bool, str | None]:
+    """Return (available, resolved_path_or_name) for a CLI binary discovered on PATH."""
+    candidate = shutil.which(binary) or binary
+    if shutil.which(candidate):
+        return True, candidate
+    return False, None
+
+
+def make_cli_flag(
+    flag: str,
+    order: int,
+    kind: str = "value",
+    *,
+    neg_flag: str | None = None,
+) -> dict[str, Any]:
+    """Build a json_schema_extra dict describing a declarative CLI flag (see build_declarative_cli_args)."""
+    d: dict[str, Any] = {"cli_flag": flag, "cli_order": order, "cli_kind": kind}
+    if neg_flag:
+        d["cli_neg_flag"] = neg_flag
+    return d
+
+
+print_readable = partial(as_readable, md=True, display_str=True)

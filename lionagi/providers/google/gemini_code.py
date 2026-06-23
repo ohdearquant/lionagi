@@ -7,26 +7,26 @@ import asyncio
 import contextlib
 import logging
 import os
-import shutil
 import warnings
 from collections.abc import AsyncIterator, Callable
 from dataclasses import dataclass
 from dataclasses import field as datafield
-from functools import partial
 from pathlib import Path
 from textwrap import shorten
 from typing import Any, Literal
 
 from pydantic import BaseModel, Field, field_validator, model_validator
 
-from lionagi.libs.path_safety import check_paths_safe, contain_and_resolve
+from lionagi.libs.path_safety import check_paths_safe
 from lionagi.libs.path_safety import contain_paths_in_root as contain_paths_in_repo
-from lionagi.libs.schema.as_readable import as_readable
 from lionagi.ln.concurrency.utils import maybe_await
 from lionagi.providers._agentic_handlers import AgenticHandlersMixin
 from lionagi.providers._cli_subprocess import (
     _INHERIT_STDIN,
+    discover_cli,
     ndjson_from_cli,
+    print_readable,
+    resolve_cli_workspace,
     validate_message_prompt,
 )
 from lionagi.service.connections.agentic_endpoint import AgenticEndpoint
@@ -36,12 +36,7 @@ from lionagi.utils import to_dict
 
 from ._config import GeminiCodeConfigs
 
-HAS_GEMINI_CLI = False
-GEMINI_CLI = None
-
-if (g := (shutil.which("gemini") or "gemini")) and shutil.which(g):
-    HAS_GEMINI_CLI = True
-    GEMINI_CLI = g
+HAS_GEMINI_CLI, GEMINI_CLI = discover_cli("gemini")
 
 logging.basicConfig(level=logging.INFO)
 log = logging.getLogger("gemini-cli")
@@ -139,18 +134,7 @@ class GeminiCodeRequest(BaseModel):
         return self
 
     def cwd(self) -> Path:
-        if not self.ws:
-            return self.repo
-
-        ws_path = Path(self.ws)
-
-        if ws_path.is_absolute():
-            raise ValueError(f"Workspace path must be relative, got absolute: {self.ws}")
-
-        if ".." in ws_path.parts:
-            raise ValueError(f"Directory traversal detected in workspace path: {self.ws}")
-
-        return contain_and_resolve(ws_path, self.repo)
+        return resolve_cli_workspace(self.repo, self.ws)
 
     def as_cmd_args(self) -> list[str]:
         args: list[str] = ["-p", self.prompt, "--output-format", "stream-json"]
@@ -314,9 +298,6 @@ async def stream_gemini_cli_events(request: GeminiCodeRequest):
         async for obj in stream:
             yield obj
     yield {"type": "done"}
-
-
-print_readable = partial(as_readable, md=True, display_str=True)
 
 
 def _pp_text(text: str, theme: str = "light") -> None:
