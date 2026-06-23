@@ -6,11 +6,10 @@ from typing import TYPE_CHECKING, Any, Literal
 
 from pydantic import JsonValue
 
-from lionagi.ln.fuzzy import FuzzyMatchKeysParams
-from lionagi.ln.fuzzy._fuzzy_validate import fuzzy_validate_mapping
+from lionagi.ln import fuzzy_validate_mapping
 from lionagi.ln.types import Undefined
 
-from .._defaults import STANDARD_REMOVED_KWARGS
+from .._defaults import STANDARD_REMOVED_KWARGS, make_parse_param
 from ..types import ChatParam, ParseParam
 
 if TYPE_CHECKING:
@@ -75,20 +74,15 @@ def prepare_communicate_kw(
 
     parse_param = None
     if response_format and not skip_validation:
-        from ..parse.parse import get_default_call
-
         fuzzy_kw = fuzzy_match_kwargs or {}
         handle_validation = fuzzy_kw.pop("handle_validation", "raise")
 
-        parse_param = ParseParam(
-            response_format=response_format,
-            fuzzy_match_params=(
-                FuzzyMatchKeysParams(**fuzzy_kw) if fuzzy_kw else FuzzyMatchKeysParams()
-            ),
+        parse_param = make_parse_param(
+            response_format,
+            parse_model,
             handle_validation=handle_validation,
-            alcall_params=get_default_call().with_updates(retry_attempts=num_parse_retries),
-            imodel=parse_model,
-            imodel_kw={},
+            num_retries=num_parse_retries,
+            fuzzy_kw=fuzzy_kw,
         )
 
     return {
@@ -125,16 +119,12 @@ async def communicate(
 
     # Handle response_format with parse
     if parse_param and chat_param.response_format:
-        # Pull structure from the instruction message
-        from lionagi.operations.schema.structure import Structure
         from lionagi.protocols.messages.assistant_response import AssistantResponse
 
-        from ..parse.parse import parse
+        from ..parse.parse import _try_propagate_structure, parse
 
-        if not isinstance(parse_param.structure, Structure) and hasattr(ins, "content"):
-            si = getattr(ins.content, "_structure_instance", None)
-            if si is not None:
-                parse_param = parse_param.with_updates(structure=si)
+        ins_content = getattr(ins, "content", None)
+        parse_param = _try_propagate_structure(ins_content, parse_param)
 
         try:
             out, res2 = await parse(branch, res.response, parse_param, return_res_message=True)
