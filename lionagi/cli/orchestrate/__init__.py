@@ -636,7 +636,7 @@ def add_orchestrate_subparser(
     return {"fanout": fo, "flow": fl}
 
 
-def _run_orch_command(coro, *, verbose: bool, extra_handlers: tuple = ()) -> tuple[any, int]:
+def _run_orch_command(coro, *, verbose: bool, extra_handlers: tuple = ()) -> tuple[object, int]:
     """Run an orchestration coroutine, map shared exceptions to exit codes.
 
     Returns (result, exit_code).  extra_handlers is a tuple of (ExcType, exit_code)
