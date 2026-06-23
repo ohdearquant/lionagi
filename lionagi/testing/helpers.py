@@ -249,11 +249,6 @@ class MockElement(Element):
     value: Any = _Field(None)
 
 
-def make_mock_element_class() -> type[MockElement]:
-    """Back-compat shim — returns the module-level ``MockElement``."""
-    return MockElement
-
-
 class MockClaudeCode:
     """Mock agentic model returning task/research/default dict shapes based on the last user message."""
 
@@ -289,5 +284,4 @@ __all__ = (
     "MockElement",
     "TestDataHelpers",
     "ValidationHelpers",
-    "make_mock_element_class",
 )
