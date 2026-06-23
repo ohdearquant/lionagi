@@ -37,6 +37,12 @@ _UNSET: Any = object()
 _PARTIAL_EXPORT_TIMEOUT_S: float = 120.0
 
 
+class ChainEvent(BaseModel):
+    """Mixin: engine-assigned chain id for audit-trail reconstruction."""
+
+    eid: str = Field(default="", description="Leave empty — the engine assigns this id.")
+
+
 class EngineEvent(BaseModel):
     """Base for engine-only domain events with no casts-emission twin."""
 
