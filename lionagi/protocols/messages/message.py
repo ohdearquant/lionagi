@@ -50,6 +50,9 @@ class Message(Node, Sendable):
     @classmethod
     def _validate_content(cls, v: Any) -> Any:
         t = cls._content_type
+        # base Message is a generic envelope (content: Any); only roled subclasses coerce
+        if t is MessageContent:
+            return v
         if v is None:
             return t()
         if isinstance(v, dict):
