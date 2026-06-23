@@ -89,11 +89,9 @@ def serialize_sender_recipient(value: Any) -> str | None:
 
 
 def _coerce_id_field(data: dict[str, Any], key: str) -> str | None:
-    """Return data[key] coerced to str, or None if absent/falsy."""
+    """Return data[key] coerced to str, leaving an absent or falsy value unchanged."""
     val = data.get(key)
-    if val:
-        return str(val)
-    return None
+    return str(val) if val else val
 
 
 def _unwrap_action_data(data: dict[str, Any], nested_key: str) -> tuple[str, dict[str, Any]]:
