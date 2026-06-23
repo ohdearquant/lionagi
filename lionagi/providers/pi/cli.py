@@ -10,11 +10,9 @@ import contextlib
 import json
 import logging
 import os
-import shutil
 from collections.abc import AsyncIterator, Callable
 from dataclasses import dataclass
 from dataclasses import field as datafield
-from functools import partial
 from pathlib import Path
 from textwrap import shorten
 from typing import Any, Literal
@@ -23,14 +21,18 @@ from pydantic import BaseModel, Field, field_validator, model_validator
 
 from lionagi.libs.path_safety import check_paths_safe
 from lionagi.libs.path_safety import contain_paths_in_root as contain_paths_in_repo
-from lionagi.libs.schema.as_readable import as_readable
 from lionagi.ln.concurrency.utils import maybe_await
 from lionagi.providers._agentic_handlers import AgenticHandlersMixin
 from lionagi.providers._cli_subprocess import (
     _INHERIT_STDIN,
     build_declarative_cli_args,
+    discover_cli,
     ndjson_from_cli,
+    print_readable,
     validate_message_prompt,
+)
+from lionagi.providers._cli_subprocess import (
+    make_cli_flag as _cli,
 )
 from lionagi.service.connections.agentic_endpoint import AgenticEndpoint
 from lionagi.service.connections.endpoint_config import EndpointConfig
@@ -39,12 +41,7 @@ from lionagi.utils import to_dict
 
 from ._config import PiConfigs
 
-HAS_PI_CLI = False
-PI_CLI = None
-
-if (c := (shutil.which("pi") or "pi")) and shutil.which(c):
-    HAS_PI_CLI = True
-    PI_CLI = c
+HAS_PI_CLI, PI_CLI = discover_cli("pi")
 
 logging.basicConfig(level=logging.INFO)
 log = logging.getLogger("pi-cli")
@@ -79,21 +76,6 @@ _PI_MODEL_PROVIDER_MAP: list[tuple[str, str, bool]] = [
     ("o3", "openai", False),
     ("o4", "openai", False),
 ]
-
-
-# --------------------------------------------------------------------------- flag metadata
-
-
-def _cli(
-    flag: str,
-    order: int,
-    kind: str = "value",
-) -> dict[str, Any]:
-    return {
-        "cli_flag": flag,
-        "cli_order": order,
-        "cli_kind": kind,
-    }
 
 
 # --------------------------------------------------------------------------- request model
@@ -406,9 +388,6 @@ async def stream_pi_cli_events(request: PiCodeRequest):
         async for obj in stream:
             yield obj
     yield {"type": "done"}
-
-
-print_readable = partial(as_readable, md=True, display_str=True)
 
 
 def _pp_text(text: str, theme: str = "light") -> None:

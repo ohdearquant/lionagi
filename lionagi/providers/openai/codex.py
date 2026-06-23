@@ -7,10 +7,8 @@ import asyncio
 import contextlib
 import json
 import logging
-import shutil
 import warnings
 from collections.abc import AsyncIterator, Callable
-from functools import partial
 from pathlib import Path
 from textwrap import shorten
 from typing import Any, Literal
@@ -18,15 +16,20 @@ from typing import Any, Literal
 from pydantic import BaseModel, Field, field_validator, model_validator
 
 from lionagi.libs.path_safety import check_add_dirs_safe as check_add_dir_entries_safe
-from lionagi.libs.path_safety import check_path_safe, check_paths_safe, contain_and_resolve
+from lionagi.libs.path_safety import check_path_safe, check_paths_safe
 from lionagi.libs.path_safety import contain_paths_in_root as contain_paths_in_repo
-from lionagi.libs.schema.as_readable import as_readable
 from lionagi.ln.concurrency.utils import maybe_await
 from lionagi.providers._agentic_handlers import AgenticHandlersMixin
 from lionagi.providers._cli_subprocess import (
     build_declarative_cli_args,
+    discover_cli,
     ndjson_from_cli,
+    print_readable,
+    resolve_cli_workspace,
     validate_message_prompt,
+)
+from lionagi.providers._cli_subprocess import (
+    make_cli_flag as _cli,
 )
 from lionagi.service.connections.agentic_endpoint import AgenticEndpoint
 from lionagi.service.connections.endpoint_config import EndpointConfig
@@ -36,12 +39,7 @@ from lionagi.utils import to_dict
 
 from ._config import CodexConfigs
 
-HAS_CODEX_CLI = False
-CODEX_CLI = None
-
-if (c := (shutil.which("codex") or "codex")) and shutil.which(c):
-    HAS_CODEX_CLI = True
-    CODEX_CLI = c
+HAS_CODEX_CLI, CODEX_CLI = discover_cli("codex")
 
 logging.basicConfig(level=logging.INFO)
 log = logging.getLogger("codex-cli")
@@ -72,21 +70,6 @@ CodexReasoningEffort = Literal[
 ]
 
 __all__ = ("CodexCodeRequest", "stream_codex_cli", "CodexCLIEndpoint")
-
-
-# --------------------------------------------------------------------------- flag metadata
-
-
-def _cli(
-    flag: str,
-    order: int,
-    kind: str = "value",
-) -> dict[str, Any]:
-    return {
-        "cli_flag": flag,
-        "cli_order": order,
-        "cli_kind": kind,
-    }
 
 
 # --------------------------------------------------------------------------- request model
@@ -314,18 +297,7 @@ class CodexCodeRequest(BaseModel):
     # ── workspace path ────────────────────────────────────────────
 
     def cwd(self) -> Path:
-        if not self.ws:
-            return self.repo
-
-        ws_path = Path(self.ws)
-
-        if ws_path.is_absolute():
-            raise ValueError(f"Workspace path must be relative, got absolute: {self.ws}")
-
-        if ".." in ws_path.parts:
-            raise ValueError(f"Directory traversal detected in workspace path: {self.ws}")
-
-        return contain_and_resolve(ws_path, self.repo)
+        return resolve_cli_workspace(self.repo, self.ws)
 
     # ── CLI command builder ───────────────────────────────────────
 
@@ -424,9 +396,6 @@ async def stream_codex_cli_events(request: CodexCodeRequest):
         async for obj in stream:
             yield obj
     yield {"type": "done"}
-
-
-print_readable = partial(as_readable, md=True, display_str=True)
 
 
 def _pp_text(text: str, theme: str = "light") -> None:
