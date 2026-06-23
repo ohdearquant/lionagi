@@ -171,5 +171,5 @@ class ToListParams(Params):
 
     def __call__(self, input_: Any, **kw) -> list:
         """Convert parameters to a list."""
-        partial = self.as_partial()
-        return partial(input_, **kw)
+        kwargs = {**self.default_kw(), **kw}
+        return to_list(input_, **kwargs)
