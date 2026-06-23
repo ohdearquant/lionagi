@@ -6,11 +6,12 @@ from typing import TYPE_CHECKING, Any, Literal
 
 from pydantic import JsonValue
 
+from lionagi.ln import fuzzy_validate_mapping
 from lionagi.ln.fuzzy import FuzzyMatchKeysParams
-from lionagi.ln.fuzzy._fuzzy_validate import fuzzy_validate_mapping
 from lionagi.ln.types import Undefined
 
 from .._defaults import STANDARD_REMOVED_KWARGS
+from .._defaults import get_default_parse_call as get_default_call
 from ..types import ChatParam, ParseParam
 
 if TYPE_CHECKING:
@@ -75,8 +76,6 @@ def prepare_communicate_kw(
 
     parse_param = None
     if response_format and not skip_validation:
-        from ..parse.parse import get_default_call
-
         fuzzy_kw = fuzzy_match_kwargs or {}
         handle_validation = fuzzy_kw.pop("handle_validation", "raise")
 
@@ -125,16 +124,12 @@ async def communicate(
 
     # Handle response_format with parse
     if parse_param and chat_param.response_format:
-        # Pull structure from the instruction message
-        from lionagi.operations.schema.structure import Structure
         from lionagi.protocols.messages.assistant_response import AssistantResponse
 
-        from ..parse.parse import parse
+        from ..parse.parse import _try_propagate_structure, parse
 
-        if not isinstance(parse_param.structure, Structure) and hasattr(ins, "content"):
-            si = getattr(ins.content, "_structure_instance", None)
-            if si is not None:
-                parse_param = parse_param.with_updates(structure=si)
+        ins_content = getattr(ins, "content", None)
+        parse_param = _try_propagate_structure(ins_content, parse_param)
 
         try:
             out, res2 = await parse(branch, res.response, parse_param, return_res_message=True)

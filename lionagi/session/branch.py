@@ -926,89 +926,36 @@ class Branch(Element, Relational):
         include_token_usage_to_model: bool = True,
         **kwargs,
     ) -> AsyncGenerator:
-        from lionagi.ln.fuzzy import FuzzyMatchKeysParams
-        from lionagi.operations.ReAct.ReAct import ReActStream
-        from lionagi.operations.ReAct.utils import ReActAnalysis
-        from lionagi.operations.types import (
-            ActionParam,
-            ChatParam,
-            InterpretParam,
-            ParseParam,
-        )
+        from lionagi.operations.ReAct.ReAct import ReActStream, prepare_react_kw
 
         instruct_dict = _merge_instruct(instruct, instruction, guidance, context)
-
-        intp_param = None
-        if interpret:
-            intp_param = InterpretParam(
-                domain=interpret_domain or "general",
-                style=interpret_style or "concise",
-                sample_writing=interpret_sample or "",
-                imodel=interpret_model or analysis_model or self.chat_model,
-                imodel_kw=interpret_kwargs or {},
-            )
-
-        chat_param = ChatParam.from_branch(
+        kw = prepare_react_kw(
             self,
-            guidance=instruct_dict.get("guidance"),
-            context=instruct_dict.get("context"),
-            tool_schemas=tool_schemas or [],
+            instruct_dict,
+            interpret=interpret,
+            interpret_domain=interpret_domain,
+            interpret_style=interpret_style,
+            interpret_sample=interpret_sample,
+            interpret_model=interpret_model,
+            interpret_kwargs=interpret_kwargs,
+            tools=tools,
+            tool_schemas=tool_schemas,
+            response_format=response_format,
+            intermediate_response_options=intermediate_response_options,
+            intermediate_listable=intermediate_listable,
+            reasoning_effort=reasoning_effort,
+            extension_allowed=extension_allowed,
+            max_extensions=max_extensions,
+            response_kwargs=response_kwargs,
+            display_as=display_as,
+            analysis_model=analysis_model,
+            verbose_analysis=verbose,
+            verbose_length=verbose_length,
             include_token_usage_to_model=include_token_usage_to_model,
-            imodel=analysis_model or self.chat_model,
             imodel_kw=kwargs,
         )
 
-        action_param = None
-        if tools is not None or tool_schemas is not None:
-            from lionagi.operations.act.act import _get_default_call_params
-
-            action_param = ActionParam(
-                action_call_params=_get_default_call_params(),
-                tools=tools or True,
-                strategy="concurrent",
-                suppress_errors=True,
-                verbose_action=False,
-            )
-
-        from lionagi.operations.parse.parse import get_default_call
-
-        parse_param = ParseParam(
-            response_format=ReActAnalysis,
-            fuzzy_match_params=FuzzyMatchKeysParams(),
-            handle_validation="return_value",
-            alcall_params=get_default_call(),
-            imodel=analysis_model or self.chat_model,
-            imodel_kw={},
-        )
-
-        resp_ctx = response_kwargs or {}
-        if response_format:
-            resp_ctx["response_format"] = response_format
-
-        async for result in ReActStream(
-            self,
-            instruction=instruct_dict.get("instruction", str(instruct)),
-            chat_param=chat_param,
-            action_param=action_param,
-            parse_param=parse_param,
-            intp_param=intp_param,
-            resp_ctx=resp_ctx,
-            reasoning_effort=reasoning_effort,
-            reason=True,
-            field_models=None,
-            handle_validation="return_value",
-            invoke_actions=True,
-            clear_messages=False,
-            intermediate_response_options=intermediate_response_options,
-            intermediate_listable=intermediate_listable,
-            intermediate_nullable=False,
-            max_extensions=max_extensions,
-            extension_allowed=extension_allowed,
-            verbose_analysis=verbose,
-            display_as=display_as,
-            verbose_length=verbose_length,
-            continue_after_failed_response=False,
-        ):
+        async for result in ReActStream(self, **kw):
             if verbose:
                 analysis, str_ = result
                 from lionagi.libs.schema.as_readable import as_readable
