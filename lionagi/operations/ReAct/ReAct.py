@@ -134,6 +134,7 @@ def prepare_react_kw(  # noqa: N802
     branch: "Branch",
     instruct_dict: dict,
     *,
+    instruction_fallback: str = "",
     interpret: bool = False,
     interpret_domain: str | None = None,
     interpret_style: str | None = None,
@@ -205,7 +206,7 @@ def prepare_react_kw(  # noqa: N802
         resp_ctx["response_format"] = response_format
 
     return {
-        "instruction": instruct_dict.get("instruction", ""),
+        "instruction": instruct_dict.get("instruction", instruction_fallback),
         "chat_param": chat_param,
         "action_param": action_param,
         "parse_param": parse_param,

@@ -932,6 +932,7 @@ class Branch(Element, Relational):
         kw = prepare_react_kw(
             self,
             instruct_dict,
+            instruction_fallback=str(instruct),
             interpret=interpret,
             interpret_domain=interpret_domain,
             interpret_style=interpret_style,

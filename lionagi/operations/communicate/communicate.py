@@ -7,11 +7,9 @@ from typing import TYPE_CHECKING, Any, Literal
 from pydantic import JsonValue
 
 from lionagi.ln import fuzzy_validate_mapping
-from lionagi.ln.fuzzy import FuzzyMatchKeysParams
 from lionagi.ln.types import Undefined
 
-from .._defaults import STANDARD_REMOVED_KWARGS
-from .._defaults import get_default_parse_call as get_default_call
+from .._defaults import STANDARD_REMOVED_KWARGS, make_parse_param
 from ..types import ChatParam, ParseParam
 
 if TYPE_CHECKING:
@@ -79,15 +77,12 @@ def prepare_communicate_kw(
         fuzzy_kw = fuzzy_match_kwargs or {}
         handle_validation = fuzzy_kw.pop("handle_validation", "raise")
 
-        parse_param = ParseParam(
-            response_format=response_format,
-            fuzzy_match_params=(
-                FuzzyMatchKeysParams(**fuzzy_kw) if fuzzy_kw else FuzzyMatchKeysParams()
-            ),
+        parse_param = make_parse_param(
+            response_format,
+            parse_model,
             handle_validation=handle_validation,
-            alcall_params=get_default_call().with_updates(retry_attempts=num_parse_retries),
-            imodel=parse_model,
-            imodel_kw={},
+            num_retries=num_parse_retries,
+            fuzzy_kw=fuzzy_kw,
         )
 
     return {
