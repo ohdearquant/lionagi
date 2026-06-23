@@ -4,6 +4,7 @@
 """Async batch processing with retry, timeout, and concurrency control."""
 
 from collections.abc import AsyncGenerator, Callable
+from contextlib import nullcontext
 from dataclasses import dataclass
 from typing import Any, ClassVar
 
@@ -207,21 +208,8 @@ async def alcall(
 
     async def task_wrapper(item: Any, idx: int) -> None:
         try:
-            if semaphore:
-                async with semaphore:
-                    _, result = await _execute_with_retry(
-                        func,
-                        item,
-                        idx,
-                        is_coro=is_coro,
-                        timeout=retry_timeout,
-                        initial_delay=retry_initial_delay,
-                        backoff=retry_backoff,
-                        max_attempts=retry_attempts,
-                        default=retry_default,
-                        **kwargs,
-                    )
-            else:
+            ctx = semaphore if semaphore is not None else nullcontext()
+            async with ctx:
                 _, result = await _execute_with_retry(
                     func,
                     item,

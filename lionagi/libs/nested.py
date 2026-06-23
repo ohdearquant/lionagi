@@ -5,7 +5,9 @@ from collections import deque
 from collections.abc import Mapping, Sequence
 from typing import Any
 
-from lionagi.utils import UNDEFINED
+from lionagi.ln import Undefined
+
+UNDEFINED = Undefined
 
 
 def get_target_container(
