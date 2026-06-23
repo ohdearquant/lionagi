@@ -10,7 +10,6 @@ import os
 import warnings
 from collections.abc import AsyncIterator, Callable
 from dataclasses import dataclass
-from dataclasses import field as datafield
 from pathlib import Path
 from textwrap import shorten
 from typing import Any, Literal
@@ -31,6 +30,7 @@ from lionagi.providers._cli_subprocess import (
 )
 from lionagi.service.connections.agentic_endpoint import AgenticEndpoint
 from lionagi.service.connections.endpoint_config import EndpointConfig
+from lionagi.service.types.cli_session import CLISession
 from lionagi.service.types.stream_chunk import StreamChunk
 from lionagi.utils import to_dict
 
@@ -171,98 +171,7 @@ class GeminiChunk:
     is_delta: bool = False
 
 
-@dataclass
-class GeminiSession:
-    session_id: str | None = None
-    model: str | None = None
-
-    # chronological log
-    chunks: list[GeminiChunk] = datafield(default_factory=list)
-
-    # materialized views
-    messages: list[dict[str, Any]] = datafield(default_factory=list)
-    tool_uses: list[dict[str, Any]] = datafield(default_factory=list)
-    tool_results: list[dict[str, Any]] = datafield(default_factory=list)
-
-    # final summary
-    result: str = ""
-    usage: dict[str, Any] = datafield(default_factory=dict)
-    total_cost_usd: float | None = None
-    num_turns: int | None = None
-    duration_ms: int | None = None
-    is_error: bool = False
-    summary: dict | None = None
-
-    def populate_summary(self) -> None:
-        self.summary = _extract_summary(self)
-
-
-def _extract_summary(session: GeminiSession) -> dict[str, Any]:
-    tool_counts: dict[str, int] = {}
-    tool_details: list[dict[str, Any]] = []
-    file_operations: dict[str, list[str]] = {
-        "reads": [],
-        "writes": [],
-        "edits": [],
-    }
-    key_actions = []
-
-    for tool_use in session.tool_uses:
-        tool_name = tool_use.get("name", "unknown")
-        tool_input = tool_use.get("input", {})
-        tool_id = tool_use.get("id", "")
-
-        tool_counts[tool_name] = tool_counts.get(tool_name, 0) + 1
-        tool_details.append({"tool": tool_name, "id": tool_id, "input": tool_input})
-
-        if tool_name in ["read_file", "Read"]:
-            file_path = tool_input.get("path", tool_input.get("file_path", "unknown"))
-            file_operations["reads"].append(file_path)
-            key_actions.append(f"Read {file_path}")
-
-        elif tool_name in ["write_file", "Write"]:
-            file_path = tool_input.get("path", tool_input.get("file_path", "unknown"))
-            file_operations["writes"].append(file_path)
-            key_actions.append(f"Wrote {file_path}")
-
-        elif tool_name in ["edit_file", "Edit"]:
-            file_path = tool_input.get("path", tool_input.get("file_path", "unknown"))
-            file_operations["edits"].append(file_path)
-            key_actions.append(f"Edited {file_path}")
-
-        elif tool_name in ["run_shell_command", "shell", "Bash"]:
-            command = tool_input.get("command", "")
-            command_summary = command[:50] + "..." if len(command) > 50 else command
-            key_actions.append(f"Ran: {command_summary}")
-
-        elif tool_name.startswith("mcp_"):
-            operation = tool_name.replace("mcp_", "")
-            key_actions.append(f"MCP {operation}")
-
-        else:
-            key_actions.append(f"Used {tool_name}")
-
-    key_actions = list(dict.fromkeys(key_actions)) if key_actions else ["No specific actions"]
-
-    for op_type in file_operations:
-        file_operations[op_type] = list(dict.fromkeys(file_operations[op_type]))
-
-    result_summary = (session.result[:200] + "...") if len(session.result) > 200 else session.result
-
-    return {
-        "tool_counts": tool_counts,
-        "tool_details": tool_details,
-        "file_operations": file_operations,
-        "key_actions": key_actions,
-        "total_tool_calls": sum(tool_counts.values()),
-        "result_summary": result_summary,
-        "usage_stats": {
-            "total_cost_usd": session.total_cost_usd,
-            "num_turns": session.num_turns,
-            "duration_ms": session.duration_ms,
-            **session.usage,
-        },
-    }
+GeminiSession = CLISession
 
 
 # TODO(#1043 Phase 2): migrate create_subprocess_exec + wait_for to anyio
