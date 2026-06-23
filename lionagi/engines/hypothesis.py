@@ -10,11 +10,11 @@ import logging
 from pathlib import Path
 from typing import Any
 
-from pydantic import BaseModel, Field
+from pydantic import Field
 
 from lionagi.casts.emission import Finding, Gap, Verdict
 
-from .engine import ChainRun, Engine, EngineEvent, EngineRun
+from .engine import ChainEvent, ChainRun, Engine, EngineEvent, EngineRun
 
 logger = logging.getLogger("lionagi.engines")
 
@@ -38,12 +38,6 @@ __all__ = (
 # Events — the pipeline vocabulary. Each carries refs to upstream events;
 # the engine stamps ``eid``, agents fill refs from their instructions.
 # ---------------------------------------------------------------------------
-
-
-class ChainEvent(BaseModel):
-    """Mixin: engine-assigned chain id for audit-trail reconstruction."""
-
-    eid: str = Field(default="", description="Leave empty — the engine assigns this id.")
 
 
 class FindingPosted(Finding, ChainEvent):
