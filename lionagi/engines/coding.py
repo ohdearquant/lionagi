@@ -723,11 +723,18 @@ class CodingEngine(Engine):
         return applied
 
     async def _run_subprocess_gate(
-        self, run: CodingRun, change: ChangeProposed, cmd_source: str | list[str], *, round_no: int
+        self,
+        run: CodingRun,
+        change: ChangeProposed,
+        cmd_source: str | list[str],
+        *,
+        round_no: int,
+        notify_event: str,
     ) -> TestsRan:
         """Run cmd_source as a subprocess and emit a TestsRan; shared by _test and _fast_test."""
         cmd, shell = _resolve_cmd(cmd_source)
         cmd_str = cmd_source if isinstance(cmd_source, str) else " ".join(cmd_source)
+        run.notify(notify_event, change=change.eid, round=round_no, cmd=cmd_str)
         result = await run_sync(_subprocess_sync, cmd, shell, self.test_timeout_s, run.workspace)
         combined = (result.get("stdout", "") + result.get("stderr", "")).rstrip()
         returncode = int(result.get("returncode", -1))
@@ -750,9 +757,9 @@ class CodingEngine(Engine):
     async def _test(self, run: CodingRun, change: ChangeProposed, *, round_no: int) -> TestsRan:
         """Run the declared test command as a subprocess; passed is the process exit code, never a model claim."""
         await self._apply_auto_repairs(run, round_no=round_no)
-        cmd_str = run.test_cmd if isinstance(run.test_cmd, str) else " ".join(run.test_cmd)
-        run.notify("testing", change=change.eid, round=round_no, cmd=cmd_str)
-        return await self._run_subprocess_gate(run, change, run.test_cmd, round_no=round_no)
+        return await self._run_subprocess_gate(
+            run, change, run.test_cmd, round_no=round_no, notify_event="testing"
+        )
 
     async def _fast_test(
         self, run: CodingRun, change: ChangeProposed, *, round_no: int
@@ -764,13 +771,9 @@ class CodingEngine(Engine):
         """
         if self.fast_test_cmd is None:
             return None
-        cmd_str = (
-            self.fast_test_cmd
-            if isinstance(self.fast_test_cmd, str)
-            else " ".join(self.fast_test_cmd)
+        return await self._run_subprocess_gate(
+            run, change, self.fast_test_cmd, round_no=round_no, notify_event="fast_testing"
         )
-        run.notify("fast_testing", change=change.eid, round=round_no, cmd=cmd_str)
-        return await self._run_subprocess_gate(run, change, self.fast_test_cmd, round_no=round_no)
 
     async def _fix_loop(
         self, run: CodingRun, plan: WorkPlanned, change: ChangeProposed, tests: TestsRan
