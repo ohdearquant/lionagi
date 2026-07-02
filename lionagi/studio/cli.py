@@ -18,6 +18,14 @@ from lionagi.cli._logging import warn
 
 _STUDIO_IMAGE = "ghcr.io/ohdearquant/lion-studio:latest"
 
+# Keys the scheduler engine's chain-fire merge (`{**schedule, **chain_action}`,
+# see studio/scheduler/engine.py) actually understands. Anything else would
+# still shallow-merge into the fired child schedule row and silently clobber
+# unrelated columns (id, trigger_type, cron_expr, ...) — reject it up front.
+_CHAIN_ACTION_ALLOWED_KEYS = frozenset(
+    {"kind", "action_kind", "model", "prompt", "agent", "playbook", "on_success", "on_fail"}
+)
+
 
 def _mount_allowed_roots() -> list[Path]:
     """Host path prefixes allowed for Docker bind-mounts (home + XDG_CONFIG_HOME)."""
@@ -528,6 +536,83 @@ def _cmd_get(args: argparse.Namespace) -> int:
     return 0
 
 
+def _validate_chain_action_node(
+    action: Any,
+    label: str,
+    self_field: str,
+    chain_depth: int,
+    max_chain_depth: int,
+) -> str | None:
+    """Validate one chain_action node, recursing into its own nested
+    on_success/on_fail the same way the engine's chain-fire would reach them.
+
+    `label` is a human-readable path for error messages (e.g. "--on-success"
+    or "--on-success.on_success"). `self_field` is the chain field this node
+    was reached through — used for the re-fire warning: does this node set
+    its own copy of that field, or will it inherit the parent's via the
+    shallow merge? `chain_depth` is the engine chain_depth this node fires at
+    if reached (see scheduler/engine.py); recursion stops once that reaches
+    `max_chain_depth`, matching the engine's own `chain_depth < _MAX_CHAIN_DEPTH`
+    gate — beyond it, a node's own on_success/on_fail is never read.
+    """
+    if not isinstance(action, dict):
+        return f"{label}: must be a JSON object, got {type(action).__name__}"
+
+    unknown = set(action) - _CHAIN_ACTION_ALLOWED_KEYS
+    if unknown:
+        allowed = ", ".join(sorted(_CHAIN_ACTION_ALLOWED_KEYS))
+        return f"{label}: unknown key(s) {sorted(unknown)}; allowed: {allowed}"
+
+    if self_field not in action:
+        warn(
+            f'{label} does not set its own "{self_field}" key — under the '
+            f"engine's shallow merge, the chained run will inherit its "
+            f"parent's {self_field} and may re-fire again at the next chain "
+            f'depth. Add "{self_field}": null to the JSON to stop the chain '
+            "here."
+        )
+
+    if chain_depth >= max_chain_depth:
+        return None
+
+    for nested_field in ("on_success", "on_fail"):
+        if nested_field in action and action[nested_field] is not None:
+            err = _validate_chain_action_node(
+                action[nested_field],
+                f"{label}.{nested_field}",
+                nested_field,
+                chain_depth + 1,
+                max_chain_depth,
+            )
+            if err:
+                return err
+    return None
+
+
+def _parse_chain_action(raw: str, flag: str) -> tuple[dict[str, Any] | None, str | None]:
+    """Parse+validate a --on-success/--on-fail JSON blob, recursively —
+    nested on_success/on_fail chain actions are validated the same way as
+    the top level, since they ride the same shallow merge into the engine's
+    fired child schedules.
+
+    Returns (parsed_dict, error_message); error_message is None on success.
+    """
+    try:
+        parsed = json.loads(raw)
+    except json.JSONDecodeError as exc:
+        return None, f"{flag}: invalid JSON ({exc})"
+
+    from lionagi.studio.scheduler.engine import _MAX_CHAIN_DEPTH
+
+    field = "on_success" if flag == "--on-success" else "on_fail"
+    err = _validate_chain_action_node(
+        parsed, flag, field, chain_depth=1, max_chain_depth=_MAX_CHAIN_DEPTH
+    )
+    if err:
+        return None, err
+    return parsed, None
+
+
 def _cmd_create(args: argparse.Namespace) -> int:
     body: dict[str, Any] = {
         "name": args.name,
@@ -569,6 +654,18 @@ def _cmd_create(args: argparse.Namespace) -> int:
                 body["action_project"] = detected
     if args.description:
         body["description"] = args.description
+    if args.on_success:
+        parsed, err = _parse_chain_action(args.on_success, "--on-success")
+        if err:
+            print(f"Error: {err}", file=sys.stderr)
+            return 1
+        body["on_success"] = parsed
+    if args.on_fail:
+        parsed, err = _parse_chain_action(args.on_fail, "--on-fail")
+        if err:
+            print(f"Error: {err}", file=sys.stderr)
+            return 1
+        body["on_fail"] = parsed
     result = _api("/", method="POST", body=body)
     if result is None:
         return 1
@@ -675,6 +772,33 @@ def add_schedule_subparser(subparsers: argparse._SubParsersAction) -> None:
     )
     create_p.add_argument("--project", help="Project name.")
     create_p.add_argument("--description", help="Human-readable description.")
+    create_p.add_argument(
+        "--on-success",
+        dest="on_success",
+        metavar="JSON",
+        help=(
+            "Chain action to fire when this run exits 0, as a JSON object "
+            "(allowed keys: kind/action_kind, model, prompt, agent, playbook, "
+            "on_success, on_fail). WARNING — shallow merge: the chain child is "
+            "built as {**this_schedule, **on_success}, so any key you omit is "
+            "INHERITED from this schedule, including on_success/on_fail "
+            "themselves. A 2-level chain must set the inner level's own "
+            '"on_success": null explicitly, or the chain keeps re-firing at '
+            "each depth (capped, but rarely what you want). Example: "
+            '--on-success \'{"prompt": "notify done", "on_success": null}\'.'
+        ),
+    )
+    create_p.add_argument(
+        "--on-fail",
+        dest="on_fail",
+        metavar="JSON",
+        help=(
+            "Chain action to fire when this run exits non-zero, as a JSON "
+            "object (same allowed keys and shallow-merge caveat as "
+            "--on-success — see above). Example: --on-fail "
+            '\'{"prompt": "alert on-call", "on_fail": null}\'.'
+        ),
+    )
 
     # enable / disable / trigger / delete
     for sub_name, sub_help in (
