@@ -8,6 +8,8 @@ from __future__ import annotations
 import argparse
 from unittest.mock import MagicMock, patch
 
+import pytest
+
 
 def test_schedule_subparser_registered():
     """li schedule is wired into the main parser."""
@@ -146,6 +148,26 @@ def test_base_url_studio_url_takes_precedence(monkeypatch):
     from lionagi.studio.cli import _base_url
 
     assert _base_url() == "https://studio.example.com"
+
+
+@pytest.mark.parametrize(
+    "env_url",
+    [
+        "http://127.0.0.1:8765/api",
+        "http://127.0.0.1:8765/api/",
+        "https://studio.example.com/api",
+    ],
+    ids=["api", "api-slash", "https-api"],
+)
+def test_base_url_strips_trailing_api_suffix(monkeypatch, env_url):
+    """A base URL already carrying /api must not double-prefix requests:
+    endpoint paths add /api themselves, so _base_url strips a trailing one."""
+    monkeypatch.setenv("LIONAGI_STUDIO_URL", env_url)
+
+    from lionagi.studio.cli import _base_url
+
+    assert not _base_url().endswith("/api")
+    assert _base_url() == env_url.rstrip("/").removesuffix("/api")
 
 
 # ---------------------------------------------------------------------------
