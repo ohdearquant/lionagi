@@ -264,6 +264,16 @@ def main(argv: list[str] | None = None) -> int:
 
         return run_agent_status(_argv[2:])
 
+    # `li monitor run <id> [...]` / `li mon run <id> [...]` is a scriptable
+    # wait-for-terminal primitive, not a detail-view lookup — must be
+    # intercepted before argparse's positional `id` slot would otherwise
+    # swallow the literal token "run" as an entity-id (same reasoning as the
+    # `agent status` interception above, ADR-0085 slice 3).
+    if _argv and _argv[0] in ("monitor", "mon") and len(_argv) > 1 and _argv[1] == "run":
+        from .monitor import run_monitor_wait
+
+        return run_monitor_wait(_argv[2:])
+
     parser = argparse.ArgumentParser(
         prog="li",
         description="lionagi command line — spawn subagents via any CLI-backed provider.",
