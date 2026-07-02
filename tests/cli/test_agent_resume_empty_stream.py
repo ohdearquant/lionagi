@@ -166,8 +166,9 @@ async def test_resume_empty_stream_exit_code_nonzero(monkeypatch, tmp_path):
     monkeypatch.setattr(agent_mod, "run_async", _real_run_async)
 
     args = SimpleNamespace(
-        model="codex/model",
-        prompt="follow up",
+        query=["codex/model", "follow up"],
+        prompt_flag=None,
+        prompt_file=None,
         yolo=False,
         verbose=False,
         theme=None,

@@ -40,10 +40,16 @@ def _parse(argv: list[str]):
 
 
 def _agent_args(**overrides):
-    """Return a Namespace suitable for run_agent() with sensible defaults."""
+    """Return a Namespace suitable for run_agent() with sensible defaults.
+
+    Mirrors the parser namespace: positionals arrive as the `query` bucket
+    (model= / prompt= overrides are folded in for test readability)."""
+    model = overrides.pop("model", "claude")
+    prompt = overrides.pop("prompt", "do stuff")
     defaults = dict(
-        model="claude",
-        prompt="do stuff",
+        query=[q for q in (model, prompt) if q is not None],
+        prompt_flag=None,
+        prompt_file=None,
         agent=None,
         resume=None,
         continue_last=False,

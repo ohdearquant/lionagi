@@ -88,4 +88,22 @@ def serialize_sender_recipient(value: Any) -> str | None:
     return str(value)
 
 
+def _coerce_id_field(data: dict[str, Any], key: str) -> str | None:
+    """Return data[key] coerced to str, leaving an absent or falsy value unchanged."""
+    val = data.get(key)
+    return str(val) if val else val
+
+
+def _unwrap_action_data(data: dict[str, Any], nested_key: str) -> tuple[str, dict[str, Any]]:
+    """Extract function and arguments from data, supporting a legacy nested-key wrapper."""
+    if nested_key in data:
+        inner = data[nested_key]
+        function = inner.get("function", "")
+        arguments = inner.get("arguments", {})
+    else:
+        function = data.get("function", "")
+        arguments = data.get("arguments", {})
+    return function, arguments
+
+
 # File: lionagi/protocols/messages/base.py

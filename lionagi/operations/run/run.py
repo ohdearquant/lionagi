@@ -387,13 +387,10 @@ async def run_and_collect(
     if parse_param is None or parse_param.response_format is None:
         return full_text
 
-    from lionagi.operations.schema.structure import Structure
-
-    if not isinstance(parse_param.structure, Structure) and ins_msg is not None:
-        si = getattr(ins_msg.content, "_structure_instance", None)
-        if si is not None:
-            parse_param = parse_param.with_updates(structure=si)
-
+    from ..parse.parse import _try_propagate_structure
     from ..parse.parse import parse as _parse
+
+    ins_content = getattr(ins_msg, "content", None) if ins_msg is not None else None
+    parse_param = _try_propagate_structure(ins_content, parse_param)
 
     return await _parse(branch, full_text, parse_param)

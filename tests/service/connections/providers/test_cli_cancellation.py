@@ -89,7 +89,7 @@ class TestSubprocessSessionIsolation:
         from lionagi.providers.google.gemini_code import _ndjson_from_cli
 
         with (
-            patch("lionagi.providers.google.gemini_code.GEMINI_CLI", "gemini"),
+            patch("lionagi.providers.google.gemini_code.AGY_CLI", "agy"),
             patch("asyncio.create_subprocess_exec", new_callable=AsyncMock) as mock_exec,
         ):
             mock_proc = MagicMock()
@@ -467,7 +467,7 @@ class TestProcessGroupCleanup:
         killpg_calls: list[tuple] = []
 
         with (
-            patch("lionagi.providers.google.gemini_code.GEMINI_CLI", "gemini"),
+            patch("lionagi.providers.google.gemini_code.AGY_CLI", "agy"),
             patch("asyncio.create_subprocess_exec", new_callable=AsyncMock) as mock_exec,
             patch(
                 "lionagi.ln._proc.os.killpg",
@@ -530,7 +530,7 @@ class TestProcessGroupCleanup:
         killpg_calls: list = []
 
         with (
-            patch("lionagi.providers.google.gemini_code.GEMINI_CLI", "gemini"),
+            patch("lionagi.providers.google.gemini_code.AGY_CLI", "agy"),
             patch("asyncio.create_subprocess_exec", new_callable=AsyncMock) as mock_exec,
             patch(
                 "lionagi.ln._proc.os.killpg",
@@ -562,7 +562,7 @@ class TestProcessGroupCleanup:
         monkeypatch.delattr(proc_mod.os, "killpg", raising=False)
 
         with (
-            patch("lionagi.providers.google.gemini_code.GEMINI_CLI", "gemini"),
+            patch("lionagi.providers.google.gemini_code.AGY_CLI", "agy"),
             patch("asyncio.create_subprocess_exec", new_callable=AsyncMock) as mock_exec,
         ):
             mock_exec.return_value = mock_proc
@@ -684,7 +684,7 @@ class TestStderrDeadlockPrevention:
         mock_proc.kill = MagicMock()
 
         with (
-            patch("lionagi.providers.google.gemini_code.GEMINI_CLI", "gemini"),
+            patch("lionagi.providers.google.gemini_code.AGY_CLI", "agy"),
             patch("asyncio.create_subprocess_exec", new_callable=AsyncMock) as mock_exec,
             patch("lionagi.ln._proc.os.killpg"),
         ):

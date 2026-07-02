@@ -25,6 +25,15 @@ if TYPE_CHECKING:
     from lionagi.session.branch import Branch
 
 
+def _try_propagate_structure(content: Any, parse_param: "ParseParam") -> "ParseParam":
+    """If parse_param has no Structure yet, pull _structure_instance from instruction content."""
+    if not isinstance(parse_param.structure, Structure) and content is not None:
+        si = getattr(content, "_structure_instance", None)
+        if si is not None:
+            return parse_param.with_updates(structure=si)
+    return parse_param
+
+
 def prepare_parse_kws(
     branch: "Branch",
     text: str,

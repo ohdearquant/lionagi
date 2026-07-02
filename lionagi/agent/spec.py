@@ -254,9 +254,7 @@ def _load_pack(pack: str | Pack) -> Pack | None:
     if isinstance(pack, Pack):
         return pack
     if pack == "default":
-        from importlib.resources import as_file, files
+        from lionagi.casts.catalog import _load_packaged_pack
 
-        packaged = files("lionagi.casts").joinpath("packs", "default.yaml")
-        with as_file(packaged) as p:
-            return Pack.from_file(p)
+        return _load_packaged_pack(raise_on_error=True)
     return None

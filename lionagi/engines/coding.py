@@ -16,13 +16,13 @@ from pathlib import Path
 from time import monotonic
 from typing import Any
 
-from pydantic import BaseModel, Field
+from pydantic import Field
 
 from lionagi.casts.emission import Verdict
 from lionagi.ln.concurrency import run_sync
 from lionagi.tools._subprocess import _SHELL_CONTROL, _subprocess_sync
 
-from .engine import ChainRun, Engine, EngineEvent, EngineRun
+from .engine import ChainEvent, ChainRun, Engine, EngineEvent, EngineRun
 
 logger = logging.getLogger("lionagi.engines")
 
@@ -50,10 +50,7 @@ __all__ = (
 # ---------------------------------------------------------------------------
 
 
-class CodingChainEvent(BaseModel):
-    """Mixin: engine-assigned chain id for the coding pipeline's audit trail."""
-
-    eid: str = Field(default="", description="Leave empty — the engine assigns this id.")
+CodingChainEvent = ChainEvent
 
 
 class WorkPlanned(EngineEvent, CodingChainEvent):
@@ -725,12 +722,19 @@ class CodingEngine(Engine):
             applied.append(ev)
         return applied
 
-    async def _test(self, run: CodingRun, change: ChangeProposed, *, round_no: int) -> TestsRan:
-        """Run the declared test command as a subprocess; passed is the process exit code, never a model claim."""
-        await self._apply_auto_repairs(run, round_no=round_no)
-        cmd, shell = _resolve_cmd(run.test_cmd)
-        cmd_str = run.test_cmd if isinstance(run.test_cmd, str) else " ".join(run.test_cmd)
-        run.notify("testing", change=change.eid, round=round_no, cmd=cmd_str)
+    async def _run_subprocess_gate(
+        self,
+        run: CodingRun,
+        change: ChangeProposed,
+        cmd_source: str | list[str],
+        *,
+        round_no: int,
+        notify_event: str,
+    ) -> TestsRan:
+        """Run cmd_source as a subprocess and emit a TestsRan; shared by _test and _fast_test."""
+        cmd, shell = _resolve_cmd(cmd_source)
+        cmd_str = cmd_source if isinstance(cmd_source, str) else " ".join(cmd_source)
+        run.notify(notify_event, change=change.eid, round=round_no, cmd=cmd_str)
         result = await run_sync(_subprocess_sync, cmd, shell, self.test_timeout_s, run.workspace)
         combined = (result.get("stdout", "") + result.get("stderr", "")).rstrip()
         returncode = int(result.get("returncode", -1))
@@ -749,6 +753,13 @@ class CodingEngine(Engine):
         )
         await run.emit(tests)
         return run.last(TestsRan)
+
+    async def _test(self, run: CodingRun, change: ChangeProposed, *, round_no: int) -> TestsRan:
+        """Run the declared test command as a subprocess; passed is the process exit code, never a model claim."""
+        await self._apply_auto_repairs(run, round_no=round_no)
+        return await self._run_subprocess_gate(
+            run, change, run.test_cmd, round_no=round_no, notify_event="testing"
+        )
 
     async def _fast_test(
         self, run: CodingRun, change: ChangeProposed, *, round_no: int
@@ -760,31 +771,9 @@ class CodingEngine(Engine):
         """
         if self.fast_test_cmd is None:
             return None
-        cmd, shell = _resolve_cmd(self.fast_test_cmd)
-        cmd_str = (
-            self.fast_test_cmd
-            if isinstance(self.fast_test_cmd, str)
-            else " ".join(self.fast_test_cmd)
+        return await self._run_subprocess_gate(
+            run, change, self.fast_test_cmd, round_no=round_no, notify_event="fast_testing"
         )
-        run.notify("fast_testing", change=change.eid, round=round_no, cmd=cmd_str)
-        result = await run_sync(_subprocess_sync, cmd, shell, self.test_timeout_s, run.workspace)
-        combined = (result.get("stdout", "") + result.get("stderr", "")).rstrip()
-        returncode = int(result.get("returncode", -1))
-        timed_out = bool(result.get("timed_out", False))
-        passed = returncode == 0 and not timed_out
-        output_file = self._write_output(run, combined)
-        tests = TestsRan(
-            change_ref=change.eid,
-            cmd=cmd_str,
-            passed=passed,
-            returncode=returncode,
-            timed_out=timed_out,
-            round=round_no,
-            output_tail=_tail(combined),
-            output_file=output_file,
-        )
-        await run.emit(tests)
-        return run.last(TestsRan)
 
     async def _fix_loop(
         self, run: CodingRun, plan: WorkPlanned, change: ChangeProposed, tests: TestsRan

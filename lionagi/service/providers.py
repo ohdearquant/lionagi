@@ -136,10 +136,10 @@ BACKENDS: dict[str, str] = {
     "claude-code": "claude_code/sonnet",
     "claude_code": "claude_code/sonnet",
     "codex": "codex/gpt-5.3-codex-spark",
-    "gemini-code": "gemini_code/gemini-3-flash-preview",
-    "gemini_code": "gemini_code/gemini-3-flash-preview",
-    "gemini-cli": "gemini_code/gemini-3-flash-preview",
-    "gemini_cli": "gemini_code/gemini-3-flash-preview",
+    "gemini-code": "gemini_code/gemini-3.5-flash",
+    "gemini_code": "gemini_code/gemini-3.5-flash",
+    "gemini-cli": "gemini_code/gemini-3.5-flash",
+    "gemini_cli": "gemini_code/gemini-3.5-flash",
     "pi": "pi/gemini-2.5-flash",
     "pi-code": "pi/gemini-2.5-flash",
     "pi_code": "pi/gemini-2.5-flash",
@@ -166,7 +166,7 @@ class ModelSpec:
         return self.model
 
 
-_CLAUDE_MODEL_PREFIXES = ("opus", "sonnet", "haiku")
+_CLAUDE_MODEL_PREFIXES = ("opus", "sonnet", "haiku", "fable")
 
 
 _CLAUDE_PROVIDER_NAMES = frozenset(

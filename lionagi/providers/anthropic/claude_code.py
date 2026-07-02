@@ -6,9 +6,7 @@ from __future__ import annotations
 import contextlib
 import json
 import logging
-import shutil
 from collections.abc import AsyncIterator, Callable
-from functools import partial
 from pathlib import Path
 from textwrap import shorten
 from typing import Any, Literal
@@ -17,12 +15,20 @@ from pydantic import BaseModel, Field, field_validator, model_validator
 
 from lionagi import ln
 from lionagi.libs.path_safety import check_add_dirs_safe as check_add_dir_entries_safe
-from lionagi.libs.path_safety import check_path_safe, contain_and_resolve
+from lionagi.libs.path_safety import check_path_safe
 from lionagi.libs.path_safety import contain_paths_in_root as contain_paths_in_repo
-from lionagi.libs.schema.as_readable import as_readable
 from lionagi.ln.concurrency.utils import maybe_await
 from lionagi.providers._agentic_handlers import AgenticHandlersMixin
-from lionagi.providers._cli_subprocess import build_declarative_cli_args, ndjson_from_cli
+from lionagi.providers._cli_subprocess import (
+    build_declarative_cli_args,
+    discover_cli,
+    ndjson_from_cli,
+    print_readable,
+    resolve_cli_workspace,
+)
+from lionagi.providers._cli_subprocess import (
+    make_cli_flag as _cli,
+)
 from lionagi.service.connections.agentic_endpoint import AgenticEndpoint
 from lionagi.service.connections.endpoint_config import EndpointConfig
 from lionagi.service.types.cli_session import CLISession
@@ -41,12 +47,7 @@ try:
 except ImportError:
     _claude_tail_repair = None
 
-HAS_CLAUDE_CODE_CLI = False
-CLAUDE_CLI = None
-
-if (c := (shutil.which("claude") or "claude")) and shutil.which(c):
-    HAS_CLAUDE_CODE_CLI = True
-    CLAUDE_CLI = c
+HAS_CLAUDE_CODE_CLI, CLAUDE_CLI = discover_cli("claude")
 
 logging.basicConfig(level=logging.INFO)
 log = logging.getLogger("claude-cli")
@@ -86,23 +87,6 @@ __all__ = ("ClaudeCodeRequest", "stream_claude_code_cli", "ClaudeCodeCLIEndpoint
 #   repeat     – ``--flag a --flag b`` (flag repeated per item)
 
 
-def _cli(
-    flag: str,
-    order: int,
-    kind: str = "value",
-    *,
-    neg_flag: str | None = None,
-) -> dict[str, Any]:
-    d: dict[str, Any] = {
-        "cli_flag": flag,
-        "cli_order": order,
-        "cli_kind": kind,
-    }
-    if neg_flag:
-        d["cli_neg_flag"] = neg_flag
-    return d
-
-
 # --------------------------------------------------------------------------- request model
 class ClaudeCodeRequest(BaseModel):
     """Configuration + prompt for a Claude Code CLI invocation."""
@@ -133,8 +117,10 @@ class ClaudeCodeRequest(BaseModel):
     )
 
     # ── model & runtime (order 20–29) ─────────────────────────────
+    # Bare "sonnet" is pinned to Sonnet 5 (see _pin_sonnet_alias) rather than
+    # left to the CLI's own alias resolution.
     model: Literal["sonnet", "opus", "haiku"] | str | None = Field(
-        default="sonnet",
+        default="claude-sonnet-5",
         json_schema_extra=_cli("--model", 20),
     )
     effort: ClaudeEffort | None = Field(
@@ -289,6 +275,10 @@ class ClaudeCodeRequest(BaseModel):
 
     # ── validators ────────────────────────────────────────────────
 
+    @field_validator("model", mode="before")
+    def _pin_sonnet_alias(cls, v):
+        return "claude-sonnet-5" if v == "sonnet" else v
+
     @field_validator("permission_mode", mode="before")
     def _norm_perm(cls, v):
         if v in {
@@ -430,18 +420,7 @@ class ClaudeCodeRequest(BaseModel):
     # ── workspace path ────────────────────────────────────────────
 
     def cwd(self) -> Path:
-        if not self.ws:
-            return self.repo
-
-        ws_path = Path(self.ws)
-
-        if ws_path.is_absolute():
-            raise ValueError(f"Workspace path must be relative, got absolute: {self.ws}")
-
-        if ".." in ws_path.parts:
-            raise ValueError(f"Directory traversal detected in workspace path: {self.ws}")
-
-        return contain_and_resolve(ws_path, self.repo)
+        return resolve_cli_workspace(self.repo, self.ws)
 
     # ── CLI command builder ───────────────────────────────────────
 
@@ -492,7 +471,7 @@ class ClaudeCodeRequest(BaseModel):
 
         # model default – always emit
         if "--model" not in args:
-            args.extend(["--model", self.model or "sonnet"])
+            args.extend(["--model", self.model or "claude-sonnet-5"])
 
         # always verbose for structured stream output
         args.append("--verbose")
@@ -533,9 +512,6 @@ async def stream_cc_cli_events(request: ClaudeCodeRequest):
         async for obj in stream:
             yield obj
     yield {"type": "done"}
-
-
-print_readable = partial(as_readable, md=True, display_str=True)
 
 
 def _pp_system(sys_obj: dict[str, Any], theme) -> None:
@@ -760,11 +736,14 @@ CONTEXT_WINDOWS: dict[str, int] = {
     "opus-4-7": 1_000_000,
     "opus-4-6": 1_000_000,
     "opus": 1_000_000,
+    "sonnet-5": 1_000_000,
     "sonnet-4-6": 1_000_000,
     "sonnet-4-5": 200_000,
     "sonnet": 1_000_000,
     "haiku-4-5": 200_000,
     "haiku": 200_000,
+    "fable-5": 1_000_000,
+    "fable": 1_000_000,
 }
 
 _CLAUDE_HANDLER_PARAMS = (

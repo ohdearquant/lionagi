@@ -4,7 +4,7 @@ import re
 from dataclasses import dataclass, field
 from typing import Any, ClassVar, Literal
 
-from pydantic import BaseModel, field_validator
+from pydantic import BaseModel
 
 from lionagi.ln.types import ModelConfig
 
@@ -267,14 +267,5 @@ class Instruction(Message):
     """User instruction message with structured content."""
 
     _role: ClassVar[MessageRole] = MessageRole.USER
+    _content_type: ClassVar[type] = InstructionContent
     content: InstructionContent
-
-    @field_validator("content", mode="before")
-    def _validate_content(cls, v):
-        if v is None:
-            return InstructionContent()
-        if isinstance(v, dict):
-            return InstructionContent.from_dict(v)
-        if isinstance(v, InstructionContent):
-            return v
-        raise TypeError("content must be dict or InstructionContent instance")

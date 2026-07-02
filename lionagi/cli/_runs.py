@@ -437,6 +437,77 @@ teardown_agent_persist = teardown_persist
 teardown_orchestration_persist = teardown_persist
 
 
+async def _open_shared_db():
+    """Open a StateDB, register it as the process-wide shared connection, and return it.
+
+    On failure, closes and unregisters before re-raising so callers never hold a
+    half-initialised or double-registered connection.
+    """
+    from lionagi.state.db import StateDB, register_shared_db, unregister_shared_db
+
+    db = StateDB()
+    try:
+        await db.open()
+        # Lifecycle hooks (SESSION_START/END, BRANCH_CREATE) reach a db via
+        # get_shared_db(); register ours so they reuse this owned connection
+        # rather than opening a second one whose aiosqlite worker thread leaks.
+        await register_shared_db(db)
+    except Exception:
+        try:
+            await db.close()
+        except Exception as close_exc:
+            _log.warning("fallback db.close after open failure also failed: %s", close_exc)
+        unregister_shared_db(db)
+        raise
+    return db
+
+
+def _make_message_handler(
+    db,
+    branch_id: str,
+    session_id: str,
+    branch_prog_id: str,
+    session_prog_id: str,
+    *,
+    dedup_set: set | None = None,
+    new_msg_ids_list: list | None = None,
+    on_first_msg=None,
+):
+    """Return an async _on_message handler for live DB persistence.
+
+    dedup_set: when provided, skip append_to_progression for already-seen IDs
+               (resume dedup for the agent path).
+    new_msg_ids_list: when provided, newly appended IDs are recorded here.
+    on_first_msg: async callable invoked at the start of each message write
+                  (used for lazy branch-row creation on the orchestration path).
+    """
+
+    async def _on_message(msg):
+        try:
+            if on_first_msg is not None:
+                await on_first_msg()
+            msg_dict = msg.to_dict(mode="db")
+            msg_id = msg_dict["id"]
+            await db.insert_message(msg_dict)
+            if dedup_set is None or msg_id not in dedup_set:
+                await db.append_to_progression(branch_prog_id, msg_id)
+                await db.append_to_progression(session_prog_id, msg_id)
+                if new_msg_ids_list is not None:
+                    new_msg_ids_list.append(msg_id)
+            await db.touch_session_activity(session_id, at=msg_dict.get("created_at"))
+            if msg_dict.get("role") == "system":
+                await db.update_branch(branch_id, system_msg_id=msg_id)
+        except Exception as exc:
+            _log.warning(
+                "live persist write failed for branch %s: %s",
+                branch_id,
+                exc,
+                exc_info=True,
+            )
+
+    return _on_message
+
+
 async def setup_agent_persist(
     branch: Branch,
     *,
@@ -451,18 +522,10 @@ async def setup_agent_persist(
 ) -> dict | None:
     from lionagi.session.session import Session
     from lionagi.state import provenance as _provenance
-    from lionagi.state.db import StateDB
 
-    db: StateDB | None = None
+    db = None
     try:
-        db = StateDB()
-        await db.open()
-        # Lifecycle hooks (SESSION_START/END, BRANCH_CREATE) reach a db via
-        # get_shared_db(); register ours so they reuse this owned connection
-        # rather than opening a second one whose aiosqlite worker thread leaks.
-        from lionagi.state.db import register_shared_db
-
-        await register_shared_db(db)
+        db = await _open_shared_db()
 
         session = Session(name="agent", default_branch=branch)
         session_id = str(session.id)
@@ -575,6 +638,7 @@ async def setup_agent_persist(
                 agent_name=agent_name,
             )
 
+        new_msg_ids: list = []
         ctx = {
             "db": db,
             "session": session,
@@ -583,30 +647,20 @@ async def setup_agent_persist(
             "session_prog_id": session_prog_id,
             "branch_prog_id": branch_prog_id,
             "existing_msg_ids": existing_msg_ids,
-            "new_msg_ids": [],
+            "new_msg_ids": new_msg_ids,
             "artifacts_path": artifacts_path,
             "artifact_contract": artifact_contract,
         }
 
-        async def _on_message(msg):
-            try:
-                msg_dict = msg.to_dict(mode="db")
-                msg_id = msg_dict["id"]
-                await db.insert_message(msg_dict)
-                if msg_id not in ctx["existing_msg_ids"]:
-                    await db.append_to_progression(branch_prog_id, msg_id)
-                    await db.append_to_progression(session_prog_id, msg_id)
-                    ctx["new_msg_ids"].append(msg_id)
-                await db.touch_session_activity(session_id, at=msg_dict.get("created_at"))
-                if msg_dict.get("role") == "system":
-                    await db.update_branch(branch_id, system_msg_id=msg_id)
-            except Exception as exc:
-                _log.warning(
-                    "live persist write failed for branch %s: %s",
-                    branch_id,
-                    exc,
-                    exc_info=True,
-                )
+        _on_message = _make_message_handler(
+            db,
+            branch_id,
+            session_id,
+            branch_prog_id,
+            session_prog_id,
+            dedup_set=existing_msg_ids,
+            new_msg_ids_list=new_msg_ids,
+        )
 
         # Bind signal persistence through the already-open DB so every Signal
         # emitted on this session's observer lands in session_signals without

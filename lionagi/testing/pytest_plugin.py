@@ -73,14 +73,6 @@ def mocked_branch(mock_factory):
 
 
 @pytest.fixture
-def mocked_branch_with_custom_response(mock_factory) -> Callable[..., Any]:
-    def _create_branch(response: Any = "custom test response", **kwargs: Any):
-        return mock_factory.create_mocked_branch(response=response, **kwargs)
-
-    return _create_branch
-
-
-@pytest.fixture
 def make_mocked_branch(mock_factory) -> Callable[..., Any]:
     """Canonical factory fixture: replaces every per-file ``make_mocked_branch_for_*``.
 
