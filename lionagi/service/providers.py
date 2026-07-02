@@ -17,6 +17,7 @@ __all__ = (
     "PROVIDER_FAST_KWARGS",
     "PROVIDER_TO_ALIAS",
     "PROVIDER_YOLO_KWARGS",
+    "PROVIDERS_EFFORT_VIA_MODEL_NAME",
     "PROVIDERS_NO_EFFORT",
     "parse_model_spec",
 )
@@ -53,6 +54,29 @@ def _clamp_claude_effort(effort: str, model: str) -> str:
     return "high"
 
 
+# agy (Antigravity CLI) has no effort flag or kwarg — effort is expressed only
+# as a Low/Medium/High suffix baked into the --model name, and Gemini 3.1 Pro
+# has no Medium tier. lionagi's 5-level none|minimal|low|medium|high|xhigh|max
+# collapses onto this 3-tier scale.
+_GEMINI_EFFORT_CLAMP: dict[str, str] = {
+    "none": "Low",
+    "minimal": "Low",
+    "low": "Low",
+    "medium": "Medium",
+    "high": "High",
+    "xhigh": "High",
+    "max": "High",
+}
+
+
+def _clamp_gemini_effort(effort: str, is_pro: bool) -> str:
+    """Map lionagi's 5-level effort onto agy's Low/Medium/High tiers; Pro has no Medium."""
+    tier = _GEMINI_EFFORT_CLAMP.get(effort, "Medium")
+    if is_pro and tier == "Medium":
+        return "High"
+    return tier
+
+
 # CLI providers use subprocess auth; api_key is a placeholder. Passing a placeholder to API providers OVERRIDES key resolution.
 CLI_PROVIDERS: frozenset[str] = frozenset(
     {
@@ -77,22 +101,37 @@ PROVIDER_EFFORT_KWARG: dict[str, str] = {
     "pi": "thinking",
 }
 
-PROVIDERS_NO_EFFORT: frozenset[str] = frozenset(
+# agy-backed aliases (see lionagi/providers/google/gemini_code.py) fold effort
+# into the resolved --model name via resolve_agy_model instead of a kwarg —
+# classified separately from PROVIDER_EFFORT_KWARG below.
+PROVIDERS_EFFORT_VIA_MODEL_NAME: frozenset[str] = frozenset(
     {
         "gemini_code",
         "gemini-code",
         "gemini_cli",
         "gemini-cli",
+    }
+)
+
+# Bare "gemini" is the direct Google API provider (see
+# providers/google/_config.py:GeminiChatConfigs) — distinct from the agy CLI
+# above — and has no effort concept at all.
+PROVIDERS_NO_EFFORT: frozenset[str] = frozenset(
+    {
         "gemini",
     }
 )
 
-# Invariant: provider cannot be in both PROVIDERS_NO_EFFORT and PROVIDER_EFFORT_KWARG; RuntimeError (not assert) survives -O.
-_overlap = PROVIDERS_NO_EFFORT & set(PROVIDER_EFFORT_KWARG)
+# Invariant: the three provider-effort classifications above are mutually exclusive; RuntimeError (not assert) survives -O.
+_overlap = (
+    (PROVIDERS_NO_EFFORT & set(PROVIDER_EFFORT_KWARG))
+    | (PROVIDERS_NO_EFFORT & PROVIDERS_EFFORT_VIA_MODEL_NAME)
+    | (set(PROVIDER_EFFORT_KWARG) & PROVIDERS_EFFORT_VIA_MODEL_NAME)
+)
 if _overlap:
     raise RuntimeError(
-        f"Provider classification conflict: {_overlap!r} appear in both "
-        "PROVIDERS_NO_EFFORT and PROVIDER_EFFORT_KWARG"
+        f"Provider classification conflict: {_overlap!r} appear in more than one "
+        "of PROVIDERS_NO_EFFORT, PROVIDER_EFFORT_KWARG, PROVIDERS_EFFORT_VIA_MODEL_NAME"
     )
 del _overlap
 
