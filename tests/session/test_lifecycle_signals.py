@@ -17,6 +17,7 @@ from lionagi.session.signal import (
     NodeCompleted,
     NodeEscalated,
     NodeFailed,
+    NodePaused,
     NodeQueued,
     NodeStarted,
     RunEnd,
@@ -54,6 +55,16 @@ def test_lane_for_running_via_run_start():
 
 def test_lane_for_awaiting_approval():
     assert lane_for([NodeStarted(), NodeAwaitingApproval()]) == "awaiting_approval"
+
+
+def test_lane_for_paused():
+    assert lane_for([NodeStarted(), NodePaused()]) == "paused"
+
+
+def test_lane_for_paused_resets_to_running_on_node_started():
+    """NodeStarted after NodePaused resets the lane to running (resume + execution began)."""
+    signals = [NodeStarted(), NodePaused(), NodeStarted()]
+    assert lane_for(signals) == "running"
 
 
 def test_lane_for_succeeded_via_node_completed():
@@ -102,6 +113,12 @@ def test_lane_for_terminal_sticky_escalated():
     assert lane_for(signals) == "escalated"
 
 
+def test_lane_for_terminal_sticky_ignores_paused():
+    """A stray NodePaused after a terminal state (e.g. a late-arriving signal) is ignored."""
+    signals = [NodeStarted(), NodeCompleted(), NodePaused()]
+    assert lane_for(signals) == "succeeded"
+
+
 def test_lane_for_retry_reset_from_succeeded():
     signals = [NodeStarted(), NodeCompleted(), NodeQueued()]
     assert lane_for(signals) == "queued"
@@ -144,6 +161,12 @@ def test_node_queued_fields():
 def test_node_awaiting_approval_fields():
     sig = NodeAwaitingApproval(op_id="x", name="gate-op", reason="human review required")
     assert sig.reason == "human review required"
+
+
+def test_node_paused_fields():
+    sig = NodePaused(op_id="z", name="blocked-op")
+    assert sig.op_id == "z"
+    assert sig.name == "blocked-op"
 
 
 def test_node_escalated_fields():
