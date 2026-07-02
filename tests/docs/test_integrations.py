@@ -272,9 +272,9 @@ class TestCLIProviderRequestModels:
             "system_prompt",
             "model",
             "yolo",
-            "approval_mode",
             "sandbox",
-            "debug",
+            "resume",
+            "continue_recent",
             "include_directories",
         ):
             assert field in fields, f"Missing field: {field}"

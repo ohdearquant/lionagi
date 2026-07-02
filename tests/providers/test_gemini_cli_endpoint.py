@@ -1,15 +1,15 @@
 # Copyright (c) 2023-2026, HaiyangLi <quantocean.li at gmail dot com>
 # SPDX-License-Identifier: Apache-2.0
-"""Tests for the Gemini CLI endpoint fixes.
+"""Tests for the Antigravity (`agy`) CLI endpoint.
 
-Covers trust-env injection, nonzero-exit stderr surfacing, JSON-noise tolerance, default model gemini-3-flash-preview, and known-bad model surfacing a RuntimeError.
+Covers argv construction (json output-format, model resolution, resume/yolo
+flags), nonzero-exit error surfacing, endpoint _call session mapping, default
+model gemini-3.5-flash, and the REST-vs-CLI helpful error.
 """
 
 from __future__ import annotations
 
-import asyncio
-import os
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import patch
 
 import pytest
 
@@ -20,70 +20,48 @@ from lionagi.providers.google.gemini_code import (
 )
 
 # ---------------------------------------------------------------------------
-# Trust env injection
+# argv construction
 # ---------------------------------------------------------------------------
 
 
-class TestTrustEnvInjection:
-    """GEMINI_CLI_TRUST_WORKSPACE must be set in the subprocess env."""
+class TestCmdArgs:
+    """as_cmd_args must emit json output-format + a resolved agy model name."""
 
-    @pytest.mark.asyncio
-    async def test_trust_env_injected_into_subprocess(self, monkeypatch, tmp_path):
-        """_ndjson_from_cli must pass GEMINI_CLI_TRUST_WORKSPACE=true to ndjson_from_cli."""
-        import lionagi.providers.google.gemini_code as gemini_models
+    def test_default_argv_uses_json_and_resolved_model(self):
+        args = GeminiCodeRequest(prompt="hello").as_cmd_args()
+        assert args[:2] == ["-p", "hello"]
+        assert "--output-format" in args and "json" in args
+        i = args.index("--model")
+        assert args[i + 1] == "Gemini 3.5 Flash (Medium)"
 
-        monkeypatch.setattr(gemini_models, "GEMINI_CLI", "/fake/gemini")
+    def test_pro_model_resolves_to_high(self):
+        args = GeminiCodeRequest(prompt="hi", model="gemini-3-pro-preview").as_cmd_args()
+        i = args.index("--model")
+        assert args[i + 1] == "Gemini 3.1 Pro (High)"
 
-        captured_env: dict | None = None
+    def test_yolo_emits_skip_permissions(self):
+        args = GeminiCodeRequest(prompt="hi", yolo=True).as_cmd_args()
+        assert "--dangerously-skip-permissions" in args
 
-        async def fake_ndjson(cmd, *, cwd=None, env=None, stdin=None, tail_repair=None):
-            nonlocal captured_env
-            captured_env = env
-            # Yield nothing — we only care about the env that was passed
-            return
-            yield  # make it an async generator
+    def test_no_yolo_no_skip_permissions(self):
+        args = GeminiCodeRequest(prompt="hi", yolo=False).as_cmd_args()
+        assert "--dangerously-skip-permissions" not in args
 
-        monkeypatch.setattr(gemini_models, "ndjson_from_cli", fake_ndjson)
+    def test_resume_emits_conversation_flag(self):
+        args = GeminiCodeRequest(prompt="hi", resume="conv-1").as_cmd_args()
+        i = args.index("--conversation")
+        assert args[i + 1] == "conv-1"
+        assert "--continue" not in args
 
-        request = GeminiCodeRequest(prompt="test", repo=tmp_path)
-        # Drain the async generator
-        async with __import__("contextlib").aclosing(
-            gemini_models._ndjson_from_cli(request)
-        ) as gen:
-            async for _ in gen:
-                pass
+    def test_continue_recent_emits_continue(self):
+        args = GeminiCodeRequest(prompt="hi", continue_recent=True).as_cmd_args()
+        assert "--continue" in args
 
-        assert captured_env is not None, "_ndjson_from_cli did not call ndjson_from_cli"
-        assert captured_env.get("GEMINI_CLI_TRUST_WORKSPACE") == "true"
-
-    @pytest.mark.asyncio
-    async def test_trust_env_inherits_parent_env(self, monkeypatch, tmp_path):
-        """Subprocess env must include all parent env vars, not just the trust flag."""
-        import lionagi.providers.google.gemini_code as gemini_models
-
-        monkeypatch.setattr(gemini_models, "GEMINI_CLI", "/fake/gemini")
-        monkeypatch.setenv("SOME_PARENT_VAR", "parent_value")
-
-        captured_env: dict | None = None
-
-        async def fake_ndjson(cmd, *, cwd=None, env=None, stdin=None, tail_repair=None):
-            nonlocal captured_env
-            captured_env = env
-            return
-            yield
-
-        monkeypatch.setattr(gemini_models, "ndjson_from_cli", fake_ndjson)
-
-        request = GeminiCodeRequest(prompt="test", repo=tmp_path)
-        async with __import__("contextlib").aclosing(
-            gemini_models._ndjson_from_cli(request)
-        ) as gen:
-            async for _ in gen:
-                pass
-
-        assert captured_env is not None
-        assert captured_env.get("SOME_PARENT_VAR") == "parent_value"
-        assert captured_env.get("GEMINI_CLI_TRUST_WORKSPACE") == "true"
+    def test_system_prompt_folded_into_prompt(self):
+        req = GeminiCodeRequest(prompt="ask", system_prompt="be terse")
+        assert req.full_prompt() == "be terse\n\nask"
+        args = req.as_cmd_args()
+        assert args[1] == "be terse\n\nask"
 
 
 # ---------------------------------------------------------------------------
@@ -92,83 +70,57 @@ class TestTrustEnvInjection:
 
 
 class TestSubprocessErrorSurfacing:
-    """When gemini exits nonzero, stderr must be surfaced as RuntimeError."""
+    """When agy exits nonzero, ndjson_from_cli raises RuntimeError; it propagates."""
 
     @pytest.mark.asyncio
-    async def test_nonzero_exit_raises_runtime_error_with_stderr(self, monkeypatch, tmp_path):
-        """ndjson_from_cli raises RuntimeError with stderr text on nonzero exit."""
-        import lionagi.providers.google.gemini_code as gemini_models
-        from lionagi.providers._cli_subprocess import ndjson_from_cli
+    async def test_nonzero_exit_propagates_runtime_error(self):
+        async def fake_events(_request):
+            raise RuntimeError("agy exited 1: authentication required")
+            yield  # pragma: no cover — make it an async generator
 
-        monkeypatch.setattr(gemini_models, "GEMINI_CLI", "/bin/sh")
-
-        # A command that prints to stderr and exits nonzero
-        async def fake_ndjson(cmd, *, cwd=None, env=None, stdin=None, tail_repair=None):
-            raise RuntimeError(
-                "Gemini CLI is not running in a trusted directory. "
-                "To proceed, use --skip-trust or set GEMINI_CLI_TRUST_WORKSPACE=true."
-            )
-            yield
-
-        monkeypatch.setattr(gemini_models, "ndjson_from_cli", fake_ndjson)
-
-        request = GeminiCodeRequest(prompt="hello", repo=tmp_path)
-
-        with pytest.raises(RuntimeError, match="trusted directory"):
-            async with __import__("contextlib").aclosing(
-                gemini_models._ndjson_from_cli(request)
-            ) as gen:
-                async for _ in gen:
+        with patch(
+            "lionagi.providers.google.gemini_code.stream_gemini_cli_events",
+            side_effect=fake_events,
+        ):
+            with pytest.raises(RuntimeError, match="authentication required"):
+                async for _ in stream_gemini_cli(GeminiCodeRequest(prompt="hi")):
                     pass
 
 
 # ---------------------------------------------------------------------------
-# Noise-line tolerance (stdout lines before JSON)
+# Endpoint _call session mapping
 # ---------------------------------------------------------------------------
 
 
-class TestNoiseTolerance:
-    """Non-JSON lines in stdout must not abort the parse loop."""
+class TestEndpointCall:
+    """The endpoint _call must return a session dict carrying the conversation_id."""
 
     @pytest.mark.asyncio
-    async def test_stream_gemini_cli_tolerates_noise_before_json(self, monkeypatch):
-        """stream_gemini_cli must work even if the first stdout lines are not valid JSON."""
-        import lionagi.providers.google.gemini_code as gemini_models
-
-        # Simulate: noise line appears in events list as would happen if ndjson_from_cli
-        # managed to yield a dict after skipping the noise. The underlying
-        # ndjson_from_cli drops non-JSON lines silently; we verify that
-        # stream_gemini_cli can consume a session when the NDJSON events are clean.
-        events = [
-            {"type": "init", "session_id": "s1", "model": "gemini-3-flash-preview"},
-            {
-                "type": "message",
-                "role": "assistant",
-                "content": "GEMINI-LIONAGI-OK",
-                "delta": True,
-            },
-            {
-                "type": "result",
-                "result": "GEMINI-LIONAGI-OK",
-                "status": "success",
-                "stats": {"duration_ms": 500},
-            },
-        ]
+    async def test_call_returns_session_dict_with_session_id(self):
+        from lionagi.providers.google.gemini_code import GeminiCLIEndpoint
 
         async def fake_events(_request):
-            for ev in events:
-                yield ev
-            yield {"type": "done"}
+            yield {
+                "conversation_id": "conv-xyz",
+                "status": "SUCCESS",
+                "response": "GEMINI-LIONAGI-OK",
+                "duration_seconds": 0.5,
+                "num_turns": 1,
+                "usage": {"input_tokens": 3, "output_tokens": 4},
+            }
 
-        monkeypatch.setattr(gemini_models, "stream_gemini_cli_events", fake_events)
+        ep = GeminiCLIEndpoint()
+        request = GeminiCodeRequest(prompt="hello")
+        with patch(
+            "lionagi.providers.google.gemini_code.stream_gemini_cli_events",
+            side_effect=fake_events,
+        ):
+            result = await ep._call({"request": request}, {})
 
-        session = None
-        async for item in gemini_models.stream_gemini_cli(GeminiCodeRequest(prompt="hello")):
-            if isinstance(item, GeminiSession):
-                session = item
-
-        assert session is not None
-        assert session.result == "GEMINI-LIONAGI-OK"
+        assert result["result"] == "GEMINI-LIONAGI-OK"
+        assert result["session_id"] == "conv-xyz", (
+            "conversation_id must survive into the returned session dict for state.db persistence"
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -177,11 +129,11 @@ class TestNoiseTolerance:
 
 
 class TestDefaultModel:
-    """GeminiCodeRequest default model must be gemini-3-flash-preview."""
+    """GeminiCodeRequest default model must be the latest flash family."""
 
-    def test_default_model_is_gemini_3_flash_preview(self):
+    def test_default_model_is_gemini_3_5_flash(self):
         req = GeminiCodeRequest(prompt="hello")
-        assert req.model == "gemini-3-flash-preview"
+        assert req.model == "gemini-3.5-flash"
 
     def test_explicit_model_is_preserved(self):
         req = GeminiCodeRequest(prompt="hello", model="gemini-2.5-pro")
@@ -194,15 +146,15 @@ class TestDefaultModel:
 
 
 class TestBackendsDefaultModel:
-    """BACKENDS entries for gemini-cli must point to gemini-3-flash-preview."""
+    """BACKENDS entries for gemini-cli must point to the latest flash family."""
 
-    def test_gemini_cli_backend_uses_3_flash_preview(self):
+    def test_gemini_cli_backend_uses_3_5_flash(self):
         from lionagi.service.providers import BACKENDS
 
-        assert "gemini-3-flash-preview" in BACKENDS["gemini-cli"]
-        assert "gemini-3-flash-preview" in BACKENDS["gemini_cli"]
-        assert "gemini-3-flash-preview" in BACKENDS["gemini-code"]
-        assert "gemini-3-flash-preview" in BACKENDS["gemini_code"]
+        assert "gemini-3.5-flash" in BACKENDS["gemini-cli"]
+        assert "gemini-3.5-flash" in BACKENDS["gemini_cli"]
+        assert "gemini-3.5-flash" in BACKENDS["gemini-code"]
+        assert "gemini-3.5-flash" in BACKENDS["gemini_code"]
 
 
 # ---------------------------------------------------------------------------
@@ -233,8 +185,6 @@ class TestRunErrorMessage:
         """Using 'gemini' (REST API) in run() must mention 'gemini-cli'."""
         from lionagi.session.branch import Branch
 
-        # 'gemini' resolves to the REST API endpoint (GeminiChatConfigs.CHAT)
-        # which is not a CLI endpoint — is_cli=False.
         branch = Branch(chat_model="gemini/gemini-2.5-flash")
 
         if branch.chat_model.is_cli:

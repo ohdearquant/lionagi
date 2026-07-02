@@ -1,6 +1,7 @@
 """Regression tests for per-provider CLI subprocess behaviour parity.
 
-Three regressions from ndjson_from_cli extraction: Claude tail repair, Codex double-workspace, Gemini/Pi stdin inheritance.
+Covers: Claude tail repair, Codex double-workspace, Pi stdin inheritance,
+Gemini/agy DEVNULL stdin (headless print mode).
 """
 
 from __future__ import annotations
@@ -168,14 +169,14 @@ def test_codex_as_cmd_args_contains_dash_c_flag():
 
 
 # ---------------------------------------------------------------------------
-# Gemini and Pi inherit stdin (not DEVNULL)
+# Pi inherits stdin; Gemini (agy print mode) keeps the DEVNULL default
 # ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
-async def test_gemini_ndjson_passes_inherit_stdin():
-    """Gemini _ndjson_from_cli must pass stdin=_INHERIT_STDIN to ndjson_from_cli."""
-    from lionagi.providers._cli_subprocess import _INHERIT_STDIN
+async def test_gemini_ndjson_defaults_stdin_devnull():
+    """agy runs headless print mode and reads nothing from stdin — gemini must
+    NOT pass a stdin override, leaving ndjson_from_cli's DEVNULL default."""
     from lionagi.providers.google import gemini_code as gemini_models
 
     call_kwargs: list[dict] = []
@@ -186,7 +187,7 @@ async def test_gemini_ndjson_passes_inherit_stdin():
         yield
 
     with (
-        patch.object(gemini_models, "GEMINI_CLI", "/fake/gemini"),
+        patch.object(gemini_models, "AGY_CLI", "/fake/agy"),
         patch.object(gemini_models, "ndjson_from_cli", _fake_ndjson),
     ):
         req = gemini_models.GeminiCodeRequest(prompt="hello")
@@ -196,9 +197,8 @@ async def test_gemini_ndjson_passes_inherit_stdin():
             pass
 
     assert call_kwargs, "ndjson_from_cli must be called"
-    kw = call_kwargs[0]
-    assert kw.get("stdin") is _INHERIT_STDIN, (
-        "Gemini must pass stdin=_INHERIT_STDIN so the child inherits the parent stdin"
+    assert "stdin" not in call_kwargs[0], (
+        "agy print mode must not override stdin (DEVNULL default applies)"
     )
 
 
