@@ -314,11 +314,18 @@ async def spawn_and_wait(
     invocation_id: str,
     *,
     tmp_path: str | None = None,
+    cwd: str | None = None,
 ) -> tuple[int, str]:
     """Spawn subprocess and wait for completion. Returns (exit_code, stderr_tail).
 
     If *tmp_path* is given it is deleted after the subprocess exits — used by
     the ``flow_yaml`` action kind which writes a temp spec file before spawning.
+
+    *cwd* pins the subprocess working directory. ``None`` inherits the
+    caller's own cwd (the daemon's launch directory) — callers should resolve
+    a concrete path (e.g. from ``action_project``) before spawning so `uv run
+    li` doesn't fail with "No such file or directory" when the daemon was
+    started somewhere with no project (see SchedulerEngine._resolve_action_cwd).
     """
     env = {**os.environ, "LIONAGI_INVOCATION_ID": invocation_id}
 
@@ -328,6 +335,7 @@ async def spawn_and_wait(
         stdout=asyncio.subprocess.DEVNULL,
         stderr=asyncio.subprocess.PIPE,
         env=env,
+        cwd=cwd,
         # `uv run li` forks the real worker (and that worker may fork
         # further). Put the whole tree in its own session/process group so a
         # cancel can signal the GROUP, not just the direct child — otherwise

@@ -10,6 +10,7 @@ import logging
 import os
 import time
 import uuid
+from pathlib import Path
 from typing import Any
 
 from lionagi.state.reasons import RunReasons, ScheduleReasons
@@ -25,6 +26,48 @@ _log = logging.getLogger(__name__)
 
 _MAX_CHAIN_DEPTH = 10
 _TICK_INTERVAL = 30  # seconds
+
+
+async def _resolve_action_cwd(schedule: dict) -> str | None:
+    """Resolve the working directory for a scheduled subprocess spawn.
+
+    Layered resolution (first hit wins):
+      1. ``action_project`` — the registered project's stored path, if it
+         exists on disk.
+      2. ``LIONAGI_SCHEDULER_CWD`` — an operator-set fallback directory.
+      3. ``None`` — inherit the daemon's own launch cwd (pre-existing
+         behavior); a warning is logged since `uv run li` will fail to spawn
+         if that directory has no project (e.g. the daemon was started at
+         ``/``).
+
+    Imports ``lionagi.studio.services.projects`` lazily so this module (and
+    ``lionagi.studio.scheduler.subprocess``) stay importable without the
+    ``studio`` extra (fastapi) — the scheduler engine only actually reaches
+    this branch when ``action_project`` is set, i.e. inside a running studio
+    daemon where fastapi is already a hard dependency.
+    """
+    action_project = schedule.get("action_project")
+    if action_project:
+        from lionagi.studio.services.projects import get_project
+
+        project = await get_project(action_project)
+        if project:
+            path = project.get("path")
+            if path and Path(path).is_dir():
+                return path
+
+    env_cwd = os.environ.get("LIONAGI_SCHEDULER_CWD")
+    if env_cwd and Path(env_cwd).is_dir():
+        return env_cwd
+
+    _log.warning(
+        "No resolvable cwd for schedule %s (action_project=%r); the scheduled "
+        "action will inherit the daemon's own working directory and may fail "
+        "to spawn (`uv run li` finds no project) if that directory has none.",
+        schedule.get("id"),
+        action_project,
+    )
+    return None
 
 
 class SchedulerEngine:
@@ -345,8 +388,9 @@ class SchedulerEngine:
                 "Firing schedule %s (run %s, chain_depth=%d)", schedule["name"], run_id, chain_depth
             )
 
+            action_cwd = await _resolve_action_cwd(schedule)
             exit_code, stderr_tail = await _subprocess.spawn_and_wait(
-                argv, inv_id, tmp_path=_tmp_path
+                argv, inv_id, tmp_path=_tmp_path, cwd=action_cwd
             )
             end_time = time.time()
             status = "completed" if exit_code == 0 else "failed"
