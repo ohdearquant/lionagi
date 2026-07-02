@@ -8,10 +8,14 @@ from __future__ import annotations
 import time
 import uuid
 
-import lionagi.state.db as state_db_mod
-import lionagi.studio.services.invocations as invocations_mod
-from lionagi.state.db import StateDB
-from lionagi.state.reasons import RunReasons
+import pytest
+
+pytest.importorskip("fastapi", reason="studio extra not installed")
+
+import lionagi.state.db as state_db_mod  # noqa: E402
+import lionagi.studio.services.invocations as invocations_mod  # noqa: E402
+from lionagi.state.db import StateDB  # noqa: E402
+from lionagi.state.reasons import RunReasons  # noqa: E402
 
 
 async def _create_invocation(db: StateDB, *, status: str = "running") -> str:

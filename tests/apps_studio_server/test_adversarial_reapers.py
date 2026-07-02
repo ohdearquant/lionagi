@@ -10,9 +10,11 @@ from pathlib import Path
 
 import pytest
 
-from lionagi.state.db import StateDB
+pytest.importorskip("fastapi", reason="studio extra not installed")
 
-from ._helpers import run_async
+from lionagi.state.db import StateDB  # noqa: E402
+
+from ._helpers import run_async  # noqa: E402
 
 # ── shared DB helpers ─────────────────────────────────────────────────────────
 
