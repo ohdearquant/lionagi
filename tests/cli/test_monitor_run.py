@@ -606,6 +606,26 @@ def test_add_monitor_subparser_run_flag_and_new_options():
     assert args.follow is True
 
 
+def test_run_monitor_run_flag_comma_only_ids_is_usage_error(
+    temp_db_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    """`li monitor --run ,,,` is truthy but splits to zero ids; it must fail
+    as a usage error, not dispatch an empty watch set and exit 0."""
+    import argparse
+
+    from lionagi.cli.monitor import run_monitor
+
+    parser = argparse.ArgumentParser()
+    sub = parser.add_subparsers(dest="command")
+    add_monitor_subparser(sub)
+    args = parser.parse_args(["monitor", "--run", ",,,"])
+
+    with caplog.at_level(logging.ERROR):
+        exit_code = run_monitor(args)
+    assert exit_code == 2
+    assert "no schedule_run ids" in caplog.text
+
+
 def test_add_monitor_subparser_existing_dashboard_args_unaffected():
     """Regression: adding --run/--interval/--follow must not disturb the
     existing bare / --watch / --since / --type / --project surface."""

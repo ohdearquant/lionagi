@@ -1098,9 +1098,15 @@ def run_monitor(args: argparse.Namespace) -> int:
     from lionagi.ln.concurrency import run_async
 
     if args.run_ids:
-        return _dispatch_wait(
-            _split_watched_ids([args.run_ids]), interval=args.interval, follow=args.follow
-        )
+        watched_ids = _split_watched_ids([args.run_ids])
+        if not watched_ids:
+            # A truthy --run value can still split to nothing (e.g. ","),
+            # which would otherwise dispatch an empty watch set and exit 0.
+            from ._logging import log_error
+
+            log_error("no schedule_run ids given (only empty/comma-only tokens)")
+            return 2
+        return _dispatch_wait(watched_ids, interval=args.interval, follow=args.follow)
 
     since: float | None = None
     if args.since:
