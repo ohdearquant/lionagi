@@ -10,8 +10,10 @@ import logging
 import os
 import time
 import uuid
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from lionagi.state.reasons import RunReasons, ScheduleReasons
 from lionagi.studio.scheduler import subprocess as _subprocess
@@ -26,6 +28,22 @@ _log = logging.getLogger(__name__)
 
 _MAX_CHAIN_DEPTH = 10
 _TICK_INTERVAL = 30  # seconds
+
+
+def _resolve_scheduler_tzinfo(tz_name: str) -> ZoneInfo:
+    """Resolve the configured scheduler timezone name to a ZoneInfo.
+
+    Falls back to UTC (with a warning) if the configured name isn't a valid
+    IANA zone — an invalid config must never crash cron resolution.
+    """
+    try:
+        return ZoneInfo(tz_name)
+    except (ZoneInfoNotFoundError, ValueError):
+        _log.warning(
+            "Invalid scheduler timezone %r (LIONAGI_SCHEDULER_TZ); falling back to UTC.",
+            tz_name,
+        )
+        return ZoneInfo("UTC")
 
 
 async def _resolve_action_cwd(schedule: dict) -> str | None:
@@ -83,7 +101,66 @@ class SchedulerEngine:
     async def start(self) -> None:
         _log.info("Scheduler engine starting")
         self._stopping = False
+        await self._recompute_armed_cron_schedules()
         self._task = asyncio.create_task(self._tick_loop())
+
+    async def _recompute_armed_cron_schedules(self) -> None:
+        """Re-resolve every enabled cron schedule's next_fire_at under the
+        current timezone interpretation before the tick loop starts.
+
+        Guards against silently-stale fire times if LIONAGI_SCHEDULER_TZ (or
+        the host's local timezone) changed since a schedule was last armed —
+        the same interpretation change that PATCH and enable also trigger via
+        recompute_next_fire().
+        """
+        try:
+            schedules = await self._svc.list_schedules(enabled=True)
+        except Exception:
+            _log.exception("Failed to load schedules for startup timezone recompute")
+            return
+        for s in schedules:
+            try:
+                await self.recompute_next_fire(s)
+            except Exception:
+                _log.exception(
+                    "Failed to recompute next_fire_at for schedule %s on startup", s.get("id")
+                )
+
+    async def recompute_next_fire(
+        self, schedule: dict, *, now: float | None = None
+    ) -> float | None:
+        """Recompute + persist a cron schedule's next_fire_at, logging once
+        if (and only if) the value actually shifts from what was stored.
+
+        This is the single shared code path for every situation where the
+        cron interpretation may have changed under a schedule: daemon
+        startup (_recompute_armed_cron_schedules), a PATCH that touches
+        cron_expr/trigger fields, and the disable→enable transition (both in
+        services/schedules.py). Never shifts a fire time silently — an
+        unchanged recomputation is a no-op (no write, no log).
+        """
+        if schedule.get("trigger_type") != "cron" or not schedule.get("cron_expr"):
+            return None
+        ref_time = now if now is not None else time.time()
+        old = schedule.get("next_fire_at")
+        new = self._compute_next_fire(schedule, ref_time)
+        if new is None:
+            return None
+        if old is not None and abs(new - old) < 1e-6:
+            return new
+        await self._svc.update_schedule(schedule["id"], next_fire_at=new)
+        if old is not None:
+            from lionagi.studio.config import SCHEDULER_TZ
+
+            _log.info(
+                "next_fire_at shifted for schedule %s (%s): %s -> %s (tz=%s)",
+                schedule.get("name"),
+                schedule.get("id"),
+                datetime.fromtimestamp(old, tz=timezone.utc).isoformat(),
+                datetime.fromtimestamp(new, tz=timezone.utc).isoformat(),
+                SCHEDULER_TZ,
+            )
+        return new
 
     async def stop(self) -> None:
         _log.info("Scheduler engine stopping")
@@ -553,7 +630,16 @@ class SchedulerEngine:
             try:
                 from croniter import croniter
 
-                return croniter(expr, start_time=ref_time).get_next(float)
+                from lionagi.studio.config import SCHEDULER_TZ
+
+                # Resolve the cron expression's wall-clock fields in the
+                # configured timezone (default: system local), not UTC.
+                # croniter honors DST transitions when given a tz-aware
+                # start_time; get_next(float) still returns an absolute UTC
+                # epoch, which is what next_fire_at stores.
+                tz = _resolve_scheduler_tzinfo(SCHEDULER_TZ)
+                start = datetime.fromtimestamp(ref_time, tz=tz)
+                return croniter(expr, start_time=start).get_next(float)
             except Exception:
                 _log.exception("Invalid cron expression: %s", expr)
                 return None

@@ -5,9 +5,14 @@
 from __future__ import annotations
 
 import asyncio
+import logging
+from datetime import datetime, timezone
 from unittest.mock import AsyncMock, MagicMock, patch
+from zoneinfo import ZoneInfo
 
 import pytest
+
+NY = ZoneInfo("America/New_York")
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -511,3 +516,196 @@ def test_engine_uses_injected_svc():
     svc = _make_svc()
     engine = SchedulerEngine(svc=svc)
     assert engine._svc is svc
+
+
+# ---------------------------------------------------------------------------
+# Cron timezone resolution — the P1 fix: cron_expr is resolved in the
+# configured timezone (default: system local), not UTC. next_fire_at is
+# still stored as a UTC epoch.
+# ---------------------------------------------------------------------------
+
+
+def test_compute_next_fire_uses_configured_timezone(monkeypatch):
+    """(a) Cron resolved in a pinned non-UTC configured TZ produces the
+    correct UTC epoch — pinned via LIONAGI_SCHEDULER_TZ so this doesn't
+    depend on the CI host's local timezone."""
+    pytest.importorskip("croniter", reason="studio extra not installed")
+    import lionagi.studio.config as studio_config
+    from lionagi.studio.scheduler.engine import SchedulerEngine
+
+    monkeypatch.setattr(studio_config, "SCHEDULER_TZ", "America/New_York")
+
+    engine = SchedulerEngine(svc=_make_svc())
+    schedule = _minimal_schedule(cron_expr="0 18 * * *")  # 18:00 local, daily
+
+    # Reference: 2026-07-02 10:00:00 EDT — before today's 18:00 local fire.
+    ref_epoch = datetime(2026, 7, 2, 10, 0, 0, tzinfo=NY).timestamp()
+
+    next_at = engine._compute_next_fire(schedule, ref_epoch)
+    assert next_at is not None
+
+    # 18:00 EDT (UTC-4 in July) == 22:00 UTC same day. A UTC-only
+    # implementation would resolve "0 18 * * *" against ref_epoch's raw UTC
+    # clock fields and land on a different absolute instant.
+    got_utc = datetime.fromtimestamp(next_at, tz=timezone.utc)
+    assert got_utc == datetime(2026, 7, 2, 22, 0, 0, tzinfo=timezone.utc)
+    assert datetime.fromtimestamp(next_at, tz=NY) == datetime(2026, 7, 2, 18, 0, 0, tzinfo=NY)
+
+
+def test_compute_next_fire_date_pinned_cron_fires_same_day_not_next_year(monkeypatch):
+    """(b) The July-2027 silent-skip bug: a date-pinned cron created after
+    its UTC-clock moment but before its local-clock moment must fire
+    *today*, not silently skip to the same date next year."""
+    pytest.importorskip("croniter", reason="studio extra not installed")
+    import lionagi.studio.config as studio_config
+    from lionagi.studio.scheduler.engine import SchedulerEngine
+
+    monkeypatch.setattr(studio_config, "SCHEDULER_TZ", "America/New_York")
+
+    engine = SchedulerEngine(svc=_make_svc())
+    schedule = _minimal_schedule(cron_expr="30 17 2 7 *")  # 17:30 local, July 2 only
+
+    # 19:00 UTC = 15:00 EDT on 2027-07-02: already past the cron's literal
+    # "17:30" UTC-clock instant, but still before 17:30 EDT local — this is
+    # exactly the window that broke 8 production schedules under UTC-only
+    # resolution (created after the UTC moment, before the local moment).
+    ref_epoch = datetime(2027, 7, 2, 19, 0, 0, tzinfo=timezone.utc).timestamp()
+
+    next_at = engine._compute_next_fire(schedule, ref_epoch)
+    assert next_at is not None
+
+    got_local = datetime.fromtimestamp(next_at, tz=NY)
+    assert got_local == datetime(2027, 7, 2, 17, 30, 0, tzinfo=NY)
+    assert got_local.year == 2027  # NOT skipped to 2028
+
+
+def test_invalid_scheduler_tz_falls_back_to_utc(monkeypatch, caplog):
+    """An invalid LIONAGI_SCHEDULER_TZ must not crash cron resolution — it
+    falls back to UTC with a warning."""
+    pytest.importorskip("croniter", reason="studio extra not installed")
+    import lionagi.studio.config as studio_config
+    from lionagi.studio.scheduler.engine import SchedulerEngine
+
+    monkeypatch.setattr(studio_config, "SCHEDULER_TZ", "Not/A_Real_Zone")
+
+    engine = SchedulerEngine(svc=_make_svc())
+    schedule = _minimal_schedule(cron_expr="0 18 * * *")
+    ref_epoch = datetime(2026, 7, 2, 10, 0, 0, tzinfo=timezone.utc).timestamp()
+
+    with caplog.at_level(logging.WARNING):
+        next_at = engine._compute_next_fire(schedule, ref_epoch)
+
+    assert next_at is not None
+    got_utc = datetime.fromtimestamp(next_at, tz=timezone.utc)
+    assert got_utc == datetime(2026, 7, 2, 18, 0, 0, tzinfo=timezone.utc)
+    assert any("Invalid scheduler timezone" in r.message for r in caplog.records)
+
+
+# ---------------------------------------------------------------------------
+# recompute_next_fire — shared recompute+log path for daemon start, PATCH,
+# and disable->enable (services/schedules.py hooks it too; see
+# tests/studio/test_schedule_tz_recompute.py for those integration paths).
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_recompute_next_fire_persists_and_logs_on_shift(monkeypatch, caplog):
+    """Recomputing a schedule whose stored next_fire_at is stale persists
+    the new value and logs exactly once (old -> new)."""
+    pytest.importorskip("croniter", reason="studio extra not installed")
+    import lionagi.studio.config as studio_config
+    from lionagi.studio.scheduler.engine import SchedulerEngine
+
+    monkeypatch.setattr(studio_config, "SCHEDULER_TZ", "America/New_York")
+
+    svc = _make_svc()
+    engine = SchedulerEngine(svc=svc)
+    schedule = _minimal_schedule(cron_expr="0 18 * * *", next_fire_at=100.0)
+    ref_epoch = datetime(2026, 7, 2, 10, 0, 0, tzinfo=NY).timestamp()
+
+    with caplog.at_level(logging.INFO):
+        new = await engine.recompute_next_fire(schedule, now=ref_epoch)
+
+    assert new is not None
+    assert new != 100.0
+    svc.update_schedule.assert_awaited_once_with(schedule["id"], next_fire_at=new)
+    shift_logs = [r for r in caplog.records if "next_fire_at shifted" in r.message]
+    assert len(shift_logs) == 1
+
+
+@pytest.mark.asyncio
+async def test_recompute_next_fire_noop_when_unchanged(monkeypatch, caplog):
+    """(d) A schedule already at the correct next_fire_at is a true no-op:
+    no DB write, no log line."""
+    pytest.importorskip("croniter", reason="studio extra not installed")
+    import lionagi.studio.config as studio_config
+    from lionagi.studio.scheduler.engine import SchedulerEngine
+
+    monkeypatch.setattr(studio_config, "SCHEDULER_TZ", "America/New_York")
+
+    svc = _make_svc()
+    engine = SchedulerEngine(svc=svc)
+    schedule = _minimal_schedule(cron_expr="0 18 * * *")
+    ref_epoch = datetime(2026, 7, 2, 10, 0, 0, tzinfo=NY).timestamp()
+
+    first = await engine.recompute_next_fire(schedule, now=ref_epoch)
+    schedule["next_fire_at"] = first
+    svc.update_schedule.reset_mock()
+    caplog.clear()
+
+    with caplog.at_level(logging.INFO):
+        second = await engine.recompute_next_fire(schedule, now=ref_epoch)
+
+    assert second == first
+    svc.update_schedule.assert_not_awaited()
+    assert not any("shifted" in r.message for r in caplog.records)
+
+
+@pytest.mark.asyncio
+async def test_recompute_armed_cron_schedules_shifts_and_logs_on_startup(monkeypatch, caplog):
+    """(c1) Daemon-start recompute shifts a stale schedule and logs once."""
+    pytest.importorskip("croniter", reason="studio extra not installed")
+    import lionagi.studio.config as studio_config
+    from lionagi.studio.scheduler.engine import SchedulerEngine
+
+    monkeypatch.setattr(studio_config, "SCHEDULER_TZ", "America/New_York")
+
+    svc = _make_svc()
+    stale_schedule = _minimal_schedule(id="sched-stale", cron_expr="0 18 * * *", next_fire_at=100.0)
+    svc.list_schedules = AsyncMock(return_value=[stale_schedule])
+    engine = SchedulerEngine(svc=svc)
+
+    with caplog.at_level(logging.INFO):
+        await engine._recompute_armed_cron_schedules()
+
+    svc.update_schedule.assert_awaited_once()
+    assert any("next_fire_at shifted" in r.message for r in caplog.records)
+
+
+@pytest.mark.asyncio
+async def test_recompute_armed_cron_schedules_unchanged_no_log(monkeypatch, caplog):
+    """(d) A schedule that's already correct produces no write and no log
+    during the daemon-start sweep."""
+    pytest.importorskip("croniter", reason="studio extra not installed")
+    import lionagi.studio.config as studio_config
+    import lionagi.studio.scheduler.engine as engine_mod
+    from lionagi.studio.scheduler.engine import SchedulerEngine
+
+    monkeypatch.setattr(studio_config, "SCHEDULER_TZ", "America/New_York")
+
+    fixed_now = datetime(2026, 7, 2, 10, 0, 0, tzinfo=NY).timestamp()
+    monkeypatch.setattr(engine_mod.time, "time", lambda: fixed_now)
+
+    schedule = _minimal_schedule(id="sched-stable", cron_expr="0 18 * * *")
+    probe = SchedulerEngine(svc=_make_svc())
+    schedule["next_fire_at"] = probe._compute_next_fire(schedule, fixed_now)
+
+    svc = _make_svc()
+    svc.list_schedules = AsyncMock(return_value=[schedule])
+    engine = SchedulerEngine(svc=svc)
+
+    with caplog.at_level(logging.INFO):
+        await engine._recompute_armed_cron_schedules()
+
+    svc.update_schedule.assert_not_awaited()
+    assert not any("shifted" in r.message for r in caplog.records)
