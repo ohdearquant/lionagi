@@ -3285,7 +3285,7 @@ requires-dist = [
     { name = "uvicorn", marker = "extra == 'studio'", specifier = ">=0.34" },
     { name = "xmltodict", marker = "extra == 'xml'", specifier = ">=0.12.0" },
 ]
-provides-extras = ["reader", "ollama", "mcp", "rich", "schema", "pandas", "postgres", "sqlite", "graph", "xml", "ag2", "sandbox", "testing", "studio", "all"]
+provides-extras = ["reader", "ollama", "mcp", "rich", "schema", "pandas", "postgres", "sqlite", "graph", "xml", "ag2", "sandbox", "studio", "all"]
 
 [package.metadata.requires-dev]
 dev = [

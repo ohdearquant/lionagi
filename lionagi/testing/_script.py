@@ -106,15 +106,9 @@ class ScriptModel(BaseModel):
 
     @classmethod
     def from_yaml(cls, path: str | Path) -> ScriptModel:
-        """Load a YAML script. Requires the ``[testing]`` extra (pyyaml)."""
+        """Load a YAML script."""
+        import yaml
 
-        try:
-            import yaml
-        except ImportError as e:
-            raise ImportError(
-                "loading YAML scripts requires pyyaml — install lionagi[testing] "
-                "or use ScriptModel.from_json / from_responses"
-            ) from e
         with open(path, encoding="utf-8") as f:
             data = yaml.safe_load(f)
         return cls.model_validate(data or {})
