@@ -64,6 +64,7 @@ class RunReasons:
     FAILED_EXIT_NONZERO = "run.failed.exit_nonzero"
     FAILED_EXCEPTION = "run.failed.exception"
     FAILED_MISSING_ARTIFACT = "run.failed.missing_artifact"  # ADR-0029
+    FAILED_ESCALATED = "run.failed.escalated"  # undeclared-artifact backstop
     TIMED_OUT_DEADLINE = "run.timed_out.deadline"
     ABORTED_USER = "run.aborted.user"
     CANCELLED_SIGINT = "run.cancelled.sigint"  # issue #1055

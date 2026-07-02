@@ -113,6 +113,20 @@ _SESSION_COLUMNS = frozenset(
         "total_cost_usd",
         "num_turns",
         "duration_ms",
+        # ADR-0029 documents artifact_contract_json as fixed at session
+        # creation for the single-agent case, where the full contract
+        # (playbook + agent profile) is already known at create_session time.
+        # DAG flows break that assumption: which role runs which leg is only
+        # known once planning finishes, which happens after create_session
+        # (see _build_dag in cli/orchestrate/flow.py). This column is
+        # allowlisted here so that ONE extension write is possible — folding
+        # resolved per-leg role artifact_defaults into the flow-wide
+        # contract, done once at DAG-build time, strictly before any leg
+        # starts executing. No writer may touch it after that point; the
+        # anti-drift intent of ADR-0029 (no changes once work is underway)
+        # still holds, it is just anchored at "DAG built" instead of
+        # "session created" for this call path.
+        "artifact_contract_json",
     }
 )
 
