@@ -27,9 +27,10 @@ from ..services.schedules import (
 
 _log = logging.getLogger(__name__)
 
-_LAUNCH_VALID_KINDS = frozenset({"agent", "flow", "fanout", "play", "engine"})
+_LAUNCH_VALID_KINDS = frozenset({"agent", "flow", "fanout", "play", "flow_yaml", "engine"})
 
 _detached_tasks: set[asyncio.Task] = set()
+_user_cancelled: set[str] = set()
 
 _launch_semaphore: asyncio.Semaphore | None = None
 
@@ -69,6 +70,10 @@ def _validate_request(data: dict[str, Any]) -> None:
         if not (data.get("action_prompt") or "").strip():
             raise ValueError("action_prompt (the engine spec) is required for engine launches")
         _svc_validate_identifier(data.get("action_engine_def"), "action_engine_def")
+    if kind == "flow_yaml" and not (data.get("action_flow_yaml") or "").strip():
+        raise ValueError(
+            "action_flow_yaml (the inline flow spec) is required for flow_yaml launches"
+        )
 
 
 async def launch(data: dict[str, Any]) -> dict[str, Any]:
@@ -88,6 +93,7 @@ async def launch(data: dict[str, Any]) -> dict[str, Any]:
         "action_playbook": data.get("action_playbook"),
         "action_project": data.get("action_project"),
         "action_extra_args": data.get("action_extra_args") or [],
+        "action_flow_yaml": data.get("action_flow_yaml"),
     }
     if data["action_kind"] == "engine":
         defn = await _resolve_engine_def(data["action_engine_def"])
@@ -181,7 +187,12 @@ async def _spawn_detached(argv: list[str], inv_id: str, *, tmp_path: str | None)
         else:
             status, reason = "failed", RunReasons.FAILED_EXIT_NONZERO
     except asyncio.CancelledError:
-        # Server is shutting down — write a terminal row before propagating.
+        # Write a terminal row before propagating; distinguish user vs shutdown.
+        is_user = inv_id in _user_cancelled
+        _user_cancelled.discard(inv_id)
+        reason_summary = (
+            "Launch cancelled by user." if is_user else "Launch cancelled by server shutdown."
+        )
         try:
             async with StateDB() as db:
                 await db.update_invocation(inv_id, ended_at=time.time())
@@ -190,7 +201,7 @@ async def _spawn_detached(argv: list[str], inv_id: str, *, tmp_path: str | None)
                     inv_id,
                     new_status="cancelled",
                     reason_code=RunReasons.CANCELLED_SYSTEM,
-                    reason_summary="Launch cancelled by server shutdown.",
+                    reason_summary=reason_summary,
                     evidence_refs=[],
                     source="executor",
                     actor=inv_id,
@@ -198,7 +209,7 @@ async def _spawn_detached(argv: list[str], inv_id: str, *, tmp_path: str | None)
                 )
         except Exception:
             _log.exception(
-                "Failed to record cancellation for launch invocation %s during shutdown",
+                "Failed to record cancellation for launch invocation %s",
                 inv_id,
             )
         raise
@@ -248,3 +259,18 @@ async def launch_run(body: LaunchRequest) -> dict[str, Any]:
         raise HTTPException(status_code=429, detail=str(exc)) from exc
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+
+@studio_route(
+    "/invocations/{invocation_id}/cancel", method="POST", area="launches", status_code=202
+)
+async def cancel_launch(invocation_id: str) -> dict[str, Any]:
+    """Cancel an in-flight launch: terminate its detached process; the task records a cancelled invocation row."""
+    for t in list(_detached_tasks):
+        if t.get_name() == f"launch-{invocation_id}" and not t.done():
+            _user_cancelled.add(invocation_id)
+            t.cancel()
+            return {"invocation_id": invocation_id, "status": "cancelling"}
+    raise HTTPException(
+        status_code=404, detail=f"No in-flight launch for invocation {invocation_id!r}"
+    )

@@ -10,10 +10,10 @@ from pydantic import BaseModel
 
 from lionagi.libs.schema.as_readable import as_readable
 from lionagi.libs.validate.common_field_validators import validate_model_to_type
-from lionagi.ln.fuzzy import FuzzyMatchKeysParams
 from lionagi.models.field_model import FieldModel
 from lionagi.service.imodel import iModel
 
+from .._defaults import make_parse_param
 from ..fields import Instruct
 from ..types import ActionParam, ChatParam, HandleValidation, InterpretParam, ParseParam
 from .utils import Analysis, ReActAnalysis
@@ -92,15 +92,10 @@ async def ReAct(  # noqa: N802  # public name is the ReAct acronym
             verbose_action=False,
         )
 
-    from ..parse.parse import get_default_call
-
-    parse_param = ParseParam(
-        response_format=ReActAnalysis,
-        fuzzy_match_params=FuzzyMatchKeysParams(),
+    parse_param = make_parse_param(
+        ReActAnalysis,
+        analysis_model or branch.chat_model,
         handle_validation="return_value",
-        alcall_params=get_default_call(),
-        imodel=analysis_model or branch.chat_model,
-        imodel_kw={},
     )
 
     resp_ctx = response_kwargs or {}
@@ -133,6 +128,106 @@ async def ReAct(  # noqa: N802  # public name is the ReAct acronym
         return_analysis=return_analysis,
         between_rounds=kwargs.get("between_rounds"),
     )
+
+
+def prepare_react_kw(  # noqa: N802
+    branch: "Branch",
+    instruct_dict: dict,
+    *,
+    instruction_fallback: str = "",
+    interpret: bool = False,
+    interpret_domain: str | None = None,
+    interpret_style: str | None = None,
+    interpret_sample: str | None = None,
+    interpret_model: iModel | None = None,
+    interpret_kwargs: dict | None = None,
+    tools: Any = None,
+    tool_schemas: Any = None,
+    response_format: type[BaseModel] | BaseModel = None,
+    intermediate_response_options: list[BaseModel] | BaseModel = None,
+    intermediate_listable: bool = False,
+    reasoning_effort: Literal["low", "medium", "high"] = None,
+    extension_allowed: bool = True,
+    max_extensions: int | None = 3,
+    response_kwargs: dict | None = None,
+    display_as: Literal["json", "yaml"] = "yaml",
+    analysis_model: iModel | None = None,
+    verbose_analysis: bool = False,
+    verbose_length: int = None,
+    include_token_usage_to_model: bool = True,
+    continue_after_failed_response: bool = False,
+    imodel_kw: dict | None = None,
+) -> dict:
+    """Build the kwargs dict for ReActStream from high-level parameters.
+
+    Accepts an already-merged instruct_dict so callers can normalize their
+    input (via _merge_instruct or instruct.to_dict()) before calling.
+    """
+    intp_param = None
+    if interpret:
+        intp_param = InterpretParam(
+            domain=interpret_domain or "general",
+            style=interpret_style or "concise",
+            sample_writing=interpret_sample or "",
+            imodel=interpret_model or analysis_model or branch.chat_model,
+            imodel_kw=interpret_kwargs or {},
+        )
+
+    chat_param = ChatParam.from_branch(
+        branch,
+        guidance=instruct_dict.get("guidance"),
+        context=instruct_dict.get("context"),
+        tool_schemas=tool_schemas or [],
+        include_token_usage_to_model=include_token_usage_to_model,
+        imodel=analysis_model or branch.chat_model,
+        imodel_kw=imodel_kw or {},
+    )
+
+    action_param = None
+    if tools is not None or tool_schemas is not None:
+        from ..act.act import _get_default_call_params
+
+        action_param = ActionParam(
+            action_call_params=_get_default_call_params(),
+            tools=tools or True,
+            strategy="concurrent",
+            suppress_errors=True,
+            verbose_action=False,
+        )
+
+    parse_param = make_parse_param(
+        ReActAnalysis,
+        analysis_model or branch.chat_model,
+        handle_validation="return_value",
+    )
+
+    resp_ctx = response_kwargs or {}
+    if response_format:
+        resp_ctx["response_format"] = response_format
+
+    return {
+        "instruction": instruct_dict.get("instruction", instruction_fallback),
+        "chat_param": chat_param,
+        "action_param": action_param,
+        "parse_param": parse_param,
+        "intp_param": intp_param,
+        "resp_ctx": resp_ctx,
+        "reasoning_effort": reasoning_effort,
+        "reason": True,
+        "field_models": None,
+        "handle_validation": "return_value",
+        "invoke_actions": True,
+        "clear_messages": False,
+        "intermediate_response_options": intermediate_response_options,
+        "intermediate_listable": intermediate_listable,
+        "intermediate_nullable": False,
+        "max_extensions": max_extensions,
+        "extension_allowed": extension_allowed,
+        "verbose_analysis": verbose_analysis,
+        "display_as": display_as,
+        "verbose_length": verbose_length,
+        "continue_after_failed_response": continue_after_failed_response,
+    }
 
 
 async def ReAct_v1(  # noqa: N802  # public name preserves the ReAct acronym

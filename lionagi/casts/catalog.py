@@ -10,8 +10,12 @@ from .pattern import Mode, Role, list_modes, list_roles
 __all__ = ("build_catalog",)
 
 
-def _load_default_pack():
-    """Load the default pack; returns None if unavailable."""
+def _load_packaged_pack(*, raise_on_error: bool = False):
+    """Load the packaged default pack from the lionagi.casts resource tree.
+
+    Returns the Pack on success. On failure, raises if raise_on_error is True,
+    otherwise returns None.
+    """
     try:
         from importlib.resources import as_file, files
 
@@ -21,7 +25,14 @@ def _load_default_pack():
         with as_file(packaged) as p:
             return Pack.from_file(p)
     except Exception:
+        if raise_on_error:
+            raise
         return None
+
+
+def _load_default_pack():
+    """Load the default pack; returns None if unavailable."""
+    return _load_packaged_pack(raise_on_error=False)
 
 
 def _emission_entries(role: Role) -> list[dict]:

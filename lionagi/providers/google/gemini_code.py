@@ -20,24 +20,23 @@ import asyncio
 import contextlib
 import logging
 import os
-import shutil
 from collections.abc import AsyncIterator, Callable
-from functools import partial
 from pathlib import Path
 from typing import Any, Literal
 
 from pydantic import BaseModel, Field, field_validator, model_validator
 
 from lionagi import ln
-from lionagi.libs.path_safety import (
-    check_paths_safe,
-    contain_and_resolve,
-    contain_paths_in_root,
-)
-from lionagi.libs.schema.as_readable import as_readable
+from lionagi.libs.path_safety import check_paths_safe, contain_paths_in_root
 from lionagi.ln.concurrency.utils import maybe_await
 from lionagi.providers._agentic_handlers import AgenticHandlersMixin
-from lionagi.providers._cli_subprocess import ndjson_from_cli, validate_message_prompt
+from lionagi.providers._cli_subprocess import (
+    discover_cli,
+    ndjson_from_cli,
+    print_readable,
+    resolve_cli_workspace,
+    validate_message_prompt,
+)
 from lionagi.service.connections.agentic_endpoint import AgenticEndpoint
 from lionagi.service.connections.endpoint_config import EndpointConfig
 from lionagi.service.types.cli_session import CLISession
@@ -46,11 +45,12 @@ from lionagi.utils import to_dict
 
 from ._config import GeminiCodeConfigs
 
-
 def _resolve_agy_binary() -> str | None:
-    found = shutil.which("agy")
+    found, path = discover_cli("agy")
     if found:
-        return found
+        return path
+    # agy installs to ~/.local/bin, which service contexts (launchd, cron)
+    # often lack on PATH even though login shells have it.
     fallback = os.path.expanduser("~/.local/bin/agy")
     if os.path.isfile(fallback) and os.access(fallback, os.X_OK):
         return fallback
@@ -240,18 +240,7 @@ class GeminiCodeRequest(BaseModel):
         return self
 
     def cwd(self) -> Path:
-        if not self.ws:
-            return self.repo
-
-        ws_path = Path(self.ws)
-
-        if ws_path.is_absolute():
-            raise ValueError(f"Workspace path must be relative, got absolute: {self.ws}")
-
-        if ".." in ws_path.parts:
-            raise ValueError(f"Directory traversal detected in workspace path: {self.ws}")
-
-        return contain_and_resolve(ws_path, self.repo)
+        return resolve_cli_workspace(self.repo, self.ws)
 
     def full_prompt(self) -> str:
         if self.system_prompt:
@@ -316,8 +305,6 @@ async def stream_gemini_cli_events(request: GeminiCodeRequest):
 
 
 # --------------------------------------------------------------------------- pretty-print
-
-print_readable = partial(as_readable, md=True, display_str=True)
 
 
 def _pp_text(text: str, theme: str = "light") -> None:

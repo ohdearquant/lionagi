@@ -1,8 +1,9 @@
 from __future__ import annotations
 
+import asyncio
 import logging
 import os
-from contextlib import asynccontextmanager
+from contextlib import asynccontextmanager, suppress
 from pathlib import Path
 from typing import Any
 
@@ -77,22 +78,108 @@ def _emit_startup_warnings() -> None:
         )
 
 
+def _start_claude_mirror() -> tuple[asyncio.Event, asyncio.Task] | tuple[None, None]:
+    """Start the in-process Claude Code mirror tail if enabled; return (stop, task)."""
+    from .config import MIRROR_CLAUDE_ENABLED, MIRROR_CLAUDE_INTERVAL, MIRROR_CLAUDE_SINCE
+
+    if not MIRROR_CLAUDE_ENABLED:
+        return None, None
+    from lionagi.cli.mirror import mirror_forever
+
+    stop = asyncio.Event()
+    task = asyncio.create_task(
+        mirror_forever(stop, since=MIRROR_CLAUDE_SINCE, interval=MIRROR_CLAUDE_INTERVAL),
+        name="claude-mirror-tail",
+    )
+
+    def _log_unexpected_exit(t: asyncio.Task) -> None:
+        # The task handle is retained (returned, awaited only at shutdown), so a
+        # task that raises never triggers asyncio's "exception was never
+        # retrieved" warning — its failure is otherwise completely silent and the
+        # studio runs on with no live mirroring. Surface it loudly here instead.
+        if t.cancelled():
+            return
+        exc = t.exception()
+        if exc is not None:
+            _log.error("Claude mirror tail exited unexpectedly", exc_info=exc)
+
+    task.add_done_callback(_log_unexpected_exit)
+    _log.info("Claude Code mirror tail started (since=%s)", MIRROR_CLAUDE_SINCE)
+    return stop, task
+
+
+async def _stop_claude_mirror(stop: asyncio.Event | None, task: asyncio.Task | None) -> None:
+    """Signal the mirror tail to stop and await it, cancelling as a backstop."""
+    if stop is None or task is None:
+        return
+    stop.set()
+    try:
+        await asyncio.wait_for(task, timeout=10)
+    except (asyncio.TimeoutError, TimeoutError):
+        task.cancel()
+        with suppress(asyncio.CancelledError, Exception):
+            await task
+    except Exception:  # noqa: BLE001
+        # a failed tail must not block shutdown
+        _log.warning("Claude mirror tail ended with error", exc_info=True)
+
+
+async def _startup_warmup() -> None:
+    """Deferred startup maintenance that must not gate readiness: the WAL
+    checkpoint. Kept off the critical path so /health serves as soon as
+    reconciliation completes (not waiting on the checkpoint), and so the
+    checkpoint does not block readiness while contending with the mirror's
+    first connection open on a cold first-run DB. The whole body
+    (including the import) is guarded so an unexpected failure is logged, not
+    silently dropped when the task is finalized at shutdown.
+
+    Stale-session reconciliation is deliberately NOT deferred — it runs pre-yield
+    in lifespan() because stateful /api routes read the session rows it corrects.
+    """
+    try:
+        from .services.db_maintenance import checkpoint_state_db
+
+        await checkpoint_state_db(actor="startup")
+    except Exception:  # noqa: BLE001
+        _log.warning("Startup WAL checkpoint failed (non-fatal)", exc_info=True)
+
+
+async def _finalize_warmup(task: asyncio.Task | None) -> None:
+    """Settle the background warmup task before shutdown proceeds: cancel it if
+    still running, then await so it is retrieved (never a pending/un-retrieved
+    task warning). An unexpected failure is logged rather than silently dropped."""
+    if task is None:
+        return
+    if not task.done():
+        task.cancel()
+    try:
+        await task
+    except asyncio.CancelledError:
+        pass
+    except Exception:  # noqa: BLE001
+        _log.warning("Startup warmup task failed (non-fatal)", exc_info=True)
+
+
 @asynccontextmanager
 async def lifespan(app_instance):
     from .scheduler.engine import scheduler
-    from .services.db_maintenance import checkpoint_state_db
     from .services.lifecycle import run_startup_reconciliation
 
     _emit_startup_warnings()
     await scheduler.start()
+    # Reconciliation corrects phantom / stale-status session and invocation rows
+    # that stateful /api routes (sessions, runs, stats) read directly, so it must
+    # complete before we serve — keep it pre-yield.
     await run_startup_reconciliation()
-    try:
-        await checkpoint_state_db(actor="startup")
-    except Exception:  # noqa: BLE001
-        _log.warning("Startup WAL checkpoint failed (non-fatal)", exc_info=True)
+    mirror_stop, mirror_task = _start_claude_mirror()
+    # The WAL checkpoint is pure maintenance and the main first-run cost; defer it
+    # to a background task so readiness is not gated on it.
+    warmup_task = asyncio.create_task(_startup_warmup(), name="studio-startup-warmup")
     yield
     from .services.launches import shutdown_launches
 
+    await _finalize_warmup(warmup_task)
+    await _stop_claude_mirror(mirror_stop, mirror_task)
     await shutdown_launches()
     await scheduler.stop()
 

@@ -6,7 +6,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any, ClassVar
 
-from pydantic import Field, field_validator
+from pydantic import Field
 
 from lionagi.ln._utils import now_utc
 
@@ -52,16 +52,7 @@ class System(Message):
     """System-level message setting context or policy for the conversation."""
 
     _role: ClassVar[MessageRole] = MessageRole.SYSTEM
+    _content_type: ClassVar[type] = SystemContent
     content: SystemContent = Field(default_factory=SystemContent)
     sender: SenderRecipient | None = MessageRole.SYSTEM
     recipient: SenderRecipient | None = MessageRole.ASSISTANT
-
-    @field_validator("content", mode="before")
-    def _validate_content(cls, v):
-        if v is None:
-            return SystemContent()
-        if isinstance(v, dict):
-            return SystemContent.from_dict(v)
-        if isinstance(v, SystemContent):
-            return v
-        raise TypeError("content must be dict or SystemContent instance")

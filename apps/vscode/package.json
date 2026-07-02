@@ -1,0 +1,263 @@
+{
+  "name": "den",
+  "displayName": "Den",
+  "description": "Watch your lionagi agent runs and Claude Code sessions live in VS Code.",
+  "version": "0.1.0",
+  "publisher": "lionagi",
+  "license": "Apache-2.0",
+  "icon": "media/icon.png",
+  "galleryBanner": {
+    "color": "#1E1B2E",
+    "theme": "dark"
+  },
+  "pricing": "Free",
+  "qna": "marketplace",
+  "homepage": "https://github.com/ohdearquant/lionagi/tree/main/apps/vscode#readme",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/ohdearquant/lionagi.git",
+    "directory": "apps/vscode"
+  },
+  "bugs": {
+    "url": "https://github.com/ohdearquant/lionagi/issues"
+  },
+  "engines": {
+    "vscode": "^1.90.0"
+  },
+  "categories": [
+    "AI",
+    "Visualization",
+    "Other"
+  ],
+  "keywords": [
+    "lionagi",
+    "agent",
+    "orchestration",
+    "ai",
+    "llm",
+    "claude code",
+    "observability"
+  ],
+  "main": "./out/extension.js",
+  "activationEvents": [
+    "onStartupFinished"
+  ],
+  "contributes": {
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "den",
+          "title": "Den",
+          "icon": "media/lion.svg"
+        }
+      ]
+    },
+    "views": {
+      "den": [
+        {
+          "id": "den.runs",
+          "name": "Runs"
+        }
+      ]
+    },
+    "viewsWelcome": [
+      {
+        "view": "den.runs",
+        "contents": "$(loading~spin) Starting Den…",
+        "when": "den.backendState == 'starting' || (den.backendState == 'stopped' && config.den.autoStart)"
+      },
+      {
+        "view": "den.runs",
+        "contents": "Den backend is stopped.\n[Start Backend](command:den.startBackend)",
+        "when": "den.backendState == 'stopped' && !config.den.autoStart"
+      },
+      {
+        "view": "den.runs",
+        "contents": "Den couldn't start. See the Den output channel for details.\n[Retry](command:den.startBackend)",
+        "when": "den.backendState == 'error'"
+      },
+      {
+        "view": "den.runs",
+        "contents": "No runs yet. Den watches your lionagi agent runs and Claude Code sessions — start one from your terminal and it appears here.\n[Star lionagi on GitHub](command:den.starOnGitHub)",
+        "when": "den.backendState == 'running' && !den.hasRuns"
+      }
+    ],
+    "commands": [
+      {
+        "command": "den.startBackend",
+        "title": "Den: Start Backend",
+        "icon": "$(play)"
+      },
+      {
+        "command": "den.stopBackend",
+        "title": "Den: Stop Backend",
+        "icon": "$(debug-stop)"
+      },
+      {
+        "command": "den.refreshRuns",
+        "title": "Den: Refresh Runs",
+        "icon": "$(refresh)"
+      },
+      {
+        "command": "den.openRunTree",
+        "title": "Den: View Run Tree",
+        "category": "Den",
+        "icon": "$(type-hierarchy-sub)"
+      },
+      {
+        "command": "den.starOnGitHub",
+        "title": "Den: Star lionagi on GitHub",
+        "icon": "$(github-inverted)"
+      }
+    ],
+    "menus": {
+      "view/title": [
+        {
+          "command": "den.refreshRuns",
+          "when": "view == den.runs",
+          "group": "navigation"
+        },
+        {
+          "command": "den.starOnGitHub",
+          "when": "view == den.runs",
+          "group": "navigation@9"
+        }
+      ],
+      "view/item/context": [
+        {
+          "command": "den.openRunTree",
+          "when": "view == den.runs && viewItem =~ /^run(Active|Terminal)Tree$/",
+          "group": "inline"
+        }
+      ],
+      "commandPalette": [
+        {
+          "command": "den.startBackend"
+        },
+        {
+          "command": "den.stopBackend"
+        },
+        {
+          "command": "den.refreshRuns"
+        },
+        {
+          "command": "den.starOnGitHub"
+        },
+        {
+          "command": "den.openRunTree",
+          "when": "false"
+        }
+      ]
+    },
+    "configuration": {
+      "title": "Den",
+      "properties": {
+        "den.url": {
+          "type": "string",
+          "default": "",
+          "description": "Attach to a running studio backend instead of spawning one. Leave empty to auto-spawn."
+        },
+        "den.pythonPath": {
+          "type": "string",
+          "default": "",
+          "description": "Python interpreter for the spawned backend. Leave empty to auto-detect: workspace .venv, then a uv project (installs the studio backend on first run), then python3."
+        },
+        "den.port": {
+          "type": "number",
+          "default": 8765,
+          "description": "Port the spawned backend will listen on."
+        },
+        "den.host": {
+          "type": "string",
+          "default": "127.0.0.1",
+          "description": "Host the spawned backend will bind to."
+        },
+        "den.autoStart": {
+          "type": "boolean",
+          "default": true,
+          "description": "Automatically start the backend when the extension activates."
+        },
+        "den.authToken": {
+          "type": "string",
+          "default": "",
+          "description": "Bearer token for LIONAGI_STUDIO_AUTH_TOKEN (optional)."
+        }
+      }
+    },
+    "walkthroughs": [
+      {
+        "id": "den.gettingStarted",
+        "title": "Get started with Den",
+        "description": "Watch your lionagi runs and Claude Code sessions live, without leaving VS Code.",
+        "steps": [
+          {
+            "id": "den.install",
+            "title": "Install the studio backend",
+            "description": "Den renders a small local backend. Install it once with `pip install 'lionagi[studio]'`, or let Den auto-detect your workspace `.venv` or `uv` project.\n[Open a terminal](command:workbench.action.terminal.new)",
+            "media": {
+              "markdown": "media/walkthrough/install.md"
+            },
+            "completionEvents": [
+              "onContext:den.backendState == 'running'"
+            ]
+          },
+          {
+            "id": "den.open",
+            "title": "Open the Den panel",
+            "description": "Click the lion in the activity bar. Den auto-starts the backend and shows your live run tree.\n[Open Den](command:den.runs.focus)",
+            "media": {
+              "markdown": "media/walkthrough/open.md"
+            },
+            "completionEvents": [
+              "onView:den.runs"
+            ]
+          },
+          {
+            "id": "den.run",
+            "title": "Start your first run",
+            "description": "Start any run from your terminal and it appears in the tree live. `li agent`, `li o`, and Claude Code sessions all land here.\n[Open a terminal](command:workbench.action.terminal.new)",
+            "media": {
+              "markdown": "media/walkthrough/run.md"
+            },
+            "completionEvents": [
+              "onContext:den.hasRuns"
+            ]
+          },
+          {
+            "id": "den.trace",
+            "title": "Trace a run",
+            "description": "Click a run to stream its output live, or right-click and choose View Run Tree to see its branch and agent graph with per-run cost.",
+            "media": {
+              "markdown": "media/walkthrough/trace.md"
+            },
+            "completionEvents": [
+              "onCommand:den.openRunTree"
+            ]
+          }
+        ]
+      }
+    ]
+  },
+  "scripts": {
+    "compile": "node esbuild.js",
+    "watch": "node esbuild.js --watch",
+    "vscode:prepublish": "node esbuild.js --minify",
+    "typecheck": "tsc --noEmit",
+    "package": "vsce package",
+    "test": "vitest run"
+  },
+  "devDependencies": {
+    "@types/node": "^20.0.0",
+    "@types/vscode": "^1.90.0",
+    "@vscode/vsce": "^3.0.0",
+    "esbuild": "^0.25.0",
+    "jsdom": "^29.1.1",
+    "typescript": "^5.5.0",
+    "vitest": "^3.2.6"
+  },
+  "overrides": {
+    "vite": {
+      "esbuild": "0.27.2"
+    }
+  }
+}

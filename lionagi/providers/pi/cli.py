@@ -10,11 +10,8 @@ import contextlib
 import json
 import logging
 import os
-import shutil
 from collections.abc import AsyncIterator, Callable
 from dataclasses import dataclass
-from dataclasses import field as datafield
-from functools import partial
 from pathlib import Path
 from textwrap import shorten
 from typing import Any, Literal
@@ -23,28 +20,28 @@ from pydantic import BaseModel, Field, field_validator, model_validator
 
 from lionagi.libs.path_safety import check_paths_safe
 from lionagi.libs.path_safety import contain_paths_in_root as contain_paths_in_repo
-from lionagi.libs.schema.as_readable import as_readable
 from lionagi.ln.concurrency.utils import maybe_await
 from lionagi.providers._agentic_handlers import AgenticHandlersMixin
 from lionagi.providers._cli_subprocess import (
     _INHERIT_STDIN,
     build_declarative_cli_args,
+    discover_cli,
     ndjson_from_cli,
+    print_readable,
     validate_message_prompt,
+)
+from lionagi.providers._cli_subprocess import (
+    make_cli_flag as _cli,
 )
 from lionagi.service.connections.agentic_endpoint import AgenticEndpoint
 from lionagi.service.connections.endpoint_config import EndpointConfig
+from lionagi.service.types.cli_session import CLISession
 from lionagi.service.types.stream_chunk import StreamChunk
 from lionagi.utils import to_dict
 
 from ._config import PiConfigs
 
-HAS_PI_CLI = False
-PI_CLI = None
-
-if (c := (shutil.which("pi") or "pi")) and shutil.which(c):
-    HAS_PI_CLI = True
-    PI_CLI = c
+HAS_PI_CLI, PI_CLI = discover_cli("pi")
 
 logging.basicConfig(level=logging.INFO)
 log = logging.getLogger("pi-cli")
@@ -79,21 +76,6 @@ _PI_MODEL_PROVIDER_MAP: list[tuple[str, str, bool]] = [
     ("o3", "openai", False),
     ("o4", "openai", False),
 ]
-
-
-# --------------------------------------------------------------------------- flag metadata
-
-
-def _cli(
-    flag: str,
-    order: int,
-    kind: str = "value",
-) -> dict[str, Any]:
-    return {
-        "cli_flag": flag,
-        "cli_order": order,
-        "cli_kind": kind,
-    }
 
 
 # --------------------------------------------------------------------------- request model
@@ -310,75 +292,7 @@ class PiChunk:
     tool_result: dict[str, Any] | None = None
 
 
-@dataclass
-class PiSession:
-    session_id: str | None = None
-    model: str | None = None
-    chunks: list[PiChunk] = datafield(default_factory=list)
-    messages: list[dict[str, Any]] = datafield(default_factory=list)
-    tool_uses: list[dict[str, Any]] = datafield(default_factory=list)
-    tool_results: list[dict[str, Any]] = datafield(default_factory=list)
-    result: str = ""
-    usage: dict[str, Any] = datafield(default_factory=dict)
-    num_turns: int | None = None
-    duration_ms: int | None = None
-    is_error: bool = False
-    summary: dict | None = None
-
-    def populate_summary(self) -> None:
-        self.summary = _extract_summary(self)
-
-
-def _extract_summary(session: PiSession) -> dict[str, Any]:
-    tool_counts: dict[str, int] = {}
-    key_actions: list[str] = []
-    file_operations: dict[str, list[str]] = {
-        "reads": [],
-        "writes": [],
-        "edits": [],
-    }
-
-    for tu in session.tool_uses:
-        name = tu.get("name", "unknown")
-        inp = tu.get("input", tu.get("args", {}))
-        tool_counts[name] = tool_counts.get(name, 0) + 1
-
-        if name in ("read", "Read", "read_file"):
-            fp = inp.get("path", inp.get("file_path", "unknown"))
-            file_operations["reads"].append(fp)
-            key_actions.append(f"Read {fp}")
-        elif name in ("write", "Write", "write_file", "create_file"):
-            fp = inp.get("path", inp.get("file_path", "unknown"))
-            file_operations["writes"].append(fp)
-            key_actions.append(f"Wrote {fp}")
-        elif name in ("edit", "Edit", "edit_file", "patch"):
-            fp = inp.get("path", inp.get("file_path", "unknown"))
-            file_operations["edits"].append(fp)
-            key_actions.append(f"Edited {fp}")
-        elif name in ("bash", "Bash", "shell"):
-            cmd = inp.get("command", inp.get("cmd", ""))
-            cmd_short = cmd[:50] + "..." if len(cmd) > 50 else cmd
-            key_actions.append(f"Ran: {cmd_short}")
-        else:
-            key_actions.append(f"Used {name}")
-
-    for op_type in file_operations:
-        file_operations[op_type] = list(dict.fromkeys(file_operations[op_type]))
-
-    result_summary = (session.result[:200] + "...") if len(session.result) > 200 else session.result
-
-    return {
-        "tool_counts": tool_counts,
-        "file_operations": file_operations,
-        "key_actions": list(dict.fromkeys(key_actions)) or ["No specific actions"],
-        "total_tool_calls": sum(tool_counts.values()),
-        "result_summary": result_summary,
-        "usage_stats": {
-            "num_turns": session.num_turns,
-            "duration_ms": session.duration_ms,
-            **session.usage,
-        },
-    }
+PiSession = CLISession
 
 
 # --------------------------------------------------------------------------- NDJSON stream
@@ -406,9 +320,6 @@ async def stream_pi_cli_events(request: PiCodeRequest):
         async for obj in stream:
             yield obj
     yield {"type": "done"}
-
-
-print_readable = partial(as_readable, md=True, display_str=True)
 
 
 def _pp_text(text: str, theme: str = "light") -> None:

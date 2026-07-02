@@ -6,13 +6,12 @@ from typing import TYPE_CHECKING, Literal, Union
 from pydantic import BaseModel, JsonValue
 
 from lionagi.ln import AlcallParams
-from lionagi.ln.fuzzy import FuzzyMatchKeysParams
 from lionagi.ln.types import Spec
 from lionagi.models import FieldModel
 from lionagi.protocols.generic import Progression
 from lionagi.protocols.messages import Instruction, SenderRecipient
 
-from .._defaults import STANDARD_REMOVED_KWARGS
+from .._defaults import STANDARD_REMOVED_KWARGS, make_parse_param
 from ..fields import Instruct
 from ..types import (
     ActionParam,
@@ -135,15 +134,8 @@ def prepare_operate_kw(
 
     parse_param = None
     if response_format and not skip_validation:
-        from ..parse.parse import get_default_call
-
-        parse_param = ParseParam(
-            response_format=response_format,
-            fuzzy_match_params=FuzzyMatchKeysParams(),
-            handle_validation=handle_validation,
-            alcall_params=get_default_call(),
-            imodel=parse_model,
-            imodel_kw={},
+        parse_param = make_parse_param(
+            response_format, parse_model, handle_validation=handle_validation
         )
 
     action_param = None

@@ -42,7 +42,6 @@ from .helpers import (
     MockElement,
     TestDataHelpers,
     ValidationHelpers,
-    make_mock_element_class,
 )
 from .loaders import (
     TestDataLoader,
@@ -89,7 +88,6 @@ __all__ = (
     "TestDataHelpers",
     "TestDataLoader",
     "ValidationHelpers",
-    "make_mock_element_class",
     "get_api_response",
     "get_conversation",
     "get_error_scenario",
