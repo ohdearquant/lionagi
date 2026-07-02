@@ -493,7 +493,7 @@ CREATE INDEX IF NOT EXISTS idx_admin_events_target
 -- ── Artifacts (ADR-0021) ─────────────────────────────────────────────────
 -- Structured skill outputs (review verdicts, gate verdicts, CI results,
 -- ...). The split is DB-for-structured, filesystem-for-blobs: `content`
--- holds the SkillOutcome.model_dump() JSON; `file_path` optionally
+-- holds the outcome's JSON payload; `file_path` optionally
 -- points to a large blob (full log, generated artifact, worktree diff).
 -- `kind` is the discriminator the frontend renderer dispatches on.
 
