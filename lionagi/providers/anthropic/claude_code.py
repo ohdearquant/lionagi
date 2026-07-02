@@ -133,8 +133,10 @@ class ClaudeCodeRequest(BaseModel):
     )
 
     # ── model & runtime (order 20–29) ─────────────────────────────
+    # Bare "sonnet" is pinned to Sonnet 5 (see _pin_sonnet_alias) rather than
+    # left to the CLI's own alias resolution.
     model: Literal["sonnet", "opus", "haiku"] | str | None = Field(
-        default="sonnet",
+        default="claude-sonnet-5",
         json_schema_extra=_cli("--model", 20),
     )
     effort: ClaudeEffort | None = Field(
@@ -288,6 +290,10 @@ class ClaudeCodeRequest(BaseModel):
     max_thinking_tokens: int | None = Field(default=None, exclude=True)
 
     # ── validators ────────────────────────────────────────────────
+
+    @field_validator("model", mode="before")
+    def _pin_sonnet_alias(cls, v):
+        return "claude-sonnet-5" if v == "sonnet" else v
 
     @field_validator("permission_mode", mode="before")
     def _norm_perm(cls, v):
@@ -492,7 +498,7 @@ class ClaudeCodeRequest(BaseModel):
 
         # model default – always emit
         if "--model" not in args:
-            args.extend(["--model", self.model or "sonnet"])
+            args.extend(["--model", self.model or "claude-sonnet-5"])
 
         # always verbose for structured stream output
         args.append("--verbose")
@@ -760,6 +766,7 @@ CONTEXT_WINDOWS: dict[str, int] = {
     "opus-4-7": 1_000_000,
     "opus-4-6": 1_000_000,
     "opus": 1_000_000,
+    "sonnet-5": 1_000_000,
     "sonnet-4-6": 1_000_000,
     "sonnet-4-5": 200_000,
     "sonnet": 1_000_000,
