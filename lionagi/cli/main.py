@@ -263,7 +263,7 @@ def main(argv: list[str] | None = None) -> int:
     sub = parser.add_subparsers(dest="command", required=True)
 
     orch_parsers = add_orchestrate_subparser(sub)
-    add_agent_subparser(sub)
+    agent_parser = add_agent_subparser(sub)
     add_casts_subparser(sub)
     add_engine_subparser(sub)
     add_team_subparser(sub)
@@ -278,6 +278,26 @@ def main(argv: list[str] | None = None) -> int:
     # declared args as flags on the flow sub-parser BEFORE argparse runs,
     # so positional prompts don't swallow flag values.
     inject_playbook_schema_into_parser(orch_parsers["flow"], _argv)
+
+    # `li agent` parses standalone so flags may appear anywhere relative to
+    # the [MODEL] PROMPT positionals (subparser dispatch cannot intermix).
+    # parse_intermixed_args is unusable here: it drops the `--` sentinel
+    # between its two passes, letting a hostile prompt like "--bypass" placed
+    # after `--` toggle real flags on the re-parse. Split at the sentinel
+    # ourselves, parse flags, and fold leftover positionals back in order.
+    if _argv and _argv[0] == "agent":
+        tail = _argv[1:]
+        if "--" in tail:
+            i = tail.index("--")
+            head, post = tail[:i], tail[i + 1 :]
+        else:
+            head, post = tail, []
+        args, extras = agent_parser.parse_known_args(head)
+        unknown = [e for e in extras if e.startswith("-") and e != "-"]
+        if unknown:
+            agent_parser.error(f"unrecognized arguments: {' '.join(unknown)}")
+        args.query = [*(args.query or []), *extras, *post]
+        return run_agent(args)
 
     args = parser.parse_args(_argv)
 

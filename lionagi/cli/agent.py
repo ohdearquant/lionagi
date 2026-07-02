@@ -6,6 +6,8 @@ from __future__ import annotations
 
 import argparse
 import json
+import sys
+from pathlib import Path
 
 from lionagi import Branch
 from lionagi._errors import ConfigurationError
@@ -438,12 +440,13 @@ async def _run_agent(
     return res or "", provider, branch_id, _terminal_status
 
 
-def add_agent_subparser(subparsers: argparse._SubParsersAction) -> None:
+def add_agent_subparser(subparsers: argparse._SubParsersAction) -> argparse.ArgumentParser:
     agent = subparsers.add_parser(
         "agent",
         help="Spawn one-shot subagent (blocking); prints final response.",
         description=(
             "Spawn a single subagent and wait for its final response. "
+            "Flags may appear anywhere relative to the positionals. "
             "Use -r / -c to continue a previous conversation. "
             "Use -a to load a profile from .lionagi/agents/. "
             "Use --preset to apply a built-in agent configuration. "
@@ -451,16 +454,29 @@ def add_agent_subparser(subparsers: argparse._SubParsersAction) -> None:
         ),
     )
     agent.add_argument(
-        "model",
-        nargs="?",
-        default=None,
+        "query",
+        nargs="*",
+        metavar="[MODEL] PROMPT",
         help=(
-            "One of 'claude', 'codex', 'gemini-code' (defaults), or a full spec "
-            "like 'claude/opus'. Optional when -a (agent profile) provides a model, "
-            "or when --resume / --continue-last is set."
+            "Optional model spec followed by the prompt. Model is one of "
+            "'claude', 'codex', 'gemini-code' (defaults), or a full spec like "
+            "'claude/opus'; omit it when -a / --resume / -c provides one. "
+            "The prompt may instead be passed via --prompt or --prompt-file."
         ),
     )
-    agent.add_argument("prompt", help="Prompt to send to the subagent.")
+    agent.add_argument(
+        "--prompt",
+        dest="prompt_flag",
+        metavar="TEXT",
+        default=None,
+        help="Prompt text (alternative to the positional PROMPT).",
+    )
+    agent.add_argument(
+        "--prompt-file",
+        metavar="PATH",
+        default=None,
+        help="Read the prompt from a file; '-' reads stdin (heredoc-friendly).",
+    )
     agent.add_argument(
         "-a",
         "--agent",
@@ -511,10 +527,55 @@ def add_agent_subparser(subparsers: argparse._SubParsersAction) -> None:
     )
 
     add_common_cli_args(agent)
+    return agent
+
+
+def _resolve_model_and_prompt(args: argparse.Namespace) -> tuple[str | None, str] | None:
+    """Assign the positional bucket + --prompt/--prompt-file to (model, prompt).
+
+    Returns None after logging a clear error."""
+    query: list[str] = getattr(args, "query", None) or []
+    flag_prompt = args.prompt_flag
+    if args.prompt_file:
+        if flag_prompt is not None:
+            log_error("pass --prompt or --prompt-file, not both")
+            return None
+        if args.prompt_file == "-":
+            flag_prompt = sys.stdin.read()
+        else:
+            try:
+                flag_prompt = Path(args.prompt_file).read_text()
+            except OSError as exc:
+                log_error(f"could not read --prompt-file: {exc}")
+                return None
+        if not flag_prompt.strip():
+            log_error(f"--prompt-file {args.prompt_file!r} is empty")
+            return None
+    if len(query) > 2:
+        log_error(
+            "too many positional arguments — expected [MODEL] PROMPT. "
+            "Did you forget to quote the prompt?"
+        )
+        return None
+    if flag_prompt is not None:
+        if len(query) == 2:
+            log_error("prompt given twice (positionally and via --prompt/--prompt-file)")
+            return None
+        return (query[0] if query else None), flag_prompt
+    if len(query) == 2:
+        return query[0], query[1]
+    if len(query) == 1:
+        return None, query[0]
+    log_error("no prompt given — pass it positionally, or via --prompt / --prompt-file")
+    return None
 
 
 def run_agent(args: argparse.Namespace) -> int:
     """Dispatch agent command."""
+    resolved = _resolve_model_and_prompt(args)
+    if resolved is None:
+        return 1
+    model, prompt_text = resolved
     # --form: load, build, and validate BEFORE any LLM call.
     form_prompt_prefix: str = ""
     if getattr(args, "form", None):
@@ -542,9 +603,9 @@ def run_agent(args: argparse.Namespace) -> int:
         if work_form.values:
             form_prompt_prefix = _form_to_context_block(work_form) + "\n\n"
 
-    prompt = form_prompt_prefix + args.prompt
+    prompt = form_prompt_prefix + prompt_text
 
-    has_model = args.model is not None or args.agent is not None
+    has_model = model is not None or args.agent is not None
     if not has_model and not (args.resume or args.continue_last):
         log_error(
             "model or --agent is required unless --resume / -r or --continue-last / -c is set"
@@ -554,7 +615,7 @@ def run_agent(args: argparse.Namespace) -> int:
     try:
         result, provider, branch_id, terminal_status = run_async(
             _run_agent(
-                args.model,
+                model,
                 prompt,
                 yolo=args.yolo,
                 verbose=args.verbose,
