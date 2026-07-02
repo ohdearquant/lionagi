@@ -172,9 +172,10 @@ async def test_poll_pending_once_reports_immediately_terminal_run(
         sched_id = await _make_schedule(db, name="nightly-build")
         run_id = await _make_schedule_run(db, sched_id, status="completed", exit_code=0)
         pending = {run_id: await db.get_schedule_run(run_id)}
-        resolved = await _poll_pending_once(db, pending, {})
+        done: list[dict[str, Any]] = []
+        await _poll_pending_once(db, pending, {}, done)
 
-    assert [r["id"] for r in resolved] == [run_id]
+    assert [r["id"] for r in done] == [run_id]
     assert run_id not in pending
     out = capsys.readouterr().out
     assert run_id in out
@@ -190,9 +191,10 @@ async def test_poll_pending_once_leaves_running_run_pending(
         sched_id = await _make_schedule(db)
         run_id = await _make_schedule_run(db, sched_id, status="running")
         pending = {run_id: await db.get_schedule_run(run_id)}
-        resolved = await _poll_pending_once(db, pending, {})
+        done: list[dict[str, Any]] = []
+        await _poll_pending_once(db, pending, {}, done)
 
-    assert resolved == []
+    assert done == []
     assert run_id in pending
     assert capsys.readouterr().out == ""
 
@@ -209,15 +211,16 @@ async def test_poll_pending_once_across_two_ticks_with_db_mutation_no_real_sleep
         sched_id = await _make_schedule(db)
         run_id = await _make_schedule_run(db, sched_id, status="running")
         pending = {run_id: await db.get_schedule_run(run_id)}
+        done: list[dict[str, Any]] = []
 
-        first = await _poll_pending_once(db, pending, {})
-        assert first == []
+        await _poll_pending_once(db, pending, {}, done)
+        assert done == []
         assert run_id in pending
 
         await _set_fields(db, "schedule_runs", run_id, status="completed", exit_code=0)
 
-        second = await _poll_pending_once(db, pending, {})
-        assert [r["id"] for r in second] == [run_id]
+        await _poll_pending_once(db, pending, {}, done)
+        assert [r["id"] for r in done] == [run_id]
         assert run_id not in pending
 
     out = capsys.readouterr().out
@@ -234,12 +237,13 @@ async def test_poll_pending_once_row_vanished_mid_wait_resolves_as_failure(
         pending = {run_id: await db.get_schedule_run(run_id)}
         await db.execute("DELETE FROM schedule_runs WHERE id = ?", (run_id,))
 
+        done: list[dict[str, Any]] = []
         with caplog.at_level(logging.ERROR, logger="lionagi.cli.error"):
-            resolved = await _poll_pending_once(db, pending, {})
+            await _poll_pending_once(db, pending, {}, done)
 
     assert run_id not in pending
-    assert len(resolved) == 1
-    assert resolved[0]["exit_code"] is None
+    assert len(done) == 1
+    assert done[0]["exit_code"] is None
     assert "disappeared" in caplog.text.lower()
 
 
@@ -381,6 +385,84 @@ async def test_dispatch_wait_polls_across_real_iterations_until_background_mutat
     assert run_id in capsys.readouterr().out
 
 
+@pytest.mark.asyncio
+async def test_dispatch_wait_sigint_while_still_pending_returns_exit_running(
+    temp_db_path: Path,
+) -> None:
+    """A run that never goes terminal + a real SIGINT mid-wait must report
+    EXIT_RUNNING, not silently succeed."""
+    async with StateDB() as db:
+        sched_id = await _make_schedule(db)
+        run_id = await _make_schedule_run(db, sched_id, status="running")
+
+    def _send_interrupt() -> None:
+        time.sleep(0.3)
+        os.kill(os.getpid(), signal.SIGINT)
+
+    t = threading.Thread(target=_send_interrupt, daemon=True)
+    t.start()
+
+    exit_code = _dispatch_wait([run_id], interval=0.05, follow=False)
+    t.join(timeout=2)
+
+    assert exit_code == EXIT_RUNNING
+
+
+@pytest.mark.asyncio
+async def test_dispatch_wait_interrupted_during_resolve_returns_exit_running(
+    temp_db_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """If SIGINT lands during the very first resolve call (before we even
+    know whether the requested ids exist), we cannot claim success -- must
+    report EXIT_RUNNING, never a vacuous 0."""
+    async with StateDB():
+        pass  # ensure state.db exists on disk before _dispatch_wait checks it
+
+    import lionagi.ln.concurrency as concurrency_mod
+
+    def _fake_run_async(coro: Any) -> Any:
+        coro.close()  # avoid "coroutine was never awaited" warning
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr(concurrency_mod, "run_async", _fake_run_async)
+
+    exit_code = _dispatch_wait(["some-id"], interval=5.0, follow=False)
+    assert exit_code == EXIT_RUNNING
+
+
+@pytest.mark.asyncio
+async def test_dispatch_wait_keyboard_interrupt_after_tick_mutates_state_still_reports_failure(
+    temp_db_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Regression: run_async can complete a tick's real work (printing a
+    terminal row, mutating `pending`/`done`) and *then* raise
+    KeyboardInterrupt before _dispatch_wait ever sees the tick's return
+    value -- exactly what happens when SIGINT is delivered right as the
+    tick's coroutine finishes. The already-observed failure must still be
+    reflected in the exit code, not lost to a vacuous empty-`done` success.
+    """
+    async with StateDB() as db:
+        sched_id = await _make_schedule(db)
+        run_id = await _make_schedule_run(db, sched_id, status="failed", exit_code=1)
+
+    import lionagi.ln.concurrency as concurrency_mod
+
+    real_run_async = concurrency_mod.run_async
+    calls = {"n": 0}
+
+    def _fake_run_async(coro: Any) -> Any:
+        calls["n"] += 1
+        if calls["n"] == 2:  # call 1 = resolve; call 2 = the first tick
+            real_run_async(coro)  # let it actually run and mutate state...
+            raise KeyboardInterrupt  # ...then simulate SIGINT racing the return
+        return real_run_async(coro)
+
+    monkeypatch.setattr(concurrency_mod, "run_async", _fake_run_async)
+
+    exit_code = _dispatch_wait([run_id], interval=5.0, follow=False)
+    assert exit_code == 1
+
+
 # ── _query_schedule_runs_since (the --follow baseline boundary, deterministic) ──
 
 
@@ -434,6 +516,32 @@ async def test_dispatch_wait_follow_sigint_clean(temp_db_path: Path) -> None:
     t.join(timeout=2)
 
     assert exit_code == 0
+
+
+@pytest.mark.asyncio
+async def test_dispatch_wait_follow_preserves_initial_failure_exit_code(
+    temp_db_path: Path,
+) -> None:
+    """Regression: --follow must not collapse an initial bounded-set FAILURE
+    into a false success just because the follow phase was entered and later
+    interrupted. The initial watched set's aggregate result is the contract
+    --follow's exit code honors; the open-ended tail has no result of its
+    own to report."""
+    async with StateDB() as db:
+        sched_id = await _make_schedule(db)
+        run_id = await _make_schedule_run(db, sched_id, status="failed", exit_code=1)
+
+    def _send_interrupt() -> None:
+        time.sleep(0.3)
+        os.kill(os.getpid(), signal.SIGINT)
+
+    t = threading.Thread(target=_send_interrupt, daemon=True)
+    t.start()
+
+    exit_code = _dispatch_wait([run_id], interval=0.05, follow=True)
+    t.join(timeout=2)
+
+    assert exit_code == 1
 
 
 @pytest.mark.asyncio
@@ -574,6 +682,21 @@ def test_run_monitor_wait_unknown_id_returns_exit_unknown(temp_db_path: Path) ->
 def test_run_monitor_wait_requires_at_least_one_id():
     with pytest.raises(SystemExit):
         run_monitor_wait([])
+
+
+def test_run_monitor_wait_comma_only_token_rejected_as_usage_error():
+    """nargs="+" only guarantees a non-empty argv list, not that any token
+    survives comma-splitting -- a single "," token must be treated the same
+    as no ids at all, not silently dispatched as a zero-id wait."""
+    with pytest.raises(SystemExit) as exc_info:
+        run_monitor_wait([",,,"])
+    assert exc_info.value.code == 2
+
+
+def test_run_monitor_wait_empty_string_token_rejected_as_usage_error():
+    with pytest.raises(SystemExit) as exc_info:
+        run_monitor_wait([""])
+    assert exc_info.value.code == 2
 
 
 # ── CLI wiring: `li monitor run --help` / `li monitor --help` subprocess ────

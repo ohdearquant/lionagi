@@ -798,11 +798,21 @@ async def _poll_pending_once(
     db: Any,
     pending: dict[str, dict[str, Any]],
     schedule_names: dict[str, str],
-) -> list[dict[str, Any]]:
-    """Check every still-pending run once; print (and drop from `pending`)
-    any that are now terminal. Printing happens immediately per row, not
-    batched, so a harness tailing stdout sees each result the moment it
-    lands rather than waiting for the whole watched set to finish.
+    done: list[dict[str, Any]],
+) -> None:
+    """Check every still-pending run once; print, record into `done`, and
+    drop from `pending` any that are now terminal. Printing happens
+    immediately per row, not batched, so a harness tailing stdout sees each
+    result the moment it lands rather than waiting for the whole watched
+    set to finish.
+
+    `done` is mutated in place rather than returned: a coroutine only ever
+    suspends at an `await`, and there is no `await` between the print/
+    append/delete below, so that trio is atomic with respect to task
+    cancellation — a row can never leave `pending` without also landing in
+    `done`, even if the caller (run_async, see _dispatch_wait) discards
+    this coroutine's actual return value because a SIGINT raced its
+    completion.
 
     This is the primitive's testable inner tick: exercising "terminal
     across different poll iterations" only needs two direct calls to this
@@ -810,7 +820,6 @@ async def _poll_pending_once(
     """
     from ._logging import log_error
 
-    resolved: list[dict[str, Any]] = []
     for run_id in list(pending):
         row = await db.get_schedule_run(run_id)
         if row is None:
@@ -823,9 +832,8 @@ async def _poll_pending_once(
             continue
         name = await _schedule_name(db, row["schedule_id"], cache=schedule_names)
         print(_format_wait_line(row, name))
-        resolved.append(row)
+        done.append(row)
         del pending[run_id]
-    return resolved
 
 
 async def _query_schedule_runs_since(db: Any, baseline: float) -> list[dict[str, Any]]:
@@ -908,26 +916,35 @@ def _dispatch_wait(ids: list[str], *, interval: float, follow: bool) -> int:
             return await _resolve_watched_runs(db, ids)
 
     resolved = _run_tick(_resolve())
-    pending, unresolved = resolved if resolved is not None else ({}, [])
+    if resolved is None:
+        # Interrupted before resolving even completed — we don't yet know
+        # which ids exist or what state they're in, so there is no aggregate
+        # to report. This is "still in progress", not success or failure.
+        return EXIT_RUNNING
+    pending, unresolved = resolved
     for raw_id in unresolved:
         log_error(f"schedule_run {raw_id!r} not found")
 
-    async def _tick() -> list[dict[str, Any]]:
-        async with StateDB() as db:
-            return await _poll_pending_once(db, pending, schedule_names)
-
+    total_watched = len(pending)
     done: list[dict[str, Any]] = []
+
+    async def _tick() -> None:
+        async with StateDB() as db:
+            await _poll_pending_once(db, pending, schedule_names, done)
+
     while pending and not interrupted:
-        tick_result = _run_tick(_tick())
-        if tick_result is not None:
-            done.extend(tick_result)
+        _run_tick(_tick())
         if not pending or interrupted:
             break
         _sleep_interval(interval)
 
     if unresolved:
         exit_code = EXIT_UNKNOWN
-    elif pending:  # only reachable via interruption mid-wait
+    elif len(done) < total_watched:
+        # Some watched run never reached a terminal status before we had to
+        # stop — whether that row was ever printed is irrelevant; `done`
+        # (mutated in _poll_pending_once, see above) is the one ground truth
+        # that survives a tick being interrupted mid-flight.
         exit_code = EXIT_RUNNING
     elif all(r.get("exit_code") == 0 for r in done):
         exit_code = 0
@@ -944,7 +961,7 @@ def _dispatch_wait(ids: list[str], *, interval: float, follow: bool) -> int:
                 for row in new_rows:
                     follow_pending.setdefault(row["id"], row)
                 if follow_pending:
-                    await _poll_pending_once(db, follow_pending, schedule_names)
+                    await _poll_pending_once(db, follow_pending, schedule_names, [])
             if new_rows:
                 bl = max(bl, *(r["created_at"] for r in new_rows))
             return bl
@@ -956,9 +973,10 @@ def _dispatch_wait(ids: list[str], *, interval: float, follow: bool) -> int:
             if interrupted:
                 break
             _sleep_interval(interval)
-        # --follow has no natural end — its exit code reflects whether the
-        # *initial* watched set was resolvable, not the open-ended tail.
-        return EXIT_UNKNOWN if unresolved else 0
+        # --follow has no natural end, so its exit code is whatever the
+        # *initial* bounded set already resolved to (see exit_code above)
+        # — new runs discovered during the tail print their own lines but
+        # don't feed the final aggregate.
 
     return exit_code
 
@@ -984,7 +1002,13 @@ def run_monitor_wait(argv: list[str]) -> int:
         help="Keep watching for new schedule_runs after the initial set drains.",
     )
     args = parser.parse_args(argv)
-    return _dispatch_wait(_split_watched_ids(args.ids), interval=args.interval, follow=args.follow)
+    watched_ids = _split_watched_ids(args.ids)
+    if not watched_ids:
+        # nargs="+" only guarantees argv had at least one token, not that any
+        # of them survive comma-splitting (e.g. a lone "," or ""). Without
+        # this check that degenerates into a silent, instant, exit-0 no-op.
+        parser.error("no schedule_run ids given (only empty/comma-only tokens)")
+    return _dispatch_wait(watched_ids, interval=args.interval, follow=args.follow)
 
 
 # ── CLI registration ──────────────────────────────────────────────────────────
