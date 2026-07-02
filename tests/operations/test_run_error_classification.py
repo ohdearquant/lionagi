@@ -233,6 +233,45 @@ async def test_run_already_classified_provider_error_not_double_wrapped():
 
 
 # ---------------------------------------------------------------------------
+# Late error must not destroy already-streamed text
+# ---------------------------------------------------------------------------
+
+
+async def test_run_error_after_text_persists_delivered_content():
+    """Text the provider streamed before failing is flushed into the branch
+    (and yielded) before the classified error is raised — a timeout after a
+    complete final message must not destroy the delivered response."""
+    branch = Branch()
+    branch.chat_model = _make_fake_cli_model(
+        [
+            StreamChunk(type="text", content="the complete final answer"),
+            StreamChunk(type="error", content="agy returned status=TIMEOUT"),
+        ]
+    )
+
+    with pytest.raises(ProviderError, match="status=TIMEOUT"):
+        await _drain(run(branch, "do something", RunParam()))
+
+    responses = [m for m in branch.msgs.messages if type(m).__name__ == "AssistantResponse"]
+    assert len(responses) == 1
+    assert responses[0].response == "the complete final answer"
+
+
+async def test_run_error_without_text_persists_nothing():
+    """The flush-before-raise path is a no-op when no text was streamed."""
+    branch = Branch()
+    branch.chat_model = _make_fake_cli_model(
+        [StreamChunk(type="error", content="hard failure, no content")]
+    )
+
+    with pytest.raises(ProviderError):
+        await _drain(run(branch, "do something", RunParam()))
+
+    responses = [m for m in branch.msgs.messages if type(m).__name__ == "AssistantResponse"]
+    assert responses == []
+
+
+# ---------------------------------------------------------------------------
 # Regression: error:null chunk must NOT be swallowed as benign EOS
 # (null normalised to {} matched the benign predicate before the fix)
 # ---------------------------------------------------------------------------

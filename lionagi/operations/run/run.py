@@ -260,6 +260,12 @@ async def run(
                                     "ending stream cleanly"
                                 )
                                 break
+                            # Persist text the provider already delivered before
+                            # failing — a late failure (timeout after streaming a
+                            # response) must not destroy content the caller and
+                            # state.db would otherwise have received.
+                            if res := await _flush_response():
+                                yield res
                             content = chunk.content or "(empty error)"
                             raise classify_provider_error(content)
 
