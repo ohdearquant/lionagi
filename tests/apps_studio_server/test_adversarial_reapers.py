@@ -56,16 +56,14 @@ async def _seed_session(
         if artifacts_path is not None:
             updates["artifacts_path"] = artifacts_path
         if status is None:
-            await db.db.execute("UPDATE sessions SET status = NULL WHERE id = ?", (sid,))
-            await db.db.commit()
+            await db.execute("UPDATE sessions SET status = NULL WHERE id = ?", (sid,))
         if updates:
             sets = ", ".join(f"{k} = ?" for k in updates)
             vals = list(updates.values()) + [sid]
-            await db.db.execute(
+            await db.execute(
                 f"UPDATE sessions SET {sets} WHERE id = ?",  # noqa: S608
                 vals,
             )
-            await db.db.commit()
     return sid
 
 
@@ -90,10 +88,9 @@ async def _seed_invocation(
             }
         )
         if updated_at is not None:
-            await db.db.execute(
+            await db.execute(
                 "UPDATE invocations SET updated_at = ? WHERE id = ?", (updated_at, iid)
             )
-            await db.db.commit()
     return iid
 
 
@@ -111,10 +108,9 @@ async def _get_inv_status(db_path: Path, iid: str) -> str | None:
 
 async def _count_transitions(db_path: Path, entity_id: str) -> int:
     async with StateDB(db_path) as db:
-        cur = await db.db.execute(
+        row = await db.fetch_one(
             "SELECT COUNT(*) AS n FROM status_transitions WHERE entity_id = ?", (entity_id,)
         )
-        row = await cur.fetchone()
         return row["n"] if row else 0
 
 
@@ -410,13 +406,12 @@ def test_1173_prune_status_transitions_cleanup(tmp_path, monkeypatch):
             )
             # Insert a fake status_transition for this session
             trans_id = str(uuid.uuid4())
-            await db.db.execute(
+            await db.execute(
                 "INSERT INTO status_transitions"
                 " (id, entity_type, entity_id, status, reason_code, source, actor, created_at)"
                 " VALUES (?, 'session', ?, 'completed', 'test.completed', 'test', 'test', ?)",
                 (trans_id, sid, old_ts),
             )
-            await db.db.commit()
         return sid, trans_id
 
     sid, trans_id = run_async(seed())
@@ -429,8 +424,7 @@ def test_1173_prune_status_transitions_cleanup(tmp_path, monkeypatch):
     # Transition row also cleaned up
     async def check_trans():
         async with StateDB(db_path) as db:
-            cur = await db.db.execute("SELECT id FROM status_transitions WHERE id = ?", (trans_id,))
-            return await cur.fetchone()
+            return await db.fetch_one("SELECT id FROM status_transitions WHERE id = ?", (trans_id,))
 
     assert run_async(check_trans()) is None
 

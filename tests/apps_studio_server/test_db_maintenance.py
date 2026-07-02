@@ -37,19 +37,18 @@ async def _make_schedule_run(db: StateDB, *, status: str, fired_at: float) -> st
     sched_id = str(uuid.uuid4())
     run_id = str(uuid.uuid4())
     now_ts = time.time()
-    await db.db.execute(
+    await db.execute(
         "INSERT INTO schedules (id, name, trigger_type, action_kind, created_at, updated_at)"
         " VALUES (?, ?, ?, ?, ?, ?)",
         (sched_id, f"s-{sched_id[:6]}", "cron", "agent", now_ts, now_ts),
     )
-    await db.db.execute(
+    await db.execute(
         "INSERT INTO schedule_runs"
         " (id, schedule_id, status, trigger_context, action_kind, action_args,"
         "  fired_at, created_at, updated_at)"
         " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
         (run_id, sched_id, status, "{}", "agent", "[]", fired_at, fired_at, fired_at),
     )
-    await db.db.commit()
     return run_id
 
 
@@ -181,9 +180,8 @@ def test_prune_removes_old_terminal_sessions_only(tmp_path, monkeypatch):
 
     async def remaining_ids():
         async with StateDB(db_path) as db:
-            cur = await db.db.execute("SELECT id FROM sessions")
-            rows = await cur.fetchall()
-            return {r[0] for r in rows}
+            rows = await db.fetch_all("SELECT id FROM sessions")
+            return {r["id"] for r in rows}
 
     rem = run_async(remaining_ids())
     assert old_completed not in rem
@@ -207,12 +205,11 @@ def test_prune_respects_fk_branches_cascade(tmp_path, monkeypatch):
             pid = str(uuid.uuid4())
             await db.create_progression(pid)
             branch_id = str(uuid.uuid4())
-            await db.db.execute(
+            await db.execute(
                 "INSERT INTO branches (id, session_id, progression_id, created_at, started_at)"
                 " VALUES (?, ?, ?, ?, ?)",
                 (branch_id, sid, pid, old_ts, old_ts),
             )
-            await db.db.commit()
         return sid, branch_id
 
     _, branch_id = run_async(seed())
@@ -220,8 +217,7 @@ def test_prune_respects_fk_branches_cascade(tmp_path, monkeypatch):
 
     async def check():
         async with StateDB(db_path) as db:
-            cur = await db.db.execute("SELECT id FROM branches WHERE id = ?", (branch_id,))
-            return await cur.fetchone()
+            return await db.fetch_one("SELECT id FROM branches WHERE id = ?", (branch_id,))
 
     assert run_async(check()) is None
 
@@ -268,9 +264,8 @@ def test_prune_old_schedule_runs(tmp_path, monkeypatch):
 
     async def check():
         async with StateDB(db_path) as db:
-            cur = await db.db.execute("SELECT id FROM schedule_runs")
-            rows = await cur.fetchall()
-            return {r[0] for r in rows}
+            rows = await db.fetch_all("SELECT id FROM schedule_runs")
+            return {r["id"] for r in rows}
 
     rem = run_async(check())
     assert old_done not in rem

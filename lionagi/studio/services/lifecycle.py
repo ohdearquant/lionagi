@@ -172,10 +172,9 @@ async def reap_null_status_sessions() -> int:
 
     try:
         async with StateDB() as db:
-            cur = await db.db.execute(
+            rows = await db.fetch_all(
                 "SELECT id, artifacts_path, started_at, ended_at FROM sessions WHERE status IS NULL"
             )
-            rows = await cur.fetchall()
 
         for row in rows:
             sid = row["id"]

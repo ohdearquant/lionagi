@@ -114,8 +114,10 @@ async def test_artifacts_cascade_when_invocation_deleted(db: StateDB):
         name="x",
         content={"verdict": "APPROVE"},
     )
-    await db.db.execute("DELETE FROM invocations WHERE id = ?", (inv["id"],))
-    await db.db.commit()
+    from sqlalchemy import text
+
+    async with db._tx() as conn:
+        await conn.execute(text("DELETE FROM invocations WHERE id = :id"), {"id": inv["id"]})
     assert await db.get_artifact(art_id) is None
 
 

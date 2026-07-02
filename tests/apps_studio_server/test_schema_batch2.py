@@ -30,8 +30,7 @@ class TestStatusSourceMigration:
 
         async def _check():
             async with StateDB(db_path) as db:
-                cur = await db.db.execute("PRAGMA table_info(shows)")
-                cols = {row["name"] for row in await cur.fetchall()}
+                cols = {row["name"] for row in await db.fetch_all("PRAGMA table_info(shows)")}
             return cols
 
         cols = _run(_check())
@@ -78,11 +77,9 @@ class TestStatusSourceMigration:
 
         async def _migrate_and_check():
             async with StateDB(db_path) as db:
-                cur = await db.db.execute("PRAGMA table_info(shows)")
-                cols = {row["name"] for row in await cur.fetchall()}
+                cols = {row["name"] for row in await db.fetch_all("PRAGMA table_info(shows)")}
                 # Read back the legacy row — it should have status_source = 'unknown'
-                cur2 = await db.db.execute("SELECT status_source FROM shows WHERE id = 'old-id'")
-                row = await cur2.fetchone()
+                row = await db.fetch_one("SELECT status_source FROM shows WHERE id = 'old-id'")
             return cols, row
 
         cols, row = _run(_migrate_and_check())

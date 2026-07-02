@@ -11,6 +11,7 @@ import uuid
 from pathlib import Path
 
 import pytest
+from sqlalchemy import text
 
 from lionagi.state.db import StateDB
 
@@ -57,9 +58,13 @@ async def test_two_connections_can_insert_concurrently(db_path: Path):
         db3 = StateDB(db_path)
         await db3.open()
         try:
-            cur = await db3.db.execute("SELECT COUNT(*) AS n FROM messages")
-            n = (await cur.fetchone())["n"]
-            assert n == 20
+            async with db3._read() as conn:
+                row = (
+                    (await conn.execute(text("SELECT COUNT(*) AS n FROM messages")))
+                    .mappings()
+                    .first()
+                )
+            assert row["n"] == 20
         finally:
             await db3.close()
     finally:
@@ -68,7 +73,7 @@ async def test_two_connections_can_insert_concurrently(db_path: Path):
 
 
 async def test_concurrent_resolve_lion_class_no_unique_error(db_path: Path):
-    """_resolve_lion_class uses INSERT OR IGNORE + SELECT — two concurrent connections on the same novel class must not raise UNIQUE constraint failure."""
+    """_resolve_lion_class uses INSERT ON CONFLICT DO NOTHING + SELECT — two concurrent connections on the same novel class must not raise UNIQUE constraint failure."""
     db1 = StateDB(db_path)
     db2 = StateDB(db_path)
     await db1.open()
@@ -94,27 +99,36 @@ async def test_concurrent_resolve_lion_class_no_unique_error(db_path: Path):
 async def test_busy_timeout_eventually_returns_locked_error(
     tmp_path: Path,
 ):
-    """A connection holding an exclusive lock past busy_timeout surfaces OperationalError rather than hanging; uses 100ms timeout to keep test fast."""
-    db_path = tmp_path / "locked.db"
-    db1 = StateDB(db_path)
-    db2 = StateDB(db_path)
-    await db1.open()
-    await db2.open()
-    # Tighten the timeout on db2 so the test runs fast.
-    await db2.db.execute("PRAGMA busy_timeout = 100")
-    try:
-        await db1.db.execute("BEGIN EXCLUSIVE")
-        try:
-            import aiosqlite
+    """A connection holding an exclusive lock past busy_timeout surfaces OperationalError rather than hanging; uses a short timeout to keep test fast.
 
-            with pytest.raises(aiosqlite.OperationalError):
+    The 'connection holding an exclusive lock' pattern is expressed by opening
+    a raw aiosqlite connection and issuing BEGIN EXCLUSIVE directly, then
+    attempting a write on a StateDB engine (which will time out according to
+    busy_timeout PRAGMA).
+    """
+    import aiosqlite
+
+    db_path = tmp_path / "locked.db"
+    db2 = StateDB(db_path)
+    await db2.open()
+    try:
+        # Tighten busy_timeout on db2 so the test runs fast.
+        async with db2._engine.connect() as conn:
+            await conn.execute(text("PRAGMA busy_timeout = 100"))
+
+        # Grab an exclusive lock via a raw aiosqlite connection (bypasses SA hooks).
+        raw_conn = await aiosqlite.connect(str(db_path))
+        await raw_conn.execute("PRAGMA busy_timeout = 0")
+        await raw_conn.execute("BEGIN EXCLUSIVE")
+        try:
+            from sqlalchemy.exc import OperationalError
+
+            with pytest.raises(OperationalError):
                 await db2.insert_message(_make_msg())
-                # commit forces the lock attempt to actually fail
-                await db2.db.commit()
         finally:
-            await db1.db.rollback()
+            await raw_conn.execute("ROLLBACK")
+            await raw_conn.close()
     finally:
-        await db1.close()
         await db2.close()
 
 

@@ -270,11 +270,13 @@ async def _import_one_run(
         total_branches += 1
 
     if session_msg_ids:
-        await db.db.execute(
-            "UPDATE progressions SET collection = ? WHERE id = ?",
-            (json.dumps(session_msg_ids), session_prog_id),
-        )
-        await db.db.commit()
+        from sqlalchemy import text
+
+        async with db._tx() as conn:
+            await conn.execute(
+                text("UPDATE progressions SET collection = :col WHERE id = :id"),
+                {"col": json.dumps(session_msg_ids), "id": session_prog_id},
+            )
         await db.update_session(
             run_id,
             first_msg_id=session_msg_ids[0],
@@ -299,22 +301,40 @@ def _format_bytes(n: int) -> str:
 async def _list_sessions(*, limit: int = 50, status: str | None = None) -> None:
     import time
 
+    from sqlalchemy import text
+
     from lionagi.state.db import StateDB
 
     async with StateDB() as db:
-        if status:
-            cur = await db.db.execute(
-                "SELECT id, name, status, updated_at FROM sessions "
-                "WHERE status = ? ORDER BY updated_at DESC LIMIT ?",
-                (status, limit),
-            )
-        else:
-            cur = await db.db.execute(
-                "SELECT id, name, status, updated_at FROM sessions "
-                "ORDER BY updated_at DESC LIMIT ?",
-                (limit,),
-            )
-        rows = await cur.fetchall()
+        async with db._read() as conn:
+            if status:
+                rows = (
+                    (
+                        await conn.execute(
+                            text(
+                                "SELECT id, name, status, updated_at FROM sessions "
+                                "WHERE status = :st ORDER BY updated_at DESC LIMIT :lim"
+                            ),
+                            {"st": status, "lim": limit},
+                        )
+                    )
+                    .mappings()
+                    .all()
+                )
+            else:
+                rows = (
+                    (
+                        await conn.execute(
+                            text(
+                                "SELECT id, name, status, updated_at FROM sessions "
+                                "ORDER BY updated_at DESC LIMIT :lim"
+                            ),
+                            {"lim": limit},
+                        )
+                    )
+                    .mappings()
+                    .all()
+                )
 
         if not rows:
             print("(no sessions in state.db)")
@@ -335,15 +355,28 @@ async def _list_sessions(*, limit: int = 50, status: str | None = None) -> None:
                 time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(updated)) if updated else ""
             )
 
-            branch_cur = await db.db.execute(
-                "SELECT COUNT(*) AS n FROM branches WHERE session_id = ?", (sid,)
-            )
-            bc = (await branch_cur.fetchone())["n"]
+            async with db._read() as conn:
+                bc = (
+                    (
+                        await conn.execute(
+                            text("SELECT COUNT(*) AS n FROM branches WHERE session_id = :sid"),
+                            {"sid": sid},
+                        )
+                    )
+                    .mappings()
+                    .first()["n"]
+                )
 
-            prog_cur = await db.db.execute(
-                "SELECT progression_id FROM sessions WHERE id = ?", (sid,)
-            )
-            prog_row = await prog_cur.fetchone()
+                prog_row = (
+                    (
+                        await conn.execute(
+                            text("SELECT progression_id FROM sessions WHERE id = :id"),
+                            {"id": sid},
+                        )
+                    )
+                    .mappings()
+                    .first()
+                )
             msg_count = 0
             if prog_row and prog_row["progression_id"]:
                 prog_data = await db.get_progression(prog_row["progression_id"])
@@ -369,6 +402,8 @@ async def _print_stats() -> None:
         print("(no state.db yet — first run will create it)")
         return
 
+    from sqlalchemy import text
+
     async with StateDB() as db:
         print("Row counts:")
         for table in (
@@ -380,19 +415,34 @@ async def _print_stats() -> None:
             "shows",
             "plays",
         ):
-            cur = await db.db.execute(
-                f"SELECT COUNT(*) AS n FROM {table}"  # noqa: S608
-            )
-            row = await cur.fetchone()
+            async with db._read() as conn:
+                row = (
+                    (
+                        await conn.execute(
+                            text(f"SELECT COUNT(*) AS n FROM {table}")  # noqa: S608
+                        )
+                    )
+                    .mappings()
+                    .first()
+                )
             print(f"  {table:<14} {row['n']:>10}")
         print()
 
-        cur = await db.db.execute(
-            "SELECT COALESCE(status, '(null)') AS s, COUNT(*) AS n "
-            "FROM sessions GROUP BY status ORDER BY n DESC"
-        )
+        async with db._read() as conn:
+            rows = (
+                (
+                    await conn.execute(
+                        text(
+                            "SELECT COALESCE(status, '(null)') AS s, COUNT(*) AS n "
+                            "FROM sessions GROUP BY status ORDER BY n DESC"
+                        )
+                    )
+                )
+                .mappings()
+                .all()
+            )
         print("Sessions by status:")
-        for row in await cur.fetchall():
+        for row in rows:
             print(f"  {row['s']:<14} {row['n']:>10}")
         print()
 
@@ -404,8 +454,8 @@ async def _print_stats() -> None:
             "synchronous",
             "foreign_keys",
         ):
-            cur = await db.db.execute(f"PRAGMA {pragma}")
-            row = await cur.fetchone()
+            async with db._read() as conn:
+                row = (await conn.execute(text(f"PRAGMA {pragma}"))).first()
             val = row[0] if row else "?"
             print(f"  {pragma:<22} {val}")
 
@@ -414,10 +464,9 @@ async def _checkpoint(mode: str) -> str:
     from lionagi.state.db import StateDB
 
     async with StateDB() as db:
-        cur = await db.db.execute(f"PRAGMA wal_checkpoint({mode})")
-        row = await cur.fetchone()
-        if not row:
-            return "(no result)"
+        row = await db.checkpoint(mode)
+        if row is None:
+            return "(not applicable on this backend)"
         return f"busy={row[0]}, log_pages={row[1]}, checkpointed={row[2]}"
 
 
@@ -425,8 +474,7 @@ async def _vacuum() -> None:
     from lionagi.state.db import StateDB
 
     async with StateDB() as db:
-        await db.db.execute("VACUUM")
-        await db.db.commit()
+        await db.vacuum()
 
 
 async def _prune(
@@ -441,32 +489,53 @@ async def _prune(
 
     cutoff = _time.time() - (keep_days * 86400)
 
+    from sqlalchemy import text
+
     async with StateDB() as db:
-        cur = await db.db.execute(
-            """SELECT id FROM sessions
-               WHERE id NOT IN (
-                 SELECT id FROM sessions
-                 ORDER BY updated_at DESC LIMIT ?
-               )
-               AND (updated_at < ? OR updated_at IS NULL)""",
-            (keep_n, cutoff),
-        )
-        rows = await cur.fetchall()
+        async with db._read() as conn:
+            rows = (
+                (
+                    await conn.execute(
+                        text(
+                            "SELECT id FROM sessions "
+                            "WHERE id NOT IN ("
+                            "  SELECT id FROM sessions ORDER BY updated_at DESC LIMIT :keep_n"
+                            ") AND (updated_at < :cutoff OR updated_at IS NULL)"
+                        ),
+                        {"keep_n": keep_n, "cutoff": cutoff},
+                    )
+                )
+                .mappings()
+                .all()
+            )
         victim_ids = [r["id"] for r in rows]
 
         if not victim_ids:
             return {"sessions": 0, "branches": 0, "messages": 0}
 
-        placeholders = ",".join("?" * len(victim_ids))
-        cur = await db.db.execute(
-            f"SELECT COUNT(*) AS n FROM branches "  # noqa: S608
-            f"WHERE session_id IN ({placeholders})",
-            victim_ids,
-        )
-        branch_count = (await cur.fetchone())["n"]
+        placeholders = ",".join(f":v{i}" for i in range(len(victim_ids)))
+        id_params = {f"v{i}": vid for i, vid in enumerate(victim_ids)}
 
-        cur = await db.db.execute("SELECT COUNT(*) AS n FROM messages")
-        msgs_before = (await cur.fetchone())["n"]
+        async with db._read() as conn:
+            branch_count = (
+                (
+                    await conn.execute(
+                        text(
+                            f"SELECT COUNT(*) AS n FROM branches "  # noqa: S608
+                            f"WHERE session_id IN ({placeholders})"
+                        ),
+                        id_params,
+                    )
+                )
+                .mappings()
+                .first()["n"]
+            )
+
+            msgs_before = (
+                (await conn.execute(text("SELECT COUNT(*) AS n FROM messages")))
+                .mappings()
+                .first()["n"]
+            )
 
         if dry_run:
             return {
@@ -475,22 +544,28 @@ async def _prune(
                 "messages": 0,  # can't preview without doing the delete
             }
 
-        await db.db.execute(
-            f"DELETE FROM sessions WHERE id IN ({placeholders})",  # noqa: S608
-            victim_ids,
-        )
-        await db.db.commit()
+        async with db._tx() as conn:
+            await conn.execute(
+                text(
+                    f"DELETE FROM sessions WHERE id IN ({placeholders})"  # noqa: S608
+                ),
+                id_params,
+            )
+            await conn.execute(
+                text(
+                    "DELETE FROM messages "
+                    "WHERE id NOT IN ("
+                    "  SELECT value FROM progressions, json_each(progressions.collection)"
+                    ")"
+                )
+            )
 
-        await db.db.execute(
-            """DELETE FROM messages
-               WHERE id NOT IN (
-                 SELECT value FROM progressions, json_each(progressions.collection)
-               )"""
-        )
-        await db.db.commit()
-
-        cur = await db.db.execute("SELECT COUNT(*) AS n FROM messages")
-        msgs_after = (await cur.fetchone())["n"]
+        async with db._read() as conn:
+            msgs_after = (
+                (await conn.execute(text("SELECT COUNT(*) AS n FROM messages")))
+                .mappings()
+                .first()["n"]
+            )
 
         return {
             "sessions": len(victim_ids),
@@ -512,9 +587,19 @@ async def _doctor(
 
     cutoff = _time.time() - (stale_hours * 3600)
 
+    from sqlalchemy import text
+
     async with StateDB() as db:
-        cur = await db.db.execute("SELECT id, started_at FROM sessions WHERE status = 'running'")
-        rows = await cur.fetchall()
+        async with db._read() as conn:
+            rows = (
+                (
+                    await conn.execute(
+                        text("SELECT id, started_at FROM sessions WHERE status = 'running'")
+                    )
+                )
+                .mappings()
+                .all()
+            )
         total = len(rows)
         victims: list[str] = []
         skipped = 0
@@ -531,17 +616,25 @@ async def _doctor(
         elif victims:
             # Re-assert status='running' in the UPDATE to avoid race with
             # sessions that finish between select and update.
-            placeholders = ",".join("?" * len(victims))
-            params = [new_status, _time.time(), cutoff, *victims]
-            cur = await db.db.execute(
-                f"UPDATE sessions SET status = ?, ended_at = ? "  # noqa: S608
-                f"WHERE status = 'running' "
-                f"  AND (started_at IS NULL OR started_at < ?) "
-                f"  AND id IN ({placeholders})",
-                params,
-            )
-            swept_count = cur.rowcount or 0
-            await db.db.commit()
+            placeholders = ",".join(f":v{i}" for i in range(len(victims)))
+            id_params = {f"v{i}": vid for i, vid in enumerate(victims)}
+            params = {
+                "new_status": new_status,
+                "ended_at": _time.time(),
+                "cutoff": cutoff,
+                **id_params,
+            }
+            async with db._tx() as conn:
+                result = await conn.execute(
+                    text(
+                        f"UPDATE sessions SET status = :new_status, ended_at = :ended_at "  # noqa: S608
+                        f"WHERE status = 'running' "
+                        f"  AND (started_at IS NULL OR started_at < :cutoff) "
+                        f"  AND id IN ({placeholders})"
+                    ),
+                    params,
+                )
+                swept_count = result.rowcount or 0
 
         return {"running": total, "swept": swept_count, "skipped": skipped}
 
@@ -602,6 +695,8 @@ async def _import_runs() -> dict[str, int]:
 
 async def _import_teams() -> dict[str, int]:
     """Backfill ~/.lionagi/teams/*.json into the teams + team_messages tables."""
+    from sqlalchemy import text
+
     from lionagi.state.db import StateDB
 
     teams_dir = (RUNS_ROOT.parent / "teams").resolve()
@@ -625,26 +720,33 @@ async def _import_teams() -> dict[str, int]:
                 counts["errors"] += 1
                 continue
 
-            cur = await db.db.execute("SELECT 1 FROM teams WHERE id = ? LIMIT 1", (team_id,))
-            if await cur.fetchone() is not None:
+            async with db._read() as conn:
+                existing = (
+                    await conn.execute(
+                        text("SELECT 1 FROM teams WHERE id = :id LIMIT 1"),
+                        {"id": team_id},
+                    )
+                ).first()
+            if existing is not None:
                 counts["skipped_teams"] += 1
                 continue
 
             members = data.get("members") or []
             created_at = _mtime_as_float(path)
-            await db.db.execute(
-                """INSERT INTO teams
-                   (id, name, created_at, updated_at, member_count, members, status)
-                   VALUES (?, ?, ?, ?, ?, ?, ?)""",
-                (
-                    team_id,
-                    data.get("name") or team_id,
-                    created_at,
-                    created_at,
-                    len(members),
-                    json.dumps(members),
-                    "active",
-                ),
+
+            rows_to_insert: list[dict] = []
+            msg_rows: list[dict] = []
+
+            rows_to_insert.append(
+                {
+                    "id": team_id,
+                    "name": data.get("name") or team_id,
+                    "created_at": created_at,
+                    "updated_at": created_at,
+                    "member_count": len(members),
+                    "members": json.dumps(members),
+                    "status": "active",
+                }
             )
             counts["teams"] += 1
 
@@ -670,26 +772,43 @@ async def _import_teams() -> dict[str, int]:
                     read_by_arr = list(read_by)
                 else:
                     read_by_arr = []
-                await db.db.execute(
-                    """INSERT INTO team_messages
-                       (id, team_id, created_at, sender, recipient, content,
-                        summary, read_by, session_id)
-                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-                    (
-                        msg_id,
-                        team_id,
-                        created,
-                        msg.get("from") or "_unknown",
-                        recipient,
-                        content,
-                        (content[:200] + "…") if len(content) > 200 else None,
-                        json.dumps(read_by_arr),
-                        None,
-                    ),
+                msg_rows.append(
+                    {
+                        "id": msg_id,
+                        "team_id": team_id,
+                        "created_at": created,
+                        "sender": msg.get("from") or "_unknown",
+                        "recipient": recipient,
+                        "content": content,
+                        "summary": (content[:200] + "…") if len(content) > 200 else None,
+                        "read_by": json.dumps(read_by_arr),
+                        "session_id": None,
+                    }
                 )
                 counts["messages"] += 1
 
-        await db.db.commit()
+            async with db._tx() as conn:
+                for row in rows_to_insert:
+                    await conn.execute(
+                        text(
+                            "INSERT INTO teams "
+                            "(id, name, created_at, updated_at, member_count, members, status) "
+                            "VALUES (:id, :name, :created_at, :updated_at, "
+                            ":member_count, :members, :status)"
+                        ),
+                        row,
+                    )
+                for mrow in msg_rows:
+                    await conn.execute(
+                        text(
+                            "INSERT INTO team_messages "
+                            "(id, team_id, created_at, sender, recipient, content, "
+                            "summary, read_by, session_id) "
+                            "VALUES (:id, :team_id, :created_at, :sender, :recipient, "
+                            ":content, :summary, :read_by, :session_id)"
+                        ),
+                        mrow,
+                    )
 
     return counts
 

@@ -110,11 +110,14 @@ async def test_migration_adds_columns():
         old.close()
 
         # Open with current StateDB — reconcile_schema() should add the columns.
+        from sqlalchemy import text
+
         state = StateDB(db_path)
         await state.open()
         try:
-            cur = await state.db.execute("PRAGMA table_info(sessions)")
-            cols = {r["name"] for r in await cur.fetchall()}
+            async with state._read() as conn:
+                rows = (await conn.execute(text("PRAGMA table_info(sessions)"))).mappings().all()
+            cols = {r["name"] for r in rows}
             assert "artifact_contract_json" in cols, "migration missing artifact_contract_json"
             assert "artifact_verification_json" in cols, (
                 "migration missing artifact_verification_json"

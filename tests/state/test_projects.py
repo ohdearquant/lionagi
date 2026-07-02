@@ -114,10 +114,10 @@ async def test_create_project_all_fields(db: StateDB):
 
 
 async def test_create_project_duplicate_raises(db: StateDB):
-    import aiosqlite
+    from sqlalchemy.exc import IntegrityError
 
     await db.create_project("dup-proj")
-    with pytest.raises(aiosqlite.IntegrityError):
+    with pytest.raises(IntegrityError):
         await db.create_project("dup-proj")
 
 

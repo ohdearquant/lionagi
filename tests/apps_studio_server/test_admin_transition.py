@@ -43,11 +43,10 @@ async def _seed_stale_session(
         )
         # Set last_message_at and updated_at explicitly
         _up = updated_at or old_time
-        await db.db.execute(
+        await db.execute(
             "UPDATE sessions SET last_message_at=?, updated_at=? WHERE id=?",
             (old_time, _up, session_id),
         )
-        await db.db.commit()
 
 
 def _make_admin_client(tmp_path, monkeypatch, db_path):

@@ -11,6 +11,8 @@ import uuid
 from pathlib import Path
 
 import pytest
+from sqlalchemy import text
+from sqlalchemy.exc import IntegrityError
 
 from lionagi.state.db import StateDB
 
@@ -28,46 +30,63 @@ async def db():
 
 async def test_teams_table_exists_with_status_check(db: StateDB):
     """Schema CHECK accepts 'active' / 'archived' and rejects others."""
-    await db.db.execute(
-        "INSERT INTO teams (id, name, created_at, updated_at, status) VALUES (?, ?, ?, ?, ?)",
-        ("t1", "team-one", 1.0, 1.0, "active"),
-    )
-    await db.db.execute(
-        "INSERT INTO teams (id, name, created_at, updated_at, status) VALUES (?, ?, ?, ?, ?)",
-        ("t2", "team-two", 1.0, 1.0, "archived"),
-    )
-
-    import sqlite3
-
-    with pytest.raises(sqlite3.IntegrityError):
-        await db.db.execute(
-            "INSERT INTO teams (id, name, created_at, updated_at, status) VALUES (?, ?, ?, ?, ?)",
-            ("t3", "team-three", 1.0, 1.0, "frozen"),
+    async with db._tx() as conn:
+        await conn.execute(
+            text(
+                "INSERT INTO teams (id, name, created_at, updated_at, status) "
+                "VALUES (:id, :name, :ca, :ua, :st)"
+            ),
+            {"id": "t1", "name": "team-one", "ca": 1.0, "ua": 1.0, "st": "active"},
         )
+        await conn.execute(
+            text(
+                "INSERT INTO teams (id, name, created_at, updated_at, status) "
+                "VALUES (:id, :name, :ca, :ua, :st)"
+            ),
+            {"id": "t2", "name": "team-two", "ca": 1.0, "ua": 1.0, "st": "archived"},
+        )
+
+    with pytest.raises(IntegrityError):
+        async with db._tx() as conn:
+            await conn.execute(
+                text(
+                    "INSERT INTO teams (id, name, created_at, updated_at, status) "
+                    "VALUES (:id, :name, :ca, :ua, :st)"
+                ),
+                {"id": "t3", "name": "team-three", "ca": 1.0, "ua": 1.0, "st": "frozen"},
+            )
 
 
 async def test_team_messages_cascade_on_team_delete(db: StateDB):
-    await db.db.execute(
-        "INSERT INTO teams (id, name, created_at, updated_at) VALUES (?, ?, ?, ?)",
-        ("t1", "team-one", 1.0, 1.0),
-    )
-    await db.db.execute(
-        "INSERT INTO team_messages (id, team_id, created_at, sender, content) "
-        "VALUES (?, ?, ?, ?, ?)",
-        ("m1", "t1", 1.0, "alice", "hello"),
-    )
-    await db.db.commit()
+    async with db._tx() as conn:
+        await conn.execute(
+            text(
+                "INSERT INTO teams (id, name, created_at, updated_at) VALUES (:id, :name, :ca, :ua)"
+            ),
+            {"id": "t1", "name": "team-one", "ca": 1.0, "ua": 1.0},
+        )
+        await conn.execute(
+            text(
+                "INSERT INTO team_messages (id, team_id, created_at, sender, content) "
+                "VALUES (:id, :tid, :ca, :sender, :content)"
+            ),
+            {"id": "m1", "tid": "t1", "ca": 1.0, "sender": "alice", "content": "hello"},
+        )
 
-    cur = await db.db.execute("SELECT COUNT(*) AS n FROM team_messages")
-    assert (await cur.fetchone())["n"] == 1
+    async with db._read() as conn:
+        count = (
+            (await conn.execute(text("SELECT COUNT(*) AS n FROM team_messages"))).mappings().first()
+        )
+    assert count["n"] == 1
 
-    await db.db.execute("DELETE FROM teams WHERE id = ?", ("t1",))
-    await db.db.commit()
+    async with db._tx() as conn:
+        await conn.execute(text("DELETE FROM teams WHERE id = :id"), {"id": "t1"})
 
-    cur = await db.db.execute("SELECT COUNT(*) AS n FROM team_messages")
-    assert (await cur.fetchone())["n"] == 0, (
-        "team_messages should cascade-delete when their team is removed"
-    )
+    async with db._read() as conn:
+        count = (
+            (await conn.execute(text("SELECT COUNT(*) AS n FROM team_messages"))).mappings().first()
+        )
+    assert count["n"] == 0, "team_messages should cascade-delete when their team is removed"
 
 
 async def test_team_messages_session_id_fk_to_sessions(db: StateDB):
@@ -77,19 +96,38 @@ async def test_team_messages_session_id_fk_to_sessions(db: StateDB):
     await db.create_progression(prog_id)
     await db.create_session({"id": sess_id, "progression_id": prog_id, "status": "running"})
 
-    await db.db.execute(
-        "INSERT INTO teams (id, name, created_at, updated_at) VALUES (?, ?, ?, ?)",
-        ("t1", "team-one", 1.0, 1.0),
-    )
-    await db.db.execute(
-        "INSERT INTO team_messages (id, team_id, created_at, sender, content, session_id) "
-        "VALUES (?, ?, ?, ?, ?, ?)",
-        ("m1", "t1", 1.0, "alice", "hello", sess_id),
-    )
-    await db.db.commit()
+    async with db._tx() as conn:
+        await conn.execute(
+            text(
+                "INSERT INTO teams (id, name, created_at, updated_at) VALUES (:id, :name, :ca, :ua)"
+            ),
+            {"id": "t1", "name": "team-one", "ca": 1.0, "ua": 1.0},
+        )
+        await conn.execute(
+            text(
+                "INSERT INTO team_messages (id, team_id, created_at, sender, content, session_id) "
+                "VALUES (:id, :tid, :ca, :sender, :content, :sid)"
+            ),
+            {
+                "id": "m1",
+                "tid": "t1",
+                "ca": 1.0,
+                "sender": "alice",
+                "content": "hello",
+                "sid": sess_id,
+            },
+        )
 
-    cur = await db.db.execute("SELECT session_id FROM team_messages WHERE id = ?", ("m1",))
-    row = await cur.fetchone()
+    async with db._read() as conn:
+        row = (
+            (
+                await conn.execute(
+                    text("SELECT session_id FROM team_messages WHERE id = :id"), {"id": "m1"}
+                )
+            )
+            .mappings()
+            .first()
+        )
     assert row["session_id"] == sess_id
 
 
@@ -149,18 +187,38 @@ async def test_import_teams_loads_json_into_db(tmp_path: Path, monkeypatch):
 
     # Verify rows landed correctly.
     async with StateDB(state_db) as db:
-        cur = await db.db.execute("SELECT id, name, member_count, members, status FROM teams")
-        team_row = await cur.fetchone()
+        async with db._read() as conn:
+            team_row = (
+                (
+                    await conn.execute(
+                        text("SELECT id, name, member_count, members, status FROM teams")
+                    )
+                )
+                .mappings()
+                .first()
+            )
         assert team_row["id"] == "abc123"
         assert team_row["name"] == "review-team"
         assert team_row["member_count"] == 2
-        assert json.loads(team_row["members"]) == ["alice", "bob"]
+        members = team_row["members"]
+        if isinstance(members, str):
+            members = json.loads(members)
+        assert members == ["alice", "bob"]
         assert team_row["status"] == "active"
 
-        cur = await db.db.execute(
-            "SELECT id, sender, recipient, content FROM team_messages ORDER BY created_at"
-        )
-        msgs = await cur.fetchall()
+        async with db._read() as conn:
+            msgs = (
+                (
+                    await conn.execute(
+                        text(
+                            "SELECT id, sender, recipient, content "
+                            "FROM team_messages ORDER BY created_at"
+                        )
+                    )
+                )
+                .mappings()
+                .all()
+            )
         assert len(msgs) == 2
         assert msgs[0]["sender"] == "alice"
         assert msgs[0]["recipient"] == "bob"

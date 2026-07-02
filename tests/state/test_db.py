@@ -86,12 +86,14 @@ async def test_open_close():
     read-back of foreign_keys (which works in-memory) and that the schema is
     accessible.
     """
+    from sqlalchemy import text
+
     state = StateDB(":memory:")
     await state.open()
 
     # foreign_keys pragma is set to ON in _apply_pragmas — verify round-trip
-    cur = await state.db.execute("PRAGMA foreign_keys")
-    row = await cur.fetchone()
+    async with state._read() as conn:
+        row = (await conn.execute(text("PRAGMA foreign_keys"))).first()
     assert row[0] == 1  # 1 = ON
 
     # Schema is available after open
@@ -99,7 +101,7 @@ async def test_open_close():
     assert version == "1"
 
     await state.close()
-    assert state._db is None
+    assert state._engine is None
 
 
 async def test_context_manager():
@@ -107,14 +109,13 @@ async def test_context_manager():
     async with StateDB(":memory:") as state:
         version = await state.schema_version()
         assert version == "1"
-    assert state._db is None
+    assert state._engine is None
 
 
-async def test_db_property_raises_when_closed():
-    """Accessing .db before open() raises RuntimeError."""
+async def test_engine_is_none_when_closed():
+    """_engine is None before open() is called."""
     state = StateDB(":memory:")
-    with pytest.raises(RuntimeError, match="not open"):
-        _ = state.db
+    assert state._engine is None
 
 
 # ── Schema ─────────────────────────────────────────────────────────────────────
@@ -122,6 +123,8 @@ async def test_db_property_raises_when_closed():
 
 async def test_schema_creates_all_tables(db: StateDB):
     """All 8 tables are present after open()."""
+    from sqlalchemy import text
+
     expected = {
         "schema_meta",
         "message_types",
@@ -133,8 +136,10 @@ async def test_schema_creates_all_tables(db: StateDB):
         "plays",
         "definitions",
     }
-    cur = await db.db.execute("SELECT name FROM sqlite_master WHERE type='table'")
-    rows = await cur.fetchall()
+    async with db._read() as conn:
+        rows = (
+            await conn.execute(text("SELECT name FROM sqlite_master WHERE type='table'"))
+        ).fetchall()
     names = {r[0] for r in rows}
     assert expected <= names, f"Missing tables: {expected - names}"
 
@@ -156,26 +161,32 @@ async def test_apply_schema_adds_missing_columns_on_old_db(tmp_path):
     Resulting symptom: the CLI process hangs forever after the agent
     completes.
     """
-    import aiosqlite
+    from sqlalchemy import text
+    from sqlalchemy.ext.asyncio import create_async_engine
 
     path = tmp_path / "old.db"
 
     # Simulate a real pre-PR-980 DB: ADR-0009 core columns are present
     # (since they shipped first), but the provenance/lifecycle columns
     # added later are missing.
-    async with aiosqlite.connect(str(path)) as old:
-        await old.execute(
-            "CREATE TABLE sessions ("
-            "id TEXT PRIMARY KEY, created_at REAL, node_metadata TEXT, "
-            "name TEXT, user TEXT, progression_id TEXT, "
-            "first_msg_id TEXT, last_msg_id TEXT)"
+    bootstrap = create_async_engine(f"sqlite+aiosqlite:///{path}")
+    async with bootstrap.begin() as conn:
+        await conn.execute(
+            text(
+                "CREATE TABLE sessions ("
+                "id TEXT PRIMARY KEY, created_at REAL, node_metadata TEXT, "
+                "name TEXT, user TEXT, progression_id TEXT, "
+                "first_msg_id TEXT, last_msg_id TEXT)"
+            )
         )
-        await old.execute(
-            "CREATE TABLE branches ("
-            "id TEXT PRIMARY KEY, created_at REAL, node_metadata TEXT, "
-            "user TEXT, name TEXT, session_id TEXT, progression_id TEXT)"
+        await conn.execute(
+            text(
+                "CREATE TABLE branches ("
+                "id TEXT PRIMARY KEY, created_at REAL, node_metadata TEXT, "
+                "user TEXT, name TEXT, session_id TEXT, progression_id TEXT)"
+            )
         )
-        await old.commit()
+    await bootstrap.dispose()
 
     # Opening with the current StateDB must reconcile in the new columns
     # AND the index/trigger statements in schema.sql (which reference
@@ -183,8 +194,9 @@ async def test_apply_schema_adds_missing_columns_on_old_db(tmp_path):
     db = StateDB(str(path))
     await db.open()
     try:
-        cur = await db.db.execute("PRAGMA table_info(sessions)")
-        cols = {r["name"] for r in await cur.fetchall()}
+        async with db._read() as conn:
+            rows = (await conn.execute(text("PRAGMA table_info(sessions)"))).mappings().all()
+        cols = {r["name"] for r in rows}
         for must_have in (
             "status",
             "started_at",
@@ -202,8 +214,9 @@ async def test_apply_schema_adds_missing_columns_on_old_db(tmp_path):
             "current_phase",
         ):
             assert must_have in cols, f"sessions.{must_have} not migrated"
-        cur = await db.db.execute("PRAGMA table_info(branches)")
-        bcols = {r["name"] for r in await cur.fetchall()}
+        async with db._read() as conn:
+            brows = (await conn.execute(text("PRAGMA table_info(branches)"))).mappings().all()
+        bcols = {r["name"] for r in brows}
         assert "system_msg_id" in bcols
         # And the live-persist write path actually works against the
         # migrated DB (the symptom we're guarding against).
@@ -224,12 +237,20 @@ async def test_apply_schema_adds_missing_columns_on_old_db(tmp_path):
 
 async def test_message_types_seeded(db: StateDB):
     """6 message types pre-seeded (0 = __unknown__, 1-5 = known classes)."""
-    cur = await db.db.execute("SELECT COUNT(*) AS n FROM message_types")
-    row = await cur.fetchone()
+    from sqlalchemy import text
+
+    async with db._read() as conn:
+        row = (
+            (await conn.execute(text("SELECT COUNT(*) AS n FROM message_types"))).mappings().first()
+        )
     assert row["n"] == 6
 
-    cur = await db.db.execute("SELECT lion_class FROM message_types WHERE type_id = 0")
-    row = await cur.fetchone()
+    async with db._read() as conn:
+        row = (
+            (await conn.execute(text("SELECT lion_class FROM message_types WHERE type_id = 0")))
+            .mappings()
+            .first()
+        )
     assert row["lion_class"] == "__unknown__"
 
 
@@ -254,50 +275,88 @@ async def test_insert_and_get_message(db: StateDB):
 
 
 async def test_insert_message_idempotent(db: StateDB):
-    """INSERT OR IGNORE: inserting the same id twice does not error."""
+    """ON CONFLICT DO UPDATE: inserting the same id twice does not error."""
+    from sqlalchemy import text
+
     msg = make_message()
     await db.insert_message(msg)
-    # Second insert — same id, should silently be ignored
+    # Second insert — same id, should silently be handled
     await db.insert_message(msg)
 
-    cur = await db.db.execute("SELECT COUNT(*) AS n FROM messages WHERE id = ?", (msg["id"],))
-    row = await cur.fetchone()
+    async with db._read() as conn:
+        row = (
+            (
+                await conn.execute(
+                    text("SELECT COUNT(*) AS n FROM messages WHERE id = :id"), {"id": msg["id"]}
+                )
+            )
+            .mappings()
+            .first()
+        )
     assert row["n"] == 1
 
 
 async def test_resolve_lion_class_known(db: StateDB):
     """A known lion_class string returns the correct seeded type_id."""
+    from sqlalchemy import text
+
     known = "lionagi.protocols.messages.system.System"
     msg = make_message(lion_class=known)
     await db.insert_message(msg)
 
-    cur = await db.db.execute("SELECT lion_class FROM messages WHERE id = ?", (msg["id"],))
-    row = await cur.fetchone()
+    async with db._read() as conn:
+        row = (
+            (
+                await conn.execute(
+                    text("SELECT lion_class FROM messages WHERE id = :id"), {"id": msg["id"]}
+                )
+            )
+            .mappings()
+            .first()
+        )
     # type_id 1 maps to System
     assert row["lion_class"] == 1
 
 
 async def test_resolve_lion_class_unknown_empty(db: StateDB):
     """Empty lion_class string returns sentinel type_id 0."""
+    from sqlalchemy import text
+
     msg = make_message(lion_class="")
     await db.insert_message(msg)
 
-    cur = await db.db.execute("SELECT lion_class FROM messages WHERE id = ?", (msg["id"],))
-    row = await cur.fetchone()
+    async with db._read() as conn:
+        row = (
+            (
+                await conn.execute(
+                    text("SELECT lion_class FROM messages WHERE id = :id"), {"id": msg["id"]}
+                )
+            )
+            .mappings()
+            .first()
+        )
     assert row["lion_class"] == 0
 
 
 async def test_resolve_lion_class_auto_register(db: StateDB):
     """Unknown non-empty class is auto-registered and gets a new type_id."""
+    from sqlalchemy import text
+
     novel_class = "myapp.custom.CustomMessage"
     msg = make_message(lion_class=novel_class)
     await db.insert_message(msg)
 
-    cur = await db.db.execute(
-        "SELECT type_id FROM message_types WHERE lion_class = ?",
-        (novel_class,),
-    )
-    row = await cur.fetchone()
+    async with db._read() as conn:
+        row = (
+            (
+                await conn.execute(
+                    text("SELECT type_id FROM message_types WHERE lion_class = :lc"),
+                    {"lc": novel_class},
+                )
+            )
+            .mappings()
+            .first()
+        )
     assert row is not None
     # Must be > 5 (beyond the seeded range)
     assert row["type_id"] > 5
@@ -878,11 +937,19 @@ async def test_resolve_lion_class_concurrent_race(tmp_path):
         await asyncio.gather(*(insert_one(i) for i in range(20)))
 
         # Exactly one message_types row for the novel class.
-        cur = await db.db.execute(
-            "SELECT COUNT(*) AS n FROM message_types WHERE lion_class = ?",
-            ("test.race.NovelClass",),
-        )
-        row = await cur.fetchone()
+        from sqlalchemy import text
+
+        async with db._read() as conn:
+            row = (
+                (
+                    await conn.execute(
+                        text("SELECT COUNT(*) AS n FROM message_types WHERE lion_class = :lc"),
+                        {"lc": "test.race.NovelClass"},
+                    )
+                )
+                .mappings()
+                .first()
+            )
         assert row["n"] == 1
     finally:
         await db.close()
@@ -1086,8 +1153,10 @@ async def test_session_delete_cascades_branches(db: StateDB):
     )
 
     assert await db.get_branch(bid) is not None
-    await db.db.execute("DELETE FROM sessions WHERE id = ?", (sid,))
-    await db.db.commit()
+    async with db._tx() as conn:
+        from sqlalchemy import text
+
+        await conn.execute(text("DELETE FROM sessions WHERE id = :id"), {"id": sid})
     assert await db.get_branch(bid) is None
 
 
@@ -1166,7 +1235,10 @@ async def test_update_artifact_verification_none(db: StateDB):
 
 async def test_new_db_has_artifact_columns(db: StateDB):
     """Fresh in-memory DB exposes both new columns via PRAGMA table_info."""
-    cur = await db.db.execute("PRAGMA table_info(sessions)")
-    cols = {r["name"] for r in await cur.fetchall()}
+    from sqlalchemy import text
+
+    async with db._read() as conn:
+        rows = (await conn.execute(text("PRAGMA table_info(sessions)"))).mappings().all()
+    cols = {r["name"] for r in rows}
     assert "artifact_contract_json" in cols
     assert "artifact_verification_json" in cols

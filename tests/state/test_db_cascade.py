@@ -9,6 +9,8 @@ import time
 import uuid
 
 import pytest
+from sqlalchemy import text
+from sqlalchemy.exc import IntegrityError
 
 from lionagi.state.db import StateDB
 
@@ -26,8 +28,8 @@ async def db():
 
 async def test_pragma_foreign_keys_is_on(db: StateDB):
     """Sanity guard: if PRAGMA foreign_keys is off, every cascade test would silently pass."""
-    cur = await db.db.execute("PRAGMA foreign_keys")
-    row = await cur.fetchone()
+    async with db._read() as conn:
+        row = (await conn.execute(text("PRAGMA foreign_keys"))).first()
     assert row[0] == 1
 
 
@@ -68,20 +70,34 @@ async def test_delete_session_cascades_branches(db: StateDB):
         }
     )
 
-    cur = await db.db.execute(
-        "SELECT COUNT(*) AS n FROM branches WHERE session_id = ?",
-        (sid,),
-    )
-    assert (await cur.fetchone())["n"] == 2
+    async with db._read() as conn:
+        row = (
+            (
+                await conn.execute(
+                    text("SELECT COUNT(*) AS n FROM branches WHERE session_id = :sid"),
+                    {"sid": sid},
+                )
+            )
+            .mappings()
+            .first()
+        )
+    assert row["n"] == 2
 
-    await db.db.execute("DELETE FROM sessions WHERE id = ?", (sid,))
-    await db.db.commit()
+    async with db._tx() as conn:
+        await conn.execute(text("DELETE FROM sessions WHERE id = :id"), {"id": sid})
 
-    cur = await db.db.execute(
-        "SELECT COUNT(*) AS n FROM branches WHERE session_id = ?",
-        (sid,),
-    )
-    assert (await cur.fetchone())["n"] == 0
+    async with db._read() as conn:
+        row = (
+            (
+                await conn.execute(
+                    text("SELECT COUNT(*) AS n FROM branches WHERE session_id = :sid"),
+                    {"sid": sid},
+                )
+            )
+            .mappings()
+            .first()
+        )
+    assert row["n"] == 0
 
 
 async def test_delete_session_does_not_cascade_progression(db: StateDB):
@@ -91,14 +107,21 @@ async def test_delete_session_does_not_cascade_progression(db: StateDB):
     await db.create_progression(spid)
     await db.create_session({"id": sid, "progression_id": spid})
 
-    await db.db.execute("DELETE FROM sessions WHERE id = ?", (sid,))
-    await db.db.commit()
+    async with db._tx() as conn:
+        await conn.execute(text("DELETE FROM sessions WHERE id = :id"), {"id": sid})
 
-    cur = await db.db.execute(
-        "SELECT COUNT(*) AS n FROM progressions WHERE id = ?",
-        (spid,),
-    )
-    assert (await cur.fetchone())["n"] == 1
+    async with db._read() as conn:
+        row = (
+            (
+                await conn.execute(
+                    text("SELECT COUNT(*) AS n FROM progressions WHERE id = :id"),
+                    {"id": spid},
+                )
+            )
+            .mappings()
+            .first()
+        )
+    assert row["n"] == 1
 
 
 # ── Show → Play cascade ──────────────────────────────────────────────────────
@@ -126,20 +149,34 @@ async def test_delete_show_cascades_plays(db: StateDB):
             }
         )
 
-    cur = await db.db.execute(
-        "SELECT COUNT(*) AS n FROM plays WHERE show_id = ?",
-        (show_id,),
-    )
-    assert (await cur.fetchone())["n"] == 3
+    async with db._read() as conn:
+        row = (
+            (
+                await conn.execute(
+                    text("SELECT COUNT(*) AS n FROM plays WHERE show_id = :sid"),
+                    {"sid": show_id},
+                )
+            )
+            .mappings()
+            .first()
+        )
+    assert row["n"] == 3
 
-    await db.db.execute("DELETE FROM shows WHERE id = ?", (show_id,))
-    await db.db.commit()
+    async with db._tx() as conn:
+        await conn.execute(text("DELETE FROM shows WHERE id = :id"), {"id": show_id})
 
-    cur = await db.db.execute(
-        "SELECT COUNT(*) AS n FROM plays WHERE show_id = ?",
-        (show_id,),
-    )
-    assert (await cur.fetchone())["n"] == 0
+    async with db._read() as conn:
+        row = (
+            (
+                await conn.execute(
+                    text("SELECT COUNT(*) AS n FROM plays WHERE show_id = :sid"),
+                    {"sid": show_id},
+                )
+            )
+            .mappings()
+            .first()
+        )
+    assert row["n"] == 0
 
 
 async def test_delete_show_with_no_plays_succeeds(db: StateDB):
@@ -153,14 +190,21 @@ async def test_delete_show_with_no_plays_succeeds(db: StateDB):
         }
     )
 
-    await db.db.execute("DELETE FROM shows WHERE id = ?", (show_id,))
-    await db.db.commit()
+    async with db._tx() as conn:
+        await conn.execute(text("DELETE FROM shows WHERE id = :id"), {"id": show_id})
 
-    cur = await db.db.execute(
-        "SELECT COUNT(*) AS n FROM shows WHERE id = ?",
-        (show_id,),
-    )
-    assert (await cur.fetchone())["n"] == 0
+    async with db._read() as conn:
+        row = (
+            (
+                await conn.execute(
+                    text("SELECT COUNT(*) AS n FROM shows WHERE id = :id"),
+                    {"id": show_id},
+                )
+            )
+            .mappings()
+            .first()
+        )
+    assert row["n"] == 0
 
 
 # ── Play.session_id is NOT cascaded ─────────────────────────────────────────
@@ -168,8 +212,6 @@ async def test_delete_show_with_no_plays_succeeds(db: StateDB):
 
 async def test_delete_session_referenced_by_play_is_rejected(db: StateDB):
     """plays.session_id has no cascade — SQLite rejects deleting a session still referenced by a play (ADR-0012)."""
-    import aiosqlite
-
     show_id = str(uuid.uuid4())
     await db.create_show(
         {
@@ -195,9 +237,9 @@ async def test_delete_session_referenced_by_play_is_rejected(db: StateDB):
         }
     )
 
-    with pytest.raises(aiosqlite.IntegrityError):
-        await db.db.execute("DELETE FROM sessions WHERE id = ?", (sid,))
-        await db.db.commit()
+    with pytest.raises(IntegrityError):
+        async with db._tx() as conn:
+            await conn.execute(text("DELETE FROM sessions WHERE id = :id"), {"id": sid})
 
 
 # ── Branch.system_msg_id is NOT cascaded ─────────────────────────────────────
@@ -207,8 +249,6 @@ async def test_delete_message_does_not_cascade_to_branch_system_msg_id(
     db: StateDB,
 ):
     """branches.system_msg_id has no cascade — SQLite rejects deleting a message still referenced as a system message."""
-    import aiosqlite
-
     msg_id = str(uuid.uuid4())
     await db.insert_message(
         {
@@ -236,6 +276,6 @@ async def test_delete_message_does_not_cascade_to_branch_system_msg_id(
         }
     )
 
-    with pytest.raises(aiosqlite.IntegrityError):
-        await db.db.execute("DELETE FROM messages WHERE id = ?", (msg_id,))
-        await db.db.commit()
+    with pytest.raises(IntegrityError):
+        async with db._tx() as conn:
+            await conn.execute(text("DELETE FROM messages WHERE id = :id"), {"id": msg_id})

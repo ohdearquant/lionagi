@@ -60,16 +60,15 @@ async def resolve_entity(db: Any, id_or_short: str) -> tuple[str, str, dict[str,
 
     for table in _SEARCH_ORDER:
         if is_prefix:
-            cur = await db.db.execute(
+            row = await db.fetch_one(
                 f"SELECT * FROM {table} WHERE id LIKE ?",  # noqa: S608
                 (id_or_short + "%",),
             )
         else:
-            cur = await db.db.execute(
+            row = await db.fetch_one(
                 f"SELECT * FROM {table} WHERE id = ?",  # noqa: S608
                 (id_or_short,),
             )
-        row = await cur.fetchone()
         if row is not None:
             entity_type = _TABLE_TO_ENTITY_TYPE[table]
             return table, entity_type, db._row_to_dict(row)

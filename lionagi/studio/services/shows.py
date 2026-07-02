@@ -276,8 +276,7 @@ async def import_shows() -> dict[str, int]:
             topic = show_path.name
             now = time.time()
 
-            cur = await db.db.execute("SELECT id FROM shows WHERE topic = ?", (topic,))
-            existing = await cur.fetchone()
+            existing = await db.fetch_one("SELECT id FROM shows WHERE topic = ?", (topic,))
             if existing:
                 show_id = existing["id"]
             else:
@@ -330,7 +329,7 @@ async def import_shows() -> dict[str, int]:
                         topic,
                     )
 
-                await db.db.execute(
+                await db.execute(
                     """INSERT OR IGNORE INTO shows
                        (id, topic, goal, repo, base_branch, integration_branch,
                         status, show_dir, created_at, updated_at)
@@ -351,7 +350,6 @@ async def import_shows() -> dict[str, int]:
                 shows_count += 1
 
                 if show_reason_code is not None:
-                    await db.db.commit()
                     await db.update_status(
                         "show",
                         show_id,
@@ -369,22 +367,20 @@ async def import_shows() -> dict[str, int]:
                 meta = _read_json(play_dir / "_meta.json") or {}
                 verdict = _read_json(play_dir / "_verdict.json")
 
-                play_cur = await db.db.execute(
+                if await db.fetch_one(
                     "SELECT id FROM plays WHERE show_id = ? AND name = ?",
                     (show_id, play_name),
-                )
-                if await play_cur.fetchone():
+                ):
                     continue
 
                 play_id = str(uuid.uuid4())
 
                 session_id = None
                 session_name = f"show_{topic}_{play_name}"
-                sess_cur = await db.db.execute(
+                sess_row = await db.fetch_one(
                     "SELECT id FROM sessions WHERE name = ? ORDER BY created_at DESC LIMIT 1",
                     (session_name,),
                 )
-                sess_row = await sess_cur.fetchone()
                 if sess_row:
                     session_id = sess_row["id"]
 
@@ -480,7 +476,7 @@ async def import_shows() -> dict[str, int]:
                         imported_play_status,
                     )
 
-                await db.db.execute(
+                await db.execute(
                     """INSERT OR IGNORE INTO plays
                        (id, show_id, name, playbook, effort, status, attempt,
                         session_id, started_at, ended_at, exit_code,
@@ -515,7 +511,6 @@ async def import_shows() -> dict[str, int]:
                 plays_count += 1
 
                 if play_reason_code is not None:
-                    await db.db.commit()
                     await db.update_status(
                         "play",
                         play_id,
@@ -527,8 +522,6 @@ async def import_shows() -> dict[str, int]:
                         actor="shows_import",
                         metadata={"topic": topic, "play": play_name, "attempt": play_attempt},
                     )
-
-        await db.db.commit()
 
     return {"shows_imported": shows_count, "plays_imported": plays_count}
 

@@ -112,7 +112,7 @@ async def test_start_create_session_failure_closes_db(
     """If create_session fails, the DB is closed and env._live_persist is set to None (prevents interpreter-shutdown hang)."""
 
     async def fail(self, session: dict):
-        await self.db.execute("SELECT 1")
+        await self.execute("SELECT 1")
         raise RuntimeError("simulated DB failure")
 
     monkeypatch.setattr(StateDB, "create_session", fail)
@@ -213,16 +213,16 @@ async def test_register_branch_hook_ensure_branch_row_idempotent(
 
     async with StateDB() as db:
         # Branch row exists once.
-        cur = await db.db.execute(
+        row = await db.fetch_one(
             "SELECT COUNT(*) AS n FROM branches WHERE id = ?", (str(worker.id),)
         )
-        n_rows = (await cur.fetchone())["n"]
+        n_rows = row["n"]
         # System message exists once.
-        cur = await db.db.execute(
+        row = await db.fetch_one(
             "SELECT COUNT(*) AS n FROM messages WHERE id = ?",
             (str(worker.system.id),),
         )
-        n_sys = (await cur.fetchone())["n"]
+        n_sys = row["n"]
         # Branch progression has both user messages.
         prog = await db.get_progression(env._live_persist["branch_prog_ids"][str(worker.id)])
 
@@ -427,7 +427,7 @@ async def test_stop_closes_db_even_if_bookmark_update_fails(
     await stop_live_persist(env, status="completed")  # MUST NOT raise
 
     # Connection was closed.
-    assert db._db is None
+    assert db._engine is None
     for _ in range(20):
         if _aiosqlite_thread_count() <= before:
             break
@@ -853,7 +853,7 @@ async def test_stop_get_progression_failure_logs_and_closes_db(
     with caplog.at_level(logging.WARNING, logger="lionagi.cli"):
         await stop_live_persist(env, status="completed")
 
-    assert db._db is None
+    assert db._engine is None
     assert env._live_persist is None
     assert any("live persist teardown failed" in rec.message for rec in caplog.records)
     assert any("progression unavailable" in rec.message for rec in caplog.records)

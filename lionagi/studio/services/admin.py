@@ -14,6 +14,8 @@ from typing import Any, Literal
 
 from fastapi import HTTPException, Query
 from pydantic import BaseModel, ConfigDict, Field
+from sqlalchemy import text
+from sqlalchemy.exc import OperationalError as _SAOperationalError
 
 from lionagi.cli._util import pid_alive as _pid_is_live
 from lionagi.ln import now_utc
@@ -413,79 +415,73 @@ async def transition_sessions(
                         }
                     )
 
-            await db.db.execute("BEGIN IMMEDIATE")
-            try:
-                cur = await db.db.execute(
-                    "UPDATE sessions SET status=?, ended_at=?, updated_at=?, "
-                    "  status_reason_code=?, status_reason_summary=?, status_evidence_refs=? "
-                    "WHERE id=? AND status='running'"
-                    "  AND (last_message_at IS ? OR last_message_at = ?)"
-                    "  AND (updated_at      IS ? OR updated_at      = ?)",
-                    (
-                        target_status,
-                        now,
-                        now,
-                        effective_reason_code,
-                        effective_reason_summary,
-                        json.dumps(effective_evidence_refs),
-                        sid,
-                        _snap_last_msg,
-                        _snap_last_msg,
-                        _snap_updated,
-                        _snap_updated,
+            # CAS: swap running→target only if the snapshot still holds, then
+            # record the transition atomically. transaction() opens BEGIN
+            # IMMEDIATE; a clean exit commits, any exception rolls back.
+            async with db.transaction() as conn:
+                result = await conn.execute(
+                    text(
+                        "UPDATE sessions SET status=:status, ended_at=:now, updated_at=:now, "
+                        "  status_reason_code=:rcode, status_reason_summary=:rsummary, "
+                        "  status_evidence_refs=:erefs "
+                        "WHERE id=:sid AND status='running'"
+                        "  AND (last_message_at IS :slast OR last_message_at = :slast)"
+                        "  AND (updated_at      IS :supd  OR updated_at      = :supd)"
                     ),
+                    {
+                        "status": target_status,
+                        "now": now,
+                        "rcode": effective_reason_code,
+                        "rsummary": effective_reason_summary,
+                        "erefs": json.dumps(effective_evidence_refs),
+                        "sid": sid,
+                        "slast": _snap_last_msg,
+                        "supd": _snap_updated,
+                    },
                 )
-                if cur.rowcount == 0:
-                    await db.db.rollback()
-                    existing = await db.get_session(sid)
-                    if existing is None:
-                        skipped.append({"session_id": sid, "reason": "not_found"})
-                    elif existing.get("status") == "running":
-                        skipped.append(
-                            {
-                                "session_id": sid,
-                                "reason": "changed_since_snapshot",
-                            }
-                        )
-                    else:
-                        skipped.append(
-                            {
-                                "session_id": sid,
-                                "reason": f"not_running:{existing.get('status')}",
-                            }
-                        )
-                    continue
-                await db.db.execute(
-                    "INSERT INTO status_transitions "
-                    "(id, entity_type, entity_id, previous_status, status, "
-                    " reason_code, reason_summary, evidence_refs, "
-                    " source, actor, created_at, metadata) "
-                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-                    (
-                        uuid.uuid4().hex,
-                        "session",
-                        sid,
-                        "running",
-                        target_status,
-                        effective_reason_code,
-                        effective_reason_summary,
-                        json.dumps(effective_evidence_refs),
-                        "admin",
-                        actor,
-                        now,
-                        json.dumps(
-                            {
-                                "legacy_reason": legacy_reason,
-                                "health": health.value,
-                                "process_alive": process_alive,
-                            }
+                cas_hit = result.rowcount != 0
+                if cas_hit:
+                    await conn.execute(
+                        text(
+                            "INSERT INTO status_transitions "
+                            "(id, entity_type, entity_id, previous_status, status, "
+                            " reason_code, reason_summary, evidence_refs, "
+                            " source, actor, created_at, metadata) "
+                            "VALUES (:id, :etype, :eid, :prev, :status, "
+                            " :rcode, :rsummary, :erefs, :source, :actor, :now, :meta)"
                         ),
-                    ),
-                )
-                await db.db.commit()
-            except BaseException:
-                await db.db.rollback()
-                raise
+                        {
+                            "id": uuid.uuid4().hex,
+                            "etype": "session",
+                            "eid": sid,
+                            "prev": "running",
+                            "status": target_status,
+                            "rcode": effective_reason_code,
+                            "rsummary": effective_reason_summary,
+                            "erefs": json.dumps(effective_evidence_refs),
+                            "source": "admin",
+                            "actor": actor,
+                            "now": now,
+                            "meta": json.dumps(
+                                {
+                                    "legacy_reason": legacy_reason,
+                                    "health": health.value,
+                                    "process_alive": process_alive,
+                                }
+                            ),
+                        },
+                    )
+            if not cas_hit:
+                existing = await db.get_session(sid)
+                if existing is None:
+                    skipped.append({"session_id": sid, "reason": "not_found"})
+                elif existing.get("status") == "running":
+                    skipped.append({"session_id": sid, "reason": "changed_since_snapshot"})
+                else:
+                    skipped.append(
+                        {"session_id": sid, "reason": f"not_running:{existing.get('status')}"}
+                    )
+                continue
             transitioned.append(sid)
 
         event_id = await db.insert_admin_event(
@@ -673,11 +669,16 @@ async def run_maintenance_route(body: MaintenanceBody) -> dict[str, Any]:
         result = await prune_old_data(actor="admin")
         return {"action": "prune", **result}
 
-    except sqlite3.OperationalError as exc:
+    except (sqlite3.OperationalError, _SAOperationalError) as exc:
         # Only genuine lock/busy contention is retry-able. Open/path failures
         # ("unable to open database file") are configuration problems and must
         # not tell the operator to retry shortly — let them surface as 500.
+        # SQLAlchemy wraps the driver error; inspect .orig too in case the
+        # wrapper message omits the underlying "database is locked" text.
         msg = str(exc).lower()
+        orig = getattr(exc, "orig", None)
+        if orig is not None:
+            msg = f"{msg} {str(orig).lower()}"
         if "locked" in msg or "in progress" in msg:
             raise HTTPException(
                 status_code=409,
