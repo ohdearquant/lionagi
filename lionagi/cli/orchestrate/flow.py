@@ -258,6 +258,7 @@ class _ExecResult:
     agent_results: list[dict]
     n_spawned: int
     t_exec_elapsed: float
+    escalated_agent_ids: list[str] = field(default_factory=list)
 
 
 # ── Phase 1: build DAG ────────────────────────────────────────────────────────
@@ -285,6 +286,7 @@ async def _build_dag(
     worker_models: list[str] = []
     node_ids: list[str] = []
     role_base: dict[str, object] = {}
+    role_artifact_entries: list[dict] = []
 
     for i, ta in enumerate(assignments):
         w_branch, w_model, w_profile = await build_worker_branch(
@@ -299,11 +301,43 @@ async def _build_dag(
         worker_models.append(w_model)
         role_base.setdefault(ta.assignee, w_branch)
 
+        # ADR-0029: fold this leg's OWN declared artifact contract (profile
+        # first, else the casts role's artifact_defaults — e.g. reviewer/
+        # critic) into the flow-wide contract, namespaced under this leg's
+        # own artifact subdirectory. A role that declares nothing leaves the
+        # contract untouched — this only fires for a real declaration.
+        role_defaults = w_profile.artifact_defaults if w_profile else None
+        if not role_defaults:
+            from lionagi.casts.pattern import Role as _Role
+
+            with contextlib.suppress(ValueError):
+                role_defaults = _Role.load(ta.assignee).artifact_defaults
+        leg_expected: list[dict] = []
+        if role_defaults:
+            for entry in role_defaults.get("expected", []):
+                eid = entry.get("id", "")
+                epath = entry.get("path", "")
+                leg_expected.append(
+                    {
+                        **entry,
+                        "id": f"{agent_ids[i]}__{eid}",
+                        "path": f"{agent_ids[i]}/{epath}",
+                        "source": "role_default",
+                    }
+                )
+            role_artifact_entries.extend(leg_expected)
+
         ctx: list = [{"original_task": prompt}]
         artifact_note = (
             f"Your artifact directory: {env.run.agent_artifact_dir(agent_ids[i])}/ — "
             "write output files here."
         )
+        if leg_expected:
+            required_paths = ", ".join(e["path"].split("/", 1)[1] for e in leg_expected)
+            artifact_note += (
+                f" REQUIRED: write {required_paths} in that directory — the run "
+                "is marked failed if it is missing at completion."
+            )
         if dep_indices[i]:
             ups = "; ".join(
                 f"step {j + 1} ({agent_ids[j]}): {env.run.agent_artifact_dir(agent_ids[j])}/"
@@ -367,6 +401,33 @@ async def _build_dag(
             await ctx_lp["db"].update_session(
                 ctx_lp["session_id"], node_metadata=json.dumps({**early_graph, **_markers})
             )
+
+    # Persist the per-leg role/profile artifact declarations collected above.
+    # start_live_persist already ran (playbook/whole-flow contract, if any) —
+    # this extends that contract now that per-leg roles are resolved, so
+    # teardown's verify_artifact_contract (reading ctx["artifact_contract"])
+    # sees the full picture. Validated eagerly: a malformed role declaration
+    # should fail loudly here, not be silently dropped.
+    #
+    # ADR-0029 extension (see db.py _SESSION_COLUMNS comment): this is the
+    # one allowed post-creation write to artifact_contract_json, happening
+    # once here at DAG-build time, before _execute_dag runs any leg. It must
+    # reach the session row (not just env._live_persist) — a crash or
+    # orphan exit before teardown should still leave the DB row showing what
+    # was actually expected, matching what Studio/`li state show-session`
+    # read directly from artifact_contract_json.
+    if role_artifact_entries and ctx_lp is not None:
+        from lionagi.state.artifact_verifier import validate_artifact_contract
+
+        existing = ctx_lp.get("artifact_contract") or {"expected": []}
+        merged_contract = {"expected": [*existing.get("expected", []), *role_artifact_entries]}
+        validate_artifact_contract(merged_contract)
+        ctx_lp["artifact_contract"] = merged_contract
+        if ctx_lp.get("db"):
+            with contextlib.suppress(Exception):
+                await ctx_lp["db"].update_session(
+                    ctx_lp["session_id"], artifact_contract_json=json.dumps(merged_contract)
+                )
 
     return _DagState(
         node_ids=node_ids,
@@ -540,6 +601,24 @@ async def _execute_dag(
     op_results = dag_result.get("operation_results", {})
     n_spawned = dag_result.get("spawned_operations", 0)
 
+    # Escalation backstop: a leg the executor tracked as escalated (gave up
+    # instead of producing a result — see NodeEscalated / EscalationRequest,
+    # ADR-0072/0083) reads as a normal completed op_result to the loop below.
+    # Without this, a reviewer/critic that emits EscalationRequest(route=
+    # "give_up") instead of writing its artifact is indistinguishable from a
+    # clean completion once execution finishes — this makes it loud at
+    # teardown even when no artifact_defaults declaration exists to catch it.
+    escalated_op_ids = {str(x) for x in dag_result.get("escalated_operations", [])}
+    escalated_agent_ids = [
+        agent_ids[i] for i in range(len(assignments)) if node_ids[i] in escalated_op_ids
+    ]
+    if escalated_agent_ids:
+        env._escalated_evidence = [
+            {"kind": "escalated_operation", "id": agent_ids[i], "label": assignments[i].assignee}
+            for i in range(len(assignments))
+            if node_ids[i] in escalated_op_ids
+        ]
+
     agent_results: list[dict] = []
 
     def _record_result(result: dict) -> None:
@@ -592,6 +671,7 @@ async def _execute_dag(
         agent_results=agent_results,
         n_spawned=n_spawned,
         t_exec_elapsed=t_exec_elapsed,
+        escalated_agent_ids=escalated_agent_ids,
     )
 
 

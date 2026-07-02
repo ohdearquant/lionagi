@@ -1020,3 +1020,299 @@ async def test_stop_verification_preserves_non_completed_reason(
     v = s["artifact_verification_json"]
     assert isinstance(v, dict)
     assert v["status"] == "failed"
+
+
+# ── ADR-0029 + ADR-0028: session→invocation propagation on missing artifact ──
+#
+# The tests above prove the *session* row flips to failed/FAILED_MISSING_ARTIFACT.
+# A multi-leg `li play`/`li o flow` run is read by callers (Studio, `li status`,
+# `li play check`) at the *invocation* level, not the raw session level, via
+# _resolve_invocation_terminal_flow(). That function had no direct test —
+# these confirm the flip a reviewer/critic gate leg produces actually reaches
+# the record a status-reader queries, and pin down exactly what does and does
+# not survive the trip.
+
+
+async def test_missing_artifact_session_failure_propagates_to_invocation_status(
+    temp_db_path: Path,
+    tmp_path: Path,
+):
+    """A required artifact missing at teardown flips the session to failed, and
+    _resolve_invocation_terminal_flow (flow.py) — the function the real `finally`
+    block in _run_flow uses to finalize the invocation record — reflects that
+    into the invocation's terminal status. This is the propagation hop a
+    status-reader (Studio, `li status`) actually observes.
+    """
+    from lionagi.cli.orchestrate.flow import _resolve_invocation_terminal_flow
+    from lionagi.state.reasons import RunReasons
+
+    invocation_id = "inv-missing-artifact"
+    artifacts_dir = tmp_path / "artifacts" / "reviewer"
+    artifacts_dir.mkdir(parents=True)
+    # review.md deliberately not written — reproduces the incident shape: a
+    # reviewer gate leg that completes without producing its review.
+
+    async with StateDB() as db:
+        await db.create_invocation(
+            {"id": invocation_id, "skill": "codex-pr-review", "started_at": 0.0}
+        )
+
+    env = _minimal_env()
+    contract = {"expected": [{"id": "review", "path": "review.md", "required": True}]}
+    await start_live_persist(
+        env,
+        invocation_kind="flow",
+        artifacts_path=str(artifacts_dir),
+        artifact_contract=contract,
+        invocation_id=invocation_id,
+    )
+    ctx = env._live_persist
+    assert ctx is not None
+
+    await stop_live_persist(env, status="completed")
+
+    async with StateDB() as db:
+        s = await db.get_session(ctx["session_id"])
+    assert s is not None
+    assert s["status"] == "failed"
+    assert s["status_reason_code"] == "run.failed.missing_artifact"
+
+    # The hop this test exists for: does the invocation-level resolver see it?
+    (
+        inv_status,
+        inv_reason_code,
+        inv_summary,
+        inv_evidence,
+        inv_metadata,
+    ) = await _resolve_invocation_terminal_flow(invocation_id, fallback_status="completed")
+    assert inv_status == "failed"
+    # NOTE: the invocation layer generalizes to "a child session failed" — it
+    # does NOT carry the session's specific FAILED_MISSING_ARTIFACT reason code
+    # or the missing-artifact evidence forward verbatim. A status-reader at the
+    # invocation level sees loud failure but must drill into the child session
+    # (evidence below references it) to learn *why* it failed.
+    assert inv_reason_code == RunReasons.FAILED_EXCEPTION
+    assert "child session failed" in inv_summary
+    assert any(e.get("id") == ctx["session_id"] for e in inv_evidence)
+    assert inv_metadata["child_statuses"] == ["failed"]
+
+    # Persist it exactly as _run_flow's finally block does, then read back the
+    # invocation row itself — "the record a status-reader sees."
+    async with StateDB() as db:
+        await db.update_status(
+            "invocation",
+            invocation_id,
+            new_status=inv_status,
+            reason_code=inv_reason_code,
+            reason_summary=inv_summary,
+            evidence_refs=inv_evidence,
+            source="executor",
+            actor=invocation_id,
+            metadata=inv_metadata,
+        )
+        inv_row = await db.get_invocation(invocation_id)
+    assert inv_row is not None
+    assert inv_row["status"] == "failed"
+
+
+async def test_all_legs_completed_resolves_invocation_completed(
+    temp_db_path: Path,
+    tmp_path: Path,
+):
+    """Control case: when every child session completes cleanly (artifact
+    present), the invocation resolves to completed — the failure path above
+    is a real signal, not an always-failed resolver.
+    """
+    from lionagi.cli.orchestrate.flow import _resolve_invocation_terminal_flow
+
+    invocation_id = "inv-all-completed"
+    artifacts_dir = tmp_path / "artifacts" / "reviewer"
+    artifacts_dir.mkdir(parents=True)
+    (artifacts_dir / "review.md").write_text("looks good")
+
+    async with StateDB() as db:
+        await db.create_invocation(
+            {"id": invocation_id, "skill": "codex-pr-review", "started_at": 0.0}
+        )
+
+    env = _minimal_env()
+    contract = {"expected": [{"id": "review", "path": "review.md", "required": True}]}
+    await start_live_persist(
+        env,
+        invocation_kind="flow",
+        artifacts_path=str(artifacts_dir),
+        artifact_contract=contract,
+        invocation_id=invocation_id,
+    )
+    await stop_live_persist(env, status="completed")
+
+    (
+        inv_status,
+        inv_reason_code,
+        _summary,
+        _evidence,
+        _metadata,
+    ) = await _resolve_invocation_terminal_flow(invocation_id, fallback_status="completed")
+    assert inv_status == "completed"
+
+
+# ── bench545 regressions: plan-time per-leg wiring + escalation backstop ──────
+#
+# Both tests below reproduce the actual production gap (play fe9a23ac,
+# artifacts under bench545): the play-level artifact_contract was NULL for
+# the WHOLE run — nothing at plan time ever populated a per-leg contract, so
+# the tests above (which hand-build a `contract` and pass it to
+# start_live_persist directly) do not exercise the gap itself. These two
+# start with NO contract, exactly like bench545, and drive the real
+# _build_dag / _execute_dag phase functions to prove the wiring — not just a
+# role-profile declaration nobody consults — is what closes it.
+
+
+async def test_build_dag_wires_role_artifact_defaults_into_live_contract_and_fails_loud(
+    temp_db_path: Path,
+    tmp_path: Path,
+):
+    """A path: no whole-flow contract is declared (play-level NULL, as in
+    bench545). The only source of a per-leg contract is the resolved
+    worker's own casts Role (no committed AgentProfile file exists in this
+    repo, so w_profile is always None in practice — the role fallback IS the
+    real path). _build_dag must itself populate the live contract from the
+    reviewer role's artifact_defaults, persist it to the session row, and
+    the run must still fail loud at teardown when the declared artifact is
+    never written.
+    """
+    from unittest.mock import patch
+
+    from lionagi.casts.emission import TaskAssignment
+    from lionagi.cli.orchestrate.flow import _build_dag, _PlanResult
+
+    env = _minimal_env()
+    artifacts_dir = tmp_path / "artifacts"
+    await start_live_persist(
+        env,
+        invocation_kind="flow",
+        artifacts_path=str(artifacts_dir),
+    )
+    ctx = env._live_persist
+    assert ctx is not None
+    assert ctx["artifact_contract"] is None  # bench545 starting state
+
+    assignments = [TaskAssignment(task="review the PR", assignee="reviewer")]
+    plan_result = _PlanResult(
+        assignments=assignments,
+        agent_ids=["reviewer"],
+        dep_indices=[[]],
+        pool=[],
+        budget_preambles={},
+    )
+
+    with patch(
+        "lionagi.cli.orchestrate.flow.build_worker_branch",
+        return_value=(Branch(name="reviewer"), "codex/gpt-5.5", None),
+    ):
+        await _build_dag(env, "review this PR", plan_result, reactive_spec="off")
+
+    # The live in-memory contract was extended during DAG build, before any
+    # worker ran.
+    merged = env._live_persist["artifact_contract"]
+    assert merged is not None
+    entry = next(e for e in merged["expected"] if e["id"] == "reviewer__review")
+    assert entry["path"] == "reviewer/review.md"
+    assert entry["required"] is True
+
+    # ...and the session row itself carries it — the exact field bench545
+    # showed stuck at NULL for the whole play.
+    async with StateDB() as db:
+        s = await db.get_session(ctx["session_id"])
+    assert s is not None
+    stored = s["artifact_contract_json"]
+    assert isinstance(stored, dict)
+    assert "reviewer__review" in {e["id"] for e in stored["expected"]}
+
+    # The reviewer leg never wrote reviewer/review.md.
+    await stop_live_persist(env, status="completed")
+
+    async with StateDB() as db:
+        s = await db.get_session(ctx["session_id"])
+    assert s is not None
+    assert s["status"] == "failed"
+    assert s["status_reason_code"] == "run.failed.missing_artifact"
+
+
+async def test_execute_dag_escalation_without_artifact_declaration_fails_loud(
+    temp_db_path: Path,
+    tmp_path: Path,
+):
+    """B path: an ordinary (non-gate) role with no artifact_defaults at all —
+    the undeclared case _build_dag's merge cannot catch by construction — that
+    gives up mid-run via EscalationRequest instead of completing cleanly. The
+    ReactiveExecutor already tracks this (NodeEscalated / _escalated_ids) but
+    before this fix nothing surfaced it past _execute_dag, so a completed run
+    with an escalated leg and no result read as an ordinary clean completion.
+    This is the backstop: it must still fail loud even though no contract was
+    ever declared for the leg.
+    """
+    from unittest.mock import MagicMock, patch
+
+    from lionagi.casts.emission import TaskAssignment
+    from lionagi.cli.orchestrate.flow import _DagState, _execute_dag, _PlanResult
+
+    env = _minimal_env()
+    artifacts_dir = tmp_path / "artifacts"
+    await start_live_persist(env, invocation_kind="flow", artifacts_path=str(artifacts_dir))
+    ctx = env._live_persist
+    assert ctx is not None
+
+    assignments = [TaskAssignment(task="do the risky thing", assignee="worker")]
+    plan_result = _PlanResult(
+        assignments=assignments,
+        agent_ids=["worker"],
+        dep_indices=[[]],
+        pool=[],
+        budget_preambles={},
+    )
+    dag_state = _DagState(
+        node_ids=["node-0"],
+        known_nodes={"node-0"},
+        deps_by_node={"node-0": []},
+        reactive=False,
+        spawn_roles=None,
+        role_base={},
+        worker_models=["codex/gpt-5.5"],
+    )
+
+    from lionagi.engines import PlanningEngine
+
+    async def _run_dag_result():
+        return {
+            "operation_results": {},
+            "spawned_operations": 0,
+            "escalated_operations": ["node-0"],
+        }
+
+    fake_engine_run = MagicMock()
+    fake_engine_run.run_dag = MagicMock(return_value=_run_dag_result())
+
+    with patch.object(PlanningEngine, "new_run", return_value=fake_engine_run):
+        exec_result = await _execute_dag(env, plan_result, dag_state, max_concurrent=1, max_ops=0)
+
+    assert exec_result.escalated_agent_ids == ["worker"]
+    assert env._escalated_evidence == [
+        {"kind": "escalated_operation", "id": "worker", "label": "worker"}
+    ]
+    # Confirms this really is the undeclared case, not the A-path in disguise.
+    assert env._live_persist["artifact_contract"] is None
+
+    await stop_live_persist(env, status="completed")
+
+    async with StateDB() as db:
+        s = await db.get_session(ctx["session_id"])
+    assert s is not None
+    assert s["status"] == "failed"
+    assert s["status_reason_code"] == "run.failed.escalated"
+
+    import json as _json
+
+    evidence = s["status_evidence_refs"]
+    evidence = _json.loads(evidence) if isinstance(evidence, str) else evidence
+    assert any(e.get("id") == "worker" for e in evidence)

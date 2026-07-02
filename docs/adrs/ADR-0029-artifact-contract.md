@@ -99,6 +99,23 @@ for outcome-kind contract checks (deferred to v1.1; see Non-Goals).
 written at session creation, never updated. Editing the playbook
 mid-run does not retroactively change what was expected.
 
+> **DAG-flow extension** (`li o flow`, `lionagi/cli/orchestrate/flow.py`):
+> the rule above assumes the full contract is resolvable at
+> `create_session` time, which holds for the single-agent case (§5) where
+> the playbook and agent profile are both known before the session row is
+> written. Multi-leg flows break that assumption — which casts `Role` (or
+> `AgentProfile`) runs which leg is only known once planning finishes,
+> which happens *after* `create_session`. `_build_dag` performs exactly
+> one additional write to `artifact_contract_json`, folding each leg's
+> resolved role `artifact_defaults` into the contract, namespaced under
+> that leg's own artifact subdirectory. This happens once, before
+> `_execute_dag` runs any leg — i.e. before any worker output could exist
+> — so the anti-drift guarantee ("no retroactive change of what was
+> expected") still holds; it is just anchored at "DAG built" rather than
+> "session created" for this call path. No other call site may write this
+> column after that point. See `_SESSION_COLUMNS` in `lionagi/state/db.py`
+> for the allowlist entry and rationale.
+
 ### 2. Playbook contract shape
 
 ```yaml
@@ -496,6 +513,13 @@ lionagi/cli/_agents.py                    # AgentProfile parser exposes
 apps/studio/server/services/sessions.py   # include contract+verification in API
 apps/studio/server/routers/runs.py        # detail endpoint exposes both
 apps/studio/frontend/components/runs/ExpectedArtifacts.tsx  # new UI section
+lionagi/cli/orchestrate/flow.py           # DAG-flow extension: _build_dag folds
+                                          # per-leg role artifact_defaults into
+                                          # the contract once, pre-execution (see
+                                          # "DAG-flow extension" note above)
+lionagi/casts/pattern.py                  # Role.artifact_defaults field
+lionagi/casts/roles/reviewer.py           # ROLE.artifact_defaults declares review.md
+lionagi/casts/roles/critic.py             # ROLE.artifact_defaults declares review.md
 ```
 
 ## Consequences

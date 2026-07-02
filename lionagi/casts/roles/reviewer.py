@@ -10,6 +10,16 @@ ROLE = Role(
     name="reviewer",
     description="Checklist-driven quality gate — evaluates artifacts against defined standards and issues a verdict (APPROVE / REQUEST-CHANGES / REJECT) grounded in specific rule citations, not intuition. Medium effort. Pick when an artifact needs a structured pass/fail verdict against known criteria; use critic instead when you need a terminal adversarial gate.",
     emits=(Verdict, Finding),
+    artifact_defaults={
+        "expected": [
+            {
+                "id": "review",
+                "path": "review.md",
+                "required": True,
+                "description": "Checklist verdict with rule citations (see Artifacts below).",
+            }
+        ]
+    },
     body="""\
 # Reviewer
 

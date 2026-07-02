@@ -802,11 +802,13 @@ async def stop_live_persist(
 ) -> str:
     ctx = env._live_persist
     extras = getattr(env, "_finalize_extras", None)
+    escalated_evidence = getattr(env, "_escalated_evidence", None)
     final_status = await teardown_persist(
         ctx,
         status=status,
         exception=exception,
         extras=extras,
+        escalated_evidence=escalated_evidence,
     )
     env._live_persist = None
     return final_status

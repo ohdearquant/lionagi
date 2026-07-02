@@ -280,6 +280,7 @@ async def _teardown_common(
     artifact_contract: dict | None,
     extras: dict | None = None,
     identity_markers: dict | None = None,
+    escalated_evidence: list[dict] | None = None,
 ) -> str:
     from lionagi.state.artifact_verifier import (
         missing_artifact_evidence,
@@ -333,6 +334,23 @@ async def _teardown_common(
                 str(entry.get("id", "")) for entry in missing
             ]
 
+    # Escalation backstop: a leg that never declared an artifact (so the check
+    # above has nothing to verify) but gave up mid-run via EscalationRequest
+    # still must not read as a clean completion. Only fires when nothing else
+    # already made the run loud — an existing failure reason (including the
+    # artifact check above) is preserved untouched.
+    if escalated_evidence and final_status == "completed":
+        from lionagi.state.reasons import RunReasons
+
+        final_status = "failed"
+        final_reason_code = RunReasons.FAILED_ESCALATED
+        ids = [str(e.get("id", "")) for e in escalated_evidence]
+        final_reason_summary = (
+            f"{len(escalated_evidence)} operation(s) escalated without producing "
+            f"required output: {', '.join(ids)}."
+        )
+        final_evidence_refs = escalated_evidence
+
     await db.update_status(
         "session",
         session_id,
@@ -361,6 +379,7 @@ async def teardown_persist(
     status: str = "completed",
     exception: BaseException | None = None,
     extras: dict | None = None,
+    escalated_evidence: list[dict] | None = None,
 ) -> str:
     if ctx is None:
         return status
@@ -377,6 +396,7 @@ async def teardown_persist(
             artifact_contract=ctx.get("artifact_contract"),
             extras=extras,
             identity_markers=ctx.get("identity_markers"),
+            escalated_evidence=escalated_evidence,
         )
 
         from lionagi.hooks import unroute_message_persistence

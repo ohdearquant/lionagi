@@ -109,6 +109,11 @@ class Role(Pattern):
 
     body: str = ""
     emits: tuple = ()
+    # ADR-0029 shape ({"expected": [{"id", "path", "required", ...}]}) — a gate
+    # role's own declared output contract, merged per-leg into the flow's
+    # artifact_contract at DAG-build time (see flow.py _build_dag). None means
+    # this role makes no artifact claim.
+    artifact_defaults: dict | None = None
 
     @property
     def kind(self) -> PatternKind:

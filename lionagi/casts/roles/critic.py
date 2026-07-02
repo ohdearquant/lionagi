@@ -10,6 +10,16 @@ ROLE = Role(
     name="critic",
     description="Final adversarial quality gate — assumes the artifact is broken until evidence proves otherwise, runs last after all other verify-zone roles, and issues the terminal quality verdict (APPROVE / APPROVE-WITH-FIXES / REQUEST-CHANGES / REJECT). High effort. Pick when a release needs a terminal correctness gate, not a checklist pass.",
     emits=(Verdict, Finding),
+    artifact_defaults={
+        "expected": [
+            {
+                "id": "review",
+                "path": "review.md",
+                "required": True,
+                "description": "Adversarial review report with terminal verdict (see Artifacts below).",
+            }
+        ]
+    },
     body="""\
 # Critic
 
