@@ -6,15 +6,22 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+## [0.27.2] - 2026-07-02
+
 ### Added
 
 - `SESSION_START`, `SESSION_END`, and `BRANCH_CREATE` hook emissions wired in `lionagi/cli/_runs.py`. The built-in handlers in `lionagi.hooks.builtins` (`persist_session_start`, `persist_session_end`, `persist_branch_provenance`) are now called at the correct lifecycle moments. Both `persist_session_start` and `persist_session_end` guard against double-fire: a second emit for an already-started or already-terminal session is a no-op and does not insert a duplicate `status_transitions` row.
 - `log_tool_call` in `lionagi.agent.hooks` and `lionagi.hooks.builtins` — canonical name for the tool-call observability post-hook, replacing `log_tool_use`. Also name-addressable via `lionagi.hooks.loader` registry as `"log_tool_call"`.
 - `lionagi.testing` is now documented as a supported public surface. Register `lionagi.testing.pytest_plugin` in your `pytest_plugins` to get the bundled fixtures.
 - `StateDB` is now backend-pluggable on a single SQLAlchemy-Core implementation: the default embedded SQLite backend needs no configuration, and an optional PostgreSQL backend is available via `pip install lionagi[postgres]` with a `postgresql+asyncpg://…` URL.
+- `li agent` gains `--prompt TEXT` and `--prompt-file PATH` (`-` reads stdin) for scripted callers, alongside the existing positional prompt.
 
 ### Changed
 
+- The Gemini CLI provider now targets Antigravity (`agy`), Google's successor to the standalone Gemini CLI, via its headless JSON print mode. Streaming persistence reaches parity with the codex and claude CLI providers: the conversation id is captured as the session id (enabling native resume) and usage, turn count, and duration are recorded.
+- Default Gemini models track the newest families served by `agy`: `gemini-3.5-flash` (default) and `gemini-3.1-pro`. Legacy preview names remain aliases.
+- The bare `sonnet` model alias now resolves to `claude-sonnet-5`.
+- `li agent` argument parsing now accepts flags before the prompt (for example `li agent codex/model --effort high "prompt"`); previously a flag ahead of the prompt raised an "unrecognized arguments" error.
 - `sqlalchemy[asyncio]>=2.0.0` is now a core dependency — the `StateDB` state layer (used by `li agent`, `li play`, and the lifecycle hooks) runs on SQLAlchemy-Core for both the SQLite and PostgreSQL backends. The `[postgres]` extra now carries only the PostgreSQL driver stack (`pydapter[postgres]`, `asyncpg`).
 - `EndpointConfig` gains a `serialize_by_alias` flag (default `False`); the Exa and Firecrawl endpoints set it to `True`, removing six identical per-file `create_payload` overrides whose only purpose was alias-serialization.
 - Provider endpoint files no longer resolve `api_key` individually; `EndpointMeta.create_config` reads the appropriate settings field automatically when `api_key_env` is declared on the provider config, removing 21 identical boilerplate blocks while preserving per-provider env-var names and the Ollama no-key path.
@@ -30,12 +37,14 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
 
 ### Removed
 
+- The unused `lionagi.outcomes` package (dead code, never part of the public surface) has been removed.
 - `request_fields` phantom param dropped from `MessageManager.create_instruction`, `create_message`, and `add_message` (was accepted but silently ignored); `parse_lndl_fuzzy` removed from `lndl.__all__` (Phase-2 feature, not yet shipped).
 - Internal `_get_oai_config` alias in `lionagi.testing._legacy` removed (was never public; callers within the module now call `oai_chat_endpoint_config` directly).
 - `LogManager`, `LogManagerConfig`, and `to_list_type` removed from the public `lionagi.protocols.types` surface (back-compat aliases and an internal Pile helper that inflated the curated re-export set); import them from their canonical modules `lionagi.protocols.generic.log` and `lionagi.protocols.generic.pile` instead.
 
 ### Fixed
 
+- A degraded CLI termination (for example a timeout that arrives after a complete final message) no longer discards the delivered response or surfaces successful output as an error. `li agent` flushes already-streamed text into the transcript before raising, and the agy wrapper leads error chunks with the terminal status instead of impersonating the response as the error message.
 - Python 3.14 compatibility: `FieldModel.annotated()` and `Spec` materialized `Annotated` types via the `Annotated.__class_getitem__` attribute, which 3.14 removed from typing special forms (raising `AttributeError: __class_getitem__`). Both now use canonical subscription `Annotated[tuple(args)]`, valid on 3.10–3.14.
 - CI now tests every Python version in the matrix. A committed `.python-version` was overriding the matrix interpreter for `uv venv`/`uv sync`/`uv run`, so every leg silently ran on 3.10; the `test` job now sets `UV_PYTHON` to the matrix version.
 - `ReactiveExecutor.execute()` / `execute_stream()` subscribe to the bus via the public `session.observer` property instead of the private `_observer` attribute, which is `None` until first accessed — reactive `SpawnRequest` events were liable to be silently dropped.
