@@ -633,7 +633,31 @@ def add_orchestrate_subparser(
     )
     add_common_cli_args(fl)
 
-    return {"fanout": fo, "flow": fl}
+    # `li o ctl status <id>` — generic alias into the same status renderer as
+    # `li agent status` / `li play status` (ADR-0085 section 6). Only
+    # `status` is implemented today; pause/resume/msg/stop land with the
+    # session_controls transport (ADR-0085 part 1).
+    ctl = orch_sub.add_parser(
+        "ctl",
+        help="Control-plane surfaces for a run (status; more verbs land later).",
+        description="Read-only and (later) control operations addressed by run id.",
+    )
+    ctl_sub = ctl.add_subparsers(dest="ctl_command", required=True)
+    ctl_status = ctl_sub.add_parser(
+        "status",
+        help="Show lifecycle status for a session, invocation, or play by id.",
+        description=(
+            "Generic id-addressed status lookup — no agent/play kind scoping, so "
+            "<id> is required (no 'latest run' default). Prefer `li agent status` "
+            "/ `li play status` when the kind is known."
+        ),
+    )
+    ctl_status.add_argument("id", help="Session, invocation, or play ID (or short prefix).")
+    ctl_status.add_argument(
+        "--json", action="store_true", dest="as_json", help="Emit a stable JSON object."
+    )
+
+    return {"fanout": fo, "flow": fl, "ctl": ctl}
 
 
 def _run_orch_command(coro, *, verbose: bool, extra_handlers: tuple = ()) -> tuple[object, int]:
@@ -904,6 +928,14 @@ def run_orchestrate(args: argparse.Namespace) -> int:
         if not args.verbose:
             print(output)
         return EXIT_CODE_BY_STATUS.get(terminal_status, 0)
+
+    if args.orch_command == "ctl":
+        if args.ctl_command == "status":
+            from lionagi.cli.status import run_ctl_status
+
+            return run_ctl_status(args)
+        log_error(f"Unknown ctl command: {args.ctl_command}")
+        return 1
 
     log_error(f"Unknown orchestrate command: {args.orch_command}")
     return 1

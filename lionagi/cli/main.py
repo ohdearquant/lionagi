@@ -204,6 +204,10 @@ def _handle_play_shortcut(argv: list[str]) -> list[str] | int:
         return 0
     if head == "check":
         return _handle_play_check(rest[1:])
+    if head == "status":
+        from .status import run_play_status
+
+        return run_play_status(rest[1:])
     if head.startswith("-"):
         log_error(
             "li play NAME must come before flags\n"
@@ -251,6 +255,14 @@ def main(argv: list[str] | None = None) -> int:
     if isinstance(rewritten, int):
         return rewritten
     _argv = rewritten
+
+    # `li agent status [<id>] [--json]` is a pure-read status surface, not a
+    # prompt to send — must be intercepted before the intermixed agent-flag
+    # parsing below, which otherwise treats "status" as query text (ADR-0085).
+    if _argv and _argv[0] == "agent" and len(_argv) > 1 and _argv[1] == "status":
+        from .status import run_agent_status
+
+        return run_agent_status(_argv[2:])
 
     parser = argparse.ArgumentParser(
         prog="li",
