@@ -10,10 +10,14 @@ import time
 from datetime import datetime, timezone
 from pathlib import Path
 
-from lionagi.state.claude_mirror import session_db_id
-from lionagi.state.db import StateDB
+import pytest
 
-from ._helpers import run_async
+pytest.importorskip("fastapi", reason="studio extra not installed")
+
+from lionagi.state.claude_mirror import session_db_id  # noqa: E402
+from lionagi.state.db import StateDB  # noqa: E402
+
+from ._helpers import run_async  # noqa: E402
 
 
 def _write_transcript(root: Path, uid: str, *, cwd: str, base_ts: float) -> Path:
