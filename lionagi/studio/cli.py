@@ -18,6 +18,14 @@ from lionagi.cli._logging import warn
 
 _STUDIO_IMAGE = "ghcr.io/ohdearquant/lion-studio:latest"
 
+# Keys the scheduler engine's chain-fire merge (`{**schedule, **chain_action}`,
+# see studio/scheduler/engine.py) actually understands. Anything else would
+# still shallow-merge into the fired child schedule row and silently clobber
+# unrelated columns (id, trigger_type, cron_expr, ...) — reject it up front.
+_CHAIN_ACTION_ALLOWED_KEYS = frozenset(
+    {"kind", "action_kind", "model", "prompt", "agent", "playbook", "on_success", "on_fail"}
+)
+
 
 def _mount_allowed_roots() -> list[Path]:
     """Host path prefixes allowed for Docker bind-mounts (home + XDG_CONFIG_HOME)."""
@@ -528,6 +536,24 @@ def _cmd_get(args: argparse.Namespace) -> int:
     return 0
 
 
+def _parse_chain_action(raw: str, flag: str) -> tuple[dict[str, Any] | None, str | None]:
+    """Parse+validate a --on-success/--on-fail JSON blob.
+
+    Returns (parsed_dict, error_message); error_message is None on success.
+    """
+    try:
+        parsed = json.loads(raw)
+    except json.JSONDecodeError as exc:
+        return None, f"{flag}: invalid JSON ({exc})"
+    if not isinstance(parsed, dict):
+        return None, f"{flag}: must be a JSON object, got {type(parsed).__name__}"
+    unknown = set(parsed) - _CHAIN_ACTION_ALLOWED_KEYS
+    if unknown:
+        allowed = ", ".join(sorted(_CHAIN_ACTION_ALLOWED_KEYS))
+        return None, f"{flag}: unknown key(s) {sorted(unknown)}; allowed: {allowed}"
+    return parsed, None
+
+
 def _cmd_create(args: argparse.Namespace) -> int:
     body: dict[str, Any] = {
         "name": args.name,
@@ -569,6 +595,32 @@ def _cmd_create(args: argparse.Namespace) -> int:
                 body["action_project"] = detected
     if args.description:
         body["description"] = args.description
+    if args.on_success:
+        parsed, err = _parse_chain_action(args.on_success, "--on-success")
+        if err:
+            print(f"Error: {err}", file=sys.stderr)
+            return 1
+        if "on_success" not in parsed:
+            warn(
+                '--on-success does not set its own "on_success" key — under the '
+                "engine's shallow merge, the chained run will inherit THIS schedule's "
+                "on_success and may re-fire again at the next chain depth. Add "
+                '"on_success": null to the JSON to stop the chain here.'
+            )
+        body["on_success"] = parsed
+    if args.on_fail:
+        parsed, err = _parse_chain_action(args.on_fail, "--on-fail")
+        if err:
+            print(f"Error: {err}", file=sys.stderr)
+            return 1
+        if "on_fail" not in parsed:
+            warn(
+                '--on-fail does not set its own "on_fail" key — under the engine\'s '
+                "shallow merge, the chained run will inherit THIS schedule's on_fail "
+                'and may re-fire again at the next chain depth. Add "on_fail": null '
+                "to the JSON to stop the chain here."
+            )
+        body["on_fail"] = parsed
     result = _api("/", method="POST", body=body)
     if result is None:
         return 1
@@ -675,6 +727,33 @@ def add_schedule_subparser(subparsers: argparse._SubParsersAction) -> None:
     )
     create_p.add_argument("--project", help="Project name.")
     create_p.add_argument("--description", help="Human-readable description.")
+    create_p.add_argument(
+        "--on-success",
+        dest="on_success",
+        metavar="JSON",
+        help=(
+            "Chain action to fire when this run exits 0, as a JSON object "
+            "(allowed keys: kind/action_kind, model, prompt, agent, playbook, "
+            "on_success, on_fail). WARNING — shallow merge: the chain child is "
+            "built as {**this_schedule, **on_success}, so any key you omit is "
+            "INHERITED from this schedule, including on_success/on_fail "
+            "themselves. A 2-level chain must set the inner level's own "
+            '"on_success": null explicitly, or the chain keeps re-firing at '
+            "each depth (capped, but rarely what you want). Example: "
+            '--on-success \'{"prompt": "notify done", "on_success": null}\'.'
+        ),
+    )
+    create_p.add_argument(
+        "--on-fail",
+        dest="on_fail",
+        metavar="JSON",
+        help=(
+            "Chain action to fire when this run exits non-zero, as a JSON "
+            "object (same allowed keys and shallow-merge caveat as "
+            "--on-success — see above). Example: --on-fail "
+            '\'{"prompt": "alert on-call", "on_fail": null}\'.'
+        ),
+    )
 
     # enable / disable / trigger / delete
     for sub_name, sub_help in (

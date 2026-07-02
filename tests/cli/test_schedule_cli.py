@@ -239,3 +239,202 @@ def test_schedule_create_auto_detect_exception_silently_skipped(monkeypatch):
 
     assert outcome["result"] == 0
     assert "action_project" not in outcome["body"]
+
+
+# ---------------------------------------------------------------------------
+# _cmd_create: --on-success / --on-fail chain flags
+# ---------------------------------------------------------------------------
+
+
+def test_schedule_create_on_success_round_trips_to_body(monkeypatch):
+    """--on-success JSON parses and lands on the posted body as a dict."""
+    outcome = _run_create(
+        monkeypatch, ["--on-success", '{"prompt": "notify done", "on_success": null}']
+    )
+
+    assert outcome["result"] == 0
+    assert outcome["body"]["on_success"] == {"prompt": "notify done", "on_success": None}
+
+
+def test_schedule_create_on_fail_round_trips_to_body(monkeypatch):
+    """--on-fail JSON parses and lands on the posted body as a dict."""
+    outcome = _run_create(
+        monkeypatch, ["--on-fail", '{"prompt": "alert on-call", "on_fail": null}']
+    )
+
+    assert outcome["result"] == 0
+    assert outcome["body"]["on_fail"] == {"prompt": "alert on-call", "on_fail": None}
+
+
+def test_schedule_create_on_success_and_on_fail_together(monkeypatch):
+    """Both chain flags can be set on the same create call."""
+    outcome = _run_create(
+        monkeypatch,
+        [
+            "--on-success",
+            '{"agent": "notifier", "on_success": null}',
+            "--on-fail",
+            '{"agent": "pager", "on_fail": null}',
+        ],
+    )
+
+    assert outcome["result"] == 0
+    assert outcome["body"]["on_success"] == {"agent": "notifier", "on_success": None}
+    assert outcome["body"]["on_fail"] == {"agent": "pager", "on_fail": None}
+
+
+def test_schedule_create_on_success_malformed_json_errors_cleanly(monkeypatch, capsys):
+    """Malformed --on-success JSON returns 1 with a clear stderr message, no API call."""
+    api_called = []
+    import lionagi.studio.cli as sched_mod
+
+    monkeypatch.setattr(sched_mod, "_api", lambda *a, **kw: api_called.append(1))
+
+    from lionagi.studio.cli import add_schedule_subparser, run_schedule
+
+    parser = argparse.ArgumentParser()
+    sub = parser.add_subparsers(dest="command")
+    add_schedule_subparser(sub)
+    args = parser.parse_args(
+        ["schedule", "create", "my-sched", "--cron", "0 * * * *", "--on-success", "{not json"]
+    )
+    result = run_schedule(args)
+
+    assert result == 1
+    assert api_called == []
+    captured = capsys.readouterr()
+    assert "--on-success" in captured.err
+    assert "invalid JSON" in captured.err
+
+
+def test_schedule_create_on_fail_malformed_json_errors_cleanly(monkeypatch, capsys):
+    """Malformed --on-fail JSON returns 1 with a clear stderr message, no API call."""
+    api_called = []
+    import lionagi.studio.cli as sched_mod
+
+    monkeypatch.setattr(sched_mod, "_api", lambda *a, **kw: api_called.append(1))
+
+    from lionagi.studio.cli import add_schedule_subparser, run_schedule
+
+    parser = argparse.ArgumentParser()
+    sub = parser.add_subparsers(dest="command")
+    add_schedule_subparser(sub)
+    args = parser.parse_args(
+        ["schedule", "create", "my-sched", "--cron", "0 * * * *", "--on-fail", "[1, 2"]
+    )
+    result = run_schedule(args)
+
+    assert result == 1
+    assert api_called == []
+    captured = capsys.readouterr()
+    assert "--on-fail" in captured.err
+    assert "invalid JSON" in captured.err
+
+
+def test_schedule_create_on_success_non_object_json_rejected(monkeypatch, capsys):
+    """--on-success must be a JSON object, not e.g. a bare list or string."""
+    import lionagi.studio.cli as sched_mod
+
+    monkeypatch.setattr(sched_mod, "_api", lambda *a, **kw: (_ for _ in ()).throw(AssertionError))
+
+    from lionagi.studio.cli import add_schedule_subparser, run_schedule
+
+    parser = argparse.ArgumentParser()
+    sub = parser.add_subparsers(dest="command")
+    add_schedule_subparser(sub)
+    args = parser.parse_args(
+        ["schedule", "create", "my-sched", "--cron", "0 * * * *", "--on-success", "[1, 2, 3]"]
+    )
+    result = run_schedule(args)
+
+    assert result == 1
+    captured = capsys.readouterr()
+    assert "must be a JSON object" in captured.err
+
+
+def test_schedule_create_on_success_unknown_key_rejected(monkeypatch, capsys):
+    """A chain_action key the engine's merge doesn't understand is rejected up front,
+    since it would otherwise silently clobber an unrelated schedule column via the
+    shallow merge in scheduler/engine.py."""
+    import lionagi.studio.cli as sched_mod
+
+    monkeypatch.setattr(sched_mod, "_api", lambda *a, **kw: (_ for _ in ()).throw(AssertionError))
+
+    from lionagi.studio.cli import add_schedule_subparser, run_schedule
+
+    parser = argparse.ArgumentParser()
+    sub = parser.add_subparsers(dest="command")
+    add_schedule_subparser(sub)
+    args = parser.parse_args(
+        [
+            "schedule",
+            "create",
+            "my-sched",
+            "--cron",
+            "0 * * * *",
+            "--on-success",
+            '{"trigger_type": "interval"}',
+        ]
+    )
+    result = run_schedule(args)
+
+    assert result == 1
+    captured = capsys.readouterr()
+    assert "unknown key" in captured.err
+    assert "trigger_type" in captured.err
+
+
+def test_schedule_create_on_success_missing_explicit_key_warns(monkeypatch):
+    """A nested chain_action that omits its own on_success key triggers the
+    re-fire warning (shallow-merge inheritance gotcha)."""
+    import lionagi.studio.cli as sched_mod
+
+    warnings: list[str] = []
+    monkeypatch.setattr(sched_mod, "warn", warnings.append)
+
+    outcome = _run_create(monkeypatch, ["--on-success", '{"prompt": "notify done"}'])
+
+    assert outcome["result"] == 0
+    assert len(warnings) == 1
+    assert "on_success" in warnings[0]
+    assert "re-fire" in warnings[0]
+
+
+def test_schedule_create_on_fail_missing_explicit_key_warns(monkeypatch):
+    """A nested chain_action that omits its own on_fail key triggers the
+    re-fire warning (shallow-merge inheritance gotcha)."""
+    import lionagi.studio.cli as sched_mod
+
+    warnings: list[str] = []
+    monkeypatch.setattr(sched_mod, "warn", warnings.append)
+
+    outcome = _run_create(monkeypatch, ["--on-fail", '{"prompt": "alert on-call"}'])
+
+    assert outcome["result"] == 0
+    assert len(warnings) == 1
+    assert "on_fail" in warnings[0]
+    assert "re-fire" in warnings[0]
+
+
+def test_schedule_create_on_success_explicit_null_no_warning(monkeypatch):
+    """Explicitly setting on_success: null in the chain_action suppresses the warning."""
+    import lionagi.studio.cli as sched_mod
+
+    warnings: list[str] = []
+    monkeypatch.setattr(sched_mod, "warn", warnings.append)
+
+    outcome = _run_create(
+        monkeypatch, ["--on-success", '{"prompt": "notify done", "on_success": null}']
+    )
+
+    assert outcome["result"] == 0
+    assert warnings == []
+
+
+def test_schedule_create_without_chain_flags_omits_fields(monkeypatch):
+    """No --on-success/--on-fail: neither key is posted to the API."""
+    outcome = _run_create(monkeypatch, [])
+
+    assert outcome["result"] == 0
+    assert "on_success" not in outcome["body"]
+    assert "on_fail" not in outcome["body"]
