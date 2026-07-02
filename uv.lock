@@ -3118,6 +3118,7 @@ dependencies = [
     { name = "pydantic-settings" },
     { name = "python-dotenv" },
     { name = "pyyaml" },
+    { name = "sqlalchemy", extra = ["asyncio"] },
     { name = "tiktoken" },
     { name = "toml" },
 ]
@@ -3139,7 +3140,6 @@ all = [
     { name = "ollama" },
     { name = "pydapter", extra = ["postgres"] },
     { name = "rich" },
-    { name = "sqlalchemy", extra = ["asyncio"] },
     { name = "starlette" },
     { name = "xmltodict" },
 ]
@@ -3162,7 +3162,6 @@ pandas = [
 postgres = [
     { name = "asyncpg" },
     { name = "pydapter", extra = ["postgres"] },
-    { name = "sqlalchemy", extra = ["asyncio"] },
 ]
 reader = [
     { name = "docling" },
@@ -3272,7 +3271,7 @@ requires-dist = [
     { name = "python-dotenv", specifier = ">=1.2.2" },
     { name = "pyyaml", specifier = ">=6.0" },
     { name = "rich", marker = "extra == 'rich'", specifier = ">=13.0.0" },
-    { name = "sqlalchemy", extras = ["asyncio"], marker = "extra == 'postgres'", specifier = ">=2.0.0" },
+    { name = "sqlalchemy", extras = ["asyncio"], specifier = ">=2.0.0" },
     { name = "starlette", marker = "extra == 'mcp'", specifier = ">=1.3.1" },
     { name = "starlette", marker = "extra == 'studio'", specifier = ">=1.3.1" },
     { name = "tiktoken", specifier = ">=0.10.0" },
