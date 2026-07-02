@@ -89,11 +89,15 @@ async def persist_session_end(
     teardown_persist() always stamps the terminal status (via
     _teardown_common()'s update_status() call) before emitting SESSION_END, so
     by the time this handler runs in the normal CLI flow the row is already
-    terminal. Only the status/reason_code/ended_at transition is skipped in
-    that case, to avoid a duplicate status_transitions row and to keep a
-    genuine double-fire from clobbering an already-recorded status. Usage
-    fields are new information either way and are written regardless of
-    whether the row was already terminal.
+    terminal. In that case only the pure usage fields (input_tokens,
+    output_tokens, total_cost_usd, num_turns, duration_ms) are written — the
+    status/reason_code/ended_at transition is skipped (avoids a duplicate
+    status_transitions row and keeps a genuine double-fire from clobbering an
+    already-recorded status), and node_metadata is left untouched too, since
+    _teardown_common() already owns it for a terminal row (its own
+    extras/identity-markers write happens before update_status()) and
+    update_session() does a plain column SET, not a merge — writing
+    {"error": ...} here would clobber that richer data rather than add to it.
     """
     from lionagi.state.db import SESSION_TERMINAL_STATUSES
     from lionagi.state.reasons import RunReasons
@@ -108,8 +112,8 @@ async def persist_session_end(
     fields: dict[str, Any] = {}
     if not already_terminal:
         fields["ended_at"] = time.time()
-    if error is not None:
-        fields["node_metadata"] = {"error": error}
+        if error is not None:
+            fields["node_metadata"] = {"error": error}
     if input_tokens is not None:
         fields["input_tokens"] = input_tokens
     if output_tokens is not None:

@@ -498,6 +498,74 @@ class TestSessionEndEmission:
             _m._SHARED.pop(db_path, None)
             _m._SHARED.pop(normalize_state_db_url(None), None)
 
+    async def test_already_terminal_with_error_preserves_node_metadata(self, monkeypatch, tmp_path):
+        """already_terminal + error must not clobber node_metadata _teardown_common wrote.
+
+        _teardown_common() writes node_metadata (extras + identity markers)
+        and transitions the row to terminal status before SESSION_END fires.
+        If SESSION_END later carries an error (the exception/timeout teardown
+        path), the already_terminal branch must not overwrite that richer
+        node_metadata with a bare {"error": ...} dict — update_session() does
+        a plain column SET, not a merge, so any write there replaces the
+        whole column instead of adding to it.
+        """
+        import json
+
+        from lionagi.hooks.builtins import persist_session_end
+        from lionagi.hooks.bus import HookBus, HookPoint
+
+        db_path = _redirect_shared_db(monkeypatch, tmp_path)
+
+        db = await _shared(db_path)
+        try:
+            sid, prog_id = "se-terminal-error-1", "prog-se-4"
+            await _seed_session(db, sid, prog_id, status="running")
+
+            # Written as a JSON string, matching _teardown_common's own
+            # update_kwargs["node_metadata"] = json.dumps({**extras, **markers}).
+            rich_metadata = {"pid": 4242, "identity": "worker-abc", "cwd": "/work"}
+            await db.update_session(sid, node_metadata=json.dumps(rich_metadata))
+
+            bus = HookBus()
+            bus.on(HookPoint.SESSION_END, persist_session_end)
+
+            # First emit mirrors _teardown_common's update_status() call:
+            # transitions the row to terminal, no error on this leg.
+            await bus.emit(HookPoint.SESSION_END, session_id=sid, status="failed")
+
+            row = await db.get_session(sid)
+            assert row["status"] == "failed"
+            assert row["node_metadata"] == rich_metadata, (
+                "sanity: metadata survives the transition emit"
+            )
+
+            # Second emit mirrors the exception/timeout teardown path: the
+            # row is already terminal, error is set, and usage fields are
+            # attached (as a real li agent invocation would pass them).
+            await bus.emit(
+                HookPoint.SESSION_END,
+                session_id=sid,
+                status="failed",
+                error="boom",
+                num_turns=5,
+            )
+
+            row = await db.get_session(sid)
+            assert row["num_turns"] == 5, (
+                "usage fields must still be written on the terminal+error path"
+            )
+            assert row["node_metadata"] == rich_metadata, (
+                "node_metadata must survive an already-terminal SESSION_END with an "
+                "error — _teardown_common owns it for terminal rows"
+            )
+        finally:
+            await db.close()
+            import lionagi.state.db as _m
+            from lionagi.state.engine import normalize_state_db_url
+
+            _m._SHARED.pop(db_path, None)
+            _m._SHARED.pop(normalize_state_db_url(None), None)
+
 
 class TestBranchCreateEmission:
     """BRANCH_CREATE emit → persist handler fires and is idempotent."""
