@@ -24,6 +24,7 @@ from lionagi.service.providers import (
     PROVIDER_FAST_KWARGS,
     PROVIDER_TO_ALIAS,
     PROVIDER_YOLO_KWARGS,
+    PROVIDERS_EFFORT_VIA_MODEL_NAME,
     PROVIDERS_NO_EFFORT,
     ModelSpec,
     _clamp_claude_effort,
@@ -40,6 +41,7 @@ __all__ = (
     "PROVIDER_FAST_KWARGS",
     "PROVIDER_TO_ALIAS",
     "PROVIDER_YOLO_KWARGS",
+    "PROVIDERS_EFFORT_VIA_MODEL_NAME",
     "PROVIDERS_NO_EFFORT",
     "add_common_cli_args",
     "build_chat_model",
@@ -77,6 +79,7 @@ def build_imodel_from_spec(
 
     # Resolve provider for yolo/effort kwarg lookup
     provider_raw = ms.model.split("/")[0] if "/" in ms.model else ms.model
+    resolved_model = ms.model
 
     if bypass:
         extra.update(PROVIDER_BYPASS_KWARGS.get(provider_raw, {}))
@@ -96,9 +99,16 @@ def build_imodel_from_spec(
             elif provider_raw in _CLAUDE_PROVIDER_NAMES:
                 effort = _clamp_claude_effort(effort, ms.model)
             extra[kwarg] = effort
+        elif provider_raw in PROVIDERS_EFFORT_VIA_MODEL_NAME:
+            # agy (Antigravity CLI) has no effort kwarg — fold effort into the
+            # resolved --model name instead (see resolve_agy_model).
+            from lionagi.providers.google.gemini_code import resolve_agy_model
+
+            bare_model = ms.model.split("/", 1)[1] if "/" in ms.model else ms.model
+            resolved_model = f"{provider_raw}/{resolve_agy_model(bare_model, effort=effort)}"
 
     return iModel(
-        model=ms.model,
+        model=resolved_model,
         endpoint="query_cli",
         api_key="dummy",
         **extra,
@@ -135,6 +145,12 @@ def build_chat_model(
             elif provider in _CLAUDE_PROVIDER_NAMES:
                 effort = _clamp_claude_effort(effort, model)
             extra[kwarg] = effort
+        elif provider in PROVIDERS_EFFORT_VIA_MODEL_NAME:
+            # agy (Antigravity CLI) has no effort kwarg — fold effort into the
+            # resolved --model name instead (see resolve_agy_model).
+            from lionagi.providers.google.gemini_code import resolve_agy_model
+
+            model = resolve_agy_model(model, effort=effort)
 
     if extra:
         return iModel(
@@ -201,7 +217,9 @@ def add_common_cli_args(parser: argparse.ArgumentParser) -> None:
         help=(
             "Override effort (overrides spec suffix). "
             "claude: low|medium|high|xhigh|max. "
-            "codex: none|minimal|low|medium|high|xhigh."
+            "codex: none|minimal|low|medium|high|xhigh. "
+            "gemini-code/gemini-cli: folded into --model as Low|Medium|High "
+            "(Gemini 3.1 Pro has no Medium)."
         ),
     )
     parser.add_argument(

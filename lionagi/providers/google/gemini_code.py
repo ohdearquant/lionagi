@@ -39,6 +39,7 @@ from lionagi.providers._cli_subprocess import (
 )
 from lionagi.service.connections.agentic_endpoint import AgenticEndpoint
 from lionagi.service.connections.endpoint_config import EndpointConfig
+from lionagi.service.providers import _clamp_gemini_effort
 from lionagi.service.types.cli_session import CLISession
 from lionagi.service.types.stream_chunk import StreamChunk
 from lionagi.utils import to_dict
@@ -131,29 +132,52 @@ _MODEL_ALIASES: dict[str, str] = {
 }
 
 
-def resolve_agy_model(model: str | None) -> str:
-    """Map a lionagi model spec onto an exact `agy --model` name."""
+def resolve_agy_model(model: str | None, effort: str | None = None) -> str:
+    """Map a lionagi model spec onto an exact `agy --model` name.
+
+    agy has no effort flag/kwarg — effort is expressed only as the
+    Low/Medium/High suffix on the model name. `effort` is lionagi's 5-level
+    scale (none|minimal|low|medium|high|xhigh|max); when given, it selects
+    that suffix for the Gemini flash/pro families instead of the family
+    default below (`_clamp_gemini_effort` collapses onto Gemini 3.1 Pro's
+    Low/High-only range). An exact `(...)`-qualified `model` — already a
+    concrete agy display name — always wins over `effort`.
+    """
     if not model:
-        return "Gemini 3.5 Flash (Medium)"
+        model = "gemini-3.5-flash"
     if model in _AGY_MODELS:
         return model
     key = model.strip().lower()
     if key in _MODEL_ALIASES:
-        return _MODEL_ALIASES[key]
+        target = _MODEL_ALIASES[key]
+        if effort is None:
+            return target
+        if target.startswith("Gemini 3.5 Flash"):
+            return f"Gemini 3.5 Flash ({_clamp_gemini_effort(effort, False)})"
+        if target.startswith("Gemini 3.1 Pro"):
+            return f"Gemini 3.1 Pro ({_clamp_gemini_effort(effort, True)})"
+        return target  # cross-family alias (Claude/GPT-OSS via agy) — no effort tiers
+
+    # effort given but the string isn't a known alias: still resolve a
+    # gemini family from it (e.g. "gemini-3-pro-experimental") so --effort
+    # keeps working on forward-compatible model names.
+    is_pro = "pro" in key
+    if effort is not None and (is_pro or "flash" in key or "gemini" in key):
+        family = "Gemini 3.1 Pro" if is_pro else "Gemini 3.5 Flash"
+        return f"{family} ({_clamp_gemini_effort(effort, is_pro)})"
 
     # Heuristic fallback: derive (family, effort) from a free-form string so
     # e.g. "gemini-3-pro-low" or "flash high" still resolve.
-    is_pro = "pro" in key
     if "low" in key:
-        effort = "Low"
+        heuristic = "Low"
     elif "high" in key or "xhigh" in key or "max" in key:
-        effort = "High"
+        heuristic = "High"
     else:
-        effort = "Low" if is_pro else "Medium"
+        heuristic = "Low" if is_pro else "Medium"
     if is_pro:
-        return f"Gemini 3.1 Pro ({'High' if effort == 'Medium' else effort})"
+        return f"Gemini 3.1 Pro ({'High' if heuristic == 'Medium' else heuristic})"
     if "flash" in key or "gemini" in key:
-        return f"Gemini 3.5 Flash ({effort})"
+        return f"Gemini 3.5 Flash ({heuristic})"
 
     # Not recognizable — pass through; agy rejects an invalid name clearly.
     return model

@@ -9,10 +9,20 @@ import pytest
 from lionagi.cli._providers import build_imodel_from_spec, parse_model_spec
 
 
-def test_parse_model_spec_rejects_effort_for_gemini_provider():
-    """Gemini providers do not support effort levels — ValueError is raised."""
+def test_parse_model_spec_folds_effort_suffix_for_gemini_code():
+    """gemini-code now supports effort levels — folded into the agy model-name
+    suffix downstream via resolve_agy_model — so an embedded '-high' suffix
+    parses instead of raising."""
+    ms = parse_model_spec("gemini-code/gemini-3.1-pro-high")
+    assert ms.model == "gemini-code/gemini-3.1-pro"
+    assert ms.effort == "high"
+
+
+def test_parse_model_spec_rejects_effort_for_bare_gemini_provider():
+    """The bare 'gemini' provider (direct Google API, not the agy CLI) still
+    does not support effort levels — ValueError is raised."""
     with pytest.raises(ValueError, match="does not support effort"):
-        parse_model_spec("gemini-code/gemini-3.1-pro-high")
+        parse_model_spec("gemini/gemini-3.1-pro-high")
 
 
 def test_build_imodel_from_spec_maps_effort_and_yolo_without_network(monkeypatch):
@@ -133,3 +143,113 @@ def test_module_invariant_sets_are_disjoint():
         f"Provider(s) {overlap!r} appear in both PROVIDERS_NO_EFFORT and "
         f"PROVIDER_EFFORT_KWARG — this is a classification conflict"
     )
+
+
+def test_module_invariant_three_way_disjoint_including_effort_via_model_name():
+    """PROVIDERS_NO_EFFORT, PROVIDER_EFFORT_KWARG, and PROVIDERS_EFFORT_VIA_MODEL_NAME
+    must be pairwise disjoint (providers.py raises RuntimeError at import time if
+    not; this re-checks for a readable failure message at the test layer)."""
+    from lionagi.cli._providers import (
+        PROVIDER_EFFORT_KWARG,
+        PROVIDERS_EFFORT_VIA_MODEL_NAME,
+        PROVIDERS_NO_EFFORT,
+    )
+
+    assert not (PROVIDERS_NO_EFFORT & PROVIDER_EFFORT_KWARG.keys())
+    assert not (PROVIDERS_NO_EFFORT & PROVIDERS_EFFORT_VIA_MODEL_NAME)
+    assert not (PROVIDER_EFFORT_KWARG.keys() & PROVIDERS_EFFORT_VIA_MODEL_NAME)
+
+
+# ── gemini-code / agy effort folding ───────────────────────────────────────
+# agy (Antigravity CLI) has no effort flag/kwarg — --effort must fold into
+# the resolved --model name suffix instead (see resolve_agy_model). These
+# cover the CLI-integration layer (build_chat_model / resolve_persisted_effort);
+# tests/providers/google/gemini_code/test_ndjson_mapping.py covers
+# resolve_agy_model itself directly.
+
+
+def test_gemini_code_no_longer_in_no_effort_but_bare_gemini_still_is():
+    """The four agy-backed aliases moved out of PROVIDERS_NO_EFFORT into
+    PROVIDERS_EFFORT_VIA_MODEL_NAME; bare 'gemini' (the API provider) stays."""
+    from lionagi.cli._providers import PROVIDERS_EFFORT_VIA_MODEL_NAME, PROVIDERS_NO_EFFORT
+
+    for alias in ("gemini_code", "gemini-code", "gemini_cli", "gemini-cli"):
+        assert alias not in PROVIDERS_NO_EFFORT
+        assert alias in PROVIDERS_EFFORT_VIA_MODEL_NAME
+    assert "gemini" in PROVIDERS_NO_EFFORT
+    assert "gemini" not in PROVIDERS_EFFORT_VIA_MODEL_NAME
+
+
+def test_build_chat_model_folds_effort_into_gemini_code_model_name():
+    """--effort high for gemini-code folds into the agy model-name suffix
+    (agy has no effort kwarg) instead of being silently dropped."""
+    from lionagi.cli._providers import build_chat_model
+
+    chat_model = build_chat_model(
+        "gemini-code", "gemini-3.5-flash", False, False, None, "high", False
+    )
+    assert isinstance(chat_model, str), f"expected bare spec string, got {type(chat_model)}"
+    assert chat_model == "gemini-code/Gemini 3.5 Flash (High)"
+
+
+def test_build_chat_model_folds_max_effort_to_high_for_gemini_code():
+    """--effort max clamps to agy's High tier (agy has no 'max')."""
+    from lionagi.cli._providers import build_chat_model
+
+    chat_model = build_chat_model(
+        "gemini-code", "gemini-3.5-flash", False, False, None, "max", False
+    )
+    assert chat_model == "gemini-code/Gemini 3.5 Flash (High)"
+
+
+def test_build_chat_model_folds_medium_effort_to_high_for_gemini_pro():
+    """Gemini 3.1 Pro has no Medium tier — medium clamps to High."""
+    from lionagi.cli._providers import build_chat_model
+
+    chat_model = build_chat_model(
+        "gemini-code", "gemini-3.1-pro", False, False, None, "medium", False
+    )
+    assert chat_model == "gemini-code/Gemini 3.1 Pro (High)"
+
+
+def test_build_chat_model_explicit_qualified_model_wins_over_effort():
+    """An explicit (...)-qualified model name is already a concrete agy
+    display name — it wins over --effort rather than being reinterpreted."""
+    from lionagi.cli._providers import build_chat_model
+
+    chat_model = build_chat_model(
+        "gemini-code", "Gemini 3.5 Flash (Low)", False, False, None, "high", False
+    )
+    assert chat_model == "gemini-code/Gemini 3.5 Flash (Low)"
+
+
+def test_build_chat_model_no_effort_leaves_gemini_model_unresolved():
+    """No --effort given: build_chat_model does not eagerly resolve through
+    resolve_agy_model (unchanged from pre-effort-folding behavior) — the bare
+    spec passes through and is resolved lazily in GeminiCodeRequest.as_cmd_args()."""
+    from lionagi.cli._providers import build_chat_model
+
+    chat_model = build_chat_model(
+        "gemini-code", "gemini-3.5-flash", False, False, None, None, False
+    )
+    assert chat_model == "gemini-code/gemini-3.5-flash"
+
+
+def test_resolve_persisted_effort_gemini_code_keeps_requested_effort():
+    """Unlike bare 'gemini', gemini-code now persists the requested effort
+    instead of forcing None — it consumes effort via model-name resolution,
+    not a PROVIDER_EFFORT_KWARG entry (there still isn't one for gemini-code)."""
+    from lionagi.cli._providers import (
+        PROVIDER_EFFORT_KWARG,
+        build_chat_model,
+        resolve_persisted_effort,
+    )
+
+    provider = "gemini-code"
+    assert provider not in PROVIDER_EFFORT_KWARG
+
+    chat_model = build_chat_model(provider, "gemini-3.5-flash", False, False, None, "high", False)
+    assert isinstance(chat_model, str)
+
+    result = resolve_persisted_effort(provider, chat_model, "high")
+    assert result == "high", f"expected requested effort to persist for gemini-code, got {result!r}"

@@ -286,3 +286,47 @@ async def test_on_text_and_on_final_fire():
 )
 def test_resolve_agy_model(spec, expected):
     assert resolve_agy_model(spec) == expected
+
+
+# ---------------------------------------------------------------------------
+# Model resolution — effort folding (agy has no effort flag/kwarg; effort is
+# expressed only as the Low/Medium/High suffix on --model)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "spec,effort,expected",
+    [
+        # lionagi effort clamps onto agy's Low/Medium/High tier for flash.
+        ("gemini-3.5-flash", "low", "Gemini 3.5 Flash (Low)"),
+        ("gemini-3.5-flash", "medium", "Gemini 3.5 Flash (Medium)"),
+        ("gemini-3.5-flash", "high", "Gemini 3.5 Flash (High)"),
+        # xhigh/max both clamp to High — agy has no tier above High.
+        ("gemini-3.5-flash", "xhigh", "Gemini 3.5 Flash (High)"),
+        ("gemini-3.5-flash", "max", "Gemini 3.5 Flash (High)"),
+        # none/minimal both clamp to Low.
+        ("gemini-3.5-flash", "none", "Gemini 3.5 Flash (Low)"),
+        ("gemini-3.5-flash", "minimal", "Gemini 3.5 Flash (Low)"),
+        # Gemini 3.1 Pro has no Medium tier — medium (and anything clamping to
+        # Medium) bumps to High; Low and High pass through unchanged.
+        ("gemini-3.1-pro", "low", "Gemini 3.1 Pro (Low)"),
+        ("gemini-3.1-pro", "medium", "Gemini 3.1 Pro (High)"),
+        ("gemini-3.1-pro", "high", "Gemini 3.1 Pro (High)"),
+        ("gemini-3.1-pro", "max", "Gemini 3.1 Pro (High)"),
+        # An exact (...)-qualified model is already a concrete agy display
+        # name — it wins over effort rather than being reinterpreted.
+        ("Gemini 3.5 Flash (Low)", "high", "Gemini 3.5 Flash (Low)"),
+        ("Gemini 3.1 Pro (Low)", "high", "Gemini 3.1 Pro (Low)"),
+        # No effort given: family default from _MODEL_ALIASES, unaffected.
+        ("gemini-3.5-flash", None, "Gemini 3.5 Flash (Medium)"),
+        ("gemini-3.1-pro", None, "Gemini 3.1 Pro (High)"),
+    ],
+)
+def test_resolve_agy_model_effort_folding(spec, effort, expected):
+    assert resolve_agy_model(spec, effort=effort) == expected
+
+
+def test_resolve_agy_model_effort_ignored_for_cross_family_alias():
+    """Claude/GPT-OSS routed through agy have no Low/Medium/High tiers —
+    effort is accepted but has no suffix to fold into."""
+    assert resolve_agy_model("opus", effort="high") == "Claude Opus 4.6 (Thinking)"

@@ -27,6 +27,7 @@ from ._providers import (
     PROVIDER_EFFORT_KWARG,
     PROVIDER_FAST_KWARGS,
     PROVIDER_YOLO_KWARGS,
+    PROVIDERS_EFFORT_VIA_MODEL_NAME,
     add_common_cli_args,
     build_chat_model,
     build_deadline_preamble,
@@ -322,6 +323,12 @@ async def _run_agent(
             kwarg = PROVIDER_EFFORT_KWARG.get(provider)
             if kwarg:
                 cfg[kwarg] = effort
+            elif provider in PROVIDERS_EFFORT_VIA_MODEL_NAME:
+                # agy (Antigravity CLI) has no effort kwarg — fold effort into
+                # the resolved --model name instead (see resolve_agy_model).
+                from lionagi.providers.google.gemini_code import resolve_agy_model
+
+                cfg["model"] = resolve_agy_model(cfg.get("model"), effort=effort)
         if bypass:
             cfg.update(PROVIDER_BYPASS_KWARGS.get(provider, {}))
         elif yolo:
