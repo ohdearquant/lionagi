@@ -438,3 +438,125 @@ def test_schedule_create_without_chain_flags_omits_fields(monkeypatch):
     assert outcome["result"] == 0
     assert "on_success" not in outcome["body"]
     assert "on_fail" not in outcome["body"]
+
+
+# ---------------------------------------------------------------------------
+# _cmd_create: nested chain_action validation (recursive)
+#
+# The engine fires a chain_action via a shallow merge (`{**schedule,
+# **chain_action}` in scheduler/engine.py), so a chain_action nested inside
+# on_success/on_fail rides the exact same merge one level deeper when its
+# parent's run completes. Validation must recurse into those nested actions,
+# not just check the top level.
+# ---------------------------------------------------------------------------
+
+
+def test_schedule_create_nested_on_success_unknown_key_rejected(monkeypatch, capsys):
+    """A nested on_success dict with a key outside the allowed set is
+    rejected, even though the top-level chain_action is clean — an unknown
+    key at any depth would otherwise clobber an unrelated schedule column
+    (e.g. trigger_type) via the engine's shallow merge one level down."""
+    import lionagi.studio.cli as sched_mod
+
+    monkeypatch.setattr(sched_mod, "_api", lambda *a, **kw: (_ for _ in ()).throw(AssertionError))
+
+    from lionagi.studio.cli import add_schedule_subparser, run_schedule
+
+    parser = argparse.ArgumentParser()
+    sub = parser.add_subparsers(dest="command")
+    add_schedule_subparser(sub)
+    args = parser.parse_args(
+        [
+            "schedule",
+            "create",
+            "my-sched",
+            "--cron",
+            "0 * * * *",
+            "--on-success",
+            '{"prompt": "step 1", "on_success": {"trigger_type": "interval", "prompt": "step 2"}}',
+        ]
+    )
+    result = run_schedule(args)
+
+    assert result == 1
+    captured = capsys.readouterr()
+    assert "unknown key" in captured.err
+    assert "trigger_type" in captured.err
+    assert "--on-success.on_success" in captured.err
+
+
+def test_schedule_create_nested_on_success_non_dict_rejected(monkeypatch, capsys):
+    """A nested on_success value that isn't a JSON object (e.g. a list) is
+    rejected up front — left unchecked, the engine would treat it as a truthy
+    chain_action on the child's successful run and blow up on
+    `{**schedule, **chain_action}` after that child action already ran."""
+    import lionagi.studio.cli as sched_mod
+
+    monkeypatch.setattr(sched_mod, "_api", lambda *a, **kw: (_ for _ in ()).throw(AssertionError))
+
+    from lionagi.studio.cli import add_schedule_subparser, run_schedule
+
+    parser = argparse.ArgumentParser()
+    sub = parser.add_subparsers(dest="command")
+    add_schedule_subparser(sub)
+    args = parser.parse_args(
+        [
+            "schedule",
+            "create",
+            "my-sched",
+            "--cron",
+            "0 * * * *",
+            "--on-success",
+            '{"prompt": "step 1", "on_success": [1, 2, 3]}',
+        ]
+    )
+    result = run_schedule(args)
+
+    assert result == 1
+    captured = capsys.readouterr()
+    assert "must be a JSON object" in captured.err
+    assert "--on-success.on_success" in captured.err
+
+
+def test_schedule_create_nested_chain_explicit_null_accepted_no_warning(monkeypatch):
+    """A valid 2-level chain where the innermost level explicitly nulls out
+    its own on_success is accepted with no warnings at any depth."""
+    import lionagi.studio.cli as sched_mod
+
+    warnings: list[str] = []
+    monkeypatch.setattr(sched_mod, "warn", warnings.append)
+
+    outcome = _run_create(
+        monkeypatch,
+        [
+            "--on-success",
+            '{"prompt": "step 1", "on_success": {"prompt": "step 2", "on_success": null}}',
+        ],
+    )
+
+    assert outcome["result"] == 0
+    assert warnings == []
+    assert outcome["body"]["on_success"] == {
+        "prompt": "step 1",
+        "on_success": {"prompt": "step 2", "on_success": None},
+    }
+
+
+def test_schedule_create_nested_chain_missing_on_success_warns(monkeypatch):
+    """The top level sets its own on_success (to the nested dict), so it does
+    not warn — but the nested dict itself omits its own on_success key, which
+    does trigger the re-fire warning, scoped to that nested path."""
+    import lionagi.studio.cli as sched_mod
+
+    warnings: list[str] = []
+    monkeypatch.setattr(sched_mod, "warn", warnings.append)
+
+    outcome = _run_create(
+        monkeypatch,
+        ["--on-success", '{"prompt": "step 1", "on_success": {"prompt": "step 2"}}'],
+    )
+
+    assert outcome["result"] == 0
+    assert len(warnings) == 1
+    assert "--on-success.on_success" in warnings[0]
+    assert "re-fire" in warnings[0]
