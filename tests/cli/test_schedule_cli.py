@@ -146,3 +146,96 @@ def test_base_url_studio_url_takes_precedence(monkeypatch):
     from lionagi.studio.cli import _base_url
 
     assert _base_url() == "https://studio.example.com"
+
+
+# ---------------------------------------------------------------------------
+# _cmd_create: --project auto-detect from cwd (scheduler spawn-cwd fix)
+# ---------------------------------------------------------------------------
+
+
+def _run_create(monkeypatch, extra_args: list[str], api_response: dict | None = None) -> dict:
+    """Run `li schedule create ...`, capturing the JSON body posted to _api."""
+    import lionagi.studio.cli as sched_mod
+
+    captured_body: dict = {}
+
+    def _fake_api(path, method="GET", body=None):
+        captured_body.update(body or {})
+        return api_response if api_response is not None else {"id": "sched-1", "name": "n"}
+
+    monkeypatch.setattr(sched_mod, "_api", _fake_api)
+
+    from lionagi.studio.cli import add_schedule_subparser, run_schedule
+
+    parser = argparse.ArgumentParser()
+    sub = parser.add_subparsers(dest="command")
+    add_schedule_subparser(sub)
+    args = parser.parse_args(["schedule", "create", "my-sched", "--cron", "0 * * * *", *extra_args])
+    result = run_schedule(args)
+    return {"result": result, "body": captured_body}
+
+
+def test_schedule_create_explicit_project_skips_auto_detect(monkeypatch):
+    """--project given: used as-is, detect_project is never consulted."""
+    detect_calls = []
+    monkeypatch.setattr(
+        "lionagi.cli._project.detect_project",
+        lambda cwd=None: detect_calls.append(cwd) or ("should-not-be-used", "git_remote"),
+    )
+
+    outcome = _run_create(monkeypatch, ["--project", "explicit-proj"])
+
+    assert outcome["result"] == 0
+    assert outcome["body"]["action_project"] == "explicit-proj"
+    assert detect_calls == []
+
+
+def test_schedule_create_without_project_auto_detects_valid(monkeypatch):
+    """No --project: a valid detect_project() result populates action_project."""
+    monkeypatch.setattr(
+        "lionagi.cli._project.detect_project",
+        lambda cwd=None: ("lionagi/lionagi", "git_remote"),
+    )
+
+    outcome = _run_create(monkeypatch, [])
+
+    assert outcome["result"] == 0
+    assert outcome["body"]["action_project"] == "lionagi/lionagi"
+
+
+def test_schedule_create_without_project_no_detection_omits_field(monkeypatch):
+    """No --project and detect_project finds nothing: action_project is simply absent."""
+    monkeypatch.setattr("lionagi.cli._project.detect_project", lambda cwd=None: (None, None))
+
+    outcome = _run_create(monkeypatch, [])
+
+    assert outcome["result"] == 0
+    assert "action_project" not in outcome["body"]
+
+
+def test_schedule_create_auto_detect_invalid_identifier_silently_skipped(monkeypatch):
+    """A detected name that fails identifier validation (leading '-') must never
+    break `create` — it is silently dropped, not surfaced as an error."""
+    monkeypatch.setattr(
+        "lionagi.cli._project.detect_project",
+        lambda cwd=None: ("-not-a-valid-flag-name", "git_remote"),
+    )
+
+    outcome = _run_create(monkeypatch, [])
+
+    assert outcome["result"] == 0
+    assert "action_project" not in outcome["body"]
+
+
+def test_schedule_create_auto_detect_exception_silently_skipped(monkeypatch):
+    """detect_project() raising must never break `create`."""
+
+    def _boom(cwd=None):
+        raise RuntimeError("cwd detection blew up")
+
+    monkeypatch.setattr("lionagi.cli._project.detect_project", _boom)
+
+    outcome = _run_create(monkeypatch, [])
+
+    assert outcome["result"] == 0
+    assert "action_project" not in outcome["body"]

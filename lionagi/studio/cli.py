@@ -5,6 +5,7 @@
 from __future__ import annotations
 
 import argparse
+import contextlib
 import json
 import os
 import shutil
@@ -553,6 +554,19 @@ def _cmd_create(args: argparse.Namespace) -> int:
         body["action_flow_yaml"] = p.read_text()
     if args.project:
         body["action_project"] = args.project
+    else:
+        # Best-effort: auto-capture the project from cwd (ADR-0026 detection
+        # cascade) so a schedule created inside a registered project resolves
+        # its spawn cwd at trigger time (see scheduler.engine._resolve_action_cwd).
+        # Any failure here must never block schedule creation.
+        with contextlib.suppress(Exception):
+            from lionagi.cli._project import detect_project
+            from lionagi.studio.scheduler.subprocess import _validate_identifier
+
+            detected, _source = detect_project(Path.cwd())
+            if detected:
+                _validate_identifier(detected, "action_project")
+                body["action_project"] = detected
     if args.description:
         body["description"] = args.description
     result = _api("/", method="POST", body=body)
