@@ -3131,9 +3131,12 @@ all = [
     { name = "ag2", extra = ["openai"] },
     { name = "aiosqlite" },
     { name = "asyncpg" },
+    { name = "croniter" },
     { name = "datamodel-code-generator" },
     { name = "docling" },
+    { name = "fastapi" },
     { name = "fastmcp" },
+    { name = "httpx" },
     { name = "matplotlib" },
     { name = "networkx", version = "3.4.2", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.11'" },
     { name = "networkx", version = "3.6.1", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.11'" },
@@ -3141,6 +3144,7 @@ all = [
     { name = "pydapter", extra = ["postgres"] },
     { name = "rich" },
     { name = "starlette" },
+    { name = "uvicorn" },
     { name = "xmltodict" },
 ]
 graph = [
@@ -3257,6 +3261,7 @@ requires-dist = [
     { name = "lionagi", extras = ["rich"], marker = "extra == 'all'" },
     { name = "lionagi", extras = ["schema"], marker = "extra == 'all'" },
     { name = "lionagi", extras = ["sqlite"], marker = "extra == 'all'" },
+    { name = "lionagi", extras = ["studio"], marker = "extra == 'all'" },
     { name = "lionagi", extras = ["xml"], marker = "extra == 'all'" },
     { name = "matplotlib", marker = "extra == 'graph'", specifier = ">=3.7.0" },
     { name = "msgspec", specifier = ">=0.20.0" },
