@@ -216,6 +216,29 @@ async def test_no_system_chunk_when_no_session_id():
     assert "system" not in [c.type for c in chunks]
 
 
+@pytest.mark.asyncio
+async def test_error_chunk_leads_with_status_not_response():
+    """The error chunk must not impersonate the response: a degraded
+    termination can carry a complete final message in ``response``, and
+    surfacing that text bare as the error inverts success into failure."""
+    chunks = await _run_chunks(
+        [_success_obj(status="TIMEOUT", response="the complete final answer")]
+    )
+    error_chunks = [c for c in chunks if c.type == "error"]
+    assert len(error_chunks) == 1
+    assert error_chunks[0].content.startswith("agy returned status=TIMEOUT")
+    # bounded detail retained so quota/auth patterns still classify
+    assert "the complete final answer" in error_chunks[0].content
+
+
+@pytest.mark.asyncio
+async def test_error_chunk_without_response_names_status():
+    chunks = await _run_chunks([_success_obj(status="FAILURE", response="")])
+    error_chunks = [c for c in chunks if c.type == "error"]
+    assert len(error_chunks) == 1
+    assert error_chunks[0].content == "agy returned status=FAILURE"
+
+
 # ---------------------------------------------------------------------------
 # Callbacks
 # ---------------------------------------------------------------------------
