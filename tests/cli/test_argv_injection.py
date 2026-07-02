@@ -88,6 +88,39 @@ class TestBuildArgvActionModelInjection:
         argv, tmp = build_argv(_schedule(action_model=None), {})
         assert tmp is None
 
+    def test_model_empty_string_omits_positional_agent_kind(self):
+        """Regression: an empty action_model must not be forwarded as a blank
+        model positional for kind='agent'. `li agent` treats a single
+        positional as the prompt and falls through to the --agent profile's
+        default model; a blank model positional instead overrides that
+        default and crashes Branch init (EndpointConfig: provider '')."""
+        from lionagi.studio.scheduler.subprocess import build_argv
+
+        argv, tmp = build_argv(_schedule(action_model="", action_agent="researcher"), {})
+        assert tmp is None
+        assert "--" in argv
+        positionals = argv[argv.index("--") + 1 :]
+        assert positionals == ["hello world"], (
+            f"expected only the prompt after '--', got {positionals!r}; an "
+            "empty-string model positional would override the --agent "
+            "profile's default model"
+        )
+
+    def test_model_none_omits_positional_agent_kind(self):
+        from lionagi.studio.scheduler.subprocess import build_argv
+
+        argv, tmp = build_argv(_schedule(action_model=None, action_agent="researcher"), {})
+        positionals = argv[argv.index("--") + 1 :]
+        assert positionals == ["hello world"]
+
+    def test_model_set_still_includes_positional_agent_kind(self):
+        """Non-empty action_model must still be forwarded (no regression)."""
+        from lionagi.studio.scheduler.subprocess import build_argv
+
+        argv, tmp = build_argv(_schedule(action_model="sonnet", action_agent="researcher"), {})
+        positionals = argv[argv.index("--") + 1 :]
+        assert positionals == ["sonnet", "hello world"]
+
     def test_model_valid_identifiers_accepted(self):
         from lionagi.studio.scheduler.subprocess import build_argv
 
