@@ -1,6 +1,19 @@
 # Copyright (c) 2023-2026, HaiyangLi <quantocean.li at gmail dot com>
 # SPDX-License-Identifier: Apache-2.0
 
+"""Antigravity CLI (`agy`) backend for the `gemini-code` / `gemini-cli` provider.
+
+Google folded the standalone Gemini Code Assist CLI into the Antigravity suite
+(`agy`), so this provider now drives `agy` in headless print mode with
+``--output-format json``. That mode emits one terminal JSON object
+(``conversation_id``, ``status``, ``response``, ``usage``), which is exactly one
+NDJSON record, so the shared ``ndjson_from_cli`` subprocess plumbing consumes it
+unchanged. ``conversation_id`` is stored as ``session.session_id`` so it rides
+the normal AssistantResponse -> branch -> state.db persistence path and native
+resume works via ``--conversation``. The public names, module path, and
+provider aliases (``gemini-code`` / ``gemini-cli`` / ``gemini_cli``) are kept.
+"""
+
 from __future__ import annotations
 
 import asyncio
@@ -8,59 +21,153 @@ import contextlib
 import logging
 import os
 import shutil
-import warnings
 from collections.abc import AsyncIterator, Callable
-from dataclasses import dataclass
-from dataclasses import field as datafield
 from functools import partial
 from pathlib import Path
-from textwrap import shorten
 from typing import Any, Literal
 
 from pydantic import BaseModel, Field, field_validator, model_validator
 
-from lionagi.libs.path_safety import check_paths_safe, contain_and_resolve
-from lionagi.libs.path_safety import contain_paths_in_root as contain_paths_in_repo
+from lionagi import ln
+from lionagi.libs.path_safety import (
+    check_paths_safe,
+    contain_and_resolve,
+    contain_paths_in_root,
+)
 from lionagi.libs.schema.as_readable import as_readable
 from lionagi.ln.concurrency.utils import maybe_await
 from lionagi.providers._agentic_handlers import AgenticHandlersMixin
-from lionagi.providers._cli_subprocess import (
-    _INHERIT_STDIN,
-    ndjson_from_cli,
-    validate_message_prompt,
-)
+from lionagi.providers._cli_subprocess import ndjson_from_cli, validate_message_prompt
 from lionagi.service.connections.agentic_endpoint import AgenticEndpoint
 from lionagi.service.connections.endpoint_config import EndpointConfig
+from lionagi.service.types.cli_session import CLISession
 from lionagi.service.types.stream_chunk import StreamChunk
 from lionagi.utils import to_dict
 
 from ._config import GeminiCodeConfigs
 
-HAS_GEMINI_CLI = False
-GEMINI_CLI = None
 
-if (g := (shutil.which("gemini") or "gemini")) and shutil.which(g):
-    HAS_GEMINI_CLI = True
-    GEMINI_CLI = g
+def _resolve_agy_binary() -> str | None:
+    found = shutil.which("agy")
+    if found:
+        return found
+    fallback = os.path.expanduser("~/.local/bin/agy")
+    if os.path.isfile(fallback) and os.access(fallback, os.X_OK):
+        return fallback
+    return None
 
-logging.basicConfig(level=logging.INFO)
-log = logging.getLogger("gemini-cli")
+
+AGY_CLI = _resolve_agy_binary()
+HAS_AGY = AGY_CLI is not None
+
+log = logging.getLogger("antigravity-cli")
 
 __all__ = (
     "GeminiChunk",
     "GeminiCodeRequest",
     "GeminiSession",
     "stream_gemini_cli",
+    "stream_gemini_cli_events",
     "GeminiCLIEndpoint",
+    "resolve_agy_model",
 )
+
+# agy models expose ~1M-token context (verified against `agy models`).
+CONTEXT_WINDOWS: dict[str, int] = {
+    "gemini-3-flash-preview": 1_048_576,
+    "gemini-3-pro-preview": 1_048_576,
+    "gemini-2.5-flash": 1_048_576,
+    "gemini-2.5-pro": 2_097_152,
+}
+
+
+# --------------------------------------------------------------------------- model mapping
+
+# `agy --model` takes a human-readable name plus an effort qualifier (verified
+# against `agy models`). lionagi callers pass legacy Gemini CLI model strings
+# (`gemini-3-flash-preview`, `gemini-3-pro-preview`) or bare family names; map
+# those onto the exact strings agy understands. Unknown values pass through so
+# agy surfaces a clear error rather than us silently forcing a default.
+_AGY_MODELS: frozenset[str] = frozenset(
+    {
+        "Gemini 3.5 Flash (Medium)",
+        "Gemini 3.5 Flash (High)",
+        "Gemini 3.5 Flash (Low)",
+        "Gemini 3.1 Pro (Low)",
+        "Gemini 3.1 Pro (High)",
+        "Claude Sonnet 4.6 (Thinking)",
+        "Claude Opus 4.6 (Thinking)",
+        "GPT-OSS 120B (Medium)",
+    }
+)
+
+_MODEL_ALIASES: dict[str, str] = {
+    # flash family -> default medium effort
+    "gemini-3-flash-preview": "Gemini 3.5 Flash (Medium)",
+    "gemini-3-flash": "Gemini 3.5 Flash (Medium)",
+    "gemini-3.5-flash": "Gemini 3.5 Flash (Medium)",
+    "gemini-2.5-flash": "Gemini 3.5 Flash (Medium)",
+    "gemini-1.5-flash": "Gemini 3.5 Flash (Medium)",
+    "gemini-flash": "Gemini 3.5 Flash (Medium)",
+    "flash": "Gemini 3.5 Flash (Medium)",
+    # pro family -> strong (High): pro is chosen when the caller wants depth
+    "gemini-3-pro-preview": "Gemini 3.1 Pro (High)",
+    "gemini-3-pro": "Gemini 3.1 Pro (High)",
+    "gemini-3.1-pro": "Gemini 3.1 Pro (High)",
+    "gemini-2.5-pro": "Gemini 3.1 Pro (High)",
+    "gemini-1.5-pro": "Gemini 3.1 Pro (High)",
+    "gemini-pro": "Gemini 3.1 Pro (High)",
+    "pro": "Gemini 3.1 Pro (High)",
+    # cross-family models agy can also route to
+    "claude-opus": "Claude Opus 4.6 (Thinking)",
+    "opus": "Claude Opus 4.6 (Thinking)",
+    "claude-sonnet": "Claude Sonnet 4.6 (Thinking)",
+    "sonnet": "Claude Sonnet 4.6 (Thinking)",
+    "gpt-oss": "GPT-OSS 120B (Medium)",
+    "gpt-oss-120b": "GPT-OSS 120B (Medium)",
+}
+
+
+def resolve_agy_model(model: str | None) -> str:
+    """Map a lionagi model spec onto an exact `agy --model` name."""
+    if not model:
+        return "Gemini 3.5 Flash (Medium)"
+    if model in _AGY_MODELS:
+        return model
+    key = model.strip().lower()
+    if key in _MODEL_ALIASES:
+        return _MODEL_ALIASES[key]
+
+    # Heuristic fallback: derive (family, effort) from a free-form string so
+    # e.g. "gemini-3-pro-low" or "flash high" still resolve.
+    is_pro = "pro" in key
+    if "low" in key:
+        effort = "Low"
+    elif "high" in key or "xhigh" in key or "max" in key:
+        effort = "High"
+    else:
+        effort = "Low" if is_pro else "Medium"
+    if is_pro:
+        return f"Gemini 3.1 Pro ({'High' if effort == 'Medium' else effort})"
+    if "flash" in key or "gemini" in key:
+        return f"Gemini 3.5 Flash ({effort})"
+
+    # Not recognizable — pass through; agy rejects an invalid name clearly.
+    return model
+
+
+# --------------------------------------------------------------------------- request model
 
 
 class GeminiCodeRequest(BaseModel):
-    """Configuration + prompt for a Gemini CLI invocation."""
+    """Configuration + prompt for an Antigravity CLI (`agy`) invocation."""
 
     # -- conversational bits -------------------------------------------------
-    prompt: str = Field(description="The prompt for Gemini CLI")
-    system_prompt: str | None = None
+    prompt: str = Field(description="The prompt for the Antigravity CLI")
+    system_prompt: str | None = Field(
+        default=None,
+        description="Prepended to the prompt — agy print mode has no separate system flag",
+    )
 
     # -- repo / workspace ----------------------------------------------------
     repo: Path = Field(default_factory=Path.cwd, exclude=True)
@@ -71,26 +178,33 @@ class GeminiCodeRequest(BaseModel):
     model: str | None = Field(
         default="gemini-3-flash-preview",
         description=(
-            "Gemini model to use. OAuth (gemini-cli) supports: "
-            "gemini-3-flash-preview, gemini-3-pro-preview, "
-            "gemini-2.5-flash, gemini-2.5-pro. "
-            "Note: gemini-3.5-flash and gemini-3.5-flash-preview are not valid "
-            "OAuth model IDs and will return a 404."
+            "Model spec; mapped onto an `agy --model` name by resolve_agy_model. "
+            "Accepts gemini-3-flash-preview, gemini-3-pro-preview, bare family "
+            "names (flash/pro), or an exact agy display name."
         ),
     )
     yolo: bool = Field(
         default=False,
-        description="Auto-approve all actions without confirmation (--yolo flag)",
+        description="Auto-approve all tool permission requests (--dangerously-skip-permissions)",
     )
-    approval_mode: Literal["suggest", "auto_edit", "full_auto"] | None = None
-    debug: bool = False
     sandbox: bool = Field(
-        default=True,
-        description="Run in sandbox mode for safety",
+        default=False,
+        description="Run agy with terminal restrictions enabled (--sandbox)",
+    )
+    print_timeout: str | None = Field(
+        default=None,
+        description="Go-duration cap for print-mode wait, e.g. '10m' (--print-timeout; agy default 5m)",
     )
 
-    # -- MCP integration -----------------------------------------------------
-    mcp_tools: list[str] = Field(default_factory=list)
+    # -- conversation resume -------------------------------------------------
+    resume: str | None = Field(
+        default=None,
+        description="Resume a previous agy conversation by id (--conversation)",
+    )
+    continue_recent: bool = Field(
+        default=False,
+        description="Continue the most recent agy conversation (--continue)",
+    )
 
     # -- internal use --------------------------------------------------------
     verbose_output: bool = Field(default=False)
@@ -100,6 +214,13 @@ class GeminiCodeRequest(BaseModel):
     @model_validator(mode="before")
     @classmethod
     def _validate_message_prompt(cls, data):
+        if data.get("prompt"):
+            return data
+        if (data.get("resume") or data.get("continue_recent")) and data.get("messages"):
+            data = dict(data)
+            content = data["messages"][-1]["content"]
+            data["prompt"] = ln.json_dumps(content) if isinstance(content, dict | list) else content
+            return data
         return validate_message_prompt(data)
 
     @field_validator("include_directories", mode="after")
@@ -110,32 +231,9 @@ class GeminiCodeRequest(BaseModel):
     @model_validator(mode="after")
     def _contain_directories_in_repo(self):
         if self.include_directories:
-            repo_root = self.repo.resolve()
-            contain_paths_in_repo(self.include_directories, repo_root, "include_directories")
-        return self
-
-    @model_validator(mode="after")
-    def _warn_dangerous_settings(self):
-        if self.yolo:
-            warnings.warn(
-                "GeminiCodeRequest: yolo=True enables auto-approval of ALL actions "
-                "without confirmation. This bypasses safety prompts and may allow "
-                "unintended file modifications, command execution, or data access. "
-                "Only use in trusted, isolated environments.",
-                UserWarning,
-                stacklevel=4,
+            contain_paths_in_root(
+                self.include_directories, self.repo.resolve(), "include_directories"
             )
-
-        if not self.sandbox:
-            warnings.warn(
-                "GeminiCodeRequest: sandbox=False disables sandbox protection. "
-                "The Gemini CLI will have unrestricted access to the file system "
-                "and can execute arbitrary commands. This significantly increases "
-                "security risk. Only disable sandbox in controlled environments.",
-                UserWarning,
-                stacklevel=4,
-            )
-
         return self
 
     def cwd(self) -> Path:
@@ -152,377 +250,185 @@ class GeminiCodeRequest(BaseModel):
 
         return contain_and_resolve(ws_path, self.repo)
 
+    def full_prompt(self) -> str:
+        if self.system_prompt:
+            return f"{self.system_prompt}\n\n{self.prompt}"
+        return self.prompt
+
     def as_cmd_args(self) -> list[str]:
-        args: list[str] = ["-p", self.prompt, "--output-format", "stream-json"]
-
-        if self.model:
-            args += ["-m", self.model]
-
-        if self.yolo:
-            args.append("--yolo")
-
-        if self.approval_mode:
-            args += ["--approval-mode", self.approval_mode]
-
-        if self.debug:
-            args.append("--debug")
-
-        if not self.sandbox:
-            args.append("--no-sandbox")
-
+        """Build the argv for a headless `agy` print-mode invocation."""
+        args: list[str] = [
+            "-p",
+            self.full_prompt(),
+            "--output-format",
+            "json",
+            "--model",
+            resolve_agy_model(self.model),
+        ]
         for directory in self.include_directories:
-            args += ["--include-directories", directory]
-
+            args += ["--add-dir", str(directory)]
+        if self.sandbox:
+            args.append("--sandbox")
+        if self.yolo:
+            args.append("--dangerously-skip-permissions")
+        if self.resume:
+            args += ["--conversation", self.resume]
+        elif self.continue_recent:
+            args.append("--continue")
+        if self.print_timeout:
+            args += ["--print-timeout", self.print_timeout]
         return args
 
 
-@dataclass
-class GeminiChunk:
-    raw: dict[str, Any]
-    type: str
-    # convenience views
-    text: str | None = None
-    tool_use: dict[str, Any] | None = None
-    tool_result: dict[str, Any] | None = None
-    is_delta: bool = False
+# Public type aliases (preserve the historical import surface).
+GeminiSession = CLISession
+GeminiChunk = StreamChunk
 
 
-@dataclass
-class GeminiSession:
-    session_id: str | None = None
-    model: str | None = None
-
-    # chronological log
-    chunks: list[GeminiChunk] = datafield(default_factory=list)
-
-    # materialized views
-    messages: list[dict[str, Any]] = datafield(default_factory=list)
-    tool_uses: list[dict[str, Any]] = datafield(default_factory=list)
-    tool_results: list[dict[str, Any]] = datafield(default_factory=list)
-
-    # final summary
-    result: str = ""
-    usage: dict[str, Any] = datafield(default_factory=dict)
-    total_cost_usd: float | None = None
-    num_turns: int | None = None
-    duration_ms: int | None = None
-    is_error: bool = False
-    summary: dict | None = None
-
-    def populate_summary(self) -> None:
-        self.summary = _extract_summary(self)
+# --------------------------------------------------------------------------- subprocess seam
 
 
-def _extract_summary(session: GeminiSession) -> dict[str, Any]:
-    tool_counts: dict[str, int] = {}
-    tool_details: list[dict[str, Any]] = []
-    file_operations: dict[str, list[str]] = {
-        "reads": [],
-        "writes": [],
-        "edits": [],
-    }
-    key_actions = []
-
-    for tool_use in session.tool_uses:
-        tool_name = tool_use.get("name", "unknown")
-        tool_input = tool_use.get("input", {})
-        tool_id = tool_use.get("id", "")
-
-        tool_counts[tool_name] = tool_counts.get(tool_name, 0) + 1
-        tool_details.append({"tool": tool_name, "id": tool_id, "input": tool_input})
-
-        if tool_name in ["read_file", "Read"]:
-            file_path = tool_input.get("path", tool_input.get("file_path", "unknown"))
-            file_operations["reads"].append(file_path)
-            key_actions.append(f"Read {file_path}")
-
-        elif tool_name in ["write_file", "Write"]:
-            file_path = tool_input.get("path", tool_input.get("file_path", "unknown"))
-            file_operations["writes"].append(file_path)
-            key_actions.append(f"Wrote {file_path}")
-
-        elif tool_name in ["edit_file", "Edit"]:
-            file_path = tool_input.get("path", tool_input.get("file_path", "unknown"))
-            file_operations["edits"].append(file_path)
-            key_actions.append(f"Edited {file_path}")
-
-        elif tool_name in ["run_shell_command", "shell", "Bash"]:
-            command = tool_input.get("command", "")
-            command_summary = command[:50] + "..." if len(command) > 50 else command
-            key_actions.append(f"Ran: {command_summary}")
-
-        elif tool_name.startswith("mcp_"):
-            operation = tool_name.replace("mcp_", "")
-            key_actions.append(f"MCP {operation}")
-
-        else:
-            key_actions.append(f"Used {tool_name}")
-
-    key_actions = list(dict.fromkeys(key_actions)) if key_actions else ["No specific actions"]
-
-    for op_type in file_operations:
-        file_operations[op_type] = list(dict.fromkeys(file_operations[op_type]))
-
-    result_summary = (session.result[:200] + "...") if len(session.result) > 200 else session.result
-
-    return {
-        "tool_counts": tool_counts,
-        "tool_details": tool_details,
-        "file_operations": file_operations,
-        "key_actions": key_actions,
-        "total_tool_calls": sum(tool_counts.values()),
-        "result_summary": result_summary,
-        "usage_stats": {
-            "total_cost_usd": session.total_cost_usd,
-            "num_turns": session.num_turns,
-            "duration_ms": session.duration_ms,
-            **session.usage,
-        },
-    }
-
-
-# TODO(#1043 Phase 2): migrate create_subprocess_exec + wait_for to anyio
 async def _ndjson_from_cli(request: GeminiCodeRequest):
-    if GEMINI_CLI is None:
-        raise RuntimeError("Gemini CLI not found. Please install the gemini CLI tool.")
-    workspace = request.cwd()
-    workspace.mkdir(parents=True, exist_ok=True)
-    cmd = [GEMINI_CLI, *request.as_cmd_args()]
-    # Gemini CLI 0.46+ refuses to run headless in untrusted directories unless
-    # GEMINI_CLI_TRUST_WORKSPACE=true is set in the subprocess environment.
-    # Without it the process exits nonzero and stderr carries:
-    #   "Gemini CLI is not running in a trusted directory. To proceed, either
-    #    use --skip-trust, set the GEMINI_CLI_TRUST_WORKSPACE=true environment
-    #    variable, or trust this directory in interactive mode."
-    # We prefer the env-var approach over --skip-trust because the flag may not
-    # exist on older CLI versions. Inherit the full parent env so that OAuth
-    # credentials (~/.config/gemini/) remain accessible to the subprocess.
-    env = {**os.environ, "GEMINI_CLI_TRUST_WORKSPACE": "true"}
-    # Old Gemini subprocess did not set stdin; pass _INHERIT_STDIN to preserve that.
-    async with contextlib.aclosing(
-        ndjson_from_cli(cmd, cwd=workspace, env=env, stdin=_INHERIT_STDIN)
-    ) as stream:
+    if AGY_CLI is None:
+        raise RuntimeError(
+            "Antigravity CLI 'agy' not found. Install it and sign in "
+            "(it installs to ~/.local/bin/agy); run `agy` once to authenticate."
+        )
+    cmd = [AGY_CLI, *request.as_cmd_args()]
+    # agy resolves relative --add-dir entries against the process cwd and has no
+    # '-C'-style flag, so pass the resolved workspace as cwd. Default stdin is
+    # DEVNULL — print mode reads nothing from stdin.
+    async with contextlib.aclosing(ndjson_from_cli(cmd, cwd=request.cwd())) as stream:
         async for obj in stream:
             yield obj
 
 
 async def stream_gemini_cli_events(request: GeminiCodeRequest):
-    """Stream events from Gemini CLI."""
-    if not GEMINI_CLI:
-        raise RuntimeError("Gemini CLI not found (npm i -g @google/gemini-cli)")
+    """Stream the raw agy result object(s) from the CLI."""
+    if not AGY_CLI:
+        raise RuntimeError("Antigravity CLI 'agy' not found (expected at ~/.local/bin/agy).")
     async with contextlib.aclosing(_ndjson_from_cli(request)) as stream:
         async for obj in stream:
             yield obj
-    yield {"type": "done"}
 
+
+# --------------------------------------------------------------------------- pretty-print
 
 print_readable = partial(as_readable, md=True, display_str=True)
 
 
 def _pp_text(text: str, theme: str = "light") -> None:
-    txt = f"""
-    > 🔷 Gemini:
-    {text}
-    """
-    print_readable(txt, theme=theme)
+    print_readable(f"\n> ✦ Gemini:\n{text}", theme=theme)
 
 
-def _pp_tool_use(tu: dict[str, Any], theme: str = "light") -> None:
-    preview = shorten(str(tu.get("input", {})).replace("\n", " "), 130)
-    body = f"- 🔧 Tool Use — {tu.get('name', 'unknown')}: {preview}"
-    print_readable(body, border=False, panel=False, theme=theme)
-
-
-def _pp_tool_result(tr: dict[str, Any], theme: str = "light") -> None:
-    body_preview = shorten(str(tr.get("content", "")).replace("\n", " "), 130)
-    status = "ERR" if tr.get("is_error") else "OK"
-    body = f"- 📋 Tool Result — {status}: {body_preview}"
-    print_readable(body, border=False, panel=False, theme=theme)
-
-
-def _pp_final(sess: GeminiSession, theme: str = "light") -> None:
+def _pp_final(sess: CLISession, theme: str = "light") -> None:
     usage = sess.usage or {}
     txt = (
-        f"\n### Gemini Session complete\n"
-        f"**Result:** {sess.result or ''}\n"
+        f"\n### Antigravity session complete\n"
+        f"- conversation: {sess.session_id or 'N/A'}\n"
         f"- turns: {sess.num_turns}\n"
         f"- duration: {sess.duration_ms} ms\n"
-        f"- tokens: {usage.get('input_tokens', 0)}/{usage.get('output_tokens', 0)}"
+        f"- tokens: {usage.get('input_tokens', 0)}/{usage.get('output_tokens', 0)} "
+        f"(thinking {usage.get('thinking_tokens', 0)})"
     )
     print_readable(txt, theme=theme)
 
 
+# --------------------------------------------------------------------------- main parser
+
+
 async def stream_gemini_cli(
     request: GeminiCodeRequest,
-    session: GeminiSession | None = None,
+    session: CLISession | None = None,
     *,
     on_text: Callable[[str], None] | None = None,
     on_tool_use: Callable[[dict[str, Any]], None] | None = None,
     on_tool_result: Callable[[dict[str, Any]], None] | None = None,
-    on_final: Callable[[GeminiSession], None] | None = None,
-) -> AsyncIterator[GeminiChunk | dict | GeminiSession]:
-    """Consume the ND-JSON stream from Gemini CLI and return a populated GeminiSession."""
+    on_final: Callable[[CLISession], None] | None = None,
+) -> AsyncIterator[StreamChunk | CLISession]:
+    """Run agy in json print mode and project its result object into StreamChunks.
+
+    agy's json format surfaces no per-tool events on stdout (they live only in
+    the per-session transcript), so ``on_tool_use`` / ``on_tool_result`` are
+    accepted for interface parity but do not fire in this transport.
+    """
     if session is None:
-        session = GeminiSession()
+        session = CLISession()
     theme = request.cli_display_theme or "light"
-    _start_monotonic = asyncio.get_running_loop().time()
+    _start = asyncio.get_running_loop().time()
 
-    stream = stream_gemini_cli_events(request)
-    try:
+    saw_object = False
+    async with contextlib.aclosing(stream_gemini_cli_events(request)) as stream:
         async for obj in stream:
-            typ = obj.get("type", "unknown")
-            chunk = GeminiChunk(raw=obj, type=typ)
-            session.chunks.append(chunk)
-
-            if typ in ("system", "init"):
-                session.session_id = obj.get("session_id", obj.get("id"))
-                session.model = obj.get("model")
-                yield obj
-
-            elif typ in ("message", "assistant"):
-                msg = obj.get("message", obj)
-                chunk.is_delta = bool(obj.get("delta"))
-
-                # The gemini CLI echoes the user prompt as a role=user message
-                # event before emitting the assistant reply.  Skip it so the echo
-                # does not pollute session.messages or the result accumulation.
-                # Note: this treats all role=user events as prompt echoes, which
-                # matches the current single-user stream shape of the gemini CLI.
-                role = msg.get("role", "assistant")
-                if role == "user":
-                    yield chunk
-                    continue
-
-                session.messages.append(msg)
-
-                content = msg.get("content", "")
-                if isinstance(content, str):
-                    chunk.text = content
-                    if on_text:
-                        await maybe_await(on_text(content))
-                    if request.verbose_output:
-                        _pp_text(content, theme)
-                elif isinstance(content, list):
-                    for blk in content:
-                        if isinstance(blk, dict):
-                            btype = blk.get("type")
-                            if btype == "text":
-                                text = blk.get("text", "")
-                                chunk.text = text
-                                if on_text:
-                                    await maybe_await(on_text(text))
-                                if request.verbose_output:
-                                    _pp_text(text, theme)
-                            elif btype in ("tool_use", "tool_call"):
-                                tu = {
-                                    "id": blk.get(
-                                        "tool_id",
-                                        blk.get("tool_use_id", blk.get("id", "")),
-                                    ),
-                                    "name": blk.get("tool_name", blk.get("name", "")),
-                                    "input": blk.get(
-                                        "parameters",
-                                        blk.get("input", blk.get("args", {})),
-                                    ),
-                                }
-                                chunk.tool_use = tu
-                                session.tool_uses.append(tu)
-                                if on_tool_use:
-                                    await maybe_await(on_tool_use(tu))
-                                if request.verbose_output:
-                                    _pp_tool_use(tu, theme)
-                yield chunk
-
-            elif typ in ("tool_call", "tool_use"):
-                # Real gemini CLI event keys (observed from --output-format stream-json):
-                #   id    → "tool_id"   (not "id" or "tool_use_id")
-                #   name  → "tool_name" (not "name")
-                #   args  → "parameters" (not "input" or "args")
-                tu = {
-                    "id": obj.get("tool_id", obj.get("tool_use_id", obj.get("id", ""))),
-                    "name": obj.get("tool_name", obj.get("name", "")),
-                    "input": obj.get("parameters", obj.get("input", obj.get("args", {}))),
-                }
-                chunk.tool_use = tu
-                session.tool_uses.append(tu)
-                if on_tool_use:
-                    await maybe_await(on_tool_use(tu))
-                if request.verbose_output:
-                    _pp_tool_use(tu, theme)
-                yield chunk
-
-            elif typ == "tool_result":
-                # Real gemini CLI event keys (observed from --output-format stream-json):
-                #   tool_use_id → "tool_id"   (not "tool_use_id" or "id")
-                #   content     → "output"    (not "content" or "result")
-                #   is_error    → status != "success" OR explicit is_error flag
-                #   Note: any status other than "success" is treated as an error;
-                #   this is correct for current CLI versions which emit only
-                #   "success" or "error" in the status field of tool_result events.
-                _status = obj.get("status", "")
-                tr = {
-                    "tool_use_id": obj.get("tool_id", obj.get("tool_use_id", obj.get("id", ""))),
-                    "content": obj.get("output", obj.get("content", obj.get("result", ""))),
-                    "is_error": obj.get("is_error", _status not in ("", "success")),
-                }
-                chunk.tool_result = tr
-                session.tool_results.append(tr)
-                if on_tool_result:
-                    await maybe_await(on_tool_result(tr))
-                if request.verbose_output:
-                    _pp_tool_result(tr, theme)
-                yield chunk
-
-            elif typ in ("result", "response"):
-                session.result = obj.get("result", obj.get("response", "")).strip()
-                stats = obj.get("stats") or {}
-                session.usage = obj.get("usage", stats)
-                session.total_cost_usd = obj.get("total_cost_usd", obj.get("cost"))
-                session.num_turns = obj.get("num_turns", obj.get("turns"))
-                # Gemini CLI nests duration inside stats; prefer it over the
-                # top-level lookup so we capture the actual inference time
-                # rather than the Python monotonic wall-clock fallback.
-                session.duration_ms = (
-                    obj.get("duration_ms")
-                    or obj.get("duration")
-                    or stats.get("duration_ms")
-                    or stats.get("duration")
-                )
-                session.is_error = obj.get("is_error", obj.get("error") is not None)
-
-            elif typ == "error":
-                session.is_error = True
-                session.result = obj.get("message", obj.get("error", "Unknown error"))
-
-            elif typ == "done":
-                break
-    finally:
-        await stream.aclose()
-
-    # Populate session.result from streamed chunks when the CLI didn't emit a
-    # dedicated "result" event (common for Gemini). Deltas accumulate into one
-    # piece; non-delta chunks are kept as separate parts.
-    if not session.result:
-        parts: list[str] = []
-        current_delta: list[str] = []
-        for c in session.chunks:
-            if c.text is None:
+            if not isinstance(obj, dict):
                 continue
-            if c.is_delta:
-                current_delta.append(c.text)
+            saw_object = True
+            status = str(obj.get("status", "")).upper()
+            response = (obj.get("response") or "").strip()
+
+            session.session_id = obj.get("conversation_id") or session.session_id
+            session.model = resolve_agy_model(request.model)
+            session.result = response
+            session.usage = obj.get("usage", {}) or {}
+            session.num_turns = obj.get("num_turns")
+            duration = obj.get("duration_seconds")
+            if duration is not None:
+                session.duration_ms = int(float(duration) * 1000)
+            session.is_error = status not in ("SUCCESS", "")
+
+            # Session id must be captured before the error branch — a failed
+            # turn can still report a live conversation id to resume into.
+            if session.session_id:
+                sys_sc = StreamChunk(
+                    type="system",
+                    metadata={"session_id": session.session_id, "model": session.model},
+                )
+                session.chunks.append(sys_sc)
+                yield sys_sc
+
+            if session.is_error:
+                msg = response or f"agy returned status={status or 'UNKNOWN'}"
+                sc = StreamChunk(type="error", content=msg, is_error=True, metadata=obj)
+                session.chunks.append(sc)
+                yield sc
             else:
-                if current_delta:
-                    parts.append("".join(current_delta))
-                    current_delta = []
-                parts.append(c.text)
-        if current_delta:
-            parts.append("".join(current_delta))
-        if parts:
-            session.result = "\n".join(parts)
-    if session.num_turns is None and session.messages:
-        session.num_turns = len(session.messages)
+                if on_text and response:
+                    await maybe_await(on_text(response))
+                if request.verbose_output and response:
+                    _pp_text(response, theme)
+                sc = StreamChunk(type="text", content=response, metadata=obj)
+                session.chunks.append(sc)
+                yield sc
+
+                # Terminal usage/turns/duration — the only channel run.py reads
+                # provider-reported usage from (persisted onto model_response).
+                result_meta: dict[str, Any] = {
+                    "model": session.model,
+                    "conversation_id": session.session_id,
+                    "status": status or "SUCCESS",
+                }
+                if session.usage:
+                    result_meta["usage"] = session.usage
+                if session.num_turns is not None:
+                    result_meta["num_turns"] = session.num_turns
+                if session.duration_ms is not None:
+                    result_meta["duration_ms"] = session.duration_ms
+                result_sc = StreamChunk(type="result", metadata=result_meta)
+                session.chunks.append(result_sc)
+                yield result_sc
+
+    if not saw_object and not session.result:
+        # rc==0 but nothing parseable (e.g. agy printed a plain-text error line).
+        session.is_error = True
+        session.result = "agy produced no parseable json response"
+        sc = StreamChunk(type="error", content=session.result, is_error=True)
+        session.chunks.append(sc)
+        yield sc
+
+    if session.num_turns is None:
+        session.num_turns = 1
     if session.duration_ms is None:
-        session.duration_ms = int((asyncio.get_running_loop().time() - _start_monotonic) * 1000)
+        session.duration_ms = int((asyncio.get_running_loop().time() - _start) * 1000)
 
     if on_final:
         await maybe_await(on_final(session))
@@ -532,15 +438,7 @@ async def stream_gemini_cli(
     yield session
 
 
-gemini_log = log
-
-
-CONTEXT_WINDOWS: dict[str, int] = {
-    "gemini-2.5": 1_048_576,
-    "gemini-2.0": 1_048_576,
-    "gemini-1.5-pro": 2_097_152,
-    "gemini-1.5-flash": 1_048_576,
-}
+# --------------------------------------------------------------------------- endpoint
 
 _GEMINI_HANDLER_PARAMS = (
     "on_text",
@@ -580,88 +478,30 @@ class GeminiCLIEndpoint(AgenticHandlersMixin, AgenticEndpoint):
             request_obj = payload["request"]
         async with contextlib.aclosing(stream_gemini_cli(request_obj, **handlers)) as gen:
             async for item in gen:
-                if isinstance(item, GeminiSession):
-                    continue
-                if isinstance(item, dict):
-                    typ = item.get("type", "")
-                    if typ == "result":
+                if isinstance(item, CLISession):
+                    if item.is_error and not any(c.type == "error" for c in item.chunks):
                         yield StreamChunk(
-                            type="result",
-                            content=item.get("result", ""),
-                            metadata=item,
+                            type="error",
+                            content=item.result or "Antigravity session failed",
+                            is_error=True,
                         )
                     continue
-                if isinstance(item, GeminiChunk):
-                    if item.text is not None:
-                        yield StreamChunk(
-                            type="text",
-                            content=item.text,
-                            is_delta=item.is_delta,
-                        )
-                    if item.tool_use is not None:
-                        tu = item.tool_use
-                        yield StreamChunk(
-                            type="tool_use",
-                            tool_name=tu.get("name"),
-                            tool_id=tu.get("id"),
-                            tool_input=tu.get("input"),
-                        )
-                    if item.tool_result is not None:
-                        tr = item.tool_result
-                        yield StreamChunk(
-                            type="tool_result",
-                            tool_id=tr.get("tool_use_id"),
-                            tool_output=tr.get("content"),
-                            is_error=tr.get("is_error", False),
-                        )
-                    if (
-                        item.text is None
-                        and item.tool_use is None
-                        and item.tool_result is None
-                        and item.type == "result"
-                    ):
-                        yield StreamChunk(
-                            type="result",
-                            content=item.raw.get("result", ""),
-                            metadata=item.raw,
-                        )
+                yield item
 
-    async def _call(
-        self,
-        payload: dict,
-        headers: dict,
-        **kwargs,
-    ):
-        responses = []
+    async def _call(self, payload: dict, headers: dict, **kwargs):
         request: GeminiCodeRequest = payload["request"]
-        session: GeminiSession = GeminiSession()
+        session = CLISession()
         handlers = self._runtime_handlers(kwargs)
+        responses: list[Any] = []
 
         async with contextlib.aclosing(stream_gemini_cli(request, session, **handlers)) as gen:
             async for chunk in gen:
-                if isinstance(chunk, dict):
-                    if chunk.get("type") == "done":
-                        break
                 responses.append(chunk)
 
-        gemini_log.info(f"Session {session.session_id} finished with {len(responses)} chunks")
-
-        parts = []
-        current_delta: list[str] = []
-        for i in session.chunks:
-            if i.text is not None:
-                if i.is_delta:
-                    current_delta.append(i.text)
-                else:
-                    if current_delta:
-                        parts.append("".join(current_delta))
-                        current_delta = []
-                    parts.append(i.text)
-        if current_delta:
-            parts.append("".join(current_delta))
-
-        if parts:
-            session.result = "\n".join(parts)
+        log.info("Antigravity session %s finished (%d chunks)", session.session_id, len(responses))
+        if not session.result:
+            texts = [c.content for c in session.chunks if c.type == "text" and c.content]
+            session.result = "\n".join(texts)
         if request.cli_include_summary:
             session.populate_summary()
 

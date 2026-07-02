@@ -166,7 +166,7 @@ class ModelSpec:
         return self.model
 
 
-_CLAUDE_MODEL_PREFIXES = ("opus", "sonnet", "haiku")
+_CLAUDE_MODEL_PREFIXES = ("opus", "sonnet", "haiku", "fable")
 
 
 _CLAUDE_PROVIDER_NAMES = frozenset(

@@ -765,6 +765,8 @@ CONTEXT_WINDOWS: dict[str, int] = {
     "sonnet": 1_000_000,
     "haiku-4-5": 200_000,
     "haiku": 200_000,
+    "fable-5": 1_000_000,
+    "fable": 1_000_000,
 }
 
 _CLAUDE_HANDLER_PARAMS = (
