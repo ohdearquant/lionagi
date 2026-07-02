@@ -378,7 +378,13 @@ async def stream_gemini_cli(
                 yield sys_sc
 
             if session.is_error:
-                msg = response or f"agy returned status={status or 'UNKNOWN'}"
+                # The error chunk must never impersonate the response: a
+                # degraded termination (e.g. timeout after a complete final
+                # message) would otherwise surface the delivered content AS
+                # the error. Lead with the status; keep a bounded detail so
+                # quota/auth patterns still classify.
+                detail = f": {response[:500]}" if response else ""
+                msg = f"agy returned status={status or 'UNKNOWN'}{detail}"
                 sc = StreamChunk(type="error", content=msg, is_error=True, metadata=obj)
                 session.chunks.append(sc)
                 yield sc
