@@ -101,6 +101,81 @@ class TestAgentSpecCoding:
 
 
 # ---------------------------------------------------------------------------
+# AgentSpec.lean_coding preset
+# ---------------------------------------------------------------------------
+
+
+class TestAgentSpecLeanCoding:
+    def test_lion_system_is_false(self):
+        spec = AgentSpec.lean_coding(task_class="edit")
+        assert spec.lion_system is False
+
+    def test_system_message_no_lion_preamble(self):
+        from lionagi.session.prompts import LION_SYSTEM_MESSAGE
+
+        spec = AgentSpec.lean_coding(task_class="edit")
+        msg = spec.build_system_message()
+        lion_marker = "LION_SYSTEM_MESSAGE"
+        assert lion_marker not in msg
+
+    def test_edit_tools(self):
+        spec = AgentSpec.lean_coding(task_class="edit")
+        assert set(spec.tools) == {"reader", "editor"}
+
+    def test_run_tools(self):
+        spec = AgentSpec.lean_coding(task_class="run")
+        assert set(spec.tools) == {"bash"}
+
+    def test_search_tools(self):
+        spec = AgentSpec.lean_coding(task_class="search")
+        assert set(spec.tools) == {"reader", "search"}
+
+    def test_refactor_tools(self):
+        spec = AgentSpec.lean_coding(task_class="refactor")
+        assert set(spec.tools) == {"reader", "editor", "bash"}
+
+    def test_system_message_under_char_limit(self):
+        # ~300 tokens ≈ 1200 chars; lean profile should stay well under that
+        spec = AgentSpec.lean_coding(task_class="edit")
+        msg = spec.build_system_message()
+        assert len(msg) < 4000, f"System message too long: {len(msg)} chars"
+
+    def test_system_message_shorter_than_coding(self):
+        from lionagi.session.prompts import LION_SYSTEM_MESSAGE
+
+        lean = AgentSpec.lean_coding(task_class="edit")
+        full = AgentSpec.coding()
+        lean_msg = lean.build_system_message()
+        full_msg = LION_SYSTEM_MESSAGE + full.build_system_message()
+        assert len(lean_msg) < len(full_msg)
+
+    def test_role_is_implementer(self):
+        spec = AgentSpec.lean_coding(task_class="refactor")
+        assert spec.profile.role.name == "implementer"
+
+    def test_invalid_task_class_raises(self):
+        with pytest.raises(ValueError, match="Unknown task_class"):
+            AgentSpec.lean_coding(task_class="nonsense")
+
+    def test_custom_system_prompt(self):
+        spec = AgentSpec.lean_coding(task_class="edit", system_prompt="Custom instructions.")
+        msg = spec.build_system_message()
+        assert "Custom instructions." in msg
+
+    def test_secure_wires_guards(self):
+        spec = AgentSpec.lean_coding(task_class="edit", secure=True)
+        assert "pre:bash" in spec.hook_handlers or "pre:reader" in spec.hook_handlers
+
+    def test_secure_false_no_guards(self):
+        spec = AgentSpec.lean_coding(task_class="edit", secure=False)
+        assert not spec.hook_handlers
+
+    def test_model_passthrough(self):
+        spec = AgentSpec.lean_coding(task_class="run", model="openai/gpt-4.1-mini")
+        assert spec.model == "openai/gpt-4.1-mini"
+
+
+# ---------------------------------------------------------------------------
 # AgentSpec.build_system_message
 # ---------------------------------------------------------------------------
 
