@@ -482,7 +482,7 @@ def _api(path: str, method: str = "GET", body: dict | None = None) -> Any:
     import urllib.error
     import urllib.request
 
-    url = f"{_base_url()}/schedules{path}"
+    url = f"{_base_url()}/api/schedules{path}"
     data = json.dumps(body).encode() if body is not None else None
     req = urllib.request.Request(  # noqa: S310
         url,
