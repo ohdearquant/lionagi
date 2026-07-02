@@ -17,6 +17,7 @@ from ._util import pid_alive as _pid_alive_int
 __all__ = (
     "add_monitor_subparser",
     "run_monitor",
+    "run_monitor_wait",
 )
 
 
@@ -717,6 +718,299 @@ def _watch_loop(
     return 0
 
 
+# ── Wait-for-terminal primitive (li monitor run / li monitor --run) ───────────
+#
+# A scripting primitive, not a view: append-only stdout lines (no screen
+# clearing, no table), meant for a harness to poll `li monitor run <id>` as a
+# background task rather than hand-rolling raw sqlite polling against the
+# live WAL-mode state.db. Separate code path from _watch_loop above — that
+# one is a human dashboard; this one blocks until specific schedule_runs go
+# terminal, then exits with a meaningful code.
+
+_TERMINAL_SCHEDULE_RUN_STATUSES = frozenset({"completed", "failed", "cancelled", "skipped"})
+
+
+def _split_watched_ids(raw: list[str]) -> list[str]:
+    """Flatten comma-separated and/or space-separated id tokens into one
+    ordered, deduped list — `li monitor run a,b` and `li monitor run a b`
+    (and any mix) must resolve identically."""
+    seen: dict[str, None] = {}
+    for token in raw:
+        for piece in token.split(","):
+            piece = piece.strip()
+            if piece:
+                seen.setdefault(piece, None)
+    return list(seen)
+
+
+async def _resolve_schedule_run(db: Any, raw_id: str) -> dict[str, Any] | None:
+    """Exact match then prefix match, mirroring _find_entity's convention.
+    schedule_run ids are 12-char hex (uuid4().hex[:12]), not 36-char UUIDs,
+    so the length-36 prefix heuristic used elsewhere in this codebase
+    (resolve_entity in _util.py) does not apply here.
+    """
+    row = await db.get_schedule_run(raw_id)
+    if row:
+        return row
+    return await db.fetch_one(
+        "SELECT * FROM schedule_runs WHERE id LIKE ?",
+        (raw_id + "%",),
+    )
+
+
+async def _resolve_watched_runs(
+    db: Any, ids: list[str]
+) -> tuple[dict[str, dict[str, Any]], list[str]]:
+    """Resolve every requested id once, up front. schedule_run ids are
+    already-fired-run identifiers a caller obtained elsewhere (e.g. `li
+    schedule trigger`), not something that might come into existence later,
+    so — unlike the --follow discovery scan below — resolution itself is
+    not retried on every poll tick.
+    """
+    pending: dict[str, dict[str, Any]] = {}
+    unresolved: list[str] = []
+    for raw_id in ids:
+        row = await _resolve_schedule_run(db, raw_id)
+        if row is None:
+            unresolved.append(raw_id)
+        else:
+            pending[row["id"]] = row  # canonical id as key: dedupes prefix collisions
+    return pending, unresolved
+
+
+async def _schedule_name(db: Any, schedule_id: str, *, cache: dict[str, str]) -> str:
+    if schedule_id not in cache:
+        sched = await db.get_schedule(schedule_id)
+        cache[schedule_id] = (sched or {}).get("name") or schedule_id
+    return cache[schedule_id]
+
+
+def _format_wait_line(row: dict[str, Any], name: str) -> str:
+    exit_code = row.get("exit_code")
+    exit_str = "-" if exit_code is None else str(exit_code)
+    return (
+        f"{row['id']}  name={name}  chain_depth={row.get('chain_depth', 0)}  "
+        f"status={row['status']}  exit_code={exit_str}"
+    )
+
+
+async def _poll_pending_once(
+    db: Any,
+    pending: dict[str, dict[str, Any]],
+    schedule_names: dict[str, str],
+    done: list[dict[str, Any]],
+) -> None:
+    """Check every still-pending run once; print, record into `done`, and
+    drop from `pending` any that are now terminal. Printing happens
+    immediately per row, not batched, so a harness tailing stdout sees each
+    result the moment it lands rather than waiting for the whole watched
+    set to finish.
+
+    `done` is mutated in place rather than returned: a coroutine only ever
+    suspends at an `await`, and there is no `await` between the print/
+    append/delete below, so that trio is atomic with respect to task
+    cancellation — a row can never leave `pending` without also landing in
+    `done`, even if the caller (run_async, see _dispatch_wait) discards
+    this coroutine's actual return value because a SIGINT raced its
+    completion.
+
+    This is the primitive's testable inner tick: exercising "terminal
+    across different poll iterations" only needs two direct calls to this
+    function with a DB row mutated in between — no real sleeping required.
+    """
+    from ._logging import log_error
+
+    for run_id in list(pending):
+        row = await db.get_schedule_run(run_id)
+        if row is None:
+            # Existed at resolution time but is gone now (e.g. its parent
+            # schedule was deleted, cascading the run) — resolve it as a
+            # failure so the wait can't hang on state that never comes back.
+            row = {**pending[run_id], "status": "failed", "exit_code": None}
+            log_error(f"schedule_run {run_id!r} disappeared from state.db while waiting")
+        elif row["status"] not in _TERMINAL_SCHEDULE_RUN_STATUSES:
+            continue
+        name = await _schedule_name(db, row["schedule_id"], cache=schedule_names)
+        print(_format_wait_line(row, name))
+        done.append(row)
+        del pending[run_id]
+
+
+async def _query_schedule_runs_since(db: Any, baseline: float) -> list[dict[str, Any]]:
+    """--follow discovery query: schedule_runs created strictly after
+    `baseline`, oldest first. Strict '>' (not '>=') is the same
+    baseline-first, anti-backlog-replay discipline used by any other
+    "watch for new stuff" loop in this codebase — a row already seen at
+    exactly `baseline` must never be re-reported on the next tick.
+    """
+    return await db.fetch_all(
+        "SELECT * FROM schedule_runs WHERE created_at > ? ORDER BY created_at ASC",
+        (baseline,),
+    )
+
+
+def _dispatch_wait(ids: list[str], *, interval: float, follow: bool) -> int:
+    """Block until every id in `ids` reaches a terminal schedule_run status,
+    printing one line per run the moment it lands; with --follow, keep
+    watching (tail -f style) for newly created runs after the initial set
+    drains, exiting only on SIGINT/SIGTERM.
+
+    Shaped like _watch_loop above (own signal handlers on the main thread,
+    run_async per discrete tick, chunked time.sleep for cadence) rather
+    than one run_async call wrapping a long-lived asyncio.sleep loop:
+    run_async installs its own SIGINT handler for the duration of any call
+    it wraps and never touches SIGTERM at all, so a single all-encompassing
+    call cannot give this command the dual-signal clean exit it needs —
+    per-tick calls, exactly like the dashboard's --watch, can. Unlike
+    _watch_loop's default multi-second refresh, --interval is often
+    sub-second here, so a much larger share of wall-clock time is spent
+    inside individual run_async() calls rather than between them — a SIGINT
+    landing mid-call surfaces as KeyboardInterrupt at the call site (see
+    _run_tick below) far more often than it does for the dashboard, so that
+    case is folded into the same clean-exit path instead of left to crash.
+    """
+    from lionagi.ln.concurrency import run_async
+    from lionagi.state.db import DEFAULT_DB_PATH, StateDB
+
+    from ._logging import log_error
+    from .status import EXIT_RUNNING, EXIT_UNKNOWN
+
+    if not DEFAULT_DB_PATH.exists():
+        log_error("state.db not found — no schedule runs recorded yet")
+        return EXIT_UNKNOWN
+
+    interrupted = False
+
+    def _handle_signal(signum: int, frame: Any) -> None:
+        nonlocal interrupted
+        interrupted = True
+
+    signal.signal(signal.SIGINT, _handle_signal)
+    signal.signal(signal.SIGTERM, _handle_signal)
+
+    def _sleep_interval(secs: float) -> None:
+        # Sleep in small increments so SIGINT/SIGTERM stay responsive,
+        # mirroring _watch_loop's own chunked sleep exactly.
+        for _ in range(max(1, round(secs * 10))):
+            if interrupted:
+                break
+            time.sleep(0.1)
+
+    def _run_tick(coro: Any) -> Any:
+        # run_async raises bare KeyboardInterrupt when SIGINT lands during
+        # its own call (it installs a temporary handler for that duration —
+        # see run_async's docstring in ln/concurrency/utils.py). Treat that
+        # exactly like `interrupted` being set between ticks: no traceback,
+        # no half-updated state, just the same clean stop.
+        nonlocal interrupted
+        try:
+            return run_async(coro)
+        except KeyboardInterrupt:
+            interrupted = True
+            return None
+
+    schedule_names: dict[str, str] = {}
+
+    async def _resolve() -> tuple[dict[str, dict[str, Any]], list[str]]:
+        async with StateDB() as db:
+            return await _resolve_watched_runs(db, ids)
+
+    resolved = _run_tick(_resolve())
+    if resolved is None:
+        # Interrupted before resolving even completed — we don't yet know
+        # which ids exist or what state they're in, so there is no aggregate
+        # to report. This is "still in progress", not success or failure.
+        return EXIT_RUNNING
+    pending, unresolved = resolved
+    for raw_id in unresolved:
+        log_error(f"schedule_run {raw_id!r} not found")
+
+    total_watched = len(pending)
+    done: list[dict[str, Any]] = []
+
+    async def _tick() -> None:
+        async with StateDB() as db:
+            await _poll_pending_once(db, pending, schedule_names, done)
+
+    while pending and not interrupted:
+        _run_tick(_tick())
+        if not pending or interrupted:
+            break
+        _sleep_interval(interval)
+
+    if unresolved:
+        exit_code = EXIT_UNKNOWN
+    elif len(done) < total_watched:
+        # Some watched run never reached a terminal status before we had to
+        # stop — whether that row was ever printed is irrelevant; `done`
+        # (mutated in _poll_pending_once, see above) is the one ground truth
+        # that survives a tick being interrupted mid-flight.
+        exit_code = EXIT_RUNNING
+    elif all(r.get("exit_code") == 0 for r in done):
+        exit_code = 0
+    else:
+        exit_code = 1
+
+    if follow and not interrupted:
+        baseline = time.time()
+        follow_pending: dict[str, dict[str, Any]] = {}
+
+        async def _follow_tick(bl: float) -> float:
+            async with StateDB() as db:
+                new_rows = await _query_schedule_runs_since(db, bl)
+                for row in new_rows:
+                    follow_pending.setdefault(row["id"], row)
+                if follow_pending:
+                    await _poll_pending_once(db, follow_pending, schedule_names, [])
+            if new_rows:
+                bl = max(bl, *(r["created_at"] for r in new_rows))
+            return bl
+
+        while not interrupted:
+            tick_result = _run_tick(_follow_tick(baseline))
+            if tick_result is not None:
+                baseline = tick_result
+            if interrupted:
+                break
+            _sleep_interval(interval)
+        # --follow has no natural end, so its exit code is whatever the
+        # *initial* bounded set already resolved to (see exit_code above)
+        # — new runs discovered during the tail print their own lines but
+        # don't feed the final aggregate.
+
+    return exit_code
+
+
+def run_monitor_wait(argv: list[str]) -> int:
+    """Entry point for `li monitor run <id> [<id2> ...] [--interval SECS] [--follow]`."""
+    parser = argparse.ArgumentParser(prog="li monitor run", add_help=True)
+    parser.add_argument(
+        "ids",
+        nargs="+",
+        help="schedule_run ID(s) (or short prefixes) to wait for. Comma- or space-separated.",
+    )
+    parser.add_argument(
+        "--interval",
+        type=float,
+        default=3.0,
+        metavar="SECS",
+        help="Poll interval in seconds (default 3).",
+    )
+    parser.add_argument(
+        "--follow",
+        action="store_true",
+        help="Keep watching for new schedule_runs after the initial set drains.",
+    )
+    args = parser.parse_args(argv)
+    watched_ids = _split_watched_ids(args.ids)
+    if not watched_ids:
+        # nargs="+" only guarantees argv had at least one token, not that any
+        # of them survive comma-splitting (e.g. a lone "," or ""). Without
+        # this check that degenerates into a silent, instant, exit-0 no-op.
+        parser.error("no schedule_run ids given (only empty/comma-only tokens)")
+    return _dispatch_wait(watched_ids, interval=args.interval, follow=args.follow)
+
+
 # ── CLI registration ──────────────────────────────────────────────────────────
 
 
@@ -774,11 +1068,45 @@ def add_monitor_subparser(subparsers: argparse._SubParsersAction) -> None:
         default=None,
         help="Filter sessions by project name.",
     )
+    mon.add_argument(
+        "--run",
+        dest="run_ids",
+        default=None,
+        metavar="ID[,ID...]",
+        help=(
+            "Wait for one or more schedule_run IDs to reach a terminal state, "
+            "then exit (scripting primitive; see `li monitor run --help` for "
+            "the positional form). Ignores id/--watch/--since/--type/--project."
+        ),
+    )
+    mon.add_argument(
+        "--interval",
+        type=float,
+        default=3.0,
+        metavar="SECS",
+        help="Poll interval in seconds for --run mode (default 3). Independent of --refresh.",
+    )
+    mon.add_argument(
+        "--follow",
+        action="store_true",
+        help="With --run: keep watching for new schedule_runs after the initial set drains.",
+    )
 
 
 def run_monitor(args: argparse.Namespace) -> int:
     """Dispatch `li monitor` subcommand."""
     from lionagi.ln.concurrency import run_async
+
+    if args.run_ids:
+        watched_ids = _split_watched_ids([args.run_ids])
+        if not watched_ids:
+            # A truthy --run value can still split to nothing (e.g. ","),
+            # which would otherwise dispatch an empty watch set and exit 0.
+            from ._logging import log_error
+
+            log_error("no schedule_run ids given (only empty/comma-only tokens)")
+            return 2
+        return _dispatch_wait(watched_ids, interval=args.interval, follow=args.follow)
 
     since: float | None = None
     if args.since:

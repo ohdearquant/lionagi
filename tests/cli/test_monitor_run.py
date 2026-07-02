@@ -1,0 +1,752 @@
+# Copyright (c) 2023-2026, HaiyangLi <quantocean.li at gmail dot com>
+# SPDX-License-Identifier: Apache-2.0
+"""Tests for `li monitor run` / `li monitor --run` — scriptable
+wait-for-terminal primitive over schedule_runs (additive to the `li monitor`
+dashboard, not a replacement)."""
+
+from __future__ import annotations
+
+import logging
+import os
+import signal
+import threading
+import time
+import uuid
+from pathlib import Path
+from typing import Any
+
+import pytest
+
+from lionagi.cli.monitor import (
+    _dispatch_wait,
+    _format_wait_line,
+    _poll_pending_once,
+    _query_schedule_runs_since,
+    _resolve_schedule_run,
+    _split_watched_ids,
+    add_monitor_subparser,
+    run_monitor_wait,
+)
+from lionagi.cli.status import EXIT_RUNNING, EXIT_UNKNOWN
+from lionagi.state.db import StateDB
+
+# ── Fixtures ────────────────────────────────────────────────────────────────
+
+
+@pytest.fixture
+def temp_db_path(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+    """Per-test temp DB; patch DEFAULT_DB_PATH so StateDB() opens it."""
+    db_path = tmp_path / "state.db"
+    monkeypatch.setattr("lionagi.state.db.DEFAULT_DB_PATH", db_path)
+    return db_path
+
+
+async def _make_schedule(db: StateDB, *, name: str | None = None) -> str:
+    sid = uuid.uuid4().hex[:12]
+    await db.create_schedule(
+        {
+            "id": sid,
+            "name": name or f"sched-{sid}",
+            "trigger_type": "interval",
+            "interval_sec": 60,
+            "action_kind": "agent",
+        }
+    )
+    return sid
+
+
+async def _make_schedule_run(
+    db: StateDB,
+    schedule_id: str,
+    *,
+    status: str = "running",
+    exit_code: int | None = None,
+    chain_depth: int = 0,
+) -> str:
+    rid = uuid.uuid4().hex[:12]
+    await db.create_schedule_run(
+        {
+            "id": rid,
+            "schedule_id": schedule_id,
+            "trigger_context": {},
+            "action_kind": "agent",
+            "action_args": [],
+            "status": status,
+            "exit_code": exit_code,
+            "chain_depth": chain_depth,
+            "fired_at": time.time(),
+        }
+    )
+    return rid
+
+
+async def _set_fields(db: StateDB, table: str, id_: str, **fields: Any) -> None:
+    sets = ", ".join(f"{k} = ?" for k in fields)
+    await db.execute(f"UPDATE {table} SET {sets} WHERE id = ?", (*fields.values(), id_))
+
+
+# ── _split_watched_ids ───────────────────────────────────────────────────────
+
+
+def test_split_watched_ids_multiple_positional_tokens():
+    assert _split_watched_ids(["a", "b", "c"]) == ["a", "b", "c"]
+
+
+def test_split_watched_ids_comma_separated_single_token():
+    assert _split_watched_ids(["a,b,c"]) == ["a", "b", "c"]
+
+
+def test_split_watched_ids_mixed_tokens_and_commas():
+    assert _split_watched_ids(["a,b", "c"]) == ["a", "b", "c"]
+
+
+def test_split_watched_ids_strips_whitespace():
+    assert _split_watched_ids([" a , b "]) == ["a", "b"]
+
+
+def test_split_watched_ids_dedupes_preserving_first_seen_order():
+    assert _split_watched_ids(["a,b,a", "b", "c"]) == ["a", "b", "c"]
+
+
+def test_split_watched_ids_drops_empty_pieces():
+    assert _split_watched_ids(["a,,b", ""]) == ["a", "b"]
+
+
+# ── _format_wait_line ────────────────────────────────────────────────────────
+
+
+def test_format_wait_line_contains_all_fields():
+    row = {"id": "abc123", "chain_depth": 2, "status": "completed", "exit_code": 0}
+    line = _format_wait_line(row, "my-schedule")
+    assert "abc123" in line
+    assert "my-schedule" in line
+    assert "chain_depth=2" in line
+    assert "status=completed" in line
+    assert "exit_code=0" in line
+
+
+def test_format_wait_line_none_exit_code_renders_dash():
+    row = {"id": "abc123", "chain_depth": 0, "status": "cancelled", "exit_code": None}
+    line = _format_wait_line(row, "my-schedule")
+    assert "exit_code=-" in line
+
+
+# ── _resolve_schedule_run ────────────────────────────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_resolve_schedule_run_exact_match(temp_db_path: Path) -> None:
+    async with StateDB() as db:
+        sched_id = await _make_schedule(db)
+        run_id = await _make_schedule_run(db, sched_id, status="completed", exit_code=0)
+        row = await _resolve_schedule_run(db, run_id)
+        assert row is not None
+        assert row["id"] == run_id
+
+
+@pytest.mark.asyncio
+async def test_resolve_schedule_run_prefix_match(temp_db_path: Path) -> None:
+    async with StateDB() as db:
+        sched_id = await _make_schedule(db)
+        run_id = await _make_schedule_run(db, sched_id, status="completed", exit_code=0)
+        row = await _resolve_schedule_run(db, run_id[:6])
+        assert row is not None
+        assert row["id"] == run_id
+
+
+@pytest.mark.asyncio
+async def test_resolve_schedule_run_not_found_returns_none(temp_db_path: Path) -> None:
+    async with StateDB() as db:
+        row = await _resolve_schedule_run(db, "totally-unknown-id")
+        assert row is None
+
+
+# ── _poll_pending_once (the testable inner tick — no real sleeps needed) ────
+
+
+@pytest.mark.asyncio
+async def test_poll_pending_once_reports_immediately_terminal_run(
+    temp_db_path: Path, capsys: pytest.CaptureFixture
+) -> None:
+    async with StateDB() as db:
+        sched_id = await _make_schedule(db, name="nightly-build")
+        run_id = await _make_schedule_run(db, sched_id, status="completed", exit_code=0)
+        pending = {run_id: await db.get_schedule_run(run_id)}
+        done: list[dict[str, Any]] = []
+        await _poll_pending_once(db, pending, {}, done)
+
+    assert [r["id"] for r in done] == [run_id]
+    assert run_id not in pending
+    out = capsys.readouterr().out
+    assert run_id in out
+    assert "nightly-build" in out
+    assert "status=completed" in out
+
+
+@pytest.mark.asyncio
+async def test_poll_pending_once_leaves_running_run_pending(
+    temp_db_path: Path, capsys: pytest.CaptureFixture
+) -> None:
+    async with StateDB() as db:
+        sched_id = await _make_schedule(db)
+        run_id = await _make_schedule_run(db, sched_id, status="running")
+        pending = {run_id: await db.get_schedule_run(run_id)}
+        done: list[dict[str, Any]] = []
+        await _poll_pending_once(db, pending, {}, done)
+
+    assert done == []
+    assert run_id in pending
+    assert capsys.readouterr().out == ""
+
+
+@pytest.mark.asyncio
+async def test_poll_pending_once_across_two_ticks_with_db_mutation_no_real_sleep(
+    temp_db_path: Path, capsys: pytest.CaptureFixture
+) -> None:
+    """Drives the run from running -> completed between two direct calls to
+    the tick function — the deterministic, zero-wall-clock way to exercise
+    'terminal across different poll iterations' (see also the real-thread
+    variant against _dispatch_wait below)."""
+    async with StateDB() as db:
+        sched_id = await _make_schedule(db)
+        run_id = await _make_schedule_run(db, sched_id, status="running")
+        pending = {run_id: await db.get_schedule_run(run_id)}
+        done: list[dict[str, Any]] = []
+
+        await _poll_pending_once(db, pending, {}, done)
+        assert done == []
+        assert run_id in pending
+
+        await _set_fields(db, "schedule_runs", run_id, status="completed", exit_code=0)
+
+        await _poll_pending_once(db, pending, {}, done)
+        assert [r["id"] for r in done] == [run_id]
+        assert run_id not in pending
+
+    out = capsys.readouterr().out
+    assert out.count(run_id) == 1
+
+
+@pytest.mark.asyncio
+async def test_poll_pending_once_row_vanished_mid_wait_resolves_as_failure(
+    temp_db_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    async with StateDB() as db:
+        sched_id = await _make_schedule(db)
+        run_id = await _make_schedule_run(db, sched_id, status="running")
+        pending = {run_id: await db.get_schedule_run(run_id)}
+        await db.execute("DELETE FROM schedule_runs WHERE id = ?", (run_id,))
+
+        done: list[dict[str, Any]] = []
+        with caplog.at_level(logging.ERROR, logger="lionagi.cli.error"):
+            await _poll_pending_once(db, pending, {}, done)
+
+    assert run_id not in pending
+    assert len(done) == 1
+    assert done[0]["exit_code"] is None
+    assert "disappeared" in caplog.text.lower()
+
+
+# ── _dispatch_wait: bounded wait, no --follow ────────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_dispatch_wait_single_immediately_terminal_success(
+    temp_db_path: Path, capsys: pytest.CaptureFixture
+) -> None:
+    async with StateDB() as db:
+        sched_id = await _make_schedule(db, name="my-sched")
+        run_id = await _make_schedule_run(db, sched_id, status="completed", exit_code=0)
+
+    started = time.monotonic()
+    exit_code = _dispatch_wait([run_id], interval=5.0, follow=False)
+    elapsed = time.monotonic() - started
+
+    assert exit_code == 0
+    assert elapsed < 2.0, "already-terminal run must not wait out a full poll interval"
+    out = capsys.readouterr().out
+    assert run_id in out
+    assert "status=completed" in out
+
+
+@pytest.mark.asyncio
+async def test_dispatch_wait_single_immediately_terminal_failure(temp_db_path: Path) -> None:
+    async with StateDB() as db:
+        sched_id = await _make_schedule(db)
+        run_id = await _make_schedule_run(db, sched_id, status="failed", exit_code=1)
+
+    exit_code = _dispatch_wait([run_id], interval=5.0, follow=False)
+    assert exit_code == 1
+
+
+@pytest.mark.asyncio
+async def test_dispatch_wait_multi_id_all_terminal_success(temp_db_path: Path) -> None:
+    async with StateDB() as db:
+        sched_id = await _make_schedule(db)
+        run_a = await _make_schedule_run(db, sched_id, status="completed", exit_code=0)
+        run_b = await _make_schedule_run(db, sched_id, status="completed", exit_code=0)
+
+    exit_code = _dispatch_wait([run_a, run_b], interval=5.0, follow=False)
+    assert exit_code == 0
+
+
+@pytest.mark.asyncio
+async def test_dispatch_wait_multi_id_one_nonzero_exit_fails_aggregate(temp_db_path: Path) -> None:
+    async with StateDB() as db:
+        sched_id = await _make_schedule(db)
+        run_a = await _make_schedule_run(db, sched_id, status="completed", exit_code=0)
+        run_b = await _make_schedule_run(db, sched_id, status="failed", exit_code=1)
+
+    exit_code = _dispatch_wait([run_a, run_b], interval=5.0, follow=False)
+    assert exit_code == 1
+
+
+@pytest.mark.asyncio
+async def test_dispatch_wait_unknown_id_returns_exit_unknown_without_blocking(
+    temp_db_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    # Open+close once so state.db actually exists on disk — this test is
+    # about an id that isn't among the (existing) schedule_runs, not about
+    # a missing state.db file entirely (see test_dispatch_wait_no_db_file).
+    async with StateDB():
+        pass
+
+    started = time.monotonic()
+    with caplog.at_level(logging.ERROR, logger="lionagi.cli.error"):
+        exit_code = _dispatch_wait(["nonexistent-id"], interval=5.0, follow=False)
+    elapsed = time.monotonic() - started
+
+    assert exit_code == EXIT_UNKNOWN
+    assert elapsed < 2.0, "unresolved id must not enter the poll loop at all"
+    assert "nonexistent-id" in caplog.text
+
+
+def test_dispatch_wait_no_db_file_returns_exit_unknown(
+    temp_db_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    """state.db does not exist yet (fresh install, `li agent` never run) —
+    must fail fast with EXIT_UNKNOWN, not try to open/create it."""
+    with caplog.at_level(logging.ERROR, logger="lionagi.cli.error"):
+        exit_code = _dispatch_wait(["anything"], interval=5.0, follow=False)
+
+    assert exit_code == EXIT_UNKNOWN
+    assert not temp_db_path.exists()
+    assert "state.db not found" in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_dispatch_wait_mixed_unknown_and_resolved_still_returns_exit_unknown(
+    temp_db_path: Path, capsys: pytest.CaptureFixture, caplog: pytest.LogCaptureFixture
+) -> None:
+    """A bad id must not be masked by other watched runs succeeding — the
+    whole invocation reports EXIT_UNKNOWN, but the good run's line still
+    prints (it did finish; the caller should see that)."""
+    async with StateDB() as db:
+        sched_id = await _make_schedule(db)
+        good_id = await _make_schedule_run(db, sched_id, status="completed", exit_code=0)
+
+    with caplog.at_level(logging.ERROR, logger="lionagi.cli.error"):
+        exit_code = _dispatch_wait([good_id, "bogus-id"], interval=5.0, follow=False)
+
+    assert exit_code == EXIT_UNKNOWN
+    assert good_id in capsys.readouterr().out
+    assert "bogus-id" in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_dispatch_wait_polls_across_real_iterations_until_background_mutation(
+    temp_db_path: Path, capsys: pytest.CaptureFixture
+) -> None:
+    """Integration-level companion to the deterministic two-tick test above:
+    a background thread flips the row to terminal partway through, proving
+    the sync orchestration loop (not just the inner tick function) actually
+    polls on a real cadence rather than resolving everything up front."""
+    async with StateDB() as db:
+        sched_id = await _make_schedule(db)
+        run_id = await _make_schedule_run(db, sched_id, status="running")
+
+    def _flip_to_completed() -> None:
+        import asyncio
+
+        async def _go() -> None:
+            async with StateDB() as db2:
+                await _set_fields(db2, "schedule_runs", run_id, status="completed", exit_code=0)
+
+        time.sleep(0.25)
+        asyncio.run(_go())
+
+    t = threading.Thread(target=_flip_to_completed, daemon=True)
+    t.start()
+
+    exit_code = _dispatch_wait([run_id], interval=0.05, follow=False)
+    t.join(timeout=5)
+
+    assert exit_code == 0
+    assert run_id in capsys.readouterr().out
+
+
+@pytest.mark.asyncio
+async def test_dispatch_wait_sigint_while_still_pending_returns_exit_running(
+    temp_db_path: Path,
+) -> None:
+    """A run that never goes terminal + a real SIGINT mid-wait must report
+    EXIT_RUNNING, not silently succeed."""
+    async with StateDB() as db:
+        sched_id = await _make_schedule(db)
+        run_id = await _make_schedule_run(db, sched_id, status="running")
+
+    def _send_interrupt() -> None:
+        time.sleep(0.3)
+        os.kill(os.getpid(), signal.SIGINT)
+
+    t = threading.Thread(target=_send_interrupt, daemon=True)
+    t.start()
+
+    exit_code = _dispatch_wait([run_id], interval=0.05, follow=False)
+    t.join(timeout=2)
+
+    assert exit_code == EXIT_RUNNING
+
+
+@pytest.mark.asyncio
+async def test_dispatch_wait_interrupted_during_resolve_returns_exit_running(
+    temp_db_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """If SIGINT lands during the very first resolve call (before we even
+    know whether the requested ids exist), we cannot claim success -- must
+    report EXIT_RUNNING, never a vacuous 0."""
+    async with StateDB():
+        pass  # ensure state.db exists on disk before _dispatch_wait checks it
+
+    import lionagi.ln.concurrency as concurrency_mod
+
+    def _fake_run_async(coro: Any) -> Any:
+        coro.close()  # avoid "coroutine was never awaited" warning
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr(concurrency_mod, "run_async", _fake_run_async)
+
+    exit_code = _dispatch_wait(["some-id"], interval=5.0, follow=False)
+    assert exit_code == EXIT_RUNNING
+
+
+@pytest.mark.asyncio
+async def test_dispatch_wait_keyboard_interrupt_after_tick_mutates_state_still_reports_failure(
+    temp_db_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Regression: run_async can complete a tick's real work (printing a
+    terminal row, mutating `pending`/`done`) and *then* raise
+    KeyboardInterrupt before _dispatch_wait ever sees the tick's return
+    value -- exactly what happens when SIGINT is delivered right as the
+    tick's coroutine finishes. The already-observed failure must still be
+    reflected in the exit code, not lost to a vacuous empty-`done` success.
+    """
+    async with StateDB() as db:
+        sched_id = await _make_schedule(db)
+        run_id = await _make_schedule_run(db, sched_id, status="failed", exit_code=1)
+
+    import lionagi.ln.concurrency as concurrency_mod
+
+    real_run_async = concurrency_mod.run_async
+    calls = {"n": 0}
+
+    def _fake_run_async(coro: Any) -> Any:
+        calls["n"] += 1
+        if calls["n"] == 2:  # call 1 = resolve; call 2 = the first tick
+            real_run_async(coro)  # let it actually run and mutate state...
+            raise KeyboardInterrupt  # ...then simulate SIGINT racing the return
+        return real_run_async(coro)
+
+    monkeypatch.setattr(concurrency_mod, "run_async", _fake_run_async)
+
+    exit_code = _dispatch_wait([run_id], interval=5.0, follow=False)
+    assert exit_code == 1
+
+
+# ── _query_schedule_runs_since (the --follow baseline boundary, deterministic) ──
+
+
+@pytest.mark.asyncio
+async def test_query_schedule_runs_since_only_returns_strictly_newer(temp_db_path: Path) -> None:
+    """The exact SQL boundary --follow relies on: a run created AT baseline
+    must not be re-returned (strict '>'), only ones created after it."""
+    async with StateDB() as db:
+        sched_id = await _make_schedule(db)
+        old_id = await _make_schedule_run(db, sched_id, status="completed", exit_code=0)
+        old_row = await db.get_schedule_run(old_id)
+        baseline = old_row["created_at"]
+
+        new_id = await _make_schedule_run(db, sched_id, status="running")
+        new_rows = await _query_schedule_runs_since(db, baseline)
+
+    assert [r["id"] for r in new_rows] == [new_id]
+
+
+@pytest.mark.asyncio
+async def test_query_schedule_runs_since_empty_when_nothing_newer(temp_db_path: Path) -> None:
+    async with StateDB() as db:
+        sched_id = await _make_schedule(db)
+        run_id = await _make_schedule_run(db, sched_id, status="completed", exit_code=0)
+        row = await db.get_schedule_run(run_id)
+        new_rows = await _query_schedule_runs_since(db, row["created_at"])
+
+    assert new_rows == []
+
+
+# ── _dispatch_wait: --follow (baseline-first tail behavior) ─────────────────
+
+
+@pytest.mark.asyncio
+async def test_dispatch_wait_follow_sigint_clean(temp_db_path: Path) -> None:
+    """Mirrors test_watch_mode_sigint_clean in test_monitor.py: --follow must
+    exit cleanly (not hang, not traceback) on SIGINT once the initial set has
+    drained."""
+    async with StateDB() as db:
+        sched_id = await _make_schedule(db)
+        run_id = await _make_schedule_run(db, sched_id, status="completed", exit_code=0)
+
+    def _send_interrupt() -> None:
+        time.sleep(0.3)
+        os.kill(os.getpid(), signal.SIGINT)
+
+    t = threading.Thread(target=_send_interrupt, daemon=True)
+    t.start()
+
+    exit_code = _dispatch_wait([run_id], interval=0.05, follow=True)
+    t.join(timeout=2)
+
+    assert exit_code == 0
+
+
+@pytest.mark.asyncio
+async def test_dispatch_wait_follow_preserves_initial_failure_exit_code(
+    temp_db_path: Path,
+) -> None:
+    """Regression: --follow must not collapse an initial bounded-set FAILURE
+    into a false success just because the follow phase was entered and later
+    interrupted. The initial watched set's aggregate result is the contract
+    --follow's exit code honors; the open-ended tail has no result of its
+    own to report."""
+    async with StateDB() as db:
+        sched_id = await _make_schedule(db)
+        run_id = await _make_schedule_run(db, sched_id, status="failed", exit_code=1)
+
+    def _send_interrupt() -> None:
+        time.sleep(0.3)
+        os.kill(os.getpid(), signal.SIGINT)
+
+    t = threading.Thread(target=_send_interrupt, daemon=True)
+    t.start()
+
+    exit_code = _dispatch_wait([run_id], interval=0.05, follow=True)
+    t.join(timeout=2)
+
+    assert exit_code == 1
+
+
+@pytest.mark.asyncio
+async def test_dispatch_wait_follow_ignores_pre_existing_runs_reports_only_new(
+    temp_db_path: Path, capsys: pytest.CaptureFixture
+) -> None:
+    """Baseline-first discipline: a schedule_run that already existed before
+    --follow started watching must never be (re-)reported during the follow
+    phase; only runs created after the baseline was captured are new."""
+    async with StateDB() as db:
+        sched_id = await _make_schedule(db)
+        watched_id = await _make_schedule_run(db, sched_id, status="completed", exit_code=0)
+        pre_existing_id = await _make_schedule_run(db, sched_id, status="completed", exit_code=0)
+
+    new_run_id: dict[str, str] = {}
+
+    def _create_new_run_then_interrupt() -> None:
+        import asyncio
+
+        async def _go() -> None:
+            async with StateDB() as db2:
+                new_run_id["id"] = await _make_schedule_run(
+                    db2, sched_id, status="completed", exit_code=0
+                )
+
+        time.sleep(0.25)
+        asyncio.run(_go())
+        time.sleep(0.4)
+        os.kill(os.getpid(), signal.SIGINT)
+
+    t = threading.Thread(target=_create_new_run_then_interrupt, daemon=True)
+    t.start()
+
+    exit_code = _dispatch_wait([watched_id], interval=0.05, follow=True)
+    t.join(timeout=5)
+
+    assert exit_code == 0
+    out = capsys.readouterr().out
+    assert watched_id in out  # the originally-requested id: reported during the bounded phase
+    assert new_run_id["id"] in out  # created after baseline: reported during follow
+    assert pre_existing_id not in out  # existed before baseline: never re-reported
+
+
+# ── argv parsing: `--run` flag form + `--interval`/`--follow` on the main parser ──
+
+
+def test_add_monitor_subparser_run_flag_and_new_options():
+    import argparse
+
+    parser = argparse.ArgumentParser()
+    sub = parser.add_subparsers(dest="command")
+    add_monitor_subparser(sub)
+
+    args = parser.parse_args(["monitor", "--run", "id1,id2,id3"])
+    assert args.run_ids == "id1,id2,id3"
+    assert args.interval == 3.0
+    assert args.follow is False
+
+    args = parser.parse_args(["monitor", "--run", "id1", "--interval", "0.5", "--follow"])
+    assert args.run_ids == "id1"
+    assert args.interval == 0.5
+    assert args.follow is True
+
+
+def test_run_monitor_run_flag_comma_only_ids_is_usage_error(
+    temp_db_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    """`li monitor --run ,,,` is truthy but splits to zero ids; it must fail
+    as a usage error, not dispatch an empty watch set and exit 0."""
+    import argparse
+
+    from lionagi.cli.monitor import run_monitor
+
+    parser = argparse.ArgumentParser()
+    sub = parser.add_subparsers(dest="command")
+    add_monitor_subparser(sub)
+    args = parser.parse_args(["monitor", "--run", ",,,"])
+
+    with caplog.at_level(logging.ERROR):
+        exit_code = run_monitor(args)
+    assert exit_code == 2
+    assert "no schedule_run ids" in caplog.text
+
+
+def test_add_monitor_subparser_existing_dashboard_args_unaffected():
+    """Regression: adding --run/--interval/--follow must not disturb the
+    existing bare / --watch / --since / --type / --project surface."""
+    import argparse
+
+    parser = argparse.ArgumentParser()
+    sub = parser.add_subparsers(dest="command")
+    add_monitor_subparser(sub)
+
+    args = parser.parse_args(["monitor"])
+    assert args.id is None
+    assert not args.watch
+    assert args.run_ids is None
+
+    args = parser.parse_args(["monitor", "abc123", "--watch"])
+    assert args.id == "abc123"
+    assert args.watch
+
+
+# ── run_monitor_wait: the `li monitor run <id>...` positional entry point ───
+
+
+@pytest.mark.asyncio
+async def test_run_monitor_wait_single_positional_id(
+    temp_db_path: Path, capsys: pytest.CaptureFixture
+) -> None:
+    async with StateDB() as db:
+        sched_id = await _make_schedule(db)
+        run_id = await _make_schedule_run(db, sched_id, status="completed", exit_code=0)
+
+    exit_code = run_monitor_wait([run_id])
+    assert exit_code == 0
+    assert run_id in capsys.readouterr().out
+
+
+@pytest.mark.asyncio
+async def test_run_monitor_wait_comma_separated_single_token(
+    temp_db_path: Path, capsys: pytest.CaptureFixture
+) -> None:
+    """`li monitor run id1,id2` — one argv token, both ids must resolve."""
+    async with StateDB() as db:
+        sched_id = await _make_schedule(db)
+        run_a = await _make_schedule_run(db, sched_id, status="completed", exit_code=0)
+        run_b = await _make_schedule_run(db, sched_id, status="completed", exit_code=0)
+
+    exit_code = run_monitor_wait([f"{run_a},{run_b}"])
+    assert exit_code == 0
+    out = capsys.readouterr().out
+    assert run_a in out
+    assert run_b in out
+
+
+@pytest.mark.asyncio
+async def test_run_monitor_wait_multiple_positional_tokens(
+    temp_db_path: Path, capsys: pytest.CaptureFixture
+) -> None:
+    """`li monitor run id1 id2` — two argv tokens, both ids must resolve."""
+    async with StateDB() as db:
+        sched_id = await _make_schedule(db)
+        run_a = await _make_schedule_run(db, sched_id, status="completed", exit_code=0)
+        run_b = await _make_schedule_run(db, sched_id, status="completed", exit_code=0)
+
+    exit_code = run_monitor_wait([run_a, run_b])
+    assert exit_code == 0
+    out = capsys.readouterr().out
+    assert run_a in out
+    assert run_b in out
+
+
+def test_run_monitor_wait_unknown_id_returns_exit_unknown(temp_db_path: Path) -> None:
+    assert run_monitor_wait(["nonexistent-id"]) == EXIT_UNKNOWN
+
+
+def test_run_monitor_wait_requires_at_least_one_id():
+    with pytest.raises(SystemExit):
+        run_monitor_wait([])
+
+
+def test_run_monitor_wait_comma_only_token_rejected_as_usage_error():
+    """nargs="+" only guarantees a non-empty argv list, not that any token
+    survives comma-splitting -- a single "," token must be treated the same
+    as no ids at all, not silently dispatched as a zero-id wait."""
+    with pytest.raises(SystemExit) as exc_info:
+        run_monitor_wait([",,,"])
+    assert exc_info.value.code == 2
+
+
+def test_run_monitor_wait_empty_string_token_rejected_as_usage_error():
+    with pytest.raises(SystemExit) as exc_info:
+        run_monitor_wait([""])
+    assert exc_info.value.code == 2
+
+
+# ── CLI wiring: `li monitor run --help` / `li monitor --help` subprocess ────
+
+
+def test_cli_monitor_run_help_subprocess():
+    import subprocess
+    import sys
+
+    result = subprocess.run(
+        [sys.executable, "-m", "lionagi.cli", "monitor", "run", "--help"],
+        capture_output=True,
+        text=True,
+    )
+    assert result.returncode == 0
+    assert "follow" in result.stdout.lower()
+    assert "interval" in result.stdout.lower()
+
+
+def test_cli_monitor_help_still_shows_dashboard_usage():
+    """Regression: `li monitor --help` (no 'run') must still describe the
+    existing dashboard, proving the pre-dispatch interception in main.py
+    only intercepts the literal 'run' token, not all of `li monitor`."""
+    import subprocess
+    import sys
+
+    result = subprocess.run(
+        [sys.executable, "-m", "lionagi.cli", "monitor", "--help"],
+        capture_output=True,
+        text=True,
+    )
+    assert result.returncode == 0
+    assert "--watch" in result.stdout
