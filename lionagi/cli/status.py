@@ -482,6 +482,15 @@ def _dispatch(command: str, entity_id: str | None, as_json: bool) -> int:
 async def _audit_degraded(db: Any) -> dict[str, Any]:
     """Scan terminal-success play/flow records once; count how many never
     recorded run-usage metrics per _detect_degraded — a trust-debt baseline.
+
+    Known coverage gap: setup_orchestration_persist() (cli/orchestrate/_orchestration.py)
+    never populates a singular ctx["branch"] for multi-leg DAG sessions (it tracks
+    per-leg branches via ctx["hooks"] instead), so teardown_persist()'s
+    `if _branch is not None` guard (cli/_runs.py) always skips _collect_branch_usage()
+    for invocation_kind IN ('play', 'flow') — num_turns/duration_ms/tokens/cost are
+    therefore never recorded for ANY such session, healthy or not. Until that's fixed,
+    a 100% (or near-100%) sessions_degraded rate reflects this detector-coverage gap,
+    not a real degradation rate — see the printed note in _dispatch_audit.
     """
     sessions = await db.fetch_all(
         "SELECT * FROM sessions WHERE invocation_kind IN ('play', 'flow') AND status = 'completed'"
@@ -549,6 +558,13 @@ def _dispatch_audit(*, as_json: bool) -> int:
         print(f"  sessions: {result['sessions_degraded']} / {result['sessions_scanned']} scanned")
         print(f"  plays:    {result['plays_degraded']} / {result['plays_scanned']} scanned")
         print(f"  total:    {result['total_degraded']}")
+        if result["sessions_scanned"] and result["sessions_degraded"] == result["sessions_scanned"]:
+            print(
+                "  note: 100% of scanned sessions flagged — this matches a known "
+                "usage-metric persistence gap for orchestrator/play/flow sessions "
+                "(num_turns is never recorded for that invocation class), not "
+                "necessarily real degradation. See _audit_degraded docstring."
+            )
     return 0
 
 
