@@ -480,7 +480,10 @@ def _launch_vite_dev(
 
 def _base_url() -> str:
     if url := os.environ.get("LIONAGI_STUDIO_URL"):
-        return url.rstrip("/")
+        # Endpoint paths below add /api themselves; tolerate a base URL that
+        # already carries it (an older documented workaround) so requests
+        # don't hit /api/api/... and 404.
+        return url.rstrip("/").removesuffix("/api")
     host = os.environ.get("LIONAGI_STUDIO_HOST", "127.0.0.1")
     port = os.environ.get("LIONAGI_STUDIO_PORT", "8765")
     return f"http://{host}:{port}"
