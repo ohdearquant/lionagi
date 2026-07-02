@@ -226,7 +226,13 @@ def build_argv(schedule: dict, trigger_context: dict) -> tuple[list[str], str | 
             flags += ["--agent", agent]
         if project:
             flags += ["--project", project]
-        argv += ["agent", *flags, "--", model, prompt]
+        # Omit the model positional entirely when action_model is unset: `li
+        # agent` treats a single positional as the prompt and falls through to
+        # the --agent profile's own default model. Passing an empty string as
+        # the model positional would instead be parsed as an explicit (blank)
+        # model spec, overriding the profile default and crashing Branch init.
+        positionals = [model, prompt] if model else [prompt]
+        argv += ["agent", *flags, "--", *positionals]
 
     elif kind == "flow":
         flags = []
