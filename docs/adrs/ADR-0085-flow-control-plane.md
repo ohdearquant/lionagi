@@ -353,6 +353,29 @@ Two hard guards:
   on a different engine would fabricate context. Quota death on a resumed
   conversation surfaces to the caller.
 
+**Quota window classes + alert event.** Not all exhaustions are equal:
+codex has short rolling resets (a few hours; the error names a clock time)
+and a hard weekly window; gemini's window is daily; claude subagent seats
+reset on session windows. The quota classifier therefore stamps a window
+class on every `ProviderQuotaError` — `rolling` | `period` | `unknown`,
+parsed from the provider's error surface, with `reset_at` when the text
+names one. Consequences differ by class:
+
+- `rolling`: warn line + fallback hop (if chained). Routine.
+- `period` (daily/weekly exhausted): additionally emits a **`quota_alert`**
+  payload through the part-5 notify mechanism (a distinct
+  `notify.on_quota_alert` template, same substitution contract):
+  `{"kind": "quota_alert", "provider": ..., "model": ..., "window":
+  "period", "reset_at": ..., "invocation_id": ...}`. A period exhaustion is
+  an operator event — capacity is gone for the day/week and someone may
+  choose to refresh it — so it must push outward, not sit in a log. The
+  operator wiring (email, khive comm) is a shell template, not lionagi
+  code.
+
+Design lands with this ADR; the alert path has no implementation urgency —
+the interim protocol is manual — but the event shape is fixed here so the
+notify contract does not churn twice.
+
 Explicitly **not** v1: predictive budgeting (routing away from a provider
 before it exhausts). That needs `usage_events` history to exist first and
 is staged as a follow-up on the same table.
