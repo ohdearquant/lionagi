@@ -23,6 +23,7 @@ from lionagi.state.artifact_verifier import resolve_artifact_contract
 
 from ._logging import hint, log_error
 from ._providers import (
+    BACKENDS,
     PROVIDER_BYPASS_KWARGS,
     PROVIDER_EFFORT_KWARG,
     PROVIDER_FAST_KWARGS,
@@ -239,10 +240,29 @@ async def _run_agent(
         branch = Branch.from_dict(json.loads(branch_path.read_text()))
     elif resume:
         _, branch_path = find_branch(resume)
+        resolved_branch_id = branch_path.stem
+        if resolved_branch_id != resume:
+            hint(f"[resume] prefix-matched {resume} → {resolved_branch_id}")
         branch = Branch.from_dict(json.loads(branch_path.read_text()))
 
     if model_str is not None:
         ms = parse_model_spec(model_str)
+        if branch is not None and "/" not in ms.model and ms.model not in BACKENDS:
+            # A resume-path override is grafted into the existing branch's
+            # config with no further validation (unlike a new branch, whose
+            # provider must resolve via build_chat_model/match_endpoint or
+            # fail naturally). A bare token that isn't a known backend name
+            # is almost always a mangled command — e.g. a --resume id split
+            # across two argv tokens leaves [fragment, prompt] as positionals
+            # and the fragment is read as MODEL.
+            log_error(
+                f"resume model override {model_str!r} does not look like a "
+                "model spec (expected 'provider/model', or a known name "
+                "like 'claude', 'codex', 'gemini-code'). Positionals are "
+                "[MODEL] PROMPT — this looks like a mangled command, e.g. "
+                "a --resume id accidentally split across two arguments."
+            )
+            return "", "", str(branch.id), "failed"
         if "/" in ms.model:
             provider, model = ms.model.split("/", 1)
         else:
@@ -314,6 +334,11 @@ async def _run_agent(
     else:
         cfg = branch.chat_model.endpoint.config.kwargs
         if model_str is not None:
+            old_model = cfg.get("model")
+            if model != old_model:
+                from lionagi.cli._logging import warn
+
+                warn(f"resume model override: {old_model} → {model}")
             cfg["model"] = model
         if verbose:
             cfg["verbose_output"] = True
