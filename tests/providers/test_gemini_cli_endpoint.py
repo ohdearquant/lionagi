@@ -4,7 +4,7 @@
 
 Covers argv construction (json output-format, model resolution, resume/yolo
 flags), nonzero-exit error surfacing, endpoint _call session mapping, default
-model gemini-3-flash-preview, and the REST-vs-CLI helpful error.
+model gemini-3.5-flash, and the REST-vs-CLI helpful error.
 """
 
 from __future__ import annotations
@@ -129,11 +129,11 @@ class TestEndpointCall:
 
 
 class TestDefaultModel:
-    """GeminiCodeRequest default model must be gemini-3-flash-preview."""
+    """GeminiCodeRequest default model must be the latest flash family."""
 
-    def test_default_model_is_gemini_3_flash_preview(self):
+    def test_default_model_is_gemini_3_5_flash(self):
         req = GeminiCodeRequest(prompt="hello")
-        assert req.model == "gemini-3-flash-preview"
+        assert req.model == "gemini-3.5-flash"
 
     def test_explicit_model_is_preserved(self):
         req = GeminiCodeRequest(prompt="hello", model="gemini-2.5-pro")
@@ -146,15 +146,15 @@ class TestDefaultModel:
 
 
 class TestBackendsDefaultModel:
-    """BACKENDS entries for gemini-cli must point to gemini-3-flash-preview."""
+    """BACKENDS entries for gemini-cli must point to the latest flash family."""
 
-    def test_gemini_cli_backend_uses_3_flash_preview(self):
+    def test_gemini_cli_backend_uses_3_5_flash(self):
         from lionagi.service.providers import BACKENDS
 
-        assert "gemini-3-flash-preview" in BACKENDS["gemini-cli"]
-        assert "gemini-3-flash-preview" in BACKENDS["gemini_cli"]
-        assert "gemini-3-flash-preview" in BACKENDS["gemini-code"]
-        assert "gemini-3-flash-preview" in BACKENDS["gemini_code"]
+        assert "gemini-3.5-flash" in BACKENDS["gemini-cli"]
+        assert "gemini-3.5-flash" in BACKENDS["gemini_cli"]
+        assert "gemini-3.5-flash" in BACKENDS["gemini-code"]
+        assert "gemini-3.5-flash" in BACKENDS["gemini_code"]
 
 
 # ---------------------------------------------------------------------------

@@ -74,6 +74,8 @@ __all__ = (
 
 # agy models expose ~1M-token context (verified against `agy models`).
 CONTEXT_WINDOWS: dict[str, int] = {
+    "gemini-3.5-flash": 1_048_576,
+    "gemini-3.1-pro": 1_048_576,
     "gemini-3-flash-preview": 1_048_576,
     "gemini-3-pro-preview": 1_048_576,
     "gemini-2.5-flash": 1_048_576,
@@ -176,11 +178,12 @@ class GeminiCodeRequest(BaseModel):
 
     # -- runtime & safety ----------------------------------------------------
     model: str | None = Field(
-        default="gemini-3-flash-preview",
+        default="gemini-3.5-flash",
         description=(
             "Model spec; mapped onto an `agy --model` name by resolve_agy_model. "
-            "Accepts gemini-3-flash-preview, gemini-3-pro-preview, bare family "
-            "names (flash/pro), or an exact agy display name."
+            "Accepts gemini-3.5-flash, gemini-3.1-pro, legacy Gemini CLI names "
+            "(gemini-3-flash-preview, gemini-3-pro-preview), bare family names "
+            "(flash/pro), or an exact agy display name."
         ),
     )
     yolo: bool = Field(
