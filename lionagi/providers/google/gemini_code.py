@@ -45,6 +45,7 @@ from lionagi.utils import to_dict
 
 from ._config import GeminiCodeConfigs
 
+
 def _resolve_agy_binary() -> str | None:
     found, path = discover_cli("agy")
     if found:
