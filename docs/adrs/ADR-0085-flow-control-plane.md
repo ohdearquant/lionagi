@@ -211,6 +211,20 @@ overridable with an explicit `--allow-degraded-context`. Full
 branch-message restoration from the run dir's `branches/*.json` snapshots
 is the follow-up that lifts the restriction.
 
+**Resume finalization is unconditional (normative).** A resumed run MUST
+re-drive the full finalization tail — artifact-contract verification,
+worktree commit, teardown persist, and the terminal notify hook — even when
+the checkpoint shows zero pending ops. The failure this guards against is
+observed, not hypothetical: a play can complete every op and then die
+(session or token limit, external kill) before the coordinator commits the
+produced artifacts, leaving finished work sitting uncommitted in the
+worktree until an operator recovers it by hand — reported from fleet
+operation on 2026-07-02 as the highest-cost play failure mode. A resume
+that concludes "no pending ops, nothing to do" silently converts that crash
+window into data loss. Implementation gate: a regression test that builds
+an all-ops-completed checkpoint with no commit artifacts present, resumes,
+and asserts the finalization tail runs and the commit lands.
+
 The resumed run gets a fresh session row linked to the original via
 `resumed_from` in `node_metadata`; the original's terminal status remains
 whatever it was (`paused`, `timed_out`, `failed`).
