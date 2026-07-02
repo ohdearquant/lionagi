@@ -25,6 +25,7 @@ from lionagi.session.signal import (
     RunStart,
     Signal,
     _collect_branch_usage,
+    _collect_multi_branch_usage,
     build_run_end,
 )
 
@@ -137,6 +138,83 @@ def test_build_run_end_populates_from_branch():
     assert sig.output_tokens == 5
     assert sig.duration_ms == pytest.approx(500.0)
     assert sig.data == "ok"
+
+
+# ---------------------------------------------------------------------------
+# orchestration usage aggregation — sum usage across all DAG leg branches
+# ---------------------------------------------------------------------------
+
+
+def _branch_with_usage(
+    *, input_tokens=0, output_tokens=0, total_cost_usd=0.0, num_turns=0
+) -> MagicMock:
+    msg = MagicMock()
+    msg.metadata = {
+        "model_response": {
+            "usage": {"input_tokens": input_tokens, "output_tokens": output_tokens},
+            "total_cost_usd": total_cost_usd,
+            "num_turns": num_turns,
+        }
+    }
+    branch = MagicMock()
+    branch.msgs.messages = [msg]
+    return branch
+
+
+def test_collect_multi_branch_usage_empty():
+    usage = _collect_multi_branch_usage([])
+    assert usage["input_tokens"] == 0
+    assert usage["output_tokens"] == 0
+    assert usage["total_cost_usd"] == 0.0
+    assert usage["num_turns"] == 0
+
+
+def test_collect_multi_branch_usage_single_branch_matches_collect_branch_usage():
+    branch = _branch_with_usage(
+        input_tokens=40, output_tokens=20, total_cost_usd=0.005, num_turns=1
+    )
+    assert _collect_multi_branch_usage([branch]) == _collect_branch_usage(branch)
+
+
+def test_collect_multi_branch_usage_sums_across_branches():
+    """The most important assertion in this module: aggregated usage must be the
+    SUM across every branch in a multi-leg DAG run, not just one leg's value and
+    not zero (the orchestrator/play/flow gap this aggregator fixes).
+    """
+    orchestrator = _branch_with_usage(
+        input_tokens=10, output_tokens=5, total_cost_usd=0.001, num_turns=1
+    )
+    worker_a = _branch_with_usage(
+        input_tokens=100, output_tokens=50, total_cost_usd=0.02, num_turns=3
+    )
+    worker_b = _branch_with_usage(
+        input_tokens=200, output_tokens=75, total_cost_usd=0.03, num_turns=2
+    )
+
+    usage = _collect_multi_branch_usage([orchestrator, worker_a, worker_b])
+
+    assert usage["input_tokens"] == 10 + 100 + 200
+    assert usage["output_tokens"] == 5 + 50 + 75
+    assert usage["total_cost_usd"] == pytest.approx(0.001 + 0.02 + 0.03)
+    assert usage["num_turns"] == 1 + 3 + 2
+    # Not just the max/last leg's value — a real sum, and not zero.
+    assert usage["input_tokens"] != max(10, 100, 200)
+    assert usage["input_tokens"] > 0
+
+
+def test_collect_multi_branch_usage_skips_branches_that_raise():
+    class _RaisingMsgs:
+        @property
+        def messages(self):
+            raise RuntimeError("boom")
+
+    good = _branch_with_usage(input_tokens=10, output_tokens=5)
+    bad = MagicMock()
+    bad.msgs = _RaisingMsgs()
+
+    usage = _collect_multi_branch_usage([good, bad])
+    assert usage["input_tokens"] == 10
+    assert usage["output_tokens"] == 5
 
 
 # ---------------------------------------------------------------------------
