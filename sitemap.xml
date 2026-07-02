@@ -345,6 +345,10 @@
          <lastmod>2026-07-02</lastmod>
     </url>
     <url>
+         <loc>https://lionagi.ai/adrs/ADR-0086-statedb-sqlalchemy-core-backend-unification/</loc>
+         <lastmod>2026-07-02</lastmod>
+    </url>
+    <url>
          <loc>https://lionagi.ai/adrs/DECISION_LOG/</loc>
          <lastmod>2026-07-02</lastmod>
     </url>
