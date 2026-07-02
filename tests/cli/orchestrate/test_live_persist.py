@@ -389,6 +389,64 @@ async def test_stop_updates_session_bookmarks_and_status(
     assert env._live_persist is None
 
 
+def _usage_message(input_tokens: int, output_tokens: int, cost: float, turns: int):
+    from lionagi.protocols.messages.assistant_response import (
+        AssistantResponse,
+        AssistantResponseContent,
+    )
+
+    return AssistantResponse(
+        content=AssistantResponseContent(assistant_response="ok"),
+        metadata={
+            "model_response": {
+                "usage": {"input_tokens": input_tokens, "output_tokens": output_tokens},
+                "total_cost_usd": cost,
+                "num_turns": turns,
+            }
+        },
+    )
+
+
+async def test_stop_aggregates_usage_across_all_dag_leg_branches(
+    temp_db_path: Path,
+):
+    """Regression test for the orchestrator/play/flow usage-tracking gap:
+    setup_orchestration_persist() never sets a singular ctx["branch"] (every
+    leg is tracked via ctx["hooks"] instead), so the session row's usage
+    columns must be the SUM across every branch registered there — the
+    orchestrator branch plus every worker — not left at zero/NULL.
+    """
+    orc_branch = Branch(name="orchestrator", messages=[_usage_message(10, 5, 0.001, 1)])
+    env = _minimal_env(orc_branch=orc_branch)
+    await start_live_persist(env)
+
+    worker_a = Branch(name="worker-a", messages=[_usage_message(100, 50, 0.02, 3)])
+    worker_b = Branch(name="worker-b", messages=[_usage_message(200, 75, 0.03, 2)])
+    env.session.include_branches(worker_a)
+    env.session.include_branches(worker_b)
+    _register_branch_hook(env._live_persist, worker_a)
+    _register_branch_hook(env._live_persist, worker_b)
+
+    ctx = env._live_persist
+    # Confirm the fixture matches the real production shape before asserting
+    # on the fix: orchestration sessions never populate a singular ctx["branch"].
+    assert ctx.get("branch") is None
+    assert len(ctx["hooks"]) == 3  # orchestrator + 2 workers
+
+    await stop_live_persist(env, status="completed")
+
+    async with StateDB() as db:
+        s = await db.get_session(ctx["session_id"])
+
+    assert s["num_turns"] == 1 + 3 + 2
+    assert s["input_tokens"] == 10 + 100 + 200
+    assert s["output_tokens"] == 5 + 50 + 75
+    assert s["total_cost_usd"] == pytest.approx(0.001 + 0.02 + 0.03)
+    # Must be a real sum across every leg, not just one branch's value and not zero.
+    assert s["num_turns"] not in (0, 1, 3, 2)
+    assert s["input_tokens"] not in (0, 10, 100, 200)
+
+
 async def test_stop_removes_persistence_handler_from_bus(
     temp_db_path: Path,
 ):

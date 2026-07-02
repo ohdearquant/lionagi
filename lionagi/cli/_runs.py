@@ -413,13 +413,22 @@ async def teardown_persist(
             err_str = str(exception) if exception is not None else None
             _usage: dict = {}
             _branch = ctx.get("branch")
-            if _branch is not None:
-                try:
+            try:
+                if _branch is not None:
                     from lionagi.session.signal import _collect_branch_usage
 
                     _usage = _collect_branch_usage(_branch)
-                except Exception:  # noqa: BLE001, S110
-                    pass
+                else:
+                    # Orchestrator/DAG sessions never set a singular ctx["branch"];
+                    # every leg (including the orchestrator branch itself) is
+                    # tracked in ctx["hooks"] as (branch, handler) pairs instead.
+                    _hook_branches = [b for b, _h in ctx.get("hooks", [])]
+                    if _hook_branches:
+                        from lionagi.session.signal import _collect_multi_branch_usage
+
+                        _usage = _collect_multi_branch_usage(_hook_branches)
+            except Exception:  # noqa: BLE001, S110
+                pass
             await session_obj.hooks.emit(
                 HookPoint.SESSION_END,
                 session_id=ctx["session_id"],

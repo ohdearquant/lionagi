@@ -257,6 +257,35 @@ def _collect_branch_usage(branch: Any) -> dict[str, Any]:
     }
 
 
+def _collect_multi_branch_usage(branches: Iterable[Any]) -> dict[str, Any]:
+    """Sum provider-reported usage across multiple branches (multi-leg DAG runs).
+
+    Applies _collect_branch_usage to each branch and adds the per-branch totals
+    together. Same key shape as _collect_branch_usage: input_tokens,
+    output_tokens, total_cost_usd, num_turns. duration_ms is deliberately not
+    included here — wall-clock across parallel legs isn't simply summable, so
+    the CLI teardown path leaves it unset for orchestration sessions too.
+    """
+    input_tokens = 0
+    output_tokens = 0
+    total_cost_usd = 0.0
+    num_turns = 0
+
+    for branch in branches:
+        usage = _collect_branch_usage(branch)
+        input_tokens += usage["input_tokens"]
+        output_tokens += usage["output_tokens"]
+        total_cost_usd += usage["total_cost_usd"]
+        num_turns += usage["num_turns"]
+
+    return {
+        "input_tokens": input_tokens,
+        "output_tokens": output_tokens,
+        "total_cost_usd": total_cost_usd,
+        "num_turns": num_turns,
+    }
+
+
 def build_run_end(branch: Any, *, duration_ms: float = 0.0, result: Any = None) -> RunEnd:
     """Build a RunEnd signal with usage populated from branch message history."""
     usage = _collect_branch_usage(branch)

@@ -84,7 +84,17 @@ async def persist_session_end(
     duration_ms: float | None = None,
     **_unused: Any,
 ) -> None:
-    """Stamp the terminal status + ended_at on the session row, with optional usage."""
+    """Stamp ended_at/status + usage on the session row.
+
+    teardown_persist() always stamps the terminal status (via
+    _teardown_common()'s update_status() call) before emitting SESSION_END, so
+    by the time this handler runs in the normal CLI flow the row is already
+    terminal. Only the status/reason_code/ended_at transition is skipped in
+    that case, to avoid a duplicate status_transitions row and to keep a
+    genuine double-fire from clobbering an already-recorded status. Usage
+    fields are new information either way and are written regardless of
+    whether the row was already terminal.
+    """
     from lionagi.state.db import SESSION_TERMINAL_STATUSES
     from lionagi.state.reasons import RunReasons
 
@@ -92,16 +102,12 @@ async def persist_session_end(
     row = await db.get_session(session_id)
     if row is None:
         return
-    if row.get("status") in SESSION_TERMINAL_STATUSES:
-        return
-    _status_reason_map: dict[str, str] = {
-        "completed": RunReasons.COMPLETED_OK,
-        "failed": RunReasons.FAILED_EXCEPTION,
-        "timed_out": RunReasons.TIMED_OUT_DEADLINE,
-        "aborted": RunReasons.ABORTED_USER,
-        "cancelled": RunReasons.CANCELLED_SYSTEM,
-    }
-    fields: dict[str, Any] = {"ended_at": time.time()}
+
+    already_terminal = row.get("status") in SESSION_TERMINAL_STATUSES
+
+    fields: dict[str, Any] = {}
+    if not already_terminal:
+        fields["ended_at"] = time.time()
     if error is not None:
         fields["node_metadata"] = {"error": error}
     if input_tokens is not None:
@@ -114,6 +120,21 @@ async def persist_session_end(
         fields["num_turns"] = num_turns
     if duration_ms is not None:
         fields["duration_ms"] = duration_ms
+
+    if not fields:
+        return
+
+    if already_terminal:
+        await db.update_session(session_id, **fields)
+        return
+
+    _status_reason_map: dict[str, str] = {
+        "completed": RunReasons.COMPLETED_OK,
+        "failed": RunReasons.FAILED_EXCEPTION,
+        "timed_out": RunReasons.TIMED_OUT_DEADLINE,
+        "aborted": RunReasons.ABORTED_USER,
+        "cancelled": RunReasons.CANCELLED_SYSTEM,
+    }
     await db.update_session(
         session_id,
         reason_code=_status_reason_map.get(status, RunReasons.FAILED_EXCEPTION),
