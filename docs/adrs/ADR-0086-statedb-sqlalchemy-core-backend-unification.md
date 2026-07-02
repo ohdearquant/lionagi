@@ -1,4 +1,4 @@
-# ADR-0085: StateDB SQLAlchemy-Core backend unification
+# ADR-0086: StateDB SQLAlchemy-Core backend unification
 
 **Status**: Accepted
 **Date**: 2026-06-22
