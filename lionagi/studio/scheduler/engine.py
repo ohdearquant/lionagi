@@ -112,15 +112,29 @@ class SchedulerEngine:
         the host's local timezone) changed since a schedule was last armed —
         the same interpretation change that PATCH and enable also trigger via
         recompute_next_fire().
+
+        A schedule whose stored next_fire_at is already due (<= now) is left
+        untouched here: it must flow through _check_missed_fires() first, so
+        missed_fire_policy ("run_once" / "skip") gets a chance to run before
+        anything advances next_fire_at into the future. _check_missed_fires()
+        runs right after this method returns (see _tick_loop), and the fire
+        path (_fire() / _record_missed_fire_skip()) is what advances
+        next_fire_at once the policy has been applied. Only schedules whose
+        stored next_fire_at is still ahead of now — the timezone-migration
+        correction case this hook exists for — are recomputed here.
         """
         try:
             schedules = await self._svc.list_schedules(enabled=True)
         except Exception:
             _log.exception("Failed to load schedules for startup timezone recompute")
             return
+        now = time.time()
         for s in schedules:
+            next_fire_at = s.get("next_fire_at")
+            if next_fire_at is not None and next_fire_at <= now:
+                continue
             try:
-                await self.recompute_next_fire(s)
+                await self.recompute_next_fire(s, now=now)
             except Exception:
                 _log.exception(
                     "Failed to recompute next_fire_at for schedule %s on startup", s.get("id")
