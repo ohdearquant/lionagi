@@ -3,6 +3,7 @@
 
 
 from lionagi.lndl.extract import extract_lndl_blocks
+from lionagi.lndl.prompt import get_lndl_system_prompt
 
 
 def test_extract_single_lndl_block():
@@ -79,3 +80,15 @@ def test_all_exports():
     from lionagi.lndl.extract import __all__
 
     assert "extract_lndl_blocks" in __all__
+
+
+def test_prompt_instructs_fenced_output_and_extractor_matches_it():
+    """The prompt must tell the model to fence its LNDL in ```lndl, and a
+    response following that instruction must be extractable."""
+    prompt = get_lndl_system_prompt()
+    assert "```lndl" in prompt
+
+    response = "Some reasoning here.\n\n```lndl\n<lvar a>hello</lvar>\nOUT{a}\n```\n"
+    blocks = extract_lndl_blocks(response)
+    assert len(blocks) == 1
+    assert "<lvar a>hello</lvar>" in blocks[0]
