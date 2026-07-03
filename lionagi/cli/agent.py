@@ -351,9 +351,18 @@ async def _run_agent(
             elif provider in PROVIDERS_EFFORT_VIA_MODEL_NAME:
                 # agy (Antigravity CLI) has no effort kwarg — fold effort into
                 # the resolved --model name instead (see resolve_agy_model).
+                # cfg["model"] here is the *persisted* prior resolution
+                # (already a concrete agy display name) unless the caller
+                # also passed a new model_str this turn — reapply_effort
+                # lets a fresh --effort replace that persisted suffix,
+                # while an explicit model_str given on this call still wins.
                 from lionagi.providers.google.gemini_code import resolve_agy_model
 
-                cfg["model"] = resolve_agy_model(cfg.get("model"), effort=effort)
+                cfg["model"] = resolve_agy_model(
+                    cfg.get("model"),
+                    effort=effort,
+                    reapply_effort=model_str is None,
+                )
         if bypass:
             cfg.update(PROVIDER_BYPASS_KWARGS.get(provider, {}))
         elif yolo:
