@@ -231,6 +231,24 @@ def build_argv(schedule: dict, trigger_context: dict) -> tuple[list[str], str | 
         # the --agent profile's own default model. Passing an empty string as
         # the model positional would instead be parsed as an explicit (blank)
         # model spec, overriding the profile default and crashing Branch init.
+        #
+        # But omitting the model positional only holds the "extra positionals
+        # are rejected loudly" invariant when there are no extra args to
+        # append: with model omitted, a single action_extra_args token brings
+        # the positional count back up to 2 (the same arity as [model,
+        # prompt]), so the CLI's resolver would silently reparse the real
+        # prompt as MODEL and the extra-args token as PROMPT instead of
+        # failing. Reject that combination here rather than let it corrupt
+        # argument positions at fire time.
+        if not model and isinstance(extra, list) and extra:
+            raise ValueError(
+                "action_extra_args is not supported together with an empty "
+                "action_model for kind='agent': omitting the model "
+                "positional makes the extra-args token(s) indistinguishable "
+                "from an explicit [model, prompt] pair, which would silently "
+                "misroute action_prompt as the model. Set action_model "
+                "explicitly, or clear action_extra_args."
+            )
         positionals = [model, prompt] if model else [prompt]
         argv += ["agent", *flags, "--", *positionals]
 

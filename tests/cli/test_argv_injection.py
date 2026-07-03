@@ -121,6 +121,56 @@ class TestBuildArgvActionModelInjection:
         positionals = argv[argv.index("--") + 1 :]
         assert positionals == ["sonnet", "hello world"]
 
+    def test_model_empty_with_extra_args_raises(self):
+        """Regression: when kind='agent' omits the model positional (falsy
+        action_model), a non-empty action_extra_args token collapses the CLI
+        down to exactly 2 positionals -- the same arity as the historical
+        [model, prompt] shape -- so `li agent`'s model/prompt resolver
+        silently reparses the real prompt as MODEL and the extra-args token
+        as PROMPT instead of failing loudly. This combination must raise at
+        build time."""
+        from lionagi.studio.scheduler.subprocess import build_argv
+
+        with pytest.raises(ValueError, match="action_extra_args"):
+            build_argv(
+                _schedule(
+                    action_model="",
+                    action_agent="researcher",
+                    action_extra_args=["strict"],
+                ),
+                {},
+            )
+
+    def test_model_none_with_extra_args_raises(self):
+        from lionagi.studio.scheduler.subprocess import build_argv
+
+        with pytest.raises(ValueError, match="action_extra_args"):
+            build_argv(
+                _schedule(
+                    action_model=None,
+                    action_agent="researcher",
+                    action_extra_args=["strict"],
+                ),
+                {},
+            )
+
+    def test_model_set_with_extra_args_still_accepted(self):
+        """Non-empty action_model + action_extra_args is unaffected: the
+        positional count is unambiguous (model, prompt) regardless of the
+        extra tokens appended after them."""
+        from lionagi.studio.scheduler.subprocess import build_argv
+
+        argv, tmp = build_argv(
+            _schedule(
+                action_model="sonnet",
+                action_agent="researcher",
+                action_extra_args=["strict"],
+            ),
+            {},
+        )
+        positionals = argv[argv.index("--") + 1 :]
+        assert positionals == ["sonnet", "hello world", "strict"]
+
     def test_model_valid_identifiers_accepted(self):
         from lionagi.studio.scheduler.subprocess import build_argv
 
