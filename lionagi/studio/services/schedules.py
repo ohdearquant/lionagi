@@ -63,9 +63,16 @@ def _svc_validate_extra_args(extra: list | None) -> None:
     _validate_extra_args(extra)
 
 
-def _svc_validate_cron_expr(expr: str | None) -> None:
-    """Service-boundary check: reject a syntactically invalid cron expression."""
+def _svc_validate_cron_expr(expr: str | None, *, required: bool = False) -> None:
+    """Service-boundary check: reject a syntactically invalid cron expression.
+
+    `required=True` also rejects a missing/empty expression — callers pass
+    this when trigger_type == "cron", since a cron-triggered schedule with no
+    expression commits fine but never fires (next_fire_at stays None forever).
+    """
     if not expr:
+        if required:
+            raise ValueError("cron_expr is required when trigger_type is 'cron'")
         return
     from croniter import croniter
 
@@ -307,7 +314,7 @@ async def create_schedule(data: dict[str, Any]) -> dict[str, Any]:
     _svc_validate_extra_args(data.get("action_extra_args"))
     _svc_validate_github_repo(data.get("github_repo"))
     if data.get("trigger_type") == "cron":
-        _svc_validate_cron_expr(data.get("cron_expr"))
+        _svc_validate_cron_expr(data.get("cron_expr"), required=True)
 
     if data.get("action_kind") == "flow_yaml":
         yaml_text = data.get("action_flow_yaml") or ""
@@ -370,7 +377,7 @@ async def update_schedule(schedule_id: str, fields: dict[str, Any]) -> bool:
                 raise ValueError(f"Invalid flow_yaml spec: {spec_err}")
         touches_trigger = "cron_expr" in fields or "trigger_type" in fields
         if touches_trigger and effective.get("trigger_type") == "cron":
-            _svc_validate_cron_expr(effective.get("cron_expr"))
+            _svc_validate_cron_expr(effective.get("cron_expr"), required=True)
 
         await db.update_schedule(schedule_id, **fields)
 

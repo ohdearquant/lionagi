@@ -323,3 +323,132 @@ async def test_enable_recompute_failure_does_not_raise(temp_db_path, caplog, mon
         row = await db.get_schedule(sid)
     assert row["enabled"] == 1  # the enable flag still committed
     assert any("Failed to recompute next_fire_at" in r.message for r in caplog.records)
+
+
+@pytest.mark.asyncio
+async def test_create_cron_empty_string_expr_rejected(temp_db_path):
+    """A cron-triggered create with an empty cron_expr must not commit — the
+    falsy early-return in the validator used to let this through, producing a
+    schedule whose next_fire_at is never set."""
+    from lionagi.studio.services.schedules import create_schedule, get_schedule_by_name
+
+    with pytest.raises(ValueError, match="cron_expr is required"):
+        await create_schedule(
+            {
+                "name": "create-empty-cron-test",
+                "trigger_type": "cron",
+                "cron_expr": "",
+                "action_kind": "agent",
+                "action_prompt": "ping",
+            }
+        )
+
+    assert await get_schedule_by_name("create-empty-cron-test") is None
+
+
+@pytest.mark.asyncio
+async def test_create_cron_none_expr_rejected(temp_db_path):
+    """Same as above but cron_expr omitted entirely (None)."""
+    from lionagi.studio.services.schedules import create_schedule, get_schedule_by_name
+
+    with pytest.raises(ValueError, match="cron_expr is required"):
+        await create_schedule(
+            {
+                "name": "create-none-cron-test",
+                "trigger_type": "cron",
+                "action_kind": "agent",
+                "action_prompt": "ping",
+            }
+        )
+
+    assert await get_schedule_by_name("create-none-cron-test") is None
+
+
+@pytest.mark.asyncio
+async def test_patch_flip_to_cron_without_expr_rejected(temp_db_path):
+    """A PATCH that flips trigger_type to 'cron' while cron_expr is absent (and
+    was never set) on the effective row must also be rejected — the
+    touches_trigger gate fires on trigger_type alone."""
+    from lionagi.state.db import StateDB
+    from lionagi.studio.services.schedules import create_schedule, update_schedule
+
+    created = await create_schedule(
+        {
+            "name": "patch-flip-to-cron-test",
+            "trigger_type": "interval",
+            "interval_sec": 60,
+            "action_kind": "agent",
+            "action_prompt": "ping",
+        }
+    )
+    sid = created["id"]
+
+    with pytest.raises(ValueError, match="cron_expr is required"):
+        await update_schedule(sid, {"trigger_type": "cron"})
+
+    async with StateDB() as db:
+        row = await db.get_schedule(sid)
+    assert row["trigger_type"] == "interval"  # untouched — rejected before commit
+
+
+@pytest.mark.asyncio
+async def test_patch_blank_expr_on_cron_schedule_rejected(temp_db_path):
+    """A PATCH that blanks cron_expr on an existing cron schedule is rejected —
+    the touches_trigger gate fires on cron_expr alone."""
+    from lionagi.state.db import StateDB
+    from lionagi.studio.services.schedules import create_schedule, update_schedule
+
+    created = await create_schedule(
+        {
+            "name": "patch-blank-cron-expr-test",
+            "trigger_type": "cron",
+            "cron_expr": "0 18 * * *",
+            "action_kind": "agent",
+            "action_prompt": "ping",
+        }
+    )
+    sid = created["id"]
+
+    with pytest.raises(ValueError, match="cron_expr is required"):
+        await update_schedule(sid, {"cron_expr": ""})
+
+    async with StateDB() as db:
+        row = await db.get_schedule(sid)
+    assert row["cron_expr"] == "0 18 * * *"  # untouched — rejected before commit
+
+
+@pytest.mark.asyncio
+async def test_create_cron_valid_expr_still_accepted(temp_db_path):
+    """A valid cron_expr on a cron-triggered create still passes (regression
+    guard for the required=True change)."""
+    from lionagi.studio.services.schedules import create_schedule
+
+    created = await create_schedule(
+        {
+            "name": "create-valid-cron-test",
+            "trigger_type": "cron",
+            "cron_expr": "0 18 * * *",
+            "action_kind": "agent",
+            "action_prompt": "ping",
+        }
+    )
+    assert created["name"] == "create-valid-cron-test"
+
+
+@pytest.mark.asyncio
+async def test_create_non_cron_empty_expr_still_accepted(temp_db_path):
+    """A non-cron trigger with an empty/absent cron_expr is unaffected — the
+    required check only applies when trigger_type == 'cron'."""
+    from lionagi.studio.services.schedules import create_schedule
+
+    created = await create_schedule(
+        {
+            "name": "create-interval-empty-cron-test",
+            "trigger_type": "interval",
+            "interval_sec": 60,
+            "cron_expr": "",
+            "action_kind": "agent",
+            "action_prompt": "ping",
+        }
+    )
+    assert created["name"] == "create-interval-empty-cron-test"
