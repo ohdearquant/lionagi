@@ -100,7 +100,12 @@ async def _make_show(db: StateDB, *, status: str = "active", topic: str = "test-
 
 
 async def _make_play(
-    db: StateDB, show_id: str, *, status: str = "running", name: str = "play-1"
+    db: StateDB,
+    show_id: str,
+    *,
+    status: str = "running",
+    name: str = "play-1",
+    session_id: str | None = None,
 ) -> str:
     play_id = uuid.uuid4().hex[:12]
     await db.create_play(
@@ -109,6 +114,7 @@ async def _make_play(
             "show_id": show_id,
             "name": name,
             "status": status,
+            "session_id": session_id,
             "started_at": time.time(),
         }
     )
@@ -378,6 +384,29 @@ async def test_gather_table_rows_project_filter(temp_db_path: Path) -> None:
 
 
 @pytest.mark.asyncio
+async def test_gather_table_rows_project_filter_applies_to_plays(temp_db_path: Path) -> None:
+    """--project must scope plays too, not just sessions — the plays table
+    has no project column, so a play's project is inherited from its
+    linked session."""
+    async with StateDB() as db:
+        show_id = await _make_show(db)
+        sid_a = await _make_session(db, project="proj-a")
+        sid_b = await _make_session(db, project="proj-b")
+        play_a = await _make_play(db, show_id, name="play-a", session_id=sid_a)
+        play_b = await _make_play(db, show_id, name="play-b", session_id=sid_b)
+
+        rows_a = await _gather_table_rows(db, since=None, entity_type="play", project="proj-a")
+        rows_b = await _gather_table_rows(db, since=None, entity_type="play", project="proj-b")
+
+    ids_a = [r["id"] for r in rows_a]
+    ids_b = [r["id"] for r in rows_b]
+    assert play_a[:16] in ids_a
+    assert play_b[:16] not in ids_a
+    assert play_b[:16] in ids_b
+    assert play_a[:16] not in ids_b
+
+
+@pytest.mark.asyncio
 async def test_gather_table_rows_type_filter_session(temp_db_path: Path) -> None:
     async with StateDB() as db:
         sid = await _make_session(db)
@@ -512,6 +541,21 @@ async def test_since_shows_terminal_play(temp_db_path: Path) -> None:
 
     assert play_id[:16] in [r["id"] for r in rows_since]
     assert play_id[:16] not in [r["id"] for r in rows_default]
+
+
+@pytest.mark.asyncio
+async def test_since_shows_terminal_show(temp_db_path: Path) -> None:
+    """--since widens the shows query past the active-only filter to every
+    show status (e.g. 'completed')."""
+    async with StateDB() as db:
+        show_id = await _make_show(db, status="completed")
+        since = time.time() - 3600
+
+        rows_since = await _gather_table_rows(db, since=since, entity_type="show", project=None)
+        rows_default = await _gather_table_rows(db, since=None, entity_type="show", project=None)
+
+    assert show_id[:16] in [r["id"] for r in rows_since]
+    assert show_id[:16] not in [r["id"] for r in rows_default]
 
 
 # ── Integration: _find_entity ─────────────────────────────────────────────────

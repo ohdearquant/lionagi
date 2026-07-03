@@ -192,8 +192,15 @@ async def _query_running_plays(
     db: Any,
     *,
     since: float | None = None,
+    project: str | None = None,
 ) -> list[dict[str, Any]]:
-    """In-flight statuses only by default; with since, all statuses in the window."""
+    """In-flight statuses only by default; with since, all statuses in the window.
+
+    The plays table has no project column, so project-scoping matches
+    against the project of the play's linked session (session_id) — the
+    same source of truth _query_running_sessions filters on. A play with
+    no linked session has no project to match and is excluded.
+    """
     query = (
         "SELECT plays.*, "  # noqa: S608
         "(SELECT COUNT(*) FROM branches WHERE session_id = plays.session_id) AS branch_count "
@@ -208,6 +215,9 @@ async def _query_running_plays(
         placeholders = ",".join("?" * len(running_statuses))
         query += f" AND status IN ({placeholders})"
         params.extend(running_statuses)
+    if project:
+        query += " AND plays.session_id IN (SELECT id FROM sessions WHERE project = ?)"
+        params.append(project)
     query += " ORDER BY updated_at DESC"
     rows = await db.fetch_all(query, params)
     return rows
@@ -621,7 +631,7 @@ async def _gather_table_rows(
 
     plays: list[dict[str, Any]] = []
     if entity_type in (None, "play"):
-        plays = await _query_running_plays(db, since=since)
+        plays = await _query_running_plays(db, since=since, project=project)
         # A play row is the canonical rendering of its backing session, so
         # drop that session only when the play row itself is being shown —
         # dedup against what this view actually fetched, never in SQL, so a
@@ -1329,7 +1339,7 @@ def add_monitor_subparser(subparsers: argparse._SubParsersAction) -> None:
         "--project",
         "-p",
         default=None,
-        help="Filter sessions by project name.",
+        help="Filter sessions and plays by project name.",
     )
     mon.add_argument(
         "--run",
