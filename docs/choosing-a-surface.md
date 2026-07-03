@@ -17,10 +17,10 @@ detail lives in the [CLI Reference](cli-reference.md).
 | A pipeline you run repeatedly | `li play NAME` | Playbook = named, parametric, version-controlled flow |
 | A well-known domain pipeline | `li engine run KIND` | Prebuilt research / review / coding / hypothesis / planning engines |
 | Run it later, or on a cadence | `li schedule create` | Cron, interval, or repo-event triggers |
-| Script must wait for a run to finish | `li monitor run ID` | Blocks until terminal state, exit code reflects outcome |
+| Script must wait for a scheduled run to finish | `li monitor run ID` | Takes a schedule-run ID; blocks until terminal state, exit code reflects outcome |
 | Watch progress live | `li monitor --watch` | Live table or per-run detail view |
 | Agents messaging each other across runs | `li team` | Persistent shared inbox |
-| Group many runs into one record | `li invoke` | One parent row instead of N session rows |
+| Group many runs into one record | `li invoke` | One parent invocation row grouping N session rows |
 
 ## Sizing: don't pay for structure you don't need
 
@@ -52,11 +52,13 @@ The surfaces are designed to chain:
 ```bash
 # Recurring pipeline: schedule fires a playbook on a cron
 li schedule create nightly-audit --cron "0 6 * * *" \
-  --action-kind playbook --playbook audit
+  --action-kind play --playbook audit
 
-# Scriptable orchestration: launch, then block until terminal
-li play backend-review --pr 42 &
-li monitor run "$RUN_ID" && echo "review done"
+# Scriptable orchestration: fire the schedule now, block until terminal.
+# `li schedule trigger` prints the schedule-run ID that `li monitor run`
+# waits on. (Direct `li play` runs are watched with `li monitor --watch`.)
+RUN_ID=$(li schedule trigger nightly-audit | awk '/^Run:/ {print $2}')
+li monitor run "$RUN_ID" && echo "audit done"
 
 # One dashboard row for a multi-run skill
 INV=$(li invoke start --skill release-check --prompt "v0.28 gate")
@@ -79,9 +81,19 @@ Two rules of thumb for choosing the chain:
 
 ## What each layer persists
 
-Every surface writes to the same run store (`~/.lionagi/runs/`) and state
-database, so anything you start on one surface is observable and resumable
-from the others: a flow leg is a branch you can `li agent -r`, a play is
-visible in `li monitor`, a scheduled firing shows up in `li schedule runs`.
-Escalating a task to a heavier surface never orphans the work the lighter
-one already did.
+All surfaces share one state database, but what each writes differs:
+
+- **`li agent` / `li o fanout` / `li o flow` / `li play`** write a run
+  directory under `~/.lionagi/runs/` (manifest, branch snapshots, stream
+  buffers) plus session rows in the state database. A flow or fanout leg
+  is a branch you can resume with `li agent -r`.
+- **`li engine run`** writes an engine-run row and its session rows to the
+  state database only — no run directory.
+- **`li invoke`** writes one parent invocation row; the runs you attach to
+  it keep their own persistence.
+- **`li schedule create`** writes schedule metadata; each firing records a
+  schedule run, listed by `li schedule runs ID`.
+
+Because the state database is shared, anything you start on one surface is
+observable from the others, and escalating a task to a heavier surface
+never orphans the work the lighter one already did.
