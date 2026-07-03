@@ -894,6 +894,15 @@ def _new_chain_state(pending: dict[str, dict[str, Any]], *, chain: bool) -> dict
         # (printed by _poll_pending_once) — lets discovery tell an
         # already-processed child apart from one still in `pending`.
         "done_ids": set(),
+        # run id -> exit_code observed when that run was folded — unlike
+        # chain_tail_exit (keyed by root), this answers "what did run X
+        # itself exit with" for any folded run, watched root or not.
+        "exit_of": {},
+        # parent run id -> the chain child its grace window handed off to.
+        # Lets a later-discovering ancestor follow an already-processed
+        # link forward to wherever the chain currently lives instead of
+        # stopping at that link's own exit.
+        "handoff": {},
     }
 
 
@@ -928,7 +937,10 @@ async def _advance_chains(
     resolves its root immediately, matching --no-chain's "watch only the
     literal ids given"), done_ids (run ids already folded into the above
     once — lets discovery tell an already-processed child apart from one
-    still waiting in `pending`).
+    still waiting in `pending`), exit_of (run id -> its own folded
+    exit_code), handoff (parent run id -> the chain child its grace window
+    handed off to — followed forward when an ancestor discovers an
+    already-processed link, see below).
     """
     root_of = chain_state["root_of"]
     chain_tail_exit = chain_state["chain_tail_exit"]
@@ -937,9 +949,12 @@ async def _advance_chains(
     schedule_cache = chain_state["schedule_cache"]
     chain = chain_state["chain"]
     done_ids = chain_state["done_ids"]
+    exit_of = chain_state["exit_of"]
+    handoff = chain_state["handoff"]
 
     for row in done[processed:]:
         done_ids.add(row["id"])
+        exit_of[row["id"]] = row.get("exit_code")
         roots = root_of.get(row["id"]) or {row["id"]}
         for root in roots:
             chain_tail_exit[root] = row.get("exit_code")
@@ -966,28 +981,47 @@ async def _advance_chains(
                     # of overwriting, so the child's own root still resolves
                     # once the child (now the chain's tail) goes terminal.
                     root_of.setdefault(child_id, set()).update(info["roots"])
+                    handoff[parent_id] = child_id
                     if child_id in done_ids:
                         # The child already went terminal (possibly in the
                         # very same tick as its parent) and was already
                         # printed once by _poll_pending_once. Re-adding it
                         # to `pending` would print it again on the next
                         # tick, so fold the parent's root(s) into whatever
-                        # bookkeeping the child already landed in instead —
-                        # never touch `pending` for it.
-                        child_exit = chain_tail_exit.get(child_id)
-                        for root in info["roots"]:
-                            chain_tail_exit[root] = child_exit
-                        if child_id in awaiting_grace:
-                            # The child's own schedule also declares a
-                            # matching chain action — join its still-open
-                            # grace window rather than spinning up separate
-                            # bookkeeping for the same run.
-                            awaiting_grace[child_id]["roots"].update(info["roots"])
+                        # bookkeeping the chain currently lives in instead —
+                        # never touch `pending` for an already-printed run.
+                        # The child's own grace window may itself have
+                        # already handed off to a deeper link, so follow the
+                        # handoff trail to the chain's current carrier
+                        # first; stopping at this child would resolve the
+                        # parent's root(s) with an intermediate exit code
+                        # instead of the final link's.
+                        carrier = child_id
+                        seen = {carrier}
+                        while carrier in handoff and handoff[carrier] not in seen:
+                            carrier = handoff[carrier]
+                            seen.add(carrier)
+                        if carrier not in done_ids:
+                            # The chain's tail is a still-live descendant in
+                            # `pending` — the parent's root(s) ride on it and
+                            # resolve when it goes terminal, like any other
+                            # handed-off root.
+                            root_of.setdefault(carrier, set()).update(info["roots"])
                         else:
-                            # The child already resolved outright (no
-                            # matching chain action of its own) — the
-                            # parent's root(s) resolve right along with it.
-                            resolved_roots.update(info["roots"])
+                            carrier_exit = exit_of.get(carrier)
+                            for root in info["roots"]:
+                                chain_tail_exit[root] = carrier_exit
+                            if carrier in awaiting_grace:
+                                # The carrier's own schedule also declares a
+                                # matching chain action — join its still-open
+                                # grace window rather than spinning up
+                                # separate bookkeeping for the same run.
+                                awaiting_grace[carrier]["roots"].update(info["roots"])
+                            else:
+                                # The carrier resolved outright (no matching
+                                # chain action of its own) — the parent's
+                                # root(s) resolve right along with it.
+                                resolved_roots.update(info["roots"])
                     else:
                         pending[child_id] = child
                 del awaiting_grace[parent_id]

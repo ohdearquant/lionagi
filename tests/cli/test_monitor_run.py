@@ -874,6 +874,49 @@ async def test_dispatch_wait_child_already_terminal_joins_own_grace_prints_once(
     assert out.count(child_id) == 1
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize("descendant_first", [False, True])
+async def test_dispatch_wait_deep_chain_follows_handoff_past_terminal_child(
+    temp_db_path: Path, capsys: pytest.CaptureFixture, descendant_first: bool
+) -> None:
+    """Regression: a three-link chain (parent failed -> child failed ->
+    grandchild succeeded), all terminal before the wait starts, watched via
+    both the parent AND the child as overlapping roots. When the child is
+    listed first, its grace window discovers the grandchild and hands its
+    root off BEFORE the parent's grace window discovers the child — so the
+    parent's discovery finds an already-processed child that is no longer
+    in awaiting_grace. It must follow the child's handoff forward to the
+    grandchild (the chain's real tail) instead of resolving the parent's
+    root on the child's intermediate failure: final-link-wins means this
+    recovered chain reports success in both watch orders, each run printed
+    exactly once."""
+    async with StateDB() as db:
+        parent_sched = await _make_schedule(db, name="parent-sched", on_fail={"kind": "agent"})
+        parent_id = await _make_schedule_run(db, parent_sched, status="failed", exit_code=1)
+        child_sched = await _make_schedule(db, name="child-sched", on_fail={"kind": "agent"})
+        child_id = await _make_schedule_run(
+            db, child_sched, status="failed", exit_code=1, chain_depth=1, chain_parent_id=parent_id
+        )
+        grand_sched = await _make_schedule(db, name="grandchild-sched")
+        grandchild_id = await _make_schedule_run(
+            db,
+            grand_sched,
+            status="completed",
+            exit_code=0,
+            chain_depth=2,
+            chain_parent_id=child_id,
+        )
+
+    roots = [child_id, parent_id] if descendant_first else [parent_id, child_id]
+    exit_code = _dispatch_wait(roots, interval=0.02, follow=False)
+
+    assert exit_code == 0
+    out = capsys.readouterr().out
+    assert out.count(parent_id) == 1
+    assert out.count(child_id) == 1
+    assert out.count(grandchild_id) == 1
+
+
 # ── _query_schedule_runs_since (the --follow baseline boundary, deterministic) ──
 
 
