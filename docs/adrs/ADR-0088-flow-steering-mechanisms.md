@@ -1,10 +1,25 @@
 # ADR-0088: Flow-Steering Control-Plane Mechanisms
 
-**Status**: Proposed
+**Status**: Accepted with conditions (2026-07-03)
 **Date**: 2026-07-03
 **Refines / supersedes**: ADR-0085 section 3 (Queue message, in-run steering)
 **Builds on**: ADR-0085 (control transport + poller) · ADR-0072 (reactive capability bus) ·
 ADR-0080 (role-to-substrate routing, for op-mode `--to <role>`)
+
+**Sign-off rulings (2026-07-03):** (1) Render seam: A1, engine-local at the context-merge
+point, mirroring the budget preamble; A2 cross-operate reuse is deferred until a real
+single-node steer consumer exists. (2) Delivery semantics: consume-once is the target
+(render the unrendered tail, mark it consumed); if consume-once forces touching the
+pause/resume state protected by the slice-1 fence, slice 1 falls back to persistent
+rendering and consume-once lands as the immediate slice-2 refinement. (3) Mode B operator
+budget: separate from the model spawn budget, default 10, revisited when B is built.
+(4) Measurement thresholds approved as drafted; a provider failing arm 2 triggers Mode B
+or a per-provider render adjustment for that provider only, not a global block.
+(5) Mode A ships identity-independent; only `--to`-addressed steering waits on the
+actor-identity slice. Conditions: slice-1 acceptance testing must assert both the labeled
+render and that a live provider surfaces it; this work stays subordinate to trustworthy
+terminal status; Mode B stays unbuilt until the provider-by-arm table clears the
+pre-registered gate.
 
 ## Context
 
