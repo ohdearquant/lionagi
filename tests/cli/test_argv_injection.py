@@ -338,6 +338,54 @@ class TestBuildArgvSentinelStructure:
             if tmp_path and os.path.exists(tmp_path):
                 os.unlink(tmp_path)
 
+    def test_flow_yaml_empty_model_omits_positional(self):
+        """flow_yaml with no action_model: the model positional is omitted so
+        the YAML file's own model/agent defaults apply. An explicit blank
+        positional would parse as model='' and suppress the file defaults."""
+        import os
+
+        from lionagi.studio.scheduler.subprocess import build_argv
+
+        sched = {
+            "id": "sy",
+            "action_kind": "flow_yaml",
+            "action_model": "",
+            "action_prompt": None,
+            "action_project": None,
+            "action_extra_args": [],
+            "action_flow_yaml": "model: claude-code/opus-4-7\nprompt: yaml prompt\n",
+        }
+        argv, tmp_path = build_argv(sched, {})
+        try:
+            assert "" not in argv, f"blank positional leaked into argv: {argv}"
+            assert argv[-1] == "--", f"argv must end at the sentinel when model unset: {argv}"
+        finally:
+            if tmp_path and os.path.exists(tmp_path):
+                os.unlink(tmp_path)
+
+    def test_flow_yaml_model_positional_kept_when_set(self):
+        """flow_yaml with a model: positional still follows the sentinel (CLI overrides file)."""
+        import os
+
+        from lionagi.studio.scheduler.subprocess import build_argv
+
+        sched = {
+            "id": "sy",
+            "action_kind": "flow_yaml",
+            "action_model": "sonnet",
+            "action_prompt": None,
+            "action_project": None,
+            "action_extra_args": [],
+            "action_flow_yaml": "prompt: yaml prompt\n",
+        }
+        argv, tmp_path = build_argv(sched, {})
+        try:
+            sentinel_idx = argv.index("--")
+            assert argv[sentinel_idx + 1 :] == ["sonnet"]
+        finally:
+            if tmp_path and os.path.exists(tmp_path):
+                os.unlink(tmp_path)
+
     def test_project_flag_placed_before_sentinel(self):
         """--project <name> must appear before the '--' sentinel in agent kind."""
         from lionagi.studio.scheduler.subprocess import build_argv

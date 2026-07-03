@@ -268,10 +268,15 @@ def build_argv(schedule: dict, trigger_context: dict) -> tuple[list[str], str | 
             raise
         # Named flags first (-f must come before --), then -- sentinel, then
         # model positional only (no prompt positional — YAML supplies it).
+        # `li o flow -f` treats file values as defaults that CLI positionals
+        # override, so an unset model must be omitted entirely: an explicit
+        # blank positional would suppress the YAML's own model/agent defaults.
         flags = ["-f", tmp_path]
         if project:
             flags += ["--project", project]
-        argv += ["o", "flow", *flags, "--", model]
+        argv += ["o", "flow", *flags, "--"]
+        if model:
+            argv.append(model)
 
     elif kind == "engine":
         # engine def launch: argv shape is
