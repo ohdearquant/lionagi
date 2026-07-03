@@ -1,6 +1,6 @@
 # ADR-0079: Substrate Executor Provider Interface
 
-**Status**: Proposed
+**Status**: Superseded in part by [ADR-0089](ADR-0089-sandbox-backend-seam-and-measurement-loop.md) (its `ExecutionTarget`/`ExecutionLimits` types are adopted there; the `ExecutorProvider` protocol half is parked, not carried forward)
 **Date**: 2026-06-03
 **Related**: #1196, [ADR-0080](ADR-0080-remote-sandbox-substrate-execution.md), [ADR-0072](ADR-0072-reactive-capability-bus.md)
 
