@@ -132,7 +132,12 @@ _MODEL_ALIASES: dict[str, str] = {
 }
 
 
-def resolve_agy_model(model: str | None, effort: str | None = None) -> str:
+def resolve_agy_model(
+    model: str | None,
+    effort: str | None = None,
+    *,
+    reapply_effort: bool = False,
+) -> str:
     """Map a lionagi model spec onto an exact `agy --model` name.
 
     agy has no effort flag/kwarg — effort is expressed only as the
@@ -141,11 +146,24 @@ def resolve_agy_model(model: str | None, effort: str | None = None) -> str:
     that suffix for the Gemini flash/pro families instead of the family
     default below (`_clamp_gemini_effort` collapses onto Gemini 3.1 Pro's
     Low/High-only range). An exact `(...)`-qualified `model` — already a
-    concrete agy display name — always wins over `effort`.
+    concrete agy display name — always wins over `effort` by default.
+
+    `reapply_effort=True` bypasses that short-circuit for the Gemini
+    flash/pro families so a new `effort` can replace the suffix already
+    baked into `model`. Callers set this only when `model` is a *persisted*
+    prior resolution rather than something the caller typed on this
+    invocation (e.g. `li agent -r ... --effort ...` re-applying effort to
+    a resumed branch's already-resolved model, with no new `--model` given)
+    — a model the caller explicitly pinned this turn must still win.
     """
     if not model:
         model = "gemini-3.5-flash"
     if model in _AGY_MODELS:
+        if reapply_effort and effort is not None:
+            if model.startswith("Gemini 3.5 Flash"):
+                return f"Gemini 3.5 Flash ({_clamp_gemini_effort(effort, False)})"
+            if model.startswith("Gemini 3.1 Pro"):
+                return f"Gemini 3.1 Pro ({_clamp_gemini_effort(effort, True)})"
         return model
     key = model.strip().lower()
     if key in _MODEL_ALIASES:

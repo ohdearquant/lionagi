@@ -330,3 +330,47 @@ def test_resolve_agy_model_effort_ignored_for_cross_family_alias():
     """Claude/GPT-OSS routed through agy have no Low/Medium/High tiers —
     effort is accepted but has no suffix to fold into."""
     assert resolve_agy_model("opus", effort="high") == "Claude Opus 4.6 (Thinking)"
+
+
+# ---------------------------------------------------------------------------
+# Model resolution — reapply_effort (li agent -r --effort re-applying effort
+# to an already-resolved persisted model, e.g. issue #1595)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "spec,effort,expected",
+    [
+        ("Gemini 3.5 Flash (Low)", "high", "Gemini 3.5 Flash (High)"),
+        ("Gemini 3.5 Flash (High)", "low", "Gemini 3.5 Flash (Low)"),
+        ("Gemini 3.1 Pro (Low)", "high", "Gemini 3.1 Pro (High)"),
+        # medium clamps to High for the Pro family, same as fresh resolution.
+        ("Gemini 3.1 Pro (Low)", "medium", "Gemini 3.1 Pro (High)"),
+    ],
+)
+def test_resolve_agy_model_reapply_effort_overrides_persisted_suffix(spec, effort, expected):
+    assert resolve_agy_model(spec, effort=effort, reapply_effort=True) == expected
+
+
+def test_resolve_agy_model_reapply_effort_default_false_preserves_pin():
+    """Without reapply_effort, an exact qualified model still wins over effort
+    (unchanged default — this is the semantics for a caller-typed pin)."""
+    assert resolve_agy_model("Gemini 3.5 Flash (Low)", effort="high") == "Gemini 3.5 Flash (Low)"
+
+
+def test_resolve_agy_model_reapply_effort_no_new_effort_keeps_persisted():
+    """reapply_effort=True with no new effort given must not touch the
+    persisted model (nothing to reapply)."""
+    assert (
+        resolve_agy_model("Gemini 3.5 Flash (Low)", effort=None, reapply_effort=True)
+        == "Gemini 3.5 Flash (Low)"
+    )
+
+
+def test_resolve_agy_model_reapply_effort_ignored_for_cross_family_alias():
+    """Cross-family agy models (Claude/GPT-OSS) have no effort tier to
+    reapply — reapply_effort has nothing to do and the model passes through."""
+    assert (
+        resolve_agy_model("Claude Opus 4.6 (Thinking)", effort="high", reapply_effort=True)
+        == "Claude Opus 4.6 (Thinking)"
+    )
