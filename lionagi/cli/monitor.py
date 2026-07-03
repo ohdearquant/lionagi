@@ -890,6 +890,10 @@ def _new_chain_state(pending: dict[str, dict[str, Any]], *, chain: bool) -> dict
         "resolved_roots": set(),
         "schedule_cache": {},
         "chain": chain,
+        # run ids that have already gone terminal and been folded once below
+        # (printed by _poll_pending_once) — lets discovery tell an
+        # already-processed child apart from one still in `pending`.
+        "done_ids": set(),
     }
 
 
@@ -922,7 +926,9 @@ async def _advance_chains(
     has concluded), schedule_cache (memoized `db.get_schedule` lookups),
     chain (bool — chain-following on/off; when off, every terminal row
     resolves its root immediately, matching --no-chain's "watch only the
-    literal ids given").
+    literal ids given"), done_ids (run ids already folded into the above
+    once — lets discovery tell an already-processed child apart from one
+    still waiting in `pending`).
     """
     root_of = chain_state["root_of"]
     chain_tail_exit = chain_state["chain_tail_exit"]
@@ -930,8 +936,10 @@ async def _advance_chains(
     resolved_roots = chain_state["resolved_roots"]
     schedule_cache = chain_state["schedule_cache"]
     chain = chain_state["chain"]
+    done_ids = chain_state["done_ids"]
 
     for row in done[processed:]:
+        done_ids.add(row["id"])
         roots = root_of.get(row["id"]) or {row["id"]}
         for root in roots:
             chain_tail_exit[root] = row.get("exit_code")
@@ -949,6 +957,7 @@ async def _advance_chains(
             children = await _find_chain_children(db, parent_id)
             if children:
                 for child in children:
+                    child_id = child["id"]
                     # A discovered child can itself already own a root — it
                     # may be a directly-watched id in an overlapping watch
                     # set (e.g. `li monitor run parent child` where child is
@@ -956,8 +965,31 @@ async def _advance_chains(
                     # root(s) into whatever the child already owns instead
                     # of overwriting, so the child's own root still resolves
                     # once the child (now the chain's tail) goes terminal.
-                    root_of.setdefault(child["id"], set()).update(info["roots"])
-                    pending[child["id"]] = child
+                    root_of.setdefault(child_id, set()).update(info["roots"])
+                    if child_id in done_ids:
+                        # The child already went terminal (possibly in the
+                        # very same tick as its parent) and was already
+                        # printed once by _poll_pending_once. Re-adding it
+                        # to `pending` would print it again on the next
+                        # tick, so fold the parent's root(s) into whatever
+                        # bookkeeping the child already landed in instead —
+                        # never touch `pending` for it.
+                        child_exit = chain_tail_exit.get(child_id)
+                        for root in info["roots"]:
+                            chain_tail_exit[root] = child_exit
+                        if child_id in awaiting_grace:
+                            # The child's own schedule also declares a
+                            # matching chain action — join its still-open
+                            # grace window rather than spinning up separate
+                            # bookkeeping for the same run.
+                            awaiting_grace[child_id]["roots"].update(info["roots"])
+                        else:
+                            # The child already resolved outright (no
+                            # matching chain action of its own) — the
+                            # parent's root(s) resolve right along with it.
+                            resolved_roots.update(info["roots"])
+                    else:
+                        pending[child_id] = child
                 del awaiting_grace[parent_id]
                 continue
             info["ticks_left"] -= 1

@@ -816,6 +816,64 @@ async def test_dispatch_wait_overlapping_roots_child_watched_directly_fails(
     assert out.count(child_id) == 1
 
 
+@pytest.mark.asyncio
+async def test_dispatch_wait_child_already_terminal_same_tick_prints_once(
+    temp_db_path: Path, capsys: pytest.CaptureFixture
+) -> None:
+    """Regression: parent AND its chain child are *both* already terminal
+    before `_dispatch_wait` even starts (no background flip needed) -- the
+    very first poll tick prints both directly, then the parent's grace-
+    window discovery finds the child via chain_parent_id. The child's own
+    schedule declares no chain action of its own, so it should already be
+    resolved outright by the time discovery reaches it -- re-adding it to
+    `pending` would make the next tick's `_poll_pending_once` print it a
+    second time."""
+    async with StateDB() as db:
+        parent_sched = await _make_schedule(db, name="parent-sched", on_success={"kind": "agent"})
+        parent_id = await _make_schedule_run(db, parent_sched, status="completed", exit_code=0)
+        child_sched = await _make_schedule(db, name="child-sched")
+        child_id = await _make_schedule_run(
+            db,
+            child_sched,
+            status="completed",
+            exit_code=0,
+            chain_depth=1,
+            chain_parent_id=parent_id,
+        )
+
+    exit_code = _dispatch_wait([parent_id, child_id], interval=0.05, follow=False)
+
+    assert exit_code == 0
+    out = capsys.readouterr().out
+    assert out.count(parent_id) == 1
+    assert out.count(child_id) == 1
+
+
+@pytest.mark.asyncio
+async def test_dispatch_wait_child_already_terminal_joins_own_grace_prints_once(
+    temp_db_path: Path, capsys: pytest.CaptureFixture
+) -> None:
+    """Variant of the above: the already-terminal child's own schedule
+    *also* declares a matching chain action (on_success), so discovery must
+    join the parent's root into the child's own `awaiting_grace` entry
+    instead of resolving it outright -- and once that grace window expires
+    (no grandchild ever fires), both roots resolve together on the child's
+    exit code, each line still printed exactly once."""
+    async with StateDB() as db:
+        sched_id = await _make_schedule(db, name="chained", on_success={"kind": "agent"})
+        parent_id = await _make_schedule_run(db, sched_id, status="completed", exit_code=0)
+        child_id = await _make_schedule_run(
+            db, sched_id, status="completed", exit_code=0, chain_depth=1, chain_parent_id=parent_id
+        )
+
+    exit_code = _dispatch_wait([parent_id, child_id], interval=0.02, follow=False)
+
+    assert exit_code == 0
+    out = capsys.readouterr().out
+    assert out.count(parent_id) == 1
+    assert out.count(child_id) == 1
+
+
 # ── _query_schedule_runs_since (the --follow baseline boundary, deterministic) ──
 
 
