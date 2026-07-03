@@ -167,8 +167,8 @@ def test_cli_package_init_is_lazy():
     lionagi.studio.cli) must not pull in lionagi.cli.main — main.py imports
     lionagi.studio.cli at module level, so an eager package init would make
     every studio->cli._logging import re-enter a partially-initialized
-    module. The entry point is lionagi.cli.main:main; the package itself
-    exports nothing."""
+    module. `from lionagi.cli import main` still resolves to the callable
+    via the package's lazy __getattr__ re-export."""
     import subprocess
     import sys
 
@@ -177,7 +177,30 @@ def test_cli_package_init_is_lazy():
         "assert 'lionagi.cli.main' not in sys.modules, 'eager main import'; "
         "import lionagi.studio.cli; "
         "assert 'lionagi.cli.main' not in sys.modules, 'studio pulled main'; "
-        "import lionagi.cli.main; assert callable(lionagi.cli.main.main)"
+        "from lionagi.cli import main; assert callable(main), type(main); "
+        "import types; "
+        "assert not isinstance(main, types.ModuleType), type(main)"
+    )
+    result = subprocess.run(
+        [sys.executable, "-c", code], capture_output=True, text=True, timeout=120
+    )
+    assert result.returncode == 0, result.stderr
+
+
+def test_cli_package_getattr_raises_for_unknown_attr():
+    """The package's __getattr__ only special-cases `main`; anything
+    else must raise AttributeError like a normal missing attribute."""
+    import subprocess
+    import sys
+
+    code = (
+        "import lionagi.cli as pkg\n"
+        "try:\n"
+        "    pkg.not_a_real_attribute\n"
+        "except AttributeError:\n"
+        "    pass\n"
+        "else:\n"
+        "    raise SystemExit('expected AttributeError for unknown attr')\n"
     )
     result = subprocess.run(
         [sys.executable, "-c", code], capture_output=True, text=True, timeout=120
