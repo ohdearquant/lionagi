@@ -775,6 +775,76 @@ async def test_resume_seeds_executor_with_checkpointed_flow_context(tmp_path: Pa
     assert kwargs["context"] == {"shared_note": "value-from-completed-op"}
 
 
+async def test_resumed_checkpoint_carries_restored_flow_context_across_zero_completions(
+    tmp_path: Path,
+):
+    """A second-generation checkpoint -- one written by a RESUMED run -- must
+    still carry forward the flow_context restored from the prior checkpoint,
+    even if the resumed run crashes before any op completes and the writer
+    only ever flushes its initial construction-time seed. Otherwise a
+    resume-of-a-resume silently loses shared context that nothing actually
+    went wrong with restoring, across this second simulated process boundary.
+    """
+    env = _make_resume_env(tmp_path)
+    env.run.checkpoint_path = tmp_path / "checkpoint.json"
+    checkpoint = {
+        "version": 1,
+        "session_id": "prior-session",
+        "prompt": "write the brief",
+        "plan": [
+            {
+                "task": "write the brief",
+                "assignee": "worker",
+                "inputs": [],
+                "exit_criteria": None,
+                "depends_on": [],
+                "modes": [],
+                "agent_id": "worker",
+                "dep_indices": [],
+            }
+        ],
+        "config": {},
+        "flow_context": {"shared_note": "value-from-completed-op"},
+        "ops": {
+            "worker": {"agent_id": "worker", "status": "completed", "response": "already done"}
+        },
+        "spawned": [],
+    }
+
+    async def _run_dag_result(*args, executor_ref=None, **_kw):
+        # No NodeCompleted/NodeFailed signal ever fires -- simulating the
+        # resumed run crashing before any op completes, so the only
+        # checkpoint write this generation makes is the initial flush.
+        return {"operation_results": {}, "spawned_operations": 0, "escalated_operations": []}
+
+    fake_engine_run = MagicMock()
+    fake_engine_run.run_dag = _run_dag_result
+
+    from lionagi.engines import PlanningEngine
+
+    with (
+        patch(
+            "lionagi.cli.orchestrate.flow.build_worker_branch",
+            return_value=(_FakeBranch("worker"), "codex/gpt-5.5", None),
+        ),
+        patch.object(PlanningEngine, "new_run", return_value=fake_engine_run),
+        patch("lionagi.cli.orchestrate.flow.plan"),
+        patch("lionagi.cli.orchestrate.flow._finalize_flow", return_value="ok"),
+    ):
+        await _run_flow_inner(
+            "codex/gpt-5.5",
+            "write the brief",
+            env=env,
+            resume_checkpoint=checkpoint,
+            allow_degraded_context=False,
+            checkpoint_config={"model_spec": "codex/gpt-5.5"},
+            reactive_spec="off",
+        )
+
+    data = load_checkpoint(env.run.checkpoint_path)
+    assert data["flow_context"] == {"shared_note": "value-from-completed-op"}
+
+
 async def test_resume_refuses_checkpoint_with_spawned_entries(tmp_path: Path):
     """Replaying reactively spawned work on resume isn't implemented, so a
     checkpoint that recorded any must refuse resume outright -- silently

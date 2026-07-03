@@ -690,6 +690,12 @@ async def _execute_dag(
             prompt=checkpoint_prompt,
             plan=checkpoint_plan or [],
             config=checkpoint_config,
+            # Seed with whatever was restored from a prior checkpoint (empty
+            # on a fresh, non-resumed run) so this generation's checkpoint
+            # carries the context forward even if zero ops complete before
+            # the next crash — otherwise a resume-of-a-resume would silently
+            # lose it despite nothing having gone wrong with restoration.
+            flow_context=dict(checkpoint_flow_context or {}),
             ops=dict(checkpoint_ops_seed or {}),
         )
         with contextlib.suppress(Exception):
