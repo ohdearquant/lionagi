@@ -53,15 +53,15 @@ The surfaces are designed to chain:
 # Recurring pipeline: schedule an agent turn on a cron. Create prints
 # the schedule ID; trigger and runs take that ID, not the name.
 SCHED=$(li schedule create nightly-audit --cron "0 6 * * *" \
-  --action-kind agent --agent auditor --prompt "run the nightly audit" \
-  | awk '/^Created:/ {print $2}')
+  --action-kind agent --agent auditor --model sonnet \
+  --prompt "run the nightly audit" | awk '/^Created:/ {print $2}')
 
 # Fire it now, then list its firings — each row carries a run ID and
 # outcome. (Direct `li play` runs are watched with `li monitor --watch`.)
 li schedule trigger "$SCHED"
 li schedule runs "$SCHED"
 
-# Block until a listed firing reaches a terminal state
+# Copy a run ID from that listing, then block until it goes terminal
 li monitor run "$RUN_ID" && echo "audit done"
 
 # One dashboard row for a multi-run skill
