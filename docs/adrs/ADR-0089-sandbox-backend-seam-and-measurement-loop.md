@@ -1,6 +1,6 @@
 # ADR-0089: Sandbox Backend Seam and Recursive Measurement Loop
 
-**Status**: Proposed
+**Status**: Accepted
 **Date**: 2026-07-03
 **Supersedes**: [ADR-0079](ADR-0079-substrate-executor-provider-interface.md) (in part: its
 `ExecutionTarget`/`ExecutionLimits` types are adopted by implementing them; its `ExecutorProvider`

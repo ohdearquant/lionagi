@@ -1,6 +1,6 @@
 # ADR-0080: Remote Sandbox Substrate Execution
 
-**Status**: Proposed
+**Status**: Superseded by [ADR-0089](ADR-0089-sandbox-backend-seam-and-measurement-loop.md) (backend contract absorbed; the flow/play `DependencyAwareExecutor` integration is deferred to a future ADR, not carried by ADR-0089)
 **Date**: 2026-06-03
 **Related**: #1195, [ADR-0079](ADR-0079-substrate-executor-provider-interface.md), [ADR-0057](ADR-0057-remote-sandbox-execution.md)
 
