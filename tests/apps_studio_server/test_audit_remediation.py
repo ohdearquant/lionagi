@@ -1012,6 +1012,7 @@ class TestGithubRepoRealServiceValidation:
             json={
                 "name": "gh-patch-base",
                 "trigger_type": "cron",
+                "cron_expr": "0 * * * *",
                 "action_kind": "agent",
                 "action_model": "sonnet",
             },
@@ -1037,6 +1038,7 @@ class TestGithubRepoRealServiceValidation:
             json={
                 "name": "gh-patch-base2",
                 "trigger_type": "cron",
+                "cron_expr": "0 * * * *",
                 "action_kind": "agent",
                 "action_model": "sonnet",
             },
@@ -1075,6 +1077,7 @@ class TestGithubRepoRealServiceValidation:
             json={
                 "name": "gh-patch-dot-base",
                 "trigger_type": "cron",
+                "cron_expr": "0 * * * *",
                 "action_kind": "agent",
                 "action_model": "sonnet",
             },
@@ -1128,6 +1131,7 @@ class TestGithubRepoRealServiceValidation:
             json={
                 "name": "gh-patch-long-owner-base",
                 "trigger_type": "cron",
+                "cron_expr": "0 * * * *",
                 "action_kind": "agent",
                 "action_model": "sonnet",
             },
@@ -1149,6 +1153,7 @@ class TestGithubRepoRealServiceValidation:
             json={
                 "name": "gh-patch-long-repo-base",
                 "trigger_type": "cron",
+                "cron_expr": "0 * * * *",
                 "action_kind": "agent",
                 "action_model": "sonnet",
             },
@@ -1195,6 +1200,7 @@ class TestGithubRepoRealServiceValidation:
             json={
                 "name": "schema-seed",
                 "trigger_type": "cron",
+                "cron_expr": "0 * * * *",
                 "action_kind": "agent",
                 "action_model": "sonnet",
             },

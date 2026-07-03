@@ -158,6 +158,7 @@ def test_create_schedule_rejects_empty_flow_yaml():
     data = {
         "name": "bad-sched",
         "trigger_type": "cron",
+        "cron_expr": "0 * * * *",
         "action_kind": "flow_yaml",
         # action_flow_yaml intentionally absent
     }
@@ -181,6 +182,7 @@ def test_create_schedule_rejects_malformed_flow_yaml():
     data = {
         "name": "bad-yaml-sched",
         "trigger_type": "cron",
+        "cron_expr": "0 * * * *",
         "action_kind": "flow_yaml",
         "action_flow_yaml": "key: [unclosed",
     }
