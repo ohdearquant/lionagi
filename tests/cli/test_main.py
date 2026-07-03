@@ -167,7 +167,8 @@ def test_cli_package_init_is_lazy():
     lionagi.studio.cli) must not pull in lionagi.cli.main — main.py imports
     lionagi.studio.cli at module level, so an eager package init would make
     every studio->cli._logging import re-enter a partially-initialized
-    module. `from lionagi.cli import main` still works via __getattr__."""
+    module. The entry point is lionagi.cli.main:main; the package itself
+    exports nothing."""
     import subprocess
     import sys
 
@@ -176,7 +177,7 @@ def test_cli_package_init_is_lazy():
         "assert 'lionagi.cli.main' not in sys.modules, 'eager main import'; "
         "import lionagi.studio.cli; "
         "assert 'lionagi.cli.main' not in sys.modules, 'studio pulled main'; "
-        "from lionagi.cli import main; assert callable(main)"
+        "import lionagi.cli.main; assert callable(lionagi.cli.main.main)"
     )
     result = subprocess.run(
         [sys.executable, "-c", code], capture_output=True, text=True, timeout=120
