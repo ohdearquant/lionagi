@@ -737,6 +737,85 @@ async def test_dispatch_wait_no_chain_ignores_fired_children(
     assert child_id not in out
 
 
+@pytest.mark.asyncio
+async def test_dispatch_wait_overlapping_roots_child_watched_directly_succeeds(
+    temp_db_path: Path, capsys: pytest.CaptureFixture
+) -> None:
+    """Regression: a parent AND its already-linked chain child are both
+    passed as initial watch roots (e.g. from comma/list expansion). The
+    parent is terminal from the start, which starts a grace window that
+    discovers the child via chain_parent_id -- but the child is *also* one
+    of the originally-watched roots, and is still running at that moment.
+    The discovery must not clobber the child's own root ownership: once the
+    child later completes on its own, both the parent's root (resolved via
+    the child as its final link) and the child's own root must resolve, not
+    just the parent's."""
+    async with StateDB() as db:
+        sched_id = await _make_schedule(db, name="chained", on_success={"kind": "agent"})
+        parent_id = await _make_schedule_run(db, sched_id, status="completed", exit_code=0)
+        child_id = await _make_schedule_run(
+            db, sched_id, status="running", chain_depth=1, chain_parent_id=parent_id
+        )
+
+    def _flip_child_to_completed() -> None:
+        import asyncio
+
+        async def _go() -> None:
+            async with StateDB() as db2:
+                await _set_fields(db2, "schedule_runs", child_id, status="completed", exit_code=0)
+
+        time.sleep(0.2)
+        asyncio.run(_go())
+
+    t = threading.Thread(target=_flip_child_to_completed, daemon=True)
+    t.start()
+
+    exit_code = _dispatch_wait([parent_id, child_id], interval=0.05, follow=False)
+    t.join(timeout=5)
+
+    assert exit_code == 0
+    out = capsys.readouterr().out
+    assert out.count(parent_id) == 1
+    assert out.count(child_id) == 1
+
+
+@pytest.mark.asyncio
+async def test_dispatch_wait_overlapping_roots_child_watched_directly_fails(
+    temp_db_path: Path, capsys: pytest.CaptureFixture
+) -> None:
+    """Failure-side variant of the overlapping-roots regression above: the
+    child (also a directly-watched root) completes with a nonzero exit code
+    -- the aggregate must report failure (1), not fall back to EXIT_RUNNING
+    because the child's own root never resolved."""
+    async with StateDB() as db:
+        sched_id = await _make_schedule(db, name="chained", on_success={"kind": "agent"})
+        parent_id = await _make_schedule_run(db, sched_id, status="completed", exit_code=0)
+        child_id = await _make_schedule_run(
+            db, sched_id, status="running", chain_depth=1, chain_parent_id=parent_id
+        )
+
+    def _flip_child_to_failed() -> None:
+        import asyncio
+
+        async def _go() -> None:
+            async with StateDB() as db2:
+                await _set_fields(db2, "schedule_runs", child_id, status="failed", exit_code=1)
+
+        time.sleep(0.2)
+        asyncio.run(_go())
+
+    t = threading.Thread(target=_flip_child_to_failed, daemon=True)
+    t.start()
+
+    exit_code = _dispatch_wait([parent_id, child_id], interval=0.05, follow=False)
+    t.join(timeout=5)
+
+    assert exit_code == 1
+    out = capsys.readouterr().out
+    assert out.count(parent_id) == 1
+    assert out.count(child_id) == 1
+
+
 # ── _query_schedule_runs_since (the --follow baseline boundary, deterministic) ──
 
 

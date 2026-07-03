@@ -879,11 +879,12 @@ async def _schedule_declares_chain_action(
 
 def _new_chain_state(pending: dict[str, dict[str, Any]], *, chain: bool) -> dict[str, Any]:
     """Build the bookkeeping dict `_advance_chains` mutates tick over tick —
-    one root per originally-watched id currently in `pending`. Factored out
-    so tests can drive `_advance_chains` directly the same way they drive
-    `_poll_pending_once`, without duplicating its internal shape."""
+    each originally-watched id in `pending` starts out owning itself as its
+    own root. Factored out so tests can drive `_advance_chains` directly the
+    same way they drive `_poll_pending_once`, without duplicating its
+    internal shape."""
     return {
-        "root_of": {rid: rid for rid in pending},
+        "root_of": {rid: {rid} for rid in pending},
         "chain_tail_exit": {},
         "awaiting_grace": {},
         "resolved_roots": set(),
@@ -912,13 +913,16 @@ async def _advance_chains(
     function tick-by-tick with direct DB mutations in between, no real
     sleeping required, the same way `_poll_pending_once` is tested above.
 
-    `chain_state` keys: root_of (run_id -> originally-watched root id),
-    chain_tail_exit (root id -> most recent terminal exit_code seen for
-    that chain), awaiting_grace (run_id -> {root, ticks_left}),
-    resolved_roots (root ids whose chain has concluded), schedule_cache
-    (memoized `db.get_schedule` lookups), chain (bool — chain-following
-    on/off; when off, every terminal row resolves its root immediately,
-    matching --no-chain's "watch only the literal ids given").
+    `chain_state` keys: root_of (run_id -> set of originally-watched roots
+    that run currently accounts for — a run can own more than one root when
+    an overlapping watch set passes both a run and one of its own chain
+    descendants as separate roots, see below), chain_tail_exit (root id ->
+    most recent terminal exit_code seen for that chain), awaiting_grace
+    (run_id -> {roots, ticks_left}), resolved_roots (root ids whose chain
+    has concluded), schedule_cache (memoized `db.get_schedule` lookups),
+    chain (bool — chain-following on/off; when off, every terminal row
+    resolves its root immediately, matching --no-chain's "watch only the
+    literal ids given").
     """
     root_of = chain_state["root_of"]
     chain_tail_exit = chain_state["chain_tail_exit"]
@@ -928,14 +932,15 @@ async def _advance_chains(
     chain = chain_state["chain"]
 
     for row in done[processed:]:
-        root = root_of.get(row["id"], row["id"])
-        chain_tail_exit[root] = row.get("exit_code")
+        roots = root_of.get(row["id"]) or {row["id"]}
+        for root in roots:
+            chain_tail_exit[root] = row.get("exit_code")
         if chain and await _schedule_declares_chain_action(
             db, row["schedule_id"], row.get("exit_code"), cache=schedule_cache
         ):
-            awaiting_grace[row["id"]] = {"root": root, "ticks_left": _CHAIN_GRACE_TICKS}
+            awaiting_grace[row["id"]] = {"roots": set(roots), "ticks_left": _CHAIN_GRACE_TICKS}
         else:
-            resolved_roots.add(root)
+            resolved_roots.update(roots)
     processed = len(done)
 
     if chain:
@@ -944,13 +949,20 @@ async def _advance_chains(
             children = await _find_chain_children(db, parent_id)
             if children:
                 for child in children:
-                    root_of[child["id"]] = info["root"]
+                    # A discovered child can itself already own a root — it
+                    # may be a directly-watched id in an overlapping watch
+                    # set (e.g. `li monitor run parent child` where child is
+                    # parent's own chain_parent_id link). Union the parent's
+                    # root(s) into whatever the child already owns instead
+                    # of overwriting, so the child's own root still resolves
+                    # once the child (now the chain's tail) goes terminal.
+                    root_of.setdefault(child["id"], set()).update(info["roots"])
                     pending[child["id"]] = child
                 del awaiting_grace[parent_id]
                 continue
             info["ticks_left"] -= 1
             if info["ticks_left"] <= 0:
-                resolved_roots.add(info["root"])
+                resolved_roots.update(info["roots"])
                 del awaiting_grace[parent_id]
 
     return processed
