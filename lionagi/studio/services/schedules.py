@@ -4,6 +4,7 @@
 
 from __future__ import annotations
 
+import logging
 import time
 import uuid
 from typing import Any
@@ -15,6 +16,8 @@ from lionagi.service.providers import EFFORT_LEVELS as _VALID_EFFORT_LEVELS
 from lionagi.state.db import DEFAULT_DB_PATH, StateDB
 
 from ..registry import studio_route
+
+_log = logging.getLogger(__name__)
 
 _PRESERVE_DASHED: frozenset[str] = frozenset({"argument-hint"})
 
@@ -58,6 +61,16 @@ def _svc_validate_extra_args(extra: list | None) -> None:
     from lionagi.studio.scheduler.subprocess import _validate_extra_args
 
     _validate_extra_args(extra)
+
+
+def _svc_validate_cron_expr(expr: str | None) -> None:
+    """Service-boundary check: reject a syntactically invalid cron expression."""
+    if not expr:
+        return
+    from croniter import croniter
+
+    if not croniter.is_valid(expr):
+        raise ValueError(f"Invalid cron expression: {expr!r}")
 
 
 def _svc_validate_github_repo(repo: str | None) -> None:
@@ -324,6 +337,9 @@ async def update_schedule(schedule_id: str, fields: dict[str, Any]) -> bool:
             spec_err = _validate_flow_yaml_spec(yaml_text)
             if spec_err:
                 raise ValueError(f"Invalid flow_yaml spec: {spec_err}")
+        touches_trigger = "cron_expr" in fields or "trigger_type" in fields
+        if touches_trigger and effective.get("trigger_type") == "cron":
+            _svc_validate_cron_expr(effective.get("cron_expr"))
 
         await db.update_schedule(schedule_id, **fields)
 
@@ -331,10 +347,21 @@ async def update_schedule(schedule_id: str, fields: dict[str, Any]) -> bool:
     # next_fire_at immediately rather than waiting for the next fire — the
     # stored `effective` dict already reflects the post-update schedule, so
     # this recomputes under the new interpretation and logs iff it shifted.
+    # The field update above already committed; a recompute failure here
+    # (e.g. a transient DB error) must not turn an already-committed PATCH
+    # into an unhandled 500 — it degrades to a stale next_fire_at that the
+    # engine's own startup/tick recompute will pick up later.
     if effective.get("trigger_type") == "cron":
         from ..scheduler.engine import scheduler
 
-        await scheduler.recompute_next_fire(effective)
+        try:
+            await scheduler.recompute_next_fire(effective)
+        except Exception:
+            _log.warning(
+                "Failed to recompute next_fire_at for schedule %s after update",
+                schedule_id,
+                exc_info=True,
+            )
     return True
 
 
@@ -354,11 +381,20 @@ async def enable_schedule(schedule_id: str) -> bool:
     # may be stale (in the past, or computed under an old interpretation).
     # Recompute now so re-enabling never fires immediately on stale data —
     # it only fires immediately if the *current* cron interpretation says so.
+    # The enabled flag above already committed; a recompute failure here
+    # must not turn an already-committed enable into an unhandled 500.
     effective = {**schedule, "enabled": 1}
     if effective.get("trigger_type") == "cron":
         from ..scheduler.engine import scheduler
 
-        await scheduler.recompute_next_fire(effective)
+        try:
+            await scheduler.recompute_next_fire(effective)
+        except Exception:
+            _log.warning(
+                "Failed to recompute next_fire_at for schedule %s after enable",
+                schedule_id,
+                exc_info=True,
+            )
     return True
 
 
