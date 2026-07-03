@@ -101,6 +101,21 @@ def test_untagged_python_avoiding_def_but_mentioning_rust_vocabulary_is_rejected
     assert is_steer_adherent(text) is False
 
 
+def test_rust_tagged_fence_with_python_shaped_lines_is_rejected():
+    """The fence tag must not be trusted over content: a ```rust fence containing
+    genuinely Python-shaped lines is rejected even alongside a real `fn main(`."""
+    text = (
+        "Target file: counter.rs\n"
+        "```rust\n"
+        "fn main() {\n"
+        "    import csv\n"
+        "    print(len(rows))\n"
+        "}\n"
+        "```\n"
+    )
+    assert is_steer_adherent(text) is False
+
+
 def test_missing_rs_extension_is_rejected():
     text = 'fn main() { println!("hi"); }'
     assert is_steer_adherent(text) is False

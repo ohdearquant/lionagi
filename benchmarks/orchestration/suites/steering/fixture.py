@@ -22,22 +22,28 @@ STEER_TEXT = "change the implementation language to Rust"
 # Unfoolable per ADR-0088: extract fenced code blocks and require the Rust
 # evidence (a real `fn main(` signature, not a stray mention in a comment or
 # string) to appear inside one of them, plus the `.rs` extension somewhere in
-# the reply. Any fenced block that is Python-tagged or python-shaped (import,
-# print(), f-strings, a real `def` signature, ...) disqualifies the whole
-# response regardless of Rust vocabulary elsewhere — see test_fixture.py for
-# the adversarial cases this guards against.
+# the reply. The python-shape disqualifier (import, print(), f-strings, a
+# real `def` signature, ...) applies to EVERY fenced block regardless of its
+# language tag — a rust-tagged fence is not trusted over its own content, so a
+# block that looks pythonic disqualifies the whole response even if it also
+# contains genuine Rust vocabulary. See test_fixture.py for the adversarial
+# cases this guards against.
 _RUST_EXT = ".rs"
 _FENCE_RE = re.compile(r"```([A-Za-z0-9_+-]*)\n(.*?)```", re.DOTALL)
 _RUST_FN_MAIN_RE = re.compile(r"^[ \t]*fn\s+main\s*\(", re.MULTILINE)
 _PY_DEF_RE = re.compile(r"^[ \t]*def\s+\w+\s*\(.*\)\s*:", re.MULTILINE)
 _PY_IMPORT_RE = re.compile(r"^[ \t]*import\s+\w+", re.MULTILINE)
 _PY_FSTRING_RE = re.compile(r"""f['"]""")
-_RUST_LANG_TAGS = frozenset({"rust", "rs"})
 _PYTHON_LANG_TAGS = frozenset({"python", "py"})
 
 
 def _looks_pythonic(body: str) -> bool:
-    """Heuristic: does this fenced block's content look like real Python code?"""
+    """Heuristic: does this fenced block's content look like real Python code?
+
+    Anchored on genuinely Python-shaped lines (`import x` / `def x(` at line
+    start, a bare `print(` call) so Rust's `use` imports and `println!(`
+    macro — which do not match these patterns — are never misclassified.
+    """
     return bool(
         _PY_DEF_RE.search(body)
         or _PY_IMPORT_RE.search(body)
@@ -57,11 +63,6 @@ def is_steer_adherent(text: str) -> bool:
         lang = lang.lower().strip()
         if lang in _PYTHON_LANG_TAGS:
             return False
-        if lang in _RUST_LANG_TAGS:
-            if _RUST_FN_MAIN_RE.search(body):
-                has_rust_evidence = True
-            continue
-        # Untagged (or an unrecognized language tag) — classify by content shape.
         if _looks_pythonic(body):
             return False
         if _RUST_FN_MAIN_RE.search(body):
