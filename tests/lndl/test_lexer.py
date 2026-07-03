@@ -56,6 +56,39 @@ class TestLexerLiterals:
         assert tokens[0].type is TokenType.NUM
         assert tokens[0].value == "3.14"
 
+    def test_scientific_notation_lowercase_e(self):
+        tokens = Lexer("1e10").tokenize()
+        assert tokens[0].type is TokenType.NUM
+        assert tokens[0].value == "1e10"
+
+    def test_scientific_notation_uppercase_e(self):
+        tokens = Lexer("2E5").tokenize()
+        assert tokens[0].type is TokenType.NUM
+        assert tokens[0].value == "2E5"
+
+    def test_scientific_notation_negative_exponent(self):
+        tokens = Lexer("1.5e-3").tokenize()
+        assert tokens[0].type is TokenType.NUM
+        assert tokens[0].value == "1.5e-3"
+
+    def test_scientific_notation_positive_exponent(self):
+        tokens = Lexer("2E+5").tokenize()
+        assert tokens[0].type is TokenType.NUM
+        assert tokens[0].value == "2E+5"
+
+    def test_trailing_e_without_exponent_not_consumed(self):
+        """A bare 'e' with no following digit stays its own token, not part of the number."""
+        tokens = Lexer("1e").tokenize()
+        assert tokens[0].type is TokenType.NUM
+        assert tokens[0].value == "1"
+        assert tokens[1].type is TokenType.ID
+        assert tokens[1].value == "e"
+
+    def test_negative_scientific_notation_in_out_block(self):
+        tokens = Lexer("OUT{k: -1.5e-3}").tokenize()
+        types_values = [(t.type, t.value) for t in tokens]
+        assert (TokenType.NUM, "-1.5e-3") in types_values
+
     def test_negative_number_in_out_block(self):
         tokens = Lexer("OUT{score: -1}").tokenize()
         types_values = [(t.type, t.value) for t in tokens]

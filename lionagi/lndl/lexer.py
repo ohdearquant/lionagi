@@ -82,6 +82,21 @@ class Lexer:
         while (char := self.current_char()) and (char.isdigit() or char == "."):
             result += char
             self.advance()
+        # Scientific-notation exponent: e/E, optional sign, then at least one
+        # digit. The e/E is only consumed when a valid exponent follows, so a
+        # trailing 'e' with no digits stays a separate token.
+        if (char := self.current_char()) and char in "eE":
+            sign = self.peek_char()
+            exp_digit = self.peek_char(2) if sign in ("+", "-") else sign
+            if exp_digit and exp_digit.isdigit():
+                result += char
+                self.advance()
+                if (sign_char := self.current_char()) and sign_char in "+-":
+                    result += sign_char
+                    self.advance()
+                while (digit := self.current_char()) and digit.isdigit():
+                    result += digit
+                    self.advance()
         return result
 
     def read_string(self) -> str:

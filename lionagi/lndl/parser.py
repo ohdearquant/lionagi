@@ -468,7 +468,8 @@ class Parser:
                 num_str = num_token.value
                 self.advance()
                 try:
-                    fields[field_name] = float(num_str) if "." in num_str else int(num_str)
+                    is_float = any(c in num_str for c in ".eE")
+                    fields[field_name] = float(num_str) if is_float else int(num_str)
                 except ValueError as e:
                     raise ParseError(f"Invalid number literal '{num_str}'", num_token) from e
 
