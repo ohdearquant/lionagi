@@ -73,6 +73,31 @@ def _svc_validate_cron_expr(expr: str | None) -> None:
         raise ValueError(f"Invalid cron expression: {expr!r}")
 
 
+async def _svc_recompute_next_fire_guarded(effective: dict[str, Any], context: str) -> None:
+    """Recompute next_fire_at after a committed write, without raising.
+
+    The caller's DB write has already committed, so a recompute failure must
+    not surface as an unhandled 500. One immediate retry covers transient DB
+    contention. If both attempts fail the row keeps its stale next_fire_at:
+    the tick loop only touches rows that are due or have no next_fire_at, so
+    a stale *future* timestamp is healed only by the daemon-startup recompute
+    (or fires once on the old timestamp and recomputes from there).
+    """
+    from ..scheduler.engine import scheduler
+
+    for _ in range(2):
+        try:
+            await scheduler.recompute_next_fire(effective)
+            return
+        except Exception:
+            _log.warning(
+                "Failed to recompute next_fire_at for schedule %s after %s",
+                effective.get("id"),
+                context,
+                exc_info=True,
+            )
+
+
 def _svc_validate_github_repo(repo: str | None) -> None:
     """Service-boundary check: reject github_repo values that would manipulate the API path.
 
@@ -277,6 +302,8 @@ async def create_schedule(data: dict[str, Any]) -> dict[str, Any]:
     _svc_validate_identifier(data.get("action_playbook"), "action_playbook")
     _svc_validate_extra_args(data.get("action_extra_args"))
     _svc_validate_github_repo(data.get("github_repo"))
+    if data.get("trigger_type") == "cron":
+        _svc_validate_cron_expr(data.get("cron_expr"))
 
     if data.get("action_kind") == "flow_yaml":
         yaml_text = data.get("action_flow_yaml") or ""
@@ -349,19 +376,10 @@ async def update_schedule(schedule_id: str, fields: dict[str, Any]) -> bool:
     # this recomputes under the new interpretation and logs iff it shifted.
     # The field update above already committed; a recompute failure here
     # (e.g. a transient DB error) must not turn an already-committed PATCH
-    # into an unhandled 500 — it degrades to a stale next_fire_at that the
-    # engine's own startup/tick recompute will pick up later.
+    # into an unhandled 500 — it degrades to a stale next_fire_at (retried
+    # once; healed at daemon startup if both attempts fail).
     if effective.get("trigger_type") == "cron":
-        from ..scheduler.engine import scheduler
-
-        try:
-            await scheduler.recompute_next_fire(effective)
-        except Exception:
-            _log.warning(
-                "Failed to recompute next_fire_at for schedule %s after update",
-                schedule_id,
-                exc_info=True,
-            )
+        await _svc_recompute_next_fire_guarded(effective, "update")
     return True
 
 
@@ -385,16 +403,7 @@ async def enable_schedule(schedule_id: str) -> bool:
     # must not turn an already-committed enable into an unhandled 500.
     effective = {**schedule, "enabled": 1}
     if effective.get("trigger_type") == "cron":
-        from ..scheduler.engine import scheduler
-
-        try:
-            await scheduler.recompute_next_fire(effective)
-        except Exception:
-            _log.warning(
-                "Failed to recompute next_fire_at for schedule %s after enable",
-                schedule_id,
-                exc_info=True,
-            )
+        await _svc_recompute_next_fire_guarded(effective, "enable")
     return True
 
 
