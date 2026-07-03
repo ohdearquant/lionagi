@@ -872,10 +872,12 @@ async def _execute_dag(
             }
         )
 
-        # Fold the spawned node's role contract into the session contract, the
-        # same move _build_dag makes for planned legs (ADR-0029) — without
-        # this a spawned reviewer/critic could silently skip its required
-        # artifact and the teardown backstop would have nothing to check.
+        # Record the spawned node's role-declared artifacts in the session
+        # contract for post-run visibility (synthesis, Studio), namespaced
+        # under the node's own subdir. These are folded as non-required: a
+        # reactively spawned node is built with only its instruction and is
+        # never told its artifact dir, so it has no path to satisfy a required
+        # entry — enforcing one would flip an otherwise-completed run to failed.
         if assignee:
             role_defaults = dag_state.role_artifact_defaults.get(assignee)
             if role_defaults:
@@ -887,6 +889,7 @@ async def _execute_dag(
                             **entry,
                             "id": f"{sid}__{eid}",
                             "path": f"{sid}/{epath}",
+                            "required": False,
                             "source": "role_default",
                         }
                     )
@@ -1037,6 +1040,7 @@ def _finalize_flow(
             "name": agent_ids[i],
             "model": worker_models[i],
             "artifact_dir": str(env.run.agent_artifact_dir(agent_ids[i])),
+            "spawned": False,
         }
         for i in range(len(assignments))
     ]

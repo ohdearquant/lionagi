@@ -364,8 +364,10 @@ async def test_execute_dag_tags_spawned_nodes(tmp_path):
 async def test_execute_dag_spawned_node_registers_artifact_contract(tmp_path):
     """A spawned node running under a role with artifact_defaults must be
     attributed back to that role and get its own contract entry folded into
-    the live-persist context, so the teardown backstop can flag a missing
-    required artifact the same way it does for planned legs."""
+    the live-persist context for post-run visibility — folded non-required,
+    since a spawned node is never told its artifact dir and so has no path to
+    satisfy a required entry (enforcing one would fail an otherwise-complete
+    run)."""
     env = _make_env(tmp_path)
     db = _FakeDB()
     env._live_persist = {
@@ -430,6 +432,10 @@ async def test_execute_dag_spawned_node_registers_artifact_contract(tmp_path):
     assert "spawn-1__report" in ids
     paths = {e["path"] for e in contract["expected"]}
     assert "spawn-1/report.md" in paths
+    # Folded non-required even though the role default declares required=True —
+    # a spawned node can't be held to an artifact it was never told to write.
+    spawned_entry = next(e for e in contract["expected"] if e["id"] == "spawn-1__report")
+    assert spawned_entry["required"] is False
 
 
 @pytest.mark.asyncio
