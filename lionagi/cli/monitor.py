@@ -129,15 +129,18 @@ async def _query_running_sessions(
     project: str | None = None,
     invocation_kind: str | None = None,
 ) -> list[dict[str, Any]]:
+    """Running only by default; with since, all statuses in the window."""
     query = (
         "SELECT sessions.*, "
         "(SELECT COUNT(*) FROM branches WHERE session_id = sessions.id) AS branch_count "
-        "FROM sessions WHERE status = 'running'"  # noqa: S608
+        "FROM sessions WHERE 1=1"  # noqa: S608
     )
     params: list[Any] = []
     if since is not None:
         query += " AND updated_at >= ?"
         params.append(since)
+    else:
+        query += " AND status = 'running'"
     if project:
         query += " AND project = ?"
         params.append(project)
@@ -154,11 +157,14 @@ async def _query_running_invocations(
     *,
     since: float | None = None,
 ) -> list[dict[str, Any]]:
-    query = "SELECT * FROM invocations WHERE status = 'running'"
+    """Running only by default; with since, all statuses in the window."""
+    query = "SELECT * FROM invocations WHERE 1=1"  # noqa: S608
     params: list[Any] = []
     if since is not None:
         query += " AND updated_at >= ?"
         params.append(since)
+    else:
+        query += " AND status = 'running'"
     query += " ORDER BY started_at DESC"
     rows = await db.fetch_all(query, params)
     return rows
@@ -169,11 +175,14 @@ async def _query_active_shows(
     *,
     since: float | None = None,
 ) -> list[dict[str, Any]]:
-    query = "SELECT * FROM shows WHERE status = 'active'"
+    """Active only by default; with since, all statuses in the window."""
+    query = "SELECT * FROM shows WHERE 1=1"  # noqa: S608
     params: list[Any] = []
     if since is not None:
         query += " AND updated_at >= ?"
         params.append(since)
+    else:
+        query += " AND status = 'active'"
     query += " ORDER BY updated_at DESC"
     rows = await db.fetch_all(query, params)
     return rows
@@ -184,17 +193,21 @@ async def _query_running_plays(
     *,
     since: float | None = None,
 ) -> list[dict[str, Any]]:
-    running_statuses = ("running", "running_complete", "gated", "redoing", "prepared")
-    placeholders = ",".join("?" * len(running_statuses))
+    """In-flight statuses only by default; with since, all statuses in the window."""
     query = (
-        f"SELECT plays.*, "  # noqa: S608
-        f"(SELECT COUNT(*) FROM branches WHERE session_id = plays.session_id) AS branch_count "
-        f"FROM plays WHERE status IN ({placeholders})"
+        "SELECT plays.*, "  # noqa: S608
+        "(SELECT COUNT(*) FROM branches WHERE session_id = plays.session_id) AS branch_count "
+        "FROM plays WHERE 1=1"
     )
-    params: list[Any] = list(running_statuses)
+    params: list[Any] = []
     if since is not None:
         query += " AND updated_at >= ?"
         params.append(since)
+    else:
+        running_statuses = ("running", "running_complete", "gated", "redoing", "prepared")
+        placeholders = ",".join("?" * len(running_statuses))
+        query += f" AND status IN ({placeholders})"
+        params.extend(running_statuses)
     query += " ORDER BY updated_at DESC"
     rows = await db.fetch_all(query, params)
     return rows
@@ -597,6 +610,7 @@ async def _gather_table_rows(
     """Collect entity rows across all tables and convert to table-row dicts."""
     rows: list[dict[str, Any]] = []
 
+    sessions: list[dict[str, Any]] = []
     if entity_type in (None, "session", "agent", "play_session", "play"):
         # For specific type filters, restrict to sessions whose invocation_kind matches.
         # "session" (no filter) and None (all) show every running session.
@@ -604,7 +618,19 @@ async def _gather_table_rows(
         sessions = await _query_running_sessions(
             db, since=since, project=project, invocation_kind=inv_kind
         )
-        rows.extend(_session_to_row(s) for s in sessions)
+
+    plays: list[dict[str, Any]] = []
+    if entity_type in (None, "play"):
+        plays = await _query_running_plays(db, since=since)
+        # A play row is the canonical rendering of its backing session, so
+        # drop that session only when the play row itself is being shown —
+        # dedup against what this view actually fetched, never in SQL, so a
+        # session view or a play row outside the window still renders the
+        # session once.
+        play_session_ids = {p["session_id"] for p in plays if p.get("session_id")}
+        sessions = [s for s in sessions if s["id"] not in play_session_ids]
+
+    rows.extend(_session_to_row(s) for s in sessions)
 
     if entity_type in (None, "invocation"):
         invocations = await _query_running_invocations(db, since=since)
@@ -614,9 +640,7 @@ async def _gather_table_rows(
         shows = await _query_active_shows(db, since=since)
         rows.extend(_show_to_row(s) for s in shows)
 
-    if entity_type in (None, "play"):
-        plays = await _query_running_plays(db, since=since)
-        rows.extend(_play_to_row(p) for p in plays)
+    rows.extend(_play_to_row(p) for p in plays)
 
     return rows
 
@@ -681,11 +705,16 @@ def _watch_loop(
     refresh_seconds: int,
     entity_id: str | None,
     *,
-    since: float | None,
+    since_window: str | None,
     entity_type: str | None,
     project: str | None,
 ) -> int:
-    """Repeatedly clear screen and reprint; exit cleanly on SIGINT/SIGTERM."""
+    """Repeatedly clear screen and reprint; exit cleanly on SIGINT/SIGTERM.
+
+    The since cutoff is re-derived from the window string every tick so the
+    window slides with the clock; a cutoff frozen at launch would accumulate
+    terminal rows for the life of the watch.
+    """
     from lionagi.ln.concurrency import run_async
 
     interrupted = False
@@ -698,6 +727,7 @@ def _watch_loop(
     signal.signal(signal.SIGTERM, _handle_signal)
 
     while not interrupted:
+        since = _since_timestamp(since_window) if since_window else None
         if entity_id:
             output = run_async(_run_detail(entity_id))
         else:
@@ -1373,7 +1403,7 @@ def run_monitor(args: argparse.Namespace) -> int:
         return _watch_loop(
             args.refresh,
             entity_id,
-            since=since,
+            since_window=args.since or None,
             entity_type=entity_type,
             project=project,
         )
