@@ -818,6 +818,10 @@ def _watch_loop(
 
 _TERMINAL_SCHEDULE_RUN_STATUSES = frozenset({"completed", "failed", "cancelled", "skipped"})
 _CHAIN_GRACE_TICKS = 2
+# Mirrors the scheduler engine's own chain-depth cap (lionagi/studio/scheduler/engine.py
+# _MAX_CHAIN_DEPTH) -- the engine never fires a chain child at or past this depth, so a
+# grace window here would just burn ticks waiting on a child that is never coming.
+_MAX_CHAIN_DEPTH = 10
 
 
 def _split_watched_ids(raw: list[str]) -> list[str]:
@@ -1033,8 +1037,24 @@ async def _advance_chains(
         roots = root_of.get(row["id"]) or {row["id"]}
         for root in roots:
             chain_tail_exit[root] = row.get("exit_code")
-        if chain and await _schedule_declares_chain_action(
-            db, row["schedule_id"], row.get("exit_code"), cache=schedule_cache
+        # The engine only ever fires a chain child when chain_depth is still
+        # under its cap AND the run actually completed its fire path: its
+        # chain block sits after the subprocess returns a real exit code, so
+        # a cancelled run (the CancelledError branch sets status="cancelled"),
+        # a skipped run (created terminal by create_skipped_run, never fired),
+        # and a run that failed before spawning (argv build error or internal
+        # exception; status="failed" with exit_code=None) all bypass it
+        # entirely. A run past any of these gates can never get a child, no
+        # matter what its schedule declares, and opening a grace window for
+        # it would just burn the full window before falling back.
+        if (
+            chain
+            and row.get("chain_depth", 0) < _MAX_CHAIN_DEPTH
+            and row.get("status") not in ("cancelled", "skipped")
+            and row.get("exit_code") is not None
+            and await _schedule_declares_chain_action(
+                db, row["schedule_id"], row.get("exit_code"), cache=schedule_cache
+            )
         ):
             awaiting_grace[row["id"]] = {"roots": set(roots), "ticks_left": _CHAIN_GRACE_TICKS}
         else:
