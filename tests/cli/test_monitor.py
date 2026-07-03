@@ -886,6 +886,21 @@ async def test_null_invocation_kind_session_not_hidden(temp_db_path: Path) -> No
     assert sid[:16] in [r["id"] for r in rows]
 
 
+@pytest.mark.asyncio
+async def test_null_invocation_kind_unbacked_session_renders_in_all_view(
+    temp_db_path: Path,
+) -> None:
+    """A session with no invocation_kind and no plays row renders in the
+    all-entities view — dedup only drops sessions whose play row is shown."""
+    async with StateDB() as db:
+        sid = await _make_session(db, invocation_kind=None, status="completed")
+        since = time.time() - 3600
+
+        rows = await _gather_table_rows(db, since=since, entity_type=None, project=None)
+
+    assert [r["id"] for r in rows].count(sid[:16]) == 1
+
+
 def test_watch_loop_recomputes_since_every_tick(monkeypatch: pytest.MonkeyPatch) -> None:
     """The watch loop re-derives the cutoff from the window string each tick
     (a sliding window), so terminal rows age out instead of accumulating."""
