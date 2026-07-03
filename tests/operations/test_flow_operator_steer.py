@@ -226,5 +226,124 @@ async def test_operator_steer_consume_once_across_real_flow_ops():
     assert "[OPERATOR STEER]" not in (calls[1].last_user_message or "")
 
 
+# ---------------------------------------------------------------------------
+# Regression (issue 1681): a steer landing after prepare, before invoke
+# ---------------------------------------------------------------------------
+
+
+def test_steer_appended_after_prepare_is_caught_by_invoke_time_recheck():
+    """Reproduces the race: op2's prepare runs while the queue is still
+    empty (nothing to render), then a steer lands in the shared context
+    (simulating a control-plane poller landing mid-run). Without an
+    invoke-time recheck this steer would be silently dropped for the rest
+    of the flow; the recheck must catch it right before the provider call."""
+    session = Session()
+    graph = Graph()
+    op1 = Operation(operation="operate", parameters={"instruction": "op1 task"})
+    op2 = Operation(operation="operate", parameters={"instruction": "op2 task"})
+    graph.add_node(op1)
+    graph.add_node(op2)
+    graph.add_edge(Edge(head=op1.id, tail=op2.id))
+
+    executor = DependencyAwareExecutor(session=session, graph=graph)
+
+    executor._prepare_operation(op1)
+    assert "rendered_into_op" not in op1.metadata
+
+    # op2 is prepared while the queue is still empty — the current design's
+    # single prepare-time render sees nothing.
+    executor._prepare_operation(op2)
+    assert op2.parameters["instruction"] == "op2 task"
+    assert "rendered_into_op" not in op2.metadata
+
+    # A steer lands after op2's prepare already ran, mirroring the control
+    # poller appending mid-run (ADR-0085 part 1) after op2's slot passed.
+    executor.context.content["operator_messages"] = [{"ts": 1.0, "text": "late steer"}]
+
+    # The invoke-time recheck (called by _execute_operation immediately
+    # before `await operation.invoke()`) must still catch it.
+    executor._render_pending_operator_steers(op2)
+
+    assert "[OPERATOR STEER]" in op2.parameters["instruction"]
+    assert "late steer" in op2.parameters["instruction"]
+    assert op2.metadata["rendered_into_op"] == str(op2.id)
+
+    # Consume-once: a third op prepared afterwards must not re-render it.
+    op3 = Operation(operation="operate", parameters={"instruction": "op3 task"})
+    graph.add_node(op3)
+    graph.add_edge(Edge(head=op2.id, tail=op3.id))
+    executor._prepare_operation(op3)
+    executor._render_pending_operator_steers(op3)
+    assert op3.parameters["instruction"] == "op3 task"
+    assert "rendered_into_op" not in op3.metadata
+
+
+def test_no_pending_steer_leaves_recheck_a_noop():
+    session = Session()
+    graph = Graph()
+    op = Operation(operation="operate", parameters={"instruction": "do the task"})
+    graph.add_node(op)
+
+    executor = DependencyAwareExecutor(session=session, graph=graph)
+    executor._prepare_operation(op)
+    executor._render_pending_operator_steers(op)
+
+    assert op.parameters["instruction"] == "do the task"
+    assert "rendered_into_op" not in op.metadata
+
+
+@pytest.mark.asyncio
+async def test_operator_steer_injected_at_own_started_callback_still_renders():
+    """Acceptance: inject the steer from op2's own ``on_progress("started")``
+    callback — which fires right after op2's prepare and right before its
+    invoke — deterministically simulating the window a control-plane poller
+    can land in. The rendered block must still reach the provider payload."""
+    branch = TestBranch.from_text(["op1 done", "op2 done"], name="worker")
+    session = Session()
+    session.include_branches(branch)
+    session.default_branch = branch
+
+    graph = Graph()
+    op1 = create_operation("operate", parameters={"instruction": "op1 task"})
+    op2 = create_operation("operate", parameters={"instruction": "op2 task"})
+    op1.branch_id = branch.id
+    op2.branch_id = branch.id
+    graph.add_node(op1)
+    graph.add_node(op2)
+    graph.add_edge(Edge(head=op1.id, tail=op2.id))
+
+    executor_ref: dict = {}
+    injected = False
+
+    def on_progress(op_id, name, status, elapsed):
+        nonlocal injected
+        if injected or status != "started" or op_id != str(op2.id):
+            return
+        executor = executor_ref.get("executor")
+        if executor is not None:
+            existing = executor.context.content.get("operator_messages", [])
+            executor.context.content["operator_messages"] = [
+                *existing,
+                {"ts": 1.0, "text": "steer during op2 start"},
+            ]
+            injected = True
+
+    await session.flow(
+        graph,
+        on_progress=on_progress,
+        executor_ref=executor_ref,
+        parallel=False,
+    )
+
+    assert injected
+    assert op2.metadata.get("rendered_into_op") == str(op2.id)
+
+    calls = TestBranch.calls(branch)
+    assert len(calls) == 2
+    payload_text = json.dumps(calls[1].payload)
+    assert "[OPERATOR STEER]" in payload_text
+    assert "steer during op2 start" in payload_text
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])
