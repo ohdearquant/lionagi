@@ -567,7 +567,8 @@ class TestSessionEndEmission:
             _m._SHARED.pop(normalize_state_db_url(None), None)
 
     async def test_non_terminal_error_persists_usage_and_error(self, monkeypatch, tmp_path):
-        """A raw {"error": ...} dict bind must not silently drop usage data.
+        """A raw {"error": ...} dict bind must not silently drop usage data,
+        and must not clobber node_metadata the row already carries.
 
         Before the fix, the not-already-terminal branch assigned
         fields["node_metadata"] = {"error": error} as a bare dict.
@@ -576,6 +577,10 @@ class TestSessionEndEmission:
         whole statement — taking input_tokens/output_tokens/total_cost_usd/
         num_turns/status down with it — and HookBus.emit() swallows handler
         exceptions, so the failure was silent.
+
+        Even once pre-serialized, update_session() does a plain column SET,
+        not a merge, so the fix must read the row's existing node_metadata
+        and merge {"error": error} into it rather than overwrite wholesale.
         """
         from lionagi.hooks.builtins import persist_session_end
         from lionagi.hooks.bus import HookBus, HookPoint
@@ -586,6 +591,9 @@ class TestSessionEndEmission:
         try:
             sid, prog_id = "se-err-nonterm-1", "prog-se-5"
             await _seed_session(db, sid, prog_id, status="running")
+            await db.set_session_provenance(
+                sid, node_metadata={"identity": "marker-1", "kind": "cli"}
+            )
 
             bus = HookBus()
             bus.on(HookPoint.SESSION_END, persist_session_end)
@@ -606,7 +614,11 @@ class TestSessionEndEmission:
             assert row["output_tokens"] == 7
             assert row["total_cost_usd"] == 0.01
             assert row["num_turns"] == 3
-            assert row["node_metadata"] == {"error": "ValueError: boom"}
+            assert row["node_metadata"] == {
+                "identity": "marker-1",
+                "kind": "cli",
+                "error": "ValueError: boom",
+            }
         finally:
             await db.close()
             import lionagi.state.db as _m

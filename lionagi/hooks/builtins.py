@@ -116,7 +116,13 @@ async def persist_session_end(
         if error is not None:
             # update_session() binds this as a raw SQL param (no JSON
             # bindparam), so pre-serialize to avoid sqlite3.InterfaceError.
-            fields["node_metadata"] = json.dumps({"error": error})
+            # update_session() also does a plain column SET, not a merge, so
+            # start from whatever node_metadata the row already carries
+            # (e.g. identity markers) rather than clobbering it.
+            existing_metadata = row.get("node_metadata")
+            if not isinstance(existing_metadata, dict):
+                existing_metadata = {}
+            fields["node_metadata"] = json.dumps({**existing_metadata, "error": error})
     if input_tokens is not None:
         fields["input_tokens"] = input_tokens
     if output_tokens is not None:
