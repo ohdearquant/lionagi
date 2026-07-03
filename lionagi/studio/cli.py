@@ -478,9 +478,29 @@ def _launch_vite_dev(
 # --- `li schedule` — manage lionagi Studio schedules from the CLI ---
 
 
+_warned_api_suffix = False
+
+
 def _base_url() -> str:
     if url := os.environ.get("LIONAGI_STUDIO_URL"):
-        return url.rstrip("/")
+        url = url.rstrip("/")
+        # Endpoint paths below add /api themselves; tolerate a base URL that
+        # already carries it (an older documented workaround) so requests
+        # don't hit /api/api/... and 404. Warn (once) rather than strip
+        # silently: a reverse proxy whose public prefix genuinely ends in
+        # /api needs to see why its path was rewritten.
+        if url.endswith("/api"):
+            url = url.removesuffix("/api")
+            global _warned_api_suffix
+            if not _warned_api_suffix:
+                _warned_api_suffix = True
+                warn(
+                    f"LIONAGI_STUDIO_URL ends with /api; using {url} as the Studio "
+                    "root because endpoint paths add /api themselves. If your proxy "
+                    "prefix intentionally ends in /api, point LIONAGI_STUDIO_URL at "
+                    "the Studio root instead."
+                )
+        return url
     host = os.environ.get("LIONAGI_STUDIO_HOST", "127.0.0.1")
     port = os.environ.get("LIONAGI_STUDIO_PORT", "8765")
     return f"http://{host}:{port}"
