@@ -16,7 +16,7 @@ from pathlib import Path
 
 import pytest
 
-from lionagi.cli.orchestrate.flow import _apply_session_control
+from lionagi.cli.orchestrate.flow import _CONTROL_UNSTAMPED, _apply_session_control
 from lionagi.models.note import Note
 from lionagi.operations.node import Operation
 from lionagi.protocols.generic.pile import Pile
@@ -68,6 +68,19 @@ def _pending_operation() -> Operation:
     return Operation(operation="chat")
 
 
+class _FinalizeFailsDB:
+    """Delegates to a real StateDB but every finalize write raises."""
+
+    def __init__(self, db: StateDB):
+        self._db = db
+
+    def __getattr__(self, name):
+        return getattr(self._db, name)
+
+    async def finalize_session_control(self, *args, **kwargs):
+        raise RuntimeError("database is locked")
+
+
 # ── pause / resume: idempotent apply-then-stamp ─────────────────────────────
 
 
@@ -84,6 +97,24 @@ async def test_pause_applies_and_stamps(tmp_path: Path) -> None:
         finalized = await db.get_session_control(row["id"])
         assert finalized["applied_at"] is not None
         assert finalized["result"] == "applied"
+
+
+async def test_unstamped_row_returns_sentinel_and_stays_pending(tmp_path: Path) -> None:
+    """When no finalize write lands (transient DB failure), the sentinel tells
+    the poller to end the tick — otherwise a later control applied this tick
+    is overtaken by this row re-applying next tick (a resume undone by its
+    own stuck pause)."""
+    async with StateDB(tmp_path / "state.db") as db:
+        sid = await _make_session(db)
+        row = await _queue_control(db, sid, "pause")
+        executor = _FakeExecutor()
+
+        result = await _apply_session_control(_FinalizeFailsDB(db), executor, row)
+
+        assert result == _CONTROL_UNSTAMPED
+        assert executor.paused == 1, "the idempotent apply itself still runs"
+        pending = await db.list_pending_session_controls(sid)
+        assert [p["id"] for p in pending] == [row["id"]], "row must remain pending"
 
 
 async def test_resume_applies_and_stamps(tmp_path: Path) -> None:
@@ -279,7 +310,8 @@ async def test_exception_during_apply_is_caught_and_recorded(tmp_path: Path) -> 
 
 async def test_exception_during_finalize_does_not_raise(tmp_path: Path) -> None:
     """If even the finalize-on-error write fails, _apply_session_control must
-    still return a result string rather than propagating."""
+    return the unstamped sentinel (never propagate) so the poller ends the
+    tick with the row still pending."""
 
     class _BrokenDB:
         def __init__(self, real_db: StateDB):
@@ -298,5 +330,4 @@ async def test_exception_during_finalize_does_not_raise(tmp_path: Path) -> None:
 
         result = await _apply_session_control(_BrokenDB(db), executor, row)
 
-        assert result is not None
-        assert result.startswith("rejected:error:")
+        assert result == _CONTROL_UNSTAMPED

@@ -239,3 +239,26 @@ async def test_concurrent_session_control_inserts_no_rows_dropped(tmp_path: Path
         pending = await db.list_pending_session_controls(sid)
 
     assert len(pending) == n
+
+
+async def test_identical_created_at_apply_order_is_deterministic(tmp_path: Path) -> None:
+    """Two controls sharing one created_at float (rapid enqueues) must come
+    back in the same order on every read — an unstable tie would let a pause
+    and resume swap apply order between poll ticks."""
+    from sqlalchemy import text
+
+    db_path = tmp_path / "state.db"
+    async with StateDB(db_path) as db:
+        sid = await _make_session(db)
+        id_a = await db.insert_session_control(session_id=sid, verb="pause")
+        id_b = await db.insert_session_control(session_id=sid, verb="resume")
+        async with db._tx() as conn:
+            await conn.execute(
+                text("UPDATE session_controls SET created_at = :ts WHERE id IN (:a, :b)"),
+                {"ts": 1000.0, "a": id_a, "b": id_b},
+            )
+
+        first = [r["id"] for r in await db.list_pending_session_controls(sid)]
+        second = [r["id"] for r in await db.list_pending_session_controls(sid)]
+
+    assert first == second == sorted([id_a, id_b])

@@ -76,6 +76,11 @@ async def _persist_session_phase(env, phase: str) -> None:
 
 _CONTROL_POLL_INTERVAL = 2.0
 
+# Sentinel: the row's apply ran but no finalize write landed, so it is still
+# pending in the DB. The poller must stop the tick rather than let later
+# controls overtake it — the whole batch re-reads in order next tick.
+_CONTROL_UNSTAMPED = "unstamped"
+
 
 async def _apply_session_control(db, executor, row: dict) -> str | None:
     """Apply one session_controls row against *executor*; returns the finalize
@@ -142,9 +147,15 @@ async def _apply_session_control(db, executor, row: dict) -> str | None:
         return result
     except Exception as exc:  # noqa: BLE001 — the poller must never crash the run
         result = f"rejected:error:{exc}"[:500]
-        with contextlib.suppress(Exception):
-            await db.finalize_session_control(control_id, result=result)
         logger.warning("control %s (%s) failed to apply: %s", control_id, verb, exc)
+        try:
+            await db.finalize_session_control(control_id, result=result)
+        except Exception:  # noqa: BLE001
+            # The row is still pending: a later control applied this tick
+            # would be overtaken by this one re-applying next tick (e.g. a
+            # stuck pause re-pausing after its resume). Signal the poller to
+            # end the tick so ordering is preserved on the retry.
+            return _CONTROL_UNSTAMPED
         return result
 
 
@@ -694,6 +705,8 @@ async def _execute_dag(
                 continue
             for row in pending:
                 applied_result = await _apply_session_control(ctx["db"], executor, row)
+                if applied_result == _CONTROL_UNSTAMPED:
+                    break
                 if applied_result is not None:
                     _control_log.append(
                         {

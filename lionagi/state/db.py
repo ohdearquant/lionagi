@@ -3114,7 +3114,9 @@ class StateDB:
                             "SELECT id, session_id, verb, payload, created_at, applied_at, result "
                             "FROM session_controls "
                             "WHERE session_id = :sid AND applied_at IS NULL "
-                            "ORDER BY created_at"
+                            # id tiebreak: identical created_at floats (rapid
+                            # enqueues) must not flip apply order between ticks
+                            "ORDER BY created_at, id"
                         ),
                         {"sid": session_id},
                     )
