@@ -268,10 +268,19 @@ class SchedulerEngine:
             try:
                 await self._svc.update_schedule(schedule["id"], next_fire_at=next_at)
             except Exception:
+                # The reserve did not land, so storage still holds the
+                # past-due next_fire_at and the immediately-following
+                # _tick() will queue its own normal fire for it. Queuing a
+                # recovery fire on top of that would run the external
+                # action twice, so skip recovery entirely and let the
+                # normal tick own this cycle's single fire (or, if storage
+                # stays unavailable, a later missed-fire check retries).
                 _log.exception(
-                    "Failed to reserve next_fire_at ahead of missed-fire recovery for schedule %s",
+                    "Failed to reserve next_fire_at ahead of missed-fire recovery for schedule %s"
+                    "; skipping recovery this cycle",
                     schedule.get("id"),
                 )
+                return
         run_id = uuid.uuid4().hex[:12]
         _log.info(
             "Missed fire recovery for schedule %s (%s)",

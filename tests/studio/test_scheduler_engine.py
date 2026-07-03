@@ -884,6 +884,94 @@ async def test_startup_missed_fire_run_once_not_double_fired_by_immediate_tick(m
 
 
 @pytest.mark.asyncio
+async def test_startup_missed_fire_run_once_reserve_failure_skips_recovery(monkeypatch):
+    """Failure path of the synchronous reserve: if update_schedule raises
+    while reserving next_fire_at, storage still holds the past-due value
+    and the immediately-following _tick() will fire the schedule normally.
+    The recovery path must therefore NOT queue its own fire on a failed
+    reserve — otherwise the external action runs twice in one cycle. Net
+    result: exactly one fire total, and it is the normal scheduled one,
+    not a missed_recovery fire."""
+    pytest.importorskip("croniter", reason="studio extra not installed")
+    import lionagi.studio.config as studio_config
+    import lionagi.studio.scheduler.engine as engine_mod
+    from lionagi.studio.scheduler.engine import SchedulerEngine
+
+    monkeypatch.setattr(studio_config, "SCHEDULER_TZ", "America/New_York")
+
+    fixed_now = datetime(2026, 7, 2, 10, 0, 0, tzinfo=NY).timestamp()
+    monkeypatch.setattr(engine_mod.time, "time", lambda: fixed_now)
+
+    schedule = _minimal_schedule(
+        id="sched-run-once-reserve-fail",
+        cron_expr="0 0 * * *",
+        next_fire_at=fixed_now - 3600,
+        missed_fire_policy="run_once",
+    )
+    svc = _make_svc()
+    svc.list_schedules = AsyncMock(return_value=[schedule])
+
+    calls = {"n": 0}
+
+    async def _first_write_fails(sid, **fields):
+        # The reserve (first write) hits a transient storage failure; later
+        # writes (the normal fire's own advance) succeed and persist into
+        # the same dict list_schedules() keeps returning.
+        calls["n"] += 1
+        if calls["n"] == 1:
+            raise RuntimeError("storage briefly unavailable")
+        if sid == schedule["id"]:
+            schedule.update(fields)
+
+    svc.update_schedule = AsyncMock(side_effect=_first_write_fails)
+    engine = SchedulerEngine(svc=svc)
+
+    original_tracked_fire = engine._tracked_fire
+    tracked_calls: list[tuple] = []
+
+    def _spy_tracked_fire(*args, **kwargs):
+        tracked_calls.append((args, kwargs))
+        return original_tracked_fire(*args, **kwargs)
+
+    engine._tracked_fire = _spy_tracked_fire  # type: ignore[method-assign]
+
+    with (
+        patch(
+            "lionagi.studio.scheduler.subprocess.build_argv",
+            return_value=(["uv", "run", "li", "agent", "ping"], None),
+        ),
+        patch(
+            "lionagi.studio.scheduler.subprocess.spawn_and_wait",
+            new=AsyncMock(return_value=(0, "")),
+        ),
+        patch(
+            "lionagi.studio.services.lifecycle.run_periodic_reapers",
+            new=AsyncMock(return_value={}),
+        ),
+        patch(
+            "lionagi.studio.services.db_maintenance.checkpoint_state_db",
+            new=AsyncMock(return_value=None),
+        ),
+    ):
+        await engine._recompute_armed_cron_schedules()
+        await engine._check_missed_fires()
+        await engine._tick()
+        if engine._fire_tasks:
+            await asyncio.gather(*engine._fire_tasks)
+
+    assert len(tracked_calls) == 1, (
+        "Expected exactly one fire total when the reserve write fails: the "
+        "recovery must stand down and let the normal tick own the fire. Got "
+        f"{len(tracked_calls)} fires: "
+        f"{[c[1].get('trigger_context') for c in tracked_calls]}"
+    )
+    ctx = tracked_calls[0][1].get("trigger_context") or {}
+    assert not ctx.get("missed_recovery"), (
+        f"The single fire must be the normal scheduled one, not a recovery fire: {ctx}"
+    )
+
+
+@pytest.mark.asyncio
 async def test_startup_missed_fire_skip_records_no_recovery_and_advances(monkeypatch):
     """Same startup ordering, but missed_fire_policy="skip": no recovery
     fire is created, and next_fire_at still ends up in the future (advanced
