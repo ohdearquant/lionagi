@@ -128,6 +128,16 @@ class _FakeBuilder:
         return SimpleNamespace(nodes=list(self._nodes))
 
 
+class _FakeDB:
+    """Minimal live-persist db stub — records update_session calls."""
+
+    def __init__(self):
+        self.calls: list[tuple] = []
+
+    async def update_session(self, session_id, **kw):
+        self.calls.append((session_id, kw))
+
+
 class _FakeBranch:
     def __init__(self, name="worker"):
         self.id = uuid4()
@@ -350,6 +360,139 @@ async def test_execute_dag_tags_spawned_nodes(tmp_path):
     assert exec_result.n_spawned == 1
 
 
+@pytest.mark.asyncio
+async def test_execute_dag_spawned_node_registers_artifact_contract(tmp_path):
+    """A spawned node running under a role with artifact_defaults must be
+    attributed back to that role and get its own contract entry folded into
+    the live-persist context for post-run visibility — folded non-required,
+    since a spawned node is never told its artifact dir and so has no path to
+    satisfy a required entry (enforcing one would fail an otherwise-complete
+    run)."""
+    env = _make_env(tmp_path)
+    db = _FakeDB()
+    env._live_persist = {
+        "db": db,
+        "session_id": "sess-1",
+        "artifact_contract": None,
+        "identity_markers": {},
+    }
+    assignments = [TaskAssignment(task="x", assignee="researcher")]
+    plan_result = _PlanResult(
+        assignments=assignments,
+        agent_ids=["researcher"],
+        dep_indices=[[]],
+        pool=[],
+        budget_preambles={},
+    )
+    dag_state = _DagState(
+        node_ids=["node-0"],
+        known_nodes={"node-0"},
+        deps_by_node={"node-0": []},
+        reactive=True,
+        spawn_roles=None,
+        role_base={},
+        worker_models=["codex/gpt-5.5"],
+        role_artifact_defaults={
+            "implementer": {"expected": [{"id": "report", "path": "report.md", "required": True}]}
+        },
+    )
+
+    # The spawned node's graph entry carries the assignee role_node_builder
+    # stamped on it (patterns.py) — that's how a post-run surface recovers
+    # which role a reactively-injected node ran under.
+    spawned_node = SimpleNamespace(metadata={"assignee": "implementer"}, branch_id=None)
+    env.builder.get_graph = lambda: SimpleNamespace(
+        nodes=[], internal_nodes={"node-spawn-1": spawned_node}
+    )
+
+    from lionagi.engines import PlanningEngine
+
+    fake_engine_run = MagicMock()
+    fake_engine_run.run_dag = MagicMock(
+        return_value=_asyncio_coro(
+            {
+                "operation_results": {
+                    "node-0": "planned result",
+                    "node-spawn-1": "spawned result",
+                },
+                "spawned_operations": 1,
+            }
+        )
+    )
+
+    with patch.object(PlanningEngine, "new_run", return_value=fake_engine_run):
+        exec_result = await _execute_dag(env, plan_result, dag_state, max_concurrent=1, max_ops=0)
+
+    spawned = next(r for r in exec_result.agent_results if r.get("spawned"))
+    assert spawned["assignee"] == "implementer"
+
+    contract = env._live_persist["artifact_contract"]
+    assert contract is not None
+    ids = {e["id"] for e in contract["expected"]}
+    assert "spawn-1__report" in ids
+    paths = {e["path"] for e in contract["expected"]}
+    assert "spawn-1/report.md" in paths
+    # Folded non-required even though the role default declares required=True —
+    # a spawned node can't be held to an artifact it was never told to write.
+    spawned_entry = next(e for e in contract["expected"] if e["id"] == "spawn-1__report")
+    assert spawned_entry["required"] is False
+
+
+@pytest.mark.asyncio
+async def test_execute_dag_spawned_node_without_role_defaults_no_contract(tmp_path):
+    """A spawned node whose role declares no artifact_defaults must not
+    fabricate a contract entry — only fires for a real per-role declaration."""
+    env = _make_env(tmp_path)
+    env._live_persist = {
+        "db": _FakeDB(),
+        "session_id": "sess-1",
+        "artifact_contract": None,
+        "identity_markers": {},
+    }
+    assignments = [TaskAssignment(task="x", assignee="researcher")]
+    plan_result = _PlanResult(
+        assignments=assignments,
+        agent_ids=["researcher"],
+        dep_indices=[[]],
+        pool=[],
+        budget_preambles={},
+    )
+    dag_state = _DagState(
+        node_ids=["node-0"],
+        known_nodes={"node-0"},
+        deps_by_node={"node-0": []},
+        reactive=True,
+        spawn_roles=None,
+        role_base={},
+        worker_models=["codex/gpt-5.5"],
+        role_artifact_defaults={"implementer": None},
+    )
+    spawned_node = SimpleNamespace(metadata={"assignee": "implementer"}, branch_id=None)
+    env.builder.get_graph = lambda: SimpleNamespace(
+        nodes=[], internal_nodes={"node-spawn-1": spawned_node}
+    )
+
+    from lionagi.engines import PlanningEngine
+
+    fake_engine_run = MagicMock()
+    fake_engine_run.run_dag = MagicMock(
+        return_value=_asyncio_coro(
+            {
+                "operation_results": {
+                    "node-0": "planned result",
+                    "node-spawn-1": "spawned result",
+                },
+                "spawned_operations": 1,
+            }
+        )
+    )
+
+    with patch.object(PlanningEngine, "new_run", return_value=fake_engine_run):
+        await _execute_dag(env, plan_result, dag_state, max_concurrent=1, max_ops=0)
+
+    assert env._live_persist["artifact_contract"] is None
+
+
 # ── Tests for _synthesize ─────────────────────────────────────────────────────
 
 
@@ -409,7 +552,14 @@ async def test_synthesize_returns_dict_with_model_key(tmp_path):
         worker_models=["codex/gpt-5.5"],
     )
     exec_result = _ExecResult(
-        agent_results=[{"id": "researcher", "name": "researcher", "response": "findings"}],
+        agent_results=[
+            {
+                "id": "researcher",
+                "agent_id": "researcher",
+                "name": "researcher",
+                "response": "findings",
+            }
+        ],
         n_spawned=0,
         t_exec_elapsed=1.0,
     )
@@ -431,6 +581,64 @@ async def test_synthesize_returns_dict_with_model_key(tmp_path):
     assert "model" in result
     assert "response" in result
     assert "time_ms" in result
+
+
+@pytest.mark.asyncio
+async def test_synthesize_includes_spawned_artifact_dir(tmp_path):
+    """ARTIFACT CHAIN in the synthesis instruction must include a reactively
+    spawned node's artifact dir, not just the plan-time agent_ids."""
+    env = _make_env(tmp_path)
+    assignments = [TaskAssignment(task="x", assignee="researcher")]
+    plan_result = _PlanResult(
+        assignments=assignments,
+        agent_ids=["researcher"],
+        dep_indices=[[]],
+        pool=[],
+        budget_preambles={},
+    )
+    dag_state = _DagState(
+        node_ids=["node-0"],
+        known_nodes={"node-0"},
+        deps_by_node={"node-0": []},
+        reactive=True,
+        spawn_roles=None,
+        role_base={},
+        worker_models=["codex/gpt-5.5"],
+    )
+    exec_result = _ExecResult(
+        agent_results=[
+            {
+                "id": "researcher",
+                "agent_id": "researcher",
+                "name": "researcher",
+                "response": "findings",
+            },
+            {
+                "id": "spawn-1",
+                "agent_id": "spawn-1",
+                "name": "implementer",
+                "response": "spawned output",
+            },
+        ],
+        n_spawned=1,
+        t_exec_elapsed=1.0,
+    )
+
+    env.session.flow = _make_flow_returning("node-1", "synthesized content")
+
+    await _synthesize(
+        env,
+        "task",
+        plan_result,
+        dag_state,
+        exec_result,
+        synthesis_model=None,
+        model_spec="codex/gpt-5.5",
+    )
+
+    instruction = env.builder._ops[-1]["instruction"]
+    assert str(tmp_path / "spawn-1") in instruction
+    assert str(tmp_path / "researcher") in instruction
 
 
 # ── Tests for _finalize_flow ──────────────────────────────────────────────────
@@ -598,6 +806,85 @@ def test_finalize_flow_writes_synthesis_artifact(tmp_path):
 
     assert env.run.synthesis_path.exists()
     assert env.run.synthesis_path.read_text() == "the synthesized answer"
+
+
+def test_finalize_flow_agents_includes_spawned_node(tmp_path):
+    """extras['agents'] must include an entry for a reactively spawned node —
+    it otherwise resolves to nothing in extras['operations'], which is built
+    from agent_results and already carries the spawned entry."""
+    env = _make_env(tmp_path)
+    assignments = [TaskAssignment(task="x", assignee="researcher")]
+    plan_result = _PlanResult(
+        assignments=assignments,
+        agent_ids=["researcher"],
+        dep_indices=[[]],
+        pool=[],
+        budget_preambles={},
+    )
+    dag_state = _DagState(
+        node_ids=["node-0"],
+        known_nodes={"node-0"},
+        deps_by_node={"node-0": []},
+        reactive=True,
+        spawn_roles=None,
+        role_base={},
+        worker_models=["codex/gpt-5.5"],
+    )
+    exec_result = _ExecResult(
+        agent_results=[
+            {
+                "id": "researcher",
+                "agent_id": "researcher",
+                "name": "researcher",
+                "model": "codex/gpt-5.5",
+                "depends_on": [],
+                "spawned": False,
+                "response": "data",
+                "time_ms": 100,
+            },
+            {
+                "id": "spawn-1",
+                "agent_id": "spawn-1",
+                "name": "implementer",
+                "model": "codex/gpt-5.5",
+                "assignee": "implementer",
+                "depends_on": [],
+                "spawned": True,
+                "response": "more data",
+                "time_ms": 100,
+            },
+        ],
+        n_spawned=1,
+        t_exec_elapsed=1.0,
+    )
+
+    captured: dict = {}
+
+    def _fake_finalize(env, *, kind, prompt, extras=None):
+        captured["extras"] = extras
+
+    with patch("lionagi.cli.orchestrate.flow.finalize_orchestration", side_effect=_fake_finalize):
+        _finalize_flow(
+            env,
+            "task",
+            plan_result,
+            dag_state,
+            exec_result,
+            None,
+            output_format="text",
+            show_graph=False,
+        )
+
+    agent_ids_seen = {a["id"] for a in captured["extras"]["agents"]}
+    op_ids_seen = {o["id"] for o in captured["extras"]["operations"]}
+    assert "spawn-1" in agent_ids_seen
+    # Every operation id must resolve to an agent entry (the bug this guards
+    # against: a spawned op appearing in "operations" with nothing matching
+    # in "agents").
+    assert op_ids_seen <= agent_ids_seen
+    spawned_agent = next(a for a in captured["extras"]["agents"] if a["id"] == "spawn-1")
+    assert spawned_agent["name"] == "implementer"
+    assert spawned_agent["spawned"] is True
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────

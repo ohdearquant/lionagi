@@ -87,6 +87,11 @@ def role_node_builder(roles: dict[str, Branch]):
                     f"recognized role (known: {sorted(roles)})"
                 )
             node.branch_id = target.id
+            # Stamped so post-run callers (artifact contracts, DAG metadata) can
+            # attribute a reactively spawned node back to the role that ran it —
+            # the node otherwise carries no trace of its assignee once its
+            # branch_id is overwritten by the executor's per-spawn branch clone.
+            node.metadata["assignee"] = req.assignee
         return node
 
     return build
