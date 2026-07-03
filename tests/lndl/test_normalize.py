@@ -1,14 +1,9 @@
 # Copyright (c) 2025 - 2026, HaiyangLi <quantocean.li at gmail dot com>
 # SPDX-License-Identifier: Apache-2.0
 
-"""Phase 1 tests for lionagi.lndl.fuzzy (normalize_lndl_text only).
+"""Tests for lionagi.lndl.normalize.normalize_lndl_text."""
 
-# TODO(lndl-phase-2): add TestParseLndlFuzzy once Phase 2 lands.
-"""
-
-import pytest
-
-from lionagi.lndl.fuzzy import normalize_lndl_text, parse_lndl_fuzzy
+from lionagi.lndl.normalize import normalize_lndl_text
 
 
 class TestNormalizeLndlText:
@@ -45,15 +40,15 @@ class TestNormalizeLndlText:
         result = normalize_lndl_text("")
         assert result == ""
 
+    def test_fenced_block_preferred(self):
+        """When the model wraps LNDL in ```lndl fences, prefer the fenced content."""
+        text = "some preamble\n```lndl\n<lvar x>1</lvar>\nOUT{x: [x]}\n```\ntrailer"
+        normalized = normalize_lndl_text(text)
+        assert "<lvar x>1</lvar>" in normalized
+        assert "preamble" not in normalized
 
-class TestParseLndlFuzzyPhase2Guard:
-    """parse_lndl_fuzzy must raise NotImplementedError in Phase 1."""
-
-    def test_raises_not_implemented(self):
-        with pytest.raises(NotImplementedError, match="Phase 2"):
-            parse_lndl_fuzzy("some text", object())
-
-    def test_error_references_issue(self):
-        with pytest.raises(NotImplementedError) as exc_info:
-            parse_lndl_fuzzy("x", None)
-        assert "966" in str(exc_info.value)
+    def test_missing_gt_repaired(self):
+        """<lact alias fn(args)</lact> (missing closing >) gets repaired."""
+        text = "<lact myalias multiply(x=1, y=2)</lact>\nOUT{myalias}"
+        result = normalize_lndl_text(text)
+        assert "<lact myalias>multiply(x=1, y=2)</lact>" in result

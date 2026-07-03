@@ -12,7 +12,7 @@ from lionagi.lndl.prompt import get_lndl_system_prompt
 # SHA-256 of the prompt as of the tests being written. Any accidental edit to
 # LNDL_SYSTEM_PROMPT (whitespace, typo, truncation, marker removal) will flip
 # this hash and make test_prompt_snapshot fail immediately.
-_EXPECTED_SHA256 = "3a2020594e14e21de470e90403c3fe63ec4352f74dcb44ad82b7eb082cd27e0a"
+_EXPECTED_SHA256 = "556dd46e601ec490737f735e2a5199a31d04c7cc75d8d85e4d0b4eaa9b610d44"
 
 
 class TestGetLndlSystemPrompt:
