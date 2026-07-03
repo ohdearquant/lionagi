@@ -14,6 +14,7 @@ Payload contract (schema_version=1):
   NodeFailed      — op_id, name, elapsed, parent_id, depends_on
   NodeAwaitingApproval — op_id, name, reason
   NodeEscalated   — op_id, name, reason, route, escalation_request
+  NodePaused      — op_id, name
   GateDenied      — data: any
   MessageAdded    — data: RoledMessage (stored as message_ref in payload)
 
@@ -43,6 +44,7 @@ __all__ = (
     "NodeQueued",
     "NodeAwaitingApproval",
     "NodeEscalated",
+    "NodePaused",
     "GateDenied",
     "MessageAdded",
     "NodeLifecycleState",
@@ -170,11 +172,18 @@ class NodeEscalated(Signal):
     escalation_request: Any = None
 
 
+class NodePaused(Signal):
+    """A DAG operation node is blocked at an operation boundary, awaiting resume()."""
+
+    op_id: str = ""
+    name: str = ""
+
+
 # -- Lifecycle projection (ADR-0083) ------------------------------------------
 
-#: The six canonical per-node lifecycle states.
+#: The seven canonical per-node lifecycle states.
 NodeLifecycleState = Literal[
-    "queued", "running", "awaiting_approval", "succeeded", "failed", "escalated"
+    "queued", "running", "awaiting_approval", "paused", "succeeded", "failed", "escalated"
 ]
 
 _TERMINAL: frozenset[str] = frozenset({"succeeded", "failed", "escalated"})
@@ -188,6 +197,8 @@ def _signal_to_state(sig: Any) -> NodeLifecycleState | None:
         return "running"
     if isinstance(sig, NodeAwaitingApproval):
         return "awaiting_approval"
+    if isinstance(sig, NodePaused):
+        return "paused"
     if isinstance(sig, NodeCompleted | RunEnd):
         return "succeeded"
     if isinstance(sig, NodeFailed | RunFailed):

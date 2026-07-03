@@ -33,6 +33,7 @@
       case "failed": return "failed";
       case "queued": return "queued";
       case "awaiting_approval": return "awaiting_approval";
+      case "paused": return "paused";
       case "escalated": return "escalated";
       default: return "pending";
     }

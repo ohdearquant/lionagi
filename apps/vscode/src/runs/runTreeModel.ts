@@ -98,6 +98,9 @@ export function applySignalRow(state: RunTreeState, row: SignalRow): void {
     case "NodeAwaitingApproval":
       newState = "awaiting_approval";
       break;
+    case "NodePaused":
+      newState = "paused";
+      break;
     case "NodeCompleted":
       newState = "succeeded";
       break;

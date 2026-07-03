@@ -94,6 +94,7 @@ export type NodeLifecycleState =
   | "queued"
   | "running"
   | "awaiting_approval"
+  | "paused"
   | "succeeded"
   | "failed"
   | "escalated";

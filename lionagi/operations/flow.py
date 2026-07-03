@@ -85,6 +85,7 @@ class DependencyAwareExecutor:
         self.operation_branches = {}
         self.skipped_operations = set()
         self._op_start_times = {}
+        self._pause_event: ConcurrencyEvent | None = None
         for node in graph.internal_nodes.values():
             if isinstance(node, Operation):
                 self.completion_events[node.id] = ConcurrencyEvent()
@@ -179,6 +180,32 @@ class DependencyAwareExecutor:
         if self.verbose:
             logger.debug("Pre-allocated %d branches", len(operations_needing_branches))
 
+    def pause(self) -> None:
+        """Install a pause gate at the next operation boundary; idempotent."""
+        if self._pause_event is None:
+            self._pause_event = ConcurrencyEvent()
+
+    def resume(self) -> None:
+        """Release the pause gate; idempotent. A later pause() installs a fresh event."""
+        if self._pause_event is not None:
+            self._pause_event.set()
+            self._pause_event = None
+
+    def _emit_paused(self, operation: Operation) -> None:
+        """Fire-and-forget NodePaused onto the session bus."""
+        try:
+            from lionagi.session.signal import NodePaused  # noqa: PLC0415
+
+            op_id = str(operation.id)
+            name = operation.metadata.get("reference_id", op_id[:8])
+            sig = NodePaused(op_id=op_id, name=name)
+            loop = asyncio.get_running_loop()
+            loop.create_task(self.session.emit(sig))
+        except RuntimeError:
+            pass  # no running loop — tests / sync contexts
+        except Exception:  # noqa: BLE001, S110
+            pass  # best-effort; never break the pause path
+
     async def _execute_operation(self, operation: Operation, limiter: CapacityLimiter):
         if operation.execution.status in Event._TERMINAL_STATUSES:
             if self.verbose:
@@ -215,6 +242,15 @@ class DependencyAwareExecutor:
                 return
 
             await self._wait_for_dependencies(operation)
+
+            # Soft pause at the operation boundary: ops already past this point
+            # (inside the limiter) run to completion; nothing new starts while
+            # a gate is installed. Each loop iteration binds a distinct gate
+            # instance, so a resume followed by a fresh pause re-emits and
+            # re-waits correctly.
+            while (gate := self._pause_event) is not None:
+                self._emit_paused(operation)
+                await gate.wait()
 
             async with limiter:
                 self._prepare_operation(operation)

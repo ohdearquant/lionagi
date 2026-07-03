@@ -217,6 +217,11 @@ ul.tree-list ul.tree-list {
   color: var(--vscode-charts-orange, var(--vscode-charts-yellow));
 }
 
+.node-state--paused {
+  background: color-mix(in srgb, var(--vscode-charts-blue, var(--vscode-charts-yellow)) 20%, transparent);
+  color: var(--vscode-charts-blue, var(--vscode-charts-yellow));
+}
+
 .node-state--escalated {
   background: color-mix(in srgb, var(--vscode-charts-purple, var(--vscode-charts-red)) 20%, transparent);
   color: var(--vscode-charts-purple, var(--vscode-charts-red));
