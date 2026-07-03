@@ -110,13 +110,17 @@ class TestAgentSpecLeanCoding:
         spec = AgentSpec.lean_coding(task_class="edit")
         assert spec.lion_system is False
 
-    def test_system_message_no_lion_preamble(self):
+    async def test_lean_coding_no_lion_preamble_at_runtime(self):
+        # build_system_message() never includes the LION preamble regardless
+        # of lion_system; the preamble is prepended by create_agent(). Drive
+        # the real factory path so a regression there is actually caught.
         from lionagi.session.prompts import LION_SYSTEM_MESSAGE
 
         spec = AgentSpec.lean_coding(task_class="edit")
-        msg = spec.build_system_message()
-        lion_marker = "LION_SYSTEM_MESSAGE"
-        assert lion_marker not in msg
+        branch = await create_agent(spec, load_settings=False)
+        sys_msg = branch.msgs.system
+        assert sys_msg is not None
+        assert LION_SYSTEM_MESSAGE.strip() not in sys_msg.rendered
 
     def test_edit_tools(self):
         spec = AgentSpec.lean_coding(task_class="edit")
