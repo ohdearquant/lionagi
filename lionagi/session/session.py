@@ -312,6 +312,7 @@ class Session(Node, Relational):
         spawn_type: type | None = None,
         node_builder: Any = None,
         max_spawn: int = 50,
+        executor_ref: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         """Execute a graph-based DAG workflow, optionally reactive (self-expanding)."""
         from lionagi.operations.flow import flow
@@ -334,6 +335,7 @@ class Session(Node, Relational):
             spawn_type=spawn_type,
             node_builder=node_builder,
             max_spawn=max_spawn,
+            executor_ref=executor_ref,
         )
 
     async def flow_stream(

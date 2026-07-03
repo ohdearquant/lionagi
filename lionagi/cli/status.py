@@ -15,15 +15,19 @@ here since other lambdas/tools parse it):
   current_phase, progress_completed, progress_total, model, provider,
   project, last_activity_at, session_id, branch_id, invocation_id, label,
   degraded, degraded_reason,
-  status_reason_code, status_reason_summary, status_evidence_refs
+  status_reason_code, status_reason_summary, status_evidence_refs,
+  pending_controls
 
 Exit codes: 0 terminal-success, 1 terminal-failure, 3 still running/active,
 2 lookup failed (unknown id, or state.db unreachable) — argparse itself
 owns exit code 2 for usage errors, so this reuses that convention for any
 other "could not produce a status" outcome.
 
-`session_controls` (ADR-0085 part 1) does not exist yet, so no pending-
-controls column is rendered here — that lands with a later slice.
+`pending_controls` lists unapplied session_controls rows (id, verb,
+created_at) for the resolved backing session, oldest first — queued via
+`li o ctl pause|resume|msg` and consumed by the control poller running
+alongside a live flow's heartbeat loop (ADR-0085 part 1). Always `[]` when
+there is no backing session or nothing queued.
 """
 
 from __future__ import annotations
@@ -297,10 +301,15 @@ async def _build_view(
             progress_completed, progress_total = prog
 
     branch_id: str | None = None
+    pending_controls: list[dict[str, Any]] = []
     if primary_session is not None:
         branches = await db.list_branches(primary_session["id"])
         if branches:
             branch_id = max(branches, key=lambda b: b.get("created_at") or 0).get("id")
+        pending_controls = [
+            {"id": c["id"], "verb": c["verb"], "created_at": c["created_at"]}
+            for c in await db.list_pending_session_controls(primary_session["id"])
+        ]
 
     status = row.get("status") or ""
     terminal, exit_class, exit_code = _classify(entity_type, status)
@@ -354,6 +363,7 @@ async def _build_view(
         "status_reason_code": row.get("status_reason_code"),
         "status_reason_summary": row.get("status_reason_summary"),
         "status_evidence_refs": row.get("status_evidence_refs"),
+        "pending_controls": pending_controls,
     }
 
 
@@ -390,6 +400,12 @@ def _render_human(view: dict[str, Any]) -> str:
         lines.append(_dim(f'  resume:      li agent -r {view["branch_id"]} "..."'))
     if view["invocation_id"] and view["invocation_id"] != view["id"]:
         lines.append(f"  invocation:  {view['invocation_id']}")
+
+    if view["pending_controls"]:
+        lines.append("")
+        lines.append(_dim("  -- pending controls --"))
+        for ctl in view["pending_controls"]:
+            lines.append(f"    {ctl['verb']:<8} {ctl['id']}  queued {_fmt_ts(ctl['created_at'])}")
 
     if view["degraded"]:
         lines.append("")

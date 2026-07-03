@@ -634,13 +634,15 @@ def add_orchestrate_subparser(
     add_common_cli_args(fl)
 
     # `li o ctl status <id>` — generic alias into the same status renderer as
-    # `li agent status` / `li play status` (ADR-0085 section 6). Only
-    # `status` is implemented today; pause/resume/msg/stop land with the
-    # session_controls transport (ADR-0085 part 1).
+    # `li agent status` / `li play status` (ADR-0085 section 6). `pause` /
+    # `resume` / `msg` queue session_controls rows consumed by the control
+    # poller running alongside a live flow's heartbeat loop (ADR-0085 part 1).
+    # `stop` is out of scope for this slice — it depends on the checkpoint
+    # writer, which lands separately.
     ctl = orch_sub.add_parser(
         "ctl",
-        help="Control-plane surfaces for a run (status; more verbs land later).",
-        description="Read-only and (later) control operations addressed by run id.",
+        help="Control-plane surfaces for a run (status, pause, resume, msg).",
+        description="Read-only and control operations addressed by run id.",
     )
     ctl_sub = ctl.add_subparsers(dest="ctl_command", required=True)
     ctl_status = ctl_sub.add_parser(
@@ -656,6 +658,35 @@ def add_orchestrate_subparser(
     ctl_status.add_argument(
         "--json", action="store_true", dest="as_json", help="Emit a stable JSON object."
     )
+
+    ctl_pause = ctl_sub.add_parser(
+        "pause",
+        help="Queue a pause for a running flow.",
+        description=(
+            "Queues a pause control row; the target flow's control poller applies "
+            "it at the next op boundary (idempotent — safe to queue more than once)."
+        ),
+    )
+    ctl_pause.add_argument("id", help="Session, invocation, or play ID (or short prefix).")
+
+    ctl_resume = ctl_sub.add_parser(
+        "resume",
+        help="Queue a resume for a paused flow.",
+        description="Queues a resume control row, releasing a pending pause gate.",
+    )
+    ctl_resume.add_argument("id", help="Session, invocation, or play ID (or short prefix).")
+
+    ctl_msg = ctl_sub.add_parser(
+        "msg",
+        help="Queue an operator message for a running flow (context mode only).",
+        description=(
+            "Queues a message control row; the control poller deep-merges it into "
+            "the flow's workspace context, visible to any op not yet started. "
+            "Op-mode injection (--as-op) is not supported by this command yet."
+        ),
+    )
+    ctl_msg.add_argument("id", help="Session, invocation, or play ID (or short prefix).")
+    ctl_msg.add_argument("text", help="Message text to inject into the flow context.")
 
     return {"fanout": fo, "flow": fl, "ctl": ctl}
 
@@ -934,6 +965,18 @@ def run_orchestrate(args: argparse.Namespace) -> int:
             from lionagi.cli.status import run_ctl_status
 
             return run_ctl_status(args)
+        if args.ctl_command == "pause":
+            from ._control import run_ctl_pause
+
+            return run_ctl_pause(args)
+        if args.ctl_command == "resume":
+            from ._control import run_ctl_resume
+
+            return run_ctl_resume(args)
+        if args.ctl_command == "msg":
+            from ._control import run_ctl_msg
+
+            return run_ctl_msg(args)
         log_error(f"Unknown ctl command: {args.ctl_command}")
         return 1
 

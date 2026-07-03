@@ -159,6 +159,7 @@ ALL_TABLES = {
     "session_signals",
     "engine_runs",
     "engine_defs",
+    "session_controls",
 }
 
 
@@ -173,7 +174,7 @@ async def sqlite_meta_engine(tmp_path):
     await engine.dispose()
 
 
-async def test_metadata_creates_all_21_tables(sqlite_meta_engine):
+async def test_metadata_creates_all_22_tables(sqlite_meta_engine):
     """metadata.create_all() builds every expected table in SQLite."""
     async with sqlite_meta_engine.connect() as conn:
         tables = await conn.run_sync(lambda sync_conn: set(sa.inspect(sync_conn).get_table_names()))
@@ -264,7 +265,7 @@ async def test_metadata_check_constraint_parity_vs_schema_sql(tmp_path, sqlite_m
         meta_checks = _checks(await conn.run_sync(_meta_rows))
 
     # Guard against the regex silently extracting nothing (would make equality trivial).
-    assert len(raw_checks) == 14, f"expected 14 enum CHECK columns, got {len(raw_checks)}"
+    assert len(raw_checks) == 15, f"expected 15 enum CHECK columns, got {len(raw_checks)}"
     drift = {
         k: {
             "schema_sql": sorted(raw_checks.get(k) or []),

@@ -421,6 +421,7 @@ async def test_json_stable_shape(temp_db_path: Path):
         "status_reason_code",
         "status_reason_summary",
         "status_evidence_refs",
+        "pending_controls",
     }
     assert set(view.keys()) == expected_keys
 
@@ -693,3 +694,106 @@ def test_cli_play_status_help_subprocess():
     )
     assert result.returncode == 0
     assert "audit-degraded" in result.stdout.lower()
+
+
+# ── pending_controls (ADR-0085 part 1: session_controls transport) ────────
+
+
+@pytest.mark.asyncio
+async def test_view_pending_controls_empty_by_default(temp_db_path: Path):
+    async with StateDB() as db:
+        sid = await _make_session(db)
+        row = await db.get_session(sid)
+        view = await _build_view(db, command="ctl", entity_type="session", row=row)
+    assert view["pending_controls"] == []
+
+
+@pytest.mark.asyncio
+async def test_view_pending_controls_lists_queued_rows(temp_db_path: Path):
+    async with StateDB() as db:
+        sid = await _make_session(db)
+        c1 = await db.insert_session_control(session_id=sid, verb="pause", created_at=1.0)
+        c2 = await db.insert_session_control(session_id=sid, verb="resume", created_at=2.0)
+        row = await db.get_session(sid)
+        view = await _build_view(db, command="ctl", entity_type="session", row=row)
+
+    assert [c["id"] for c in view["pending_controls"]] == [c1, c2]
+    assert [c["verb"] for c in view["pending_controls"]] == ["pause", "resume"]
+
+
+@pytest.mark.asyncio
+async def test_view_pending_controls_excludes_applied(temp_db_path: Path):
+    async with StateDB() as db:
+        sid = await _make_session(db)
+        c1 = await db.insert_session_control(session_id=sid, verb="pause")
+        await db.finalize_session_control(c1, result="applied")
+        row = await db.get_session(sid)
+        view = await _build_view(db, command="ctl", entity_type="session", row=row)
+
+    assert view["pending_controls"] == []
+
+
+@pytest.mark.asyncio
+async def test_view_pending_controls_empty_when_no_backing_session(
+    temp_db_path: Path, no_project: None
+):
+    """entity_type='play' with no session_id → primary_session None → []
+    rather than an error (no backing session to query controls against)."""
+    async with StateDB() as db:
+        show_id = await _make_show(db)
+        play_id = await _make_play(db, show_id, session_id=None)
+        row = await db.get_play(play_id)
+        view = await _build_view(db, command="ctl", entity_type="play", row=row)
+    assert view["pending_controls"] == []
+
+
+@pytest.mark.asyncio
+async def test_ctl_status_json_includes_pending_controls(temp_db_path: Path):
+    async with StateDB() as db:
+        sid = await _make_session(db)
+        await db.insert_session_control(session_id=sid, verb="pause")
+
+    output, exit_code = await _run_status(command="ctl", entity_id=sid, as_json=True)
+    view = json.loads(output)
+    assert len(view["pending_controls"]) == 1
+    assert view["pending_controls"][0]["verb"] == "pause"
+
+
+@pytest.mark.asyncio
+async def test_ctl_status_human_renders_pending_controls(temp_db_path: Path):
+    async with StateDB() as db:
+        sid = await _make_session(db)
+        await db.insert_session_control(session_id=sid, verb="pause")
+
+    output, exit_code = await _run_status(command="ctl", entity_id=sid, as_json=False)
+    assert "pending controls" in output
+    assert "pause" in output
+
+
+def test_cli_ctl_pause_help_subprocess():
+    result = subprocess.run(
+        [sys.executable, "-m", "lionagi.cli", "o", "ctl", "pause", "--help"],
+        capture_output=True,
+        text=True,
+    )
+    assert result.returncode == 0
+    assert "id" in result.stdout.lower()
+
+
+def test_cli_ctl_resume_help_subprocess():
+    result = subprocess.run(
+        [sys.executable, "-m", "lionagi.cli", "o", "ctl", "resume", "--help"],
+        capture_output=True,
+        text=True,
+    )
+    assert result.returncode == 0
+
+
+def test_cli_ctl_msg_help_subprocess():
+    result = subprocess.run(
+        [sys.executable, "-m", "lionagi.cli", "o", "ctl", "msg", "--help"],
+        capture_output=True,
+        text=True,
+    )
+    assert result.returncode == 0
+    assert "text" in result.stdout.lower()
