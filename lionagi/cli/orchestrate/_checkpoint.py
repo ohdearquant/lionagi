@@ -64,10 +64,51 @@ class CheckpointWriter:
             "config": self.config,
         }
 
-    async def record(self, agent_id: str, *, status: str, response: Any) -> None:
-        """Record one op's outcome and persist the whole checkpoint atomically."""
+    async def record(
+        self,
+        agent_id: str,
+        *,
+        status: str,
+        response: Any,
+        flow_context: dict[str, Any] | None = None,
+    ) -> None:
+        """Record one planned op's outcome and persist the whole checkpoint atomically.
+
+        flow_context, when given, replaces the writer's snapshot of the
+        executor's shared context workspace as of this completion — the
+        latest one wins, since it is a running accumulation, not per-op data.
+        """
         async with self._lock:
             self.ops[agent_id] = {"agent_id": agent_id, "status": status, "response": response}
+            if flow_context is not None:
+                self.flow_context = flow_context
+            await self._write_locked()
+
+    async def record_spawned(
+        self,
+        node_id: str,
+        *,
+        status: str,
+        response: Any,
+        flow_context: dict[str, Any] | None = None,
+    ) -> None:
+        """Record one reactively spawned node's outcome, keyed by its own node id.
+
+        Spawned nodes must never share the `ops` keyspace: a spawned child's
+        branch can carry a name identical to a planned agent_id's (clones
+        inherit the source branch's name), and using that name as the `ops`
+        key would silently overwrite the planned op's checkpoint entry.
+        """
+        async with self._lock:
+            entry = {"node_id": node_id, "status": status, "response": response}
+            for i, existing in enumerate(self.spawned):
+                if existing.get("node_id") == node_id:
+                    self.spawned[i] = entry
+                    break
+            else:
+                self.spawned.append(entry)
+            if flow_context is not None:
+                self.flow_context = flow_context
             await self._write_locked()
 
     async def flush(self) -> None:

@@ -570,9 +570,16 @@ def _apply_checkpoint_precompletion(
     checkpoint_ops: dict[str, dict],
     *,
     allow_degraded_context: bool,
+    checkpoint_spawned: list[dict] | None = None,
 ) -> None:
-    """Mark nodes the checkpoint recorded as completed so the executor's
-    pre-completed seam (DependencyAwareExecutor.__init__) skips them outright.
+    """Mark nodes the checkpoint recorded as terminal so the executor's
+    pre-completed seam (DependencyAwareExecutor._execute_operation's
+    terminal-status skip) short-circuits them outright instead of re-running.
+
+    completed ops restore their response and are treated as done; failed ops
+    are restored as terminal FAILED rather than silently re-run — a failed op
+    may already have produced side effects or partial artifacts before the
+    process died, so resume must never guess at retry semantics on its own.
 
     A pending op that declared inherit_context expects its predecessor's
     actual conversation history, which resume does not restore (v1: results
@@ -580,8 +587,23 @@ def _apply_checkpoint_precompletion(
     combination is refused loudly unless the caller passes
     allow_degraded_context, naming every affected op so it is an informed
     choice rather than a silent correctness trap.
+
+    checkpoint_spawned refuses resume outright when non-empty: reactively
+    spawned nodes are not replayed by this version (their DAG position and
+    branch aren't reconstructible from the persisted plan alone), so silently
+    proceeding would drop completed spawned work without telling anyone.
     """
     from lionagi.protocols.types import EventStatus
+
+    if checkpoint_spawned:
+        spawned_ids = ", ".join(str(e.get("node_id", "?")) for e in checkpoint_spawned)
+        raise FlowResumeError(
+            "Resume refused: this checkpoint recorded reactively spawned "
+            f"node(s) [{spawned_ids}] that this version cannot replay. "
+            "Resuming would silently drop that completed work. Re-run the "
+            "flow from scratch, or resume only checkpoints without spawned "
+            "entries."
+        )
 
     graph = env.builder.get_graph()
     degraded: list[str] = []
@@ -593,6 +615,9 @@ def _apply_checkpoint_precompletion(
         entry = checkpoint_ops.get(agent_id)
         if entry and entry.get("status") == "completed":
             node.execution.status = EventStatus.COMPLETED
+            node.execution.response = entry.get("response")
+        elif entry and entry.get("status") == "failed":
+            node.execution.status = EventStatus.FAILED
             node.execution.response = entry.get("response")
         elif node.metadata.get("inherit_context"):
             degraded.append(agent_id)
@@ -621,6 +646,7 @@ async def _execute_dag(
     checkpoint_plan: list[dict] | None = None,
     checkpoint_config: dict | None = None,
     checkpoint_ops_seed: dict[str, dict] | None = None,
+    checkpoint_flow_context: dict | None = None,
 ) -> _ExecResult:
     """Drive the planning engine over the DAG and collect per-agent results.
 
@@ -629,6 +655,11 @@ async def _execute_dag(
     into the completion/failure observers below. Tests that stub
     env.run/env.builder with MagicMock (no checkpoint_config passed) are
     unaffected — the writer, and every os.replace() it would do, never exists.
+
+    checkpoint_flow_context seeds the executor's shared context workspace on
+    resume with whatever was accumulated (via operation.response["context"])
+    before the crash — without it, pending ops on a resumed run would see an
+    empty workspace instead of what they would have seen live.
     """
     assignments = plan_result.assignments
     agent_ids = plan_result.agent_ids
@@ -637,6 +668,7 @@ async def _execute_dag(
     spawn_roles = dag_state.spawn_roles
     node_ids = dag_state.node_ids
     known_nodes = dag_state.known_nodes
+    known_node_strs = {str(n) for n in known_nodes}
     deps_by_node = dag_state.deps_by_node
     worker_models = dag_state.worker_models
     role_base = dag_state.role_base
@@ -742,26 +774,44 @@ async def _execute_dag(
     def _checkpoint_record(sig, status: str) -> None:
         """Fire-and-forget the checkpoint write for one op's outcome.
 
-        sig.name is the agent_id (explicit_name at add_operation time), the
-        checkpoint's ops key; sig.op_id is the stringified node UUID, used
-        only to look up the response the executor already recorded — set
-        strictly before this signal fires (operations/flow.py
-        _execute_operation), so it is always present here.
+        sig.name is the agent_id (explicit_name at add_operation time) for a
+        PLANNED node only — a reactively spawned node's branch can carry a
+        name identical to a planned agent_id's (clones inherit the source
+        branch's name), so sig.name is never trustworthy as a checkpoint key
+        on its own. sig.op_id (the stringified node UUID) against
+        known_node_strs is the only reliable way to tell a planned node from
+        a spawned one; spawned nodes are recorded separately by node id via
+        record_spawned so they can never collide with / overwrite a planned
+        op's `ops` entry.
         """
         if _checkpoint_writer is None:
             return
         executor = _executor_ref.get("executor")
         response = None
+        flow_ctx = None
         if executor is not None:
             with contextlib.suppress(Exception):
                 from uuid import UUID as _UUID
 
                 response = executor.results.get(_UUID(sig.op_id))
-        _checkpoint_tasks.append(
-            _asyncio.ensure_future(
-                _checkpoint_writer.record(sig.name, status=status, response=response)
+            with contextlib.suppress(Exception):
+                flow_ctx = dict(executor.context.content)
+        if sig.op_id in known_node_strs:
+            _checkpoint_tasks.append(
+                _asyncio.ensure_future(
+                    _checkpoint_writer.record(
+                        sig.name, status=status, response=response, flow_context=flow_ctx
+                    )
+                )
             )
-        )
+        else:
+            _checkpoint_tasks.append(
+                _asyncio.ensure_future(
+                    _checkpoint_writer.record_spawned(
+                        sig.op_id, status=status, response=response, flow_context=flow_ctx
+                    )
+                )
+            )
 
     def _on_node_started(sig, _ctx):
         progress(f"  ▶ {sig.name} started")
@@ -872,6 +922,7 @@ async def _execute_dag(
             max_concurrent=conc,
             verbose=env.verbose,
             executor_ref=_executor_ref,
+            context=checkpoint_flow_context,
         )
     finally:
         _hb_task.cancel()
@@ -1605,6 +1656,7 @@ async def _run_flow_inner(
             dag_state,
             resume_checkpoint.get("ops") or {},
             allow_degraded_context=allow_degraded_context,
+            checkpoint_spawned=resume_checkpoint.get("spawned") or None,
         )
         checkpoint_plan = resume_checkpoint["plan"]
     else:
@@ -1623,6 +1675,9 @@ async def _run_flow_inner(
         checkpoint_plan=checkpoint_plan,
         checkpoint_config=checkpoint_config,
         checkpoint_ops_seed=resume_checkpoint.get("ops") if resume_checkpoint is not None else None,
+        checkpoint_flow_context=(
+            resume_checkpoint.get("flow_context") if resume_checkpoint is not None else None
+        ),
     )
 
     synthesis_result = None

@@ -36,6 +36,7 @@ from lionagi.cli.orchestrate.flow import (
     _run_flow_inner,
 )
 from lionagi.protocols.types import EventStatus
+from lionagi.session.signal import NodeCompleted, NodeFailed
 from lionagi.state.db import StateDB
 
 # ── Fixtures ────────────────────────────────────────────────────────────────
@@ -264,6 +265,45 @@ async def test_checkpoint_writer_flush_persists_without_touching_ops(tmp_path: P
     assert data["ops"] == {"seeded": {"agent_id": "seeded", "status": "completed", "response": "x"}}
 
 
+async def test_checkpoint_writer_record_flow_context_updates_running_snapshot(tmp_path: Path):
+    path = tmp_path / "checkpoint.json"
+    writer = CheckpointWriter(path=path, session_id="s", prompt="p", plan=[], config={})
+
+    await writer.record("a", status="completed", response="r1", flow_context={"k": 1})
+    await writer.record("b", status="completed", response="r2")  # no flow_context this time
+    await writer.record("c", status="completed", response="r3", flow_context={"k": 1, "j": 2})
+
+    data = load_checkpoint(path)
+    # The middle record (no flow_context passed) must not reset it to {} --
+    # only an explicit non-None flow_context updates the running snapshot.
+    assert data["flow_context"] == {"k": 1, "j": 2}
+
+
+async def test_checkpoint_writer_record_spawned_keeps_separate_from_ops_and_dedups_by_node_id(
+    tmp_path: Path,
+):
+    """Spawned nodes must never share the `ops` keyspace with planned agent_ids
+    -- a spawned child's branch can be named identically to a planned agent_id
+    (clones inherit the source branch's name), so `ops` and `spawned` are kept
+    as two distinct groves, and re-recording the same spawned node id updates
+    its one entry rather than appending a duplicate.
+    """
+    path = tmp_path / "checkpoint.json"
+    writer = CheckpointWriter(path=path, session_id="s", prompt="p", plan=[], config={})
+
+    await writer.record("critic", status="completed", response="planned-result")
+    await writer.record_spawned("spawned-1", status="completed", response="child-result-v1")
+    await writer.record_spawned("spawned-1", status="completed", response="child-result-v2")
+
+    data = load_checkpoint(path)
+    assert data["ops"] == {
+        "critic": {"agent_id": "critic", "status": "completed", "response": "planned-result"}
+    }
+    assert data["spawned"] == [
+        {"node_id": "spawned-1", "status": "completed", "response": "child-result-v2"}
+    ]
+
+
 # ── _apply_checkpoint_precompletion ──────────────────────────────────────────
 
 
@@ -352,6 +392,253 @@ def test_apply_checkpoint_precompletion_no_degraded_ops_is_a_silent_noop():
     assert nodes["n-worker"].execution.response == "done"
 
 
+def test_apply_checkpoint_precompletion_preserves_failed_ops_as_terminal_not_rerun():
+    """A checkpointed 'failed' op must be restored as terminal FAILED, not
+    silently treated as pending and re-run -- it may already have produced
+    side effects or partial artifacts before the process died, and resume
+    must never guess at retry semantics on its own.
+    """
+    nodes = {"n-worker": _FakeNode("n-worker")}
+    env = SimpleNamespace(
+        builder=SimpleNamespace(get_graph=lambda: SimpleNamespace(internal_nodes=nodes))
+    )
+    assignments = [TaskAssignment(task="do it", assignee="worker")]
+    plan_result = _PlanResult(
+        assignments=assignments,
+        agent_ids=["worker"],
+        dep_indices=[[]],
+        pool=[],
+        budget_preambles={},
+    )
+    dag_state = _DagState(
+        node_ids=["n-worker"],
+        known_nodes={"n-worker"},
+        deps_by_node={},
+        reactive=False,
+        spawn_roles=None,
+        role_base={},
+        worker_models=[],
+    )
+    checkpoint_ops = {
+        "worker": {"agent_id": "worker", "status": "failed", "response": {"error": "boom"}}
+    }
+
+    _apply_checkpoint_precompletion(
+        env, plan_result, dag_state, checkpoint_ops, allow_degraded_context=False
+    )
+
+    assert nodes["n-worker"].execution.status == EventStatus.FAILED
+    assert nodes["n-worker"].execution.response == {"error": "boom"}
+
+
+def test_apply_checkpoint_precompletion_refuses_when_spawned_entries_present():
+    """Replaying reactively spawned work on resume isn't implemented, so a
+    checkpoint that recorded any must refuse resume outright rather than
+    silently drop that completed work. Refusal is unconditional -- it is not
+    something --allow-degraded-context (a different concern) can bypass -- and
+    happens before any node is mutated.
+    """
+    nodes = {"n-worker": _FakeNode("n-worker")}
+    env = SimpleNamespace(
+        builder=SimpleNamespace(get_graph=lambda: SimpleNamespace(internal_nodes=nodes))
+    )
+    assignments = [TaskAssignment(task="do it", assignee="worker")]
+    plan_result = _PlanResult(
+        assignments=assignments,
+        agent_ids=["worker"],
+        dep_indices=[[]],
+        pool=[],
+        budget_preambles={},
+    )
+    dag_state = _DagState(
+        node_ids=["n-worker"],
+        known_nodes={"n-worker"},
+        deps_by_node={},
+        reactive=True,
+        spawn_roles=None,
+        role_base={},
+        worker_models=[],
+    )
+    checkpoint_ops = {"worker": {"agent_id": "worker", "status": "completed", "response": "done"}}
+    checkpoint_spawned = [{"node_id": "spawn-1", "status": "completed", "response": "child"}]
+
+    with pytest.raises(FlowResumeError, match="spawn-1"):
+        _apply_checkpoint_precompletion(
+            env,
+            plan_result,
+            dag_state,
+            checkpoint_ops,
+            allow_degraded_context=False,
+            checkpoint_spawned=checkpoint_spawned,
+        )
+    with pytest.raises(FlowResumeError, match="spawn-1"):
+        _apply_checkpoint_precompletion(
+            env,
+            plan_result,
+            dag_state,
+            checkpoint_ops,
+            allow_degraded_context=True,
+            checkpoint_spawned=checkpoint_spawned,
+        )
+    assert nodes["n-worker"].execution.status is None
+
+
+# ── _execute_dag: checkpoint write correctness ───────────────────────────────
+
+
+async def test_checkpoint_captures_nonempty_executor_flow_context_on_completion(tmp_path: Path):
+    """The write side of the flow_context guarantee: _checkpoint_record must
+    snapshot the live executor's shared context workspace, not just the
+    completing op's own response -- otherwise --resume has nothing correct to
+    restore even though the checkpoint's `ops` entries look fine on their own.
+    """
+    env = _make_resume_env(tmp_path)
+    env.session = Session(default_branch=Branch(name="orchestrator"))
+    env.run.checkpoint_path = tmp_path / "checkpoint.json"
+
+    assignments = [TaskAssignment(task="write the brief", assignee="worker")]
+    plan_result = _PlanResult(
+        assignments=assignments,
+        agent_ids=["worker"],
+        dep_indices=[[]],
+        pool=[],
+        budget_preambles={},
+    )
+    dag_state = _DagState(
+        node_ids=["node-0"],
+        known_nodes={"node-0"},
+        deps_by_node={"node-0": []},
+        reactive=False,
+        spawn_roles=None,
+        role_base={},
+        worker_models=["claude"],
+    )
+
+    fake_executor = SimpleNamespace(
+        context=SimpleNamespace(content={"shared_note": "value-from-completed-op"}),
+        results={},
+    )
+
+    async def _run_dag_result(*args, executor_ref=None, **_kw):
+        executor_ref["executor"] = fake_executor
+        await env.session.emit(
+            NodeCompleted(op_id="node-0", name="worker", elapsed=0.1, parent_id=None, depends_on=[])
+        )
+        return {
+            "operation_results": {"node-0": "result-A"},
+            "spawned_operations": 0,
+            "escalated_operations": [],
+        }
+
+    fake_engine_run = MagicMock()
+    fake_engine_run.run_dag = _run_dag_result
+
+    from lionagi.engines import PlanningEngine
+
+    with patch.object(PlanningEngine, "new_run", return_value=fake_engine_run):
+        await _execute_dag(
+            env,
+            plan_result,
+            dag_state,
+            max_concurrent=1,
+            max_ops=0,
+            checkpoint_prompt="write the brief",
+            checkpoint_plan=[{"agent_id": "worker"}],
+            checkpoint_config={"model_spec": "claude"},
+        )
+
+    data = load_checkpoint(env.run.checkpoint_path)
+    assert data["flow_context"] == {"shared_note": "value-from-completed-op"}
+    assert data["ops"]["worker"]["status"] == "completed"
+
+
+async def test_checkpoint_spawned_node_name_collision_does_not_overwrite_planned_ops_entry(
+    tmp_path: Path,
+):
+    """A reactively spawned child's branch can carry a name identical to a
+    planned agent_id's (clones inherit the source branch's name). Using that
+    name as the checkpoint's `ops` key would silently overwrite the planned
+    op's entry -- spawned completions must route to `spawned`, keyed by their
+    own node id, and never touch `ops`.
+    """
+    env = _make_resume_env(tmp_path)
+    env.session = Session(default_branch=Branch(name="orchestrator"))
+    env.run.checkpoint_path = tmp_path / "checkpoint.json"
+
+    assignments = [TaskAssignment(task="critique", assignee="critic")]
+    plan_result = _PlanResult(
+        assignments=assignments,
+        agent_ids=["critic"],
+        dep_indices=[[]],
+        pool=[],
+        budget_preambles={},
+    )
+    dag_state = _DagState(
+        node_ids=["node-critic"],
+        known_nodes={"node-critic"},
+        deps_by_node={"node-critic": []},
+        reactive=True,
+        spawn_roles=None,
+        role_base={},
+        worker_models=["claude"],
+    )
+
+    async def _run_dag_result(*args, executor_ref=None, **_kw):
+        executor_ref["executor"] = SimpleNamespace(context=SimpleNamespace(content={}), results={})
+        # The planned "critic" op completes successfully.
+        await env.session.emit(
+            NodeCompleted(
+                op_id="node-critic", name="critic", elapsed=0.1, parent_id=None, depends_on=[]
+            )
+        )
+        # A reactively spawned child whose cloned branch also happens to be
+        # named "critic" -- the exact collision the review flagged -- fails.
+        await env.session.emit(
+            NodeFailed(
+                op_id="spawned-node-xyz",
+                name="critic",
+                elapsed=0.2,
+                parent_id="node-critic",
+                depends_on=["node-critic"],
+            )
+        )
+        return {
+            "operation_results": {
+                "node-critic": "critic-result",
+                "spawned-node-xyz": "spawned-result",
+            },
+            "spawned_operations": 1,
+            "escalated_operations": [],
+        }
+
+    fake_engine_run = MagicMock()
+    fake_engine_run.run_dag = _run_dag_result
+
+    from lionagi.engines import PlanningEngine
+
+    with patch.object(PlanningEngine, "new_run", return_value=fake_engine_run):
+        await _execute_dag(
+            env,
+            plan_result,
+            dag_state,
+            max_concurrent=1,
+            max_ops=0,
+            checkpoint_prompt="critique",
+            checkpoint_plan=[{"agent_id": "critic"}],
+            checkpoint_config={"model_spec": "claude"},
+        )
+
+    data = load_checkpoint(env.run.checkpoint_path)
+    # The planned entry must still read "completed" -- not clobbered to
+    # "failed" by the same-named spawned child that completed after it.
+    assert data["ops"] == {
+        "critic": {"agent_id": "critic", "status": "completed", "response": None}
+    }
+    assert data["spawned"] == [
+        {"node_id": "spawned-node-xyz", "status": "failed", "response": None}
+    ]
+
+
 # ── Resume sequencing: planner skipped, finalization tail still runs ────────
 
 
@@ -421,6 +708,123 @@ async def test_resume_skips_planner_and_still_calls_finalize_with_zero_pending_o
     node = env.builder._nodes["node-0"]
     assert node.execution.status == EventStatus.COMPLETED
     assert node.execution.response == "already done"
+
+
+async def test_resume_seeds_executor_with_checkpointed_flow_context(tmp_path: Path):
+    """A completed op that wrote into the executor's shared flow_context
+    before a crash must hand that same context to the fresh (post-resume)
+    executor, so pending ops downstream see it exactly as they would have
+    live -- not the empty workspace a brand new DependencyAwareExecutor
+    otherwise starts with. Proven across a simulated process boundary: this
+    _run_flow_inner call knows nothing except what the checkpoint dict carries.
+    """
+    env = _make_resume_env(tmp_path)
+    checkpoint = {
+        "version": 1,
+        "session_id": "prior-session",
+        "prompt": "write the brief",
+        "plan": [
+            {
+                "task": "write the brief",
+                "assignee": "worker",
+                "inputs": [],
+                "exit_criteria": None,
+                "depends_on": [],
+                "modes": [],
+                "agent_id": "worker",
+                "dep_indices": [],
+            }
+        ],
+        "config": {},
+        "flow_context": {"shared_note": "value-from-completed-op"},
+        "ops": {
+            "worker": {"agent_id": "worker", "status": "completed", "response": "already done"}
+        },
+        "spawned": [],
+    }
+
+    fake_engine_run = MagicMock()
+    fake_engine_run.run_dag = MagicMock(
+        return_value=_asyncio_coro(
+            {"operation_results": {}, "spawned_operations": 0, "escalated_operations": []}
+        )
+    )
+
+    from lionagi.engines import PlanningEngine
+
+    with (
+        patch(
+            "lionagi.cli.orchestrate.flow.build_worker_branch",
+            return_value=(_FakeBranch("worker"), "codex/gpt-5.5", None),
+        ),
+        patch.object(PlanningEngine, "new_run", return_value=fake_engine_run),
+        patch("lionagi.cli.orchestrate.flow.plan"),
+        patch("lionagi.cli.orchestrate.flow._finalize_flow", return_value="ok"),
+    ):
+        await _run_flow_inner(
+            "codex/gpt-5.5",
+            "write the brief",
+            env=env,
+            resume_checkpoint=checkpoint,
+            allow_degraded_context=False,
+            checkpoint_config=None,
+            reactive_spec="off",
+        )
+
+    _args, kwargs = fake_engine_run.run_dag.call_args
+    assert kwargs["context"] == {"shared_note": "value-from-completed-op"}
+
+
+async def test_resume_refuses_checkpoint_with_spawned_entries(tmp_path: Path):
+    """Replaying reactively spawned work on resume isn't implemented, so a
+    checkpoint that recorded any must refuse resume outright -- silently
+    proceeding would drop that completed spawned work along with its
+    artifact-contract/synthesis participation.
+    """
+    env = _make_resume_env(tmp_path)
+    checkpoint = {
+        "version": 1,
+        "session_id": "prior-session",
+        "prompt": "write the brief",
+        "plan": [
+            {
+                "task": "write the brief",
+                "assignee": "worker",
+                "inputs": [],
+                "exit_criteria": None,
+                "depends_on": [],
+                "modes": [],
+                "agent_id": "worker",
+                "dep_indices": [],
+            }
+        ],
+        "config": {},
+        "flow_context": {},
+        "ops": {"worker": {"agent_id": "worker", "status": "completed", "response": "done"}},
+        "spawned": [
+            {"node_id": "spawned-node-xyz", "status": "completed", "response": "child result"}
+        ],
+    }
+
+    with (
+        patch(
+            "lionagi.cli.orchestrate.flow.build_worker_branch",
+            return_value=(_FakeBranch("worker"), "codex/gpt-5.5", None),
+        ),
+        patch("lionagi.cli.orchestrate.flow.plan") as plan_mock,
+        pytest.raises(FlowResumeError, match="spawned-node-xyz"),
+    ):
+        await _run_flow_inner(
+            "codex/gpt-5.5",
+            "write the brief",
+            env=env,
+            resume_checkpoint=checkpoint,
+            allow_degraded_context=False,
+            checkpoint_config=None,
+            reactive_spec="off",
+        )
+
+    plan_mock.assert_not_called()
 
 
 async def test_resume_missing_artifact_still_flips_status_to_failed(
