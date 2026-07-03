@@ -331,3 +331,61 @@ async def test_exception_during_finalize_does_not_raise(tmp_path: Path) -> None:
         result = await _apply_session_control(_BrokenDB(db), executor, row)
 
         assert result == _CONTROL_UNSTAMPED
+
+
+async def test_finalize_retry_recovers_transient_failure(tmp_path: Path) -> None:
+    """A single transient finalize failure after a successful apply must end
+    with a truthful 'applied' stamp, never a rejected label."""
+
+    class _FlakyOnceDB:
+        def __init__(self, real_db: StateDB):
+            self._real = real_db
+            self._failed = False
+
+        def __getattr__(self, name):
+            return getattr(self._real, name)
+
+        async def finalize_session_control(self, *a, **kw):
+            if not self._failed:
+                self._failed = True
+                raise RuntimeError("database is locked")
+            return await self._real.finalize_session_control(*a, **kw)
+
+    async with StateDB(tmp_path / "state.db") as db:
+        sid = await _make_session(db)
+        row = await _queue_control(db, sid, "pause")
+        executor = _FakeExecutor()
+
+        result = await _apply_session_control(_FlakyOnceDB(db), executor, row)
+
+        assert result == "applied"
+        assert executor.paused == 1
+        finalized = await db.get_session_control(row["id"])
+        assert finalized["result"] == "applied"
+
+
+async def test_message_finalize_failure_never_mislabels_or_reinjects(tmp_path: Path) -> None:
+    """An injected message whose finalize writes all fail stays 'applying'
+    (never 'rejected:...'), and the next poll skips it without a second
+    injection — the at-most-once guarantee survives the stamp failure."""
+    async with StateDB(tmp_path / "state.db") as db:
+        sid = await _make_session(db)
+        row = await _queue_control(db, sid, "message", payload={"text": "steer left"})
+        nodes = Pile(item_type={Operation})
+        nodes.include(_pending_operation())
+        executor = _FakeExecutor(nodes=nodes)
+        flaky = _FinalizeFailsDB(db)
+
+        result = await _apply_session_control(flaky, executor, row)
+
+        assert result == _CONTROL_UNSTAMPED
+        messages = executor.context.content.get("operator_messages")
+        assert messages is not None and len(messages) == 1
+        stored = await db.get_session_control(row["id"])
+        assert stored["result"] == "applying"
+
+        reread = await db.get_session_control(row["id"])
+        second = await _apply_session_control(flaky, executor, reread)
+
+        assert second is None, "an 'applying' row is skipped, not re-applied"
+        assert len(executor.context.content.get("operator_messages")) == 1

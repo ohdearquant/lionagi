@@ -94,21 +94,21 @@ async def _apply_session_control(db, executor, row: dict) -> str | None:
     and apply leaves a visible 'applying' row (surfaced by `li o ctl status`)
     rather than risking a double injection on the next poll (at-most-once).
 
-    Never raises: any exception is caught and recorded as a rejected result so
-    a bad control row can never crash the run it rides alongside.
+    Never raises: apply failures are recorded as a rejected result so a bad
+    control row can never crash the run it rides alongside. Finalize failures
+    after a successful apply never mislabel the row as rejected — the 'applied'
+    stamp is retried, then the row is left for the next tick.
     """
     control_id = row["id"]
     verb = row["verb"]
     try:
         if verb == "pause":
             executor.pause()
-            await db.finalize_session_control(control_id, result="applied")
-            return "applied"
+            return await _finalize_applied(db, control_id)
 
         if verb == "resume":
             executor.resume()
-            await db.finalize_session_control(control_id, result="applied")
-            return "applied"
+            return await _finalize_applied(db, control_id)
 
         if verb == "message":
             if row.get("result") == "applying":
@@ -136,8 +136,7 @@ async def _apply_session_control(db, executor, row: dict) -> str | None:
             existing = executor.context.content.get("operator_messages", [])
             entry = {"ts": time.time(), "text": payload.get("text", "")}
             deep_update(executor.context.content, {"operator_messages": [*existing, entry]})
-            await db.finalize_session_control(control_id, result="applied")
-            return "applied"
+            return await _finalize_applied(db, control_id)
 
         # 'stop' is schema-reserved for a later slice (the checkpoint writer);
         # any other verb is unrecognised. Reject loudly instead of leaving a
@@ -157,6 +156,23 @@ async def _apply_session_control(db, executor, row: dict) -> str | None:
             # end the tick so ordering is preserved on the retry.
             return _CONTROL_UNSTAMPED
         return result
+
+
+async def _finalize_applied(db, control_id: str) -> str:
+    """Stamp 'applied' after a successful apply; never mislabel it rejected.
+
+    A finalize failure here means the effect landed but the stamp did not:
+    retry once, then hand the row back to the poller via the unstamped
+    sentinel — pause/resume re-apply idempotently next tick, and a message
+    row stays 'applying' so it is skipped rather than double-injected.
+    """
+    for _ in range(2):
+        try:
+            await db.finalize_session_control(control_id, result="applied")
+            return "applied"
+        except Exception as exc:  # noqa: BLE001 — the poller must never crash the run
+            logger.warning("control %s applied but finalize failed: %s", control_id, exc)
+    return _CONTROL_UNSTAMPED
 
 
 _BUDGET_PREAMBLE_TEMPLATE = """\
