@@ -189,8 +189,10 @@ to vary across model families; a single-model pass does not clear the gate.
   LNDL re-scopes its pitch to robustness only (structured-output parse-failure reduction —
   prior internal measurements put strict-JSON parse-fail at roughly 40–60% for weaker
   models vs <5% for LNDL's forgiving pipeline), and any further work requires a new ADR.
-- Between 0.8× and 1.0× on any model: results go to review with the raw per-run table;
-  no automatic proceed.
+- **REVIEW**: every outcome that is neither PASS nor KILL (including mixed results, e.g.
+  one model well over 1.0× while another clears 0.8×) goes to review with the raw per-run
+  table; no automatic proceed. The three outcomes partition the result space — there is no
+  unassigned region.
 
 Sections 1–5 (seam, repair semantics, grammar doc, lexer fix, scratchpad-as-tool) are
 worth landing on robustness grounds alone and are not gated. Section 6's registry
