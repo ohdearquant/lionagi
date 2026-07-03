@@ -392,6 +392,32 @@ async def test_patch_flip_to_cron_without_expr_rejected(temp_db_path):
 
 
 @pytest.mark.asyncio
+async def test_patch_blank_expr_on_cron_schedule_rejected(temp_db_path):
+    """A PATCH that blanks cron_expr on an existing cron schedule is rejected —
+    the touches_trigger gate fires on cron_expr alone."""
+    from lionagi.state.db import StateDB
+    from lionagi.studio.services.schedules import create_schedule, update_schedule
+
+    created = await create_schedule(
+        {
+            "name": "patch-blank-cron-expr-test",
+            "trigger_type": "cron",
+            "cron_expr": "0 18 * * *",
+            "action_kind": "agent",
+            "action_prompt": "ping",
+        }
+    )
+    sid = created["id"]
+
+    with pytest.raises(ValueError, match="cron_expr is required"):
+        await update_schedule(sid, {"cron_expr": ""})
+
+    async with StateDB() as db:
+        row = await db.get_schedule(sid)
+    assert row["cron_expr"] == "0 18 * * *"  # untouched — rejected before commit
+
+
+@pytest.mark.asyncio
 async def test_create_cron_valid_expr_still_accepted(temp_db_path):
     """A valid cron_expr on a cron-triggered create still passes (regression
     guard for the required=True change)."""
