@@ -226,7 +226,13 @@ def build_argv(schedule: dict, trigger_context: dict) -> tuple[list[str], str | 
             flags += ["--agent", agent]
         if project:
             flags += ["--project", project]
-        argv += ["agent", *flags, "--", model, prompt]
+        # Omit the model positional entirely when action_model is unset: `li
+        # agent` treats a single positional as the prompt and falls through to
+        # the --agent profile's own default model. Passing an empty string as
+        # the model positional would instead be parsed as an explicit (blank)
+        # model spec, overriding the profile default and crashing Branch init.
+        positionals = [model, prompt] if model else [prompt]
+        argv += ["agent", *flags, "--", *positionals]
 
     elif kind == "flow":
         flags = []
@@ -249,10 +255,39 @@ def build_argv(schedule: dict, trigger_context: dict) -> tuple[list[str], str | 
             argv.append(playbook)
 
     elif kind == "flow_yaml":
+        # Extra positionals have nowhere safe to land here: this launch emits
+        # no positionals at all (the spec file carries prompt and model), so
+        # `li o flow` would soak extra tokens into its optional model/prompt
+        # slots and silently override the model merged into the spec below.
+        # Fail at build time so no invocation row is created for a launch
+        # that cannot honor them.
+        if isinstance(extra, list) and extra:
+            raise ValueError(
+                "flow_yaml launches do not accept action_extra_args; "
+                "set model/prompt inside the flow spec instead"
+            )
         # Write the inline YAML spec to a temp file so `li o flow -f <path>`
         # can read it.  The caller is responsible for deleting tmp_path after
         # the subprocess exits.
         yaml_text = schedule.get("action_flow_yaml") or ""
+        if model:
+            # An explicit action_model is merged into the spec itself, never
+            # passed as a positional: when the file supplies its own model or
+            # agent, `li o flow -f` reclassifies a lone model positional as
+            # prompt text, so a positional cannot reliably override the file.
+            # Merging into the spec wins deterministically and leaves no
+            # positional surface at all. Unparseable or non-mapping specs are
+            # written unchanged — `li o flow` rejects them with its own parse
+            # error, which names the file.
+            import yaml
+
+            try:
+                spec = yaml.safe_load(yaml_text)
+            except Exception:
+                spec = None
+            if isinstance(spec, dict):
+                spec["model"] = model
+                yaml_text = yaml.safe_dump(spec, sort_keys=False, allow_unicode=True)
         fd, tmp_path = tempfile.mkstemp(suffix=".yaml", prefix="lionagi-sched-")
         try:
             with os.fdopen(fd, "w") as fh:
@@ -260,12 +295,13 @@ def build_argv(schedule: dict, trigger_context: dict) -> tuple[list[str], str | 
         except Exception:
             os.unlink(tmp_path)
             raise
-        # Named flags first (-f must come before --), then -- sentinel, then
-        # model positional only (no prompt positional — YAML supplies it).
+        # Named flags first (-f must come before --), then the -- sentinel.
+        # No positionals at all: the YAML file supplies the prompt, and any
+        # explicit model was merged into the spec above.
         flags = ["-f", tmp_path]
         if project:
             flags += ["--project", project]
-        argv += ["o", "flow", *flags, "--", model]
+        argv += ["o", "flow", *flags, "--"]
 
     elif kind == "engine":
         # engine def launch: argv shape is

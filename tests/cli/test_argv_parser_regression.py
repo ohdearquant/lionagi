@@ -287,30 +287,19 @@ class TestFlowYamlParserPromptExclusion:
 
         _reset()
 
-        # Write a controlled YAML file so the content is predictable.
-        fd, tmp_yaml = tempfile.mkstemp(suffix=".yaml", prefix="lionagi-test-")
+        # Use the generated temp file directly: the spec content is fully
+        # determined by action_flow_yaml plus the merged-in action_model.
+        sched = {
+            "id": "test",
+            "action_kind": "flow_yaml",
+            "action_model": "sonnet",
+            "action_prompt": hostile,
+            "action_project": None,
+            "action_extra_args": [],
+            "action_flow_yaml": "prompt: yaml-supplied-prompt\n",
+        }
+        full_argv, tmp_yaml = build_argv(sched, {})
         try:
-            with os.fdopen(fd, "w") as fh:
-                fh.write("prompt: yaml-supplied-prompt\n")
-
-            sched = {
-                "id": "test",
-                "action_kind": "flow_yaml",
-                "action_model": "sonnet",
-                "action_prompt": hostile,
-                "action_project": None,
-                "action_extra_args": [],
-                "action_flow_yaml": "prompt: yaml-supplied-prompt\n",
-            }
-            full_argv, gen_tmp = build_argv(sched, {})
-            # Discard the generated temp file; substitute our controlled one.
-            if gen_tmp and os.path.exists(gen_tmp):
-                os.unlink(gen_tmp)
-
-            # Swap -f <generated> → -f <our yaml>
-            f_idx = full_argv.index("-f")
-            full_argv[f_idx + 1] = tmp_yaml
-
             cli_argv = _argv_without_wrapper(full_argv)
 
             with (
@@ -325,6 +314,9 @@ class TestFlowYamlParserPromptExclusion:
             assert c["prompt"] == "yaml-supplied-prompt", (
                 f"Expected YAML prompt, got {c['prompt']!r}"
             )
+            assert c["model_spec"] == "sonnet", (
+                f"Expected the schedule's model to override the spec, got {c['model_spec']!r}"
+            )
             assert c["bypass"] is False, (
                 f"bypass toggled for flow_yaml with hostile action_prompt {hostile!r}"
             )
@@ -335,7 +327,7 @@ class TestFlowYamlParserPromptExclusion:
                 f"fast toggled for flow_yaml with hostile action_prompt {hostile!r}"
             )
         finally:
-            if os.path.exists(tmp_yaml):
+            if tmp_yaml and os.path.exists(tmp_yaml):
                 os.unlink(tmp_yaml)
 
 
@@ -417,12 +409,12 @@ class TestSentinelPlacement:
             assert "--bypass" not in argv, (
                 f"Hostile prompt must not appear in flow_yaml argv: {argv}"
             )
-            # Only model after sentinel — no prompt positional
+            # No positionals at all: the model is merged into the spec file
+            # and the YAML supplies the prompt.
             sep_idx = argv.index("--")
             after = argv[sep_idx + 1 :]
-            assert after == ["sonnet"], (
-                f"Expected only ['sonnet'] after '--' in flow_yaml, got {after}"
-            )
+            assert after == [], f"Expected nothing after '--' in flow_yaml, got {after}"
+            assert "sonnet" not in argv, f"model leaked into argv: {argv}"
         finally:
             if tmp_path and os.path.exists(tmp_path):
                 os.unlink(tmp_path)

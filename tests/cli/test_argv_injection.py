@@ -88,6 +88,39 @@ class TestBuildArgvActionModelInjection:
         argv, tmp = build_argv(_schedule(action_model=None), {})
         assert tmp is None
 
+    def test_model_empty_string_omits_positional_agent_kind(self):
+        """Regression: an empty action_model must not be forwarded as a blank
+        model positional for kind='agent'. `li agent` treats a single
+        positional as the prompt and falls through to the --agent profile's
+        default model; a blank model positional instead overrides that
+        default and crashes Branch init (EndpointConfig: provider '')."""
+        from lionagi.studio.scheduler.subprocess import build_argv
+
+        argv, tmp = build_argv(_schedule(action_model="", action_agent="researcher"), {})
+        assert tmp is None
+        assert "--" in argv
+        positionals = argv[argv.index("--") + 1 :]
+        assert positionals == ["hello world"], (
+            f"expected only the prompt after '--', got {positionals!r}; an "
+            "empty-string model positional would override the --agent "
+            "profile's default model"
+        )
+
+    def test_model_none_omits_positional_agent_kind(self):
+        from lionagi.studio.scheduler.subprocess import build_argv
+
+        argv, tmp = build_argv(_schedule(action_model=None, action_agent="researcher"), {})
+        positionals = argv[argv.index("--") + 1 :]
+        assert positionals == ["hello world"]
+
+    def test_model_set_still_includes_positional_agent_kind(self):
+        """Non-empty action_model must still be forwarded (no regression)."""
+        from lionagi.studio.scheduler.subprocess import build_argv
+
+        argv, tmp = build_argv(_schedule(action_model="sonnet", action_agent="researcher"), {})
+        positionals = argv[argv.index("--") + 1 :]
+        assert positionals == ["sonnet", "hello world"]
+
     def test_model_valid_identifiers_accepted(self):
         from lionagi.studio.scheduler.subprocess import build_argv
 
@@ -301,6 +334,107 @@ class TestBuildArgvSentinelStructure:
             sentinel_idx = argv.index("--")
             f_idx = argv.index("-f")
             assert f_idx < sentinel_idx, f"-f must appear before '--' sentinel: argv={argv}"
+        finally:
+            if tmp_path and os.path.exists(tmp_path):
+                os.unlink(tmp_path)
+
+    def test_flow_yaml_empty_model_omits_positional(self):
+        """flow_yaml with no action_model: the model positional is omitted so
+        the YAML file's own model/agent defaults apply. An explicit blank
+        positional would parse as model='' and suppress the file defaults."""
+        import os
+
+        from lionagi.studio.scheduler.subprocess import build_argv
+
+        sched = {
+            "id": "sy",
+            "action_kind": "flow_yaml",
+            "action_model": "",
+            "action_prompt": None,
+            "action_project": None,
+            "action_extra_args": [],
+            "action_flow_yaml": "model: claude-code/opus-4-7\nprompt: yaml prompt\n",
+        }
+        argv, tmp_path = build_argv(sched, {})
+        try:
+            assert "" not in argv, f"blank positional leaked into argv: {argv}"
+            assert argv[-1] == "--", f"argv must end at the sentinel when model unset: {argv}"
+        finally:
+            if tmp_path and os.path.exists(tmp_path):
+                os.unlink(tmp_path)
+
+    def test_flow_yaml_model_merged_into_spec(self):
+        """flow_yaml with a model: merged into the spec file, never a positional.
+        A lone model positional is reclassified as prompt text by `li o flow -f`
+        whenever the file carries its own model/agent, so the file must win."""
+        import os
+
+        import yaml
+
+        from lionagi.studio.scheduler.subprocess import build_argv
+
+        sched = {
+            "id": "sy",
+            "action_kind": "flow_yaml",
+            "action_model": "sonnet",
+            "action_prompt": None,
+            "action_project": None,
+            "action_extra_args": [],
+            "action_flow_yaml": "model: claude-code/opus-4-7\nprompt: yaml prompt\n",
+        }
+        argv, tmp_path = build_argv(sched, {})
+        try:
+            assert "sonnet" not in argv, f"model leaked into argv: {argv}"
+            assert argv[-1] == "--", f"argv must end at the sentinel: {argv}"
+            with open(tmp_path) as fh:
+                spec = yaml.safe_load(fh)
+            assert spec["model"] == "sonnet"
+            assert spec["prompt"] == "yaml prompt"
+        finally:
+            if tmp_path and os.path.exists(tmp_path):
+                os.unlink(tmp_path)
+
+    def test_flow_yaml_extra_args_rejected(self):
+        """flow_yaml emits no positionals at all, so extra args would be
+        soaked into `li o flow`'s optional model/prompt slots and silently
+        override the model merged into the spec — build_argv rejects them
+        outright so no invocation row is created."""
+        from lionagi.studio.scheduler.subprocess import build_argv
+
+        sched = {
+            "id": "sy",
+            "action_kind": "flow_yaml",
+            "action_model": "sonnet",
+            "action_prompt": None,
+            "action_project": None,
+            "action_extra_args": ["extra-model", "extra-prompt"],
+            "action_flow_yaml": "model: file-model\nprompt: yaml prompt\n",
+        }
+        with pytest.raises(ValueError, match="action_extra_args"):
+            build_argv(sched, {})
+
+    def test_flow_yaml_unparseable_spec_written_unchanged(self):
+        """flow_yaml with a model but a broken spec: no merge, no positional;
+        the file is written as-is so `li o flow` reports its own parse error."""
+        import os
+
+        from lionagi.studio.scheduler.subprocess import build_argv
+
+        broken = "prompt: [unclosed\n"
+        sched = {
+            "id": "sy",
+            "action_kind": "flow_yaml",
+            "action_model": "sonnet",
+            "action_prompt": None,
+            "action_project": None,
+            "action_extra_args": [],
+            "action_flow_yaml": broken,
+        }
+        argv, tmp_path = build_argv(sched, {})
+        try:
+            assert "sonnet" not in argv, f"model leaked into argv: {argv}"
+            with open(tmp_path) as fh:
+                assert fh.read() == broken
         finally:
             if tmp_path and os.path.exists(tmp_path):
                 os.unlink(tmp_path)
