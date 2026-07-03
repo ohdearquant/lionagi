@@ -12,7 +12,8 @@ Nothing changes for callers who don't pass it.
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Any
+import types as _types
+from typing import TYPE_CHECKING, Any, Union, get_args, get_origin
 
 from pydantic import JsonValue, ValidationError
 
@@ -55,6 +56,60 @@ _ACTION_PARAM = ActionParam(
     suppress_errors=True,
     verbose_action=False,
 )
+
+
+def _unwrap_optional_type(t: Any) -> Any:
+    """If ``t`` is Optional[X] / X | None, return X. Else return ``t``."""
+    origin = get_origin(t)
+    if origin is Union or origin is _types.UnionType:
+        args = [a for a in get_args(t) if a is not type(None)]
+        if len(args) == 1:
+            return args[0]
+    return t
+
+
+def _render_type(annotation: Any) -> str:
+    """Render a field's type the way LNDL_SYSTEM_PROMPT's own ``Specs:``
+    examples do -- e.g. ``int``, ``list[str]``, ``dict[str, float]``, or
+    ``ModelName: field1, field2`` for a nested pydantic model."""
+    annotation = _unwrap_optional_type(annotation)
+    origin = get_origin(annotation)
+    if origin is list:
+        args = get_args(annotation)
+        elem = args[0] if args else Any
+        if isinstance(elem, type) and hasattr(elem, "model_fields"):
+            fields = ", ".join(elem.model_fields.keys())
+            return f"list[{elem.__name__}: {fields}]"
+        return f"list[{_render_type(elem)}]"
+    if origin is dict:
+        args = get_args(annotation)
+        key_t = _render_type(args[0]) if args else "str"
+        val_t = _render_type(args[1]) if len(args) > 1 else "Any"
+        return f"dict[{key_t}, {val_t}]"
+    if isinstance(annotation, type) and hasattr(annotation, "model_fields"):
+        fields = ", ".join(annotation.model_fields.keys())
+        return f"{annotation.__name__}: {fields}"
+    return getattr(annotation, "__name__", str(annotation))
+
+
+def _render_target_spec(target: Any) -> str | None:
+    """Render the target model's fields as an LNDL ``Specs:`` line -- the
+    exact format LNDL_SYSTEM_PROMPT's own examples use to teach the model
+    the schema it must fill (rule 5: "Use the EXACT spec names declared in
+    the schema you are given"). Without this, a real model is never told
+    the target field names once the per-round chat call strips native
+    ``response_format``. Returns None for a plain-dict/no-target caller —
+    there's no structured spec to announce."""
+    model_fields = getattr(target, "model_fields", None)
+    if not model_fields:
+        return None
+    parts = []
+    for name, info in model_fields.items():
+        type_str = _render_type(info.annotation)
+        if not info.is_required():
+            type_str += ", optional"
+        parts.append(f"{name}({type_str})")
+    return "Specs: " + ", ".join(parts)
 
 
 async def _bridge_action_calls(branch: Branch, calls: list[ActionCall]) -> dict[str, Any]:
@@ -175,11 +230,13 @@ def build_lndl_middle(round_budget: int = DEFAULT_ROUND_BUDGET):
         # it's what assemble()+model_validate() below must target.
         target = chat_param.response_format
         base_guidance = chat_param.guidance or ""
-        lndl_guidance = (
-            f"{get_lndl_system_prompt()}\n\n{base_guidance}"
-            if base_guidance
-            else get_lndl_system_prompt()
-        )
+        guidance_parts = [get_lndl_system_prompt()]
+        target_spec = _render_target_spec(target)
+        if target_spec:
+            guidance_parts.append(target_spec)
+        if base_guidance:
+            guidance_parts.append(base_guidance)
+        lndl_guidance = "\n\n".join(guidance_parts)
         # Strip native tool-calling and JSON-schema auto-rendering from the
         # per-round chat call: LNDL uses a free-text <lact>/OUT{} protocol,
         # not native function-calling, and it's assemble()+model_validate()
@@ -225,7 +282,15 @@ def build_lndl_middle(round_budget: int = DEFAULT_ROUND_BUDGET):
                 last_error = str(e)
                 continue
 
-        return last_error  # Exhausted(last_error) — round budget exhausted.
+        # Exhausted(last_error): round budget hit without a valid OUT{}. Raise
+        # rather than return the raw error (or None, for an all-Continue run)
+        # -- a caller expecting a validated model must never receive a bare
+        # str/None through operate(), and Failed/Exhausted are the only two
+        # RoundOutcome variants that end the run without a value to return.
+        detail = f": {last_error}" if last_error else " (no OUT{} block was produced)"
+        raise LNDLError(
+            f"LNDL round budget ({round_budget}) exhausted without a valid OUT{{}}{detail}"
+        )
 
     return _lndl_middle
 

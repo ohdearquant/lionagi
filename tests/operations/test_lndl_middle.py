@@ -12,9 +12,19 @@ import pytest
 from pydantic import BaseModel
 
 from lionagi.hooks.bus import HookBus, HookPoint
-from lionagi.lndl import Continue, Retry, Success, get_lndl_system_prompt
+from lionagi.lndl import Continue, LNDLError, Retry, Success, get_lndl_system_prompt
+from lionagi.operations.lndl_middle import (
+    DEFAULT_ROUND_BUDGET as PACKAGE_DEFAULT_ROUND_BUDGET,
+)
+from lionagi.operations.lndl_middle import (
+    build_lndl_middle as package_build_lndl_middle,
+)
+from lionagi.operations.lndl_middle import (
+    lndl_middle as package_lndl_middle,
+)
 from lionagi.operations.lndl_middle.lndl_middle import (
     _classify_round,
+    _render_target_spec,
     _run_round_chat,
     build_lndl_middle,
     lndl_middle,
@@ -30,6 +40,21 @@ class AnswerModel(BaseModel):
 class TwoFieldModel(BaseModel):
     answer: str
     detail: str
+
+
+class OptionalFieldModel(BaseModel):
+    answer: str
+    detail: str | None = None
+
+
+class Finding(BaseModel):
+    name: str
+    score: float
+
+
+class ReportModel(BaseModel):
+    findings: list[Finding]
+    scores: dict[str, float]
 
 
 def lookup(query: str) -> str:
@@ -108,6 +133,39 @@ class TestClassifyRound:
         )
         assert isinstance(outcome, Success)
         assert assembled == {"answer": "from an earlier round"}
+
+
+# ---------------------------------------------------------------------------
+# _render_target_spec — the target schema summary injected into round-1
+# guidance (LNDL_SYSTEM_PROMPT rule 5: "Use the EXACT spec names declared in
+# the schema you are given"). Without this, stripping native response_format
+# from the round chat call leaves a real model with no idea what fields to
+# fill.
+# ---------------------------------------------------------------------------
+
+
+class TestRenderTargetSpec:
+    def test_none_target_renders_nothing(self):
+        assert _render_target_spec(None) is None
+
+    def test_non_model_target_renders_nothing(self):
+        assert _render_target_spec({"answer": {"type": "string"}}) is None
+
+    def test_scalar_fields(self):
+        spec = _render_target_spec(AnswerModel)
+        assert spec == "Specs: answer(str)"
+
+    def test_two_scalar_fields(self):
+        spec = _render_target_spec(TwoFieldModel)
+        assert spec == "Specs: answer(str), detail(str)"
+
+    def test_optional_field_marked(self):
+        spec = _render_target_spec(OptionalFieldModel)
+        assert spec == "Specs: answer(str), detail(str, optional)"
+
+    def test_nested_model_and_dict_and_list_fields(self):
+        spec = _render_target_spec(ReportModel)
+        assert spec == "Specs: findings(list[Finding: name, score]), scores(dict[str, float])"
 
 
 # ---------------------------------------------------------------------------
@@ -257,8 +315,12 @@ class TestRetryAndRepair:
 
 
 class TestExhausted:
+    """Exhaustion is a terminal RoundOutcome with no value to return — the
+    Middle raises LNDLError rather than leaking a raw last_error str (or
+    None, for an all-Continue run) through operate()'s return type."""
+
     @pytest.mark.asyncio
-    async def test_exhausted_returns_last_error_string(self):
+    async def test_exhausted_raises_with_last_error(self):
         custom_middle = build_lndl_middle(round_budget=2)
         branch = TestBranch.from_text(
             [
@@ -267,10 +329,33 @@ class TestExhausted:
             ]
         )
         chat_param = ChatParam(response_format=AnswerModel)
-        result = await custom_middle(branch, "answer", chat_param)
-        assert isinstance(result, str)
-        assert "undeclared alias" in result
+        with pytest.raises(LNDLError, match="undeclared alias"):
+            await custom_middle(branch, "answer", chat_param)
         assert len(TestBranch.calls(branch)) == 2
+
+    @pytest.mark.asyncio
+    async def test_all_continue_exhaustion_raises_without_none_leak(self):
+        """Every round is a bare Continue (no OUT{} ever) — last_error stays
+        None the whole run. Must still raise, never return None."""
+        custom_middle = build_lndl_middle(round_budget=2)
+        branch = TestBranch.from_text(["still thinking...", "still thinking..."])
+        chat_param = ChatParam(response_format=AnswerModel)
+        with pytest.raises(LNDLError, match="round budget"):
+            await custom_middle(branch, "answer", chat_param)
+        assert len(TestBranch.calls(branch)) == 2
+
+    @pytest.mark.asyncio
+    async def test_operate_integration_exhaustion_raises(self):
+        """branch.operate(..., response_format=...) must not silently hand a
+        structured caller a bare string or None on exhaustion."""
+        custom_middle = build_lndl_middle(round_budget=1)
+        branch = TestBranch.from_text("```lndl\nOUT{answer: [missing]}\n```")
+        with pytest.raises(LNDLError):
+            await branch.operate(
+                instruction="answer",
+                response_format=AnswerModel,
+                middle=custom_middle,
+            )
 
 
 class TestFailedPropagates:
@@ -348,6 +433,34 @@ class TestPromptInjection:
         assert marker in calls[0].last_user_message
         assert "Be terse." in calls[0].last_user_message
 
+    @pytest.mark.asyncio
+    async def test_round_one_tells_the_model_the_target_field_names(self):
+        """Native response_format is stripped from the round chat call — the
+        model must instead be told the target's field names via a rendered
+        Specs: line, or it has no way to know what OUT{} should contain."""
+        branch = TestBranch.from_text(
+            "```lndl\n<lvar a>hi</lvar>\n<lvar b>there</lvar>\nOUT{answer: [a], detail: [b]}\n```"
+        )
+        chat_param = ChatParam(response_format=TwoFieldModel)
+        await lndl_middle(branch, "say hi", chat_param)
+
+        calls = TestBranch.calls(branch)
+        assert "answer(str)" in calls[0].last_user_message
+        assert "detail(str)" in calls[0].last_user_message
+
+    @pytest.mark.asyncio
+    async def test_no_response_format_omits_target_specs_line(self):
+        """LNDL_SYSTEM_PROMPT's own worked examples legitimately contain
+        several 'Specs:' lines — assert no *additional* one was injected for
+        a target-less call, rather than a raw 'not in' check."""
+        base_specs_count = get_lndl_system_prompt().count("Specs:")
+        branch = TestBranch.from_text("```lndl\n<lvar a>hi</lvar>\nOUT{answer: [a]}\n```")
+        chat_param = ChatParam(response_format=None)
+        await lndl_middle(branch, "say hi", chat_param)
+
+        calls = TestBranch.calls(branch)
+        assert calls[0].last_user_message.count("Specs:") == base_specs_count
+
 
 class TestChatParamStripping:
     @pytest.mark.asyncio
@@ -370,6 +483,24 @@ class TestRoundBudget:
         custom_middle = build_lndl_middle(round_budget=1)
         branch = TestBranch.from_text("```lndl\nOUT{answer: [missing]}\n```")
         chat_param = ChatParam(response_format=AnswerModel)
-        result = await custom_middle(branch, "answer", chat_param)
-        assert isinstance(result, str)
+        with pytest.raises(LNDLError):
+            await custom_middle(branch, "answer", chat_param)
         assert len(TestBranch.calls(branch)) == 1
+
+
+class TestPackageImportSurface:
+    """The documented public path (CHANGELOG.md, ADR-0087 §1) is the package
+    itself, not the private nested module — a caller writes
+    `from lionagi.operations.lndl_middle import lndl_middle`, not
+    `...lndl_middle.lndl_middle import lndl_middle`."""
+
+    def test_package_level_lndl_middle_is_callable(self):
+        assert callable(package_lndl_middle)
+
+    def test_package_level_build_lndl_middle_is_callable_and_builds(self):
+        assert callable(package_build_lndl_middle)
+        custom = package_build_lndl_middle(round_budget=5)
+        assert callable(custom)
+
+    def test_package_level_default_round_budget(self):
+        assert PACKAGE_DEFAULT_ROUND_BUDGET == 3
