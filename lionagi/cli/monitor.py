@@ -11,6 +11,7 @@ import time
 from pathlib import Path
 from typing import Any
 
+from ._project import detect_project
 from ._runs import RUNS_ROOT
 from ._util import pid_alive as _pid_alive_int
 
@@ -175,7 +176,14 @@ async def _query_active_shows(
     *,
     since: float | None = None,
 ) -> list[dict[str, Any]]:
-    """Active only by default; with since, all statuses in the window."""
+    """Active only by default; with since, all statuses in the window.
+
+    Unlike sessions and plays, `repo` on a show is a filesystem path (or a
+    path with a trailing remote annotation) copied verbatim from the play's
+    `_show.md`, not a project slug — so it cannot be matched against
+    `--project` in SQL. Project-scoping for shows happens in Python, in
+    _gather_table_rows, via the same detect_project() cascade sessions use.
+    """
     query = "SELECT * FROM shows WHERE 1=1"  # noqa: S608
     params: list[Any] = []
     if since is not None:
@@ -203,7 +211,8 @@ async def _query_running_plays(
     """
     query = (
         "SELECT plays.*, "  # noqa: S608
-        "(SELECT COUNT(*) FROM branches WHERE session_id = plays.session_id) AS branch_count "
+        "(SELECT COUNT(*) FROM branches WHERE session_id = plays.session_id) AS branch_count, "
+        "(SELECT project FROM sessions WHERE id = plays.session_id) AS session_project "
         "FROM plays WHERE 1=1"
     )
     params: list[Any] = []
@@ -430,7 +439,7 @@ def _play_to_row(play: dict[str, Any]) -> dict[str, Any]:
     return {
         "id": play["id"][:16],
         "type": "play",
-        "project": "-",
+        "project": play.get("session_project") or "-",
         "status": play.get("status") or "?",
         "phase": _trunc(play.get("name") or "-", 18),
         "elapsed": _elapsed(play.get("started_at"), play.get("ended_at")),
@@ -610,6 +619,30 @@ async def _detail_play(db: Any, play: dict[str, Any]) -> str:
 # ── Gather all running entities ───────────────────────────────────────────────
 
 
+def _show_project_matches(show: dict[str, Any], project: str) -> bool:
+    """A show's `repo` column is a filesystem path (sometimes with a
+    trailing remote annotation), not a project slug, so it cannot be
+    compared to `--project` directly — derive its slug via the same
+    detect_project() cascade sessions use and compare that. A show with a
+    missing, empty, or unresolvable repo path derives (None, None) and is
+    excluded under --project — the same orphan semantics as a play with no
+    linked session.
+    """
+    repo = show.get("repo")
+    if not repo:
+        return False
+    # Strip a trailing " (remote, ...)" annotation some _show.md authors
+    # append after the path so the bare path is what gets resolved.
+    repo = repo.split(" (")[0].rstrip()
+    if not repo:
+        return False
+    try:
+        derived, _source = detect_project(Path(repo))
+    except Exception:  # noqa: BLE001
+        return False
+    return derived == project
+
+
 async def _gather_table_rows(
     db: Any,
     *,
@@ -648,6 +681,8 @@ async def _gather_table_rows(
 
     if entity_type in (None, "show"):
         shows = await _query_active_shows(db, since=since)
+        if project:
+            shows = [s for s in shows if _show_project_matches(s, project)]
         rows.extend(_show_to_row(s) for s in shows)
 
     rows.extend(_play_to_row(p) for p in plays)

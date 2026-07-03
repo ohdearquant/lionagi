@@ -86,13 +86,20 @@ async def _make_invocation(db: StateDB, *, status: str = "running", skill: str =
     return inv_id
 
 
-async def _make_show(db: StateDB, *, status: str = "active", topic: str = "test-topic") -> str:
+async def _make_show(
+    db: StateDB,
+    *,
+    status: str = "active",
+    topic: str = "test-topic",
+    repo: str | None = None,
+) -> str:
     show_id = uuid.uuid4().hex[:12]
     await db.create_show(
         {
             "id": show_id,
             "topic": topic,
             "status": status,
+            "repo": repo,
             "show_dir": "/tmp/show",
         }
     )
@@ -342,6 +349,33 @@ def test_play_to_row():
     row = _play_to_row(play)
     assert row["type"] == "play"
     assert row["phase"] == "backend-impl"
+    assert row["project"] == "-"
+
+
+def test_play_to_row_renders_session_project():
+    """_query_running_plays attaches the linked session's project as
+    session_project; _play_to_row must render it instead of hardcoding '-'."""
+    play = {
+        "id": "play001abc",
+        "status": "running",
+        "name": "backend-impl",
+        "session_project": "lionagi",
+    }
+    row = _play_to_row(play)
+    assert row["project"] == "lionagi"
+
+
+def test_play_to_row_orphan_no_session_project_falls_back():
+    """A play with no linked session (or a dangling session_id) has no
+    session_project — must render '-', not crash."""
+    play = {
+        "id": "play002abc",
+        "status": "running",
+        "name": "orphan-play",
+        "session_project": None,
+    }
+    row = _play_to_row(play)
+    assert row["project"] == "-"
 
 
 # ── Integration: DB-backed list_running ───────────────────────────────────────
@@ -404,6 +438,140 @@ async def test_gather_table_rows_project_filter_applies_to_plays(temp_db_path: P
     assert play_b[:16] not in ids_a
     assert play_b[:16] in ids_b
     assert play_a[:16] not in ids_b
+
+
+@pytest.mark.asyncio
+async def test_gather_table_rows_project_filter_applies_to_shows(
+    temp_db_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """--project must scope shows too. `repo` is a filesystem path, not a
+    project slug, so the filter must go through detect_project() rather
+    than compare `repo` to `--project` as strings — this pins the
+    path -> slug translation, not string equality."""
+    async with StateDB() as db:
+        show_a = await _make_show(db, topic="show-a", repo="/Users/lion/projects/proj-a")
+        show_b = await _make_show(db, topic="show-b", repo="/Users/lion/projects/proj-b")
+
+        def fake_detect_project(path: Path) -> tuple[str | None, str | None]:
+            name = Path(path).name
+            if name in ("proj-a", "proj-b"):
+                return (name, "git_remote")
+            return (None, None)
+
+        monkeypatch.setattr("lionagi.cli.monitor.detect_project", fake_detect_project)
+
+        rows_a = await _gather_table_rows(db, since=None, entity_type="show", project="proj-a")
+        rows_b = await _gather_table_rows(db, since=None, entity_type="show", project="proj-b")
+
+    ids_a = [r["id"] for r in rows_a]
+    ids_b = [r["id"] for r in rows_b]
+    assert show_a[:16] in ids_a
+    assert show_b[:16] not in ids_a
+    assert show_b[:16] in ids_b
+    assert show_a[:16] not in ids_b
+
+
+@pytest.mark.asyncio
+async def test_gather_table_rows_show_annotated_repo_matches_project(
+    temp_db_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Real _show.md repo lines sometimes carry a trailing remote
+    annotation after the path — the matcher must strip it and resolve the
+    bare path rather than fail derivation on a nonexistent path."""
+    async with StateDB() as db:
+        show_id = await _make_show(
+            db,
+            topic="annotated",
+            repo="/Users/lion/projects/proj-a  (org/proj-a, PRIVATE)",
+        )
+
+        seen: list[str] = []
+
+        def fake_detect_project(path: Path) -> tuple[str | None, str | None]:
+            seen.append(str(path))
+            if Path(path).name == "proj-a":
+                return ("proj-a", "git_remote")
+            return (None, None)
+
+        monkeypatch.setattr("lionagi.cli.monitor.detect_project", fake_detect_project)
+
+        rows = await _gather_table_rows(db, since=None, entity_type="show", project="proj-a")
+
+    assert show_id[:16] in [r["id"] for r in rows]
+    assert seen == ["/Users/lion/projects/proj-a"]
+
+
+@pytest.mark.asyncio
+async def test_gather_table_rows_show_missing_repo_excluded_under_project(
+    temp_db_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A show with no repo path has nothing to derive a project from — it
+    must be excluded once --project is applied, but still render in the
+    unfiltered view (same orphan semantics as a play with no session)."""
+    async with StateDB() as db:
+        show_id = await _make_show(db, topic="no-repo", repo=None)
+
+        monkeypatch.setattr("lionagi.cli.monitor.detect_project", lambda path: (None, None))
+
+        rows_filtered = await _gather_table_rows(
+            db, since=None, entity_type="show", project="proj-a"
+        )
+        rows_unfiltered = await _gather_table_rows(db, since=None, entity_type="show", project=None)
+
+    assert show_id[:16] not in [r["id"] for r in rows_filtered]
+    assert show_id[:16] in [r["id"] for r in rows_unfiltered]
+
+
+@pytest.mark.asyncio
+async def test_gather_table_rows_show_nonexistent_repo_path_no_crash(
+    temp_db_path: Path,
+) -> None:
+    """A repo path that doesn't exist on disk (dangling worktree, or the
+    literal path+annotation string import_shows sometimes stores) must not
+    crash detect_project's underlying git subprocess call — it just fails to
+    resolve and the show is excluded under --project. Exercises the real
+    detect_project(), not a monkeypatched stand-in."""
+    async with StateDB() as db:
+        show_id = await _make_show(
+            db, topic="bogus", repo="/nonexistent/path/does-not-exist-xyz-1642"
+        )
+
+        rows = await _gather_table_rows(db, since=None, entity_type="show", project="proj-a")
+
+    assert show_id[:16] not in [r["id"] for r in rows]
+
+
+@pytest.mark.asyncio
+async def test_gather_table_rows_play_row_renders_session_project(
+    temp_db_path: Path,
+) -> None:
+    """A play row's PROJECT cell must reflect its linked session's project,
+    not the hardcoded '-' placeholder."""
+    async with StateDB() as db:
+        show_id = await _make_show(db)
+        sid = await _make_session(db, project="proj-a")
+        play_id = await _make_play(db, show_id, name="play-a", session_id=sid)
+
+        rows = await _gather_table_rows(db, since=None, entity_type="play", project=None)
+
+    play_rows = [r for r in rows if r["id"] == play_id[:16]]
+    assert len(play_rows) == 1
+    assert play_rows[0]["project"] == "proj-a"
+
+
+@pytest.mark.asyncio
+async def test_gather_table_rows_orphan_play_renders_dash(temp_db_path: Path) -> None:
+    """A play with no linked session still renders without crashing, with
+    PROJECT falling back to '-' rather than raising on the missing subselect
+    match."""
+    async with StateDB() as db:
+        show_id = await _make_show(db)
+        play_no_session = await _make_play(db, show_id, name="no-session", session_id=None)
+
+        rows = await _gather_table_rows(db, since=None, entity_type="play", project=None)
+
+    by_id = {r["id"]: r for r in rows}
+    assert by_id[play_no_session[:16]]["project"] == "-"
 
 
 @pytest.mark.asyncio
