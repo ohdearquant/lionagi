@@ -85,15 +85,19 @@ async def _svc_recompute_next_fire_guarded(effective: dict[str, Any], context: s
     """
     from ..scheduler.engine import scheduler
 
-    for _ in range(2):
+    for attempt in range(2):
         try:
             await scheduler.recompute_next_fire(effective)
             return
         except Exception:
-            _log.warning(
-                "Failed to recompute next_fire_at for schedule %s after %s",
+            # A recovered first attempt is not warning-worthy noise; only the
+            # final failure (stale next_fire_at until restart) warrants one.
+            log = _log.warning if attempt else _log.debug
+            log(
+                "Failed to recompute next_fire_at for schedule %s after %s (attempt %d)",
                 effective.get("id"),
                 context,
+                attempt + 1,
                 exc_info=True,
             )
 
