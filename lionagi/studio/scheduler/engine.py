@@ -117,11 +117,14 @@ class SchedulerEngine:
         untouched here: it must flow through _check_missed_fires() first, so
         missed_fire_policy ("run_once" / "skip") gets a chance to run before
         anything advances next_fire_at into the future. _check_missed_fires()
-        runs right after this method returns (see _tick_loop), and the fire
-        path (_fire() / _record_missed_fire_skip()) is what advances
-        next_fire_at once the policy has been applied. Only schedules whose
-        stored next_fire_at is still ahead of now — the timezone-migration
-        correction case this hook exists for — are recomputed here.
+        runs right after this method returns (see _tick_loop), and the
+        recovery path (_recover_missed_fire_run_once() / _record_missed_
+        fire_skip()) is what advances next_fire_at once the policy has been
+        applied — synchronously, before _check_missed_fires() returns, so
+        the _tick() call that immediately follows never observes the same
+        past-due timestamp. Only schedules whose stored next_fire_at is
+        still ahead of now — the timezone-migration correction case this
+        hook exists for — are recomputed here.
         """
         try:
             schedules = await self._svc.list_schedules(enabled=True)
@@ -224,25 +227,62 @@ class SchedulerEngine:
             now = time.time()
             for s in schedules:
                 next_fire_at = s.get("next_fire_at")
-                if next_fire_at is None or next_fire_at >= now:
+                if next_fire_at is None or next_fire_at > now:
                     continue
                 policy = s.get("missed_fire_policy")
                 if policy == "run_once":
-                    run_id = uuid.uuid4().hex[:12]
-                    _log.info(
-                        "Missed fire recovery for schedule %s (%s)",
-                        s["name"],
-                        s["id"],
-                    )
-                    self._tracked_fire(
-                        s,
-                        run_id,
-                        trigger_context={"missed_recovery": True, "fired_at": now},
-                    )
+                    await self._recover_missed_fire_run_once(s, now)
                 else:
                     await self._record_missed_fire_skip(s, now)
         except Exception:
             _log.exception("Missed fire check error")
+
+    async def _recover_missed_fire_run_once(self, schedule: dict, now: float) -> None:
+        """Queue exactly one recovery fire for a past-due run_once schedule,
+        reserving its next_fire_at synchronously first.
+
+        _tick_loop() calls _check_missed_fires() and then _tick() back to
+        back with nothing awaited in between (the tick loop only sleeps
+        *between* iterations, not before its first one). The recovery fire
+        itself is queued as a background task via _tracked_fire() — it does
+        the real work (spawns the action) and, once it runs, persists its
+        own next_fire_at through the same _compute_next_fire() path every
+        other fire uses. But that write may not have happened yet by the
+        time the very next _tick() reloads schedules from storage: without
+        a synchronous reserve here, _tick() would see the same past-due
+        next_fire_at and queue a second, duplicate fire for it.
+
+        Reserving next_fire_at here (before returning to _tick_loop) closes
+        that window: _fire() recomputes and persists next_fire_at again
+        once it actually runs, so this reserve only has to survive long
+        enough for the immediately-following _tick() to reload schedules —
+        it is a stopgap, not a duplicate of the fire path's own bookkeeping.
+        If the process crashes between this reserve and the recovery fire
+        landing, the recovery run is lost for this cycle, but the schedule
+        is not stuck: it already holds a legitimate future next_fire_at and
+        resumes firing normally next time, equivalent to one skipped run
+        rather than indefinite starvation.
+        """
+        next_at = self._compute_next_fire(schedule, now)
+        if next_at is not None:
+            try:
+                await self._svc.update_schedule(schedule["id"], next_fire_at=next_at)
+            except Exception:
+                _log.exception(
+                    "Failed to reserve next_fire_at ahead of missed-fire recovery for schedule %s",
+                    schedule.get("id"),
+                )
+        run_id = uuid.uuid4().hex[:12]
+        _log.info(
+            "Missed fire recovery for schedule %s (%s)",
+            schedule["name"],
+            schedule["id"],
+        )
+        self._tracked_fire(
+            schedule,
+            run_id,
+            trigger_context={"missed_recovery": True, "fired_at": now},
+        )
 
     async def _record_missed_fire_skip(self, schedule: dict, now: float) -> None:
         """Record missed-fire skip and advance next_fire_at."""

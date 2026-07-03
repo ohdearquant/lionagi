@@ -801,6 +801,89 @@ async def test_startup_missed_fire_run_once_recovers_and_advances(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_startup_missed_fire_run_once_not_double_fired_by_immediate_tick(monkeypatch):
+    """Reproduces the exact _tick_loop() startup ordering: _check_missed_fires()
+    runs, then _tick() runs immediately after with no sleep in between (the
+    tick loop only sleeps *between* iterations of the while-loop, not before
+    its first one). A past-due run_once schedule must be fired exactly once
+    total: the missed-fire recovery path must reserve/advance next_fire_at
+    synchronously before _check_missed_fires() returns, so the immediately
+    following _tick() does not see the same stale past-due next_fire_at and
+    queue a second, duplicate fire for it."""
+    pytest.importorskip("croniter", reason="studio extra not installed")
+    import lionagi.studio.config as studio_config
+    import lionagi.studio.scheduler.engine as engine_mod
+    from lionagi.studio.scheduler.engine import SchedulerEngine
+
+    monkeypatch.setattr(studio_config, "SCHEDULER_TZ", "America/New_York")
+
+    fixed_now = datetime(2026, 7, 2, 10, 0, 0, tzinfo=NY).timestamp()
+    monkeypatch.setattr(engine_mod.time, "time", lambda: fixed_now)
+
+    schedule = _minimal_schedule(
+        id="sched-run-once-tick",
+        cron_expr="0 0 * * *",
+        next_fire_at=fixed_now - 3600,
+        missed_fire_policy="run_once",
+    )
+    svc = _make_svc()
+    svc.list_schedules = AsyncMock(return_value=[schedule])
+
+    async def _persist_update_schedule(sid, **fields):
+        # Mutate the same dict list_schedules() keeps returning, mirroring
+        # a real DB: a persisted update must be visible to the next fetch.
+        if sid == schedule["id"]:
+            schedule.update(fields)
+
+    svc.update_schedule = AsyncMock(side_effect=_persist_update_schedule)
+    engine = SchedulerEngine(svc=svc)
+
+    original_tracked_fire = engine._tracked_fire
+    tracked_calls: list[tuple] = []
+
+    def _spy_tracked_fire(*args, **kwargs):
+        tracked_calls.append((args, kwargs))
+        return original_tracked_fire(*args, **kwargs)
+
+    engine._tracked_fire = _spy_tracked_fire  # type: ignore[method-assign]
+
+    with (
+        patch(
+            "lionagi.studio.scheduler.subprocess.build_argv",
+            return_value=(["uv", "run", "li", "agent", "ping"], None),
+        ),
+        patch(
+            "lionagi.studio.scheduler.subprocess.spawn_and_wait",
+            new=AsyncMock(return_value=(0, "")),
+        ),
+        patch(
+            "lionagi.studio.services.lifecycle.run_periodic_reapers",
+            new=AsyncMock(return_value={}),
+        ),
+        patch(
+            "lionagi.studio.services.db_maintenance.checkpoint_state_db",
+            new=AsyncMock(return_value=None),
+        ),
+    ):
+        # Exact _tick_loop() ordering: _check_missed_fires() then _tick(),
+        # with nothing awaited/slept in between (the recovery fire is a
+        # tracked background task, not awaited here — same as production).
+        await engine._recompute_armed_cron_schedules()
+        await engine._check_missed_fires()
+        await engine._tick()
+        if engine._fire_tasks:
+            await asyncio.gather(*engine._fire_tasks)
+
+    assert len(tracked_calls) == 1, (
+        "Expected exactly one fire total (missed-fire recovery only); the "
+        "immediately-following _tick() must not queue a second, duplicate "
+        f"fire for the same past-due schedule. Got {len(tracked_calls)} "
+        f"fires: {[c[1].get('trigger_context') for c in tracked_calls]}"
+    )
+    assert tracked_calls[0][1]["trigger_context"]["missed_recovery"] is True
+
+
+@pytest.mark.asyncio
 async def test_startup_missed_fire_skip_records_no_recovery_and_advances(monkeypatch):
     """Same startup ordering, but missed_fire_policy="skip": no recovery
     fire is created, and next_fire_at still ends up in the future (advanced
@@ -844,6 +927,77 @@ async def test_startup_missed_fire_skip_records_no_recovery_and_advances(monkeyp
     final_next_fire_at = update_calls[-1].kwargs.get("next_fire_at")
     assert final_next_fire_at is not None
     assert final_next_fire_at > fixed_now
+
+
+@pytest.mark.asyncio
+async def test_check_missed_fires_run_once_equality_boundary_is_due(monkeypatch):
+    """next_fire_at == now must be treated as due by _check_missed_fires(),
+    not bypassed to the normal tick path: the startup recompute treats
+    <= now as past-due (see _recompute_armed_cron_schedules), so the
+    missed-fire guard must match with > now (strictly future), not >= now."""
+    pytest.importorskip("croniter", reason="studio extra not installed")
+    import lionagi.studio.config as studio_config
+    import lionagi.studio.scheduler.engine as engine_mod
+    from lionagi.studio.scheduler.engine import SchedulerEngine
+
+    monkeypatch.setattr(studio_config, "SCHEDULER_TZ", "America/New_York")
+
+    fixed_now = datetime(2026, 7, 2, 10, 0, 0, tzinfo=NY).timestamp()
+    monkeypatch.setattr(engine_mod.time, "time", lambda: fixed_now)
+
+    schedule = _minimal_schedule(
+        id="sched-run-once-eq",
+        cron_expr="0 0 * * *",
+        next_fire_at=fixed_now,
+        missed_fire_policy="run_once",
+    )
+    svc = _make_svc()
+    svc.list_schedules = AsyncMock(return_value=[schedule])
+    svc.update_schedule = AsyncMock()
+    engine = SchedulerEngine(svc=svc)
+
+    with patch.object(engine, "_tracked_fire") as mock_tracked:
+        await engine._check_missed_fires()
+
+    mock_tracked.assert_called_once()
+    assert mock_tracked.call_args.kwargs["trigger_context"]["missed_recovery"] is True
+
+
+@pytest.mark.asyncio
+async def test_check_missed_fires_skip_equality_boundary_is_due(monkeypatch):
+    """Same equality boundary for missed_fire_policy="skip": next_fire_at
+    == now must be recorded as a missed-fire skip, not silently fall
+    through to the normal tick's due-check."""
+    pytest.importorskip("croniter", reason="studio extra not installed")
+    import lionagi.studio.config as studio_config
+    import lionagi.studio.scheduler.engine as engine_mod
+    from lionagi.studio.scheduler.engine import SchedulerEngine
+
+    monkeypatch.setattr(studio_config, "SCHEDULER_TZ", "America/New_York")
+
+    fixed_now = datetime(2026, 7, 2, 10, 0, 0, tzinfo=NY).timestamp()
+    monkeypatch.setattr(engine_mod.time, "time", lambda: fixed_now)
+
+    from lionagi.state.reasons import ScheduleReasons
+
+    schedule = _minimal_schedule(
+        id="sched-skip-eq",
+        cron_expr="0 0 * * *",
+        next_fire_at=fixed_now,
+        missed_fire_policy="skip",
+    )
+    svc = _make_svc()
+    svc.list_schedules = AsyncMock(return_value=[schedule])
+    svc.update_schedule = AsyncMock()
+    engine = SchedulerEngine(svc=svc)
+
+    with patch.object(engine, "_tracked_fire") as mock_tracked:
+        await engine._check_missed_fires()
+
+    mock_tracked.assert_not_called()
+    svc.create_schedule_run.assert_awaited_once()
+    reason_kwargs = svc.update_status.await_args_list[-1].kwargs
+    assert reason_kwargs.get("reason_code") == ScheduleReasons.SKIPPED_MISSED_FIRE
 
 
 @pytest.mark.asyncio
