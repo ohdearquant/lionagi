@@ -24,6 +24,7 @@ import types as _types
 from typing import Any, Union, get_args, get_origin
 
 from .ast import Lact, Lvar, Program, RLvar
+from .errors import InvalidConstructorError, MissingFieldError, MissingLvarError
 from .types import ActionCall
 
 NOTE_NAMESPACE = "note"
@@ -161,6 +162,30 @@ def _alias_field(node: Lvar | RLvar | Lact) -> str | None:
     return None
 
 
+def build_action_call(alias: str, node: Lact) -> ActionCall:
+    """Parse a lact node's call text into an ``ActionCall`` placeholder.
+
+    Shared by ``_alias_value`` (OUT-gated resolution) and callers executing
+    lacts directly (e.g. a Continue-round tool pass with no OUT{} to gate
+    against). Raises ``InvalidConstructorError`` when the call text isn't a
+    parseable ``fn(args)`` expression.
+    """
+    from ._parse_function_call import parse_function_call, qualified_name
+
+    try:
+        parsed = parse_function_call(node.call)
+    except Exception as e:
+        raise InvalidConstructorError(
+            f"lact '{alias}' body is not a parseable function call: {node.call!r}"
+        ) from e
+    return ActionCall(
+        name=alias,
+        function=qualified_name(parsed),
+        arguments=parsed["arguments"],
+        raw_call=node.call,
+    )
+
+
 def _alias_value(
     alias: str,
     lvars_by_alias: dict[str, Lvar | RLvar],
@@ -175,6 +200,14 @@ def _alias_value(
     - else return the ActionCall placeholder (caller will execute later)
 
     For an OUT-side ``note.X`` ref: pull the value from ``scratchpad``.
+
+    An alias not declared this round (neither an lvar nor a lact here) but
+    present in ``action_results`` resolves to that historical result — a
+    later round's OUT{} can reference a lact executed in an earlier round
+    without re-declaring it, matching "tool results already in history".
+
+    Raises ``MissingLvarError`` when the alias is not declared anywhere
+    (this round's lvars/lacts) and has no historical result either.
     """
     if _is_note_ref(alias):
         if scratchpad is not None:
@@ -185,24 +218,13 @@ def _alias_value(
     if alias in lacts_by_alias:
         if action_results and alias in action_results:
             return True, action_results[alias]
-        # Build an ActionCall placeholder for deferred execution
-        from ._parse_function_call import parse_function_call, qualified_name
-
-        node = lacts_by_alias[alias]
-        try:
-            parsed = parse_function_call(node.call)
-            return True, ActionCall(
-                name=alias,
-                function=qualified_name(parsed),
-                arguments=parsed["arguments"],
-                raw_call=node.call,
-            )
-        except Exception:
-            return False, None
+        return True, build_action_call(alias, lacts_by_alias[alias])
     if alias in lvars_by_alias:
         node = lvars_by_alias[alias]
         return True, node.content
-    return False, None
+    if action_results and alias in action_results:
+        return True, action_results[alias]
+    raise MissingLvarError(f"OUT{{}} references undeclared alias '{alias}'")
 
 
 def assemble_spec_value(
@@ -322,14 +344,21 @@ def _assemble_grouped_list(
         if not isinstance(group, list):
             # Mixed: a flat alias outside a group — promote into singleton group
             group = [group]
-        value = assemble_spec_value(
-            group,
-            elem_type,
-            lvars_by_alias,
-            lacts_by_alias,
-            action_results,
-            scratchpad,
-        )
+        try:
+            value = assemble_spec_value(
+                group,
+                elem_type,
+                lvars_by_alias,
+                lacts_by_alias,
+                action_results,
+                scratchpad,
+            )
+        except MissingLvarError:
+            # None of this group's entries resolved as declared aliases —
+            # the model likely wrote raw string literals directly instead of
+            # nested aliases. Fall through to the salvage fallback below
+            # rather than treating a within-group literal as a real error.
+            value = None
         if value is None and _is_model_cls(elem_type):
             # All entries in the group were string literals (none of them
             # registered aliases). Salvage by piping the joined text into
@@ -415,6 +444,14 @@ def assemble(
                     out[spec_name] = scratchpad[key]
                     continue
             out[spec_name] = refs
+
+    if model_fields:
+        required = {name for name, info in model_fields.items() if info.is_required()}
+        missing = required - out.keys()
+        if missing:
+            raise MissingFieldError(
+                f"OUT{{}} is missing required field(s): {', '.join(sorted(missing))}"
+            )
     return out
 
 
@@ -456,6 +493,7 @@ __all__ = (
     "NOTE_NAMESPACE",
     "assemble",
     "assemble_spec_value",
+    "build_action_call",
     "collect_actions",
     "collect_notes",
     "replace_actions",

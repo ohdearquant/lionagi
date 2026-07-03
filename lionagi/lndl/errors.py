@@ -20,11 +20,3 @@ class TypeMismatchError(LNDLError):
 
 class InvalidConstructorError(LNDLError):
     """Cannot parse constructor syntax."""
-
-
-class MissingOutBlockError(LNDLError):
-    """No OUT{} block found in response."""
-
-
-class AmbiguousMatchError(LNDLError):
-    """Multiple fields match with similar similarity scores (tie)."""

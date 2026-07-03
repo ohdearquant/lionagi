@@ -4,12 +4,10 @@
 import pytest
 
 from lionagi.lndl.errors import (
-    AmbiguousMatchError,
     InvalidConstructorError,
     LNDLError,
     MissingFieldError,
     MissingLvarError,
-    MissingOutBlockError,
     TypeMismatchError,
 )
 
@@ -42,16 +40,6 @@ def test_invalid_constructor_error_is_lndl_error():
     assert isinstance(err, LNDLError)
 
 
-def test_missing_out_block_error_is_lndl_error():
-    err = MissingOutBlockError("no OUT{}")
-    assert isinstance(err, LNDLError)
-
-
-def test_ambiguous_match_error_is_lndl_error():
-    err = AmbiguousMatchError("ties between a and b")
-    assert isinstance(err, LNDLError)
-
-
 def test_errors_raise_correctly():
     with pytest.raises(LNDLError):
         raise LNDLError("test")
@@ -68,16 +56,10 @@ def test_errors_raise_correctly():
     with pytest.raises(InvalidConstructorError):
         raise InvalidConstructorError("c")
 
-    with pytest.raises(MissingOutBlockError):
-        raise MissingOutBlockError("no block")
-
-    with pytest.raises(AmbiguousMatchError):
-        raise AmbiguousMatchError("ambiguous")
-
 
 def test_error_hierarchy_catch_by_base():
     with pytest.raises(LNDLError):
         raise MissingLvarError("lvar")
 
     with pytest.raises(LNDLError):
-        raise AmbiguousMatchError("tie")
+        raise MissingFieldError("field")

@@ -7,6 +7,7 @@ already covers for the note-namespace and nested-group happy paths."""
 
 from __future__ import annotations
 
+import pytest
 from pydantic import BaseModel
 
 from lionagi.lndl.assembler import (
@@ -15,6 +16,7 @@ from lionagi.lndl.assembler import (
     collect_actions,
     replace_actions,
 )
+from lionagi.lndl.errors import InvalidConstructorError, MissingFieldError, MissingLvarError
 from lionagi.lndl.lexer import Lexer
 from lionagi.lndl.parser import Parser
 from lionagi.lndl.types import ActionCall
@@ -58,11 +60,11 @@ class TestActionCallPlaceholders:
         result = assemble(prog, AnswerModel, action_results={"a": "found it"})
         assert result["answer"] == "found it"
 
-    def test_malformed_lact_call_dropped_not_raised(self):
-        """A lact whose body isn't a parseable function call is silently skipped."""
+    def test_malformed_lact_call_raises_invalid_constructor(self):
+        """A lact whose body isn't a parseable function call raises, not silently skips."""
         prog = _parse("<lact a>not_a_valid_call!!!</lact>\nOUT{answer: [a]}")
-        result = assemble(prog, AnswerModel)
-        assert result["answer"] is None
+        with pytest.raises(InvalidConstructorError):
+            assemble(prog, AnswerModel)
 
 
 class TestCollectAndReplaceActions:
@@ -129,9 +131,11 @@ class TestAssembleNoOutBlock:
 
 class TestAssembleSpecValueDirect:
     def test_dict_origin_no_field_bound_refs_filtered(self):
-        """dict[K, V] target: refs with no bound field (raw aliases) contribute nothing."""
-        result = assemble_spec_value(["a", "b"], dict[str, str], {}, {}, None)
-        assert result is None
+        """dict[K, V] target: refs with no bound field (raw, declared aliases) contribute nothing."""
+        prog = _parse("<lvar a>x</lvar>\n<lvar b>y</lvar>\nOUT{d: [a, b]}")
+        lvars_by_alias = {lv.alias: lv for lv in prog.lvars}
+        result = assemble_spec_value(["a", "b"], dict[str, str], lvars_by_alias, {}, None)
+        assert result == {}
 
     def test_empty_refs_returns_none(self):
         result = assemble_spec_value([], str, {}, {}, None)
@@ -139,8 +143,15 @@ class TestAssembleSpecValueDirect:
 
     def test_non_string_alias_in_refs_skipped(self):
         """Defensive: a non-str item in refs (e.g. a stray int) is skipped, not raised."""
-        result = assemble_spec_value([1, "missing_alias"], str, {}, {}, None)
-        assert result is None
+        prog = _parse("<lvar a>1</lvar>\nOUT{answer: [a]}")
+        lvars_by_alias = {lv.alias: lv for lv in prog.lvars}
+        result = assemble_spec_value([1, "a"], str, lvars_by_alias, {}, None)
+        assert result == "1"
+
+    def test_missing_alias_in_refs_raises_missing_lvar(self):
+        """A refs entry that's a genuinely undeclared alias raises, not silently skips."""
+        with pytest.raises(MissingLvarError):
+            assemble_spec_value(["missing_alias"], str, {}, {}, None)
 
     def test_scalar_target_multiple_aliases_returns_list(self):
         """A scalar-typed spec with more than one bound alias falls back to a list."""
@@ -219,3 +230,53 @@ class TestOptionalFieldUnwrap:
         )
         result = assemble(prog, Wrapper, action_results={"s": "done"})
         assert result["report"] == {"title": "Analysis", "summary": "done"}
+
+
+class TestMissingFieldError:
+    """A required target-model field absent from OUT{} raises, rather than
+    surfacing only as a downstream pydantic ValidationError."""
+
+    def test_out_missing_required_field_raises(self):
+        class TwoFieldModel(BaseModel):
+            answer: str
+            detail: str
+
+        prog = _parse("<lvar a>hi</lvar>\nOUT{answer: [a]}")
+        with pytest.raises(MissingFieldError):
+            assemble(prog, TwoFieldModel)
+
+    def test_out_covers_all_required_fields_does_not_raise(self):
+        class TwoFieldModel(BaseModel):
+            answer: str
+            detail: str
+
+        prog = _parse("<lvar a>hi</lvar>\n<lvar b>there</lvar>\nOUT{answer: [a], detail: [b]}")
+        result = assemble(prog, TwoFieldModel)
+        assert result == {"answer": "hi", "detail": "there"}
+
+    def test_optional_field_not_required(self):
+        class OptionalModel(BaseModel):
+            answer: str
+            detail: str | None = None
+
+        prog = _parse("<lvar a>hi</lvar>\nOUT{answer: [a]}")
+        result = assemble(prog, OptionalModel)
+        assert result == {"answer": "hi"}
+
+
+class TestCrossRoundActionResults:
+    """An alias declared/executed in an earlier round (absent from this
+    round's lvars/lacts) resolves via the cumulative action_results dict —
+    a later round's OUT{} can reference it without redeclaration."""
+
+    def test_alias_from_earlier_round_resolves_without_redeclaration(self):
+        # This round's text declares nothing but the OUT block itself; 'a'
+        # was a lact executed in an earlier round.
+        prog = _parse("OUT{answer: [a]}")
+        result = assemble(prog, AnswerModel, action_results={"a": "round 1 result"})
+        assert result == {"answer": "round 1 result"}
+
+    def test_alias_missing_everywhere_still_raises(self):
+        prog = _parse("OUT{answer: [a]}")
+        with pytest.raises(MissingLvarError):
+            assemble(prog, AnswerModel, action_results={"other": "irrelevant"})
