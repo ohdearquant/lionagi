@@ -357,6 +357,11 @@ class _DagState:
     role_base: dict[str, object]
     worker_models: list[str]
     op_segments: list[dict] = field(default_factory=list)
+    # role → its resolved artifact_defaults (profile first, else casts Role),
+    # cached once per role in _build_dag so _execute_dag can register the same
+    # contract for a reactively spawned node run under that role — spawned
+    # nodes don't exist yet at DAG-build time so can't be folded in there.
+    role_artifact_defaults: dict[str, dict | None] = field(default_factory=dict)
 
 
 @dataclass
@@ -395,6 +400,7 @@ async def _build_dag(
     node_ids: list[str] = []
     role_base: dict[str, object] = {}
     role_artifact_entries: list[dict] = []
+    role_artifact_defaults: dict[str, dict | None] = {}
 
     for i, ta in enumerate(assignments):
         w_branch, w_model, w_profile = await build_worker_branch(
@@ -414,12 +420,16 @@ async def _build_dag(
         # critic) into the flow-wide contract, namespaced under this leg's
         # own artifact subdirectory. A role that declares nothing leaves the
         # contract untouched — this only fires for a real declaration.
-        role_defaults = w_profile.artifact_defaults if w_profile else None
-        if not role_defaults:
-            from lionagi.casts.pattern import Role as _Role
+        if ta.assignee in role_artifact_defaults:
+            role_defaults = role_artifact_defaults[ta.assignee]
+        else:
+            role_defaults = w_profile.artifact_defaults if w_profile else None
+            if not role_defaults:
+                from lionagi.casts.pattern import Role as _Role
 
-            with contextlib.suppress(ValueError):
-                role_defaults = _Role.load(ta.assignee).artifact_defaults
+                with contextlib.suppress(ValueError):
+                    role_defaults = _Role.load(ta.assignee).artifact_defaults
+            role_artifact_defaults[ta.assignee] = role_defaults
         leg_expected: list[dict] = []
         if role_defaults:
             for entry in role_defaults.get("expected", []):
@@ -545,6 +555,7 @@ async def _build_dag(
         spawn_roles=spawn_roles,
         role_base=role_base,
         worker_models=worker_models,
+        role_artifact_defaults=role_artifact_defaults,
     )
 
 
@@ -821,25 +832,78 @@ async def _execute_dag(
             }
         )
 
-    # Reactively spawned nodes are in the result map but not in our plan.
+    # Reactively spawned nodes are in the result map but not in our plan. Their
+    # graph node still carries the assignee role_node_builder stamped on it
+    # (role_node_builder in lionagi/orchestration/patterns.py) and the branch
+    # the executor ultimately ran it on, so both are recovered here — plan-
+    # time arrays (agent_ids/worker_models) are fixed-size and can't cover
+    # nodes injected mid-run via SpawnRequest.
+    graph_nodes = getattr(env.builder.get_graph(), "internal_nodes", {}) or {}
+    spawned_contract_entries: list[dict] = []
     spawn_idx = 0
     for nid, res in op_results.items():
         if nid in known_nodes:
             continue
         spawn_idx += 1
         sid = f"spawn-{spawn_idx}"
+        graph_node = graph_nodes.get(nid)
+        assignee = graph_node.metadata.get("assignee") if graph_node is not None else None
+        spawn_model = ""
+        if graph_node is not None and graph_node.branch_id is not None:
+            with contextlib.suppress(Exception):
+                branch = env.session.branches[graph_node.branch_id]
+                from lionagi.state import provenance as _provenance
+
+                ep_cfg = branch.chat_model.endpoint.config
+                spawn_model = _provenance.resolve_model_spec(
+                    getattr(ep_cfg, "provider", None), (ep_cfg.kwargs or {}).get("model")
+                )
         _record_result(
             {
                 "id": sid,
                 "agent_id": sid,
-                "name": "spawned",
-                "model": "",
+                "name": assignee or "spawned",
+                "model": spawn_model,
+                "assignee": assignee,
                 "depends_on": [],
                 "spawned": True,
                 "response": str(res) if res is not None else "(no response)",
                 "time_ms": t_exec_elapsed * 1000,
             }
         )
+
+        # Fold the spawned node's role contract into the session contract, the
+        # same move _build_dag makes for planned legs (ADR-0029) — without
+        # this a spawned reviewer/critic could silently skip its required
+        # artifact and the teardown backstop would have nothing to check.
+        if assignee:
+            role_defaults = dag_state.role_artifact_defaults.get(assignee)
+            if role_defaults:
+                for entry in role_defaults.get("expected", []):
+                    eid = entry.get("id", "")
+                    epath = entry.get("path", "")
+                    spawned_contract_entries.append(
+                        {
+                            **entry,
+                            "id": f"{sid}__{eid}",
+                            "path": f"{sid}/{epath}",
+                            "source": "role_default",
+                        }
+                    )
+
+    ctx_lp = getattr(env, "_live_persist", None)
+    if spawned_contract_entries and ctx_lp is not None:
+        from lionagi.state.artifact_verifier import validate_artifact_contract
+
+        existing = ctx_lp.get("artifact_contract") or {"expected": []}
+        merged_contract = {"expected": [*existing.get("expected", []), *spawned_contract_entries]}
+        validate_artifact_contract(merged_contract)
+        ctx_lp["artifact_contract"] = merged_contract
+        if ctx_lp.get("db"):
+            with contextlib.suppress(Exception):
+                await ctx_lp["db"].update_session(
+                    ctx_lp["session_id"], artifact_contract_json=json.dumps(merged_contract)
+                )
 
     spawn_note = f" (+{n_spawned} spawned)" if n_spawned else ""
     progress(f"DAG done ({t_exec_elapsed:.1f}s){spawn_note}.")
@@ -872,7 +936,6 @@ async def _synthesize(
 
     assignments = plan_result.assignments
     dep_indices = plan_result.dep_indices
-    agent_ids = plan_result.agent_ids
     node_ids = dag_state.node_ids
 
     synth_spec = synthesis_model or model_spec
@@ -888,7 +951,11 @@ async def _synthesize(
     leaf_nodes = [n for n in node_ids if n not in depended] or list(node_ids)
 
     artifacts = [f"[{r['id']} via {r['name']}]: {r['response']}" for r in agent_results]
-    adirs = [str(env.run.agent_artifact_dir(a)) for a in agent_ids]
+    # Derived from agent_results (the executor's ground truth), not the
+    # plan-time agent_ids array — reactively spawned nodes have their own
+    # artifact dir (agent_results[i]["agent_id"]) and would otherwise be
+    # silently omitted from what the synthesizer is told to read.
+    adirs = [str(env.run.agent_artifact_dir(r["agent_id"])) for r in agent_results]
     team_synth_note = ""
     if env.team_data:
         team_synth_note = (
@@ -959,20 +1026,38 @@ def _finalize_flow(
     if env.team_data:
         _post_results_to_team(env.team_data, agent_results, agent_ids, synthesis_result)
 
+    # "agents" must cover every id that "operations" (below) can reference —
+    # operations is built from agent_results, which already includes
+    # reactively spawned nodes (spawned=True), so agents has to walk the same
+    # ground truth rather than only the fixed-size plan-time assignments, or
+    # a spawned op's id resolves to nothing in UI/Studio agent lookups.
+    agents_meta = [
+        {
+            "id": agent_ids[i],
+            "name": agent_ids[i],
+            "model": worker_models[i],
+            "artifact_dir": str(env.run.agent_artifact_dir(agent_ids[i])),
+        }
+        for i in range(len(assignments))
+    ]
+    agents_meta.extend(
+        {
+            "id": r["agent_id"],
+            "name": r.get("assignee") or r["name"],
+            "model": r.get("model", ""),
+            "artifact_dir": str(env.run.agent_artifact_dir(r["agent_id"])),
+            "spawned": True,
+        }
+        for r in agent_results
+        if r.get("spawned")
+    )
+
     finalize_orchestration(
         env,
         kind="flow",
         prompt=prompt,
         extras={
-            "agents": [
-                {
-                    "id": agent_ids[i],
-                    "name": agent_ids[i],
-                    "model": worker_models[i],
-                    "artifact_dir": str(env.run.agent_artifact_dir(agent_ids[i])),
-                }
-                for i in range(len(assignments))
-            ],
+            "agents": agents_meta,
             "operations": [
                 {
                     "id": r["id"],

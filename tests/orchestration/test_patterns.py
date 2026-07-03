@@ -50,6 +50,21 @@ class TestRoleNodeBuilder:
         node = nb(SpawnRequest(instruction="x"), None)
         assert node.branch_id is None
 
+    def test_maps_assignee_stamps_metadata(self):
+        """The spawned node's role must be recoverable after branch_id is later
+        overwritten by the executor's per-spawn clone — flow.py's post-run
+        artifact-contract and DAG-metadata surfaces read this back."""
+        session, roles = _roles("researcher")
+        nb = role_node_builder(roles)
+        node = nb(SpawnRequest(instruction="dig", assignee="researcher"), None)
+        assert node.metadata.get("assignee") == "researcher"
+
+    def test_no_assignee_leaves_metadata_unset(self):
+        session, roles = _roles("researcher")
+        nb = role_node_builder(roles)
+        node = nb(SpawnRequest(instruction="x"), None)
+        assert node.metadata.get("assignee") is None
+
     def test_unknown_assignee_raises(self):
         session, roles = _roles("researcher")
         nb = role_node_builder(roles)
