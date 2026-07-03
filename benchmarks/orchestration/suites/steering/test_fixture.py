@@ -116,6 +116,29 @@ def test_rust_tagged_fence_with_python_shaped_lines_is_rejected():
     assert is_steer_adherent(text) is False
 
 
+def test_lone_fn_main_with_from_import_line_is_rejected():
+    """A single `fn main(` token plus a `from X import Y` line is not structural Rust evidence."""
+    text = "Target file: counter.rs\n```rust\nfn main() {\n    from csv import reader\n}\n```\n"
+    assert is_steer_adherent(text) is False
+
+
+def test_lone_fn_main_with_pythonic_expression_style_is_rejected():
+    """A different shape of the same fooling class: `fn main(` with no Rust-only
+    idiom (no let/use/::/macro/arrow/ref/match) beyond a single bare token,
+    wrapped around plain expression-style assignment, is not structural Rust
+    evidence — no single blacklisted Python keyword is even present here."""
+    text = (
+        "Target file: counter.rs\n"
+        "```rust\n"
+        "fn main() {\n"
+        '    rows = list(open("data.csv"))\n'
+        "    total = len(rows)\n"
+        "}\n"
+        "```\n"
+    )
+    assert is_steer_adherent(text) is False
+
+
 def test_missing_rs_extension_is_rejected():
     text = 'fn main() { println!("hi"); }'
     assert is_steer_adherent(text) is False
