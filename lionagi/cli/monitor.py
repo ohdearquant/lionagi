@@ -1038,15 +1038,20 @@ async def _advance_chains(
         for root in roots:
             chain_tail_exit[root] = row.get("exit_code")
         # The engine only ever fires a chain child when chain_depth is still
-        # under its cap AND the run wasn't cancelled (its CancelledError
-        # branch sets status="cancelled" and skips the chain-fire block
-        # entirely) -- so a run past either gate can never get a child, no
+        # under its cap AND the run actually completed its fire path: its
+        # chain block sits after the subprocess returns a real exit code, so
+        # a cancelled run (the CancelledError branch sets status="cancelled"),
+        # a skipped run (created terminal by create_skipped_run, never fired),
+        # and a run that failed before spawning (argv build error or internal
+        # exception; status="failed" with exit_code=None) all bypass it
+        # entirely. A run past any of these gates can never get a child, no
         # matter what its schedule declares, and opening a grace window for
         # it would just burn the full window before falling back.
         if (
             chain
             and row.get("chain_depth", 0) < _MAX_CHAIN_DEPTH
-            and row.get("status") != "cancelled"
+            and row.get("status") not in ("cancelled", "skipped")
+            and row.get("exit_code") is not None
             and await _schedule_declares_chain_action(
                 db, row["schedule_id"], row.get("exit_code"), cache=schedule_cache
             )

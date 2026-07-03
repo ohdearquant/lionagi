@@ -402,6 +402,51 @@ async def test_advance_chains_cancelled_run_resolves_without_grace(
 
 
 @pytest.mark.asyncio
+async def test_advance_chains_skipped_run_resolves_without_grace(
+    temp_db_path: Path,
+) -> None:
+    """A skipped run (overlap or missed-fire policy) is created terminal by
+    create_skipped_run and never goes through the engine's fire path, so no
+    chain child can ever follow it -- even though its schedule declares a
+    matching on_fail (skipped runs have exit_code=None), no grace window
+    opens; the root resolves on the very next tick."""
+    async with StateDB() as db:
+        sched_id = await _make_schedule(db, name="declares-on-fail-skip", on_fail={"kind": "agent"})
+        run_id = await _make_schedule_run(db, sched_id, status="skipped", exit_code=None)
+        pending = {run_id: await db.get_schedule_run(run_id)}
+        chain_state = _new_chain_state(pending, chain=True)
+
+        await _chain_tick(db, pending, [], chain_state, 0)
+
+    assert chain_state["resolved_roots"] == {run_id}
+    assert not chain_state["awaiting_grace"]
+
+
+@pytest.mark.asyncio
+async def test_advance_chains_failed_run_without_exit_code_resolves_without_grace(
+    temp_db_path: Path,
+) -> None:
+    """A run that failed before its subprocess ever spawned (argv build
+    error or internal exception) lands status="failed" with exit_code=None.
+    The engine's chain block sits after the subprocess returns a real exit
+    code, so such a run can never get a chain child -- even with a matching
+    on_fail declared, no grace window opens; the root resolves on the very
+    next tick."""
+    async with StateDB() as db:
+        sched_id = await _make_schedule(
+            db, name="declares-on-fail-noexit", on_fail={"kind": "agent"}
+        )
+        run_id = await _make_schedule_run(db, sched_id, status="failed", exit_code=None)
+        pending = {run_id: await db.get_schedule_run(run_id)}
+        chain_state = _new_chain_state(pending, chain=True)
+
+        await _chain_tick(db, pending, [], chain_state, 0)
+
+    assert chain_state["resolved_roots"] == {run_id}
+    assert not chain_state["awaiting_grace"]
+
+
+@pytest.mark.asyncio
 async def test_advance_chains_chain_depth_at_cap_resolves_without_grace(
     temp_db_path: Path,
 ) -> None:
