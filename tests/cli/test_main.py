@@ -157,3 +157,29 @@ def test_play_flag_before_name_includes_usage(caplog):
     assert result == 1
     full_msg = " ".join(r.message for r in caplog.records)
     assert "Usage" in full_msg or "li play" in full_msg
+
+
+# ─── package-init laziness: lionagi.cli must not eagerly import main ───
+
+
+def test_cli_package_init_is_lazy():
+    """Importing lionagi.cli (or any submodule of it, e.g. via
+    lionagi.studio.cli) must not pull in lionagi.cli.main — main.py imports
+    lionagi.studio.cli at module level, so an eager package init would make
+    every studio->cli._logging import re-enter a partially-initialized
+    module. The entry point is lionagi.cli.main:main; the package itself
+    exports nothing."""
+    import subprocess
+    import sys
+
+    code = (
+        "import sys; import lionagi.cli; "
+        "assert 'lionagi.cli.main' not in sys.modules, 'eager main import'; "
+        "import lionagi.studio.cli; "
+        "assert 'lionagi.cli.main' not in sys.modules, 'studio pulled main'; "
+        "import lionagi.cli.main; assert callable(lionagi.cli.main.main)"
+    )
+    result = subprocess.run(
+        [sys.executable, "-c", code], capture_output=True, text=True, timeout=120
+    )
+    assert result.returncode == 0, result.stderr
