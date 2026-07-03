@@ -12,6 +12,12 @@ def test_handle_play_shortcut_rewrites_name_to_flow_argv():
     assert result == ["o", "flow", "-p", "triage", "--x"]
 
 
+def test_handle_play_shortcut_resume_passthrough():
+    """play --resume <id> [...] is rewritten to o flow --resume <id> [...] verbatim."""
+    result = _handle_play_shortcut(["play", "--resume", "abc123", "--allow-degraded-context"])
+    assert result == ["o", "flow", "--resume", "abc123", "--allow-degraded-context"]
+
+
 def test_handle_play_shortcut_rejects_flag_before_name(monkeypatch):
     """play --bad returns exit code 1 because flag comes before name."""
     import lionagi.cli._logging as log_mod

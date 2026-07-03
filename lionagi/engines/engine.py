@@ -459,6 +459,7 @@ class EngineRun:
         max_concurrent: int = 5,
         verbose: bool = False,
         executor_ref: dict[str, Any] | None = None,
+        context: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         """Execute a prebuilt operation DAG on the run's session and return operation results."""
         from lionagi.operations.node import Operation  # noqa: PLC0415
@@ -533,6 +534,7 @@ class EngineRun:
         try:
             result = await self.session.flow(
                 graph,
+                context=context,
                 reactive=reactive,
                 spawn_type=spawn_type,
                 node_builder=node_builder,

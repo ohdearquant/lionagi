@@ -601,6 +601,7 @@ async def setup_orchestration_persist(
     effort: str | None = None,
     project: str | None = None,
     branches: list[Any] | None = None,
+    extra_node_metadata: dict | None = None,
 ) -> dict | None:
     db = None
     try:
@@ -616,7 +617,11 @@ async def setup_orchestration_persist(
         from lionagi.cli.kill import current_pid_markers as _pid_markers
 
         _identity_markers = _pid_markers()
-        _node_meta = {**(session_dict.get("node_metadata") or {}), **_identity_markers}
+        _node_meta = {
+            **(session_dict.get("node_metadata") or {}),
+            **_identity_markers,
+            **(extra_node_metadata or {}),
+        }
         await db.create_session(
             {
                 "id": session_id,
@@ -776,6 +781,7 @@ async def start_live_persist(
     provider: str | None = None,
     effort: str | None = None,
     project: str | None = None,
+    extra_node_metadata: dict | None = None,
 ) -> None:
     ctx = await setup_orchestration_persist(
         env.session,
@@ -790,6 +796,7 @@ async def start_live_persist(
         effort=effort,
         project=project,
         branches=list(env.session.branches),
+        extra_node_metadata=extra_node_metadata,
     )
     env._live_persist = ctx
 

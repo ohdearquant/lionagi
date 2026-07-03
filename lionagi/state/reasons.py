@@ -74,6 +74,7 @@ class RunReasons:
     CANCELLED_MANUAL_KILL = "run.cancelled.manual_kill"
     CANCELLED_FORCE_KILL = "run.cancelled.force_kill"
     CANCELLED_STALE_AUTO = "run.cancelled.stale_auto"
+    PAUSED_OPERATOR = "run.paused.operator"
 
 
 class SessionReasons:
