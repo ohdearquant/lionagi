@@ -775,16 +775,26 @@ async def _execute_dag(
     # "give_up") instead of writing its artifact is indistinguishable from a
     # clean completion once execution finishes — this makes it loud at
     # teardown even when no artifact_defaults declaration exists to catch it.
+    #
+    # The escalation tracker itself is plan-agnostic: it records any emitting
+    # node's id whether that node was planned up front or spawned mid-run via
+    # SpawnRequest (reactive mode). Spawned nodes never appear in node_ids/
+    # agent_ids (those are fixed-size arrays built once from the initial
+    # assignments), so they must be checked separately against known_nodes
+    # rather than only via the plan-time index walk below.
     escalated_op_ids = {str(x) for x in dag_result.get("escalated_operations", [])}
-    escalated_agent_ids = [
-        agent_ids[i] for i in range(len(assignments)) if node_ids[i] in escalated_op_ids
+    escalated_evidence = [
+        {"kind": "escalated_operation", "id": agent_ids[i], "label": assignments[i].assignee}
+        for i in range(len(assignments))
+        if node_ids[i] in escalated_op_ids
     ]
-    if escalated_agent_ids:
-        env._escalated_evidence = [
-            {"kind": "escalated_operation", "id": agent_ids[i], "label": assignments[i].assignee}
-            for i in range(len(assignments))
-            if node_ids[i] in escalated_op_ids
-        ]
+    for spawned_nid in sorted(escalated_op_ids - known_nodes):
+        escalated_evidence.append(
+            {"kind": "escalated_operation", "id": spawned_nid, "label": spawned_nid}
+        )
+    escalated_agent_ids = [entry["id"] for entry in escalated_evidence]
+    if escalated_evidence:
+        env._escalated_evidence = escalated_evidence
 
     agent_results: list[dict] = []
 

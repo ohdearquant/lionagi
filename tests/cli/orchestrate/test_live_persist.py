@@ -1374,3 +1374,77 @@ async def test_execute_dag_escalation_without_artifact_declaration_fails_loud(
     evidence = s["status_evidence_refs"]
     evidence = _json.loads(evidence) if isinstance(evidence, str) else evidence
     assert any(e.get("id") == "worker" for e in evidence)
+
+
+async def test_execute_dag_escalation_backstop_catches_reactively_spawned_node(
+    temp_db_path: Path,
+    tmp_path: Path,
+):
+    """The escalation backstop above only walks `range(len(assignments))` /
+    `node_ids` — the fixed-size arrays built once at plan time — so it can
+    never match an escalated id belonging to a node spawned mid-run via
+    SpawnRequest (reactive mode). ReactiveExecutor's own escalation tracking
+    is plan-agnostic: it adds ANY emitting node's id to `_escalated_ids`,
+    spawned or not. Reproduce the exact gap — an escalated id present in
+    `escalated_operations` but absent from `node_ids`/`known_nodes` — and
+    confirm it still surfaces past the backstop.
+    """
+    from unittest.mock import MagicMock, patch
+
+    from lionagi.casts.emission import TaskAssignment
+    from lionagi.cli.orchestrate.flow import _DagState, _execute_dag, _PlanResult
+
+    env = _minimal_env()
+    artifacts_dir = tmp_path / "artifacts"
+    await start_live_persist(env, invocation_kind="flow", artifacts_path=str(artifacts_dir))
+    ctx = env._live_persist
+    assert ctx is not None
+
+    assignments = [TaskAssignment(task="do the risky thing", assignee="worker")]
+    plan_result = _PlanResult(
+        assignments=assignments,
+        agent_ids=["worker"],
+        dep_indices=[[]],
+        pool=[],
+        budget_preambles={},
+    )
+    dag_state = _DagState(
+        node_ids=["node-0"],
+        known_nodes={"node-0"},
+        deps_by_node={"node-0": []},
+        reactive=True,
+        spawn_roles=None,
+        role_base={},
+        worker_models=["codex/gpt-5.5"],
+    )
+
+    from lionagi.engines import PlanningEngine
+
+    async def _run_dag_result():
+        return {
+            # The plan-time leg completed cleanly; a reactively spawned node
+            # ("node-spawned-1", never appended to node_ids/agent_ids) is the
+            # one that escalated.
+            "operation_results": {"node-0": "ok", "node-spawned-1": "(gave up)"},
+            "spawned_operations": 1,
+            "escalated_operations": ["node-spawned-1"],
+        }
+
+    fake_engine_run = MagicMock()
+    fake_engine_run.run_dag = MagicMock(return_value=_run_dag_result())
+
+    with patch.object(PlanningEngine, "new_run", return_value=fake_engine_run):
+        exec_result = await _execute_dag(env, plan_result, dag_state, max_concurrent=1, max_ops=0)
+
+    assert exec_result.escalated_agent_ids == ["node-spawned-1"]
+    assert env._escalated_evidence == [
+        {"kind": "escalated_operation", "id": "node-spawned-1", "label": "node-spawned-1"}
+    ]
+
+    await stop_live_persist(env, status="completed")
+
+    async with StateDB() as db:
+        s = await db.get_session(ctx["session_id"])
+    assert s is not None
+    assert s["status"] == "failed"
+    assert s["status_reason_code"] == "run.failed.escalated"
