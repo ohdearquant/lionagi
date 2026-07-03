@@ -104,6 +104,7 @@ Invariants:
 | `NodeFailed` | `failed` | Existing. |
 | `RunFailed` | `failed` | Existing. |
 | `NodeEscalated` | `escalated` | New — see §2. |
+| `NodePaused` | `paused` | Added by ADR-0085 slice 1 — a node blocked at an operation boundary, awaiting `resume()`. |
 | `StructuredOutput(data=EscalationRequest)` | `escalated` | Capability-emission path before `NodeEscalated` is issued. |
 | `GateDenied` | *(ignored)* | Governance detail; may trigger `NodeAwaitingApproval` upstream but is not a lane by itself. |
 | `MessageAdded`, `HookSignal`, others | *(ignored)* | Not state-bearing. |
