@@ -117,6 +117,31 @@ class TestParseErrors:
         assert nested == ["x"]
 
 
+class TestScientificNotationLiterals:
+    def test_exponent_no_dot_parses_as_float(self):
+        prog = _parse("OUT{x: 1e10}")
+        assert prog.out_block.fields["x"] == 1e10
+        assert isinstance(prog.out_block.fields["x"], float)
+
+    def test_fractional_negative_exponent_parses_as_float(self):
+        prog = _parse("OUT{x: 1.5e-3}")
+        assert prog.out_block.fields["x"] == pytest.approx(0.0015)
+
+    def test_uppercase_positive_exponent_parses_as_float(self):
+        prog = _parse("OUT{x: 2E+5}")
+        assert prog.out_block.fields["x"] == 200000.0
+
+    def test_plain_integer_still_parses_as_int(self):
+        prog = _parse("OUT{x: 42}")
+        assert prog.out_block.fields["x"] == 42
+        assert isinstance(prog.out_block.fields["x"], int)
+
+    def test_exponent_overflow_raises_parse_error(self):
+        """An exponent that overflows to inf is rejected, not silently accepted."""
+        with pytest.raises(ParseError, match="Invalid number literal"):
+            _parse("OUT{x: 1e400}")
+
+
 class TestDottedLact:
     def test_dotted_lact_parses_model_field_alias(self):
         prog = _parse("<lact model.field alias>fn(x=1)</lact>\nOUT{alias}")
