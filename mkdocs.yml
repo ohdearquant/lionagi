@@ -178,6 +178,8 @@ nav:
 
   - Concepts: concepts.md
 
+  - Choosing a Surface: choosing-a-surface.md
+
   - Cookbook:
       - cookbook/index.md
       - Codebase Audit: cookbook/codebase-audit.md
