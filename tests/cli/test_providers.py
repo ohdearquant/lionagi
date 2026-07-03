@@ -253,3 +253,67 @@ def test_resolve_persisted_effort_gemini_code_keeps_requested_effort():
 
     result = resolve_persisted_effort(provider, chat_model, "high")
     assert result == "high", f"expected requested effort to persist for gemini-code, got {result!r}"
+
+
+# ── mixed-case --effort on effort-via-model-name paths ─
+# All clamp tables (_CODEX_EFFORT_CLAMP, _clamp_claude_effort,
+# _GEMINI_EFFORT_CLAMP) are lowercase-keyed. A mixed-case --effort silently
+# misclamps instead of raising (worst on gemini: "High" -> "Medium" fallback).
+
+
+def test_normalize_effort_lowercases_and_passes_through_none():
+    from lionagi.service.providers import normalize_effort
+
+    assert normalize_effort("High") == "high"
+    assert normalize_effort("XHIGH") == "xhigh"
+    assert normalize_effort("low") == "low"
+    assert normalize_effort(None) is None
+
+
+def test_build_chat_model_mixed_case_effort_folds_correct_gemini_tier():
+    """--effort High (capitalized) must fold to the High agy tier, not
+    silently misclamp to Medium via a lowercase-keyed dict miss."""
+    from lionagi.cli._providers import build_chat_model
+
+    chat_model = build_chat_model(
+        "gemini-code", "gemini-3.5-flash", False, False, None, "High", False
+    )
+    assert chat_model == "gemini-code/Gemini 3.5 Flash (High)", (
+        f"mixed-case --effort must not misclamp, got {chat_model!r}"
+    )
+
+
+def test_build_chat_model_mixed_case_effort_matches_lowercase_equivalent():
+    from lionagi.cli._providers import build_chat_model
+
+    mixed = build_chat_model("gemini-code", "gemini-3.5-flash", False, False, None, "HIGH", False)
+    lower = build_chat_model("gemini-code", "gemini-3.5-flash", False, False, None, "high", False)
+    assert mixed == lower
+
+
+def test_build_imodel_from_spec_mixed_case_max_clamps_codex_to_xhigh(monkeypatch):
+    """--effort Max (mixed case) must still clamp to xhigh for codex, not
+    pass through raw as "Max"."""
+    import lionagi.cli._providers as pmod
+    from lionagi.testing import IModelKwargCaptor
+
+    captor = IModelKwargCaptor.fresh()
+    monkeypatch.setattr(pmod, "iModel", captor)
+
+    build_imodel_from_spec("codex/gpt-5.4", effort_override="Max")
+
+    assert captor.captures[0].get("reasoning_effort") == "xhigh"
+
+
+def test_build_imodel_from_spec_mixed_case_xhigh_clamps_claude_to_high(monkeypatch):
+    """--effort XHigh on a non-opus-4-7 Claude model must clamp to 'high',
+    matching the lowercase 'xhigh' behavior (case must not bypass the clamp)."""
+    import lionagi.cli._providers as pmod
+    from lionagi.testing import IModelKwargCaptor
+
+    captor = IModelKwargCaptor.fresh()
+    monkeypatch.setattr(pmod, "iModel", captor)
+
+    build_imodel_from_spec("claude/sonnet", effort_override="XHigh")
+
+    assert captor.captures[0].get("effort") == "high"

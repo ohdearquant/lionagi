@@ -19,6 +19,7 @@ __all__ = (
     "PROVIDER_YOLO_KWARGS",
     "PROVIDERS_EFFORT_VIA_MODEL_NAME",
     "PROVIDERS_NO_EFFORT",
+    "normalize_effort",
     "parse_model_spec",
 )
 
@@ -35,6 +36,21 @@ EFFORT_LEVELS = frozenset(
         "max",
     }
 )
+
+
+def normalize_effort(effort: str | None) -> str | None:
+    """Case-fold a raw effort string to lionagi's lowercase vocabulary.
+
+    Every clamp table below (_CODEX_EFFORT_CLAMP, _clamp_claude_effort,
+    _GEMINI_EFFORT_CLAMP) is keyed on lowercase levels and falls back to a
+    default on a lookup miss, so an un-normalized value like "High" silently
+    misclamps rather than raising. Call this once at each boundary where a
+    raw effort string enters lionagi from outside (CLI flag, profile
+    frontmatter, orchestration spec) — accepted vocabulary is unchanged,
+    only case is folded.
+    """
+    return effort.lower() if isinstance(effort, str) else effort
+
 
 # Codex accepts none|minimal|low|medium|high|xhigh — NOT "max".
 # Profiles/orchestrators may emit "max"; clamp to "xhigh" for codex.

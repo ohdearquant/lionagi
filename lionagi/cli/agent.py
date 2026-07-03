@@ -33,6 +33,7 @@ from ._providers import (
     build_chat_model,
     build_deadline_preamble,
     load_agent_profile,
+    normalize_effort,
     parse_model_spec,
     resolve_persisted_effort,
 )
@@ -203,6 +204,7 @@ async def _run_agent(
     preset: str | None = None,
 ) -> tuple[str, str, str, str]:
     """Execute one agent turn; returns (result, provider, branch_id, terminal_status)."""
+    effort = normalize_effort(effort)
     if resume and continue_last:
         raise ConfigurationError("--resume / -r and --continue-last / -c are mutually exclusive.")
     if preset and (resume or continue_last):
@@ -227,7 +229,7 @@ async def _run_agent(
         if profile.model and model_str is None:
             model_str = profile.model
         if profile.effort and effort is None:
-            effort = profile.effort
+            effort = normalize_effort(profile.effort)
         if profile.yolo and not yolo:
             yolo = True
         if profile.fast_mode and not fast:
