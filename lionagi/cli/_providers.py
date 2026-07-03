@@ -28,6 +28,7 @@ from lionagi.service.providers import (
     PROVIDERS_NO_EFFORT,
     ModelSpec,
     _clamp_claude_effort,
+    normalize_effort,
     parse_model_spec,
 )
 
@@ -43,6 +44,7 @@ __all__ = (
     "PROVIDER_YOLO_KWARGS",
     "PROVIDERS_EFFORT_VIA_MODEL_NAME",
     "PROVIDERS_NO_EFFORT",
+    "normalize_effort",
     "add_common_cli_args",
     "build_chat_model",
     "build_imodel_from_spec",
@@ -73,7 +75,7 @@ def build_imodel_from_spec(
 ) -> iModel:
     """Parse spec, build iModel. Effort in spec unless overridden."""
     ms = parse_model_spec(spec)
-    effort = effort_override if effort_override is not None else ms.effort
+    effort = normalize_effort(effort_override) if effort_override is not None else ms.effort
 
     extra: dict = {}
 
@@ -126,6 +128,7 @@ def build_chat_model(
     bypass: bool = False,
 ) -> iModel | str:
     """Legacy: for agent.py compat. Returns bare spec string when no flags."""
+    effort = normalize_effort(effort)
     extra: dict = {}
     if bypass:
         extra.update(PROVIDER_BYPASS_KWARGS.get(provider, {}))

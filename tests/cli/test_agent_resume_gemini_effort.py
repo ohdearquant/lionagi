@@ -210,3 +210,33 @@ async def test_fresh_run_unaffected_by_reapply_effort(monkeypatch, tmp_path):
 
     assert terminal_status == "completed"
     assert provider == "gemini-code"
+
+
+@pytest.mark.asyncio
+async def test_resume_mixed_case_effort_reapplies_correct_agy_tier(monkeypatch, tmp_path):
+    """`li agent -r <id> --effort High` (mixed case, no new model) must
+    replace the persisted 'Low' suffix with 'High', not silently misclamp
+    to 'Medium' via a lowercase-keyed dict miss (issue #1652)."""
+    branch_id, branch_path = _make_gemini_branch_json(
+        tmp_path, "gemini-code", "Gemini 3.5 Flash (Low)"
+    )
+
+    import lionagi.cli.agent as agent_mod
+
+    monkeypatch.setattr(agent_mod, "find_branch", lambda bid: ("run-x", branch_path))
+    _wire_agent_stubs(monkeypatch, tmp_path, operate_return="ok")
+    captured = _capture_resolved_model(monkeypatch)
+
+    from lionagi.cli.agent import _run_agent
+
+    _result, _provider, _bid, terminal_status = await _run_agent(
+        None,
+        "continue",
+        resume=branch_id,
+        effort="High",
+    )
+
+    assert terminal_status == "completed"
+    assert captured == ["Gemini 3.5 Flash (High)"], (
+        f"mixed-case --effort on resume must not misclamp, got {captured}"
+    )
