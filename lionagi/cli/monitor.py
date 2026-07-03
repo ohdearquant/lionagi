@@ -726,8 +726,23 @@ def _watch_loop(
 # live WAL-mode state.db. Separate code path from _watch_loop above — that
 # one is a human dashboard; this one blocks until specific schedule_runs go
 # terminal, then exits with a meaningful code.
+#
+# Chain-following (default on; opt out with --no-chain): the scheduler can
+# fire a child run from a terminal run's schedule on_success/on_fail (engine
+# records chain_parent_id/chain_depth on the child — see
+# lionagi/studio/scheduler/engine.py's _fire). A watched run going terminal
+# is not necessarily the end of its chain, so once it lands we extend the
+# watch frontier with any already-fired children and keep watching. A
+# schedule that declares a chain action for the outcome but whose child
+# hasn't fired yet gets a bounded grace window (_CHAIN_GRACE_TICKS poll
+# ticks) before the chain is concluded on the parent's own exit code — a
+# schedule with no matching chain action needs no grace wait at all. The
+# aggregate exit code is final-link-wins: each chain's *last* link decides,
+# not every link along the way (an on_fail recovery child that succeeds
+# means the chain as a whole succeeded).
 
 _TERMINAL_SCHEDULE_RUN_STATUSES = frozenset({"completed", "failed", "cancelled", "skipped"})
+_CHAIN_GRACE_TICKS = 2
 
 
 def _split_watched_ids(raw: list[str]) -> list[str]:
@@ -836,6 +851,189 @@ async def _poll_pending_once(
         del pending[run_id]
 
 
+async def _find_chain_children(db: Any, parent_run_id: str) -> list[dict[str, Any]]:
+    """schedule_runs the engine fired as an on_success/on_fail chain child
+    of `parent_run_id` (chain_parent_id wiring — see engine.py's _fire)."""
+    return await db.fetch_all(
+        "SELECT * FROM schedule_runs WHERE chain_parent_id = ?",
+        (parent_run_id,),
+    )
+
+
+async def _schedule_declares_chain_action(
+    db: Any,
+    schedule_id: str,
+    exit_code: int | None,
+    *,
+    cache: dict[str, dict[str, Any] | None],
+) -> bool:
+    """True if `schedule_id` declares an on_success/on_fail action matching
+    the outcome that just landed — i.e. the engine *will* attempt to fire a
+    chain child, so a grace wait for it is warranted. A schedule with no
+    matching action needs no grace wait at all."""
+    if schedule_id not in cache:
+        cache[schedule_id] = await db.get_schedule(schedule_id)
+    sched = cache[schedule_id] or {}
+    return bool(sched.get("on_success")) if exit_code == 0 else bool(sched.get("on_fail"))
+
+
+def _new_chain_state(pending: dict[str, dict[str, Any]], *, chain: bool) -> dict[str, Any]:
+    """Build the bookkeeping dict `_advance_chains` mutates tick over tick —
+    each originally-watched id in `pending` starts out owning itself as its
+    own root. Factored out so tests can drive `_advance_chains` directly the
+    same way they drive `_poll_pending_once`, without duplicating its
+    internal shape."""
+    return {
+        "root_of": {rid: {rid} for rid in pending},
+        "chain_tail_exit": {},
+        "awaiting_grace": {},
+        "resolved_roots": set(),
+        "schedule_cache": {},
+        "chain": chain,
+        # run ids that have already gone terminal and been folded once below
+        # (printed by _poll_pending_once) — lets discovery tell an
+        # already-processed child apart from one still in `pending`.
+        "done_ids": set(),
+        # run id -> exit_code observed when that run was folded — unlike
+        # chain_tail_exit (keyed by root), this answers "what did run X
+        # itself exit with" for any folded run, watched root or not.
+        "exit_of": {},
+        # parent run id -> the chain child its grace window handed off to.
+        # Lets a later-discovering ancestor follow an already-processed
+        # link forward to wherever the chain currently lives instead of
+        # stopping at that link's own exit.
+        "handoff": {},
+    }
+
+
+async def _advance_chains(
+    db: Any,
+    pending: dict[str, dict[str, Any]],
+    done: list[dict[str, Any]],
+    *,
+    chain_state: dict[str, Any],
+    processed: int,
+) -> int:
+    """Fold the newly-terminal tail of `done` (index `processed` onward)
+    into chain bookkeeping: extend `pending` with any already-fired
+    children, resolve roots whose schedule has no matching chain action
+    immediately, and start/advance a grace countdown for roots that do
+    declare one but whose child hasn't fired yet. Returns the new
+    `processed` index.
+
+    Mutates `pending` in place exactly like `_poll_pending_once` mutates
+    `done` — so a caller (the real dispatch loop, or a test) can drive this
+    function tick-by-tick with direct DB mutations in between, no real
+    sleeping required, the same way `_poll_pending_once` is tested above.
+
+    `chain_state` keys: root_of (run_id -> set of originally-watched roots
+    that run currently accounts for — a run can own more than one root when
+    an overlapping watch set passes both a run and one of its own chain
+    descendants as separate roots, see below), chain_tail_exit (root id ->
+    most recent terminal exit_code seen for that chain), awaiting_grace
+    (run_id -> {roots, ticks_left}), resolved_roots (root ids whose chain
+    has concluded), schedule_cache (memoized `db.get_schedule` lookups),
+    chain (bool — chain-following on/off; when off, every terminal row
+    resolves its root immediately, matching --no-chain's "watch only the
+    literal ids given"), done_ids (run ids already folded into the above
+    once — lets discovery tell an already-processed child apart from one
+    still waiting in `pending`), exit_of (run id -> its own folded
+    exit_code), handoff (parent run id -> the chain child its grace window
+    handed off to — followed forward when an ancestor discovers an
+    already-processed link, see below).
+    """
+    root_of = chain_state["root_of"]
+    chain_tail_exit = chain_state["chain_tail_exit"]
+    awaiting_grace = chain_state["awaiting_grace"]
+    resolved_roots = chain_state["resolved_roots"]
+    schedule_cache = chain_state["schedule_cache"]
+    chain = chain_state["chain"]
+    done_ids = chain_state["done_ids"]
+    exit_of = chain_state["exit_of"]
+    handoff = chain_state["handoff"]
+
+    for row in done[processed:]:
+        done_ids.add(row["id"])
+        exit_of[row["id"]] = row.get("exit_code")
+        roots = root_of.get(row["id"]) or {row["id"]}
+        for root in roots:
+            chain_tail_exit[root] = row.get("exit_code")
+        if chain and await _schedule_declares_chain_action(
+            db, row["schedule_id"], row.get("exit_code"), cache=schedule_cache
+        ):
+            awaiting_grace[row["id"]] = {"roots": set(roots), "ticks_left": _CHAIN_GRACE_TICKS}
+        else:
+            resolved_roots.update(roots)
+    processed = len(done)
+
+    if chain:
+        for parent_id in list(awaiting_grace):
+            info = awaiting_grace[parent_id]
+            children = await _find_chain_children(db, parent_id)
+            if children:
+                for child in children:
+                    child_id = child["id"]
+                    # A discovered child can itself already own a root — it
+                    # may be a directly-watched id in an overlapping watch
+                    # set (e.g. `li monitor run parent child` where child is
+                    # parent's own chain_parent_id link). Union the parent's
+                    # root(s) into whatever the child already owns instead
+                    # of overwriting, so the child's own root still resolves
+                    # once the child (now the chain's tail) goes terminal.
+                    root_of.setdefault(child_id, set()).update(info["roots"])
+                    handoff[parent_id] = child_id
+                    if child_id in done_ids:
+                        # The child already went terminal (possibly in the
+                        # very same tick as its parent) and was already
+                        # printed once by _poll_pending_once. Re-adding it
+                        # to `pending` would print it again on the next
+                        # tick, so fold the parent's root(s) into whatever
+                        # bookkeeping the chain currently lives in instead —
+                        # never touch `pending` for an already-printed run.
+                        # The child's own grace window may itself have
+                        # already handed off to a deeper link, so follow the
+                        # handoff trail to the chain's current carrier
+                        # first; stopping at this child would resolve the
+                        # parent's root(s) with an intermediate exit code
+                        # instead of the final link's.
+                        carrier = child_id
+                        seen = {carrier}
+                        while carrier in handoff and handoff[carrier] not in seen:
+                            carrier = handoff[carrier]
+                            seen.add(carrier)
+                        if carrier not in done_ids:
+                            # The chain's tail is a still-live descendant in
+                            # `pending` — the parent's root(s) ride on it and
+                            # resolve when it goes terminal, like any other
+                            # handed-off root.
+                            root_of.setdefault(carrier, set()).update(info["roots"])
+                        else:
+                            carrier_exit = exit_of.get(carrier)
+                            for root in info["roots"]:
+                                chain_tail_exit[root] = carrier_exit
+                            if carrier in awaiting_grace:
+                                # The carrier's own schedule also declares a
+                                # matching chain action — join its still-open
+                                # grace window rather than spinning up
+                                # separate bookkeeping for the same run.
+                                awaiting_grace[carrier]["roots"].update(info["roots"])
+                            else:
+                                # The carrier resolved outright (no matching
+                                # chain action of its own) — the parent's
+                                # root(s) resolve right along with it.
+                                resolved_roots.update(info["roots"])
+                    else:
+                        pending[child_id] = child
+                del awaiting_grace[parent_id]
+                continue
+            info["ticks_left"] -= 1
+            if info["ticks_left"] <= 0:
+                resolved_roots.update(info["roots"])
+                del awaiting_grace[parent_id]
+
+    return processed
+
+
 async def _query_schedule_runs_since(db: Any, baseline: float) -> list[dict[str, Any]]:
     """--follow discovery query: schedule_runs created strictly after
     `baseline`, oldest first. Strict '>' (not '>=') is the same
@@ -849,11 +1047,19 @@ async def _query_schedule_runs_since(db: Any, baseline: float) -> list[dict[str,
     )
 
 
-def _dispatch_wait(ids: list[str], *, interval: float, follow: bool) -> int:
+def _dispatch_wait(ids: list[str], *, interval: float, follow: bool, chain: bool = True) -> int:
     """Block until every id in `ids` reaches a terminal schedule_run status,
     printing one line per run the moment it lands; with --follow, keep
     watching (tail -f style) for newly created runs after the initial set
     drains, exiting only on SIGINT/SIGTERM.
+
+    Chain-following (default on; `chain=False` for --no-chain): a watched
+    run going terminal extends the watch frontier with any scheduler
+    on_success/on_fail chain children (see module comment above
+    _TERMINAL_SCHEDULE_RUN_STATUSES and _advance_chains). The aggregate exit
+    code is final-link-wins per chain, not every link along the way — with
+    chain-following off, that collapses back to the original one-run-one-
+    link behavior.
 
     Shaped like _watch_loop above (own signal handlers on the main thread,
     run_async per discrete tick, chunked time.sleep for cadence) rather
@@ -927,26 +1133,40 @@ def _dispatch_wait(ids: list[str], *, interval: float, follow: bool) -> int:
 
     total_watched = len(pending)
     done: list[dict[str, Any]] = []
+    chain_state = _new_chain_state(pending, chain=chain)
+    processed = 0
 
     async def _tick() -> None:
+        nonlocal processed
         async with StateDB() as db:
             await _poll_pending_once(db, pending, schedule_names, done)
+            processed = await _advance_chains(
+                db, pending, done, chain_state=chain_state, processed=processed
+            )
 
-    while pending and not interrupted:
+    def _chain_open() -> bool:
+        return bool(pending or chain_state["awaiting_grace"])
+
+    while _chain_open() and not interrupted:
         _run_tick(_tick())
-        if not pending or interrupted:
+        if not _chain_open() or interrupted:
             break
         _sleep_interval(interval)
 
+    resolved_roots = chain_state["resolved_roots"]
+    chain_tail_exit = chain_state["chain_tail_exit"]
     if unresolved:
         exit_code = EXIT_UNKNOWN
-    elif len(done) < total_watched:
-        # Some watched run never reached a terminal status before we had to
-        # stop — whether that row was ever printed is irrelevant; `done`
-        # (mutated in _poll_pending_once, see above) is the one ground truth
-        # that survives a tick being interrupted mid-flight.
+    elif len(resolved_roots) < total_watched:
+        # Some watched chain never concluded before we had to stop — either
+        # still pending outright or still inside its grace window. `done`
+        # (mutated in _poll_pending_once) and `chain_state` (mutated in
+        # _advance_chains, see above) are the ground truth that survives a
+        # tick being interrupted mid-flight.
         exit_code = EXIT_RUNNING
-    elif all(r.get("exit_code") == 0 for r in done):
+    elif all(chain_tail_exit.get(root) == 0 for root in resolved_roots):
+        # Final-link-wins: each resolved chain's most recently seen terminal
+        # exit_code decides, not every link along the way.
         exit_code = 0
     else:
         exit_code = 1
@@ -982,7 +1202,8 @@ def _dispatch_wait(ids: list[str], *, interval: float, follow: bool) -> int:
 
 
 def run_monitor_wait(argv: list[str]) -> int:
-    """Entry point for `li monitor run <id> [<id2> ...] [--interval SECS] [--follow]`."""
+    """Entry point for `li monitor run <id> [<id2> ...] [--interval SECS]
+    [--follow] [--no-chain]`."""
     parser = argparse.ArgumentParser(prog="li monitor run", add_help=True)
     parser.add_argument(
         "ids",
@@ -1001,6 +1222,18 @@ def run_monitor_wait(argv: list[str]) -> int:
         action="store_true",
         help="Keep watching for new schedule_runs after the initial set drains.",
     )
+    parser.add_argument(
+        "--no-chain",
+        dest="chain",
+        action="store_false",
+        default=True,
+        help=(
+            "Watch only the literal id(s) given. By default a watched run "
+            "going terminal follows any scheduler on_success/on_fail chain "
+            "child the engine fires for it, so the wait tracks the chain to "
+            "its final link instead of exiting on the first terminal run."
+        ),
+    )
     args = parser.parse_args(argv)
     watched_ids = _split_watched_ids(args.ids)
     if not watched_ids:
@@ -1008,7 +1241,7 @@ def run_monitor_wait(argv: list[str]) -> int:
         # of them survive comma-splitting (e.g. a lone "," or ""). Without
         # this check that degenerates into a silent, instant, exit-0 no-op.
         parser.error("no schedule_run ids given (only empty/comma-only tokens)")
-    return _dispatch_wait(watched_ids, interval=args.interval, follow=args.follow)
+    return _dispatch_wait(watched_ids, interval=args.interval, follow=args.follow, chain=args.chain)
 
 
 # ── CLI registration ──────────────────────────────────────────────────────────
@@ -1076,7 +1309,9 @@ def add_monitor_subparser(subparsers: argparse._SubParsersAction) -> None:
         help=(
             "Wait for one or more schedule_run IDs to reach a terminal state, "
             "then exit (scripting primitive; see `li monitor run --help` for "
-            "the positional form). Ignores id/--watch/--since/--type/--project."
+            "the positional form). Follows scheduler on_success/on_fail chain "
+            "children by default (see --no-chain). "
+            "Ignores id/--watch/--since/--type/--project."
         ),
     )
     mon.add_argument(
@@ -1090,6 +1325,16 @@ def add_monitor_subparser(subparsers: argparse._SubParsersAction) -> None:
         "--follow",
         action="store_true",
         help="With --run: keep watching for new schedule_runs after the initial set drains.",
+    )
+    mon.add_argument(
+        "--no-chain",
+        dest="chain",
+        action="store_false",
+        default=True,
+        help=(
+            "With --run: watch only the literal id(s) given, instead of "
+            "following scheduler on_success/on_fail chain children by default."
+        ),
     )
 
 
@@ -1106,7 +1351,9 @@ def run_monitor(args: argparse.Namespace) -> int:
 
             log_error("no schedule_run ids given (only empty/comma-only tokens)")
             return 2
-        return _dispatch_wait(watched_ids, interval=args.interval, follow=args.follow)
+        return _dispatch_wait(
+            watched_ids, interval=args.interval, follow=args.follow, chain=args.chain
+        )
 
     since: float | None = None
     if args.since:

@@ -18,8 +18,10 @@ from typing import Any
 import pytest
 
 from lionagi.cli.monitor import (
+    _advance_chains,
     _dispatch_wait,
     _format_wait_line,
+    _new_chain_state,
     _poll_pending_once,
     _query_schedule_runs_since,
     _resolve_schedule_run,
@@ -41,7 +43,13 @@ def temp_db_path(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     return db_path
 
 
-async def _make_schedule(db: StateDB, *, name: str | None = None) -> str:
+async def _make_schedule(
+    db: StateDB,
+    *,
+    name: str | None = None,
+    on_success: dict[str, Any] | None = None,
+    on_fail: dict[str, Any] | None = None,
+) -> str:
     sid = uuid.uuid4().hex[:12]
     await db.create_schedule(
         {
@@ -50,6 +58,8 @@ async def _make_schedule(db: StateDB, *, name: str | None = None) -> str:
             "trigger_type": "interval",
             "interval_sec": 60,
             "action_kind": "agent",
+            "on_success": on_success,
+            "on_fail": on_fail,
         }
     )
     return sid
@@ -62,6 +72,7 @@ async def _make_schedule_run(
     status: str = "running",
     exit_code: int | None = None,
     chain_depth: int = 0,
+    chain_parent_id: str | None = None,
 ) -> str:
     rid = uuid.uuid4().hex[:12]
     await db.create_schedule_run(
@@ -74,6 +85,7 @@ async def _make_schedule_run(
             "status": status,
             "exit_code": exit_code,
             "chain_depth": chain_depth,
+            "chain_parent_id": chain_parent_id,
             "fired_at": time.time(),
         }
     )
@@ -245,6 +257,180 @@ async def test_poll_pending_once_row_vanished_mid_wait_resolves_as_failure(
     assert len(done) == 1
     assert done[0]["exit_code"] is None
     assert "disappeared" in caplog.text.lower()
+
+
+# ── _advance_chains (the testable chain-follow tick — no real sleeps needed) ─
+#
+# Mirrors _poll_pending_once's testing style: direct calls with DB mutations
+# in between, driving the exact same pending/done/chain_state a real
+# `_dispatch_wait` tick would, but deterministically and with zero wall-clock
+# waiting for the grace window itself.
+
+
+async def _chain_tick(
+    db: StateDB,
+    pending: dict[str, Any],
+    done: list[dict[str, Any]],
+    chain_state: dict[str, Any],
+    processed: int,
+) -> int:
+    """One `_dispatch_wait` tick's worth of work: poll pending runs, then
+    fold newly-terminal rows into chain bookkeeping — exactly the order
+    `_dispatch_wait`'s own `_tick()` closure uses."""
+    await _poll_pending_once(db, pending, {}, done)
+    return await _advance_chains(db, pending, done, chain_state=chain_state, processed=processed)
+
+
+@pytest.mark.asyncio
+async def test_advance_chains_extends_frontier_and_child_exit_code_decides(
+    temp_db_path: Path, capsys: pytest.CaptureFixture
+) -> None:
+    """(a) parent terminal + child fires within the grace window -> the
+    frontier extends to the child, and the chain concludes on the child's
+    own exit code (not the parent's, even though the parent succeeded)."""
+    async with StateDB() as db:
+        sched_id = await _make_schedule(db, name="parent-sched", on_success={"kind": "agent"})
+        parent_id = await _make_schedule_run(db, sched_id, status="running")
+        pending = {parent_id: await db.get_schedule_run(parent_id)}
+        done: list[dict[str, Any]] = []
+        chain_state = _new_chain_state(pending, chain=True)
+        processed = 0
+
+        # tick 1: parent still running -- nothing to do yet
+        processed = await _chain_tick(db, pending, done, chain_state, processed)
+        assert done == []
+        assert chain_state["resolved_roots"] == set()
+
+        # parent goes terminal (success); on_success is declared -> grace starts
+        await _set_fields(db, "schedule_runs", parent_id, status="completed", exit_code=0)
+        processed = await _chain_tick(db, pending, done, chain_state, processed)
+        assert parent_id not in pending
+        assert parent_id in chain_state["awaiting_grace"]
+        assert chain_state["resolved_roots"] == set()
+
+        # child fires (simulating the scheduler engine) before grace expires
+        child_id = await _make_schedule_run(
+            db, sched_id, status="running", chain_depth=1, chain_parent_id=parent_id
+        )
+        processed = await _chain_tick(db, pending, done, chain_state, processed)
+        assert child_id in pending  # frontier extended
+        assert not chain_state["awaiting_grace"]
+        assert chain_state["resolved_roots"] == set()
+
+        # child completes -- but FAILS this time: the schedule only declares
+        # on_success, so a failing child has no further chain action and
+        # the chain concludes immediately on the child's own (nonzero) exit
+        # code, proving the child -- not the successful parent -- decides.
+        await _set_fields(db, "schedule_runs", child_id, status="failed", exit_code=1)
+        processed = await _chain_tick(db, pending, done, chain_state, processed)
+
+    assert chain_state["resolved_roots"] == {parent_id}
+    assert chain_state["chain_tail_exit"][parent_id] == 1
+    out = capsys.readouterr().out
+    assert parent_id in out
+    assert child_id in out
+
+
+@pytest.mark.asyncio
+async def test_advance_chains_no_declared_action_resolves_without_grace(
+    temp_db_path: Path,
+) -> None:
+    """(c) a schedule declaring on_success only, hit by a FAILED run, has no
+    on_fail counterpart -- the root resolves immediately, no grace entry at
+    all."""
+    async with StateDB() as db:
+        sched_id = await _make_schedule(db, name="success-only", on_success={"kind": "agent"})
+        run_id = await _make_schedule_run(db, sched_id, status="failed", exit_code=1)
+        pending = {run_id: await db.get_schedule_run(run_id)}
+        chain_state = _new_chain_state(pending, chain=True)
+
+        await _chain_tick(db, pending, [], chain_state, 0)
+
+    assert chain_state["resolved_roots"] == {run_id}
+    assert chain_state["chain_tail_exit"][run_id] == 1
+    assert not chain_state["awaiting_grace"]
+
+
+@pytest.mark.asyncio
+async def test_advance_chains_grace_expires_without_child_resolves_on_parent_exit_code(
+    temp_db_path: Path,
+) -> None:
+    """(d) a schedule declares on_success, but the child never fires within
+    the grace window -- the chain concludes on the parent's own exit code
+    rather than hanging."""
+    async with StateDB() as db:
+        sched_id = await _make_schedule(
+            db, name="declares-but-never-fires", on_success={"kind": "agent"}
+        )
+        parent_id = await _make_schedule_run(db, sched_id, status="completed", exit_code=0)
+        pending = {parent_id: await db.get_schedule_run(parent_id)}
+        done: list[dict[str, Any]] = []
+        chain_state = _new_chain_state(pending, chain=True)
+        processed = 0
+
+        processed = await _chain_tick(db, pending, done, chain_state, processed)
+        assert parent_id in chain_state["awaiting_grace"]
+        assert chain_state["resolved_roots"] == set()
+
+        # second tick, still no child anywhere -- grace expires
+        processed = await _chain_tick(db, pending, done, chain_state, processed)
+
+    assert chain_state["resolved_roots"] == {parent_id}
+    assert chain_state["chain_tail_exit"][parent_id] == 0
+    assert not chain_state["awaiting_grace"]
+
+
+@pytest.mark.asyncio
+async def test_advance_chains_multi_hop_chain_followed_to_final_link(
+    temp_db_path: Path, capsys: pytest.CaptureFixture
+) -> None:
+    """(f) a retry-on-failure chain (on_fail declared, no on_success):
+    parent fails -> child1 fails -> child2 succeeds. Depth-2 chain; the
+    final link (child2) decides the aggregate, and child2's own schedule
+    has no on_success declared so it resolves immediately once it succeeds
+    (no further grace, no infinite chase)."""
+    async with StateDB() as db:
+        sched_id = await _make_schedule(db, name="retry-on-fail", on_fail={"kind": "agent"})
+        parent_id = await _make_schedule_run(db, sched_id, status="failed", exit_code=1)
+        pending = {parent_id: await db.get_schedule_run(parent_id)}
+        done: list[dict[str, Any]] = []
+        chain_state = _new_chain_state(pending, chain=True)
+        processed = 0
+
+        # parent already terminal (failed); on_fail declared -> grace starts
+        processed = await _chain_tick(db, pending, done, chain_state, processed)
+        assert parent_id in chain_state["awaiting_grace"]
+
+        # hop 1 fires and also fails
+        child1_id = await _make_schedule_run(
+            db, sched_id, status="failed", exit_code=1, chain_depth=1, chain_parent_id=parent_id
+        )
+        processed = await _chain_tick(db, pending, done, chain_state, processed)
+        assert child1_id in pending  # discovered, not yet polled this tick
+        assert not chain_state["awaiting_grace"]
+
+        # next tick resolves child1 (already terminal) -> on_fail declared
+        # again for its own outcome -> grace starts for hop 2
+        processed = await _chain_tick(db, pending, done, chain_state, processed)
+        assert chain_state["chain_tail_exit"][parent_id] == 1
+        assert child1_id in chain_state["awaiting_grace"]
+
+        # hop 2 fires and succeeds -- final link
+        child2_id = await _make_schedule_run(
+            db, sched_id, status="completed", exit_code=0, chain_depth=2, chain_parent_id=child1_id
+        )
+        processed = await _chain_tick(db, pending, done, chain_state, processed)
+        assert child2_id in pending
+
+        processed = await _chain_tick(db, pending, done, chain_state, processed)
+
+    assert chain_state["resolved_roots"] == {parent_id}
+    assert chain_state["chain_tail_exit"][parent_id] == 0
+    assert not chain_state["awaiting_grace"]
+    out = capsys.readouterr().out
+    assert parent_id in out
+    assert child1_id in out
+    assert child2_id in out
 
 
 # ── _dispatch_wait: bounded wait, no --follow ────────────────────────────────
@@ -463,6 +649,274 @@ async def test_dispatch_wait_keyboard_interrupt_after_tick_mutates_state_still_r
     assert exit_code == 1
 
 
+# ── _dispatch_wait: chain-following (li monitor run's default; --no-chain) ──
+
+
+@pytest.mark.asyncio
+async def test_dispatch_wait_chain_follow_on_fail_recovery_final_link_wins(
+    temp_db_path: Path, capsys: pytest.CaptureFixture
+) -> None:
+    """(b) a failed parent whose schedule declares on_fail, and whose
+    already-fired child succeeded, must report exit 0 -- the chain
+    recovered, and the *final* link decides, not the failed first one. Both
+    links' lines are printed."""
+    async with StateDB() as db:
+        sched_id = await _make_schedule(db, name="flaky", on_fail={"kind": "agent"})
+        parent_id = await _make_schedule_run(db, sched_id, status="failed", exit_code=1)
+        child_id = await _make_schedule_run(
+            db, sched_id, status="completed", exit_code=0, chain_depth=1, chain_parent_id=parent_id
+        )
+
+    exit_code = _dispatch_wait([parent_id], interval=0.05, follow=False)
+
+    assert exit_code == 0
+    out = capsys.readouterr().out
+    assert parent_id in out
+    assert child_id in out
+
+
+@pytest.mark.asyncio
+async def test_dispatch_wait_chain_follow_no_declared_action_resolves_immediately(
+    temp_db_path: Path,
+) -> None:
+    """(c) a schedule declaring on_success only, hit by a FAILED run, needs
+    no grace wait at all -- must resolve well before a full poll interval,
+    not just before some generous timeout."""
+    async with StateDB() as db:
+        sched_id = await _make_schedule(db, name="success-only", on_success={"kind": "agent"})
+        run_id = await _make_schedule_run(db, sched_id, status="failed", exit_code=1)
+
+    started = time.monotonic()
+    exit_code = _dispatch_wait([run_id], interval=5.0, follow=False)
+    elapsed = time.monotonic() - started
+
+    assert exit_code == 1
+    assert elapsed < 2.0, "no matching chain action declared -- must not enter a grace wait"
+
+
+@pytest.mark.asyncio
+async def test_dispatch_wait_chain_follow_grace_expiry_does_not_hang(
+    temp_db_path: Path, capsys: pytest.CaptureFixture
+) -> None:
+    """(d) a schedule declares on_success but the child never fires -- the
+    wait must still conclude (on the parent's own exit code), not hang
+    forever waiting on a chain child that's never coming."""
+    async with StateDB() as db:
+        sched_id = await _make_schedule(
+            db, name="declares-but-never-fires", on_success={"kind": "agent"}
+        )
+        parent_id = await _make_schedule_run(db, sched_id, status="completed", exit_code=0)
+
+    started = time.monotonic()
+    exit_code = _dispatch_wait([parent_id], interval=0.02, follow=False)
+    elapsed = time.monotonic() - started
+
+    assert exit_code == 0
+    assert elapsed < 3.0
+    assert parent_id in capsys.readouterr().out
+
+
+@pytest.mark.asyncio
+async def test_dispatch_wait_no_chain_ignores_fired_children(
+    temp_db_path: Path, capsys: pytest.CaptureFixture
+) -> None:
+    """(e) --no-chain (chain=False) watches only the literal id given, even
+    when a chain child has already fired for it."""
+    async with StateDB() as db:
+        sched_id = await _make_schedule(db, name="chained", on_success={"kind": "agent"})
+        parent_id = await _make_schedule_run(db, sched_id, status="completed", exit_code=0)
+        child_id = await _make_schedule_run(
+            db, sched_id, status="failed", exit_code=1, chain_depth=1, chain_parent_id=parent_id
+        )
+
+    exit_code = _dispatch_wait([parent_id], interval=5.0, follow=False, chain=False)
+
+    assert exit_code == 0
+    out = capsys.readouterr().out
+    assert parent_id in out
+    assert child_id not in out
+
+
+@pytest.mark.asyncio
+async def test_dispatch_wait_overlapping_roots_child_watched_directly_succeeds(
+    temp_db_path: Path, capsys: pytest.CaptureFixture
+) -> None:
+    """Regression: a parent AND its already-linked chain child are both
+    passed as initial watch roots (e.g. from comma/list expansion). The
+    parent is terminal from the start, which starts a grace window that
+    discovers the child via chain_parent_id -- but the child is *also* one
+    of the originally-watched roots, and is still running at that moment.
+    The discovery must not clobber the child's own root ownership: once the
+    child later completes on its own, both the parent's root (resolved via
+    the child as its final link) and the child's own root must resolve, not
+    just the parent's."""
+    async with StateDB() as db:
+        sched_id = await _make_schedule(db, name="chained", on_success={"kind": "agent"})
+        parent_id = await _make_schedule_run(db, sched_id, status="completed", exit_code=0)
+        child_id = await _make_schedule_run(
+            db, sched_id, status="running", chain_depth=1, chain_parent_id=parent_id
+        )
+
+    def _flip_child_to_completed() -> None:
+        import asyncio
+
+        async def _go() -> None:
+            async with StateDB() as db2:
+                await _set_fields(db2, "schedule_runs", child_id, status="completed", exit_code=0)
+
+        time.sleep(0.2)
+        asyncio.run(_go())
+
+    t = threading.Thread(target=_flip_child_to_completed, daemon=True)
+    t.start()
+
+    exit_code = _dispatch_wait([parent_id, child_id], interval=0.05, follow=False)
+    t.join(timeout=5)
+
+    assert exit_code == 0
+    out = capsys.readouterr().out
+    assert out.count(parent_id) == 1
+    assert out.count(child_id) == 1
+
+
+@pytest.mark.asyncio
+async def test_dispatch_wait_overlapping_roots_child_watched_directly_fails(
+    temp_db_path: Path, capsys: pytest.CaptureFixture
+) -> None:
+    """Failure-side variant of the overlapping-roots regression above: the
+    child (also a directly-watched root) completes with a nonzero exit code
+    -- the aggregate must report failure (1), not fall back to EXIT_RUNNING
+    because the child's own root never resolved."""
+    async with StateDB() as db:
+        sched_id = await _make_schedule(db, name="chained", on_success={"kind": "agent"})
+        parent_id = await _make_schedule_run(db, sched_id, status="completed", exit_code=0)
+        child_id = await _make_schedule_run(
+            db, sched_id, status="running", chain_depth=1, chain_parent_id=parent_id
+        )
+
+    def _flip_child_to_failed() -> None:
+        import asyncio
+
+        async def _go() -> None:
+            async with StateDB() as db2:
+                await _set_fields(db2, "schedule_runs", child_id, status="failed", exit_code=1)
+
+        time.sleep(0.2)
+        asyncio.run(_go())
+
+    t = threading.Thread(target=_flip_child_to_failed, daemon=True)
+    t.start()
+
+    exit_code = _dispatch_wait([parent_id, child_id], interval=0.05, follow=False)
+    t.join(timeout=5)
+
+    assert exit_code == 1
+    out = capsys.readouterr().out
+    assert out.count(parent_id) == 1
+    assert out.count(child_id) == 1
+
+
+@pytest.mark.asyncio
+async def test_dispatch_wait_child_already_terminal_same_tick_prints_once(
+    temp_db_path: Path, capsys: pytest.CaptureFixture
+) -> None:
+    """Regression: parent AND its chain child are *both* already terminal
+    before `_dispatch_wait` even starts (no background flip needed) -- the
+    very first poll tick prints both directly, then the parent's grace-
+    window discovery finds the child via chain_parent_id. The child's own
+    schedule declares no chain action of its own, so it should already be
+    resolved outright by the time discovery reaches it -- re-adding it to
+    `pending` would make the next tick's `_poll_pending_once` print it a
+    second time."""
+    async with StateDB() as db:
+        parent_sched = await _make_schedule(db, name="parent-sched", on_success={"kind": "agent"})
+        parent_id = await _make_schedule_run(db, parent_sched, status="completed", exit_code=0)
+        child_sched = await _make_schedule(db, name="child-sched")
+        child_id = await _make_schedule_run(
+            db,
+            child_sched,
+            status="completed",
+            exit_code=0,
+            chain_depth=1,
+            chain_parent_id=parent_id,
+        )
+
+    exit_code = _dispatch_wait([parent_id, child_id], interval=0.05, follow=False)
+
+    assert exit_code == 0
+    out = capsys.readouterr().out
+    assert out.count(parent_id) == 1
+    assert out.count(child_id) == 1
+
+
+@pytest.mark.asyncio
+async def test_dispatch_wait_child_already_terminal_joins_own_grace_prints_once(
+    temp_db_path: Path, capsys: pytest.CaptureFixture
+) -> None:
+    """Variant of the above: the already-terminal child's own schedule
+    *also* declares a matching chain action (on_success), so discovery must
+    join the parent's root into the child's own `awaiting_grace` entry
+    instead of resolving it outright -- and once that grace window expires
+    (no grandchild ever fires), both roots resolve together on the child's
+    exit code, each line still printed exactly once."""
+    async with StateDB() as db:
+        sched_id = await _make_schedule(db, name="chained", on_success={"kind": "agent"})
+        parent_id = await _make_schedule_run(db, sched_id, status="completed", exit_code=0)
+        child_id = await _make_schedule_run(
+            db, sched_id, status="completed", exit_code=0, chain_depth=1, chain_parent_id=parent_id
+        )
+
+    exit_code = _dispatch_wait([parent_id, child_id], interval=0.02, follow=False)
+
+    assert exit_code == 0
+    out = capsys.readouterr().out
+    assert out.count(parent_id) == 1
+    assert out.count(child_id) == 1
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("descendant_first", [False, True])
+async def test_dispatch_wait_deep_chain_follows_handoff_past_terminal_child(
+    temp_db_path: Path, capsys: pytest.CaptureFixture, descendant_first: bool
+) -> None:
+    """Regression: a three-link chain (parent failed -> child failed ->
+    grandchild succeeded), all terminal before the wait starts, watched via
+    both the parent AND the child as overlapping roots. When the child is
+    listed first, its grace window discovers the grandchild and hands its
+    root off BEFORE the parent's grace window discovers the child — so the
+    parent's discovery finds an already-processed child that is no longer
+    in awaiting_grace. It must follow the child's handoff forward to the
+    grandchild (the chain's real tail) instead of resolving the parent's
+    root on the child's intermediate failure: final-link-wins means this
+    recovered chain reports success in both watch orders, each run printed
+    exactly once."""
+    async with StateDB() as db:
+        parent_sched = await _make_schedule(db, name="parent-sched", on_fail={"kind": "agent"})
+        parent_id = await _make_schedule_run(db, parent_sched, status="failed", exit_code=1)
+        child_sched = await _make_schedule(db, name="child-sched", on_fail={"kind": "agent"})
+        child_id = await _make_schedule_run(
+            db, child_sched, status="failed", exit_code=1, chain_depth=1, chain_parent_id=parent_id
+        )
+        grand_sched = await _make_schedule(db, name="grandchild-sched")
+        grandchild_id = await _make_schedule_run(
+            db,
+            grand_sched,
+            status="completed",
+            exit_code=0,
+            chain_depth=2,
+            chain_parent_id=child_id,
+        )
+
+    roots = [child_id, parent_id] if descendant_first else [parent_id, child_id]
+    exit_code = _dispatch_wait(roots, interval=0.02, follow=False)
+
+    assert exit_code == 0
+    out = capsys.readouterr().out
+    assert out.count(parent_id) == 1
+    assert out.count(child_id) == 1
+    assert out.count(grandchild_id) == 1
+
+
 # ── _query_schedule_runs_since (the --follow baseline boundary, deterministic) ──
 
 
@@ -599,11 +1053,45 @@ def test_add_monitor_subparser_run_flag_and_new_options():
     assert args.run_ids == "id1,id2,id3"
     assert args.interval == 3.0
     assert args.follow is False
+    assert args.chain is True  # chain-following is the default
 
-    args = parser.parse_args(["monitor", "--run", "id1", "--interval", "0.5", "--follow"])
+    args = parser.parse_args(
+        ["monitor", "--run", "id1", "--interval", "0.5", "--follow", "--no-chain"]
+    )
     assert args.run_ids == "id1"
     assert args.interval == 0.5
     assert args.follow is True
+    assert args.chain is False
+
+
+@pytest.mark.asyncio
+async def test_run_monitor_run_flag_no_chain_ignores_fired_children(
+    temp_db_path: Path, capsys: pytest.CaptureFixture
+) -> None:
+    """CLI wiring: `li monitor --run <id> --no-chain` must actually thread
+    chain=False through to _dispatch_wait, not just parse the flag."""
+    import argparse
+
+    from lionagi.cli.monitor import run_monitor
+
+    async with StateDB() as db:
+        sched_id = await _make_schedule(db, name="chained", on_success={"kind": "agent"})
+        parent_id = await _make_schedule_run(db, sched_id, status="completed", exit_code=0)
+        child_id = await _make_schedule_run(
+            db, sched_id, status="failed", exit_code=1, chain_depth=1, chain_parent_id=parent_id
+        )
+
+    parser = argparse.ArgumentParser()
+    sub = parser.add_subparsers(dest="command")
+    add_monitor_subparser(sub)
+    args = parser.parse_args(["monitor", "--run", parent_id, "--no-chain"])
+
+    exit_code = run_monitor(args)
+
+    assert exit_code == 0
+    out = capsys.readouterr().out
+    assert parent_id in out
+    assert child_id not in out
 
 
 def test_run_monitor_run_flag_comma_only_ids_is_usage_error(
@@ -659,6 +1147,27 @@ async def test_run_monitor_wait_single_positional_id(
     exit_code = run_monitor_wait([run_id])
     assert exit_code == 0
     assert run_id in capsys.readouterr().out
+
+
+@pytest.mark.asyncio
+async def test_run_monitor_wait_no_chain_flag_ignores_fired_children(
+    temp_db_path: Path, capsys: pytest.CaptureFixture
+) -> None:
+    """`li monitor run <id> --no-chain` — the positional entry point wires
+    --no-chain through to _dispatch_wait too, not just the --run flag form."""
+    async with StateDB() as db:
+        sched_id = await _make_schedule(db, name="chained", on_success={"kind": "agent"})
+        parent_id = await _make_schedule_run(db, sched_id, status="completed", exit_code=0)
+        child_id = await _make_schedule_run(
+            db, sched_id, status="failed", exit_code=1, chain_depth=1, chain_parent_id=parent_id
+        )
+
+    exit_code = run_monitor_wait([parent_id, "--no-chain"])
+
+    assert exit_code == 0
+    out = capsys.readouterr().out
+    assert parent_id in out
+    assert child_id not in out
 
 
 @pytest.mark.asyncio
@@ -734,6 +1243,7 @@ def test_cli_monitor_run_help_subprocess():
     assert result.returncode == 0
     assert "follow" in result.stdout.lower()
     assert "interval" in result.stdout.lower()
+    assert "chain" in result.stdout.lower()
 
 
 def test_cli_monitor_help_still_shows_dashboard_usage():
