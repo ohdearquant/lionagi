@@ -69,6 +69,10 @@ class RunDir:
         return self.state_root / "run.json"
 
     @property
+    def checkpoint_path(self) -> Path:
+        return self.state_root / "checkpoint.json"
+
+    @property
     def branches_dir(self) -> Path:
         return self.state_root / "branches"
 

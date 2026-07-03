@@ -13,7 +13,7 @@ from dataclasses import dataclass, field
 
 from lionagi._errors import LionError
 from lionagi._errors import TimeoutError as LionTimeoutError
-from lionagi.casts.emission import SpawnRequest
+from lionagi.casts.emission import SpawnRequest, TaskAssignment
 from lionagi.ln.concurrency import CancelScope, move_on_after
 from lionagi.orchestration import plan, role_node_builder
 
@@ -21,6 +21,7 @@ from .._logging import progress
 from .._logging import warn as _warn
 from .._providers import parse_model_spec
 from .._util import classify_exception
+from ._checkpoint import CheckpointWriter, FlowResumeError, resolve_checkpoint_target
 from ._common import (
     _create_fanout_team,
     _format_result_json,
@@ -559,6 +560,53 @@ async def _build_dag(
     )
 
 
+# ── Resume: pre-mark checkpoint-completed nodes ───────────────────────────────
+
+
+def _apply_checkpoint_precompletion(
+    env: OrchestrationEnv,
+    plan_result: _PlanResult,
+    dag_state: _DagState,
+    checkpoint_ops: dict[str, dict],
+    *,
+    allow_degraded_context: bool,
+) -> None:
+    """Mark nodes the checkpoint recorded as completed so the executor's
+    pre-completed seam (DependencyAwareExecutor.__init__) skips them outright.
+
+    A pending op that declared inherit_context expects its predecessor's
+    actual conversation history, which resume does not restore (v1: results
+    flow through parameters exactly as live, message history does not) — that
+    combination is refused loudly unless the caller passes
+    allow_degraded_context, naming every affected op so it is an informed
+    choice rather than a silent correctness trap.
+    """
+    from lionagi.protocols.types import EventStatus
+
+    graph = env.builder.get_graph()
+    degraded: list[str] = []
+
+    for agent_id, node_id in zip(plan_result.agent_ids, dag_state.node_ids, strict=True):
+        node = graph.internal_nodes.get(node_id)
+        if node is None:
+            continue
+        entry = checkpoint_ops.get(agent_id)
+        if entry and entry.get("status") == "completed":
+            node.execution.status = EventStatus.COMPLETED
+            node.execution.response = entry.get("response")
+        elif node.metadata.get("inherit_context"):
+            degraded.append(agent_id)
+
+    if degraded and not allow_degraded_context:
+        raise FlowResumeError(
+            "Resume refused: pending op(s) "
+            f"{', '.join(degraded)} expect inherited conversational context "
+            "that resume cannot restore (v1 restores results-context only). "
+            "Pass --allow-degraded-context to run them against an empty "
+            "branch instead."
+        )
+
+
 # ── Phase 2: execution ────────────────────────────────────────────────────────
 
 
@@ -569,8 +617,19 @@ async def _execute_dag(
     *,
     max_concurrent: int,
     max_ops: int,
+    checkpoint_prompt: str = "",
+    checkpoint_plan: list[dict] | None = None,
+    checkpoint_config: dict | None = None,
+    checkpoint_ops_seed: dict[str, dict] | None = None,
 ) -> _ExecResult:
-    """Drive the planning engine over the DAG and collect per-agent results."""
+    """Drive the planning engine over the DAG and collect per-agent results.
+
+    checkpoint_config is the opt-in gate for the whole checkpoint writer:
+    only when it is not None is a CheckpointWriter constructed and wired
+    into the completion/failure observers below. Tests that stub
+    env.run/env.builder with MagicMock (no checkpoint_config passed) are
+    unaffected — the writer, and every os.replace() it would do, never exists.
+    """
     assignments = plan_result.assignments
     agent_ids = plan_result.agent_ids
 
@@ -582,6 +641,27 @@ async def _execute_dag(
     worker_models = dag_state.worker_models
     role_base = dag_state.role_base
     _op_segments = dag_state.op_segments
+
+    # Shared out-of-band handle for the live executor, populated synchronously
+    # by DependencyAwareExecutor.__init__ the moment run_dag() constructs it —
+    # both the control poller and the checkpoint writer's per-completion hook
+    # (below) read from it.
+    _executor_ref: dict[str, object] = {}
+    _checkpoint_tasks: list = []
+
+    _checkpoint_writer: CheckpointWriter | None = None
+    if checkpoint_config is not None:
+        _ctx_lp = getattr(env, "_live_persist", None)
+        _checkpoint_writer = CheckpointWriter(
+            path=env.run.checkpoint_path,
+            session_id=(_ctx_lp or {}).get("session_id") or "",
+            prompt=checkpoint_prompt,
+            plan=checkpoint_plan or [],
+            config=checkpoint_config,
+            ops=dict(checkpoint_ops_seed or {}),
+        )
+        with contextlib.suppress(Exception):
+            await _checkpoint_writer.flush()
 
     await _persist_session_phase(env, "executing")
     if reactive:
@@ -659,6 +739,30 @@ async def _execute_dag(
                     break
         _persist_segments()
 
+    def _checkpoint_record(sig, status: str) -> None:
+        """Fire-and-forget the checkpoint write for one op's outcome.
+
+        sig.name is the agent_id (explicit_name at add_operation time), the
+        checkpoint's ops key; sig.op_id is the stringified node UUID, used
+        only to look up the response the executor already recorded — set
+        strictly before this signal fires (operations/flow.py
+        _execute_operation), so it is always present here.
+        """
+        if _checkpoint_writer is None:
+            return
+        executor = _executor_ref.get("executor")
+        response = None
+        if executor is not None:
+            with contextlib.suppress(Exception):
+                from uuid import UUID as _UUID
+
+                response = executor.results.get(_UUID(sig.op_id))
+        _checkpoint_tasks.append(
+            _asyncio.ensure_future(
+                _checkpoint_writer.record(sig.name, status=status, response=response)
+            )
+        )
+
     def _on_node_started(sig, _ctx):
         progress(f"  ▶ {sig.name} started")
         _update_branch_status(sig.name, "running")
@@ -668,11 +772,13 @@ async def _execute_dag(
         progress(f"  ✓ {sig.name} done ({sig.elapsed:.1f}s)")
         _update_branch_status(sig.name, "completed")
         _record_segment(sig.op_id, sig.name, "completed")
+        _checkpoint_record(sig, "completed")
 
     def _on_node_failed(sig, _ctx):
         progress(f"  ✗ {sig.name} FAILED ({sig.elapsed:.1f}s)")
         _update_branch_status(sig.name, "failed")
         _record_segment(sig.op_id, sig.name, "failed")
+        _checkpoint_record(sig, "failed")
 
     # ADR-0075 §4: run_dag drives the session bus; observers above consume the signals.
     async def _heartbeat_loop() -> None:
@@ -692,11 +798,11 @@ async def _execute_dag(
                     )
 
     # ADR-0085 part 1: control poller — the only consumer of session_controls
-    # rows queued by `li o ctl pause|resume|msg`. _executor_ref is populated
-    # synchronously by DependencyAwareExecutor.__init__ the moment run_dag()
-    # constructs it, so the "executor not yet available" window below is at
-    # most one event-loop tick, well inside poll_interval.
-    _executor_ref: dict[str, object] = {}
+    # rows queued by `li o ctl pause|resume|msg`. _executor_ref (declared
+    # above, shared with the checkpoint writer's completion hook) is
+    # populated synchronously by DependencyAwareExecutor.__init__ the moment
+    # run_dag() constructs it, so the "executor not yet available" window
+    # below is at most one event-loop tick, well inside poll_interval.
     _control_log: list[dict] = []
 
     def _persist_control_log() -> None:
@@ -775,6 +881,14 @@ async def _execute_dag(
         with contextlib.suppress(_asyncio.CancelledError):
             await _ctl_task
     t_exec_elapsed = time.monotonic() - t_exec
+
+    # Drain every scheduled checkpoint write before returning — the whole
+    # point of the writer is surviving a crash right after this function
+    # returns, so the last op's completion must be durably on disk by now,
+    # not still queued behind a fire-and-forget task.
+    if _checkpoint_tasks:
+        with contextlib.suppress(Exception):
+            await _asyncio.gather(*_checkpoint_tasks, return_exceptions=True)
 
     op_results = dag_result.get("operation_results", {})
     n_spawned = dag_result.get("spawned_operations", 0)
@@ -1122,6 +1236,8 @@ async def _run_flow(
     invocation_id: str | None = None,
     project: str | None = None,
     pack: str | None = None,
+    resume_checkpoint: dict | None = None,
+    allow_degraded_context: bool = False,
     **legacy_kwargs,
 ) -> tuple[str, str]:
     """Returns (output, terminal_status)."""
@@ -1131,6 +1247,40 @@ async def _run_flow(
         legacy_kwargs.pop("max_agents")
     if legacy_kwargs:
         raise TypeError(f"_run_flow() got unexpected keyword arguments: {list(legacy_kwargs)}")
+
+    # The checkpoint's own "config" replays THIS call's kwargs verbatim on
+    # --resume (dry_run/show_graph excluded deliberately — those are
+    # presentation flags for the CURRENT invocation, not "what happened").
+    # Built unconditionally: a resumed run's own checkpoint must be just as
+    # resumable as the first one.
+    _checkpoint_config = {
+        "model_spec": model_spec,
+        "with_synthesis": with_synthesis,
+        "synthesis_model": synthesis_model,
+        "max_concurrent": max_concurrent,
+        "yolo": yolo,
+        "bypass": bypass,
+        "verbose": verbose,
+        "effort": effort,
+        "theme": theme,
+        "output_format": output_format,
+        "save_dir": save_dir,
+        "team_name": team_name,
+        "team_attach": team_attach,
+        "cwd": cwd,
+        "timeout": timeout,
+        "agent_name": agent_name,
+        "bare": bare,
+        "workers_str": workers_str,
+        "max_ops": max_ops,
+        "reactive_spec": reactive_spec,
+        "fast": fast,
+        "playbook_name": playbook_name,
+        "playbook_artifacts": playbook_artifacts,
+        "invocation_id": invocation_id,
+        "project": project,
+        "pack": pack,
+    }
 
     env = await setup_orchestration(
         pattern_name="Flow",
@@ -1165,6 +1315,13 @@ async def _run_flow(
             agent_defaults=agent_defaults,
         )
 
+    # Every flow run stamps its own run_id into node_metadata so a later
+    # --resume can resolve this session back to a checkpoint; a resumed run
+    # additionally links to the run it resumed from.
+    _extra_node_metadata: dict = {"run_id": env.run.run_id}
+    if resume_checkpoint is not None and resume_checkpoint.get("session_id"):
+        _extra_node_metadata["resumed_from"] = resume_checkpoint["session_id"]
+
     await start_live_persist(
         env,
         invocation_kind="play" if playbook_name else "flow",
@@ -1177,6 +1334,7 @@ async def _run_flow(
         effort=env.effort,
         project=project,
         artifact_contract=artifact_contract,
+        extra_node_metadata=_extra_node_metadata,
     )
 
     inner_kw = dict(
@@ -1192,6 +1350,9 @@ async def _run_flow(
         dry_run=dry_run,
         show_graph=show_graph,
         reactive_spec=reactive_spec,
+        resume_checkpoint=resume_checkpoint,
+        allow_degraded_context=allow_degraded_context,
+        checkpoint_config=_checkpoint_config,
     )
     _terminal_status = "completed"
     result: str = ""
@@ -1268,57 +1429,86 @@ async def _run_flow_inner(
     dry_run: bool = False,
     show_graph: bool = False,
     reactive_spec: str = "all",
+    resume_checkpoint: dict | None = None,
+    allow_degraded_context: bool = False,
+    checkpoint_config: dict | None = None,
 ) -> str:
     """Sequence the flow phases: plan → [dry-run] → build → execute → synthesize → finalize."""
     t0 = time.monotonic()
 
-    roster = available_roles()
-    budget_note = ""
-    if max_ops > 0:
-        budget_note = (
-            f"BUDGET: at most {max_ops} ops total, INCLUDING any reactively "
-            "spawned follow-ups — plan tightly. "
+    if resume_checkpoint is not None:
+        # Resume: replay the persisted plan verbatim — no planner LLM call.
+        # dep_indices are already 0-based positions (persisted, not the raw
+        # depends_on ordinal refs), so _earlier_dep_indices is skipped
+        # entirely, not just its LLM-facing caller.
+        plan_entries = resume_checkpoint.get("plan") or []
+        if not plan_entries:
+            raise FlowResumeError("Checkpoint has an empty plan — nothing to resume.")
+        assignments = [
+            TaskAssignment(
+                **{k: v for k, v in entry.items() if k not in ("agent_id", "dep_indices")}
+            )
+            for entry in plan_entries
+        ]
+        agent_ids: list[str] = [entry["agent_id"] for entry in plan_entries]
+        dep_indices = [list(entry.get("dep_indices") or []) for entry in plan_entries]
+        # Replay the naming bookkeeping so a role that reactively spawns
+        # again post-resume gets a name that doesn't collide with one
+        # already used in the run being resumed (build_worker_branch
+        # re-registers each restored agent_id into _all_names itself, via
+        # the explicit_name path _build_dag already takes below).
+        for ta in assignments:
+            env._name_counts[ta.assignee] = env._name_counts.get(ta.assignee, 0) + 1
+        t_plan = 0.0
+        progress(f"Resumed plan: {len(assignments)} assignments (planner skipped).")
+    else:
+        roster = available_roles()
+        budget_note = ""
+        if max_ops > 0:
+            budget_note = (
+                f"BUDGET: at most {max_ops} ops total, INCLUDING any reactively "
+                "spawned follow-ups — plan tightly. "
+            )
+        guidance = (
+            f"{role_roster(env.default_model_spec)}\n\n{mode_roster()}\n\n"
+            f"{budget_note}{team_guidance(team_attach or team_name)}"
         )
-    guidance = (
-        f"{role_roster(env.default_model_spec)}\n\n{mode_roster()}\n\n"
-        f"{budget_note}{team_guidance(team_attach or team_name)}"
-    )
 
-    progress("Planning DAG...")
-    assignments = await plan(
-        env.orc_branch, prompt, roles=roster, dag=True, guidance=guidance, max_tasks=max_ops
-    )
-    if not assignments:
-        # Fail loud rather than silently exiting 0 with no work done.
-        _warn("Orchestrator returned no assignments; retrying once with a sharper instruction.")
+        progress("Planning DAG...")
         assignments = await plan(
-            env.orc_branch,
-            prompt,
-            roles=roster,
-            dag=True,
-            guidance=guidance + " Return ONLY the assignments list — do not perform the task.",
-            max_tasks=max_ops,
+            env.orc_branch, prompt, roles=roster, dag=True, guidance=guidance, max_tasks=max_ops
         )
-    if not assignments:
-        raise FlowPlanError(
-            "Orchestrator produced no usable plan (an empty TaskAssignment list) after a "
-            "retry. This commonly happens when the task prompt embeds imperative "
-            "multi-section instructions that pull the model into executing the task "
-            "instead of decomposing it — prefer a declarative task statement, and run "
-            "with --verbose to inspect the raw response."
-        )
+        if not assignments:
+            # Fail loud rather than silently exiting 0 with no work done.
+            _warn("Orchestrator returned no assignments; retrying once with a sharper instruction.")
+            assignments = await plan(
+                env.orc_branch,
+                prompt,
+                roles=roster,
+                dag=True,
+                guidance=guidance + " Return ONLY the assignments list — do not perform the task.",
+                max_tasks=max_ops,
+            )
+        if not assignments:
+            raise FlowPlanError(
+                "Orchestrator produced no usable plan (an empty TaskAssignment list) after a "
+                "retry. This commonly happens when the task prompt embeds imperative "
+                "multi-section instructions that pull the model into executing the task "
+                "instead of decomposing it — prefer a declarative task statement, and run "
+                "with --verbose to inspect the raw response."
+            )
 
-    # Defensive cap: a runaway orchestrator emitting hundreds of assignments
-    # would spawn hundreds of branches/iModels. Truncate (don't crash).
-    if len(assignments) > 200:
-        _warn(f"Plan has {len(assignments)} assignments; truncating to 200.")
-        assignments = assignments[:200]
+        # Defensive cap: a runaway orchestrator emitting hundreds of assignments
+        # would spawn hundreds of branches/iModels. Truncate (don't crash).
+        if len(assignments) > 200:
+            _warn(f"Plan has {len(assignments)} assignments; truncating to 200.")
+            assignments = assignments[:200]
 
-    t_plan = time.monotonic() - t0
+        t_plan = time.monotonic() - t0
 
-    agent_ids: list[str] = [env.assign_name(ta.assignee) for ta in assignments]
+        agent_ids = [env.assign_name(ta.assignee) for ta in assignments]
 
-    dep_indices = [_earlier_dep_indices(ta.depends_on, i) for i, ta in enumerate(assignments)]
+        dep_indices = [_earlier_dep_indices(ta.depends_on, i) for i, ta in enumerate(assignments)]
 
     # --workers overrides model only; --bare also drops profiles (distinct behaviors).
     pool = [s.strip() for s in workers_str.split(",")] if workers_str else []
@@ -1408,8 +1598,31 @@ async def _run_flow_inner(
 
     dag_state = await _build_dag(env, prompt, plan_result, reactive_spec=reactive_spec)
 
+    if resume_checkpoint is not None:
+        _apply_checkpoint_precompletion(
+            env,
+            plan_result,
+            dag_state,
+            resume_checkpoint.get("ops") or {},
+            allow_degraded_context=allow_degraded_context,
+        )
+        checkpoint_plan = resume_checkpoint["plan"]
+    else:
+        checkpoint_plan = [
+            {**assignments[i].model_dump(), "agent_id": agent_ids[i], "dep_indices": dep_indices[i]}
+            for i in range(len(assignments))
+        ]
+
     exec_result = await _execute_dag(
-        env, plan_result, dag_state, max_concurrent=max_concurrent, max_ops=max_ops
+        env,
+        plan_result,
+        dag_state,
+        max_concurrent=max_concurrent,
+        max_ops=max_ops,
+        checkpoint_prompt=prompt,
+        checkpoint_plan=checkpoint_plan,
+        checkpoint_config=checkpoint_config,
+        checkpoint_ops_seed=resume_checkpoint.get("ops") if resume_checkpoint is not None else None,
     )
 
     synthesis_result = None
@@ -1439,3 +1652,28 @@ async def _run_flow_inner(
     progress(f"\nTotal: {t_total:.1f}s")
 
     return output
+
+
+async def _resume_flow(
+    target: str,
+    *,
+    allow_degraded_context: bool = False,
+    dry_run: bool = False,
+    show_graph: bool = False,
+) -> tuple[str, str]:
+    """Resolve a checkpointed run/session id and replay it through _run_flow.
+
+    dry_run/show_graph come from the CURRENT invocation, not the checkpoint —
+    they are presentation flags, not part of what already happened. Every
+    other _run_flow kwarg replays the persisted config verbatim.
+    """
+    _run_dir, checkpoint = await resolve_checkpoint_target(target)
+    config = dict(checkpoint.get("config") or {})
+    config["dry_run"] = dry_run
+    config["show_graph"] = show_graph
+    return await _run_flow(
+        prompt=checkpoint.get("prompt", ""),
+        resume_checkpoint=checkpoint,
+        allow_degraded_context=allow_degraded_context,
+        **config,
+    )

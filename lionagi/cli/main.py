@@ -208,6 +208,8 @@ def _handle_play_shortcut(argv: list[str]) -> list[str] | int:
         from .status import run_play_status
 
         return run_play_status(rest[1:])
+    if head == "--resume":
+        return ["o", "flow", *rest]
     if head.startswith("-"):
         log_error(
             "li play NAME must come before flags\n"

@@ -14,8 +14,9 @@ from lionagi.ln.concurrency import is_cancelled, run_async
 from .._logging import hint, log_error
 from .._providers import add_common_cli_args
 from .._util import EXIT_CODE_BY_STATUS
+from ._checkpoint import FlowResumeError
 from .fanout import _run_fanout
-from .flow import FlowPlanError, _run_flow
+from .flow import FlowPlanError, _resume_flow, _run_flow
 
 # ── flow-spec helpers ────────────────────────────────────────────────────────
 
@@ -631,6 +632,29 @@ def add_orchestrate_subparser(
             "alone may spawn. Caps still apply via --max-ops."
         ),
     )
+    fl.add_argument(
+        "--resume",
+        metavar="RUN_OR_SESSION_ID",
+        default=None,
+        help=(
+            "Resume a checkpointed flow from a prior process (by run id, or "
+            "any session/invocation/play id backed by one). Replays the "
+            "persisted plan verbatim — no planner call, no other flow flags "
+            "read (model/prompt/playbook/etc. all come from the checkpoint). "
+            "Distinct from `li o ctl resume`, which un-pauses a still-running "
+            "session."
+        ),
+    )
+    fl.add_argument(
+        "--allow-degraded-context",
+        action="store_true",
+        help=(
+            "With --resume: proceed even when a pending op declared "
+            "inherit_context — it runs against an empty branch instead of "
+            "its predecessor's conversation history, which resume does not "
+            "restore. Without this flag such ops refuse loudly, naming them."
+        ),
+    )
     add_common_cli_args(fl)
 
     # `li o ctl status <id>` — generic alias into the same status renderer as
@@ -763,6 +787,25 @@ def run_orchestrate(args: argparse.Namespace) -> int:
         return 0
 
     if args.orch_command == "flow":
+        resume_target = getattr(args, "resume", None)
+        if resume_target:
+            flow_result, rc = _run_orch_command(
+                _resume_flow(
+                    resume_target,
+                    allow_degraded_context=getattr(args, "allow_degraded_context", False),
+                    dry_run=args.dry_run,
+                    show_graph=getattr(args, "show_graph", False),
+                ),
+                verbose=args.verbose,
+                extra_handlers=((FlowResumeError, EXIT_CODE_BY_STATUS["failed"]),),
+            )
+            if rc != 0:
+                return rc
+            output, terminal_status = flow_result
+            if not args.verbose:
+                print(output)
+            return EXIT_CODE_BY_STATUS.get(terminal_status, 0)
+
         playbook_name = getattr(args, "playbook", None)
         playbook_artifacts: dict | None = None
         file_spec = getattr(args, "file", None)
