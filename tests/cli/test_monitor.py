@@ -441,6 +441,79 @@ async def test_gather_table_rows_since_filter(temp_db_path: Path) -> None:
     assert not any(sid_old[:16] in i for i in ids)
 
 
+# ── Regression: --since widens the status filter to terminal states ───────────
+#
+# `--since` used to only ever AND a time bound on top of a running-only
+# filter, so a session that finished (however recently) could never appear
+# no matter how narrow the --since window was. These lock in the fix: with
+# --since given, terminal statuses widen into view within the window; with
+# no --since, the default view stays running-only, unchanged.
+
+
+@pytest.mark.asyncio
+async def test_since_shows_terminal_session_default_hides_it(temp_db_path: Path) -> None:
+    """A completed session is visible with --since but hidden in the default
+    (no-flag) running-only view."""
+    async with StateDB() as db:
+        sid = await _make_session(db, status="completed")
+        since = time.time() - 3600
+
+        rows_since = await _gather_table_rows(db, since=since, entity_type="session", project=None)
+        rows_default = await _gather_table_rows(db, since=None, entity_type="session", project=None)
+
+    assert sid[:16] in [r["id"] for r in rows_since], "completed session must show with --since"
+    assert sid[:16] not in [r["id"] for r in rows_default], "default view must stay running-only"
+
+
+@pytest.mark.asyncio
+async def test_since_default_view_running_only_unchanged(temp_db_path: Path) -> None:
+    """Without --since, a mix of terminal-status sessions must never appear —
+    the no-flag view's running-only behavior is unchanged by the fix."""
+    async with StateDB() as db:
+        running_id = await _make_session(db, status="running")
+        for status in ("completed", "failed", "timed_out", "aborted", "cancelled"):
+            await _make_session(db, status=status)
+
+        rows = await _gather_table_rows(db, since=None, entity_type="session", project=None)
+
+    ids = [r["id"] for r in rows]
+    assert ids == [running_id[:16]]
+
+
+@pytest.mark.asyncio
+async def test_since_shows_terminal_invocation(temp_db_path: Path) -> None:
+    """--since widens the invocations query to terminal statuses too."""
+    async with StateDB() as db:
+        inv_id = await _make_invocation(db, status="completed")
+        since = time.time() - 3600
+
+        rows_since = await _gather_table_rows(
+            db, since=since, entity_type="invocation", project=None
+        )
+        rows_default = await _gather_table_rows(
+            db, since=None, entity_type="invocation", project=None
+        )
+
+    assert inv_id[:16] in [r["id"] for r in rows_since]
+    assert inv_id[:16] not in [r["id"] for r in rows_default]
+
+
+@pytest.mark.asyncio
+async def test_since_shows_terminal_play(temp_db_path: Path) -> None:
+    """--since widens the plays query past the running-ish status tuple to
+    every play status (e.g. 'merged')."""
+    async with StateDB() as db:
+        show_id = await _make_show(db)
+        play_id = await _make_play(db, show_id, status="merged")
+        since = time.time() - 3600
+
+        rows_since = await _gather_table_rows(db, since=since, entity_type="play", project=None)
+        rows_default = await _gather_table_rows(db, since=None, entity_type="play", project=None)
+
+    assert play_id[:16] in [r["id"] for r in rows_since]
+    assert play_id[:16] not in [r["id"] for r in rows_default]
+
+
 # ── Integration: _find_entity ─────────────────────────────────────────────────
 
 
@@ -676,6 +749,74 @@ async def test_type_play_filter_includes_both_sessions_and_plays(temp_db_path: P
     ids = [r["id"] for r in rows]
     assert play_sess_id[:16] in ids, "play-kind session not in --type play results"
     assert play_row_id[:16] in ids, "play table row not in --type play results"
+
+
+# ── Regression: direct `li play` runs (no plays-table row) via --since ────────
+#
+# `create_play` has no production caller on the direct `li play NAME` path —
+# a completed direct play exists only as a session row with
+# invocation_kind='play'. The play view must surface that session (once
+# --since widens past running-only) and must never double-list it against a
+# plays-table row when one also exists for the same underlying session.
+
+
+@pytest.mark.asyncio
+async def test_since_shows_terminal_direct_play_session(temp_db_path: Path) -> None:
+    """A completed direct-play session (invocation_kind=play, no plays-table
+    row) appears in the play view with --since, and stays hidden by default."""
+    async with StateDB() as db:
+        play_sess_id = await _make_session(db, invocation_kind="play", status="completed")
+        since = time.time() - 3600
+
+        rows_since = await _gather_table_rows(db, since=since, entity_type="play", project=None)
+        rows_default = await _gather_table_rows(db, since=None, entity_type="play", project=None)
+
+    assert play_sess_id[:16] in [r["id"] for r in rows_since]
+    assert play_sess_id[:16] not in [r["id"] for r in rows_default]
+
+
+@pytest.mark.asyncio
+async def test_since_no_double_listing_when_play_row_and_session_both_exist(
+    temp_db_path: Path,
+) -> None:
+    """When a plays-table row's session_id points at a session that itself
+    carries invocation_kind='play', the play must render exactly once (from
+    the plays-table row), not a second time from the sessions branch."""
+    async with StateDB() as db:
+        show_id = await _make_show(db)
+        play_sess_id = await _make_session(db, invocation_kind="play", status="completed")
+        play_row_id = await _make_play(db, show_id, status="merged")
+        await db.execute(
+            "UPDATE plays SET session_id = ? WHERE id = ?", (play_sess_id, play_row_id)
+        )
+        since = time.time() - 3600
+
+        rows = await _gather_table_rows(db, since=since, entity_type="play", project=None)
+
+    ids = [r["id"] for r in rows]
+    assert play_row_id[:16] in ids, "the plays-table row must still appear"
+    assert play_sess_id[:16] not in ids, "the underlying session must not also appear"
+    assert ids.count(play_row_id[:16]) == 1
+
+
+@pytest.mark.asyncio
+async def test_since_no_double_listing_in_all_view(temp_db_path: Path) -> None:
+    """The same dedup must hold in the "all" (entity_type=None) view, since
+    its play section is the same _query_running_plays call."""
+    async with StateDB() as db:
+        show_id = await _make_show(db)
+        play_sess_id = await _make_session(db, invocation_kind="play", status="completed")
+        play_row_id = await _make_play(db, show_id, status="merged")
+        await db.execute(
+            "UPDATE plays SET session_id = ? WHERE id = ?", (play_sess_id, play_row_id)
+        )
+        since = time.time() - 3600
+
+        rows = await _gather_table_rows(db, since=since, entity_type=None, project=None)
+
+    ids = [r["id"] for r in rows]
+    assert play_row_id[:16] in ids
+    assert play_sess_id[:16] not in ids
 
 
 # ── Regression: AGENTS column ────────────────────────────────────────────────

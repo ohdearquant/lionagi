@@ -129,15 +129,35 @@ async def _query_running_sessions(
     project: str | None = None,
     invocation_kind: str | None = None,
 ) -> list[dict[str, Any]]:
+    """Default (since=None): running sessions only, unchanged. With --since:
+    the status filter widens to every status (running + terminal) so recently
+    completed/failed/cancelled/timed_out work becomes visible within the
+    window — `--since` otherwise only ever ANDed a time bound on top of a
+    running-only filter, so terminal work could never appear no matter how
+    recent it was.
+
+    Always excludes an `invocation_kind='play'` session that a plays-table
+    row already references via `session_id` — a direct `li play` run (no
+    show) has no plays-table row and the session itself IS the play, but
+    once a plays-table row exists for it (show-orchestrated), that row is
+    the canonical representation and the session must not also render as a
+    second, duplicate play entry.
+    """
     query = (
         "SELECT sessions.*, "
         "(SELECT COUNT(*) FROM branches WHERE session_id = sessions.id) AS branch_count "
-        "FROM sessions WHERE status = 'running'"  # noqa: S608
+        "FROM sessions WHERE 1=1"  # noqa: S608
     )
     params: list[Any] = []
     if since is not None:
         query += " AND updated_at >= ?"
         params.append(since)
+    else:
+        query += " AND status = 'running'"
+    query += (
+        " AND NOT (invocation_kind = 'play'"
+        " AND sessions.id IN (SELECT session_id FROM plays WHERE session_id IS NOT NULL))"
+    )
     if project:
         query += " AND project = ?"
         params.append(project)
@@ -154,11 +174,15 @@ async def _query_running_invocations(
     *,
     since: float | None = None,
 ) -> list[dict[str, Any]]:
-    query = "SELECT * FROM invocations WHERE status = 'running'"
+    """Default: running only. With --since: every status, time-windowed —
+    see `_query_running_sessions` docstring for the rationale."""
+    query = "SELECT * FROM invocations WHERE 1=1"  # noqa: S608
     params: list[Any] = []
     if since is not None:
         query += " AND updated_at >= ?"
         params.append(since)
+    else:
+        query += " AND status = 'running'"
     query += " ORDER BY started_at DESC"
     rows = await db.fetch_all(query, params)
     return rows
@@ -169,11 +193,15 @@ async def _query_active_shows(
     *,
     since: float | None = None,
 ) -> list[dict[str, Any]]:
-    query = "SELECT * FROM shows WHERE status = 'active'"
+    """Default: active only. With --since: every status, time-windowed —
+    see `_query_running_sessions` docstring for the rationale."""
+    query = "SELECT * FROM shows WHERE 1=1"  # noqa: S608
     params: list[Any] = []
     if since is not None:
         query += " AND updated_at >= ?"
         params.append(since)
+    else:
+        query += " AND status = 'active'"
     query += " ORDER BY updated_at DESC"
     rows = await db.fetch_all(query, params)
     return rows
@@ -184,17 +212,23 @@ async def _query_running_plays(
     *,
     since: float | None = None,
 ) -> list[dict[str, Any]]:
-    running_statuses = ("running", "running_complete", "gated", "redoing", "prepared")
-    placeholders = ",".join("?" * len(running_statuses))
+    """Default: the running-ish statuses only. With --since: every status,
+    time-windowed — see `_query_running_sessions` docstring for the
+    rationale."""
     query = (
-        f"SELECT plays.*, "  # noqa: S608
-        f"(SELECT COUNT(*) FROM branches WHERE session_id = plays.session_id) AS branch_count "
-        f"FROM plays WHERE status IN ({placeholders})"
+        "SELECT plays.*, "  # noqa: S608
+        "(SELECT COUNT(*) FROM branches WHERE session_id = plays.session_id) AS branch_count "
+        "FROM plays WHERE 1=1"
     )
-    params: list[Any] = list(running_statuses)
+    params: list[Any] = []
     if since is not None:
         query += " AND updated_at >= ?"
         params.append(since)
+    else:
+        running_statuses = ("running", "running_complete", "gated", "redoing", "prepared")
+        placeholders = ",".join("?" * len(running_statuses))
+        query += f" AND status IN ({placeholders})"
+        params.extend(running_statuses)
     query += " ORDER BY updated_at DESC"
     rows = await db.fetch_all(query, params)
     return rows
