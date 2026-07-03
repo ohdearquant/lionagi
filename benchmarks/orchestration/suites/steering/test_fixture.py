@@ -1,0 +1,153 @@
+"""Unit tests for the steering fixture's unfoolable machine check (ADR-0088)."""
+
+from __future__ import annotations
+
+import sys
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
+
+from suites.steering.fixture import is_steer_adherent  # noqa: E402
+
+_GENUINE_RUST = """\
+Target file: main.rs
+
+```rust
+use std::fs::File;
+use std::io::{BufRead, BufReader};
+
+fn main() {
+    let file = File::open("data.csv").unwrap();
+    let count = BufReader::new(file).lines().count();
+    println!("{}", count);
+}
+```
+"""
+
+_GENUINE_PYTHON = """\
+Target file: counter.py
+
+```python
+def count_rows(path):
+    with open(path) as f:
+        return sum(1 for _ in f)
+```
+"""
+
+
+def test_genuine_rust_is_adherent():
+    assert is_steer_adherent(_GENUINE_RUST) is True
+
+
+def test_genuine_python_is_not_adherent():
+    assert is_steer_adherent(_GENUINE_PYTHON) is False
+
+
+def test_fool_python_mentioning_rust_is_rejected():
+    """Python name-dropping Rust vocabulary must not fool the check — the real 'def ' still trips it."""
+    text = (
+        "Target file: counter.rs (renamed to sound like Rust, save as .rs)\n"
+        "```python\n"
+        "# like Rust's fn main pattern\n"
+        "def count_rows(path):\n"
+        "    with open(path) as f:\n"
+        "        return sum(1 for _ in f)\n"
+        "```\n"
+    )
+    assert is_steer_adherent(text) is False
+
+
+def test_genuine_rust_mentioning_def_in_comment_is_still_adherent():
+    """A `def` mention inside a Rust comment must not sink an otherwise-genuine Rust answer."""
+    text = (
+        "Target file: main.rs\n"
+        "```rust\n"
+        "// this replaces Python's def keyword entirely\n"
+        "fn main() {\n"
+        '    println!("done");\n'
+        "}\n"
+        "```\n"
+    )
+    assert is_steer_adherent(text) is True
+
+
+def test_genuine_rust_with_def_inside_string_literal_is_still_adherent():
+    """A `def` substring inside a Rust string literal must not sink a genuine Rust answer."""
+    text = (
+        "Target file: main.rs\n"
+        "```rust\n"
+        "fn main() {\n"
+        '    println!("def is not a rust keyword");\n'
+        "}\n"
+        "```\n"
+    )
+    assert is_steer_adherent(text) is True
+
+
+def test_untagged_python_avoiding_def_but_mentioning_rust_vocabulary_is_rejected():
+    """Untagged Python code mentioning .rs/fn main in a comment, with no real `def`, must not fool the check."""
+    text = (
+        "Target file: counter.rs\n"
+        "```\n"
+        "# fn main equivalent below (Rust's entrypoint, for reference)\n"
+        "import csv\n"
+        "\n"
+        'with open("data.csv") as f:\n'
+        "    rows = list(csv.reader(f))\n"
+        "\n"
+        "print(len(rows))\n"
+        "```\n"
+    )
+    assert is_steer_adherent(text) is False
+
+
+def test_rust_tagged_fence_with_python_shaped_lines_is_rejected():
+    """The fence tag must not be trusted over content: a ```rust fence containing
+    genuinely Python-shaped lines is rejected even alongside a real `fn main(`."""
+    text = (
+        "Target file: counter.rs\n"
+        "```rust\n"
+        "fn main() {\n"
+        "    import csv\n"
+        "    print(len(rows))\n"
+        "}\n"
+        "```\n"
+    )
+    assert is_steer_adherent(text) is False
+
+
+def test_lone_fn_main_with_from_import_line_is_rejected():
+    """A single `fn main(` token plus a `from X import Y` line is not structural Rust evidence."""
+    text = "Target file: counter.rs\n```rust\nfn main() {\n    from csv import reader\n}\n```\n"
+    assert is_steer_adherent(text) is False
+
+
+def test_lone_fn_main_with_pythonic_expression_style_is_rejected():
+    """A different shape of the same fooling class: `fn main(` with no Rust-only
+    idiom (no let/use/::/macro/arrow/ref/match) beyond a single bare token,
+    wrapped around plain expression-style assignment, is not structural Rust
+    evidence — no single blacklisted Python keyword is even present here."""
+    text = (
+        "Target file: counter.rs\n"
+        "```rust\n"
+        "fn main() {\n"
+        '    rows = list(open("data.csv"))\n'
+        "    total = len(rows)\n"
+        "}\n"
+        "```\n"
+    )
+    assert is_steer_adherent(text) is False
+
+
+def test_missing_rs_extension_is_rejected():
+    text = 'fn main() { println!("hi"); }'
+    assert is_steer_adherent(text) is False
+
+
+def test_missing_rust_token_is_rejected():
+    text = "See main.rs for the full source."
+    assert is_steer_adherent(text) is False
+
+
+def test_empty_text_is_rejected():
+    assert is_steer_adherent("") is False
