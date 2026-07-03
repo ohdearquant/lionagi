@@ -240,3 +240,48 @@ async def test_resume_mixed_case_effort_reapplies_correct_agy_tier(monkeypatch, 
     assert captured == ["Gemini 3.5 Flash (High)"], (
         f"mixed-case --effort on resume must not misclamp, got {captured}"
     )
+
+
+@pytest.mark.asyncio
+async def test_resume_mixed_case_profile_effort_reapplies_correct_agy_tier(monkeypatch, tmp_path):
+    """A profile with `effort: High` (mixed case) merged in when no --effort
+    is given must also resolve to 'High' on resume — the profile merge
+    happens after the CLI arg is folded, so it needs its own normalization."""
+    from types import SimpleNamespace
+
+    branch_id, branch_path = _make_gemini_branch_json(
+        tmp_path, "gemini-code", "Gemini 3.5 Flash (Low)"
+    )
+
+    import lionagi.cli.agent as agent_mod
+
+    monkeypatch.setattr(agent_mod, "find_branch", lambda bid: ("run-x", branch_path))
+    monkeypatch.setattr(
+        agent_mod,
+        "load_agent_profile",
+        lambda name: SimpleNamespace(
+            model=None,
+            effort="High",
+            yolo=False,
+            fast_mode=False,
+            system_prompt=None,
+            artifact_defaults=None,
+        ),
+    )
+    _wire_agent_stubs(monkeypatch, tmp_path, operate_return="ok")
+    captured = _capture_resolved_model(monkeypatch)
+
+    from lionagi.cli.agent import _run_agent
+
+    _result, _provider, _bid, terminal_status = await _run_agent(
+        None,
+        "continue",
+        resume=branch_id,
+        effort=None,
+        agent_name="mixed-case-profile",
+    )
+
+    assert terminal_status == "completed"
+    assert captured == ["Gemini 3.5 Flash (High)"], (
+        f"mixed-case profile effort on resume must not misclamp, got {captured}"
+    )

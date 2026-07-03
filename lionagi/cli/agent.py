@@ -229,7 +229,7 @@ async def _run_agent(
         if profile.model and model_str is None:
             model_str = profile.model
         if profile.effort and effort is None:
-            effort = profile.effort
+            effort = normalize_effort(profile.effort)
         if profile.yolo and not yolo:
             yolo = True
         if profile.fast_mode and not fast:
