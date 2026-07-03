@@ -255,7 +255,7 @@ def test_resolve_persisted_effort_gemini_code_keeps_requested_effort():
     assert result == "high", f"expected requested effort to persist for gemini-code, got {result!r}"
 
 
-# ── issue #1652 — --effort is case-sensitive on effort-via-model-name paths ─
+# ── mixed-case --effort on effort-via-model-name paths ─
 # All clamp tables (_CODEX_EFFORT_CLAMP, _clamp_claude_effort,
 # _GEMINI_EFFORT_CLAMP) are lowercase-keyed. A mixed-case --effort silently
 # misclamps instead of raising (worst on gemini: "High" -> "Medium" fallback).
