@@ -21,6 +21,13 @@ _log = logging.getLogger(__name__)
 
 _PRESERVE_DASHED: frozenset[str] = frozenset({"argument-hint"})
 
+# schedules columns declared NOT NULL — a PATCH that explicitly sets one of
+# these to null must be rejected (400) rather than passed through to a DB
+# constraint violation (or, worse, silently dropped).
+_NON_NULLABLE_SCHEDULE_FIELDS: frozenset[str] = frozenset(
+    {"name", "trigger_type", "action_kind", "missed_fire_policy", "overlap_policy"}
+)
+
 
 def _svc_validate_action_model(model: str | None) -> None:
     """Service-boundary check: reject action_model values that inject CLI flags.
@@ -78,6 +85,23 @@ def _svc_validate_cron_expr(expr: str | None, *, required: bool = False) -> None
 
     if not croniter.is_valid(expr):
         raise ValueError(f"Invalid cron expression: {expr!r}")
+
+
+def _svc_validate_interval_sec(interval: Any, *, required: bool = False) -> None:
+    """Service-boundary check: reject a missing or non-positive interval.
+
+    `required=True` rejects a missing/null value — callers pass this when
+    trigger_type == "interval", since an interval-triggered schedule without
+    interval_sec commits fine but never fires (next-fire computation returns
+    None forever), the same enabled-but-dead shape as a cron schedule with
+    no expression.
+    """
+    if interval is None:
+        if required:
+            raise ValueError("interval_sec is required when trigger_type is 'interval'")
+        return
+    if isinstance(interval, bool) or not isinstance(interval, int) or interval <= 0:
+        raise ValueError(f"interval_sec must be a positive integer, got {interval!r}")
 
 
 async def _svc_recompute_next_fire_guarded(effective: dict[str, Any], context: str) -> None:
@@ -315,6 +339,8 @@ async def create_schedule(data: dict[str, Any]) -> dict[str, Any]:
     _svc_validate_github_repo(data.get("github_repo"))
     if data.get("trigger_type") == "cron":
         _svc_validate_cron_expr(data.get("cron_expr"), required=True)
+    if data.get("trigger_type") == "interval":
+        _svc_validate_interval_sec(data.get("interval_sec"), required=True)
 
     if data.get("action_kind") == "flow_yaml":
         yaml_text = data.get("action_flow_yaml") or ""
@@ -340,12 +366,20 @@ async def create_schedule(data: dict[str, Any]) -> dict[str, Any]:
 
 
 async def update_schedule(schedule_id: str, fields: dict[str, Any]) -> bool:
-    if not fields:
-        return False
     async with StateDB() as db:
         schedule = await db.get_schedule(schedule_id)
         if not schedule:
             return False
+        if not fields:
+            # Nothing was explicitly set on the PATCH body — a genuine no-op
+            # on a schedule that exists, not a 404.
+            return True
+
+        cleared = {
+            key for key in _NON_NULLABLE_SCHEDULE_FIELDS if key in fields and fields[key] is None
+        }
+        if cleared:
+            raise ValueError(f"Field(s) {sorted(cleared)} cannot be cleared to null")
 
         if "action_model" in fields:
             _svc_validate_action_model(fields["action_model"])
@@ -378,6 +412,9 @@ async def update_schedule(schedule_id: str, fields: dict[str, Any]) -> bool:
         touches_trigger = "cron_expr" in fields or "trigger_type" in fields
         if touches_trigger and effective.get("trigger_type") == "cron":
             _svc_validate_cron_expr(effective.get("cron_expr"), required=True)
+        touches_interval = "interval_sec" in fields or "trigger_type" in fields
+        if touches_interval and effective.get("trigger_type") == "interval":
+            _svc_validate_interval_sec(effective.get("interval_sec"), required=True)
 
         await db.update_schedule(schedule_id, **fields)
 
@@ -404,6 +441,10 @@ async def enable_schedule(schedule_id: str) -> bool:
         schedule = await db.get_schedule(schedule_id)
         if not schedule:
             return False
+        if schedule.get("trigger_type") == "cron":
+            _svc_validate_cron_expr(schedule.get("cron_expr"), required=True)
+        if schedule.get("trigger_type") == "interval":
+            _svc_validate_interval_sec(schedule.get("interval_sec"), required=True)
         await db.update_schedule(schedule_id, enabled=1)
 
     # A schedule can sit disabled for a long time; its stored next_fire_at
@@ -556,7 +597,12 @@ async def create_schedule_route(body: CreateScheduleRequest) -> dict[str, Any]:
     name="update_schedule",
 )
 async def update_schedule_route(schedule_id: str, body: UpdateScheduleRequest) -> dict[str, Any]:
-    fields = body.model_dump(exclude_none=True)
+    # exclude_unset (not exclude_none): a field the client never mentioned is
+    # left untouched, while a field explicitly sent as null is passed through
+    # so update_schedule can clear it (where the column allows) or reject it
+    # (where it doesn't). exclude_none would silently drop explicit nulls,
+    # making an all-null PATCH indistinguishable from an empty one.
+    fields = body.model_dump(exclude_unset=True)
     try:
         ok = await update_schedule(schedule_id, fields)
     except ValueError as exc:
@@ -586,7 +632,10 @@ async def delete_schedule_route(schedule_id: str) -> dict[str, Any]:
     name="enable_schedule",
 )
 async def enable_schedule_route(schedule_id: str) -> dict[str, Any]:
-    ok = await enable_schedule(schedule_id)
+    try:
+        ok = await enable_schedule(schedule_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
     if not ok:
         raise HTTPException(status_code=404, detail=f"Schedule '{schedule_id}' not found")
     return {"ok": True, "enabled": True}
