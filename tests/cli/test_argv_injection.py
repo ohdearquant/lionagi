@@ -363,9 +363,13 @@ class TestBuildArgvSentinelStructure:
             if tmp_path and os.path.exists(tmp_path):
                 os.unlink(tmp_path)
 
-    def test_flow_yaml_model_positional_kept_when_set(self):
-        """flow_yaml with a model: positional still follows the sentinel (CLI overrides file)."""
+    def test_flow_yaml_model_merged_into_spec(self):
+        """flow_yaml with a model: merged into the spec file, never a positional.
+        A lone model positional is reclassified as prompt text by `li o flow -f`
+        whenever the file carries its own model/agent, so the file must win."""
         import os
+
+        import yaml
 
         from lionagi.studio.scheduler.subprocess import build_argv
 
@@ -376,12 +380,42 @@ class TestBuildArgvSentinelStructure:
             "action_prompt": None,
             "action_project": None,
             "action_extra_args": [],
-            "action_flow_yaml": "prompt: yaml prompt\n",
+            "action_flow_yaml": "model: claude-code/opus-4-7\nprompt: yaml prompt\n",
         }
         argv, tmp_path = build_argv(sched, {})
         try:
-            sentinel_idx = argv.index("--")
-            assert argv[sentinel_idx + 1 :] == ["sonnet"]
+            assert "sonnet" not in argv, f"model leaked into argv: {argv}"
+            assert argv[-1] == "--", f"argv must end at the sentinel: {argv}"
+            with open(tmp_path) as fh:
+                spec = yaml.safe_load(fh)
+            assert spec["model"] == "sonnet"
+            assert spec["prompt"] == "yaml prompt"
+        finally:
+            if tmp_path and os.path.exists(tmp_path):
+                os.unlink(tmp_path)
+
+    def test_flow_yaml_unparseable_spec_written_unchanged(self):
+        """flow_yaml with a model but a broken spec: no merge, no positional;
+        the file is written as-is so `li o flow` reports its own parse error."""
+        import os
+
+        from lionagi.studio.scheduler.subprocess import build_argv
+
+        broken = "prompt: [unclosed\n"
+        sched = {
+            "id": "sy",
+            "action_kind": "flow_yaml",
+            "action_model": "sonnet",
+            "action_prompt": None,
+            "action_project": None,
+            "action_extra_args": [],
+            "action_flow_yaml": broken,
+        }
+        argv, tmp_path = build_argv(sched, {})
+        try:
+            assert "sonnet" not in argv, f"model leaked into argv: {argv}"
+            with open(tmp_path) as fh:
+                assert fh.read() == broken
         finally:
             if tmp_path and os.path.exists(tmp_path):
                 os.unlink(tmp_path)

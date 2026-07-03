@@ -259,6 +259,24 @@ def build_argv(schedule: dict, trigger_context: dict) -> tuple[list[str], str | 
         # can read it.  The caller is responsible for deleting tmp_path after
         # the subprocess exits.
         yaml_text = schedule.get("action_flow_yaml") or ""
+        if model:
+            # An explicit action_model is merged into the spec itself, never
+            # passed as a positional: when the file supplies its own model or
+            # agent, `li o flow -f` reclassifies a lone model positional as
+            # prompt text, so a positional cannot reliably override the file.
+            # Merging into the spec wins deterministically and leaves no
+            # positional surface at all. Unparseable or non-mapping specs are
+            # written unchanged — `li o flow` rejects them with its own parse
+            # error, which names the file.
+            import yaml
+
+            try:
+                spec = yaml.safe_load(yaml_text)
+            except Exception:
+                spec = None
+            if isinstance(spec, dict):
+                spec["model"] = model
+                yaml_text = yaml.safe_dump(spec, sort_keys=False, allow_unicode=True)
         fd, tmp_path = tempfile.mkstemp(suffix=".yaml", prefix="lionagi-sched-")
         try:
             with os.fdopen(fd, "w") as fh:
@@ -266,17 +284,13 @@ def build_argv(schedule: dict, trigger_context: dict) -> tuple[list[str], str | 
         except Exception:
             os.unlink(tmp_path)
             raise
-        # Named flags first (-f must come before --), then -- sentinel, then
-        # model positional only (no prompt positional — YAML supplies it).
-        # `li o flow -f` treats file values as defaults that CLI positionals
-        # override, so an unset model must be omitted entirely: an explicit
-        # blank positional would suppress the YAML's own model/agent defaults.
+        # Named flags first (-f must come before --), then the -- sentinel.
+        # No positionals at all: the YAML file supplies the prompt, and any
+        # explicit model was merged into the spec above.
         flags = ["-f", tmp_path]
         if project:
             flags += ["--project", project]
         argv += ["o", "flow", *flags, "--"]
-        if model:
-            argv.append(model)
 
     elif kind == "engine":
         # engine def launch: argv shape is
