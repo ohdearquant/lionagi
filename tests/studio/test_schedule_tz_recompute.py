@@ -329,7 +329,7 @@ async def test_enable_recompute_failure_does_not_raise(temp_db_path, caplog, mon
 async def test_create_cron_empty_string_expr_rejected(temp_db_path):
     """A cron-triggered create with an empty cron_expr must not commit — the
     falsy early-return in the validator used to let this through, producing a
-    schedule whose next_fire_at is never set (issue #1638)."""
+    schedule whose next_fire_at is never set."""
     from lionagi.studio.services.schedules import create_schedule, get_schedule_by_name
 
     with pytest.raises(ValueError, match="cron_expr is required"):
