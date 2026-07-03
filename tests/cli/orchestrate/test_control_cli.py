@@ -32,15 +32,21 @@ def temp_db_path(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     return db_path
 
 
-async def _make_session(db: StateDB, *, invocation_kind: str = "flow") -> str:
-    sid = uuid.uuid4().hex[:12]
+async def _make_session(
+    db: StateDB,
+    *,
+    invocation_kind: str = "flow",
+    status: str = "running",
+    session_id: str | None = None,
+) -> str:
+    sid = session_id or uuid.uuid4().hex[:12]
     pid = uuid.uuid4().hex
     await db.create_progression(pid)
     await db.create_session(
         {
             "id": sid,
             "progression_id": pid,
-            "status": "running",
+            "status": status,
             "invocation_kind": invocation_kind,
             "started_at": time.time(),
         }
@@ -164,6 +170,72 @@ async def test_msg_enqueues_row_with_text_payload(temp_db_path: Path):
 def test_msg_unknown_id_returns_exit_unknown(temp_db_path: Path):
     rc = run_ctl_msg(argparse.Namespace(id="x" * 36, text="hi"))
     assert rc == EXIT_UNKNOWN
+
+
+# ── write-path guards: ambiguity, terminal sessions, non-flow kinds ─────────
+
+
+@pytest.mark.asyncio
+async def test_ambiguous_prefix_rejected_no_row_written(temp_db_path: Path):
+    async with StateDB() as db:
+        sid_a = await _make_session(db, session_id="deadbeef1111")
+        sid_b = await _make_session(db, session_id="deadbeef2222")
+
+    rc = run_ctl_pause(argparse.Namespace(id="deadbeef"))
+    assert rc == EXIT_UNKNOWN
+
+    async with StateDB() as db:
+        for sid in (sid_a, sid_b):
+            assert await db.list_pending_session_controls(sid) == []
+
+
+@pytest.mark.asyncio
+async def test_unambiguous_prefix_still_resolves(temp_db_path: Path):
+    async with StateDB() as db:
+        sid = await _make_session(db, session_id="deadbeef1111")
+        await _make_session(db, session_id="feedface2222")
+
+    rc = run_ctl_pause(argparse.Namespace(id="deadbeef"))
+    assert rc == 0
+
+    async with StateDB() as db:
+        assert len(await db.list_pending_session_controls(sid)) == 1
+
+
+@pytest.mark.asyncio
+async def test_terminal_session_rejected_no_row_written(temp_db_path: Path):
+    async with StateDB() as db:
+        sid = await _make_session(db, status="completed")
+
+    rc = run_ctl_pause(argparse.Namespace(id=sid))
+    assert rc == EXIT_UNKNOWN
+
+    async with StateDB() as db:
+        assert await db.list_pending_session_controls(sid) == []
+
+
+@pytest.mark.asyncio
+async def test_non_poller_kind_rejected_no_row_written(temp_db_path: Path):
+    async with StateDB() as db:
+        sid = await _make_session(db, invocation_kind="agent")
+
+    rc = run_ctl_msg(argparse.Namespace(id=sid, text="hello"))
+    assert rc == EXIT_UNKNOWN
+
+    async with StateDB() as db:
+        assert await db.list_pending_session_controls(sid) == []
+
+
+@pytest.mark.asyncio
+async def test_play_kind_session_accepted(temp_db_path: Path):
+    async with StateDB() as db:
+        sid = await _make_session(db, invocation_kind="play")
+
+    rc = run_ctl_resume(argparse.Namespace(id=sid))
+    assert rc == 0
+
+    async with StateDB() as db:
+        assert len(await db.list_pending_session_controls(sid)) == 1
 
 
 # ── multiple controls queue independently ──────────────────────────────────
