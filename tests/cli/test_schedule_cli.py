@@ -159,15 +159,41 @@ def test_base_url_studio_url_takes_precedence(monkeypatch):
     ],
     ids=["api", "api-slash", "https-api"],
 )
-def test_base_url_strips_trailing_api_suffix(monkeypatch, env_url):
+def test_base_url_strips_trailing_api_suffix(monkeypatch, caplog, env_url):
     """A base URL already carrying /api must not double-prefix requests:
-    endpoint paths add /api themselves, so _base_url strips a trailing one."""
+    endpoint paths add /api themselves, so _base_url strips a trailing one
+    and warns (once) so intentional reverse-proxy layouts can diagnose it."""
+    import logging
+
+    import lionagi.studio.cli as sched_mod
+
     monkeypatch.setenv("LIONAGI_STUDIO_URL", env_url)
+    monkeypatch.setattr(sched_mod, "_warned_api_suffix", False)
 
-    from lionagi.studio.cli import _base_url
+    with caplog.at_level(logging.WARNING):
+        first = sched_mod._base_url()
+        second = sched_mod._base_url()
 
-    assert not _base_url().endswith("/api")
-    assert _base_url() == env_url.rstrip("/").removesuffix("/api")
+    assert not first.endswith("/api")
+    assert first == env_url.rstrip("/").removesuffix("/api")
+    assert second == first
+    warnings = [r for r in caplog.records if "LIONAGI_STUDIO_URL ends with /api" in r.message]
+    assert len(warnings) == 1, "strip must warn exactly once per process"
+
+
+def test_base_url_no_warning_without_api_suffix(monkeypatch, caplog):
+    """A clean root URL is returned untouched with no warning."""
+    import logging
+
+    import lionagi.studio.cli as sched_mod
+
+    monkeypatch.setenv("LIONAGI_STUDIO_URL", "https://studio.example.com")
+    monkeypatch.setattr(sched_mod, "_warned_api_suffix", False)
+
+    with caplog.at_level(logging.WARNING):
+        assert sched_mod._base_url() == "https://studio.example.com"
+
+    assert not [r for r in caplog.records if "LIONAGI_STUDIO_URL" in r.message]
 
 
 # ---------------------------------------------------------------------------
