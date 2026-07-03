@@ -13,6 +13,7 @@ from typing import Any
 import pytest
 
 from lionagi.cli.monitor import (
+    _cached_detect_project,
     _colour_status,
     _elapsed,
     _find_entity,
@@ -24,6 +25,7 @@ from lionagi.cli.monitor import (
     _run_detail,
     _run_table,
     _session_to_row,
+    _show_project_matches,
     _show_to_row,
     _since_timestamp,
     _trunc,
@@ -40,6 +42,17 @@ def temp_db_path(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     monkeypatch.setattr("lionagi.state.db.DEFAULT_DB_PATH", db_path)
     monkeypatch.setattr("lionagi.cli.monitor._run_table", _run_table)  # identity; force DB path
     return db_path
+
+
+@pytest.fixture(autouse=True)
+def _clear_project_cache() -> None:
+    """_show_project_matches caches detect_project() results by repo path
+    for the monitor process lifetime — clear it around every test so a
+    monkeypatched detect_project in one test can't leak a cached result
+    into another test that reuses the same repo path."""
+    _cached_detect_project.cache_clear()
+    yield
+    _cached_detect_project.cache_clear()
 
 
 async def _make_session(
@@ -498,6 +511,79 @@ async def test_gather_table_rows_show_annotated_repo_matches_project(
         rows = await _gather_table_rows(db, since=None, entity_type="show", project="proj-a")
 
     assert show_id[:16] in [r["id"] for r in rows]
+    assert seen == ["/Users/lion/projects/proj-a"]
+
+
+def test_show_project_matches_strips_tab_separated_annotation(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A tab (not a literal space) before the annotation must still be
+    stripped — the old `.split(" (")` missed this variant."""
+    seen: list[str] = []
+
+    def fake_detect_project(path: Path) -> tuple[str | None, str | None]:
+        seen.append(str(path))
+        return ("proj-a", "git_remote") if Path(path).name == "proj-a" else (None, None)
+
+    monkeypatch.setattr("lionagi.cli.monitor.detect_project", fake_detect_project)
+
+    show = {"repo": "/Users/lion/projects/proj-a\t(org/proj-a, PRIVATE)"}
+    assert _show_project_matches(show, "proj-a") is True
+    assert seen == ["/Users/lion/projects/proj-a"]
+
+
+def test_show_project_matches_strips_no_space_annotation(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """No whitespace at all before the annotation must still be stripped —
+    the old `.split(" (")` required a leading space to trigger."""
+    seen: list[str] = []
+
+    def fake_detect_project(path: Path) -> tuple[str | None, str | None]:
+        seen.append(str(path))
+        return ("proj-a", "git_remote") if Path(path).name == "proj-a" else (None, None)
+
+    monkeypatch.setattr("lionagi.cli.monitor.detect_project", fake_detect_project)
+
+    show = {"repo": "/Users/lion/projects/proj-a(org/proj-a, PRIVATE)"}
+    assert _show_project_matches(show, "proj-a") is True
+    assert seen == ["/Users/lion/projects/proj-a"]
+
+
+def test_show_project_matches_preserves_mid_path_parens(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A directory name that itself contains " (something)" mid-path (not
+    at the end of the string) must NOT be truncated — the strip is anchored
+    to a trailing annotation only."""
+    seen: list[str] = []
+
+    def fake_detect_project(path: Path) -> tuple[str | None, str | None]:
+        seen.append(str(path))
+        return ("proj-a", "git_remote") if str(path).endswith("proj-a") else (None, None)
+
+    monkeypatch.setattr("lionagi.cli.monitor.detect_project", fake_detect_project)
+
+    show = {"repo": "/Users/lion/projects/foo (bar)/proj-a"}
+    assert _show_project_matches(show, "proj-a") is True
+    assert seen == ["/Users/lion/projects/foo (bar)/proj-a"]
+
+
+def test_show_project_matches_strips_normal_remote_annotation(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The canonical " (remote, ...)" suffix form still strips correctly
+    under the new regex."""
+    seen: list[str] = []
+
+    def fake_detect_project(path: Path) -> tuple[str | None, str | None]:
+        seen.append(str(path))
+        return ("proj-a", "git_remote") if Path(path).name == "proj-a" else (None, None)
+
+    monkeypatch.setattr("lionagi.cli.monitor.detect_project", fake_detect_project)
+
+    show = {"repo": "/Users/lion/projects/proj-a (org/proj-a, PRIVATE)"}
+    assert _show_project_matches(show, "proj-a") is True
     assert seen == ["/Users/lion/projects/proj-a"]
 
 

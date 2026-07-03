@@ -5,9 +5,11 @@
 from __future__ import annotations
 
 import argparse
+import re
 import signal
 import sys
 import time
+from functools import cache
 from pathlib import Path
 from typing import Any
 
@@ -619,6 +621,17 @@ async def _detail_play(db: Any, play: dict[str, Any]) -> str:
 # ── Gather all running entities ───────────────────────────────────────────────
 
 
+_TRAILING_ANNOTATION_RE = re.compile(r"\s*\([^)]*\)\s*$")
+
+
+@cache
+def _cached_detect_project(repo: str) -> tuple[str | None, str | None]:
+    """Cache detect_project() results by bare repo path — the derivation is
+    stable for the lifetime of a monitor process, and this is called per
+    active show per render tick under --watch."""
+    return detect_project(Path(repo))
+
+
 def _show_project_matches(show: dict[str, Any], project: str) -> bool:
     """A show's `repo` column is a filesystem path (sometimes with a
     trailing remote annotation), not a project slug, so it cannot be
@@ -631,13 +644,15 @@ def _show_project_matches(show: dict[str, Any], project: str) -> bool:
     repo = show.get("repo")
     if not repo:
         return False
-    # Strip a trailing " (remote, ...)" annotation some _show.md authors
-    # append after the path so the bare path is what gets resolved.
-    repo = repo.split(" (")[0].rstrip()
+    # Strip a trailing "(remote, ...)" annotation some _show.md authors
+    # append after the path so the bare path is what gets resolved. Anchored
+    # to the end of the string so a legitimate path segment containing
+    # " (something)" mid-path is left untouched.
+    repo = _TRAILING_ANNOTATION_RE.sub("", repo)
     if not repo:
         return False
     try:
-        derived, _source = detect_project(Path(repo))
+        derived, _source = _cached_detect_project(repo)
     except Exception:  # noqa: BLE001
         return False
     return derived == project
