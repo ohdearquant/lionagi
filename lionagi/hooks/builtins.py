@@ -4,6 +4,7 @@
 
 from __future__ import annotations
 
+import json
 import logging
 import time
 import warnings
@@ -113,7 +114,9 @@ async def persist_session_end(
     if not already_terminal:
         fields["ended_at"] = time.time()
         if error is not None:
-            fields["node_metadata"] = {"error": error}
+            # update_session() binds this as a raw SQL param (no JSON
+            # bindparam), so pre-serialize to avoid sqlite3.InterfaceError.
+            fields["node_metadata"] = json.dumps({"error": error})
     if input_tokens is not None:
         fields["input_tokens"] = input_tokens
     if output_tokens is not None:

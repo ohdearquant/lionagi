@@ -566,6 +566,55 @@ class TestSessionEndEmission:
             _m._SHARED.pop(db_path, None)
             _m._SHARED.pop(normalize_state_db_url(None), None)
 
+    async def test_non_terminal_error_persists_usage_and_error(self, monkeypatch, tmp_path):
+        """A raw {"error": ...} dict bind must not silently drop usage data.
+
+        Before the fix, the not-already-terminal branch assigned
+        fields["node_metadata"] = {"error": error} as a bare dict.
+        update_session()'s dynamic UPDATE builder binds fields as raw SQL
+        parameters (no JSON bindparam), so sqlite3.InterfaceError aborted the
+        whole statement — taking input_tokens/output_tokens/total_cost_usd/
+        num_turns/status down with it — and HookBus.emit() swallows handler
+        exceptions, so the failure was silent.
+        """
+        from lionagi.hooks.builtins import persist_session_end
+        from lionagi.hooks.bus import HookBus, HookPoint
+
+        db_path = _redirect_shared_db(monkeypatch, tmp_path)
+
+        db = await _shared(db_path)
+        try:
+            sid, prog_id = "se-err-nonterm-1", "prog-se-5"
+            await _seed_session(db, sid, prog_id, status="running")
+
+            bus = HookBus()
+            bus.on(HookPoint.SESSION_END, persist_session_end)
+            await bus.emit(
+                HookPoint.SESSION_END,
+                session_id=sid,
+                status="failed",
+                error="ValueError: boom",
+                input_tokens=42,
+                output_tokens=7,
+                total_cost_usd=0.01,
+                num_turns=3,
+            )
+
+            row = await db.get_session(sid)
+            assert row["status"] == "failed"
+            assert row["input_tokens"] == 42
+            assert row["output_tokens"] == 7
+            assert row["total_cost_usd"] == 0.01
+            assert row["num_turns"] == 3
+            assert row["node_metadata"] == {"error": "ValueError: boom"}
+        finally:
+            await db.close()
+            import lionagi.state.db as _m
+            from lionagi.state.engine import normalize_state_db_url
+
+            _m._SHARED.pop(db_path, None)
+            _m._SHARED.pop(normalize_state_db_url(None), None)
+
 
 class TestBranchCreateEmission:
     """BRANCH_CREATE emit → persist handler fires and is idempotent."""
