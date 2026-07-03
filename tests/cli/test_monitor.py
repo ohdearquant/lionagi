@@ -441,11 +441,24 @@ async def test_gather_table_rows_project_filter_applies_to_plays(temp_db_path: P
 
 
 @pytest.mark.asyncio
-async def test_gather_table_rows_project_filter_applies_to_shows(temp_db_path: Path) -> None:
-    """--project must scope shows too — shows carry project under `repo`."""
+async def test_gather_table_rows_project_filter_applies_to_shows(
+    temp_db_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """--project must scope shows too. `repo` is a filesystem path, not a
+    project slug, so the filter must go through detect_project() rather
+    than compare `repo` to `--project` as strings — this pins the
+    path -> slug translation, not string equality."""
     async with StateDB() as db:
-        show_a = await _make_show(db, topic="show-a", repo="proj-a")
-        show_b = await _make_show(db, topic="show-b", repo="proj-b")
+        show_a = await _make_show(db, topic="show-a", repo="/Users/lion/projects/proj-a")
+        show_b = await _make_show(db, topic="show-b", repo="/Users/lion/projects/proj-b")
+
+        def fake_detect_project(path: Path) -> tuple[str | None, str | None]:
+            name = Path(path).name
+            if name in ("proj-a", "proj-b"):
+                return (name, "git_remote")
+            return (None, None)
+
+        monkeypatch.setattr("lionagi.cli.monitor.detect_project", fake_detect_project)
 
         rows_a = await _gather_table_rows(db, since=None, entity_type="show", project="proj-a")
         rows_b = await _gather_table_rows(db, since=None, entity_type="show", project="proj-b")
@@ -456,6 +469,46 @@ async def test_gather_table_rows_project_filter_applies_to_shows(temp_db_path: P
     assert show_b[:16] not in ids_a
     assert show_b[:16] in ids_b
     assert show_a[:16] not in ids_b
+
+
+@pytest.mark.asyncio
+async def test_gather_table_rows_show_missing_repo_excluded_under_project(
+    temp_db_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A show with no repo path has nothing to derive a project from — it
+    must be excluded once --project is applied, but still render in the
+    unfiltered view (same orphan semantics as a play with no session)."""
+    async with StateDB() as db:
+        show_id = await _make_show(db, topic="no-repo", repo=None)
+
+        monkeypatch.setattr("lionagi.cli.monitor.detect_project", lambda path: (None, None))
+
+        rows_filtered = await _gather_table_rows(
+            db, since=None, entity_type="show", project="proj-a"
+        )
+        rows_unfiltered = await _gather_table_rows(db, since=None, entity_type="show", project=None)
+
+    assert show_id[:16] not in [r["id"] for r in rows_filtered]
+    assert show_id[:16] in [r["id"] for r in rows_unfiltered]
+
+
+@pytest.mark.asyncio
+async def test_gather_table_rows_show_nonexistent_repo_path_no_crash(
+    temp_db_path: Path,
+) -> None:
+    """A repo path that doesn't exist on disk (dangling worktree, or the
+    literal path+annotation string import_shows sometimes stores) must not
+    crash detect_project's underlying git subprocess call — it just fails to
+    resolve and the show is excluded under --project. Exercises the real
+    detect_project(), not a monkeypatched stand-in."""
+    async with StateDB() as db:
+        show_id = await _make_show(
+            db, topic="bogus", repo="/nonexistent/path/does-not-exist-xyz-1642"
+        )
+
+        rows = await _gather_table_rows(db, since=None, entity_type="show", project="proj-a")
+
+    assert show_id[:16] not in [r["id"] for r in rows]
 
 
 @pytest.mark.asyncio

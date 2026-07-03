@@ -11,6 +11,7 @@ import time
 from pathlib import Path
 from typing import Any
 
+from ._project import detect_project
 from ._runs import RUNS_ROOT
 from ._util import pid_alive as _pid_alive_int
 
@@ -174,13 +175,14 @@ async def _query_active_shows(
     db: Any,
     *,
     since: float | None = None,
-    project: str | None = None,
 ) -> list[dict[str, Any]]:
     """Active only by default; with since, all statuses in the window.
 
-    Shows carry their project under the `repo` column (see _show_to_row),
-    not a `project` column, so project-scoping matches against `repo` — the
-    same field the table already renders under the PROJECT header.
+    Unlike sessions and plays, `repo` on a show is a filesystem path (or a
+    path with a trailing remote annotation) copied verbatim from the play's
+    `_show.md`, not a project slug — so it cannot be matched against
+    `--project` in SQL. Project-scoping for shows happens in Python, in
+    _gather_table_rows, via the same detect_project() cascade sessions use.
     """
     query = "SELECT * FROM shows WHERE 1=1"  # noqa: S608
     params: list[Any] = []
@@ -189,9 +191,6 @@ async def _query_active_shows(
         params.append(since)
     else:
         query += " AND status = 'active'"
-    if project:
-        query += " AND repo = ?"
-        params.append(project)
     query += " ORDER BY updated_at DESC"
     rows = await db.fetch_all(query, params)
     return rows
@@ -620,6 +619,25 @@ async def _detail_play(db: Any, play: dict[str, Any]) -> str:
 # ── Gather all running entities ───────────────────────────────────────────────
 
 
+def _show_project_matches(show: dict[str, Any], project: str) -> bool:
+    """A show's `repo` column is a filesystem path (sometimes with a
+    trailing remote annotation), not a project slug, so it cannot be
+    compared to `--project` directly — derive its slug via the same
+    detect_project() cascade sessions use and compare that. A show with a
+    missing, empty, or unresolvable repo path derives (None, None) and is
+    excluded under --project — the same orphan semantics as a play with no
+    linked session.
+    """
+    repo = show.get("repo")
+    if not repo:
+        return False
+    try:
+        derived, _source = detect_project(Path(repo))
+    except Exception:  # noqa: BLE001
+        return False
+    return derived == project
+
+
 async def _gather_table_rows(
     db: Any,
     *,
@@ -657,7 +675,9 @@ async def _gather_table_rows(
         rows.extend(_invocation_to_row(i) for i in invocations)
 
     if entity_type in (None, "show"):
-        shows = await _query_active_shows(db, since=since, project=project)
+        shows = await _query_active_shows(db, since=since)
+        if project:
+            shows = [s for s in shows if _show_project_matches(s, project)]
         rows.extend(_show_to_row(s) for s in shows)
 
     rows.extend(_play_to_row(p) for p in plays)
