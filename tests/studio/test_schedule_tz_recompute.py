@@ -156,3 +156,170 @@ async def test_disable_enable_recomputes_stale_next_fire(temp_db_path, caplog):
     assert row["next_fire_at"] != stale_past
     assert row["next_fire_at"] > time.time()  # freshly computed, strictly future
     assert any("next_fire_at shifted" in r.message for r in caplog.records)
+
+
+@pytest.mark.asyncio
+async def test_patch_invalid_cron_expr_rejected_before_commit(temp_db_path):
+    """An invalid cron_expr in a PATCH is a clean ValueError; the DB row is
+    left untouched rather than committing bad data ahead of a recompute."""
+    from lionagi.state.db import StateDB
+    from lionagi.studio.services.schedules import create_schedule, update_schedule
+
+    created = await create_schedule(
+        {
+            "name": "patch-invalid-cron-test",
+            "trigger_type": "cron",
+            "cron_expr": "0 18 * * *",
+            "action_kind": "agent",
+            "action_prompt": "ping",
+        }
+    )
+    sid = created["id"]
+
+    with pytest.raises(ValueError, match="Invalid cron expression"):
+        await update_schedule(sid, {"cron_expr": "not a cron expression"})
+
+    async with StateDB() as db:
+        row = await db.get_schedule(sid)
+    assert row["cron_expr"] == "0 18 * * *"
+
+
+@pytest.mark.asyncio
+async def test_create_invalid_cron_expr_rejected(temp_db_path):
+    """An invalid cron_expr at create time is a clean ValueError and nothing
+    is committed — bad data can't enter the DB at the POST boundary either."""
+    from lionagi.studio.services.schedules import create_schedule, get_schedule_by_name
+
+    with pytest.raises(ValueError, match="Invalid cron expression"):
+        await create_schedule(
+            {
+                "name": "create-invalid-cron-test",
+                "trigger_type": "cron",
+                "cron_expr": "not a cron expression",
+                "action_kind": "agent",
+                "action_prompt": "ping",
+            }
+        )
+
+    assert await get_schedule_by_name("create-invalid-cron-test") is None
+
+
+@pytest.mark.asyncio
+async def test_patch_recompute_retry_recovers_transient_failure(temp_db_path, caplog, monkeypatch):
+    """A recompute that fails once then succeeds still lands a fresh
+    next_fire_at — the guarded retry absorbs transient DB contention."""
+    from lionagi.state.db import StateDB
+    from lionagi.studio.scheduler.engine import scheduler
+    from lionagi.studio.services.schedules import create_schedule, update_schedule
+
+    created = await create_schedule(
+        {
+            "name": "patch-recompute-retry-test",
+            "trigger_type": "cron",
+            "cron_expr": "0 18 * * *",
+            "action_kind": "agent",
+            "action_prompt": "ping",
+        }
+    )
+    sid = created["id"]
+    async with StateDB() as db:
+        await db.update_schedule(sid, next_fire_at=100.0)
+
+    real_recompute = scheduler.recompute_next_fire
+    calls = {"n": 0}
+
+    async def _flaky(effective):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            raise RuntimeError("db busy")
+        await real_recompute(effective)
+
+    monkeypatch.setattr(scheduler, "recompute_next_fire", _flaky)
+
+    with caplog.at_level(logging.WARNING):
+        ok = await update_schedule(sid, {"cron_expr": "50 1 * * *"})
+    assert ok is True
+    assert calls["n"] == 2
+
+    async with StateDB() as db:
+        row = await db.get_schedule(sid)
+    assert row["next_fire_at"] != 100.0
+    assert row["next_fire_at"] > time.time()
+
+
+@pytest.mark.asyncio
+async def test_patch_recompute_failure_does_not_raise(temp_db_path, caplog, monkeypatch):
+    """A recompute failure after a valid, already-committed PATCH degrades to
+    a warning log instead of propagating out of update_schedule()."""
+    from lionagi.state.db import StateDB
+    from lionagi.studio.scheduler.engine import scheduler
+    from lionagi.studio.services.schedules import create_schedule, update_schedule
+
+    created = await create_schedule(
+        {
+            "name": "patch-recompute-fails-test",
+            "trigger_type": "cron",
+            "cron_expr": "0 18 * * *",
+            "action_kind": "agent",
+            "action_prompt": "ping",
+        }
+    )
+    sid = created["id"]
+    async with StateDB() as db:
+        await db.update_schedule(sid, next_fire_at=100.0)
+
+    async def _boom(*args, **kwargs):
+        raise RuntimeError("db busy")
+
+    monkeypatch.setattr(scheduler, "recompute_next_fire", _boom)
+
+    with caplog.at_level(logging.WARNING):
+        ok = await update_schedule(sid, {"cron_expr": "50 1 * * *"})
+    assert ok is True
+
+    async with StateDB() as db:
+        row = await db.get_schedule(sid)
+    assert row["cron_expr"] == "50 1 * * *"  # the field update still committed
+    # Documented degradation: both recompute attempts failed, so the stale
+    # next_fire_at is untouched until the daemon-startup recompute heals it.
+    assert row["next_fire_at"] == 100.0
+    assert any("Failed to recompute next_fire_at" in r.message for r in caplog.records)
+
+
+@pytest.mark.asyncio
+async def test_enable_recompute_failure_does_not_raise(temp_db_path, caplog, monkeypatch):
+    """A recompute failure after a valid, already-committed enable degrades
+    to a warning log instead of propagating out of enable_schedule()."""
+    from lionagi.state.db import StateDB
+    from lionagi.studio.scheduler.engine import scheduler
+    from lionagi.studio.services.schedules import (
+        create_schedule,
+        disable_schedule,
+        enable_schedule,
+    )
+
+    created = await create_schedule(
+        {
+            "name": "enable-recompute-fails-test",
+            "trigger_type": "cron",
+            "cron_expr": "0 18 * * *",
+            "action_kind": "agent",
+            "action_prompt": "ping",
+        }
+    )
+    sid = created["id"]
+    assert await disable_schedule(sid) is True
+
+    async def _boom(*args, **kwargs):
+        raise RuntimeError("db busy")
+
+    monkeypatch.setattr(scheduler, "recompute_next_fire", _boom)
+
+    with caplog.at_level(logging.WARNING):
+        ok = await enable_schedule(sid)
+    assert ok is True
+
+    async with StateDB() as db:
+        row = await db.get_schedule(sid)
+    assert row["enabled"] == 1  # the enable flag still committed
+    assert any("Failed to recompute next_fire_at" in r.message for r in caplog.records)
