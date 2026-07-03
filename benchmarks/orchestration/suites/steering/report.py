@@ -18,6 +18,10 @@ GATE_TEXT = (
     "PASS if arm2-arm1 >= 0.4 absolute AND arm2 >= 0.8 on >= 2 of 4 providers AND arm0 <= 0.1"
 )
 
+# ADR-0088 pre-registered N >= 20 per cell. A cell below this threshold, or
+# missing entirely, cannot support a real gate verdict for its provider.
+MIN_VALID_N = 20
+
 
 def _valid(results: list[SteerRunResult]) -> list[SteerRunResult]:
     return [r for r in results if r.error is None]
@@ -34,34 +38,62 @@ def _proportions(results: list[SteerRunResult]) -> dict[tuple[str, str], Proport
     }
 
 
+def _cell_complete(p: Proportion | None) -> bool:
+    return p is not None and p.n >= MIN_VALID_N
+
+
 def evaluate_gate(props: dict[tuple[str, str], Proportion]) -> dict:
-    """Evaluate the pre-registered gate per provider; returns a verdict dict."""
+    """Evaluate the pre-registered gate per provider; returns a verdict dict.
+
+    A provider only counts toward the ">= 2 of 4" clause once all three built
+    arms have >= MIN_VALID_N valid trials each. The gate itself is >= 2-of-4
+    (not all-4), so a run over exactly two provider families can still yield a
+    real PASS/FAIL once both are complete. With fewer than two complete
+    providers there isn't enough data to judge the gate, so the overall
+    verdict is INCOMPLETE — never a PASS, and never a FAIL that would read as
+    real evidence against the fixture.
+    """
     providers = sorted({provider for provider, _arm in props})
     per_provider = {}
-    clearing = 0
+    complete_providers = []
     for provider in providers:
         arm0 = props.get((provider, Arm.NO_STEER.value))
         arm1 = props.get((provider, Arm.STEER_BURIED.value))
         arm2 = props.get((provider, Arm.STEER_RENDERED.value))
-        if not (arm0 and arm1 and arm2 and arm0.n and arm1.n and arm2.n):
-            per_provider[provider] = {"clears": False, "reason": "incomplete cells"}
+        if not (_cell_complete(arm0) and _cell_complete(arm1) and _cell_complete(arm2)):
+            per_provider[provider] = {
+                "complete": False,
+                "clears": False,
+                "reason": f"incomplete cells (need >= {MIN_VALID_N} valid trials per arm)",
+            }
             continue
         lift = arm2.p - arm1.p
         clears = lift >= 0.4 and arm2.p >= 0.8 and arm0.p <= 0.1
         per_provider[provider] = {
+            "complete": True,
             "clears": clears,
             "arm0": arm0.p,
             "arm1": arm1.p,
             "arm2": arm2.p,
             "lift": lift,
         }
-        if clears:
-            clearing += 1
+        complete_providers.append(provider)
+
+    clearing = sum(1 for p in complete_providers if per_provider[p]["clears"])
+    if len(complete_providers) < 2:
+        verdict = "INCOMPLETE"
+    elif clearing >= 2:
+        verdict = "PASS"
+    else:
+        verdict = "FAIL"
+
     return {
         "gate_text": GATE_TEXT,
+        "min_valid_n": MIN_VALID_N,
         "per_provider": per_provider,
+        "complete_providers": complete_providers,
         "providers_clearing": clearing,
-        "pass": clearing >= 2,
+        "verdict": verdict,
     }
 
 
@@ -92,9 +124,12 @@ def build_report(results: list[SteerRunResult], *, smoke: bool = False) -> tuple
     lines.append("")
     lines.append(f"Errored trials excluded from proportions: {errors}")
     lines.append("")
+    n_complete = len(verdict["complete_providers"])
     lines.append(
-        f"**Gate result**: {'PASS' if verdict['pass'] else 'FAIL'} "
-        f"({verdict['providers_clearing']} of {len(providers)} providers clear)"
+        f"**Gate result**: {verdict['verdict']} "
+        f"({verdict['providers_clearing']} of {n_complete} complete providers clear; "
+        f"{n_complete} of {len(providers)} providers have >= {verdict['min_valid_n']} "
+        "valid trials on every arm)"
     )
     if smoke:
         lines.append("")

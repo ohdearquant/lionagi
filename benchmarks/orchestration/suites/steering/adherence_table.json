@@ -8,17 +8,17 @@
   },
   "verdict": {
     "gate_text": "PASS if arm2-arm1 >= 0.4 absolute AND arm2 >= 0.8 on >= 2 of 4 providers AND arm0 <= 0.1",
+    "min_valid_n": 20,
     "per_provider": {
       "claude_code": {
+        "complete": false,
         "clears": false,
-        "arm0": 0.0,
-        "arm1": 1.0,
-        "arm2": 1.0,
-        "lift": 0.0
+        "reason": "incomplete cells (need >= 20 valid trials per arm)"
       }
     },
+    "complete_providers": [],
     "providers_clearing": 0,
-    "pass": false
+    "verdict": "INCOMPLETE"
   },
   "errors": 0,
   "raw_results": [

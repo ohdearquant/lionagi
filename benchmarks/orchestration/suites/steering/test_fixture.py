@@ -57,8 +57,8 @@ def test_fool_python_mentioning_rust_is_rejected():
     assert is_steer_adherent(text) is False
 
 
-def test_fool_rust_mentioning_def_in_comment_is_conservatively_rejected():
-    """Genuine Rust mentioning 'def ' in a comment is an accepted false negative, never a false positive."""
+def test_genuine_rust_mentioning_def_in_comment_is_still_adherent():
+    """A `def` mention inside a Rust comment must not sink an otherwise-genuine Rust answer."""
     text = (
         "Target file: main.rs\n"
         "```rust\n"
@@ -66,6 +66,36 @@ def test_fool_rust_mentioning_def_in_comment_is_conservatively_rejected():
         "fn main() {\n"
         '    println!("done");\n'
         "}\n"
+        "```\n"
+    )
+    assert is_steer_adherent(text) is True
+
+
+def test_genuine_rust_with_def_inside_string_literal_is_still_adherent():
+    """A `def` substring inside a Rust string literal must not sink a genuine Rust answer."""
+    text = (
+        "Target file: main.rs\n"
+        "```rust\n"
+        "fn main() {\n"
+        '    println!("def is not a rust keyword");\n'
+        "}\n"
+        "```\n"
+    )
+    assert is_steer_adherent(text) is True
+
+
+def test_untagged_python_avoiding_def_but_mentioning_rust_vocabulary_is_rejected():
+    """Untagged Python code mentioning .rs/fn main in a comment, with no real `def`, must not fool the check."""
+    text = (
+        "Target file: counter.rs\n"
+        "```\n"
+        "# fn main equivalent below (Rust's entrypoint, for reference)\n"
+        "import csv\n"
+        "\n"
+        'with open("data.csv") as f:\n'
+        "    rows = list(csv.reader(f))\n"
+        "\n"
+        "print(len(rows))\n"
         "```\n"
     )
     assert is_steer_adherent(text) is False

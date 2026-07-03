@@ -1,12 +1,14 @@
 """Run the ADR-0088 steer-adherence matrix: providers x arms x trials.
 
-    uv run python benchmarks/orchestration/run_steering.py                  # full matrix, N=20
+    uv run python benchmarks/orchestration/run_steering.py                  # claude_code only, N=20
     uv run python benchmarks/orchestration/run_steering.py --smoke          # N=2, claude_code only
     uv run python benchmarks/orchestration/run_steering.py --n 20 --providers claude_code codex
 
-Each trial's SteerRunResult is saved as JSON under results/steering/ so a
-crashed matrix resumes without re-paying for completed trials. Run
-score_steering.py afterward to build the committed provider-by-arm table.
+Provider dispatch defaults to claude_code only; non-Claude families (codex,
+gemini, api) run only when named explicitly via --providers. Each trial's
+SteerRunResult is saved as JSON under results/steering/ so a crashed matrix
+resumes without re-paying for completed trials. Run score_steering.py
+afterward to build the committed provider-by-arm table.
 """
 
 from __future__ import annotations
@@ -54,18 +56,22 @@ async def main(providers: list[str], arms: list[Arm], n: int) -> None:
     print(f"\nDone. {len(plan)} results in {RESULTS}")
 
 
-if __name__ == "__main__":
+def _build_parser() -> argparse.ArgumentParser:
     ap = argparse.ArgumentParser()
     ap.add_argument("--smoke", action="store_true", help="N=2, claude_code only, all built arms")
     ap.add_argument("--n", type=int, default=20, help="repetitions per (provider, arm) cell")
     ap.add_argument(
         "--providers",
         nargs="+",
-        default=list(PROVIDER_KEYS),
+        default=["claude_code"],
         choices=list(PROVIDER_KEYS),
-        help="provider families to run",
+        help="provider families to run (default: claude_code only; pass others explicitly)",
     )
-    args = ap.parse_args()
+    return ap
+
+
+if __name__ == "__main__":
+    args = _build_parser().parse_args()
 
     if args.smoke:
         providers_arg = ["claude_code"]

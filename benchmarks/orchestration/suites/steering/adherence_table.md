@@ -8,6 +8,6 @@
 
 Errored trials excluded from proportions: 0
 
-**Gate result**: FAIL (0 of 1 providers clear)
+**Gate result**: INCOMPLETE (0 of 0 complete providers clear; 0 of 1 providers have >= 20 valid trials on every arm)
 
 This table is a SMOKE run (N=2/arm, claude_code only) proving the harness runs end-to-end and produces the table — it is NOT the pre-registered N>=20/cell evidence run and the gate result above is not a real verdict.
