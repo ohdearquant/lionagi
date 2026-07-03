@@ -648,3 +648,26 @@ CREATE INDEX IF NOT EXISTS idx_engine_defs_kind
   ON engine_defs(kind);
 CREATE INDEX IF NOT EXISTS idx_engine_defs_updated
   ON engine_defs(updated_at DESC);
+
+-- ── Session controls (ADR-0085 part 1: run control plane transport) ───────────
+-- One row per operator control verb queued against a live session.  A poller
+-- task in cli/orchestrate/flow.py's _execute_dag (same lifecycle as the
+-- heartbeat loop) reads unapplied rows (applied_at IS NULL) and applies them
+-- against the running executor.  Apply/stamp ordering is verb-classed:
+-- pause/resume/stop are idempotent (apply, then stamp), message is not
+-- (stamp 'applying', then apply, then finalize).  'stop' is schema-reserved
+-- for a later slice (the checkpoint writer); no CLI verb emits it yet.
+
+CREATE TABLE IF NOT EXISTS session_controls (
+  id          TEXT    PRIMARY KEY,         -- uuid4 hex
+  session_id  TEXT    NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
+  verb        TEXT    NOT NULL
+              CHECK(verb IN ('pause', 'resume', 'message', 'stop')),
+  payload     JSON,                        -- verb-specific; NULL for pause/resume
+  created_at  REAL    NOT NULL,
+  applied_at  REAL,                        -- NULL until the poller consumes it
+  result      TEXT                         -- 'applying' | 'applied' | 'rejected:<reason>'
+);
+
+CREATE INDEX IF NOT EXISTS idx_session_controls_pending
+  ON session_controls(session_id, applied_at) WHERE applied_at IS NULL;

@@ -458,6 +458,7 @@ class EngineRun:
         max_spawn: int = 50,
         max_concurrent: int = 5,
         verbose: bool = False,
+        executor_ref: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         """Execute a prebuilt operation DAG on the run's session and return operation results."""
         from lionagi.operations.node import Operation  # noqa: PLC0415
@@ -539,6 +540,7 @@ class EngineRun:
                 max_concurrent=max_concurrent,
                 verbose=verbose,
                 on_progress=_on_progress,
+                executor_ref=executor_ref,
             )
         finally:
             self.session.observer.unobserve(_on_spawned)

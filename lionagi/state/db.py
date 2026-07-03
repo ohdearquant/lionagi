@@ -3057,6 +3057,129 @@ class StateDB:
             )
         return result.rowcount > 0
 
+    # ── Session controls (ADR-0085 part 1: run control plane transport) ────
+    # session_controls rows are written by `li o ctl pause|resume|msg` and
+    # consumed by the control poller task in cli/orchestrate/flow.py's
+    # _execute_dag (same lifecycle as the heartbeat loop). Apply/stamp
+    # ordering is verb-classed by the poller, not by these methods: pause/
+    # resume call insert_session_control() then, once applied against the
+    # executor, finalize_session_control() directly (idempotent — safe to
+    # re-apply on a poller crash). message calls mark_session_control_applying()
+    # before attempting the (non-idempotent) apply, then finalize_session_control()
+    # (a crash between the two leaves a visible 'applying' row instead of a
+    # silent double-injection risk).
+
+    async def insert_session_control(
+        self,
+        *,
+        session_id: str,
+        verb: str,
+        payload: dict[str, Any] | None = None,
+        created_at: float | None = None,
+    ) -> str:
+        """Queue a control verb for *session_id*; returns the new control id.
+
+        Serialised through _tx() like the other append-only session logs.
+        """
+        control_id = uuid.uuid4().hex
+        async with self._tx() as conn:
+            await conn.execute(
+                text(
+                    "INSERT INTO session_controls "
+                    "(id, session_id, verb, payload, created_at, applied_at, result) "
+                    "VALUES (:id, :sid, :verb, :payload, :created_at, NULL, NULL)"
+                ).bindparams(bindparam("payload", type_=JSON)),
+                {
+                    "id": control_id,
+                    "sid": session_id,
+                    "verb": verb,
+                    "payload": payload,
+                    "created_at": created_at if created_at is not None else time.time(),
+                },
+            )
+        return control_id
+
+    async def list_pending_session_controls(self, session_id: str) -> list[dict[str, Any]]:
+        """Unapplied controls (applied_at IS NULL) for *session_id*, oldest first.
+
+        Includes rows mid-apply (result='applying') — the poller/status surface
+        distinguish "never touched" (result IS NULL) from "a prior poller crashed
+        mid-apply" (result='applying') by inspecting that field.
+        """
+        async with self._read() as conn:
+            rows = (
+                (
+                    await conn.execute(
+                        text(
+                            "SELECT id, session_id, verb, payload, created_at, applied_at, result "
+                            "FROM session_controls "
+                            "WHERE session_id = :sid AND applied_at IS NULL "
+                            # id tiebreak: identical created_at floats (rapid
+                            # enqueues) must not flip apply order between ticks
+                            "ORDER BY created_at, id"
+                        ),
+                        {"sid": session_id},
+                    )
+                )
+                .mappings()
+                .all()
+            )
+        result = []
+        for r in rows:
+            d = dict(r)
+            if isinstance(d.get("payload"), str):
+                try:
+                    d["payload"] = json.loads(d["payload"])
+                except (json.JSONDecodeError, TypeError):
+                    pass
+            result.append(d)
+        return result
+
+    async def mark_session_control_applying(self, control_id: str) -> None:
+        """Stamp a non-idempotent (message) control as mid-apply, before attempting it.
+
+        applied_at stays NULL — the row remains "pending" until finalize_session_control()
+        runs, so a poller crash right after this stamp is visible, not silently lost.
+        """
+        async with self._tx() as conn:
+            await conn.execute(
+                text("UPDATE session_controls SET result = 'applying' WHERE id = :id"),
+                {"id": control_id},
+            )
+
+    async def finalize_session_control(self, control_id: str, *, result: str) -> None:
+        """Stamp applied_at + a terminal *result* ('applied' or 'rejected:<reason>')."""
+        async with self._tx() as conn:
+            await conn.execute(
+                text(
+                    "UPDATE session_controls SET applied_at = :applied_at, result = :result "
+                    "WHERE id = :id"
+                ),
+                {"applied_at": time.time(), "result": result, "id": control_id},
+            )
+
+    async def get_session_control(self, control_id: str) -> dict[str, Any] | None:
+        async with self._read() as conn:
+            row = (
+                (
+                    await conn.execute(
+                        text("SELECT * FROM session_controls WHERE id = :id"),
+                        {"id": control_id},
+                    )
+                )
+                .mappings()
+                .first()
+            )
+        if row is None:
+            return None
+        d = dict(row)
+        if isinstance(d.get("payload"), str):
+            try:
+                d["payload"] = json.loads(d["payload"])
+            except (json.JSONDecodeError, TypeError):
+                pass
+        return d
+
     # ── Helpers ────────────────────────────────────────────────────────
 
     @staticmethod
@@ -3075,6 +3198,7 @@ class StateDB:
             "artifact_contract_json",
             "artifact_verification_json",
             "status_evidence_refs",
+            "payload",
         ):
             if key in d and isinstance(d[key], str):
                 try:

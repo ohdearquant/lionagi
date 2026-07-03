@@ -1,7 +1,7 @@
 # Copyright (c) 2023-2026, HaiyangLi <quantocean.li at gmail dot com>
 # SPDX-License-Identifier: Apache-2.0
 
-"""SQLAlchemy MetaData for all 21 StateDB tables — single source of truth for schema DDL."""
+"""SQLAlchemy MetaData for all 22 StateDB tables — single source of truth for schema DDL."""
 
 from __future__ import annotations
 
@@ -797,3 +797,49 @@ engine_defs = Table(
 Index("idx_engine_defs_name", engine_defs.c.name)
 Index("idx_engine_defs_kind", engine_defs.c.kind)
 Index("idx_engine_defs_updated", engine_defs.c.updated_at)
+
+# ── session_controls (ADR-0085 part 1: run control plane transport) ────────────
+# One row per operator control verb queued against a live session. A poller task
+# in `cli/orchestrate/flow.py`'s `_execute_dag` (the same lifecycle as the
+# heartbeat loop) reads unapplied rows and applies them against the running
+# executor. Apply/stamp ordering is verb-classed: pause/resume/stop are
+# idempotent (apply, then stamp — safe to re-apply on a poller crash); message
+# is not (stamp 'applying', then apply, then finalize — a crash surfaces as an
+# unapplied 'applying' row rather than risking a double injection). 'stop' is
+# schema-reserved for a later slice (the checkpoint writer); no CLI verb emits
+# it yet.
+
+session_controls = Table(
+    "session_controls",
+    metadata,
+    Column("id", Text, primary_key=True),
+    Column(
+        "session_id",
+        Text,
+        ForeignKey("sessions.id", ondelete="CASCADE"),
+        nullable=False,
+    ),
+    Column(
+        "verb",
+        Text,
+        CheckConstraint(
+            "verb IN ('pause','resume','message','stop')",
+            name="ck_session_controls_verb",
+        ),
+        nullable=False,
+    ),
+    Column("payload", JSON),
+    Column("created_at", Float, nullable=False),
+    # NULL until the poller consumes the row.
+    Column("applied_at", Float),
+    # 'applying' (message verb, mid-apply) | 'applied' | 'rejected:<reason>'.
+    Column("result", Text),
+)
+
+Index(
+    "idx_session_controls_pending",
+    session_controls.c.session_id,
+    session_controls.c.applied_at,
+    sqlite_where=text("applied_at IS NULL"),
+    postgresql_where=text("applied_at IS NULL"),
+)

@@ -71,6 +71,7 @@ class DependencyAwareExecutor:
         verbose: bool = False,
         default_branch: "Branch" = None,
         alcall_params: AlcallParams | None = None,
+        executor_ref: dict[str, Any] | None = None,
     ):
         self.session = session
         self.graph = graph
@@ -86,6 +87,13 @@ class DependencyAwareExecutor:
         self.skipped_operations = set()
         self._op_start_times = {}
         self._pause_event: ConcurrencyEvent | None = None
+        # ADR-0085 part 1: an out-of-band handle the caller can pass so a
+        # control poller running alongside this flow (cli/orchestrate/flow.py)
+        # can reach pause()/resume()/context/graph on the live executor. Set
+        # synchronously here (before any awaiting) so it is available the
+        # instant execute() starts.
+        if executor_ref is not None:
+            executor_ref["executor"] = self
         for node in graph.internal_nodes.values():
             if isinstance(node, Operation):
                 self.completion_events[node.id] = ConcurrencyEvent()
@@ -908,6 +916,7 @@ async def flow(
     spawn_type: type | None = None,
     node_builder: Any = None,
     max_spawn: int = 50,
+    executor_ref: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Execute a graph with dependency management and optional reactive self-expansion."""
 
@@ -926,6 +935,7 @@ async def flow(
             spawn_type=spawn_type,
             node_builder=node_builder,
             max_spawn=max_spawn,
+            executor_ref=executor_ref,
         )
     else:
         executor = DependencyAwareExecutor(
@@ -936,6 +946,7 @@ async def flow(
             verbose=verbose,
             default_branch=branch,
             alcall_params=alcall_params,
+            executor_ref=executor_ref,
         )
     if on_progress is not None:
         executor.on_progress = on_progress

@@ -67,6 +67,114 @@ async def _persist_session_phase(env, phase: str) -> None:
             await ctx["db"].update_session(ctx["session_id"], current_phase=phase)
 
 
+# ── Control poller (ADR-0085 part 1: session_controls transport) ─────────────
+# `li o ctl pause|resume|msg` enqueues a session_controls row from a separate
+# process; this poller — running alongside the heartbeat loop in _execute_dag,
+# same lifecycle — is the only consumer, and applies each row against the live
+# executor. See docs/adrs/ADR-0085-flow-control-plane.md section 1 for the
+# verb-classed apply/stamp ordering this implements.
+
+_CONTROL_POLL_INTERVAL = 2.0
+
+# Sentinel: the row's apply ran but no finalize write landed, so it is still
+# pending in the DB. The poller must stop the tick rather than let later
+# controls overtake it — the whole batch re-reads in order next tick.
+_CONTROL_UNSTAMPED = "unstamped"
+
+
+async def _apply_session_control(db, executor, row: dict) -> str | None:
+    """Apply one session_controls row against *executor*; returns the finalize
+    result string, or None if the row was left untouched (message already
+    mid-apply from a prior poller crash).
+
+    pause/resume are idempotent: apply, then stamp 'applied' — a poller crash
+    between the two is harmless, since re-applying on the next poll is a no-op.
+    message is not idempotent: stamp 'applying' first, then attempt the
+    (checked, not assumed) injection, then finalize — a crash between stamp
+    and apply leaves a visible 'applying' row (surfaced by `li o ctl status`)
+    rather than risking a double injection on the next poll (at-most-once).
+
+    Never raises: apply failures are recorded as a rejected result so a bad
+    control row can never crash the run it rides alongside. Finalize failures
+    after a successful apply never mislabel the row as rejected — the 'applied'
+    stamp is retried, then the row is left for the next tick.
+    """
+    control_id = row["id"]
+    verb = row["verb"]
+    try:
+        if verb == "pause":
+            executor.pause()
+            return await _finalize_applied(db, control_id)
+
+        if verb == "resume":
+            executor.resume()
+            return await _finalize_applied(db, control_id)
+
+        if verb == "message":
+            if row.get("result") == "applying":
+                # A prior poller crashed between stamp and apply. At-most-once:
+                # leave it untouched — re-attempting could double-inject the
+                # message if the earlier apply actually landed before the crash.
+                return None
+            await db.mark_session_control_applying(control_id)
+
+            from lionagi.operations.node import Operation as _Operation  # noqa: PLC0415
+            from lionagi.protocols.types import EventStatus as _EventStatus  # noqa: PLC0415
+
+            has_pending_op = any(
+                isinstance(node, _Operation) and node.execution.status == _EventStatus.PENDING
+                for node in executor.graph.internal_nodes.values()
+            )
+            if not has_pending_op:
+                result = "rejected:no-pending-ops"
+                await db.finalize_session_control(control_id, result=result)
+                return result
+
+            from lionagi.libs.nested import deep_update  # noqa: PLC0415
+
+            payload = row.get("payload") or {}
+            existing = executor.context.content.get("operator_messages", [])
+            entry = {"ts": time.time(), "text": payload.get("text", "")}
+            deep_update(executor.context.content, {"operator_messages": [*existing, entry]})
+            return await _finalize_applied(db, control_id)
+
+        # 'stop' is schema-reserved for a later slice (the checkpoint writer);
+        # any other verb is unrecognised. Reject loudly instead of leaving a
+        # row that would be polled forever.
+        result = f"rejected:unsupported-verb:{verb}"
+        await db.finalize_session_control(control_id, result=result)
+        return result
+    except Exception as exc:  # noqa: BLE001 — the poller must never crash the run
+        result = f"rejected:error:{exc}"[:500]
+        logger.warning("control %s (%s) failed to apply: %s", control_id, verb, exc)
+        try:
+            await db.finalize_session_control(control_id, result=result)
+        except Exception:  # noqa: BLE001
+            # The row is still pending: a later control applied this tick
+            # would be overtaken by this one re-applying next tick (e.g. a
+            # stuck pause re-pausing after its resume). Signal the poller to
+            # end the tick so ordering is preserved on the retry.
+            return _CONTROL_UNSTAMPED
+        return result
+
+
+async def _finalize_applied(db, control_id: str) -> str:
+    """Stamp 'applied' after a successful apply; never mislabel it rejected.
+
+    A finalize failure here means the effect landed but the stamp did not:
+    retry once, then hand the row back to the poller via the unstamped
+    sentinel — pause/resume re-apply idempotently next tick, and a message
+    row stays 'applying' so it is skipped rather than double-injected.
+    """
+    for _ in range(2):
+        try:
+            await db.finalize_session_control(control_id, result="applied")
+            return "applied"
+        except Exception as exc:  # noqa: BLE001 — the poller must never crash the run
+            logger.warning("control %s applied but finalize failed: %s", control_id, exc)
+    return _CONTROL_UNSTAMPED
+
+
 _BUDGET_PREAMBLE_TEMPLATE = """\
 [BUDGET]
 You are op {op_index} of {num_ops} in this flow. Your share of the total \
@@ -572,6 +680,60 @@ async def _execute_dag(
                         "with no completion — possible hung child process"
                     )
 
+    # ADR-0085 part 1: control poller — the only consumer of session_controls
+    # rows queued by `li o ctl pause|resume|msg`. _executor_ref is populated
+    # synchronously by DependencyAwareExecutor.__init__ the moment run_dag()
+    # constructs it, so the "executor not yet available" window below is at
+    # most one event-loop tick, well inside poll_interval.
+    _executor_ref: dict[str, object] = {}
+    _control_log: list[dict] = []
+
+    def _persist_control_log() -> None:
+        ctx = getattr(env, "_live_persist", None)
+        if not ctx or not ctx.get("db"):
+            return
+        extras = getattr(env, "_finalize_extras", {}) or {}
+        extras["controls"] = _control_log
+        env._finalize_extras = extras
+
+        async def _do():
+            with contextlib.suppress(Exception):
+                _markers = ctx.get("identity_markers") or {}
+                await ctx["db"].update_session(
+                    ctx["session_id"], node_metadata=json.dumps({**extras, **_markers})
+                )
+
+        _asyncio.ensure_future(_do())
+
+    async def _control_poll_loop() -> None:
+        while True:
+            await _asyncio.sleep(_CONTROL_POLL_INTERVAL)
+            ctx = getattr(env, "_live_persist", None)
+            if not ctx or not ctx.get("db"):
+                continue
+            executor = _executor_ref.get("executor")
+            if executor is None:
+                continue
+            try:
+                pending = await ctx["db"].list_pending_session_controls(ctx["session_id"])
+            except Exception as exc:  # noqa: BLE001 — transient DB hiccup, retry next tick
+                logger.debug("control poll: transient error listing pending controls: %s", exc)
+                continue
+            for row in pending:
+                applied_result = await _apply_session_control(ctx["db"], executor, row)
+                if applied_result == _CONTROL_UNSTAMPED:
+                    break
+                if applied_result is not None:
+                    _control_log.append(
+                        {
+                            "id": row["id"],
+                            "verb": row["verb"],
+                            "result": applied_result,
+                            "ts": time.time(),
+                        }
+                    )
+                    _persist_control_log()
+
     from lionagi.engines import PlanningEngine
     from lionagi.session.signal import NodeCompleted, NodeFailed, NodeStarted
 
@@ -582,6 +744,7 @@ async def _execute_dag(
 
     t_exec = time.monotonic()
     _hb_task = _asyncio.ensure_future(_heartbeat_loop())
+    _ctl_task = _asyncio.ensure_future(_control_poll_loop())
     try:
         dag_result = await eng_run.run_dag(
             env.builder.get_graph(),
@@ -591,11 +754,15 @@ async def _execute_dag(
             max_spawn=max_spawn,
             max_concurrent=conc,
             verbose=env.verbose,
+            executor_ref=_executor_ref,
         )
     finally:
         _hb_task.cancel()
+        _ctl_task.cancel()
         with contextlib.suppress(_asyncio.CancelledError):
             await _hb_task
+        with contextlib.suppress(_asyncio.CancelledError):
+            await _ctl_task
     t_exec_elapsed = time.monotonic() - t_exec
 
     op_results = dag_result.get("operation_results", {})
