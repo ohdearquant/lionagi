@@ -13,6 +13,7 @@ import sys
 import time
 import uuid
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -40,9 +41,19 @@ from lionagi.state.reasons import RunReasons
 
 @pytest.fixture
 def temp_db_path(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
-    """Per-test temp DB; patch DEFAULT_DB_PATH so StateDB() opens it."""
+    """Per-test temp DB; patch DEFAULT_DB_PATH so StateDB() opens it.
+
+    Also neutralizes LIONAGI_STATE_DB_URL, which StateDB prefers over
+    DEFAULT_DB_PATH — a host env pointing at a real DB would otherwise
+    bypass the patch entirely. AppSettings is frozen, so swap the module
+    reference rather than mutating the instance.
+    """
     db_path = tmp_path / "state.db"
     monkeypatch.setattr("lionagi.state.db.DEFAULT_DB_PATH", db_path)
+    monkeypatch.setattr(
+        "lionagi.state.db.settings",
+        SimpleNamespace(LIONAGI_STATE_DB_URL=None),
+    )
     return db_path
 
 
@@ -797,3 +808,114 @@ def test_cli_ctl_msg_help_subprocess():
     )
     assert result.returncode == 0
     assert "text" in result.stdout.lower()
+
+
+# ── Integration: `li o ctl status` real argparse tree wiring ───────────────
+#
+# The tests above exercise `run_ctl_status()` with a hand-built
+# `argparse.Namespace` (test_run_ctl_status_dispatches_generic_lookup) or hit
+# `agent status` / `play status`, which are intercepted in main() BEFORE the
+# `add_orchestrate_subparser` tree ever runs. Neither path can catch a dest=
+# typo or a missing required=True on the real `ctl` / `ctl status` subparser
+# wiring in lionagi/cli/orchestrate/__init__.py. These tests drive
+# `lionagi.cli.main.main()` end to end so the full parser tree — including
+# `orch_sub.add_parser("ctl")`, `ctl_sub.add_parser("status")`, and the
+# `args.ctl_command == "status"` dispatch in run_orchestrate() — is what's
+# under test, not a stand-in.
+
+
+def test_cli_o_ctl_status_help_subprocess():
+    result = subprocess.run(
+        [sys.executable, "-m", "lionagi.cli", "o", "ctl", "status", "--help"],
+        capture_output=True,
+        text=True,
+    )
+    assert result.returncode == 0
+    assert "json" in result.stdout.lower()
+
+
+@pytest.mark.asyncio
+async def test_main_o_ctl_status_json_routes_to_real_session(
+    temp_db_path: Path, capsys: pytest.CaptureFixture[str]
+):
+    """`li o ctl status <id> --json` through the real parser tree resolves the
+    session and prints the same view `_run_status` would build directly —
+    proves `id`/`--json` land on the attrs run_ctl_status actually reads."""
+    from lionagi.cli.main import main
+
+    async with StateDB() as db:
+        sid = await _make_session(db, status="completed")
+        await db.update_status(
+            "session", sid, new_status="completed", reason_code=RunReasons.COMPLETED_OK
+        )
+
+    exit_code = main(["o", "ctl", "status", sid, "--json"])
+    assert exit_code == 0
+    view = json.loads(capsys.readouterr().out)
+    assert view["id"] == sid
+    assert view["entity_type"] == "session"
+
+
+@pytest.mark.asyncio
+async def test_main_o_ctl_status_human_render_default(
+    temp_db_path: Path, capsys: pytest.CaptureFixture[str]
+):
+    """Without --json the human renderer runs, and pending controls surface —
+    same code path exercised in test_ctl_status_human_renders_pending_controls
+    but reached through the real CLI parser."""
+    from lionagi.cli.main import main
+
+    async with StateDB() as db:
+        sid = await _make_session(db, status="running")
+        await db.insert_session_control(session_id=sid, verb="pause")
+
+    exit_code = main(["o", "ctl", "status", sid])
+    assert exit_code == EXIT_RUNNING
+    output = capsys.readouterr().out
+    assert "pending controls" in output
+    assert "pause" in output
+
+
+def test_main_o_ctl_status_unknown_id_exit_unknown(
+    temp_db_path: Path, capsys: pytest.CaptureFixture[str]
+):
+    """A well-formed but unresolvable id must reach EXIT_UNKNOWN through the
+    real parser tree, not a stack trace — proves the ctl_command=='status'
+    branch actually dispatches to run_ctl_status rather than falling through
+    to the 'Unknown ctl command' error path."""
+    from lionagi.cli.main import main
+
+    exit_code = main(["o", "ctl", "status", "no-such-id-999"])
+    assert exit_code == EXIT_UNKNOWN
+
+
+def test_main_o_ctl_status_missing_id_is_argparse_error() -> None:
+    """`id` is a required positional on `ctl status` — omitting it must be
+    rejected by argparse (exit 2), not silently default to 'latest run' the
+    way `agent status` / `play status` do."""
+    from lionagi.cli.main import main
+
+    with pytest.raises(SystemExit) as exc_info:
+        main(["o", "ctl", "status"])
+    assert exc_info.value.code == 2
+
+
+def test_main_o_ctl_missing_subcommand_is_argparse_error() -> None:
+    """`ctl_sub` is `required=True` — `li o ctl` with no status/pause/resume/msg
+    subcommand must be an argparse error, not an AttributeError on a missing
+    `args.ctl_command`."""
+    from lionagi.cli.main import main
+
+    with pytest.raises(SystemExit) as exc_info:
+        main(["o", "ctl"])
+    assert exc_info.value.code == 2
+
+
+def test_main_o_ctl_status_unknown_flag_is_argparse_error(temp_db_path: Path) -> None:
+    """A near-miss flag (e.g. a typo'd `--jsonn`) must be rejected by argparse,
+    not silently swallowed into the `id` positional or ignored."""
+    from lionagi.cli.main import main
+
+    with pytest.raises(SystemExit) as exc_info:
+        main(["o", "ctl", "status", "some-id", "--jsonn"])
+    assert exc_info.value.code == 2
