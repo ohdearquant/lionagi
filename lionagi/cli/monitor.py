@@ -129,19 +129,10 @@ async def _query_running_sessions(
     project: str | None = None,
     invocation_kind: str | None = None,
 ) -> list[dict[str, Any]]:
-    """Default (since=None): running sessions only, unchanged. With --since:
-    the status filter widens to every status (running + terminal) so recently
-    completed/failed/cancelled/timed_out work becomes visible within the
-    window — `--since` otherwise only ever ANDed a time bound on top of a
-    running-only filter, so terminal work could never appear no matter how
-    recent it was.
+    """Running only by default; with since, all statuses in the window.
 
-    Always excludes an `invocation_kind='play'` session that a plays-table
-    row already references via `session_id` — a direct `li play` run (no
-    show) has no plays-table row and the session itself IS the play, but
-    once a plays-table row exists for it (show-orchestrated), that row is
-    the canonical representation and the session must not also render as a
-    second, duplicate play entry.
+    Play-kind sessions already referenced by a plays row are excluded so
+    show-orchestrated plays render once (via the plays table).
     """
     query = (
         "SELECT sessions.*, "
@@ -174,8 +165,7 @@ async def _query_running_invocations(
     *,
     since: float | None = None,
 ) -> list[dict[str, Any]]:
-    """Default: running only. With --since: every status, time-windowed —
-    see `_query_running_sessions` docstring for the rationale."""
+    """Running only by default; with since, all statuses in the window."""
     query = "SELECT * FROM invocations WHERE 1=1"  # noqa: S608
     params: list[Any] = []
     if since is not None:
@@ -193,8 +183,7 @@ async def _query_active_shows(
     *,
     since: float | None = None,
 ) -> list[dict[str, Any]]:
-    """Default: active only. With --since: every status, time-windowed —
-    see `_query_running_sessions` docstring for the rationale."""
+    """Active only by default; with since, all statuses in the window."""
     query = "SELECT * FROM shows WHERE 1=1"  # noqa: S608
     params: list[Any] = []
     if since is not None:
@@ -212,9 +201,7 @@ async def _query_running_plays(
     *,
     since: float | None = None,
 ) -> list[dict[str, Any]]:
-    """Default: the running-ish statuses only. With --since: every status,
-    time-windowed — see `_query_running_sessions` docstring for the
-    rationale."""
+    """In-flight statuses only by default; with since, all statuses in the window."""
     query = (
         "SELECT plays.*, "  # noqa: S608
         "(SELECT COUNT(*) FROM branches WHERE session_id = plays.session_id) AS branch_count "
