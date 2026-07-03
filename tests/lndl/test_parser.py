@@ -9,6 +9,7 @@ import warnings
 
 import pytest
 
+from lionagi.lndl.errors import LNDLError
 from lionagi.lndl.lexer import Lexer
 from lionagi.lndl.parser import ParseError, Parser, parse_value
 
@@ -64,6 +65,75 @@ class TestParseErrors:
             _parse("<lact hintx len>fn()</lact>\nOUT{len}")
         messages = [str(w.message) for w in caught]
         assert any("reserved keyword or builtin" in m for m in messages)
+
+    def test_malformed_number_double_dot_raises_parse_error(self):
+        with pytest.raises(ParseError, match="Invalid number literal"):
+            _parse("OUT{x: 1.2.3}")
+
+    def test_malformed_number_repeated_dots_raises_parse_error(self):
+        with pytest.raises(ParseError, match="Invalid number literal"):
+            _parse("OUT{x: 1..2}")
+
+    def test_malformed_negative_number_raises_parse_error(self):
+        with pytest.raises(ParseError, match="Invalid number literal"):
+            _parse("OUT{x: -1.2.3}")
+
+    def test_oversized_int_literal_raises_parse_error(self):
+        huge = "9" * 100_000
+        with pytest.raises(ParseError, match="Invalid number literal"):
+            _parse(f"OUT{{x: {huge}}}")
+
+    def test_malformed_number_error_is_lndl_error(self):
+        try:
+            _parse("OUT{x: 1.2.3}")
+        except ParseError as e:
+            assert isinstance(e, LNDLError)
+        else:
+            pytest.fail("expected ParseError")
+
+    def test_parse_error_is_lndl_error(self):
+        try:
+            _parse("<lvar a>1")
+        except ParseError as e:
+            assert isinstance(e, LNDLError)
+        else:
+            pytest.fail("expected ParseError")
+
+    def test_deeply_nested_out_list_raises_parse_error_not_recursion_error(self):
+        depth = 40
+        text = "OUT{y: " + "[" * depth + "x" + "]" * depth + "}"
+        with pytest.raises(ParseError, match="nesting too deep"):
+            _parse(text)
+
+    def test_out_list_nesting_within_cap_parses(self):
+        depth = 10
+        text = "OUT{y: " + "[" * depth + "x" + "]" * depth + "}"
+        prog = _parse(text)
+        nested = prog.out_block.fields["y"]
+        for _ in range(depth - 1):
+            assert isinstance(nested, list)
+            assert len(nested) == 1
+            nested = nested[0]
+        assert nested == ["x"]
+
+
+class TestDottedLact:
+    def test_dotted_lact_parses_model_field_alias(self):
+        prog = _parse("<lact model.field alias>fn(x=1)</lact>\nOUT{alias}")
+        assert len(prog.lacts) == 1
+        lact = prog.lacts[0]
+        assert lact.model == "model"
+        assert lact.field == "field"
+        assert lact.alias == "alias"
+        assert lact.call == "fn(x=1)"
+
+    def test_dotted_lact_without_explicit_alias_uses_field_as_alias(self):
+        prog = _parse("<lact model.field>fn(x=1)</lact>\nOUT{field}")
+        assert len(prog.lacts) == 1
+        lact = prog.lacts[0]
+        assert lact.model == "model"
+        assert lact.field == "field"
+        assert lact.alias == "field"
 
 
 class TestOutBlockForms:

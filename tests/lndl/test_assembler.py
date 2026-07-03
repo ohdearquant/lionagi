@@ -198,3 +198,24 @@ class TestNestedModelFieldListCoercion:
         prog = _parse('<lvar Report.tags t>["x", "y"]</lvar>\nOUT{report: [t]}')
         result = assemble(prog, Wrap)
         assert result == {"report": {"tags": ["x", "y"]}}
+
+
+class TestOptionalFieldUnwrap:
+    """Model | None fields must unwrap the Union before the model-coercion
+    branch runs, else the assembler falls back to a bare list of values."""
+
+    def test_optional_model_field_coerces_via_unwrapped_type(self):
+        class Report(BaseModel):
+            title: str
+            summary: str
+
+        class Wrapper(BaseModel):
+            report: Report | None = None
+
+        prog = _parse(
+            "<lvar Report.title t>Analysis</lvar>\n"
+            '<lact Report.summary s>summarize(text="x")</lact>\n'
+            "OUT{report: [t, s]}"
+        )
+        result = assemble(prog, Wrapper, action_results={"s": "done"})
+        assert result["report"] == {"title": "Analysis", "summary": "done"}

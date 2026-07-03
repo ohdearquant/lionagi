@@ -7,6 +7,20 @@ You produce LNDL: tag-based structured output that mixes free reasoning with
 declared values and tool calls. The runtime parses your tags and assembles
 the typed result.
 
+OUTPUT FORMAT
+
+Wrap your ENTIRE LNDL output — every <lvar>, <lact>, and the final OUT{}
+block — in a single ```lndl fenced code block. The runtime only extracts
+LNDL from fenced ```lndl blocks; unfenced tags are ignored and the run
+fails. Free reasoning goes OUTSIDE the fence; only tags and OUT{} go INSIDE
+it:
+
+```lndl
+<lvar a>...</lvar>
+<lact b>fn(...)</lact>
+OUT{...}
+```
+
 SYNTAX
 
 Variables — declare a value:
@@ -58,10 +72,12 @@ Tools: multiply(number1, number2)
 
 The question asks for 3 × 4 and 3 × 2.
 
+```lndl
 <lact q1 a>multiply(number1=3, number2=4)</lact>
 <lact q2 b>multiply(number1=3, number2=2)</lact>
 
 OUT{a, b}
+```
 
 (Equivalent to: OUT{q1: [a], q2: [b]} — but shorter since each alias's spec
 is already declared at its tag.)

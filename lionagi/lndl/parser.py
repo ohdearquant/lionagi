@@ -9,9 +9,11 @@ import warnings
 from typing import Any
 
 from .ast import Lact, Lvar, OutBlock, Program, RLvar
+from .errors import LNDLError
 from .lexer import Token, TokenType
 
 _warned_action_names: set[str] = set()
+_MAX_OUT_NESTING_DEPTH = 32
 
 PYTHON_RESERVED = {
     "and",
@@ -63,7 +65,7 @@ PYTHON_RESERVED = {
 }
 
 
-class ParseError(Exception):
+class ParseError(LNDLError):
     def __init__(self, message: str, token: Token):
         self.message = message
         self.token = token
@@ -317,12 +319,17 @@ class Parser:
 
         return Lact(model=model, field=field, alias=alias, call=call, extra_id=extra_id)
 
-    def _parse_out_list(self) -> list:
+    def _parse_out_list(self, depth: int = 0) -> list:
         """Parse one bracketed list (refs or nested groups) starting at LBRACKET.
 
         Returns ``list[str]`` for flat refs and ``list[list[str]]`` when the
         contents are themselves bracketed (e.g. ``[[a, b], [c, d]]``).
         """
+        if depth >= _MAX_OUT_NESTING_DEPTH:
+            raise ParseError(
+                f"OUT block nesting too deep - exceeded max depth of {_MAX_OUT_NESTING_DEPTH}",
+                self.current_token(),
+            )
         self.expect(TokenType.LBRACKET)
         self.skip_newlines()
         items: list = []
@@ -331,7 +338,7 @@ class Parser:
             if self.match(TokenType.RBRACKET, TokenType.EOF):
                 break
             if self.match(TokenType.LBRACKET):
-                items.append(self._parse_out_list())
+                items.append(self._parse_out_list(depth + 1))
             elif self.match(TokenType.ID):
                 name = self.current_token().value
                 self.advance()
@@ -457,9 +464,13 @@ class Parser:
                 self.advance()
 
             elif self.match(TokenType.NUM):
-                num_str = self.current_token().value
+                num_token = self.current_token()
+                num_str = num_token.value
                 self.advance()
-                fields[field_name] = float(num_str) if "." in num_str else int(num_str)
+                try:
+                    fields[field_name] = float(num_str) if "." in num_str else int(num_str)
+                except ValueError as e:
+                    raise ParseError(f"Invalid number literal '{num_str}'", num_token) from e
 
             elif self.match(TokenType.ID):
                 value = self.current_token().value
