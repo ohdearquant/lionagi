@@ -140,6 +140,13 @@ class SchedulerEngine:
                     s.get("id"),
                 )
                 continue
+            if s.get("trigger_type") == "interval" and not s.get("interval_sec"):
+                _log.warning(
+                    "Schedule %s is enabled with trigger_type='interval' but has "
+                    "no interval_sec; it will never fire until re-configured",
+                    s.get("id"),
+                )
+                continue
             next_fire_at = s.get("next_fire_at")
             if next_fire_at is not None and next_fire_at <= now:
                 continue

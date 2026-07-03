@@ -87,6 +87,23 @@ def _svc_validate_cron_expr(expr: str | None, *, required: bool = False) -> None
         raise ValueError(f"Invalid cron expression: {expr!r}")
 
 
+def _svc_validate_interval_sec(interval: Any, *, required: bool = False) -> None:
+    """Service-boundary check: reject a missing or non-positive interval.
+
+    `required=True` rejects a missing/null value — callers pass this when
+    trigger_type == "interval", since an interval-triggered schedule without
+    interval_sec commits fine but never fires (next-fire computation returns
+    None forever), the same enabled-but-dead shape as a cron schedule with
+    no expression.
+    """
+    if interval is None:
+        if required:
+            raise ValueError("interval_sec is required when trigger_type is 'interval'")
+        return
+    if isinstance(interval, bool) or not isinstance(interval, int) or interval <= 0:
+        raise ValueError(f"interval_sec must be a positive integer, got {interval!r}")
+
+
 async def _svc_recompute_next_fire_guarded(effective: dict[str, Any], context: str) -> None:
     """Recompute next_fire_at after a committed write, without raising.
 
@@ -322,6 +339,8 @@ async def create_schedule(data: dict[str, Any]) -> dict[str, Any]:
     _svc_validate_github_repo(data.get("github_repo"))
     if data.get("trigger_type") == "cron":
         _svc_validate_cron_expr(data.get("cron_expr"), required=True)
+    if data.get("trigger_type") == "interval":
+        _svc_validate_interval_sec(data.get("interval_sec"), required=True)
 
     if data.get("action_kind") == "flow_yaml":
         yaml_text = data.get("action_flow_yaml") or ""
@@ -393,6 +412,9 @@ async def update_schedule(schedule_id: str, fields: dict[str, Any]) -> bool:
         touches_trigger = "cron_expr" in fields or "trigger_type" in fields
         if touches_trigger and effective.get("trigger_type") == "cron":
             _svc_validate_cron_expr(effective.get("cron_expr"), required=True)
+        touches_interval = "interval_sec" in fields or "trigger_type" in fields
+        if touches_interval and effective.get("trigger_type") == "interval":
+            _svc_validate_interval_sec(effective.get("interval_sec"), required=True)
 
         await db.update_schedule(schedule_id, **fields)
 
@@ -421,6 +443,8 @@ async def enable_schedule(schedule_id: str) -> bool:
             return False
         if schedule.get("trigger_type") == "cron":
             _svc_validate_cron_expr(schedule.get("cron_expr"), required=True)
+        if schedule.get("trigger_type") == "interval":
+            _svc_validate_interval_sec(schedule.get("interval_sec"), required=True)
         await db.update_schedule(schedule_id, enabled=1)
 
     # A schedule can sit disabled for a long time; its stored next_fire_at

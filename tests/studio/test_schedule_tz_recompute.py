@@ -744,3 +744,122 @@ async def test_startup_recompute_warns_on_dead_cron_row(temp_db_path, caplog):
         if "no cron_expr" in r.getMessage().lower() and sid in r.getMessage()
     ]
     assert matches, [r.getMessage() for r in caplog.records]
+
+
+@pytest.mark.asyncio
+async def test_patch_null_interval_sec_on_interval_schedule_rejected(temp_db_path):
+    """Explicitly nulling interval_sec on an interval-triggered schedule is
+    rejected — it would strand the schedule enabled-but-dead (next-fire
+    computation returns None without an interval), the same shape the cron
+    guard closes for empty expressions."""
+    from lionagi.studio.services.schedules import create_schedule, get_schedule, update_schedule
+
+    created = await create_schedule(
+        {
+            "name": "patch-null-interval-test",
+            "trigger_type": "interval",
+            "interval_sec": 60,
+            "action_kind": "agent",
+            "action_prompt": "ping",
+        }
+    )
+    sid = created["id"]
+
+    with pytest.raises(ValueError, match="interval_sec is required"):
+        await update_schedule(sid, {"interval_sec": None})
+
+    row = await get_schedule(sid)
+    assert row["interval_sec"] == 60  # untouched
+
+
+@pytest.mark.asyncio
+async def test_patch_nonpositive_interval_sec_rejected(temp_db_path):
+    """Zero or negative interval_sec is rejected on update."""
+    from lionagi.studio.services.schedules import create_schedule, update_schedule
+
+    created = await create_schedule(
+        {
+            "name": "patch-nonpositive-interval-test",
+            "trigger_type": "interval",
+            "interval_sec": 60,
+            "action_kind": "agent",
+            "action_prompt": "ping",
+        }
+    )
+    sid = created["id"]
+
+    with pytest.raises(ValueError, match="positive integer"):
+        await update_schedule(sid, {"interval_sec": 0})
+
+
+@pytest.mark.asyncio
+async def test_create_interval_without_interval_sec_rejected(temp_db_path):
+    """Creating an interval-triggered schedule without interval_sec is
+    rejected instead of committing a schedule that can never fire."""
+    from lionagi.studio.services.schedules import create_schedule
+
+    with pytest.raises(ValueError, match="interval_sec is required"):
+        await create_schedule(
+            {
+                "name": "create-dead-interval-test",
+                "trigger_type": "interval",
+                "action_kind": "agent",
+                "action_prompt": "ping",
+            }
+        )
+
+
+@pytest.mark.asyncio
+async def test_patch_trigger_flip_away_from_interval_allows_clearing_interval(temp_db_path):
+    """Flipping trigger_type to cron in the same PATCH that clears
+    interval_sec is legal — the interval requirement only binds while the
+    effective trigger_type is 'interval'."""
+    from lionagi.studio.services.schedules import create_schedule, get_schedule, update_schedule
+
+    created = await create_schedule(
+        {
+            "name": "patch-flip-clear-interval-test",
+            "trigger_type": "interval",
+            "interval_sec": 60,
+            "action_kind": "agent",
+            "action_prompt": "ping",
+        }
+    )
+    sid = created["id"]
+
+    ok = await update_schedule(
+        sid, {"trigger_type": "cron", "cron_expr": "0 18 * * *", "interval_sec": None}
+    )
+    assert ok is True
+
+    row = await get_schedule(sid)
+    assert row["trigger_type"] == "cron"
+    assert row["interval_sec"] is None
+
+
+@pytest.mark.asyncio
+async def test_enable_dead_interval_schedule_rejected(temp_db_path):
+    """Enabling an interval schedule whose interval_sec was lost (legacy row)
+    is rejected the same way as enabling a dead cron schedule."""
+    from lionagi.state.db import StateDB
+    from lionagi.studio.services.schedules import create_schedule, disable_schedule, enable_schedule
+
+    created = await create_schedule(
+        {
+            "name": "enable-dead-interval-test",
+            "trigger_type": "interval",
+            "interval_sec": 60,
+            "action_kind": "agent",
+            "action_prompt": "ping",
+        }
+    )
+    sid = created["id"]
+    await disable_schedule(sid)
+
+    # Simulate a legacy dead row: null the interval directly in the DB,
+    # below the service-layer validation.
+    async with StateDB() as db:
+        await db.update_schedule(sid, interval_sec=None)
+
+    with pytest.raises(ValueError, match="interval_sec is required"):
+        await enable_schedule(sid)
