@@ -12,6 +12,7 @@ it changes. That isolates "did coordinating agents help?" from prompt effects.
 from __future__ import annotations
 
 import logging
+import os
 import time
 
 from lionagi.agent import AgentSpec
@@ -94,8 +95,39 @@ def _roster_guidance(config: OrchestrationConfig) -> str:
     )
 
 
-async def run_once(task: Task, config: OrchestrationConfig, trial: int) -> RunResult:
-    """Run one trial. Catches errors into RunResult.error (never raises)."""
+async def run_once(
+    task: Task, config: OrchestrationConfig, trial: int, *, backend: str | None = None
+) -> RunResult:
+    """Run one trial, optionally through the ADR-0089 sandbox-backend seam.
+
+    ``backend=None`` (default) is byte-for-byte the pre-existing in-process
+    path — no behavior change for existing callers. ``"local_worktree"`` or
+    ``"daytona"`` provisions an isolated workspace around the same in-process
+    trial first (the trial is a prompt-cell: the model call still runs
+    host-side, already authenticated) and tears it down after, so the
+    workspace and any artifacts stay isolated from the live checkout.
+    """
+    handle = None
+    sandbox_backend = None
+    if backend is not None:
+        from lionagi.tools.sandbox_backend import ProvisionSpec, get_backend
+
+        sandbox_backend = get_backend(backend)
+        handle = await sandbox_backend.provision(ProvisionSpec(repo_root=os.getcwd()))
+    try:
+        result = await _run_once_inprocess(task, config, trial)
+    finally:
+        if handle is not None:
+            try:
+                await sandbox_backend.teardown(handle)
+            except Exception:  # noqa: BLE001 — teardown failure must not mask the trial result
+                logger.exception("sandbox backend teardown failed: %s", backend)
+    result.backend = backend or "inprocess"
+    return result
+
+
+async def _run_once_inprocess(task: Task, config: OrchestrationConfig, trial: int) -> RunResult:
+    """The pre-ADR-0089 in-process trial body. Catches errors into RunResult.error (never raises)."""
     t0 = time.monotonic()
     try:
         if config.pattern == "single":
