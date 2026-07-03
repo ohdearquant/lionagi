@@ -50,14 +50,18 @@ two nodes, drop down a layer.
 The surfaces are designed to chain:
 
 ```bash
-# Recurring pipeline: schedule fires a playbook on a cron
-li schedule create nightly-audit --cron "0 6 * * *" \
-  --action-kind play --playbook audit
+# Recurring pipeline: schedule an agent turn on a cron. Create prints
+# the schedule ID; trigger and runs take that ID, not the name.
+SCHED=$(li schedule create nightly-audit --cron "0 6 * * *" \
+  --action-kind agent --agent auditor --prompt "run the nightly audit" \
+  | awk '/^Created:/ {print $2}')
 
-# Scriptable orchestration: fire the schedule now, block until terminal.
-# `li schedule trigger` prints the schedule-run ID that `li monitor run`
-# waits on. (Direct `li play` runs are watched with `li monitor --watch`.)
-RUN_ID=$(li schedule trigger nightly-audit | awk '/^Run:/ {print $2}')
+# Fire it now, then list its firings — each row carries a run ID and
+# outcome. (Direct `li play` runs are watched with `li monitor --watch`.)
+li schedule trigger "$SCHED"
+li schedule runs "$SCHED"
+
+# Block until a listed firing reaches a terminal state
 li monitor run "$RUN_ID" && echo "audit done"
 
 # One dashboard row for a multi-run skill
@@ -84,9 +88,9 @@ Two rules of thumb for choosing the chain:
 All surfaces share one state database, but what each writes differs:
 
 - **`li agent` / `li o fanout` / `li o flow` / `li play`** write a run
-  directory under `~/.lionagi/runs/` (manifest, branch snapshots, stream
-  buffers) plus session rows in the state database. A flow or fanout leg
-  is a branch you can resume with `li agent -r`.
+  directory under `~/.lionagi/runs/` (branch snapshots, stream buffers)
+  plus session rows in the state database. A flow or fanout leg is a
+  branch you can resume with `li agent -r`.
 - **`li engine run`** writes an engine-run row and its session rows to the
   state database only — no run directory.
 - **`li invoke`** writes one parent invocation row; the runs you attach to
