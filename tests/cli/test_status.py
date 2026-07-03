@@ -13,6 +13,7 @@ import sys
 import time
 import uuid
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -40,9 +41,19 @@ from lionagi.state.reasons import RunReasons
 
 @pytest.fixture
 def temp_db_path(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
-    """Per-test temp DB; patch DEFAULT_DB_PATH so StateDB() opens it."""
+    """Per-test temp DB; patch DEFAULT_DB_PATH so StateDB() opens it.
+
+    Also neutralizes LIONAGI_STATE_DB_URL, which StateDB prefers over
+    DEFAULT_DB_PATH — a host env pointing at a real DB would otherwise
+    bypass the patch entirely. AppSettings is frozen, so swap the module
+    reference rather than mutating the instance.
+    """
     db_path = tmp_path / "state.db"
     monkeypatch.setattr("lionagi.state.db.DEFAULT_DB_PATH", db_path)
+    monkeypatch.setattr(
+        "lionagi.state.db.settings",
+        SimpleNamespace(LIONAGI_STATE_DB_URL=None),
+    )
     return db_path
 
 
