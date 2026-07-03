@@ -591,6 +591,7 @@ class TestCreateScheduleInjectionRejection:
             data = {
                 "name": "good-sched",
                 "trigger_type": "cron",
+                "cron_expr": "0 * * * *",
                 "action_kind": "agent",
                 "action_model": "claude-sonnet-4-6",
                 "action_extra_args": ["my-task"],
