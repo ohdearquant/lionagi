@@ -631,6 +631,11 @@ def _show_project_matches(show: dict[str, Any], project: str) -> bool:
     repo = show.get("repo")
     if not repo:
         return False
+    # Strip a trailing " (remote, ...)" annotation some _show.md authors
+    # append after the path so the bare path is what gets resolved.
+    repo = repo.split(" (")[0].rstrip()
+    if not repo:
+        return False
     try:
         derived, _source = detect_project(Path(repo))
     except Exception:  # noqa: BLE001

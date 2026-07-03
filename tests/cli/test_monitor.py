@@ -472,6 +472,36 @@ async def test_gather_table_rows_project_filter_applies_to_shows(
 
 
 @pytest.mark.asyncio
+async def test_gather_table_rows_show_annotated_repo_matches_project(
+    temp_db_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Real _show.md repo lines sometimes carry a trailing remote
+    annotation after the path — the matcher must strip it and resolve the
+    bare path rather than fail derivation on a nonexistent path."""
+    async with StateDB() as db:
+        show_id = await _make_show(
+            db,
+            topic="annotated",
+            repo="/Users/lion/projects/proj-a  (org/proj-a, PRIVATE)",
+        )
+
+        seen: list[str] = []
+
+        def fake_detect_project(path: Path) -> tuple[str | None, str | None]:
+            seen.append(str(path))
+            if Path(path).name == "proj-a":
+                return ("proj-a", "git_remote")
+            return (None, None)
+
+        monkeypatch.setattr("lionagi.cli.monitor.detect_project", fake_detect_project)
+
+        rows = await _gather_table_rows(db, since=None, entity_type="show", project="proj-a")
+
+    assert show_id[:16] in [r["id"] for r in rows]
+    assert seen == ["/Users/lion/projects/proj-a"]
+
+
+@pytest.mark.asyncio
 async def test_gather_table_rows_show_missing_repo_excluded_under_project(
     temp_db_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
