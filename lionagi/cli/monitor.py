@@ -174,8 +174,14 @@ async def _query_active_shows(
     db: Any,
     *,
     since: float | None = None,
+    project: str | None = None,
 ) -> list[dict[str, Any]]:
-    """Active only by default; with since, all statuses in the window."""
+    """Active only by default; with since, all statuses in the window.
+
+    Shows carry their project under the `repo` column (see _show_to_row),
+    not a `project` column, so project-scoping matches against `repo` — the
+    same field the table already renders under the PROJECT header.
+    """
     query = "SELECT * FROM shows WHERE 1=1"  # noqa: S608
     params: list[Any] = []
     if since is not None:
@@ -183,6 +189,9 @@ async def _query_active_shows(
         params.append(since)
     else:
         query += " AND status = 'active'"
+    if project:
+        query += " AND repo = ?"
+        params.append(project)
     query += " ORDER BY updated_at DESC"
     rows = await db.fetch_all(query, params)
     return rows
@@ -203,7 +212,8 @@ async def _query_running_plays(
     """
     query = (
         "SELECT plays.*, "  # noqa: S608
-        "(SELECT COUNT(*) FROM branches WHERE session_id = plays.session_id) AS branch_count "
+        "(SELECT COUNT(*) FROM branches WHERE session_id = plays.session_id) AS branch_count, "
+        "(SELECT project FROM sessions WHERE id = plays.session_id) AS session_project "
         "FROM plays WHERE 1=1"
     )
     params: list[Any] = []
@@ -430,7 +440,7 @@ def _play_to_row(play: dict[str, Any]) -> dict[str, Any]:
     return {
         "id": play["id"][:16],
         "type": "play",
-        "project": "-",
+        "project": play.get("session_project") or "-",
         "status": play.get("status") or "?",
         "phase": _trunc(play.get("name") or "-", 18),
         "elapsed": _elapsed(play.get("started_at"), play.get("ended_at")),
@@ -647,7 +657,7 @@ async def _gather_table_rows(
         rows.extend(_invocation_to_row(i) for i in invocations)
 
     if entity_type in (None, "show"):
-        shows = await _query_active_shows(db, since=since)
+        shows = await _query_active_shows(db, since=since, project=project)
         rows.extend(_show_to_row(s) for s in shows)
 
     rows.extend(_play_to_row(p) for p in plays)

@@ -86,13 +86,20 @@ async def _make_invocation(db: StateDB, *, status: str = "running", skill: str =
     return inv_id
 
 
-async def _make_show(db: StateDB, *, status: str = "active", topic: str = "test-topic") -> str:
+async def _make_show(
+    db: StateDB,
+    *,
+    status: str = "active",
+    topic: str = "test-topic",
+    repo: str | None = None,
+) -> str:
     show_id = uuid.uuid4().hex[:12]
     await db.create_show(
         {
             "id": show_id,
             "topic": topic,
             "status": status,
+            "repo": repo,
             "show_dir": "/tmp/show",
         }
     )
@@ -342,6 +349,33 @@ def test_play_to_row():
     row = _play_to_row(play)
     assert row["type"] == "play"
     assert row["phase"] == "backend-impl"
+    assert row["project"] == "-"
+
+
+def test_play_to_row_renders_session_project():
+    """_query_running_plays attaches the linked session's project as
+    session_project; _play_to_row must render it instead of hardcoding '-'."""
+    play = {
+        "id": "play001abc",
+        "status": "running",
+        "name": "backend-impl",
+        "session_project": "lionagi",
+    }
+    row = _play_to_row(play)
+    assert row["project"] == "lionagi"
+
+
+def test_play_to_row_orphan_no_session_project_falls_back():
+    """A play with no linked session (or a dangling session_id) has no
+    session_project — must render '-', not crash."""
+    play = {
+        "id": "play002abc",
+        "status": "running",
+        "name": "orphan-play",
+        "session_project": None,
+    }
+    row = _play_to_row(play)
+    assert row["project"] == "-"
 
 
 # ── Integration: DB-backed list_running ───────────────────────────────────────
@@ -404,6 +438,57 @@ async def test_gather_table_rows_project_filter_applies_to_plays(temp_db_path: P
     assert play_b[:16] not in ids_a
     assert play_b[:16] in ids_b
     assert play_a[:16] not in ids_b
+
+
+@pytest.mark.asyncio
+async def test_gather_table_rows_project_filter_applies_to_shows(temp_db_path: Path) -> None:
+    """--project must scope shows too — shows carry project under `repo`."""
+    async with StateDB() as db:
+        show_a = await _make_show(db, topic="show-a", repo="proj-a")
+        show_b = await _make_show(db, topic="show-b", repo="proj-b")
+
+        rows_a = await _gather_table_rows(db, since=None, entity_type="show", project="proj-a")
+        rows_b = await _gather_table_rows(db, since=None, entity_type="show", project="proj-b")
+
+    ids_a = [r["id"] for r in rows_a]
+    ids_b = [r["id"] for r in rows_b]
+    assert show_a[:16] in ids_a
+    assert show_b[:16] not in ids_a
+    assert show_b[:16] in ids_b
+    assert show_a[:16] not in ids_b
+
+
+@pytest.mark.asyncio
+async def test_gather_table_rows_play_row_renders_session_project(
+    temp_db_path: Path,
+) -> None:
+    """A play row's PROJECT cell must reflect its linked session's project,
+    not the hardcoded '-' placeholder."""
+    async with StateDB() as db:
+        show_id = await _make_show(db)
+        sid = await _make_session(db, project="proj-a")
+        play_id = await _make_play(db, show_id, name="play-a", session_id=sid)
+
+        rows = await _gather_table_rows(db, since=None, entity_type="play", project=None)
+
+    play_rows = [r for r in rows if r["id"] == play_id[:16]]
+    assert len(play_rows) == 1
+    assert play_rows[0]["project"] == "proj-a"
+
+
+@pytest.mark.asyncio
+async def test_gather_table_rows_orphan_play_renders_dash(temp_db_path: Path) -> None:
+    """A play with no linked session still renders without crashing, with
+    PROJECT falling back to '-' rather than raising on the missing subselect
+    match."""
+    async with StateDB() as db:
+        show_id = await _make_show(db)
+        play_no_session = await _make_play(db, show_id, name="no-session", session_id=None)
+
+        rows = await _gather_table_rows(db, since=None, entity_type="play", project=None)
+
+    by_id = {r["id"]: r for r in rows}
+    assert by_id[play_no_session[:16]]["project"] == "-"
 
 
 @pytest.mark.asyncio
