@@ -819,6 +819,102 @@ async def test_since_no_double_listing_in_all_view(temp_db_path: Path) -> None:
     assert play_sess_id[:16] not in ids
 
 
+# ── Regression: dedup must not hide sessions from views without a play section ─
+#
+# The play-vs-session dedup lives in _gather_table_rows and applies only when
+# the plays section is actually being rendered. A SQL-level exclusion would
+# hide the backing session from the sessions-only view entirely, and would
+# zero-render the play when the plays row's updated_at falls outside the
+# --since window while the session's is inside it.
+
+
+@pytest.mark.asyncio
+async def test_type_session_view_still_shows_play_backed_session(temp_db_path: Path) -> None:
+    """--type session renders every session, including one a plays-table row
+    references — the play dedup only applies where plays are also shown."""
+    async with StateDB() as db:
+        show_id = await _make_show(db)
+        play_sess_id = await _make_session(db, invocation_kind="play", status="completed")
+        play_row_id = await _make_play(db, show_id, status="merged")
+        await db.execute(
+            "UPDATE plays SET session_id = ? WHERE id = ?", (play_sess_id, play_row_id)
+        )
+        since = time.time() - 3600
+
+        rows = await _gather_table_rows(db, since=since, entity_type="session", project=None)
+
+    assert play_sess_id[:16] in [r["id"] for r in rows]
+
+
+@pytest.mark.asyncio
+async def test_desynced_play_row_outside_window_session_still_renders_once(
+    temp_db_path: Path,
+) -> None:
+    """plays.updated_at outside the --since window but sessions.updated_at
+    inside: the run renders exactly once (via the session), not zero times."""
+    async with StateDB() as db:
+        show_id = await _make_show(db)
+        play_sess_id = await _make_session(db, invocation_kind="play", status="completed")
+        play_row_id = await _make_play(db, show_id, status="merged")
+        old = time.time() - 7200
+        await db.execute(
+            "UPDATE plays SET session_id = ?, updated_at = ? WHERE id = ?",
+            (play_sess_id, old, play_row_id),
+        )
+        since = time.time() - 3600
+
+        rows = await _gather_table_rows(db, since=since, entity_type="play", project=None)
+
+    ids = [r["id"] for r in rows]
+    assert play_row_id[:16] not in ids, "stale plays row is outside the window"
+    assert ids.count(play_sess_id[:16]) == 1, "the session must render exactly once"
+
+
+@pytest.mark.asyncio
+async def test_null_invocation_kind_session_not_hidden(temp_db_path: Path) -> None:
+    """A session with no invocation_kind must never be swallowed by the play
+    dedup in the sessions-only view, even when a plays row references it."""
+    async with StateDB() as db:
+        show_id = await _make_show(db)
+        sid = await _make_session(db, invocation_kind=None, status="completed")
+        play_row_id = await _make_play(db, show_id, status="merged")
+        await db.execute("UPDATE plays SET session_id = ? WHERE id = ?", (sid, play_row_id))
+        since = time.time() - 3600
+
+        rows = await _gather_table_rows(db, since=since, entity_type="session", project=None)
+
+    assert sid[:16] in [r["id"] for r in rows]
+
+
+def test_watch_loop_recomputes_since_every_tick(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The watch loop re-derives the cutoff from the window string each tick
+    (a sliding window), so terminal rows age out instead of accumulating."""
+    import lionagi.cli.monitor as monitor_mod
+
+    handlers: dict[int, Any] = {}
+    monkeypatch.setattr(
+        monitor_mod.signal, "signal", lambda signum, handler: handlers.setdefault(signum, handler)
+    )
+
+    ticks = iter([100.0, 200.0])
+    monkeypatch.setattr(monitor_mod, "_since_timestamp", lambda window: next(ticks))
+    monkeypatch.setattr(monitor_mod, "_clear_screen", lambda: None)
+
+    captured: list[float | None] = []
+
+    async def fake_run_table(*, since: float | None, entity_type: Any, project: Any) -> str:
+        captured.append(since)
+        if len(captured) >= 2:
+            handlers[signal.SIGINT](signal.SIGINT, None)
+        return ""
+
+    monkeypatch.setattr(monitor_mod, "_run_table", fake_run_table)
+
+    rc = monitor_mod._watch_loop(0, None, since_window="1h", entity_type=None, project=None)
+    assert rc == 0
+    assert captured == [100.0, 200.0], "each tick must use a freshly derived cutoff"
+
+
 # ── Regression: AGENTS column ────────────────────────────────────────────────
 
 
@@ -972,7 +1068,7 @@ def test_watch_mode_sigint_clean(temp_db_path: Path, monkeypatch: pytest.MonkeyP
     exit_code = _watch_loop(
         1,
         None,
-        since=None,
+        since_window=None,
         entity_type=None,
         project=None,
     )
