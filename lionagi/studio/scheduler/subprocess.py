@@ -255,6 +255,17 @@ def build_argv(schedule: dict, trigger_context: dict) -> tuple[list[str], str | 
             argv.append(playbook)
 
     elif kind == "flow_yaml":
+        # Extra positionals have nowhere safe to land here: this launch emits
+        # no positionals at all (the spec file carries prompt and model), so
+        # `li o flow` would soak extra tokens into its optional model/prompt
+        # slots and silently override the model merged into the spec below.
+        # Fail at build time so no invocation row is created for a launch
+        # that cannot honor them.
+        if isinstance(extra, list) and extra:
+            raise ValueError(
+                "flow_yaml launches do not accept action_extra_args; "
+                "set model/prompt inside the flow spec instead"
+            )
         # Write the inline YAML spec to a temp file so `li o flow -f <path>`
         # can read it.  The caller is responsible for deleting tmp_path after
         # the subprocess exits.

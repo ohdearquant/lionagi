@@ -394,6 +394,25 @@ class TestBuildArgvSentinelStructure:
             if tmp_path and os.path.exists(tmp_path):
                 os.unlink(tmp_path)
 
+    def test_flow_yaml_extra_args_rejected(self):
+        """flow_yaml emits no positionals at all, so extra args would be
+        soaked into `li o flow`'s optional model/prompt slots and silently
+        override the model merged into the spec — build_argv rejects them
+        outright so no invocation row is created."""
+        from lionagi.studio.scheduler.subprocess import build_argv
+
+        sched = {
+            "id": "sy",
+            "action_kind": "flow_yaml",
+            "action_model": "sonnet",
+            "action_prompt": None,
+            "action_project": None,
+            "action_extra_args": ["extra-model", "extra-prompt"],
+            "action_flow_yaml": "model: file-model\nprompt: yaml prompt\n",
+        }
+        with pytest.raises(ValueError, match="action_extra_args"):
+            build_argv(sched, {})
+
     def test_flow_yaml_unparseable_spec_written_unchanged(self):
         """flow_yaml with a model but a broken spec: no merge, no positional;
         the file is written as-is so `li o flow` reports its own parse error."""
