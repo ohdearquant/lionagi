@@ -1,7 +1,15 @@
 # ADR-0087: LNDL operate() Seam, Scratchpad-as-Tool, and the Measurement Gate
 
-**Status**: Proposed
+**Status**: Accepted (gated scope, 2026-07-03)
 **Date**: 2026-07-03
+
+**Scope note (accepted 2026-07-03):** Sections 1 through 5 are accepted and implementable
+now; the seam Middle (sections 1 and 2) proceeds first. Section 6's action-registry
+expansion stays gated behind the measurement pilot, and the judgment-flavored ops
+(synthesize, contradicts, confidence, complexity) require a separate ADR before any
+implementation. The measurement gate is pre-registered and its thresholds are fixed before
+implementation begins: PASS at or below 0.8x baseline token cost, KILL above 1.0x, REVIEW in
+between, measured per model on at least two providers with the full prompt tax counted.
 
 ## Context
 
