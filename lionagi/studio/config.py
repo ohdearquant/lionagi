@@ -3,6 +3,30 @@ from __future__ import annotations
 import os
 from pathlib import Path
 
+
+def _system_local_tz_name() -> str:
+    """Best-effort resolution of the system's IANA timezone name.
+
+    Checks ``$TZ`` first, then falls back to reading the ``/etc/localtime``
+    symlink (the standard way Unix hosts point at their zoneinfo entry).
+    Returns "UTC" if neither resolves — the daemon still runs correctly,
+    just without local-time cron semantics until LIONAGI_SCHEDULER_TZ or the
+    host's timezone is configured.
+    """
+    tz_env = os.environ.get("TZ")
+    if tz_env:
+        return tz_env
+    try:
+        localtime = Path("/etc/localtime").resolve()
+    except OSError:
+        return "UTC"
+    parts = localtime.parts
+    if "zoneinfo" in parts:
+        idx = parts.index("zoneinfo")
+        return "/".join(parts[idx + 1 :])
+    return "UTC"
+
+
 STUDIO_PORT: int = int(os.environ.get("LIONAGI_STUDIO_PORT", "8765"))
 HOST: str = os.environ.get("LIONAGI_STUDIO_HOST", "127.0.0.1")
 DATA_ROOT: Path = Path(os.environ.get("LIONAGI_DATA_ROOT", "~/.lionagi")).expanduser()
@@ -34,6 +58,14 @@ ZERO_SESSION_GRACE_SECONDS: int = int(
 PHANTOM_STALE_HOURS: float = float(os.environ.get("LIONAGI_STUDIO_PHANTOM_STALE_HOURS", "1.0"))
 # Minimum seconds between consecutive periodic reaper runs (throttle).
 REAPER_INTERVAL_SECONDS: int = int(os.environ.get("LIONAGI_STUDIO_REAPER_INTERVAL_SECONDS", "300"))
+
+# ── Scheduler cron timezone ───────────────────────────────────────────────────
+# Cron expressions (trigger_type="cron") are interpreted in this IANA timezone;
+# the stored next_fire_at column always remains a UTC epoch regardless. Defaults
+# to the system's local timezone (resolved from $TZ, else /etc/localtime);
+# override for deployments where the daemon host's timezone doesn't match
+# operator intent.
+SCHEDULER_TZ: str = os.environ.get("LIONAGI_SCHEDULER_TZ") or _system_local_tz_name()
 
 # ── DB maintenance config ─────────────────────────────────────────────────────
 # Size threshold in bytes above which /api/stats raises a size_alert (500 MB).

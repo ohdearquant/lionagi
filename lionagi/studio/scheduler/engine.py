@@ -10,8 +10,10 @@ import logging
 import os
 import time
 import uuid
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from lionagi.state.reasons import RunReasons, ScheduleReasons
 from lionagi.studio.scheduler import subprocess as _subprocess
@@ -26,6 +28,22 @@ _log = logging.getLogger(__name__)
 
 _MAX_CHAIN_DEPTH = 10
 _TICK_INTERVAL = 30  # seconds
+
+
+def _resolve_scheduler_tzinfo(tz_name: str) -> ZoneInfo:
+    """Resolve the configured scheduler timezone name to a ZoneInfo.
+
+    Falls back to UTC (with a warning) if the configured name isn't a valid
+    IANA zone — an invalid config must never crash cron resolution.
+    """
+    try:
+        return ZoneInfo(tz_name)
+    except (ZoneInfoNotFoundError, ValueError):
+        _log.warning(
+            "Invalid scheduler timezone %r (LIONAGI_SCHEDULER_TZ); falling back to UTC.",
+            tz_name,
+        )
+        return ZoneInfo("UTC")
 
 
 async def _resolve_action_cwd(schedule: dict) -> str | None:
@@ -83,7 +101,83 @@ class SchedulerEngine:
     async def start(self) -> None:
         _log.info("Scheduler engine starting")
         self._stopping = False
+        await self._recompute_armed_cron_schedules()
         self._task = asyncio.create_task(self._tick_loop())
+
+    async def _recompute_armed_cron_schedules(self) -> None:
+        """Re-resolve every enabled cron schedule's next_fire_at under the
+        current timezone interpretation before the tick loop starts.
+
+        Guards against silently-stale fire times if LIONAGI_SCHEDULER_TZ (or
+        the host's local timezone) changed since a schedule was last armed —
+        the same interpretation change that PATCH and enable also trigger via
+        recompute_next_fire().
+
+        A schedule whose stored next_fire_at is already due (<= now) is left
+        untouched here: it must flow through _check_missed_fires() first, so
+        missed_fire_policy ("run_once" / "skip") gets a chance to run before
+        anything advances next_fire_at into the future. _check_missed_fires()
+        runs right after this method returns (see _tick_loop), and the
+        recovery path (_recover_missed_fire_run_once() / _record_missed_
+        fire_skip()) is what advances next_fire_at once the policy has been
+        applied — synchronously, before _check_missed_fires() returns, so
+        the _tick() call that immediately follows never observes the same
+        past-due timestamp. Only schedules whose stored next_fire_at is
+        still ahead of now — the timezone-migration correction case this
+        hook exists for — are recomputed here.
+        """
+        try:
+            schedules = await self._svc.list_schedules(enabled=True)
+        except Exception:
+            _log.exception("Failed to load schedules for startup timezone recompute")
+            return
+        now = time.time()
+        for s in schedules:
+            next_fire_at = s.get("next_fire_at")
+            if next_fire_at is not None and next_fire_at <= now:
+                continue
+            try:
+                await self.recompute_next_fire(s, now=now)
+            except Exception:
+                _log.exception(
+                    "Failed to recompute next_fire_at for schedule %s on startup", s.get("id")
+                )
+
+    async def recompute_next_fire(
+        self, schedule: dict, *, now: float | None = None
+    ) -> float | None:
+        """Recompute + persist a cron schedule's next_fire_at, logging once
+        if (and only if) the value actually shifts from what was stored.
+
+        This is the single shared code path for every situation where the
+        cron interpretation may have changed under a schedule: daemon
+        startup (_recompute_armed_cron_schedules), a PATCH that touches
+        cron_expr/trigger fields, and the disable→enable transition (both in
+        services/schedules.py). Never shifts a fire time silently — an
+        unchanged recomputation is a no-op (no write, no log).
+        """
+        if schedule.get("trigger_type") != "cron" or not schedule.get("cron_expr"):
+            return None
+        ref_time = now if now is not None else time.time()
+        old = schedule.get("next_fire_at")
+        new = self._compute_next_fire(schedule, ref_time)
+        if new is None:
+            return None
+        if old is not None and abs(new - old) < 1e-6:
+            return new
+        await self._svc.update_schedule(schedule["id"], next_fire_at=new)
+        if old is not None:
+            from lionagi.studio.config import SCHEDULER_TZ
+
+            _log.info(
+                "next_fire_at shifted for schedule %s (%s): %s -> %s (tz=%s)",
+                schedule.get("name"),
+                schedule.get("id"),
+                datetime.fromtimestamp(old, tz=timezone.utc).isoformat(),
+                datetime.fromtimestamp(new, tz=timezone.utc).isoformat(),
+                SCHEDULER_TZ,
+            )
+        return new
 
     async def stop(self) -> None:
         _log.info("Scheduler engine stopping")
@@ -133,25 +227,71 @@ class SchedulerEngine:
             now = time.time()
             for s in schedules:
                 next_fire_at = s.get("next_fire_at")
-                if next_fire_at is None or next_fire_at >= now:
+                if next_fire_at is None or next_fire_at > now:
                     continue
                 policy = s.get("missed_fire_policy")
                 if policy == "run_once":
-                    run_id = uuid.uuid4().hex[:12]
-                    _log.info(
-                        "Missed fire recovery for schedule %s (%s)",
-                        s["name"],
-                        s["id"],
-                    )
-                    self._tracked_fire(
-                        s,
-                        run_id,
-                        trigger_context={"missed_recovery": True, "fired_at": now},
-                    )
+                    await self._recover_missed_fire_run_once(s, now)
                 else:
                     await self._record_missed_fire_skip(s, now)
         except Exception:
             _log.exception("Missed fire check error")
+
+    async def _recover_missed_fire_run_once(self, schedule: dict, now: float) -> None:
+        """Queue exactly one recovery fire for a past-due run_once schedule,
+        reserving its next_fire_at synchronously first.
+
+        _tick_loop() calls _check_missed_fires() and then _tick() back to
+        back with nothing awaited in between (the tick loop only sleeps
+        *between* iterations, not before its first one). The recovery fire
+        itself is queued as a background task via _tracked_fire() — it does
+        the real work (spawns the action) and, once it runs, persists its
+        own next_fire_at through the same _compute_next_fire() path every
+        other fire uses. But that write may not have happened yet by the
+        time the very next _tick() reloads schedules from storage: without
+        a synchronous reserve here, _tick() would see the same past-due
+        next_fire_at and queue a second, duplicate fire for it.
+
+        Reserving next_fire_at here (before returning to _tick_loop) closes
+        that window: _fire() recomputes and persists next_fire_at again
+        once it actually runs, so this reserve only has to survive long
+        enough for the immediately-following _tick() to reload schedules —
+        it is a stopgap, not a duplicate of the fire path's own bookkeeping.
+        If the process crashes between this reserve and the recovery fire
+        landing, the recovery run is lost for this cycle, but the schedule
+        is not stuck: it already holds a legitimate future next_fire_at and
+        resumes firing normally next time, equivalent to one skipped run
+        rather than indefinite starvation.
+        """
+        next_at = self._compute_next_fire(schedule, now)
+        if next_at is not None:
+            try:
+                await self._svc.update_schedule(schedule["id"], next_fire_at=next_at)
+            except Exception:
+                # The reserve did not land, so storage still holds the
+                # past-due next_fire_at and the immediately-following
+                # _tick() will queue its own normal fire for it. Queuing a
+                # recovery fire on top of that would run the external
+                # action twice, so skip recovery entirely and let the
+                # normal tick own this cycle's single fire (or, if storage
+                # stays unavailable, a later missed-fire check retries).
+                _log.exception(
+                    "Failed to reserve next_fire_at ahead of missed-fire recovery for schedule %s"
+                    "; skipping recovery this cycle",
+                    schedule.get("id"),
+                )
+                return
+        run_id = uuid.uuid4().hex[:12]
+        _log.info(
+            "Missed fire recovery for schedule %s (%s)",
+            schedule["name"],
+            schedule["id"],
+        )
+        self._tracked_fire(
+            schedule,
+            run_id,
+            trigger_context={"missed_recovery": True, "fired_at": now},
+        )
 
     async def _record_missed_fire_skip(self, schedule: dict, now: float) -> None:
         """Record missed-fire skip and advance next_fire_at."""
@@ -553,7 +693,16 @@ class SchedulerEngine:
             try:
                 from croniter import croniter
 
-                return croniter(expr, start_time=ref_time).get_next(float)
+                from lionagi.studio.config import SCHEDULER_TZ
+
+                # Resolve the cron expression's wall-clock fields in the
+                # configured timezone (default: system local), not UTC.
+                # croniter honors DST transitions when given a tz-aware
+                # start_time; get_next(float) still returns an absolute UTC
+                # epoch, which is what next_fire_at stores.
+                tz = _resolve_scheduler_tzinfo(SCHEDULER_TZ)
+                start = datetime.fromtimestamp(ref_time, tz=tz)
+                return croniter(expr, start_time=start).get_next(float)
             except Exception:
                 _log.exception("Invalid cron expression: %s", expr)
                 return None

@@ -326,6 +326,15 @@ async def update_schedule(schedule_id: str, fields: dict[str, Any]) -> bool:
                 raise ValueError(f"Invalid flow_yaml spec: {spec_err}")
 
         await db.update_schedule(schedule_id, **fields)
+
+    # A PATCH that touches cron_expr (or trigger_type) must take effect on
+    # next_fire_at immediately rather than waiting for the next fire — the
+    # stored `effective` dict already reflects the post-update schedule, so
+    # this recomputes under the new interpretation and logs iff it shifted.
+    if effective.get("trigger_type") == "cron":
+        from ..scheduler.engine import scheduler
+
+        await scheduler.recompute_next_fire(effective)
     return True
 
 
@@ -340,6 +349,16 @@ async def enable_schedule(schedule_id: str) -> bool:
         if not schedule:
             return False
         await db.update_schedule(schedule_id, enabled=1)
+
+    # A schedule can sit disabled for a long time; its stored next_fire_at
+    # may be stale (in the past, or computed under an old interpretation).
+    # Recompute now so re-enabling never fires immediately on stale data —
+    # it only fires immediately if the *current* cron interpretation says so.
+    effective = {**schedule, "enabled": 1}
+    if effective.get("trigger_type") == "cron":
+        from ..scheduler.engine import scheduler
+
+        await scheduler.recompute_next_fire(effective)
     return True
 
 

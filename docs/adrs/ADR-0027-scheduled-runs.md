@@ -59,6 +59,16 @@ Three trigger types, matching the patterns that emerged from competitive analysi
 | `interval` | `interval_sec` (integer seconds) | `last_fired_at + interval_sec <= now` |
 | `github_poll` | `github_repo`, `github_filter`, `poll_interval_sec` | HTTP poll → cursor-based new-event detection |
 
+Cron expressions resolve in the scheduler's configured timezone, not UTC: `LIONAGI_SCHEDULER_TZ`
+if set, otherwise the host's local timezone (read from `$TZ` or `/etc/localtime`), falling back
+to UTC if neither resolves to a valid IANA zone. `next_fire_at` is still always stored as a UTC
+epoch — only the interpretation of the cron fields themselves is timezone-aware. This means a
+cron schedule written before this timezone resolution existed, when all cron fields were
+implicitly read as UTC, can shift to a different absolute fire time the first time it's
+recomputed on an upgraded host (daemon startup, a PATCH to the schedule, or a disable→enable
+cycle). Operators who want to preserve the old UTC-only interpretation for existing schedules
+should set `LIONAGI_SCHEDULER_TZ=UTC`.
+
 ### 2. Action Execution
 
 Each schedule defines an action that maps to a CLI command:
