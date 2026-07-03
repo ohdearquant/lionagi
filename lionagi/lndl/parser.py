@@ -4,6 +4,7 @@
 """LNDL Parser — recursive descent parser for structured output tags."""
 
 import ast
+import math
 import re
 import warnings
 from typing import Any
@@ -469,7 +470,14 @@ class Parser:
                 self.advance()
                 try:
                     is_float = any(c in num_str for c in ".eE")
-                    fields[field_name] = float(num_str) if is_float else int(num_str)
+                    if is_float:
+                        parsed = float(num_str)
+                        # Overflow-to-inf (e.g. 1e400) serializes to invalid JSON downstream.
+                        if not math.isfinite(parsed):
+                            raise ValueError("non-finite number literal")
+                        fields[field_name] = parsed
+                    else:
+                        fields[field_name] = int(num_str)
                 except ValueError as e:
                     raise ParseError(f"Invalid number literal '{num_str}'", num_token) from e
 

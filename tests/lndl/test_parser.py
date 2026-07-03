@@ -136,6 +136,11 @@ class TestScientificNotationLiterals:
         assert prog.out_block.fields["x"] == 42
         assert isinstance(prog.out_block.fields["x"], int)
 
+    def test_exponent_overflow_raises_parse_error(self):
+        """An exponent that overflows to inf is rejected, not silently accepted."""
+        with pytest.raises(ParseError, match="Invalid number literal"):
+            _parse("OUT{x: 1e400}")
+
 
 class TestDottedLact:
     def test_dotted_lact_parses_model_field_alias(self):

@@ -84,6 +84,15 @@ class TestLexerLiterals:
         assert tokens[1].type is TokenType.ID
         assert tokens[1].value == "e"
 
+    def test_trailing_e_with_sign_but_no_digit_not_consumed(self):
+        """'e' followed by a sign but no digit is not folded into the number."""
+        for src in ("1e+", "1e-"):
+            tokens = Lexer(src).tokenize()
+            assert tokens[0].type is TokenType.NUM
+            assert tokens[0].value == "1"
+            assert tokens[1].type is TokenType.ID
+            assert tokens[1].value == "e"
+
     def test_negative_scientific_notation_in_out_block(self):
         tokens = Lexer("OUT{k: -1.5e-3}").tokenize()
         types_values = [(t.type, t.value) for t in tokens]
