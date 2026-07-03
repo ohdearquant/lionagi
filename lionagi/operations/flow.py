@@ -43,6 +43,54 @@ UNLIMITED_CONCURRENCY = int(os.environ.get("LIONAGI_MAX_CONCURRENCY", "10000"))
 # Tracks which Operation a reactive task is running (per-task contextvar).
 _CURRENT_OP: contextvars.ContextVar = contextvars.ContextVar("reactive_current_op", default=None)
 
+_OPERATOR_STEER_TEMPLATE = """\
+[OPERATOR STEER]
+A human operator sent these live corrections while this flow is running.
+Attend to them before continuing. Most recent last.
+{lines}
+[/OPERATOR STEER]
+
+"""
+
+
+def _format_operator_ts(ts: Any) -> str:
+    import datetime
+
+    try:
+        dt = datetime.datetime.fromtimestamp(float(ts), tz=datetime.timezone.utc)
+        return dt.strftime("%Y-%m-%dT%H:%M:%SZ")
+    except (TypeError, ValueError, OSError):
+        return str(ts)
+
+
+def _render_operator_messages(operation: "Operation", context: dict[str, Any]) -> None:
+    """Lift ``operator_messages`` out of context and render unconsumed entries into the instruction.
+
+    Always pops the key so it never rides along as raw JSON in the model's
+    context, whether or not there was anything new to render. Consume-once:
+    an entry already carrying a ``rendered_into_op`` breadcrumb was rendered
+    into an earlier operation and is skipped here.
+    """
+    messages = context.pop("operator_messages", None)
+    if not messages:
+        return
+
+    pending = [m for m in messages if isinstance(m, dict) and not m.get("rendered_into_op")]
+    if not pending:
+        return
+
+    lines = "\n".join(f"- {_format_operator_ts(m.get('ts'))}: {m.get('text', '')}" for m in pending)
+    block = _OPERATOR_STEER_TEMPLATE.format(lines=lines)
+
+    instruction = operation.parameters.get("instruction")
+    instruction = "" if instruction is None else str(instruction)
+    operation.parameters["instruction"] = block + instruction
+
+    op_id = str(operation.id)
+    for m in pending:
+        m["rendered_into_op"] = op_id
+    operation.metadata["rendered_into_op"] = op_id
+
 
 @dataclass(slots=True)
 class FlowEvent:
@@ -423,6 +471,10 @@ class DependencyAwareExecutor:
                         "original_context": existing_context,
                         **self.context.content,
                     }
+
+        context = operation.parameters.get("context")
+        if isinstance(context, dict):
+            _render_operator_messages(operation, context)
 
         branch = self._resolve_branch_for_operation(operation)
         self.operation_branches[operation.id] = branch
