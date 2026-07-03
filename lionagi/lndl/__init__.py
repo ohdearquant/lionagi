@@ -15,6 +15,7 @@ from .assembler import (
     NOTE_NAMESPACE,
     assemble,
     assemble_spec_value,
+    build_action_call,
     collect_actions,
     collect_notes,
     replace_actions,
@@ -29,12 +30,10 @@ from .diagnostics import (
     extract_lndl_chunks,
 )
 from .errors import (
-    AmbiguousMatchError,
     InvalidConstructorError,
     LNDLError,
     MissingFieldError,
     MissingLvarError,
-    MissingOutBlockError,
     TypeMismatchError,
 )
 from .extract import extract_lndl_blocks
@@ -60,7 +59,6 @@ __all__ = (
     "LNDL_SYSTEM_PROMPT",
     "NOTE_NAMESPACE",
     "ActionCall",
-    "AmbiguousMatchError",
     "Continue",
     "Exhausted",
     "Failed",
@@ -79,7 +77,6 @@ __all__ = (
     "LvarMetadata",
     "MissingFieldError",
     "MissingLvarError",
-    "MissingOutBlockError",
     "OutBlock",
     "ParseError",
     "ParsedConstructor",
@@ -96,6 +93,7 @@ __all__ = (
     "TypeMismatchError",
     "assemble",
     "assemble_spec_value",
+    "build_action_call",
     "classify_chunk",
     "classify_result",
     "collect_actions",

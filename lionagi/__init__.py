@@ -25,13 +25,11 @@ if TYPE_CHECKING:
     )
     from .ln import alcall, json_dumps, lcall, to_dict, to_list
     from .lndl import (
-        AmbiguousMatchError,
         InvalidConstructorError,
         LNDLError,
         LNDLOutput,
         MissingFieldError,
         MissingLvarError,
-        MissingOutBlockError,
         TypeMismatchError,
         extract_lndl_blocks,
         get_lndl_system_prompt,
@@ -86,8 +84,6 @@ _LAZY_MAP: dict[str, tuple[str, str | None]] = {
     "MissingFieldError": ("lndl", "MissingFieldError"),
     "TypeMismatchError": ("lndl", "TypeMismatchError"),
     "InvalidConstructorError": ("lndl", "InvalidConstructorError"),
-    "MissingOutBlockError": ("lndl", "MissingOutBlockError"),
-    "AmbiguousMatchError": ("lndl", "AmbiguousMatchError"),
     "get_lndl_system_prompt": ("lndl", "get_lndl_system_prompt"),
     "extract_lndl_blocks": ("lndl", "extract_lndl_blocks"),
     "normalize_lndl_text": ("lndl", "normalize_lndl_text"),
@@ -123,7 +119,6 @@ __all__ = (
     "Adaptable",
     "AdapterError",
     "AdapterRegistry",
-    "AmbiguousMatchError",
     "AsyncAdaptable",
     "AsyncAdapterRegistry",
     "BaseModel",
@@ -147,7 +142,6 @@ __all__ = (
     "Message",
     "MissingFieldError",
     "MissingLvarError",
-    "MissingOutBlockError",
     "Node",
     "Operable",
     "OperableModel",
