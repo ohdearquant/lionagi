@@ -692,9 +692,7 @@ function RunDetailPage() {
           }
         }
         const graph = (s as unknown as Record<string, unknown>).graph as
-          | { nodes: WorkerGraph["nodes"]; edges: WorkerGraph["edges"] }
-          | null
-          | undefined;
+          { nodes: WorkerGraph["nodes"]; edges: WorkerGraph["edges"] } | null | undefined;
         if (graph && graph.nodes && graph.nodes.length > 0) {
           setRunGraph({
             name: s.name || id,
@@ -931,7 +929,10 @@ function RunDetailPage() {
     );
   }
 
-  const totalMessages = session.branches.reduce((n, b) => n + b.messages.length, 0);
+  const totalMessages = session.branches.reduce(
+    (n, b) => n + Math.max(b.message_total ?? 0, b.messages.length),
+    0,
+  );
 
   const durationSec =
     session.created_at != null && session.updated_at != null
@@ -950,17 +951,11 @@ function RunDetailPage() {
     toolCallCount,
     errorCount: errors.length,
     showTopic: (session as unknown as Record<string, unknown>).show_topic as
-      | string
-      | null
-      | undefined,
+      string | null | undefined,
     showPlayName: (session as unknown as Record<string, unknown>).show_play_name as
-      | string
-      | null
-      | undefined,
+      string | null | undefined,
     playbookName: (session as unknown as Record<string, unknown>).playbook_name as
-      | string
-      | null
-      | undefined,
+      string | null | undefined,
   };
 
   const expectedArtifactsCount = session.artifact_contract_json?.expected?.length ?? 0;
