@@ -10,7 +10,7 @@ import type { StepNodeData } from "./StepNode";
 import type { ConditionEdgeData } from "./ConditionEdge";
 
 const INPUT_CLS =
-  "w-full rounded-md border border-edge bg-surface-raised px-3 py-1.5 text-body text-content-primary placeholder-content-muted focus:border-accent focus:outline-none";
+  "w-full rounded-md border border-edge bg-surface-input px-3 py-1.5 text-body text-content-primary placeholder-content-muted focus:border-interactive-primary focus:outline-none";
 const LABEL_CLS = "block text-meta uppercase tracking-[0.06em] text-content-muted mb-1";
 
 // ─── Types ───────────────────────────────────────────────
@@ -122,7 +122,7 @@ function NodePanel({
         {editable && onDelete && (
           <button
             onClick={() => onDelete("node", id)}
-            className="text-xs text-content-muted hover:text-status-failure"
+            className="text-xs text-content-muted hover:text-status-error"
           >
             delete
           </button>
@@ -291,7 +291,7 @@ function EdgePanel({
         {editable && onDelete && (
           <button
             onClick={() => onDelete("edge", id)}
-            className="text-xs text-content-muted hover:text-status-failure"
+            className="text-xs text-content-muted hover:text-status-error"
           >
             delete
           </button>
@@ -309,8 +309,8 @@ function EdgePanel({
                 onClick={() => update("mode", m)}
                 className={`rounded px-3 py-1 text-xs font-medium ${
                   data.mode === m
-                    ? "bg-surface-raised text-content-primary"
-                    : "bg-surface-raised text-content-muted hover:text-content-primary"
+                    ? "bg-interactive-secondary text-content-primary"
+                    : "bg-surface-input text-content-muted hover:text-content-primary"
                 }`}
               >
                 {m}
@@ -390,7 +390,6 @@ function EdgePanel({
 // ─── Exec Result Panel ───────────────────────────────────
 
 function ExecResultPanel({
-  id,
   data,
   result,
 }: {
@@ -402,7 +401,7 @@ function ExecResultPanel({
     <div className="flex flex-col gap-4 p-4 overflow-y-auto">
       <div className="flex items-center gap-2">
         <h3 className="font-mono text-label font-semibold text-status-success">{data.label}</h3>
-        <span className="rounded-full border border-status-success/40 bg-status-success/10 px-2 py-0.5 text-meta text-status-success">
+        <span className="rounded-full border border-status-success/40 bg-status-success-bg px-2 py-0.5 text-meta text-status-success">
           completed
         </span>
       </div>

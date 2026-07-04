@@ -1,8 +1,24 @@
 import React, { lazy, Suspense, useCallback, useMemo, useRef, useState } from "react";
-import Badge from "@/components/Badge";
+import { useTranslations } from "use-intl";
+import Badge from "@/components/ui/Badge";
+import FilterChip from "@/components/ui/FilterChip";
+import StatCard from "@/components/ui/StatCard";
+import {
+  IconArrowUpRight,
+  IconCheck,
+  IconChevronDown,
+  IconChevronRight,
+  IconDotFilled,
+  IconFile,
+  IconGlobe,
+  IconPencil,
+  IconPlus,
+  IconSearch,
+  IconTerminal,
+} from "@/components/ui/icons";
 import type { RunMessage, RunStep } from "@/lib/types";
 
-const Markdown = lazy(() => import("@/components/Markdown"));
+const Markdown = lazy(() => import("@/components/ui/Markdown"));
 
 interface RolesBreakdown {
   system?: number;
@@ -34,22 +50,22 @@ const STATUS_TONE: Record<string, "ok" | "pending" | "failed"> = {
   failed: "failed",
 };
 
-const TOOL_ICONS: Record<string, string> = {
-  exec_command: "$_",
-  Bash: "$_",
-  Read: "📄",
-  Write: "✎",
-  Edit: "✎",
-  apply_patch: "⊕",
-  WebFetch: "↗",
-  WebSearch: "🔍",
-  Grep: "/?",
-  Glob: "**",
-  TodoWrite: "☑",
+const TOOL_ICONS: Record<string, React.ReactNode> = {
+  exec_command: <IconTerminal size={12} strokeWidth={2} />,
+  Bash: <IconTerminal size={12} strokeWidth={2} />,
+  Read: <IconFile size={12} strokeWidth={2} />,
+  Write: <IconPencil size={12} strokeWidth={2} />,
+  Edit: <IconPencil size={12} strokeWidth={2} />,
+  apply_patch: <IconPlus size={12} strokeWidth={2} />,
+  WebFetch: <IconArrowUpRight size={12} strokeWidth={2} />,
+  WebSearch: <IconGlobe size={12} strokeWidth={2} />,
+  Grep: <IconSearch size={12} strokeWidth={2} />,
+  Glob: <IconSearch size={12} strokeWidth={2} />,
+  TodoWrite: <IconCheck size={12} strokeWidth={2} />,
 };
 
-function toolIcon(fn: string): string {
-  return TOOL_ICONS[fn] || "•";
+function toolIcon(fn: string): React.ReactNode {
+  return TOOL_ICONS[fn] ?? <IconDotFilled size={6} />;
 }
 
 function formatTime(ts: number | null | undefined): string {
@@ -67,12 +83,12 @@ function previewText(text: string, max = 140): string {
   return stripped.length > max ? stripped.slice(0, max - 1) + "…" : stripped;
 }
 
-function summarizeOutput(out: string): string {
-  if (!out) return "(no output)";
+function summarizeOutput(out: string, more: (n: number) => string): string {
+  if (!out) return "";
   const lines = out.trimEnd().split("\n");
   const first = lines[0] || "";
   if (lines.length === 1) return first.length > 100 ? first.slice(0, 99) + "…" : first;
-  return `${first.slice(0, 80)}${first.length > 80 ? "…" : ""} · +${lines.length - 1} more`;
+  return `${first.slice(0, 80)}${first.length > 80 ? "…" : ""} · ${more(lines.length - 1)}`;
 }
 
 function formatBytes(n: number): string {
@@ -166,6 +182,7 @@ export default function RunStepCard({
   expanded: expandedProp,
   onToggleExpand,
 }: RunStepCardProps) {
+  const t = useTranslations("runCard");
   const [internalExpanded, setInternalExpanded] = useState(defaultExpanded);
   const isControlled = expandedProp !== undefined;
   const expanded = isControlled ? expandedProp : internalExpanded;
@@ -204,7 +221,6 @@ export default function RunStepCard({
 
   const messages = useMemo(() => step.messages ?? [], [step.messages]);
   const result = (step.result ?? {}) as StepResult;
-  const roles = (result.roles ?? {}) as RolesBreakdown;
 
   const counts = useMemo(() => {
     const c = { system: 0, user: 0, assistant: 0, tool_call: 0, action: 0 };
@@ -318,10 +334,10 @@ export default function RunStepCard({
         step.status === "completed"
           ? "border-edge"
           : step.status === "failed"
-            ? "border-status-failure/40"
+            ? "border-status-error/40"
             : step.status === "running"
               ? "border-status-running/40"
-              : "border-edge-hairline"
+              : "border-edge-subtle"
       }`}
     >
       <button
@@ -331,7 +347,13 @@ export default function RunStepCard({
         onClick={() => setExpanded((v) => !v)}
         className="flex w-full items-start gap-2 px-3 py-2 text-left hover:bg-surface-overlay"
       >
-        <span className="mt-0.5 text-body text-content-muted">{expanded ? "▾" : "▸"}</span>
+        <span className="mt-1 flex items-center text-content-muted">
+          {expanded ? (
+            <IconChevronDown size={10} strokeWidth={2.25} />
+          ) : (
+            <IconChevronRight size={10} strokeWidth={2.25} />
+          )}
+        </span>
         <div className="flex-1 min-w-0">
           <div className="flex flex-wrap items-center gap-1.5">
             <span className="font-mono text-label font-semibold text-content-primary">
@@ -355,11 +377,13 @@ export default function RunStepCard({
               </Badge>
             )}
             <span className="ml-auto flex items-center gap-2 font-mono text-meta text-content-muted">
-              <span>{summary.toolCount} tools</span>
+              <span>{t("countTools", { count: summary.toolCount })}</span>
               {summary.failedCount > 0 && (
-                <span className="text-status-failure">{summary.failedCount} failed</span>
+                <span className="text-status-error">
+                  {t("countFailed", { count: summary.failedCount })}
+                </span>
               )}
-              <span>{summary.files.length} files</span>
+              <span>{t("countFiles", { count: summary.files.length })}</span>
               {summary.durationSec != null && (
                 <span>
                   {summary.durationSec < 60
@@ -383,14 +407,14 @@ export default function RunStepCard({
           {/* Tab bar */}
           <div
             role="tablist"
-            aria-label="Step details"
+            aria-label={t("stepDetails")}
             className="sticky top-0 z-10 flex items-center gap-0 border-b border-edge bg-surface-base/95 px-2 backdrop-blur"
           >
             <TabButton
               id="overview"
               active={tab}
               onSelect={setTab}
-              label="Overview"
+              label={t("tabOverview")}
               panelId={`step-${step.step}-panel-overview`}
               buttonId={`step-${step.step}-tab-overview`}
               tabIndex={tab === "overview" ? 0 : -1}
@@ -403,7 +427,7 @@ export default function RunStepCard({
               id="files"
               active={tab}
               onSelect={setTab}
-              label="Files"
+              label={t("tabFiles")}
               count={summary.files.length}
               panelId={`step-${step.step}-panel-files`}
               buttonId={`step-${step.step}-tab-files`}
@@ -417,7 +441,7 @@ export default function RunStepCard({
               id="commands"
               active={tab}
               onSelect={setTab}
-              label="Commands"
+              label={t("tabCommands")}
               count={summary.toolCount}
               panelId={`step-${step.step}-panel-commands`}
               buttonId={`step-${step.step}-tab-commands`}
@@ -431,7 +455,7 @@ export default function RunStepCard({
               id="errors"
               active={tab}
               onSelect={setTab}
-              label="Errors"
+              label={t("tabErrors")}
               count={summary.failedCount}
               tone={summary.failedCount > 0 ? "error" : undefined}
               panelId={`step-${step.step}-panel-errors`}
@@ -446,7 +470,7 @@ export default function RunStepCard({
               id="conversation"
               active={tab}
               onSelect={setTab}
-              label="Conversation"
+              label={t("tabConversation")}
               count={messages.length}
               panelId={`step-${step.step}-panel-conversation`}
               buttonId={`step-${step.step}-tab-conversation`}
@@ -466,9 +490,9 @@ export default function RunStepCard({
                   });
                   setExpandedTools(expandedTools.size > 0 ? new Set() : all);
                 }}
-                className="ml-auto rounded border border-edge px-2 py-0.5 text-[10px] text-content-muted hover:border-edge-strong hover:text-content-primary"
+                className="ml-auto rounded border border-edge px-2 py-0.5 text-[length:var(--t-xs)] text-content-muted hover:border-edge-strong hover:text-content-primary"
               >
-                {expandedTools.size > 0 ? "collapse all tools" : "expand all tools"}
+                {expandedTools.size > 0 ? t("collapseAllTools") : t("expandAllTools")}
               </button>
             )}
           </div>
@@ -524,32 +548,32 @@ export default function RunStepCard({
               aria-labelledby={`step-${step.step}-tab-conversation`}
             >
               <div className="flex flex-wrap items-center gap-1.5 border-b border-edge px-2 py-1">
-                <span className="text-[9px] uppercase tracking-wide text-content-muted">
-                  filter:
+                <span className="text-[length:var(--t-xs)] uppercase tracking-wide text-content-muted">
+                  {t("filterLabel")}
                 </span>
                 <FilterChip
-                  label="responses"
+                  label={t("filterResponses")}
                   count={counts.assistant}
                   active={filters.responses}
                   tone="blue"
                   onToggle={() => setFilters((f) => ({ ...f, responses: !f.responses }))}
                 />
                 <FilterChip
-                  label="tools"
+                  label={t("filterTools")}
                   count={counts.tool_call + counts.action}
                   active={filters.tools}
                   tone="amber"
                   onToggle={() => setFilters((f) => ({ ...f, tools: !f.tools }))}
                 />
                 <FilterChip
-                  label="user"
+                  label={t("filterUser")}
                   count={counts.user}
                   active={filters.user}
                   tone="green"
                   onToggle={() => setFilters((f) => ({ ...f, user: !f.user }))}
                 />
                 <FilterChip
-                  label="system"
+                  label={t("filterSystem")}
                   count={counts.system}
                   active={filters.system}
                   tone="neutral"
@@ -588,6 +612,7 @@ const TabButton = React.forwardRef<
   { id, active, onSelect, label, count, tone, panelId, buttonId, tabIndex, onKeyDown },
   ref,
 ) {
+  const t = useTranslations("runCard");
   const isActive = id === active;
   const tabPosition = TAB_ORDER.indexOf(id) + 1;
   const totalTabs = TAB_ORDER.length;
@@ -599,7 +624,7 @@ const TabButton = React.forwardRef<
       role="tab"
       aria-selected={isActive}
       aria-controls={panelId}
-      aria-label={`${label} tab ${tabPosition} of ${totalTabs}`}
+      aria-label={t("tabAria", { label, position: tabPosition, total: totalTabs })}
       tabIndex={tabIndex ?? (isActive ? 0 : -1)}
       onClick={() => onSelect(id)}
       onKeyDown={onKeyDown}
@@ -612,7 +637,7 @@ const TabButton = React.forwardRef<
       {label}
       {count != null && (
         <span
-          className={`rounded px-1 font-mono text-[9px] ${tone === "error" ? "bg-status-failure/10 text-status-failure" : "bg-surface-overlay text-content-muted"}`}
+          className={`rounded px-1 font-mono text-[length:var(--t-xs)] ${tone === "error" ? "bg-status-error-bg text-status-error" : "bg-surface-overlay text-content-muted"}`}
         >
           {count}
         </span>
@@ -638,12 +663,13 @@ function OverviewPanel({
   lastAssistant: RunMessage | null;
   onJumpToConversation: () => void;
 }) {
+  const t = useTranslations("runCard");
   return (
     <div className="grid grid-cols-1 gap-2 p-2 lg:grid-cols-3">
       <div className="lg:col-span-2 rounded border border-edge bg-surface-raised p-3">
         <div className="mb-1.5 flex items-center gap-2">
-          <span className="text-[9px] font-semibold uppercase tracking-wider text-content-muted">
-            Outcome
+          <span className="text-[length:var(--t-xs)] font-semibold uppercase tracking-wider text-content-muted">
+            {t("outcome")}
           </span>
           {summary.verdict && (
             <Badge tone={VERDICT_TONE[summary.verdict] ?? "pending"} className="rounded font-mono">
@@ -666,29 +692,29 @@ function OverviewPanel({
                 onClick={onJumpToConversation}
                 className="mt-2 text-meta text-status-running hover:text-status-running/80 transition-colors"
               >
-                View full conversation →
+                {t("viewFullConversation")}
               </button>
             )}
           </>
         ) : (
-          <p className="text-body text-content-muted">No final response recorded.</p>
+          <p className="text-body text-content-muted">{t("noFinalResponse")}</p>
         )}
       </div>
       <div className="flex flex-col gap-2">
-        <StatBlock
-          label="Tool calls"
+        <StatCard
+          label={t("statToolCalls")}
           value={summary.toolCount.toString()}
-          sub={`${summary.commands.length} kinds`}
+          sub={t("kindsSub", { count: summary.commands.length })}
         />
-        <StatBlock
-          label="Failed"
+        <StatCard
+          label={t("statFailed")}
           value={summary.failedCount.toString()}
           tone={summary.failedCount > 0 ? "error" : "ok"}
         />
-        <StatBlock label="Files touched" value={summary.files.length.toString()} />
+        <StatCard label={t("statFilesTouched")} value={summary.files.length.toString()} />
         {summary.durationSec != null && (
-          <StatBlock
-            label="Duration"
+          <StatCard
+            label={t("statDuration")}
             value={
               summary.durationSec < 60
                 ? `${summary.durationSec}s`
@@ -699,16 +725,18 @@ function OverviewPanel({
       </div>
       {summary.commands.length > 0 && (
         <div className="rounded border border-edge bg-surface-raised p-2">
-          <div className="mb-1.5 text-[9px] font-semibold uppercase tracking-wider text-content-muted">
-            Top Commands
+          <div className="mb-1.5 text-[length:var(--t-xs)] font-semibold uppercase tracking-wider text-content-muted">
+            {t("topCommands")}
           </div>
           <ul className="flex flex-col gap-0.5">
             {summary.commands.slice(0, 8).map((c) => (
               <li key={c.cmd} className="flex items-center justify-between gap-2 text-body">
-                <span className="truncate font-mono text-status-pending">{c.cmd}</span>
+                <span className="truncate font-mono text-status-warning">{c.cmd}</span>
                 <span className="shrink-0 font-mono text-meta text-content-muted">
                   ×{c.count}
-                  {c.failed > 0 && <span className="text-status-failure"> ({c.failed} err)</span>}
+                  {c.failed > 0 && (
+                    <span className="text-status-error"> {t("errCount", { count: c.failed })}</span>
+                  )}
                 </span>
               </li>
             ))}
@@ -717,8 +745,8 @@ function OverviewPanel({
       )}
       {summary.files.length > 0 && (
         <div className="rounded border border-edge bg-surface-raised p-2 lg:col-span-2">
-          <div className="mb-1.5 text-[9px] font-semibold uppercase tracking-wider text-content-muted">
-            Top Files
+          <div className="mb-1.5 text-[length:var(--t-xs)] font-semibold uppercase tracking-wider text-content-muted">
+            {t("topFiles")}
           </div>
           <ul className="flex flex-col gap-0.5">
             {summary.files.slice(0, 8).map((f) => (
@@ -728,53 +756,23 @@ function OverviewPanel({
         </div>
       )}
       {summary.failedCount > 0 && (
-        <div className="rounded border border-status-failure/30 bg-status-failure/10 p-2 lg:col-span-3">
-          <div className="mb-1.5 text-[9px] font-semibold uppercase tracking-wider text-status-failure">
-            {summary.failedCount} Failed Tool Call{summary.failedCount === 1 ? "" : "s"}
+        <div className="rounded border border-status-error/30 bg-status-error-bg p-2 lg:col-span-3">
+          <div className="mb-1.5 text-[length:var(--t-xs)] font-semibold uppercase tracking-wider text-status-error">
+            {t("failedToolCalls", { count: summary.failedCount })}
           </div>
           <ul className="flex flex-col gap-1">
             {summary.failedTools.slice(0, 5).map((t, i) => (
               <li key={i} className="text-body">
-                <span className="font-mono text-status-failure">{t.function}</span>
+                <span className="font-mono text-status-error">{t.function}</span>
                 <span className="ml-2 truncate font-mono text-content-secondary">{t.summary}</span>
                 {t.exit_code != null && (
-                  <span className="ml-2 text-meta text-status-failure">exit {t.exit_code}</span>
+                  <span className="ml-2 text-meta text-status-error">exit {t.exit_code}</span>
                 )}
               </li>
             ))}
           </ul>
         </div>
       )}
-    </div>
-  );
-}
-
-function StatBlock({
-  label,
-  value,
-  sub,
-  tone,
-}: {
-  label: string;
-  value: string;
-  sub?: string;
-  tone?: "ok" | "error";
-}) {
-  return (
-    <div className="rounded border border-edge bg-surface-raised px-3 py-2">
-      <div className="text-[9px] uppercase tracking-wider text-content-muted">{label}</div>
-      <div
-        className={`mt-0.5 font-mono text-base font-semibold ${
-          tone === "error"
-            ? "text-status-failure"
-            : tone === "ok"
-              ? "text-status-success"
-              : "text-content-primary"
-        }`}
-      >
-        {value}
-      </div>
-      {sub && <div className="text-meta text-content-muted">{sub}</div>}
     </div>
   );
 }
@@ -789,7 +787,7 @@ function FileRow({ file }: { file: FileChange }) {
       </span>
       <span className="shrink-0 flex items-center gap-1 font-mono text-meta">
         {ops.read > 0 && <span className="text-status-running">r{ops.read}</span>}
-        {ops.edit > 0 && <span className="text-status-pending">e{ops.edit}</span>}
+        {ops.edit > 0 && <span className="text-status-warning">e{ops.edit}</span>}
         {ops.write > 0 && <span className="text-status-success">w{ops.write}</span>}
         {ops.other > 0 && <span className="text-content-muted">·{ops.other}</span>}
         <span className="ml-1 text-content-muted">({total})</span>
@@ -799,8 +797,9 @@ function FileRow({ file }: { file: FileChange }) {
 }
 
 function FilesPanel({ files }: { files: FileChange[] }) {
+  const t = useTranslations("runCard");
   if (files.length === 0)
-    return <div className="p-4 text-body text-content-muted">No file activity recorded.</div>;
+    return <div className="p-4 text-body text-content-muted">{t("noFileActivity")}</div>;
   return (
     <div className="p-2">
       <ul className="flex flex-col gap-0.5">
@@ -813,26 +812,27 @@ function FilesPanel({ files }: { files: FileChange[] }) {
 }
 
 function CommandsPanel({ commands }: { commands: CommandSummary[] }) {
+  const t = useTranslations("runCard");
   if (commands.length === 0)
-    return <div className="p-4 text-body text-content-muted">No commands recorded.</div>;
+    return <div className="p-4 text-body text-content-muted">{t("noCommands")}</div>;
   return (
     <div className="p-2">
       <table className="w-full text-left text-body">
         <thead>
-          <tr className="border-b border-edge text-[9px] uppercase tracking-wider text-content-muted">
-            <th className="px-2 py-1 font-medium">Tool</th>
-            <th className="px-2 py-1 text-right font-medium">Calls</th>
-            <th className="px-2 py-1 text-right font-medium">Failed</th>
-            <th className="px-2 py-1 text-right font-medium">Output</th>
+          <tr className="border-b border-edge text-[length:var(--t-xs)] uppercase tracking-wider text-content-muted">
+            <th className="px-2 py-1 font-medium">{t("colTool")}</th>
+            <th className="px-2 py-1 text-right font-medium">{t("colCalls")}</th>
+            <th className="px-2 py-1 text-right font-medium">{t("colFailed")}</th>
+            <th className="px-2 py-1 text-right font-medium">{t("colOutput")}</th>
           </tr>
         </thead>
         <tbody>
           {commands.map((c) => (
-            <tr key={c.cmd} className="border-b border-edge-hairline">
-              <td className="px-2 py-1 font-mono text-status-pending">{c.cmd}</td>
+            <tr key={c.cmd} className="border-b border-edge-subtle">
+              <td className="px-2 py-1 font-mono text-status-warning">{c.cmd}</td>
               <td className="px-2 py-1 text-right font-mono text-content-primary">{c.count}</td>
               <td
-                className={`px-2 py-1 text-right font-mono ${c.failed > 0 ? "text-status-failure" : "text-content-muted"}`}
+                className={`px-2 py-1 text-right font-mono ${c.failed > 0 ? "text-status-error" : "text-content-muted"}`}
               >
                 {c.failed > 0 ? c.failed : "—"}
               </td>
@@ -848,18 +848,17 @@ function CommandsPanel({ commands }: { commands: CommandSummary[] }) {
 }
 
 function ErrorsPanel({ failed }: { failed: RunMessage[] }) {
+  const t = useTranslations("runCard");
   if (failed.length === 0)
-    return (
-      <div className="p-4 text-body text-status-success">No errors. All tool calls succeeded.</div>
-    );
+    return <div className="p-4 text-body text-status-success">{t("noErrors")}</div>;
   return (
     <div className="flex flex-col gap-1.5 p-2">
       {failed.map((t, i) => (
-        <div key={i} className="rounded border border-status-failure/30 bg-status-failure/10 p-2">
+        <div key={i} className="rounded border border-status-error/30 bg-status-error-bg p-2">
           <div className="flex items-center gap-2 text-body">
-            <span className="font-mono text-status-failure">{t.function}</span>
+            <span className="font-mono text-status-error">{t.function}</span>
             {t.exit_code != null && (
-              <span className="rounded bg-status-failure/10 border border-status-failure/30 px-1.5 py-0 font-mono text-meta text-status-failure">
+              <span className="rounded bg-status-error-bg border border-status-error/30 px-1.5 py-0 font-mono text-meta text-status-error">
                 exit {t.exit_code}
               </span>
             )}
@@ -874,51 +873,13 @@ function ErrorsPanel({ failed }: { failed: RunMessage[] }) {
             $ {t.summary}
           </p>
           {t.output && (
-            <pre className="mt-1.5 max-h-40 overflow-auto rounded bg-status-failure/10 border border-status-failure/20 p-1.5 font-mono text-meta leading-relaxed text-status-failure">
+            <pre className="mt-1.5 max-h-40 overflow-auto rounded bg-status-error-bg border border-status-error/20 p-1.5 font-mono text-meta leading-relaxed text-status-error">
               {t.output.length > 2000 ? t.output.slice(0, 2000) + "\n…[truncated]" : t.output}
             </pre>
           )}
         </div>
       ))}
     </div>
-  );
-}
-
-function FilterChip({
-  label,
-  count,
-  active,
-  tone,
-  onToggle,
-}: {
-  label: string;
-  count: number;
-  active: boolean;
-  tone: "blue" | "amber" | "green" | "neutral";
-  onToggle: () => void;
-}) {
-  const toneColors = {
-    blue: active
-      ? "border-status-running/40 bg-status-running/10 text-status-running"
-      : "border-edge text-content-muted",
-    amber: active
-      ? "border-status-pending/40 bg-status-pending/10 text-status-pending"
-      : "border-edge text-content-muted",
-    green: active
-      ? "border-status-success/40 bg-status-success/10 text-status-success"
-      : "border-edge text-content-muted",
-    neutral: active
-      ? "border-edge-strong bg-surface-overlay text-content-secondary"
-      : "border-edge text-content-muted",
-  }[tone];
-  return (
-    <button
-      type="button"
-      onClick={onToggle}
-      className={`rounded border px-1.5 py-0 text-[9px] font-medium uppercase tracking-wide transition-colors hover:brightness-110 ${toneColors}`}
-    >
-      {label} {count}
-    </button>
   );
 }
 
@@ -988,14 +949,15 @@ function MessageFeed({
 }
 
 function SystemBlock({ content }: { content: string }) {
+  const t = useTranslations("runCard");
   return (
     <details className="border-b border-edge">
-      <summary className="cursor-pointer px-4 py-1.5 text-[10px] text-content-muted hover:bg-surface-overlay hover:text-content-secondary">
+      <summary className="cursor-pointer px-4 py-1.5 text-[length:var(--t-xs)] text-content-muted hover:bg-surface-overlay hover:text-content-secondary">
         <span className="font-mono uppercase tracking-wide">system</span>{" "}
-        <span className="text-content-muted">{content.length.toLocaleString()} chars</span>
+        <span className="text-content-muted">{t("charsCount", { count: content.length })}</span>
       </summary>
       <div className="bg-surface-base px-4 py-2">
-        <p className="max-h-48 overflow-y-auto whitespace-pre-wrap font-mono text-[10px] leading-relaxed text-content-secondary">
+        <p className="max-h-48 overflow-y-auto whitespace-pre-wrap font-mono text-[length:var(--t-xs)] leading-relaxed text-content-secondary">
           {content}
         </p>
       </div>
@@ -1004,6 +966,7 @@ function SystemBlock({ content }: { content: string }) {
 }
 
 function UserBlock({ content, timestamp }: { content: string; timestamp?: number | null }) {
+  const t = useTranslations("runCard");
   const [open, setOpen] = useState(content.length < 200);
   return (
     <div className="border-b border-edge border-l-2 border-l-status-success bg-surface-overlay/40 px-3 py-1.5">
@@ -1013,8 +976,8 @@ function UserBlock({ content, timestamp }: { content: string; timestamp?: number
         onClick={() => setOpen((v) => !v)}
         className="flex w-full items-start gap-2 text-left"
       >
-        <span className="shrink-0 text-[9px] font-medium uppercase tracking-wide text-status-success">
-          user
+        <span className="shrink-0 text-[length:var(--t-xs)] font-medium uppercase tracking-wide text-status-success">
+          {t("roleUser")}
         </span>
         {!open && (
           <span className="min-w-0 truncate text-body text-content-secondary">
@@ -1022,7 +985,7 @@ function UserBlock({ content, timestamp }: { content: string; timestamp?: number
           </span>
         )}
         {timestamp && open && (
-          <span className="ml-auto shrink-0 text-[9px] text-content-muted">
+          <span className="ml-auto shrink-0 text-[length:var(--t-xs)] text-content-muted">
             {formatTime(timestamp)}
           </span>
         )}
@@ -1047,6 +1010,7 @@ function AssistantBlock({
   timestamp?: number | null;
   ordinal: number;
 }) {
+  const t = useTranslations("runCard");
   const isThinking = content.startsWith("[thinking]");
   const displayText = isThinking ? content.replace(/^\[thinking\]\s*/, "") : content;
   return (
@@ -1055,33 +1019,37 @@ function AssistantBlock({
       className={`border-b border-edge border-l-2 px-3 py-2 ${
         isThinking
           ? "border-l-edge-strong bg-surface-base"
-          : "border-l-status-running bg-status-running/10"
+          : "border-l-status-running bg-status-running-bg"
       }`}
     >
       <div className="mb-1 flex items-center gap-2">
         <span
-          className={`shrink-0 rounded px-1 font-mono text-[9px] ${isThinking ? "bg-surface-overlay text-content-muted" : "bg-status-running/10 border border-status-running/30 text-status-running"}`}
+          className={`shrink-0 rounded px-1 font-mono text-[length:var(--t-xs)] ${isThinking ? "bg-surface-overlay text-content-muted" : "bg-status-running-bg border border-status-running/30 text-status-running"}`}
         >
           #{ordinal}
         </span>
         <span
-          className={`text-[9px] font-medium uppercase tracking-wide ${
+          className={`text-[length:var(--t-xs)] font-medium uppercase tracking-wide ${
             isThinking ? "text-content-muted" : "text-status-running"
           }`}
         >
-          {isThinking ? "thinking" : "response"}
+          {isThinking ? t("roleThinking") : t("roleResponse")}
         </span>
         {timestamp && (
-          <span className="ml-auto text-[9px] text-content-muted">{formatTime(timestamp)}</span>
+          <span className="ml-auto text-[length:var(--t-xs)] text-content-muted">
+            {formatTime(timestamp)}
+          </span>
         )}
       </div>
-      <p
-        className={`whitespace-pre-wrap break-words text-body leading-snug ${
-          isThinking ? "text-content-muted italic" : "text-content-primary"
-        }`}
-      >
-        {displayText}
-      </p>
+      {isThinking ? (
+        <p className="whitespace-pre-wrap break-words text-body leading-snug text-content-muted italic">
+          {displayText}
+        </p>
+      ) : (
+        <Suspense fallback={null}>
+          <Markdown className="text-body leading-snug">{displayText}</Markdown>
+        </Suspense>
+      )}
     </div>
   );
 }
@@ -1095,6 +1063,7 @@ function ToolCallBlock({
   expanded: boolean;
   onToggle: () => void;
 }) {
+  const t = useTranslations("runCard");
   const fn = message.function || "tool";
   const summary = message.summary || "";
   const output = message.output || "";
@@ -1103,74 +1072,82 @@ function ToolCallBlock({
   const isError = status === "error";
 
   const statusBadge = isError ? (
-    <span className="rounded border border-status-failure/30 bg-status-failure/10 px-1.5 py-0.5 text-[9px] font-medium text-status-failure">
+    <span className="rounded border border-status-error/30 bg-status-error-bg px-1.5 py-0.5 text-[length:var(--t-xs)] font-medium text-status-error">
       {exitCode != null ? `exit ${exitCode}` : "ERR"}
     </span>
   ) : (
-    <span className="rounded border border-status-success/30 bg-status-success/10 px-1.5 py-0.5 text-[9px] font-medium text-status-success">
-      ✓
+    <span className="inline-flex items-center rounded border border-status-success/30 bg-status-success-bg px-1.5 py-1 text-[length:var(--t-xs)] font-medium text-status-success">
+      <IconCheck size={10} strokeWidth={2.5} />
     </span>
   );
 
   return (
-    <div className={`border-b border-edge ${isError ? "bg-status-failure/10" : "bg-surface-base"}`}>
+    <div className={`border-b border-edge ${isError ? "bg-status-error-bg" : "bg-surface-base"}`}>
       <button
         type="button"
         aria-expanded={expanded}
         onClick={onToggle}
         className="flex w-full items-center gap-2 px-3 py-0.5 text-left hover:bg-surface-overlay"
       >
-        <span className="w-4 text-center font-mono text-body text-status-pending">
+        <span className="flex w-4 shrink-0 items-center justify-center text-status-warning">
           {toolIcon(fn)}
         </span>
-        <span className="rounded border border-status-pending/30 bg-status-pending/10 px-1.5 py-0.5 font-mono text-meta text-status-pending">
+        <span className="rounded border border-status-warning/30 bg-status-warning-bg px-1.5 py-0.5 font-mono text-meta text-status-warning">
           {fn}
         </span>
         <span
           className="flex-1 truncate font-mono text-body text-content-secondary"
           title={summary}
         >
-          {summary || "(no args)"}
+          {summary || t("noArgs")}
         </span>
         {statusBadge}
         {output && (
           <span className="text-meta text-content-muted">{formatBytes(output.length)}</span>
         )}
-        <span className="text-[10px] text-content-muted">{expanded ? "▾" : "▸"}</span>
+        <span className="flex items-center text-content-muted">
+          {expanded ? (
+            <IconChevronDown size={9} strokeWidth={2.25} />
+          ) : (
+            <IconChevronRight size={9} strokeWidth={2.25} />
+          )}
+        </span>
       </button>
 
       {expanded && (
         <div className="border-t border-edge bg-surface-raised px-4 py-2.5">
           {message.arguments && Object.keys(message.arguments).length > 1 && (
             <div className="mb-3">
-              <div className="mb-1 text-[10px] uppercase tracking-wide text-content-muted">
-                arguments
+              <div className="mb-1 text-[length:var(--t-xs)] uppercase tracking-wide text-content-muted">
+                {t("argsChip")}
               </div>
-              <pre className="overflow-x-auto rounded bg-surface-overlay p-2 font-mono text-[10px] leading-relaxed text-content-secondary">
+              <pre className="max-h-64 overflow-auto rounded bg-surface-overlay p-2 font-mono text-[length:var(--t-xs)] leading-relaxed text-content-secondary">
                 {JSON.stringify(message.arguments, null, 2)}
               </pre>
             </div>
           )}
           <div>
-            <div className="mb-1 flex items-center gap-2 text-[10px] uppercase tracking-wide text-content-muted">
-              <span>output</span>
+            <div className="mb-1 flex items-center gap-2 text-[length:var(--t-xs)] uppercase tracking-wide text-content-muted">
+              <span>{t("outputChip")}</span>
               <span className="text-content-muted">{formatBytes(output.length)}</span>
             </div>
             <pre
               className={`max-h-96 overflow-auto rounded p-2 font-mono text-meta leading-relaxed ${
                 isError
-                  ? "bg-status-failure/10 text-status-failure border border-status-failure/20"
+                  ? "bg-status-error-bg text-status-error border border-status-error/20"
                   : "bg-surface-overlay text-content-secondary"
               }`}
             >
-              {output || "(no output)"}
+              {output || t("noOutput")}
             </pre>
           </div>
         </div>
       )}
 
       {!expanded && output && (
-        <p className="ml-6 mr-4 pb-1 text-[10px] text-content-muted">{summarizeOutput(output)}</p>
+        <p className="ml-6 mr-4 pb-1 text-[length:var(--t-xs)] text-content-muted">
+          {summarizeOutput(output, (n) => t("moreLines", { count: n }))}
+        </p>
       )}
     </div>
   );

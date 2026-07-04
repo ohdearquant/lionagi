@@ -3,13 +3,13 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
     <title>Lion Studio</title>
     <script>
       (function () {
-        // Dark is the default — kill light-flash for first-time visitors.
-        var t = localStorage.getItem('theme');
-        document.documentElement.setAttribute('data-theme', t === 'light' ? 'light' : 'dark');
+        var t = localStorage.getItem('theme') || 'dark';
+        document.documentElement.setAttribute('data-theme', t);
+        if (t === 'dark') document.documentElement.classList.add('dark');
+        else document.documentElement.classList.remove('dark');
       })();
     </script>
   </head>

@@ -45,12 +45,12 @@ function statusBackground(status: string): string {
     status === "done" ||
     status === "director-managed-complete"
   ) {
-    return "var(--status-success/10)";
+    return "var(--status-success-bg)";
   }
   if (status === "running" || status === "director-managed") {
-    return "var(--status-running/10)";
+    return "var(--status-running-bg)";
   }
-  if (status === "failed" || status === "error") return "var(--status-failure/10)";
+  if (status === "failed" || status === "error") return "var(--status-error-bg)";
   return "var(--surface-raised)";
 }
 
@@ -66,7 +66,7 @@ function statusColor(status: string): string {
   if (status === "running" || status === "pending" || status === "director-managed") {
     return "var(--status-running)";
   }
-  if (status === "failed" || status === "error") return "var(--status-failure)";
+  if (status === "failed" || status === "error") return "var(--status-error)";
   return "var(--edge-strong)";
 }
 
@@ -147,7 +147,7 @@ export default function PlayDag({ plays, showMd, onNodeClick }: PlayDagProps) {
         background: statusBackground(play.meta.status),
         border: `1px solid ${statusColor(play.meta.status)}`,
         color: "var(--content-primary)",
-        fontSize: 10,
+        fontSize: "var(--t-xs)",
         fontFamily: "monospace",
         width: 180,
         borderRadius: 5,
@@ -170,7 +170,7 @@ export default function PlayDag({ plays, showMd, onNodeClick }: PlayDagProps) {
               source: dep,
               target: play.name,
               markerEnd: { type: MarkerType.ArrowClosed },
-              style: { stroke: "var(--edge-hairline)" },
+              style: { stroke: "var(--edge-default)" },
             });
           }
         }
@@ -219,7 +219,7 @@ export default function PlayDag({ plays, showMd, onNodeClick }: PlayDagProps) {
         proOptions={{ hideAttribution: true }}
         className="bg-surface-base"
       >
-        <Background color="var(--edge-hairline)" gap={20} size={1} />
+        <Background color="var(--edge-subtle)" gap={20} size={1} />
         <Controls
           showInteractive={false}
           className="!bg-surface-raised !border-edge !shadow-none [&>button]:!bg-surface-raised [&>button]:!border-edge [&>button]:!text-content-secondary [&>button:hover]:!bg-surface-overlay [&>button:hover]:!text-content-primary"

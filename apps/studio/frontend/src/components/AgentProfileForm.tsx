@@ -1,7 +1,9 @@
 "use client";
 
 import { useCallback, useState } from "react";
-import Button from "./Button";
+import Button from "@/components/ui/Button";
+import SectionLabel from "@/components/ui/SectionLabel";
+import { FieldLabel, Input, Select, TextArea } from "@/components/ui/Field";
 import type { AgentProfile } from "@/lib/types";
 
 interface AgentProfileFormProps {
@@ -24,16 +26,6 @@ const MODEL_OPTIONS: Record<Provider, string[]> = {
 
 const PERMISSION_OPTIONS = ["default", "bypassPermissions"] as const;
 const EFFORT_OPTIONS = ["none", "low", "medium", "high", "xhigh"] as const;
-
-const SECTION_LABEL = "text-label font-semibold text-content-primary";
-const SECTION_DESC = "text-meta text-content-muted";
-const FIELD_LABEL = "text-meta uppercase tracking-[0.06em] text-content-muted";
-const INPUT_CLS =
-  "w-full rounded border border-edge bg-surface-raised px-3 py-1.5 text-body text-content-primary placeholder-content-muted focus:border-accent focus:outline-none";
-const SELECT_CLS =
-  "w-full rounded border border-edge bg-surface-raised px-3 py-1.5 text-body text-content-primary focus:border-accent focus:outline-none";
-const TEXTAREA_CLS =
-  "w-full resize-y rounded border border-edge bg-surface-raised px-3 py-2 font-mono text-body text-content-primary placeholder-content-muted focus:border-accent focus:outline-none";
 
 function isProvider(value: string): value is Provider {
   return (PROVIDER_OPTIONS as readonly string[]).includes(value);
@@ -115,93 +107,81 @@ export default function AgentProfileForm({
       {/* Section 1: Basics */}
       <section className="flex flex-col gap-3">
         <div>
-          <h2 className={SECTION_LABEL}>Basics</h2>
-          <p className={SECTION_DESC}>Agent name and description</p>
+          <SectionLabel className="text-label font-semibold text-content-primary">
+            Basics
+          </SectionLabel>
+          <p className="text-meta text-content-muted">Agent name and description</p>
         </div>
 
-        <div className="flex flex-col gap-1">
-          <label htmlFor="agent-name" className={FIELD_LABEL}>
-            Name
-          </label>
-          <input
+        <FieldLabel label="Name">
+          <Input
             id="agent-name"
             type="text"
             value={form.name}
             onChange={(e) => setForm((prev) => ({ ...prev, name: e.target.value }))}
             placeholder="my_agent"
             disabled={mode === "edit"}
-            className={`${INPUT_CLS} ${mode === "edit" ? "cursor-not-allowed opacity-60" : ""}`}
+            mono
+            className={mode === "edit" ? "cursor-not-allowed opacity-60" : undefined}
           />
-        </div>
+        </FieldLabel>
 
-        <div className="flex flex-col gap-1">
-          <label htmlFor="agent-description" className={FIELD_LABEL}>
-            Description
-          </label>
-          <input
+        <FieldLabel label="Description">
+          <Input
             id="agent-description"
             type="text"
             value={form.description}
             onChange={(e) => setForm((prev) => ({ ...prev, description: e.target.value }))}
             placeholder="What does this agent do?"
-            className={INPUT_CLS}
           />
-        </div>
+        </FieldLabel>
       </section>
 
       {/* Section 2: Provider & Model */}
       <section className="flex flex-col gap-3">
         <div>
-          <h2 className={SECTION_LABEL}>Model</h2>
-          <p className={SECTION_DESC}>Provider and model selection</p>
+          <SectionLabel className="text-label font-semibold text-content-primary">
+            Model
+          </SectionLabel>
+          <p className="text-meta text-content-muted">Provider and model selection</p>
         </div>
 
         <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
-          <div className="flex flex-col gap-1">
-            <label htmlFor="agent-provider" className={FIELD_LABEL}>
-              Provider
-            </label>
-            <select
+          <FieldLabel label="Provider">
+            <Select
               id="agent-provider"
               value={provider}
               onChange={(e) => handleProviderChange(e.target.value)}
-              className={SELECT_CLS}
             >
               {PROVIDER_OPTIONS.map((p) => (
                 <option key={p} value={p}>
                   {p}
                 </option>
               ))}
-            </select>
-          </div>
+            </Select>
+          </FieldLabel>
 
-          <div className="flex flex-col gap-1">
-            <label htmlFor="agent-model" className={FIELD_LABEL}>
-              Model
-            </label>
-            <input
+          <FieldLabel label="Model">
+            <Input
               id="agent-model"
               type="text"
               list={`model-options-${provider}`}
               value={form.model}
               onChange={(e) => setForm((prev) => ({ ...prev, model: e.target.value }))}
               placeholder={availableModels[0]}
-              className={INPUT_CLS}
+              mono
             />
             <datalist id={`model-options-${provider}`}>
               {availableModels.map((m) => (
                 <option key={m} value={m} />
               ))}
             </datalist>
-          </div>
+          </FieldLabel>
 
           {/* Permission Mode — claude_code only */}
           {provider === "claude_code" ? (
-            <div className="flex flex-col gap-1">
-              <label htmlFor="agent-perm-mode" className={FIELD_LABEL}>
-                Permission Mode
-              </label>
-              <select
+            <FieldLabel label="Permission Mode">
+              <Select
                 id="agent-perm-mode"
                 value={form.permission_mode ?? "default"}
                 onChange={(e) =>
@@ -210,24 +190,20 @@ export default function AgentProfileForm({
                     permission_mode: e.target.value === "default" ? undefined : e.target.value,
                   }))
                 }
-                className={SELECT_CLS}
               >
                 {PERMISSION_OPTIONS.map((p) => (
                   <option key={p} value={p}>
                     {p}
                   </option>
                 ))}
-              </select>
-            </div>
+              </Select>
+            </FieldLabel>
           ) : null}
 
           {/* Reasoning Effort — codex only */}
           {provider === "codex" ? (
-            <div className="flex flex-col gap-1">
-              <label htmlFor="agent-reasoning-effort" className={FIELD_LABEL}>
-                Reasoning Effort
-              </label>
-              <select
+            <FieldLabel label="Reasoning Effort">
+              <Select
                 id="agent-reasoning-effort"
                 value={form.reasoning_effort ?? "none"}
                 onChange={(e) =>
@@ -236,15 +212,14 @@ export default function AgentProfileForm({
                     reasoning_effort: e.target.value === "none" ? undefined : e.target.value,
                   }))
                 }
-                className={SELECT_CLS}
               >
                 {EFFORT_OPTIONS.map((e) => (
                   <option key={e} value={e}>
                     {e}
                   </option>
                 ))}
-              </select>
-            </div>
+              </Select>
+            </FieldLabel>
           ) : null}
         </div>
       </section>
@@ -252,46 +227,51 @@ export default function AgentProfileForm({
       {/* Section 3: System Prompt */}
       <section className="flex flex-col gap-3">
         <div>
-          <label htmlFor="agent-system-prompt" className={SECTION_LABEL}>
+          <label
+            htmlFor="agent-system-prompt"
+            className="text-label font-semibold text-content-primary"
+          >
             System Prompt
           </label>
-          <p className={SECTION_DESC}>Base identity and role instructions for this agent</p>
+          <p className="text-meta text-content-muted">
+            Base identity and role instructions for this agent
+          </p>
         </div>
-        <textarea
+        <TextArea
           id="agent-system-prompt"
           value={form.system_prompt ?? ""}
           onChange={(e) => setForm((prev) => ({ ...prev, system_prompt: e.target.value }))}
           placeholder="You are a specialized agent that..."
           rows={6}
-          className={TEXTAREA_CLS}
+          mono
         />
       </section>
 
       {/* Section 4: Guidance */}
       <section className="flex flex-col gap-3">
         <div>
-          <label htmlFor="agent-guidance" className={SECTION_LABEL}>
+          <label htmlFor="agent-guidance" className="text-label font-semibold text-content-primary">
             Guidance
           </label>
-          <p className={SECTION_DESC}>Task-specific instructions and constraints</p>
+          <p className="text-meta text-content-muted">Task-specific instructions and constraints</p>
         </div>
-        <textarea
+        <TextArea
           id="agent-guidance"
           value={form.guidance ?? ""}
           onChange={(e) => setForm((prev) => ({ ...prev, guidance: e.target.value }))}
           placeholder="When working on this task, always..."
           rows={4}
-          className={TEXTAREA_CLS}
+          mono
         />
       </section>
 
       {/* Errors */}
       {errors.length > 0 ? (
-        <div className="rounded border border-status-failure/40 bg-status-failure/10 px-4 py-3">
-          <p className="text-meta font-semibold uppercase tracking-[0.06em] text-status-failure">
+        <div className="rounded border border-status-error/40 bg-status-error-bg px-4 py-3">
+          <p className="text-meta font-semibold uppercase tracking-[0.06em] text-status-error">
             Validation errors
           </p>
-          <ul className="mt-1 list-inside list-disc text-body text-status-failure">
+          <ul className="mt-1 list-inside list-disc text-body text-status-error">
             {errors.map((err, i) => (
               <li key={i}>{err}</li>
             ))}

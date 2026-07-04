@@ -35,6 +35,7 @@ function ConditionEdgeComponent({
     targetPosition,
   });
 
+  // Edge stroke colors are data-driven (selected state + completion state) — kept inline
   const strokeColor = selected ? "#a855f7" : completed ? "#22c55e" : "#444";
 
   return (
@@ -46,7 +47,7 @@ function ConditionEdgeComponent({
         stroke={strokeColor}
         strokeWidth={selected ? 2.5 : completed ? 2 : 1.5}
         strokeDasharray={isCode ? "6 4" : undefined}
-        style={{ transition: "stroke 0.3s, stroke-width 0.2s" }}
+        style={{ transition: "stroke 0.25s, stroke-width 0.15s" }}
         markerEnd={`url(#${completed ? "arrow-active" : "arrow"})`}
       />
 
@@ -60,7 +61,7 @@ function ConditionEdgeComponent({
             }}
           >
             <span
-              className="rounded px-1.5 py-0.5 text-[10px] font-mono"
+              className="rounded px-1.5 py-0.5 font-mono text-[length:var(--t-xs)]"
               style={{
                 backgroundColor: selected ? "#2d1b69" : "#1a1a1a",
                 color: selected ? "#c4b5fd" : "#888",

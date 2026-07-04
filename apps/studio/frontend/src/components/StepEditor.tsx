@@ -1,6 +1,9 @@
 "use client";
 
 import { useCallback, useState } from "react";
+import IconButton from "@/components/ui/IconButton";
+import { FieldLabel, Input, Select, TextArea } from "@/components/ui/Field";
+import { IconChevronDown, IconChevronRight } from "@/components/ui/icons";
 import type { AgentProfileSummary, ModelConfig } from "@/lib/types";
 
 export interface StepData {
@@ -18,11 +21,6 @@ export interface StepEditorProps {
   modelOverrides?: Record<string, ModelConfig>;
   onChange: (steps: Record<string, StepData>) => void;
 }
-
-const INPUT_CLS =
-  "w-full rounded border border-neutral-700 bg-neutral-900 px-3 py-1.5 text-sm text-neutral-200 placeholder-neutral-600 focus:border-neutral-500 focus:outline-none";
-
-const LABEL_CLS = "block text-xs uppercase tracking-wide text-neutral-500";
 
 function generateStepName(existing: Record<string, StepData>): string {
   let n = 1;
@@ -86,20 +84,22 @@ function StepCard({
   );
 
   return (
-    <div className="rounded border border-neutral-800 bg-neutral-950 p-4">
+    <div className="rounded border border-edge bg-surface-raised p-4">
       {/* Card header */}
       <div className="flex items-center justify-between gap-3">
-        <button
-          type="button"
+        <IconButton
           aria-label={expanded ? "Collapse step" : "Expand step"}
           aria-expanded={expanded}
           onClick={() => setExpanded((v) => !v)}
-          className="shrink-0 text-neutral-600 hover:text-neutral-300 focus:outline-none"
         >
-          <span aria-hidden="true" className="font-mono text-sm">
-            {expanded ? "▾" : "▸"}
+          <span aria-hidden="true" className="flex items-center">
+            {expanded ? (
+              <IconChevronDown size={10} strokeWidth={2.25} />
+            ) : (
+              <IconChevronRight size={10} strokeWidth={2.25} />
+            )}
           </span>
-        </button>
+        </IconButton>
 
         <input
           type="text"
@@ -108,16 +108,18 @@ function StepCard({
           onBlur={handleNameBlur}
           onKeyDown={handleNameKeyDown}
           aria-label="Step name"
-          className="min-w-0 flex-1 rounded border border-transparent bg-transparent px-1 py-0.5 font-mono text-sm font-semibold text-neutral-200 hover:border-neutral-700 focus:border-neutral-500 focus:outline-none"
+          className="min-w-0 flex-1 rounded border border-transparent bg-transparent px-1 py-0.5 font-data text-body font-semibold text-content-primary hover:border-edge focus:border-edge-strong focus:outline-none"
         />
 
-        {nameError ? <span className="shrink-0 text-xs text-red-400">{nameError}</span> : null}
+        {nameError ? (
+          <span className="shrink-0 text-meta text-status-error">{nameError}</span>
+        ) : null}
 
         <button
           type="button"
           onClick={() => onDelete(stepKey)}
           aria-label={`Delete step ${stepKey}`}
-          className="shrink-0 rounded px-2 py-0.5 text-xs text-neutral-600 hover:bg-neutral-800 hover:text-red-400 focus:outline-none"
+          className="shrink-0 rounded px-2 py-0.5 text-meta text-content-muted hover:bg-surface-overlay hover:text-status-error focus:outline-none"
         >
           delete
         </button>
@@ -127,16 +129,12 @@ function StepCard({
       {expanded ? (
         <div className="mt-4 flex flex-col gap-3">
           {/* Role */}
-          <div className="flex flex-col gap-1">
-            <label htmlFor={`${stepKey}-role`} className={LABEL_CLS}>
-              Role
-            </label>
+          <FieldLabel label="Role">
             {roles.length > 0 ? (
-              <select
+              <Select
                 id={`${stepKey}-role`}
                 value={data.role}
                 onChange={(e) => onChangeField(stepKey, "role", e.target.value)}
-                className={INPUT_CLS}
               >
                 <option value="">— select role —</option>
                 {roles.map((r) => {
@@ -157,15 +155,14 @@ function StepCard({
                     </option>
                   );
                 })}
-              </select>
+              </Select>
             ) : (
-              <input
+              <Input
                 id={`${stepKey}-role`}
                 type="text"
                 value={data.role}
                 onChange={(e) => onChangeField(stepKey, "role", e.target.value)}
                 placeholder="e.g. implementer"
-                className={INPUT_CLS}
               />
             )}
 
@@ -181,37 +178,30 @@ function StepCard({
                 const source = override ? (profile ? "override" : "worker") : "profile";
 
                 return (
-                  <div className="flex items-center gap-2 rounded border border-neutral-800 bg-neutral-900/50 px-2 py-1 text-xs text-neutral-400">
-                    <span className="text-neutral-500">via {source}:</span>
-                    <span className="font-mono text-neutral-300">
+                  <div className="flex items-center gap-2 rounded border border-edge bg-surface-overlay px-2 py-1 text-meta text-content-muted">
+                    <span>via {source}:</span>
+                    <span className="font-data text-content-secondary">
                       {provider}/{model}
                     </span>
                   </div>
                 );
               })()}
-          </div>
+          </FieldLabel>
 
           {/* Assignment */}
-          <div className="flex flex-col gap-1">
-            <label htmlFor={`${stepKey}-assignment`} className={LABEL_CLS}>
-              Assignment
-            </label>
-            <input
+          <FieldLabel label="Assignment">
+            <Input
               id={`${stepKey}-assignment`}
               type="text"
               value={data.assignment}
               onChange={(e) => onChangeField(stepKey, "assignment", e.target.value)}
               placeholder="inputs -> outputs"
-              className={INPUT_CLS}
             />
-          </div>
+          </FieldLabel>
 
           {/* Prompt template */}
-          <div className="flex flex-col gap-1">
-            <label htmlFor={`${stepKey}-prompt`} className={LABEL_CLS}>
-              Prompt Template
-            </label>
-            <textarea
+          <FieldLabel label="Prompt Template">
+            <TextArea
               id={`${stepKey}-prompt`}
               value={data.prompt}
               onChange={(e) => onChangeField(stepKey, "prompt", e.target.value)}
@@ -219,17 +209,14 @@ function StepCard({
                 "Use {field} syntax to reference inputs.\nExample: Analyze {task} and produce a {plan}."
               }
               rows={3}
-              className={`${INPUT_CLS} resize-y font-mono`}
+              mono
             />
-          </div>
+          </FieldLabel>
 
           {/* Capacity + Timeout row */}
           <div className="flex gap-3">
-            <div className="flex flex-1 flex-col gap-1">
-              <label htmlFor={`${stepKey}-capacity`} className={LABEL_CLS}>
-                Capacity
-              </label>
-              <input
+            <FieldLabel label="Capacity" className="flex-1">
+              <Input
                 id={`${stepKey}-capacity`}
                 type="number"
                 min={1}
@@ -238,15 +225,11 @@ function StepCard({
                   const v = e.target.value === "" ? 1 : Number(e.target.value);
                   onChangeField(stepKey, "capacity", v);
                 }}
-                className={INPUT_CLS}
               />
-            </div>
+            </FieldLabel>
 
-            <div className="flex flex-1 flex-col gap-1">
-              <label htmlFor={`${stepKey}-timeout`} className={LABEL_CLS}>
-                Timeout (s)
-              </label>
-              <input
+            <FieldLabel label="Timeout (s)" className="flex-1">
+              <Input
                 id={`${stepKey}-timeout`}
                 type="number"
                 min={0}
@@ -256,9 +239,8 @@ function StepCard({
                   const v = e.target.value === "" ? null : Number(e.target.value);
                   onChangeField(stepKey, "timeout", v);
                 }}
-                className={INPUT_CLS}
               />
-            </div>
+            </FieldLabel>
           </div>
         </div>
       ) : null}
@@ -330,7 +312,7 @@ export default function StepEditor({
   return (
     <div className="flex flex-col gap-3">
       {stepEntries.length === 0 ? (
-        <p className="rounded border border-dashed border-neutral-800 px-4 py-6 text-center text-sm text-neutral-600">
+        <p className="rounded border border-dashed border-edge px-4 py-6 text-center text-body text-content-muted">
           No steps defined. Add one below.
         </p>
       ) : (
@@ -352,7 +334,7 @@ export default function StepEditor({
       <button
         type="button"
         onClick={handleAddStep}
-        className="self-start rounded border border-neutral-700 bg-neutral-900 px-4 py-1.5 text-sm text-neutral-300 hover:border-neutral-500 hover:bg-neutral-800 focus:outline-none"
+        className="self-start rounded border border-edge bg-surface-base px-4 py-1.5 text-body text-content-secondary hover:border-edge-strong hover:text-content-primary focus:outline-none"
       >
         + Add Step
       </button>

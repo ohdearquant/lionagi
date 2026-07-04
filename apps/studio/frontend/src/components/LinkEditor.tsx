@@ -1,6 +1,9 @@
 "use client";
 
 import { useCallback } from "react";
+import IconButton from "@/components/ui/IconButton";
+import { IconArrowRight } from "@/components/ui/icons";
+import { FieldLabel, Input, Select, TextArea } from "@/components/ui/Field";
 
 export interface LinkData {
   from: string;
@@ -82,7 +85,7 @@ function FieldMapEditor({ map, onChange }: FieldMapEditorProps) {
   return (
     <div className="flex flex-col gap-1">
       {entries.length > 0 ? (
-        <div className="mb-1 grid grid-cols-[1fr_1fr_auto] gap-1 text-xs text-neutral-500">
+        <div className="mb-1 grid grid-cols-[1fr_1fr_auto] gap-1 text-meta text-content-muted">
           <span>from field</span>
           <span>to field</span>
           <span />
@@ -91,37 +94,32 @@ function FieldMapEditor({ map, onChange }: FieldMapEditorProps) {
 
       {entries.map(([key, value], idx) => (
         <div key={idx} className="grid grid-cols-[1fr_1fr_auto] items-center gap-1">
-          <input
+          <Input
             type="text"
             aria-label={`Field mapping ${idx + 1} source`}
             value={key}
             onChange={(e) => updateKey(key, e.target.value)}
             placeholder="source_field"
-            className="rounded border border-neutral-700 bg-neutral-900 px-2 py-1 font-mono text-xs text-neutral-200 placeholder-neutral-600 focus:border-neutral-500 focus:outline-none"
+            mono
           />
-          <input
+          <Input
             type="text"
             aria-label={`Field mapping ${idx + 1} destination`}
             value={value}
             onChange={(e) => updateValue(key, e.target.value)}
             placeholder="dest_field"
-            className="rounded border border-neutral-700 bg-neutral-900 px-2 py-1 font-mono text-xs text-neutral-200 placeholder-neutral-600 focus:border-neutral-500 focus:outline-none"
+            mono
           />
-          <button
-            type="button"
-            onClick={() => removeEntry(key)}
-            aria-label="Remove field mapping"
-            className="flex h-6 w-6 items-center justify-center rounded text-neutral-500 hover:bg-neutral-800 hover:text-neutral-300"
-          >
+          <IconButton aria-label="Remove field mapping" onClick={() => removeEntry(key)}>
             x
-          </button>
+          </IconButton>
         </div>
       ))}
 
       <button
         type="button"
         onClick={addEntry}
-        className="mt-1 self-start rounded border border-neutral-700 px-2 py-0.5 text-xs text-neutral-400 hover:border-neutral-500 hover:text-neutral-200"
+        className="mt-1 self-start rounded border border-edge px-2 py-0.5 text-meta text-content-muted hover:border-edge-strong hover:text-content-secondary"
       >
         + Add field
       </button>
@@ -160,19 +158,15 @@ function LinkCard({ link, index, stepNames, onUpdate, onDelete }: LinkCardProps)
   };
 
   return (
-    <div className="flex flex-col gap-3 rounded border border-neutral-800 bg-neutral-950 p-4">
+    <div className="flex flex-col gap-3 rounded border border-edge bg-surface-raised p-4">
       {/* Header row: from → to + mode toggle + delete */}
       <div className="flex flex-wrap items-center gap-3">
         {/* From */}
-        <div className="flex min-w-0 flex-1 flex-col gap-0.5">
-          <label htmlFor={`link-${index}-from`} className="text-xs uppercase text-neutral-500">
-            from
-          </label>
-          <select
+        <FieldLabel label="from" className="min-w-0 flex-1">
+          <Select
             id={`link-${index}-from`}
             value={link.from}
             onChange={(e) => set({ from: e.target.value })}
-            className="rounded border border-neutral-700 bg-neutral-900 px-2 py-1 text-sm text-neutral-200 focus:border-neutral-500 focus:outline-none"
           >
             {stepNames.map((name) => (
               <option key={name} value={name}>
@@ -180,24 +174,20 @@ function LinkCard({ link, index, stepNames, onUpdate, onDelete }: LinkCardProps)
               </option>
             ))}
             {stepNames.length === 0 ? <option value="">— no steps defined —</option> : null}
-          </select>
-        </div>
+          </Select>
+        </FieldLabel>
 
         {/* Arrow */}
-        <span className="mt-4 shrink-0 text-neutral-600" aria-hidden>
-          →
+        <span className="mt-4 flex shrink-0 items-center text-content-muted" aria-hidden>
+          <IconArrowRight size={12} strokeWidth={2} />
         </span>
 
         {/* To */}
-        <div className="flex min-w-0 flex-1 flex-col gap-0.5">
-          <label htmlFor={`link-${index}-to`} className="text-xs uppercase text-neutral-500">
-            to
-          </label>
-          <select
+        <FieldLabel label="to" className="min-w-0 flex-1">
+          <Select
             id={`link-${index}-to`}
             value={link.to}
             onChange={(e) => set({ to: e.target.value })}
-            className="rounded border border-neutral-700 bg-neutral-900 px-2 py-1 text-sm text-neutral-200 focus:border-neutral-500 focus:outline-none"
           >
             {stepNames.map((name) => (
               <option key={name} value={name}>
@@ -205,19 +195,19 @@ function LinkCard({ link, index, stepNames, onUpdate, onDelete }: LinkCardProps)
               </option>
             ))}
             {stepNames.length === 0 ? <option value="">— no steps defined —</option> : null}
-          </select>
-        </div>
+          </Select>
+        </FieldLabel>
 
         {/* Mode toggle (segmented control) */}
-        <div className="mt-4 flex shrink-0 overflow-hidden rounded border border-neutral-700">
+        <div className="mt-4 flex shrink-0 overflow-hidden rounded border border-edge">
           {(["simple", "code"] as const).map((m) => (
             <label
               key={m}
               className={[
-                "cursor-pointer px-3 py-1 text-xs transition-colors",
+                "cursor-pointer px-3 py-1 text-meta transition-colors",
                 mode === m
-                  ? "bg-neutral-700 text-neutral-100"
-                  : "bg-neutral-900 text-neutral-500 hover:bg-neutral-800 hover:text-neutral-300",
+                  ? "bg-surface-overlay text-content-primary"
+                  : "bg-surface-base text-content-muted hover:bg-surface-overlay hover:text-content-secondary",
               ].join(" ")}
             >
               <input
@@ -238,7 +228,7 @@ function LinkCard({ link, index, stepNames, onUpdate, onDelete }: LinkCardProps)
           type="button"
           onClick={() => onDelete(index)}
           aria-label={`Delete link ${link.from} → ${link.to}`}
-          className="mt-4 shrink-0 rounded border border-neutral-800 px-2 py-1 text-xs text-neutral-500 hover:border-red-900 hover:bg-red-950 hover:text-red-400"
+          className="mt-4 shrink-0 rounded border border-edge px-2 py-1 text-meta text-content-muted hover:border-status-error/40 hover:bg-status-error-bg hover:text-status-error"
         >
           Delete
         </button>
@@ -248,27 +238,25 @@ function LinkCard({ link, index, stepNames, onUpdate, onDelete }: LinkCardProps)
       {mode === "simple" ? (
         <div className="flex flex-col gap-3">
           {/* Condition */}
-          <div className="flex flex-col gap-1">
-            <label
-              htmlFor={`link-${index}-condition`}
-              className="text-xs uppercase text-neutral-500"
-            >
-              condition
-              <span className="ml-1 normal-case text-neutral-600">(optional)</span>
-            </label>
-            <input
+          <FieldLabel
+            label={
+              <>
+                condition <span className="normal-case text-content-muted">(optional)</span>
+              </>
+            }
+          >
+            <Input
               id={`link-${index}-condition`}
               type="text"
               value={link.condition ?? ""}
               onChange={(e) => set({ condition: e.target.value })}
               placeholder='e.g. "not approved"'
-              className="rounded border border-neutral-700 bg-neutral-900 px-2 py-1.5 text-sm text-neutral-200 placeholder-neutral-600 focus:border-neutral-500 focus:outline-none"
             />
-          </div>
+          </FieldLabel>
 
           {/* Field map */}
           <div className="flex flex-col gap-1">
-            <span className="text-xs uppercase text-neutral-500">field map</span>
+            <span className="text-meta font-medium text-content-muted">field map</span>
             <FieldMapEditor map={link.map ?? {}} onChange={(map) => set({ map })} />
           </div>
         </div>
@@ -276,20 +264,17 @@ function LinkCard({ link, index, stepNames, onUpdate, onDelete }: LinkCardProps)
 
       {/* Code mode body */}
       {mode === "code" ? (
-        <div className="flex flex-col gap-1">
-          <label htmlFor={`link-${index}-handler`} className="text-xs uppercase text-neutral-500">
-            handler
-          </label>
-          <textarea
+        <FieldLabel label="handler">
+          <TextArea
             id={`link-${index}-handler`}
             value={link.handler ?? ""}
             onChange={(e) => set({ handler: e.target.value })}
             rows={6}
             spellCheck={false}
             placeholder={"def handler(ctx):\n    return ctx"}
-            className="rounded border border-neutral-700 bg-neutral-900 px-3 py-2 font-mono text-xs leading-5 text-neutral-200 placeholder-neutral-600 focus:border-neutral-500 focus:outline-none"
+            mono
           />
-        </div>
+        </FieldLabel>
       ) : null}
     </div>
   );
@@ -322,7 +307,7 @@ export default function LinkEditor({ links, stepNames, onChange }: LinkEditorPro
   return (
     <div className="flex flex-col gap-3">
       {links.length === 0 ? (
-        <p className="rounded border border-neutral-800 px-4 py-6 text-center text-sm text-neutral-500">
+        <p className="rounded border border-edge px-4 py-6 text-center text-body text-content-muted">
           No links defined. Add one below.
         </p>
       ) : null}
@@ -341,7 +326,7 @@ export default function LinkEditor({ links, stepNames, onChange }: LinkEditorPro
       <button
         type="button"
         onClick={handleAdd}
-        className="self-start rounded border border-neutral-700 px-3 py-1.5 text-sm text-neutral-400 hover:border-neutral-500 hover:text-neutral-200"
+        className="self-start rounded border border-edge px-3 py-1.5 text-body text-content-muted hover:border-edge-strong hover:text-content-secondary"
       >
         + Add Link
       </button>

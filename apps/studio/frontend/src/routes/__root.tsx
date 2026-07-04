@@ -1,9 +1,7 @@
 import { createRootRoute, Outlet } from "@tanstack/react-router";
-import { useEffect } from "react";
+import { useEffect, useState } from "react";
 import { IntlProvider } from "use-intl";
-import { ToastProvider } from "@/components/Toast";
-import { ProjectProvider } from "@/lib/project-context";
-import Shell from "@/components/Shell";
+import AppShell from "@/components/shell/AppShell";
 import "../globals.css";
 
 import enMessages from "@/messages/en.json";
@@ -27,22 +25,24 @@ function getLocaleFromCookie(): Locale {
 }
 
 function RootComponent() {
-  const locale = getLocaleFromCookie();
+  const [locale, setLocale] = useState<Locale>(getLocaleFromCookie);
   const messages = MESSAGES[locale];
 
   useEffect(() => {
     document.documentElement.lang = locale;
   }, [locale]);
 
+  function handleLocaleChange(next: string) {
+    if ((VALID_LOCALES as readonly string[]).includes(next)) {
+      setLocale(next as Locale);
+    }
+  }
+
   return (
     <IntlProvider locale={locale} messages={messages}>
-      <ToastProvider>
-        <ProjectProvider>
-          <Shell>
-            <Outlet />
-          </Shell>
-        </ProjectProvider>
-      </ToastProvider>
+      <AppShell locale={locale} onLocaleChange={handleLocaleChange}>
+        <Outlet />
+      </AppShell>
     </IntlProvider>
   );
 }

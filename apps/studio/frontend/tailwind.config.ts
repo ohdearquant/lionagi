@@ -1,51 +1,64 @@
 import type { Config } from "tailwindcss";
 
 const config: Config = {
-  // Cockpit theming architecture: dark is the unqualified :root default;
-  // [data-theme="light"] is the override. index.html always stamps an
-  // explicit data-theme attribute (never leaves it unset), so the `dark:`
-  // variant below stays meaningful for the rare component that needs it.
-  darkMode: ["selector", '[data-theme="dark"]'],
+  darkMode: ["class", '[data-theme="dark"]'],
   content: ["./index.html", "./src/**/*.{js,ts,jsx,tsx}"],
   theme: {
     extend: {
       colors: {
+        /* Canonical design-token surfaces */
         surface: {
           base: "var(--surface-base)",
           raised: "var(--surface-raised)",
           overlay: "var(--surface-overlay)",
+          /* Legacy aliases kept so existing pages still compile */
+          nav: "var(--surface-nav)",
+          input: "var(--surface-input)",
+          "input-hover": "var(--surface-input-hover)",
         },
+        /* Canonical content */
         content: {
           primary: "var(--content-primary)",
           secondary: "var(--content-secondary)",
           muted: "var(--content-muted)",
+          inverse: "var(--content-inverse)",
         },
+        /* Edge / borders — canonical names + legacy aliases */
         edge: {
           DEFAULT: "var(--edge-hairline)",
           hairline: "var(--edge-hairline)",
           strong: "var(--edge-strong)",
+          /* Legacy names that existing pages reference */
+          subtle: "var(--edge-subtle)",
         },
-        accent: {
-          DEFAULT: "var(--accent)",
-          contrast: "var(--accent-contrast)",
+        /* Lion amber */
+        accent: "var(--accent)",
+        /* Text on accent fills — theme-invariant, like accent itself */
+        "accent-contrast": "var(--accent-contrast)",
+        /* Interactive — kept for existing pages */
+        interactive: {
+          primary: "var(--interactive-primary)",
+          "primary-hover": "var(--interactive-primary-hover)",
+          secondary: "var(--interactive-secondary)",
+          "secondary-hover": "var(--interactive-secondary-hover)",
         },
+        /* Status */
         status: {
-          success: "var(--status-success)",
           running: "var(--status-running)",
-          failure: "var(--status-failure)",
+          success: "var(--status-success)",
           pending: "var(--status-pending)",
+          failure: "var(--status-failure)",
+          /* Legacy aliases used by existing pages */
+          "success-bg": "var(--status-success-bg)",
+          "running-bg": "var(--status-running-bg)",
+          error: "var(--status-error)",
+          "error-bg": "var(--status-error-bg)",
+          warning: "var(--status-warning)",
+          "warning-bg": "var(--status-warning-bg)",
+          selected: "var(--status-selected)",
+          "selected-bg": "var(--status-selected-bg)",
         },
-        rail: {
-          discovery: "var(--rail-discovery)",
-          judgement: "var(--rail-judgement)",
-          analysis: "var(--rail-analysis)",
-          planning: "var(--rail-planning)",
-          production: "var(--rail-production)",
-          retrospective: "var(--rail-retrospective)",
-          universal: "var(--rail-universal)",
-        },
-        // Out of scope for this skin port (DESIGN-MAP.md §7 item 5) — no
-        // cockpit-doc coverage; kept as-is pending a future decision.
+        /* Role palette — kept for existing pages */
         role: {
           researcher: "var(--role-researcher)",
           implementer: "var(--role-implementer)",
@@ -56,31 +69,13 @@ const config: Config = {
           tester: "var(--role-tester)",
         },
       },
-      boxShadow: {
-        "raised-soft": "var(--shadow-raised-soft)",
-      },
-      ringColor: {
-        accent: "var(--accent)",
-      },
       fontFamily: {
-        data: ["var(--font-data)"],
-        ui: ["var(--font-ui)"],
+        ui: "var(--font-ui)",
+        data: "var(--font-data)",
       },
-      fontSize: {
-        xs: "var(--t-xs)",
-        sm: "var(--t-sm)",
-        base: "var(--t-base)",
-        md: "var(--t-md)",
-        lg: "var(--t-lg)",
-        xl: "var(--t-xl)",
-      },
-      letterSpacing: {
-        meta: "var(--tracking-meta)",
-      },
-      transitionDuration: {
-        press: "var(--motion-press)",
-        micro: "var(--motion-micro)",
-        modal: "var(--motion-modal)",
+      boxShadow: {
+        card: "var(--shadow-card)",
+        "card-hover": "var(--shadow-card-hover)",
       },
       borderRadius: {
         DEFAULT: "6px",

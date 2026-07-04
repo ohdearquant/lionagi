@@ -50,9 +50,9 @@ export interface ArtifactVerification {
 
 // ─── Run types ───────────────────────────────────────────────────────────────
 
-// RunSummary matches the SQLite-session response shape from list_runs()
-// (services/runs.py): playbook_name/agent_name and ended_at are the
-// canonical fields.
+// H-FE-3: RunSummary matches the actual SQLite-session response shape from
+// list_runs() (services/runs.py). Fields worker_name/finished_at were stale
+// filesystem-run remnants; the real fields are playbook_name/ended_at etc.
 export interface RunSummary {
   run_id: string;
   id?: string;
@@ -117,21 +117,24 @@ export interface RunStep {
   timestamp: number | null;
 }
 
-// RunDetail comes from GET /api/runs/{id} (services/runs.py get_run), which
-// reads the SQLite session and is a superset of RunSummary plus detail-only
-// fields (state_root, artifact_root, task, error, cwd, steps, graph,
-// manifest, branches).
+// RunDetail comes from the filesystem run.json path (GET /api/runs/{id} →
+// services/runs.py get_run → _adapt_summary). Unlike RunSummary which maps
+// SQLite session rows, RunDetail reads the on-disk run manifest. The manifest
+// uses "worker_name" and "finished_at" as canonical field names (see
+// _adapt_summary in services/runs.py). ADR-0004 open design question:
+// long-term these should unify with the SQLite session fields.
 export interface RunDetail {
   run_id: string;
   state_root: string;
   artifact_root: string;
-  playbook_name?: string | null;
-  agent_name?: string | null;
+  // Filesystem run.json fields — distinct from SQLite session schema
+  worker_name?: string;
   task?: string;
   status: string;
   error: string | null;
   cwd: string | null;
   started_at: number | null;
+  finished_at?: number | null;
   ended_at?: number | null;
   steps?: RunStep[];
   graph: { nodes: WorkerStepNode[]; edges: WorkerLinkEdge[] };
@@ -301,8 +304,7 @@ export interface ShowDetail {
   show_md: string | null;
   goal?: string | null;
   status?: string;
-  // Indicates whether `status` was derived from the SQLite session or the
-  // on-disk show manifest.
+  // M-FE-2: status_source added by backend agent (H-BE-3)
   status_source?: "sqlite" | "filesystem";
   plays: Array<{
     name: string;
@@ -316,8 +318,8 @@ export interface ShowDetail {
   }>;
 }
 
-// "done" is the terminal SSE event emitted by the shows service. The SSE
-// subscription MUST be closed when this event arrives.
+// H-FE-5: "done" is the terminal SSE event emitted by shows.py:456-458.
+// The SSE subscription MUST be closed when this event arrives.
 export interface ShowEvent {
   type: "new" | "change" | "delete" | "done";
   path?: string;
@@ -349,6 +351,7 @@ export interface ScheduleSummary {
   missed_fire_policy: string;
   overlap_policy: string;
   project: string | null;
+  github_filter?: { event?: string; base?: string; state?: string } | null;
   created_at: number;
   updated_at: number;
 }

@@ -4,6 +4,7 @@ import ModelConfigTable from "@/components/ModelConfigTable";
 
 const WorkerCanvas = lazy(() => import("@/components/canvas/WorkerCanvas"));
 import { getWorkerGraph, getWorkerRaw, listAgents, updateWorker, validateWorker } from "@/lib/api";
+import { IconChevronDown, IconChevronUp } from "@/components/ui/icons";
 import type {
   AgentProfileSummary,
   ModelConfig,
@@ -126,7 +127,7 @@ export default function GraphPlaybookEditor({ workerName }: { workerName: string
   if (loadError) {
     return (
       <main className="mx-auto max-w-7xl px-4 py-6">
-        <div className="rounded border border-status-failure/30 bg-status-failure/10 px-3 py-2 text-body text-status-failure">
+        <div className="rounded border border-status-error/30 bg-status-error-bg px-3 py-2 text-body text-status-error">
           {loadError}
         </div>
       </main>
@@ -143,7 +144,7 @@ export default function GraphPlaybookEditor({ workerName }: { workerName: string
 
   return (
     <div className="flex h-[calc(100vh-56px)] flex-col">
-      <div className="flex items-center gap-3 border-b border-edge bg-surface-raised px-4 py-2">
+      <div className="flex items-center gap-3 border-b border-edge bg-surface-nav px-4 py-2">
         <Link
           to="/playbooks/$name"
           params={{ name: workerName }}
@@ -157,29 +158,34 @@ export default function GraphPlaybookEditor({ workerName }: { workerName: string
           value={description}
           onChange={(e) => setDescription(e.target.value)}
           placeholder="Playbook description..."
-          className="flex-1 rounded-md border border-transparent bg-transparent px-2 py-1 text-body text-content-secondary placeholder-content-muted hover:border-edge focus:border-edge-strong focus:outline-none"
+          className="flex-1 rounded-md border border-transparent bg-transparent px-2 py-1 text-body text-content-secondary placeholder:text-content-muted hover:border-edge focus:border-edge-strong focus:outline-none"
         />
 
         <button
           onClick={() => setShowModels((v) => !v)}
-          className="rounded-md bg-surface-raised px-3 py-1 text-meta text-content-secondary hover:bg-surface-overlay hover:text-content-primary"
+          className="rounded-md bg-interactive-secondary px-3 py-1 text-meta text-content-secondary hover:bg-interactive-secondary-hover hover:text-content-primary"
         >
-          Models {showModels ? "▴" : "▾"}
+          Models{" "}
+          {showModels ? (
+            <IconChevronUp size={9} strokeWidth={2.25} className="inline" />
+          ) : (
+            <IconChevronDown size={9} strokeWidth={2.25} className="inline" />
+          )}
         </button>
 
         <button
           onClick={handleSave}
           disabled={saving}
-          className="rounded-md bg-accent px-4 py-1 text-body font-medium text-accent-contrast hover:bg-accent disabled:cursor-not-allowed disabled:opacity-50"
+          className="rounded-md bg-interactive-primary px-4 py-1 text-body font-medium text-content-inverse hover:bg-interactive-primary-hover disabled:cursor-not-allowed disabled:opacity-50"
         >
           {saving ? "Saving..." : "Save"}
         </button>
       </div>
 
       {errors.length > 0 && (
-        <div className="border-b border-status-failure/30 bg-status-failure/10 px-4 py-2">
+        <div className="border-b border-status-error/30 bg-status-error-bg px-4 py-2">
           {errors.map((err, i) => (
-            <p key={i} className="text-meta text-status-failure">
+            <p key={i} className="text-meta text-status-error">
               {err}
             </p>
           ))}

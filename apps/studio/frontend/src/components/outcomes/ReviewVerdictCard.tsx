@@ -2,7 +2,7 @@
 // severity/category breakdown with blocking findings highlighted, not
 // as raw text. Mirrors the spec layout in the ADR.
 
-import StatusPill from "@/components/StatusPill";
+import StatusPill from "@/components/ui/StatusPill";
 
 interface Finding {
   severity: "critical" | "high" | "medium" | "low" | "info";
@@ -121,10 +121,10 @@ export default function ReviewVerdictCard({ name, content }: ReviewVerdictCardPr
             {blocking.map((f, i) => (
               <li
                 key={i}
-                className="rounded border border-status-failure/30 bg-status-failure/10/40 p-2"
+                className="rounded border border-status-error/30 bg-status-error-bg/40 p-2"
               >
                 <div className="flex items-center gap-2">
-                  <span className="rounded bg-status-failure/10 px-1.5 py-0.5 text-meta uppercase tracking-wide text-status-failure">
+                  <span className="rounded bg-status-error/10 px-1.5 py-0.5 text-meta uppercase tracking-wide text-status-error">
                     {SEVERITY_LABEL[f.severity]}
                   </span>
                   <span className="text-body text-content-primary">{f.description}</span>

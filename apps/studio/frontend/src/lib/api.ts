@@ -21,7 +21,6 @@ import type {
   WorkerRaw,
   WorkerStepNode,
   WorkerLinkEdge,
-  WorkerSummary,
 } from "./types";
 
 declare global {
@@ -186,12 +185,6 @@ export async function getRun(runId: string): Promise<RunDetail> {
 
 // ─── Workers (playbooks) ──────────────────────────────────────────────────────
 
-interface PlaybookListEntry {
-  name: string;
-  path?: string;
-  description?: string;
-}
-
 interface PlaybookDetail {
   name: string;
   path?: string;
@@ -239,19 +232,6 @@ function parseGraphFromPlaybook(pb: PlaybookDetail): WorkerGraph {
     description: String(data.description ?? pb.description ?? ""),
     nodes,
     edges,
-  };
-}
-
-export async function listWorkers(): Promise<{ workers: WorkerSummary[] }> {
-  const data = await fetchJson<{ playbooks: PlaybookListEntry[] }>("/api/playbooks/");
-  return {
-    workers: (data.playbooks ?? []).map((p) => ({
-      name: p.name,
-      file: p.path,
-      description: p.description,
-      steps: 0,
-      links: 0,
-    })),
   };
 }
 
@@ -431,7 +411,7 @@ export async function getShow(topic: string): Promise<ShowDetail> {
   return fetchJson<ShowDetail>(`/api/shows/${encodeURIComponent(topic)}`);
 }
 
-// The terminal {"type":"done"} event from the shows service MUST close the
+// H-FE-5: terminal {"type":"done"} event from shows.py MUST close the
 // stream. The closer runs BEFORE invoking the callback for done events so
 // that close() always runs even if the callback throws.
 export function streamShow(topic: string, onEvent: (event: ShowEvent) => void): () => void {
@@ -482,6 +462,9 @@ export interface SessionDetail {
   name: string;
   created_at: number;
   updated_at: number;
+  status?: string | null;
+  started_at?: number | null;
+  ended_at?: number | null;
   branches: SessionBranch[];
   // ADR-0022: provenance disclosure — mirrors what list_sessions() exposes.
   model?: string | null;
@@ -699,7 +682,7 @@ export async function getDefinitionVersion(
   );
 }
 
-// Backend saves definitions via POST /api/definitions/{kind}/{name} — no PUT route exists.
+// F-A3-1 (ADR-0016): backend is POST /api/definitions/{kind}/{name} — no PUT route exists.
 // Return type matches services/definitions.py save_definition() response shape:
 //   { kind, name, version, saved_at, message? }
 export async function saveDefinition(
@@ -727,7 +710,8 @@ export async function saveDefinition(
   });
 }
 
-// version is a query param per ADR-0016 (not a path segment).
+// H-FE-4: version is a query param per ADR-0016 and definitions.py:58-63,
+// not a path segment. Return type updated to include full rollback response.
 export async function rollbackDefinition(
   kind: string,
   name: string,
@@ -873,40 +857,6 @@ export async function getAdminDoctor(): Promise<AdminDoctorResponse> {
   return fetchJson<AdminDoctorResponse>("/api/admin/doctor");
 }
 
-// `/api/admin/health` computes REAL process liveness (pid-file/`ps` scan)
-// for status="running" sessions — unlike RunSummary.effective_health, which
-// only ever checks idle-time thresholds and can never detect a truly dead
-// process. `unhealthy` lists every session whose health is not
-// healthy/idle; `session_id` matches RunSummary.run_id / RunSummary.id.
-export interface UnhealthySession {
-  session_id: string;
-  name: string;
-  health: "unresponsive" | "stale" | "orphaned" | "zombie";
-  status: string;
-  invocation_kind: string | null;
-  agent_name: string | null;
-  playbook_name: string | null;
-  last_message_at: number | null;
-  idle_seconds: number | null;
-  process_alive: boolean;
-  message_count: number;
-}
-
-export interface AdminHealthReport {
-  sessions: {
-    total: number;
-    by_status: Record<string, number>;
-    by_health: Record<string, number>;
-    unhealthy: UnhealthySession[];
-  };
-  db: Record<string, unknown>;
-  diagnostic_run_at: string;
-}
-
-export async function getAdminHealth(): Promise<AdminHealthReport> {
-  return fetchJson<AdminHealthReport>("/api/admin/health");
-}
-
 export async function pruneAdmin(body: AdminPruneRequest): Promise<{ pruned: number }> {
   return fetchJson<{ pruned: number }>("/api/admin/prune", {
     method: "POST",
@@ -986,59 +936,6 @@ export async function deleteProject(name: string): Promise<unknown> {
   });
 }
 
-// ─── Teams ────────────────────────────────────────────────────────────────────
-
-export interface TeamSummary {
-  id: string;
-  name: string;
-  member_count: number;
-  last_modified: number;
-}
-
-export interface TeamListResponse {
-  teams: TeamSummary[];
-  limit: number;
-  offset: number;
-  total: number;
-  has_next: boolean;
-}
-
-// Shape written by `li team` (cli/team.py cmd_create/cmd_send) and returned
-// as-is by GET /api/teams/{id} (services/teams.py get_team reads the raw
-// JSON file, no adaptation).
-export interface TeamMessage {
-  id: string;
-  from: string;
-  to: string | string[];
-  content: string;
-  timestamp: string;
-  read_by?: Record<string, string>;
-  from_op?: string;
-}
-
-export interface TeamDetail {
-  id: string;
-  name: string;
-  members: string[];
-  messages: TeamMessage[];
-  created_at: string;
-}
-
-export async function listTeams(params?: {
-  limit?: number;
-  offset?: number;
-}): Promise<TeamListResponse> {
-  const query = new URLSearchParams();
-  if (params?.limit != null) query.set("limit", String(params.limit));
-  if (params?.offset != null) query.set("offset", String(params.offset));
-  const suffix = query.toString() ? `?${query.toString()}` : "";
-  return fetchJson<TeamListResponse>(`/api/teams/${suffix}`);
-}
-
-export async function getTeam(teamId: string): Promise<TeamDetail> {
-  return fetchJson<TeamDetail>(`/api/teams/${encodeURIComponent(teamId)}`);
-}
-
 // ─── Stats (extended) ─────────────────────────────────────────────────────────
 
 export interface DbStats {
@@ -1068,6 +965,13 @@ export async function getStats(): Promise<StudioStats> {
 }
 
 // ─── Schedules (ADR-0027) ───────────────────────────────────────────────────
+
+export type GitHubEventFilter = "pr_merged" | "pr_opened" | "pr_updated" | "pr_closed";
+
+export interface GitHubFilter {
+  event?: GitHubEventFilter;
+  base?: string;
+}
 
 export interface ScheduleListResponse {
   schedules: ScheduleSummary[];
@@ -1174,7 +1078,7 @@ export async function listEngineRuns(params?: EngineRunListParams): Promise<Engi
   if (params?.limit != null) query.set("limit", String(params.limit));
   if (params?.offset != null) query.set("offset", String(params.offset));
   const qs = query.toString();
-  return fetchJson<EngineRunSummary[]>(`/api/engine-runs/${qs ? `?${qs}` : ""}`);
+  return fetchJson<EngineRunSummary[]>(`/api/engine-runs${qs ? `?${qs}` : ""}`);
 }
 
 export async function getEngineRun(runId: string): Promise<EngineRunSummary> {
@@ -1182,6 +1086,12 @@ export async function getEngineRun(runId: string): Promise<EngineRunSummary> {
 }
 
 // ─── Engine definitions ───────────────────────────────────────────────────────
+
+/** Per-stage override persisted on an engine definition. */
+export interface StageOverride {
+  role?: string;
+  model?: string;
+}
 
 export interface EngineDef {
   id: string;
@@ -1191,6 +1101,7 @@ export interface EngineDef {
   max_depth: number | null;
   max_agents: number | null;
   options: Record<string, string> | null;
+  stages: Record<string, StageOverride> | null;
   description: string | null;
   created_at: number;
   updated_at: number;
@@ -1203,6 +1114,7 @@ export interface CreateEngineDefRequest {
   max_depth?: number;
   max_agents?: number;
   options?: Record<string, string>;
+  stages?: Record<string, StageOverride>;
   description?: string;
 }
 
@@ -1213,6 +1125,7 @@ export interface UpdateEngineDefRequest {
   max_depth?: number;
   max_agents?: number;
   options?: Record<string, string>;
+  stages?: Record<string, StageOverride>;
   description?: string;
 }
 
@@ -1257,12 +1170,317 @@ export async function deleteEngineDef(defId: string): Promise<{ ok: boolean }> {
   return fetchJson(`/api/engine-defs/${encodeURIComponent(defId)}`, { method: "DELETE" });
 }
 
+// ─── Workflow definitions ─────────────────────────────────────────────────────
+
+export type WorkflowNodeKind = "input" | "chat" | "parse" | "fanout" | "engine" | "gate";
+
+export interface WorkflowNodePos {
+  x: number;
+  y: number;
+}
+
+export interface WorkflowEngineConfig {
+  engine_def_id: string;
+  model?: string;
+  max_depth?: number;
+  max_agents?: number;
+  options?: Record<string, string>;
+}
+
+export interface WorkflowGateConfig {
+  condition: string;
+}
+
+export interface WorkflowNode {
+  id: string;
+  kind: WorkflowNodeKind;
+  label: string;
+  pos: WorkflowNodePos;
+  config?: WorkflowEngineConfig | WorkflowGateConfig | Record<string, unknown>;
+}
+
+export interface WorkflowEdge {
+  id: string;
+  from: string;
+  to: string;
+  label?: string;
+}
+
+export interface WorkflowSpec {
+  version: 1;
+  nodes: WorkflowNode[];
+  edges: WorkflowEdge[];
+  inputs: string[];
+  outputs: string[];
+}
+
+export interface WorkflowDef {
+  id: string;
+  name: string;
+  description: string | null;
+  spec_json: WorkflowSpec | null;
+  created_at: number;
+  updated_at: number;
+}
+
+export interface CreateWorkflowDefRequest {
+  name: string;
+  description?: string;
+  spec_json?: WorkflowSpec;
+}
+
+export interface UpdateWorkflowDefRequest {
+  name?: string;
+  description?: string;
+  spec_json?: WorkflowSpec;
+}
+
+export async function listWorkflowDefs(): Promise<WorkflowDef[]> {
+  return fetchJson<WorkflowDef[]>("/api/workflow-defs/");
+}
+
+export async function getWorkflowDef(defId: string): Promise<WorkflowDef> {
+  return fetchJson<WorkflowDef>(`/api/workflow-defs/${encodeURIComponent(defId)}`);
+}
+
+export async function createWorkflowDef(
+  body: CreateWorkflowDefRequest,
+): Promise<{ id: string; name: string; created_at: number }> {
+  return fetchJson(`/api/workflow-defs/`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+}
+
+export async function updateWorkflowDef(
+  defId: string,
+  body: UpdateWorkflowDefRequest,
+): Promise<{ ok: boolean }> {
+  return fetchJson(`/api/workflow-defs/${encodeURIComponent(defId)}`, {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+}
+
+export async function deleteWorkflowDef(defId: string): Promise<{ ok: boolean }> {
+  return fetchJson(`/api/workflow-defs/${encodeURIComponent(defId)}`, { method: "DELETE" });
+}
+
+// ---------------------------------------------------------------------------
+// Casts catalog — roles, modes, and their emission contracts (read-only)
+
+export interface CastEmission {
+  model: string;
+  key: string;
+}
+
+export interface CastRoleConfig {
+  active?: boolean;
+  model?: string | null;
+  effort?: string | null;
+  default_modes?: string[];
+  modes_allow?: string[];
+  authority?: string[];
+  boundaries?: string[];
+  escalations?: string[];
+}
+
+export interface CastRole {
+  name: string;
+  description: string | null;
+  emits: CastEmission[];
+  body?: string | null;
+  config?: CastRoleConfig | null;
+}
+
+export interface CastMode {
+  name: string;
+  description: string | null;
+  behaviors?: string | null;
+  conflicts_with?: string[];
+}
+
+export interface CastsCatalog {
+  roles: CastRole[];
+  modes: CastMode[];
+}
+
+export async function getCasts(): Promise<CastsCatalog> {
+  return fetchJson<CastsCatalog>("/api/casts/");
+}
+
 export async function launchEngine(body: {
   action_kind: "engine";
   action_engine_def: string;
   action_prompt: string;
 }): Promise<LaunchResult> {
   return fetchJson(`/api/launches/`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+}
+
+// ─── Leo ─────────────────────────────────────────────────────────────────────
+
+export interface LeoSession {
+  id: string;
+}
+
+export interface LeoEvent {
+  type:
+    | "text"
+    | "proposed_action"
+    | "ui_command"
+    | "error"
+    | "done"
+    | "tool_start"
+    | "tool_done"
+    | "heartbeat";
+  content?: string;
+  action?: LeoProposedAction;
+  command?: LeoUiCommand;
+  detail?: string;
+  ts?: number;
+  tool?: string;
+  args_summary?: string;
+  preview?: string;
+}
+
+export interface LeoProposedAction {
+  kind: string;
+  params: Record<string, unknown>;
+  description: string;
+  endpoint: string;
+}
+
+// A declarative UI command Leo issues over SSE; the frontend executes it
+// client-side (navigation, form prefill). Never touches server state.
+export interface LeoUiCommand {
+  kind: string;
+  space?: string;
+  params?: Record<string, string>;
+}
+
+export async function createLeoSession(): Promise<LeoSession> {
+  return fetchJson<LeoSession>("/api/leo/sessions", { method: "POST" });
+}
+
+export function streamLeoMessage(
+  sessionId: string,
+  content: string,
+  onEvent: (event: LeoEvent) => void,
+): () => void {
+  // Use fetch directly (not sseSubscribe) because we POST with a body.
+  const controller = new AbortController();
+  let closed = false;
+  const close = () => {
+    closed = true;
+    controller.abort();
+  };
+
+  void (async () => {
+    try {
+      const token = resolveAuthToken();
+      const headers: Record<string, string> = {
+        "Content-Type": "application/json",
+        Accept: "text/event-stream",
+      };
+      if (token) headers["Authorization"] = `Bearer ${token}`;
+
+      const response = await fetch(
+        `${API_BASE}/api/leo/sessions/${encodeURIComponent(sessionId)}/messages`,
+        {
+          method: "POST",
+          headers,
+          body: JSON.stringify({ content }),
+          signal: controller.signal,
+        },
+      );
+
+      if (!response.ok || !response.body) {
+        onEvent({ type: "error", detail: `Request failed: ${response.status}` });
+        onEvent({ type: "done" });
+        return;
+      }
+
+      const reader = response.body.getReader();
+      const decoder = new TextDecoder();
+      let buffer = "";
+
+      for (;;) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        buffer += decoder.decode(value, { stream: true });
+        let sep: number;
+        while ((sep = buffer.indexOf("\n\n")) !== -1) {
+          const frame = buffer.slice(0, sep);
+          buffer = buffer.slice(sep + 2);
+          const data = frame
+            .split("\n")
+            .filter((line) => line.startsWith("data:"))
+            .map((line) => line.slice(5).replace(/^ /, ""))
+            .join("\n");
+          if (data && !closed) {
+            try {
+              const event = JSON.parse(data) as LeoEvent;
+              if (event.type === "done") {
+                close();
+              }
+              onEvent(event);
+            } catch {
+              // malformed frame
+            }
+          }
+        }
+      }
+    } catch (err: unknown) {
+      if (!closed) {
+        const msg = err instanceof Error ? err.message : "Connection lost";
+        if (err instanceof Error && err.name === "AbortError") {
+          // user-initiated close — no error
+        } else {
+          onEvent({ type: "error", detail: msg });
+        }
+        onEvent({ type: "done" });
+      }
+    }
+  })();
+
+  return close;
+}
+
+// Each action kind maps to a fixed route built from typed params. The
+// `endpoint` string on the proposal is display-only — params pass through the
+// LLM, so deriving the request target from free text would let a malformed
+// name redirect the confirmed call away from the described action.
+const LEO_ACTION_ROUTES: Record<
+  string,
+  (params: Record<string, unknown>) => { path: string; body: Record<string, unknown> }
+> = {
+  launch_playbook: (p) => ({
+    path: "/api/launches/",
+    body: { action_kind: "play", action_playbook: String(p.name ?? "") },
+  }),
+  create_playbook: (p) => ({
+    path: `/api/playbooks/${encodeURIComponent(String(p.name ?? ""))}`,
+    body: { description: p.description ?? "", prompt: p.prompt ?? "" },
+  }),
+  run_maintenance: (p) => ({
+    path: "/api/admin/maintenance",
+    body: { action: String(p.action ?? "") },
+  }),
+};
+
+export async function confirmLeoAction(action: LeoProposedAction): Promise<unknown> {
+  const route = LEO_ACTION_ROUTES[action.kind];
+  if (!route) {
+    throw new Error(`Unknown Leo action kind: ${action.kind}`);
+  }
+  const { path, body } = route(action.params);
+  return fetchJson<unknown>(path, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(body),

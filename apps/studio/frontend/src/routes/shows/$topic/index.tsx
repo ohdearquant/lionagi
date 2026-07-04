@@ -1,16 +1,22 @@
 import { createFileRoute, Link } from "@tanstack/react-router";
 import { lazy, Suspense, useCallback, useEffect, useMemo, useState } from "react";
 import React from "react";
-import Button from "@/components/Button";
-import Duration from "@/components/Duration";
-import PageHeader from "@/components/PageHeader";
-import StatusPill from "@/components/StatusPill";
-import Timestamp from "@/components/Timestamp";
+import Button from "@/components/ui/Button";
+import Duration from "@/components/ui/Duration";
+import PageHeader from "@/components/ui/PageHeader";
+import {
+  IconChevronDown,
+  IconChevronRight,
+  IconChevronUp,
+  IconDotFilled,
+  IconDotOutline,
+} from "@/components/ui/icons";
+import StatusPill from "@/components/ui/StatusPill";
+import Timestamp from "@/components/ui/Timestamp";
 import { getShow, streamShow } from "@/lib/api";
 import type { PlayMeta, ShowDetail, ShowEvent } from "@/lib/types";
-import { empty } from "@/lib/copy";
 
-const Markdown = lazy(() => import("@/components/Markdown"));
+const Markdown = lazy(() => import("@/components/ui/Markdown"));
 const PlayDag = lazy(() => import("@/components/shows/PlayDag"));
 
 export const Route = createFileRoute("/shows/$topic/")({
@@ -105,7 +111,7 @@ function SummaryBlock({ label, value, tone }: { label: string; value: string; to
     <div>
       <dt className="text-meta uppercase tracking-[0.06em] text-content-muted">{label}</dt>
       <dd
-        className={`text-body ${tone === "failed" ? "text-status-failure" : "text-content-primary"}`}
+        className={`text-body ${tone === "failed" ? "text-status-error" : "text-content-primary"}`}
       >
         {value}
       </dd>
@@ -130,7 +136,7 @@ function ShowSummaryPanel({
 
   return (
     <div className="grid grid-cols-1 gap-3 md:grid-cols-3">
-      <section className="rounded border border-edge bg-surface-raised p-3">
+      <section className="rounded border border-edge bg-surface-raised p-3 shadow-card">
         <h3 className="text-meta uppercase tracking-[0.06em] text-content-muted">Roll-up</h3>
         {rollup ? (
           <dl className="mt-2 grid grid-cols-2 gap-x-3 gap-y-1 text-body">
@@ -158,7 +164,7 @@ function ShowSummaryPanel({
                 <span
                   className={
                     rollup.failed.length > 0
-                      ? "text-status-failure tabular-nums"
+                      ? "text-status-error tabular-nums"
                       : "text-content-muted tabular-nums"
                   }
                 >
@@ -174,11 +180,11 @@ function ShowSummaryPanel({
             />
           </dl>
         ) : (
-          <p className="mt-2 text-body text-content-muted">{empty.plays}</p>
+          <p className="mt-2 text-body text-content-muted">{"No plays yet."}</p>
         )}
       </section>
 
-      <section className="rounded border border-edge bg-surface-raised p-3">
+      <section className="rounded border border-edge bg-surface-raised p-3 shadow-card">
         <h3 className="text-meta uppercase tracking-[0.06em] text-content-muted">Plan</h3>
         {showSummary ? (
           <dl className="mt-2 flex flex-col gap-1.5 text-body">
@@ -196,7 +202,7 @@ function ShowSummaryPanel({
         )}
       </section>
 
-      <section className="rounded border border-edge bg-surface-raised p-3">
+      <section className="rounded border border-edge bg-surface-raised p-3 shadow-card">
         <h3 className="text-meta uppercase tracking-[0.06em] text-content-muted">Action</h3>
         {hasBlockers || hasNext ? (
           <dl className="mt-2 flex flex-col gap-1.5 text-body">
@@ -211,7 +217,7 @@ function ShowSummaryPanel({
             <ul className="flex flex-col gap-1.5">
               {rollup.failed.map((play) => (
                 <li key={play.name} className="flex flex-col gap-0.5">
-                  <span className="font-mono text-body text-status-failure">{play.name}</span>
+                  <span className="font-mono text-body text-status-error">{play.name}</span>
                   <span className="text-meta text-content-secondary">
                     exit {play.meta.exit_code ?? "—"} —{" "}
                     {play.meta.exit_code === 124
@@ -299,7 +305,7 @@ function ShowDetailPage() {
   const summary = useMemo(() => extractSummary(show?.show_md ?? null), [show]);
 
   return (
-    <main className="mx-auto flex w-full max-w-[1600px] flex-col gap-4 px-4 py-6 text-content-primary animate-page-enter">
+    <main className="flex w-full flex-col gap-4 px-6 py-6 text-content-primary animate-page-enter">
       <PageHeader
         density="tight"
         breadcrumb={[
@@ -325,7 +331,9 @@ function ShowDetailPage() {
               variant="toggle"
               size="sm"
               active={live}
-              leading={live ? "●" : "○"}
+              leading={
+                live ? <IconDotFilled size={8} /> : <IconDotOutline size={8} strokeWidth={2.5} />
+              }
               onClick={() => setLive((v) => !v)}
             >
               {live ? "Live on" : "Live off"}
@@ -335,7 +343,7 @@ function ShowDetailPage() {
       />
 
       {error && (
-        <div className="rounded border border-status-failure/30 bg-status-failure/10 px-3 py-2 text-body text-status-failure">
+        <div className="rounded border border-status-error/30 bg-status-error-bg px-3 py-2 text-body text-status-error">
           {error}
         </div>
       )}
@@ -357,7 +365,13 @@ function ShowDetailPage() {
                 className="flex items-center justify-between text-left text-label font-semibold text-content-primary hover:text-content-secondary transition-colors"
               >
                 <span>Plan &amp; decisions</span>
-                <span className="text-content-muted text-body ml-2">{showPlan ? "▴" : "▾"}</span>
+                <span className="ml-2 flex items-center text-content-muted">
+                  {showPlan ? (
+                    <IconChevronUp size={10} strokeWidth={2.25} />
+                  ) : (
+                    <IconChevronDown size={10} strokeWidth={2.25} />
+                  )}
+                </span>
               </button>
               {showPlan ? (
                 <div className="overflow-auto rounded border border-edge bg-surface-raised p-4 max-h-[calc(100vh-18rem)]">
@@ -410,7 +424,7 @@ function ShowDetailPage() {
                         return (
                           <React.Fragment key={play.name}>
                             <tr
-                              className="border-b border-edge-hairline text-content-secondary hover:bg-surface-overlay cursor-pointer"
+                              className="border-b border-edge-subtle text-content-secondary hover:bg-surface-overlay cursor-pointer"
                               onClick={() => setExpanded(isExpanded ? null : play.name)}
                             >
                               <td className="max-w-[12rem] truncate px-3 py-2 font-mono text-body text-content-primary">
@@ -469,10 +483,14 @@ function ShowDetailPage() {
                               </td>
                               <td className="px-3 py-2">
                                 <span
-                                  className="text-body text-content-muted"
+                                  className="flex items-center text-content-muted"
                                   aria-label={isExpanded ? "Collapse" : "Expand"}
                                 >
-                                  {isExpanded ? "▴" : "▾"}
+                                  {isExpanded ? (
+                                    <IconChevronUp size={10} strokeWidth={2.25} />
+                                  ) : (
+                                    <IconChevronDown size={10} strokeWidth={2.25} />
+                                  )}
                                 </span>
                               </td>
                             </tr>
@@ -503,7 +521,7 @@ function ShowDetailPage() {
                                           <Link
                                             to="/runs/$id"
                                             params={{ id: play.session_id }}
-                                            className="inline-flex items-center gap-1 text-body font-medium text-accent hover:underline"
+                                            className="inline-flex items-center gap-1 text-body font-medium text-interactive-primary hover:underline"
                                           >
                                             {play.session_name ?? play.session_id}
                                             <span aria-hidden="true">→</span>
@@ -589,7 +607,13 @@ function ShowDetailPage() {
                                         }
                                         className="flex items-center gap-1 text-meta uppercase tracking-[0.06em] text-content-muted hover:text-content-primary transition-colors"
                                       >
-                                        <span>{rawExpanded[play.name] ? "▾" : "▸"}</span>
+                                        <span className="flex items-center">
+                                          {rawExpanded[play.name] ? (
+                                            <IconChevronDown size={9} strokeWidth={2.25} />
+                                          ) : (
+                                            <IconChevronRight size={9} strokeWidth={2.25} />
+                                          )}
+                                        </span>
                                         <span>Raw data</span>
                                       </button>
                                       {rawExpanded[play.name] && (
@@ -601,7 +625,7 @@ function ShowDetailPage() {
                                                 text={JSON.stringify(play.meta, null, 2)}
                                               />
                                             </div>
-                                            <pre className="mt-1 overflow-auto rounded border border-edge bg-surface-raised p-2 font-mono text-meta text-content-secondary">
+                                            <pre className="mt-1 max-h-64 overflow-auto rounded border border-edge bg-surface-raised p-2 font-mono text-meta text-content-secondary">
                                               {JSON.stringify(play.meta, null, 2)}
                                             </pre>
                                           </div>
@@ -613,7 +637,7 @@ function ShowDetailPage() {
                                                   text={JSON.stringify(play.verdict, null, 2)}
                                                 />
                                               </div>
-                                              <pre className="mt-1 overflow-auto rounded border border-edge bg-surface-raised p-2 font-mono text-meta text-content-secondary">
+                                              <pre className="mt-1 max-h-64 overflow-auto rounded border border-edge bg-surface-raised p-2 font-mono text-meta text-content-secondary">
                                                 {JSON.stringify(play.verdict, null, 2)}
                                               </pre>
                                             </div>

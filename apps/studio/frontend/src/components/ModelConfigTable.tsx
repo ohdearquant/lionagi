@@ -1,5 +1,6 @@
 "use client";
 
+import { Input, Select } from "@/components/ui/Field";
 import type { ModelConfig } from "@/lib/types";
 
 const PROVIDER_OPTIONS = ["claude_code", "codex", "gemini_code"] as const;
@@ -129,17 +130,11 @@ export default function ModelConfigTable({ models, onChange }: ModelConfigTableP
     onChange(fromRows(next));
   }
 
-  const inputClass =
-    "rounded border border-neutral-700 bg-neutral-900 px-3 py-1.5 text-sm text-neutral-200 focus:border-neutral-500 focus:outline-none w-full";
-
-  const selectClass =
-    "rounded border border-neutral-700 bg-neutral-900 px-3 py-1.5 text-sm text-neutral-200 focus:border-neutral-500 focus:outline-none w-full";
-
   return (
     <div className="flex flex-col gap-2">
-      <div className="overflow-x-auto border border-neutral-800">
-        <table className="min-w-full border-collapse text-sm">
-          <thead className="border-b border-neutral-800 bg-neutral-900/70 text-xs uppercase text-neutral-500">
+      <div className="overflow-x-auto border border-edge">
+        <table className="min-w-full border-collapse text-body">
+          <thead className="border-b border-edge bg-surface-raised text-meta uppercase text-content-muted">
             <tr>
               <th scope="col" className="px-3 py-2 text-left font-medium tracking-normal">
                 Role Name
@@ -168,88 +163,84 @@ export default function ModelConfigTable({ models, onChange }: ModelConfigTableP
 
               const rowLabel = role || `row ${index + 1}`;
               return (
-                <tr key={index} className="border-b border-neutral-900 text-neutral-300">
+                <tr key={index} className="border-b border-edge text-content-secondary">
                   {/* Role Name */}
                   <td className="px-3 py-2 align-middle">
-                    <input
+                    <Input
                       type="text"
                       aria-label={`Role name for row ${index + 1}`}
                       value={role}
                       onChange={(e) => handleRoleChange(index, e.target.value)}
                       placeholder="role_name"
-                      className={inputClass}
+                      mono
                     />
                   </td>
 
                   {/* Provider */}
                   <td className="px-3 py-2 align-middle">
-                    <select
+                    <Select
                       aria-label={`Provider for ${rowLabel}`}
                       value={provider}
                       onChange={(e) => handleProviderChange(index, e.target.value)}
-                      className={selectClass}
                     >
                       {PROVIDER_OPTIONS.map((p) => (
                         <option key={p} value={p}>
                           {p}
                         </option>
                       ))}
-                    </select>
+                    </Select>
                   </td>
 
                   {/* Model */}
                   <td className="px-3 py-2 align-middle">
-                    <select
+                    <Select
                       aria-label={`Model for ${rowLabel}`}
                       value={config.model}
                       onChange={(e) => handleModelChange(index, e.target.value)}
-                      className={selectClass}
                     >
                       {availableModels.map((m) => (
                         <option key={m} value={m}>
                           {m}
                         </option>
                       ))}
-                    </select>
+                    </Select>
                   </td>
 
                   {/* Effort (codex only) */}
                   <td className="px-3 py-2 align-middle">
                     {showEffort ? (
-                      <select
+                      <Select
                         aria-label={`Reasoning effort for ${rowLabel}`}
                         value={config.reasoning_effort ?? "none"}
                         onChange={(e) => handleEffortChange(index, e.target.value)}
-                        className={selectClass}
                       >
                         {EFFORT_OPTIONS.map((e) => (
                           <option key={e} value={e}>
                             {e}
                           </option>
                         ))}
-                      </select>
+                      </Select>
                     ) : (
-                      <span className="px-1 text-neutral-600">—</span>
+                      <span className="px-1 text-content-muted">—</span>
                     )}
                   </td>
 
                   {/* Permission (claude_code only) */}
                   <td className="px-3 py-2 align-middle">
                     {showPermission ? (
-                      <select
+                      <Select
                         aria-label={`Permission mode for ${rowLabel}`}
                         value={config.permission_mode ?? "default"}
                         onChange={(e) => handlePermissionChange(index, e.target.value)}
-                        className={selectClass}
                       >
                         {PERMISSION_OPTIONS.map((p) => (
                           <option key={p} value={p}>
                             {p}
                           </option>
                         ))}
-                      </select>
+                      </Select>
                     ) : (
-                      <span className="px-1 text-neutral-600">—</span>
+                      <span className="px-1 text-content-muted">—</span>
                     )}
                   </td>
 
@@ -258,7 +249,7 @@ export default function ModelConfigTable({ models, onChange }: ModelConfigTableP
                     <button
                       type="button"
                       onClick={() => handleDeleteRow(index)}
-                      className="rounded border border-neutral-700 bg-neutral-900 px-2 py-1 text-xs text-neutral-400 hover:border-red-800 hover:bg-red-950/40 hover:text-red-300"
+                      className="rounded border border-edge bg-surface-base px-2 py-1 text-meta text-content-muted hover:border-status-error/40 hover:bg-status-error-bg hover:text-status-error"
                       aria-label={`Remove ${role || "row"}`}
                     >
                       remove
@@ -270,7 +261,7 @@ export default function ModelConfigTable({ models, onChange }: ModelConfigTableP
 
             {rows.length === 0 ? (
               <tr>
-                <td colSpan={6} className="px-3 py-8 text-center text-sm text-neutral-500">
+                <td colSpan={6} className="px-3 py-8 text-center text-body text-content-muted">
                   No model configurations. Add a role to get started.
                 </td>
               </tr>
@@ -283,7 +274,7 @@ export default function ModelConfigTable({ models, onChange }: ModelConfigTableP
         <button
           type="button"
           onClick={handleAddRow}
-          className="rounded border border-neutral-700 bg-neutral-900 px-3 py-1.5 text-sm text-neutral-300 hover:border-neutral-500 hover:text-neutral-200"
+          className="rounded border border-edge bg-surface-base px-3 py-1.5 text-body text-content-secondary hover:border-edge-strong hover:text-content-primary"
         >
           + add role
         </button>
