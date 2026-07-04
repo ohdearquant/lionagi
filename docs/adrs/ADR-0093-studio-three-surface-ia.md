@@ -131,13 +131,17 @@ survives visual iteration.
 Four phases, each one PR that leaves the app coherent, codex-gated, visually examined in both
 themes with screenshots in the PR body:
 
-- **A — Shell + canvas v1**: three-surface rail, redirects, unified Run list with all three
-  projections, slide-over (Overview/Output), attention chips, project lens. The existing shell
-  PR is re-tasked in place: its API-path pinning suite, favicon, design tokens, and
-  ProjectContext carry over; its five-group rail is replaced. Hosted deploy and its visual
-  gate ride this phase.
-- **B — Operations depth**: chain cards, SSE live tail, centralized staleness adopted
-  everywhere, cancel/re-fire actions, command palette.
+- **A — Shell + canvas v1**: three-surface rail, unified Run list with all three
+  projections, slide-over (Overview/Output), attention chips, project lens. Redirects land
+  for **list pages only** (`/runs`, `/invocations`, `/kanban`, `/playfield`, `/shows`), whose
+  projections have parity from day one; **detail routes** (`/runs/$id`, `/invocations/$id`,
+  `/shows/$topic`) keep working unchanged. The existing shell PR is re-tasked in place: its
+  API-path pinning suite, favicon, design tokens, and ProjectContext carry over; its
+  five-group rail is replaced. Hosted deploy and its visual gate ride this phase.
+- **B — Operations depth**: command palette (sequenced early in the phase), chain cards, SSE
+  live tail, centralized staleness adopted everywhere, cancel/re-fire actions. The slide-over
+  reaches full parity (Messages · Artifacts · Chain · Raw), and only then do the detail-route
+  redirects land.
 - **C — Library**: catalog + editors, YAML workflow editor with validate/plan-preview
   (additive endpoints land here), script naming, inviting zero states.
 - **D — System + removal**: System page, legacy route files deleted (redirects stay),
@@ -159,8 +163,10 @@ themes with screenshots in the PR body:
 **Negative / risks**
 
 - The slide-over must reach full parity with the old detail pages before their routes retire,
-  or operators lose capability mid-migration (mitigation: redirects land only in phase D;
-  parity is a phase-A/B exit criterion).
+  or operators lose capability mid-migration (mitigation: redirects are staged — phase A
+  redirects only list pages whose projections already have parity; detail routes redirect in
+  phase B once the slide-over reaches full tab parity; legacy route files are deleted in
+  phase D with all redirects staying).
 - Muscle memory and existing bookmarks break (mitigation: permanent redirects, palette).
 - Dense-table power workflows could regress inside a filter-driven canvas (mitigation:
   `?view=table` is exactly the old table, kept at parity deliberately).
