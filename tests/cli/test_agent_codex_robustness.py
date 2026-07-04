@@ -299,7 +299,7 @@ async def test_run_agent_timeout_preserves_partial_output(monkeypatch, tmp_path)
 
     from lionagi.cli.agent import _run_agent
 
-    result, _provider, _branch_id, terminal_status = await _run_agent(
+    result, _provider, _branch_id, terminal_status, _sid = await _run_agent(
         "codex/gpt-5.3-codex-spark",
         "review all files",
         timeout=30,
@@ -367,7 +367,7 @@ async def test_run_agent_timeout_empty_partial_returns_empty_string(monkeypatch,
 
     from lionagi.cli.agent import _run_agent
 
-    result, _provider, _branch_id, terminal_status = await _run_agent(
+    result, _provider, _branch_id, terminal_status, _sid = await _run_agent(
         "codex/gpt-5.3-codex-spark",
         "review all files",
         timeout=30,

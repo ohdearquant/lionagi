@@ -111,11 +111,27 @@ async def _latest_session(
     return db._row_to_dict(row) if row is not None else None
 
 
+async def _resolve_session_by_branch_id(db: Any, entity_id: str) -> dict[str, Any] | None:
+    """Fallback: treat *entity_id* as a branch_id (the resume token printed in
+    `li agent -r <branch_id> "..."` hints and echoed as `branch_id` in the status
+    view) and resolve it to its owning session.
+
+    There is no `branch_id` column on `sessions` — `branches` is a separate
+    table, and `branches.session_id` is a NOT NULL FK, so a matched branch row
+    always names exactly one owning session.
+    """
+    branch = await _fetch_by_id(db, "branches", entity_id)
+    if branch is None:
+        return None
+    return await db.get_session(branch["session_id"])
+
+
 async def _resolve_agent_target(
     db: Any, entity_id: str | None, project: str | None
 ) -> tuple[str, dict[str, Any]] | None:
-    """`li agent status` resolution: session (any kind) or ADR-0020 invocation by id;
-    default-latest is scoped to agent-kind sessions for *project*.
+    """`li agent status` resolution: session (any kind), ADR-0020 invocation, or
+    a branch_id (resolved to its owning session), by id; default-latest is
+    scoped to agent-kind sessions for *project*.
 
     Kind scoping only gates the no-id default: an explicit id is honoured
     regardless of invocation_kind, since the id is already unambiguous.
@@ -127,6 +143,9 @@ async def _resolve_agent_target(
         row = await _fetch_by_id(db, "invocations", entity_id)
         if row is not None:
             return "invocation", row
+        row = await _resolve_session_by_branch_id(db, entity_id)
+        if row is not None:
+            return "session", row
         return None
     row = await _latest_session(db, invocation_kinds=("agent",), project=project)
     return ("session", row) if row is not None else None
@@ -154,7 +173,11 @@ async def _resolve_play_target(
 
 
 async def _resolve_any_target(db: Any, entity_id: str) -> tuple[str, dict[str, Any]] | None:
-    """`li o ctl status <id>` resolution: no kind scoping, id required (no latest)."""
+    """`li o ctl status <id>` resolution: no kind scoping, id required (no latest).
+
+    Falls back to branch_id (resolved to its owning session) last, after
+    sessions/invocations/plays all miss — see _resolve_session_by_branch_id.
+    """
     row = await _fetch_by_id(db, "sessions", entity_id)
     if row is not None:
         return "session", row
@@ -164,6 +187,9 @@ async def _resolve_any_target(db: Any, entity_id: str) -> tuple[str, dict[str, A
     row = await _fetch_by_id(db, "plays", entity_id)
     if row is not None:
         return "play", row
+    row = await _resolve_session_by_branch_id(db, entity_id)
+    if row is not None:
+        return "session", row
     return None
 
 

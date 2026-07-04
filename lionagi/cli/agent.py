@@ -203,8 +203,13 @@ async def _run_agent(
     project: str | None = None,
     bypass: bool = False,
     preset: str | None = None,
-) -> tuple[str, str, str, str]:
-    """Execute one agent turn; returns (result, provider, branch_id, terminal_status)."""
+) -> tuple[str, str, str, str, str | None]:
+    """Execute one agent turn; returns (result, provider, branch_id, terminal_status, session_id).
+
+    session_id is None whenever live persistence never started (e.g. the
+    mangled resume-model-override guard fires before setup_agent_persist is
+    called, or setup itself failed and disabled persistence for this run).
+    """
     effort = normalize_effort(effort)
     if resume and continue_last:
         raise ConfigurationError("--resume / -r and --continue-last / -c are mutually exclusive.")
@@ -265,7 +270,7 @@ async def _run_agent(
                 "[MODEL] PROMPT — this looks like a mangled command, e.g. "
                 "a --resume id accidentally split across two arguments."
             )
-            return "", "", str(branch.id), "failed"
+            return "", "", str(branch.id), "failed", None
         if "/" in ms.model:
             provider, model = ms.model.split("/", 1)
         else:
@@ -485,7 +490,8 @@ async def _run_agent(
 
     save_last_branch_pointer(run.run_id, branch_id)
 
-    return res or "", provider, branch_id, _terminal_status
+    session_id = live.get("session_id") if live else None
+    return res or "", provider, branch_id, _terminal_status, session_id
 
 
 def add_agent_subparser(subparsers: argparse._SubParsersAction) -> argparse.ArgumentParser:
@@ -661,7 +667,7 @@ def run_agent(args: argparse.Namespace) -> int:
         return 1
 
     try:
-        result, provider, branch_id, terminal_status = run_async(
+        result, provider, branch_id, terminal_status, session_id = run_async(
             _run_agent(
                 model,
                 prompt,
@@ -698,4 +704,6 @@ def run_agent(args: argparse.Namespace) -> int:
         print(f"\n{result}" if result is not None else "", flush=True)
 
     hint(f'\n[to resume] li agent -r {branch_id} "..."')
+    if session_id:
+        hint(f"[status]    li agent status {session_id}")
     return EXIT_CODE_BY_STATUS.get(terminal_status, 1)
