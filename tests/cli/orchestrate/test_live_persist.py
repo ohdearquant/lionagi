@@ -1188,6 +1188,80 @@ async def test_stop_dirty_working_tree_stays_completed(
     assert s["status"] == "completed"
 
 
+async def test_stop_assistant_output_only_stays_completed(
+    temp_db_path: Path,
+    tmp_path: Path,
+):
+    """A research/read-only leg whose deliverable is its response text — no
+    commit, no dirty tree, no artifact — is legitimate work. A durable
+    assistant message must count as completion evidence in its own right,
+    or schedule chaining breaks for every read-only agent."""
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    _init_git_repo(repo)
+
+    env = _minimal_env()
+    env.cwd = str(repo)
+    await start_live_persist(env, invocation_kind="flow")
+    ctx = env._live_persist
+    assert ctx is not None
+
+    async with StateDB() as db:
+        msg_id = "msg-answer-1"
+        await db.insert_message(
+            {
+                "id": msg_id,
+                "created_at": 1.0,
+                "content": {"assistant_response": "The answer to your question is 42."},
+                "role": "assistant",
+            }
+        )
+        await db.append_to_progression(ctx["session_prog_id"], msg_id)
+
+    await stop_live_persist(env, status="completed")
+
+    async with StateDB() as db:
+        s = await db.get_session(ctx["session_id"])
+    assert s is not None
+    assert s["status"] == "completed"
+
+
+async def test_stop_whitespace_only_assistant_message_still_gates(
+    temp_db_path: Path,
+    tmp_path: Path,
+):
+    """A blank/whitespace-only assistant message is not a real deliverable —
+    it must not be able to game the gate into staying `completed`."""
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    _init_git_repo(repo)
+
+    env = _minimal_env()
+    env.cwd = str(repo)
+    await start_live_persist(env, invocation_kind="flow")
+    ctx = env._live_persist
+    assert ctx is not None
+
+    async with StateDB() as db:
+        msg_id = "msg-blank-1"
+        await db.insert_message(
+            {
+                "id": msg_id,
+                "created_at": 1.0,
+                "content": {"assistant_response": "   "},
+                "role": "assistant",
+            }
+        )
+        await db.append_to_progression(ctx["session_prog_id"], msg_id)
+
+    await stop_live_persist(env, status="completed")
+
+    async with StateDB() as db:
+        s = await db.get_session(ctx["session_id"])
+    assert s is not None
+    assert s["status"] == "completed_empty"
+
+
 async def test_stop_no_cwd_never_gates_on_git_evidence(
     temp_db_path: Path,
 ):

@@ -782,9 +782,10 @@ def run_orchestrate(args: argparse.Namespace) -> int:
         )
         if rc != 0:
             return rc
+        fanout_result, fanout_terminal_status = output
         if not args.verbose:
-            print(output)
-        return 0
+            print(fanout_result)
+        return EXIT_CODE_BY_STATUS.get(fanout_terminal_status, 0)
 
     if args.orch_command == "flow":
         resume_target = getattr(args, "resume", None)

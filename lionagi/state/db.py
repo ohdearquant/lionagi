@@ -132,7 +132,18 @@ _SESSION_COLUMNS = frozenset(
 )
 
 _INVOCATION_STATUSES = frozenset(
-    {"running", "completed", "failed", "timed_out", "aborted", "cancelled"}
+    {
+        "running",
+        "completed",
+        # Completion-trust gate: flow/scheduler aggregation can settle an
+        # invocation on this status when a child session produced no commits
+        # ahead of base, no artifacts, and no assistant output.
+        "completed_empty",
+        "failed",
+        "timed_out",
+        "aborted",
+        "cancelled",
+    }
 )
 _INVOCATION_COLUMNS = frozenset(
     {

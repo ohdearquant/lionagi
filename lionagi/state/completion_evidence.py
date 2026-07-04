@@ -85,17 +85,26 @@ def check_completion_evidence(
     if rc != 0:
         return _no_evidence("cwd is not a git working tree")
 
+    # A probe that actually runs and fails (transient error, timeout, git
+    # hiccup) must never be read as "ran and found nothing" — that silently
+    # turns a git error into a false completed_empty on real work. Only a
+    # probe that *succeeds* is allowed to report an absence of evidence;
+    # any decisive failure bails the whole check out as unchecked so the
+    # caller keeps trusting "completed".
     rc, status_out = _run_git(cwd, ["status", "--porcelain"])
-    dirty = rc == 0 and bool(status_out)
+    if rc != 0:
+        return _no_evidence("git status probe failed")
+    dirty = bool(status_out)
 
     resolved_base = _resolve_base_ref(cwd, base_ref)
     commits_ahead: int | None = None
     ahead: bool | None = None
     if resolved_base is not None:
         rc, out = _run_git(cwd, ["rev-list", "--count", f"{resolved_base}..HEAD"])
-        if rc == 0 and out.isdigit():
-            commits_ahead = int(out)
-            ahead = commits_ahead > 0
+        if rc != 0 or not out.isdigit():
+            return _no_evidence("git rev-list probe failed")
+        commits_ahead = int(out)
+        ahead = commits_ahead > 0
 
     return {
         "checked": True,

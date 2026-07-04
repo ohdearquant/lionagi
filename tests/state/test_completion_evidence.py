@@ -101,6 +101,44 @@ def test_base_ref_auto_resolves_to_main(git_repo: Path):
     assert evidence["base_ref"] == "main"
 
 
+def test_status_probe_failure_is_unchecked_not_clean(git_repo: Path, monkeypatch):
+    """A `git status` probe that errors (transient failure, timeout) must
+    never be read as "ran and found nothing" — that would silently turn a
+    git error into a false completed_empty on real, uncommitted work."""
+    import lionagi.state.completion_evidence as ce_mod
+
+    real_run_git = ce_mod._run_git
+
+    def _flaky(cwd: str, args: list[str]) -> tuple[int, str]:
+        if args and args[0] == "status":
+            return 128, ""
+        return real_run_git(cwd, args)
+
+    monkeypatch.setattr(ce_mod, "_run_git", _flaky)
+    evidence = check_completion_evidence(str(git_repo), base_ref="main")
+    assert evidence["checked"] is False
+    assert has_completion_evidence(evidence) is False
+
+
+def test_rev_list_probe_failure_is_unchecked_not_clean(git_repo: Path, monkeypatch):
+    """A `git rev-list` probe that errors after a resolvable base ref must
+    also bail out unchecked rather than silently reporting ahead=None,
+    which combined with a clean tree would read as "no evidence"."""
+    import lionagi.state.completion_evidence as ce_mod
+
+    real_run_git = ce_mod._run_git
+
+    def _flaky(cwd: str, args: list[str]) -> tuple[int, str]:
+        if args and args[0] == "rev-list":
+            return 128, ""
+        return real_run_git(cwd, args)
+
+    monkeypatch.setattr(ce_mod, "_run_git", _flaky)
+    evidence = check_completion_evidence(str(git_repo), base_ref="main")
+    assert evidence["checked"] is False
+    assert has_completion_evidence(evidence) is False
+
+
 def test_unresolvable_base_ref_still_checks_dirty(tmp_path: Path):
     """A repo with no resolvable base (e.g. a fresh repo with no commits at
     all) still reports dirty/clean — the base-ref comparison just no-ops."""
