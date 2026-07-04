@@ -257,8 +257,10 @@ collapse the two.
 3. The row is durable in `state.db`. It exists independent of any consumer's
    liveness. Nothing to drop.
 4. The delivery loop scans due pending rows each tick and fires the notify
-   template per row: transition `pending→delivering`, `attempt++`,
-   `next_attempt_at = now + backoff(attempt)`.
+   template per row: transition `pending→delivering` as an exclusive claim —
+   `attempt++` and `next_attempt_at = now + claim_lease` in the same guarded
+   UPDATE. Backoff is written only when the row returns to `pending`
+   (transport retry or ack-required redelivery).
 5. Consumer dead right now: the transport still lands the message in the seat's
    durable inbox (the inbox waits for the seat regardless of process liveness).
    On transport success, `delivering→delivered`. If the transport itself failed,
@@ -268,9 +270,12 @@ collapse the two.
    plus producer retry.
 7. Optional ack tier: with `ack_required=1` the seat calls
    `li dispatch ack <token>` (direct-DB write) and the producer stops
-   re-delivering. Un-acked past `expires_at` → `expired`; `max_attempts`
-   transport failures → `dead_letter`, surfaced to the attention queue and
-   `li monitor` for the operator.
+   re-delivering. `max_attempts` bounds every send while awaiting ack:
+   transport-failure exhaustion → `dead_letter` (max-attempts reason),
+   successful-but-unacked exhaustion → `dead_letter` (ack-timeout reason).
+   Un-acked past `expires_at` → `expired` as an additional, optional bound.
+   Dead-lettered rows surface to the attention queue and `li monitor` for
+   the operator.
 
 No step depends on the consumer being alive at fire time.
 

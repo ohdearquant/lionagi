@@ -309,9 +309,9 @@ async def test_ack_required_tier_loops_back_to_pending_on_success(tmp_path: Path
 async def test_ack_required_with_no_expiry_is_bounded_by_max_attempts(tmp_path: Path):
     """ack_required=True + expires_at=None must not re-deliver forever: a
     successful transport still exhausts at max_attempts sends, going to
-    dead_letter with a distinct ack-timeout reason (Codex gate finding 2:
-    the ADR's boundedness contract applies to every send while awaiting
-    ack, not only to transport failures)."""
+    dead_letter with a distinct ack-timeout reason — the boundedness
+    contract applies to every send while awaiting ack, not only to
+    transport failures."""
     from sqlalchemy import text
 
     from lionagi.state.reasons import DispatchReasons
@@ -388,9 +388,9 @@ async def test_ack_required_dead_letters_after_max_attempts_successful_sends(tmp
 
 async def test_overlapping_scans_do_not_double_execute_transport(tmp_path: Path):
     """Two concurrent deliver_due_dispatches() calls must not both run transport
-    for a row recovered from a stale 'delivering' claim (Codex gate finding 1):
-    the claim must be exclusive via a guarded attempt-counter CAS, not a
-    same-state 'delivering -> delivering' no-op match."""
+    for a row recovered from a stale 'delivering' claim: the claim must be
+    exclusive via a guarded attempt-counter CAS, not a same-state
+    'delivering -> delivering' no-op match."""
     from lionagi.state.transitions import Actor, StateReason, TransitionRequest, transition
 
     hits = tmp_path / "hits.txt"
@@ -440,10 +440,10 @@ async def test_overlapping_scans_do_not_double_execute_transport(tmp_path: Path)
 
 async def test_retry_dispatch_is_a_single_atomic_write(tmp_path: Path):
     """retry_dispatch() folds the status flip and the attempt/next_attempt_at/
-    last_error reset into ONE guarded transaction (Codex gate finding 3, Rider
-    B): concurrent retries on the same terminal row must not both apply, and
-    the one that does apply must never leave stale exhausted accounting
-    behind (which two separate, non-atomic writes could under a crash)."""
+    last_error reset into ONE guarded transaction: concurrent retries on the
+    same terminal row must not both apply, and the one that does apply must
+    never leave stale exhausted accounting behind (which two separate,
+    non-atomic writes could under a crash)."""
     db_path = tmp_path / "state.db"
     async with StateDB(db_path) as db:
         dispatch_id = await enqueue_dispatch(
@@ -477,11 +477,10 @@ async def test_retry_dispatch_is_a_single_atomic_write(tmp_path: Path):
 
 async def test_transition_patch_guard_is_atomic_under_concurrent_claim(tmp_path: Path):
     """Directly exercise transition()'s guard+patch CAS with two concurrent
-    callers racing the SAME guarded write (the storage-level property Codex
-    gate finding 3 requires): exactly one applies, and its patch columns
-    (attempt reset + next_attempt_at + cleared last_error) land as a single
-    consistent write — never a status flip with the other caller's stale
-    counters visible in between."""
+    callers racing the SAME guarded write: exactly one applies, and its patch
+    columns (attempt reset + next_attempt_at + cleared last_error) land as a
+    single consistent write — never a status flip with the other caller's
+    stale counters visible in between."""
     from lionagi.state.reasons import DispatchReasons
     from lionagi.state.transitions import Actor, StateReason, TransitionRequest, transition
 
