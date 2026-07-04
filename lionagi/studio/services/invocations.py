@@ -55,6 +55,10 @@ async def list_invocations(
                 # child session.  NULL when the invocation has no sessions yet.
                 "project": r.get("project"),
                 "project_source": r.get("project_source"),
+                # From the schedule_run that fired this invocation (ADR-0027),
+                # when it was a scheduled run. NULL for interactive invocations.
+                "schedule_run_exit_code": r.get("schedule_run_exit_code"),
+                "schedule_run_error_detail": r.get("schedule_run_error_detail"),
             }
         )
     return out
@@ -76,6 +80,10 @@ async def get_invocation(invocation_id: str) -> dict[str, Any] | None:
         sessions = await db.list_sessions_for_invocation(invocation_id)
         # ADR-0021: structured outcomes alongside child sessions for the invocation detail page.
         artifacts = await db.list_artifacts_for_invocation(invocation_id)
+        # ADR-0027: the schedule_run that fired this invocation, when it was a
+        # scheduled run, so the detail page can show exit_code/error_detail
+        # for a failed run without the UI having to correlate two IDs itself.
+        schedule_run = await db.get_schedule_run_by_invocation(invocation_id)
     return {
         "id": row["id"],
         "skill": row["skill"],
@@ -91,6 +99,8 @@ async def get_invocation(invocation_id: str) -> dict[str, Any] | None:
         "created_at": row["created_at"],
         "updated_at": row["updated_at"],
         "node_metadata": node_meta,
+        "schedule_run_exit_code": schedule_run.get("exit_code") if schedule_run else None,
+        "schedule_run_error_detail": schedule_run.get("error_detail") if schedule_run else None,
         "sessions": [
             {
                 "id": s["id"],
