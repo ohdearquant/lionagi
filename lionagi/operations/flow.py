@@ -325,6 +325,7 @@ class DependencyAwareExecutor:
                     logger.debug("Executing operation: %s", ref_id)
 
                 operation._branch = branch
+                self._render_pending_operator_steers(operation)
                 await operation.invoke()
 
                 elapsed = _time.monotonic() - self._op_start_times.get(
@@ -478,6 +479,28 @@ class DependencyAwareExecutor:
 
         branch = self._resolve_branch_for_operation(operation)
         self.operation_branches[operation.id] = branch
+
+    def _render_pending_operator_steers(self, operation: Operation) -> None:
+        """Last-chance render, called immediately before the provider call.
+
+        A steer can land in ``self.context.content["operator_messages"]``
+        after this operation's own ``_prepare_operation`` already ran (e.g.
+        a control-plane poller appending mid-run). Re-reading the canonical
+        queue here, right before ``invoke()``, catches that window instead
+        of silently dropping the steer for the rest of the flow.
+        """
+        messages = self.context.content.get("operator_messages")
+        if not messages:
+            return
+        if not any(isinstance(m, dict) and not m.get("rendered_into_op") for m in messages):
+            return
+
+        context = operation.parameters.get("context")
+        if not isinstance(context, dict):
+            context = {}
+            operation.parameters["context"] = context
+        context["operator_messages"] = messages
+        _render_operator_messages(operation, context)
 
     def _resolve_branch_for_operation(self, operation: Operation) -> "Branch":
         """Resolve which branch an operation should use - all branches are pre-allocated."""
