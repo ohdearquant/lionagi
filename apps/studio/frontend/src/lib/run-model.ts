@@ -58,6 +58,11 @@ export type SourceErrors = Partial<Record<SourceKey, string>>;
 export interface AggregateRunsResult {
   runs: Run[];
   sourceErrors: SourceErrors;
+  // Sources withheld because they have no project column to scope by — not
+  // a failure, but distinct from "no runs": the caller renders this so
+  // "nothing found" and "nothing fetched under this project" don't look
+  // the same to an operator.
+  excludedSources: RunSource[];
 }
 
 function toEpochSeconds(value: string | number | null | undefined): number | null {
@@ -371,5 +376,6 @@ export async function aggregateRuns(opts: AggregateRunsOptions = {}): Promise<Ag
 
   const all = [...agentRuns, ...scheduleRunLists.flat(), ...scriptRuns, ...flowRuns];
   all.sort((a, b) => (b.updatedAt ?? b.startedAt ?? 0) - (a.updatedAt ?? a.startedAt ?? 0));
-  return { runs: all, sourceErrors };
+  const excludedSources: RunSource[] = includeGlobalSources ? [] : ["script", "flow"];
+  return { runs: all, sourceErrors, excludedSources };
 }

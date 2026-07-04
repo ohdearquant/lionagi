@@ -116,6 +116,11 @@ function OperationsPage() {
 
   const [runs, setRuns] = useState<Run[] | null>(null);
   const [sourceErrors, setSourceErrors] = useState<SourceErrors>({});
+  // Sources withheld under the current project scope (they carry no project
+  // column, e.g. Script/Flow) — distinct from sourceErrors: this isn't a
+  // failure, but it must still be visible so "no runs" doesn't read as a
+  // complete view when it's really "this source isn't scoped here".
+  const [excludedSources, setExcludedSources] = useState<RunSource[]>([]);
   // Set only when the aggregator itself rejects (the primary agent-run
   // fetch failed) — distinct from sourceErrors, which is per-source
   // degradation the aggregator already absorbed and still returned data for.
@@ -139,6 +144,7 @@ function OperationsPage() {
         if (!active) return;
         setRuns(r.runs);
         setSourceErrors(r.sourceErrors);
+        setExcludedSources(r.excludedSources);
       })
       .catch((err) => {
         if (active) setError(err instanceof Error ? err.message : String(err));
@@ -150,6 +156,7 @@ function OperationsPage() {
               if (!active) return;
               setRuns(r.runs);
               setSourceErrors(r.sourceErrors);
+              setExcludedSources(r.excludedSources);
               setStaleSince(null);
             })
             .catch(() => {
@@ -167,6 +174,15 @@ function OperationsPage() {
     const tick = setInterval(() => setNow(Math.floor(Date.now() / 1000)), 30000);
     return () => clearInterval(tick);
   }, []);
+
+  // A selected source filter can become excluded out from under the user
+  // (e.g. they had Script selected, then picked a project) — drop it rather
+  // than leave them parked on a filter the canvas can never satisfy.
+  useEffect(() => {
+    if (search.source && excludedSources.includes(search.source)) {
+      void navigate({ search: (prev) => ({ ...prev, source: undefined }) });
+    }
+  }, [excludedSources, search.source, navigate]);
 
   const windowSec = windowSeconds(win);
 
@@ -292,16 +308,32 @@ function OperationsPage() {
         <select
           className="h-7 rounded border border-edge bg-surface-input px-2 text-meta text-content-primary"
           value={search.source ?? ""}
+          title={
+            excludedSources.length > 0
+              ? `${excludedSources.map((s) => SOURCE_LABEL[s]).join(" and ")} not tracked per project — visible under All projects`
+              : undefined
+          }
           onChange={(e) =>
             setSearch({ source: (e.target.value || undefined) as RunSource | undefined })
           }
         >
           <option value="">All sources</option>
-          {(Object.keys(SOURCE_LABEL) as RunSource[]).map((s) => (
-            <option key={s} value={s}>
-              {SOURCE_LABEL[s]}
-            </option>
-          ))}
+          {(Object.keys(SOURCE_LABEL) as RunSource[]).map((s) => {
+            const excluded = excludedSources.includes(s);
+            return (
+              <option
+                key={s}
+                value={s}
+                disabled={excluded}
+                title={
+                  excluded ? "Not tracked per project — visible under All projects" : undefined
+                }
+              >
+                {SOURCE_LABEL[s]}
+                {excluded ? " (not per-project)" : ""}
+              </option>
+            );
+          })}
         </select>
         <div className="flex items-center gap-0.5 rounded border border-edge bg-surface-overlay p-0.5">
           {(["1h", "24h", "7d", "all"] as const).map((w) => (
@@ -351,6 +383,13 @@ function OperationsPage() {
         </div>
       )}
 
+      {excludedSources.length > 0 && (
+        <div className="border-b border-edge px-4 py-2 text-meta text-content-muted">
+          {excludedSources.map((s) => SOURCE_LABEL[s]).join(" and ")} not tracked per project —
+          visible under All projects.
+        </div>
+      )}
+
       <div className="flex-1 overflow-hidden">
         {runs == null ? (
           <div className="p-4 text-body text-content-muted">Loading…</div>
@@ -358,7 +397,9 @@ function OperationsPage() {
           <div className="p-8 text-center text-body text-content-muted">
             {degradedSources.length > 0
               ? "No runs match the current filters — note the partial-data notice above."
-              : "No runs match the current filters."}
+              : excludedSources.length > 0
+                ? "No runs match the current filters — note the per-project source notice above."
+                : "No runs match the current filters."}
           </div>
         ) : view === "table" ? (
           <TableView runs={visible} onSelect={(id) => setSearch({ run: id })} />
