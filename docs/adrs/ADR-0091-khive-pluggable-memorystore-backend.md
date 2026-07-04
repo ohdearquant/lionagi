@@ -1,6 +1,6 @@
 # ADR-0091: khive as a Pluggable lionagi MemoryStore Backend
 
-**Status**: Proposed
+**Status**: Accepted
 **Date**: 2026-07-04
 
 ## Context
