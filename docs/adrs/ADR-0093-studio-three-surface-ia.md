@@ -56,9 +56,11 @@ are first-class in this architecture:
 
 - **The Leo operator panel** (founder-required): a dockable right-side panel present on every
   surface — an operator chat that also *drives the UI* (its command channel can navigate,
-  filter, and open detail from conversation). Resurrected from the cockpit's panel + UI-command
-  components and their daemon chat/signals services; the shell reserves the right dock from
-  phase A, the live panel lands with its backend in phase B.
+  filter, and open detail from conversation). The panel is a **persistent, scrollable
+  session**, not a transient tail: the full conversation history loads and scrolls, and
+  reopening Studio resumes the same session where it left off. Resurrected from the cockpit's
+  panel + UI-command components and their daemon chat/signals services; the shell reserves the
+  right dock from phase A, the live panel lands with its backend in phase B.
 - **The cockpit's visual language** is the style anchor for all phases: the dark canvas
   chrome, signal chips, monospace accents, and status bar of that build, harmonized with the
   current token system and shipped in both themes under the established contrast floors.
@@ -97,6 +99,13 @@ Run { id, source: agent|schedule|script|flow, status, project, started_at, updat
   (Overview · Output with SSE live tail · Messages · Artifacts · Chain · Raw) with full parity
   to the old detail pages, plus actions: cancel, re-fire (schedule-sourced), copy
   `li agent -r <id>`. Deep links keep working; the canvas never unloads behind it.
+- **Any run is resumable, at any time** (founder-required). The slide-over carries a
+  **Resume** action for every run with an underlying session: type a follow-up instruction
+  and the daemon resumes that session in place (additive endpoint wrapping the existing
+  resume machinery) — terminal status is no barrier, and the resumed turn appears as new
+  activity on the canvas. Copying the CLI command stays as the escape hatch; the UI action
+  lands in phase B alongside the Leo panel, sharing its daemon surface and Leo's
+  authn/authz review.
 - **Chains render as one card.** schedule → schedule_run (chain_parent_id) → invocation →
   session collapse into a single feed card with children, ending the four-page hunt for one
   firing's story.
@@ -167,9 +176,10 @@ themes with screenshots in the PR body:
   status bar) and the right dock is reserved for the Leo panel. Hosted deploy and its visual
   gate ride this phase.
 - **B — Operations depth**: command palette (sequenced early in the phase), the **Leo
-  operator panel** live in the right dock (chat + UI-drive commands, daemon endpoints
-  resurrected from the cockpit line), chain cards, SSE live tail, centralized staleness
-  adopted everywhere, cancel/re-fire actions. The slide-over reaches full parity
+  operator panel** live in the right dock (chat + UI-drive commands, scrollable persistent
+  session, daemon endpoints resurrected from the cockpit line), chain cards, SSE live tail,
+  centralized staleness adopted everywhere, cancel/re-fire/**resume** actions. The
+  slide-over reaches full parity
   (Messages · Artifacts · Chain · Raw), and only then do the detail-route redirects land.
 - **C — Library**: catalog + editors, workflow canvas + text editor with validate/plan-preview
   and YAML/TOML import/export (additive endpoints land here), script naming, inviting zero
