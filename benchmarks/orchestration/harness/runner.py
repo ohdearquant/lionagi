@@ -13,7 +13,11 @@ from __future__ import annotations
 
 import logging
 import os
+import pickle
+import shlex
+import sys
 import time
+from pathlib import Path
 
 from lionagi.agent import AgentSpec
 from lionagi.casts.emission import SpawnRequest
@@ -33,6 +37,11 @@ from .cost import collect_usage
 from .task import RunResult, Task
 
 logger = logging.getLogger("orchbench.runner")
+
+# The pre-seam in-process path has no ceiling at all (a reactive "flow" trial
+# can run many turns across several spawned agents), so the seam's own cap
+# must stay generous — this bounds a runaway subprocess, not typical trials.
+_CELL_TIMEOUT_S = 1800
 
 # Ocean's allowed model set → canonical CLI specs (the bare `claude` alias is
 # claude_code; `claude/x` provider isn't the CLI provider, so map to claude-code).
@@ -102,27 +111,68 @@ async def run_once(
 
     ``backend=None`` (default) is byte-for-byte the pre-existing in-process
     path — no behavior change for existing callers. ``"local_worktree"`` or
-    ``"daytona"`` provisions an isolated workspace around the same in-process
-    trial first (the trial is a prompt-cell: the model call still runs
-    host-side, already authenticated) and tears it down after, so the
-    workspace and any artifacts stay isolated from the live checkout.
+    ``"daytona"`` provisions an isolated workspace and then genuinely routes
+    the trial through ``backend.run_cell()`` as a prompt-cell: the model call
+    still runs host-side, already authenticated, via a subprocess that
+    re-enters this same in-process trial body inside the sandboxed workspace
+    (see ``_cell_entry.py``) — not a parallel, unused code path next to the
+    handle. A backend that cannot host a prompt-cell host-side
+    (``capabilities().hosts_prompt_cell_host_side`` is False, e.g. Daytona)
+    fails fast here instead of silently falling back to the in-process path.
     """
-    handle = None
-    sandbox_backend = None
-    if backend is not None:
-        from lionagi.tools.sandbox_backend import ProvisionSpec, get_backend
+    if backend is None:
+        return await _run_once_inprocess(task, config, trial)
 
-        sandbox_backend = get_backend(backend)
-        handle = await sandbox_backend.provision(ProvisionSpec(repo_root=os.getcwd()))
+    from lionagi.tools.sandbox_backend import Cell, ProvisionSpec, get_backend
+
+    sandbox_backend = get_backend(backend)
+    caps = sandbox_backend.capabilities()
+    if not caps.hosts_prompt_cell_host_side:
+        raise ValueError(
+            f"backend {backend!r} cannot host this trial: run_once()'s trial is "
+            "always a prompt-cell (the model call runs host-side, already "
+            "authenticated) and capabilities().hosts_prompt_cell_host_side is "
+            "False for this backend (ADR-0089 §3) — pick a backend that can "
+            "host prompt-cells; route exec-shaped work to this one instead"
+        )
+
+    handle = await sandbox_backend.provision(ProvisionSpec(repo_root=os.getcwd()))
+    t0 = time.monotonic()
     try:
-        result = await _run_once_inprocess(task, config, trial)
+        entry_script = str(Path(__file__).resolve().with_name("_cell_entry.py"))
+        cell = Cell(
+            kind="prompt_cell",
+            entrypoint=f"{shlex.quote(sys.executable)} {shlex.quote(entry_script)} in.pkl out.pkl",
+            seed_inputs={"in.pkl": pickle.dumps((task, config, trial))},
+            artifact_manifest=["out.pkl"],
+            timeout_s=_CELL_TIMEOUT_S,
+        )
+        cell_result = await sandbox_backend.run_cell(handle, cell)
+        out_bytes = cell_result.artifacts.get("out.pkl")
+        if cell_result.exit_code != 0 or not out_bytes:
+            detail = (
+                cell_result.stderr or cell_result.stdout or "no output artifact produced"
+            ).strip()
+            result = RunResult(
+                task_id=task.id,
+                config_key=config.key(),
+                trial=trial,
+                outputs=[],
+                wall_seconds=time.monotonic() - t0,
+                error=f"sandbox cell failed (exit {cell_result.exit_code}): {detail[-2000:]}",
+                model=config.model,
+            )
+        else:
+            # Round-tripping our own RunResult, pickled moments ago by _cell_entry.py
+            # in this same trial's sandboxed subprocess — not untrusted input (ADR-0089
+            # §3: a prompt-cell runs no untrusted code).
+            result = pickle.loads(out_bytes)  # noqa: S301
     finally:
-        if handle is not None:
-            try:
-                await sandbox_backend.teardown(handle)
-            except Exception:  # noqa: BLE001 — teardown failure must not mask the trial result
-                logger.exception("sandbox backend teardown failed: %s", backend)
-    result.backend = backend or "inprocess"
+        try:
+            await sandbox_backend.teardown(handle)
+        except Exception:  # noqa: BLE001 — teardown failure must not mask the trial result
+            logger.exception("sandbox backend teardown failed: %s", backend)
+    result.backend = backend
     return result
 
 

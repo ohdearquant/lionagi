@@ -14,6 +14,7 @@ decide what a backend can do; they never branch on a backend's name.
 
 from __future__ import annotations
 
+import os
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -198,6 +199,20 @@ class SandboxBackend(Protocol):
 # local_worktree backend — wraps sandbox.py's SandboxSession lifecycle.
 # ---------------------------------------------------------------------------
 
+#: ``run_cell``'s subprocess never blanket-inherits the host environment (a
+#: credential-leak vector: any secret in this process's env would otherwise be
+#: visible to the cell's command). Only these host variables are forwarded —
+#: enough to resolve the interpreter/tool chain and locate a home directory —
+#: plus whatever ``cell.env`` explicitly allow-lists (empty for prompt-cells,
+#: enforced below).
+_SAFE_ENV_KEYS = ("PATH", "HOME", "PYTHONPATH", "VIRTUAL_ENV")
+
+
+def _minimal_subprocess_env(cell_env: Mapping[str, str]) -> dict[str, str]:
+    env = {k: os.environ[k] for k in _SAFE_ENV_KEYS if k in os.environ}
+    env.update(cell_env)
+    return env
+
 
 class LocalWorktreeBackend:
     """Git-worktree isolation; ``run_cell`` is a host-side subprocess in the worktree."""
@@ -242,7 +257,10 @@ class LocalWorktreeBackend:
             dst.write_bytes(data)
 
         timeout_s = float(cell.timeout_s or 300)
-        result = await run_sync(_subprocess_sync, cell.entrypoint, True, timeout_s, str(base))
+        env = _minimal_subprocess_env(cell.env)
+        result = await run_sync(
+            _subprocess_sync, cell.entrypoint, True, timeout_s, str(base), env=env
+        )
 
         events = [SubstrateStreamEvent(type="stdout", content=result["stdout"])]
         if result["stderr"]:
