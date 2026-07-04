@@ -1480,3 +1480,70 @@ async def test_max_runs_claim_released_on_pre_run_failure_allows_retry():
     assert await svc.count_schedule_runs("sched-once", chain_depth=0) == 1
     disable_calls = [c for c in svc.schedule_updates if c[1].get("enabled") == 0]
     assert disable_calls  # exactly max_runs=1 total run reached; auto-disabled
+
+
+@pytest.mark.asyncio
+async def test_max_runs_reservation_snapshots_inflight_before_stale_count_read():
+    """Pins the round-3 finding: a concurrent reserve must not overshoot
+    max_runs by combining a stale persisted count with an already-released
+    in-flight claim.
+
+    Forces the exact interleaving the reviewer's reproducer exploited:
+    fire A holds a claim (in-flight, not yet terminal). Reserve B starts its
+    admission check and its count_schedule_runs() read is suspended
+    mid-flight. While B is suspended, A completes: its terminal run is
+    recorded AND its claim is released — both entirely inside B's await
+    window. B's count() then resumes and returns the count as it was
+    when the read started (stale — before A's write), simulating a real
+    DB read that began before the write landed. If _reserve_max_runs_budget
+    read `inflight` only after this await (the round-2 shape), it would see
+    inflight=0 (already released) + used=0 (stale) and incorrectly admit a
+    second top-level fire for max_runs=1. Reading `inflight` before the
+    await (the round-3 fix) must still see A's claim and refuse B."""
+    from lionagi.studio.scheduler.engine import SchedulerEngine
+
+    svc = _StatefulSvc()
+    engine = SchedulerEngine(svc)
+    schedule = _minimal_schedule(id="sched-once", max_runs=1)
+
+    # Fire A claims the budget first (simulates A's fire already in-flight,
+    # not yet terminal).
+    allowed_a, claim_a = await engine._reserve_max_runs_budget(schedule)
+    assert allowed_a
+    assert claim_a is not None
+    assert engine._max_runs_inflight.get("sched-once") == 1
+
+    count_started = asyncio.Event()
+    resume_count = asyncio.Event()
+    real_count = svc.count_schedule_runs
+
+    async def stalling_count(schedule_id, *, chain_depth=0):
+        # Read the count as of THIS moment (before A's terminal write
+        # lands), but don't return it until told to -- after A has both
+        # recorded its terminal run and released its claim.
+        snapshot = await real_count(schedule_id, chain_depth=chain_depth)
+        count_started.set()
+        await resume_count.wait()
+        return snapshot
+
+    svc.count_schedule_runs = stalling_count
+
+    b_task = asyncio.create_task(engine._reserve_max_runs_budget(schedule))
+    await count_started.wait()
+
+    # Fire A "completes" while B's count read is still suspended: record its
+    # terminal run, then release its claim -- exactly what _fire()'s finally
+    # does at the end of a real fire.
+    await svc.create_schedule_run(
+        {"id": "run-a", "schedule_id": "sched-once", "chain_depth": 0, "status": "completed"}
+    )
+    claim_a.release()
+    assert engine._max_runs_inflight.get("sched-once", 0) == 0
+
+    resume_count.set()
+    allowed_b, claim_b = await b_task
+
+    assert not allowed_b
+    assert claim_b is None
+    # Exactly one terminal run for max_runs=1 -- B must not have overshot it.
+    assert await real_count("sched-once", chain_depth=0) == 1

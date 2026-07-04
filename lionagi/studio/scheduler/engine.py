@@ -474,14 +474,33 @@ class SchedulerEngine:
         ``_check_max_runs()`` (e.g. ``create_invocation`` raising) would
         otherwise leak the claim permanently for the life of the process,
         since nothing else would ever release it.
+
+        Snapshot ordering matters here: ``inflight`` is read BEFORE the
+        awaited ``count_schedule_runs()`` call, not after. ``release()`` is
+        deliberately lock-free (a claim must still release from a
+        cancelled/failing ``_fire()``'s ``finally`` without depending on
+        this lock, which would otherwise reintroduce cancellation-unsafe
+        lock-acquire-in-finally hazards), so a concurrent fire's claim can
+        be released by another task while this call is suspended awaiting
+        the DB. If ``inflight`` were read *after* that await (the round-2
+        shape), a fire that both completes its terminal write and releases
+        its claim entirely within this call's await window would vanish
+        from both the persisted count (read too early, before the write)
+        and the in-flight snapshot (read too late, after the release) —
+        the exact gap the round-3 review's forced interleaving exploited.
+        Reading ``inflight`` first captures that other fire's claim before
+        it can disappear: the persisted count may still be stale, but the
+        in-flight snapshot backstops it, so the sum can only ever
+        over-count (spurious refusal, safe and self-correcting on the next
+        tick) — never under-count (an actual overshoot).
         """
         max_runs = schedule.get("max_runs")
         if not max_runs:
             return True, None
         sid = schedule["id"]
         async with self._max_runs_lock:
-            used = await self._svc.count_schedule_runs(sid, chain_depth=0)
             inflight = self._max_runs_inflight.get(sid, 0)
+            used = await self._svc.count_schedule_runs(sid, chain_depth=0)
             if used + inflight >= max_runs:
                 return False, None
             self._max_runs_inflight[sid] = inflight + 1
