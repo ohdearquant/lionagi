@@ -14,40 +14,46 @@
       "ariaLabel": "主导航"
     },
     "mobile": {
-      "open": "打开导航菜单"
+      "open": "打开导航菜单",
+      "close": "关闭导航菜单"
+    },
+    "rail": {
+      "collapse": "收起导航",
+      "expand": "展开导航"
     },
     "breadcrumb": {
       "ariaLabel": "导航路径"
     },
     "groups": {
-      "dashboard": "控制台",
-      "work": "工作",
+      "home": "首页",
+      "operations": "操作",
+      "automations": "自动化",
       "library": "资源库",
       "admin": "管理"
     },
     "items": {
-      "dashboard": "控制台",
-      "shows": "展示",
+      "home": "首页",
       "playfield": "运行场",
       "runs": "运行",
-      "kanban": "看板",
-      "projects": "项目",
+      "board": "看板",
       "teams": "团队",
       "invocations": "调用",
       "schedules": "调度",
       "engines": "引擎",
-      "playbooks": "剧本",
+      "scripts": "脚本",
       "agents": "智能体",
       "plugins": "插件",
       "skills": "技能",
+      "overview": "概览",
       "health": "健康状态",
       "maintenance": "维护"
     },
     "projectChip": {
-      "selected": "[项目：{name} ▾]",
-      "allShort": "[所有项目 ▾]",
+      "selected": "{name} ▾",
+      "allShort": "所有项目 ▾",
       "ariaLabel": "按项目筛选",
       "all": "所有项目",
+      "otherContexts": "其他上下文（{count}）",
       "viewAll": "查看所有项目"
     },
     "localeSwitcher": {

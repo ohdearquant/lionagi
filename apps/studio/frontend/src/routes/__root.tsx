@@ -2,6 +2,7 @@ import { createRootRoute, Outlet } from "@tanstack/react-router";
 import { useEffect } from "react";
 import { IntlProvider } from "use-intl";
 import { ToastProvider } from "@/components/Toast";
+import { ProjectProvider } from "@/lib/project-context";
 import Shell from "@/components/Shell";
 import "../globals.css";
 
@@ -36,9 +37,11 @@ function RootComponent() {
   return (
     <IntlProvider locale={locale} messages={messages}>
       <ToastProvider>
-        <Shell>
-          <Outlet />
-        </Shell>
+        <ProjectProvider>
+          <Shell>
+            <Outlet />
+          </Shell>
+        </ProjectProvider>
       </ToastProvider>
     </IntlProvider>
   );

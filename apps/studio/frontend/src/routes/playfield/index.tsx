@@ -9,6 +9,7 @@ import PageHeader from "@/components/PageHeader";
 import StatusPill from "@/components/StatusPill";
 import Timestamp from "@/components/Timestamp";
 import { listRuns } from "@/lib/api";
+import { useProject } from "@/lib/project-context";
 import type { RunSummary } from "@/lib/types";
 import { empty, errors } from "@/lib/copy";
 
@@ -134,8 +135,25 @@ function PlayfieldPageInner() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [now, setNow] = useState(() => Math.floor(Date.now() / 1000));
-  const [projectFilter, setProjectFilter] = useState<string | null>(null);
+  const { project: globalProject, setProject: setGlobalProject } = useProject();
+  const [projectFilter, setProjectFilter] = useState<string | null>(() => globalProject || null);
   const [knownProjects, setKnownProjects] = useState<string[]>([]);
+
+  // Follow the shared project switcher. "Unassigned" is a page-local bucket
+  // with no equivalent in the shared context, so a local selection of it is
+  // left alone here — only a *change* to the global scope overrides it. This
+  // compares against the previous render rather than an effect (React's
+  // "adjusting state" pattern) so it fires exactly on a scope change.
+  const [prevGlobalProject, setPrevGlobalProject] = useState(globalProject);
+  if (globalProject !== prevGlobalProject) {
+    setPrevGlobalProject(globalProject);
+    setProjectFilter(globalProject || null);
+  }
+
+  function selectProjectFilter(next: string | null) {
+    setProjectFilter(next);
+    if (next !== "Unassigned") setGlobalProject(next ?? "");
+  }
 
   useEffect(() => {
     let active = true;
@@ -215,7 +233,7 @@ function PlayfieldPageInner() {
             size="sm"
             variant="toggle"
             active={projectFilter === null}
-            onClick={() => setProjectFilter(null)}
+            onClick={() => selectProjectFilter(null)}
           >
             {t("allProjects")}
           </Button>
@@ -225,7 +243,7 @@ function PlayfieldPageInner() {
               size="sm"
               variant="toggle"
               active={projectFilter === p}
-              onClick={() => setProjectFilter(projectFilter === p ? null : p)}
+              onClick={() => selectProjectFilter(projectFilter === p ? null : p)}
             >
               {/* "Unassigned" is the internal sentinel — translate display only */}
               {p === "Unassigned" ? t("unassigned") : p}

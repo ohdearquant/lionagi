@@ -1,53 +1,30 @@
 import { Link, useLocation } from "@tanstack/react-router";
 import type { LinkProps } from "@tanstack/react-router";
 import { useTranslations } from "use-intl";
-import { NAV_GROUPS, isRouteActive } from "./types";
-
-const GROUP_KEY: Record<string, string> = {
-  Dashboard: "groups.dashboard",
-  Work: "groups.work",
-  Library: "groups.library",
-  Admin: "groups.admin",
-};
-
-const ITEM_KEY: Record<string, string> = {
-  Dashboard: "items.dashboard",
-  Shows: "items.shows",
-  Runs: "items.runs",
-  Projects: "items.projects",
-  Teams: "items.teams",
-  Invocations: "items.invocations",
-  Schedules: "items.schedules",
-  Playbooks: "items.playbooks",
-  Agents: "items.agents",
-  Plugins: "items.plugins",
-  Skills: "items.skills",
-  Health: "items.health",
-  Maintenance: "items.maintenance",
-};
+import { GROUP_I18N_KEY, ITEM_I18N_KEY, NAV_GROUPS, isRouteActive } from "./types";
 
 export default function Breadcrumb() {
   const t = useTranslations("nav");
   const pathname = useLocation().pathname ?? "/";
 
   const tGroup = (label: string) => {
-    const key = GROUP_KEY[label];
+    const key = GROUP_I18N_KEY[label];
     return key ? t(key as Parameters<typeof t>[0]) : label;
   };
 
   const tItem = (label: string) => {
-    const key = ITEM_KEY[label];
+    const key = ITEM_I18N_KEY[label];
     return key ? t(key as Parameters<typeof t>[0]) : label;
   };
 
-  // Dashboard root
+  // Home root
   if (pathname === "/") {
     return (
       <nav
         aria-label={t("breadcrumb.ariaLabel")}
         className="flex h-6 items-center gap-1 border-b border-edge bg-surface-base px-4 text-meta text-content-muted"
       >
-        <span>{t("items.dashboard")}</span>
+        <span>{tItem("Home")}</span>
       </nav>
     );
   }

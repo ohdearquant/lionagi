@@ -177,7 +177,7 @@ export async function listRuns(params?: RunListParams): Promise<RunListResponse>
   if (params?.project) query.set("project", params.project);
   for (const value of params?.status ?? []) query.append("status", value);
   const suffix = query.toString() ? `?${query.toString()}` : "";
-  return fetchJson<RunListResponse>(`/api/runs${suffix}`);
+  return fetchJson<RunListResponse>(`/api/runs/${suffix}`);
 }
 
 export async function getRun(runId: string): Promise<RunDetail> {
@@ -680,7 +680,7 @@ export async function listDefinitions(
   kind?: string,
 ): Promise<{ definitions: DefinitionSummary[] }> {
   const query = kind ? `?kind=${encodeURIComponent(kind)}` : "";
-  return fetchJson<{ definitions: DefinitionSummary[] }>(`/api/definitions${query}`);
+  return fetchJson<{ definitions: DefinitionSummary[] }>(`/api/definitions/${query}`);
 }
 
 export async function getDefinition(kind: string, name: string): Promise<DefinitionDetail> {
@@ -827,7 +827,7 @@ export interface PluginSkillDetail {
 }
 
 export async function listPlugins(): Promise<{ plugins: PluginSummary[] }> {
-  return fetchJson<{ plugins: PluginSummary[] }>("/api/plugins/");
+  return fetchJson<{ plugins: PluginSummary[] }>("/api/plugins");
 }
 
 export async function getPlugin(name: string): Promise<PluginDetail> {
@@ -998,7 +998,7 @@ export async function listTeams(params?: {
   if (params?.limit != null) query.set("limit", String(params.limit));
   if (params?.offset != null) query.set("offset", String(params.offset));
   const suffix = query.toString() ? `?${query.toString()}` : "";
-  return fetchJson<TeamListResponse>(`/api/teams${suffix}`);
+  return fetchJson<TeamListResponse>(`/api/teams/${suffix}`);
 }
 
 export async function getTeam(teamId: string): Promise<TeamDetail> {
@@ -1030,7 +1030,7 @@ export interface StudioStats {
 }
 
 export async function getStats(): Promise<StudioStats> {
-  return fetchJson<StudioStats>("/api/stats/");
+  return fetchJson<StudioStats>("/api/stats");
 }
 
 // ─── Schedules (ADR-0027) ───────────────────────────────────────────────────
@@ -1140,7 +1140,7 @@ export async function listEngineRuns(params?: EngineRunListParams): Promise<Engi
   if (params?.limit != null) query.set("limit", String(params.limit));
   if (params?.offset != null) query.set("offset", String(params.offset));
   const qs = query.toString();
-  return fetchJson<EngineRunSummary[]>(`/api/engine-runs${qs ? `?${qs}` : ""}`);
+  return fetchJson<EngineRunSummary[]>(`/api/engine-runs/${qs ? `?${qs}` : ""}`);
 }
 
 export async function getEngineRun(runId: string): Promise<EngineRunSummary> {

@@ -40,6 +40,8 @@ const config: Config = {
           "error-bg": "var(--status-error-bg)",
           warning: "var(--status-warning)",
           "warning-bg": "var(--status-warning-bg)",
+          neutral: "var(--status-neutral)",
+          "neutral-bg": "var(--status-neutral-bg)",
           selected: "var(--status-selected)",
           "selected-bg": "var(--status-selected-bg)",
         },

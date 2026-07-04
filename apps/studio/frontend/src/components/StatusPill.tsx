@@ -191,7 +191,7 @@ const TONE_CLASS: Record<StatusTone, string> = {
   failed: "border-status-error/40 bg-status-error-bg text-status-error",
   pending: "border-status-warning/40 bg-status-warning-bg text-status-warning",
   blocked: "border-status-selected/40 bg-status-selected-bg text-status-selected",
-  neutral: "border-edge bg-surface-overlay text-content-secondary",
+  neutral: "border-status-neutral/40 bg-status-neutral-bg text-status-neutral",
 };
 
 export default function StatusPill({
@@ -219,7 +219,15 @@ export default function StatusPill({
         .join(" ")}
     >
       {resolvedIcon ? (
-        <span aria-hidden="true" className="text-[9px] leading-none shrink-0">
+        <span
+          aria-hidden="true"
+          className={[
+            "text-[9px] leading-none shrink-0",
+            resolvedTone === "running" ? "animate-status-pulse" : "",
+          ]
+            .filter(Boolean)
+            .join(" ")}
+        >
           {resolvedIcon}
         </span>
       ) : null}

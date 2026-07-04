@@ -14,40 +14,46 @@
       "ariaLabel": "Primary"
     },
     "mobile": {
-      "open": "Open navigation menu"
+      "open": "Open navigation menu",
+      "close": "Close navigation menu"
+    },
+    "rail": {
+      "collapse": "Collapse navigation",
+      "expand": "Expand navigation"
     },
     "breadcrumb": {
       "ariaLabel": "Breadcrumb"
     },
     "groups": {
-      "dashboard": "Dashboard",
-      "work": "Work",
+      "home": "Home",
+      "operations": "Operations",
+      "automations": "Automations",
       "library": "Library",
       "admin": "Admin"
     },
     "items": {
-      "dashboard": "Dashboard",
-      "shows": "Shows",
+      "home": "Home",
       "playfield": "Playfield",
       "runs": "Runs",
-      "kanban": "Kanban",
-      "projects": "Projects",
+      "board": "Board",
       "teams": "Teams",
       "invocations": "Invocations",
       "schedules": "Schedules",
       "engines": "Engines",
-      "playbooks": "Playbooks",
+      "scripts": "Scripts",
       "agents": "Agents",
       "plugins": "Plugins",
       "skills": "Skills",
+      "overview": "Overview",
       "health": "Health",
       "maintenance": "Maintenance"
     },
     "projectChip": {
-      "selected": "[project: {name} ▾]",
-      "allShort": "[All projects ▾]",
+      "selected": "{name} ▾",
+      "allShort": "All projects ▾",
       "ariaLabel": "Filter by project",
       "all": "All projects",
+      "otherContexts": "Other contexts ({count})",
       "viewAll": "View all projects"
     },
     "localeSwitcher": {

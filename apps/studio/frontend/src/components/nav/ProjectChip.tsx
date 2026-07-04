@@ -1,18 +1,32 @@
-import { Link, useLocation } from "@tanstack/react-router";
+import { Link } from "@tanstack/react-router";
 import { useTranslations } from "use-intl";
-import { useEffect, useId, useRef, useState } from "react";
+import { useEffect, useId, useMemo, useRef, useState } from "react";
 import { listProjects } from "@/lib/api";
+import { useProject } from "@/lib/project-context";
 import type { ProjectSummary } from "@/lib/types";
+
+// Projects auto-registered from a bare working directory (no git remote, no
+// .lionagi/pyproject config — see lionagi/cli/_project.py's detection
+// cascade) are almost always agent scratch dirs, not real work contexts.
+// They're kept selectable but collapsed out of the top-level list so the
+// switcher stays usable once dozens of them accumulate.
+const SCRATCH_SOURCES = new Set(["cwd_dir", "cwd_missing"]);
+
+function isScratchProject(p: ProjectSummary): boolean {
+  return SCRATCH_SOURCES.has(p.source);
+}
 
 export default function ProjectChip() {
   const t = useTranslations("nav");
-  const location = useLocation();
-  const pathname = location.pathname ?? "/";
-  const searchParams = new URLSearchParams(window.location.search);
-  const currentProject = searchParams.get("project") ?? "";
+  const { project: currentProject, setProject } = useProject();
 
   const [projects, setProjects] = useState<ProjectSummary[]>([]);
   const [open, setOpen] = useState(false);
+  // null = no explicit user choice yet — the group starts open whenever the
+  // active selection lives inside it (derived every render, so it tracks the
+  // project list arriving asynchronously after mount). Once the operator
+  // toggles it, their choice overrides the derived default.
+  const [othersOpenOverride, setOthersOpenOverride] = useState<boolean | null>(null);
   const containerRef = useRef<HTMLDivElement>(null);
   const menuRef = useRef<HTMLDivElement>(null);
   const menuId = useId();
@@ -22,6 +36,18 @@ export default function ProjectChip() {
       .then((data) => setProjects(data.projects))
       .catch(() => {});
   }, []);
+
+  const { primary, others } = useMemo(() => {
+    const primary: ProjectSummary[] = [];
+    const others: ProjectSummary[] = [];
+    for (const p of projects) (isScratchProject(p) ? others : primary).push(p);
+    return { primary, others };
+  }, [projects]);
+
+  // If the active selection lives in the "Other contexts" group (e.g. a
+  // direct link to an agent scratch dir), start with that group expanded.
+  const isCurrentInOthers = currentProject !== "" && others.some((p) => p.name === currentProject);
+  const othersOpen = othersOpenOverride ?? isCurrentInOthers;
 
   useEffect(() => {
     function handleOutsideClick(e: MouseEvent) {
@@ -43,16 +69,7 @@ export default function ProjectChip() {
   }, [open]);
 
   function selectProject(name: string) {
-    const params = new URLSearchParams(searchParams.toString());
-    if (name) {
-      params.set("project", name);
-    } else {
-      params.delete("project");
-    }
-    const qs = params.toString();
-    // Phase 1b: route tree incomplete; skip typed navigate, use direct location
-    const newUrl = qs ? `${pathname}?${qs}` : pathname;
-    window.history.pushState({}, "", newUrl);
+    setProject(name);
     setOpen(false);
   }
 
@@ -99,6 +116,29 @@ export default function ProjectChip() {
     }
   }
 
+  function renderProjectItem(p: ProjectSummary, muted: boolean) {
+    return (
+      <button
+        key={p.name}
+        type="button"
+        role="menuitemradio"
+        aria-checked={currentProject === p.name}
+        onClick={() => selectProject(p.name)}
+        className={[
+          "flex w-full items-center justify-between px-3 py-2 text-left text-body transition-colors duration-150 hover:bg-surface-overlay hover:text-content-primary focus:bg-surface-overlay focus:outline-none focus-visible:ring-1 focus-visible:ring-interactive-primary",
+          currentProject === p.name
+            ? "font-semibold text-content-primary"
+            : muted
+              ? "text-content-muted"
+              : "text-content-secondary",
+        ].join(" ")}
+      >
+        <span className="truncate">{p.name}</span>
+        {p.source && <span className="ml-2 shrink-0 text-meta text-content-muted">{p.source}</span>}
+      </button>
+    );
+  }
+
   const chipLabel = currentProject
     ? t("projectChip.selected", { name: currentProject })
     : t("projectChip.allShort");
@@ -113,7 +153,7 @@ export default function ProjectChip() {
         aria-haspopup="menu"
         aria-expanded={open}
         aria-controls={menuId}
-        className="h-6 rounded border border-edge bg-surface-nav px-1.5 text-[11px] text-content-secondary focus:border-interactive-primary focus:outline-none hover:border-edge-strong transition-colors cursor-pointer"
+        className="h-6 rounded border border-edge bg-surface-nav px-1.5 text-[11px] text-content-secondary focus:border-interactive-primary focus:outline-none hover:border-edge-strong transition-colors cursor-pointer focus-visible:ring-1 focus-visible:ring-interactive-primary"
       >
         {chipLabel}
       </button>
@@ -126,7 +166,7 @@ export default function ProjectChip() {
           role="menu"
           aria-label={t("projectChip.ariaLabel")}
           onKeyDown={handleMenuKeyDown}
-          className="absolute right-0 top-full z-50 mt-1 w-64 rounded border border-edge bg-surface-nav py-1 shadow-card"
+          className="absolute right-0 top-full z-50 mt-1 max-h-96 w-64 overflow-y-auto rounded border border-edge bg-surface-nav py-1 shadow-card"
         >
           <button
             type="button"
@@ -134,7 +174,7 @@ export default function ProjectChip() {
             aria-checked={currentProject === ""}
             onClick={() => selectProject("")}
             className={[
-              "flex w-full items-center justify-between px-3 py-2 text-left text-body transition-colors duration-150 hover:bg-surface-overlay hover:text-content-primary focus:bg-surface-overlay focus:outline-none",
+              "flex w-full items-center justify-between px-3 py-2 text-left text-body transition-colors duration-150 hover:bg-surface-overlay hover:text-content-primary focus:bg-surface-overlay focus:outline-none focus-visible:ring-1 focus-visible:ring-interactive-primary",
               currentProject === ""
                 ? "font-semibold text-content-primary"
                 : "text-content-secondary",
@@ -143,33 +183,32 @@ export default function ProjectChip() {
             {t("projectChip.all")}
           </button>
 
-          {projects.map((p) => (
-            <button
-              key={p.name}
-              type="button"
-              role="menuitemradio"
-              aria-checked={currentProject === p.name}
-              onClick={() => selectProject(p.name)}
-              className={[
-                "flex w-full items-center justify-between px-3 py-2 text-left text-body transition-colors duration-150 hover:bg-surface-overlay hover:text-content-primary focus:bg-surface-overlay focus:outline-none",
-                currentProject === p.name
-                  ? "font-semibold text-content-primary"
-                  : "text-content-secondary",
-              ].join(" ")}
-            >
-              <span>{p.name}</span>
-              {p.source && (
-                <span className="ml-2 shrink-0 text-meta text-content-muted">{p.source}</span>
-              )}
-            </button>
-          ))}
+          {primary.map((p) => renderProjectItem(p, false))}
+
+          {others.length > 0 && (
+            <>
+              <div className="mt-1 border-t border-edge pt-1">
+                <button
+                  type="button"
+                  role="menuitem"
+                  aria-expanded={othersOpen}
+                  onClick={() => setOthersOpenOverride(!othersOpen)}
+                  className="flex w-full items-center justify-between px-3 py-1.5 text-left text-meta text-content-muted transition-colors duration-150 hover:bg-surface-overlay hover:text-content-secondary focus:bg-surface-overlay focus:outline-none focus-visible:ring-1 focus-visible:ring-interactive-primary"
+                >
+                  <span>{t("projectChip.otherContexts", { count: others.length })}</span>
+                  <span aria-hidden="true">{othersOpen ? "▾" : "▸"}</span>
+                </button>
+              </div>
+              {othersOpen && others.map((p) => renderProjectItem(p, true))}
+            </>
+          )}
 
           <div className="mt-1 border-t border-edge pt-1">
             <Link
               to="/projects"
               role="menuitem"
               onClick={() => setOpen(false)}
-              className="block px-3 py-2 text-body text-content-secondary transition-colors duration-150 hover:bg-surface-overlay hover:text-content-primary focus:bg-surface-overlay focus:outline-none"
+              className="block px-3 py-2 text-body text-content-secondary transition-colors duration-150 hover:bg-surface-overlay hover:text-content-primary focus:bg-surface-overlay focus:outline-none focus-visible:ring-1 focus-visible:ring-interactive-primary"
             >
               {t("projectChip.viewAll")}
             </Link>

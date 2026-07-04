@@ -45,6 +45,8 @@
     --status-error-bg: rgba(220, 38, 38, 0.08);
     --status-warning: #c27f10;
     --status-warning-bg: rgba(194, 127, 16, 0.08);
+    --status-neutral: #71717a;
+    --status-neutral-bg: rgba(113, 113, 122, 0.08);
     --status-selected: #7c3aed;
     --status-selected-bg: rgba(124, 58, 237, 0.08);
 
@@ -122,6 +124,8 @@
     --status-error-bg: rgba(248, 113, 113, 0.1);
     --status-warning: #fbbf24;
     --status-warning-bg: rgba(251, 191, 36, 0.1);
+    --status-neutral: #a1a1aa;
+    --status-neutral-bg: rgba(161, 161, 170, 0.1);
     --status-selected: #a78bfa;
     --status-selected-bg: rgba(167, 139, 250, 0.1);
 
@@ -417,4 +421,22 @@
 }
 .animate-fade-in {
   animation: fade-in 0.15s ease-out both;
+}
+
+/* ── Running-status pulse ─────────────────────────────────────────────────
+   Subtle breathing cue on the "running" status glyph — never the label
+   text, so status pills stay legible while in flight. Reduced-motion is
+   already handled by the guard above (freezes to a single frame).
+*/
+@keyframes status-pulse {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.45;
+  }
+}
+.animate-status-pulse {
+  animation: status-pulse 1.6s ease-in-out infinite;
 }
