@@ -1,4 +1,4 @@
-import { createFileRoute, useNavigate } from "@tanstack/react-router";
+import { createFileRoute, redirect, useNavigate } from "@tanstack/react-router";
 import { useEffect, useMemo, useState } from "react";
 import Badge from "@/components/Badge";
 import Table, { type TableColumn } from "@/components/Table";
@@ -7,6 +7,9 @@ import type { ShowSummary } from "@/lib/types";
 import { empty } from "@/lib/copy";
 
 export const Route = createFileRoute("/shows/")({
+  beforeLoad: () => {
+    throw redirect({ to: "/", search: (prev) => ({ ...prev, source: "script" }) });
+  },
   component: ShowsPage,
 });
 

@@ -80,17 +80,27 @@
     --dag-edge-done: #16a34a;
     --dag-hover-border: #737373;
     --dag-assign-text: #707070; /* was #c4c4c4; darkened to meet 4.5:1 on dag-pending-bg (#f5f5f4) */
+
+    /* ─── Data typeface + canvas chrome (ADR-0093 style anchor) ─── */
+    --font-data: "JetBrains Mono", "SF Mono", ui-monospace, Menlo, Monaco, monospace;
+    --canvas-grid: rgba(0, 0, 0, 0.05);
+    --canvas-vignette: rgba(0, 0, 0, 0.04);
   }
 
-  /* ── Dark theme ── */
+  /* ── Dark theme ──
+     Surface/edge values are harmonized toward the recovered desktop cockpit's
+     canvas chrome (near-black base, translucent hairline edges) rather than
+     the flat charcoal grays this shell shipped with — same token names, so
+     every existing component keeps working, only the dark palette reads as
+     a genuine operations canvas instead of a dark-mode-bolted-onto-light-UI. */
   .dark {
     /* ─── Surface ─── */
-    --surface-base: #111113;
-    --surface-raised: #18181b;
-    --surface-overlay: #1e1e22;
-    --surface-nav: #18181b;
-    --surface-input: #222226;
-    --surface-input-hover: #2a2a2f;
+    --surface-base: #0c0d10;
+    --surface-raised: #13151a;
+    --surface-overlay: #1a1d24;
+    --surface-nav: #13151a;
+    --surface-input: #1c1f26;
+    --surface-input-hover: #242832;
 
     /* ─── Shadow ─── */
     --shadow-card: 0 1px 3px rgba(0, 0, 0, 0.3), 0 1px 2px rgba(0, 0, 0, 0.2);
@@ -103,10 +113,10 @@
     --content-muted: #9696a0;
     --content-inverse: #ffffff;
 
-    /* ─── Edge (borders, dividers) ─── */
-    --edge-default: #2d2d32;
-    --edge-subtle: #242428;
-    --edge-strong: #3e3e45;
+    /* ─── Edge (borders, dividers) ─── translucent hairlines, cockpit-style */
+    --edge-default: rgba(255, 255, 255, 0.1);
+    --edge-subtle: rgba(255, 255, 255, 0.06);
+    --edge-strong: rgba(255, 255, 255, 0.18);
 
     /* ─── Interactive (buttons, links) ─── */
     --interactive-primary: #22c55e;
@@ -159,6 +169,11 @@
     --dag-edge-done: #22c55e;
     --dag-hover-border: #62626e;
     --dag-assign-text: #848484; /* was #3e3e45; lightened to meet 4.5:1 on dag-pending-bg (#1c1c1e) */
+
+    /* ─── Canvas chrome (ADR-0093 style anchor) — quieter than light mode,
+       felt as alignment authority, never seen as decoration. ─── */
+    --canvas-grid: rgba(255, 255, 255, 0.04);
+    --canvas-vignette: rgba(0, 0, 0, 0.35);
   }
 }
 
@@ -197,6 +212,15 @@
   }
   .shadow-card-hover {
     box-shadow: var(--shadow-card-hover);
+  }
+
+  /* Operations canvas substrate — quiet technical dot grid, alignment
+     authority not decoration (ADR-0093 style anchor). */
+  .canvas-grid {
+    background: radial-gradient(var(--canvas-grid) 0.65px, transparent 0.65px), var(--surface-base);
+    background-size:
+      16px 16px,
+      auto;
   }
 
   /* Skeleton pulse */

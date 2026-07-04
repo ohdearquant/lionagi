@@ -1,20 +1,28 @@
-import { Link, useLocation } from "@tanstack/react-router";
+import { Link, useLocation, type LinkProps } from "@tanstack/react-router";
 import { useTranslations } from "use-intl";
 import { Suspense, useEffect, useState, type ReactNode } from "react";
 import Breadcrumb from "@/components/nav/Breadcrumb";
-import NavGroup from "@/components/nav/NavGroup";
 import ProjectChip from "@/components/nav/ProjectChip";
-import { NAV_GROUPS } from "@/components/nav/types";
+import { NAV_ITEMS, isRouteActive } from "@/components/nav/types";
 
 export interface ShellProps {
   children: ReactNode;
 }
 
 const RAIL_COLLAPSED_KEY = "studio.railCollapsed";
+const DOCK_EXPANDED_KEY = "studio.dockExpanded";
 
 function readStoredRailCollapsed(): boolean {
   try {
     return window.localStorage.getItem(RAIL_COLLAPSED_KEY) === "1";
+  } catch {
+    return false;
+  }
+}
+
+function readStoredDockExpanded(): boolean {
+  try {
+    return window.localStorage.getItem(DOCK_EXPANDED_KEY) === "1";
   } catch {
     return false;
   }
@@ -133,15 +141,98 @@ function RailToggle({ collapsed, onToggle }: { collapsed: boolean; onToggle: () 
   );
 }
 
+function RailLink({
+  href,
+  icon,
+  label,
+  active,
+  collapsed,
+  onNavigate,
+}: {
+  href: LinkProps["to"];
+  icon: string;
+  label: string;
+  active: boolean;
+  collapsed: boolean;
+  onNavigate?: () => void;
+}) {
+  return (
+    <Link
+      to={href}
+      onClick={onNavigate}
+      title={collapsed ? label : undefined}
+      className={[
+        "flex h-9 items-center gap-2.5 rounded px-2.5 text-label transition-colors duration-150 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-interactive-primary",
+        active
+          ? "bg-status-selected-bg font-semibold text-content-primary"
+          : "text-content-secondary hover:bg-surface-overlay hover:text-content-primary",
+      ].join(" ")}
+    >
+      <span aria-hidden="true" className="w-4 shrink-0 text-center">
+        {icon}
+      </span>
+      {!collapsed && <span className="truncate">{label}</span>}
+    </Link>
+  );
+}
+
+const DOCK_COLLAPSED_WIDTH = "w-9";
+const DOCK_EXPANDED_WIDTH = "w-72";
+
+/**
+ * Reserved right-side dock slot for the Leo operator panel (ADR-0093): an
+ * operator chat that also drives the UI, present on every surface. The
+ * live panel + its daemon chat/signals wiring land in phase B — phase A
+ * only reserves the collapsible slot so the layout doesn't shift later.
+ */
+function LeoDock({ expanded, onToggle }: { expanded: boolean; onToggle: () => void }) {
+  const t = useTranslations("nav");
+  return (
+    <aside
+      aria-label={t("dock.ariaLabel")}
+      className={[
+        "sticky top-0 hidden h-screen shrink-0 flex-col border-l border-edge bg-surface-nav transition-[width] duration-150 md:flex",
+        expanded ? DOCK_EXPANDED_WIDTH : DOCK_COLLAPSED_WIDTH,
+      ].join(" ")}
+    >
+      <div className="flex h-11 shrink-0 items-center justify-center border-b border-edge px-1.5">
+        <button
+          type="button"
+          onClick={onToggle}
+          aria-label={expanded ? t("dock.collapse") : t("dock.expand")}
+          aria-pressed={expanded}
+          className="flex h-7 w-7 shrink-0 items-center justify-center rounded text-content-muted transition-colors hover:bg-interactive-secondary hover:text-content-primary focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-interactive-primary"
+        >
+          <span aria-hidden="true" className="text-[13px]">
+            ✦
+          </span>
+        </button>
+      </div>
+      {expanded && (
+        <div className="flex flex-1 flex-col items-center justify-center gap-2 px-4 py-6 text-center">
+          <span aria-hidden="true" className="text-[20px] text-content-muted">
+            ✦
+          </span>
+          <p className="text-label font-medium text-content-secondary">{t("dock.title")}</p>
+          <p className="text-meta text-content-muted">{t("dock.comingSoon")}</p>
+        </div>
+      )}
+    </aside>
+  );
+}
+
 export default function Shell({ children }: ShellProps) {
   const t = useTranslations("nav");
   const pathname = useLocation().pathname ?? "/";
   const [mobileOpen, setMobileOpen] = useState(false);
   const [collapsed, setCollapsed] = useState(false);
+  const [dockExpanded, setDockExpanded] = useState(false);
 
   useEffect(() => {
     // eslint-disable-next-line react-hooks/set-state-in-effect -- reads localStorage, unavailable during server render
     setCollapsed(readStoredRailCollapsed());
+
+    setDockExpanded(readStoredDockExpanded());
   }, []);
 
   function toggleCollapsed() {
@@ -151,6 +242,18 @@ export default function Shell({ children }: ShellProps) {
         window.localStorage.setItem(RAIL_COLLAPSED_KEY, next ? "1" : "0");
       } catch {
         // localStorage unavailable (private browsing) — collapse state just won't persist
+      }
+      return next;
+    });
+  }
+
+  function toggleDock() {
+    setDockExpanded((prev) => {
+      const next = !prev;
+      try {
+        window.localStorage.setItem(DOCK_EXPANDED_KEY, next ? "1" : "0");
+      } catch {
+        // localStorage unavailable (private browsing) — expand state just won't persist
       }
       return next;
     });
@@ -168,7 +271,7 @@ export default function Shell({ children }: ShellProps) {
       >
         <Link
           to="/"
-          title={t("dashboard.title")}
+          title={t("surfaces.operations")}
           className="flex h-11 shrink-0 items-center gap-2 border-b border-edge px-3"
         >
           <BrandMark />
@@ -179,8 +282,15 @@ export default function Shell({ children }: ShellProps) {
           )}
         </Link>
         <nav className="flex flex-1 flex-col gap-0.5 overflow-y-auto px-2 py-2">
-          {NAV_GROUPS.map((group) => (
-            <NavGroup key={group.label} group={group} pathname={pathname} collapsed={collapsed} />
+          {NAV_ITEMS.map((item) => (
+            <RailLink
+              key={item.href}
+              href={item.href}
+              icon={item.icon}
+              label={t(item.i18nKey as Parameters<typeof t>[0])}
+              active={isRouteActive(item, pathname)}
+              collapsed={collapsed}
+            />
           ))}
         </nav>
         <div className="flex shrink-0 items-center justify-end border-t border-edge px-2 py-1.5">
@@ -228,11 +338,13 @@ export default function Shell({ children }: ShellProps) {
               </button>
             </div>
             <nav className="flex flex-1 flex-col gap-0.5 overflow-y-auto px-2 py-2">
-              {NAV_GROUPS.map((group) => (
-                <NavGroup
-                  key={group.label}
-                  group={group}
-                  pathname={pathname}
+              {NAV_ITEMS.map((item) => (
+                <RailLink
+                  key={item.href}
+                  href={item.href}
+                  icon={item.icon}
+                  label={t(item.i18nKey as Parameters<typeof t>[0])}
+                  active={isRouteActive(item, pathname)}
                   collapsed={false}
                   onNavigate={() => setMobileOpen(false)}
                 />
@@ -273,7 +385,7 @@ export default function Shell({ children }: ShellProps) {
           </button>
 
           {/* Mobile-only brand mark — the desktop rail already shows one */}
-          <Link to="/" title={t("dashboard.title")} className="flex items-center md:hidden">
+          <Link to="/" title={t("surfaces.operations")} className="flex items-center md:hidden">
             <BrandMark />
           </Link>
 
@@ -293,6 +405,8 @@ export default function Shell({ children }: ShellProps) {
           {children}
         </div>
       </div>
+
+      <LeoDock expanded={dockExpanded} onToggle={toggleDock} />
     </div>
   );
 }

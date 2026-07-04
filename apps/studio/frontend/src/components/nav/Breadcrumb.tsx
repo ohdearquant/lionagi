@@ -1,52 +1,63 @@
-import { Link, useLocation } from "@tanstack/react-router";
-import type { LinkProps } from "@tanstack/react-router";
+import { useLocation } from "@tanstack/react-router";
 import { useTranslations } from "use-intl";
-import { GROUP_I18N_KEY, ITEM_I18N_KEY, NAV_GROUPS, isRouteActive } from "./types";
+import { NAV_ITEMS, isRouteActive } from "./types";
+
+// Pages that still live at their own route in phase A (ADR-0093 §Delivery A)
+// even though the rail no longer links to them directly — Library and
+// System link out to them, and old bookmarks keep working. Ordered longest
+// prefix first so a more specific match (e.g. /admin/health) wins over a
+// shorter one (/admin).
+const STANDALONE_PAGES: Array<{
+  prefix: string;
+  surfaceKey: string;
+  label: string;
+}> = [
+  { prefix: "/admin/health", surfaceKey: "surfaces.system", label: "Health" },
+  { prefix: "/admin/maintenance", surfaceKey: "surfaces.system", label: "Maintenance" },
+  { prefix: "/admin", surfaceKey: "surfaces.system", label: "Overview" },
+  { prefix: "/projects", surfaceKey: "surfaces.system", label: "Projects" },
+  { prefix: "/playbooks", surfaceKey: "surfaces.library", label: "Scripts" },
+  { prefix: "/agents", surfaceKey: "surfaces.library", label: "Agents" },
+  { prefix: "/schedules", surfaceKey: "surfaces.library", label: "Schedules" },
+  { prefix: "/skills", surfaceKey: "surfaces.library", label: "Skills" },
+  { prefix: "/plugins", surfaceKey: "surfaces.library", label: "Plugins" },
+  { prefix: "/engines", surfaceKey: "surfaces.library", label: "Engines" },
+  { prefix: "/teams", surfaceKey: "surfaces.library", label: "Teams" },
+  { prefix: "/runs", surfaceKey: "surfaces.operations", label: "Run" },
+  { prefix: "/invocations", surfaceKey: "surfaces.operations", label: "Run" },
+  { prefix: "/shows", surfaceKey: "surfaces.operations", label: "Script run" },
+].sort((a, b) => b.prefix.length - a.prefix.length);
+
+function detailSegmentFor(pathname: string, prefix: string): string | null {
+  if (pathname === prefix || !pathname.startsWith(`${prefix}/`)) return null;
+  const remainder = pathname.slice(prefix.length + 1);
+  const segment = remainder.split("/")[0];
+  if (!segment) return null;
+  const decoded = decodeURIComponent(segment);
+  return decoded.length > 12 ? decoded.slice(0, 12) : decoded;
+}
 
 export default function Breadcrumb() {
   const t = useTranslations("nav");
   const pathname = useLocation().pathname ?? "/";
 
-  const tGroup = (label: string) => {
-    const key = GROUP_I18N_KEY[label];
-    return key ? t(key as Parameters<typeof t>[0]) : label;
-  };
-
-  const tItem = (label: string) => {
-    const key = ITEM_I18N_KEY[label];
-    return key ? t(key as Parameters<typeof t>[0]) : label;
-  };
-
-  // Home root
-  if (pathname === "/") {
+  const surface = NAV_ITEMS.find((item) => isRouteActive(item, pathname));
+  if (surface) {
     return (
       <nav
         aria-label={t("breadcrumb.ariaLabel")}
         className="flex h-6 items-center gap-1 border-b border-edge bg-surface-base px-4 text-meta text-content-muted"
       >
-        <span>{tItem("Home")}</span>
+        <span>{t(surface.i18nKey as Parameters<typeof t>[0])}</span>
       </nav>
     );
   }
 
-  // Find matching group and item
-  let groupLabel: string | null = null;
-  let itemLabel: string | null = null;
-  let itemHref: LinkProps["to"] | null = null;
+  const standalone = STANDALONE_PAGES.find(
+    (page) => pathname === page.prefix || pathname.startsWith(`${page.prefix}/`),
+  );
 
-  outer: for (const group of NAV_GROUPS) {
-    for (const item of group.items) {
-      if (isRouteActive(item, pathname)) {
-        groupLabel = group.label;
-        itemLabel = item.label;
-        itemHref = item.href;
-        break outer;
-      }
-    }
-  }
-
-  if (!groupLabel || !itemLabel || !itemHref) {
-    // Unknown route: show first decoded segment
+  if (!standalone) {
     const firstSegment = pathname.split("/").filter(Boolean)[0] ?? "";
     return (
       <nav
@@ -58,31 +69,16 @@ export default function Breadcrumb() {
     );
   }
 
-  // Determine detail segment beyond the section route
-  let detailSegment: string | null = null;
-  if (
-    typeof itemHref === "string" &&
-    pathname !== itemHref &&
-    pathname.startsWith(`${itemHref}/`)
-  ) {
-    const remainder = pathname.slice(itemHref.length + 1);
-    const segment = remainder.split("/")[0];
-    if (segment) {
-      const decoded = decodeURIComponent(segment);
-      detailSegment = decoded.length > 12 ? decoded.slice(0, 12) : decoded;
-    }
-  }
+  const detailSegment = detailSegmentFor(pathname, standalone.prefix);
 
   return (
     <nav
       aria-label={t("breadcrumb.ariaLabel")}
       className="flex h-6 items-center gap-1 border-b border-edge bg-surface-base px-4 text-meta text-content-muted"
     >
-      <span>{tGroup(groupLabel)}</span>
+      <span>{t(standalone.surfaceKey as Parameters<typeof t>[0])}</span>
       <span aria-hidden="true">›</span>
-      <Link to={itemHref} className="transition-colors duration-150 hover:text-content-secondary">
-        {tItem(itemLabel)}
-      </Link>
+      <span>{standalone.label}</span>
       {detailSegment && (
         <>
           <span aria-hidden="true">›</span>

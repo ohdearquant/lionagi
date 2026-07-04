@@ -7,9 +7,6 @@
       "name": "Lion Studio",
       "subtitle": "Orchestration"
     },
-    "dashboard": {
-      "title": "Dashboard"
-    },
     "primary": {
       "ariaLabel": "Primary"
     },
@@ -24,29 +21,17 @@
     "breadcrumb": {
       "ariaLabel": "Breadcrumb"
     },
-    "groups": {
-      "home": "Home",
+    "surfaces": {
       "operations": "Operations",
-      "automations": "Automations",
       "library": "Library",
-      "admin": "Admin"
+      "system": "System"
     },
-    "items": {
-      "home": "Home",
-      "playfield": "Playfield",
-      "runs": "Runs",
-      "board": "Board",
-      "teams": "Teams",
-      "invocations": "Invocations",
-      "schedules": "Schedules",
-      "engines": "Engines",
-      "scripts": "Scripts",
-      "agents": "Agents",
-      "plugins": "Plugins",
-      "skills": "Skills",
-      "overview": "Overview",
-      "health": "Health",
-      "maintenance": "Maintenance"
+    "dock": {
+      "ariaLabel": "Operator panel",
+      "expand": "Expand operator panel",
+      "collapse": "Collapse operator panel",
+      "title": "Leo",
+      "comingSoon": "The operator panel is coming soon."
     },
     "projectChip": {
       "selected": "{name} ▾",

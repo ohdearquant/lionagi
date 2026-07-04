@@ -1,6 +1,6 @@
 // Copyright (c) 2023-2026, HaiyangLi <quantocean.li at gmail dot com>
 // SPDX-License-Identifier: Apache-2.0
-import { createFileRoute, Link } from "@tanstack/react-router";
+import { createFileRoute, Link, redirect } from "@tanstack/react-router";
 import { useEffect, useState } from "react";
 import { useTranslations } from "use-intl";
 import Duration from "@/components/Duration";
@@ -11,6 +11,9 @@ import type { RunSummary } from "@/lib/types";
 import { errors } from "@/lib/copy";
 
 export const Route = createFileRoute("/kanban/")({
+  beforeLoad: () => {
+    throw redirect({ to: "/", search: (prev) => ({ ...prev, view: "board" }) });
+  },
   component: KanbanPage,
 });
 

@@ -1,4 +1,4 @@
-import { createFileRoute, Link } from "@tanstack/react-router";
+import { createFileRoute, Link, redirect } from "@tanstack/react-router";
 import { useEffect, useMemo, useState } from "react";
 import Button from "@/components/Button";
 import PageHeader from "@/components/PageHeader";
@@ -10,6 +10,12 @@ import type { InvocationListResponse } from "@/lib/api";
 import { empty, errors } from "@/lib/copy";
 
 export const Route = createFileRoute("/invocations/")({
+  beforeLoad: () => {
+    throw redirect({
+      to: "/",
+      search: (prev) => ({ ...prev, view: "table", source: "schedule" }),
+    });
+  },
   component: InvocationsPage,
 });
 

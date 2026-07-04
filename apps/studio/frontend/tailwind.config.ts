@@ -59,6 +59,9 @@ const config: Config = {
         card: "var(--shadow-card)",
         "card-hover": "var(--shadow-card-hover)",
       },
+      fontFamily: {
+        data: ["var(--font-data)"],
+      },
       borderRadius: {
         DEFAULT: "6px",
       },

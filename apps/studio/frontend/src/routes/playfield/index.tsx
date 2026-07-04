@@ -1,6 +1,6 @@
 // Copyright (c) 2023-2026, HaiyangLi <quantocean.li at gmail dot com>
 // SPDX-License-Identifier: Apache-2.0
-import { createFileRoute, Link } from "@tanstack/react-router";
+import { createFileRoute, Link, redirect } from "@tanstack/react-router";
 import { useEffect, useState } from "react";
 import { useTranslations } from "use-intl";
 import Button from "@/components/Button";
@@ -14,6 +14,12 @@ import type { RunSummary } from "@/lib/types";
 import { empty, errors } from "@/lib/copy";
 
 export const Route = createFileRoute("/playfield/")({
+  beforeLoad: () => {
+    throw redirect({
+      to: "/",
+      search: (prev) => ({ ...prev, view: "stream", live: true }),
+    });
+  },
   component: PlayfieldPage,
 });
 

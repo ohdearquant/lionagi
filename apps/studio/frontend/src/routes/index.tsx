@@ -1,478 +1,571 @@
-import { createFileRoute, Link } from "@tanstack/react-router";
-import type { LinkProps } from "@tanstack/react-router";
-import { useEffect, useMemo, useState } from "react";
-import { useTranslations } from "use-intl";
-import MetricCard from "@/components/MetricCard";
+import { createFileRoute } from "@tanstack/react-router";
+import { useEffect, useMemo, useRef, useState } from "react";
+import { useVirtualizer } from "@tanstack/react-virtual";
 import PageHeader from "@/components/PageHeader";
 import StatusPill from "@/components/StatusPill";
+import type { StatusTone } from "@/components/StatusPill";
 import Timestamp from "@/components/Timestamp";
 import Duration from "@/components/Duration";
-import TimeRangeChips, { type TimeRange, rangeToSeconds } from "@/components/TimeRangeChips";
-import { getShow, getStats, listRuns, listShows } from "@/lib/api";
-import type { DbStats, StudioStats } from "@/lib/api";
-import type { RunSummary, ShowSummary } from "@/lib/types";
+import Button from "@/components/Button";
+import { useProject } from "@/lib/project-context";
+import { aggregateRuns, type Run } from "@/lib/run-model";
+import type { DerivedStatus, RunSource } from "@/lib/derive-run-status";
+import RunSlideOver from "@/components/operations/RunSlideOver";
+
+type ViewMode = "stream" | "board" | "table";
+type WindowValue = "1h" | "24h" | "7d" | "all";
+
+interface OperationsSearch {
+  view?: ViewMode;
+  // Accepts string[] too — the retired list-page redirects (/runs,
+  // /invocations, /kanban, /playfield, /shows) forward their own
+  // multi-value `status` search param through this same shape.
+  status?: string | string[];
+  source?: RunSource;
+  window?: WindowValue;
+  q?: string;
+  run?: string;
+  live?: boolean;
+}
+
+function coerceView(value: unknown): ViewMode | undefined {
+  return value === "stream" || value === "board" || value === "table" ? value : undefined;
+}
+function coerceSource(value: unknown): RunSource | undefined {
+  return value === "agent" || value === "schedule" || value === "script" || value === "flow"
+    ? value
+    : undefined;
+}
+function coerceWindow(value: unknown): WindowValue | undefined {
+  return value === "1h" || value === "24h" || value === "7d" || value === "all" ? value : undefined;
+}
+function coerceStatus(value: unknown): string | string[] | undefined {
+  if (typeof value === "string") return value;
+  if (Array.isArray(value)) {
+    const strings = value.filter((v): v is string => typeof v === "string");
+    return strings.length > 0 ? strings : undefined;
+  }
+  return undefined;
+}
+function firstStatus(status: string | string[] | undefined): string | undefined {
+  return Array.isArray(status) ? status[0] : status;
+}
 
 export const Route = createFileRoute("/")({
-  component: DashboardPage,
+  validateSearch: (search: Record<string, unknown>): OperationsSearch => ({
+    view: coerceView(search.view),
+    status: coerceStatus(search.status),
+    source: coerceSource(search.source),
+    window: coerceWindow(search.window),
+    q: typeof search.q === "string" ? search.q : undefined,
+    run: typeof search.run === "string" ? search.run : undefined,
+    live: search.live === "1" || search.live === true ? true : undefined,
+  }),
+  component: OperationsPage,
 });
 
-const RUNNING_STATES = new Set(["running", "executing", "in_progress", "director-managed", "open"]);
-// timed_out / aborted / cancelled are NOT failures — deliberate bound or system cancellation.
-const FAILED_STATES = new Set(["failed", "error", "failure"]);
-const COMPLETED_STATES = new Set([
-  "completed",
-  "done",
-  "success",
-  "finished",
-  "running_complete",
-  "director-managed-complete",
-]);
-const NEEDS_REVIEW_STATES = new Set(["needs_review", "blocked", "gated"]);
-
-// Thresholds: typical runs are 45-90 min; 30 min would flag nearly every flow.
-const SLOW_RUN_SECONDS = 60 * 60;
-const STUCK_RUN_SECONDS = 60 * 60;
-
-function durationSeconds(run: RunSummary, nowSec: number): number | null {
-  if (run.started_at == null) return null;
-  const end = run.ended_at ?? nowSec;
-  return end - run.started_at;
+function windowSeconds(w: WindowValue): number | null {
+  if (w === "1h") return 3600;
+  if (w === "24h") return 86400;
+  if (w === "7d") return 86400 * 7;
+  return null;
 }
 
-function isInRange(run: RunSummary, windowSec: number | null, nowSec: number): boolean {
-  if (!windowSec) return true;
-  if (run.started_at != null && nowSec - run.started_at <= windowSec) return true;
-  if (run.ended_at != null && nowSec - run.ended_at <= windowSec) return true;
-  return false;
-}
+const STATUS_TONE: Record<DerivedStatus, StatusTone> = {
+  running: "running",
+  completed: "ok",
+  failed: "failed",
+  stale: "pending",
+  expired: "neutral",
+  cancelled: "neutral",
+  pending: "pending",
+};
 
-function DashboardPage() {
-  const t = useTranslations("dashboard");
-  const [stats, setStats] = useState<StudioStats | null>(null);
-  const [allRuns, setAllRuns] = useState<RunSummary[]>([]);
-  const [shows, setShows] = useState<ShowSummary[]>([]);
-  const [range, setRange] = useState<TimeRange>("24h");
-  const [now, setNow] = useState<number>(() => Math.floor(Date.now() / 1000));
-  const [fetchError, setFetchError] = useState<string | null>(null);
+const STATUS_LABEL: Record<DerivedStatus, string> = {
+  running: "Running",
+  completed: "Completed",
+  failed: "Failed",
+  stale: "Stale",
+  expired: "Expired",
+  cancelled: "Cancelled",
+  pending: "Pending",
+};
+
+const SOURCE_LABEL: Record<RunSource, string> = {
+  agent: "Agent",
+  schedule: "Schedule",
+  script: "Script",
+  flow: "Flow",
+};
+
+const PAGE_SIZE = 100;
+
+function OperationsPage() {
+  const search = Route.useSearch();
+  const navigate = Route.useNavigate();
+  const { project } = useProject();
+
+  const view: ViewMode = search.view ?? "stream";
+  const win: WindowValue = search.window ?? "24h";
+  const status = firstStatus(search.status);
+
+  const [runs, setRuns] = useState<Run[] | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [visibleCount, setVisibleCount] = useState(PAGE_SIZE);
+  const [now, setNow] = useState(() => Math.floor(Date.now() / 1000));
 
   useEffect(() => {
     let active = true;
-
-    async function load() {
-      try {
-        const [statsRes, runsRes, showsList] = await Promise.all([
-          getStats(),
-          listRuns({ per_page: 2000 }),
-          listShows(),
-        ]);
-        if (!active) return;
-        setStats(statsRes);
-        setAllRuns(runsRes.runs ?? []);
-        setShows(showsList);
-        setFetchError(null);
-        if (showsList.length > 0) {
-          const settled = await Promise.allSettled(
-            showsList.map((s: ShowSummary) =>
-              getShow(s.topic).then((d) => ({
-                topic: s.topic,
-                status: d.status ?? s.latest_status,
-              })),
-            ),
-          );
-          if (active) {
-            const resolved = new Map<string, string>();
-            for (const r of settled) {
-              if (r.status === "fulfilled") resolved.set(r.value.topic, r.value.status);
-            }
-            if (resolved.size > 0) {
-              setShows((prev) =>
-                prev.map((s) =>
-                  resolved.has(s.topic) ? { ...s, latest_status: resolved.get(s.topic)! } : s,
-                ),
-              );
-            }
-          }
-        }
-      } catch {
-        if (active) setFetchError(t("fetchError"));
-      }
-    }
-
-    void load();
-    const interval = setInterval(load, 30000);
-    const tick = setInterval(() => setNow(Math.floor(Date.now() / 1000)), 30000);
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- load() calls setState, data-fetch pattern matching the rest of the codebase
+    setRuns(null);
+    setError(null);
+    aggregateRuns({ project: project || undefined })
+      .then((r) => {
+        if (active) setRuns(r);
+      })
+      .catch((err) => {
+        if (active) setError(err instanceof Error ? err.message : String(err));
+      });
+    const poll = search.live
+      ? setInterval(() => {
+          aggregateRuns({ project: project || undefined })
+            .then((r) => active && setRuns(r))
+            .catch(() => {});
+        }, 5000)
+      : null;
     return () => {
       active = false;
-      clearInterval(interval);
-      clearInterval(tick);
+      if (poll) clearInterval(poll);
     };
-  }, [t]);
+  }, [project, search.live]);
 
-  const windowSec = rangeToSeconds(range);
+  useEffect(() => {
+    const tick = setInterval(() => setNow(Math.floor(Date.now() / 1000)), 30000);
+    return () => clearInterval(tick);
+  }, []);
 
-  const buckets = useMemo(() => {
-    const scoped = allRuns.filter((r) => isInRange(r, windowSec, now));
-    const running = scoped.filter((r) => RUNNING_STATES.has(r.status));
-    const failed = scoped.filter((r) => FAILED_STATES.has(r.status));
-    const completed = scoped.filter((r) => COMPLETED_STATES.has(r.status));
-    const needsReview = scoped.filter((r) => NEEDS_REVIEW_STATES.has(r.status));
-    const slow = scoped.filter((r) => {
-      if (!COMPLETED_STATES.has(r.status)) return false;
-      const d = durationSeconds(r, now);
-      return d != null && d > SLOW_RUN_SECONDS;
+  const windowSec = windowSeconds(win);
+
+  const windowed = useMemo(() => {
+    if (!runs) return [];
+    if (windowSec == null) return runs;
+    return runs.filter((r) => {
+      const anchor = r.updatedAt ?? r.startedAt;
+      return anchor != null && now - anchor <= windowSec;
     });
-    const stuck = running.filter((r) => {
-      const d = durationSeconds(r, now);
-      return d != null && d > STUCK_RUN_SECONDS;
-    });
-    const stale = running.filter((r) => r.effective_health === "stale");
-    const attention = [
-      ...failed,
-      ...stale.filter((s) => !failed.includes(s)),
-      ...stuck.filter((s) => !failed.includes(s) && !stale.includes(s)),
-      ...needsReview.filter((n) => !failed.includes(n) && !stale.includes(n) && !stuck.includes(n)),
-    ]
-      .sort((a, b) => (b.started_at ?? 0) - (a.started_at ?? 0))
-      .slice(0, 8);
-    const recent = [...scoped]
-      .sort((a, b) => (b.started_at ?? 0) - (a.started_at ?? 0))
-      .slice(0, 8);
-    return {
-      scoped,
-      running,
-      failed,
-      completed,
-      needsReview,
-      slow,
-      stuck,
-      stale,
-      attention,
-      recent,
-    };
-  }, [allRuns, windowSec, now]);
+  }, [runs, windowSec, now]);
 
-  const rangeLabel = range === "all" ? t("metrics.allTime") : range;
+  const chipCounts = useMemo(() => {
+    const counts = { running: 0, failed: 0, stale: 0, slow: 0 };
+    for (const r of windowed) {
+      if (r.status === "running") counts.running++;
+      if (r.status === "failed") counts.failed++;
+      if (r.status === "stale") counts.stale++;
+      if (r.isSlow) counts.slow++;
+    }
+    return counts;
+  }, [windowed]);
+
+  const filtered = useMemo(() => {
+    const q = search.q?.trim().toLowerCase();
+    return windowed.filter((r) => {
+      if (status && r.status !== status) return false;
+      if (search.source && r.source !== search.source) return false;
+      if (q && !r.name.toLowerCase().includes(q)) return false;
+      return true;
+    });
+  }, [windowed, status, search.source, search.q]);
+
+  const visible = filtered.slice(0, visibleCount);
+  const hasMore = filtered.length > visible.length;
+
+  const setSearch = (patch: Partial<OperationsSearch>) => {
+    void navigate({ search: (prev) => ({ ...prev, ...patch }) });
+  };
+
+  // "Slow" isn't its own status — it's a flag on running runs. Clicking the
+  // chip narrows to running (the only bucket isSlow currently applies to);
+  // the row-level "slow" tag does the rest of the pointing.
+  const applyChipFilter = (candidate: DerivedStatus | "slow") => {
+    const target = candidate === "slow" ? "running" : candidate;
+    setSearch({ status: status === target ? undefined : target });
+  };
+
+  const selectedRun = search.run ? (filtered.find((r) => r.id === search.run) ?? null) : null;
 
   return (
-    <main className="mx-auto flex w-full max-w-7xl flex-col gap-5 px-4 py-6 animate-page-enter">
+    <div className="flex flex-1 flex-col">
       <PageHeader
-        title={t("title")}
-        subtitle={t("subtitle")}
-        actions={<TimeRangeChips value={range} onChange={setRange} />}
-        density="tight"
+        title="Operations"
+        subtitle="What is happening, and what happened?"
+        actions={
+          <div className="flex items-center gap-1 rounded border border-edge bg-surface-overlay p-0.5 shadow-card">
+            {(["stream", "board", "table"] as const).map((v) => (
+              <Button
+                key={v}
+                size="sm"
+                variant={view === v ? "primary" : "ghost"}
+                onClick={() => setSearch({ view: v })}
+                className={view === v ? "" : "border-transparent"}
+              >
+                {v}
+              </Button>
+            ))}
+          </div>
+        }
       />
 
-      {fetchError && (
-        <div className="rounded border border-status-error/30 bg-status-error-bg px-3 py-2 text-body text-status-error">
-          {fetchError}
+      <div className="flex flex-wrap items-center gap-2 border-b border-edge px-4 py-2">
+        <AttentionChip
+          label="Running"
+          count={chipCounts.running}
+          tone="running"
+          active={status === "running"}
+          onClick={() => applyChipFilter("running")}
+        />
+        <AttentionChip
+          label="Failed"
+          count={chipCounts.failed}
+          tone="failed"
+          active={status === "failed"}
+          onClick={() => applyChipFilter("failed")}
+        />
+        <AttentionChip
+          label="Stale"
+          count={chipCounts.stale}
+          tone="pending"
+          active={status === "stale"}
+          onClick={() => applyChipFilter("stale")}
+        />
+        <AttentionChip
+          label="Slow"
+          count={chipCounts.slow}
+          tone="pending"
+          active={false}
+          onClick={() => applyChipFilter("slow")}
+        />
+      </div>
+
+      <div className="flex flex-wrap items-center gap-2 border-b border-edge px-4 py-2">
+        <select
+          className="h-7 rounded border border-edge bg-surface-input px-2 text-meta text-content-primary"
+          value={status ?? ""}
+          onChange={(e) => setSearch({ status: e.target.value || undefined })}
+        >
+          <option value="">All statuses</option>
+          {(Object.keys(STATUS_LABEL) as DerivedStatus[]).map((s) => (
+            <option key={s} value={s}>
+              {STATUS_LABEL[s]}
+            </option>
+          ))}
+        </select>
+        <select
+          className="h-7 rounded border border-edge bg-surface-input px-2 text-meta text-content-primary"
+          value={search.source ?? ""}
+          onChange={(e) =>
+            setSearch({ source: (e.target.value || undefined) as RunSource | undefined })
+          }
+        >
+          <option value="">All sources</option>
+          {(Object.keys(SOURCE_LABEL) as RunSource[]).map((s) => (
+            <option key={s} value={s}>
+              {SOURCE_LABEL[s]}
+            </option>
+          ))}
+        </select>
+        <div className="flex items-center gap-0.5 rounded border border-edge bg-surface-overlay p-0.5">
+          {(["1h", "24h", "7d", "all"] as const).map((w) => (
+            <Button
+              key={w}
+              size="sm"
+              variant={win === w ? "primary" : "ghost"}
+              onClick={() => setSearch({ window: w })}
+              className={win === w ? "" : "border-transparent"}
+            >
+              {w}
+            </Button>
+          ))}
+        </div>
+        <input
+          type="text"
+          placeholder="Filter by name…"
+          value={search.q ?? ""}
+          onChange={(e) => setSearch({ q: e.target.value || undefined })}
+          className="h-7 min-w-[10rem] flex-1 rounded border border-edge bg-surface-input px-2 text-meta text-content-primary placeholder:text-content-muted"
+        />
+        <Button
+          size="sm"
+          variant={search.live ? "primary" : "ghost"}
+          onClick={() => setSearch({ live: search.live ? undefined : true })}
+        >
+          {search.live ? "Live ●" : "Live"}
+        </Button>
+      </div>
+
+      {error && (
+        <div className="border-b border-edge bg-status-error-bg px-4 py-2 text-meta text-status-error">
+          API unreachable — {error}
         </div>
       )}
 
-      <div className="grid grid-cols-2 gap-3 md:grid-cols-5">
-        <MetricCard
-          label={t("metrics.runningNow")}
-          value={buckets.running.length}
-          hint={
-            buckets.stuck.length > 0
-              ? t("metrics.stuck", { count: buckets.stuck.length, minutes: STUCK_RUN_SECONDS / 60 })
-              : rangeLabel
-          }
-          tone={buckets.running.length > 0 ? "running" : "neutral"}
-          icon={buckets.running.length > 0 ? "◐" : "○"}
-        />
-        <MetricCard
-          label={t("metrics.stale")}
-          value={buckets.stale.length}
-          hint={
-            buckets.stale.length > 0
-              ? t("metrics.noActivityPastThreshold")
-              : t("metrics.noStaleActivity")
-          }
-          tone={buckets.stale.length > 0 ? "pending" : "neutral"}
-          icon={buckets.stale.length > 0 ? "◴" : "·"}
-        />
-        <MetricCard
-          label={t("metrics.failed", { range: rangeLabel })}
-          value={buckets.failed.length}
-          hint={
-            buckets.failed.length === 0 ? t("metrics.allClean") : t("metrics.needsInvestigation")
-          }
-          tone={buckets.failed.length > 0 ? "failed" : "ok"}
-          icon={buckets.failed.length > 0 ? "✕" : "✓"}
-        />
-        <MetricCard
-          label={t("metrics.slowRuns", { range: rangeLabel })}
-          value={buckets.slow.length}
-          hint={t("metrics.completedOver", { minutes: SLOW_RUN_SECONDS / 60 })}
-          tone={buckets.slow.length > 0 ? "pending" : "neutral"}
-          icon={buckets.slow.length > 0 ? "⏱" : "·"}
-        />
-        <MetricCard
-          label={t("metrics.needsReview")}
-          value={buckets.needsReview.length}
-          hint={rangeLabel}
-          tone={buckets.needsReview.length > 0 ? "pending" : "neutral"}
-          icon={buckets.needsReview.length > 0 ? "⊘" : "·"}
-        />
+      <div className="flex-1 overflow-hidden">
+        {runs == null ? (
+          <div className="p-4 text-body text-content-muted">Loading…</div>
+        ) : filtered.length === 0 ? (
+          <div className="p-8 text-center text-body text-content-muted">
+            No runs match the current filters.
+          </div>
+        ) : view === "table" ? (
+          <TableView runs={visible} onSelect={(id) => setSearch({ run: id })} />
+        ) : view === "board" ? (
+          <BoardView runs={filtered} onSelect={(id) => setSearch({ run: id })} />
+        ) : (
+          <StreamView runs={visible} onSelect={(id) => setSearch({ run: id })} />
+        )}
+        {hasMore && view !== "board" && (
+          <div className="flex justify-center border-t border-edge p-3">
+            <Button
+              size="sm"
+              variant="secondary"
+              onClick={() => setVisibleCount((c) => c + PAGE_SIZE)}
+            >
+              Load more ({filtered.length - visible.length} remaining)
+            </Button>
+          </div>
+        )}
       </div>
 
-      {stats ? (
-        <div className="flex flex-wrap items-center gap-x-5 gap-y-1 rounded border border-edge bg-surface-overlay px-4 py-2.5 text-meta text-content-muted">
-          <span className="uppercase tracking-[0.08em] text-content-muted">
-            {t("inventory.label")}
-          </span>
-          <Link
-            to="/playbooks"
-            className="transition-colors duration-100 hover:text-content-primary"
-          >
-            <span className="tabular-nums text-content-secondary">{stats.playbooks}</span>{" "}
-            {t("inventory.playbooks")}
-          </Link>
-          <Link to="/agents" className="transition-colors duration-100 hover:text-content-primary">
-            <span className="tabular-nums text-content-secondary">{stats.agents}</span>{" "}
-            {t("inventory.agents")}
-          </Link>
-          <Link to="/runs" className="transition-colors duration-100 hover:text-content-primary">
-            <span className="tabular-nums text-content-secondary">{stats.runs}</span>{" "}
-            {t("inventory.runsTotal")}
-          </Link>
-          <Link to="/shows" className="transition-colors duration-100 hover:text-content-primary">
-            <span className="tabular-nums text-content-secondary">{stats.shows}</span>{" "}
-            {t("inventory.shows")}
-          </Link>
-        </div>
-      ) : null}
-
-      <SystemHealthCard db={stats?.db} />
-
-      <div className="grid grid-cols-1 gap-6 lg:grid-cols-2">
-        <section>
-          <SectionHeader
-            title={t("sections.needsAttention")}
-            count={buckets.attention.length}
-            href="/runs"
-          />
-          {buckets.attention.length === 0 ? (
-            <div className="rounded border border-status-success/25 bg-status-success-bg px-4 py-4 text-body text-status-success shadow-card">
-              <span className="font-semibold">{t("allClean")}</span>{" "}
-              <span className="text-content-secondary">{t("allCleanDetail")}</span>
-            </div>
-          ) : (
-            <RunsTable runs={buckets.attention} emptyText="" now={now} />
-          )}
-        </section>
-        <section>
-          <SectionHeader
-            title={t("sections.recentActivity")}
-            count={buckets.recent.length}
-            href="/runs"
-          />
-          <RunsTable runs={buckets.recent} emptyText="No runs in window." now={now} />
-        </section>
-      </div>
-
-      <section>
-        <SectionHeader title={t("sections.shows")} count={shows.length} href="/shows" />
-        <div className="overflow-hidden rounded border border-edge bg-surface-raised shadow-card">
-          <table className="w-full text-left text-body">
-            <thead>
-              <tr className="border-b border-edge bg-surface-overlay text-meta uppercase tracking-[0.06em] text-content-muted">
-                <th className="px-3 py-2.5 font-medium">{t("table.topic")}</th>
-                <th className="px-3 py-2.5 font-medium tabular-nums">{t("table.plays")}</th>
-                <th className="px-3 py-2.5 font-medium">{t("table.status")}</th>
-                <th className="px-3 py-2.5 font-medium">{t("table.lastUpdate")}</th>
-              </tr>
-            </thead>
-            <tbody>
-              {shows.length === 0 ? (
-                <tr>
-                  <td colSpan={4} className="px-3 py-8 text-center text-meta text-content-muted">
-                    {t("table.noShows")}
-                  </td>
-                </tr>
-              ) : (
-                shows.map((show) => (
-                  <tr
-                    key={show.topic}
-                    className="border-b border-edge-subtle text-content-secondary transition-colors duration-100 hover:bg-surface-overlay"
-                  >
-                    <td className="px-3 py-2">
-                      <Link
-                        to="/shows/$topic"
-                        params={{ topic: show.topic }}
-                        className="text-status-running transition-colors duration-100 hover:opacity-80"
-                      >
-                        {show.topic}
-                      </Link>
-                    </td>
-                    <td className="px-3 py-2 tabular-nums">{show.play_count}</td>
-                    <td className="px-3 py-2">
-                      <StatusPill value={show.latest_status} kind="lifecycle" />
-                    </td>
-                    <td className="px-3 py-2 text-meta text-content-muted">
-                      <Timestamp value={show.last_update ?? null} />
-                    </td>
-                  </tr>
-                ))
-              )}
-            </tbody>
-          </table>
-        </div>
-      </section>
-    </main>
-  );
-}
-
-function SectionHeader({
-  title,
-  count,
-  href,
-}: {
-  title: string;
-  count: number;
-  href: LinkProps["to"];
-}) {
-  const t = useTranslations("dashboard");
-  return (
-    <div className="mb-2.5 flex items-center justify-between">
-      <div className="flex items-center gap-2">
-        <h2 className="text-label font-semibold text-content-primary">{title}</h2>
-        <span className="rounded bg-surface-overlay px-1.5 py-0.5 font-mono text-meta tabular-nums text-content-muted">
-          {count}
-        </span>
-      </div>
-      <Link
-        to={href}
-        className="text-meta text-content-muted transition-colors duration-100 hover:text-content-primary"
-      >
-        {t("viewAll")}
-      </Link>
+      {selectedRun && (
+        <RunSlideOver run={selectedRun} onClose={() => setSearch({ run: undefined })} />
+      )}
     </div>
   );
 }
 
-function RunsTable({
-  runs,
-  emptyText,
-  now,
+function AttentionChip({
+  label,
+  count,
+  tone,
+  active,
+  onClick,
 }: {
-  runs: RunSummary[];
-  emptyText: string;
-  now: number;
+  label: string;
+  count: number;
+  tone: StatusTone;
+  active: boolean;
+  onClick: () => void;
 }) {
-  const t = useTranslations("dashboard");
+  const toneClass: Record<StatusTone, string> = {
+    ok: "border-status-success/40 text-status-success",
+    running: "border-status-running/40 text-status-running",
+    failed: "border-status-error/40 text-status-error",
+    pending: "border-status-warning/40 text-status-warning",
+    blocked: "border-status-selected/40 text-status-selected",
+    neutral: "border-edge text-content-muted",
+  };
   return (
-    <div className="overflow-hidden rounded border border-edge bg-surface-raised shadow-card">
-      <table className="w-full text-left text-body">
-        <thead>
-          <tr className="border-b border-edge bg-surface-overlay text-meta uppercase tracking-[0.06em] text-content-muted">
-            <th className="px-3 py-2.5 font-medium">{t("table.run")}</th>
-            <th className="px-3 py-2.5 font-medium">{t("table.kind")}</th>
-            <th className="px-3 py-2.5 font-medium">{t("table.status")}</th>
-            <th className="px-3 py-2.5 font-medium tabular-nums text-right">
-              {t("table.duration")}
-            </th>
-            <th className="px-3 py-2.5 font-medium">{t("table.started")}</th>
+    <button
+      type="button"
+      onClick={onClick}
+      aria-pressed={active}
+      className={[
+        "flex items-center gap-1.5 rounded-full border px-3 py-1 text-meta font-medium transition-colors",
+        toneClass[tone],
+        active ? "bg-surface-overlay" : "bg-surface-raised hover:bg-surface-overlay",
+      ].join(" ")}
+    >
+      <span>{label}</span>
+      <span className="font-data tabular-nums">{count}</span>
+    </button>
+  );
+}
+
+function RunRow({ run, onSelect }: { run: Run; onSelect: (id: string) => void }) {
+  return (
+    <button
+      type="button"
+      onClick={() => onSelect(run.id)}
+      className="flex w-full items-center gap-3 border-b border-edge px-4 py-2 text-left hover:bg-surface-overlay"
+    >
+      <StatusPill tone={STATUS_TONE[run.status]} label={STATUS_LABEL[run.status]} />
+      <span className="w-16 shrink-0 text-meta uppercase text-content-muted">
+        {SOURCE_LABEL[run.source]}
+      </span>
+      <span className="flex-1 truncate text-body text-content-primary">{run.name}</span>
+      {run.isSlow && (
+        <span className="rounded border border-status-warning/40 px-1.5 py-0.5 text-meta text-status-warning">
+          slow
+        </span>
+      )}
+      <span className="font-data text-meta text-content-muted">
+        <Duration value={run.durationSeconds} fallback="—" />
+      </span>
+      <span className="w-32 shrink-0 text-right text-meta text-content-muted">
+        <Timestamp value={run.updatedAt ?? run.startedAt} />
+      </span>
+    </button>
+  );
+}
+
+function StreamView({ runs, onSelect }: { runs: Run[]; onSelect: (id: string) => void }) {
+  const parentRef = useRef<HTMLDivElement>(null);
+  const virtualizer = useVirtualizer({
+    count: runs.length,
+    getScrollElement: () => parentRef.current,
+    estimateSize: () => 41,
+    overscan: 12,
+  });
+
+  return (
+    <div ref={parentRef} className="h-full overflow-y-auto">
+      <div style={{ height: virtualizer.getTotalSize(), position: "relative", width: "100%" }}>
+        {virtualizer.getVirtualItems().map((item) => {
+          const run = runs[item.index];
+          return (
+            <div
+              key={run.id}
+              style={{
+                position: "absolute",
+                top: 0,
+                left: 0,
+                width: "100%",
+                height: item.size,
+                transform: `translateY(${item.start}px)`,
+              }}
+            >
+              <RunRow run={run} onSelect={onSelect} />
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
+const BOARD_COLUMNS: DerivedStatus[] = [
+  "pending",
+  "running",
+  "stale",
+  "failed",
+  "completed",
+  "expired",
+  "cancelled",
+];
+
+function BoardView({ runs, onSelect }: { runs: Run[]; onSelect: (id: string) => void }) {
+  const byStatus = useMemo(() => {
+    const map = new Map<DerivedStatus, Run[]>();
+    for (const col of BOARD_COLUMNS) map.set(col, []);
+    for (const r of runs) map.get(r.status)?.push(r);
+    return map;
+  }, [runs]);
+
+  return (
+    <div className="flex h-full gap-3 overflow-x-auto p-3">
+      {BOARD_COLUMNS.map((col) => {
+        const colRuns = byStatus.get(col) ?? [];
+        return (
+          <div
+            key={col}
+            className="flex w-64 shrink-0 flex-col rounded border border-edge bg-surface-raised"
+          >
+            <div className="flex items-center justify-between border-b border-edge px-3 py-2">
+              <span className="text-label text-content-primary">{STATUS_LABEL[col]}</span>
+              <span className="font-data text-meta text-content-muted">{colRuns.length}</span>
+            </div>
+            <BoardColumnList runs={colRuns} onSelect={onSelect} />
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
+function BoardColumnList({ runs, onSelect }: { runs: Run[]; onSelect: (id: string) => void }) {
+  const parentRef = useRef<HTMLDivElement>(null);
+  const virtualizer = useVirtualizer({
+    count: runs.length,
+    getScrollElement: () => parentRef.current,
+    estimateSize: () => 56,
+    overscan: 8,
+  });
+
+  return (
+    <div ref={parentRef} className="flex-1 overflow-y-auto">
+      <div style={{ height: virtualizer.getTotalSize(), position: "relative", width: "100%" }}>
+        {virtualizer.getVirtualItems().map((item) => {
+          const run = runs[item.index];
+          return (
+            <div
+              key={run.id}
+              style={{
+                position: "absolute",
+                top: 0,
+                left: 0,
+                width: "100%",
+                height: item.size,
+                transform: `translateY(${item.start}px)`,
+              }}
+              className="px-2 py-1"
+            >
+              <button
+                type="button"
+                onClick={() => onSelect(run.id)}
+                className="w-full rounded border border-edge bg-surface-overlay p-2 text-left hover:border-edge-strong"
+              >
+                <div className="truncate text-body text-content-primary">{run.name}</div>
+                <div className="mt-1 flex items-center justify-between">
+                  <span className="font-data text-meta text-content-muted">
+                    <Duration value={run.durationSeconds} fallback="—" />
+                  </span>
+                  {run.isSlow && <span className="text-meta text-status-warning">slow</span>}
+                </div>
+              </button>
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
+function TableView({ runs, onSelect }: { runs: Run[]; onSelect: (id: string) => void }) {
+  return (
+    <div className="h-full overflow-auto">
+      <table className="w-full border-collapse text-body">
+        <thead className="sticky top-0 bg-surface-raised text-meta text-content-muted">
+          <tr>
+            <th className="border-b border-edge px-3 py-2 text-left">Run</th>
+            <th className="border-b border-edge px-3 py-2 text-left">Source</th>
+            <th className="border-b border-edge px-3 py-2 text-left">Status</th>
+            <th className="border-b border-edge px-3 py-2 text-left">Duration</th>
+            <th className="border-b border-edge px-3 py-2 text-left">Updated</th>
           </tr>
         </thead>
         <tbody>
-          {runs.length === 0 ? (
-            <tr>
-              <td colSpan={5} className="px-3 py-8 text-center text-meta text-content-muted">
-                {emptyText}
+          {runs.map((run) => (
+            <tr
+              key={run.id}
+              onClick={() => onSelect(run.id)}
+              className="cursor-pointer border-b border-edge hover:bg-surface-overlay"
+            >
+              <td className="max-w-xs truncate px-3 py-2 text-content-primary">{run.name}</td>
+              <td className="px-3 py-2 text-meta uppercase text-content-muted">
+                {SOURCE_LABEL[run.source]}
+              </td>
+              <td className="px-3 py-2">
+                <StatusPill tone={STATUS_TONE[run.status]} label={STATUS_LABEL[run.status]} />
+              </td>
+              <td className="px-3 py-2 font-data text-content-muted">
+                <Duration value={run.durationSeconds} fallback="—" />
+              </td>
+              <td className="px-3 py-2 text-content-muted">
+                <Timestamp value={run.updatedAt ?? run.startedAt} />
               </td>
             </tr>
-          ) : (
-            runs.map((run) => (
-              <tr
-                key={run.run_id}
-                className="border-b border-edge-subtle text-content-secondary transition-colors duration-100 hover:bg-surface-overlay"
-              >
-                <td className="px-3 py-2">
-                  <Link
-                    to="/runs/$id"
-                    params={{ id: run.run_id }}
-                    className="font-mono text-body text-status-running transition-colors duration-100 hover:opacity-80"
-                  >
-                    {run.run_id.slice(-12)}
-                  </Link>
-                </td>
-                <td className="px-3 py-2 text-content-secondary truncate max-w-[12rem]">
-                  {run.playbook_name || run.agent_name || "—"}
-                </td>
-                <td className="px-3 py-2">
-                  <StatusPill value={run.status} kind="lifecycle" />
-                </td>
-                <td className="px-3 py-2 tabular-nums text-right">
-                  <Duration value={durationSeconds(run, now)} />
-                </td>
-                <td className="px-3 py-2 text-meta text-content-muted">
-                  <Timestamp value={run.started_at ?? null} />
-                </td>
-              </tr>
-            ))
-          )}
+          ))}
         </tbody>
       </table>
-    </div>
-  );
-}
-
-function formatBytes(value: number | null | undefined): string {
-  if (!value) return "0 B";
-  const units = ["B", "KB", "MB", "GB"];
-  const i = Math.floor(Math.log(value) / Math.log(1024));
-  return `${(value / Math.pow(1024, i)).toFixed(1)} ${units[i]}`;
-}
-
-function SystemHealthCard({ db }: { db: DbStats | undefined }) {
-  const t = useTranslations("dashboard");
-  if (!db) return null;
-  return (
-    <div className="rounded border border-edge bg-surface-raised p-4 shadow-card">
-      <div className="mb-3 flex items-center justify-between">
-        <span className="text-label font-semibold text-content-primary">{t("health.title")}</span>
-        <span className="font-mono text-meta text-content-muted">{db.path}</span>
-      </div>
-      <div className="grid grid-cols-2 gap-3 sm:grid-cols-4 text-meta">
-        <div>
-          <div className="text-content-muted">{t("health.stateDb")}</div>
-          <div className="tabular-nums text-content-secondary">{formatBytes(db.size_bytes)}</div>
-        </div>
-        <div>
-          <div className="text-content-muted">{t("health.wal")}</div>
-          <div className="tabular-nums text-content-secondary">{formatBytes(db.wal_bytes)}</div>
-        </div>
-        <div>
-          <div className="text-content-muted">{t("health.connections")}</div>
-          <div className="tabular-nums text-content-secondary">{db.connections_active}</div>
-        </div>
-        <div>
-          <div className="text-content-muted">{t("health.lastCheckpoint")}</div>
-          <div className="text-content-secondary">
-            {db.last_checkpoint_at ? (
-              <Timestamp value={db.last_checkpoint_at} />
-            ) : (
-              t("health.unavailable")
-            )}
-          </div>
-        </div>
-      </div>
-      {db.sessions_by_status && Object.keys(db.sessions_by_status).length > 0 && (
-        <div className="mt-3 flex flex-wrap gap-2">
-          {Object.entries(db.sessions_by_status).map(([s, n]) => (
-            <span key={s} className="flex items-center gap-1">
-              <StatusPill value={s} kind="lifecycle" />
-              <span className="tabular-nums text-meta text-content-muted">{n}</span>
-            </span>
-          ))}
-          {(db.sessions_by_status["running"] ?? 0) > 0 && (
-            <Link to="/admin" className="text-meta text-status-running hover:underline">
-              {t("health.doctor")}
-            </Link>
-          )}
-        </div>
-      )}
     </div>
   );
 }

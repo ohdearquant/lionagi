@@ -873,6 +873,40 @@ export async function getAdminDoctor(): Promise<AdminDoctorResponse> {
   return fetchJson<AdminDoctorResponse>("/api/admin/doctor");
 }
 
+// `/api/admin/health` computes REAL process liveness (pid-file/`ps` scan)
+// for status="running" sessions — unlike RunSummary.effective_health, which
+// only ever checks idle-time thresholds and can never detect a truly dead
+// process. `unhealthy` lists every session whose health is not
+// healthy/idle; `session_id` matches RunSummary.run_id / RunSummary.id.
+export interface UnhealthySession {
+  session_id: string;
+  name: string;
+  health: "unresponsive" | "stale" | "orphaned" | "zombie";
+  status: string;
+  invocation_kind: string | null;
+  agent_name: string | null;
+  playbook_name: string | null;
+  last_message_at: number | null;
+  idle_seconds: number | null;
+  process_alive: boolean;
+  message_count: number;
+}
+
+export interface AdminHealthReport {
+  sessions: {
+    total: number;
+    by_status: Record<string, number>;
+    by_health: Record<string, number>;
+    unhealthy: UnhealthySession[];
+  };
+  db: Record<string, unknown>;
+  diagnostic_run_at: string;
+}
+
+export async function getAdminHealth(): Promise<AdminHealthReport> {
+  return fetchJson<AdminHealthReport>("/api/admin/health");
+}
+
 export async function pruneAdmin(body: AdminPruneRequest): Promise<{ pruned: number }> {
   return fetchJson<{ pruned: number }>("/api/admin/prune", {
     method: "POST",

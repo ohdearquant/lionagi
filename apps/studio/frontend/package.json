@@ -14,6 +14,7 @@
   },
   "dependencies": {
     "@tanstack/react-router": "^1.170.15",
+    "@tanstack/react-virtual": "^3.14.5",
     "@types/dagre": "^0.7.54",
     "dagre": "^0.8.5",
     "react": "^19.2.6",

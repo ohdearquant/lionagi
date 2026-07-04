@@ -11,6 +11,7 @@
 import { Route as rootRouteImport } from './routes/__root'
 import { Route as IndexRouteImport } from './routes/index'
 import { Route as TeamsIndexRouteImport } from './routes/teams/index'
+import { Route as SystemIndexRouteImport } from './routes/system/index'
 import { Route as SkillsIndexRouteImport } from './routes/skills/index'
 import { Route as ShowsIndexRouteImport } from './routes/shows/index'
 import { Route as SchedulesIndexRouteImport } from './routes/schedules/index'
@@ -19,6 +20,7 @@ import { Route as ProjectsIndexRouteImport } from './routes/projects/index'
 import { Route as PluginsIndexRouteImport } from './routes/plugins/index'
 import { Route as PlayfieldIndexRouteImport } from './routes/playfield/index'
 import { Route as PlaybooksIndexRouteImport } from './routes/playbooks/index'
+import { Route as LibraryIndexRouteImport } from './routes/library/index'
 import { Route as KanbanIndexRouteImport } from './routes/kanban/index'
 import { Route as InvocationsIndexRouteImport } from './routes/invocations/index'
 import { Route as EnginesIndexRouteImport } from './routes/engines/index'
@@ -46,6 +48,11 @@ const IndexRoute = IndexRouteImport.update({
 const TeamsIndexRoute = TeamsIndexRouteImport.update({
   id: '/teams/',
   path: '/teams/',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const SystemIndexRoute = SystemIndexRouteImport.update({
+  id: '/system/',
+  path: '/system/',
   getParentRoute: () => rootRouteImport,
 } as any)
 const SkillsIndexRoute = SkillsIndexRouteImport.update({
@@ -86,6 +93,11 @@ const PlayfieldIndexRoute = PlayfieldIndexRouteImport.update({
 const PlaybooksIndexRoute = PlaybooksIndexRouteImport.update({
   id: '/playbooks/',
   path: '/playbooks/',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const LibraryIndexRoute = LibraryIndexRouteImport.update({
+  id: '/library/',
+  path: '/library/',
   getParentRoute: () => rootRouteImport,
 } as any)
 const KanbanIndexRoute = KanbanIndexRouteImport.update({
@@ -188,6 +200,7 @@ export interface FileRoutesByFullPath {
   '/engines/': typeof EnginesIndexRoute
   '/invocations/': typeof InvocationsIndexRoute
   '/kanban/': typeof KanbanIndexRoute
+  '/library/': typeof LibraryIndexRoute
   '/playbooks/': typeof PlaybooksIndexRoute
   '/playfield/': typeof PlayfieldIndexRoute
   '/plugins/': typeof PluginsIndexRoute
@@ -196,6 +209,7 @@ export interface FileRoutesByFullPath {
   '/schedules/': typeof SchedulesIndexRoute
   '/shows/': typeof ShowsIndexRoute
   '/skills/': typeof SkillsIndexRoute
+  '/system/': typeof SystemIndexRoute
   '/teams/': typeof TeamsIndexRoute
   '/admin/health/': typeof AdminHealthIndexRoute
   '/admin/maintenance/': typeof AdminMaintenanceIndexRoute
@@ -218,6 +232,7 @@ export interface FileRoutesByTo {
   '/engines': typeof EnginesIndexRoute
   '/invocations': typeof InvocationsIndexRoute
   '/kanban': typeof KanbanIndexRoute
+  '/library': typeof LibraryIndexRoute
   '/playbooks': typeof PlaybooksIndexRoute
   '/playfield': typeof PlayfieldIndexRoute
   '/plugins': typeof PluginsIndexRoute
@@ -226,6 +241,7 @@ export interface FileRoutesByTo {
   '/schedules': typeof SchedulesIndexRoute
   '/shows': typeof ShowsIndexRoute
   '/skills': typeof SkillsIndexRoute
+  '/system': typeof SystemIndexRoute
   '/teams': typeof TeamsIndexRoute
   '/admin/health': typeof AdminHealthIndexRoute
   '/admin/maintenance': typeof AdminMaintenanceIndexRoute
@@ -249,6 +265,7 @@ export interface FileRoutesById {
   '/engines/': typeof EnginesIndexRoute
   '/invocations/': typeof InvocationsIndexRoute
   '/kanban/': typeof KanbanIndexRoute
+  '/library/': typeof LibraryIndexRoute
   '/playbooks/': typeof PlaybooksIndexRoute
   '/playfield/': typeof PlayfieldIndexRoute
   '/plugins/': typeof PluginsIndexRoute
@@ -257,6 +274,7 @@ export interface FileRoutesById {
   '/schedules/': typeof SchedulesIndexRoute
   '/shows/': typeof ShowsIndexRoute
   '/skills/': typeof SkillsIndexRoute
+  '/system/': typeof SystemIndexRoute
   '/teams/': typeof TeamsIndexRoute
   '/admin/health/': typeof AdminHealthIndexRoute
   '/admin/maintenance/': typeof AdminMaintenanceIndexRoute
@@ -281,6 +299,7 @@ export interface FileRouteTypes {
     | '/engines/'
     | '/invocations/'
     | '/kanban/'
+    | '/library/'
     | '/playbooks/'
     | '/playfield/'
     | '/plugins/'
@@ -289,6 +308,7 @@ export interface FileRouteTypes {
     | '/schedules/'
     | '/shows/'
     | '/skills/'
+    | '/system/'
     | '/teams/'
     | '/admin/health/'
     | '/admin/maintenance/'
@@ -311,6 +331,7 @@ export interface FileRouteTypes {
     | '/engines'
     | '/invocations'
     | '/kanban'
+    | '/library'
     | '/playbooks'
     | '/playfield'
     | '/plugins'
@@ -319,6 +340,7 @@ export interface FileRouteTypes {
     | '/schedules'
     | '/shows'
     | '/skills'
+    | '/system'
     | '/teams'
     | '/admin/health'
     | '/admin/maintenance'
@@ -341,6 +363,7 @@ export interface FileRouteTypes {
     | '/engines/'
     | '/invocations/'
     | '/kanban/'
+    | '/library/'
     | '/playbooks/'
     | '/playfield/'
     | '/plugins/'
@@ -349,6 +372,7 @@ export interface FileRouteTypes {
     | '/schedules/'
     | '/shows/'
     | '/skills/'
+    | '/system/'
     | '/teams/'
     | '/admin/health/'
     | '/admin/maintenance/'
@@ -372,6 +396,7 @@ export interface RootRouteChildren {
   EnginesIndexRoute: typeof EnginesIndexRoute
   InvocationsIndexRoute: typeof InvocationsIndexRoute
   KanbanIndexRoute: typeof KanbanIndexRoute
+  LibraryIndexRoute: typeof LibraryIndexRoute
   PlaybooksIndexRoute: typeof PlaybooksIndexRoute
   PlayfieldIndexRoute: typeof PlayfieldIndexRoute
   PluginsIndexRoute: typeof PluginsIndexRoute
@@ -380,6 +405,7 @@ export interface RootRouteChildren {
   SchedulesIndexRoute: typeof SchedulesIndexRoute
   ShowsIndexRoute: typeof ShowsIndexRoute
   SkillsIndexRoute: typeof SkillsIndexRoute
+  SystemIndexRoute: typeof SystemIndexRoute
   TeamsIndexRoute: typeof TeamsIndexRoute
   AdminHealthIndexRoute: typeof AdminHealthIndexRoute
   AdminMaintenanceIndexRoute: typeof AdminMaintenanceIndexRoute
@@ -408,6 +434,13 @@ declare module '@tanstack/react-router' {
       path: '/teams'
       fullPath: '/teams/'
       preLoaderRoute: typeof TeamsIndexRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/system/': {
+      id: '/system/'
+      path: '/system'
+      fullPath: '/system/'
+      preLoaderRoute: typeof SystemIndexRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/skills/': {
@@ -464,6 +497,13 @@ declare module '@tanstack/react-router' {
       path: '/playbooks'
       fullPath: '/playbooks/'
       preLoaderRoute: typeof PlaybooksIndexRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/library/': {
+      id: '/library/'
+      path: '/library'
+      fullPath: '/library/'
+      preLoaderRoute: typeof LibraryIndexRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/kanban/': {
@@ -604,6 +644,7 @@ const rootRouteChildren: RootRouteChildren = {
   EnginesIndexRoute: EnginesIndexRoute,
   InvocationsIndexRoute: InvocationsIndexRoute,
   KanbanIndexRoute: KanbanIndexRoute,
+  LibraryIndexRoute: LibraryIndexRoute,
   PlaybooksIndexRoute: PlaybooksIndexRoute,
   PlayfieldIndexRoute: PlayfieldIndexRoute,
   PluginsIndexRoute: PluginsIndexRoute,
@@ -612,6 +653,7 @@ const rootRouteChildren: RootRouteChildren = {
   SchedulesIndexRoute: SchedulesIndexRoute,
   ShowsIndexRoute: ShowsIndexRoute,
   SkillsIndexRoute: SkillsIndexRoute,
+  SystemIndexRoute: SystemIndexRoute,
   TeamsIndexRoute: TeamsIndexRoute,
   AdminHealthIndexRoute: AdminHealthIndexRoute,
   AdminMaintenanceIndexRoute: AdminMaintenanceIndexRoute,

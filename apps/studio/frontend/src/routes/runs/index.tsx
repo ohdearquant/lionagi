@@ -1,4 +1,4 @@
-import { createFileRoute, Link, useNavigate, useSearch } from "@tanstack/react-router";
+import { createFileRoute, Link, redirect, useNavigate, useSearch } from "@tanstack/react-router";
 import { Fragment, Suspense, useEffect, useMemo, useState } from "react";
 import Button from "@/components/Button";
 import Duration from "@/components/Duration";
@@ -120,6 +120,9 @@ function coerceStatus(value: unknown): string[] | undefined {
 }
 
 export const Route = createFileRoute("/runs/")({
+  beforeLoad: () => {
+    throw redirect({ to: "/", search: (prev) => ({ ...prev, view: "table" }) });
+  },
   validateSearch: (search: Record<string, unknown>): RunsSearch => ({
     page: typeof search.page === "number" ? search.page : undefined,
     status: coerceStatus(search.status),
