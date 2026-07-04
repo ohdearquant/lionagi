@@ -8,75 +8,82 @@
 
 ![lionagi — governed multi-agent orchestration](assets/lionagi_card.png)
 
-Orchestrate multi-agent AI workflows from the command line or Python.
+**lionagi is a governed multi-agent orchestration framework.** Build agent
+workflows in Python with typed, inspectable state, or run them straight from
+the terminal with the `li` CLI: single agents, parallel fan-outs, and DAG
+flows where an orchestrator plans specialist workers. Built continuously
+since 2023.
 
 [Docs](https://ohdearquant.github.io/lionagi/) |
-[Docs / Architecture (DeepWiki)](https://deepwiki.com/ohdearquant/lionagi) |
+[How lionagi Compares](https://ohdearquant.github.io/lionagi/comparison/) |
 [Discord](https://discord.gg/JDj9ENhUE8) |
 [PyPI](https://pypi.org/project/lionagi/) |
 [Changelog](CHANGELOG.md)
 
-## Lion Studio
-
-Lion Studio is the built-in web UI for managing and operating your agent workflows. Projects, schedules, playbooks, shows, and runs — all in one place.
+## Quick start
 
 ```bash
 pip install lionagi
 
-# Option 1: Docker (recommended — one command, no Node.js needed)
-li studio                       # auto-pulls ghcr.io/ohdearquant/lion-studio
-                                # UI → http://localhost:3000  API → http://localhost:8765
+# one agent
+li agent claude/sonnet "Explain the observer pattern in 3 sentences"
 
-# Option 2: From source (for development)
-git clone https://github.com/ohdearquant/lionagi.git && cd lionagi
-pip install ".[studio]"
-li studio --dev                 # starts backend + frontend with hot reload
+# three workers in parallel, then a synthesis pass
+li o fanout claude/sonnet "Identify code smells in this codebase" -n 3 --with-synthesis
+
+# an orchestrator plans a DAG of specialists; workers run as dependencies resolve
+li o flow claude/sonnet "Audit the auth module for security issues" --cwd .
 ```
 
-## What's New in 0.26
+CLI model aliases (`claude`, `codex`, ...) spawn the provider's own CLI as a
+subprocess, so an existing `claude login` subscription works with no API key.
+API providers take the usual environment keys (`OPENAI_API_KEY`, ...).
+Details in [Providers](#providers).
 
-- **Lion Studio** — web UI for orchestrating agent workflows: projects, scheduled runs, execution DAGs, branch inspection, and multi-agent monitoring.
-- **Project management (ADR-0026)** — per-repo `.lionagi/config.toml` for project identity. Sessions auto-group by project. `--project NAME` flag on all CLI commands.
-- **Scheduled runs (ADR-0027)** — cron, interval, and GitHub-poll triggers with DAG-based conditional chains (`on_fail`/`on_success`). Studio becomes an active operator, not just a monitor.
-- **Agent infrastructure** — `AgentSpec` with `.compose(role)` / `.coding()` presets, built-in permission policies, hooks, and tool registration via `create_agent()`.
-- **Sandbox tool** — `SandboxSession` dataclass with module-level async functions for git worktree isolation: `create_sandbox()` → edit → `sandbox_diff()` → `sandbox_commit()` → `sandbox_merge()` or `sandbox_discard()`.
-
-## Install
-
-```bash
-pip install lionagi
-```
-
-**CLI provider auth** — CLI aliases spawn subprocess tools, not REST API calls:
-
-- `claude`: install [Claude Code CLI](https://docs.anthropic.com/en/docs/claude-code) → `claude login` (subscription) or `export ANTHROPIC_API_KEY=sk-ant-...` (API key)
-- `codex`: requires ChatGPT Plus/Pro → `npm install -g @openai/codex` → `codex login`
-- `deepseek`: `export DEEPSEEK_API_KEY=sk-...` for DeepSeek models
-- `pi`: install [Pi Code CLI](https://pi.ai) for Pi models
-- Python API (`iModel`, `Branch`): `export OPENAI_API_KEY=sk-...` for gpt-4.1-mini default
-
-## First Flow
+The same engine from Python, with structured output as a first-class result:
 
 ```python
 import asyncio
+from pydantic import BaseModel
 from lionagi import Branch
 
+class Assessment(BaseModel):
+    risk: str
+    reasons: list[str]
+
 async def main():
-    b = Branch()          # default: gpt-4.1-mini (requires OPENAI_API_KEY)
-    reply = await b.communicate("Name 3 features of async Python, one sentence each.")
-    print(reply)
+    b = Branch(chat_model="openai/gpt-5.4", system="You are a careful reviewer.")
+    result = await b.operate(
+        instruction="Assess the risk of enabling auto-merge on this repository.",
+        response_format=Assessment,
+    )
+    print(result.risk, result.reasons)
 
 asyncio.run(main())
 ```
 
-```text
-# output:
-1. Coroutines let you write non-blocking I/O without threads.
-2. asyncio.gather runs multiple coroutines concurrently under one event loop.
-3. async generators stream results lazily, pausing between each yield.
-```
+## Why lionagi
 
-For multi-agent orchestration without Python, see [CLI Quick Start](docs/getting-started/first-flow.md).
+- **You own the loop.** Branches, sessions, and flows are ordinary Python
+  objects and CLI commands. There is no framework runtime to surrender
+  control to, and no hidden prompt assembly between you and the model.
+- **Typed, inspectable state.** Every conversation is a collection of typed
+  messages with an explicit ordering. State serializes, persists, and
+  resumes; it is never an opaque blob inside a chain.
+- **CLI agents are first-class endpoints.** Claude Code, Codex, and other
+  coding CLIs sit in the same orchestration graph as API models, so
+  subscription-based agents and API calls compose in one flow.
+- **Durable runs.** Every run persists under `~/.lionagi/runs/`. Resume any
+  branch with `li agent -r`, reattach with `-c`, watch live work with
+  `li monitor`, and schedule recurring runs with `li schedule`.
+- **Governance built in.** Permission policies per tool call, guard hooks
+  that block destructive commands and off-limits paths, and git-worktree
+  sandboxing for speculative edits that never touch your branch until you
+  merge them.
+
+For the architecture-level comparison with LangChain / LangGraph (and a field
+matrix covering LlamaIndex and AG2), see
+[How lionagi Compares](https://ohdearquant.github.io/lionagi/comparison/).
 
 ## Concepts
 
@@ -88,14 +95,13 @@ For multi-agent orchestration without Python, see [CLI Quick Start](docs/getting
 | **team** | Persistent inbox messaging between agents via `li team send/receive`. |
 | **operate** | `branch.operate(instruction=…)` — tool use + structured output + optional streaming. |
 | **persist** | Every run saved to `~/.lionagi/runs/{run_id}/`. Resume with `li agent -r <branch-id>`. |
-| **AgentSpec** | Preset agent configuration (`.compose(role)` / `.coding()`) with permission policies, hooks, and tool registration. |
-| **Sandbox** | Git worktree isolation for safe experimentation — `create_sandbox()` → edit → `sandbox_diff()` → `sandbox_merge()` or `sandbox_discard()`. |
 
-## CLI — `li`
+## The `li` CLI
 
 ```bash
-# Single agent
+# Single agent, resumable
 li agent claude/sonnet "Explain the observer pattern in 3 sentences"
+li agent -r <branch-id> "follow up on your findings"
 
 # Fan-out: N workers in parallel, optional synthesis
 li o fanout claude/sonnet "Identify code smells in this codebase" -n 3 --with-synthesis
@@ -103,57 +109,23 @@ li o fanout claude/sonnet "Identify code smells in this codebase" -n 3 --with-sy
 # DAG flow: orchestrator plans agents with dependency edges
 li o flow claude/sonnet "Audit the auth module for security issues" --cwd .
 
+# Playbook: parametric flow spec at ~/.lionagi/playbooks/audit.playbook.yaml
+li play audit --mode security "the auth service"
+
 # Team messaging: inbox coordination between agents
 li team create "review" && li team send "Start analysis" -t <id> --to analyst
 
-# Playbook: parametric flow spec at ~/.lionagi/playbooks/audit.playbook.yaml
-li play audit --mode security "the auth service"
-li play NAME --help                          # Show playbook parameters and usage
+# Observe and operate
+li monitor --since 1h              # live and recent sessions, flows, plays
+li schedule create ...             # cron / interval / repo-event triggers
+li kill <id>                       # stop a running session or invocation
 
-# Skill: print a CC-compatible reference body to stdout (for agent context injection)
-li skill commit
-
-# Resume any run
-li agent -r <branch-id> "follow up on your findings"
-
-# Time-bounded run: injects a [DEADLINE] preamble so the agent paces its own reasoning
+# Time-bounded run: injects a [DEADLINE] preamble so the agent paces itself
 li agent claude/sonnet --timeout 300 "Audit the auth module and produce a summary"
 ```
 
-Full reference → [docs/cli-reference.md](docs/cli-reference.md) · Installable
-templates → [examples/](examples/)
-
-## CLI Commands
-
-**`li agent`** — Run a single agent session against any CLI-compatible model.
-`li agent [MODEL] PROMPT [-a NAME] [-r BRANCH_ID] [-c] [--yolo] [--bypass] [--fast] [-v] [--theme {light,dark}] [--effort LEVEL] [--cwd DIR] [--timeout SECS] [--invocation ID] [--project NAME]`
-Load a saved profile with `-a`/`--agent`; resume a previous branch by ID with `-r`/`--resume`; reattach to the last branch with `-c`/`--continue-last`.
-
-**`li o flow`** — Run a multi-agent DAG flow where an orchestrator model plans and dispatches specialist agents.
-`li o flow [MODEL] [PROMPT] [-f FILE] [-p PLAYBOOK] [-a AGENT] [--with-synthesis [MODEL]] [--max-concurrent N] [--output {text,json}] [--save DIR] [--team-mode [NAME]] [--team-attach NAME] [--dry-run] [--show-graph] [--background] [--bare] [--workers M1,M2,...] [--max-ops N] [--reactive MODE]` plus shared flags (`--yolo`, `--bypass`, `--fast`, `-v`, `--theme`, `--effort`, `--cwd`, `--timeout`, `--invocation`, `--project`).
-Provide the flow spec via `-f FILE` (YAML/JSON), a named playbook via `-p PLAYBOOK`, or a free-form prompt. `--dry-run` prints the planned DAG without executing; `--background` runs detached and requires `--save`.
-
-**`li o fanout`** — Run the same prompt against multiple worker models in parallel with optional synthesis.
-`li o fanout [MODEL] PROMPT [-a AGENT] [-n N] [--workers M1,M2,...] [--max-concurrent N] [--with-synthesis [MODEL]] [--synthesis-prompt TEXT] [--output {text,json}] [--save DIR] [--team-mode [NAME]]` plus shared flags.
-Set the worker count with `-n`; specify explicit model specs with `--workers`; add a final synthesis pass with `--with-synthesis`.
-
-**`li play`** — Shortcut for `li o flow -p NAME`; runs a named playbook from `~/.lionagi/playbooks/`.
-`li play NAME [flow-flags...]` | `li play list` | `li play check NAME`
-`li play list` enumerates installed playbooks; `li play check NAME` validates artifact contracts before a run; `li play NAME --help` shows playbook-declared parameters. All `li o flow` flags except `-f`/`--file` are forwarded after `NAME`.
-
-**`li monitor` / `li mon`** — Inspect live and recent sessions, invocations, shows, and plays.
-`li monitor [ID] [-w] [--refresh SECS] [--since WINDOW] [-t {session,invocation,show,play}] [-p PROJECT]`
-Pass an ID or unique prefix for a detail view; `-w`/`--watch` enables live refresh at `--refresh` interval; `--since` accepts windows like `30m`, `1h`, `2d`.
-
-**`li kill`** — Stop a running session or invocation.
-`li kill [ID] [--reason TEXT] [--recursive] [--all-stale] [--threshold SECS] [--dry-run] [--grace SECS]`
-Target by entity ID or unique prefix; `--recursive` also kills child entities; `--all-stale` sweeps processes with dead PIDs; `--dry-run` previews without changing state.
-
-**`li studio`** — Launch the Lion Studio web UI (backend API + React frontend).
-`li studio [start] [--port PORT] [--host HOST] [--frontend-port PORT] [--no-frontend] [--dev] [--no-docker]`
-Defaults to Docker (`ghcr.io/ohdearquant/lion-studio`; auto-pulled); `--no-docker` uses a local install; `--no-frontend` starts the API server only; `--dev` enables hot-reload frontend for development.
-
-![Lion Studio — run detail with execution DAG, branches, and multi-agent orchestration](assets/studio.png)
+Every command and flag: [CLI Reference](docs/cli-reference.md). Installable
+playbook and skill templates: [examples/](examples/).
 
 ## Python API
 
@@ -191,16 +163,44 @@ result = await branch.ReAct(
 
 Full reference → [docs/api/](docs/api/)
 
+## Lion Studio
+
+Lion Studio is the built-in web UI for operating your agent workflows:
+projects, schedules, playbooks, execution DAGs, and run inspection in one
+place.
+
+```bash
+li studio          # Docker (recommended): auto-pulls ghcr.io/ohdearquant/lion-studio
+                   # UI → http://localhost:3000   API → http://localhost:8765
+li studio --dev    # from a source checkout: backend + frontend with hot reload
+```
+
+![Lion Studio — run detail with execution DAG, branches, and multi-agent orchestration](assets/studio.png)
+
+## Providers
+
+CLI aliases spawn subprocess tools, not REST API calls:
+
+- `claude`: install [Claude Code CLI](https://docs.anthropic.com/en/docs/claude-code) → `claude login` (subscription) or `export ANTHROPIC_API_KEY=sk-ant-...`
+- `codex`: requires ChatGPT Plus/Pro → `npm install -g @openai/codex` → `codex login`
+- `deepseek`: `export DEEPSEEK_API_KEY=sk-...`
+- `pi`: install [Pi Code CLI](https://pi.ai)
+- Python API (`iModel`, `Branch`): `export OPENAI_API_KEY=sk-...` for the default model
+
+API-endpoint providers (OpenAI, Anthropic, Gemini, Ollama, NVIDIA NIM,
+Perplexity, Groq, OpenRouter): [Providers reference](docs/reference/providers.md).
+
 ## Docs
 
 | | |
 |--|--|
 | [Getting Started](docs/getting-started/first-flow.md) | Install, first flow, API key setup |
 | [Concepts](docs/concepts.md) | Branch, Session, flow, team, operate, persist |
+| [How lionagi Compares](https://ohdearquant.github.io/lionagi/comparison/) | Architecture-level comparison with LangChain / LangGraph |
 | [CLI Reference](docs/cli-reference.md) | `li agent`, `li o fanout`, `li o flow`, `li team` — all flags |
 | [Cookbook](docs/cookbook/) | 5 runnable scenarios: codebase audit, research synthesis, multi-model pipeline, team coordination, resumable background run |
 | [API Reference](docs/api/) | `branch.operate`, `branch.ReAct`, `iModel`, `Session` |
-| [Migration 0.22.5 → 0.22.6](docs/migration/0.22.5-to-0.22.6.md) | Breaking changes: `branch.instruct` removed, run paths changed |
+| [Architecture (DeepWiki)](https://deepwiki.com/ohdearquant/lionagi) | Auto-generated architecture walkthrough |
 | [Contributing](docs/contributing.md) | Dev setup, PR workflow |
 
 ## Optional Extras
@@ -217,17 +217,15 @@ uv add "lionagi[all]"       # Everything
 
 ## Claude Code Marketplace
 
-The lionagi marketplace provides installable Claude Code plugins for the lionagi agent runtime. Each plugin adds a focused set of skills and agents for a specific workflow: structured show runs, memory management, playbook authoring, developer tooling, and multi-agent orchestration.
-
-**Install:**
+Installable Claude Code plugins for the lionagi agent runtime — structured
+show runs, memory management, playbook authoring, developer tooling, and
+multi-agent orchestration:
 
 ```bash
 claude /plugin marketplace add ohdearquant/lionagi
 ```
 
-**Prerequisites:** lionagi (`pip install lionagi` or `uv pip install lionagi`) and [Claude Code](https://docs.anthropic.com/en/docs/claude-code) installed.
-
-See [marketplace/README.md](marketplace/README.md) for the full plugin list and per-plugin install instructions.
+Full plugin list: [marketplace/README.md](marketplace/README.md).
 
 ## Community
 
