@@ -506,7 +506,7 @@ def test_admin_prune_all_phantom_transitions_not_deletes(tmp_path, monkeypatch):
 
     from lionagi.studio.app import app
 
-    client = TestClient(app)
+    client = TestClient(app, base_url="http://127.0.0.1:8765")
     r = client.post("/api/admin/prune", json={"all_phantom": True})
     assert r.status_code == 200
     assert r.json()["pruned"] == 1
@@ -538,7 +538,7 @@ def test_stats_includes_phantom_count(tmp_path, monkeypatch):
 
     from lionagi.studio.app import app
 
-    client = TestClient(app)
+    client = TestClient(app, base_url="http://127.0.0.1:8765")
     r = client.get("/api/stats")
     assert r.status_code == 200
     body = r.json()

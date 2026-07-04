@@ -190,7 +190,7 @@ def patched_app(tmp_path: Path, monkeypatch):
     from lionagi.studio.app import app
 
     transport = httpx.ASGITransport(app=app)
-    client = httpx.AsyncClient(transport=transport, base_url="http://test")
+    client = httpx.AsyncClient(transport=transport, base_url="http://127.0.0.1:8765")
     return app, db_path, client
 
 
@@ -323,7 +323,7 @@ def test_list_endpoint_bearer_auth(tmp_path: Path, monkeypatch):
 
     from lionagi.studio.app import app
 
-    client = TestClient(app, raise_server_exceptions=False)
+    client = TestClient(app, raise_server_exceptions=False, base_url="http://127.0.0.1:8765")
 
     resp = client.get("/api/engine-runs/")
     assert resp.status_code == 401

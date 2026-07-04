@@ -48,7 +48,7 @@ def patched_app(shows_root: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatc
 
     from lionagi.studio.app import app
 
-    return TestClient(app)
+    return TestClient(app, base_url="http://127.0.0.1:8765")
 
 
 @pytest.fixture()
@@ -217,7 +217,7 @@ def sqlite_patched_app(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
 
     from lionagi.studio.app import app
 
-    return TestClient(app), topic
+    return TestClient(app, base_url="http://127.0.0.1:8765"), topic
 
 
 def test_show_detail_status_source_is_sqlite_with_db(sqlite_patched_app):
@@ -288,7 +288,7 @@ def docker_patched_app(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
 
     from lionagi.studio.app import app
 
-    return TestClient(app), topic
+    return TestClient(app, base_url="http://127.0.0.1:8765"), topic
 
 
 def test_get_show_returns_200_when_dir_absent_but_db_has_row(docker_patched_app):

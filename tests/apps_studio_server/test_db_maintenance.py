@@ -143,7 +143,7 @@ def test_stats_endpoint_exposes_checkpoint_and_size_fields(tmp_path, monkeypatch
 
     from lionagi.studio.app import app
 
-    client = TestClient(app)
+    client = TestClient(app, base_url="http://127.0.0.1:8765")
     r = client.get("/api/stats")
     assert r.status_code == 200
     db = r.json()["db"]
@@ -295,7 +295,7 @@ def test_prune_old_data_endpoint(tmp_path, monkeypatch):
 
     from lionagi.studio.app import app
 
-    client = TestClient(app)
+    client = TestClient(app, base_url="http://127.0.0.1:8765")
     r = client.post("/api/admin/prune-old-data", json={"keep_days": 30})
     assert r.status_code == 200
     data = r.json()

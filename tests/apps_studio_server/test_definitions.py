@@ -161,7 +161,7 @@ def _make_patched_client(tmp_path, monkeypatch):
 
     from lionagi.studio.app import app
 
-    return TestClient(app)
+    return TestClient(app, base_url="http://127.0.0.1:8765")
 
 
 @pytest.mark.parametrize(
@@ -435,7 +435,7 @@ def test_save_definition_db_failure_returns_500_from_router(tmp_path, monkeypatc
 
     from lionagi.studio.app import app
 
-    client = TestClient(app, raise_server_exceptions=False)
+    client = TestClient(app, raise_server_exceptions=False, base_url="http://127.0.0.1:8765")
     r = client.post(
         "/api/definitions/agent/db-fail-agent",
         json={"content": "# content"},

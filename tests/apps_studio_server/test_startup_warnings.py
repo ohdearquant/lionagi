@@ -99,7 +99,7 @@ def _neutralize_heavy_lifespan(monkeypatch: pytest.MonkeyPatch) -> None:
 def _lifespan_client(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> Generator[TestClient]:
     """TestClient context manager that runs the lifespan (so startup warnings fire).
 
-    Bare TestClient(app) construction does NOT trigger the lifespan.
+    Bare TestClient(app, base_url="http://127.0.0.1:8765") construction does NOT trigger the lifespan.
     """
     from importlib import reload
 
@@ -112,7 +112,9 @@ def _lifespan_client(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> Generat
 
     reload(app_mod)
     _neutralize_heavy_lifespan(monkeypatch)
-    with TestClient(app_mod.app, raise_server_exceptions=False) as client:
+    with TestClient(
+        app_mod.app, raise_server_exceptions=False, base_url="http://127.0.0.1:8765"
+    ) as client:
         yield client
 
 
@@ -128,7 +130,7 @@ def _make_bare_client(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> TestCl
     monkeypatch.setattr(stats_mod, "_DB", str(fake_db))
 
     reload(app_mod)
-    return TestClient(app_mod.app, raise_server_exceptions=False)
+    return TestClient(app_mod.app, raise_server_exceptions=False, base_url="http://127.0.0.1:8765")
 
 
 # ---------------------------------------------------------------------------

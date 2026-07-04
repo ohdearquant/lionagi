@@ -58,7 +58,7 @@ def _make_client(tmp_path, monkeypatch, db_path: Path) -> TestClient:
 
     from lionagi.studio.app import app
 
-    return TestClient(app)
+    return TestClient(app, base_url="http://127.0.0.1:8765")
 
 
 def test_admin_doctor_reports_missing_artifacts_phantom(tmp_path, monkeypatch):

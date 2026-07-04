@@ -242,7 +242,7 @@ class TestUpdatePlaybookValidation:
                 status_code=route.status_code,
                 tags=list(route.tags),
             )
-        client = TestClient(app, raise_server_exceptions=False)
+        client = TestClient(app, raise_server_exceptions=False, base_url="http://127.0.0.1:8765")
 
         resp = client.put(
             "/playbooks/my-pb3",
@@ -315,7 +315,7 @@ class TestUpdatePlaybookSpecFieldValidation:
                 status_code=route.status_code,
                 tags=list(route.tags),
             )
-        client = TestClient(app, raise_server_exceptions=False)
+        client = TestClient(app, raise_server_exceptions=False, base_url="http://127.0.0.1:8765")
 
         resp = client.put("/playbooks/pb-workers2", json={"workers": 999})
         assert resp.status_code == 422

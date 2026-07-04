@@ -29,7 +29,7 @@ def _make_client(monkeypatch, fake_db: Path | None = None) -> TestClient:
         monkeypatch.setattr(stats_mod, "_DB", str(fake_db))
 
     reload(app_mod)
-    return TestClient(app_mod.app, raise_server_exceptions=False)
+    return TestClient(app_mod.app, raise_server_exceptions=False, base_url="http://127.0.0.1:8765")
 
 
 def _stub_db_and_spawn(monkeypatch):

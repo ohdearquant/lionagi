@@ -223,6 +223,66 @@ async def require_studio_bearer_token(request: Request, call_next):
     return await call_next(request)
 
 
+@app.middleware("http")
+async def require_json_content_type(request: Request, call_next):
+    """Reject state-changing /api requests that don't declare a JSON body.
+
+    FastAPI parses request bodies as JSON regardless of the declared
+    Content-Type, so a cross-site "simple request" (text/plain, no CORS
+    preflight) carrying a JSON-shaped body would otherwise reach route
+    handlers unchecked -- the classic form-based JSON CSRF vector. The SPA
+    always sends `application/json` on requests that carry a body (see
+    apps/studio/frontend/src/lib/api.ts `fetchJson`) and sends no body at all
+    for the handful of routes that need none, so this only rejects traffic
+    the frontend itself never produces.
+    """
+    if request.method in ("GET", "HEAD", "OPTIONS"):
+        return await call_next(request)
+    path = request.url.path
+    if not (path == "/api" or path.startswith("/api/")):
+        return await call_next(request)
+    content_length = request.headers.get("content-length")
+    has_body = content_length not in (None, "0")
+    if has_body:
+        content_type = request.headers.get("content-type", "")
+        media_type = content_type.split(";", 1)[0].strip().lower()
+        if media_type != "application/json":
+            return JSONResponse(
+                {"detail": "Content-Type must be application/json"},
+                status_code=415,
+            )
+    return await call_next(request)
+
+
+@app.middleware("http")
+async def validate_host_header(request: Request, call_next):
+    """Reject requests whose Host header doesn't match an expected value.
+
+    Without this check, a malicious web page could point a browser at
+    http://127.0.0.1:<port> with an attacker-controlled Host header (DNS
+    rebinding) and, once past CORS/auth, reach the daemon as if it were a
+    same-origin request. The browser sets Host to the actual connection
+    target it resolved, so validating it here catches rebound requests that
+    same-origin checks alone don't cover. OPTIONS preflight is exempted the
+    same way the bearer-token middleware exempts it: CORSMiddleware (mounted
+    outermost) answers real preflight before this ever runs; this only
+    matters for OPTIONS requests made without an Origin header.
+    """
+    if request.method == "OPTIONS":
+        return await call_next(request)
+    hostname = (request.url.hostname or "").lower()
+    bind_host = os.getenv("LIONAGI_STUDIO_HOST", HOST)
+    allowed_hosts = {"localhost", "127.0.0.1", "::1"}
+    if bind_host not in ("127.0.0.1", "localhost", "::1", "0.0.0.0", ""):  # noqa: S104
+        allowed_hosts.add(bind_host.lower())
+    if hostname not in allowed_hosts:
+        return JSONResponse(
+            {"detail": f"Invalid Host header: {request.headers.get('host', '')!r}"},
+            status_code=400,
+        )
+    return await call_next(request)
+
+
 # Mount routes registered via the @studio_route decorator. Area modules listed
 # in _STUDIO_ROUTE_MODULES are imported here so their @studio_route decorators
 # fire and populate _ROUTES before the loop below adds each route to the app.
@@ -307,9 +367,16 @@ if _dist is not None:
 # CORS middleware is registered LAST — after every router and the one direct
 # @app.get endpoint above and the optional SPA mount — so the method allowlist
 # is derived from the complete route table (see _collect_cors_methods).  Added
-# last, it sits outermost in the middleware stack, the correct position for
-# CORS: preflight is answered before the bearer-token gate (which already lets
-# OPTIONS through).
+# last, it sits outermost in the middleware stack: Starlette wraps middlewares
+# LIFO (the most-recently-added is the first to see an incoming request), so
+# registration order below top-to-bottom (require_studio_bearer_token ->
+# require_json_content_type -> validate_host_header -> CORSMiddleware) is the
+# REVERSE of execution order for an incoming request: CORS runs first (so
+# preflight is answered before anything else), then Host validation, then the
+# Content-Type/CSRF check, then the bearer-token gate, then the route. All
+# three custom middlewares explicitly let OPTIONS through so real preflight
+# (handled by CORSMiddleware, which never even calls into them for a proper
+# preflight request) and non-browser OPTIONS probes both keep working.
 app.add_middleware(
     CORSMiddleware,
     allow_origins=CORS_ORIGINS,

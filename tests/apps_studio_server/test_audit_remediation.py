@@ -29,7 +29,7 @@ def _make_client(monkeypatch, fake_db: Path | None = None) -> TestClient:
         monkeypatch.setattr(stats_mod, "_DB", str(fake_db))
 
     reload(app_mod)
-    return TestClient(app_mod.app, raise_server_exceptions=False)
+    return TestClient(app_mod.app, raise_server_exceptions=False, base_url="http://127.0.0.1:8765")
 
 
 # ---------------------------------------------------------------------------
@@ -555,7 +555,7 @@ class TestSchedulePatchRouterValidation:
         from lionagi.studio.app import app
 
         monkeypatch.setattr(sched_svc, "update_schedule", mock_fn)
-        return TestClient(app, raise_server_exceptions=False)
+        return TestClient(app, raise_server_exceptions=False, base_url="http://127.0.0.1:8765")
 
     def test_patch_flow_yaml_without_yaml_returns_400(self, monkeypatch):
         """PATCH action_kind=flow_yaml with no yaml body → HTTP 400."""
@@ -621,7 +621,7 @@ class TestScheduleArgvInjectionRouterValidation:
         from lionagi.studio.app import app
 
         monkeypatch.setattr(sched_svc, "update_schedule", mock_fn)
-        return TestClient(app, raise_server_exceptions=False)
+        return TestClient(app, raise_server_exceptions=False, base_url="http://127.0.0.1:8765")
 
     @staticmethod
     def _client_post(monkeypatch, mock_fn):
@@ -632,7 +632,7 @@ class TestScheduleArgvInjectionRouterValidation:
         from lionagi.studio.app import app
 
         monkeypatch.setattr(sched_svc, "create_schedule", mock_fn)
-        return TestClient(app, raise_server_exceptions=False)
+        return TestClient(app, raise_server_exceptions=False, base_url="http://127.0.0.1:8765")
 
     # -- PATCH action_model injection --
 
@@ -762,7 +762,7 @@ def _real_svc_client(monkeypatch, tmp_path: Path) -> TestClient:
     db_file = tmp_path / "test_state.db"
     monkeypatch.setattr(state_db_mod, "DEFAULT_DB_PATH", db_file)
     monkeypatch.setattr(sched_svc_mod, "DEFAULT_DB_PATH", db_file)
-    return TestClient(app, raise_server_exceptions=False)
+    return TestClient(app, raise_server_exceptions=False, base_url="http://127.0.0.1:8765")
 
 
 class TestScheduleArgvInjectionRealService:
@@ -1194,7 +1194,7 @@ class TestGithubRepoRealServiceValidation:
         # 2. Use the real service to create the schema (create a throw-away schedule).
         from fastapi.testclient import TestClient
 
-        client = TestClient(app, raise_server_exceptions=False)
+        client = TestClient(app, raise_server_exceptions=False, base_url="http://127.0.0.1:8765")
         setup_r = client.post(
             "/api/schedules/",
             json={
