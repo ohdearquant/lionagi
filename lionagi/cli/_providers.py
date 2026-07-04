@@ -265,6 +265,19 @@ def add_common_cli_args(parser: argparse.ArgumentParser) -> None:
             "from .lionagi/config.toml or git remote."
         ),
     )
+    parser.add_argument(
+        "--resume-on-timeout",
+        dest="resume_on_timeout",
+        action="store_true",
+        default=False,
+        help=(
+            "If the run terminates on --timeout, automatically fire one "
+            "resume of the same session with 'continue and conclude the "
+            "task' and report the combined result. Bounded to a single "
+            "auto-resume; a timeout on the resumed leg terminates normally. "
+            "Same effect as an agent profile's 'resume_on_timeout: once'."
+        ),
+    )
 
 
 # ── Agent profile loading (absorbed from _agents.py) ─────────────────────────
@@ -308,6 +321,10 @@ class AgentProfile:
     fast_mode: bool = False
     lion_system: bool = True
     artifact_defaults: dict | None = None
+    timeout: int | None = None
+    """Default --timeout (seconds) used when the CLI flag is not given."""
+    resume_on_timeout: bool = False
+    """Auto-resume-once on a timeout terminal status (profile 'resume_on_timeout: once')."""
     extra: dict = field(default_factory=dict)
 
 
@@ -372,6 +389,40 @@ def load_agent_profile(name: str) -> AgentProfile:
     raise FileNotFoundError(msg)
 
 
+def _parse_profile_timeout(name: str, raw: Any) -> int | None:
+    """Validate the profile 'timeout' field; warn and ignore garbage rather than raising.
+
+    Only a genuine positive int is accepted — YAML booleans (True/False are
+    ints in Python) and floats (which int() would silently truncate) are
+    rejected rather than coerced.
+    """
+    if raw is None:
+        return None
+    from ._logging import warn
+
+    if isinstance(raw, bool) or not isinstance(raw, int):
+        warn(f"agent profile {name!r}: ignoring invalid timeout {raw!r} (must be a positive int)")
+        return None
+    if raw <= 0:
+        warn(f"agent profile {name!r}: ignoring non-positive timeout {raw!r}")
+        return None
+    return raw
+
+
+def _parse_profile_resume_on_timeout(name: str, raw: Any) -> bool:
+    """Validate the profile 'resume_on_timeout' field; only the literal string 'once' opts in."""
+    if raw is None or raw is False:
+        return False
+    if isinstance(raw, str) and raw.strip().lower() == "once":
+        return True
+    from ._logging import warn
+
+    warn(
+        f"agent profile {name!r}: ignoring unrecognized resume_on_timeout {raw!r} (expected 'once')"
+    )
+    return False
+
+
 def _parse_profile(name: str, text: str) -> AgentProfile:
     frontmatter, body = _parse_frontmatter(text)
 
@@ -394,6 +445,10 @@ def _parse_profile(name: str, text: str) -> AgentProfile:
         fast_mode=bool(frontmatter.get("fast_mode", False)),
         lion_system=lion_system,
         artifact_defaults=frontmatter.get("artifact_defaults"),
+        timeout=_parse_profile_timeout(name, frontmatter.get("timeout")),
+        resume_on_timeout=_parse_profile_resume_on_timeout(
+            name, frontmatter.get("resume_on_timeout")
+        ),
         extra={
             k: v
             for k, v in frontmatter.items()
@@ -405,6 +460,8 @@ def _parse_profile(name: str, text: str) -> AgentProfile:
                 "fast_mode",
                 "lion_system",
                 "artifact_defaults",
+                "timeout",
+                "resume_on_timeout",
             )
         },
     )
