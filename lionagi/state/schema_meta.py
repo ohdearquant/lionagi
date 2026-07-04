@@ -1,7 +1,7 @@
 # Copyright (c) 2023-2026, HaiyangLi <quantocean.li at gmail dot com>
 # SPDX-License-Identifier: Apache-2.0
 
-"""SQLAlchemy MetaData for all 22 StateDB tables — single source of truth for schema DDL."""
+"""SQLAlchemy MetaData for all 23 StateDB tables — single source of truth for schema DDL."""
 
 from __future__ import annotations
 
@@ -845,4 +845,55 @@ Index(
     session_controls.c.applied_at,
     sqlite_where=text("applied_at IS NULL"),
     postgresql_where=text("applied_at IS NULL"),
+)
+
+# ── dispatch_outbox (ADR-0092: durable dispatch outbox) ─────────────────────
+# Producer-driven at-least-once outbound delivery. A row survives independent
+# of any consumer's liveness; the scheduler tick re-attempts the configured
+# notify template until it succeeds, backs off, or exhausts max_attempts.
+
+dispatch_outbox = Table(
+    "dispatch_outbox",
+    metadata,
+    Column("id", Text, primary_key=True),
+    Column("kind", Text, nullable=False),
+    Column("deliver_to", Text, nullable=False),
+    Column("payload", JSON, nullable=False),
+    Column("dedup_key", Text),
+    Column(
+        "status",
+        Text,
+        CheckConstraint(
+            "status IN ('pending','delivering','delivered','acked','dead_letter','expired')",
+            name="ck_dispatch_outbox_status",
+        ),
+        nullable=False,
+        server_default="pending",
+    ),
+    Column("attempt", Integer, nullable=False, server_default="0"),
+    Column("max_attempts", Integer, nullable=False, server_default="8"),
+    Column("next_attempt_at", Float, nullable=False),
+    Column("ack_required", Integer, nullable=False, server_default="0"),
+    Column("ack_token", Text),
+    Column("session_id", Text, ForeignKey("sessions.id")),
+    Column("schedule_run_id", Text, ForeignKey("schedule_runs.id")),
+    Column("last_error", Text),
+    Column("created_at", Float, nullable=False),
+    Column("expires_at", Float),
+    Column("updated_at", Float),
+)
+
+Index(
+    "idx_dispatch_outbox_dedup",
+    dispatch_outbox.c.dedup_key,
+    unique=True,
+    sqlite_where=text("dedup_key IS NOT NULL"),
+    postgresql_where=text("dedup_key IS NOT NULL"),
+)
+Index(
+    "idx_dispatch_outbox_due",
+    dispatch_outbox.c.status,
+    dispatch_outbox.c.next_attempt_at,
+    sqlite_where=text("status IN ('pending', 'delivering')"),
+    postgresql_where=text("status IN ('pending', 'delivering')"),
 )

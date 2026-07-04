@@ -115,6 +115,19 @@ class ScheduleReasons:
     SKIPPED_MISSED_FIRE = "schedule.skipped.missed_fire"
 
 
+class DispatchReasons:
+    """ADR-0092 dispatch_outbox transition outcomes (entity_type='dispatch')."""
+
+    PENDING_ENQUEUED = "dispatch.pending.enqueued"
+    DELIVERING_ATTEMPT = "dispatch.delivering.attempt"
+    DELIVERED_TRANSPORT_OK = "dispatch.delivered.transport_ok"
+    PENDING_RETRY_BACKOFF = "dispatch.pending.retry_backoff"
+    DEAD_LETTER_MAX_ATTEMPTS = "dispatch.dead_letter.max_attempts"
+    DEAD_LETTER_ACK_TIMEOUT = "dispatch.dead_letter.ack_timeout"
+    EXPIRED_DEADLINE = "dispatch.expired.deadline"
+    ACKED_CONSUMER = "dispatch.acked.consumer"
+
+
 # ── Validator ────────────────────────────────────────────────────────
 
 
@@ -136,6 +149,7 @@ VALID_REASON_CODES: Final[frozenset[str]] = _collect(
     PlayReasons,
     ShowReasons,
     ScheduleReasons,
+    DispatchReasons,
 ) | {LEGACY_IMPORTED}
 
 

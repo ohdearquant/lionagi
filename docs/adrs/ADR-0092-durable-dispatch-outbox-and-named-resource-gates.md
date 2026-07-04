@@ -257,8 +257,10 @@ collapse the two.
 3. The row is durable in `state.db`. It exists independent of any consumer's
    liveness. Nothing to drop.
 4. The delivery loop scans due pending rows each tick and fires the notify
-   template per row: transition `pending→delivering`, `attempt++`,
-   `next_attempt_at = now + backoff(attempt)`.
+   template per row: transition `pending→delivering` as an exclusive claim —
+   `attempt++` and `next_attempt_at = now + claim_lease` in the same guarded
+   UPDATE. Backoff is written only when the row returns to `pending`
+   (transport retry or ack-required redelivery).
 5. Consumer dead right now: the transport still lands the message in the seat's
    durable inbox (the inbox waits for the seat regardless of process liveness).
    On transport success, `delivering→delivered`. If the transport itself failed,
@@ -268,9 +270,12 @@ collapse the two.
    plus producer retry.
 7. Optional ack tier: with `ack_required=1` the seat calls
    `li dispatch ack <token>` (direct-DB write) and the producer stops
-   re-delivering. Un-acked past `expires_at` → `expired`; `max_attempts`
-   transport failures → `dead_letter`, surfaced to the attention queue and
-   `li monitor` for the operator.
+   re-delivering. `max_attempts` bounds every send while awaiting ack:
+   transport-failure exhaustion → `dead_letter` (max-attempts reason),
+   successful-but-unacked exhaustion → `dead_letter` (ack-timeout reason).
+   Un-acked past `expires_at` → `expired` as an additional, optional bound.
+   Dead-lettered rows surface to the attention queue and `li monitor` for
+   the operator.
 
 No step depends on the consumer being alive at fire time.
 
@@ -339,6 +344,42 @@ Must NOT contain (v1):
    auto-broken.
 3. **Backoff shape**: `min(30 * 2**attempt, 1800)` seconds, confirmed as
    proposed. No jitter: immaterial at tens of dispatches per hour.
+
+## Post-signing erratum (2026-07-04, slice 1 review round 2)
+
+Slice-1 implementation review (PR #1705) surfaced two places where this ADR's
+text under-specified the guarantee it was actually describing. Both are
+tightened here rather than left to contradict the shipped code.
+
+1. **Ack tier boundedness is `max_attempts`-first, `expires_at` additional.**
+   §"Ack tier" above says re-delivery continues "until the consumer presents
+   the `ack_token` ... or the row expires," which reads as unbounded when no
+   `expires_at` is set. That is not the intended contract: `max_attempts`
+   bounds **every** send while awaiting ack, not only transport failures. A
+   dispatch with `ack_required=1` that keeps transporting successfully but is
+   never acked still exhausts at `max_attempts` sends and moves to
+   `dead_letter` with the distinct reason `dispatch.dead_letter.ack_timeout`
+   (as opposed to `dispatch.dead_letter.max_attempts` for the
+   transport-failure exhaustion path). `expires_at` remains a valid,
+   *additional* bound on top of `max_attempts` — it is honored when set, but
+   is not required for an `ack_required=1` row to terminate. This was picked
+   over the alternative of requiring a finite `expires_at` at enqueue time
+   for `ack_required=1` rows: a mandatory expiry couples an orthogonal
+   deadline concept to the ack tier for no correctness gain, since
+   `max_attempts` already bounds it.
+2. **A `delivering` recovery claim must be exclusive, not a same-state
+   match.** The compare-and-swap description in §1 ("guarded compare-and-swap
+   fallback... `UPDATE ... SET status=:to WHERE id=:id AND status=:from`")
+   is CAS-correct for state changes but under-specifies the recovery case:
+   the due-scan intentionally re-selects `delivering` rows for crash
+   recovery, and a `delivering -> delivering` claim is a same-state match
+   that the status guard alone lets two overlapping scans both win. The
+   guarded fallback's claim step additionally guards on the row's pre-claim
+   `attempt` value and atomically bumps `attempt` (plus advances
+   `next_attempt_at` by a short claim lease) as part of the same guarded
+   UPDATE, so only one overlapping claimant's guard still matches at write
+   time. A later scan only revisits a `delivering` row once its claim lease
+   has lapsed.
 
 ## Verify by
 

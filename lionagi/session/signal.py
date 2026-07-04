@@ -17,6 +17,7 @@ Payload contract (schema_version=1):
   NodePaused      — op_id, name
   GateDenied      — data: any
   MessageAdded    — data: RoledMessage (stored as message_ref in payload)
+  DispatchSignal  — dispatch_id, kind, deliver_to, attempt, ack_token, body (ADR-0092)
 
 Version policy: schema_version is bumped on any breaking field removal or rename.
 Adding nullable fields is non-breaking and does not bump the version.
@@ -47,6 +48,7 @@ __all__ = (
     "NodePaused",
     "GateDenied",
     "MessageAdded",
+    "DispatchSignal",
     "NodeLifecycleState",
     "lane_for",
     "build_run_end",
@@ -134,6 +136,22 @@ class GateDenied(Signal):
 
 class MessageAdded(Signal):
     """A message was added to a branch. data is the RoledMessage."""
+
+
+class DispatchSignal(Signal):
+    """Outbound dispatch payload contract (ADR-0092). schema_version rides Signal.
+
+    The notify template substitutes ``to_dict(mode="json")`` of this signal as
+    the payload: one stable envelope shared by every dispatch kind, so the
+    transport template never churns per-kind.
+    """
+
+    dispatch_id: str = ""
+    kind: str = ""  # e.g. "revival_ping" | "terminal_notify"
+    deliver_to: str = ""
+    attempt: int = 0
+    ack_token: str | None = None
+    body: dict = {}
 
 
 # -- Extended node lifecycle (ADR-0083) ---------------------------------------

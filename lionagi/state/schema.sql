@@ -675,3 +675,35 @@ CREATE TABLE IF NOT EXISTS session_controls (
 
 CREATE INDEX IF NOT EXISTS idx_session_controls_pending
   ON session_controls(session_id, applied_at) WHERE applied_at IS NULL;
+
+-- ── Dispatch outbox (ADR-0092: durable dispatch outbox) ────────────────────────
+-- Producer-driven at-least-once outbound delivery. A row survives independent
+-- of any consumer's liveness; the scheduler tick re-attempts the configured
+-- notify template until it succeeds, backs off, or exhausts max_attempts.
+
+CREATE TABLE IF NOT EXISTS dispatch_outbox (
+  id                TEXT PRIMARY KEY,
+  kind              TEXT NOT NULL,              -- 'revival_ping' | 'terminal_notify' | ...
+  deliver_to        TEXT NOT NULL,              -- opaque routing key for the transport template
+  payload           JSON NOT NULL,              -- DispatchSignal contract
+  dedup_key         TEXT,                       -- cross-submission idempotency
+  status            TEXT NOT NULL DEFAULT 'pending'
+                    CHECK(status IN ('pending', 'delivering', 'delivered', 'acked', 'dead_letter', 'expired')),
+  attempt           INTEGER NOT NULL DEFAULT 0,
+  max_attempts      INTEGER NOT NULL DEFAULT 8,
+  next_attempt_at   REAL NOT NULL,              -- backoff schedule; drives the tick scan
+  ack_required      INTEGER NOT NULL DEFAULT 0, -- opt-in retry-until-ack tier
+  ack_token         TEXT,                       -- consumer presents this to `li dispatch ack`
+  session_id        TEXT REFERENCES sessions(id),        -- denormalized, nullable
+  schedule_run_id   TEXT REFERENCES schedule_runs(id),   -- denormalized, nullable
+  last_error        TEXT,
+  created_at        REAL NOT NULL,
+  expires_at        REAL,
+  updated_at        REAL
+);
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_dispatch_outbox_dedup
+  ON dispatch_outbox(dedup_key) WHERE dedup_key IS NOT NULL;
+CREATE INDEX IF NOT EXISTS idx_dispatch_outbox_due
+  ON dispatch_outbox(status, next_attempt_at)
+  WHERE status IN ('pending', 'delivering');

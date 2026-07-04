@@ -1,0 +1,125 @@
+# Copyright (c) 2023-2026, HaiyangLi <quantocean.li at gmail dot com>
+# SPDX-License-Identifier: Apache-2.0
+"""Tests for `li dispatch` — direct-DB read/ack, no daemon required (ADR-0092)."""
+
+from __future__ import annotations
+
+from pathlib import Path
+
+import pytest
+
+pytest.importorskip("aiosqlite", reason="aiosqlite not installed")
+
+from lionagi.cli.main import main
+
+
+def _redirect_state_db(monkeypatch, tmp_path: Path) -> Path:
+    db_path = tmp_path / "state.db"
+    monkeypatch.setattr("lionagi.state.db.DEFAULT_DB_PATH", db_path)
+    return db_path
+
+
+async def _seed_dispatch(db_path: Path, **kwargs) -> str:
+    from lionagi.dispatch import enqueue_dispatch
+    from lionagi.state.db import StateDB
+
+    async with StateDB(db_path) as db:
+        return await enqueue_dispatch(db, **kwargs)
+
+
+def test_dispatch_ls_empty(monkeypatch, tmp_path, capsys):
+    _redirect_state_db(monkeypatch, tmp_path)
+    rc = main(["dispatch", "ls"])
+    captured = capsys.readouterr()
+    assert rc == 0
+    assert "no dispatches" in captured.out
+
+
+def test_dispatch_ls_lists_rows(monkeypatch, tmp_path, capsys):
+    db_path = _redirect_state_db(monkeypatch, tmp_path)
+    import asyncio
+
+    asyncio.run(_seed_dispatch(db_path, kind="terminal_notify", deliver_to="seat-1"))
+
+    rc = main(["dispatch", "ls"])
+    captured = capsys.readouterr()
+    assert rc == 0
+    assert "terminal_notify" in captured.out
+    assert "seat-1" in captured.out
+
+
+def test_dispatch_show_prints_payload(monkeypatch, tmp_path, capsys):
+    db_path = _redirect_state_db(monkeypatch, tmp_path)
+    import asyncio
+
+    dispatch_id = asyncio.run(
+        _seed_dispatch(db_path, kind="terminal_notify", deliver_to="seat-1", body={"a": 1})
+    )
+
+    rc = main(["dispatch", "show", dispatch_id])
+    captured = capsys.readouterr()
+    assert rc == 0
+    assert dispatch_id in captured.out
+    assert '"a": 1' in captured.out
+
+
+def test_dispatch_show_missing_id(monkeypatch, tmp_path, capsys):
+    _redirect_state_db(monkeypatch, tmp_path)
+    rc = main(["dispatch", "show", "does-not-exist"])
+    captured = capsys.readouterr()
+    assert rc == 1
+    assert "not found" in captured.out
+
+
+def test_dispatch_ack_no_daemon_running(monkeypatch, tmp_path, capsys):
+    """`li dispatch ack` is a direct-DB write; it works with no scheduler daemon involved."""
+    db_path = _redirect_state_db(monkeypatch, tmp_path)
+    import asyncio
+
+    from lionagi.dispatch import get_dispatch
+    from lionagi.state.db import StateDB
+
+    dispatch_id = asyncio.run(
+        _seed_dispatch(db_path, kind="terminal_notify", deliver_to="seat-1", ack_required=True)
+    )
+
+    async def _read_token():
+        async with StateDB(db_path) as db:
+            row = await get_dispatch(db, dispatch_id)
+            return row["ack_token"]
+
+    token = asyncio.run(_read_token())
+
+    rc = main(["dispatch", "ack", dispatch_id, token])
+    captured = capsys.readouterr()
+    assert rc == 0
+    assert "acked" in captured.out
+
+
+def test_dispatch_ack_wrong_token(monkeypatch, tmp_path, capsys):
+    db_path = _redirect_state_db(monkeypatch, tmp_path)
+    import asyncio
+
+    dispatch_id = asyncio.run(
+        _seed_dispatch(db_path, kind="terminal_notify", deliver_to="seat-1", ack_required=True)
+    )
+
+    with pytest.raises(ValueError, match="ack_token mismatch"):
+        main(["dispatch", "ack", dispatch_id, "wrong"])
+
+
+def test_dispatch_purge_removes_row(monkeypatch, tmp_path, capsys):
+    db_path = _redirect_state_db(monkeypatch, tmp_path)
+    import asyncio
+
+    dispatch_id = asyncio.run(_seed_dispatch(db_path, kind="terminal_notify", deliver_to="seat-1"))
+
+    rc = main(["dispatch", "purge", dispatch_id])
+    captured = capsys.readouterr()
+    assert rc == 0
+    assert "purged" in captured.out
+
+    rc = main(["dispatch", "purge", dispatch_id])
+    captured = capsys.readouterr()
+    assert rc == 1
+    assert "not found" in captured.out
