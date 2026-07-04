@@ -265,6 +265,19 @@ def add_common_cli_args(parser: argparse.ArgumentParser) -> None:
             "from .lionagi/config.toml or git remote."
         ),
     )
+    parser.add_argument(
+        "--resume-on-timeout",
+        dest="resume_on_timeout",
+        action="store_true",
+        default=False,
+        help=(
+            "If the run terminates on --timeout, automatically fire one "
+            "resume of the same session with 'continue and conclude the "
+            "task' and report the combined result. Bounded to a single "
+            "auto-resume; a timeout on the resumed leg terminates normally. "
+            "Same effect as an agent profile's 'resume_on_timeout: once'."
+        ),
+    )
 
 
 # ── Agent profile loading (absorbed from _agents.py) ─────────────────────────
@@ -310,6 +323,8 @@ class AgentProfile:
     artifact_defaults: dict | None = None
     timeout: int | None = None
     """Default --timeout (seconds) used when the CLI flag is not given."""
+    resume_on_timeout: bool = False
+    """Auto-resume-once on a timeout terminal status (profile 'resume_on_timeout: once')."""
     extra: dict = field(default_factory=dict)
 
 
@@ -391,6 +406,22 @@ def _parse_profile_timeout(name: str, raw: Any) -> int | None:
     return value
 
 
+def _parse_profile_resume_on_timeout(name: str, raw: Any) -> bool:
+    """Validate the profile 'resume_on_timeout' field; only 'once' (or a truthy bool) opts in."""
+    if raw is None or raw is False:
+        return False
+    if raw is True:
+        return True
+    if isinstance(raw, str) and raw.strip().lower() == "once":
+        return True
+    from ._logging import warn
+
+    warn(
+        f"agent profile {name!r}: ignoring unrecognized resume_on_timeout {raw!r} (expected 'once')"
+    )
+    return False
+
+
 def _parse_profile(name: str, text: str) -> AgentProfile:
     frontmatter, body = _parse_frontmatter(text)
 
@@ -414,6 +445,9 @@ def _parse_profile(name: str, text: str) -> AgentProfile:
         lion_system=lion_system,
         artifact_defaults=frontmatter.get("artifact_defaults"),
         timeout=_parse_profile_timeout(name, frontmatter.get("timeout")),
+        resume_on_timeout=_parse_profile_resume_on_timeout(
+            name, frontmatter.get("resume_on_timeout")
+        ),
         extra={
             k: v
             for k, v in frontmatter.items()
@@ -426,6 +460,7 @@ def _parse_profile(name: str, text: str) -> AgentProfile:
                 "lion_system",
                 "artifact_defaults",
                 "timeout",
+                "resume_on_timeout",
             )
         },
     )

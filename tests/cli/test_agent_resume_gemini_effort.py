@@ -267,6 +267,7 @@ async def test_resume_mixed_case_profile_effort_reapplies_correct_agy_tier(monke
             system_prompt=None,
             artifact_defaults=None,
             timeout=None,
+            resume_on_timeout=False,
         ),
     )
     _wire_agent_stubs(monkeypatch, tmp_path, operate_return="ok")
