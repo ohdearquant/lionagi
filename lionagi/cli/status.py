@@ -55,7 +55,11 @@ __all__ = (
 # by elimination (neither success nor still-running).
 
 _SESSION_SUCCESS = frozenset({"completed"})
-_SESSION_FAILURE = frozenset({"failed", "timed_out", "aborted", "cancelled"})
+# "completed_empty" (the loop exited clean but produced no commits ahead of
+# base and no artifacts — the completion-trust gate) reads as a failure here:
+# a verified-empty run is not something an operator or a schedule chain
+# should treat as a trustworthy success.
+_SESSION_FAILURE = frozenset({"completed_empty", "failed", "timed_out", "aborted", "cancelled"})
 _PLAY_SUCCESS = frozenset({"merged"})
 _PLAY_FAILURE = frozenset({"gate_failed", "escalated", "blocked", "aborted_after_finish"})
 

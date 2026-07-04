@@ -1091,6 +1091,122 @@ async def test_stop_verification_preserves_non_completed_reason(
 # not survive the trip.
 
 
+def _git(path: Path, *args: str) -> None:
+    import subprocess
+
+    subprocess.run(["git", *args], cwd=str(path), capture_output=True, check=True)
+
+
+def _init_git_repo(path: Path) -> None:
+    _git(path, "init", "-b", "main")
+    _git(path, "config", "user.email", "test@test.com")
+    _git(path, "config", "user.name", "Test")
+    (path / "README.md").write_text("initial\n")
+    _git(path, "add", ".")
+    _git(path, "commit", "-m", "init")
+    _git(path, "checkout", "-b", "feature")
+
+
+async def test_stop_no_artifact_no_commits_flips_to_completed_empty(
+    temp_db_path: Path,
+    tmp_path: Path,
+):
+    """Completion-trust gate: a leg that declares no artifact contract and
+    leaves the worktree exactly where base found it — no commits ahead, no
+    dirty tree — must not read as a trustworthy `completed`."""
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    _init_git_repo(repo)
+
+    env = _minimal_env()
+    env.cwd = str(repo)
+    await start_live_persist(env, invocation_kind="flow")
+    ctx = env._live_persist
+    assert ctx is not None
+
+    await stop_live_persist(env, status="completed")
+
+    async with StateDB() as db:
+        s = await db.get_session(ctx["session_id"])
+    assert s is not None
+    assert s["status"] == "completed_empty"
+    assert s["status_reason_code"] == "run.completed_empty.no_evidence"
+    v = s["artifact_verification_json"]
+    # No artifact contract was declared, so verification itself is a no-op —
+    # the git evidence check is what actually gated this.
+    assert v is None
+
+
+async def test_stop_commits_ahead_of_base_stays_completed(
+    temp_db_path: Path,
+    tmp_path: Path,
+):
+    """Control case: commits ahead of base are real evidence — stays completed."""
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    _init_git_repo(repo)
+    (repo / "fix.py").write_text("print('fixed')\n")
+    _git(repo, "add", ".")
+    _git(repo, "commit", "-m", "the fix")
+
+    env = _minimal_env()
+    env.cwd = str(repo)
+    await start_live_persist(env, invocation_kind="flow")
+    ctx = env._live_persist
+    assert ctx is not None
+
+    await stop_live_persist(env, status="completed")
+
+    async with StateDB() as db:
+        s = await db.get_session(ctx["session_id"])
+    assert s is not None
+    assert s["status"] == "completed"
+
+
+async def test_stop_dirty_working_tree_stays_completed(
+    temp_db_path: Path,
+    tmp_path: Path,
+):
+    """Control case: reproduces the reported incident shape — a substantive
+    fix sitting uncommitted in the working tree counts as evidence too."""
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    _init_git_repo(repo)
+    (repo / "fix.py").write_text("print('uncommitted fix')\n")
+
+    env = _minimal_env()
+    env.cwd = str(repo)
+    await start_live_persist(env, invocation_kind="flow")
+    ctx = env._live_persist
+    assert ctx is not None
+
+    await stop_live_persist(env, status="completed")
+
+    async with StateDB() as db:
+        s = await db.get_session(ctx["session_id"])
+    assert s is not None
+    assert s["status"] == "completed"
+
+
+async def test_stop_no_cwd_never_gates_on_git_evidence(
+    temp_db_path: Path,
+):
+    """No cwd (e.g. a bare `li agent` with no --cwd) means the check has no
+    opinion — must not downgrade a completion it can't evaluate."""
+    env = _minimal_env()
+    assert env.cwd is None
+    await start_live_persist(env, invocation_kind="flow")
+    ctx = env._live_persist
+    assert ctx is not None
+
+    await stop_live_persist(env, status="completed")
+
+    async with StateDB() as db:
+        s = await db.get_session(ctx["session_id"])
+    assert s is not None
+    assert s["status"] == "completed"
+
+
 async def test_missing_artifact_session_failure_propagates_to_invocation_status(
     temp_db_path: Path,
     tmp_path: Path,

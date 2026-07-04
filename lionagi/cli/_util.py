@@ -9,6 +9,11 @@ from typing import Any
 
 EXIT_CODE_BY_STATUS: dict[str, int] = {
     "completed": 0,
+    # Completion-trust gate: loop exited clean but no commits ahead of base
+    # and no artifacts were produced. Exits non-zero so scripts, CI, and
+    # schedule on_fail chaining treat it as a failure rather than silently
+    # trusting an empty run.
+    "completed_empty": 1,
     "failed": 1,
     "timed_out": 124,
     "aborted": 130,

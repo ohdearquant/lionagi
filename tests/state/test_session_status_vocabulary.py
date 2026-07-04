@@ -1,7 +1,9 @@
 # Copyright (c) 2023-2026, HaiyangLi <quantocean.li at gmail dot com>
 # SPDX-License-Identifier: Apache-2.0
 
-"""ADR-0025 session status vocabulary tests — six-value vocabulary, FSM transitions, admin transitions, and legacy CHECK-constraint rebuild path."""
+"""ADR-0025 session status vocabulary tests — seven-value vocabulary (adds
+completed_empty for the completion-trust gate), FSM transitions, admin
+transitions, and legacy CHECK-constraint rebuild path."""
 
 from __future__ import annotations
 
@@ -49,9 +51,17 @@ async def _make_session(db: StateDB, *, status: str | None = None) -> dict:
 # ── Vocabulary ────────────────────────────────────────────────────────────────
 
 
-def test_vocabulary_has_six_values():
+def test_vocabulary_has_seven_values():
     assert VALID_SESSION_STATUSES == frozenset(
-        {"running", "completed", "failed", "timed_out", "aborted", "cancelled"}
+        {
+            "running",
+            "completed",
+            "completed_empty",
+            "failed",
+            "timed_out",
+            "aborted",
+            "cancelled",
+        }
     )
 
 
@@ -96,7 +106,7 @@ def test_can_transition_rejects_none_origin():
 # ── DB-level validation ───────────────────────────────────────────────────────
 
 
-async def test_create_session_accepts_all_six_statuses(db: StateDB):
+async def test_create_session_accepts_all_seven_statuses(db: StateDB):
     for status in VALID_SESSION_STATUSES:
         s = await _make_session(db, status=status)
         retrieved = await db.get_session(s["id"])
@@ -215,9 +225,12 @@ async def test_drop_legacy_check_is_idempotent(tmp_path: Path):
 def test_cli_exit_code_map_matches_adr0025():
     from lionagi.cli._util import EXIT_CODE_BY_STATUS as _EXIT_CODE_BY_TERMINAL_STATUS
 
-    # ADR-0025 spec table: 0 / 1 / 124 / 130 / 143.
+    # ADR-0025 spec table: 0 / 1 / 124 / 130 / 143. completed_empty (the
+    # completion-trust gate) shares exit code 1 with failed — both are
+    # non-zero so scripts/CI/schedule chaining treat them as a failure.
     assert _EXIT_CODE_BY_TERMINAL_STATUS == {
         "completed": 0,
+        "completed_empty": 1,
         "failed": 1,
         "timed_out": 124,
         "aborted": 130,

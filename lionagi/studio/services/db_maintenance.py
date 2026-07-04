@@ -70,7 +70,14 @@ async def _fetch_chunked(
 
 
 # Statuses that are safe to prune (process is definitively done).
-_TERMINAL_SESSION_STATUSES = ("completed", "failed", "timed_out", "aborted", "cancelled")
+_TERMINAL_SESSION_STATUSES = (
+    "completed",
+    "completed_empty",
+    "failed",
+    "timed_out",
+    "aborted",
+    "cancelled",
+)
 _TERMINAL_RUN_STATUSES = ("completed", "failed", "skipped", "cancelled")
 
 

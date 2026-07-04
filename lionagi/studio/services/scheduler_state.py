@@ -180,6 +180,11 @@ async def resolve_invocation_terminal(
     if exception is not None:
         metadata["exception_class"] = type(exception).__name__
 
+    # Precedence: timed_out > failed > aborted > cancelled > completed_empty
+    # > completed. completed_empty outranks completed so one silently empty
+    # child still taints the invocation's terminal status instead of being
+    # averaged away by its siblings' real completions — this is what feeds
+    # the scheduler's exit_code-based on_success/on_fail chain decision.
     if child_statuses:
         if any(s == "timed_out" for s in child_statuses):
             return (
@@ -217,6 +222,17 @@ async def resolve_invocation_terminal(
                 "cancelled",
                 RunReasons.CANCELLED_SYSTEM,
                 "Invocation was cancelled because at least one child session was cancelled.",
+                evidence_refs,
+                metadata,
+            )
+        if any(s == "completed_empty" for s in child_statuses) and all(
+            s in ("completed", "completed_empty") for s in child_statuses
+        ):
+            return (
+                "completed_empty",
+                RunReasons.COMPLETED_EMPTY_NO_EVIDENCE,
+                "Invocation exited clean but at least one child session produced no "
+                "commits ahead of base and no artifacts.",
                 evidence_refs,
                 metadata,
             )
