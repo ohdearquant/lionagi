@@ -24,7 +24,13 @@ def classify_exception(exc: BaseException) -> str:
     if isinstance(exc, (TimeoutError, LionTimeoutError)):
         return "timed_out"
     from lionagi.ln.concurrency.errors import cancelled_exc_classes
+    from lionagi.ln.concurrency.utils import SigtermInterrupt
 
+    # SIGTERM is an external termination request, not an internal failure —
+    # it lands in the same terminal bucket as a runtime-cancelled task
+    # (same reason class, same exit code 143) rather than a new status.
+    if isinstance(exc, SigtermInterrupt):
+        return "cancelled"
     if isinstance(exc, cancelled_exc_classes()):
         return "cancelled"
     return "failed"

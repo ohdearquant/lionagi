@@ -13,6 +13,7 @@ from lionagi import Branch
 from lionagi._errors import ConfigurationError
 from lionagi._errors import TimeoutError as LionTimeoutError
 from lionagi.ln.concurrency import (
+    SigtermInterrupt,
     cache_cancelled_exc_class,
     cancelled_exc_classes,
     run_async,
@@ -451,6 +452,10 @@ async def _run_agent(
     except BaseException as exc:
         _terminal_status = classify_exception(exc)
         _terminal_exc = exc
+        if _terminal_status == "failed":
+            # Default traceback printing is unreliable under SIGTERM/process
+            # death — leave a one-line diagnostic before it propagates.
+            log_error(f"{type(exc).__name__}: {exc}")
         raise
     finally:
         if _heartbeat_task is not None:
@@ -684,9 +689,15 @@ def run_agent(args: argparse.Namespace) -> int:
         )
     except KeyboardInterrupt:
         return EXIT_CODE_BY_STATUS["aborted"]
+    except SigtermInterrupt as exc:
+        from lionagi.cli._logging import warn
+
+        warn(f"agent terminated by SIGTERM: {exc}")
+        return EXIT_CODE_BY_STATUS["cancelled"]
     except BaseException as exc:
         if isinstance(exc, cancelled_exc_classes()):
             return EXIT_CODE_BY_STATUS["cancelled"]
+        log_error(f"{type(exc).__name__}: {exc}")
         raise
 
     if not args.verbose:

@@ -24,6 +24,7 @@ __all__ = (
     "run_async",
     "sleep",
     "current_time",
+    "SigtermInterrupt",
 )
 
 
@@ -46,10 +47,25 @@ async def run_sync(func: Callable[P, R], *args: P.args, **kwargs: P.kwargs) -> R
     return await anyio.to_thread.run_sync(func, *args)
 
 
-# SIGINT-aware run_async: installs a temporary SIGINT handler from the main
-# thread that cancels the inner asyncio task via call_soon_threadsafe instead
-# of raising KeyboardInterrupt in join(), which would orphan the child thread
-# and leave session rows stuck in "running" state.
+class SigtermInterrupt(BaseException):
+    """Raised by run_async() when the process received SIGTERM mid-run.
+
+    Not a KeyboardInterrupt subclass: that type is the SIGINT/Ctrl-C
+    convention and callers treat it as user-initiated. SIGTERM is an
+    external termination request (a supervisor, a process-group kill)
+    and needs a distinct signal so callers can log/exit differently.
+    Subclasses BaseException, like KeyboardInterrupt, so a bare
+    ``except Exception:`` elsewhere doesn't silently swallow it.
+    """
+
+
+# Signal-aware run_async: installs temporary SIGINT/SIGTERM handlers from the
+# main thread that cancel the inner asyncio task via call_soon_threadsafe
+# instead of leaving the default disposition in place. SIGINT's default would
+# raise KeyboardInterrupt in join(), orphaning the child thread and leaving
+# session rows stuck in "running" state; SIGTERM's default is immediate
+# process termination with no unwind at all, so without a handler here an
+# external SIGTERM (a timeout supervisor, a process-group kill) is silent.
 
 
 def run_async(coro: Awaitable[T]) -> T:
@@ -59,6 +75,7 @@ def run_async(coro: Awaitable[T]) -> T:
 
     _loop_and_task_future: _ThreadFuture[tuple[Any, Any]] = _ThreadFuture()
     _cancel_requested = threading.Event()
+    _term_requested = threading.Event()
 
     def run_in_thread() -> None:
         import asyncio
@@ -66,7 +83,15 @@ def run_async(coro: Awaitable[T]) -> T:
         try:
 
             async def _runner() -> T:
-                _loop_and_task_future.set_result((asyncio.get_event_loop(), asyncio.current_task()))
+                task = asyncio.current_task()
+                _loop_and_task_future.set_result((asyncio.get_event_loop(), task))
+                if _cancel_requested.is_set() or _term_requested.is_set():
+                    # A signal was latched before this future existed, so the
+                    # handler's call_soon_threadsafe(task.cancel) had nothing
+                    # to call yet (this is the only path for SIGTERM, whose
+                    # default disposition isn't callable as a fallback).
+                    # Cancel ourselves now instead of running to completion.
+                    task.cancel()
                 return await coro
 
             result = anyio.run(_runner)
@@ -82,21 +107,25 @@ def run_async(coro: Awaitable[T]) -> T:
     # signal.signal() raises ValueError from non-main threads
     in_main_thread = threading.current_thread() is threading.main_thread()
 
-    if in_main_thread:
-        old_sigint_handler = signal.getsignal(signal.SIGINT)
-
-        def _sigint_handler(signum: int, frame: Any) -> None:  # noqa: ARG001
-            _cancel_requested.set()
+    def _make_handler(requested: threading.Event, old_handler: Any) -> Callable[[int, Any], None]:
+        def _handler(signum: int, frame: Any) -> None:
+            requested.set()
             try:
                 child_loop, task = _loop_and_task_future.result(timeout=0.5)
             except Exception:  # noqa: BLE001
-                if callable(old_sigint_handler):
-                    old_sigint_handler(signum, frame)
+                if callable(old_handler):
+                    old_handler(signum, frame)
                 return
             if task is not None and child_loop is not None:
                 child_loop.call_soon_threadsafe(task.cancel)
 
-        signal.signal(signal.SIGINT, _sigint_handler)
+        return _handler
+
+    if in_main_thread:
+        old_sigint_handler = signal.getsignal(signal.SIGINT)
+        old_sigterm_handler = signal.getsignal(signal.SIGTERM)
+        signal.signal(signal.SIGINT, _make_handler(_cancel_requested, old_sigint_handler))
+        signal.signal(signal.SIGTERM, _make_handler(_term_requested, old_sigterm_handler))
 
     thread.start()
     try:
@@ -104,9 +133,12 @@ def run_async(coro: Awaitable[T]) -> T:
     finally:
         if in_main_thread:
             signal.signal(signal.SIGINT, old_sigint_handler)
+            signal.signal(signal.SIGTERM, old_sigterm_handler)
 
     if _cancel_requested.is_set():
         raise KeyboardInterrupt
+    if _term_requested.is_set():
+        raise SigtermInterrupt("process received SIGTERM; inner task cancelled")
 
     if exception_container:
         raise exception_container[0]
