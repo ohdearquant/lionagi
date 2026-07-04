@@ -7,6 +7,7 @@ with no daemon running.
 
 from __future__ import annotations
 
+import asyncio
 import sys
 import time
 from pathlib import Path
@@ -303,6 +304,233 @@ async def test_ack_required_tier_loops_back_to_pending_on_success(tmp_path: Path
 
     assert row["status"] == "pending"
     assert row["next_attempt_at"] > time.time()
+
+
+async def test_ack_required_with_no_expiry_is_bounded_by_max_attempts(tmp_path: Path):
+    """ack_required=True + expires_at=None must not re-deliver forever: a
+    successful transport still exhausts at max_attempts sends, going to
+    dead_letter with a distinct ack-timeout reason (Codex gate finding 2:
+    the ADR's boundedness contract applies to every send while awaiting
+    ack, not only to transport failures)."""
+    from sqlalchemy import text
+
+    from lionagi.state.reasons import DispatchReasons
+
+    db_path = tmp_path / "state.db"
+    async with StateDB(db_path) as db:
+        dispatch_id = await enqueue_dispatch(
+            db,
+            kind="terminal_notify",
+            deliver_to="seat-1",
+            ack_required=True,
+            max_attempts=1,
+            expires_at=None,
+        )
+        counts = await deliver_due_dispatches(
+            db, now=time.time(), notify_template=_SUCCESS_TEMPLATE
+        )
+        row = await get_dispatch(db, dispatch_id)
+        async with db._read() as conn:
+            rows = (
+                (
+                    await conn.execute(
+                        text(
+                            "SELECT reason_code FROM status_transitions "
+                            "WHERE entity_type = 'dispatch' AND entity_id = :id "
+                            "ORDER BY created_at"
+                        ),
+                        {"id": dispatch_id},
+                    )
+                )
+                .mappings()
+                .all()
+            )
+
+    assert counts["dead_letter"] == 1
+    assert row["status"] == "dead_letter"
+    assert row["attempt"] == 1
+    codes = [r["reason_code"] for r in rows]
+    assert DispatchReasons.DEAD_LETTER_ACK_TIMEOUT in codes
+
+
+async def test_ack_required_dead_letters_after_max_attempts_successful_sends(tmp_path: Path):
+    """With max_attempts=2, the row survives one successful unacked send
+    (loops back to pending awaiting ack) and dead_letters on the second."""
+    db_path = tmp_path / "state.db"
+    async with StateDB(db_path) as db:
+        dispatch_id = await enqueue_dispatch(
+            db,
+            kind="terminal_notify",
+            deliver_to="seat-1",
+            ack_required=True,
+            max_attempts=2,
+            expires_at=None,
+        )
+        now = time.time()
+        counts1 = await deliver_due_dispatches(db, now=now, notify_template=_SUCCESS_TEMPLATE)
+        row1 = await get_dispatch(db, dispatch_id)
+        assert row1["status"] == "pending"
+        assert row1["attempt"] == 1
+
+        counts2 = await deliver_due_dispatches(
+            db, now=row1["next_attempt_at"] + 1, notify_template=_SUCCESS_TEMPLATE
+        )
+        row2 = await get_dispatch(db, dispatch_id)
+
+    assert counts1["delivered"] == 1
+    assert counts2["dead_letter"] == 1
+    assert row2["status"] == "dead_letter"
+    assert row2["attempt"] == 2
+
+
+# ── concurrency / crash-window regressions ───────────────────────────────────
+
+
+async def test_overlapping_scans_do_not_double_execute_transport(tmp_path: Path):
+    """Two concurrent deliver_due_dispatches() calls must not both run transport
+    for a row recovered from a stale 'delivering' claim (Codex gate finding 1):
+    the claim must be exclusive via a guarded attempt-counter CAS, not a
+    same-state 'delivering -> delivering' no-op match."""
+    from lionagi.state.transitions import Actor, StateReason, TransitionRequest, transition
+
+    hits = tmp_path / "hits.txt"
+    template = [
+        sys.executable,
+        "-c",
+        "import pathlib, sys, time; p = pathlib.Path(sys.argv[1]); "
+        "time.sleep(0.3); p.write_text((p.read_text() if p.exists() else '') + 'x\\n')",
+        str(hits),
+    ]
+    db_path = tmp_path / "state.db"
+    async with StateDB(db_path) as db:
+        dispatch_id = await enqueue_dispatch(db, kind="terminal_notify", deliver_to="seat-1")
+        # Simulate a claim left behind by a crashed delivery loop: status is
+        # already 'delivering' but the attempt counter was never bumped, as
+        # a bare transition() call (bypassing the outbox's atomic claim)
+        # would leave it.
+        from lionagi.state.reasons import DispatchReasons
+
+        await transition(
+            db,
+            TransitionRequest(
+                entity_type="dispatch",
+                entity_id=dispatch_id,
+                from_state="pending",
+                to_state="delivering",
+                reason=StateReason(
+                    code=DispatchReasons.DELIVERING_ATTEMPT,
+                    summary="simulate crash after claim",
+                ),
+                actor=Actor(type="scheduler", id="test"),
+                idempotency_key="claim-once",
+            ),
+        )
+
+        results = await asyncio.gather(
+            deliver_due_dispatches(db, now=time.time() + 1, notify_template=template),
+            deliver_due_dispatches(db, now=time.time() + 1, notify_template=template),
+        )
+        row = await get_dispatch(db, dispatch_id)
+
+    assert hits.read_text().count("x") == 1
+    assert row["status"] == "delivered"
+    assert row["attempt"] == 1
+    assert sum(r["delivered"] for r in results) == 1
+
+
+async def test_retry_dispatch_is_a_single_atomic_write(tmp_path: Path):
+    """retry_dispatch() folds the status flip and the attempt/next_attempt_at/
+    last_error reset into ONE guarded transaction (Codex gate finding 3, Rider
+    B): concurrent retries on the same terminal row must not both apply, and
+    the one that does apply must never leave stale exhausted accounting
+    behind (which two separate, non-atomic writes could under a crash)."""
+    db_path = tmp_path / "state.db"
+    async with StateDB(db_path) as db:
+        dispatch_id = await enqueue_dispatch(
+            db, kind="terminal_notify", deliver_to="seat-1", max_attempts=1
+        )
+        await deliver_due_dispatches(db, now=time.time(), notify_template=_FAIL_TEMPLATE)
+        row = await get_dispatch(db, dispatch_id)
+        assert row["status"] == "dead_letter"
+        assert row["last_error"]
+
+        # retry_dispatch() itself validates the row is terminal before ever
+        # calling the atomic transition. Racing the SAME precondition-checked
+        # entrypoint means whichever call's read loses the race legitimately
+        # sees 'pending' and raises (a correct business-rule rejection, not a
+        # storage-level race) rather than returning False — accept either
+        # outcome here. The property under test is the STORAGE-level CAS in
+        # transition()'s patch write, exercised directly below.
+        results = await asyncio.gather(
+            retry_dispatch(db, dispatch_id),
+            retry_dispatch(db, dispatch_id),
+            return_exceptions=True,
+        )
+        row = await get_dispatch(db, dispatch_id)
+
+    outcomes = [r if isinstance(r, bool) else "raised" for r in results]
+    assert outcomes.count(True) == 1
+    assert row["status"] == "pending"
+    assert row["attempt"] == 0
+    assert row["last_error"] is None
+
+
+async def test_transition_patch_guard_is_atomic_under_concurrent_claim(tmp_path: Path):
+    """Directly exercise transition()'s guard+patch CAS with two concurrent
+    callers racing the SAME guarded write (the storage-level property Codex
+    gate finding 3 requires): exactly one applies, and its patch columns
+    (attempt reset + next_attempt_at + cleared last_error) land as a single
+    consistent write — never a status flip with the other caller's stale
+    counters visible in between."""
+    from lionagi.state.reasons import DispatchReasons
+    from lionagi.state.transitions import Actor, StateReason, TransitionRequest, transition
+
+    db_path = tmp_path / "state.db"
+    async with StateDB(db_path) as db:
+        dispatch_id = await enqueue_dispatch(
+            db, kind="terminal_notify", deliver_to="seat-1", max_attempts=1
+        )
+        await deliver_due_dispatches(db, now=time.time(), notify_template=_FAIL_TEMPLATE)
+        row = await get_dispatch(db, dispatch_id)
+        assert row["status"] == "dead_letter"
+
+        def _retry_request(now: float) -> TransitionRequest:
+            return TransitionRequest(
+                entity_type="dispatch",
+                entity_id=dispatch_id,
+                from_state="dead_letter",
+                to_state="pending",
+                reason=StateReason(
+                    code=DispatchReasons.PENDING_RETRY_BACKOFF,
+                    summary="operator-forced retry",
+                ),
+                actor=Actor(type="operator", id="test"),
+                idempotency_key=f"race:{now}",
+            )
+
+        now = time.time()
+        results = await asyncio.gather(
+            transition(
+                db,
+                _retry_request(now),
+                patch={"attempt": 0, "next_attempt_at": now, "last_error": None},
+            ),
+            transition(
+                db,
+                _retry_request(now),
+                patch={"attempt": 0, "next_attempt_at": now, "last_error": None},
+            ),
+        )
+        row = await get_dispatch(db, dispatch_id)
+
+    applied = [r for r in results if r.applied]
+    conflicted = [r for r in results if not r.applied]
+    assert len(applied) == 1
+    assert len(conflicted) == 1
+    assert conflicted[0].conflict is True
+    assert row["status"] == "pending"
+    assert row["attempt"] == 0
+    assert row["last_error"] is None
 
 
 # ── retry / purge (direct-DB, no daemon) ─────────────────────────────────────

@@ -68,23 +68,47 @@ _ENTITY_TABLES: dict[str, str] = {
 }
 
 
-async def transition(db: Any, request: TransitionRequest) -> TransitionResult:
+async def transition(
+    db: Any,
+    request: TransitionRequest,
+    *,
+    guard: dict[str, Any] | None = None,
+    patch: dict[str, Any] | None = None,
+) -> TransitionResult:
     """Guarded compare-and-swap transition: ``UPDATE ... WHERE id=:id AND status=:from``.
 
     Writes the row status and an atomic ``status_transitions`` append inside
     one ``db._tx()``. A mismatched current state reports a conflict rather
     than raising or silently overwriting (CAS guard).
+
+    ``guard`` adds extra ``column = :expected`` equality constraints to the
+    WHERE clause beyond ``status`` — required whenever a transition can be a
+    same-state no-op (e.g. ``delivering -> delivering`` recovery claims),
+    where the status guard alone would match trivially and let two
+    concurrent callers both believe they won the claim. Callers pass the
+    value they read *before* the transition as the expected guard value;
+    only the caller whose guard value still matches at UPDATE time wins.
+
+    ``patch`` adds extra ``column = :value`` assignments to the SET clause,
+    applied atomically with the status change and the ``status_transitions``
+    append — for callers (e.g. an operator-forced retry resetting attempt
+    counters) that would otherwise need a second, non-atomic write.
     """
     table = _ENTITY_TABLES.get(request.entity_type)
     if table is None:
         raise ValueError(f"transition(): unsupported entity_type {request.entity_type!r}")
     validate_reason_code(request.reason.code)
 
+    guard = guard or {}
+    patch = patch or {}
     now = time.time()
     transition_id = uuid.uuid4().hex
 
+    guard_cols = list(guard.keys())
+    select_cols = ", ".join(["status", *guard_cols]) if guard_cols else "status"
+
     async with db._tx() as conn:
-        sel = f"SELECT status FROM {table} WHERE id = :id"  # noqa: S608
+        sel = f"SELECT {select_cols} FROM {table} WHERE id = :id"  # noqa: S608
         row = (await conn.execute(text(sel), {"id": request.entity_id})).mappings().first()
         if row is None:
             raise LookupError(
@@ -101,20 +125,41 @@ async def transition(db: Any, request: TransitionRequest) -> TransitionResult:
                 transition_id=transition_id,
             )
 
-        result = await conn.execute(
-            text(
-                f"UPDATE {table} SET status = :to_state, updated_at = :now "  # noqa: S608
-                "WHERE id = :id AND status = :from_state"
-            ),
-            {
-                "to_state": request.to_state,
-                "now": now,
-                "id": request.entity_id,
-                "from_state": previous_status,
-            },
+        for col, expected in guard.items():
+            if row[col] != expected:
+                return TransitionResult(
+                    applied=False,
+                    conflict=True,
+                    previous_state=previous_status,
+                    current_state=previous_status,
+                    transition_id=transition_id,
+                )
+
+        set_clauses = ["status = :to_state", "updated_at = :now"]
+        where_clauses = ["id = :id", "status = :from_state"]
+        params: dict[str, Any] = {
+            "to_state": request.to_state,
+            "now": now,
+            "id": request.entity_id,
+            "from_state": previous_status,
+        }
+        for i, (col, expected) in enumerate(guard.items()):
+            key = f"guard_{i}"
+            where_clauses.append(f"{col} = :{key}")
+            params[key] = expected
+        for col, value in patch.items():
+            key = f"patch_{col}"
+            set_clauses.append(f"{col} = :{key}")
+            params[key] = value
+
+        update_sql = (
+            f"UPDATE {table} SET {', '.join(set_clauses)} "  # noqa: S608
+            f"WHERE {' AND '.join(where_clauses)}"
         )
+        result = await conn.execute(text(update_sql), params)
         if result.rowcount == 0:
-            # Lost the race between the SELECT and the guarded UPDATE.
+            # Lost the race between the SELECT and the guarded UPDATE (or a
+            # concurrent claim already moved the guard column).
             return TransitionResult(
                 applied=False,
                 conflict=True,

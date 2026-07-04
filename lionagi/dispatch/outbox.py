@@ -52,6 +52,13 @@ NOTIFY_TIMEOUT_SECONDS = 10.0
 _BASE_BACKOFF_SECONDS = 30
 _MAX_BACKOFF_SECONDS = 1800
 
+# A claim on a row (pending/delivering -> delivering) advances next_attempt_at
+# by this lease so overlapping scans within the transport's execution window
+# cannot re-claim it; a scan only revisits a still-`delivering` row once the
+# lease has lapsed (crash recovery), and by then the guarded attempt-counter
+# CAS in transition() ensures only one claimant ever wins per attempt.
+_CLAIM_LEASE_SECONDS = NOTIFY_TIMEOUT_SECONDS + 5.0
+
 _PAYLOAD_TOKEN = "{payload}"  # noqa: S105 -- template placeholder, not a credential
 _DELIVER_TO_TOKEN = "{deliver_to}"  # noqa: S105 -- template placeholder, not a credential
 
@@ -148,6 +155,14 @@ async def enqueue_dispatch(
 
     Idempotent on ``dedup_key``: a re-enqueue with the same key returns the
     existing row's id rather than inserting a duplicate.
+
+    ``max_attempts`` bounds delivery whether or not ``ack_required`` — an
+    ack-required row that keeps sending successfully but never gets acked
+    still exhausts at ``max_attempts`` sends (``dead_letter``, distinct
+    ``DEAD_LETTER_ACK_TIMEOUT`` reason) rather than re-delivering forever.
+    ``expires_at`` is an *additional*, optional bound honored on top of
+    ``max_attempts``; it is not required for ``ack_required`` rows to be
+    bounded.
     """
     now = time.time()
     dispatch_id = uuid.uuid4().hex
@@ -301,8 +316,14 @@ async def deliver_due_dispatches(
 
     Ack-required rows loop back to ``pending`` (not ``delivered``) on transport
     success, so the same due-scan re-attempts delivery with backoff until the
-    consumer acks or the row expires — the default (``ack_required=0``) tier
-    stops at ``delivered`` on first transport success.
+    consumer acks, the row expires, or ``max_attempts`` sends have gone out
+    unacked (``dead_letter``, ``DEAD_LETTER_ACK_TIMEOUT``) — the default
+    (``ack_required=0``) tier stops at ``delivered`` on first transport
+    success. ``delivering`` rows are re-scanned for crash recovery, but a
+    claim on one is only exclusive for the duration of a lease
+    (``_CLAIM_LEASE_SECONDS``): the guarded attempt-counter CAS in
+    ``transition()`` prevents two overlapping scans from both running the
+    notify transport for the same attempt.
     """
     if now is None:
         now = time.time()
@@ -351,6 +372,7 @@ async def deliver_due_dispatches(
                 counts["expired"] += 1
             continue
 
+        next_attempt = row["attempt"] + 1
         delivering = await transition(
             db,
             TransitionRequest(
@@ -360,24 +382,24 @@ async def deliver_due_dispatches(
                 to_state="delivering",
                 reason=StateReason(
                     code=DispatchReasons.DELIVERING_ATTEMPT,
-                    summary=f"attempt {row['attempt'] + 1}",
+                    summary=f"attempt {next_attempt}",
                 ),
                 actor=Actor(type="scheduler", id="dispatch_delivery_loop"),
                 idempotency_key=f"deliver:{dispatch_id}:{row['attempt']}",
             ),
+            # A `delivering -> delivering` recovery claim is a same-state
+            # match on status alone, so guard on the pre-claim attempt value
+            # too: the atomic patch below bumps attempt as part of THIS
+            # UPDATE, so a second overlapping claimant's guard misses and it
+            # loses instead of also running the transport. The next_attempt_at
+            # lease keeps a live (non-crashed) claim from being re-picked-up
+            # by a later scan until the transport should plausibly be done.
+            guard={"attempt": row["attempt"]},
+            patch={"attempt": next_attempt, "next_attempt_at": now + _CLAIM_LEASE_SECONDS},
         )
         if not delivering.applied:
             # Already claimed this tick (or state moved) — skip.
             continue
-
-        next_attempt = row["attempt"] + 1
-        async with db._tx() as conn:
-            await conn.execute(
-                text(
-                    "UPDATE dispatch_outbox SET attempt = :attempt, updated_at = :now WHERE id = :id"
-                ),
-                {"attempt": next_attempt, "now": now, "id": dispatch_id},
-            )
 
         raw_payload = row["payload"]
         payload_json = raw_payload if isinstance(raw_payload, str) else json.dumps(raw_payload)
@@ -392,7 +414,37 @@ async def deliver_due_dispatches(
             )
 
         if success:
+            # ack_required rows loop back to pending awaiting the consumer's
+            # ack_token, but that must still be bounded by max_attempts (the
+            # ADR's boundedness contract applies to every send while awaiting
+            # ack, not only to transport failures) — otherwise a successful
+            # transport to a dead/non-acking consumer re-delivers forever.
+            if row["ack_required"] and next_attempt >= row["max_attempts"]:
+                result = await transition(
+                    db,
+                    TransitionRequest(
+                        entity_type="dispatch",
+                        entity_id=dispatch_id,
+                        from_state="delivering",
+                        to_state="dead_letter",
+                        reason=StateReason(
+                            code=DispatchReasons.DEAD_LETTER_ACK_TIMEOUT,
+                            summary=f"{next_attempt} sends without ack (max_attempts exhausted)",
+                        ),
+                        actor=Actor(type="scheduler", id="dispatch_delivery_loop"),
+                        idempotency_key=f"ack_timeout:{dispatch_id}:{next_attempt}",
+                    ),
+                )
+                if result.applied:
+                    counts["dead_letter"] += 1
+                continue
+
             to_state = "pending" if row["ack_required"] else "delivered"
+            patch = (
+                {"next_attempt_at": now + backoff_seconds(next_attempt)}
+                if to_state == "pending"
+                else None
+            )
             result = await transition(
                 db,
                 TransitionRequest(
@@ -407,18 +459,10 @@ async def deliver_due_dispatches(
                     actor=Actor(type="scheduler", id="dispatch_delivery_loop"),
                     idempotency_key=f"delivered:{dispatch_id}:{next_attempt}",
                 ),
+                patch=patch,
             )
             if result.applied:
                 counts["delivered"] += 1
-                if to_state == "pending":
-                    backoff = backoff_seconds(next_attempt)
-                    async with db._tx() as conn:
-                        await conn.execute(
-                            text(
-                                "UPDATE dispatch_outbox SET next_attempt_at = :nat WHERE id = :id"
-                            ),
-                            {"nat": now + backoff, "id": dispatch_id},
-                        )
             continue
 
         async with db._tx() as conn:
@@ -530,16 +574,12 @@ async def retry_dispatch(db: Any, dispatch_id: str) -> bool:
             actor=Actor(type="operator", id="li_dispatch_retry"),
             idempotency_key=f"operator_retry:{dispatch_id}:{now}",
         ),
+        # Rider B: the status change and the attempt/next_attempt_at/last_error
+        # reset are one guarded write, not two transactions — a crash between
+        # separate writes would otherwise leave a 'pending' row with stale
+        # exhausted accounting.
+        patch={"attempt": 0, "next_attempt_at": now, "last_error": None},
     )
-    if result.applied:
-        async with db._tx() as conn:
-            await conn.execute(
-                text(
-                    "UPDATE dispatch_outbox SET attempt = 0, next_attempt_at = :now, "
-                    "last_error = NULL WHERE id = :id"
-                ),
-                {"now": now, "id": dispatch_id},
-            )
     return result.applied
 
 

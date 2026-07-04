@@ -123,6 +123,7 @@ class DispatchReasons:
     DELIVERED_TRANSPORT_OK = "dispatch.delivered.transport_ok"
     PENDING_RETRY_BACKOFF = "dispatch.pending.retry_backoff"
     DEAD_LETTER_MAX_ATTEMPTS = "dispatch.dead_letter.max_attempts"
+    DEAD_LETTER_ACK_TIMEOUT = "dispatch.dead_letter.ack_timeout"
     EXPIRED_DEADLINE = "dispatch.expired.deadline"
     ACKED_CONSUMER = "dispatch.acked.consumer"
 
