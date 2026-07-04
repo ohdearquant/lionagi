@@ -351,9 +351,9 @@ function RunModal({ defn, onClose }: { defn: EngineDef; onClose: () => void }) {
         {result ? (
           <div className="rounded-md border border-status-success/40 bg-status-success-bg p-4">
             <p className="text-sm text-status-success">
-              Launched — invocation <span className="font-mono">{result}…</span>
+              Launched — run <span className="font-mono">{result}…</span>
             </p>
-            <p className="mt-1 text-[11px] text-content-muted">Track progress in Invocations.</p>
+            <p className="mt-1 text-[11px] text-content-muted">Track progress in Operations.</p>
           </div>
         ) : (
           <form onSubmit={(e) => void handleLaunch(e)} className="flex flex-col gap-3">

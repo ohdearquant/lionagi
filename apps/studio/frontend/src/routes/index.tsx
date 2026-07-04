@@ -8,7 +8,7 @@ import Timestamp from "@/components/Timestamp";
 import Duration from "@/components/Duration";
 import Button from "@/components/Button";
 import { useProject } from "@/lib/project-context";
-import { aggregateRuns, type Run } from "@/lib/run-model";
+import { aggregateRuns, type Run, type SourceErrors } from "@/lib/run-model";
 import type { DerivedStatus, RunSource } from "@/lib/derive-run-status";
 import RunSlideOver from "@/components/operations/RunSlideOver";
 
@@ -98,6 +98,11 @@ const SOURCE_LABEL: Record<RunSource, string> = {
   flow: "Flow",
 };
 
+const SOURCE_ERROR_LABEL: Record<keyof SourceErrors, string> = {
+  ...SOURCE_LABEL,
+  health: "Liveness check",
+};
+
 const PAGE_SIZE = 100;
 
 function OperationsPage() {
@@ -110,7 +115,15 @@ function OperationsPage() {
   const status = firstStatus(search.status);
 
   const [runs, setRuns] = useState<Run[] | null>(null);
+  const [sourceErrors, setSourceErrors] = useState<SourceErrors>({});
+  // Set only when the aggregator itself rejects (the primary agent-run
+  // fetch failed) — distinct from sourceErrors, which is per-source
+  // degradation the aggregator already absorbed and still returned data for.
   const [error, setError] = useState<string | null>(null);
+  // Set when a LIVE poll refresh fails outright — the canvas keeps showing
+  // the last known-good `runs` rather than blanking to empty/loading, with
+  // this noted so "no runs" is never confused with "couldn't refresh".
+  const [staleSince, setStaleSince] = useState<number | null>(null);
   const [visibleCount, setVisibleCount] = useState(PAGE_SIZE);
   const [now, setNow] = useState(() => Math.floor(Date.now() / 1000));
 
@@ -119,9 +132,13 @@ function OperationsPage() {
     // eslint-disable-next-line react-hooks/set-state-in-effect -- load() calls setState, data-fetch pattern matching the rest of the codebase
     setRuns(null);
     setError(null);
+    setSourceErrors({});
+    setStaleSince(null);
     aggregateRuns({ project: project || undefined })
       .then((r) => {
-        if (active) setRuns(r);
+        if (!active) return;
+        setRuns(r.runs);
+        setSourceErrors(r.sourceErrors);
       })
       .catch((err) => {
         if (active) setError(err instanceof Error ? err.message : String(err));
@@ -129,8 +146,15 @@ function OperationsPage() {
     const poll = search.live
       ? setInterval(() => {
           aggregateRuns({ project: project || undefined })
-            .then((r) => active && setRuns(r))
-            .catch(() => {});
+            .then((r) => {
+              if (!active) return;
+              setRuns(r.runs);
+              setSourceErrors(r.sourceErrors);
+              setStaleSince(null);
+            })
+            .catch(() => {
+              if (active) setStaleSince((prev) => prev ?? Math.floor(Date.now() / 1000));
+            });
         }, 5000)
       : null;
     return () => {
@@ -192,6 +216,12 @@ function OperationsPage() {
   };
 
   const selectedRun = search.run ? (filtered.find((r) => r.id === search.run) ?? null) : null;
+
+  const degradedSources = useMemo(() => {
+    return (Object.entries(sourceErrors) as [keyof SourceErrors, string][]).map(
+      ([key, message]) => `${SOURCE_ERROR_LABEL[key]}: ${message}`,
+    );
+  }, [sourceErrors]);
 
   return (
     <div className="flex flex-1 flex-col">
@@ -308,12 +338,27 @@ function OperationsPage() {
         </div>
       )}
 
+      {degradedSources.length > 0 && (
+        <div className="border-b border-edge bg-status-warning-bg px-4 py-2 text-meta text-status-warning">
+          Partial data — {degradedSources.join("; ")}. Some runs may be missing.
+        </div>
+      )}
+
+      {staleSince != null && (
+        <div className="border-b border-edge bg-status-warning-bg px-4 py-2 text-meta text-status-warning">
+          Live refresh failed — showing the last known data (as of <Timestamp value={staleSince} />
+          ).
+        </div>
+      )}
+
       <div className="flex-1 overflow-hidden">
         {runs == null ? (
           <div className="p-4 text-body text-content-muted">Loading…</div>
         ) : filtered.length === 0 ? (
           <div className="p-8 text-center text-body text-content-muted">
-            No runs match the current filters.
+            {degradedSources.length > 0
+              ? "No runs match the current filters — note the partial-data notice above."
+              : "No runs match the current filters."}
           </div>
         ) : view === "table" ? (
           <TableView runs={visible} onSelect={(id) => setSearch({ run: id })} />

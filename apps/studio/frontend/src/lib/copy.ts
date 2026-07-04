@@ -102,7 +102,7 @@ export const errors = {
   loadProjects: "Failed to load projects.",
   loadProject: "Failed to load project.",
   loadInvocations: "Failed to load invocations.",
-  loadInvocation: "Failed to load invocation.",
+  loadInvocation: "Failed to load run.",
   loadDiagnostics: "Failed to load diagnostics.",
   loadSchedules: "Failed to load schedules.",
   loadTeams: "Failed to load teams.",

@@ -50,14 +50,14 @@ function InvocationDetailPage() {
   if (loading) {
     return (
       <main className="mx-auto flex w-full max-w-7xl flex-col gap-5 px-4 py-6">
-        <PageHeader title="Invocation" subtitle="loading…" density="tight" />
+        <PageHeader title="Run" subtitle="loading…" density="tight" />
       </main>
     );
   }
   if (error || !data) {
     return (
       <main className="mx-auto flex w-full max-w-7xl flex-col gap-5 px-4 py-6">
-        <PageHeader title="Invocation" subtitle={error ?? "Not found"} density="tight" />
+        <PageHeader title="Run" subtitle={error ?? "Not found"} density="tight" />
       </main>
     );
   }
@@ -100,7 +100,7 @@ function InvocationDetailPage() {
 
       <section>
         <h2 className="mb-2 text-meta uppercase tracking-[0.06em] text-content-muted">
-          Sessions in this invocation
+          Sessions in this run
         </h2>
         <div className="overflow-x-auto rounded border border-edge bg-surface-raised shadow-card">
           <table className="w-full text-left text-body">
@@ -118,7 +118,7 @@ function InvocationDetailPage() {
               {data.sessions.length === 0 ? (
                 <tr>
                   <td colSpan={6} className="px-3 py-8 text-center text-meta text-content-muted">
-                    No sessions spawned under this invocation yet.
+                    No sessions spawned under this run yet.
                   </td>
                 </tr>
               ) : (

@@ -14,7 +14,7 @@ import {
   listShows,
   type EngineRunSummary,
 } from "@/lib/api";
-import type { ScheduleRunSummary, ScheduleSummary, RunSummary } from "@/lib/types";
+import type { ScheduleRunSummary, ScheduleSummary, RunSummary, ShowSummary } from "@/lib/types";
 import { deriveRunStatus, type DerivedStatus, type RunSource } from "@/lib/derive-run-status";
 
 export interface RunReason {
@@ -49,11 +49,46 @@ export interface Run {
   reason?: RunReason;
 }
 
+// One entry per source (plus the cross-cutting health probe) that failed to
+// load — the canvas renders this as a visible "some data may be missing"
+// notice instead of silently collapsing a partial result into "no runs".
+export type SourceKey = RunSource | "health";
+export type SourceErrors = Partial<Record<SourceKey, string>>;
+
+export interface AggregateRunsResult {
+  runs: Run[];
+  sourceErrors: SourceErrors;
+}
+
 function toEpochSeconds(value: string | number | null | undefined): number | null {
   if (value == null) return null;
   if (typeof value === "number") return value;
   const parsed = Date.parse(value);
   return Number.isNaN(parsed) ? null : Math.floor(parsed / 1000);
+}
+
+function errorMessage(err: unknown): string {
+  return err instanceof Error ? err.message : String(err);
+}
+
+// Runs a fan-out with at most `limit` requests in flight at once — the
+// per-schedule and per-show detail fetches would otherwise issue one
+// request per row with no ceiling.
+async function mapWithConcurrency<T, R>(
+  items: T[],
+  limit: number,
+  fn: (item: T) => Promise<R>,
+): Promise<R[]> {
+  const results: R[] = new Array(items.length);
+  let cursor = 0;
+  async function worker() {
+    while (cursor < items.length) {
+      const index = cursor++;
+      results[index] = await fn(items[index]);
+    }
+  }
+  await Promise.all(Array.from({ length: Math.min(limit, items.length) }, () => worker()));
+  return results;
 }
 
 function fromAgentRun(run: RunSummary, now: number, unhealthy: Map<string, boolean>): Run {
@@ -174,7 +209,8 @@ function fromPlay(
     status,
     isSlow,
     // Shows/plays carry no project association in the current data model —
-    // they're global, so this Run is invisible to project scoping either way.
+    // they're global. When a project scope is active this source is
+    // excluded upstream (see aggregateRuns) rather than shown unfiltered.
     project: null,
     startedAt,
     endedAt,
@@ -206,6 +242,7 @@ function fromEngineRun(er: EngineRunSummary, now: number): Run {
     status,
     isSlow,
     // Engine runs carry no project association in the current data model.
+    // Excluded upstream when a project scope is active (see aggregateRuns).
     project: null,
     startedAt: er.started_at,
     endedAt: er.ended_at,
@@ -226,16 +263,52 @@ export interface AggregateRunsOptions {
   limit?: number;
 }
 
-export async function aggregateRuns(opts: AggregateRunsOptions = {}): Promise<Run[]> {
+// Caps for sources whose list endpoints have no server-side limit (schedules,
+// shows). Applied client-side, most-recently-active first, before the
+// per-row detail fan-out — this is what keeps the default canvas query from
+// costing one request per schedule/show in a large deployment.
+const MAX_SCHEDULES = 30;
+const MAX_SHOWS = 20;
+const SCHEDULE_RUNS_PER_SCHEDULE = 20;
+const FANOUT_CONCURRENCY = 5;
+
+export async function aggregateRuns(opts: AggregateRunsOptions = {}): Promise<AggregateRunsResult> {
   const now = Math.floor(Date.now() / 1000);
   const limit = opts.limit ?? 300;
+  const project = opts.project || undefined;
+  const sourceErrors: SourceErrors = {};
+
+  // ADR-0093: the project lens scopes Operations fully. Schedules carry a
+  // project column and are filtered server-side. Shows and engine/flow runs
+  // carry no project association in the current data model, so — rather
+  // than show them unfiltered under an active project scope — they're
+  // excluded entirely while a project is selected. They remain visible with
+  // "All projects" selected, and Library is where global items stay listed
+  // regardless of project scope.
+  const includeGlobalSources = !project;
 
   const [agentResult, healthResult, schedulesResult, showsResult, engineRuns] = await Promise.all([
-    listRuns({ per_page: limit, project: opts.project || undefined }),
-    getAdminHealth().catch(() => null),
-    listSchedules({ project: opts.project || undefined }).catch(() => ({ schedules: [] })),
-    listShows().catch(() => []),
-    listEngineRuns({ limit }).catch(() => []),
+    listRuns({ per_page: limit, project }),
+    getAdminHealth().catch((err) => {
+      sourceErrors.health = errorMessage(err);
+      return null;
+    }),
+    listSchedules({ project }).catch((err) => {
+      sourceErrors.schedule = errorMessage(err);
+      return { schedules: [] as ScheduleSummary[] };
+    }),
+    includeGlobalSources
+      ? listShows().catch((err) => {
+          sourceErrors.script = errorMessage(err);
+          return [] as ShowSummary[];
+        })
+      : Promise.resolve([] as ShowSummary[]),
+    includeGlobalSources
+      ? listEngineRuns({ limit }).catch((err) => {
+          sourceErrors.flow = errorMessage(err);
+          return [] as EngineRunSummary[];
+        })
+      : Promise.resolve([] as EngineRunSummary[]),
   ]);
 
   const unhealthy = new Map<string, boolean>();
@@ -247,17 +320,45 @@ export async function aggregateRuns(opts: AggregateRunsOptions = {}): Promise<Ru
 
   const agentRuns = agentResult.runs.map((r) => fromAgentRun(r, now, unhealthy));
 
-  const scheduleRunLists = await Promise.all(
-    schedulesResult.schedules.map((schedule) =>
-      listScheduleRuns(schedule.id, { limit: Math.min(limit, 100) })
-        .then((res) => res.runs.map((run) => fromScheduleRun(run, schedule, now)))
-        .catch(() => [] as Run[]),
-    ),
-  );
+  const boundedSchedules = [...schedulesResult.schedules]
+    .sort((a, b) => (b.last_fired_at ?? b.created_at) - (a.last_fired_at ?? a.created_at))
+    .slice(0, MAX_SCHEDULES);
 
-  const showDetails = await Promise.all(
-    showsResult.map((show) => getShow(show.topic).catch(() => null)),
+  let scheduleFetchFailures = 0;
+  const scheduleRunLists = await mapWithConcurrency(
+    boundedSchedules,
+    FANOUT_CONCURRENCY,
+    (schedule) =>
+      listScheduleRuns(schedule.id, { limit: SCHEDULE_RUNS_PER_SCHEDULE })
+        .then((res) => res.runs.map((run) => fromScheduleRun(run, schedule, now)))
+        .catch(() => {
+          scheduleFetchFailures++;
+          return [] as Run[];
+        }),
   );
+  if (scheduleFetchFailures > 0) {
+    sourceErrors.schedule = `${scheduleFetchFailures} schedule${scheduleFetchFailures === 1 ? "" : "s"} failed to load its runs`;
+  }
+
+  const boundedShows = [...showsResult]
+    .sort((a, b) => {
+      const aTime = typeof a.last_update === "number" ? a.last_update : 0;
+      const bTime = typeof b.last_update === "number" ? b.last_update : 0;
+      return bTime - aTime;
+    })
+    .slice(0, MAX_SHOWS);
+
+  let showFetchFailures = 0;
+  const showDetails = await mapWithConcurrency(boundedShows, FANOUT_CONCURRENCY, (show) =>
+    getShow(show.topic).catch(() => {
+      showFetchFailures++;
+      return null;
+    }),
+  );
+  if (showFetchFailures > 0) {
+    sourceErrors.script = `${showFetchFailures} show${showFetchFailures === 1 ? "" : "s"} failed to load`;
+  }
+
   const scriptRuns: Run[] = [];
   for (const detail of showDetails) {
     if (!detail) continue;
@@ -270,5 +371,5 @@ export async function aggregateRuns(opts: AggregateRunsOptions = {}): Promise<Ru
 
   const all = [...agentRuns, ...scheduleRunLists.flat(), ...scriptRuns, ...flowRuns];
   all.sort((a, b) => (b.updatedAt ?? b.startedAt ?? 0) - (a.updatedAt ?? a.startedAt ?? 0));
-  return all;
+  return { runs: all, sourceErrors };
 }
