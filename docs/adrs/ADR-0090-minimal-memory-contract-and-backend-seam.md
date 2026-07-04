@@ -1,6 +1,6 @@
 # ADR-0090: Minimal Memory Contract and Pluggable Backend Seam
 
-**Status**: Proposed
+**Status**: Accepted
 **Date**: 2026-07-03
 
 ## Context
