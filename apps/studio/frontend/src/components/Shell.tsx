@@ -4,6 +4,14 @@ import { Suspense, useEffect, useState, type ReactNode } from "react";
 import Breadcrumb from "@/components/nav/Breadcrumb";
 import ProjectChip from "@/components/nav/ProjectChip";
 import { NAV_ITEMS, isRouteActive } from "@/components/nav/types";
+import {
+  IconChevrons,
+  IconClose,
+  IconMenu,
+  IconMoon,
+  IconSparkle,
+  IconSun,
+} from "@/components/icons";
 
 export interface ShellProps {
   children: ReactNode;
@@ -11,6 +19,7 @@ export interface ShellProps {
 
 const RAIL_COLLAPSED_KEY = "studio.railCollapsed";
 const DOCK_EXPANDED_KEY = "studio.dockExpanded";
+const THEME_KEY = "theme";
 
 function readStoredRailCollapsed(): boolean {
   try {
@@ -32,8 +41,7 @@ function BrandMark() {
   return (
     <span
       aria-hidden="true"
-      className="flex h-6 w-6 shrink-0 items-center justify-center rounded bg-gradient-to-br from-emerald-500 to-teal-600 text-[11px] font-bold text-white"
-      style={{ boxShadow: "0 1px 3px rgba(16,185,129,0.35)" }}
+      className="flex h-6 w-6 shrink-0 items-center justify-center rounded bg-accent text-[11px] font-bold text-accent-contrast"
     >
       L
     </span>
@@ -42,23 +50,19 @@ function BrandMark() {
 
 function ThemeToggle() {
   const t = useTranslations("nav");
-  const [dark, setDark] = useState(false);
+  // Dark is the default; light is the attribute override (DESIGN-SYSTEM.md §1.2).
+  const [dark, setDark] = useState(true);
 
   useEffect(() => {
-    // eslint-disable-next-line react-hooks/set-state-in-effect -- SSR hydration guard: reads DOM class unavailable during server render
-    setDark(document.documentElement.classList.contains("dark"));
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- SSR hydration guard: reads DOM attribute unavailable during server render
+    setDark(document.documentElement.getAttribute("data-theme") !== "light");
   }, []);
 
   function toggle() {
     const next = !dark;
     setDark(next);
-    if (next) {
-      document.documentElement.classList.add("dark");
-      localStorage.setItem("theme", "dark");
-    } else {
-      document.documentElement.classList.remove("dark");
-      localStorage.setItem("theme", "light");
-    }
+    document.documentElement.setAttribute("data-theme", next ? "dark" : "light");
+    localStorage.setItem(THEME_KEY, next ? "dark" : "light");
   }
 
   return (
@@ -67,47 +71,9 @@ function ThemeToggle() {
       onClick={toggle}
       aria-label={t("theme.toggle")}
       aria-pressed={dark}
-      className="flex h-6 w-6 shrink-0 items-center justify-center rounded text-content-muted hover:bg-interactive-secondary hover:text-content-primary transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-interactive-primary"
+      className="flex h-6 w-6 shrink-0 items-center justify-center rounded text-content-muted transition-colors hover:bg-surface-overlay hover:text-content-primary focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-accent"
     >
-      {dark ? (
-        // Sun icon
-        <svg
-          xmlns="http://www.w3.org/2000/svg"
-          width="14"
-          height="14"
-          viewBox="0 0 24 24"
-          fill="none"
-          stroke="currentColor"
-          strokeWidth="2"
-          strokeLinecap="round"
-          strokeLinejoin="round"
-        >
-          <circle cx="12" cy="12" r="5" />
-          <line x1="12" y1="1" x2="12" y2="3" />
-          <line x1="12" y1="21" x2="12" y2="23" />
-          <line x1="4.22" y1="4.22" x2="5.64" y2="5.64" />
-          <line x1="18.36" y1="18.36" x2="19.78" y2="19.78" />
-          <line x1="1" y1="12" x2="3" y2="12" />
-          <line x1="21" y1="12" x2="23" y2="12" />
-          <line x1="4.22" y1="19.78" x2="5.64" y2="18.36" />
-          <line x1="18.36" y1="5.64" x2="19.78" y2="4.22" />
-        </svg>
-      ) : (
-        // Moon icon
-        <svg
-          xmlns="http://www.w3.org/2000/svg"
-          width="14"
-          height="14"
-          viewBox="0 0 24 24"
-          fill="none"
-          stroke="currentColor"
-          strokeWidth="2"
-          strokeLinecap="round"
-          strokeLinejoin="round"
-        >
-          <path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z" />
-        </svg>
-      )}
+      {dark ? <IconSun width={14} height={14} /> : <IconMoon width={14} height={14} />}
     </button>
   );
 }
@@ -120,37 +86,27 @@ function RailToggle({ collapsed, onToggle }: { collapsed: boolean; onToggle: () 
       onClick={onToggle}
       aria-label={collapsed ? t("rail.expand") : t("rail.collapse")}
       aria-pressed={collapsed}
-      className="flex h-7 w-7 shrink-0 items-center justify-center rounded text-content-muted transition-colors hover:bg-interactive-secondary hover:text-content-primary focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-interactive-primary"
+      className="flex h-7 w-7 shrink-0 items-center justify-center rounded text-content-muted transition-colors hover:bg-surface-overlay hover:text-content-primary focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-accent"
     >
-      <svg
-        xmlns="http://www.w3.org/2000/svg"
-        width="14"
-        height="14"
-        viewBox="0 0 24 24"
-        fill="none"
-        stroke="currentColor"
-        strokeWidth="2"
-        strokeLinecap="round"
-        strokeLinejoin="round"
+      <IconChevrons
+        width={14}
+        height={14}
         className={["transition-transform duration-150", collapsed ? "rotate-180" : ""].join(" ")}
-      >
-        <polyline points="11 17 6 12 11 7" />
-        <polyline points="18 17 13 12 18 7" />
-      </svg>
+      />
     </button>
   );
 }
 
 function RailLink({
   href,
-  icon,
+  Icon,
   label,
   active,
   collapsed,
   onNavigate,
 }: {
   href: LinkProps["to"];
-  icon: string;
+  Icon: (typeof NAV_ITEMS)[number]["Icon"];
   label: string;
   active: boolean;
   collapsed: boolean;
@@ -162,14 +118,22 @@ function RailLink({
       onClick={onNavigate}
       title={collapsed ? label : undefined}
       className={[
-        "flex h-9 items-center gap-2.5 rounded px-2.5 text-label transition-colors duration-150 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-interactive-primary",
+        "relative flex h-9 items-center gap-2.5 rounded px-2.5 text-label transition-colors duration-150 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-accent",
         active
-          ? "bg-status-selected-bg font-semibold text-content-primary"
+          ? "bg-surface-overlay font-semibold text-content-primary"
           : "text-content-secondary hover:bg-surface-overlay hover:text-content-primary",
       ].join(" ")}
     >
+      {/* Amber left hairline — the active-item indicator (DESIGN-SYSTEM.md §5),
+          not a filled/colored icon. */}
+      {active && (
+        <span
+          aria-hidden="true"
+          className="absolute inset-y-1.5 left-0 w-0.5 rounded-r bg-accent"
+        />
+      )}
       <span aria-hidden="true" className="w-4 shrink-0 text-center">
-        {icon}
+        <Icon />
       </span>
       {!collapsed && <span className="truncate">{label}</span>}
     </Link>
@@ -184,6 +148,8 @@ const DOCK_EXPANDED_WIDTH = "w-72";
  * operator chat that also drives the UI, present on every surface. The
  * live panel + its daemon chat/signals wiring land in phase B — phase A
  * only reserves the collapsible slot so the layout doesn't shift later.
+ * This is the one legitimate overlay-drawer surface per the cockpit's
+ * master-detail rule (transient cross-space chat, not object detail).
  */
 function LeoDock({ expanded, onToggle }: { expanded: boolean; onToggle: () => void }) {
   const t = useTranslations("nav");
@@ -191,7 +157,7 @@ function LeoDock({ expanded, onToggle }: { expanded: boolean; onToggle: () => vo
     <aside
       aria-label={t("dock.ariaLabel")}
       className={[
-        "sticky top-0 hidden h-screen shrink-0 flex-col border-l border-edge bg-surface-nav transition-[width] duration-150 md:flex",
+        "sticky top-0 hidden h-screen shrink-0 flex-col border-l border-edge bg-surface-raised transition-[width] duration-150 md:flex",
         expanded ? DOCK_EXPANDED_WIDTH : DOCK_COLLAPSED_WIDTH,
       ].join(" ")}
     >
@@ -201,18 +167,14 @@ function LeoDock({ expanded, onToggle }: { expanded: boolean; onToggle: () => vo
           onClick={onToggle}
           aria-label={expanded ? t("dock.collapse") : t("dock.expand")}
           aria-pressed={expanded}
-          className="flex h-7 w-7 shrink-0 items-center justify-center rounded text-content-muted transition-colors hover:bg-interactive-secondary hover:text-content-primary focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-interactive-primary"
+          className="flex h-7 w-7 shrink-0 items-center justify-center rounded text-content-muted transition-colors hover:bg-surface-overlay hover:text-content-primary focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-accent"
         >
-          <span aria-hidden="true" className="text-[13px]">
-            ✦
-          </span>
+          <IconSparkle width={14} height={14} />
         </button>
       </div>
       {expanded && (
         <div className="flex flex-1 flex-col items-center justify-center gap-2 px-4 py-6 text-center">
-          <span aria-hidden="true" className="text-[20px] text-content-muted">
-            ✦
-          </span>
+          <IconSparkle width={20} height={20} className="text-content-muted" />
           <p className="text-label font-medium text-content-secondary">{t("dock.title")}</p>
           <p className="text-meta text-content-muted">{t("dock.comingSoon")}</p>
         </div>
@@ -265,7 +227,7 @@ export default function Shell({ children }: ShellProps) {
       <aside
         aria-label={t("primary.ariaLabel")}
         className={[
-          "sticky top-0 hidden h-screen shrink-0 flex-col border-r border-edge bg-surface-nav transition-[width] duration-150 md:flex",
+          "sticky top-0 hidden h-screen shrink-0 flex-col border-r border-edge bg-surface-raised transition-[width] duration-150 md:flex",
           collapsed ? "w-14" : "w-56",
         ].join(" ")}
       >
@@ -286,7 +248,7 @@ export default function Shell({ children }: ShellProps) {
             <RailLink
               key={item.href}
               href={item.href}
-              icon={item.icon}
+              Icon={item.Icon}
               label={t(item.i18nKey as Parameters<typeof t>[0])}
               active={isRouteActive(item, pathname)}
               collapsed={collapsed}
@@ -308,7 +270,7 @@ export default function Shell({ children }: ShellProps) {
           />
           <aside
             aria-label={t("primary.ariaLabel")}
-            className="fixed inset-y-0 left-0 z-50 flex w-64 flex-col border-r border-edge bg-surface-nav shadow-card md:hidden"
+            className="fixed inset-y-0 left-0 z-50 flex w-64 flex-col border-r border-edge bg-surface-raised md:hidden"
           >
             <div className="flex h-11 shrink-0 items-center gap-2 border-b border-edge px-3">
               <BrandMark />
@@ -319,22 +281,9 @@ export default function Shell({ children }: ShellProps) {
                 type="button"
                 aria-label={t("mobile.close")}
                 onClick={() => setMobileOpen(false)}
-                className="ml-auto flex h-7 w-7 items-center justify-center rounded text-content-muted hover:bg-interactive-secondary hover:text-content-primary focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-interactive-primary"
+                className="ml-auto flex h-7 w-7 items-center justify-center rounded text-content-muted hover:bg-surface-overlay hover:text-content-primary focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-accent"
               >
-                <svg
-                  xmlns="http://www.w3.org/2000/svg"
-                  width="16"
-                  height="16"
-                  viewBox="0 0 24 24"
-                  fill="none"
-                  stroke="currentColor"
-                  strokeWidth="2"
-                  strokeLinecap="round"
-                  strokeLinejoin="round"
-                >
-                  <line x1="18" y1="6" x2="6" y2="18" />
-                  <line x1="6" y1="6" x2="18" y2="18" />
-                </svg>
+                <IconClose width={16} height={16} />
               </button>
             </div>
             <nav className="flex flex-1 flex-col gap-0.5 overflow-y-auto px-2 py-2">
@@ -342,7 +291,7 @@ export default function Shell({ children }: ShellProps) {
                 <RailLink
                   key={item.href}
                   href={item.href}
-                  icon={item.icon}
+                  Icon={item.Icon}
                   label={t(item.i18nKey as Parameters<typeof t>[0])}
                   active={isRouteActive(item, pathname)}
                   collapsed={false}
@@ -356,32 +305,15 @@ export default function Shell({ children }: ShellProps) {
 
       {/* Main column */}
       <div className="flex min-w-0 flex-1 flex-col">
-        <header
-          className="sticky top-0 z-30 flex h-11 shrink-0 items-center gap-3 border-b border-edge bg-surface-nav px-4"
-          style={{ boxShadow: "var(--shadow-header)" }}
-        >
+        <header className="sticky top-0 z-30 flex h-11 shrink-0 items-center gap-3 border-b border-edge bg-surface-raised px-4 shadow-raised-soft">
           <button
             type="button"
             aria-label={t("mobile.open")}
             aria-expanded={mobileOpen}
             onClick={() => setMobileOpen(true)}
-            className="flex h-8 w-8 shrink-0 items-center justify-center rounded text-content-muted transition-colors hover:bg-interactive-secondary hover:text-content-primary focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-interactive-primary md:hidden"
+            className="flex h-8 w-8 shrink-0 items-center justify-center rounded text-content-muted transition-colors hover:bg-surface-overlay hover:text-content-primary focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-accent md:hidden"
           >
-            <svg
-              xmlns="http://www.w3.org/2000/svg"
-              width="18"
-              height="18"
-              viewBox="0 0 24 24"
-              fill="none"
-              stroke="currentColor"
-              strokeWidth="2"
-              strokeLinecap="round"
-              strokeLinejoin="round"
-            >
-              <line x1="3" y1="6" x2="21" y2="6" />
-              <line x1="3" y1="12" x2="21" y2="12" />
-              <line x1="3" y1="18" x2="21" y2="18" />
-            </svg>
+            <IconMenu width={18} height={18} />
           </button>
 
           {/* Mobile-only brand mark — the desktop rail already shows one */}

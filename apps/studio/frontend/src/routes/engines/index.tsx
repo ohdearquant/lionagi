@@ -30,7 +30,7 @@ const EXPORT_DIR_KINDS = new Set<string>(["coding", "hypothesis"]);
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
 function fieldClass() {
-  return "w-full rounded-md border border-edge bg-surface-base px-3 py-1.5 text-sm text-content-primary placeholder:text-content-muted focus:border-interactive-primary focus:outline-none focus:ring-1 focus:ring-interactive-primary";
+  return "w-full rounded-md border border-edge bg-surface-base px-3 py-1.5 text-sm text-content-primary placeholder:text-content-muted focus:border-accent focus:outline-none focus:ring-1 focus:ring-accent";
 }
 
 function labelClass() {
@@ -52,9 +52,9 @@ function SectionHeading({ children }: { children: React.ReactNode }) {
 // ─── Kind badge ───────────────────────────────────────────────────────────────
 
 const KIND_CLASS: Record<string, string> = {
-  research: "border-status-running/40 bg-status-running-bg text-status-running",
-  review: "border-status-warning/40 bg-status-warning-bg text-status-warning",
-  coding: "border-status-success/40 bg-status-success-bg text-status-success",
+  research: "border-status-running/40 bg-status-running/10 text-status-running",
+  review: "border-status-pending/40 bg-status-pending/10 text-status-pending",
+  coding: "border-status-success/40 bg-status-success/10 text-status-success",
   hypothesis:
     "border-purple-400/40 bg-purple-50 text-purple-700 dark:bg-purple-900/20 dark:text-purple-300",
   planning: "border-edge bg-surface-overlay text-content-secondary",
@@ -286,7 +286,7 @@ function CreateModal({ onClose, onCreated }: { onClose: () => void; onCreated: (
             </>
           )}
 
-          {err && <p className="text-sm text-status-error">{err}</p>}
+          {err && <p className="text-sm text-status-failure">{err}</p>}
 
           <div className="flex justify-end gap-2 pt-1">
             <Button variant="ghost" size="sm" type="button" onClick={onClose}>
@@ -349,7 +349,7 @@ function RunModal({ defn, onClose }: { defn: EngineDef; onClose: () => void }) {
         </p>
 
         {result ? (
-          <div className="rounded-md border border-status-success/40 bg-status-success-bg p-4">
+          <div className="rounded-md border border-status-success/40 bg-status-success/10 p-4">
             <p className="text-sm text-status-success">
               Launched — run <span className="font-mono">{result}…</span>
             </p>
@@ -368,7 +368,7 @@ function RunModal({ defn, onClose }: { defn: EngineDef; onClose: () => void }) {
               />
             </label>
 
-            {err && <p className="text-sm text-status-error">{err}</p>}
+            {err && <p className="text-sm text-status-failure">{err}</p>}
 
             <div className="flex justify-end gap-2 pt-1">
               <Button variant="ghost" size="sm" type="button" onClick={onClose}>
@@ -417,7 +417,7 @@ function EngineDefCard({ defn, onDeleted }: { defn: EngineDef; onDeleted: () => 
   return (
     <>
       {showRun && <RunModal defn={defn} onClose={() => setShowRun(false)} />}
-      <div className="flex flex-col gap-3 rounded-lg border border-edge bg-surface-raised p-4 shadow-card transition-all duration-150 hover:border-edge-strong hover:bg-surface-overlay">
+      <div className="flex flex-col gap-3 rounded-lg border border-edge bg-surface-raised p-4 transition-all duration-150 hover:border-edge-strong hover:bg-surface-overlay">
         {/* Header */}
         <div className="flex items-start justify-between gap-2">
           <div className="flex min-w-0 flex-1 flex-col gap-1">
@@ -516,7 +516,7 @@ function EnginesPage() {
       />
 
       {err && (
-        <div className="rounded-md border border-status-error/40 bg-status-error-bg p-3 text-sm text-status-error">
+        <div className="rounded-md border border-status-failure/40 bg-status-failure/10 p-3 text-sm text-status-failure">
           {err}
         </div>
       )}

@@ -31,13 +31,13 @@ const MAX_VISIBLE = 3;
 
 function borderColor(type: ToastType): string {
   if (type === "success") return "border-l-4 border-l-status-success";
-  if (type === "error") return "border-l-4 border-l-status-error";
+  if (type === "error") return "border-l-4 border-l-status-failure";
   return "border-l-4 border-l-status-running";
 }
 
 function iconColor(type: ToastType): string {
   if (type === "success") return "text-status-success";
-  if (type === "error") return "text-status-error";
+  if (type === "error") return "text-status-failure";
   return "text-status-running";
 }
 
@@ -65,7 +65,7 @@ function Toast({ item, onRemove }: { item: ToastItem; onRemove: (id: number) => 
           ? "translate-x-6 opacity-0 scale-95"
           : "translate-x-0 opacity-100 scale-100",
       ].join(" ")}
-      style={{ boxShadow: "var(--shadow-card-hover)" }}
+      style={{ boxShadow: "var(--shadow-raised-soft)" }}
     >
       <span className={`shrink-0 font-bold text-[11px] mt-0.5 ${iconColor(item.type)}`}>
         {iconGlyph(item.type)}

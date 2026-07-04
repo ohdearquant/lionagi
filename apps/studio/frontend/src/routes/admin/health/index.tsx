@@ -77,7 +77,7 @@ function AdminHealthPage() {
       <PageHeader title="Admin Health" subtitle="Read-only system diagnostics" density="tight" />
 
       {error && (
-        <div className="rounded border border-status-error/30 bg-status-error-bg px-3 py-2 text-body text-content-primary">
+        <div className="rounded border border-status-failure/30 bg-status-failure/10 px-3 py-2 text-body text-content-primary">
           {error}
         </div>
       )}
@@ -105,11 +105,11 @@ function AdminHealthPage() {
             </Link>
           </div>
           {doctor.phantom_sessions.length === 0 ? (
-            <div className="rounded border border-status-success/25 bg-status-success-bg px-4 py-4 text-body text-content-primary shadow-card">
+            <div className="rounded border border-status-success/25 bg-status-success/10 px-4 py-4 text-body text-content-primary">
               No phantom sessions detected.
             </div>
           ) : (
-            <div className="overflow-x-auto rounded border border-edge bg-surface-raised shadow-card">
+            <div className="overflow-x-auto rounded border border-edge bg-surface-raised">
               {/* Read-only mirror of the phantom table on /admin/maintenance.
                   Health shows what's happening; Maintenance is where the
                   mutating prune actions live (ADR-0032 §6). No checkboxes,
@@ -126,7 +126,7 @@ function AdminHealthPage() {
                   {doctor.phantom_sessions.map((p) => (
                     <tr
                       key={p.session_id}
-                      className="border-b border-edge-subtle text-content-secondary"
+                      className="border-b border-edge-hairline text-content-secondary"
                     >
                       <td className="px-3 py-2">
                         <div className="font-medium text-content-primary">{p.playbook ?? "—"}</div>
@@ -135,7 +135,7 @@ function AdminHealthPage() {
                         </div>
                       </td>
                       <td className="px-3 py-2">
-                        <span className="rounded border border-status-error/40 bg-status-error-bg px-1.5 py-0.5 text-meta text-content-primary">
+                        <span className="rounded border border-status-failure/40 bg-status-failure/10 px-1.5 py-0.5 text-meta text-content-primary">
                           {reasonLabel(p.reason)}
                         </span>
                       </td>

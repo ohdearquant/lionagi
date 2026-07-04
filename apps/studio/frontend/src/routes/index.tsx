@@ -245,7 +245,7 @@ function OperationsPage() {
         title="Operations"
         subtitle="What is happening, and what happened?"
         actions={
-          <div className="flex items-center gap-1 rounded border border-edge bg-surface-overlay p-0.5 shadow-card">
+          <div className="flex items-center gap-1 rounded border border-edge bg-surface-overlay p-0.5">
             {(["stream", "board", "table"] as const).map((v) => (
               <Button
                 key={v}
@@ -294,7 +294,7 @@ function OperationsPage() {
 
       <div className="flex flex-wrap items-center gap-2 border-b border-edge px-4 py-2">
         <select
-          className="h-7 rounded border border-edge bg-surface-input px-2 text-meta text-content-primary"
+          className="h-7 rounded border border-edge bg-surface-raised px-2 text-meta text-content-primary"
           value={status ?? ""}
           onChange={(e) => setSearch({ status: e.target.value || undefined })}
         >
@@ -306,7 +306,7 @@ function OperationsPage() {
           ))}
         </select>
         <select
-          className="h-7 rounded border border-edge bg-surface-input px-2 text-meta text-content-primary"
+          className="h-7 rounded border border-edge bg-surface-raised px-2 text-meta text-content-primary"
           value={search.source ?? ""}
           title={
             excludedSources.length > 0
@@ -353,7 +353,7 @@ function OperationsPage() {
           placeholder="Filter by name…"
           value={search.q ?? ""}
           onChange={(e) => setSearch({ q: e.target.value || undefined })}
-          className="h-7 min-w-[10rem] flex-1 rounded border border-edge bg-surface-input px-2 text-meta text-content-primary placeholder:text-content-muted"
+          className="h-7 min-w-[10rem] flex-1 rounded border border-edge bg-surface-raised px-2 text-meta text-content-primary placeholder:text-content-muted"
         />
         <Button
           size="sm"
@@ -365,19 +365,19 @@ function OperationsPage() {
       </div>
 
       {error && (
-        <div className="border-b border-edge bg-status-error-bg px-4 py-2 text-meta text-status-error">
+        <div className="border-b border-edge bg-status-failure/10 px-4 py-2 text-meta text-status-failure">
           API unreachable — {error}
         </div>
       )}
 
       {degradedSources.length > 0 && (
-        <div className="border-b border-edge bg-status-warning-bg px-4 py-2 text-meta text-status-warning">
+        <div className="border-b border-edge bg-status-pending/10 px-4 py-2 text-meta text-status-pending">
           Partial data — {degradedSources.join("; ")}. Some runs may be missing.
         </div>
       )}
 
       {staleSince != null && (
-        <div className="border-b border-edge bg-status-warning-bg px-4 py-2 text-meta text-status-warning">
+        <div className="border-b border-edge bg-status-pending/10 px-4 py-2 text-meta text-status-pending">
           Live refresh failed — showing the last known data (as of <Timestamp value={staleSince} />
           ).
         </div>
@@ -444,9 +444,9 @@ function AttentionChip({
   const toneClass: Record<StatusTone, string> = {
     ok: "border-status-success/40 text-status-success",
     running: "border-status-running/40 text-status-running",
-    failed: "border-status-error/40 text-status-error",
-    pending: "border-status-warning/40 text-status-warning",
-    blocked: "border-status-selected/40 text-status-selected",
+    failed: "border-status-failure/40 text-status-failure",
+    pending: "border-status-pending/40 text-status-pending",
+    blocked: "border-edge-strong/40 text-edge-strong",
     neutral: "border-edge text-content-muted",
   };
   return (
@@ -479,7 +479,7 @@ function RunRow({ run, onSelect }: { run: Run; onSelect: (id: string) => void })
       </span>
       <span className="flex-1 truncate text-body text-content-primary">{run.name}</span>
       {run.isSlow && (
-        <span className="rounded border border-status-warning/40 px-1.5 py-0.5 text-meta text-status-warning">
+        <span className="rounded border border-status-pending/40 px-1.5 py-0.5 text-meta text-status-pending">
           slow
         </span>
       )}
@@ -604,7 +604,7 @@ function BoardColumnList({ runs, onSelect }: { runs: Run[]; onSelect: (id: strin
                   <span className="font-data text-meta text-content-muted">
                     <Duration value={run.durationSeconds} fallback="—" />
                   </span>
-                  {run.isSlow && <span className="text-meta text-status-warning">slow</span>}
+                  {run.isSlow && <span className="text-meta text-status-pending">slow</span>}
                 </div>
               </button>
             </div>

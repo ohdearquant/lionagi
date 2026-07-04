@@ -105,7 +105,7 @@ function SummaryBlock({ label, value, tone }: { label: string; value: string; to
     <div>
       <dt className="text-meta uppercase tracking-[0.06em] text-content-muted">{label}</dt>
       <dd
-        className={`text-body ${tone === "failed" ? "text-status-error" : "text-content-primary"}`}
+        className={`text-body ${tone === "failed" ? "text-status-failure" : "text-content-primary"}`}
       >
         {value}
       </dd>
@@ -130,7 +130,7 @@ function ShowSummaryPanel({
 
   return (
     <div className="grid grid-cols-1 gap-3 md:grid-cols-3">
-      <section className="rounded border border-edge bg-surface-raised p-3 shadow-card">
+      <section className="rounded border border-edge bg-surface-raised p-3">
         <h3 className="text-meta uppercase tracking-[0.06em] text-content-muted">Roll-up</h3>
         {rollup ? (
           <dl className="mt-2 grid grid-cols-2 gap-x-3 gap-y-1 text-body">
@@ -158,7 +158,7 @@ function ShowSummaryPanel({
                 <span
                   className={
                     rollup.failed.length > 0
-                      ? "text-status-error tabular-nums"
+                      ? "text-status-failure tabular-nums"
                       : "text-content-muted tabular-nums"
                   }
                 >
@@ -178,7 +178,7 @@ function ShowSummaryPanel({
         )}
       </section>
 
-      <section className="rounded border border-edge bg-surface-raised p-3 shadow-card">
+      <section className="rounded border border-edge bg-surface-raised p-3">
         <h3 className="text-meta uppercase tracking-[0.06em] text-content-muted">Plan</h3>
         {showSummary ? (
           <dl className="mt-2 flex flex-col gap-1.5 text-body">
@@ -196,7 +196,7 @@ function ShowSummaryPanel({
         )}
       </section>
 
-      <section className="rounded border border-edge bg-surface-raised p-3 shadow-card">
+      <section className="rounded border border-edge bg-surface-raised p-3">
         <h3 className="text-meta uppercase tracking-[0.06em] text-content-muted">Action</h3>
         {hasBlockers || hasNext ? (
           <dl className="mt-2 flex flex-col gap-1.5 text-body">
@@ -211,7 +211,7 @@ function ShowSummaryPanel({
             <ul className="flex flex-col gap-1.5">
               {rollup.failed.map((play) => (
                 <li key={play.name} className="flex flex-col gap-0.5">
-                  <span className="font-mono text-body text-status-error">{play.name}</span>
+                  <span className="font-mono text-body text-status-failure">{play.name}</span>
                   <span className="text-meta text-content-secondary">
                     exit {play.meta.exit_code ?? "—"} —{" "}
                     {play.meta.exit_code === 124
@@ -335,7 +335,7 @@ function ShowDetailPage() {
       />
 
       {error && (
-        <div className="rounded border border-status-error/30 bg-status-error-bg px-3 py-2 text-body text-status-error">
+        <div className="rounded border border-status-failure/30 bg-status-failure/10 px-3 py-2 text-body text-status-failure">
           {error}
         </div>
       )}
@@ -410,7 +410,7 @@ function ShowDetailPage() {
                         return (
                           <React.Fragment key={play.name}>
                             <tr
-                              className="border-b border-edge-subtle text-content-secondary hover:bg-surface-overlay cursor-pointer"
+                              className="border-b border-edge-hairline text-content-secondary hover:bg-surface-overlay cursor-pointer"
                               onClick={() => setExpanded(isExpanded ? null : play.name)}
                             >
                               <td className="max-w-[12rem] truncate px-3 py-2 font-mono text-body text-content-primary">
@@ -503,7 +503,7 @@ function ShowDetailPage() {
                                           <Link
                                             to="/runs/$id"
                                             params={{ id: play.session_id }}
-                                            className="inline-flex items-center gap-1 text-body font-medium text-interactive-primary hover:underline"
+                                            className="inline-flex items-center gap-1 text-body font-medium text-accent hover:underline"
                                           >
                                             {play.session_name ?? play.session_id}
                                             <span aria-hidden="true">→</span>

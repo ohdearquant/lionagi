@@ -56,8 +56,8 @@ function StepNodeComponent({ data, selected }: NodeProps<StepNodeData>) {
         : status === "failed"
           ? "var(--dag-failed-border)"
           : selected
-            ? "var(--status-selected)"
-            : "var(--edge-default)";
+            ? "var(--edge-strong)"
+            : "var(--edge-hairline)";
 
   const bgColor =
     status === "running"
@@ -89,7 +89,7 @@ function StepNodeComponent({ data, selected }: NodeProps<StepNodeData>) {
           status === "running"
             ? "0 0 0 3px color-mix(in srgb, var(--dag-running-border) 18%, transparent)"
             : selected
-              ? "0 0 0 2px color-mix(in srgb, var(--status-selected) 22%, transparent)"
+              ? "0 0 0 2px color-mix(in srgb, var(--edge-strong) 22%, transparent)"
               : "0 1px 3px rgba(0,0,0,0.12)",
         transition: "border-color 0.2s, background 0.2s, box-shadow 0.2s",
       }}
@@ -100,7 +100,7 @@ function StepNodeComponent({ data, selected }: NodeProps<StepNodeData>) {
         style={{
           width: 8,
           height: 8,
-          background: "var(--edge-default)",
+          background: "var(--edge-hairline)",
           borderColor: "var(--surface-raised)",
           borderWidth: 1.5,
         }}
@@ -124,7 +124,7 @@ function StepNodeComponent({ data, selected }: NodeProps<StepNodeData>) {
         {status === "failed" && (
           <span
             className="shrink-0 text-[10px] font-semibold"
-            style={{ color: "var(--status-error)" }}
+            style={{ color: "var(--status-failure)" }}
           >
             ✕
           </span>
@@ -163,7 +163,7 @@ function StepNodeComponent({ data, selected }: NodeProps<StepNodeData>) {
             <span>{formatStepDuration(data.durationSeconds)}</span>
           ) : null}
           {(data.errorCount ?? 0) > 0 ? (
-            <span style={{ color: "var(--status-error)" }}>{data.errorCount} err</span>
+            <span style={{ color: "var(--status-failure)" }}>{data.errorCount} err</span>
           ) : null}
           {(data.toolCallCount ?? 0) > 0 ? <span>{data.toolCallCount} calls</span> : null}
         </div>
@@ -186,7 +186,7 @@ function StepNodeComponent({ data, selected }: NodeProps<StepNodeData>) {
         style={{
           width: 8,
           height: 8,
-          background: "var(--edge-default)",
+          background: "var(--edge-hairline)",
           borderColor: "var(--surface-raised)",
           borderWidth: 1.5,
         }}

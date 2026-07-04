@@ -14,10 +14,10 @@ export const Route = createFileRoute("/projects/")({
 // Source badge colours follow the same design vocabulary as StatusPill
 // but are simpler (no icon, static colours per source type).
 const SOURCE_CLASS: Record<string, string> = {
-  config: "border-status-running/40 bg-status-running-bg text-status-running",
-  override: "border-status-warning/40 bg-status-warning-bg text-status-warning",
-  git: "border-status-selected/40 bg-status-selected-bg text-status-selected",
-  studio: "border-status-success/40 bg-status-success-bg text-status-success",
+  config: "border-status-running/40 bg-status-running/10 text-status-running",
+  override: "border-status-pending/40 bg-status-pending/10 text-status-pending",
+  git: "border-edge-strong/40 bg-surface-overlay text-edge-strong",
+  studio: "border-status-success/40 bg-status-success/10 text-status-success",
 };
 
 function SourceBadge({ source }: { source: string }) {
@@ -79,19 +79,19 @@ function CreateProjectModal({
         if (e.target === e.currentTarget) onClose();
       }}
     >
-      <div className="w-full max-w-md rounded-lg border border-edge bg-surface-raised shadow-card p-5">
+      <div className="w-full max-w-md rounded-lg border border-edge bg-surface-raised p-5">
         <h2 className="mb-4 font-mono text-base font-semibold text-content-primary">New Project</h2>
         <form onSubmit={(e) => void handleSubmit(e)} className="flex flex-col gap-3">
           <label className="flex flex-col gap-1">
             <span className="text-meta text-content-secondary font-medium">
-              Name <span className="text-status-error">*</span>
+              Name <span className="text-status-failure">*</span>
             </span>
             <input
               type="text"
               value={name}
               onChange={(e) => setName(e.target.value)}
               placeholder="my-project"
-              className="h-8 rounded border border-edge bg-surface-base px-2.5 text-body text-content-primary placeholder:text-content-muted focus:border-interactive-primary focus:outline-none"
+              className="h-8 rounded border border-edge bg-surface-base px-2.5 text-body text-content-primary placeholder:text-content-muted focus:border-accent focus:outline-none"
             />
           </label>
           <label className="flex flex-col gap-1">
@@ -101,7 +101,7 @@ function CreateProjectModal({
               value={github}
               onChange={(e) => setGithub(e.target.value)}
               placeholder="https://github.com/org/repo"
-              className="h-8 rounded border border-edge bg-surface-base px-2.5 text-body text-content-primary placeholder:text-content-muted focus:border-interactive-primary focus:outline-none"
+              className="h-8 rounded border border-edge bg-surface-base px-2.5 text-body text-content-primary placeholder:text-content-muted focus:border-accent focus:outline-none"
             />
           </label>
           <label className="flex flex-col gap-1">
@@ -111,10 +111,10 @@ function CreateProjectModal({
               onChange={(e) => setDescription(e.target.value)}
               rows={2}
               placeholder="Short description..."
-              className="rounded border border-edge bg-surface-base px-2.5 py-1.5 text-body text-content-primary placeholder:text-content-muted focus:border-interactive-primary focus:outline-none resize-none"
+              className="rounded border border-edge bg-surface-base px-2.5 py-1.5 text-body text-content-primary placeholder:text-content-muted focus:border-accent focus:outline-none resize-none"
             />
           </label>
-          {error && <p className="text-meta text-status-error">{error}</p>}
+          {error && <p className="text-meta text-status-failure">{error}</p>}
           <div className="flex justify-end gap-2 pt-1">
             <Button variant="ghost" onClick={onClose} type="button">
               Cancel
@@ -133,7 +133,7 @@ function ProjectCard({ project }: { project: ProjectSummary }) {
   const navigate = useNavigate();
   return (
     <div
-      className="flex flex-col gap-2.5 rounded-lg border border-edge bg-surface-raised p-4 shadow-card transition-all duration-150 hover:border-edge-strong hover:bg-surface-overlay cursor-pointer"
+      className="flex flex-col gap-2.5 rounded-lg border border-edge bg-surface-raised p-4 transition-all duration-150 hover:border-edge-strong hover:bg-surface-overlay cursor-pointer"
       onClick={() => void navigate({ to: "/projects/$name", params: { name: project.name } })}
       role="link"
       tabIndex={0}
@@ -271,7 +271,7 @@ function ProjectsPageInner() {
       />
 
       {error && (
-        <div className="rounded border border-status-error/30 bg-status-error-bg px-3 py-2 text-body text-status-error">
+        <div className="rounded border border-status-failure/30 bg-status-failure/10 px-3 py-2 text-body text-status-failure">
           {error}
         </div>
       )}

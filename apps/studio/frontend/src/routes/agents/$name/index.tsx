@@ -129,7 +129,7 @@ function AgentDetailPage() {
       />
 
       {error ? (
-        <div className="rounded border border-status-error/30 bg-status-error-bg px-3 py-2 text-body text-status-error">
+        <div className="rounded border border-status-failure/30 bg-status-failure/10 px-3 py-2 text-body text-status-failure">
           {error}
         </div>
       ) : null}

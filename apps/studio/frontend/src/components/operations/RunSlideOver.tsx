@@ -21,7 +21,7 @@ export default function RunSlideOver({ run, onClose }: { run: Run; onClose: () =
       <aside
         role="dialog"
         aria-label={run.name}
-        className="fixed inset-y-0 right-0 z-50 flex w-full max-w-xl flex-col border-l border-edge bg-surface-raised shadow-card-hover"
+        className="fixed inset-y-0 right-0 z-50 flex w-full max-w-xl flex-col border-l border-edge bg-surface-raised"
       >
         <div className="flex items-center justify-between border-b border-edge px-4 py-3">
           <div className="min-w-0">
@@ -68,7 +68,7 @@ function TabButton({
       className={[
         "border-b-2 px-4 py-2 text-body transition-colors",
         active
-          ? "border-interactive-primary text-content-primary"
+          ? "border-accent text-content-primary"
           : "border-transparent text-content-muted hover:text-content-primary",
       ].join(" ")}
     >
@@ -79,7 +79,7 @@ function TabButton({
 
 function Field({ label, children }: { label: string; children: React.ReactNode }) {
   return (
-    <div className="flex items-center justify-between gap-4 border-b border-edge-subtle px-4 py-2">
+    <div className="flex items-center justify-between gap-4 border-b border-edge-hairline px-4 py-2">
       <span className="text-meta text-content-muted">{label}</span>
       <span className="font-data text-body text-content-primary">{children}</span>
     </div>
@@ -102,9 +102,9 @@ function OverviewTab({ run }: { run: Run }) {
       </Field>
       {run.reason?.exit_code != null && <Field label="Exit code">{run.reason.exit_code}</Field>}
       {run.reason?.error_detail && (
-        <div className="border-b border-edge-subtle px-4 py-2">
+        <div className="border-b border-edge-hairline px-4 py-2">
           <div className="mb-1 text-meta text-content-muted">Error detail</div>
-          <pre className="whitespace-pre-wrap break-words rounded border border-edge bg-surface-overlay p-2 font-data text-meta text-status-error">
+          <pre className="whitespace-pre-wrap break-words rounded border border-edge bg-surface-overlay p-2 font-data text-meta text-status-failure">
             {run.reason.error_detail}
           </pre>
         </div>
@@ -148,7 +148,7 @@ function OutputTab({ run }: { run: Run }) {
     );
   }
   if (error) {
-    return <div className="p-4 text-body text-status-error">{error}</div>;
+    return <div className="p-4 text-body text-status-failure">{error}</div>;
   }
   if (!session) {
     return <div className="p-4 text-body text-content-muted">Loading…</div>;

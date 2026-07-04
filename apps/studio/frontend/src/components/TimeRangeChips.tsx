@@ -31,7 +31,7 @@ export default function TimeRangeChips({ value, onChange, className }: TimeRange
       role="radiogroup"
       aria-label="Time range"
       className={[
-        "inline-flex items-center gap-0.5 rounded border border-edge bg-surface-overlay p-0.5 shadow-card",
+        "inline-flex items-center gap-0.5 rounded border border-edge bg-surface-overlay p-0.5",
         className,
       ]
         .filter(Boolean)

@@ -23,9 +23,9 @@ export const Route = createFileRoute("/schedules/")({
 // ─── Badge helpers ────────────────────────────────────────────────────────────
 
 const TRIGGER_CLASS: Record<string, string> = {
-  cron: "border-status-running/40 bg-status-running-bg text-status-running",
-  interval: "border-status-warning/40 bg-status-warning-bg text-status-warning",
-  github_poll: "border-status-success/40 bg-status-success-bg text-status-success",
+  cron: "border-status-running/40 bg-status-running/10 text-status-running",
+  interval: "border-status-pending/40 bg-status-pending/10 text-status-pending",
+  github_poll: "border-status-success/40 bg-status-success/10 text-status-success",
 };
 
 function TriggerBadge({ type }: { type: string }) {
@@ -114,7 +114,7 @@ function EnabledToggle({
       aria-pressed={enabled}
       title={enabled ? "Click to disable" : "Click to enable"}
       className={[
-        "relative inline-flex h-4 w-7 shrink-0 items-center rounded-full border transition-colors duration-150 focus:outline-none focus:ring-2 focus:ring-interactive-primary focus:ring-offset-1 focus:ring-offset-surface-base",
+        "relative inline-flex h-4 w-7 shrink-0 items-center rounded-full border transition-colors duration-150 focus:outline-none focus:ring-2 focus:ring-accent focus:ring-offset-1 focus:ring-offset-surface-base",
         enabled ? "border-status-success/50 bg-status-success" : "border-edge bg-surface-overlay",
         busy ? "opacity-60 cursor-not-allowed" : "cursor-pointer",
       ]
@@ -167,7 +167,7 @@ function ScheduleCard({
   return (
     <div
       className={[
-        "flex flex-col gap-3 rounded-lg border bg-surface-raised p-4 shadow-card transition-all duration-150",
+        "flex flex-col gap-3 rounded-lg border bg-surface-raised p-4 transition-all duration-150",
         enabled
           ? "border-edge hover:border-edge-strong hover:bg-surface-overlay"
           : "border-edge opacity-60 hover:opacity-80",
@@ -298,7 +298,7 @@ function RecentRunsTable({ runs }: { runs: ScheduleRunSummary[] }) {
               <td className="py-2 pr-4 text-content-secondary">
                 <Timestamp value={run.ended_at} />
               </td>
-              <td className="py-2 max-w-[200px] truncate text-meta text-status-error">
+              <td className="py-2 max-w-[200px] truncate text-meta text-status-failure">
                 {run.error_detail ?? "—"}
               </td>
             </tr>
@@ -357,7 +357,7 @@ const EMPTY_FORM: CreateForm = {
 function fieldClass(extra?: string) {
   return [
     "h-8 rounded border border-edge bg-surface-base px-2.5 text-body text-content-primary",
-    "placeholder:text-content-muted focus:border-interactive-primary focus:outline-none",
+    "placeholder:text-content-muted focus:border-accent focus:outline-none",
     extra,
   ]
     .filter(Boolean)
@@ -466,7 +466,7 @@ function CreateScheduleModal({
         if (e.target === e.currentTarget) onClose();
       }}
     >
-      <div className="w-full max-w-lg rounded-lg border border-edge bg-surface-raised shadow-card mx-4">
+      <div className="w-full max-w-lg rounded-lg border border-edge bg-surface-raised mx-4">
         {/* Modal header */}
         <div className="flex items-center justify-between border-b border-edge px-5 py-4">
           <h2 className="font-mono text-base font-semibold text-content-primary">New Schedule</h2>
@@ -487,7 +487,7 @@ function CreateScheduleModal({
 
           <label className={labelClass()}>
             <span className={labelTextClass()}>
-              Name <span className="text-status-error">*</span>
+              Name <span className="text-status-failure">*</span>
             </span>
             <input
               type="text"
@@ -642,7 +642,7 @@ function CreateScheduleModal({
               onChange={(e) => set("action_prompt", e.target.value)}
               rows={3}
               placeholder="Task prompt for the scheduled run..."
-              className="rounded border border-edge bg-surface-base px-2.5 py-1.5 text-body text-content-primary placeholder:text-content-muted focus:border-interactive-primary focus:outline-none resize-none"
+              className="rounded border border-edge bg-surface-base px-2.5 py-1.5 text-body text-content-primary placeholder:text-content-muted focus:border-accent focus:outline-none resize-none"
             />
           </label>
 
@@ -698,7 +698,7 @@ function CreateScheduleModal({
               onChange={(e) => set("on_success_json", e.target.value)}
               rows={2}
               placeholder='{"notify": "slack"}'
-              className="rounded border border-edge bg-surface-base px-2.5 py-1.5 font-mono text-[11px] text-content-primary placeholder:text-content-muted focus:border-interactive-primary focus:outline-none resize-none"
+              className="rounded border border-edge bg-surface-base px-2.5 py-1.5 font-mono text-[11px] text-content-primary placeholder:text-content-muted focus:border-accent focus:outline-none resize-none"
             />
           </label>
 
@@ -709,13 +709,13 @@ function CreateScheduleModal({
               onChange={(e) => set("on_fail_json", e.target.value)}
               rows={2}
               placeholder='{"notify": "pagerduty"}'
-              className="rounded border border-edge bg-surface-base px-2.5 py-1.5 font-mono text-[11px] text-content-primary placeholder:text-content-muted focus:border-interactive-primary focus:outline-none resize-none"
+              className="rounded border border-edge bg-surface-base px-2.5 py-1.5 font-mono text-[11px] text-content-primary placeholder:text-content-muted focus:border-accent focus:outline-none resize-none"
             />
           </label>
 
           {/* Error */}
           {error && (
-            <div className="rounded border border-status-error/30 bg-status-error-bg px-3 py-2 text-body text-status-error">
+            <div className="rounded border border-status-failure/30 bg-status-failure/10 px-3 py-2 text-body text-status-failure">
               {error}
             </div>
           )}
@@ -824,7 +824,7 @@ function SchedulesPageInner() {
       />
 
       {error && (
-        <div className="rounded border border-status-error/30 bg-status-error-bg px-3 py-2 text-body text-status-error">
+        <div className="rounded border border-status-failure/30 bg-status-failure/10 px-3 py-2 text-body text-status-failure">
           {error}
         </div>
       )}
@@ -853,7 +853,7 @@ function SchedulesPageInner() {
             <h2 className="font-mono text-sm font-semibold text-content-primary">Recent Runs</h2>
             {runsLoading && <span className="text-meta text-content-muted">Loading...</span>}
           </div>
-          <div className="rounded-lg border border-edge bg-surface-raised p-4 shadow-card">
+          <div className="rounded-lg border border-edge bg-surface-raised p-4">
             <RecentRunsTable runs={recentRuns} />
           </div>
         </section>

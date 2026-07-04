@@ -45,12 +45,12 @@ function statusBackground(status: string): string {
     status === "done" ||
     status === "director-managed-complete"
   ) {
-    return "var(--status-success-bg)";
+    return "var(--status-success/10)";
   }
   if (status === "running" || status === "director-managed") {
-    return "var(--status-running-bg)";
+    return "var(--status-running/10)";
   }
-  if (status === "failed" || status === "error") return "var(--status-error-bg)";
+  if (status === "failed" || status === "error") return "var(--status-failure/10)";
   return "var(--surface-raised)";
 }
 
@@ -66,7 +66,7 @@ function statusColor(status: string): string {
   if (status === "running" || status === "pending" || status === "director-managed") {
     return "var(--status-running)";
   }
-  if (status === "failed" || status === "error") return "var(--status-error)";
+  if (status === "failed" || status === "error") return "var(--status-failure)";
   return "var(--edge-strong)";
 }
 
@@ -170,7 +170,7 @@ export default function PlayDag({ plays, showMd, onNodeClick }: PlayDagProps) {
               source: dep,
               target: play.name,
               markerEnd: { type: MarkerType.ArrowClosed },
-              style: { stroke: "var(--edge-default)" },
+              style: { stroke: "var(--edge-hairline)" },
             });
           }
         }
@@ -219,7 +219,7 @@ export default function PlayDag({ plays, showMd, onNodeClick }: PlayDagProps) {
         proOptions={{ hideAttribution: true }}
         className="bg-surface-base"
       >
-        <Background color="var(--edge-subtle)" gap={20} size={1} />
+        <Background color="var(--edge-hairline)" gap={20} size={1} />
         <Controls
           showInteractive={false}
           className="!bg-surface-raised !border-edge !shadow-none [&>button]:!bg-surface-raised [&>button]:!border-edge [&>button]:!text-content-secondary [&>button:hover]:!bg-surface-overlay [&>button:hover]:!text-content-primary"

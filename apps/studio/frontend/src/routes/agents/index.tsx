@@ -124,7 +124,7 @@ function FrontmatterEditForm({ content, onChange }: FrontmatterEditFormProps) {
                 value={typeof fm.model === "string" ? fm.model : ""}
                 onChange={(e) => setField("model", e.target.value || undefined)}
                 placeholder="e.g. codex/gpt-5.5"
-                className="w-44 rounded border border-edge bg-surface-input px-2 py-1.5 font-mono text-meta text-content-primary placeholder-content-muted/50 focus:border-interactive-primary focus:outline-none focus:ring-1 focus:ring-interactive-primary/30"
+                className="w-44 rounded border border-edge bg-surface-raised px-2 py-1.5 font-mono text-meta text-content-primary placeholder-content-muted/50 focus:border-accent focus:outline-none focus:ring-1 focus:ring-accent/30"
               />
             </label>
             <label className="flex flex-col gap-1">
@@ -134,7 +134,7 @@ function FrontmatterEditForm({ content, onChange }: FrontmatterEditFormProps) {
               <select
                 value={typeof fm.effort === "string" ? fm.effort : ""}
                 onChange={(e) => setField("effort", e.target.value || undefined)}
-                className="rounded border border-edge bg-surface-input px-2 py-1.5 text-meta text-content-primary focus:border-interactive-primary focus:outline-none focus:ring-1 focus:ring-interactive-primary/30"
+                className="rounded border border-edge bg-surface-raised px-2 py-1.5 text-meta text-content-primary focus:border-accent focus:outline-none focus:ring-1 focus:ring-accent/30"
               >
                 {EFFORT_OPTIONS.map((opt) => (
                   <option key={opt} value={opt}>
@@ -155,7 +155,7 @@ function FrontmatterEditForm({ content, onChange }: FrontmatterEditFormProps) {
               <select
                 value={typeof fm.permission_mode === "string" ? fm.permission_mode : ""}
                 onChange={(e) => setField("permission_mode", e.target.value || undefined)}
-                className="rounded border border-edge bg-surface-input px-2 py-1.5 text-meta text-content-primary focus:border-interactive-primary focus:outline-none focus:ring-1 focus:ring-interactive-primary/30"
+                className="rounded border border-edge bg-surface-raised px-2 py-1.5 text-meta text-content-primary focus:border-accent focus:outline-none focus:ring-1 focus:ring-accent/30"
               >
                 {PERMISSION_MODE_OPTIONS.map((opt) => (
                   <option key={opt} value={opt}>
@@ -169,7 +169,7 @@ function FrontmatterEditForm({ content, onChange }: FrontmatterEditFormProps) {
                 type="checkbox"
                 checked={fm.yolo === true}
                 onChange={(e) => setField("yolo", e.target.checked || undefined)}
-                className="h-3.5 w-3.5 rounded border-edge accent-interactive-primary"
+                className="h-3.5 w-3.5 rounded border-edge accent-accent"
               />
               <span className="text-[10px] uppercase tracking-[0.08em] text-content-muted font-medium">
                 Yolo
@@ -180,7 +180,7 @@ function FrontmatterEditForm({ content, onChange }: FrontmatterEditFormProps) {
                 type="checkbox"
                 checked={fm.lion_system === true}
                 onChange={(e) => setField("lion_system", e.target.checked || undefined)}
-                className="h-3.5 w-3.5 rounded border-edge accent-interactive-primary"
+                className="h-3.5 w-3.5 rounded border-edge accent-accent"
               />
               <span className="text-[10px] uppercase tracking-[0.08em] text-content-muted font-medium">
                 Lion System
@@ -198,7 +198,7 @@ function FrontmatterEditForm({ content, onChange }: FrontmatterEditFormProps) {
           value={body}
           onChange={(e) => setBody(e.target.value)}
           spellCheck={false}
-          className="flex-1 min-h-[300px] resize-y rounded border border-edge bg-surface-input p-3 font-mono text-meta leading-relaxed text-content-primary placeholder-content-muted focus:border-interactive-primary focus:outline-none focus:ring-1 focus:ring-interactive-primary/30"
+          className="flex-1 min-h-[300px] resize-y rounded border border-edge bg-surface-raised p-3 font-mono text-meta leading-relaxed text-content-primary placeholder-content-muted focus:border-accent focus:outline-none focus:ring-1 focus:ring-accent/30"
           placeholder="Agent body (markdown)..."
         />
       </div>
@@ -269,7 +269,7 @@ function AgentList({
           value={searchQuery}
           onChange={(e) => onSearchChange(e.target.value)}
           placeholder="Filter agents..."
-          className="w-full rounded border border-edge bg-surface-input px-2 py-1 text-meta text-content-primary placeholder-content-muted focus:border-interactive-primary focus:outline-none"
+          className="w-full rounded border border-edge bg-surface-raised px-2 py-1 text-meta text-content-primary placeholder-content-muted focus:border-accent focus:outline-none"
         />
       </div>
 
@@ -290,7 +290,7 @@ function AgentList({
                 onClick={() => onSelect(agent.name)}
                 className={[
                   "w-full border-b border-edge px-3 py-2.5 text-left transition-colors hover:bg-surface-overlay",
-                  isSelected ? "bg-surface-overlay border-l-2 border-l-interactive-primary" : "",
+                  isSelected ? "bg-surface-overlay border-l-2 border-l-accent" : "",
                 ]
                   .filter(Boolean)
                   .join(" ")}
@@ -460,7 +460,7 @@ function AgentDetail({ agentName, agentProfile }: AgentDetailProps) {
   if (defError) {
     return (
       <div className="flex flex-1 flex-col gap-3 p-4">
-        <div className="rounded border border-status-error/30 bg-status-error-bg px-3 py-2 text-body text-status-error">
+        <div className="rounded border border-status-failure/30 bg-status-failure/10 px-3 py-2 text-body text-status-failure">
           {defError}
         </div>
         {agentProfile ? <AgentProfileFallback agent={agentProfile} /> : null}
@@ -510,7 +510,7 @@ function AgentDetail({ agentName, agentProfile }: AgentDetailProps) {
                 value={commitMessage}
                 onChange={(e) => setCommitMessage(e.target.value)}
                 placeholder="Commit message (optional)"
-                className="w-48 rounded border border-edge bg-surface-input px-2 py-1 text-meta text-content-primary placeholder-content-muted focus:border-interactive-primary focus:outline-none"
+                className="w-48 rounded border border-edge bg-surface-raised px-2 py-1 text-meta text-content-primary placeholder-content-muted focus:border-accent focus:outline-none"
               />
               <Button variant="primary" size="sm" onClick={handleSave} disabled={saving}>
                 {saving ? "Saving..." : "Save"}
@@ -536,7 +536,7 @@ function AgentDetail({ agentName, agentProfile }: AgentDetailProps) {
       </div>
 
       {saveError ? (
-        <div className="shrink-0 border-b border-status-error/30 bg-status-error-bg px-4 py-2 text-meta text-status-error">
+        <div className="shrink-0 border-b border-status-failure/30 bg-status-failure/10 px-4 py-2 text-meta text-status-failure">
           {saveError}
         </div>
       ) : null}

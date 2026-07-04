@@ -40,8 +40,8 @@ export default function ExpectedArtifacts({ contract, verification }: ExpectedAr
           </Badge>
         )}
       </div>
-      <div className="rounded border border-edge bg-surface-raised px-3 py-2 shadow-card">
-        <ul className="flex flex-col divide-y divide-edge-subtle">
+      <div className="rounded border border-edge bg-surface-raised px-3 py-2">
+        <ul className="flex flex-col divide-y divide-edge-hairline">
           {expected.map((entry) => {
             const produced = producedById.get(entry.id);
             const missing = missingRequired.has(entry.id) || missingOptional.has(entry.id);

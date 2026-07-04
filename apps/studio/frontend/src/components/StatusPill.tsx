@@ -186,12 +186,12 @@ const ICON_BY_KIND: Record<StatusKind, Partial<Record<StatusTone, string>>> = {
 // ─── Tone → utility classes ────────────────────────────────────────────────
 
 const TONE_CLASS: Record<StatusTone, string> = {
-  ok: "border-status-success/40 bg-status-success-bg text-status-success",
-  running: "border-status-running/40 bg-status-running-bg text-status-running",
-  failed: "border-status-error/40 bg-status-error-bg text-status-error",
-  pending: "border-status-warning/40 bg-status-warning-bg text-status-warning",
-  blocked: "border-status-selected/40 bg-status-selected-bg text-status-selected",
-  neutral: "border-status-neutral/40 bg-status-neutral-bg text-status-neutral",
+  ok: "border-status-success/40 bg-status-success/10 text-status-success",
+  running: "border-status-running/40 bg-status-running/10 text-status-running",
+  failed: "border-status-failure/40 bg-status-failure/10 text-status-failure",
+  pending: "border-status-pending/40 bg-status-pending/10 text-status-pending",
+  blocked: "border-edge-strong/40 bg-surface-overlay text-edge-strong",
+  neutral: "border-content-muted/40 bg-surface-overlay text-content-muted",
 };
 
 export default function StatusPill({
@@ -211,7 +211,7 @@ export default function StatusPill({
     <span
       title={typeof value === "string" ? value : undefined}
       className={[
-        "inline-flex max-w-full items-center gap-1 rounded-full border px-1.5 py-0.5 text-[10px] font-medium leading-none tracking-wide",
+        "inline-flex max-w-full items-center gap-1 rounded-full border px-1.5 py-0.5 text-meta font-medium leading-none tracking-wide",
         TONE_CLASS[resolvedTone],
         className,
       ]

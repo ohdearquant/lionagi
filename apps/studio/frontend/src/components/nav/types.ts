@@ -1,10 +1,11 @@
 import type { LinkProps } from "@tanstack/react-router";
+import { IconTarget, IconGrid, IconGear } from "@/components/icons";
 
 export interface NavItem {
   label: string;
   href: LinkProps["to"];
-  /** Single glyph shown in the rail. */
-  icon: string;
+  /** One-SVG-contract icon shown in the rail (DESIGN-SYSTEM.md §6). */
+  Icon: typeof IconTarget;
   /** i18n key under the `nav.surfaces` namespace. */
   i18nKey: string;
   match?: (pathname: string) => boolean;
@@ -29,20 +30,20 @@ export const NAV_ITEMS: NavItem[] = [
   {
     label: "Operations",
     href: "/",
-    icon: "▶",
+    Icon: IconTarget,
     i18nKey: "surfaces.operations",
     match: (pathname) => pathname === "/",
   },
   {
     label: "Library",
     href: "/library",
-    icon: "▤",
+    Icon: IconGrid,
     i18nKey: "surfaces.library",
   },
   {
     label: "System",
     href: "/system",
-    icon: "⚙",
+    Icon: IconGear,
     i18nKey: "surfaces.system",
   },
 ];

@@ -13,10 +13,10 @@ export const Route = createFileRoute("/projects/$name/")({
 
 // Source badge colours mirror the list page
 const SOURCE_CLASS: Record<string, string> = {
-  config: "border-status-running/40 bg-status-running-bg text-status-running",
-  override: "border-status-warning/40 bg-status-warning-bg text-status-warning",
-  git: "border-status-selected/40 bg-status-selected-bg text-status-selected",
-  studio: "border-status-success/40 bg-status-success-bg text-status-success",
+  config: "border-status-running/40 bg-status-running/10 text-status-running",
+  override: "border-status-pending/40 bg-status-pending/10 text-status-pending",
+  git: "border-edge-strong/40 bg-surface-overlay text-edge-strong",
+  studio: "border-status-success/40 bg-status-success/10 text-status-success",
 };
 
 function SourceBadge({ source }: { source: string }) {
@@ -66,7 +66,7 @@ function UsageTable({
             {rows.map((r) => (
               <tr
                 key={r.name}
-                className="border-b border-edge-subtle text-content-secondary hover:bg-surface-overlay transition-colors duration-100"
+                className="border-b border-edge-hairline text-content-secondary hover:bg-surface-overlay transition-colors duration-100"
               >
                 <td className="px-3 py-2 font-mono text-[12px] text-content-primary">{r.name}</td>
                 <td className="px-3 py-2 tabular-nums">{r.count}</td>
@@ -129,7 +129,7 @@ function EditForm({
             value={github}
             onChange={(e) => setGithub(e.target.value)}
             placeholder="https://github.com/org/repo"
-            className="h-8 rounded border border-edge bg-surface-base px-2.5 text-body text-content-primary placeholder:text-content-muted focus:border-interactive-primary focus:outline-none"
+            className="h-8 rounded border border-edge bg-surface-base px-2.5 text-body text-content-primary placeholder:text-content-muted focus:border-accent focus:outline-none"
           />
         </label>
         <label className="flex flex-col gap-1">
@@ -139,10 +139,10 @@ function EditForm({
             onChange={(e) => setDescription(e.target.value)}
             rows={3}
             placeholder="Short description..."
-            className="rounded border border-edge bg-surface-base px-2.5 py-1.5 text-body text-content-primary placeholder:text-content-muted focus:border-interactive-primary focus:outline-none resize-none"
+            className="rounded border border-edge bg-surface-base px-2.5 py-1.5 text-body text-content-primary placeholder:text-content-muted focus:border-accent focus:outline-none resize-none"
           />
         </label>
-        {error && <p className="text-meta text-status-error">{error}</p>}
+        {error && <p className="text-meta text-status-failure">{error}</p>}
         {saved && <p className="text-meta text-status-success">Saved.</p>}
         <div className="flex justify-end">
           <Button variant="primary" type="submit" disabled={submitting}>
@@ -182,7 +182,7 @@ function DeleteButton({ name, onDeleted }: { name: string; onDeleted: () => void
         <Button variant="ghost" size="sm" onClick={() => setConfirming(false)}>
           Cancel
         </Button>
-        {error && <span className="text-meta text-status-error">{error}</span>}
+        {error && <span className="text-meta text-status-failure">{error}</span>}
       </div>
     );
   }
@@ -239,7 +239,7 @@ function ProjectDetailInner() {
   if (error || !project) {
     return (
       <main className="mx-auto flex w-full max-w-5xl flex-col gap-5 px-4 py-6">
-        <div className="rounded border border-status-error/30 bg-status-error-bg px-3 py-2 text-body text-status-error">
+        <div className="rounded border border-status-failure/30 bg-status-failure/10 px-3 py-2 text-body text-status-failure">
           {error ?? "Project not found."}
         </div>
         <Link to="/projects" className="text-meta text-status-running hover:underline">
@@ -357,7 +357,7 @@ function ProjectDetailInner() {
       {project.source === "studio" && (
         <section className="flex flex-col gap-2">
           <h2 className="font-mono text-[13px] font-semibold text-content-primary">Danger Zone</h2>
-          <div className="rounded border border-status-error/30 bg-status-error-bg p-4">
+          <div className="rounded border border-status-failure/30 bg-status-failure/10 p-4">
             <DeleteButton
               name={project.name}
               onDeleted={() => void navigate({ to: "/projects" })}

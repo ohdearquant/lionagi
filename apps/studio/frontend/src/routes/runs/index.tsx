@@ -160,7 +160,7 @@ function StatusFilterChip({
 
 function SkeletonRow() {
   return (
-    <tr className="border-b border-edge-subtle">
+    <tr className="border-b border-edge-hairline">
       {[60, 28, 20, 20, 28, 52].map((w, i) => (
         <td key={i} className="px-3 py-2.5">
           <div
@@ -185,7 +185,7 @@ function SessionRow({
   const prov = provenanceLabel(run);
   const durSec = durationSeconds(run, now);
   return (
-    <tr className="border-b border-edge-subtle text-content-secondary transition-colors duration-100 hover:bg-surface-overlay">
+    <tr className="border-b border-edge-hairline text-content-secondary transition-colors duration-100 hover:bg-surface-overlay">
       <td className={`px-3 py-2 ${indent ? "pl-8" : ""}`}>
         <Link
           to="/runs/$id"
@@ -471,7 +471,7 @@ function RunsPageInner() {
               value={playbookInput}
               onChange={(e) => setPlaybookInput(e.target.value)}
               onKeyDown={(e) => e.key === "Enter" && applyPlaybookFilter()}
-              className="h-7 rounded border border-edge bg-surface-raised px-2.5 text-meta text-content-primary placeholder:text-content-muted focus:border-interactive-primary focus:outline-none"
+              className="h-7 rounded border border-edge bg-surface-raised px-2.5 text-meta text-content-primary placeholder:text-content-muted focus:border-accent focus:outline-none"
             />
             <Button size="sm" variant="secondary" onClick={applyPlaybookFilter}>
               Search
@@ -504,18 +504,18 @@ function RunsPageInner() {
       </div>
 
       {error && viewMode !== "engines" && (
-        <div className="rounded border border-status-error/30 bg-status-error-bg px-3 py-2 text-body text-status-error">
+        <div className="rounded border border-status-failure/30 bg-status-failure/10 px-3 py-2 text-body text-status-failure">
           {error}
         </div>
       )}
       {engineError && viewMode === "engines" && (
-        <div className="rounded border border-status-error/30 bg-status-error-bg px-3 py-2 text-body text-status-error">
+        <div className="rounded border border-status-failure/30 bg-status-failure/10 px-3 py-2 text-body text-status-failure">
           {engineError}
         </div>
       )}
 
       {viewMode === "engines" && (
-        <div className="overflow-x-auto rounded border border-edge bg-surface-raised shadow-card">
+        <div className="overflow-x-auto rounded border border-edge bg-surface-raised">
           <table aria-busy={engineLoading} className="w-full text-left text-body">
             <thead>
               <tr className="border-b border-edge bg-surface-overlay text-meta uppercase tracking-[0.06em] text-content-muted">
@@ -550,7 +550,7 @@ function RunsPageInner() {
                   return (
                     <tr
                       key={er.id}
-                      className="border-b border-edge-subtle text-content-secondary transition-colors duration-100 hover:bg-surface-overlay"
+                      className="border-b border-edge-hairline text-content-secondary transition-colors duration-100 hover:bg-surface-overlay"
                     >
                       <td className="px-3 py-2">
                         <span className="font-mono text-meta text-content-muted">
@@ -604,7 +604,7 @@ function RunsPageInner() {
         className={
           viewMode === "engines"
             ? "hidden"
-            : "overflow-x-auto rounded border border-edge bg-surface-raised shadow-card"
+            : "overflow-x-auto rounded border border-edge bg-surface-raised"
         }
       >
         <table aria-busy={loading} className="w-full text-left text-body">
@@ -655,7 +655,7 @@ function RunsPageInner() {
                           tabIndex={0}
                           aria-expanded={isExpanded}
                           aria-label={`Invocation ${group.invocation_id.slice(-8)}, ${group.sessions.length} session${group.sessions.length !== 1 ? "s" : ""}`}
-                          className="border-b border-edge-subtle bg-surface-overlay/50 text-content-primary cursor-pointer transition-colors duration-100 hover:bg-surface-overlay"
+                          className="border-b border-edge-hairline bg-surface-overlay/50 text-content-primary cursor-pointer transition-colors duration-100 hover:bg-surface-overlay"
                           onClick={() => toggleExpand(group.invocation_id)}
                           onKeyDown={(e) => {
                             if (e.key === "Enter" || e.key === " ") {

@@ -125,7 +125,7 @@ export default function ProjectChip() {
         aria-checked={currentProject === p.name}
         onClick={() => selectProject(p.name)}
         className={[
-          "flex w-full items-center justify-between px-3 py-2 text-left text-body transition-colors duration-150 hover:bg-surface-overlay hover:text-content-primary focus:bg-surface-overlay focus:outline-none focus-visible:ring-1 focus-visible:ring-interactive-primary",
+          "flex w-full items-center justify-between px-3 py-2 text-left text-body transition-colors duration-150 hover:bg-surface-overlay hover:text-content-primary focus:bg-surface-overlay focus:outline-none focus-visible:ring-1 focus-visible:ring-accent",
           currentProject === p.name
             ? "font-semibold text-content-primary"
             : muted
@@ -153,7 +153,7 @@ export default function ProjectChip() {
         aria-haspopup="menu"
         aria-expanded={open}
         aria-controls={menuId}
-        className="h-6 rounded border border-edge bg-surface-nav px-1.5 text-[11px] text-content-secondary focus:border-interactive-primary focus:outline-none hover:border-edge-strong transition-colors cursor-pointer focus-visible:ring-1 focus-visible:ring-interactive-primary"
+        className="h-6 rounded border border-edge bg-surface-raised px-1.5 text-[11px] text-content-secondary focus:border-accent focus:outline-none hover:border-edge-strong transition-colors cursor-pointer focus-visible:ring-1 focus-visible:ring-accent"
       >
         {chipLabel}
       </button>
@@ -166,7 +166,7 @@ export default function ProjectChip() {
           role="menu"
           aria-label={t("projectChip.ariaLabel")}
           onKeyDown={handleMenuKeyDown}
-          className="absolute right-0 top-full z-50 mt-1 max-h-96 w-64 overflow-y-auto rounded border border-edge bg-surface-nav py-1 shadow-card"
+          className="absolute right-0 top-full z-50 mt-1 max-h-96 w-64 overflow-y-auto rounded border border-edge bg-surface-raised py-1"
         >
           <button
             type="button"
@@ -174,7 +174,7 @@ export default function ProjectChip() {
             aria-checked={currentProject === ""}
             onClick={() => selectProject("")}
             className={[
-              "flex w-full items-center justify-between px-3 py-2 text-left text-body transition-colors duration-150 hover:bg-surface-overlay hover:text-content-primary focus:bg-surface-overlay focus:outline-none focus-visible:ring-1 focus-visible:ring-interactive-primary",
+              "flex w-full items-center justify-between px-3 py-2 text-left text-body transition-colors duration-150 hover:bg-surface-overlay hover:text-content-primary focus:bg-surface-overlay focus:outline-none focus-visible:ring-1 focus-visible:ring-accent",
               currentProject === ""
                 ? "font-semibold text-content-primary"
                 : "text-content-secondary",
@@ -193,7 +193,7 @@ export default function ProjectChip() {
                   role="menuitem"
                   aria-expanded={othersOpen}
                   onClick={() => setOthersOpenOverride(!othersOpen)}
-                  className="flex w-full items-center justify-between px-3 py-1.5 text-left text-meta text-content-muted transition-colors duration-150 hover:bg-surface-overlay hover:text-content-secondary focus:bg-surface-overlay focus:outline-none focus-visible:ring-1 focus-visible:ring-interactive-primary"
+                  className="flex w-full items-center justify-between px-3 py-1.5 text-left text-meta text-content-muted transition-colors duration-150 hover:bg-surface-overlay hover:text-content-secondary focus:bg-surface-overlay focus:outline-none focus-visible:ring-1 focus-visible:ring-accent"
                 >
                   <span>{t("projectChip.otherContexts", { count: others.length })}</span>
                   <span aria-hidden="true">{othersOpen ? "▾" : "▸"}</span>
@@ -208,7 +208,7 @@ export default function ProjectChip() {
               to="/projects"
               role="menuitem"
               onClick={() => setOpen(false)}
-              className="block px-3 py-2 text-body text-content-secondary transition-colors duration-150 hover:bg-surface-overlay hover:text-content-primary focus:bg-surface-overlay focus:outline-none focus-visible:ring-1 focus-visible:ring-interactive-primary"
+              className="block px-3 py-2 text-body text-content-secondary transition-colors duration-150 hover:bg-surface-overlay hover:text-content-primary focus:bg-surface-overlay focus:outline-none focus-visible:ring-1 focus-visible:ring-accent"
             >
               {t("projectChip.viewAll")}
             </Link>

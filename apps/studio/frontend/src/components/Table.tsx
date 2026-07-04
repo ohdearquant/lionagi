@@ -145,7 +145,7 @@ export default function Table<T>({
   };
 
   return (
-    <div className="overflow-x-auto rounded border border-edge bg-surface-raised shadow-card">
+    <div className="overflow-x-auto rounded border border-edge bg-surface-raised">
       <table className="min-w-full table-fixed border-collapse text-body">
         <thead className="border-b border-edge bg-surface-overlay text-meta uppercase tracking-[0.06em] text-content-muted">
           <tr>
@@ -213,7 +213,7 @@ export default function Table<T>({
               role={onRowClick ? "button" : undefined}
               tabIndex={onRowClick ? 0 : undefined}
               className={[
-                "border-b border-edge-subtle text-content-secondary transition-colors duration-100",
+                "border-b border-edge-hairline text-content-secondary transition-colors duration-100",
                 onRowClick ? "cursor-pointer hover:bg-surface-overlay" : "",
                 rowClassName?.(row, index),
               ]

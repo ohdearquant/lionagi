@@ -326,7 +326,7 @@ export default function WorkerCanvas({
           proOptions={{ hideAttribution: true }}
           className="bg-surface-base"
         >
-          <Background color="var(--edge-subtle)" gap={20} size={1} />
+          <Background color="var(--edge-hairline)" gap={20} size={1} />
           <Controls
             showInteractive={false}
             className="!bg-surface-raised !border-edge !shadow-none [&>button]:!bg-surface-raised [&>button]:!border-edge [&>button]:!text-content-secondary [&>button:hover]:!bg-surface-overlay [&>button:hover]:!text-content-primary"
@@ -364,13 +364,13 @@ export default function WorkerCanvas({
           <div className="absolute bottom-4 left-4 flex items-center gap-2 z-10">
             <button
               onClick={onAddStep}
-              className="rounded-md bg-interactive-secondary px-3 py-1.5 text-xs font-medium text-content-primary hover:bg-interactive-secondary-hover"
+              className="rounded-md bg-surface-raised px-3 py-1.5 text-xs font-medium text-content-primary hover:bg-surface-overlay"
             >
               + Add Step
             </button>
             <button
               onClick={handleAutoLayout}
-              className="rounded-md bg-interactive-secondary px-3 py-1.5 text-xs font-medium text-content-primary hover:bg-interactive-secondary-hover"
+              className="rounded-md bg-surface-raised px-3 py-1.5 text-xs font-medium text-content-primary hover:bg-surface-overlay"
             >
               Auto Layout
             </button>

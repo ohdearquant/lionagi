@@ -29,11 +29,11 @@ const SECTION_LABEL = "text-label font-semibold text-content-primary";
 const SECTION_DESC = "text-meta text-content-muted";
 const FIELD_LABEL = "text-meta uppercase tracking-[0.06em] text-content-muted";
 const INPUT_CLS =
-  "w-full rounded border border-edge bg-surface-input px-3 py-1.5 text-body text-content-primary placeholder-content-muted focus:border-interactive-primary focus:outline-none";
+  "w-full rounded border border-edge bg-surface-raised px-3 py-1.5 text-body text-content-primary placeholder-content-muted focus:border-accent focus:outline-none";
 const SELECT_CLS =
-  "w-full rounded border border-edge bg-surface-input px-3 py-1.5 text-body text-content-primary focus:border-interactive-primary focus:outline-none";
+  "w-full rounded border border-edge bg-surface-raised px-3 py-1.5 text-body text-content-primary focus:border-accent focus:outline-none";
 const TEXTAREA_CLS =
-  "w-full resize-y rounded border border-edge bg-surface-input px-3 py-2 font-mono text-body text-content-primary placeholder-content-muted focus:border-interactive-primary focus:outline-none";
+  "w-full resize-y rounded border border-edge bg-surface-raised px-3 py-2 font-mono text-body text-content-primary placeholder-content-muted focus:border-accent focus:outline-none";
 
 function isProvider(value: string): value is Provider {
   return (PROVIDER_OPTIONS as readonly string[]).includes(value);
@@ -287,11 +287,11 @@ export default function AgentProfileForm({
 
       {/* Errors */}
       {errors.length > 0 ? (
-        <div className="rounded border border-status-error/40 bg-status-error-bg px-4 py-3">
-          <p className="text-meta font-semibold uppercase tracking-[0.06em] text-status-error">
+        <div className="rounded border border-status-failure/40 bg-status-failure/10 px-4 py-3">
+          <p className="text-meta font-semibold uppercase tracking-[0.06em] text-status-failure">
             Validation errors
           </p>
-          <ul className="mt-1 list-inside list-disc text-body text-status-error">
+          <ul className="mt-1 list-inside list-disc text-body text-status-failure">
             {errors.map((err, i) => (
               <li key={i}>{err}</li>
             ))}

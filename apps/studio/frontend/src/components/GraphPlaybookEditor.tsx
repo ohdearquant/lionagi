@@ -126,7 +126,7 @@ export default function GraphPlaybookEditor({ workerName }: { workerName: string
   if (loadError) {
     return (
       <main className="mx-auto max-w-7xl px-4 py-6">
-        <div className="rounded border border-status-error/30 bg-status-error-bg px-3 py-2 text-body text-status-error">
+        <div className="rounded border border-status-failure/30 bg-status-failure/10 px-3 py-2 text-body text-status-failure">
           {loadError}
         </div>
       </main>
@@ -143,7 +143,7 @@ export default function GraphPlaybookEditor({ workerName }: { workerName: string
 
   return (
     <div className="flex h-[calc(100vh-56px)] flex-col">
-      <div className="flex items-center gap-3 border-b border-edge bg-surface-nav px-4 py-2">
+      <div className="flex items-center gap-3 border-b border-edge bg-surface-raised px-4 py-2">
         <Link
           to="/playbooks/$name"
           params={{ name: workerName }}
@@ -162,7 +162,7 @@ export default function GraphPlaybookEditor({ workerName }: { workerName: string
 
         <button
           onClick={() => setShowModels((v) => !v)}
-          className="rounded-md bg-interactive-secondary px-3 py-1 text-meta text-content-secondary hover:bg-interactive-secondary-hover hover:text-content-primary"
+          className="rounded-md bg-surface-raised px-3 py-1 text-meta text-content-secondary hover:bg-surface-overlay hover:text-content-primary"
         >
           Models {showModels ? "▴" : "▾"}
         </button>
@@ -170,16 +170,16 @@ export default function GraphPlaybookEditor({ workerName }: { workerName: string
         <button
           onClick={handleSave}
           disabled={saving}
-          className="rounded-md bg-interactive-primary px-4 py-1 text-body font-medium text-content-inverse hover:bg-interactive-primary-hover disabled:cursor-not-allowed disabled:opacity-50"
+          className="rounded-md bg-accent px-4 py-1 text-body font-medium text-accent-contrast hover:bg-accent disabled:cursor-not-allowed disabled:opacity-50"
         >
           {saving ? "Saving..." : "Save"}
         </button>
       </div>
 
       {errors.length > 0 && (
-        <div className="border-b border-status-error/30 bg-status-error-bg px-4 py-2">
+        <div className="border-b border-status-failure/30 bg-status-failure/10 px-4 py-2">
           {errors.map((err, i) => (
-            <p key={i} className="text-meta text-status-error">
+            <p key={i} className="text-meta text-status-failure">
               {err}
             </p>
           ))}

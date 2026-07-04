@@ -74,7 +74,7 @@ function KindCard({ kind }: { kind: KindEntry }) {
   return (
     <Link
       to={kind.href}
-      className="flex flex-col gap-1.5 rounded-lg border border-edge bg-surface-raised p-4 shadow-card transition-all duration-150 hover:border-edge-strong hover:bg-surface-overlay"
+      className="flex flex-col gap-1.5 rounded-lg border border-edge bg-surface-raised p-4 transition-all duration-150 hover:border-edge-strong hover:bg-surface-overlay"
     >
       <span className="font-mono font-semibold text-content-primary text-[13px]">{kind.label}</span>
       <p className="text-meta text-content-secondary">{kind.description}</p>

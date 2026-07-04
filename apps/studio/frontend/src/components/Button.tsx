@@ -21,18 +21,18 @@ const SIZE_CLASS: Record<NonNullable<ButtonProps["size"]>, string> = {
 
 const VARIANT_CLASS: Record<ButtonVariant, string> = {
   primary:
-    "border border-interactive-primary bg-interactive-primary text-content-inverse hover:bg-interactive-primary-hover active:scale-[0.98] disabled:opacity-50 disabled:cursor-not-allowed",
+    "border border-accent bg-accent text-accent-contrast hover:brightness-110 active:scale-[0.98] disabled:opacity-50 disabled:cursor-not-allowed",
   secondary:
     "border border-edge bg-surface-raised text-content-primary hover:border-edge-strong hover:bg-surface-overlay active:scale-[0.98] disabled:opacity-50 disabled:cursor-not-allowed",
   ghost:
     "border border-transparent bg-transparent text-content-secondary hover:text-content-primary hover:bg-surface-overlay active:scale-[0.98] disabled:opacity-50 disabled:cursor-not-allowed",
   danger:
-    "border border-status-error/40 bg-status-error-bg text-status-error hover:bg-status-error/15 active:scale-[0.98] disabled:opacity-50 disabled:cursor-not-allowed",
+    "border border-status-failure/40 bg-status-failure/10 text-status-failure hover:bg-status-failure/15 active:scale-[0.98] disabled:opacity-50 disabled:cursor-not-allowed",
   toggle: "", // resolved at runtime
 };
 
 const TOGGLE_ON =
-  "border border-status-success/40 bg-status-success-bg text-status-success hover:bg-status-success/15";
+  "border border-status-success/40 bg-status-success/10 text-status-success hover:bg-status-success/15";
 const TOGGLE_OFF =
   "border border-edge bg-surface-raised text-content-muted hover:text-content-primary hover:border-edge-strong";
 
@@ -55,7 +55,7 @@ export default function Button({
       type={type}
       {...rest}
       className={[
-        "inline-flex items-center justify-center rounded font-medium transition-all duration-150 focus:outline-none focus:ring-2 focus:ring-interactive-primary focus:ring-offset-1 focus:ring-offset-surface-base",
+        "inline-flex items-center justify-center rounded font-medium transition-all duration-150 focus:outline-none focus:ring-2 focus:ring-accent focus:ring-offset-1 focus:ring-offset-surface-base",
         SIZE_CLASS[size],
         variantCls,
         className,

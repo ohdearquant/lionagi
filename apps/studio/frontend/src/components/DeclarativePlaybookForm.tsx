@@ -18,11 +18,11 @@ const SECTION_LABEL = "text-label font-semibold text-content-primary";
 const SECTION_DESC = "text-meta text-content-muted";
 const FIELD_LABEL = "text-meta uppercase tracking-[0.06em] text-content-muted";
 const INPUT_CLS =
-  "w-full rounded border border-edge bg-surface-input px-3 py-1.5 text-body text-content-primary placeholder-content-muted focus:border-interactive-primary focus:outline-none";
+  "w-full rounded border border-edge bg-surface-raised px-3 py-1.5 text-body text-content-primary placeholder-content-muted focus:border-accent focus:outline-none";
 const SELECT_CLS =
-  "w-full rounded border border-edge bg-surface-input px-3 py-1.5 text-body text-content-primary focus:border-interactive-primary focus:outline-none";
+  "w-full rounded border border-edge bg-surface-raised px-3 py-1.5 text-body text-content-primary focus:border-accent focus:outline-none";
 const TEXTAREA_CLS =
-  "w-full resize-y rounded border border-edge bg-surface-input px-3 py-2 font-mono text-body text-content-primary placeholder-content-muted focus:border-interactive-primary focus:outline-none";
+  "w-full resize-y rounded border border-edge bg-surface-raised px-3 py-2 font-mono text-body text-content-primary placeholder-content-muted focus:border-accent focus:outline-none";
 const CHECKBOX_LABEL = "flex items-center gap-2 text-meta text-content-secondary";
 
 export default function DeclarativePlaybookForm({
@@ -173,7 +173,7 @@ export default function DeclarativePlaybookForm({
               type="checkbox"
               checked={form.yolo}
               onChange={(e) => setForm((prev) => ({ ...prev, yolo: e.target.checked }))}
-              className="h-4 w-4 rounded border-edge bg-surface-input text-interactive-primary focus:ring-interactive-primary"
+              className="h-4 w-4 rounded border-edge bg-surface-raised text-accent focus:ring-accent"
             />
             <span>yolo (auto-approve tool calls)</span>
           </label>
@@ -182,7 +182,7 @@ export default function DeclarativePlaybookForm({
               type="checkbox"
               checked={form.showGraph}
               onChange={(e) => setForm((prev) => ({ ...prev, showGraph: e.target.checked }))}
-              className="h-4 w-4 rounded border-edge bg-surface-input text-interactive-primary focus:ring-interactive-primary"
+              className="h-4 w-4 rounded border-edge bg-surface-raised text-accent focus:ring-accent"
             />
             <span>show-graph (render DAG during run)</span>
           </label>
@@ -277,7 +277,7 @@ export default function DeclarativePlaybookForm({
                         type="button"
                         onClick={() => removeArg(i)}
                         aria-label={`Remove argument ${arg.name || i + 1}`}
-                        className="rounded px-2 py-1 text-meta text-content-muted hover:bg-surface-overlay hover:text-status-error"
+                        className="rounded px-2 py-1 text-meta text-content-muted hover:bg-surface-overlay hover:text-status-failure"
                       >
                         ✕
                       </button>
@@ -312,11 +312,11 @@ export default function DeclarativePlaybookForm({
 
       {/* Errors */}
       {errors.length > 0 ? (
-        <div className="rounded border border-status-error/40 bg-status-error-bg px-4 py-3">
-          <p className="text-meta font-semibold uppercase tracking-[0.06em] text-status-error">
+        <div className="rounded border border-status-failure/40 bg-status-failure/10 px-4 py-3">
+          <p className="text-meta font-semibold uppercase tracking-[0.06em] text-status-failure">
             Validation errors
           </p>
-          <ul className="mt-1 list-inside list-disc text-body text-status-error">
+          <ul className="mt-1 list-inside list-disc text-body text-status-failure">
             {errors.map((err, i) => (
               <li key={i}>{err}</li>
             ))}

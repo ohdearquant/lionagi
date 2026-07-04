@@ -60,12 +60,12 @@ function TeamsPage() {
       />
 
       {error && (
-        <div className="rounded border border-status-error/30 bg-status-error-bg px-3 py-2 text-body text-status-error">
+        <div className="rounded border border-status-failure/30 bg-status-failure/10 px-3 py-2 text-body text-status-failure">
           {error}
         </div>
       )}
 
-      <div className="overflow-x-auto rounded border border-edge bg-surface-raised shadow-card">
+      <div className="overflow-x-auto rounded border border-edge bg-surface-raised">
         <table className="w-full text-left text-body">
           <thead>
             <tr className="border-b border-edge bg-surface-overlay text-meta uppercase tracking-[0.06em] text-content-muted">
@@ -93,7 +93,7 @@ function TeamsPage() {
                   key={team.id}
                   tabIndex={0}
                   role="link"
-                  className="cursor-pointer border-b border-edge-subtle text-content-secondary transition-colors duration-100 hover:bg-surface-overlay focus:outline-none focus:ring-1 focus:ring-inset focus:ring-interactive-primary"
+                  className="cursor-pointer border-b border-edge-hairline text-content-secondary transition-colors duration-100 hover:bg-surface-overlay focus:outline-none focus:ring-1 focus:ring-inset focus:ring-accent"
                   onClick={() =>
                     void navigate({
                       to: "/teams/$id",

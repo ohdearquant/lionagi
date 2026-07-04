@@ -57,7 +57,7 @@ function PluginList({
           value={filter}
           onChange={(e) => onFilterChange(e.target.value)}
           placeholder="Filter plugins..."
-          className="w-full rounded border border-edge bg-surface-input px-2 py-1 text-body text-content-primary placeholder-content-muted focus:border-interactive-primary focus:outline-none"
+          className="w-full rounded border border-edge bg-surface-raised px-2 py-1 text-body text-content-primary placeholder-content-muted focus:border-accent focus:outline-none"
         />
       </div>
 
@@ -77,8 +77,8 @@ function PluginList({
               className={[
                 "flex w-full flex-col gap-1 border-b border-edge/50 px-3 py-2.5 text-left transition-colors",
                 selected === p.name
-                  ? "bg-interactive-primary/10 border-l-2 border-l-interactive-primary"
-                  : "hover:bg-surface-input/50",
+                  ? "bg-accent/10 border-l-2 border-l-accent"
+                  : "hover:bg-surface-raised/50",
               ].join(" ")}
             >
               <span className="text-body font-medium text-content-primary">{p.name}</span>
@@ -164,8 +164,8 @@ function SkillSubPane({ pluginName, skillNames }: SkillSubPaneProps) {
               className={[
                 "flex w-full flex-col gap-0.5 border-b border-edge/50 px-3 py-2 text-left transition-colors",
                 selectedSkill === s.name
-                  ? "bg-interactive-primary/10 border-l-2 border-l-interactive-primary"
-                  : "hover:bg-surface-input/50",
+                  ? "bg-accent/10 border-l-2 border-l-accent"
+                  : "hover:bg-surface-raised/50",
               ].join(" ")}
             >
               <span className="text-body font-medium text-content-primary">{s.name}</span>
@@ -262,8 +262,8 @@ function AgentSubPane({ agentRefs }: AgentSubPaneProps) {
               className={[
                 "flex w-full flex-col gap-0.5 border-b border-edge/50 px-3 py-2 text-left transition-colors",
                 selectedAgent === a.name
-                  ? "bg-interactive-primary/10 border-l-2 border-l-interactive-primary"
-                  : "hover:bg-surface-input/50",
+                  ? "bg-accent/10 border-l-2 border-l-accent"
+                  : "hover:bg-surface-raised/50",
               ].join(" ")}
             >
               <span className="text-body font-medium text-content-primary">{a.name}</span>
@@ -428,7 +428,7 @@ function PluginDetailPane({ pluginName }: PluginDetailPaneProps) {
               className={[
                 "relative px-3 py-2 text-body transition-colors",
                 visibleTab === tab.id
-                  ? "text-content-primary after:absolute after:inset-x-0 after:bottom-0 after:h-0.5 after:rounded-t after:bg-interactive-primary"
+                  ? "text-content-primary after:absolute after:inset-x-0 after:bottom-0 after:h-0.5 after:rounded-t after:bg-accent"
                   : "text-content-muted hover:text-content-secondary",
               ].join(" ")}
             >

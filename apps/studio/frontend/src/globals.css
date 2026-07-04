@@ -1,145 +1,20 @@
+@import "./theme.css";
+
 @tailwind base;
 @tailwind components;
 @tailwind utilities;
 
 @layer base {
-  /* ── Light theme (default) ── */
+  /* Header shadow contract — kept as a hairline, not a real shadow. */
   :root {
-    /* ─── Surface ─── */
-    --surface-base: #f8f8f7;
-    --surface-raised: #ffffff;
-    --surface-overlay: #f2f2f0;
-    --surface-nav: #ffffff;
-    --surface-input: #f0f0ee;
-    --surface-input-hover: #e8e8e6;
-
-    /* ─── Shadow ─── */
-    --shadow-card: 0 1px 3px rgba(0, 0, 0, 0.06), 0 1px 2px rgba(0, 0, 0, 0.04);
-    --shadow-card-hover: 0 2px 6px rgba(0, 0, 0, 0.08), 0 1px 3px rgba(0, 0, 0, 0.05);
-    --shadow-header: 0 1px 0 var(--edge-default);
-
-    /* ─── Content (text) ─── */
-    --content-primary: #18181b;
-    --content-secondary: #52525b;
-    --content-muted: #686875; /* was #6e6e7b; darkened to meet 4.5:1 on surface-input (#f0f0ee) */
-    --content-inverse: #ffffff;
-
-    /* ─── Edge (borders, dividers) ─── */
-    --edge-default: #e4e4e7;
-    --edge-subtle: #ebebeb;
-    --edge-strong: #c4c4c8;
-
-    /* ─── Interactive (buttons, links) ─── */
-    --interactive-primary: #16a34a;
-    --interactive-primary-hover: #15803d;
-    --interactive-secondary: #e8e8e6;
-    --interactive-secondary-hover: #d8d8d5;
-    --interactive-focus: rgba(22, 163, 74, 0.22);
-
-    /* ─── Status ─── */
-    --status-success: #16a34a;
-    --status-success-bg: rgba(22, 163, 74, 0.08);
-    --status-running: #2563eb;
-    --status-running-bg: rgba(37, 99, 235, 0.08);
-    --status-error: #dc2626;
-    --status-error-bg: rgba(220, 38, 38, 0.08);
-    --status-warning: #c27f10;
-    --status-warning-bg: rgba(194, 127, 16, 0.08);
-    --status-neutral: #71717a;
-    --status-neutral-bg: rgba(113, 113, 122, 0.08);
-    --status-selected: #7c3aed;
-    --status-selected-bg: rgba(124, 58, 237, 0.08);
-
-    /* ─── Role colors ─── */
-    --role-researcher: #16a34a;
-    --role-implementer: #7c3aed;
-    --role-reviewer: #0d9488;
-    --role-critic: #c27f10;
-    --role-analyst: #2563eb;
-    --role-architect: #db2777;
-    --role-tester: #0891b2;
-
-    /* ─── DAG SVG palette ─── */
-    --dag-pending-bg: #f5f5f4;
-    --dag-pending-border: #d4d4d4;
-    --dag-pending-label: #737373;
-    --dag-pending-dot: #d4d4d4;
-    --dag-running-bg: #eff6ff;
-    --dag-running-border: #2563eb;
-    --dag-running-label: #1d4ed8;
-    --dag-running-dot: #2563eb;
-    --dag-completed-bg: #f0fdf4;
-    --dag-completed-border: #16a34a;
-    --dag-completed-label: #15803d;
-    --dag-completed-dot: #16a34a;
-    --dag-failed-bg: #fef2f2;
-    --dag-failed-border: #dc2626;
-    --dag-failed-label: #b91c1c;
-    --dag-failed-dot: #dc2626;
-    --dag-edge-pending: #d4d4d4;
-    --dag-edge-done: #16a34a;
-    --dag-hover-border: #737373;
-    --dag-assign-text: #707070; /* was #c4c4c4; darkened to meet 4.5:1 on dag-pending-bg (#f5f5f4) */
-
-    /* ─── Data typeface + canvas chrome (ADR-0093 style anchor) ─── */
-    --font-data: "JetBrains Mono", "SF Mono", ui-monospace, Menlo, Monaco, monospace;
-    --canvas-grid: rgba(0, 0, 0, 0.05);
-    --canvas-vignette: rgba(0, 0, 0, 0.04);
+    --shadow-header: 0 1px 0 var(--edge-hairline);
   }
 
-  /* ── Dark theme ──
-     Surface/edge values are harmonized toward the recovered desktop cockpit's
-     canvas chrome (near-black base, translucent hairline edges) rather than
-     the flat charcoal grays this shell shipped with — same token names, so
-     every existing component keeps working, only the dark palette reads as
-     a genuine operations canvas instead of a dark-mode-bolted-onto-light-UI. */
-  .dark {
-    /* ─── Surface ─── */
-    --surface-base: #0c0d10;
-    --surface-raised: #13151a;
-    --surface-overlay: #1a1d24;
-    --surface-nav: #13151a;
-    --surface-input: #1c1f26;
-    --surface-input-hover: #242832;
-
-    /* ─── Shadow ─── */
-    --shadow-card: 0 1px 3px rgba(0, 0, 0, 0.3), 0 1px 2px rgba(0, 0, 0, 0.2);
-    --shadow-card-hover: 0 2px 8px rgba(0, 0, 0, 0.4), 0 1px 4px rgba(0, 0, 0, 0.25);
-    --shadow-header: 0 1px 0 var(--edge-default);
-
-    /* ─── Content (text) ─── */
-    --content-primary: #e4e4e7;
-    --content-secondary: #a1a1aa;
-    --content-muted: #9696a0;
-    --content-inverse: #ffffff;
-
-    /* ─── Edge (borders, dividers) ─── translucent hairlines, cockpit-style */
-    --edge-default: rgba(255, 255, 255, 0.1);
-    --edge-subtle: rgba(255, 255, 255, 0.06);
-    --edge-strong: rgba(255, 255, 255, 0.18);
-
-    /* ─── Interactive (buttons, links) ─── */
-    --interactive-primary: #22c55e;
-    --interactive-primary-hover: #16a34a;
-    --interactive-secondary: #2d2d32;
-    --interactive-secondary-hover: #38383f;
-    --interactive-focus: rgba(34, 197, 94, 0.25);
-
-    /* ─── Status ─── */
-    --status-success: #22c55e;
-    --status-success-bg: rgba(34, 197, 94, 0.1);
-    --status-running: #60a5fa;
-    --status-running-bg: rgba(96, 165, 250, 0.1);
-    --status-error: #f87171;
-    --status-error-bg: rgba(248, 113, 113, 0.1);
-    --status-warning: #fbbf24;
-    --status-warning-bg: rgba(251, 191, 36, 0.1);
-    --status-neutral: #a1a1aa;
-    --status-neutral-bg: rgba(161, 161, 170, 0.1);
-    --status-selected: #a78bfa;
-    --status-selected-bg: rgba(167, 139, 250, 0.1);
-
-    /* ─── Role colors ─── */
+  /* Role-identity + DAG-node palettes — out of scope for this skin port
+     (DESIGN-MAP.md §7 items 3/5: no cockpit-doc coverage, flagged as a
+     follow-up architecture decision). Kept as-is, just re-anchored to the
+     new dark-default/light-override attribute so they still resolve. */
+  :root {
     --role-researcher: #22c55e;
     --role-implementer: #a78bfa;
     --role-reviewer: #14b8a6;
@@ -148,7 +23,6 @@
     --role-architect: #f472b6;
     --role-tester: #22d3ee;
 
-    /* ─── DAG SVG palette ─── */
     --dag-pending-bg: #1c1c1e;
     --dag-pending-border: #38383f;
     --dag-pending-label: #62626e;
@@ -168,54 +42,92 @@
     --dag-edge-pending: #2d2d32;
     --dag-edge-done: #22c55e;
     --dag-hover-border: #62626e;
-    --dag-assign-text: #848484; /* was #3e3e45; lightened to meet 4.5:1 on dag-pending-bg (#1c1c1e) */
+    --dag-assign-text: #848484;
+  }
+  [data-theme="light"] {
+    --role-researcher: #16a34a;
+    --role-implementer: #7c3aed;
+    --role-reviewer: #0d9488;
+    --role-critic: #c27f10;
+    --role-analyst: #2563eb;
+    --role-architect: #db2777;
+    --role-tester: #0891b2;
 
-    /* ─── Canvas chrome (ADR-0093 style anchor) — quieter than light mode,
-       felt as alignment authority, never seen as decoration. ─── */
-    --canvas-grid: rgba(255, 255, 255, 0.04);
-    --canvas-vignette: rgba(0, 0, 0, 0.35);
+    --dag-pending-bg: #f5f5f4;
+    --dag-pending-border: #d4d4d4;
+    --dag-pending-label: #737373;
+    --dag-pending-dot: #d4d4d4;
+    --dag-running-bg: #eff6ff;
+    --dag-running-border: #2563eb;
+    --dag-running-label: #1d4ed8;
+    --dag-running-dot: #2563eb;
+    --dag-completed-bg: #f0fdf4;
+    --dag-completed-border: #16a34a;
+    --dag-completed-label: #15803d;
+    --dag-completed-dot: #16a34a;
+    --dag-failed-bg: #fef2f2;
+    --dag-failed-border: #dc2626;
+    --dag-failed-label: #b91c1c;
+    --dag-failed-dot: #dc2626;
+    --dag-edge-pending: #d4d4d4;
+    --dag-edge-done: #16a34a;
+    --dag-hover-border: #737373;
+    --dag-assign-text: #707070;
   }
 }
 
 /* ── Semantic typography utilities ──────────────────────────────────────────
-   text-meta   → 10px  (labels, counters, timestamps, chip labels)
-   text-body   → 12px  (content paragraphs, tool summaries)
-   text-label  → 13px  (step names, prominent identifiers)
-   text-heading → 14px (section headers; use sparingly)
-   text-[9px] is reserved only for UPPERCASE tracking labels (section dividers)
-   Do NOT use text-[10px] / text-[11px] / text-[12.5px] / text-[13px] inline.
+   Derived from the cockpit type scale (theme.css --t-xs..--t-xl). 11px is
+   the FLOOR — nothing renders smaller, ever (REDESIGN-V2.md §1).
+   text-meta    → --t-xs  (11px: labels, counters, timestamps, chip labels)
+   text-body    → --t-sm  (12px: content paragraphs, tool summaries)
+   text-label   → --t-base (13px: step names, prominent identifiers)
+   text-heading → --t-md  (14px: section headers; use sparingly)
 */
 @layer utilities {
   .text-meta {
-    font-size: 10px;
+    font-size: var(--t-xs);
     line-height: 1.4;
     letter-spacing: 0.01em;
   }
   .text-body {
-    font-size: 12px;
+    font-size: var(--t-sm);
     line-height: 1.55;
   }
   .text-label {
-    font-size: 13px;
+    font-size: var(--t-base);
     line-height: 1.4;
     letter-spacing: -0.005em;
   }
   .text-heading {
-    font-size: 14px;
+    font-size: var(--t-md);
     line-height: 1.3;
     letter-spacing: -0.01em;
   }
 
-  /* Card shadow utilities */
-  .shadow-card {
-    box-shadow: var(--shadow-card);
+  /* Tracked, uppercase meta labels — section dividers, chip labels.
+     --tracking-meta opts out under :lang(zh) (theme.css). */
+  .ui-uppercase {
+    text-transform: uppercase;
+    letter-spacing: var(--tracking-meta);
   }
-  .shadow-card-hover {
-    box-shadow: var(--shadow-card-hover);
+
+  /* The one permitted soft shadow: control strips sitting *on* the canvas
+     substrate (header strip, docks) — not a card-shadow system. */
+  .shadow-raised-soft {
+    box-shadow: var(--shadow-raised-soft);
+  }
+
+  /* One focus contract, everywhere — amber ring + glow, ≥3:1 contrast. */
+  .focus-ring {
+    outline: none;
+    box-shadow: var(--focus-ring);
   }
 
   /* Operations canvas substrate — quiet technical dot grid, alignment
-     authority not decoration (ADR-0093 style anchor). */
+     authority not decoration (ADR-0093 style anchor). Coupled to
+     --edge-hairline/--accent via theme.css's color-mix() formulas, so
+     retuning either token automatically retunes the canvas. */
   .canvas-grid {
     background: radial-gradient(var(--canvas-grid) 0.65px, transparent 0.65px), var(--surface-base);
     background-size:
@@ -228,10 +140,13 @@
     background: linear-gradient(
       90deg,
       var(--surface-overlay) 25%,
-      var(--surface-input) 50%,
+      var(--surface-raised) 50%,
       var(--surface-overlay) 75%
     );
     background-size: 200% 100%;
+    /* 1.4s doesn't land near any --motion-* anchor (those are for purposeful
+       press/micro/modal transitions) — a decorative loading loop stays a
+       documented exception rather than a forced, too-fast tokenization. */
     animation: skeleton-shimmer 1.4s ease-in-out infinite;
   }
 }
@@ -257,7 +172,7 @@
   }
 }
 .animate-page-enter {
-  animation: page-enter 0.2s ease-out both;
+  animation: page-enter var(--motion-modal) ease-out both;
 }
 
 /* ── Markdown rendering ────────────────────────────────────────────────────
@@ -292,7 +207,7 @@
 }
 .markdown-body h2 {
   font-size: 1.2em;
-  border-bottom: 1px solid var(--edge-subtle);
+  border-bottom: 1px solid var(--edge-hairline);
   padding-bottom: 0.3em;
 }
 .markdown-body h3 {
@@ -319,7 +234,7 @@
   color: var(--status-running);
   text-decoration: none;
   border-bottom: 1px solid transparent;
-  transition: border-color 0.15s ease;
+  transition: border-color var(--motion-micro) ease;
 }
 .markdown-body a:hover {
   border-bottom-color: currentColor;
@@ -343,7 +258,7 @@
   font-size: 0.88em;
   padding: 0.15em 0.4em;
   background: var(--surface-overlay);
-  border: 1px solid var(--edge-default);
+  border: 1px solid var(--edge-hairline);
   border-radius: 4px;
   color: var(--content-primary);
 }
@@ -351,7 +266,7 @@
   margin: 0.85em 0;
   padding: 0.8em 1em;
   background: var(--surface-overlay);
-  border: 1px solid var(--edge-default);
+  border: 1px solid var(--edge-hairline);
   border-radius: 6px;
   overflow-x: auto;
   font-size: 0.85em;
@@ -375,7 +290,7 @@
 .markdown-body hr {
   margin: 1.5em 0;
   border: 0;
-  border-top: 1px solid var(--edge-default);
+  border-top: 1px solid var(--edge-hairline);
 }
 .markdown-body table {
   border-collapse: collapse;
@@ -385,7 +300,7 @@
 }
 .markdown-body th,
 .markdown-body td {
-  border: 1px solid var(--edge-default);
+  border: 1px solid var(--edge-hairline);
   padding: 0.4em 0.75em;
   text-align: left;
 }
@@ -404,7 +319,7 @@
   background: transparent;
 }
 *::-webkit-scrollbar-thumb {
-  background: var(--edge-default);
+  background: var(--edge-hairline);
   border-radius: 3px;
 }
 *::-webkit-scrollbar-thumb:hover {
@@ -417,7 +332,7 @@
 /* Firefox */
 * {
   scrollbar-width: thin;
-  scrollbar-color: var(--edge-default) transparent;
+  scrollbar-color: var(--edge-hairline) transparent;
 }
 
 /* ── Reduced-motion guard ────────────────────────────────────────────────── */
@@ -444,7 +359,7 @@
   }
 }
 .animate-fade-in {
-  animation: fade-in 0.15s ease-out both;
+  animation: fade-in var(--motion-micro) ease-out both;
 }
 
 /* ── Running-status pulse ─────────────────────────────────────────────────
@@ -462,5 +377,7 @@
   }
 }
 .animate-status-pulse {
+  /* 1.6s doesn't land near any --motion-* anchor (a breathing loop, not a
+     purposeful press/micro/modal transition) — a documented exception. */
   animation: status-pulse 1.6s ease-in-out infinite;
 }

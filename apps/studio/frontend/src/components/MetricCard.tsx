@@ -21,21 +21,21 @@ const TONE_BORDER: Record<MetricTone, string> = {
   neutral: "border-edge",
   ok: "border-status-success/30",
   running: "border-status-running/40",
-  failed: "border-status-error/40",
-  pending: "border-status-warning/40",
+  failed: "border-status-failure/40",
+  pending: "border-status-pending/40",
 };
 
 const TONE_VALUE_TEXT: Record<MetricTone, string> = {
   neutral: "text-content-primary",
   ok: "text-status-success",
   running: "text-status-running",
-  failed: "text-status-error",
-  pending: "text-status-warning",
+  failed: "text-status-failure",
+  pending: "text-status-pending",
 };
 
 const DELTA_CLASS: Record<NonNullable<MetricCardProps["delta"]>["tone"] & string, string> = {
   up: "text-status-success",
-  down: "text-status-error",
+  down: "text-status-failure",
   neutral: "text-content-muted",
 };
 
@@ -51,10 +51,9 @@ export default function MetricCard({
 }: MetricCardProps) {
   const interactive = !!onClick;
 
-  const base =
-    "min-w-0 rounded border bg-surface-raised p-4 shadow-card transition-all duration-150 text-left";
+  const base = "min-w-0 rounded border bg-surface-raised p-4 transition-all duration-150 text-left";
   const interactiveCls = interactive
-    ? "hover:border-edge-strong hover:shadow-card-hover cursor-pointer focus:outline-none focus:ring-2 focus:ring-interactive-primary focus:ring-offset-1 focus:ring-offset-surface-base"
+    ? "hover:border-edge-strong cursor-pointer focus:outline-none focus:ring-2 focus:ring-accent focus:ring-offset-1 focus:ring-offset-surface-base"
     : "";
 
   const content = (

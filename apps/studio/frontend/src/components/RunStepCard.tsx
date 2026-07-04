@@ -318,10 +318,10 @@ export default function RunStepCard({
         step.status === "completed"
           ? "border-edge"
           : step.status === "failed"
-            ? "border-status-error/40"
+            ? "border-status-failure/40"
             : step.status === "running"
               ? "border-status-running/40"
-              : "border-edge-subtle"
+              : "border-edge-hairline"
       }`}
     >
       <button
@@ -357,7 +357,7 @@ export default function RunStepCard({
             <span className="ml-auto flex items-center gap-2 font-mono text-meta text-content-muted">
               <span>{summary.toolCount} tools</span>
               {summary.failedCount > 0 && (
-                <span className="text-status-error">{summary.failedCount} failed</span>
+                <span className="text-status-failure">{summary.failedCount} failed</span>
               )}
               <span>{summary.files.length} files</span>
               {summary.durationSec != null && (
@@ -612,7 +612,7 @@ const TabButton = React.forwardRef<
       {label}
       {count != null && (
         <span
-          className={`rounded px-1 font-mono text-[9px] ${tone === "error" ? "bg-status-error-bg text-status-error" : "bg-surface-overlay text-content-muted"}`}
+          className={`rounded px-1 font-mono text-[9px] ${tone === "error" ? "bg-status-failure/10 text-status-failure" : "bg-surface-overlay text-content-muted"}`}
         >
           {count}
         </span>
@@ -705,10 +705,10 @@ function OverviewPanel({
           <ul className="flex flex-col gap-0.5">
             {summary.commands.slice(0, 8).map((c) => (
               <li key={c.cmd} className="flex items-center justify-between gap-2 text-body">
-                <span className="truncate font-mono text-status-warning">{c.cmd}</span>
+                <span className="truncate font-mono text-status-pending">{c.cmd}</span>
                 <span className="shrink-0 font-mono text-meta text-content-muted">
                   ×{c.count}
-                  {c.failed > 0 && <span className="text-status-error"> ({c.failed} err)</span>}
+                  {c.failed > 0 && <span className="text-status-failure"> ({c.failed} err)</span>}
                 </span>
               </li>
             ))}
@@ -728,17 +728,17 @@ function OverviewPanel({
         </div>
       )}
       {summary.failedCount > 0 && (
-        <div className="rounded border border-status-error/30 bg-status-error-bg p-2 lg:col-span-3">
-          <div className="mb-1.5 text-[9px] font-semibold uppercase tracking-wider text-status-error">
+        <div className="rounded border border-status-failure/30 bg-status-failure/10 p-2 lg:col-span-3">
+          <div className="mb-1.5 text-[9px] font-semibold uppercase tracking-wider text-status-failure">
             {summary.failedCount} Failed Tool Call{summary.failedCount === 1 ? "" : "s"}
           </div>
           <ul className="flex flex-col gap-1">
             {summary.failedTools.slice(0, 5).map((t, i) => (
               <li key={i} className="text-body">
-                <span className="font-mono text-status-error">{t.function}</span>
+                <span className="font-mono text-status-failure">{t.function}</span>
                 <span className="ml-2 truncate font-mono text-content-secondary">{t.summary}</span>
                 {t.exit_code != null && (
-                  <span className="ml-2 text-meta text-status-error">exit {t.exit_code}</span>
+                  <span className="ml-2 text-meta text-status-failure">exit {t.exit_code}</span>
                 )}
               </li>
             ))}
@@ -766,7 +766,7 @@ function StatBlock({
       <div
         className={`mt-0.5 font-mono text-base font-semibold ${
           tone === "error"
-            ? "text-status-error"
+            ? "text-status-failure"
             : tone === "ok"
               ? "text-status-success"
               : "text-content-primary"
@@ -789,7 +789,7 @@ function FileRow({ file }: { file: FileChange }) {
       </span>
       <span className="shrink-0 flex items-center gap-1 font-mono text-meta">
         {ops.read > 0 && <span className="text-status-running">r{ops.read}</span>}
-        {ops.edit > 0 && <span className="text-status-warning">e{ops.edit}</span>}
+        {ops.edit > 0 && <span className="text-status-pending">e{ops.edit}</span>}
         {ops.write > 0 && <span className="text-status-success">w{ops.write}</span>}
         {ops.other > 0 && <span className="text-content-muted">·{ops.other}</span>}
         <span className="ml-1 text-content-muted">({total})</span>
@@ -828,11 +828,11 @@ function CommandsPanel({ commands }: { commands: CommandSummary[] }) {
         </thead>
         <tbody>
           {commands.map((c) => (
-            <tr key={c.cmd} className="border-b border-edge-subtle">
-              <td className="px-2 py-1 font-mono text-status-warning">{c.cmd}</td>
+            <tr key={c.cmd} className="border-b border-edge-hairline">
+              <td className="px-2 py-1 font-mono text-status-pending">{c.cmd}</td>
               <td className="px-2 py-1 text-right font-mono text-content-primary">{c.count}</td>
               <td
-                className={`px-2 py-1 text-right font-mono ${c.failed > 0 ? "text-status-error" : "text-content-muted"}`}
+                className={`px-2 py-1 text-right font-mono ${c.failed > 0 ? "text-status-failure" : "text-content-muted"}`}
               >
                 {c.failed > 0 ? c.failed : "—"}
               </td>
@@ -855,11 +855,11 @@ function ErrorsPanel({ failed }: { failed: RunMessage[] }) {
   return (
     <div className="flex flex-col gap-1.5 p-2">
       {failed.map((t, i) => (
-        <div key={i} className="rounded border border-status-error/30 bg-status-error-bg p-2">
+        <div key={i} className="rounded border border-status-failure/30 bg-status-failure/10 p-2">
           <div className="flex items-center gap-2 text-body">
-            <span className="font-mono text-status-error">{t.function}</span>
+            <span className="font-mono text-status-failure">{t.function}</span>
             {t.exit_code != null && (
-              <span className="rounded bg-status-error-bg border border-status-error/30 px-1.5 py-0 font-mono text-meta text-status-error">
+              <span className="rounded bg-status-failure/10 border border-status-failure/30 px-1.5 py-0 font-mono text-meta text-status-failure">
                 exit {t.exit_code}
               </span>
             )}
@@ -874,7 +874,7 @@ function ErrorsPanel({ failed }: { failed: RunMessage[] }) {
             $ {t.summary}
           </p>
           {t.output && (
-            <pre className="mt-1.5 max-h-40 overflow-auto rounded bg-status-error-bg border border-status-error/20 p-1.5 font-mono text-meta leading-relaxed text-status-error">
+            <pre className="mt-1.5 max-h-40 overflow-auto rounded bg-status-failure/10 border border-status-failure/20 p-1.5 font-mono text-meta leading-relaxed text-status-failure">
               {t.output.length > 2000 ? t.output.slice(0, 2000) + "\n…[truncated]" : t.output}
             </pre>
           )}
@@ -899,13 +899,13 @@ function FilterChip({
 }) {
   const toneColors = {
     blue: active
-      ? "border-status-running/40 bg-status-running-bg text-status-running"
+      ? "border-status-running/40 bg-status-running/10 text-status-running"
       : "border-edge text-content-muted",
     amber: active
-      ? "border-status-warning/40 bg-status-warning-bg text-status-warning"
+      ? "border-status-pending/40 bg-status-pending/10 text-status-pending"
       : "border-edge text-content-muted",
     green: active
-      ? "border-status-success/40 bg-status-success-bg text-status-success"
+      ? "border-status-success/40 bg-status-success/10 text-status-success"
       : "border-edge text-content-muted",
     neutral: active
       ? "border-edge-strong bg-surface-overlay text-content-secondary"
@@ -1055,12 +1055,12 @@ function AssistantBlock({
       className={`border-b border-edge border-l-2 px-3 py-2 ${
         isThinking
           ? "border-l-edge-strong bg-surface-base"
-          : "border-l-status-running bg-status-running-bg"
+          : "border-l-status-running bg-status-running/10"
       }`}
     >
       <div className="mb-1 flex items-center gap-2">
         <span
-          className={`shrink-0 rounded px-1 font-mono text-[9px] ${isThinking ? "bg-surface-overlay text-content-muted" : "bg-status-running-bg border border-status-running/30 text-status-running"}`}
+          className={`shrink-0 rounded px-1 font-mono text-[9px] ${isThinking ? "bg-surface-overlay text-content-muted" : "bg-status-running/10 border border-status-running/30 text-status-running"}`}
         >
           #{ordinal}
         </span>
@@ -1103,27 +1103,27 @@ function ToolCallBlock({
   const isError = status === "error";
 
   const statusBadge = isError ? (
-    <span className="rounded border border-status-error/30 bg-status-error-bg px-1.5 py-0.5 text-[9px] font-medium text-status-error">
+    <span className="rounded border border-status-failure/30 bg-status-failure/10 px-1.5 py-0.5 text-[9px] font-medium text-status-failure">
       {exitCode != null ? `exit ${exitCode}` : "ERR"}
     </span>
   ) : (
-    <span className="rounded border border-status-success/30 bg-status-success-bg px-1.5 py-0.5 text-[9px] font-medium text-status-success">
+    <span className="rounded border border-status-success/30 bg-status-success/10 px-1.5 py-0.5 text-[9px] font-medium text-status-success">
       ✓
     </span>
   );
 
   return (
-    <div className={`border-b border-edge ${isError ? "bg-status-error-bg" : "bg-surface-base"}`}>
+    <div className={`border-b border-edge ${isError ? "bg-status-failure/10" : "bg-surface-base"}`}>
       <button
         type="button"
         aria-expanded={expanded}
         onClick={onToggle}
         className="flex w-full items-center gap-2 px-3 py-0.5 text-left hover:bg-surface-overlay"
       >
-        <span className="w-4 text-center font-mono text-body text-status-warning">
+        <span className="w-4 text-center font-mono text-body text-status-pending">
           {toolIcon(fn)}
         </span>
-        <span className="rounded border border-status-warning/30 bg-status-warning-bg px-1.5 py-0.5 font-mono text-meta text-status-warning">
+        <span className="rounded border border-status-pending/30 bg-status-pending/10 px-1.5 py-0.5 font-mono text-meta text-status-pending">
           {fn}
         </span>
         <span
@@ -1159,7 +1159,7 @@ function ToolCallBlock({
             <pre
               className={`max-h-96 overflow-auto rounded p-2 font-mono text-meta leading-relaxed ${
                 isError
-                  ? "bg-status-error-bg text-status-error border border-status-error/20"
+                  ? "bg-status-failure/10 text-status-failure border border-status-failure/20"
                   : "bg-surface-overlay text-content-secondary"
               }`}
             >

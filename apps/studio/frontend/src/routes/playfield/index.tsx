@@ -59,7 +59,7 @@ function groupByProject(runs: RunSummary[]): { project: string; runs: RunSummary
 
 function SkeletonRow() {
   return (
-    <tr className="border-b border-edge-subtle">
+    <tr className="border-b border-edge-hairline">
       {[50, 18, 14, 14, 22].map((w, i) => (
         <td key={i} className="px-3 py-2.5">
           <div
@@ -76,7 +76,7 @@ function PlayfieldRow({ run, now }: { run: RunSummary; now: number }) {
   const durSec = durationSeconds(run, now);
   const phase = phaseLabel(run);
   return (
-    <tr className="border-b border-edge-subtle text-content-secondary transition-colors duration-100 hover:bg-surface-overlay">
+    <tr className="border-b border-edge-hairline text-content-secondary transition-colors duration-100 hover:bg-surface-overlay">
       <td className="px-3 py-2">
         <Link
           to="/runs/$id"
@@ -259,12 +259,12 @@ function PlayfieldPageInner() {
       )}
 
       {error && (
-        <div className="rounded border border-status-error/30 bg-status-error-bg px-3 py-2 text-body text-status-error">
+        <div className="rounded border border-status-failure/30 bg-status-failure/10 px-3 py-2 text-body text-status-failure">
           {error}
         </div>
       )}
 
-      <div className="overflow-x-auto rounded border border-edge bg-surface-raised shadow-card">
+      <div className="overflow-x-auto rounded border border-edge bg-surface-raised">
         <table aria-busy={loading} className="w-full text-left text-body">
           <thead>
             <tr className="border-b border-edge bg-surface-overlay text-meta uppercase tracking-[0.06em] text-content-muted">

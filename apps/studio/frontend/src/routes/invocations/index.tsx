@@ -143,12 +143,12 @@ function InvocationsPage() {
       </div>
 
       {error && (
-        <div className="rounded border border-status-error/30 bg-status-error-bg px-3 py-2 text-body text-status-error">
+        <div className="rounded border border-status-failure/30 bg-status-failure/10 px-3 py-2 text-body text-status-failure">
           {error}
         </div>
       )}
 
-      <div className="overflow-x-auto rounded border border-edge bg-surface-raised shadow-card">
+      <div className="overflow-x-auto rounded border border-edge bg-surface-raised">
         <table aria-busy={loading} aria-live="polite" className="w-full text-left text-body">
           <thead>
             <tr className="border-b border-edge bg-surface-overlay text-meta uppercase tracking-[0.06em] text-content-muted">

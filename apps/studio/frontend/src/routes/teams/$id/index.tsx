@@ -78,7 +78,7 @@ function TeamDetailPage() {
   if (error || !team) {
     return (
       <main className="mx-auto flex w-full max-w-7xl flex-col gap-5 px-4 py-6">
-        <div className="rounded border border-status-error/30 bg-status-error-bg px-3 py-2 text-body text-status-error">
+        <div className="rounded border border-status-failure/30 bg-status-failure/10 px-3 py-2 text-body text-status-failure">
           {error ?? "Team not found"}
         </div>
         <Link to="/teams" className="text-meta text-status-running hover:underline">

@@ -1,0 +1,101 @@
+/* Design tokens — single source of truth. Imported by globals.css.
+   Dark is the default (:root). Light overrides surfaces/content only.
+   Status + accent never change between themes. */
+
+:root {
+  /* Surfaces */
+  --surface-base: #0c0d10;
+  --surface-raised: #13151a;
+  --surface-overlay: #1a1d24;
+
+  /* Edge / borders */
+  --edge-hairline: rgba(255, 255, 255, 0.1);
+  --edge-strong: rgba(255, 255, 255, 0.18);
+
+  /* Content / text — readability floor verified on dense tables at 1x,
+     not on swatches; muted must stay legible on --surface-base */
+  --content-primary: #e8e6e1;
+  --content-secondary: rgba(232, 230, 225, 0.7);
+  --content-muted: rgba(232, 230, 225, 0.5);
+
+  /* Lion amber — attention + primary actions ONLY, never decoration */
+  --accent: #e8a33d;
+  /* Contrast color for text on --accent backgrounds. Like status/accent, never changes between themes. */
+  --accent-contrast: #0c0d10;
+
+  /* Semantic status */
+  --status-running: #5ba8f5;
+  --status-success: #4fb477;
+  --status-pending: #e8a33d;
+  --status-failure: #e5604c;
+
+  /* Typefaces */
+  --font-ui: -apple-system, BlinkMacSystemFont, Inter, sans-serif;
+  --font-data: "JetBrains Mono", "SF Mono", ui-monospace, monospace;
+
+  /* Designer canvas — signal rail colors (per DESIGN-CANVAS §2).
+     Separate token family from status colors — one hue must never mean both. */
+  --rail-discovery: #22d3ee; /* cyan */
+  --rail-judgement: #f59e0b; /* amber (distinct from --accent lion amber) */
+  --rail-analysis: #a78bfa; /* violet */
+  --rail-planning: #60a5fa; /* blue */
+  --rail-production: #34d399; /* green */
+  --rail-retrospective: #94a3b8; /* slate */
+  --rail-universal: #f87171; /* red / pulsing */
+
+  /* Motion anchors (per REDESIGN-EXEC.md "Knowledge-grounded upgrades") */
+  --motion-press: 100ms;
+  --motion-micro: 150ms;
+  --motion-modal: 250ms;
+
+  /* Keyboard focus — one contract everywhere. Hover may use surface-overlay;
+     focus-visible must use the accent ring. */
+  --focus-accent-glow: 0 0 0 4px color-mix(in srgb, var(--accent) 18%, transparent);
+  --focus-ring: 0 0 0 1px var(--accent), var(--focus-accent-glow);
+
+  /* Soft lift for control strips that sit on the canvas (header strip, docks) */
+  --shadow-raised-soft: 0 1px 2px color-mix(in srgb, black 10%, transparent);
+
+  /* Designer canvas substrate — technical-paper dot grid + faint vignette.
+     Must be felt as alignment authority, never seen as decoration.
+     Dark runs quieter than light. */
+  --canvas-grid: color-mix(in srgb, var(--edge-hairline) 34%, transparent);
+  --canvas-vignette: color-mix(in srgb, var(--accent) 6%, transparent);
+
+  /* Meta-label tracking — wide caps tracking is an en idiom; zh hanzi need
+     nearly none and never uppercase (see .ui-uppercase) */
+  --tracking-meta: 0.11em;
+
+  /* Type scale — floor is 11px; nothing renders below --t-xs */
+  --t-xs: 11px;
+  --t-sm: 12px;
+  --t-base: 13px;
+  --t-md: 14px;
+  --t-lg: 16px;
+  --t-xl: 18px;
+}
+
+/* zh — hanzi take almost no tracking; uppercase is opted out in .ui-uppercase */
+:root:lang(zh) {
+  --tracking-meta: 0.02em;
+}
+
+/* Light theme — surfaces and content only; status + accent unchanged */
+[data-theme="light"] {
+  --surface-base: #f5f5f3;
+  --surface-raised: #ffffff;
+  --surface-overlay: #eeeeed;
+
+  /* Hairline is visible on white (contrast ≥ spec) */
+  --edge-hairline: #d8d6d1;
+  --edge-strong: rgba(0, 0, 0, 0.2);
+
+  /* Light paper can carry a slightly stronger grid, gentler vignette */
+  --canvas-grid: color-mix(in srgb, var(--edge-hairline) 42%, transparent);
+  --canvas-vignette: color-mix(in srgb, var(--accent) 4%, transparent);
+
+  /* Secondary ≥ #3a3d44 on white; muted ≥ #5c5f66 on white */
+  --content-primary: #18181b;
+  --content-secondary: #3a3d44;
+  --content-muted: #5c5f66;
+}

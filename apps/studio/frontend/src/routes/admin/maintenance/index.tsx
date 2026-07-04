@@ -177,7 +177,7 @@ function AdminMaintenancePage() {
       />
 
       {error && (
-        <div className="rounded border border-status-error/30 bg-status-error-bg px-3 py-2 text-body text-content-primary">
+        <div className="rounded border border-status-failure/30 bg-status-failure/10 px-3 py-2 text-body text-content-primary">
           {error}
         </div>
       )}
@@ -215,11 +215,11 @@ function AdminMaintenancePage() {
         {loading ? (
           <div className="py-8 text-center text-meta text-content-muted">Loading...</div>
         ) : phantoms.length === 0 ? (
-          <div className="rounded border border-status-success/25 bg-status-success-bg px-4 py-4 text-body text-content-primary shadow-card">
+          <div className="rounded border border-status-success/25 bg-status-success/10 px-4 py-4 text-body text-content-primary">
             {empty.phantomSessions}
           </div>
         ) : (
-          <div className="overflow-x-auto rounded border border-edge bg-surface-raised shadow-card">
+          <div className="overflow-x-auto rounded border border-edge bg-surface-raised">
             <table className="w-full text-left text-body">
               <thead>
                 <tr className="border-b border-edge bg-surface-overlay text-meta uppercase tracking-[0.06em] text-content-muted">
@@ -233,7 +233,7 @@ function AdminMaintenancePage() {
                 {phantoms.map((p) => (
                   <tr
                     key={p.session_id}
-                    className="border-b border-edge-subtle text-content-secondary transition-colors duration-100 hover:bg-surface-overlay"
+                    className="border-b border-edge-hairline text-content-secondary transition-colors duration-100 hover:bg-surface-overlay"
                   >
                     <td className="px-3 py-2">
                       <input
@@ -250,7 +250,7 @@ function AdminMaintenancePage() {
                       </div>
                     </td>
                     <td className="px-3 py-2">
-                      <span className="rounded border border-status-error/40 bg-status-error-bg px-1.5 py-0.5 text-meta text-content-primary">
+                      <span className="rounded border border-status-failure/40 bg-status-failure/10 px-1.5 py-0.5 text-meta text-content-primary">
                         {reasonLabel(p.reason)}
                       </span>
                     </td>
@@ -271,12 +271,12 @@ function AdminMaintenancePage() {
         </div>
 
         {maintenanceResult && (
-          <div className="mb-3 rounded border border-status-success/30 bg-status-success-bg px-3 py-2 text-body text-content-primary">
+          <div className="mb-3 rounded border border-status-success/30 bg-status-success/10 px-3 py-2 text-body text-content-primary">
             {maintenanceResult}
           </div>
         )}
         {maintenanceError && (
-          <div className="mb-3 rounded border border-status-error/30 bg-status-error-bg px-3 py-2 text-body text-content-primary">
+          <div className="mb-3 rounded border border-status-failure/30 bg-status-failure/10 px-3 py-2 text-body text-content-primary">
             {maintenanceError}
           </div>
         )}

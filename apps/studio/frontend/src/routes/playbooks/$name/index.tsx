@@ -42,7 +42,7 @@ function WorkerDetailPage() {
   if (error) {
     return (
       <main className="mx-auto max-w-7xl px-4 py-6">
-        <div className="rounded border border-status-error/30 bg-status-error-bg px-3 py-2 text-body text-status-error">
+        <div className="rounded border border-status-failure/30 bg-status-failure/10 px-3 py-2 text-body text-status-failure">
           {error}
         </div>
       </main>
@@ -62,7 +62,7 @@ function WorkerDetailPage() {
   return (
     <div className="flex h-[calc(100vh-56px)] flex-col">
       {/* Top bar */}
-      <div className="flex items-center gap-3 border-b border-edge bg-surface-nav px-4 py-2">
+      <div className="flex items-center gap-3 border-b border-edge bg-surface-raised px-4 py-2">
         <Link to="/playbooks" className="text-meta text-content-muted hover:text-content-primary">
           playbooks
         </Link>

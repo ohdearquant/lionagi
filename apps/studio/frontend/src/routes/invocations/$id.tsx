@@ -102,7 +102,7 @@ function InvocationDetailPage() {
         <h2 className="mb-2 text-meta uppercase tracking-[0.06em] text-content-muted">
           Sessions in this run
         </h2>
-        <div className="overflow-x-auto rounded border border-edge bg-surface-raised shadow-card">
+        <div className="overflow-x-auto rounded border border-edge bg-surface-raised">
           <table className="w-full text-left text-body">
             <thead>
               <tr className="border-b border-edge bg-surface-overlay text-meta uppercase tracking-[0.06em] text-content-muted">

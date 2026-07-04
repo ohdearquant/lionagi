@@ -59,31 +59,31 @@ const LANES: Lane[] = [
     key: "queued",
     label: "queued",
     statuses: ["pending", "prepared"],
-    headerBg: "bg-status-warning-bg",
+    headerBg: "bg-status-pending/10",
   },
   {
     key: "running",
     label: "running",
     statuses: ["running"],
-    headerBg: "bg-status-running-bg",
+    headerBg: "bg-status-running/10",
   },
   {
     key: "review",
     label: "review",
     statuses: [],
-    headerBg: "bg-status-selected-bg",
+    headerBg: "bg-surface-overlay",
   },
   {
     key: "done",
     label: "done",
     statuses: ["completed", "done", "success", "finished"],
-    headerBg: "bg-status-success-bg",
+    headerBg: "bg-status-success/10",
   },
   {
     key: "failed",
     label: "failed",
     statuses: ["failed", "timed_out", "timeout"],
-    headerBg: "bg-status-error-bg",
+    headerBg: "bg-status-failure/10",
   },
   {
     key: "cancelled",
@@ -130,7 +130,7 @@ function KanbanCard({ run, now }: { run: RunSummary; now: number }) {
     <Link
       to="/runs/$id"
       params={{ id: run.run_id }}
-      className="block min-w-0 rounded border border-edge bg-surface-raised p-3 shadow-card transition-shadow duration-100 hover:shadow-card-hover focus:outline-none focus:ring-1 focus:ring-interactive-primary"
+      className="block min-w-0 rounded border border-edge bg-surface-raised p-3 transition-colors duration-100 focus:outline-none focus:ring-1 focus:ring-accent"
     >
       <div className="mb-1.5 truncate font-medium text-label text-content-primary" title={name}>
         {name}
@@ -211,7 +211,7 @@ function SkeletonLane({ lane }: { lane: Lane }) {
       </div>
       <div className="flex flex-col gap-2 p-2">
         {[75, 55, 85].map((w, i) => (
-          <div key={i} className="rounded border border-edge bg-surface-raised p-3 shadow-card">
+          <div key={i} className="rounded border border-edge bg-surface-raised p-3">
             <div className="skeleton mb-2 h-3 rounded" style={{ width: `${w}%` }} />
             <div className="skeleton h-2.5 rounded" style={{ width: "40%" }} />
           </div>
@@ -290,7 +290,7 @@ function KanbanPage() {
       />
 
       {error && (
-        <div className="rounded border border-status-error/30 bg-status-error-bg px-3 py-2 text-body text-status-error">
+        <div className="rounded border border-status-failure/30 bg-status-failure/10 px-3 py-2 text-body text-status-failure">
           {error}
         </div>
       )}

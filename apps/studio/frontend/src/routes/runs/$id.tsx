@@ -169,7 +169,7 @@ function SectionNav({ sections, activeId }: { sections: NavSection[]; activeId: 
             onClick={() => scrollTo(s.id)}
             className={`flex items-center gap-1 rounded-full px-2.5 py-1 text-[11px] font-medium transition-colors ${
               isActive
-                ? "bg-interactive-secondary text-content-primary"
+                ? "bg-surface-raised text-content-primary"
                 : "text-content-muted hover:bg-surface-overlay hover:text-content-secondary"
             }`}
           >
@@ -178,7 +178,7 @@ function SectionNav({ sections, activeId }: { sections: NavSection[]; activeId: 
               <span
                 className={`rounded px-1 font-mono text-[9px] ${
                   s.errorTone && s.count > 0
-                    ? "bg-status-error-bg text-status-error"
+                    ? "bg-status-failure/10 text-status-failure"
                     : "bg-surface-overlay text-content-muted"
                 }`}
               >
@@ -231,7 +231,7 @@ function OverviewSection({ data }: { data: OverviewData }) {
   return (
     <div id="overview" className="scroll-mt-24">
       <SectionHeader label="Overview" />
-      <div className="rounded border border-edge bg-surface-raised px-4 py-3 shadow-card">
+      <div className="rounded border border-edge bg-surface-raised px-4 py-3">
         <div className="grid grid-cols-2 gap-x-6 gap-y-3 sm:grid-cols-3 lg:grid-cols-6">
           {stats.map((s) => (
             <div key={s.label} className="flex flex-col gap-0.5">
@@ -241,7 +241,7 @@ function OverviewSection({ data }: { data: OverviewData }) {
               <span
                 className={`font-mono text-label font-semibold tabular-nums tracking-tight ${
                   s.tone === "error"
-                    ? "text-status-error"
+                    ? "text-status-failure"
                     : s.tone === "ok"
                       ? "text-status-success"
                       : "text-content-primary"
@@ -253,7 +253,7 @@ function OverviewSection({ data }: { data: OverviewData }) {
           ))}
         </div>
         {provenance.length > 0 && (
-          <div className="mt-3 flex flex-wrap gap-3 border-t border-edge-subtle pt-3">
+          <div className="mt-3 flex flex-wrap gap-3 border-t border-edge-hairline pt-3">
             {provenance.map((p) => (
               <div key={p.label} className="flex items-center gap-1.5">
                 <span className="text-[9px] uppercase tracking-wide text-content-muted">
@@ -362,7 +362,7 @@ function ErrorsSection({ errors }: { errors: ErrorEntry[] }) {
             return (
               <div
                 key={fn}
-                className="rounded border border-l-2 border-edge border-l-status-error bg-surface-raised"
+                className="rounded border border-l-2 border-edge border-l-status-failure bg-surface-raised"
               >
                 <button
                   type="button"
@@ -371,10 +371,10 @@ function ErrorsSection({ errors }: { errors: ErrorEntry[] }) {
                   className="flex w-full items-center gap-2 px-3 py-2 text-left hover:bg-surface-overlay"
                 >
                   <span className="mt-0.5 text-body text-content-muted">{isOpen ? "▾" : "▸"}</span>
-                  <span className="font-mono text-[11px] font-semibold text-status-error">
+                  <span className="font-mono text-[11px] font-semibold text-status-failure">
                     {fn}
                   </span>
-                  <span className="rounded bg-status-error-bg px-1.5 py-0 font-mono text-[9px] text-status-error">
+                  <span className="rounded bg-status-failure/10 px-1.5 py-0 font-mono text-[9px] text-status-failure">
                     ×{errs.length}
                   </span>
                   <span className="text-[10px] text-content-muted">
@@ -420,7 +420,7 @@ function ErrorsSection({ errors }: { errors: ErrorEntry[] }) {
                           </p>
                         )}
                         {err.output && (
-                          <pre className="max-h-32 overflow-auto rounded border border-status-error/20 bg-status-error-bg p-2 font-mono text-[10px] leading-relaxed text-status-error">
+                          <pre className="max-h-32 overflow-auto rounded border border-status-failure/20 bg-status-failure/10 p-2 font-mono text-[10px] leading-relaxed text-status-failure">
                             {err.output.length > 1500
                               ? err.output.slice(0, 1500) + "\n…[truncated]"
                               : err.output}
@@ -468,15 +468,15 @@ function FilesSection({ files }: { files: string[] }) {
 
 const KIND_BADGE: Record<string, { label: string; tone: string }> = {
   NodeQueued: { label: "queued", tone: "bg-surface-overlay text-content-muted" },
-  NodeStarted: { label: "started", tone: "bg-status-running-bg text-status-running" },
-  NodeCompleted: { label: "done", tone: "bg-status-success-bg text-status-success" },
-  NodeFailed: { label: "failed", tone: "bg-status-error-bg text-status-error" },
+  NodeStarted: { label: "started", tone: "bg-status-running/10 text-status-running" },
+  NodeCompleted: { label: "done", tone: "bg-status-success/10 text-status-success" },
+  NodeFailed: { label: "failed", tone: "bg-status-failure/10 text-status-failure" },
   NodeAwaitingApproval: { label: "approval", tone: "bg-status-warn-bg text-status-warn" },
-  NodeEscalated: { label: "escalated", tone: "bg-status-error-bg text-status-error" },
-  GateDenied: { label: "gate-denied", tone: "bg-status-error-bg text-status-error" },
-  RunStart: { label: "run-start", tone: "bg-status-running-bg text-status-running" },
-  RunEnd: { label: "run-end", tone: "bg-status-success-bg text-status-success" },
-  RunFailed: { label: "run-failed", tone: "bg-status-error-bg text-status-error" },
+  NodeEscalated: { label: "escalated", tone: "bg-status-failure/10 text-status-failure" },
+  GateDenied: { label: "gate-denied", tone: "bg-status-failure/10 text-status-failure" },
+  RunStart: { label: "run-start", tone: "bg-status-running/10 text-status-running" },
+  RunEnd: { label: "run-end", tone: "bg-status-success/10 text-status-success" },
+  RunFailed: { label: "run-failed", tone: "bg-status-failure/10 text-status-failure" },
   MessageAdded: { label: "message", tone: "bg-surface-overlay text-content-muted" },
   HookSignal: { label: "hook", tone: "bg-surface-overlay text-content-muted" },
   StructuredOutput: { label: "output", tone: "bg-surface-overlay text-content-secondary" },
@@ -486,11 +486,11 @@ type LaneState = "queued" | "running" | "awaiting_approval" | "succeeded" | "fai
 
 const LANE_TONE: Record<LaneState, string> = {
   queued: "bg-surface-overlay text-content-muted",
-  running: "bg-status-running-bg text-status-running",
+  running: "bg-status-running/10 text-status-running",
   awaiting_approval: "bg-status-warn-bg text-status-warn",
-  succeeded: "bg-status-success-bg text-status-success",
-  failed: "bg-status-error-bg text-status-error",
-  escalated: "bg-status-error-bg text-status-error",
+  succeeded: "bg-status-success/10 text-status-success",
+  failed: "bg-status-failure/10 text-status-failure",
+  escalated: "bg-status-failure/10 text-status-failure",
 };
 
 function laneFor(kinds: string[]): LaneState {
@@ -579,7 +579,7 @@ function EventsSection({ events, live }: { events: SignalEvent[]; live: boolean 
         </div>
       ) : (
         <div className="rounded border border-edge bg-surface-raised">
-          <div className="flex flex-col divide-y divide-edge-subtle">
+          <div className="flex flex-col divide-y divide-edge-hairline">
             {events.map((ev) => {
               const badge = KIND_BADGE[ev.kind] ?? {
                 label: ev.kind,
@@ -648,7 +648,7 @@ function SectionHeader({
         <span
           className={`rounded px-1.5 py-0 font-mono text-[9px] ${
             errorTone && count > 0
-              ? "bg-status-error-bg text-status-error"
+              ? "bg-status-failure/10 text-status-failure"
               : "bg-surface-overlay text-content-muted"
           }`}
         >
@@ -900,7 +900,7 @@ function RunDetailPage() {
   if (error) {
     return (
       <main className="flex items-center justify-center py-20">
-        <div className="rounded border border-status-error/30 bg-status-error-bg px-4 py-3 text-body text-status-error shadow-card">
+        <div className="rounded border border-status-failure/30 bg-status-failure/10 px-4 py-3 text-body text-status-failure">
           {error}
         </div>
       </main>
@@ -1053,7 +1053,7 @@ function RunDetailPage() {
             {runGraph && (
               <div id="dag" className="scroll-mt-24">
                 <SectionHeader label="Execution DAG" count={runGraph.nodes.length} />
-                <div className="h-[320px] rounded border border-edge bg-surface-raised shadow-card overflow-hidden">
+                <div className="h-[320px] rounded border border-edge bg-surface-raised overflow-hidden">
                   <Suspense fallback={null}>
                     <WorkerCanvas
                       graph={runGraph}

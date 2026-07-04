@@ -7,10 +7,9 @@
     <title>Lion Studio</title>
     <script>
       (function () {
+        // Dark is the default — kill light-flash for first-time visitors.
         var t = localStorage.getItem('theme');
-        if (t === 'dark') {
-          document.documentElement.classList.add('dark');
-        }
+        document.documentElement.setAttribute('data-theme', t === 'light' ? 'light' : 'dark');
       })();
     </script>
   </head>

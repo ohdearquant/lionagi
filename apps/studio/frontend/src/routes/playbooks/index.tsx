@@ -45,7 +45,7 @@ function PlaybookList({
   error: string | null;
 }) {
   return (
-    <aside className="flex w-[280px] shrink-0 flex-col border-r border-edge bg-surface-nav">
+    <aside className="flex w-[280px] shrink-0 flex-col border-r border-edge bg-surface-raised">
       <div className="flex items-center justify-between border-b border-edge px-3 py-2.5">
         <span className="text-label font-semibold text-content-primary">Playbooks</span>
         <Button variant="primary" size="sm" leading="+" disabled title="Coming soon">
@@ -53,7 +53,7 @@ function PlaybookList({
         </Button>
       </div>
 
-      {error ? <div className="px-3 py-2 text-meta text-status-error">{error}</div> : null}
+      {error ? <div className="px-3 py-2 text-meta text-status-failure">{error}</div> : null}
 
       <nav className="flex-1 overflow-y-auto">
         {loading && items.length === 0 ? (
@@ -125,7 +125,7 @@ function VersionHistory({
   restoring: boolean;
 }) {
   return (
-    <div className="flex w-[200px] shrink-0 flex-col border-l border-edge bg-surface-nav">
+    <div className="flex w-[200px] shrink-0 flex-col border-l border-edge bg-surface-raised">
       <div className="border-b border-edge px-3 py-2.5">
         <span className="text-meta font-semibold uppercase tracking-[0.06em] text-content-muted">
           Versions
@@ -179,7 +179,7 @@ function VersionHistory({
                         type="button"
                         onClick={() => onRestore(v.version)}
                         disabled={restoring}
-                        className="text-meta text-status-error underline hover:opacity-80 disabled:opacity-50"
+                        className="text-meta text-status-failure underline hover:opacity-80 disabled:opacity-50"
                       >
                         restore
                       </button>
@@ -320,7 +320,7 @@ function PlaybookDetail({ name }: { name: string }) {
   if (loadError) {
     return (
       <div className="flex flex-1 items-start p-4">
-        <div className="rounded border border-status-error/30 bg-status-error-bg px-3 py-2 text-body text-status-error">
+        <div className="rounded border border-status-failure/30 bg-status-failure/10 px-3 py-2 text-body text-status-failure">
           {loadError}
         </div>
       </div>
@@ -339,7 +339,7 @@ function PlaybookDetail({ name }: { name: string }) {
 
   return (
     <div className="flex flex-1 min-h-0 flex-col">
-      <div className="flex items-center gap-2 border-b border-edge bg-surface-nav px-3 py-2">
+      <div className="flex items-center gap-2 border-b border-edge bg-surface-raised px-3 py-2">
         <span className="font-mono text-label font-semibold text-content-primary">
           {detail.name}
         </span>
@@ -349,8 +349,8 @@ function PlaybookDetail({ name }: { name: string }) {
         {isViewingOld ? <Badge tone="pending">viewing old version</Badge> : null}
 
         <div className="ml-auto flex items-center gap-2">
-          {runError ? <span className="text-meta text-status-error">{runError}</span> : null}
-          {saveError ? <span className="text-meta text-status-error">{saveError}</span> : null}
+          {runError ? <span className="text-meta text-status-failure">{runError}</span> : null}
+          {saveError ? <span className="text-meta text-status-failure">{saveError}</span> : null}
           {saveSuccess ? <span className="text-meta text-status-success">Saved</span> : null}
 
           {editing ? (
@@ -360,7 +360,7 @@ function PlaybookDetail({ name }: { name: string }) {
                 value={commitMessage}
                 onChange={(e) => setCommitMessage(e.target.value)}
                 placeholder="Commit message (optional)"
-                className="w-52 rounded-md border border-edge bg-surface-input px-2 py-1 text-meta text-content-primary placeholder-content-muted focus:border-interactive-primary focus:outline-none"
+                className="w-52 rounded-md border border-edge bg-surface-raised px-2 py-1 text-meta text-content-primary placeholder-content-muted focus:border-accent focus:outline-none"
               />
               <Button
                 variant="ghost"

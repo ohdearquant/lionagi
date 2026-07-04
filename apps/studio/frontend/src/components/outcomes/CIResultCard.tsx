@@ -49,7 +49,9 @@ function CheckRow({
       <span className="text-content-primary">{label}</span>
       <span className="flex items-center gap-2">
         {detail ? <span className="tabular-nums text-content-secondary">{detail}</span> : null}
-        <span className={"tabular-nums " + (passed ? "text-status-success" : "text-status-error")}>
+        <span
+          className={"tabular-nums " + (passed ? "text-status-success" : "text-status-failure")}
+        >
           {passed ? "passed" : "failed"}
         </span>
       </span>
@@ -123,7 +125,7 @@ export default function CIResultCard({ name, content }: CIResultCardProps) {
                   <span className="tabular-nums text-content-secondary">
                     {formatDuration(cmd.duration_seconds)}
                   </span>
-                  <span className={cmd.passed ? "text-status-success" : "text-status-error"}>
+                  <span className={cmd.passed ? "text-status-success" : "text-status-failure"}>
                     {cmd.passed ? "✓" : "✕"}
                   </span>
                 </span>
