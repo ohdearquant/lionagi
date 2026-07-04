@@ -50,7 +50,7 @@ def classify_session_health(
     status = session.get("status") or "completed"
 
     # Terminal sessions: done means done, unless they left litter.
-    if status in {"completed", "failed", "timed_out", "aborted", "cancelled"}:
+    if status in {"completed", "completed_empty", "failed", "timed_out", "aborted", "cancelled"}:
         if has_stale_locks:
             return SessionHealth.ZOMBIE
         # ``has_artifacts`` alone isn't enough to mark zombie — artifacts

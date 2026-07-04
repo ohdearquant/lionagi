@@ -42,6 +42,7 @@ from lionagi.state.schema_migrations import MIGRATION_COLUMNS as _MIGRATION_COLU
 _RUN_DEFAULTS: dict[str, str] = {
     "running": _RunReasons.STARTED_OK,
     "completed": _RunReasons.COMPLETED_OK,
+    "completed_empty": _RunReasons.COMPLETED_EMPTY_NO_EVIDENCE,
     "failed": _RunReasons.FAILED_EXCEPTION,
     "timed_out": _RunReasons.TIMED_OUT_DEADLINE,
     "aborted": _RunReasons.ABORTED_USER,
@@ -131,7 +132,18 @@ _SESSION_COLUMNS = frozenset(
 )
 
 _INVOCATION_STATUSES = frozenset(
-    {"running", "completed", "failed", "timed_out", "aborted", "cancelled"}
+    {
+        "running",
+        "completed",
+        # Completion-trust gate: flow/scheduler aggregation can settle an
+        # invocation on this status when a child session produced no commits
+        # ahead of base, no artifacts, and no assistant output.
+        "completed_empty",
+        "failed",
+        "timed_out",
+        "aborted",
+        "cancelled",
+    }
 )
 _INVOCATION_COLUMNS = frozenset(
     {
@@ -200,10 +212,24 @@ _BRANCH_COLUMNS = frozenset(
 )
 
 VALID_SESSION_STATUSES = frozenset(
-    {"running", "completed", "failed", "timed_out", "aborted", "cancelled"}
+    {
+        "running",
+        "completed",
+        # Completion-trust gate: loop exited clean but no commits ahead of base
+        # and no artifacts were produced — distinct from "completed" so
+        # operators/monitors can tell "ran and produced nothing" apart from a
+        # verified completion.
+        "completed_empty",
+        "failed",
+        "timed_out",
+        "aborted",
+        "cancelled",
+    }
 )
-SESSION_TERMINAL_STATUSES = frozenset({"completed", "failed", "timed_out", "aborted", "cancelled"})
-# Admin cannot mark completed/timed_out — those are system-determined.
+SESSION_TERMINAL_STATUSES = frozenset(
+    {"completed", "completed_empty", "failed", "timed_out", "aborted", "cancelled"}
+)
+# Admin cannot mark completed/completed_empty/timed_out — those are system-determined.
 ADMIN_TRANSITION_TARGETS = frozenset({"failed", "aborted", "cancelled"})
 
 _SESSION_STATUSES = VALID_SESSION_STATUSES
@@ -472,6 +498,9 @@ class StateDB:
             # existing DBs created before flow_yaml was added carry a
             # 4-value CHECK on schedules.action_kind that omits 'flow_yaml'.
             await self._drop_legacy_action_kind_check()
+            # existing DBs created before the completion-trust gate carry a
+            # 6-value CHECK on invocations.status that omits 'completed_empty'.
+            await self._drop_legacy_invocations_status_check()
         async with self._engine.begin() as conn:
             await conn.run_sync(metadata.create_all)
             # Seed immutable reference rows; ON CONFLICT DO NOTHING is safe to
@@ -750,6 +779,110 @@ class StateDB:
                     await conn.execute(text(idx_sql))
             finally:
                 await conn.execute(text("PRAGMA foreign_keys = ON"))
+
+    # Substring present only in the post-completion-trust-gate invocations
+    # CREATE SQL; its absence indicates a legacy DB whose status CHECK needs
+    # rebuilding to admit 'completed_empty'.
+    _LEGACY_INVOCATIONS_STATUS_MARKER = "'completed_empty'"
+
+    async def _drop_legacy_invocations_status_check(self) -> None:
+        """Rebuild ``invocations`` if its status CHECK still omits 'completed_empty'.
+
+        SQLite cannot drop a constraint via ALTER TABLE, so we use the same
+        rename → CREATE new → INSERT SELECT → DROP old pattern as
+        ``_drop_legacy_session_status_check`` / ``_drop_legacy_action_kind_check``.
+        """
+        if self.dialect != "sqlite":
+            return
+        async with self._engine.connect() as conn:
+            row = (
+                (
+                    await conn.execute(
+                        text(
+                            "SELECT sql FROM sqlite_master WHERE type='table' AND name='invocations'"
+                        )
+                    )
+                )
+                .mappings()
+                .first()
+            )
+        if row is None or row["sql"] is None:
+            return
+        create_sql: str = row["sql"]
+        if self._LEGACY_INVOCATIONS_STATUS_MARKER in create_sql:
+            return
+
+        async with self._engine.connect() as conn:
+            index_rows = (
+                (
+                    await conn.execute(
+                        text(
+                            "SELECT sql FROM sqlite_master "
+                            "WHERE type='index' AND tbl_name='invocations' AND sql IS NOT NULL"
+                        )
+                    )
+                )
+                .mappings()
+                .all()
+            )
+            index_sqls = [r["sql"] for r in index_rows]
+
+            cols_rows = (
+                (await conn.execute(text("PRAGMA table_info(invocations)"))).mappings().all()
+            )
+            cols = [r["name"] for r in cols_rows]
+        col_list = ", ".join(cols)
+
+        # `invocations` is an FK target (sessions.invocation_id,
+        # schedule_runs.invocation_id, artifacts.invocation_id): dropping it
+        # while `PRAGMA foreign_keys` is enforced raises a FOREIGN KEY
+        # constraint failure even with real rows safely copied into the new
+        # table first. `engine.begin()` opens its transaction before our first
+        # statement runs, and SQLite treats `PRAGMA foreign_keys` as a no-op
+        # inside a pending transaction — so toggling it through a normal
+        # SQLAlchemy connection never actually takes effect. Go through the
+        # raw driver connection instead (same technique as `_raw_sqlite_exec`)
+        # so the pragma flip is real autocommit, not swallowed by an open txn.
+        async with self._engine.connect() as conn:
+            driver = (await conn.get_raw_connection()).driver_connection
+            await driver.execute("PRAGMA foreign_keys = OFF")
+            try:
+                await driver.execute(
+                    """
+                    CREATE TABLE invocations_new (
+                      id              TEXT    PRIMARY KEY,
+                      skill           TEXT    NOT NULL,
+                      plugin          TEXT,
+                      prompt          TEXT,
+                      started_at      REAL    NOT NULL,
+                      ended_at        REAL,
+                      status          TEXT    NOT NULL DEFAULT 'running'
+                                      CHECK(status IN ('running', 'completed',
+                                            'completed_empty', 'failed',
+                                            'timed_out', 'aborted', 'cancelled')),
+                      session_count   INTEGER NOT NULL DEFAULT 0,
+                      created_at      REAL    NOT NULL,
+                      updated_at      REAL    NOT NULL,
+                      node_metadata   JSON,
+                      status_reason_code     TEXT,
+                      status_reason_summary  TEXT,
+                      status_evidence_refs   JSON
+                    )
+                    """
+                )
+                insert_sql = (
+                    f"INSERT INTO invocations_new ({col_list}) "  # noqa: S608
+                    f"SELECT {col_list} FROM invocations"
+                )
+                await driver.execute(insert_sql)
+                await driver.execute("DROP TABLE invocations")
+                await driver.execute("ALTER TABLE invocations_new RENAME TO invocations")
+                for idx_sql in index_sqls:
+                    await driver.execute(idx_sql)
+                await driver.commit()
+            finally:
+                await driver.execute("PRAGMA foreign_keys = ON")
+                await driver.commit()
 
     # ── Schema version ─────────────────────────────────────────────────
 

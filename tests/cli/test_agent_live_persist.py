@@ -558,7 +558,6 @@ async def test_rejected_second_setup_leaves_first_context_intact(
 
 async def test_failed_setup_releases_branch_claim(
     temp_db_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
 ):
     """Setup failing AFTER the wrapper session claims the branch must release
     the claim, so a retry (or a later run) can wrap the branch again."""
@@ -567,14 +566,19 @@ async def test_failed_setup_releases_branch_claim(
     async def boom():
         raise RuntimeError("simulated db-open failure")
 
-    monkeypatch.setattr(_runs_mod, "_open_shared_db", boom)
-
     branch = Branch(name="b1")
-    ctx = await _setup_live_persist(branch)
-    assert ctx is None
-    assert branch._owning_session_id is None
 
-    monkeypatch.undo()
+    # Scoped to its own MonkeyPatch context (not the test's shared `monkeypatch`
+    # fixture) so undoing it on exit only reverts `_open_shared_db` — reusing
+    # the shared fixture + `monkeypatch.undo()` here would also roll back
+    # `temp_db_path`'s DEFAULT_DB_PATH patch and point the retry below at the
+    # real `~/.lionagi/state.db`.
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setattr(_runs_mod, "_open_shared_db", boom)
+        ctx = await _setup_live_persist(branch)
+        assert ctx is None
+        assert branch._owning_session_id is None
+
     ctx2 = await _setup_live_persist(branch)
     assert ctx2 is not None
     await _teardown_live_persist(ctx2, status="completed")

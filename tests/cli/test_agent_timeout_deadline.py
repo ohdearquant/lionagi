@@ -128,7 +128,7 @@ def _make_agent_mocks(monkeypatch, tmp_path, captured_instruction):
     async def fake_setup(*a, **kw):
         return None
 
-    async def fake_teardown(ctx, *, status="completed", exception=None):
+    async def fake_teardown(ctx, *, status="completed", exception=None, cwd=None):
         return status
 
     monkeypatch.setattr(agent_mod, "setup_agent_persist", fake_setup)

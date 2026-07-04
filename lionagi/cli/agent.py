@@ -481,6 +481,7 @@ async def _run_agent(
                 live,
                 status=_terminal_status,
                 exception=_terminal_exc,
+                cwd=cwd,
             )
             if effective_status != _terminal_status:
                 _terminal_status = effective_status

@@ -66,6 +66,7 @@ _STATUS_COLOUR = {
     "running": _green,
     "active": _green,
     "completed": _dim,
+    "completed_empty": _yellow,
     "merged": _dim,
     "failed": _red,
     "aborted": _red,
@@ -565,6 +566,30 @@ async def _detail_session(db: Any, sess: dict[str, Any]) -> str:
     last_msg = sess.get("last_message_at")
     if last_msg:
         lines.append(f"  last_msg:  {time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(last_msg))}")
+
+    # Completion-trust evidence: surface why a terminal status landed where it
+    # did, so trusting `completed` (or catching `completed_empty`) doesn't
+    # require a manual git read.
+    if sess.get("status") in ("completed", "completed_empty"):
+        reason_summary = sess.get("status_reason_summary")
+        if reason_summary:
+            lines.append(f"  reason:    {reason_summary}")
+        evidence_refs = sess.get("status_evidence_refs")
+        if isinstance(evidence_refs, str):
+            import json as _json_ev
+
+            try:
+                evidence_refs = _json_ev.loads(evidence_refs)
+            except (ValueError, TypeError):
+                evidence_refs = None
+        if evidence_refs:
+            lines.append(_dim("  -- evidence --"))
+            for ev in evidence_refs:
+                if isinstance(ev, dict):
+                    ev_label = ev.get("label") or ev.get("kind") or "evidence"
+                    lines.append(f"    {ev_label}")
+                else:
+                    lines.append(f"    {ev}")
 
     # Branches (agent legs) — count plus per-leg status/elapsed
     branch_rows = await _fetch_branches(db, sess["id"])

@@ -69,6 +69,7 @@ def _msg_from_collection_entry(raw: dict[str, Any]) -> dict[str, Any]:
 _STATUS_MAP = {
     "running": "running",
     "completed": "completed",
+    "completed_empty": "completed_empty",
     "failed": "failed",
     "aborted": "aborted",
     "timed_out": "timed_out",
