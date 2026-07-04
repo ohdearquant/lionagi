@@ -239,7 +239,7 @@ class TestFormValidationGate:
 
         async def fake_run(*a, **kw):
             llm_called.append(1)
-            return ("done", "claude", "br-001", "completed")
+            return ("done", "claude", "br-001", "completed", "sess-001")
 
         monkeypatch.setattr(agent_mod, "_run_agent", fake_run)
 
@@ -263,7 +263,7 @@ class TestFormValidationGate:
 
         async def fake_run(*a, **kw):
             llm_called.append(1)
-            return ("done", "claude", "br-001", "completed")
+            return ("done", "claude", "br-001", "completed", "sess-001")
 
         monkeypatch.setattr(agent_mod, "_run_agent", fake_run)
 
@@ -289,7 +289,7 @@ class TestFormValidationGate:
 
         async def fake_run(*a, **kw):
             llm_called.append(1)
-            return ("done", "claude", "br-001", "completed")
+            return ("done", "claude", "br-001", "completed", "sess-001")
 
         monkeypatch.setattr(agent_mod, "_run_agent", fake_run)
 
@@ -322,7 +322,7 @@ class TestFormValidationGate:
 
         async def fake_run_agent(model_str, prompt, **kw):
             captured_prompts.append(prompt)
-            return ("done", "claude", "br-001", "completed")
+            return ("done", "claude", "br-001", "completed", "sess-001")
 
         monkeypatch.setattr(agent_mod, "_run_agent", fake_run_agent)
 
@@ -347,7 +347,7 @@ class TestFormValidationGate:
 
         async def fake_run_agent(model_str, prompt, **kw):
             captured_prompts.append(prompt)
-            return ("done", "claude", "br-001", "completed")
+            return ("done", "claude", "br-001", "completed", "sess-001")
 
         monkeypatch.setattr(agent_mod, "_run_agent", fake_run_agent)
 
@@ -376,7 +376,7 @@ class TestPresetCodingBehaviour:
 
         async def spy_run_agent(model_str, prompt, **kw):
             captured_kwargs.append(kw)
-            return ("done", "claude", "br-001", "completed")
+            return ("done", "claude", "br-001", "completed", "sess-001")
 
         monkeypatch.setattr(agent_mod, "_run_agent", spy_run_agent)
 
@@ -397,7 +397,7 @@ class TestPresetCodingBehaviour:
 
         async def spy_run_agent(model_str, prompt, **kw):
             captured_kwargs.append(kw)
-            return ("done", "claude", "br-001", "completed")
+            return ("done", "claude", "br-001", "completed", "sess-001")
 
         monkeypatch.setattr(agent_mod, "_run_agent", spy_run_agent)
 
@@ -417,7 +417,7 @@ class TestPresetCodingBehaviour:
 
         async def spy_run_agent(model_str, prompt, **kw):
             captured_kwargs.append(kw)
-            return ("done", "claude", "br-001", "completed")
+            return ("done", "claude", "br-001", "completed", "sess-001")
 
         monkeypatch.setattr(agent_mod, "_run_agent", spy_run_agent)
 
@@ -497,7 +497,7 @@ async def test_run_agent_preset_coding_creates_preset_config(monkeypatch, tmp_pa
 
     from lionagi.cli.agent import _run_agent
 
-    result, provider, branch_id, status = await _run_agent(
+    result, provider, branch_id, status, session_id = await _run_agent(
         "claude/sonnet", "build a feature", preset="coding"
     )
 
@@ -821,7 +821,7 @@ class TestFormSpecClosedSchema:
 
         async def fake_run(*a, **kw):
             llm_called.append(1)
-            return ("done", "claude", "br-001", "completed")
+            return ("done", "claude", "br-001", "completed", "sess-001")
 
         monkeypatch.setattr(agent_mod, "_run_agent", fake_run)
 
@@ -849,7 +849,7 @@ class TestFormSpecClosedSchema:
 
         async def fake_run(*a, **kw):
             llm_called.append(1)
-            return ("done", "claude", "br-001", "completed")
+            return ("done", "claude", "br-001", "completed", "sess-001")
 
         monkeypatch.setattr(agent_mod, "_run_agent", fake_run)
 
@@ -883,7 +883,7 @@ class TestFormDirectoryPath:
 
         async def fake_run(*a, **kw):
             llm_called.append(1)
-            return ("done", "claude", "br-001", "completed")
+            return ("done", "claude", "br-001", "completed", "sess-001")
 
         monkeypatch.setattr(agent_mod, "_run_agent", fake_run)
 
@@ -946,7 +946,7 @@ class TestFormNonMappingTypes:
 
         async def fake_run(*a, **kw):
             llm_called.append(1)
-            return ("done", "claude", "br-001", "completed")
+            return ("done", "claude", "br-001", "completed", "sess-001")
 
         monkeypatch.setattr(agent_mod, "_run_agent", fake_run)
         errors: list[str] = []

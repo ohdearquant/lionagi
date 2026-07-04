@@ -95,7 +95,7 @@ async def test_resume_empty_stream_returns_failed_status(monkeypatch, tmp_path):
 
     from lionagi.cli.agent import _run_agent
 
-    _result, _provider, _bid, terminal_status = await _run_agent(
+    _result, _provider, _bid, terminal_status, _sid = await _run_agent(
         "codex/model",
         "follow up",
         resume=branch_id,
@@ -214,7 +214,7 @@ async def test_resume_nonempty_stream_returns_completed_status(monkeypatch, tmp_
 
     from lionagi.cli.agent import _run_agent
 
-    result, _provider, _bid, terminal_status = await _run_agent(
+    result, _provider, _bid, terminal_status, _sid = await _run_agent(
         "codex/model",
         "follow up",
         resume=branch_id,
@@ -235,7 +235,7 @@ async def test_fresh_run_empty_result_still_exits_zero(monkeypatch, tmp_path):
 
     from lionagi.cli.agent import _run_agent
 
-    _result, _provider, _bid, terminal_status = await _run_agent(
+    _result, _provider, _bid, terminal_status, _sid = await _run_agent(
         "codex/model",
         "say hi",
         resume=None,
