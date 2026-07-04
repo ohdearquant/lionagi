@@ -62,6 +62,11 @@ Run { id, source: agent|schedule|script|flow, status, project, started_at, updat
       chain?{parent, children[]}, refs{session_id?, invocation_id?, schedule_id?, topic?} }
 ```
 
+- **The invocation noun is removed from the product.** A scheduler firing is simply a Run
+  with `source=schedule`; there is no "invocation" kind, label, filter value, column, or
+  detail tab anywhere in the UI (founder ruling: the concept is odd). The daemon's invocation
+  records remain internal plumbing the aggregator consumes — `refs.invocation_id` exists for
+  joining, and is never presented.
 - **Attention header, not a home page.** The landing state carries compact stat chips
   (Running, Failed, Stale, Slow) computed from the same query the canvas shows. A chip is a
   filter, not a link: clicking it narrows the canvas in place. There is no separate dashboard
@@ -115,7 +120,8 @@ Three routes plus params are the entire public URL surface:
 ```
 
 Every legacy path redirects: `/runs→/?view=table` · `/runs/$id→/?run=$id` ·
-`/invocations→/?view=table&source=schedule` · `/invocations/$id→/?run=$id` ·
+`/invocations→/?view=table&source=schedule` (legacy URL only; the noun does not reappear) ·
+`/invocations/$id→/?run=$id` ·
 `/kanban→/?view=board` · `/playfield→/?view=stream&live=1` · `/shows→/?source=script` ·
 `/shows/$topic→/?source=script&topic=$topic` · `/schedules[/$id]→/library?kind=schedule[&id=$id]` ·
 `/playbooks[/$name]→/library?kind=script[&id=$name]` · `/agents[/$id]→/library?kind=agent[&id=$id]` ·
