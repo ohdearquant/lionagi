@@ -526,6 +526,35 @@ async def test_teardown_closes_db_even_if_bookmark_update_fails(
     # Worker count should be back to (or below) baseline.
     assert _aiosqlite_thread_count() <= before
 
+    # Ownership release also ran despite the failure: the long-lived branch
+    # is back to a clean standalone state and can be re-wrapped on resume.
+    assert branch._owning_session_id is None
+    assert branch._observer is None
+    assert branch._hooks is None
+    assert branch.user is None
+
+
+async def test_rejected_second_setup_leaves_first_context_intact(
+    temp_db_path: Path,
+):
+    """A second setup on a still-owned branch must fail WITHOUT closing the
+    first context's shared DB handle or blocking its teardown release."""
+    branch = Branch(name="b1")
+    ctx1 = await _setup_live_persist(branch)
+
+    ctx2 = await _setup_live_persist(branch)
+    assert ctx2 is None  # rejected: branch still owned by ctx1's session
+
+    # ctx1's DB handle survived the rejected setup...
+    assert ctx1["db"]._engine is not None
+    # ...and teardown still releases ownership cleanly.
+    await _teardown_live_persist(ctx1, status="completed")
+    assert branch._owning_session_id is None
+
+    ctx3 = await _setup_live_persist(branch)
+    assert ctx3 is not None
+    await _teardown_live_persist(ctx3, status="completed")
+
 
 async def test_teardown_with_none_context_is_noop(temp_db_path: Path):
     """If setup returned None (failed), teardown(None) must be safe."""
