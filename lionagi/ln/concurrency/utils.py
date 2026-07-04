@@ -83,7 +83,15 @@ def run_async(coro: Awaitable[T]) -> T:
         try:
 
             async def _runner() -> T:
-                _loop_and_task_future.set_result((asyncio.get_event_loop(), asyncio.current_task()))
+                task = asyncio.current_task()
+                _loop_and_task_future.set_result((asyncio.get_event_loop(), task))
+                if _cancel_requested.is_set() or _term_requested.is_set():
+                    # A signal was latched before this future existed, so the
+                    # handler's call_soon_threadsafe(task.cancel) had nothing
+                    # to call yet (this is the only path for SIGTERM, whose
+                    # default disposition isn't callable as a fallback).
+                    # Cancel ourselves now instead of running to completion.
+                    task.cancel()
                 return await coro
 
             result = anyio.run(_runner)

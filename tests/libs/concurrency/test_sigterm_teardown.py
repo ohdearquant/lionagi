@@ -190,3 +190,50 @@ def test_run_async_sigterm_raises_distinct_type_not_keyboardinterrupt():
 
     assert not issubclass(SigtermInterrupt, KeyboardInterrupt)
     assert issubclass(SigtermInterrupt, BaseException)
+
+
+def test_run_async_sigterm_before_thread_start_still_cancels(monkeypatch):
+    """A SIGTERM latched before the worker thread starts must still cancel.
+
+    Regression test for a race where SIGTERM arriving after the handler is
+    installed but before _loop_and_task_future is populated left the signal
+    "swallowed": SIGTERM's default disposition (SIG_DFL) isn't callable as a
+    fallback the way SIGINT's default_int_handler is, so the handler set
+    _term_requested and returned without cancelling anything, and the inner
+    coroutine ran to full completion before SigtermInterrupt was ever raised.
+
+    Reproduced deterministically (no sleep-and-hope racing) by monkeypatching
+    threading.Thread.start to deliver SIGTERM to our own process right before
+    the worker thread is started — at that point the thread genuinely has not
+    run yet, so _loop_and_task_future cannot possibly be ready.
+    """
+    import threading
+    import time
+
+    import anyio
+    import pytest
+
+    from lionagi.ln.concurrency import run_async
+    from lionagi.ln.concurrency.utils import SigtermInterrupt
+
+    async def long_running():
+        await anyio.sleep(5)
+
+    original_start = threading.Thread.start
+
+    def start_after_sigterm(self, *args, **kwargs):
+        os.kill(os.getpid(), signal.SIGTERM)
+        return original_start(self, *args, **kwargs)
+
+    monkeypatch.setattr(threading.Thread, "start", start_after_sigterm)
+
+    started_at = time.monotonic()
+    with pytest.raises(SigtermInterrupt):
+        run_async(long_running())
+    elapsed = time.monotonic() - started_at
+
+    assert elapsed < 3.0, (
+        f"run_async took {elapsed:.2f}s to raise SigtermInterrupt for a 5s "
+        "coroutine — it looks like the coroutine ran to (near) completion "
+        "instead of being cancelled promptly on the already-latched signal"
+    )
