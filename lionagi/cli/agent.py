@@ -203,6 +203,8 @@ async def _run_agent(
     project: str | None = None,
     bypass: bool = False,
     preset: str | None = None,
+    resume_on_timeout: bool = False,
+    _auto_resumed: bool = False,
 ) -> tuple[str, str, str, str, str | None]:
     """Execute one agent turn; returns (result, provider, branch_id, terminal_status, session_id).
 
@@ -240,6 +242,10 @@ async def _run_agent(
             yolo = True
         if profile.fast_mode and not fast:
             fast = True
+        if profile.timeout and timeout is None:
+            timeout = profile.timeout
+        if profile.resume_on_timeout and not resume_on_timeout:
+            resume_on_timeout = True
 
     branch: Branch | None = None
     if continue_last:
@@ -491,6 +497,40 @@ async def _run_agent(
     save_last_branch_pointer(run.run_id, branch_id)
 
     session_id = live.get("session_id") if live else None
+
+    if _terminal_status == "timed_out" and resume_on_timeout and not _auto_resumed:
+        from lionagi.cli._logging import warn
+
+        warn(
+            f"[auto-resume] session {session_id or branch_id} timed out after "
+            f"{timeout}s — resuming once with 'continue and conclude the task'"
+        )
+        # Carry the model that actually ran this leg (explicit --model, profile
+        # default, or whatever a prior resume already grafted) forward as an
+        # explicit override. Passing model_str=None here would let the
+        # agent_name profile's model re-apply on the resumed leg (see the
+        # profile-precedence block above), silently switching models mid-run.
+        _effective_cfg = branch.chat_model.endpoint.config
+        _effective_model_str = f"{_effective_cfg.provider}/{_effective_cfg.kwargs.get('model')}"
+        return await _run_agent(
+            _effective_model_str,
+            "continue and conclude the task",
+            yolo=yolo,
+            verbose=verbose,
+            theme=theme,
+            resume=branch_id,
+            effort=effort,
+            agent_name=agent_name,
+            cwd=cwd,
+            timeout=timeout,
+            fast=fast,
+            invocation_id=invocation_id,
+            project=project,
+            bypass=bypass,
+            resume_on_timeout=resume_on_timeout,
+            _auto_resumed=True,
+        )
+
     return res or "", provider, branch_id, _terminal_status, session_id
 
 
@@ -539,8 +579,8 @@ def add_agent_subparser(subparsers: argparse._SubParsersAction) -> argparse.Argu
         help=(
             "Load agent profile by name. Resolves "
             ".lionagi/agents/<NAME>/<NAME>.md first, then .lionagi/agents/<NAME>.md. "
-            "Profile provides system prompt, default model, effort, yolo. "
-            "CLI flags override profile settings."
+            "Profile provides system prompt, default model, effort, yolo, "
+            "timeout, resume_on_timeout. CLI flags override profile settings."
         ),
     )
     agent.add_argument(
@@ -685,6 +725,7 @@ def run_agent(args: argparse.Namespace) -> int:
                 project=getattr(args, "project", None),
                 bypass=getattr(args, "bypass", False),
                 preset=getattr(args, "preset", None),
+                resume_on_timeout=getattr(args, "resume_on_timeout", False),
             )
         )
     except KeyboardInterrupt:

@@ -1,8 +1,8 @@
 site_name: LionAGI
 site_description: Orchestrate multi-agent AI workflows from the command line or Python
-site_url: https://lionagi.ai/
-repo_url: https://github.com/khive-ai/lionagi
-repo_name: khive-ai/lionagi
+site_url: https://ohdearquant.github.io/lionagi/
+repo_url: https://github.com/ohdearquant/lionagi
+repo_name: ohdearquant/lionagi
 edit_uri: edit/main/docs/
 copyright: Copyright &copy; 2024-2026 Ocean Li and LionAGI Contributors
 
@@ -90,7 +90,7 @@ markdown_extensions:
   - pymdownx.magiclink:
       normalize_issue_symbols: true
       repo_url_shorthand: true
-      user: khive-ai
+      user: ohdearquant
       repo: lionagi
   - pymdownx.mark
   - pymdownx.smartsymbols
@@ -129,7 +129,7 @@ plugins:
       enable_creation_date: true
       type: iso_datetime
   - git-committers:
-      repository: khive-ai/lionagi
+      repository: ohdearquant/lionagi
       branch: main
       enabled: false
   - autorefs
@@ -180,6 +180,8 @@ nav:
 
   - Choosing a Surface: choosing-a-surface.md
 
+  - How lionagi Compares: comparison/index.md
+
   - Cookbook:
       - cookbook/index.md
       - Codebase Audit: cookbook/codebase-audit.md
@@ -225,7 +227,7 @@ extra:
     default: stable
   social:
     - icon: fontawesome/brands/github
-      link: https://github.com/khive-ai/lionagi
+      link: https://github.com/ohdearquant/lionagi
       name: GitHub
     - icon: fontawesome/brands/discord
       link: https://discord.gg/lionagi
@@ -264,7 +266,6 @@ extra_javascript:
   - https://unpkg.com/mermaid@10/dist/mermaid.min.js
   - javascripts/mermaid-config.js
   - javascripts/mathjax.js
-  - https://polyfill.io/v3/polyfill.min.js?features=es6
   - https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-mml-chtml.js
 
 hooks:

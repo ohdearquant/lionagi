@@ -544,7 +544,10 @@ def _cmd_list(args: argparse.Namespace) -> int:
         return 0
     for s in schedules:
         status = "enabled" if s.get("enabled") else "disabled"
-        print(f"  {s['id']}  {s['name']:<30} [{status}]  {s.get('trigger_type', '?')}")
+        line = f"  {s['id']}  {s['name']:<30} [{status}]  {s.get('trigger_type', '?')}"
+        if s.get("max_runs"):
+            line += f"  (runs left: {s.get('remaining_runs')}/{s['max_runs']})"
+        print(line)
     return 0
 
 
@@ -633,7 +636,47 @@ def _parse_chain_action(raw: str, flag: str) -> tuple[dict[str, Any] | None, str
     return parsed, None
 
 
+def _warn_if_cron_far_out(cron_expr: str) -> None:
+    """Best-effort heads-up when a cron expression's next fire is far out.
+
+    Addresses the date-pinned one-shot footgun: a cron schedule created
+    after its literal moment for this year (but meant to fire "today")
+    silently resolves to the same date *next* year instead. croniter is
+    part of the `studio` extra, not a core dependency, so this degrades to
+    a no-op rather than failing schedule creation when it isn't installed.
+    """
+    try:
+        from croniter import croniter
+    except ImportError:
+        return
+    import time as _time
+    from datetime import datetime, timezone
+
+    now = datetime.now(timezone.utc)
+    try:
+        next_fire = croniter(cron_expr, start_time=now).get_next(float)
+    except Exception:
+        return
+    days_out = (next_fire - _time.time()) / 86400
+    if days_out > 360:
+        warn(
+            f"cron {cron_expr!r} next fires in about {days_out:.0f} days. "
+            "If you meant a one-shot for a specific date this year, the "
+            "schedule may have been created after that date's moment has "
+            "already passed (cron resolves in UTC) and silently waits a "
+            "full year. Consider --max-runs / --once plus a nearer date."
+        )
+
+
 def _cmd_create(args: argparse.Namespace) -> int:
+    if args.once and args.max_runs is not None:
+        print("Error: --once and --max-runs are mutually exclusive.", file=sys.stderr)
+        return 1
+    max_runs = 1 if args.once else args.max_runs
+    if max_runs is not None and max_runs < 1:
+        print(f"Error: --max-runs must be a positive integer, got {max_runs}.", file=sys.stderr)
+        return 1
+
     body: dict[str, Any] = {
         "name": args.name,
         "trigger_type": args.trigger_type,
@@ -641,8 +684,11 @@ def _cmd_create(args: argparse.Namespace) -> int:
     }
     if args.cron:
         body["cron_expr"] = args.cron
+        _warn_if_cron_far_out(args.cron)
     if args.interval:
         body["interval_sec"] = args.interval
+    if max_runs is not None:
+        body["max_runs"] = max_runs
     if args.prompt:
         body["action_prompt"] = args.prompt
     if args.model:
@@ -740,8 +786,41 @@ def _cmd_runs(args: argparse.Namespace) -> int:
     return 0
 
 
-def add_schedule_subparser(subparsers: argparse._SubParsersAction) -> None:
-    """Register `li schedule` sub-command."""
+# Common wrong spellings/guesses mapped to the real flag they were probably
+# aiming for — checked before the generic difflib fuzzy match below, since
+# some of these (e.g. --every for --interval) aren't close enough by edit
+# distance for difflib to catch on its own.
+_SCHEDULE_FLAG_SYNONYMS: dict[str, str] = {
+    "--every": "--interval",
+    "--at": "--cron",
+    "--action": "--action-kind",
+    "--on_success": "--on-success",
+    "--on_fail": "--on-fail",
+    "--max_runs": "--max-runs",
+}
+
+# Populated by add_schedule_subparser() with every long option string across
+# all `li schedule` subcommands, for fuzzy did-you-mean matching.
+_ALL_SCHEDULE_FLAGS: set[str] = set()
+
+
+def suggest_schedule_flag(token: str) -> str | None:
+    """Return a suggested correction for an unrecognized `li schedule` flag.
+
+    Checks the explicit synonym map first (catches guesses too far from the
+    real flag for edit-distance matching, e.g. "--every" for "--interval"),
+    then falls back to a fuzzy match against every registered flag.
+    """
+    if token in _SCHEDULE_FLAG_SYNONYMS:
+        return _SCHEDULE_FLAG_SYNONYMS[token]
+    import difflib
+
+    matches = difflib.get_close_matches(token, _ALL_SCHEDULE_FLAGS, n=1, cutoff=0.6)
+    return matches[0] if matches else None
+
+
+def add_schedule_subparser(subparsers: argparse._SubParsersAction) -> argparse.ArgumentParser:
+    """Register `li schedule` sub-command. Returns the `schedule` parser."""
     sched = subparsers.add_parser(
         "schedule",
         help="Manage lionagi Studio schedules.",
@@ -755,14 +834,41 @@ def add_schedule_subparser(subparsers: argparse._SubParsersAction) -> None:
     sched_sub.required = True
 
     # list
-    sched_sub.add_parser("list", help="List all schedules.")
+    sched_sub.add_parser(
+        "list",
+        help="List all schedules.",
+        epilog="Example: li schedule list",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
 
     # get
-    get_p = sched_sub.add_parser("get", help="Show schedule details.")
+    get_p = sched_sub.add_parser(
+        "get",
+        help="Show schedule details.",
+        epilog="Example: li schedule get sched-abc123",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
     get_p.add_argument("id", help="Schedule ID.")
 
     # create
-    create_p = sched_sub.add_parser("create", help="Create a new schedule.")
+    create_p = sched_sub.add_parser(
+        "create",
+        help="Create a new schedule.",
+        epilog=(
+            "Examples:\n"
+            '  li schedule create daily-digest --cron "0 9 * * *" \\\n'
+            '      --prompt "summarize overnight activity"\n'
+            "  li schedule create hourly-poll --interval 3600 --agent researcher\n"
+            '  li schedule create one-shot-backfill --cron "0 18 2 7 *" --once\n'
+            '  li schedule create nightly-chain --cron "0 2 * * *" --prompt build \\\n'
+            '      --on-success \'{"prompt": "notify done", "on_success": null}\'\n'
+            "      # WARNING: --on-success/--on-fail shallow-merge into the chained\n"
+            "      # run — any key you omit is INHERITED from this schedule,\n"
+            '      # including on_success/on_fail themselves; set "on_success": null\n'
+            "      # explicitly at each level to stop the chain there."
+        ),
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
     create_p.add_argument("name", help="Schedule name.")
     create_p.add_argument(
         "--trigger-type",
@@ -793,6 +899,23 @@ def add_schedule_subparser(subparsers: argparse._SubParsersAction) -> None:
     create_p.add_argument("--project", help="Project name.")
     create_p.add_argument("--description", help="Human-readable description.")
     create_p.add_argument(
+        "--max-runs",
+        dest="max_runs",
+        type=int,
+        metavar="N",
+        help=(
+            "Auto-disable this schedule once N total runs have fired "
+            "(default: unlimited). Chained on_success/on_fail fires do not "
+            "count toward N. Mutually exclusive with --once."
+        ),
+    )
+    create_p.add_argument(
+        "--once",
+        dest="once",
+        action="store_true",
+        help="Sugar for --max-runs 1 — fire once, then auto-disable.",
+    )
+    create_p.add_argument(
         "--on-success",
         dest="on_success",
         metavar="JSON",
@@ -821,18 +944,38 @@ def add_schedule_subparser(subparsers: argparse._SubParsersAction) -> None:
     )
 
     # enable / disable / trigger / delete
-    for sub_name, sub_help in (
-        ("enable", "Enable a schedule."),
-        ("disable", "Disable a schedule."),
-        ("trigger", "Fire a schedule immediately."),
-        ("delete", "Delete a schedule."),
+    for sub_name, sub_help, example in (
+        ("enable", "Enable a schedule.", "li schedule enable sched-abc123"),
+        ("disable", "Disable a schedule.", "li schedule disable sched-abc123"),
+        ("trigger", "Fire a schedule immediately.", "li schedule trigger sched-abc123"),
+        ("delete", "Delete a schedule.", "li schedule delete sched-abc123"),
     ):
-        p = sched_sub.add_parser(sub_name, help=sub_help)
+        p = sched_sub.add_parser(
+            sub_name,
+            help=sub_help,
+            epilog=f"Example: {example}",
+            formatter_class=argparse.RawDescriptionHelpFormatter,
+        )
         p.add_argument("id", help="Schedule ID.")
 
     # runs
-    runs_p = sched_sub.add_parser("runs", help="List runs for a schedule.")
+    runs_p = sched_sub.add_parser(
+        "runs",
+        help="List runs for a schedule.",
+        epilog="Example: li schedule runs sched-abc123",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
     runs_p.add_argument("id", help="Schedule ID.")
+
+    _ALL_SCHEDULE_FLAGS.clear()
+    for action_parser in sched_sub.choices.values():
+        _ALL_SCHEDULE_FLAGS.update(
+            opt
+            for opt in action_parser._option_string_actions
+            if opt.startswith("--") and opt != "--help"
+        )
+
+    return sched
 
 
 _ACTION_MAP = {
