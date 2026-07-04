@@ -40,6 +40,7 @@ if TYPE_CHECKING:
     from .operations.builder import OperationGraphBuilder as Builder
     from .operations.node import Operation
     from .protocols.action.manager import load_mcp_tools
+    from .protocols.memory import InMemoryStore, MemoryItem, MemoryQuery, MemoryStore
     from .protocols.messages import Message, create_message
     from .protocols.types import Edge, Element, Event, Graph, Node, Pile, Progression
     from .service.broadcaster import Broadcaster
@@ -68,6 +69,10 @@ _LAZY_MAP: dict[str, tuple[str, str | None]] = {
     "Graph": ("protocols.graph.graph", "Graph"),
     "Event": ("protocols.generic.event", "Event"),
     "Message": ("protocols.messages", "Message"),
+    "MemoryItem": ("protocols.memory", "MemoryItem"),
+    "MemoryQuery": ("protocols.memory", "MemoryQuery"),
+    "MemoryStore": ("protocols.memory", "MemoryStore"),
+    "InMemoryStore": ("protocols.memory", "InMemoryStore"),
     "create_message": ("protocols.messages.manager", "create_message"),
     "HookRegistry": ("service.hooks.hook_registry", "HookRegistry"),
     "HookedEvent": ("service.hooks.hooked_event", "HookedEvent"),
@@ -135,10 +140,14 @@ __all__ = (
     "Graph",
     "HookRegistry",
     "HookedEvent",
+    "InMemoryStore",
     "InvalidConstructorError",
     "JsonAdapter",
     "LNDLError",
     "LNDLOutput",
+    "MemoryItem",
+    "MemoryQuery",
+    "MemoryStore",
     "Message",
     "MissingFieldError",
     "MissingLvarError",
