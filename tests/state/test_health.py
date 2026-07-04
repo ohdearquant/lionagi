@@ -189,6 +189,43 @@ def test_running_process_dead_quiet_hours_is_idle():
     assert h == SessionHealth.IDLE
 
 
+def test_running_process_dead_exactly_at_threshold_is_idle():
+    """Equality with the kind threshold stays on the alive side of the
+    boundary — the same contract as the alive branch's UNRESPONSIVE cut."""
+    s = {
+        "status": "running",
+        "invocation_kind": "agent",
+        "last_message_at": NOW - 6 * 3600,
+        "message_count": 5,
+    }
+    h = classify_session_health(
+        s,
+        now=NOW,
+        process_alive=False,
+        has_artifacts=True,
+        has_stale_locks=False,
+    )
+    assert h == SessionHealth.IDLE
+
+
+def test_running_process_alive_exactly_at_threshold_is_idle():
+    """Alive/dead branches share the equality boundary."""
+    s = {
+        "status": "running",
+        "invocation_kind": "agent",
+        "last_message_at": NOW - 6 * 3600,
+        "message_count": 5,
+    }
+    h = classify_session_health(
+        s,
+        now=NOW,
+        process_alive=True,
+        has_artifacts=True,
+        has_stale_locks=False,
+    )
+    assert h == SessionHealth.IDLE
+
+
 def test_running_process_dead_past_threshold_is_stale():
     s = {
         "status": "running",
