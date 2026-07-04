@@ -6,6 +6,8 @@
 
 # lionagi
 
+![lionagi — governed multi-agent orchestration](assets/lionagi_card.png)
+
 Orchestrate multi-agent AI workflows from the command line or Python.
 
 [Docs](https://ohdearquant.github.io/lionagi/) |
@@ -15,8 +17,6 @@ Orchestrate multi-agent AI workflows from the command line or Python.
 [Changelog](CHANGELOG.md)
 
 ## Lion Studio
-
-![Lion Studio — run detail with execution DAG, branches, and multi-agent orchestration](assets/studio.png)
 
 Lion Studio is the built-in web UI for managing and operating your agent workflows. Projects, schedules, playbooks, shows, and runs — all in one place.
 
@@ -152,6 +152,8 @@ Target by entity ID or unique prefix; `--recursive` also kills child entities; `
 **`li studio`** — Launch the Lion Studio web UI (backend API + React frontend).
 `li studio [start] [--port PORT] [--host HOST] [--frontend-port PORT] [--no-frontend] [--dev] [--no-docker]`
 Defaults to Docker (`ghcr.io/ohdearquant/lion-studio`; auto-pulled); `--no-docker` uses a local install; `--no-frontend` starts the API server only; `--dev` enables hot-reload frontend for development.
+
+![Lion Studio — run detail with execution DAG, branches, and multi-agent orchestration](assets/studio.png)
 
 ## Python API
 
