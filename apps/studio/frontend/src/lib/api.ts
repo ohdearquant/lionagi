@@ -699,7 +699,7 @@ export async function getDefinitionVersion(
   );
 }
 
-// F-A3-1 (ADR-0016): backend is POST /api/definitions/{kind}/{name} — no PUT route exists.
+// Backend saves definitions via POST /api/definitions/{kind}/{name} — no PUT route exists.
 // Return type matches services/definitions.py save_definition() response shape:
 //   { kind, name, version, saved_at, message? }
 export async function saveDefinition(
