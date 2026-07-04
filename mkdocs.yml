@@ -180,6 +180,8 @@ nav:
 
   - Choosing a Surface: choosing-a-surface.md
 
+  - How lionagi Compares: comparison/index.md
+
   - Cookbook:
       - cookbook/index.md
       - Codebase Audit: cookbook/codebase-audit.md

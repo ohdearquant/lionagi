@@ -1,0 +1,381 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>LangChain × lionagi — Architecture Map</title>
+<style>
+  :root {
+    --paper: #FAF9F5;
+    --ink: #1A1F1C;
+    --muted: #6B7370;
+    --hairline: #E4E1D8;
+    --lc: #1C3C3C;         /* LangChain deep evergreen */
+    --lc-fill: #EDF3F0;
+    --la: #9A6210;         /* lionagi warm amber */
+    --la-deep: #7A4E0C;
+    --la-fill: #FBF4E6;
+    --li: #A94467;         /* LlamaIndex rose */
+    --ag: #33608C;         /* AG2 steel blue */
+  }
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  html { -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+  body {
+    background: var(--paper);
+    color: var(--ink);
+    font-family: -apple-system, BlinkMacSystemFont, "Inter", "Segoe UI", Helvetica, Arial, sans-serif;
+    -webkit-font-smoothing: antialiased;
+    line-height: 1.45;
+  }
+  .page { max-width: 1180px; margin: 0 auto; padding: 50px 48px 36px; position: relative; }
+  .page::before, .page::after {
+    content: ""; position: absolute; top: 280px; width: 480px; height: 680px;
+    border-radius: 50%; filter: blur(90px); opacity: 0.5; z-index: 0; pointer-events: none;
+  }
+  .page::before { left: -60px;  background: radial-gradient(closest-side, #DCE9E4, transparent); }
+  .page::after  { right: -60px; background: radial-gradient(closest-side, #F6E8CC, transparent); }
+  .page > * { position: relative; z-index: 1; }
+
+  /* ---------- header ---------- */
+  .eyebrow { font-size: 11px; letter-spacing: 0.18em; text-transform: uppercase; color: var(--muted); font-weight: 600; margin-bottom: 13px; }
+  h1 { font-size: 42px; font-weight: 700; letter-spacing: -0.02em; line-height: 1.1; }
+  h1 .lc { color: var(--lc); } h1 .x { color: #A8ADA8; font-weight: 300; padding: 0 4px; } h1 .la { color: var(--la); }
+  .sub { margin-top: 12px; max-width: 800px; font-size: 15px; color: #3D443F; }
+  .sub strong { font-weight: 650; }
+  .chips { margin-top: 15px; display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
+  .chip { font-size: 12px; font-weight: 600; color: var(--muted); border: 1px solid var(--hairline); background: #fff; border-radius: 999px; padding: 4px 12px; }
+  .chip b.mit { color: var(--lc); } .chip b.apa { color: var(--la); }
+  .legend { font-size: 12px; color: var(--muted); display: flex; align-items: center; gap: 6px; }
+  .dot-same { display:inline-block; width: 11px; height: 11px; border-radius: 50%; background: #C9C4B4; }
+  .dot-split { display:inline-block; width: 11px; height: 11px; border-radius: 50%; background: linear-gradient(90deg, var(--lc) 50%, var(--la) 50%); }
+
+  /* ---------- brand marks ---------- */
+  .mark { display: inline-block; width: 25px; height: 25px; border-radius: 7px; background-size: cover; background-position: center; flex: none; }
+  .img-lc  { background-image: url("data:image/jpeg;base64,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"); }
+  .img-lli { background-image: url("data:image/jpeg;base64,/9j/4AAQSkZJRgABAQAAAQABAAD/2wBDAAMCAgMCAgMDAwMEAwMEBQgFBQQEBQoHBwYIDAoMDAsKCwsNDhIQDQ4RDgsLEBYQERMUFRUVDA8XGBYUGBIUFRT/2wBDAQMEBAUEBQkFBQkUDQsNFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBT/wgARCADIAMgDASIAAhEBAxEB/8QAHAABAAEFAQEAAAAAAAAAAAAAAAcCAwQGCAUB/8QAGwEBAQEBAAMBAAAAAAAAAAAAAAUEBgECBwP/2gAMAwEAAhADEAAAAeVAAAAAAAAAAAAAAAAAAAAAAAAAAAAAPvyZtGOGXQ/Pnv8AnbGSgAAAAAAAAABKcvwhMPVcTtMBzrH9HLzyOE+gAAAAAAAAAAJ1groW3H3nX/ZxO35flN9+fLfoAAAAAAAAAACdoJmm5Mke1Ta+h87G+FKV6XXii1M2Vkpc96l12k0eOk9+pG/bnBuemYM4evoAAAAA3nRvW2fj0Y+5f1WFRlV5WStRlV5WGxRlV5eKvbyq6sFaM+VZPjDnOXDNPAAAAAAlSaORutOw9c/KryqlWjKuZWGxbyPLzptG7j1242rhN7PjY/nYefUAAAAAB0hzfOVHVN+mbfz/AFrUYMFzPOO3uIZZ9a/SVuKNvkdXzdqMqRXR4gP3xgAAAAAJajXoTTR8mOJegzxo10Z4yumfM2zwPE8OQMFHVdC2zU90wNWUAAAAACq5ZGRjgAvWXgu2gHkAAAAAAAAAAAAAAAAAAAAAAAAAAAAB/8QAKRAAAQQCAAUEAQUAAAAAAAAAAgABAwUEBgcREzBAEBIUFRYgITFgcP/aAAgBAQABBQL/AATV4Yb/AF+506LPw5IyiPxdb04LfBqaTFpI3db3XNBm+LQ7hNTwU+xY12ndbrD1qTxtCh6da7q9DrVHjad+1C7qcerC7cn8XSpfdTu6d1macM+T+Er8HJFo2Sp9Os4lkYs2IfgaTK31zundfyhBCCEEIKfChzIszhzDNNBw4r2DZ9cPXcvu6hlFDZu6ZuaEUIoQQghFCCEEIriHijNrfdqspsKxBvcwihBCCEEIIQQgmH023cZLzv6jeO0gghBCCEEIIQXLkualJ2j74G8ZVeT8/AEEIIQQisu1w8BglGUOa5q6hbHt+/oE3XpBBbbsDUOAOdkg552RKyr5hnr+a5rbIXh2Lv8ADObmWNlhPmcS8j33XrqO5fVBud5lUmVR3sF7h8RQEbnv8NHf77Wrf5O87qTns/qIuZcQS9haJlnBf7xIR7H3q/Bkss2Kjj0qn1TSpKXL2HJbLvPRm5vrWlfXy7JZ/b3GiURtJtWQ2VsHeYnF3lMl15f09aR/RpTFv7X/AP/EACwRAAEEAAUBBQkAAAAAAAAAAAIAAQMEBRESMDEhE0FCUWEQFCAjJDNAUKH/2gAIAQMBAT8B/NtWPdQ7R26d6qXY7g5hy25iQXXItf21hhPDYF/PpuYq/wBPl5uom0kxbmIDqgQggmm4zUbyPy6CMiQ1ZS7kYuD6S+OUdcbio4s1FAooFFAo4slelCWbOPYGJnLoooFFAgEeEwom0u7bFbrIzKf5ULmKzdYbYCCR2Ph0E8ZSvB4mVwOzsGPrsU4ic+18Iqy0gVmaXlyz9lWrJaPSCj1WcR1Ref8AGVt9ViR/V/1f/8QAMBEAAQMCAwUECwAAAAAAAAAAAgABAwQRBRIwE0FRYaEQFCAhIjEyMzRAQ1BxsdH/2gAIAQIBAT8B+dgi25ZG9aqKY6Z/S1MPeldhYfbVfDtKYuXnqYQOap/DI484OPHUwb4tm5OmFFhNE73cOr/1HhVFuHq6mwmL6ZWXcJ72siFwfKXjo5NjUAfNOTMjkRyI5FJLZVEjSHdtDCqwjjeI936RyI5FJOzKao0aA8k7c1VT5Y3cVd07uzeSnMmDPuUB54xLQgZ2LPuZGbuNn7J5wgG5KoMYKJ9rw6ql9wF+Dfa//8QAQBAAAgECAQUMBwQLAAAAAAAAAQIDBBEAEBIhMUEFEyAiMDJAYXGRweEzQlFygaGxNFJT0SRDYGNwgpOio8Lw/9oACAEBAAY/Av4CVG5sos8LZyPbVfb9cB4ljhrwunexZHPZhkcZrKbEHZ0YVVRM0aMbKqYZaYG7852NyckdWgsJhZveHRlpniE9ONWwjD7yJFZOcHGR2/DcN4ePR55dryW+AHnkrF/dk9Hi95vrkdPvKR0cr9yUj6ZZJEqd7VjfNzL2+ePtn+Lzxoqx/T88cSoiPbcY0RrL7jYzJonib2OLdBmTaJb/ACH5cgY5o1lQ7GGM6mqTAh9RlzrYtJNPI3tBA8MKudvkEmmN/Dlt69WVdPw08nJIedC6sO+3jy0Ex5qtp7MAjSDyRpYU3qkVtut+XWhnN1PomOzq5FiNdugBlNmBuDinqPxEBPbwf0iqih6mcXwrqbqwuDlrY10Kszgdl+gZn4UhXx8clk+1TaI+rrxdaiUHqc449RK3a5yU0ic1o1I7stcDtfO79PQK6D3XHz8sVNMPSQZud8RfEMQ/Vw6e0k+XAFHWXNL6jjWnljc+emkujhs6M6VbV+eN+i4rDQ8Z1qcQsNbQi/eegSjYac371xuiQbxzhgP5dXyGK65vxgP7RwAqi7HQBjc2mvdoojf5D/XEcYPFmVlYfC/hicMbhQoXsty8NLD6SVrC+KudJTUV0y70htbSdQH/AGzC1lTOrS5lhGg1X68V0o0qZWsergJW1zKZE4yxDUp68Tzr6Pmp2DC7pyEBLERrt9l/risddQbN7hbl7g2PVjS7H449I3fwee3fksHYDt/az//EACoQAQABAgMHBAMBAQAAAAAAAAERACExQZEQQFFhcYGxIDChwWDR8OHx/9oACAEBAAE/IfyuGJi3HeTBRfk3k1EuTQDVztTfklz1pGqmPIxN2ULMUlBhVec6Vb+zAnh5djhmGdTueN2dlKkb9lhzutQIwGFieY7Gzkpeu7gwPjhHytjmrbdQn63eEXNHVsZr/YlIgkJaN2VrI9F97VkffPjMphUuumXFdaIWi/2UCp5w/DFc0JFfO4sn3z6MHltW/pAGIHKcVKD19HMnzrU7Vyr2JVPedSQ2xXMtr7zk44HMIfOuxX2SggjkS/1lP7l71sW48FZ+GgZAJEz9hAAipYrFM1lLmC8Dl7+CtOYfXh6wAAUaXFSk67glwoGIlEZFhGWY1n0gKZgsk0Y1ASTjBwpo0D6DZlLG4SrbnHJj7Nhi5JOO99J1pQhMqCfmooDwZ97FgF6OCKaNCai36A+24Tg5E0NMfVg5RHzQNpC6EPHoYpFmpckz8KBMFtWTP9FAs1p/qODVkB7tKf7huERUK7/JOQPU1pRsRdCx6H8NAZtT3I3d+xSJuGCyL/M6g0HuEL5X3wwEmUOK8gvRPjHxeA9b0BoFYjxTmtOVMbBuIGDxtQAJWwFQNhrCXEoUUz+OHvd71xQxccXRgp5JLPpL5H3ySizUVHWhklWa/wC39GFJIWHn2EADIVY/lf8A/9oADAMBAAIAAwAAABDzzzzzzzzzzzzzzzzzzzzzzzzzzzzy3fzzzzzzzzzzwffzzzzzzzzzzzyjzzzzzzzzzzzqDfx7D7zzzzzz0U15nXXzzzzzzwExKP37zzzzzzyga+xNzzzzzzzzwPyxVXzzzzzzw13z/wD888888888888888888888888888888//EACkRAQABAgQEBgMBAAAAAAAAAAERACEwMUFhUXGRoRBAgbHB0SDh8PH/2gAIAQMBAT8Q86AzihsG07wxamljMHTfcdH2xGlrK0RETaQvwz1oTZXPX9xiIRaB7vxW3yPTEmLZJ4DwFpsfVauehQlIQd1LwhPzt1Mj1070quVkWrItWxQi9aWgCeKT/mBIhWxWxRGCKVYildzGOmAN9pTi8wc5h6Xq3EtMHEN+Ccdr1OaNDiQMnWuYTvf5wCUNReRMbtCZCIbR9vhAixEugf2RTBfAM8gXkh3oQGR95wJSlXPwFMqFMvP/AP/EACcRAQABAgQEBwEAAAAAAAAAAAERACEwMUHBYYGhsRAgQHGR0fBR/9oACAECAQE/EPWrKQhjil4oYGzk/tcSCEhec5i8dctKGaXEOV+04hyuo9jeuARPkxFEjP7NvCaX7fI7U1ifjVajKy43NnvSCQtrJH30p6EJ55XYAS8Jh6TQlvIAGZpHgSJS5dnLs8PEJgG9Z96GScD2wTfanU3bdYd60ppfUZrVxMMAB7ytb8r8+Eq76H9pGUKjmlDk9qKGIdow0HOkHP1//8QAKBABAAICAAQGAgMBAAAAAAAAAREhADFBUWGBEDBAcZGhscEgYNHw/9oACAEBAAE/EP7WkWhKEKU3+T59TH47hcSOMEE2BW8TQrGMIsAsQASduBWfAhKEOCInppeELvghCgCOabyYTluwgoABoA25FhYVCEABb3Tu3j6ayCe1wQIJEJMrcYQe/KFIQgZh4zWs62Dem3EGX6+vp1NC15+CDC8Sjuaz9j08ghPvyL8BnWw4JDE9Q/eImUpbH0wuIIHSP5rzrZ1sjrm2FSgSErFUV1yYoPJpiLbcJD9snpDgfjDFrflc9pb2M43ZGo5kCTqehH1EOjL5+DxoF4xmis1Vmqs1VmlnizcydPJLMQz6feHR0k4hTqEUedB3XLYsrkiKVdYpA1YeamIt10QOoB7ssq8Vlzp5rrNVZqrNNZqrNVZCSmHicc8l7RJR0cvOZtCAJgr9kcOiheQNiPEzXWaqzVWaqzRWaqzpYJvBEGAoyVIlINBsM3CrAHnMCRNXzbzfBrSRorNVZqrNVZqrNVYb4ZgIZOIGPvFVlt89DanwpInUTCrDoBBHaA7ZqrNVZorIdmP4jal0GyegLlTyySEKhskTfjQnzhQAI+I9A8pIzgQ/fw50sBPvZAIOG0QcUVAw0nTGTaqWcSOexr2fA69lKkjx98S9wGPoB28+xlf3hLAvWfjrQ7dcmnnE7EPgu/8AALn6JapdiRWrkwIwW0h9GhODChB6xWShODjBmF4lvEB0iAlggOKEuwHoAZ9ZHAiJ+a741IJ2jlMKRTB4Ag9oj+BtAglRgDqrglyqGZmD3cBeJqWrDmMJ5LnnVnvE8+f389+MGontXIKgWBpyMBTUEnqtxq2CiMe47ZKBK2IIISzLFl3BJkTY6IHxRM4AlV4YhSRWQEj6dsFCTLGKJIz/AOQlTmKRPSrVfAAAbVWgJFqQiyYN561VIYjuYORSm0Gklp65/wBN+834ioRhNJjEMQignz4aeSHB2HFUqytq/wBr/9k="); }
+  .tile-ag { background: #0A0E12; display: inline-flex; align-items: center; justify-content: center; }
+  .tile-ag img { width: 64%; height: 64%; filter: invert(1); }
+  .la-tile { background: #141917; display: inline-flex; align-items: center; justify-content: center; }
+  .la-tile svg { width: 84%; height: 84%; color: #E8A33D; }
+  h1 .mark { width: 36px; height: 36px; border-radius: 10px; vertical-align: -6px; }
+  .roof .mark { width: 24px; height: 24px; border-radius: 6px; align-self: center; box-shadow: 0 0 0 1px rgba(255,255,255,0.28); }
+  .who .mark { width: 17px; height: 17px; border-radius: 5px; vertical-align: -4px; margin-right: 3px; }
+  .matrix thead .mark { width: 19px; height: 19px; border-radius: 5px; vertical-align: -5px; margin-right: 5px; box-shadow: 0 0 0 1px rgba(255,255,255,0.3); }
+
+  /* ---------- towers ---------- */
+  .map { margin-top: 26px; display: grid; grid-template-columns: 1fr 148px 1fr; gap: 0 18px; }
+  .roof { border-radius: 14px 14px 4px 4px; padding: 13px 20px; color: #fff; display: flex; align-items: baseline; gap: 10px; margin-bottom: 8px; }
+  .roof .logo { font-size: 19px; position: relative; top: 1px; }
+  .roof .name { font-size: 17px; font-weight: 700; letter-spacing: -0.01em; }
+  .roof .ver { font-size: 12px; opacity: 0.75; font-weight: 500; }
+  .roof.lc-roof { background: var(--lc); }
+  .roof.la-roof { background: linear-gradient(135deg, #A96C12, #8A570D); flex-direction: row-reverse; text-align: right; }
+
+  .block { border-radius: 10px; padding: 12px 16px 11px; margin-bottom: 8px; background: #fff; border: 1px solid var(--hairline); display: flex; flex-direction: column; justify-content: center; }
+  .block.lc-b { border-left: 4px solid var(--lc); background: linear-gradient(90deg, var(--lc-fill), #fff 70%); }
+  .block.la-b { border-right: 4px solid var(--la); background: linear-gradient(270deg, var(--la-fill), #fff 70%); text-align: right; }
+  .block .main { font-size: 14.5px; font-weight: 650; letter-spacing: -0.005em; }
+  .block.lc-b .main { color: var(--lc); }
+  .block.la-b .main { color: var(--la-deep); }
+  .block .detail { font-size: 12px; color: #656C67; margin-top: 2px; }
+  code { font-family: ui-monospace, "SF Mono", Menlo, monospace; font-size: 0.93em; }
+
+  .rung { position: relative; margin-bottom: 8px; display: flex; flex-direction: column; align-items: center; justify-content: center; padding: 5px 0; }
+  .rung::before { content: ""; position: absolute; left: -22px; right: -22px; top: 25px; border-top: 2px dashed #CFCBBE; z-index: 0; }
+  .rung .medallion {
+    width: 40px; height: 40px; border-radius: 50%; background: #fff; border: 1.5px solid #D8D4C8;
+    box-shadow: 0 1px 3px rgba(26,31,28,0.08); display: flex; align-items: center; justify-content: center; color: var(--ink); z-index: 1;
+  }
+  .rung.split .medallion { border: 2px solid transparent; background:
+      linear-gradient(#fff,#fff) padding-box,
+      linear-gradient(90deg, var(--lc) 50%, var(--la) 50%) border-box; }
+  .rung svg { width: 19px; height: 19px; stroke: currentColor; fill: none; stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; }
+  .rung .layer { margin-top: 5px; font-size: 10px; font-weight: 700; letter-spacing: 0.11em; text-transform: uppercase; color: var(--ink); text-align: center; line-height: 1.3; }
+
+  /* ---------- splits ---------- */
+  h2 { font-size: 24px; font-weight: 700; letter-spacing: -0.015em; margin: 34px 0 6px; }
+  h2 .mark { font-size: 15px; vertical-align: 3px; margin-right: 8px; }
+  .h2sub { font-size: 13.5px; color: var(--muted); margin-bottom: 16px; }
+  .cards { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; }
+  .card { background: #fff; border: 1px solid var(--hairline); border-radius: 12px; overflow: hidden; }
+  .card .q { font-size: 13px; font-weight: 700; letter-spacing: 0.02em; padding: 10px 16px 9px; border-bottom: 1px solid var(--hairline); background: #FCFBF8; }
+  .card .halves { display: grid; grid-template-columns: 1fr 1fr; }
+  .card .half { padding: 11px 14px 12px; font-size: 12.5px; color: #454C47; line-height: 1.5; }
+  .card .half.l { border-right: 1px dashed var(--hairline); background: linear-gradient(180deg, var(--lc-fill), #fff 60%); }
+  .card .half.r { background: linear-gradient(180deg, var(--la-fill), #fff 60%); }
+  .card .half .who { font-size: 10.5px; font-weight: 700; letter-spacing: 0.1em; text-transform: uppercase; margin-bottom: 4px; }
+  .card .half.l .who { color: var(--lc); } .card .half.r .who { color: var(--la-deep); }
+
+  /* ---------- field matrix ---------- */
+  .matrix { width: 100%; border-collapse: separate; border-spacing: 0; background: #fff; border: 1px solid var(--hairline); border-radius: 12px; overflow: hidden; font-size: 12.5px; }
+  .matrix th, .matrix td { padding: 10px 14px; text-align: left; vertical-align: top; }
+  .matrix thead th { font-size: 13px; font-weight: 700; color: #fff; }
+  .matrix thead th.dim { background: #F1EFE8; color: var(--muted); font-size: 10.5px; letter-spacing: 0.12em; text-transform: uppercase; }
+  .matrix thead th.c-lc { background: var(--lc); } .matrix thead th.c-la { background: #9A6210; }
+  .matrix thead th.c-li { background: var(--li); } .matrix thead th.c-ag { background: var(--ag); }
+  .matrix thead th .v { font-weight: 500; font-size: 11px; opacity: 0.8; margin-left: 6px; }
+  .matrix tbody th { font-size: 10.5px; font-weight: 700; letter-spacing: 0.1em; text-transform: uppercase; color: var(--muted); background: #FCFBF8; width: 118px; }
+  .matrix tbody tr td, .matrix tbody tr th { border-top: 1px solid var(--hairline); }
+  .matrix td { color: #454C47; }
+  .matrix td.c-la { background: #FDFAF2; font-weight: 500; }
+
+  /* ---------- footer ---------- */
+  .foot { border-top: 1px solid var(--hairline); margin-top: 20px; padding-top: 13px; display: flex; justify-content: space-between; gap: 24px; font-size: 11.5px; color: var(--muted); }
+  .foot .right { text-align: right; }
+
+  @media (max-width: 900px) {
+    .page { padding: 32px 20px; }
+    h1 { font-size: 30px; }
+    .map { grid-template-columns: 1fr; }
+    .rung::before { display: none; }
+    .block.la-b { text-align: left; }
+    .roof.la-roof { flex-direction: row; text-align: left; }
+    .cards { grid-template-columns: 1fr; }
+    .matrix { font-size: 11px; }
+    .foot { flex-direction: column; } .foot .right { text-align: left; }
+  }
+</style>
+</head>
+<body>
+<svg style="display:none" aria-hidden="true"><symbol id="lamb" viewBox="0 0 128 128"><path d="M 48.527344 16.839844 C 44.136994 16.864101 39.924006 17.783926 36.089844 19.796875 C 30.24731 22.864226 25.373491 30.470663 26.810547 38.039062 A 8.75 8.75 0 0 0 37.039062 45.001953 A 8.75 8.75 0 0 0 44.019531 35.339844 C 44.095511 35.316104 44.112071 35.349046 44.222656 35.291016 C 45.378297 34.6843 48.645797 34.017983 52.253906 34.701172 C 54.810171 35.202492 56.078035 36.271581 58.126953 39.845703 C 60.181186 43.429096 62.102472 49.207532 64.150391 55.800781 A 8.750875 8.750875 0 0 0 64.195312 55.941406 C 64.28445 56.212309 64.382702 56.483046 64.472656 56.753906 C 59.10915 68.648063 51.263467 84.943907 40.828125 96.787109 A 8.5 8.5 0 0 0 41.585938 108.7832 A 8.5 8.5 0 0 0 53.583984 108.02539 C 61.552027 98.982358 67.827856 88.530976 72.746094 78.992188 C 76.269363 87.602285 80.24808 96.522033 84.794922 106.14453 A 8.75 8.75 0 0 0 96.445312 110.31836 A 8.75 8.75 0 0 0 100.61719 98.667969 C 92.109533 80.663195 85.769879 65.519143 80.818359 50.470703 C 78.781748 43.909276 76.806379 37.240689 73.310547 31.142578 C 69.78978 25.000971 63.806554 19.118006 55.576172 17.517578 A 8.750875 8.750875 0 0 0 55.542969 17.509766 C 53.821692 17.181903 52.110077 16.969633 50.419922 16.882812 C 49.786113 16.850255 49.154537 16.836378 48.527344 16.839844 z" fill="currentColor"/></symbol></svg>
+<div class="page">
+
+  <div class="eyebrow">Agent Orchestration &middot; Same Problems, Different Philosophy</div>
+  <h1><span class="lc"><span class="mark img-lc"></span> LangChain</span><span class="x">&times;</span><span class="la">lionagi <span class="mark la-tile"><svg><use href="#lamb"/></svg></span></span></h1>
+  <p class="sub">
+    <strong>lionagi has been built continuously since 2023.</strong>
+    Both stacks answer the same eight architectural questions &mdash; with opposite instincts about
+    who owns the loop, what counts as a model, and where the system ends.
+  </p>
+  <div class="chips">
+    <span class="chip">Both Python &middot; <b class="mit">LangChain MIT</b> &middot; <b class="apa">lionagi Apache-2.0</b></span>
+    <span class="legend"><span class="dot-same"></span> shared shape</span>
+    <span class="legend"><span class="dot-split"></span> philosophy splits &darr;</span>
+  </div>
+
+  <div class="map">
+    <div class="roof lc-roof"><span class="mark img-lc"></span><span class="name">LangChain / LangGraph</span><span class="ver">v1.0</span></div>
+    <div></div>
+    <div class="roof la-roof"><span class="mark la-tile"><svg><use href="#lamb"/></svg></span><span class="name">lionagi</span><span class="ver">v0.27</span></div>
+
+    <!-- 1 model interface : SPLIT -->
+    <div class="block lc-b">
+      <div class="main">langchain-core chat models</div>
+      <div class="detail">standard content blocks &middot; <code>ModelProfile</code> capability metadata</div>
+    </div>
+    <div class="rung split">
+      <div class="medallion"><svg viewBox="0 0 24 24"><rect x="7" y="7" width="10" height="10" rx="2"/><path d="M9 2v3M15 2v3M9 19v3M15 19v3M2 9h3M2 15h3M19 9h3M19 15h3"/></svg></div>
+      <div class="layer">Model<br>Interface</div>
+    </div>
+    <div class="block la-b">
+      <div class="main">iModel</div>
+      <div class="detail">chat APIs <em>and</em> coding-agent runtimes (claude-code, codex, gemini) behind one interface</div>
+    </div>
+
+    <!-- 2 messages & state -->
+    <div class="block lc-b">
+      <div class="main">BaseMessage family &middot; typed state</div>
+      <div class="detail">TypedDict / Pydantic schemas &rarr; channel inference</div>
+    </div>
+    <div class="rung">
+      <div class="medallion"><svg viewBox="0 0 24 24"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg></div>
+      <div class="layer">Messages<br>&amp; State</div>
+    </div>
+    <div class="block la-b">
+      <div class="main">RoledMessage as graph Node</div>
+      <div class="detail"><code>Pile</code> / <code>Progression</code> typed, UUID-keyed collections</div>
+    </div>
+
+    <!-- 3 tools -->
+    <div class="block lc-b">
+      <div class="main"><code>@tool</code> &middot; StructuredTool &middot; ToolNode</div>
+      <div class="detail">schema from function signature &middot; parallel execution</div>
+    </div>
+    <div class="rung">
+      <div class="medallion"><svg viewBox="0 0 24 24"><path d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.77-3.77a6 6 0 0 1-7.94 7.94l-6.91 6.91a2.12 2.12 0 0 1-3-3l6.91-6.91a6 6 0 0 1 7.94-7.94l-3.76 3.76z"/></svg></div>
+      <div class="layer">Tools</div>
+    </div>
+    <div class="block la-b">
+      <div class="main">Action manager &middot; typed contracts</div>
+      <div class="detail">function tools + MCP client integration</div>
+    </div>
+
+    <!-- 4 agent runtime : SPLIT -->
+    <div class="block lc-b">
+      <div class="main"><code>create_agent</code> + middleware stack</div>
+      <div class="detail"><code>wrap_model_call</code> / <code>wrap_tool_call</code> &middot; summarization, HITL, subagents as middleware</div>
+    </div>
+    <div class="rung split">
+      <div class="medallion"><svg viewBox="0 0 24 24"><path d="M23 4v6h-6"/><path d="M1 20v-6h6"/><path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10"/><path d="M1 14l4.64 4.36A9 9 0 0 0 20.49 15"/></svg></div>
+      <div class="layer">Agent<br>Runtime</div>
+    </div>
+    <div class="block la-b">
+      <div class="main">Branch + operations</div>
+      <div class="detail"><code>operate()</code> &middot; <code>ReAct()</code> / <code>ReActStream()</code> &middot; <code>communicate()</code></div>
+    </div>
+
+    <!-- 5 orchestration : SPLIT -->
+    <div class="block lc-b">
+      <div class="main">StateGraph &rarr; Pregel runtime</div>
+      <div class="detail">BSP super-steps over typed channels &middot; deterministic task IDs for replay</div>
+    </div>
+    <div class="rung split">
+      <div class="medallion"><svg viewBox="0 0 24 24"><circle cx="5" cy="12" r="2.5"/><circle cx="19" cy="5.5" r="2.5"/><circle cx="19" cy="18.5" r="2.5"/><path d="M7.3 10.9l9.4-4.4M7.3 13.1l9.4 4.4"/></svg></div>
+      <div class="layer">Orchestration</div>
+    </div>
+    <div class="block la-b">
+      <div class="main">Session &rarr; <code>Session.flow()</code> DAG</div>
+      <div class="detail"><code>OperationGraphBuilder</code> &middot; dependency-aware multi-branch execution</div>
+    </div>
+
+    <!-- 6 persistence : SPLIT -->
+    <div class="block lc-b">
+      <div class="main">Checkpointers &middot; BaseStore</div>
+      <div class="detail">SQLite / Postgres savers &middot; long-term memory store</div>
+    </div>
+    <div class="rung split">
+      <div class="medallion"><svg viewBox="0 0 24 24"><ellipse cx="12" cy="5" rx="8" ry="3"/><path d="M4 5v14c0 1.66 3.58 3 8 3s8-1.34 8-3V5"/><path d="M4 12c0 1.66 3.58 3 8 3s8-1.34 8-3"/></svg></div>
+      <div class="layer">Persistence</div>
+    </div>
+    <div class="block la-b">
+      <div class="main">SQLite + filesystem hybrid</div>
+      <div class="detail">companion substrate: khive &mdash; Rust knowledge-graph database</div>
+    </div>
+
+    <!-- 7 hitl -->
+    <div class="block lc-b">
+      <div class="main"><code>interrupt()</code> &middot; HumanInTheLoopMiddleware</div>
+      <div class="detail">pause &rarr; approve / edit / resume via <code>Command</code></div>
+    </div>
+    <div class="rung">
+      <div class="medallion"><svg viewBox="0 0 24 24"><circle cx="12" cy="7" r="4"/><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/></svg></div>
+      <div class="layer">Human-<br>in-the-Loop</div>
+    </div>
+    <div class="block la-b">
+      <div class="main">Approval-gated actions</div>
+      <div class="detail">pre / post tool-execution hook policies</div>
+    </div>
+
+    <!-- 8 observability -->
+    <div class="block lc-b">
+      <div class="main">Callbacks &middot; tracers &rarr; LangSmith</div>
+      <div class="detail">run trees, spans, evals</div>
+    </div>
+    <div class="rung">
+      <div class="medallion"><svg viewBox="0 0 24 24"><polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/></svg></div>
+      <div class="layer">Observability</div>
+    </div>
+    <div class="block la-b">
+      <div class="main">Run telemetry &rarr; Lion Studio</div>
+      <div class="detail">Python + Rust engines observed in one pane</div>
+    </div>
+  </div>
+
+  <!-- ================= splits ================= -->
+  <h2><span class="mark">◐</span>Where the philosophy splits</h2>
+  <div class="h2sub">Same problem, opposite instinct &mdash; this is the fresh perspective, not a clone.</div>
+  <div class="cards">
+    <div class="card">
+      <div class="q">Who owns the loop?</div>
+      <div class="halves">
+        <div class="half l"><div class="who"><span class="mark img-lc"></span> LangChain</div>
+          Declare a <code>StateGraph</code>, compile it; the Pregel runtime executes it in BSP super-steps.
+          The framework owns control flow &mdash; you extend it through middleware.</div>
+        <div class="half r"><div class="who"><span class="mark la-tile"><svg><use href="#lamb"/></svg></span> lionagi</div>
+          No compiled artifact. Operations are plain async Python you compose; the DAG builder is
+          opt-in. You own control flow &mdash; the framework supplies primitives.</div>
+      </div>
+    </div>
+    <div class="card">
+      <div class="q">What counts as a model?</div>
+      <div class="halves">
+        <div class="half l"><div class="who"><span class="mark img-lc"></span> LangChain</div>
+          Chat-completion APIs, wrapped uniformly with standard content blocks and per-model
+          capability profiles.</div>
+        <div class="half r"><div class="who"><span class="mark la-tile"><svg><use href="#lamb"/></svg></span> lionagi</div>
+          Anything that can take a turn: chat APIs <em>and</em> whole coding-agent runtimes
+          (claude-code, codex, gemini) behind one <code>iModel</code> &mdash; orchestrate agents like models.</div>
+      </div>
+    </div>
+    <div class="card">
+      <div class="q">Where does trust live?</div>
+      <div class="halves">
+        <div class="half l"><div class="who"><span class="mark img-lc"></span> LangChain</div>
+          Human-in-the-loop as a feature: <code>interrupt()</code> pauses a run, middleware gates
+          tool calls inside the app.</div>
+        <div class="half r"><div class="who"><span class="mark la-tile"><svg><use href="#lamb"/></svg></span> lionagi</div>
+          Governance as the spine: every orchestration step gate-able, policy-bound and
+          evidence-tracked &mdash; built for autonomous fleets, not only copilots.</div>
+      </div>
+    </div>
+    <div class="card">
+      <div class="q">Where does the system end?</div>
+      <div class="halves">
+        <div class="half l"><div class="who"><span class="mark img-lc"></span> LangChain</div>
+          A Python framework ringed by a hosted platform: LangSmith tracing, LangGraph Platform
+          deployment.</div>
+        <div class="half r"><div class="who"><span class="mark la-tile"><svg><use href="#lamb"/></svg></span> lionagi</div>
+          A polyglot open stack: Python orchestration over khive, a Rust knowledge-graph database,
+          with self-hosted observability (Lion Studio).</div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ================= field ================= -->
+  <h2>The wider field</h2>
+  <div class="h2sub">Four answers to agent orchestration &mdash; each with a different center of gravity.</div>
+  <table class="matrix">
+    <thead>
+      <tr>
+        <th class="dim"></th>
+        <th class="c-lc"><span class="mark img-lc"></span>LangGraph<span class="v">v1.0</span></th>
+        <th class="c-la"><span class="mark la-tile"><svg><use href="#lamb"/></svg></span>lionagi<span class="v">v0.27</span></th>
+        <th class="c-li"><span class="mark img-lli"></span>LlamaIndex</th>
+        <th class="c-ag"><span class="mark tile-ag"><img src="data:image/png;base64,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" alt=""></span>AG2<span class="v">AutoGen fork</span></th>
+      </tr>
+    </thead>
+    <tbody>
+      <tr>
+        <th>Core abstraction</th>
+        <td>StateGraph + typed channels</td>
+        <td class="c-la">Branch + operations</td>
+        <td>AgentWorkflow + event-driven steps</td>
+        <td>ConversableAgent + group chat</td>
+      </tr>
+      <tr>
+        <th>Control flow</th>
+        <td>compiled graph &middot; BSP super-steps</td>
+        <td class="c-la">your async Python &middot; opt-in DAG</td>
+        <td>typed event streams between steps</td>
+        <td>conversation turns among agents</td>
+      </tr>
+      <tr>
+        <th>Center of gravity</th>
+        <td>agent graphs + hosted platform</td>
+        <td class="c-la">governed, multi-engine orchestration</td>
+        <td>data &amp; RAG first: indexes, query engines</td>
+        <td>multi-agent conversation (MSR lineage)</td>
+      </tr>
+      <tr>
+        <th>Human-in-the-loop</th>
+        <td><code>interrupt()</code> + <code>Command</code> resume</td>
+        <td class="c-la">approval-gated hook policies</td>
+        <td>HITL events in workflows</td>
+        <td>human-input mode per agent</td>
+      </tr>
+    </tbody>
+  </table>
+
+  <div class="foot">
+    <div>
+      Grounded in source: AST-level digest of <code>langchain-ai/langchain</code> + <code>langgraph</code> (July&nbsp;2026);
+      LlamaIndex &amp; AG2 from current docs and adapter work.
+    </div>
+    <div class="right">
+      lionagi: <code>github.com/ohdearquant/lionagi</code> &middot; author Haiyang (Ocean) Li
+    </div>
+  </div>
+
+</div>
+</body>
+</html>
