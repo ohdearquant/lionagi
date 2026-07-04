@@ -124,7 +124,7 @@ class TestSessionMemorySurface:
         assert branch.memory is own_store
         assert branch.memory is not session.memory
 
-    def test_branch_already_sharing_another_sessions_store_is_not_stolen(self):
+    def test_adopted_store_survives_reparenting(self):
         session_a = Session()
         session_b = Session()
         shared = Branch(name="shared")
@@ -132,6 +132,7 @@ class TestSessionMemorySurface:
         session_a.include_branches(shared)
         store_from_a = shared.memory
 
+        session_a.remove_branch(shared)
         session_b.include_branches(shared)
 
         assert shared.memory is store_from_a

@@ -83,9 +83,17 @@ class Session(Node, Relational):
 
     def include_branches(self, branches: ID[Branch].ItemSeq):
         def _take_in_branch(branch: Branch):
+            if branch._owning_session_id is not None and branch._owning_session_id != self.id:
+                raise ValueError(
+                    f"Branch {branch.id} is already owned by session "
+                    f"{branch._owning_session_id}; call remove_branch() on the "
+                    "owning session first to reparent it."
+                )
+
             if branch not in self.branches:
                 self.branches.include(branch)
 
+            branch._owning_session_id = self.id
             branch.user = self.id
             branch._operation_manager = self._operation_manager
             branch._observer = self.observer
@@ -249,6 +257,16 @@ class Session(Node, Relational):
 
         self.branches.exclude(branch)
         self.exchange.unregister(branch.id)
+
+        # Routing infrastructure is session-owned: tear it down so a removed
+        # branch reverts to a clean standalone state and can be reparented.
+        # Branch data (messages, memory, logs) stays with the branch.
+        branch._owning_session_id = None
+        branch._observer = None
+        branch._hooks = None
+        branch._operation_manager = OperationManager()
+        if branch.user == self.id:
+            branch.user = None
 
         if self.default_branch.id == branch.id:
             if not self.branches:

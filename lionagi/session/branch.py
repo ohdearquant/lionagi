@@ -103,6 +103,7 @@ class Branch(Element, Relational):
     _observer: Any = PrivateAttr(None)
     _hooks: Any = PrivateAttr(None)
     _memory: MemoryStore | None = PrivateAttr(None)
+    _owning_session_id: Any = PrivateAttr(None)
     _capabilities: Any = PrivateAttr(None)
     _loop_control: "LoopControl | None" = PrivateAttr(None)
     _signal_tasks: list = PrivateAttr(default_factory=list)
