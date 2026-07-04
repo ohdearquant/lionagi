@@ -87,6 +87,17 @@ def _svc_validate_cron_expr(expr: str | None, *, required: bool = False) -> None
         raise ValueError(f"Invalid cron expression: {expr!r}")
 
 
+def _svc_validate_max_runs(max_runs: Any) -> None:
+    """Service-boundary check: reject a non-positive max_runs.
+
+    None means unlimited (the column default) and is always accepted.
+    """
+    if max_runs is None:
+        return
+    if isinstance(max_runs, bool) or not isinstance(max_runs, int) or max_runs < 1:
+        raise ValueError(f"max_runs must be a positive integer, got {max_runs!r}")
+
+
 def _svc_validate_interval_sec(interval: Any, *, required: bool = False) -> None:
     """Service-boundary check: reject a missing or non-positive interval.
 
@@ -254,6 +265,7 @@ CREATE TABLE IF NOT EXISTS schedules (
     next_fire_at        REAL,
     missed_fire_policy  TEXT    NOT NULL DEFAULT 'skip',
     overlap_policy      TEXT    NOT NULL DEFAULT 'skip',
+    max_runs            INTEGER,
     project             TEXT,
     created_at          REAL    NOT NULL,
     updated_at          REAL    NOT NULL
@@ -300,6 +312,10 @@ async def list_schedules(
         return []
     async with StateDB() as db:
         rows = await db.list_schedules(enabled=enabled, trigger_type=trigger_type, project=project)
+        for row in rows:
+            if row.get("max_runs"):
+                used = await db.count_schedule_runs(row["id"], chain_depth=0)
+                row["remaining_runs"] = max(row["max_runs"] - used, 0)
     return rows
 
 
@@ -311,6 +327,9 @@ async def get_schedule(schedule_id: str) -> dict[str, Any] | None:
         if not row:
             return None
         runs = await db.list_schedule_runs(schedule_id, limit=10)
+        if row.get("max_runs"):
+            used = await db.count_schedule_runs(schedule_id, chain_depth=0)
+            row["remaining_runs"] = max(row["max_runs"] - used, 0)
     row["recent_runs"] = runs
     return row
 
@@ -337,6 +356,7 @@ async def create_schedule(data: dict[str, Any]) -> dict[str, Any]:
     _svc_validate_identifier(data.get("action_playbook"), "action_playbook")
     _svc_validate_extra_args(data.get("action_extra_args"))
     _svc_validate_github_repo(data.get("github_repo"))
+    _svc_validate_max_runs(data.get("max_runs"))
     if data.get("trigger_type") == "cron":
         _svc_validate_cron_expr(data.get("cron_expr"), required=True)
     if data.get("trigger_type") == "interval":
@@ -395,6 +415,8 @@ async def update_schedule(schedule_id: str, fields: dict[str, Any]) -> bool:
             _svc_validate_extra_args(fields["action_extra_args"])
         if "github_repo" in fields:
             _svc_validate_github_repo(fields["github_repo"])
+        if "max_runs" in fields:
+            _svc_validate_max_runs(fields["max_runs"])
 
         effective = {**schedule, **fields}
         effective_repo = effective.get("github_repo")
@@ -445,6 +467,23 @@ async def enable_schedule(schedule_id: str) -> bool:
             _svc_validate_cron_expr(schedule.get("cron_expr"), required=True)
         if schedule.get("trigger_type") == "interval":
             _svc_validate_interval_sec(schedule.get("interval_sec"), required=True)
+        # Re-enable semantics: a bounded schedule that has already consumed
+        # its max_runs budget stays refused rather than silently resetting
+        # the counter. There is no per-enable-cycle counting — max_runs is a
+        # lifetime cap on the schedule's id, not a cap per enabled period —
+        # so enabling it would either immediately re-trip _check_max_runs on
+        # the next fire (confusing) or require introducing new schema state
+        # to track "cycles", which is more machinery than this footgun
+        # warrants. Raise so the caller can increase/clear max_runs first.
+        max_runs = schedule.get("max_runs")
+        if max_runs:
+            used = await db.count_schedule_runs(schedule_id, chain_depth=0)
+            if used >= max_runs:
+                raise ValueError(
+                    f"Schedule '{schedule_id}' has already reached its max_runs="
+                    f"{max_runs} limit ({used} terminal run(s) recorded). "
+                    "Increase or clear max_runs before re-enabling."
+                )
         await db.update_schedule(schedule_id, enabled=1)
 
     # A schedule can sit disabled for a long time; its stored next_fire_at
@@ -524,6 +563,7 @@ class CreateScheduleRequest(BaseModel):
     on_fail: dict | None = None
     missed_fire_policy: str = "skip"
     overlap_policy: str = "skip"
+    max_runs: int | None = None
     project: str | None = None
 
 
@@ -548,6 +588,7 @@ class UpdateScheduleRequest(BaseModel):
     on_fail: dict | None = None
     missed_fire_policy: str | None = None
     overlap_policy: str | None = None
+    max_runs: int | None = None
     project: str | None = None
 
 
@@ -663,7 +704,10 @@ async def disable_schedule_route(schedule_id: str) -> dict[str, Any]:
 async def trigger_schedule_route(schedule_id: str) -> dict[str, Any]:
     from ..scheduler.engine import scheduler
 
-    run_id = await scheduler.fire_now(schedule_id)
+    try:
+        run_id = await scheduler.fire_now(schedule_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
     if run_id is None:
         raise HTTPException(status_code=404, detail=f"Schedule '{schedule_id}' not found")
     return {"ok": True, "run_id": run_id}

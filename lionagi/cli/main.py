@@ -294,7 +294,7 @@ def main(argv: list[str] | None = None) -> int:
     add_engine_subparser(sub)
     add_team_subparser(sub)
     add_studio_subparser(sub)
-    add_schedule_subparser(sub)
+    schedule_parser = add_schedule_subparser(sub)
     add_state_subparser(sub)
     add_invoke_subparser(sub)
     add_kill_subparser(sub)
@@ -326,6 +326,28 @@ def main(argv: list[str] | None = None) -> int:
             agent_parser.error(f"unrecognized arguments: {' '.join(unknown)}")
         args.query = [*(args.query or []), *extras, *post]
         return run_agent(args)
+
+    # `li schedule ...` parses its own subparser directly (mirroring the
+    # `agent` special-case above) so an unrecognized flag gets a one-line
+    # "did you mean --X?" suggestion instead of argparse's generic usage dump.
+    if _argv and _argv[0] == "schedule":
+        ns, extras = schedule_parser.parse_known_args(_argv[1:])
+        if extras:
+            from lionagi.studio.cli import suggest_schedule_flag
+
+            # Any leftover token — flag-shaped or not — is unrecognized and
+            # must error like plain argparse would (rc=2); did-you-mean
+            # suggestions only make sense for dash-prefixed tokens, since a
+            # bare positional like a surplus id has no "real flag" to guess.
+            for tok in extras:
+                if tok.startswith("-") and tok != "-":
+                    suggestion = suggest_schedule_flag(tok)
+                    if suggestion:
+                        log_error(f"unrecognized argument {tok!r} — did you mean {suggestion!r}?")
+                        continue
+                log_error(f"unrecognized argument: {tok}")
+            return 2
+        return run_schedule(ns)
 
     args = parser.parse_args(_argv)
 

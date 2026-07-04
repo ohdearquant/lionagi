@@ -89,6 +89,8 @@ MIGRATION_COLUMNS: dict[str, list[tuple[str, str]]] = {
     "schedules": [
         # YAML flow spec column added by sched-yaml feature.
         ("action_flow_yaml", "TEXT"),
+        # One-shot / bounded-run semantics: NULL means unlimited.
+        ("max_runs", "INTEGER"),
     ],
     "schedule_runs": [
         # ADR-0028: schedule_runs originally had no updated_at.

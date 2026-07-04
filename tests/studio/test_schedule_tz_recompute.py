@@ -863,3 +863,70 @@ async def test_enable_dead_interval_schedule_rejected(temp_db_path):
 
     with pytest.raises(ValueError, match="interval_sec is required"):
         await enable_schedule(sid)
+
+
+@pytest.mark.asyncio
+async def test_enable_exhausted_max_runs_schedule_rejected(temp_db_path):
+    """Re-enable semantics: a bounded schedule that already consumed its
+    max_runs budget refuses to re-enable rather than silently resetting the
+    counter (there is no per-enable-cycle counting — max_runs is a lifetime
+    cap on the schedule id)."""
+    from lionagi.state.db import StateDB
+    from lionagi.studio.services.schedules import create_schedule, disable_schedule, enable_schedule
+
+    created = await create_schedule(
+        {
+            "name": "exhausted-once-test",
+            "trigger_type": "interval",
+            "interval_sec": 60,
+            "action_kind": "agent",
+            "action_prompt": "ping",
+            "max_runs": 1,
+        }
+    )
+    sid = created["id"]
+
+    async with StateDB() as db:
+        await db.create_schedule_run(
+            {
+                "id": "old-run",
+                "schedule_id": sid,
+                "trigger_context": {},
+                "action_kind": "agent",
+                "action_args": [],
+                "status": "completed",
+                "chain_depth": 0,
+                "fired_at": time.time(),
+            }
+        )
+    await disable_schedule(sid)
+
+    with pytest.raises(ValueError, match="max_runs"):
+        await enable_schedule(sid)
+
+    async with StateDB() as db:
+        row = await db.get_schedule(sid)
+    assert row["enabled"] == 0
+
+
+@pytest.mark.asyncio
+async def test_enable_bounded_schedule_under_budget_succeeds(temp_db_path):
+    """A bounded schedule that has NOT yet consumed its max_runs budget
+    re-enables normally."""
+    from lionagi.studio.services.schedules import create_schedule, disable_schedule, enable_schedule
+
+    created = await create_schedule(
+        {
+            "name": "under-budget-test",
+            "trigger_type": "interval",
+            "interval_sec": 60,
+            "action_kind": "agent",
+            "action_prompt": "ping",
+            "max_runs": 3,
+        }
+    )
+    sid = created["id"]
+    await disable_schedule(sid)
+
+    ok = await enable_schedule(sid)
+    assert ok is True
