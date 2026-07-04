@@ -25,3 +25,9 @@ npm-debug.log*
 # misc
 .DS_Store
 *.pem
+
+# playwright
+/playwright-report/
+/test-results/
+/blob-report/
+/playwright/.cache/
