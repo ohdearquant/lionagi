@@ -449,6 +449,19 @@ async def teardown_persist(
             except Exception as _exc:  # noqa: BLE001
                 _log.debug("signal persist unbind failed: %s", _exc)
 
+        # Release session ownership of every branch this ephemeral persist
+        # session wired, so a later setup (e.g. in-process resume) can wrap
+        # the same long-lived branch in a fresh session.
+        if session_obj is not None:
+            release = [ctx.get("branch"), *(b for b, _h in ctx.get("hooks", []))]
+            for _b in release:
+                if _b is None:
+                    continue
+                try:
+                    session_obj.remove_branch(_b)
+                except Exception as _exc:  # noqa: BLE001
+                    _log.debug("branch ownership release failed: %s", _exc)
+
         return final_status
     except Exception as exc:
         _log.warning("live persist teardown failed: %s", exc, exc_info=True)

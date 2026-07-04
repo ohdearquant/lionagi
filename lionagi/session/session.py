@@ -82,14 +82,18 @@ class Session(Node, Relational):
             self.include_branches(branches)
 
     def include_branches(self, branches: ID[Branch].ItemSeq):
-        def _take_in_branch(branch: Branch):
-            if branch._owning_session_id is not None and branch._owning_session_id != self.id:
+        # Preflight the whole batch before mutating anything, so a rejected
+        # branch never leaves earlier batch members claimed by this session.
+        candidates = [branches] if isinstance(branches, Branch) else list(branches)
+        for b in candidates:
+            if b._owning_session_id is not None and b._owning_session_id != self.id:
                 raise ValueError(
-                    f"Branch {branch.id} is already owned by session "
-                    f"{branch._owning_session_id}; call remove_branch() on the "
+                    f"Branch {b.id} is already owned by session "
+                    f"{b._owning_session_id}; call remove_branch() on the "
                     "owning session first to reparent it."
                 )
 
+        def _take_in_branch(branch: Branch):
             if branch not in self.branches:
                 self.branches.include(branch)
 
@@ -110,9 +114,7 @@ class Session(Node, Relational):
             if self.default_branch is None:
                 self.default_branch = branch
 
-        branches = [branches] if isinstance(branches, Branch) else branches
-
-        for i in branches:
+        for i in candidates:
             _take_in_branch(i)
 
     def register_operation(self, operation: str, func: Callable, *, update: bool = False):

@@ -34,6 +34,25 @@ class TestCrossSessionInclude:
         assert shared._owning_session_id == session_a.id
         assert shared not in session_b.branches
 
+    def test_rejected_batch_mutates_no_branch(self):
+        """A rejected member anywhere in the batch leaves EVERY member
+        untouched: no partial claim of earlier batch members."""
+        session_a = Session()
+        session_b = Session()
+        owned = Branch(name="owned")
+        session_a.include_branches(owned)
+        fresh1 = Branch(name="fresh1")
+        fresh2 = Branch(name="fresh2")
+
+        with pytest.raises(ValueError, match="already owned by session"):
+            session_b.include_branches([fresh1, owned, fresh2])
+
+        for b in (fresh1, fresh2):
+            assert b._owning_session_id is None
+            assert b.user is None
+            assert b not in session_b.branches
+        assert owned._owning_session_id == session_a.id
+
     def test_session_constructor_rejects_owned_branch(self):
         from lionagi.protocols.types import Pile
 
@@ -41,9 +60,14 @@ class TestCrossSessionInclude:
         shared = Branch(name="shared")
         session_a.include_branches(shared)
 
-        pile = Pile(collections=[shared], item_type={Branch}, strict_type=False)
+        fresh = Branch(name="fresh")
+        pile = Pile(collections=[fresh, shared], item_type={Branch}, strict_type=False)
         with pytest.raises(ValueError, match="already owned by session"):
             Session(branches=pile)
+
+        # the fresh sibling stays claimable after the failed construction
+        assert fresh._owning_session_id is None
+        Session().include_branches(fresh)
 
     def test_same_session_reinclude_is_idempotent(self):
         session = Session()
