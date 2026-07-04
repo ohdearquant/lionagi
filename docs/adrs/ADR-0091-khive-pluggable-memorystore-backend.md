@@ -73,12 +73,15 @@ ANN index and embedder models warm *across* stdio reconnects too. So even if lio
 `MCPConnectionPool` ends up cycling connections more often than the ideal one-per-`Branch` (e.g.
 per agent/session instead), the daemon absorbs that cost: cold stdio process, warm daemon
 underneath. Auto-spawn falls back to pure in-process dispatch if the socket is unreachable
-(sandboxed/read-only filesystem) or `KHIVE_NO_DAEMON=1` is set -- never a hard failure. Net: stdio
-is the right path; the real latency floor is query-execution time (FTS5+ANN fusion inside khive),
-not transport overhead. No embedded-client bypass is warranted on latency grounds. The one case
-where an embedded path would matter is a hosting model where holding a persistent child process
-per `Branch` is itself awkward (serverless/ephemeral) -- not a known constraint today, noted for
-later if it becomes one.
+(sandboxed/read-only filesystem) or `KHIVE_NO_DAEMON=1` is set -- never a hard failure. This
+fallback is a process-startup-time choice, not a live mid-run switch: whichever path (daemon-
+backed or in-process) is live when the stdio process starts is the path for that process's entire
+lifetime, and a running `KhiveMemoryStore` session does not transparently hop between them
+partway through. Net: stdio is the right path; the real latency floor is query-execution time
+(FTS5+ANN fusion inside khive), not transport overhead. No embedded-client bypass is warranted on
+latency grounds. The one case where an embedded path would matter is a hosting model where
+holding a persistent child process per `Branch` is itself awkward (serverless/ephemeral) -- not a
+known constraint today, noted for later if it becomes one.
 
 The MCP-tools-breadth half of the original ask ("expose khive verbs as MCP tools registerable on
 lionagi agents") is therefore a documentation/example deliverable (a worked `server_config`
@@ -103,19 +106,82 @@ kind, salience, decay_factor, memory_type, created_at, edge_id?}`.
 `score_floor?:f32`, `tags?:string[]`, `tag_mode?:"any"|"all"` (default any), `entity_names?:string[]`,
 `embedding_model?`, `fusion_strategy?:string`, `full_content?:bool` (default true),
 `include_breakdown?:bool`. Response: bare JSON array of `{id, score, rank_score, raw_score,
-content, salience, decay_factor, memory_type, created_at}` sorted by `rank_score` desc.
+content, salience, decay_factor, memory_type, created_at}` sorted by `rank_score` desc. **The
+response carries no `tags` field and no free-form properties field at all** -- `tags` is
+write-only on the `memory.remember` side; `memory.recall` never echoes it back.
 
-Mapping onto the Protocol:
+Mapping onto the Protocol, stated explicitly per direction (an earlier draft of this ADR claimed a
+symmetric round-trip that khive's actual response schema doesn't support -- corrected here):
 
-- `MemoryItem.content` <-> `content`, direct both ways.
-- `MemoryItem.tags` <-> `tags`, direct `list[str]` both ways.
-- `store(item) -> UUID` <-> `memory.remember`; parse the returned `id` string to `UUID`.
-- `search(query) -> list[MemoryItem]` <-> `memory.recall`; map `MemoryQuery.text` to `query`,
-  `MemoryQuery.limit` to `limit`, fold `memory_type`/`min_score`/`min_salience`/`tags`/`tag_mode`/
-  `entity_names` into `MemoryQuery.filters` as same-named keys.
-- `retrieve(item_id) -> MemoryItem | None` does **not** map to `memory.recall` (recall is ranked
-  search, not fetch-by-id -- caught in review before this shipped). It maps to the kg-pack
-  `get(id)` verb instead, which auto-detects entity/note/edge by UUID.
+- **Write path** -- `store(item: MemoryItem) -> UUID` <-> `memory.remember`: `item.content` ->
+  `content`, `item.tags` -> `tags` (write-through -- khive accepts and stores it), parse the
+  returned `id` string to `UUID`.
+- **Read path** -- `search(query: MemoryQuery) -> list[MemoryItem]` <-> `memory.recall`: map
+  `MemoryQuery.text` to `query`, `MemoryQuery.limit` to `limit`, fold `memory_type`/`min_score`/
+  `min_salience`/`tags`/`tag_mode`/`entity_names` into `MemoryQuery.filters` as same-named keys.
+  **`MemoryItem`s returned from `search()` are reduced-fidelity relative to what `InMemoryStore`
+  returns for the same stored item**: `content`, `salience`, `decay_factor`, `memory_type`, and
+  `created_at` all round-trip, but `tags` comes back `[]` on every `KhiveMemoryStore` search hit,
+  because `memory.recall`'s response schema doesn't carry it at all. This is a documented backend
+  capability difference, not a bug to paper over. Ruling: `KhiveMemoryStore.search()` does **not**
+  issue a hidden per-hit `get(id)` call to rehydrate `tags` for each result -- that would turn one
+  `memory.recall` into N+1 khive calls per search and silently change the performance profile of
+  every caller. A caller that needs a hit's full tag set calls `retrieve(item.id)` explicitly for
+  that one item, paying the extra round-trip only when it actually needs it.
+- `retrieve(item_id: UUID) -> MemoryItem | None` does **not** map to `memory.recall` (recall is
+  ranked search, not fetch-by-id -- caught in review before this shipped). It maps to the kg-pack
+  `get(id)` verb instead, which auto-detects entity/note/edge by UUID. **Type guard, stated as a
+  hard contract**: `retrieve()` returns a `MemoryItem` only when `get(id)` resolves to a `note`
+  entity that itself carries a `memory_type` property (i.e. a note created by `memory.remember`,
+  not an arbitrary kg record). A missing/unresolvable `id` and a valid id that resolves to
+  something else (a plain kg note without `memory_type`, an entity, an edge) both return `None` --
+  `retrieve()` never coerces a non-memory kg record into a `MemoryItem`.
+
+### Provenance: a documented lossy projection for v1, not a round-trip
+
+`MemoryItem` inherits `metadata` from `Element` (an arbitrary key-value bag lionagi callers use
+for things like `branch_id`/session provenance). khive has no matching arbitrary-bag field:
+`memory.remember` accepts exactly the fields listed above and nothing else, and `memory.recall`
+echoes back exactly the fields listed above and nothing else. A true opaque round-trip of
+`metadata` is unreachable today without a khive-side schema change -- there is no field to stash
+it in and no field to read it back out of.
+
+Decision (Leo, 2026-07-04): `KhiveMemoryStore` persists only the `MemoryItem` fields that have a
+native khive home, and explicitly **drops** the rest, rather than smuggling `metadata` into
+`content` or a synthetic tag as a workaround:
+
+- `content` -> `content` (write-through).
+- `tags` -> `tags` (write-through on `store()`; reads back `[]` on `search()` per the read-path
+  note above; full fidelity only via an explicit `retrieve()`).
+- `memory_type`, `salience`, `decay_factor` -> same-named khive fields (write-through, round-trips
+  on both `search()` and `retrieve()`).
+- `source_id` -> khive's `annotates` edge (single-parent provenance, not an arbitrary key-value
+  bag).
+- `metadata` (everything else -- `branch_id`, arbitrary caller-set keys) -> **dropped**. Not
+  stored, not round-tripped, not silently truncated into another field.
+
+This resolves what was previously listed as an Open Question in this ADR (see Open Questions
+below). Migration path, when a real caller needs queryable `metadata` (e.g. filtering recall by
+`branch_id`): khive adds a native field for it -- its own schema change, its own decision on
+khive's side -- rather than lionagi working around the gap with an encoding trick first.
+
+### Cross-backend Protocol contract (what the test fence enforces)
+
+The Protocol-level test fence bundled from ADR-0090 slice 1 (see Sequencing above) runs against
+every `MemoryStore` implementor -- `InMemoryStore` and `KhiveMemoryStore` alike. Stated explicitly
+so the fence has a concrete contract to assert:
+
+- **Store-then-retrieve fidelity is guaranteed on every backend.** For any `item` passed to
+  `store()`, an immediately following `retrieve(returned_id)` must return a `MemoryItem` whose
+  native-home fields (per the provenance mapping above) match what was stored. This is the one
+  guarantee that holds regardless of backend.
+- **Search fidelity and read-after-write timing are backend-specific, not part of the shared
+  contract.** `InMemoryStore.search()` is exact and immediately consistent (it's a dict scan).
+  `KhiveMemoryStore.search()` is reduced-fidelity per the read-path note above, and khive's ANN
+  index warms *asynchronously* -- a `search()` issued immediately after `store()` is not
+  guaranteed to surface that item yet. The test fence must not assert immediate
+  read-after-write search visibility as a cross-backend requirement -- only `InMemoryStore`'s own
+  backend-specific tests may assert that.
 
 ### GraphStore is explicitly out of scope for this ADR
 
@@ -160,28 +226,37 @@ own follow-up ADR once `MemoryStore` has a live caller.
 - Slice 1 and slice 2 landing together (per Leo's bundling ruling) is a larger single PR than
   either slice alone would have been -- more surface for one review pass.
 - `MemoryItem`'s inherited `metadata` (branch_id, source, etc., from `Element`) has no matching
-  khive-side field today -- see Open Questions. Until resolved, provenance written through
+  khive-side field today and is explicitly **dropped** by `KhiveMemoryStore`, not round-tripped --
+  see "Provenance: a documented lossy projection for v1" above. Provenance written through
   `KhiveMemoryStore` is limited to what `source_id`'s single-parent `annotates` edge can express,
-  not an arbitrary key-value bag.
+  not an arbitrary key-value bag, until khive adds a native field for it.
 - The connector-package public/private packaging question is unresolved -- see Open Questions --
   and could affect how/where `KhiveMemoryStore` is installed by end users, though not the
   Protocol or verb mapping itself.
 
+### Implementation notes (non-blocking, for whoever picks up slice 1/2)
+
+- Land ADR-0090 slice 1 and slice 2 as **separate commits within this one bundled PR**, not
+  squashed together -- so slice 2 (the `Branch`/`Session` access surface) can be reverted cleanly
+  on its own without also reverting the Protocol/`InMemoryStore`/test-fence foundation slice 1
+  provides.
+- Before slice 2 merges, confirm the `include_branches()` sharing bug flagged in ADR-0090's own
+  advisor review is actually resolved in current code -- check the live state of that path rather
+  than assuming it was fixed as part of ADR-0090 landing.
+
 ## Open Questions (for Leo / Ocean)
 
-1. **Provenance schema gap.** `MemoryItem.metadata` (branch_id, source, etc.) has no queryable
-   equivalent on khive's side -- only `memory_type` and `tags` are stored in a memory note's
-   properties today, and `source_id` gives single-parent provenance via an `annotates` edge, not
-   an arbitrary key-value bag. If lionagi needs `branch_id`/session provenance to be queryable
-   later (not just round-tripped opaquely), that's a real khive-side schema change, not a
-   lionagi-side mapping choice. Decide: is opaque round-tripping (e.g. serialize `metadata` into
-   part of `content` or a tag) acceptable for v1, or does this block on a khive schema addition
-   first?
-2. **Connector-package packaging/licensing.** khive's core is currently a private repo. Should
+1. **Connector-package packaging/licensing.** khive's core is currently a private repo. Should
    the `KhiveMemoryStore` connector package itself be public (a thin MCP wire-protocol client
    with no khive internals, distributed alongside lionagi's OSS ecosystem) or ship from khive's
    private tooling? Doesn't block this ADR or the Protocol/verb-mapping work -- the interface is
    identical either way -- but affects how end users actually obtain and install the adapter.
+
+**Resolved during spec-gate (Leo, 2026-07-04):** the provenance schema gap (previously listed
+here as Open Question 1) is decided, not open -- see "Provenance: a documented lossy projection
+for v1" above. `KhiveMemoryStore` persists only native-home fields and explicitly drops the rest;
+no opaque round-tripping workaround. The migration path is a future khive-side schema addition,
+not a lionagi-side encoding trick.
 
 ## References
 
