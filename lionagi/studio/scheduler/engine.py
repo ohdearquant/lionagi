@@ -364,6 +364,11 @@ class SchedulerEngine:
                 _log.exception("Periodic checkpoint error")
             self._last_checkpoint_run = now
 
+        try:
+            await self._deliver_due_dispatches(now)
+        except Exception:
+            _log.exception("Dispatch outbox delivery scan error")
+
         schedules = await self._svc.list_schedules(enabled=True)
 
         for s in schedules:
@@ -380,6 +385,20 @@ class SchedulerEngine:
                             await self._svc.update_schedule(s["id"], next_fire_at=next_at)
             except Exception:
                 _log.exception("Error evaluating schedule %s", s.get("name"))
+
+    async def _deliver_due_dispatches(self, now: float) -> None:
+        """Scan due dispatch_outbox rows and attempt delivery (ADR-0092 slice 1).
+
+        Unlike the reaper/checkpoint maintenance above, this is not
+        interval-gated: the 30s tick itself is the latency floor the ADR
+        accepts, and the due-scan's own ``next_attempt_at`` filter already
+        bounds how often any single row is retried.
+        """
+        from lionagi.dispatch import deliver_due_dispatches
+        from lionagi.state.db import StateDB
+
+        async with StateDB() as db:
+            await deliver_due_dispatches(db, now=now)
 
     async def _tick_github(self, schedule: dict, now: float) -> None:
         poll_interval = schedule.get("poll_interval_sec") or schedule.get("interval_sec") or 300
