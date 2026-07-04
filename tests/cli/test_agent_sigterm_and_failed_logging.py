@@ -139,7 +139,9 @@ async def test_run_agent_inner_does_not_log_on_success(monkeypatch, tmp_path):
 
     from lionagi.cli.agent import _run_agent
 
-    _result, _provider, _bid, terminal_status = await _run_agent("codex/model", "do the thing")
+    _result, _provider, _bid, terminal_status, _sid = await _run_agent(
+        "codex/model", "do the thing"
+    )
 
     assert terminal_status == "completed"
     assert not errors_emitted, f"log_error should not fire on success; got: {errors_emitted}"
