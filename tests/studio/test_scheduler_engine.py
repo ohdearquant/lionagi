@@ -54,6 +54,7 @@ def _make_svc() -> AsyncMock:
     svc.update_invocation = AsyncMock()
     svc.update_status = AsyncMock()
     svc.list_sessions_for_invocation = AsyncMock(return_value=[])
+    svc.count_schedule_runs = AsyncMock(return_value=0)
     return svc
 
 
@@ -1115,3 +1116,140 @@ async def test_recompute_armed_cron_schedules_unchanged_no_log(monkeypatch, capl
 
     svc.update_schedule.assert_not_awaited()
     assert not any("shifted" in r.message for r in caplog.records)
+
+
+# ---------------------------------------------------------------------------
+# max_runs / one-shot semantics
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_max_runs_reached_auto_disables_schedule():
+    """Once fired top-level runs hit max_runs, the schedule is disabled."""
+    from lionagi.studio.scheduler.engine import SchedulerEngine
+
+    svc = _make_svc()
+    svc.count_schedule_runs = AsyncMock(return_value=3)
+    engine = SchedulerEngine(svc=svc)
+    schedule = _minimal_schedule(max_runs=3)
+
+    with (
+        patch(
+            "lionagi.studio.scheduler.subprocess.build_argv",
+            return_value=(["uv", "run", "li", "agent", "ping"], None),
+        ),
+        patch(
+            "lionagi.studio.scheduler.subprocess.spawn_and_wait",
+            new=AsyncMock(return_value=(0, "")),
+        ),
+    ):
+        await engine._fire(schedule, "run-once-1", trigger_context={"scheduled": True})
+
+    svc.count_schedule_runs.assert_awaited_with("sched-001", chain_depth=0)
+    disable_calls = [c for c in svc.update_schedule.await_args_list if c.kwargs.get("enabled") == 0]
+    assert disable_calls, "Expected update_schedule(..., enabled=0) once max_runs is reached"
+
+
+@pytest.mark.asyncio
+async def test_max_runs_not_reached_leaves_schedule_enabled():
+    """Fewer fired runs than max_runs must not touch the enabled flag."""
+    from lionagi.studio.scheduler.engine import SchedulerEngine
+
+    svc = _make_svc()
+    svc.count_schedule_runs = AsyncMock(return_value=1)
+    engine = SchedulerEngine(svc=svc)
+    schedule = _minimal_schedule(max_runs=3)
+
+    with (
+        patch(
+            "lionagi.studio.scheduler.subprocess.build_argv",
+            return_value=(["uv", "run", "li", "agent", "ping"], None),
+        ),
+        patch(
+            "lionagi.studio.scheduler.subprocess.spawn_and_wait",
+            new=AsyncMock(return_value=(0, "")),
+        ),
+    ):
+        await engine._fire(schedule, "run-once-2", trigger_context={"scheduled": True})
+
+    disable_calls = [c for c in svc.update_schedule.await_args_list if c.kwargs.get("enabled") == 0]
+    assert not disable_calls
+
+
+@pytest.mark.asyncio
+async def test_max_runs_none_is_unlimited_never_checks_count():
+    """max_runs=None (the default/unlimited case) must not query run counts at all."""
+    from lionagi.studio.scheduler.engine import SchedulerEngine
+
+    svc = _make_svc()
+    engine = SchedulerEngine(svc=svc)
+    schedule = _minimal_schedule()  # no max_runs key -> schedule.get("max_runs") is None
+
+    with (
+        patch(
+            "lionagi.studio.scheduler.subprocess.build_argv",
+            return_value=(["uv", "run", "li", "agent", "ping"], None),
+        ),
+        patch(
+            "lionagi.studio.scheduler.subprocess.spawn_and_wait",
+            new=AsyncMock(return_value=(0, "")),
+        ),
+    ):
+        await engine._fire(schedule, "run-unlimited", trigger_context={"scheduled": True})
+
+    svc.count_schedule_runs.assert_not_awaited()
+    disable_calls = [c for c in svc.update_schedule.await_args_list if c.kwargs.get("enabled") == 0]
+    assert not disable_calls
+
+
+@pytest.mark.asyncio
+async def test_max_runs_chain_child_never_checked():
+    """chain_depth>0 (on_success/on_fail children) never consumes the parent's budget."""
+    from lionagi.studio.scheduler.engine import SchedulerEngine
+
+    svc = _make_svc()
+    engine = SchedulerEngine(svc=svc)
+    schedule = _minimal_schedule(max_runs=1)
+
+    with (
+        patch(
+            "lionagi.studio.scheduler.subprocess.build_argv",
+            return_value=(["uv", "run", "li", "agent", "ping"], None),
+        ),
+        patch(
+            "lionagi.studio.scheduler.subprocess.spawn_and_wait",
+            new=AsyncMock(return_value=(0, "")),
+        ),
+    ):
+        await engine._fire(
+            schedule,
+            "run-child",
+            trigger_context={"scheduled": True},
+            chain_depth=1,
+            chain_parent_id="run-parent",
+        )
+
+    svc.count_schedule_runs.assert_not_awaited()
+    disable_calls = [c for c in svc.update_schedule.await_args_list if c.kwargs.get("enabled") == 0]
+    assert not disable_calls
+
+
+@pytest.mark.asyncio
+async def test_max_runs_build_argv_exception_still_checked():
+    """A build_argv failure still records a terminal run and checks max_runs."""
+    from lionagi.studio.scheduler.engine import SchedulerEngine
+
+    svc = _make_svc()
+    svc.count_schedule_runs = AsyncMock(return_value=1)
+    engine = SchedulerEngine(svc=svc)
+    schedule = _minimal_schedule(max_runs=1)
+
+    with patch(
+        "lionagi.studio.scheduler.subprocess.build_argv",
+        side_effect=ValueError("bad action_kind"),
+    ):
+        await engine._fire(schedule, "run-badargv", trigger_context={"scheduled": True})
+
+    svc.count_schedule_runs.assert_awaited_with("sched-001", chain_depth=0)
+    disable_calls = [c for c in svc.update_schedule.await_args_list if c.kwargs.get("enabled") == 0]
+    assert disable_calls

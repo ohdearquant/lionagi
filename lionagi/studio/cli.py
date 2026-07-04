@@ -544,7 +544,10 @@ def _cmd_list(args: argparse.Namespace) -> int:
         return 0
     for s in schedules:
         status = "enabled" if s.get("enabled") else "disabled"
-        print(f"  {s['id']}  {s['name']:<30} [{status}]  {s.get('trigger_type', '?')}")
+        line = f"  {s['id']}  {s['name']:<30} [{status}]  {s.get('trigger_type', '?')}"
+        if s.get("max_runs"):
+            line += f"  (runs left: {s.get('remaining_runs')}/{s['max_runs']})"
+        print(line)
     return 0
 
 
@@ -633,7 +636,47 @@ def _parse_chain_action(raw: str, flag: str) -> tuple[dict[str, Any] | None, str
     return parsed, None
 
 
+def _warn_if_cron_far_out(cron_expr: str) -> None:
+    """Best-effort heads-up when a cron expression's next fire is far out.
+
+    Addresses the date-pinned one-shot footgun: a cron schedule created
+    after its literal moment for this year (but meant to fire "today")
+    silently resolves to the same date *next* year instead. croniter is
+    part of the `studio` extra, not a core dependency, so this degrades to
+    a no-op rather than failing schedule creation when it isn't installed.
+    """
+    try:
+        from croniter import croniter
+    except ImportError:
+        return
+    import time as _time
+    from datetime import datetime, timezone
+
+    now = datetime.now(timezone.utc)
+    try:
+        next_fire = croniter(cron_expr, start_time=now).get_next(float)
+    except Exception:
+        return
+    days_out = (next_fire - _time.time()) / 86400
+    if days_out > 360:
+        warn(
+            f"cron {cron_expr!r} next fires in about {days_out:.0f} days. "
+            "If you meant a one-shot for a specific date this year, the "
+            "schedule may have been created after that date's moment has "
+            "already passed (cron resolves in UTC) and silently waits a "
+            "full year. Consider --max-runs / --once plus a nearer date."
+        )
+
+
 def _cmd_create(args: argparse.Namespace) -> int:
+    if args.once and args.max_runs is not None:
+        print("Error: --once and --max-runs are mutually exclusive.", file=sys.stderr)
+        return 1
+    max_runs = 1 if args.once else args.max_runs
+    if max_runs is not None and max_runs < 1:
+        print(f"Error: --max-runs must be a positive integer, got {max_runs}.", file=sys.stderr)
+        return 1
+
     body: dict[str, Any] = {
         "name": args.name,
         "trigger_type": args.trigger_type,
@@ -641,8 +684,11 @@ def _cmd_create(args: argparse.Namespace) -> int:
     }
     if args.cron:
         body["cron_expr"] = args.cron
+        _warn_if_cron_far_out(args.cron)
     if args.interval:
         body["interval_sec"] = args.interval
+    if max_runs is not None:
+        body["max_runs"] = max_runs
     if args.prompt:
         body["action_prompt"] = args.prompt
     if args.model:
@@ -792,6 +838,23 @@ def add_schedule_subparser(subparsers: argparse._SubParsersAction) -> None:
     )
     create_p.add_argument("--project", help="Project name.")
     create_p.add_argument("--description", help="Human-readable description.")
+    create_p.add_argument(
+        "--max-runs",
+        dest="max_runs",
+        type=int,
+        metavar="N",
+        help=(
+            "Auto-disable this schedule once N total runs have fired "
+            "(default: unlimited). Chained on_success/on_fail fires do not "
+            "count toward N. Mutually exclusive with --once."
+        ),
+    )
+    create_p.add_argument(
+        "--once",
+        dest="once",
+        action="store_true",
+        help="Sugar for --max-runs 1 — fire once, then auto-disable.",
+    )
     create_p.add_argument(
         "--on-success",
         dest="on_success",

@@ -421,6 +421,32 @@ class SchedulerEngine:
         ctx = {"scheduled": True, "fired_at": now, "next_fire_at": schedule.get("next_fire_at")}
         self._tracked_fire(schedule, run_id, trigger_context=ctx)
 
+    async def _check_max_runs(self, schedule: dict, chain_depth: int) -> None:
+        """Auto-disable a schedule once its fired top-level runs hit max_runs.
+
+        Only chain_depth == 0 fires consume the budget — on_success/on_fail
+        chain children are follow-on actions of a single top-level run, not
+        additional scheduled runs, so they never count toward it. Reuses the
+        existing enabled flag (the same mechanism enable/disable already use)
+        rather than introducing a new schedule state.
+        """
+        if chain_depth != 0:
+            return
+        max_runs = schedule.get("max_runs")
+        if not max_runs:
+            return
+        sid = schedule["id"]
+        count = await self._svc.count_schedule_runs(sid, chain_depth=0)
+        if count >= max_runs:
+            _log.info(
+                "Schedule %s (%s) reached max_runs=%d after %d run(s); auto-disabling",
+                schedule.get("name"),
+                sid,
+                max_runs,
+                count,
+            )
+            await self._svc.update_schedule(sid, enabled=0)
+
     async def _fire(
         self,
         schedule: dict,
@@ -497,6 +523,7 @@ class SchedulerEngine:
             if next_at:
                 update_fields["next_fire_at"] = next_at
             await self._svc.update_schedule(sid, **update_fields)
+            await self._check_max_runs(schedule, chain_depth)
             return
 
         # Ensure the flow_yaml tmp file is removed on any exception or
@@ -589,6 +616,7 @@ class SchedulerEngine:
                 actor=inv_id,
                 metadata=inv_meta,
             )
+            await self._check_max_runs(schedule, chain_depth)
 
             if chain_depth < _MAX_CHAIN_DEPTH:
                 chain_action = None
@@ -655,6 +683,7 @@ class SchedulerEngine:
                     actor=inv_id,
                     metadata=inv_meta,
                 )
+                await self._check_max_runs(schedule, chain_depth)
             except Exception:
                 _log.exception("Failed to record cancellation for run %s during shutdown", run_id)
             raise
@@ -692,6 +721,7 @@ class SchedulerEngine:
                 actor=inv_id,
                 metadata=inv_meta,
             )
+            await self._check_max_runs(schedule, chain_depth)
         finally:
             if chain_depth == 0:
                 self._running.pop(sid, None)

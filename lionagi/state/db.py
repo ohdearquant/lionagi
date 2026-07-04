@@ -732,6 +732,7 @@ class StateDB:
                                               CHECK(missed_fire_policy IN ('skip', 'run_once')),
                           overlap_policy      TEXT    NOT NULL DEFAULT 'skip'
                                               CHECK(overlap_policy IN ('skip', 'allow')),
+                          max_runs            INTEGER,
                           project             TEXT,
                           created_at          REAL    NOT NULL,
                           updated_at          REAL    NOT NULL
@@ -1528,7 +1529,7 @@ class StateDB:
                         action_kind, action_model, action_prompt, action_agent,
                         action_playbook, action_flow_yaml, action_project, action_extra_args,
                         on_success, on_fail, last_fired_at, next_fire_at,
-                        missed_fire_policy, overlap_policy, project,
+                        missed_fire_policy, overlap_policy, max_runs, project,
                         created_at, updated_at)
                        VALUES (:id, :name, :description, :enabled, :trigger_type,
                                :cron_expr, :interval_sec, :github_repo, :github_filter,
@@ -1536,7 +1537,7 @@ class StateDB:
                                :action_kind, :action_model, :action_prompt, :action_agent,
                                :action_playbook, :action_flow_yaml, :action_project, :action_extra_args,
                                :on_success, :on_fail, :last_fired_at, :next_fire_at,
-                               :missed_fire_policy, :overlap_policy, :project,
+                               :missed_fire_policy, :overlap_policy, :max_runs, :project,
                                :created_at, :updated_at)"""
                 ).bindparams(
                     bindparam("github_filter", type_=JSON),
@@ -1570,6 +1571,7 @@ class StateDB:
                     "next_fire_at": schedule.get("next_fire_at"),
                     "missed_fire_policy": schedule.get("missed_fire_policy", "skip"),
                     "overlap_policy": schedule.get("overlap_policy", "skip"),
+                    "max_runs": schedule.get("max_runs"),
                     "project": schedule.get("project"),
                     "created_at": schedule.get("created_at", now),
                     "updated_at": schedule.get("updated_at", now),
@@ -1660,6 +1662,7 @@ class StateDB:
             "next_fire_at",
             "missed_fire_policy",
             "overlap_policy",
+            "max_runs",
             "project",
         }
         bad = set(fields) - allowed
@@ -1786,6 +1789,28 @@ class StateDB:
         async with self._read() as conn:
             rows = (await conn.execute(text(query), params)).mappings().all()
         return [self._row_to_dict(r) for r in rows]
+
+    async def count_schedule_runs(
+        self,
+        schedule_id: str,
+        *,
+        chain_depth: int = 0,
+        statuses: tuple[str, ...] = ("completed", "failed", "cancelled"),
+    ) -> int:
+        """Count runs that actually fired and reached a terminal status.
+
+        Used for max_runs bookkeeping: chain_depth=0 excludes on_success/
+        on_fail chain children (they don't consume the parent's budget), and
+        the default status set excludes 'skipped' (missed-fire/overlap skips
+        never ran) and 'running' (not yet terminal).
+        """
+        placeholders = ", ".join(f":status{i}" for i in range(len(statuses)))
+        params: dict[str, Any] = {"schedule_id": schedule_id, "chain_depth": chain_depth}
+        params.update({f"status{i}": s for i, s in enumerate(statuses)})
+        query = f"SELECT COUNT(*) AS n FROM schedule_runs WHERE schedule_id = :schedule_id AND chain_depth = :chain_depth AND status IN ({placeholders})"  # noqa: S608
+        async with self._read() as conn:
+            row = (await conn.execute(text(query), params)).mappings().first()
+        return int(row["n"]) if row else 0
 
     async def get_schedule_run(self, run_id: str) -> dict[str, Any] | None:
         async with self._read() as conn:

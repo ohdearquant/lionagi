@@ -422,6 +422,10 @@ CREATE TABLE IF NOT EXISTS schedules (
                       CHECK(missed_fire_policy IN ('skip', 'run_once')),
   overlap_policy      TEXT    NOT NULL DEFAULT 'skip'
                       CHECK(overlap_policy IN ('skip', 'allow')),
+  -- One-shot / bounded-run semantics: NULL means unlimited. Once the number
+  -- of fired top-level runs (chain children excluded) reaches max_runs, the
+  -- engine auto-disables the schedule via the existing enabled flag.
+  max_runs            INTEGER,
   project             TEXT,
   created_at          REAL    NOT NULL,
   updated_at          REAL    NOT NULL

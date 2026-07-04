@@ -608,3 +608,167 @@ def test_schedule_create_nested_chain_missing_on_success_warns(monkeypatch):
     assert len(warnings) == 1
     assert "--on-success.on_success" in warnings[0]
     assert "re-fire" in warnings[0]
+
+
+# ---------------------------------------------------------------------------
+# _cmd_create: --once / --max-runs (one-shot semantics)
+# ---------------------------------------------------------------------------
+
+
+def test_schedule_create_once_maps_to_max_runs_1(monkeypatch):
+    """--once is sugar for --max-runs 1."""
+    outcome = _run_create(monkeypatch, ["--once"])
+
+    assert outcome["result"] == 0
+    assert outcome["body"]["max_runs"] == 1
+
+
+def test_schedule_create_max_runs_explicit(monkeypatch):
+    """--max-runs N is passed through to the request body as-is."""
+    outcome = _run_create(monkeypatch, ["--max-runs", "5"])
+
+    assert outcome["result"] == 0
+    assert outcome["body"]["max_runs"] == 5
+
+
+def test_schedule_create_without_max_runs_or_once_omits_field(monkeypatch):
+    """Neither flag given: max_runs is absent from the body (unlimited)."""
+    outcome = _run_create(monkeypatch, [])
+
+    assert outcome["result"] == 0
+    assert "max_runs" not in outcome["body"]
+
+
+def test_schedule_create_once_and_max_runs_together_rejected(monkeypatch, capsys):
+    """--once and --max-runs are mutually exclusive."""
+    api_called = []
+    import lionagi.studio.cli as sched_mod
+
+    monkeypatch.setattr(sched_mod, "_api", lambda *a, **kw: api_called.append(1))
+
+    from lionagi.studio.cli import add_schedule_subparser, run_schedule
+
+    parser = argparse.ArgumentParser()
+    sub = parser.add_subparsers(dest="command")
+    add_schedule_subparser(sub)
+    args = parser.parse_args(
+        ["schedule", "create", "my-sched", "--cron", "0 * * * *", "--once", "--max-runs", "2"]
+    )
+    result = run_schedule(args)
+
+    assert result == 1
+    assert not api_called
+    assert "mutually exclusive" in capsys.readouterr().err
+
+
+@pytest.mark.parametrize("bad_value", [0, -1])
+def test_schedule_create_max_runs_rejects_non_positive(monkeypatch, capsys, bad_value):
+    """--max-runs 0 or a negative integer is rejected before hitting the API."""
+    api_called = []
+    import lionagi.studio.cli as sched_mod
+
+    monkeypatch.setattr(sched_mod, "_api", lambda *a, **kw: api_called.append(1))
+
+    from lionagi.studio.cli import add_schedule_subparser, run_schedule
+
+    parser = argparse.ArgumentParser()
+    sub = parser.add_subparsers(dest="command")
+    add_schedule_subparser(sub)
+    args = parser.parse_args(
+        ["schedule", "create", "my-sched", "--cron", "0 * * * *", "--max-runs", str(bad_value)]
+    )
+    result = run_schedule(args)
+
+    assert result == 1
+    assert not api_called
+    assert "positive integer" in capsys.readouterr().err
+
+
+def test_schedule_list_shows_remaining_runs(monkeypatch, capsys):
+    """`li schedule list` prints remaining-runs info when max_runs is set."""
+    import lionagi.studio.cli as sched_mod
+
+    fake_schedules = [
+        {
+            "id": "s1",
+            "name": "one-shot",
+            "enabled": True,
+            "trigger_type": "cron",
+            "max_runs": 3,
+            "remaining_runs": 1,
+        },
+        {
+            "id": "s2",
+            "name": "unlimited",
+            "enabled": True,
+            "trigger_type": "interval",
+        },
+    ]
+    monkeypatch.setattr(sched_mod, "_api", lambda path, **kw: {"schedules": fake_schedules})
+
+    from lionagi.studio.cli import add_schedule_subparser, run_schedule
+
+    parser = argparse.ArgumentParser()
+    sub = parser.add_subparsers(dest="command")
+    add_schedule_subparser(sub)
+    args = parser.parse_args(["schedule", "list"])
+    result = run_schedule(args)
+
+    out = capsys.readouterr().out
+    lines = out.splitlines()
+    unlimited_line = next(line for line in lines if "unlimited" in line)
+
+    assert result == 0
+    assert "runs left: 1/3" in out
+    assert "runs left" not in unlimited_line
+
+
+# ---------------------------------------------------------------------------
+# Cron far-out warning (date-pinned one-shot footgun)
+# ---------------------------------------------------------------------------
+
+
+def test_warn_if_cron_far_out_warns_beyond_360_days(monkeypatch):
+    pytest.importorskip("croniter", reason="studio extra not installed")
+    import lionagi.studio.cli as sched_mod
+
+    warnings: list[str] = []
+    monkeypatch.setattr(sched_mod, "warn", warnings.append)
+
+    # A cron pinned to a date almost certainly >360 days from "now" in test runs:
+    # Feb 29 only exists every 4 years, so worst case is ~3 years out — always far.
+    sched_mod._warn_if_cron_far_out("0 0 29 2 *")
+
+    assert warnings
+    assert "days" in warnings[0]
+
+
+def test_warn_if_cron_far_out_silent_when_near(monkeypatch):
+    pytest.importorskip("croniter", reason="studio extra not installed")
+    import lionagi.studio.cli as sched_mod
+
+    warnings: list[str] = []
+    monkeypatch.setattr(sched_mod, "warn", warnings.append)
+
+    # Fires hourly — always within a day.
+    sched_mod._warn_if_cron_far_out("0 * * * *")
+
+    assert not warnings
+
+
+def test_warn_if_cron_far_out_no_croniter_is_noop(monkeypatch):
+    """Missing the optional `studio` extra's croniter dep must never break create."""
+    import builtins
+
+    import lionagi.studio.cli as sched_mod
+
+    real_import = builtins.__import__
+
+    def _fake_import(name, *args, **kwargs):
+        if name == "croniter":
+            raise ImportError("no croniter")
+        return real_import(name, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "__import__", _fake_import)
+    # Should not raise.
+    sched_mod._warn_if_cron_far_out("0 0 29 2 *")

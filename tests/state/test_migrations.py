@@ -274,3 +274,113 @@ async def test_statedb_open_exposes_migration_columns():
             )
 
     await state.close()
+
+
+# ── max_runs / count_schedule_runs (one-shot semantics) ──────────────────────
+
+
+async def test_count_schedule_runs_excludes_skipped_and_running():
+    """count_schedule_runs only counts terminal, top-level (chain_depth=0) runs."""
+    from lionagi.state.db import StateDB
+
+    state = StateDB(":memory:")
+    await state.open()
+
+    await state.create_schedule(
+        {
+            "id": "sched-count-1",
+            "name": "count-test",
+            "trigger_type": "interval",
+            "interval_sec": 60,
+            "action_kind": "agent",
+        }
+    )
+    statuses = ["completed", "failed", "cancelled", "skipped", "running"]
+    for i, status in enumerate(statuses):
+        await state.create_schedule_run(
+            {
+                "id": f"run-{i}",
+                "schedule_id": "sched-count-1",
+                "trigger_context": {},
+                "action_kind": "agent",
+                "action_args": [],
+                "status": status,
+                "chain_depth": 0,
+                "fired_at": 1.0,
+            }
+        )
+
+    count = await state.count_schedule_runs("sched-count-1", chain_depth=0)
+    assert count == 3  # completed, failed, cancelled — not skipped, not running
+
+    await state.close()
+
+
+async def test_count_schedule_runs_excludes_chain_children():
+    """Chain children (chain_depth>0) never count toward the parent's max_runs."""
+    from lionagi.state.db import StateDB
+
+    state = StateDB(":memory:")
+    await state.open()
+
+    await state.create_schedule(
+        {
+            "id": "sched-count-2",
+            "name": "count-test-chain",
+            "trigger_type": "interval",
+            "interval_sec": 60,
+            "action_kind": "agent",
+        }
+    )
+    await state.create_schedule_run(
+        {
+            "id": "run-parent",
+            "schedule_id": "sched-count-2",
+            "trigger_context": {},
+            "action_kind": "agent",
+            "action_args": [],
+            "status": "completed",
+            "chain_depth": 0,
+            "fired_at": 1.0,
+        }
+    )
+    await state.create_schedule_run(
+        {
+            "id": "run-child",
+            "schedule_id": "sched-count-2",
+            "trigger_context": {},
+            "action_kind": "agent",
+            "action_args": [],
+            "status": "completed",
+            "chain_depth": 1,
+            "chain_parent_id": "run-parent",
+            "fired_at": 2.0,
+        }
+    )
+
+    count = await state.count_schedule_runs("sched-count-2", chain_depth=0)
+    assert count == 1
+
+    await state.close()
+
+
+async def test_max_runs_nullable_defaults_unlimited():
+    """A schedule created without max_runs stores it as NULL, not counted against."""
+    from lionagi.state.db import StateDB
+
+    state = StateDB(":memory:")
+    await state.open()
+
+    await state.create_schedule(
+        {
+            "id": "sched-unlimited",
+            "name": "unlimited-test",
+            "trigger_type": "interval",
+            "interval_sec": 60,
+            "action_kind": "agent",
+        }
+    )
+    fetched = await state.get_schedule("sched-unlimited")
+    assert fetched["max_runs"] is None
+
+    await state.close()
