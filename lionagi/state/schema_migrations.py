@@ -112,4 +112,26 @@ MIGRATION_COLUMNS: dict[str, list[tuple[str, str]]] = {
         ("export_dir", "TEXT"),
         ("error", "TEXT"),
     ],
+    # ADR-0092: durable dispatch outbox.
+    # New table created via schema.sql; these columns allow ALTER TABLE on
+    # existing databases that pre-date this table (rare, but handled uniformly).
+    "dispatch_outbox": [
+        ("id", "TEXT NOT NULL"),
+        ("kind", "TEXT NOT NULL"),
+        ("deliver_to", "TEXT NOT NULL"),
+        ("payload", "JSON NOT NULL"),
+        ("dedup_key", "TEXT"),
+        ("status", "TEXT NOT NULL DEFAULT 'pending'"),
+        ("attempt", "INTEGER NOT NULL DEFAULT 0"),
+        ("max_attempts", "INTEGER NOT NULL DEFAULT 8"),
+        ("next_attempt_at", "REAL NOT NULL"),
+        ("ack_required", "INTEGER NOT NULL DEFAULT 0"),
+        ("ack_token", "TEXT"),
+        ("session_id", "TEXT"),
+        ("schedule_run_id", "TEXT"),
+        ("last_error", "TEXT"),
+        ("created_at", "REAL NOT NULL"),
+        ("expires_at", "REAL"),
+        ("updated_at", "REAL"),
+    ],
 }

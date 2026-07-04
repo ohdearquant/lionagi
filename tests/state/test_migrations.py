@@ -113,6 +113,7 @@ async def test_migration_columns_constant_is_importable():
         "schedules",
         "schedule_runs",
         "engine_runs",  # Phase C Move 2 — new table registered for future migrations
+        "dispatch_outbox",  # ADR-0092 — new table registered for future migrations
     }
     assert set(MIGRATION_COLUMNS.keys()) == expected_tables
 
