@@ -133,6 +133,53 @@ class TestHostHeaderValidation:
         resp = client.get("/health", headers={"Host": "0.0.0.0:8765"})
         assert resp.status_code == 400
 
+    @pytest.mark.parametrize(
+        "malformed_host",
+        [
+            "127.0.0.1:8765.evil.com",
+            "127.0.0.1:8765:evil",
+            "[::1]evil.com",
+            "localhost:badport",
+        ],
+    )
+    def test_malformed_host_authority_is_rejected(self, monkeypatch, tmp_path, malformed_host):
+        """Authorities that Python/Starlette's URL parser would normalize
+        into an accepted loopback hostname must be rejected outright by the
+        strict Host-header grammar."""
+        client = _make_client(monkeypatch, tmp_path)
+
+        resp = client.get("/health", headers={"Host": malformed_host})
+        assert resp.status_code == 400
+        assert "Invalid Host header" in resp.json()["detail"]
+
+    def test_non_preflight_options_with_bad_host_is_rejected(self, monkeypatch, tmp_path):
+        """An OPTIONS request without Origin/Access-Control-Request-Method
+        is not a real CORS preflight and must still get its Host checked."""
+        client = _make_client(monkeypatch, tmp_path)
+
+        resp = client.options(
+            "/api/sessions/",
+            headers={"Host": "evil.example.com"},
+        )
+        assert resp.status_code == 400
+        assert "Invalid Host header" in resp.json()["detail"]
+
+    def test_real_cors_preflight_still_succeeds(self, monkeypatch, tmp_path):
+        """A genuine CORS preflight (Origin + Access-Control-Request-Method)
+        from the hosted SPA's origin must still succeed."""
+        monkeypatch.delenv("CORS_ORIGINS", raising=False)
+        client = _make_client(monkeypatch, tmp_path)
+
+        resp = client.options(
+            "/health",
+            headers={
+                "Origin": "https://studio.lionagi.ai",
+                "Access-Control-Request-Method": "GET",
+            },
+        )
+        assert resp.status_code in (200, 204)
+        assert resp.headers.get("access-control-allow-origin") == "https://studio.lionagi.ai"
+
 
 @pytest.mark.integration
 class TestJsonContentTypeEnforcement:
@@ -153,6 +200,39 @@ class TestJsonContentTypeEnforcement:
             content='{"pwn": true}',
             headers={"Content-Type": "text/plain"},
         )
+        assert resp.status_code == 415
+        assert resp.json()["detail"] == "Content-Type must be application/json"
+
+    async def test_chunked_text_plain_body_is_rejected(self, monkeypatch, tmp_path):
+        """A streamed body with no Content-Length (Transfer-Encoding: chunked)
+        must not slip past the Content-Type gate just because the middleware
+        can't see a Content-Length header."""
+        httpx = pytest.importorskip("httpx", reason="httpx not installed")
+        from importlib import reload
+
+        import lionagi.studio.app as app_mod
+        import lionagi.studio.services.invocations as inv_mod
+        import lionagi.studio.services.sessions as sess_mod
+        import lionagi.studio.services.stats as stats_mod
+
+        fake_db = tmp_path / "state.db"
+        for mod in (stats_mod, inv_mod, sess_mod):
+            if hasattr(mod, "DEFAULT_DB_PATH"):
+                monkeypatch.setattr(mod, "DEFAULT_DB_PATH", fake_db)
+            if hasattr(mod, "_DB"):
+                monkeypatch.setattr(mod, "_DB", str(fake_db))
+        reload(app_mod)
+
+        async def _chunks():
+            yield b'{"pwn": true}'
+
+        transport = httpx.ASGITransport(app=app_mod.app)
+        async with httpx.AsyncClient(transport=transport, base_url="http://127.0.0.1:8765") as ac:
+            resp = await ac.post(
+                "/api/schedules/some-id/enable",
+                content=_chunks(),
+                headers={"Content-Type": "text/plain", "Transfer-Encoding": "chunked"},
+            )
         assert resp.status_code == 415
         assert resp.json()["detail"] == "Content-Type must be application/json"
 

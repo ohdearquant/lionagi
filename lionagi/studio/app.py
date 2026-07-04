@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
+import re
 from contextlib import asynccontextmanager, suppress
 from pathlib import Path
 from typing import Any
@@ -242,7 +243,7 @@ async def require_json_content_type(request: Request, call_next):
     if not (path == "/api" or path.startswith("/api/")):
         return await call_next(request)
     content_length = request.headers.get("content-length")
-    has_body = content_length not in (None, "0")
+    has_body = content_length not in (None, "0") or "transfer-encoding" in request.headers
     if has_body:
         content_type = request.headers.get("content-type", "")
         media_type = content_type.split(";", 1)[0].strip().lower()
@@ -254,6 +255,40 @@ async def require_json_content_type(request: Request, call_next):
     return await call_next(request)
 
 
+# Strict Host-header authority grammar: `host` or `host:port` (1-5 digit
+# port), or a bracketed IPv6 literal `[addr]` with an optional `:port` after
+# the closing bracket -- nothing else. Deliberately stricter than
+# `request.url.hostname`, which normalizes/mis-parses authorities like
+# "127.0.0.1:8765.evil.com" or "[::1]evil.com" into an accepted hostname.
+_HOST_AUTHORITY_RE = re.compile(r"^(?P<host>[A-Za-z0-9.\-]+)(?::(?P<port>\d{1,5}))?$")
+_IPV6_AUTHORITY_RE = re.compile(r"^\[(?P<host>[0-9A-Fa-f:]+)\](?::(?P<port>\d{1,5}))?$")
+
+
+def _parse_host_authority(raw_host: str) -> str | None:
+    """Strictly parse a raw Host header value, returning the normalized host
+    (lowercased, brackets stripped for IPv6) or None if it doesn't match the
+    exact authority grammar above."""
+    raw_host = (raw_host or "").strip()
+    if not raw_host:
+        return None
+    match = (
+        _IPV6_AUTHORITY_RE.match(raw_host)
+        if raw_host.startswith("[")
+        else _HOST_AUTHORITY_RE.match(raw_host)
+    )
+    if not match:
+        return None
+    host = match.group("host")
+    return host.lower() if host else None
+
+
+def _is_cors_preflight(request: Request) -> bool:
+    """A genuine CORS preflight always carries both Origin and
+    Access-Control-Request-Method; anything else claiming to be OPTIONS is
+    an ordinary request and must still pass Host validation."""
+    return "origin" in request.headers and "access-control-request-method" in request.headers
+
+
 @app.middleware("http")
 async def validate_host_header(request: Request, call_next):
     """Reject requests whose Host header doesn't match an expected value.
@@ -263,19 +298,19 @@ async def validate_host_header(request: Request, call_next):
     rebinding) and, once past CORS/auth, reach the daemon as if it were a
     same-origin request. The browser sets Host to the actual connection
     target it resolved, so validating it here catches rebound requests that
-    same-origin checks alone don't cover. OPTIONS preflight is exempted the
-    same way the bearer-token middleware exempts it: CORSMiddleware (mounted
-    outermost) answers real preflight before this ever runs; this only
-    matters for OPTIONS requests made without an Origin header.
+    same-origin checks alone don't cover. Only a genuine CORS preflight is
+    exempted: CORSMiddleware (mounted outermost) answers those before this
+    middleware ever runs, so any OPTIONS reaching here that *isn't* a real
+    preflight (no Origin/Access-Control-Request-Method) still gets checked.
     """
-    if request.method == "OPTIONS":
+    if request.method == "OPTIONS" and _is_cors_preflight(request):
         return await call_next(request)
-    hostname = (request.url.hostname or "").lower()
+    hostname = _parse_host_authority(request.headers.get("host", ""))
     bind_host = os.getenv("LIONAGI_STUDIO_HOST", HOST)
     allowed_hosts = {"localhost", "127.0.0.1", "::1"}
     if bind_host not in ("127.0.0.1", "localhost", "::1", "0.0.0.0", ""):  # noqa: S104
         allowed_hosts.add(bind_host.lower())
-    if hostname not in allowed_hosts:
+    if hostname is None or hostname not in allowed_hosts:
         return JSONResponse(
             {"detail": f"Invalid Host header: {request.headers.get('host', '')!r}"},
             status_code=400,
@@ -373,10 +408,12 @@ if _dist is not None:
 # require_json_content_type -> validate_host_header -> CORSMiddleware) is the
 # REVERSE of execution order for an incoming request: CORS runs first (so
 # preflight is answered before anything else), then Host validation, then the
-# Content-Type/CSRF check, then the bearer-token gate, then the route. All
-# three custom middlewares explicitly let OPTIONS through so real preflight
-# (handled by CORSMiddleware, which never even calls into them for a proper
-# preflight request) and non-browser OPTIONS probes both keep working.
+# Content-Type/CSRF check, then the bearer-token gate, then the route. The
+# bearer-token and Content-Type middlewares let every OPTIONS through (real
+# preflight never reaches them -- CORSMiddleware answers it first); Host
+# validation is stricter and only exempts a *genuine* preflight (Origin +
+# Access-Control-Request-Method present), so a non-preflight OPTIONS probe
+# still gets its Host header checked.
 app.add_middleware(
     CORSMiddleware,
     allow_origins=CORS_ORIGINS,
