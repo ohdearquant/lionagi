@@ -22,6 +22,7 @@ from lionagi.cli.monitor import (
     _invocation_to_row,
     _pid_alive,
     _play_to_row,
+    _render_branch_lines,
     _run_detail,
     _run_table,
     _session_to_row,
@@ -276,6 +277,48 @@ def test_format_table_header():
     assert "TYPE" in output
     assert "STATUS" in output
     assert "ELAPSED" in output
+
+
+def test_format_table_non_tty_never_truncates_project(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Piped (non-TTY) output must never truncate identifying columns —
+    a long project name used to come back as 'ohdearquant/l…', silently
+    breaking `li monitor | grep <full-name>`."""
+    monkeypatch.setattr("lionagi.cli.monitor._IS_TTY", False)
+    long_project = "ohdearquant/lionagi-super-long-repo-name"
+    rows = [
+        {
+            "id": "abc123",
+            "type": "session",
+            "project": long_project,
+            "status": "running",
+            "phase": "agent",
+            "elapsed": "5m",
+            "agents": "1",
+        }
+    ]
+    output = _format_table(rows)
+    assert long_project in output
+
+
+def test_format_table_tty_still_truncates_project(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A TTY dashboard keeps the compact fixed-width behavior — only piped
+    output widens/never-truncates."""
+    monkeypatch.setattr("lionagi.cli.monitor._IS_TTY", True)
+    long_project = "ohdearquant/lionagi-super-long-repo-name"
+    rows = [
+        {
+            "id": "abc123",
+            "type": "session",
+            "project": long_project,
+            "status": "running",
+            "phase": "agent",
+            "elapsed": "5m",
+            "agents": "1",
+        }
+    ]
+    output = _format_table(rows)
+    assert long_project not in output
+    assert "…" in output
 
 
 # ── Unit: row builders ────────────────────────────────────────────────────────
@@ -940,6 +983,87 @@ async def test_run_detail_play(temp_db_path: Path) -> None:
 async def test_run_detail_not_found(temp_db_path: Path) -> None:
     output = await _run_detail("no-such-id-xyz-999")
     assert "not found" in output.lower() or "error" in output.lower()
+
+
+# ── Regression: detail view shows playbook name ───────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_run_detail_session_shows_playbook_name(temp_db_path: Path) -> None:
+    """`li monitor <id>` for a play/flow session must surface the active
+    playbook — a session row already carries playbook_name, but the detail
+    view used to omit it entirely."""
+    async with StateDB() as db:
+        sid = await _make_session(db, invocation_kind="play")
+        await db.execute(
+            "UPDATE sessions SET playbook_name = ? WHERE id = ?", ("feature-impl", sid)
+        )
+    output = await _run_detail(sid)
+    assert "feature-impl" in output
+
+
+@pytest.mark.asyncio
+async def test_run_detail_session_no_playbook_name_omits_line(temp_db_path: Path) -> None:
+    """A plain `li agent` session has no playbook — no dangling 'playbook: -' line."""
+    async with StateDB() as db:
+        sid = await _make_session(db, invocation_kind="agent")
+    output = await _run_detail(sid)
+    assert "playbook:" not in output
+
+
+# ── Regression: branch (agent leg) sub-step visibility ────────────────────────
+
+
+async def _add_branch(db: StateDB, session_id: str, *, name: str, status: str = "running") -> str:
+    pid = uuid.uuid4().hex
+    await db.execute("INSERT INTO progressions(id, created_at) VALUES (?, ?)", (pid, time.time()))
+    bid = uuid.uuid4().hex
+    await db.execute(
+        "INSERT INTO branches(id, created_at, session_id, progression_id, name, status, started_at) "
+        "VALUES (?,?,?,?,?,?,?)",
+        (bid, time.time(), session_id, pid, name, status, time.time()),
+    )
+    return bid
+
+
+def test_render_branch_lines_empty() -> None:
+    assert _render_branch_lines([]) == []
+
+
+def test_render_branch_lines_shows_name_and_status() -> None:
+    rows = [{"name": "reviewer", "status": "running", "started_at": time.time(), "ended_at": None}]
+    lines = _render_branch_lines(rows)
+    joined = "\n".join(lines)
+    assert "reviewer" in joined
+    assert "running" in joined
+
+
+@pytest.mark.asyncio
+async def test_run_detail_session_surfaces_branch_legs(temp_db_path: Path) -> None:
+    """A play/flow's internal sub-steps (e.g. a "reviewer" leg, a
+    "claude-code" leg) are recorded as branches with their own name/status —
+    `li monitor <session_id>` must list them so a caller can see a leg
+    transition without hand-polling sqlite."""
+    async with StateDB() as db:
+        sid = await _make_session(db, invocation_kind="play")
+        await _add_branch(db, sid, name="reviewer", status="completed")
+        await _add_branch(db, sid, name="claude-code", status="running")
+    output = await _run_detail(sid)
+    assert "reviewer" in output
+    assert "claude-code" in output
+
+
+@pytest.mark.asyncio
+async def test_run_detail_play_surfaces_branch_legs(temp_db_path: Path) -> None:
+    """Same sub-step visibility via the play id (not just the raw session id) —
+    `li monitor <play_id>` drills through the linked session to its branches."""
+    async with StateDB() as db:
+        show_id = await _make_show(db)
+        sid = await _make_session(db, invocation_kind="play")
+        play_id = await _make_play(db, show_id, name="backend-impl", session_id=sid)
+        await _add_branch(db, sid, name="reviewer", status="running")
+    output = await _run_detail(play_id)
+    assert "reviewer" in output
 
 
 @pytest.mark.asyncio
