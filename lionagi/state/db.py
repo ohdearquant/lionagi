@@ -1826,6 +1826,29 @@ class StateDB:
             )
         return self._row_to_dict(row) if row else None
 
+    async def get_schedule_run_by_invocation(self, invocation_id: str) -> dict[str, Any] | None:
+        """Look up the schedule_run that fired a given invocation (ADR-0027).
+
+        invocation_id is 1:1 with schedule_runs in practice (each fire mints a
+        fresh invocation), but the ORDER BY + LIMIT keeps this defensively
+        correct if that ever isn't true.
+        """
+        async with self._read() as conn:
+            row = (
+                (
+                    await conn.execute(
+                        text(
+                            "SELECT * FROM schedule_runs WHERE invocation_id = :invocation_id "
+                            "ORDER BY COALESCE(created_at, 0) DESC, id DESC LIMIT 1"
+                        ),
+                        {"invocation_id": invocation_id},
+                    )
+                )
+                .mappings()
+                .first()
+            )
+        return self._row_to_dict(row) if row else None
+
     async def list_running_schedule_runs(self, schedule_id: str) -> list[dict[str, Any]]:
         async with self._read() as conn:
             rows = (
@@ -1955,10 +1978,28 @@ class StateDB:
         # Per invocation, take project/project_source from its latest-updated
         # session. ROW_NUMBER() is portable; the old SQLite idiom (bare columns
         # under HAVING MAX(updated_at)) is rejected by PostgreSQL.
+        #
+        # Also surface the schedule_run that fired this invocation (exit_code,
+        # error_detail) so the UI can show why a scheduled run failed without
+        # a second round-trip. Unlike the sessions join above, this uses
+        # correlated scalar subqueries rather than a ranked derived table:
+        # ORDER BY + LIMIT/OFFSET on inv.updated_at narrows to the emitted
+        # page first (sorting only invocations, not schedule_runs), and each
+        # subquery then runs once per emitted row against the partial index
+        # on schedule_runs(invocation_id) — instead of ROW_NUMBER()ing the
+        # entire schedule_runs table before pagination even applies.
         query = (
             "SELECT inv.*, "
             "  sq.project        AS project, "
-            "  sq.project_source AS project_source "
+            "  sq.project_source AS project_source, "
+            "  ( SELECT sr.exit_code FROM schedule_runs sr "
+            "    WHERE sr.invocation_id = inv.id "
+            "    ORDER BY COALESCE(sr.created_at, 0) DESC, sr.id DESC LIMIT 1 "
+            "  ) AS schedule_run_exit_code, "
+            "  ( SELECT sr.error_detail FROM schedule_runs sr "
+            "    WHERE sr.invocation_id = inv.id "
+            "    ORDER BY COALESCE(sr.created_at, 0) DESC, sr.id DESC LIMIT 1 "
+            "  ) AS schedule_run_error_detail "
             "FROM invocations inv "
             "LEFT JOIN ( "
             "  SELECT invocation_id, project, project_source FROM ( "
