@@ -49,7 +49,7 @@ class TestHostedCorsOrigin:
         monkeypatch.delenv("CORS_ORIGINS", raising=False)
         import lionagi.studio.config as config_mod
 
-        assert "https://studio.lionagi.ai" in config_mod.CORS_ORIGINS
+        assert "https://lion-studio.khive.ai" in config_mod.CORS_ORIGINS
 
     def test_hosted_origin_gets_cors_headers(self, monkeypatch, tmp_path):
         monkeypatch.delenv("CORS_ORIGINS", raising=False)
@@ -58,12 +58,12 @@ class TestHostedCorsOrigin:
         resp = client.get(
             "/health",
             headers={
-                "Origin": "https://studio.lionagi.ai",
+                "Origin": "https://lion-studio.khive.ai",
                 "Host": "127.0.0.1:8765",
             },
         )
         assert resp.status_code == 200
-        assert resp.headers.get("access-control-allow-origin") == "https://studio.lionagi.ai"
+        assert resp.headers.get("access-control-allow-origin") == "https://lion-studio.khive.ai"
 
 
 @pytest.mark.integration
@@ -73,7 +73,7 @@ class TestHostHeaderValidation:
 
     def test_hosted_flow_host_and_origin_both_pass(self, monkeypatch, tmp_path):
         """Pin test: the exact hosted-page flow -- a request from the browser
-        tab at https://studio.lionagi.ai talking to the local daemon at
+        tab at https://lion-studio.khive.ai talking to the local daemon at
         127.0.0.1:8765 -- must be accepted by both the Host check and CORS."""
         monkeypatch.delenv("CORS_ORIGINS", raising=False)
         client = _make_client(monkeypatch, tmp_path)
@@ -82,11 +82,11 @@ class TestHostHeaderValidation:
             "/health",
             headers={
                 "Host": "127.0.0.1:8765",
-                "Origin": "https://studio.lionagi.ai",
+                "Origin": "https://lion-studio.khive.ai",
             },
         )
         assert resp.status_code == 200
-        assert resp.headers.get("access-control-allow-origin") == "https://studio.lionagi.ai"
+        assert resp.headers.get("access-control-allow-origin") == "https://lion-studio.khive.ai"
 
     def test_localhost_any_port_accepted(self, monkeypatch, tmp_path):
         client = _make_client(monkeypatch, tmp_path)
@@ -173,12 +173,12 @@ class TestHostHeaderValidation:
         resp = client.options(
             "/health",
             headers={
-                "Origin": "https://studio.lionagi.ai",
+                "Origin": "https://lion-studio.khive.ai",
                 "Access-Control-Request-Method": "GET",
             },
         )
         assert resp.status_code in (200, 204)
-        assert resp.headers.get("access-control-allow-origin") == "https://studio.lionagi.ai"
+        assert resp.headers.get("access-control-allow-origin") == "https://lion-studio.khive.ai"
 
 
 @pytest.mark.integration

@@ -40,10 +40,10 @@ CORS_ORIGINS: list[str] = (
         "http://localhost:5173",
         "http://localhost:3000",
         "http://localhost:3765",
-        # The hosted static SPA (studio.lionagi.ai) drives a user's local
+        # The hosted static SPA (lion-studio.khive.ai) drives a user's local
         # daemon from a browser tab on this origin; an exact https origin,
         # never a wildcard or subdomain pattern.
-        "https://studio.lionagi.ai",
+        "https://lion-studio.khive.ai",
     ]
 )
 
