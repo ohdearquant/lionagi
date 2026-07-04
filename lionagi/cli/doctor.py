@@ -66,10 +66,10 @@ def _check_version() -> dict[str, str]:
         return _result("fail", f"could not import lionagi: {type(exc).__name__}: {exc}")
     location = getattr(lionagi, "__file__", None)
     detail = f"lionagi {__version__} at {location}"
-    if not _looks_editable(location):
-        return _result(
-            "warn", detail + " (not an editable install — no pyproject.toml found above it)"
-        )
+    # Editability is informational only: wheel installs are intentionally
+    # non-editable and perfectly healthy.
+    if _looks_editable(location):
+        detail += " (editable install)"
     return _result("ok", detail)
 
 

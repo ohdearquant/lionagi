@@ -65,6 +65,22 @@ def test_check_version_ok_when_import_succeeds() -> None:
     assert "lionagi" in result["detail"]
 
 
+def test_check_version_ok_for_non_editable_wheel_install(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A wheel install (site-packages, no pyproject.toml above) is healthy: ok, not warn."""
+    import lionagi
+
+    wheel_pkg = tmp_path / "site-packages" / "lionagi"
+    wheel_pkg.mkdir(parents=True)
+    monkeypatch.setattr(lionagi, "__file__", str(wheel_pkg / "__init__.py"))
+
+    result = _check_version()
+
+    assert result["status"] == "ok"
+    assert "editable" not in result["detail"]
+
+
 def test_check_version_fail_on_broken_import(monkeypatch: pytest.MonkeyPatch) -> None:
     import builtins
 
