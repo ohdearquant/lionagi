@@ -43,6 +43,55 @@ def test_resolve_li_executable_prefers_shutil_which(monkeypatch, tmp_path):
     assert prefix == [str(fake_li)]
 
 
+def test_resolve_li_executable_rejects_relative_path_hit_and_falls_through(monkeypatch, tmp_path):
+    """A relative PATH entry (e.g. "." or "relbin") makes shutil.which return
+    a relative hit ("relbin/li"). Accepting it as-is would resolve argv[0]
+    against whatever cwd the spawn ends up using, not the daemon environment
+    that found it — reintroducing cwd-dependent spawn + a PATH-hijack
+    surface. The relative hit must be rejected and the returned prefix, if
+    any, must be absolute."""
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    fake_python = bin_dir / "python3"
+    fake_python.write_text("")
+    fake_li = bin_dir / "li"
+    fake_li.write_text("#!/bin/sh\n")
+    fake_li.chmod(fake_li.stat().st_mode | stat.S_IEXEC)
+
+    monkeypatch.setattr(sched_subprocess.shutil, "which", lambda name: "relbin/li")
+    monkeypatch.setattr(sched_subprocess.sys, "executable", str(fake_python))
+
+    prefix, detail = sched_subprocess.resolve_li_executable()
+
+    assert detail is None
+    assert prefix != ["relbin/li"]
+    assert prefix == [str(fake_li)]
+    assert os.path.isabs(prefix[0])
+
+
+def test_resolve_li_executable_relative_path_hit_with_no_fallback_fails_clean(
+    monkeypatch, tmp_path
+):
+    """Same relative-PATH hit, but with no venv-adjacent file or entry point
+    to fall through to: returns (None, detail) naming the rejection, never
+    the relative path."""
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    fake_python = bin_dir / "python3"
+    fake_python.write_text("")
+    # deliberately no `li` file next to fake_python
+
+    monkeypatch.setattr(sched_subprocess.shutil, "which", lambda name: "relbin/li")
+    monkeypatch.setattr(sched_subprocess.sys, "executable", str(fake_python))
+    monkeypatch.setattr(sched_subprocess.importlib_metadata, "entry_points", lambda group=None: [])
+
+    prefix, detail = sched_subprocess.resolve_li_executable()
+
+    assert prefix is None
+    assert detail is not None
+    assert "non-absolute" in detail or "rejected" in detail
+
+
 def test_resolve_li_executable_falls_back_to_venv_adjacent_file(monkeypatch, tmp_path):
     """No PATH hit, but a `li` file sits next to sys.executable (the normal
     shape of a venv that installed the `li` console script)."""

@@ -651,7 +651,16 @@ class SchedulerEngine:
                 "id": inv_id,
                 "skill": f"scheduled:{schedule['name']}",
                 "plugin": schedule["trigger_type"],
-                "prompt": rendered_prompt or schedule.get("action_playbook"),
+                # An explicit None check (not `or`) matters here: a template
+                # can render to "" (e.g. an empty trigger_context value),
+                # which build_argv sends to the child as-is. Falling back to
+                # action_playbook on an empty-but-rendered prompt would
+                # persist a value that differs from what was actually sent.
+                "prompt": (
+                    rendered_prompt
+                    if rendered_prompt is not None
+                    else schedule.get("action_playbook")
+                ),
                 "started_at": now,
                 "status": "running",
             }

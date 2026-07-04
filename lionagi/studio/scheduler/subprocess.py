@@ -208,14 +208,30 @@ def resolve_li_executable() -> tuple[list[str] | None, str | None]:
     tried: list[str] = []
 
     which_path = shutil.which("li")
-    if which_path:
+    if which_path and os.path.isabs(which_path):
         return [which_path], None
-    tried.append("shutil.which('li') found nothing on PATH")
+    if which_path:
+        # A relative PATH entry (e.g. "." or "relbin") makes shutil.which
+        # return a relative hit. Accepting it as-is would make the child's
+        # argv[0] resolve against whatever cwd the spawn ends up using
+        # (not the daemon environment that found it) — reintroducing
+        # cwd-dependent spawn behavior and a PATH-hijack surface. Reject
+        # and fall through to the next strategy instead.
+        tried.append(
+            f"shutil.which('li') found a non-absolute path ({which_path}); "
+            "rejected to avoid cwd-dependent spawn/PATH-hijack"
+        )
+    else:
+        tried.append("shutil.which('li') found nothing on PATH")
 
-    venv_li = Path(sys.executable).with_name("li")
-    if venv_li.is_file() and os.access(venv_li, os.X_OK):
-        return [str(venv_li)], None
-    tried.append(f"no executable `li` file next to sys.executable ({venv_li})")
+    python_path = Path(sys.executable) if sys.executable else None
+    if python_path is not None and python_path.is_absolute():
+        venv_li = python_path.with_name("li")
+        if venv_li.is_file() and os.access(venv_li, os.X_OK):
+            return [str(venv_li)], None
+        tried.append(f"no executable `li` file next to sys.executable ({venv_li})")
+    else:
+        tried.append(f"sys.executable is not an absolute path ({sys.executable!r})")
 
     try:
         entry_points = importlib_metadata.entry_points(group="console_scripts")

@@ -213,6 +213,35 @@ async def test_fire_records_substituted_prompt_not_raw_template():
 
 
 @pytest.mark.asyncio
+async def test_fire_records_empty_rendered_prompt_as_is_not_playbook_fallback():
+    """A template that renders to "" (e.g. an empty trigger_context value) is
+    still what build_argv actually sends the child — it must not collapse
+    into the action_playbook fallback, which would persist a value that
+    differs from what was actually sent."""
+    from lionagi.studio.scheduler.engine import SchedulerEngine
+
+    svc = _make_svc()
+    engine = SchedulerEngine(svc=svc)
+    schedule = _minimal_schedule(action_prompt="{{payload}}", action_playbook="fallback-playbook")
+
+    with (
+        patch(
+            "lionagi.studio.scheduler.subprocess.build_argv",
+            return_value=(["uv", "run", "li", "agent", ""], None),
+        ),
+        patch(
+            "lionagi.studio.scheduler.subprocess.spawn_and_wait",
+            new=AsyncMock(return_value=(0, "")),
+        ),
+    ):
+        await engine._fire(schedule, "run-002b", trigger_context={"payload": ""})
+
+    svc.create_invocation.assert_awaited_once()
+    (invocation_payload,), _kwargs = svc.create_invocation.await_args
+    assert invocation_payload["prompt"] == ""
+
+
+@pytest.mark.asyncio
 async def test_fire_executable_resolution_failure_records_failed_run_with_actionable_detail():
     """When resolve_li_executable() can't find an absolute `li` path, _fire()
     fails the schedule_run/invocation through the existing exception path with
