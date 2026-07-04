@@ -1,6 +1,6 @@
 # ADR-0093: Studio Three-Surface Information Architecture
 
-**Status**: Proposed
+**Status**: Proposed (Amendment 1 applied — see below)
 **Date**: 2026-07-04
 Related: ADR-0026 (project detection), ADR-0034 (frontend data/state architecture), ADR-0063
 (task board work center — this ADR supersedes its operator-UI decision; its `work_items`
@@ -242,3 +242,84 @@ role. The genuinely lost artifact is per-entity breadcrumbs, judged not worth a 
 - Live QA examination, 2026-07-04: status-derivation drift across pages, unvirtualized
   kanban, project-list pollution
 - ADR-0026, ADR-0034, ADR-0063
+
+---
+
+## Amendment 1 (2026-07-04): the cockpit shell is the shipped baseline
+
+### What changed
+
+During phase-A delivery the founder live-steered the implementation against the running app
+and ruled that the desktop cockpit line (tag `desktop-v0.1.0-rc1`) was the better product:
+its frontend was restored wholesale onto the phase-A branch and accepted as the baseline for
+all further Studio work. The original Decision's three-route contract was therefore never the
+shipped surface. This amendment records the shipped architecture, marks which parts of the
+original Decision it supersedes, and re-anchors the delivery phases. The original text above
+is preserved unedited as the design record.
+
+### Shipped information architecture
+
+The public surface is a six-space cockpit rail with keyboard shortcuts, plus one sub-view:
+
+| Space | Route | Shortcut | Carries |
+|-------|-------|----------|---------|
+| Mission Control | `/` | ⌘1 | attention header + live board; **Fleet** (`/fleet`) is a tab within this space (board projection of active work; the old kanban redirects here) |
+| Designer | `/designer` | ⌘2 | canvas authoring surface (workflow canvas home) |
+| Library | `/library` | ⌘3 | definitions catalog — scripts/workflows, skills, plugins, engines as tabs |
+| History | `/history` | ⌘4 | unified execution timeline (runs, schedule firings, script runs as tabs) |
+| Schedules | `/schedules` | ⌘5 | schedule definitions and firing status |
+| System | `/system` | ⌘6 | health, maintenance, project inventory |
+
+Why the shipped shape departs from three surfaces:
+
+- **Operations splits into Mission Control and History.** The founder's live verdict
+  preferred a dedicated attention surface (what needs me now) separate from the record
+  (what happened). The unified-timeline ruling survives inside History; the "no separate
+  home" rejection in Alternatives is reversed by acceptance — Mission Control is that home,
+  and the founder chose it.
+- **Designer is a first-class space.** The canvas is the command-and-control center
+  (2026-06-11 ruling) and gets its own room rather than living as a Library kind.
+- **Schedules keep a dedicated space.** Definitions and firing health are operated together
+  too often to split across Library and Operations.
+
+### Superseded by acceptance
+
+- The three-route contract and its param grammar (§Route contract). The **redirect policy
+  survives** and is honored by the shipped shell: `/runs → /history?tab=run` ·
+  `/invocations → /history` · `/shows → /history` · `/kanban → /fleet` ·
+  `/playbooks → /library?tab=workflow` · `/skills|/plugins|/engines → /library` (kind tabs) ·
+  `/admin → /system`.
+- Slide-over as the sole detail presentation. The cockpit uses master-detail panes in Fleet
+  and History; detail-state-in-URL remains the rule, the presentation is the pane.
+- The phase-A scope as written (three-surface rail + canvas projections). Phase A as shipped
+  is the cockpit restore itself.
+
+### Still binding, unchanged
+
+- **Unified Run model and one status oracle** (`deriveRunStatus` semantics: dead-process
+  demotion to Stale, spent one-shots as Expired). The cockpit inherits the per-page
+  status-drift debt this ADR set out to retire; consolidation lands in phase B.
+- **The invocation noun stays removed** from user-facing surfaces; `/invocations` is
+  redirect-only and the concept never reappears in labels, filters, or tabs.
+- **Windowing and virtualization as structural defaults.** Session detail now loads a tail
+  window (default 200 messages) with load-older paging and per-branch totals; long feeds
+  virtualize.
+- **Leo operator panel is phase B**, gated on an explicit authn/authz story reviewed before
+  implementation, together with the resume-run endpoints that share its daemon surface.
+- **Workflow definitions**: YAML canonical, TOML at the import/export boundary, additive
+  validate/plan-preview endpoints.
+- **Engineering riders**: daemon changes additive-only; e2e keyed on routes, params, and
+  stable test ids against a seeded temp db; both themes ship with the established contrast
+  floors.
+
+### Re-anchored delivery
+
+- **A (shipped)**: cockpit shell restore, six-space rail with shortcuts, legacy redirects,
+  session-detail tail-window pagination; e2e selectors reworked against the cockpit shell as
+  part of the phase-A merge gate.
+- **B**: Leo panel + resume actions (after the authn/authz review), SSE live tail, chain
+  cards, single status oracle adopted across all spaces.
+- **C**: workflow canvas in Designer with synchronized text/visual editors,
+  validate/plan-preview and YAML/TOML endpoints, Library catalog depth, inviting zero states.
+- **D**: retired route files deleted (redirects stay), i18n sweep, contrast/a11y audit in
+  both themes.
