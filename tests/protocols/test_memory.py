@@ -69,15 +69,6 @@ class TestMemoryStoreProtocolFence:
     async def test_retrieve_unknown_id_returns_none(self, store):
         assert await store.retrieve(uuid4()) is None
 
-    async def test_search_respects_limit(self, store):
-        for i in range(5):
-            await store.store(MemoryItem(content=f"item-{i}"))
-
-        results = await store.search(MemoryQuery(limit=2))
-
-        assert isinstance(results, list)
-        assert len(results) <= 2
-
 
 class TestInMemoryStoreBackendSpecific:
     """`InMemoryStore`-only guarantees: exact substring/tag search and
@@ -85,6 +76,16 @@ class TestInMemoryStoreBackendSpecific:
     fence above -- a networked/async-indexed backend (e.g. one warming an ANN
     index) is not required to satisfy either of these.
     """
+
+    async def test_search_respects_limit(self):
+        store = InMemoryStore()
+        for i in range(5):
+            await store.store(MemoryItem(content=f"item-{i}"))
+
+        results = await store.search(MemoryQuery(limit=2))
+
+        assert isinstance(results, list)
+        assert len(results) <= 2
 
     async def test_search_is_immediately_consistent_after_store(self):
         store = InMemoryStore()

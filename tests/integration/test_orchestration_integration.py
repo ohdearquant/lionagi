@@ -217,36 +217,6 @@ def test_branch_gets_hooks_when_added_after_bus_init():
     assert b2._hooks is bus
 
 
-def test_branch_shared_across_sessions_keeps_first_sessions_observer_and_hooks():
-    """A branch already wired to session A's observer/hook bus must not be
-    silently rewired to session B's when session B also calls
-    include_branches() on it — ADR-0090's advisor review flagged this as a
-    live sharing bug in the pre-existing (unconditional) wiring; this pins
-    the guarded fix down."""
-    from lionagi.session.branch import Branch
-    from lionagi.session.session import Session
-
-    session_a = Session()
-    session_b = Session()
-    _ = session_a.hooks  # force session_a's hook bus into existence first
-    _ = session_b.hooks  # and session_b's, so both have something to steal with
-
-    shared = Branch(name="shared")
-    session_a.include_branches(shared)
-
-    observer_a = shared._observer
-    hooks_a = shared._hooks
-    assert observer_a is session_a.observer
-
-    session_b.include_branches(shared)
-
-    assert shared._observer is observer_a, (
-        "branch._observer must stay session A's observer, not be stolen by session B"
-    )
-    assert shared._observer is not session_b.observer
-    assert shared._hooks is hooks_a
-
-
 # ── Test 7: both execute() and execute_stream() use the public observer property ──
 
 

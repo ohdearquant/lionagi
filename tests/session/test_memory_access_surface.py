@@ -67,17 +67,25 @@ class TestBranchMemorySurface:
 
 
 class TestSessionMemorySurface:
-    def test_standalone_session_gets_lazy_default(self):
+    def test_standalone_session_gets_a_default_store(self):
         session = Session()
-        assert session._memory is None
         store = session.memory
         assert isinstance(store, InMemoryStore)
         assert session.memory is store
+
+    def test_no_arg_session_wires_default_branch_to_its_own_store(self):
+        session = Session()
+        assert session.default_branch.memory is session.memory
 
     def test_constructor_param_is_accepted_and_kept(self):
         own_store = InMemoryStore()
         session = Session(memory=own_store)
         assert session.memory is own_store
+
+    def test_constructor_param_wires_default_branch_to_the_explicit_store(self):
+        own_store = InMemoryStore()
+        session = Session(memory=own_store)
+        assert session.default_branch.memory is own_store
 
     def test_memory_has_no_public_setter(self):
         session = Session()

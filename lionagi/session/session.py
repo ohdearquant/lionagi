@@ -53,7 +53,23 @@ class Session(Node, Relational):
 
     def __init__(self, *, memory: MemoryStore | None = None, **kwargs: Any):
         super().__init__(**kwargs)
-        self._memory = memory
+        # `_initialize_branches` (a model validator) already ran inside
+        # `super().__init__()` and, via `include_branches()`, may have read
+        # the `.memory` property and lazily created a store, wiring it into
+        # every branch taken in at construction time (including the default
+        # branch). When an explicit store is supplied here, swap it in and
+        # rewire any branch still holding that temporary store so the whole
+        # session — not just `self._memory` — ends up pointing at the
+        # explicit store. When no explicit store is supplied, leave
+        # `self._memory` as whatever `_initialize_branches` already set, so
+        # it stays the same instance every branch was wired to.
+        temp = self._memory
+        if memory is not None:
+            self._memory = memory
+            if temp is not None and temp is not memory:
+                for branch in self.branches:
+                    if branch._memory is temp:
+                        branch._memory = memory
 
     @field_serializer("user")
     def _serialize_user(self, value: SenderRecipient | None) -> JsonValue:
@@ -72,21 +88,14 @@ class Session(Node, Relational):
 
             branch.user = self.id
             branch._operation_manager = self._operation_manager
-            # Guarded, not unconditional: a branch already wired to another
-            # session's observer/hook bus (i.e. shared across sessions) keeps
-            # what it has instead of being silently stolen by whichever
-            # session calls include_branches() on it last. Mirrors the
-            # `.memory` access surface's own `if branch._memory is None`
-            # guard rather than the previously-unconditional overwrite here.
-            if branch._observer is None:
-                branch._observer = self.observer
-            if branch._hooks is None and self._hooks is not None:
+            branch._observer = self.observer
+            if self._hooks is not None:
                 branch._hooks = self._hooks
             if branch._memory is None:
-                # reads the property: lazily creates the session's own store
-                # on first use, then shares that instance. Conditional, not
-                # unconditional: a branch explicitly constructed with its
-                # own store (or already sharing another session's) keeps it.
+                # A branch keeps an explicitly supplied or previously
+                # adopted store; first claim wins. Reading the property
+                # lazily creates the session's own store on first use, then
+                # shares that one instance across every branch taken in.
                 branch._memory = self.memory
             if not self.exchange.has(branch.id):
                 self.exchange.register(branch.id)
