@@ -14,6 +14,7 @@ if TYPE_CHECKING:
 from pydantic import Field, JsonValue, PrivateAttr, field_serializer, model_validator
 from typing_extensions import Self
 
+from lionagi.protocols.memory import InMemoryStore, MemoryStore
 from lionagi.protocols.types import (
     ID,
     MESSAGE_FIELDS,
@@ -48,6 +49,11 @@ class Session(Node, Relational):
     _operation_manager: OperationManager = PrivateAttr(default_factory=OperationManager)
     _observer: Any = PrivateAttr(default=None)
     _hooks: Any = PrivateAttr(default=None)
+    _memory: MemoryStore | None = PrivateAttr(default=None)
+
+    def __init__(self, *, memory: MemoryStore | None = None, **kwargs: Any):
+        super().__init__(**kwargs)
+        self._memory = memory
 
     @field_serializer("user")
     def _serialize_user(self, value: SenderRecipient | None) -> JsonValue:
@@ -66,9 +72,22 @@ class Session(Node, Relational):
 
             branch.user = self.id
             branch._operation_manager = self._operation_manager
-            branch._observer = self.observer
-            if self._hooks is not None:
+            # Guarded, not unconditional: a branch already wired to another
+            # session's observer/hook bus (i.e. shared across sessions) keeps
+            # what it has instead of being silently stolen by whichever
+            # session calls include_branches() on it last. Mirrors the
+            # `.memory` access surface's own `if branch._memory is None`
+            # guard rather than the previously-unconditional overwrite here.
+            if branch._observer is None:
+                branch._observer = self.observer
+            if branch._hooks is None and self._hooks is not None:
                 branch._hooks = self._hooks
+            if branch._memory is None:
+                # reads the property: lazily creates the session's own store
+                # on first use, then shares that instance. Conditional, not
+                # unconditional: a branch explicitly constructed with its
+                # own store (or already sharing another session's) keeps it.
+                branch._memory = self.memory
             if not self.exchange.has(branch.id):
                 self.exchange.register(branch.id)
             if self.default_branch is None:
@@ -121,6 +140,16 @@ class Session(Node, Relational):
 
             self._observer = SessionObserver(session=self)
         return self._observer
+
+    @property
+    def memory(self) -> MemoryStore:
+        """This session's memory store: an explicitly supplied backend, or a
+        lazily-created shared `InMemoryStore` on first access. Read-only —
+        the only way to give a `Session` its own store is the `memory=`
+        constructor parameter."""
+        if self._memory is None:
+            self._memory = InMemoryStore()
+        return self._memory
 
     def observe(
         self,

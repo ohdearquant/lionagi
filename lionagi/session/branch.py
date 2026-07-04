@@ -24,6 +24,7 @@ from lionagi.protocols.generic import (
     Pile,
     Progression,
 )
+from lionagi.protocols.memory import InMemoryStore, MemoryStore
 from lionagi.protocols.messages import (
     ActionRequest,
     ActionResponse,
@@ -101,6 +102,7 @@ class Branch(Element, Relational):
     _operation_manager: OperationManager | None = PrivateAttr(None)
     _observer: Any = PrivateAttr(None)
     _hooks: Any = PrivateAttr(None)
+    _memory: MemoryStore | None = PrivateAttr(None)
     _capabilities: Any = PrivateAttr(None)
     _loop_control: "LoopControl | None" = PrivateAttr(None)
     _signal_tasks: list = PrivateAttr(default_factory=list)
@@ -122,9 +124,12 @@ class Branch(Element, Relational):
         system_template_context: dict = None,
         logs: Pile[Log] = None,
         use_lion_system_message: bool = False,
+        memory: MemoryStore | None = None,
         **kwargs,
     ):
         super().__init__(user=user, name=name, **kwargs)
+
+        self._memory = memory
 
         from lionagi.protocols.messages.manager import MessageManager
 
@@ -249,6 +254,16 @@ class Branch(Element, Relational):
     @property
     def logs(self) -> Pile[Log]:
         return self._log_manager.logs
+
+    @property
+    def memory(self) -> MemoryStore:
+        """This branch's memory store: an explicitly supplied backend, or a
+        lazily-created private `InMemoryStore` on first access. Read-only —
+        the only way to give a `Branch` its own store is the `memory=`
+        constructor parameter."""
+        if self._memory is None:
+            self._memory = InMemoryStore()
+        return self._memory
 
     @property
     def chat_model(self) -> iModel:
