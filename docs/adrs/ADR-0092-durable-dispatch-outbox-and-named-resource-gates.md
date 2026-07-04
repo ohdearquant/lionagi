@@ -1,6 +1,6 @@
 # ADR-0092: Durable Dispatch Outbox and Named Resource Gates
 
-**Status**: Proposed (spec-gated: awaiting sign-off before any implementation)
+**Status**: Accepted (spec gate signed 2026-07-04; rulings folded below)
 **Date**: 2026-07-04
 **Builds on**: ADR-0062 (scheduled item state machine, proposed) · ADR-0061 (universal scheduler, proposed) · ADR-0083 (lifecycle signal contract) · ADR-0085 §5 (terminal notify hook, proposed) · ADR-0027 (scheduled runs) · ADR-0030 (attention queue)
 
@@ -99,6 +99,13 @@ succeeded into a **durable sink** (for fleet seats, an inbox that survives the
 seat's death). Transport failure leaves the row pending and the next tick
 re-attempts with backoff, bounded by `max_attempts` and `expires_at`.
 
+Template substitution must be argv-safe: `payload` and `deliver_to` are never
+string-interpolated into a shell command line. The template receives the JSON
+via the argument vector or stdin (or, where a template genuinely needs inline
+placement, under strict quoting that the implementation enforces, not the
+template author). This ADR is §5's first real consumer carrying message-body
+content, so the injection constraint binds here.
+
 **Schema** (migration carries it):
 
 ```sql
@@ -185,6 +192,12 @@ scheduler already runs there). The read/ack verbs
 discipline, NOT `li schedule`'s daemon-HTTP-only discipline. Rationale: the
 whole point is post-reset survival; if `li dispatch ack` required the daemon to
 be up, a daemon restart window would strand acks.
+
+Because the ack/retry/purge verbs write to `state.db` from outside the daemon,
+the outbox introduces a second writer process. Every direct-DB write is a
+single-row guarded compare-and-swap inside `BEGIN IMMEDIATE` with a
+`busy_timeout` set before any other pragma or statement. No CLI write path may
+hold a transaction across user interaction or transport execution.
 
 ### 2. Named resource gates, queue-independent, composing with the OS flock
 
@@ -309,22 +322,23 @@ Must NOT contain (v1):
 - Gate acquisition adds a blocking (or timeout-bounded) step in front of gated
   runs; ungated runs are unaffected.
 
-## Open questions (for the spec gate)
+## Spec-gate rulings (signed 2026-07-04)
 
-1. **Transition machinery ordering**: land ADR-0062's `transition()` API first
-   and build the outbox on it, or ship this ADR's minimal compare-and-swap
-   fallback now and let 0062 absorb it later? The fallback is small (~30 lines)
-   and keeps this ADR unblocked; the risk is two transition code paths if 0062
-   lands soon after.
-2. **Gate table ownership**: who owns the canonical `gates:` name→path table:
-   lionagi settings defaults, or a fleet-shared config file that lionagi reads?
-   Related: stale-holder handling on the shared file. Advisory flock releases on
-   process death, so crashes are free, but a wedged live holder still needs an
-   operator escape (`li dispatch` surfacing which pid holds the flock is likely
-   sufficient).
-3. **Backoff shape**: exponential with jitter, cap at the tick interval times a
-   small factor. Proposed default `min(30 * 2**attempt, 1800)` seconds; worth a
-   one-line confirmation rather than debate.
+1. **Transition machinery ordering**: ship the ~30-line guarded compare-and-swap
+   fallback now; do not block on ADR-0062. Condition: the fallback mirrors
+   0062's `transition()` signature and reason-code discipline exactly, so 0062
+   absorbs it later as a refactor, not a migration.
+2. **Gate table ownership**: the canonical `gates:` name→lock-path table is
+   fleet-shared configuration owned by the fleet's global resource manager, not
+   by this harness — machine-level resource conventions span non-lionagi
+   processes. lionagi reads the fleet table and may add lionagi-private internal
+   gate names in its own settings only. The concrete fleet file path is proposed
+   in the implementation PR and placed by the fleet resource owner.
+   Wedged-live-holder handling: surfacing the holder pid in
+   `li dispatch` / `li monitor` is sufficient for v1; a live holder is never
+   auto-broken.
+3. **Backoff shape**: `min(30 * 2**attempt, 1800)` seconds, confirmed as
+   proposed. No jitter: immaterial at tens of dispatches per hour.
 
 ## Verify by
 
