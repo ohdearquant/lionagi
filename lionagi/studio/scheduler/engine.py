@@ -643,19 +643,30 @@ class SchedulerEngine:
         now = time.time()
 
         inv_id = uuid.uuid4().hex[:12]
+        # Record what was actually sent, not the raw {{var}} template: the
+        # operator-facing invocation should show the substituted prompt.
+        rendered_prompt = _subprocess.render_action_prompt(schedule, trigger_context)
         await self._svc.create_invocation(
             {
                 "id": inv_id,
                 "skill": f"scheduled:{schedule['name']}",
                 "plugin": schedule["trigger_type"],
-                "prompt": schedule.get("action_prompt") or schedule.get("action_playbook"),
+                "prompt": rendered_prompt or schedule.get("action_playbook"),
                 "started_at": now,
                 "status": "running",
             }
         )
 
         try:
-            argv, _tmp_path = _subprocess.build_argv(schedule, trigger_context)
+            li_prefix, li_resolve_error = _subprocess.resolve_li_executable()
+            if li_prefix is None:
+                raise RuntimeError(
+                    "Cannot spawn scheduled action: unable to resolve an "
+                    f"absolute path to the `li` executable ({li_resolve_error})"
+                )
+            argv, _tmp_path = _subprocess.build_argv(
+                schedule, trigger_context, executable_prefix=li_prefix
+            )
         except Exception as exc:
             _log.exception("Invalid schedule action for %s (run %s)", schedule.get("name"), run_id)
             _end_time = time.time()

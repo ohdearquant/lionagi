@@ -186,6 +186,61 @@ async def test_fire_happy_path_records_invocation_and_run():
 
 
 @pytest.mark.asyncio
+async def test_fire_records_substituted_prompt_not_raw_template():
+    """create_invocation's prompt field carries the {{var}}-substituted text
+    actually sent, not the raw template stored on the schedule."""
+    from lionagi.studio.scheduler.engine import SchedulerEngine
+
+    svc = _make_svc()
+    engine = SchedulerEngine(svc=svc)
+    schedule = _minimal_schedule(action_prompt="review PR {{pr_number}}")
+
+    with (
+        patch(
+            "lionagi.studio.scheduler.subprocess.build_argv",
+            return_value=(["uv", "run", "li", "agent", "review PR 42"], None),
+        ),
+        patch(
+            "lionagi.studio.scheduler.subprocess.spawn_and_wait",
+            new=AsyncMock(return_value=(0, "")),
+        ),
+    ):
+        await engine._fire(schedule, "run-002", trigger_context={"pr_number": "42"})
+
+    svc.create_invocation.assert_awaited_once()
+    (invocation_payload,), _kwargs = svc.create_invocation.await_args
+    assert invocation_payload["prompt"] == "review PR 42"
+
+
+@pytest.mark.asyncio
+async def test_fire_executable_resolution_failure_records_failed_run_with_actionable_detail():
+    """When resolve_li_executable() can't find an absolute `li` path, _fire()
+    fails the schedule_run/invocation through the existing exception path with
+    an error_detail naming what was tried — not a raw ENOENT from a bad spawn."""
+    from lionagi.studio.scheduler.engine import SchedulerEngine
+
+    svc = _make_svc()
+    engine = SchedulerEngine(svc=svc)
+    schedule = _minimal_schedule()
+
+    with (
+        patch(
+            "lionagi.studio.scheduler.subprocess.resolve_li_executable",
+            return_value=(None, "shutil.which found nothing; no venv-adjacent file"),
+        ),
+        patch("lionagi.studio.scheduler.subprocess.spawn_and_wait", new=AsyncMock()) as spawn_mock,
+    ):
+        await engine._fire(schedule, "run-003", trigger_context={"scheduled": True})
+
+    spawn_mock.assert_not_awaited()
+    svc.create_schedule_run.assert_awaited_once()
+    (run_payload,), _kwargs = svc.create_schedule_run.await_args
+    assert run_payload["status"] == "failed"
+    assert "resolve" in run_payload["error_detail"]
+    assert "shutil.which" in run_payload["error_detail"]
+
+
+@pytest.mark.asyncio
 async def test_fire_nonzero_exit_records_failed_status():
     """Non-zero exit code produces a 'failed' schedule_run status."""
     from lionagi.studio.scheduler.engine import SchedulerEngine

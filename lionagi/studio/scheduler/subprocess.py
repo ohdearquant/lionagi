@@ -9,13 +9,23 @@ import contextlib
 import logging
 import os
 import re
+import shutil
+import sys
 import tempfile
+from importlib import metadata as importlib_metadata
+from pathlib import Path
 
 from lionagi.ln._proc import aterminate_process_group
 
 _log = logging.getLogger(__name__)
 
 _TEMPLATE_RE = re.compile(r"\{\{(\w+)\}\}")
+
+# Default argv prefix for launching the CLI: relies on `uv run` resolving the
+# project/venv from the daemon's own cwd, which breaks when the daemon starts
+# from a directory with no discoverable pyproject.toml (e.g. "/"). Callers
+# should prefer the absolute prefix from resolve_li_executable() instead.
+_DEFAULT_LI_PREFIX: tuple[str, ...] = ("uv", "run", "li")
 
 # ADR-0027 defines the closed set of action kinds.  The CLI parser accepts
 # "playbook" as an alias for "play" for backward compatibility.
@@ -161,8 +171,78 @@ def _render_template(template: str, context: dict) -> str:
     return _TEMPLATE_RE.sub(_replace, template)
 
 
-def build_argv(schedule: dict, trigger_context: dict) -> tuple[list[str], str | None]:
+def render_action_prompt(schedule: dict, trigger_context: dict) -> str | None:
+    """Render a schedule's ``action_prompt`` with the trigger context.
+
+    Returns ``None`` when the schedule has no prompt template, so callers can
+    fall back to another field (e.g. ``action_playbook``) without confusing
+    "no prompt" with "empty rendered prompt".
+    """
+    prompt = schedule.get("action_prompt") or ""
+    if not prompt:
+        return None
+    return _render_template(prompt, trigger_context)
+
+
+def resolve_li_executable() -> tuple[list[str] | None, str | None]:
+    """Resolve an absolute argv prefix for launching the ``li`` CLI.
+
+    ``uv run li`` depends on ``uv`` discovering a project/venv from the
+    *current working directory*; a daemon started from a directory with no
+    discoverable ``pyproject.toml`` (e.g. the filesystem root) fails to spawn
+    with an opaque ENOENT for ``li``, unrelated to the schedule's own working
+    directory. Resolving an absolute executable path here sidesteps that
+    cwd-dependent lookup entirely.
+
+    Tries, in order:
+      1. ``shutil.which("li")`` — the `li` script on PATH.
+      2. A ``li`` file next to ``sys.executable`` (the venv running this
+         daemon almost certainly installed `li` into the same bin dir).
+      3. The ``li`` console-script entry point's target module, invoked via
+         ``[sys.executable, "-m", <module>]`` — works even when no `li`
+         script file exists on disk.
+
+    Returns ``(argv_prefix, None)`` on success, or ``(None, detail)`` where
+    *detail* names every strategy that was tried and why each failed.
+    """
+    tried: list[str] = []
+
+    which_path = shutil.which("li")
+    if which_path:
+        return [which_path], None
+    tried.append("shutil.which('li') found nothing on PATH")
+
+    venv_li = Path(sys.executable).with_name("li")
+    if venv_li.is_file() and os.access(venv_li, os.X_OK):
+        return [str(venv_li)], None
+    tried.append(f"no executable `li` file next to sys.executable ({venv_li})")
+
+    try:
+        entry_points = importlib_metadata.entry_points(group="console_scripts")
+    except Exception as exc:  # pragma: no cover - defensive, metadata API is stable
+        entry_points = []
+        tried.append(f"importlib.metadata.entry_points() raised {type(exc).__name__}: {exc}")
+    for ep in entry_points:
+        if ep.name == "li":
+            module = ep.value.split(":", 1)[0]
+            return [sys.executable, "-m", module], None
+    tried.append("no 'li' console_scripts entry point registered")
+
+    return None, "; ".join(tried)
+
+
+def build_argv(
+    schedule: dict,
+    trigger_context: dict,
+    *,
+    executable_prefix: list[str] | None = None,
+) -> tuple[list[str], str | None]:
     """Build the subprocess argv for a scheduled action.
+
+    *executable_prefix* replaces the default ``["uv", "run", "li"]`` prefix
+    (e.g. with the absolute path from ``resolve_li_executable()``) so the
+    child process spawns independent of the daemon's own cwd/PATH. Omitting
+    it preserves the pre-existing ``uv run li`` behavior.
 
     Returns ``(argv, tmp_path)`` where ``tmp_path`` is a temporary file that
     must be deleted after the subprocess exits (only set for ``flow_yaml``).
@@ -208,7 +288,7 @@ def build_argv(schedule: dict, trigger_context: dict) -> tuple[list[str], str | 
     if prompt:
         _validate_prompt(prompt)
 
-    argv = ["uv", "run", "li"]
+    argv = list(executable_prefix) if executable_prefix is not None else list(_DEFAULT_LI_PREFIX)
     tmp_path: str | None = None
 
     # CWE-88 hardening: named flags first, then '--' end-of-options sentinel,
