@@ -6,8 +6,6 @@
 
 # lionagi
 
-![lionagi — governed multi-agent orchestration](assets/lionagi_card.png)
-
 **lionagi is a governed multi-agent orchestration framework.** Build agent
 workflows in Python with typed, inspectable state, or run them straight from
 the terminal with the `li` CLI: single agents, parallel fan-outs, and DAG
