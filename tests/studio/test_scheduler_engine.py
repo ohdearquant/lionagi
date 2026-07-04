@@ -1253,3 +1253,175 @@ async def test_max_runs_build_argv_exception_still_checked():
     svc.count_schedule_runs.assert_awaited_with("sched-001", chain_depth=0)
     disable_calls = [c for c in svc.update_schedule.await_args_list if c.kwargs.get("enabled") == 0]
     assert disable_calls
+
+
+# ---------------------------------------------------------------------------
+# max_runs enforcement BEFORE firing (pre-flight reservation), not just after
+# ---------------------------------------------------------------------------
+
+
+class _StatefulSvc:
+    """Minimal stateful fake mirroring real StateDB run bookkeeping.
+
+    Unlike _make_svc()'s AsyncMock (fixed return values), this actually
+    records schedule_runs and derives count_schedule_runs() from them —
+    needed to pin the pre-flight max_runs reservation, which depends on the
+    real interaction between "check the count" and "record a new run".
+    """
+
+    def __init__(self, existing_runs: dict[str, dict] | None = None):
+        self.runs: dict[str, dict] = dict(existing_runs or {})
+        self.schedule_updates: list[tuple[str, dict]] = []
+
+    async def get_schedule(self, schedule_id):
+        return None
+
+    async def list_schedules(self, *, enabled=None):
+        return []
+
+    async def update_schedule(self, schedule_id, **fields):
+        self.schedule_updates.append((schedule_id, fields))
+
+    async def count_schedule_runs(self, schedule_id, *, chain_depth=0):
+        return sum(
+            1
+            for r in self.runs.values()
+            if r.get("schedule_id") == schedule_id
+            and r.get("chain_depth", 0) == chain_depth
+            and r.get("status") in {"completed", "failed", "cancelled"}
+        )
+
+    async def create_schedule_run(self, run):
+        self.runs[run["id"]] = dict(run)
+
+    async def update_schedule_run(self, run_id, **fields):
+        self.runs[run_id].update(fields)
+
+    async def create_invocation(self, invocation):
+        pass
+
+    async def update_invocation(self, inv_id, **fields):
+        pass
+
+    async def update_status(self, entity_type, entity_id, *, new_status, **kwargs):
+        if entity_type == "schedule_run":
+            self.runs[entity_id]["status"] = new_status
+
+    async def list_sessions_for_invocation(self, invocation_id):
+        return []
+
+
+@pytest.mark.asyncio
+async def test_max_runs_exhausted_schedule_refuses_to_fire_again():
+    """A schedule that already has a terminal run at its max_runs cap must not
+    fire again — the budget check happens BEFORE queueing the fire, not only
+    after it completes."""
+    from lionagi.studio.scheduler.engine import SchedulerEngine
+
+    svc = _StatefulSvc(
+        existing_runs={
+            "old-run": {"schedule_id": "sched-once", "chain_depth": 0, "status": "completed"}
+        }
+    )
+    engine = SchedulerEngine(svc)
+    schedule = _minimal_schedule(id="sched-once", max_runs=1)
+
+    with (
+        patch(
+            "lionagi.studio.scheduler.subprocess.build_argv",
+            return_value=(["true"], None),
+        ),
+        patch(
+            "lionagi.studio.scheduler.subprocess.spawn_and_wait",
+            new=AsyncMock(return_value=(0, "")),
+        ),
+    ):
+        await engine._maybe_fire(schedule, now=1000.0)
+        await asyncio.gather(*list(engine._fire_tasks))
+
+    assert await svc.count_schedule_runs("sched-once", chain_depth=0) == 1
+    disable_calls = [c for c in svc.schedule_updates if c[1].get("enabled") == 0]
+    assert disable_calls
+
+
+@pytest.mark.asyncio
+async def test_max_runs_sequential_maybe_fire_calls_do_not_overshoot():
+    """Two back-to-back _maybe_fire() calls for a fresh max_runs=1 schedule
+    must produce exactly one terminal run, not two — the pre-flight claim is
+    made (and visible) before the first call's background fire even starts
+    running, so the second call's check sees the claim."""
+    from lionagi.studio.scheduler.engine import SchedulerEngine
+
+    svc = _StatefulSvc()
+    engine = SchedulerEngine(svc)
+    schedule = _minimal_schedule(id="sched-once", max_runs=1)
+
+    with (
+        patch(
+            "lionagi.studio.scheduler.subprocess.build_argv",
+            return_value=(["true"], None),
+        ),
+        patch(
+            "lionagi.studio.scheduler.subprocess.spawn_and_wait",
+            new=AsyncMock(return_value=(0, "")),
+        ),
+    ):
+        await engine._maybe_fire(schedule, now=1000.0)
+        await engine._maybe_fire(schedule, now=1000.0)
+        await asyncio.gather(*list(engine._fire_tasks))
+
+    assert len(svc.runs) == 1
+    assert sorted(r["status"] for r in svc.runs.values()) == ["completed"]
+
+
+@pytest.mark.asyncio
+async def test_max_runs_reservation_released_lets_next_schedule_check_run():
+    """After a claimed fire completes, its in-process reservation is released
+    so a later _maybe_fire() call correctly sees the up-to-date persisted
+    count (not an over-counted stale claim)."""
+    from lionagi.studio.scheduler.engine import SchedulerEngine
+
+    svc = _StatefulSvc()
+    engine = SchedulerEngine(svc)
+    schedule = _minimal_schedule(id="sched-multi", max_runs=2)
+
+    with (
+        patch(
+            "lionagi.studio.scheduler.subprocess.build_argv",
+            return_value=(["true"], None),
+        ),
+        patch(
+            "lionagi.studio.scheduler.subprocess.spawn_and_wait",
+            new=AsyncMock(return_value=(0, "")),
+        ),
+    ):
+        await engine._maybe_fire(schedule, now=1000.0)
+        await asyncio.gather(*list(engine._fire_tasks))
+        assert engine._max_runs_inflight.get("sched-multi", 0) == 0
+
+        await engine._maybe_fire(schedule, now=1001.0)
+        await asyncio.gather(*list(engine._fire_tasks))
+
+    assert len(svc.runs) == 2
+    disable_calls = [c for c in svc.schedule_updates if c[1].get("enabled") == 0]
+    assert disable_calls  # the second fire reaches max_runs=2 and disables
+
+
+@pytest.mark.asyncio
+async def test_fire_now_refuses_manual_trigger_when_max_runs_exhausted():
+    """fire_now() (manual `li schedule trigger`) must also respect max_runs —
+    it is a top-level fire like any other."""
+    from lionagi.studio.scheduler.engine import SchedulerEngine
+
+    svc = _StatefulSvc(
+        existing_runs={
+            "old-run": {"schedule_id": "sched-once", "chain_depth": 0, "status": "completed"}
+        }
+    )
+    svc.get_schedule = AsyncMock(return_value=_minimal_schedule(id="sched-once", max_runs=1))
+    engine = SchedulerEngine(svc)
+
+    with pytest.raises(ValueError, match="max_runs"):
+        await engine.fire_now("sched-once")
+
+    assert len(engine._fire_tasks) == 0

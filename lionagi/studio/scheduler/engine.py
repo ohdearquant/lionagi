@@ -97,6 +97,11 @@ class SchedulerEngine:
         self._fire_tasks: set[asyncio.Task] = set()
         self._last_reaper_run: float = 0.0
         self._last_checkpoint_run: float = 0.0
+        # max_runs budget reservation (single-process; see _reserve_max_runs_budget).
+        self._max_runs_lock = asyncio.Lock()
+        self._max_runs_inflight: dict[
+            str, int
+        ] = {}  # schedule_id -> claimed-not-yet-terminal count
 
     async def start(self) -> None:
         _log.info("Scheduler engine starting")
@@ -220,6 +225,11 @@ class SchedulerEngine:
         schedule = await self._svc.get_schedule(schedule_id)
         if not schedule:
             return None
+        if not await self._reserve_max_runs_budget(schedule):
+            raise ValueError(
+                f"Schedule {schedule_id!r} has already reached its max_runs="
+                f"{schedule.get('max_runs')} limit; manual trigger refused."
+            )
         run_id = uuid.uuid4().hex[:12]
         self._tracked_fire(
             schedule, run_id, trigger_context={"manual": True, "fired_at": time.time()}
@@ -390,6 +400,13 @@ class SchedulerEngine:
 
         new_events = await github_poll(schedule)
         if new_events:
+            if not await self._reserve_max_runs_budget(schedule):
+                _log.info(
+                    "Schedule %s (%s) has exhausted max_runs; skipping github_poll fire",
+                    schedule.get("name"),
+                    schedule["id"],
+                )
+                return
             ctx = {
                 "github_events": new_events,
                 "repo": schedule.get("github_repo"),
@@ -397,6 +414,41 @@ class SchedulerEngine:
             }
             run_id = uuid.uuid4().hex[:12]
             await self._fire(schedule, run_id, trigger_context=ctx)
+
+    async def _reserve_max_runs_budget(self, schedule: dict) -> bool:
+        """Atomically claim one top-level fire against schedule['max_runs'].
+
+        Returns True if the fire may proceed, False if the schedule has
+        already consumed its budget (persisted terminal runs plus runs
+        already claimed-but-not-yet-terminal in this process). Guarded by
+        an engine-wide lock so concurrent callers — the tick loop,
+        fire_now(), github polling — can't both read the same count and
+        both claim it before either claim is visible. This is the
+        single-process analogue of a DB-backed compare-and-set; only one
+        scheduler process runs today, so a DB-backed reservation is not
+        needed. Chain children (chain_depth>0) never call this — only
+        top-level fires consume budget. The claim is released in
+        _check_max_runs() once the fire it was reserved for reaches a
+        terminal status.
+        """
+        max_runs = schedule.get("max_runs")
+        if not max_runs:
+            return True
+        sid = schedule["id"]
+        async with self._max_runs_lock:
+            used = await self._svc.count_schedule_runs(sid, chain_depth=0)
+            inflight = self._max_runs_inflight.get(sid, 0)
+            if used + inflight >= max_runs:
+                return False
+            self._max_runs_inflight[sid] = inflight + 1
+            return True
+
+    def _release_max_runs_claim(self, schedule_id: str) -> None:
+        remaining = self._max_runs_inflight.get(schedule_id, 0) - 1
+        if remaining > 0:
+            self._max_runs_inflight[schedule_id] = remaining
+        else:
+            self._max_runs_inflight.pop(schedule_id, None)
 
     async def _maybe_fire(self, schedule: dict, now: float) -> None:
         if schedule.get("overlap_policy") == "skip" and schedule["id"] in self._running:
@@ -417,6 +469,16 @@ class SchedulerEngine:
                 await self._svc.update_schedule(schedule["id"], next_fire_at=next_at)
             return
 
+        if not await self._reserve_max_runs_budget(schedule):
+            _log.info(
+                "Schedule %s (%s) has exhausted max_runs=%s; disabling instead of firing",
+                schedule.get("name"),
+                schedule["id"],
+                schedule.get("max_runs"),
+            )
+            await self._svc.update_schedule(schedule["id"], enabled=0)
+            return
+
         run_id = uuid.uuid4().hex[:12]
         ctx = {"scheduled": True, "fired_at": now, "next_fire_at": schedule.get("next_fire_at")}
         self._tracked_fire(schedule, run_id, trigger_context=ctx)
@@ -428,14 +490,18 @@ class SchedulerEngine:
         chain children are follow-on actions of a single top-level run, not
         additional scheduled runs, so they never count toward it. Reuses the
         existing enabled flag (the same mechanism enable/disable already use)
-        rather than introducing a new schedule state.
+        rather than introducing a new schedule state. Also releases this
+        fire's in-process max_runs claim (see _reserve_max_runs_budget) now
+        that it has reached a terminal status — a no-op if no claim was
+        reserved (max_runs unset).
         """
         if chain_depth != 0:
             return
+        sid = schedule["id"]
+        self._release_max_runs_claim(sid)
         max_runs = schedule.get("max_runs")
         if not max_runs:
             return
-        sid = schedule["id"]
         count = await self._svc.count_schedule_runs(sid, chain_depth=0)
         if count >= max_runs:
             _log.info(
