@@ -195,9 +195,24 @@ async def list_project_counts() -> list[dict[str, Any]]:
     ]
 
 
-async def get_session(session_id: str) -> dict[str, Any] | None:
+# Long-lived sessions accumulate tens of thousands of messages; loading
+# them all in one detail response freezes the client and approaches
+# SQLite's bound-variable limit. Detail responses window from the tail.
+DEFAULT_MESSAGE_LIMIT = 200
+MAX_MESSAGE_LIMIT = 1000
+
+
+async def get_session(
+    session_id: str,
+    *,
+    message_limit: int = DEFAULT_MESSAGE_LIMIT,
+    message_offset: int = 0,
+) -> dict[str, Any] | None:
     if not DEFAULT_DB_PATH.exists():
         return None
+
+    message_limit = max(1, min(message_limit, MAX_MESSAGE_LIMIT))
+    message_offset = max(0, message_offset)
 
     async with _open_db(_DB) as db:
         cur = await db.execute(
@@ -248,6 +263,7 @@ async def get_session(session_id: str) -> dict[str, Any] | None:
         branches = []
         for br in branch_rows:
             messages = []
+            message_total = 0
             prog_id = br["progression_id"]
             if prog_id:
                 prog_cur = await db.execute(
@@ -260,6 +276,15 @@ async def get_session(session_id: str) -> dict[str, Any] | None:
                         msg_ids = json.loads(prog_row["collection"])
                     except (json.JSONDecodeError, TypeError):
                         msg_ids = []
+
+                    message_total = len(msg_ids)
+                    # Window from the tail: offset 0 = the newest page,
+                    # each page further back prepends older history.
+                    if message_offset:
+                        end = max(0, message_total - message_offset)
+                        msg_ids = msg_ids[max(0, end - message_limit) : end]
+                    else:
+                        msg_ids = msg_ids[-message_limit:]
 
                     if msg_ids:
                         placeholders = ",".join("?" for _ in msg_ids)
@@ -284,6 +309,8 @@ async def get_session(session_id: str) -> dict[str, Any] | None:
                     "name": br["name"],
                     "created_at": br["created_at"],
                     "messages": messages,
+                    "message_total": message_total,
+                    "message_offset": message_offset,
                     "model": br["model"],
                     "provider": br["provider"],
                     "agent_name": br["agent_name"],
@@ -451,8 +478,14 @@ async def list_sessions_route() -> dict[str, Any]:
 
 
 @studio_route("/sessions/{session_id}", method="GET", area="sessions", name="get_session")
-async def get_session_route(session_id: str) -> dict[str, Any]:
-    session = await get_session(session_id)
+async def get_session_route(
+    session_id: str,
+    message_limit: int = DEFAULT_MESSAGE_LIMIT,
+    message_offset: int = 0,
+) -> dict[str, Any]:
+    session = await get_session(
+        session_id, message_limit=message_limit, message_offset=message_offset
+    )
     if session is None:
         raise NotFoundError(f"Session '{session_id}' not found")
     return session
