@@ -5,6 +5,7 @@
 from __future__ import annotations
 
 import signal
+import sys
 import time
 import uuid
 from pathlib import Path
@@ -13,6 +14,7 @@ from typing import Any
 import pytest
 
 from lionagi.cli.monitor import (
+    _NON_TTY_MAX_COL_WIDTH,
     _cached_detect_project,
     _colour_status,
     _elapsed,
@@ -22,15 +24,29 @@ from lionagi.cli.monitor import (
     _invocation_to_row,
     _pid_alive,
     _play_to_row,
+    _render_branch_lines,
     _run_detail,
     _run_table,
     _session_to_row,
     _show_project_matches,
     _show_to_row,
     _since_timestamp,
+    _stdout_is_tty,
     _trunc,
 )
 from lionagi.state.db import StateDB
+
+
+class _FakeStdout:
+    """Minimal stand-in for sys.stdout exposing only isatty() — enough to
+    drive call-time TTY detection without a real terminal/pipe."""
+
+    def __init__(self, is_tty: bool) -> None:
+        self._is_tty = is_tty
+
+    def isatty(self) -> bool:
+        return self._is_tty
+
 
 # ── Fixtures ──────────────────────────────────────────────────────────────────
 
@@ -276,6 +292,129 @@ def test_format_table_header():
     assert "TYPE" in output
     assert "STATUS" in output
     assert "ELAPSED" in output
+
+
+def test_format_table_non_tty_never_truncates_project(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Piped (non-TTY) output must never truncate identifying columns —
+    a long project name used to come back as 'ohdearquant/l…', silently
+    breaking `li monitor | grep <full-name>`. TTY-ness is patched on the
+    real sys.stdout (not the cached module global) to prove detection
+    happens at render time."""
+    monkeypatch.setattr(sys, "stdout", _FakeStdout(False))
+    long_project = "ohdearquant/lionagi-super-long-repo-name"
+    rows = [
+        {
+            "id": "abc123",
+            "type": "session",
+            "project": long_project,
+            "status": "running",
+            "phase": "agent",
+            "elapsed": "5m",
+            "agents": "1",
+        }
+    ]
+    output = _format_table(rows)
+    assert long_project in output
+
+
+def test_format_table_tty_still_truncates_project(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A TTY dashboard keeps the compact fixed-width behavior — only piped
+    output widens/never-truncates."""
+    monkeypatch.setattr(sys, "stdout", _FakeStdout(True))
+    long_project = "ohdearquant/lionagi-super-long-repo-name"
+    rows = [
+        {
+            "id": "abc123",
+            "type": "session",
+            "project": long_project,
+            "status": "running",
+            "phase": "agent",
+            "elapsed": "5m",
+            "agents": "1",
+        }
+    ]
+    output = _format_table(rows)
+    assert long_project not in output
+    assert "…" in output
+
+
+def test_format_table_tty_detected_at_call_time_not_import_time(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The same process/import must render both ways depending on stdout
+    *at call time* — a module imported while a TTY was attached, then
+    later invoked against redirected/piped stdout (or vice versa), must
+    not get stuck on whatever stdout looked like at import."""
+    long_project = "ohdearquant/lionagi-super-long-repo-name"
+    rows = [
+        {
+            "id": "abc123",
+            "type": "session",
+            "project": long_project,
+            "status": "running",
+            "phase": "agent",
+            "elapsed": "5m",
+            "agents": "1",
+        }
+    ]
+
+    monkeypatch.setattr(sys, "stdout", _FakeStdout(True))
+    tty_output = _format_table(rows)
+    assert long_project not in tty_output
+
+    monkeypatch.setattr(sys, "stdout", _FakeStdout(False))
+    piped_output = _format_table(rows)
+    assert long_project in piped_output
+
+
+def test_stdout_is_tty_reflects_current_stdout(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(sys, "stdout", _FakeStdout(True))
+    assert _stdout_is_tty() is True
+    monkeypatch.setattr(sys, "stdout", _FakeStdout(False))
+    assert _stdout_is_tty() is False
+
+
+def test_format_table_non_tty_caps_pathological_width(monkeypatch: pytest.MonkeyPatch) -> None:
+    """One pathologically long value must not blow up padding for every
+    row — layout width is capped at _NON_TTY_MAX_COL_WIDTH; the value
+    itself still prints in full (never clipped), just without alignment
+    padding past the cap."""
+    monkeypatch.setattr(sys, "stdout", _FakeStdout(False))
+    huge_project = "x" * 10_000
+    rows = [
+        {
+            "id": "abc123",
+            "type": "session",
+            "project": huge_project,
+            "status": "running",
+            "phase": "agent",
+            "elapsed": "5m",
+            "agents": "1",
+        },
+        {
+            "id": "def456",
+            "type": "session",
+            "project": "short-project",
+            "status": "running",
+            "phase": "agent",
+            "elapsed": "3m",
+            "agents": "1",
+        },
+    ]
+    output = _format_table(rows)
+    lines = output.splitlines()
+
+    # The full pathological value is still present — grep never misses it.
+    assert huge_project in output
+
+    # But layout (header separator, and every OTHER row's padding) must not
+    # scale with the 10k-char value: bounded by the column-width ceiling,
+    # not by the longest value seen.
+    separator = lines[1]
+    assert len(separator) < 10 * _NON_TTY_MAX_COL_WIDTH
+
+    short_line = next(line for line in lines if "short-project" in line)
+    assert len(short_line) < 10 * _NON_TTY_MAX_COL_WIDTH
 
 
 # ── Unit: row builders ────────────────────────────────────────────────────────
@@ -940,6 +1079,87 @@ async def test_run_detail_play(temp_db_path: Path) -> None:
 async def test_run_detail_not_found(temp_db_path: Path) -> None:
     output = await _run_detail("no-such-id-xyz-999")
     assert "not found" in output.lower() or "error" in output.lower()
+
+
+# ── Regression: detail view shows playbook name ───────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_run_detail_session_shows_playbook_name(temp_db_path: Path) -> None:
+    """`li monitor <id>` for a play/flow session must surface the active
+    playbook — a session row already carries playbook_name, but the detail
+    view used to omit it entirely."""
+    async with StateDB() as db:
+        sid = await _make_session(db, invocation_kind="play")
+        await db.execute(
+            "UPDATE sessions SET playbook_name = ? WHERE id = ?", ("feature-impl", sid)
+        )
+    output = await _run_detail(sid)
+    assert "feature-impl" in output
+
+
+@pytest.mark.asyncio
+async def test_run_detail_session_no_playbook_name_omits_line(temp_db_path: Path) -> None:
+    """A plain `li agent` session has no playbook — no dangling 'playbook: -' line."""
+    async with StateDB() as db:
+        sid = await _make_session(db, invocation_kind="agent")
+    output = await _run_detail(sid)
+    assert "playbook:" not in output
+
+
+# ── Regression: branch (agent leg) sub-step visibility ────────────────────────
+
+
+async def _add_branch(db: StateDB, session_id: str, *, name: str, status: str = "running") -> str:
+    pid = uuid.uuid4().hex
+    await db.execute("INSERT INTO progressions(id, created_at) VALUES (?, ?)", (pid, time.time()))
+    bid = uuid.uuid4().hex
+    await db.execute(
+        "INSERT INTO branches(id, created_at, session_id, progression_id, name, status, started_at) "
+        "VALUES (?,?,?,?,?,?,?)",
+        (bid, time.time(), session_id, pid, name, status, time.time()),
+    )
+    return bid
+
+
+def test_render_branch_lines_empty() -> None:
+    assert _render_branch_lines([]) == []
+
+
+def test_render_branch_lines_shows_name_and_status() -> None:
+    rows = [{"name": "reviewer", "status": "running", "started_at": time.time(), "ended_at": None}]
+    lines = _render_branch_lines(rows)
+    joined = "\n".join(lines)
+    assert "reviewer" in joined
+    assert "running" in joined
+
+
+@pytest.mark.asyncio
+async def test_run_detail_session_surfaces_branch_legs(temp_db_path: Path) -> None:
+    """A play/flow's internal sub-steps (e.g. a "reviewer" leg, a
+    "claude-code" leg) are recorded as branches with their own name/status —
+    `li monitor <session_id>` must list them so a caller can see a leg
+    transition without hand-polling sqlite."""
+    async with StateDB() as db:
+        sid = await _make_session(db, invocation_kind="play")
+        await _add_branch(db, sid, name="reviewer", status="completed")
+        await _add_branch(db, sid, name="claude-code", status="running")
+    output = await _run_detail(sid)
+    assert "reviewer" in output
+    assert "claude-code" in output
+
+
+@pytest.mark.asyncio
+async def test_run_detail_play_surfaces_branch_legs(temp_db_path: Path) -> None:
+    """Same sub-step visibility via the play id (not just the raw session id) —
+    `li monitor <play_id>` drills through the linked session to its branches."""
+    async with StateDB() as db:
+        show_id = await _make_show(db)
+        sid = await _make_session(db, invocation_kind="play")
+        play_id = await _make_play(db, show_id, name="backend-impl", session_id=sid)
+        await _add_branch(db, sid, name="reviewer", status="running")
+    output = await _run_detail(play_id)
+    assert "reviewer" in output
 
 
 @pytest.mark.asyncio

@@ -10,7 +10,8 @@
     "lint:fix": "eslint . --fix",
     "format": "prettier --write .",
     "format:check": "prettier --check .",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "e2e": "npm run build && playwright test"
   },
   "dependencies": {
     "@tanstack/react-router": "^1.170.15",
@@ -25,6 +26,7 @@
   },
   "devDependencies": {
     "@eslint/eslintrc": "^3.3.5",
+    "@playwright/test": "^1.61.1",
     "@eslint/js": "^10.0.1",
     "@tanstack/router-plugin": "^1.168.18",
     "@types/node": "^20.12.0",

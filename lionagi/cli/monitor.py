@@ -332,16 +332,41 @@ def _trunc(s: str, n: int) -> str:
     return s[: n - 1] + "…"
 
 
+def _stdout_is_tty() -> bool:
+    """Evaluated at call time (not cached at import time) so a render
+    still reflects the actual stdout of the process at that moment —
+    e.g. stdout redirected after import, or a module imported once and
+    reused across both TTY and piped invocations."""
+    return sys.stdout.isatty()
+
+
+# Ceiling on a non-TTY column's *layout* width (header/separator/padding).
+# A single pathological long value (e.g. a malformed project string) must
+# never blow up every row's padding to that value's length — the
+# requirement is "grep never false-negatives on identifying columns", not
+# "pad every row to the longest value seen". Values longer than this still
+# render in full (Python format specs never clip a value shorter than its
+# field width), just without alignment padding past the ceiling.
+_NON_TTY_MAX_COL_WIDTH = 200
+
+
 def _format_table(rows: list[dict[str, Any]]) -> str:
-    """Render a fixed-width table of entity rows.
+    """Render a table of entity rows.
 
     Expected keys per row: id, type, project, status, phase, elapsed, agents.
+
+    On a TTY, identifying columns (id, project, phase) are truncated to
+    fixed widths for a compact dashboard. Piped/redirected output (not a
+    TTY — e.g. `li monitor | grep`) never truncates: columns widen to fit
+    the longest value (up to _NON_TTY_MAX_COL_WIDTH) so a grep against a
+    project name or id can never false-negative on a value cut short by a
+    fixed column width.
     """
     if not rows:
         return _dim("(no running entities)")
 
     # Column widths — uppercase name is intentional (table layout constant)
-    col = {  # noqa: N806
+    col_min = {  # noqa: N806
         "id": 16,
         "type": 11,
         "project": 14,
@@ -350,33 +375,75 @@ def _format_table(rows: list[dict[str, Any]]) -> str:
         "elapsed": 9,
         "agents": 7,
     }
+    headers = {  # noqa: N806
+        "id": "ID",
+        "type": "TYPE",
+        "project": "PROJECT",
+        "status": "STATUS",
+        "phase": "PHASE",
+        "elapsed": "ELAPSED",
+        "agents": "AGENTS",
+    }
+
+    raw_rows = [
+        {
+            "id": str(row.get("id", "")),
+            "type": str(row.get("type", "")),
+            "project": str(row.get("project", "-")),
+            "status": row.get("status", "") or "",
+            "phase": str(row.get("phase", "-")),
+            "elapsed": str(row.get("elapsed", "-")),
+            "agents": str(row.get("agents", "-")),
+        }
+        for row in rows
+    ]
+
+    if _stdout_is_tty():
+        col = dict(col_min)  # noqa: N806
+
+        def _field(key: str, value: str) -> str:
+            return _trunc(value, col[key])
+    else:
+        col = {  # noqa: N806
+            key: min(
+                max(width, len(headers[key]), max((len(r[key]) for r in raw_rows), default=0)),
+                _NON_TTY_MAX_COL_WIDTH,
+            )
+            for key, width in col_min.items()
+        }
+
+        def _field(key: str, value: str) -> str:
+            # Never clip the value itself — only the layout width above is
+            # capped. A format spec width smaller than len(value) is a no-op
+            # (Python never truncates), so a pathological value still prints
+            # in full, just without alignment padding past the ceiling.
+            return value
 
     header_parts = [
-        _bold(f"{'ID':<{col['id']}}"),
-        _bold(f"{'TYPE':<{col['type']}}"),
-        _bold(f"{'PROJECT':<{col['project']}}"),
-        _bold(f"{'STATUS':<{col['status']}}"),
-        _bold(f"{'PHASE':<{col['phase']}}"),
-        _bold(f"{'ELAPSED':>{col['elapsed']}}"),
-        _bold(f"{'AGENTS':>{col['agents']}}"),
+        _bold(f"{headers['id']:<{col['id']}}"),
+        _bold(f"{headers['type']:<{col['type']}}"),
+        _bold(f"{headers['project']:<{col['project']}}"),
+        _bold(f"{headers['status']:<{col['status']}}"),
+        _bold(f"{headers['phase']:<{col['phase']}}"),
+        _bold(f"{headers['elapsed']:>{col['elapsed']}}"),
+        _bold(f"{headers['agents']:>{col['agents']}}"),
     ]
     header = "  ".join(header_parts)
     separator = _dim("-" * (sum(col.values()) + 2 * (len(col) - 1)))
 
     lines = [header, separator]
-    for row in rows:
-        eid = _trunc(str(row.get("id", "")), col["id"])
-        etype = _trunc(str(row.get("type", "")), col["type"])
-        eproject = _trunc(str(row.get("project", "-")), col["project"])
-        estatus = row.get("status", "")
-        ephase = _trunc(str(row.get("phase", "-")), col["phase"])
-        eelapsed = _trunc(str(row.get("elapsed", "-")), col["elapsed"])
-        eagents = str(row.get("agents", "-"))
+    for raw in raw_rows:
+        eid = _field("id", raw["id"])
+        etype = _field("type", raw["type"])
+        eproject = _field("project", raw["project"])
+        estatus = raw["status"]
+        ephase = _field("phase", raw["phase"])
+        eelapsed = _field("elapsed", raw["elapsed"])
+        eagents = raw["agents"]
 
         coloured_status = _colour_status(estatus)
         # Pad status accounting for invisible ANSI codes
-        visible_status = estatus
-        pad = col["status"] - len(visible_status)
+        pad = col["status"] - len(estatus)
         padded_status = coloured_status + " " * max(0, pad)
 
         line = "  ".join(
@@ -453,11 +520,41 @@ def _play_to_row(play: dict[str, Any]) -> dict[str, Any]:
 # ── Detail views ──────────────────────────────────────────────────────────────
 
 
+async def _fetch_branches(db: Any, session_id: str) -> list[dict[str, Any]]:
+    """Every branch (agent leg) on a session, oldest-started first."""
+    return await db.fetch_all(
+        "SELECT name, status, started_at, ended_at FROM branches "
+        "WHERE session_id = ? ORDER BY started_at",
+        (session_id,),
+    )
+
+
+def _render_branch_lines(rows: list[dict[str, Any]], *, indent: str = "  ") -> list[str]:
+    """One line per branch (agent leg) — orchestration engines like `li o
+    flow` (which `li play` compiles to) name each branch after its role
+    (e.g. "reviewer", "claude-code") and update its status/timestamps as
+    the leg runs (see flow.py's _update_branch_status). Surfacing that
+    here makes sub-step transitions poll-visible via `li monitor <id>`
+    without any new tracking mechanism.
+    """
+    if not rows:
+        return []
+    lines = [_dim(f"{indent}-- branches --")]
+    for r in rows:
+        bname = r.get("name") or "-"
+        bstatus = _colour_status(r.get("status") or "?")
+        belapsed = _elapsed(r.get("started_at"), r.get("ended_at"))
+        lines.append(f"{indent}  {bname:<20}  {bstatus}  {belapsed}")
+    return lines
+
+
 async def _detail_session(db: Any, sess: dict[str, Any]) -> str:
     lines: list[str] = []
     lines.append(_bold(f"SESSION  {sess['id']}"))
     lines.append(f"  status:    {_colour_status(sess.get('status') or '?')}")
     lines.append(f"  kind:      {sess.get('invocation_kind') or '-'}")
+    if sess.get("playbook_name"):
+        lines.append(f"  playbook:  {sess['playbook_name']}")
     lines.append(f"  project:   {sess.get('project') or '-'}")
     lines.append(f"  model:     {sess.get('model') or '-'}")
     lines.append(f"  provider:  {sess.get('provider') or '-'}")
@@ -494,11 +591,12 @@ async def _detail_session(db: Any, sess: dict[str, Any]) -> str:
                 else:
                     lines.append(f"    {ev}")
 
-    # Branch count
-    row = await db.fetch_one(
-        "SELECT COUNT(*) AS n FROM branches WHERE session_id = ?", (sess["id"],)
-    )
-    lines.append(f"  branches:  {row['n'] if row else 0}")
+    # Branches (agent legs) — count plus per-leg status/elapsed
+    branch_rows = await _fetch_branches(db, sess["id"])
+    lines.append(f"  branches:  {len(branch_rows)}")
+    if branch_rows:
+        lines.append("")
+        lines.extend(_render_branch_lines(branch_rows))
 
     # Stream tail from run dir
     run_dir = RUNS_ROOT / sess["id"]
@@ -620,6 +718,12 @@ async def _detail_play(db: Any, play: dict[str, Any]) -> str:
             lines.append(f"    model:    {srow['model'] or '-'}")
             lines.append(f"    provider: {srow['provider'] or '-'}")
             lines.append(f"    effort:   {srow['effort'] or '-'}")
+
+            # Branches (agent legs) — poll-visible sub-step progress
+            branch_rows = await _fetch_branches(db, session_id)
+            if branch_rows:
+                lines.append("")
+                lines.extend(_render_branch_lines(branch_rows, indent="    "))
 
             # Stream tail
             run_dir = RUNS_ROOT / session_id
