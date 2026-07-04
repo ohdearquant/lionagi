@@ -275,6 +275,126 @@ async def test_resumed_leg_timeout_does_not_refire(monkeypatch, tmp_path, caplog
     assert status == "timed_out"
 
 
+def _wire_agent_stubs_real_chat_model(
+    monkeypatch,
+    tmp_path: Path,
+    *,
+    operate_side_effect,
+    profile: AgentProfile | None = None,
+    session_ids: list[str] | None = None,
+):
+    """Like _wire_agent_stubs, but build_chat_model returns a *real* iModel
+    (not a placeholder string) so branch.chat_model.endpoint.config reflects
+    the model actually resolved for each leg. Needed to pin the model an
+    auto-resumed leg actually runs with, not just what operate() was told."""
+    import lionagi.cli.agent as agent_mod
+    from lionagi import Branch, iModel
+    from lionagi.service.manager import iModelManager
+
+    call_count = {"n": 0}
+    captured_models: list[str | None] = []
+
+    async def fake_operate(self, instruction=None, **kw):
+        idx = call_count["n"]
+        call_count["n"] += 1
+        captured_models.append(self.chat_model.endpoint.config.kwargs.get("model"))
+        snapshot_dir = kw.get("snapshot_dir")
+        if snapshot_dir is not None:
+            Path(snapshot_dir).mkdir(parents=True, exist_ok=True)
+            (Path(snapshot_dir) / f"{self.id}.json").write_text(json.dumps(self.to_dict()))
+        return operate_side_effect(idx)
+
+    monkeypatch.setattr(Branch, "operate", fake_operate)
+    monkeypatch.setattr(iModelManager, "shutdown", AsyncMock())
+    monkeypatch.setattr(agent_mod, "resolve_persisted_effort", lambda *a, **kw: None)
+    monkeypatch.setattr(
+        agent_mod,
+        "build_chat_model",
+        lambda provider, model, *a, **kw: iModel(provider=provider, model=model, api_key="dummy"),
+    )
+
+    _sids = session_ids or ["sess-0", "sess-1"]
+
+    async def fake_setup(*a, **kw):
+        n = min(call_count["n"], len(_sids) - 1)
+        return {"session_id": _sids[n]}
+
+    async def fake_teardown(ctx, *, status="completed", exception=None):
+        return status
+
+    monkeypatch.setattr(agent_mod, "setup_agent_persist", fake_setup)
+    monkeypatch.setattr(agent_mod, "teardown_agent_persist", fake_teardown)
+    monkeypatch.setattr(agent_mod, "save_last_branch_pointer", lambda *a, **kw: None)
+    monkeypatch.setattr(
+        agent_mod,
+        "_provenance",
+        SimpleNamespace(
+            resolve_model_spec=lambda p, m: f"{p}/{m}",
+            agent_definition_hash=lambda n: "abc",
+        ),
+    )
+    monkeypatch.setattr(agent_mod, "resolve_artifact_contract", lambda **_: None)
+    monkeypatch.setattr(
+        agent_mod,
+        "allocate_run",
+        lambda: SimpleNamespace(
+            run_id="r",
+            artifact_root=tmp_path / "artifacts",
+            stream_dir=tmp_path / "stream",
+            branches_dir=tmp_path / "branches",
+        ),
+    )
+
+    # The auto-resume path snapshots the branch itself (real Branch.to_dict())
+    # into snapshot_dir; find_branch must resolve to that real snapshot so
+    # Branch.from_dict on resume carries the actual chat_model config forward,
+    # not a fixture stand-in.
+    def fake_find_branch(bid):
+        snapshot_path = tmp_path / "branches" / f"{bid}.json"
+        return "run-x", snapshot_path
+
+    monkeypatch.setattr(agent_mod, "find_branch", fake_find_branch)
+
+    if profile is not None:
+        monkeypatch.setattr(agent_mod, "load_agent_profile", lambda name: profile)
+
+    return call_count, captured_models
+
+
+@pytest.mark.asyncio
+async def test_auto_resume_preserves_explicit_model_over_profile_default(monkeypatch, tmp_path):
+    """Explicit --model + a profile with a *different* default model: the
+    resumed leg must keep the explicit model, not silently fall back to the
+    profile's model (the auto-resume call must not pass model_str=None while
+    still forwarding agent_name)."""
+    profile = AgentProfile(name="profile-with-different-model", model="claude_code/haiku")
+
+    def side_effect(i):
+        if i == 0:
+            raise TimeoutError("first leg timed out")
+        return "concluded"
+
+    call_count, captured_models = _wire_agent_stubs_real_chat_model(
+        monkeypatch, tmp_path, operate_side_effect=side_effect, profile=profile
+    )
+
+    from lionagi.cli.agent import _run_agent
+
+    _result, _provider, _bid, status, _sid = await _run_agent(
+        "claude_code/opus",
+        "hello",
+        agent_name="profile-with-different-model",
+        timeout=30,
+        resume_on_timeout=True,
+    )
+
+    assert call_count["n"] == 2
+    assert status == "completed"
+    assert captured_models == ["opus", "opus"], (
+        f"resumed leg must keep the explicit CLI model, got {captured_models!r}"
+    )
+
+
 @pytest.mark.asyncio
 async def test_profile_resume_on_timeout_opts_in(monkeypatch, tmp_path):
     """profile 'resume_on_timeout: once' opts in without any CLI flag."""

@@ -505,8 +505,15 @@ async def _run_agent(
             f"[auto-resume] session {session_id or branch_id} timed out after "
             f"{timeout}s — resuming once with 'continue and conclude the task'"
         )
+        # Carry the model that actually ran this leg (explicit --model, profile
+        # default, or whatever a prior resume already grafted) forward as an
+        # explicit override. Passing model_str=None here would let the
+        # agent_name profile's model re-apply on the resumed leg (see the
+        # profile-precedence block above), silently switching models mid-run.
+        _effective_cfg = branch.chat_model.endpoint.config
+        _effective_model_str = f"{_effective_cfg.provider}/{_effective_cfg.kwargs.get('model')}"
         return await _run_agent(
-            None,
+            _effective_model_str,
             "continue and conclude the task",
             yolo=yolo,
             verbose=verbose,
