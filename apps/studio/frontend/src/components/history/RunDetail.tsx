@@ -465,7 +465,7 @@ function FilesSection({ files }: { files: string[] }) {
           {t("noFiles")}
         </div>
       ) : (
-        <div className="rounded border border-edge bg-surface-raised px-3 py-2">
+        <div className="max-h-56 overflow-y-auto rounded border border-edge bg-surface-raised px-3 py-2">
           <ul className="flex flex-col gap-0.5">
             {files.map((f) => (
               <li key={f} className="font-mono text-[length:var(--t-xs)] text-content-secondary">
@@ -651,6 +651,7 @@ export default function RunDetail({ id, fullPage = false }: RunDetailProps) {
   const [loadingOlder, setLoadingOlder] = useState(false);
   const olderOffsetRef = useRef(SESSION_MESSAGE_PAGE);
   const suppressAutoScrollRef = useRef(false);
+  const initialScrollDoneRef = useRef(false);
 
   useEffect(() => {
     if (!id) return;
@@ -663,6 +664,7 @@ export default function RunDetail({ id, fullPage = false }: RunDetailProps) {
     setSignalEvents([]);
     setLoadingOlder(false);
     olderOffsetRef.current = SESSION_MESSAGE_PAGE;
+    initialScrollDoneRef.current = false;
     getSession(id)
       .then((s) => {
         setSession(s);
@@ -765,10 +767,13 @@ export default function RunDetail({ id, fullPage = false }: RunDetailProps) {
       suppressAutoScrollRef.current = false;
       return;
     }
-    if (fullPage) {
+    // Scroll to the newest message once when a session first loads; polling
+    // refreshes must not yank the operator's scroll position.
+    if (fullPage && session && !initialScrollDoneRef.current) {
+      initialScrollDoneRef.current = true;
       bottomRef.current?.scrollIntoView({ behavior: "smooth" });
     }
-  }, [session?.branches, fullPage]);
+  }, [session, fullPage]);
 
   const handleToggleExpand = (stepId: string, next: boolean) => {
     setExpandedSteps((prev) => {
