@@ -1269,9 +1269,15 @@ class _StatefulSvc:
     real interaction between "check the count" and "record a new run".
     """
 
-    def __init__(self, existing_runs: dict[str, dict] | None = None):
+    def __init__(
+        self,
+        existing_runs: dict[str, dict] | None = None,
+        fail_create_invocation_times: int = 0,
+    ):
         self.runs: dict[str, dict] = dict(existing_runs or {})
         self.schedule_updates: list[tuple[str, dict]] = []
+        self._fail_create_invocation_times = fail_create_invocation_times
+        self.create_invocation_calls = 0
 
     async def get_schedule(self, schedule_id):
         return None
@@ -1298,7 +1304,9 @@ class _StatefulSvc:
         self.runs[run_id].update(fields)
 
     async def create_invocation(self, invocation):
-        pass
+        self.create_invocation_calls += 1
+        if self.create_invocation_calls <= self._fail_create_invocation_times:
+            raise RuntimeError("transient invocation insert failure")
 
     async def update_invocation(self, inv_id, **fields):
         pass
@@ -1425,3 +1433,50 @@ async def test_fire_now_refuses_manual_trigger_when_max_runs_exhausted():
         await engine.fire_now("sched-once")
 
     assert len(engine._fire_tasks) == 0
+
+
+@pytest.mark.asyncio
+async def test_max_runs_claim_released_on_pre_run_failure_allows_retry():
+    """A max_runs claim must not leak when the fire fails before a terminal
+    schedule_run is ever recorded (e.g. create_invocation() raising).
+
+    Reproduces the round-2 finding: reserve the budget, let create_invocation
+    blow up once, confirm the claim is released (not stuck inflight with zero
+    terminal runs), then confirm a retry fire succeeds and the schedule
+    completes exactly max_runs times total — not zero (stuck) and not more
+    than max_runs (double-fired)."""
+    from lionagi.studio.scheduler.engine import SchedulerEngine
+
+    svc = _StatefulSvc(fail_create_invocation_times=1)
+    svc.get_schedule = AsyncMock(return_value=_minimal_schedule(id="sched-once", max_runs=1))
+    engine = SchedulerEngine(svc)
+
+    with (
+        patch(
+            "lionagi.studio.scheduler.subprocess.build_argv",
+            return_value=(["true"], None),
+        ),
+        patch(
+            "lionagi.studio.scheduler.subprocess.spawn_and_wait",
+            new=AsyncMock(return_value=(0, "")),
+        ),
+    ):
+        first = await engine.fire_now("sched-once")
+        await asyncio.gather(*list(engine._fire_tasks), return_exceptions=True)
+
+        # The first fire's create_invocation() raised before any terminal
+        # schedule_run was recorded — the claim must have been released, not
+        # left stuck inflight.
+        assert first is not None
+        assert await svc.count_schedule_runs("sched-once", chain_depth=0) == 0
+        assert engine._max_runs_inflight.get("sched-once", 0) == 0
+
+        # A retry must be allowed (the exhausted-budget ValueError must NOT
+        # fire here — that would mean the claim leaked) and must complete.
+        second = await engine.fire_now("sched-once")
+        await asyncio.gather(*list(engine._fire_tasks), return_exceptions=True)
+
+    assert second is not None
+    assert await svc.count_schedule_runs("sched-once", chain_depth=0) == 1
+    disable_calls = [c for c in svc.schedule_updates if c[1].get("enabled") == 0]
+    assert disable_calls  # exactly max_runs=1 total run reached; auto-disabled

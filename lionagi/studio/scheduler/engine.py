@@ -30,6 +30,33 @@ _MAX_CHAIN_DEPTH = 10
 _TICK_INTERVAL = 30  # seconds
 
 
+class _MaxRunsClaim:
+    """One-shot handle for an in-process max_runs reservation.
+
+    Returned by ``_reserve_max_runs_budget()`` when a top-level fire is
+    allowed to proceed. The holder (``_fire()``) must call ``release()``
+    exactly once, from a ``finally`` block that covers every exit path —
+    normal completion, a caught exception, an uncaught exception raised out
+    of bookkeeping code, or cancellation — so the claim never survives past
+    the fire it was reserved for. ``release()`` is itself idempotent (a
+    second call is a no-op) as a defense-in-depth measure, not because any
+    call site is expected to invoke it twice.
+    """
+
+    __slots__ = ("_engine", "_schedule_id", "_released")
+
+    def __init__(self, engine: SchedulerEngine, schedule_id: str) -> None:
+        self._engine = engine
+        self._schedule_id = schedule_id
+        self._released = False
+
+    def release(self) -> None:
+        if self._released:
+            return
+        self._released = True
+        self._engine._release_max_runs_claim(self._schedule_id)
+
+
 def _resolve_scheduler_tzinfo(tz_name: str) -> ZoneInfo:
     """Resolve the configured scheduler timezone name to a ZoneInfo.
 
@@ -225,14 +252,18 @@ class SchedulerEngine:
         schedule = await self._svc.get_schedule(schedule_id)
         if not schedule:
             return None
-        if not await self._reserve_max_runs_budget(schedule):
+        allowed, claim = await self._reserve_max_runs_budget(schedule)
+        if not allowed:
             raise ValueError(
                 f"Schedule {schedule_id!r} has already reached its max_runs="
                 f"{schedule.get('max_runs')} limit; manual trigger refused."
             )
         run_id = uuid.uuid4().hex[:12]
         self._tracked_fire(
-            schedule, run_id, trigger_context={"manual": True, "fired_at": time.time()}
+            schedule,
+            run_id,
+            trigger_context={"manual": True, "fired_at": time.time()},
+            max_runs_claim=claim,
         )
         return run_id
 
@@ -400,7 +431,8 @@ class SchedulerEngine:
 
         new_events = await github_poll(schedule)
         if new_events:
-            if not await self._reserve_max_runs_budget(schedule):
+            allowed, claim = await self._reserve_max_runs_budget(schedule)
+            if not allowed:
                 _log.info(
                     "Schedule %s (%s) has exhausted max_runs; skipping github_poll fire",
                     schedule.get("name"),
@@ -413,35 +445,47 @@ class SchedulerEngine:
                 "fired_at": now,
             }
             run_id = uuid.uuid4().hex[:12]
-            await self._fire(schedule, run_id, trigger_context=ctx)
+            await self._fire(schedule, run_id, trigger_context=ctx, max_runs_claim=claim)
 
-    async def _reserve_max_runs_budget(self, schedule: dict) -> bool:
+    async def _reserve_max_runs_budget(self, schedule: dict) -> tuple[bool, _MaxRunsClaim | None]:
         """Atomically claim one top-level fire against schedule['max_runs'].
 
-        Returns True if the fire may proceed, False if the schedule has
-        already consumed its budget (persisted terminal runs plus runs
-        already claimed-but-not-yet-terminal in this process). Guarded by
-        an engine-wide lock so concurrent callers — the tick loop,
-        fire_now(), github polling — can't both read the same count and
-        both claim it before either claim is visible. This is the
-        single-process analogue of a DB-backed compare-and-set; only one
-        scheduler process runs today, so a DB-backed reservation is not
-        needed. Chain children (chain_depth>0) never call this — only
-        top-level fires consume budget. The claim is released in
-        _check_max_runs() once the fire it was reserved for reaches a
-        terminal status.
+        Returns ``(allowed, claim)``. ``allowed`` is False only when the
+        schedule is bounded (``max_runs`` set) and has already consumed its
+        budget — persisted terminal runs plus runs already
+        claimed-but-not-yet-terminal in this process; callers must refuse to
+        fire in that case. ``claim`` is a ``_MaxRunsClaim`` token when a
+        bounded schedule's budget was actually reserved, or ``None`` when
+        the schedule is unbounded (``max_runs`` unset — always allowed, no
+        claim to release). Guarded by an engine-wide lock so concurrent
+        callers — the tick loop, fire_now(), github polling — can't both
+        read the same count and both claim it before either claim is
+        visible. This is the single-process analogue of a DB-backed
+        compare-and-set; only one scheduler process runs today, so a
+        DB-backed reservation is not needed. Chain children (chain_depth>0)
+        never call this — only top-level fires consume budget.
+
+        Whenever ``allowed`` is True the caller MUST pass ``claim`` through
+        to ``_fire()`` as ``max_runs_claim=`` (even when it is ``None``) so
+        it gets released — exactly once, on every exit path including
+        pre-run failures — from ``_fire()``'s own ``finally`` block. Unlike
+        the round-1 shape, the claim is no longer released from inside
+        ``_check_max_runs()`` alone: a fire that fails before ever reaching
+        ``_check_max_runs()`` (e.g. ``create_invocation`` raising) would
+        otherwise leak the claim permanently for the life of the process,
+        since nothing else would ever release it.
         """
         max_runs = schedule.get("max_runs")
         if not max_runs:
-            return True
+            return True, None
         sid = schedule["id"]
         async with self._max_runs_lock:
             used = await self._svc.count_schedule_runs(sid, chain_depth=0)
             inflight = self._max_runs_inflight.get(sid, 0)
             if used + inflight >= max_runs:
-                return False
+                return False, None
             self._max_runs_inflight[sid] = inflight + 1
-            return True
+            return True, _MaxRunsClaim(self, sid)
 
     def _release_max_runs_claim(self, schedule_id: str) -> None:
         remaining = self._max_runs_inflight.get(schedule_id, 0) - 1
@@ -469,7 +513,8 @@ class SchedulerEngine:
                 await self._svc.update_schedule(schedule["id"], next_fire_at=next_at)
             return
 
-        if not await self._reserve_max_runs_budget(schedule):
+        allowed, claim = await self._reserve_max_runs_budget(schedule)
+        if not allowed:
             _log.info(
                 "Schedule %s (%s) has exhausted max_runs=%s; disabling instead of firing",
                 schedule.get("name"),
@@ -481,7 +526,7 @@ class SchedulerEngine:
 
         run_id = uuid.uuid4().hex[:12]
         ctx = {"scheduled": True, "fired_at": now, "next_fire_at": schedule.get("next_fire_at")}
-        self._tracked_fire(schedule, run_id, trigger_context=ctx)
+        self._tracked_fire(schedule, run_id, trigger_context=ctx, max_runs_claim=claim)
 
     async def _check_max_runs(self, schedule: dict, chain_depth: int) -> None:
         """Auto-disable a schedule once its fired top-level runs hit max_runs.
@@ -490,15 +535,16 @@ class SchedulerEngine:
         chain children are follow-on actions of a single top-level run, not
         additional scheduled runs, so they never count toward it. Reuses the
         existing enabled flag (the same mechanism enable/disable already use)
-        rather than introducing a new schedule state. Also releases this
-        fire's in-process max_runs claim (see _reserve_max_runs_budget) now
-        that it has reached a terminal status — a no-op if no claim was
-        reserved (max_runs unset).
+        rather than introducing a new schedule state.
+
+        This no longer releases the in-process max_runs claim — that is
+        _fire()'s responsibility now (via its own finally block, using the
+        max_runs_claim token), so the claim is released on every exit path,
+        not only the ones that reach this call.
         """
         if chain_depth != 0:
             return
         sid = schedule["id"]
-        self._release_max_runs_claim(sid)
         max_runs = schedule.get("max_runs")
         if not max_runs:
             return
@@ -514,6 +560,39 @@ class SchedulerEngine:
             await self._svc.update_schedule(sid, enabled=0)
 
     async def _fire(
+        self,
+        schedule: dict,
+        run_id: str,
+        *,
+        trigger_context: dict,
+        chain_parent_id: str | None = None,
+        chain_depth: int = 0,
+        max_runs_claim: _MaxRunsClaim | None = None,
+    ) -> None:
+        """Thin wrapper around _fire_inner() that guarantees max_runs_claim
+        is released exactly once on every exit path.
+
+        Only top-level callers (_maybe_fire, fire_now, _tick_github) that
+        got an allowed reservation from _reserve_max_runs_budget() pass a
+        non-None max_runs_claim; chain children never do. The release lives
+        here — not inside _check_max_runs() — precisely so it still fires
+        even when _fire_inner() blows up before ever reaching
+        _check_max_runs() (e.g. create_invocation() raising), which is the
+        leak this wrapper exists to close.
+        """
+        try:
+            await self._fire_inner(
+                schedule,
+                run_id,
+                trigger_context=trigger_context,
+                chain_parent_id=chain_parent_id,
+                chain_depth=chain_depth,
+            )
+        finally:
+            if max_runs_claim is not None:
+                max_runs_claim.release()
+
+    async def _fire_inner(
         self,
         schedule: dict,
         run_id: str,
