@@ -113,7 +113,7 @@ async def test_garbage_model_token_on_resume_is_rejected(monkeypatch, tmp_path, 
     from lionagi.cli.agent import _run_agent
 
     with caplog.at_level(logging.ERROR, logger="lionagi.cli.error"):
-        result, _provider, _bid, terminal_status = await _run_agent(
+        result, _provider, _bid, terminal_status, _sid = await _run_agent(
             "c95-32617270327a",
             "actual prompt",
             resume=branch_id,
@@ -193,7 +193,7 @@ async def test_legitimate_model_override_on_resume_proceeds_and_warns(
     from lionagi.cli.agent import _run_agent
 
     with caplog.at_level(logging.WARNING, logger="lionagi.cli.warn"):
-        result, provider, _bid, terminal_status = await _run_agent(
+        result, provider, _bid, terminal_status, _sid = await _run_agent(
             "claude_code/opus",
             "follow up",
             resume=branch_id,
@@ -224,7 +224,7 @@ async def test_matching_model_override_on_resume_does_not_warn(monkeypatch, tmp_
     with caplog.at_level(logging.WARNING, logger="lionagi.cli.warn"):
         # The fixture branch's default chat_model is openai/gpt-4.1-mini
         # (see _make_branch_json → Branch()) — re-supply the same model.
-        _result, _provider, _bid, terminal_status = await _run_agent(
+        _result, _provider, _bid, terminal_status, _sid = await _run_agent(
             "openai/gpt-4.1-mini",
             "follow up",
             resume=branch_id,
@@ -261,7 +261,7 @@ async def test_prefix_matched_resume_id_emits_hint(monkeypatch, tmp_path, caplog
     from lionagi.cli.agent import _run_agent
 
     with caplog.at_level(logging.INFO, logger="lionagi.cli.hint"):
-        _result, _provider, _bid, terminal_status = await _run_agent(
+        _result, _provider, _bid, terminal_status, _sid = await _run_agent(
             "codex/gpt-5.3-codex-spark",
             "follow up",
             resume=given_token,
@@ -289,7 +289,7 @@ async def test_exact_resume_id_does_not_emit_prefix_hint(monkeypatch, tmp_path, 
     from lionagi.cli.agent import _run_agent
 
     with caplog.at_level(logging.INFO, logger="lionagi.cli.hint"):
-        _result, _provider, _bid, terminal_status = await _run_agent(
+        _result, _provider, _bid, terminal_status, _sid = await _run_agent(
             "codex/gpt-5.3-codex-spark",
             "follow up",
             resume=branch_id,

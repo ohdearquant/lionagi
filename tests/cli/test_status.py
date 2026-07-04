@@ -144,6 +144,23 @@ async def _make_play(
     return play_id
 
 
+async def _make_branch(db: StateDB, session_id: str, *, branch_id: str | None = None) -> str:
+    """Create a branch row tied to *session_id* — the resume token surfaced
+    as `branch_id` in the status view and printed in `li agent -r` hints."""
+    bid = branch_id or str(uuid.uuid4())
+    pid = uuid.uuid4().hex
+    await db.create_progression(pid)
+    await db.create_branch(
+        {
+            "id": bid,
+            "session_id": session_id,
+            "progression_id": pid,
+            "model": "claude-3-5-sonnet",
+        }
+    )
+    return bid
+
+
 async def _set_fields(db: StateDB, table: str, id_: str, **fields) -> None:
     """Raw column UPDATE for fields create_session()/create_play() don't
     expose directly (current_phase, num_turns) — mirrors the pattern
@@ -330,6 +347,53 @@ async def test_resolve_any_target_no_kind_scoping(temp_db_path: Path):
 async def test_resolve_unknown_id_returns_none(temp_db_path: Path):
     async with StateDB() as db:
         result = await _resolve_agent_target(db, "0" * 40, None)
+    assert result is None
+
+
+@pytest.mark.asyncio
+async def test_resolve_agent_target_falls_back_to_branch_id(temp_db_path: Path):
+    """The id `li agent`'s post-run hint prints (`-r <branch_id>`) is a
+    branches.id, not a sessions.id — `li agent status <branch_id>` must
+    still resolve, to the branch's owning session."""
+    async with StateDB() as db:
+        sid = await _make_session(db)
+        branch_id = await _make_branch(db, sid)
+        result = await _resolve_agent_target(db, branch_id, None)
+    assert result is not None
+    entity_type, row = result
+    assert entity_type == "session"
+    assert row["id"] == sid
+
+
+@pytest.mark.asyncio
+async def test_resolve_agent_target_branch_id_prefix_match(temp_db_path: Path):
+    async with StateDB() as db:
+        sid = await _make_session(db)
+        branch_id = await _make_branch(db, sid)
+        result = await _resolve_agent_target(db, branch_id[:8], None)
+    assert result is not None
+    assert result[1]["id"] == sid
+
+
+@pytest.mark.asyncio
+async def test_resolve_any_target_falls_back_to_branch_id(temp_db_path: Path):
+    async with StateDB() as db:
+        sid = await _make_session(db)
+        branch_id = await _make_branch(db, sid)
+        result = await _resolve_any_target(db, branch_id)
+    assert result is not None
+    assert result[0] == "session"
+    assert result[1]["id"] == sid
+
+
+@pytest.mark.asyncio
+async def test_resolve_agent_target_unknown_branch_shaped_id_returns_none(temp_db_path: Path):
+    """A well-formed-but-unknown id must still miss cleanly through the new
+    branch_id fallback, not raise or false-positive match."""
+    async with StateDB() as db:
+        sid = await _make_session(db)
+        await _make_branch(db, sid)
+        result = await _resolve_agent_target(db, str(uuid.uuid4()), None)
     assert result is None
 
 
@@ -536,6 +600,22 @@ async def test_branch_id_surfaced_as_resume_handle(temp_db_path: Path):
     human, _ = await _run_status(command="agent", entity_id=sid, as_json=False)
     assert branch_id in human
     assert f"-r {branch_id}" in human
+
+
+@pytest.mark.asyncio
+async def test_cli_agent_status_resolves_printed_resume_id(temp_db_path: Path):
+    """End-to-end: `li agent status <branch_id>` with the exact id shape the
+    post-run hint prints (a dashed, 36-char branch uuid) must resolve to the
+    owning session, not report 'no id found'."""
+    async with StateDB() as db:
+        sid = await _make_session(db, status="completed")
+        branch_id = await _make_branch(db, sid)
+    output, exit_code = await _run_status(command="agent", entity_id=branch_id, as_json=True)
+    view = json.loads(output)
+    assert exit_code == 0
+    assert view["entity_type"] == "session"
+    assert view["id"] == sid
+    assert view["branch_id"] == branch_id
 
 
 # ── Integration: degraded marker wired through _build_view ─────────────────

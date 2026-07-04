@@ -921,7 +921,7 @@ class TestMainVerboseScanSentinelAware:
         async def _fake_run_agent(model_str, prompt, *, verbose=False, **kwargs):
             captured["prompt"] = prompt
             captured["verbose"] = verbose
-            return "out", "provider", "branch", "completed"
+            return "out", "provider", "branch", "completed", "sess-001"
 
         sched = {
             "id": "t",

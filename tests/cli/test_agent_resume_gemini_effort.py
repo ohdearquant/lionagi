@@ -83,7 +83,7 @@ async def test_resume_explicit_effort_reapplies_onto_persisted_agy_model(
 
     from lionagi.cli.agent import _run_agent
 
-    _result, _provider, _bid, terminal_status = await _run_agent(
+    _result, _provider, _bid, terminal_status, _sid = await _run_agent(
         None,
         "continue",
         resume=branch_id,
@@ -112,7 +112,7 @@ async def test_resume_without_effort_keeps_persisted_agy_model(monkeypatch, tmp_
 
     from lionagi.cli.agent import _run_agent
 
-    _result, _provider, _bid, terminal_status = await _run_agent(
+    _result, _provider, _bid, terminal_status, _sid = await _run_agent(
         None,
         "continue",
         resume=branch_id,
@@ -140,7 +140,7 @@ async def test_resume_new_model_pin_still_wins_over_effort(monkeypatch, tmp_path
 
     from lionagi.cli.agent import _run_agent
 
-    _result, _provider, _bid, terminal_status = await _run_agent(
+    _result, _provider, _bid, terminal_status, _sid = await _run_agent(
         "gemini-code/Gemini 3.1 Pro (Low)",
         "continue",
         resume=branch_id,
@@ -202,7 +202,7 @@ async def test_fresh_run_unaffected_by_reapply_effort(monkeypatch, tmp_path):
 
     from lionagi.cli.agent import _run_agent
 
-    _result, provider, _bid, terminal_status = await _run_agent(
+    _result, provider, _bid, terminal_status, _sid = await _run_agent(
         "gemini-code/gemini-3.5-flash",
         "hello",
         effort="high",
@@ -229,7 +229,7 @@ async def test_resume_mixed_case_effort_reapplies_correct_agy_tier(monkeypatch, 
 
     from lionagi.cli.agent import _run_agent
 
-    _result, _provider, _bid, terminal_status = await _run_agent(
+    _result, _provider, _bid, terminal_status, _sid = await _run_agent(
         None,
         "continue",
         resume=branch_id,
@@ -273,7 +273,7 @@ async def test_resume_mixed_case_profile_effort_reapplies_correct_agy_tier(monke
 
     from lionagi.cli.agent import _run_agent
 
-    _result, _provider, _bid, terminal_status = await _run_agent(
+    _result, _provider, _bid, terminal_status, _sid = await _run_agent(
         None,
         "continue",
         resume=branch_id,

@@ -39,7 +39,7 @@ async def _fake_run_agent(
     fast: bool = False,
     verbose: bool = False,
     **kwargs: Any,
-) -> tuple[str, str, str, str]:
+) -> tuple[str, str, str, str, str | None]:
     _CAPTURED["agent"] = {
         "model_str": model_str,
         "prompt": prompt,
@@ -48,7 +48,7 @@ async def _fake_run_agent(
         "fast": fast,
         "verbose": verbose,
     }
-    return "output", "provider", "branch-id", "completed"
+    return "output", "provider", "branch-id", "completed", "sess-001"
 
 
 async def _fake_run_flow(

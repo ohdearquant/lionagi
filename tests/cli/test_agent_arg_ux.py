@@ -23,9 +23,9 @@ async def _fake_run_agent(
     model_str: str | None,
     prompt: str,
     **kwargs: Any,
-) -> tuple[str, str, str, str]:
+) -> tuple[str, str, str, str, str | None]:
     _CAPTURED["agent"] = {"model_str": model_str, "prompt": prompt, **kwargs}
-    return "output", "provider", "branch-id", "completed"
+    return "output", "provider", "branch-id", "completed", "sess-001"
 
 
 def _run(argv: list[str]) -> int:
