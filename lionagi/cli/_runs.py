@@ -454,6 +454,20 @@ async def teardown_persist(
         _log.warning("live persist teardown failed: %s", exc, exc_info=True)
         return status
     finally:
+        # Release session ownership of every branch this ephemeral persist
+        # session wired, so a later setup (e.g. in-process resume) can wrap
+        # the same long-lived branch in a fresh session. This must run even
+        # when the bookkeeping above failed: a stranded owner marker would
+        # make the long-lived branch unresumable.
+        _session_obj = ctx.get("session")
+        if _session_obj is not None:
+            for _b in [ctx.get("branch"), *(b for b, _h in ctx.get("hooks", []))]:
+                if _b is None:
+                    continue
+                try:
+                    _session_obj.remove_branch(_b)
+                except Exception as _exc:  # noqa: BLE001
+                    _log.debug("branch ownership release failed: %s", _exc)
         try:
             await db.close()
         except Exception as exc:
@@ -557,12 +571,17 @@ async def setup_agent_persist(
     from lionagi.state import provenance as _provenance
 
     db = None
+    session = None
     try:
-        db = await _open_shared_db()
-
+        # Claim the branch BEFORE touching the shared DB registry: a branch
+        # still owned by a live persist session must be rejected here without
+        # side effects (registering a shared DB closes the previous handle,
+        # which would break the owning context's teardown).
         session = Session(name="agent", default_branch=branch)
         session_id = str(session.id)
         branch_id = str(branch.id)
+
+        db = await _open_shared_db()
 
         existing_branch = await db.get_branch(branch_id)
         if existing_branch:
@@ -710,6 +729,13 @@ async def setup_agent_persist(
             exc,
             exc_info=True,
         )
+        # If the wrapper session already claimed the branch, release it so a
+        # later setup (or retry) can wrap the same branch again.
+        if session is not None:
+            try:
+                session.remove_branch(branch)
+            except Exception as release_exc:  # noqa: BLE001
+                _log.debug("branch ownership release failed: %s", release_exc)
         if db is not None:
             try:
                 await db.close()

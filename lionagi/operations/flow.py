@@ -221,8 +221,10 @@ class DependencyAwareExecutor:
                         if isinstance(branch_id, str | UUID) or (
                             hasattr(branch_id, "__str__") and not hasattr(branch_id, "_mock_name")
                         ):
-                            self.session.branches.collections[branch_id] = branch_clone
-                            self.session.branches.progression.append(branch_id)
+                            # Full session wiring (owner marker, observer,
+                            # exchange), not a bare Pile insert that would
+                            # leave the clone claimable by another session.
+                            self.session.include_branches(branch_clone)
                 except Exception:
                     logger.debug("Skipping branch clone registration (likely mock in test).")
 
