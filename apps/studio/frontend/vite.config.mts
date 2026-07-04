@@ -5,7 +5,10 @@ import path from 'path'
 
 // The e2e harness points this at a seeded daemon on a dynamically-allocated
 // free port (see e2e/global-setup.ts); everyone else keeps the default 8765.
-const apiTarget = `http://localhost:${process.env.STUDIO_E2E_API_PORT ?? '8765'}`
+// 127.0.0.1, not localhost: the daemon binds IPv4 explicitly, and on hosts
+// where localhost resolves to ::1 first, proxying to it would fail even
+// though preview itself (bound to --host 127.0.0.1) is healthy.
+const apiTarget = `http://127.0.0.1:${process.env.STUDIO_E2E_API_PORT ?? '8765'}`
 
 export default defineConfig({
   plugins: [
