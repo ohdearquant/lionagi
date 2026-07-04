@@ -236,7 +236,9 @@
       "noFiles": "No file operations detected.",
       "sectionInvocation": "Invocation",
       "invocationSiblingRuns": "Sibling runs",
-      "invocationArtifacts": "Outcomes"
+      "invocationArtifacts": "Outcomes",
+      "loadOlder": "Load older messages",
+      "olderRemaining": "{count} older messages"
     },
     "masterAria": "History list",
     "detailAria": "Item detail"

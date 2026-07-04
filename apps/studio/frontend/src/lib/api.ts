@@ -452,6 +452,9 @@ export interface SessionBranch {
   name: string;
   created_at: number;
   messages: SessionMessage[];
+  /** Full progression length; messages is a tail window of it. */
+  message_total?: number;
+  message_offset?: number;
   model?: string | null;
   provider?: string | null;
   agent_name?: string | null;
@@ -481,8 +484,17 @@ export async function listSessions(): Promise<{ sessions: SessionSummary[] }> {
   return fetchJson<{ sessions: SessionSummary[] }>("/api/sessions/");
 }
 
-export async function getSession(id: string): Promise<SessionDetail> {
-  return fetchJson<SessionDetail>(`/api/sessions/${encodeURIComponent(id)}`);
+export const SESSION_MESSAGE_PAGE = 200;
+
+export async function getSession(
+  id: string,
+  params?: { messageLimit?: number; messageOffset?: number },
+): Promise<SessionDetail> {
+  const query = new URLSearchParams();
+  if (params?.messageLimit != null) query.set("message_limit", String(params.messageLimit));
+  if (params?.messageOffset != null) query.set("message_offset", String(params.messageOffset));
+  const qs = query.toString();
+  return fetchJson<SessionDetail>(`/api/sessions/${encodeURIComponent(id)}${qs ? `?${qs}` : ""}`);
 }
 
 export function streamSession(

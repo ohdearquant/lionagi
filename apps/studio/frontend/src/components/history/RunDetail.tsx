@@ -14,7 +14,7 @@ import Badge from "@/components/ui/Badge";
 import ExpectedArtifacts from "@/components/runs/ExpectedArtifacts";
 import RunStepCard from "@/components/RunStepCard";
 import { IconChevronDown, IconChevronRight } from "@/components/ui/icons";
-import { getSession, streamSession, streamSignals } from "@/lib/api";
+import { getSession, streamSession, streamSignals, SESSION_MESSAGE_PAGE } from "@/lib/api";
 import type { SessionDetail, SessionBranch, SessionMessage, SignalEvent } from "@/lib/api";
 import { buildOperationGraph, laneFor } from "@/lib/operationGraph";
 import type { OperationStatus } from "@/lib/operationGraph";
@@ -648,6 +648,9 @@ export default function RunDetail({ id, fullPage = false }: RunDetailProps) {
   const bottomRef = useRef<HTMLDivElement>(null);
   const [expandedSteps, setExpandedSteps] = useState<Set<string>>(new Set());
   const [signalEvents, setSignalEvents] = useState<SignalEvent[]>([]);
+  const [loadingOlder, setLoadingOlder] = useState(false);
+  const olderOffsetRef = useRef(SESSION_MESSAGE_PAGE);
+  const suppressAutoScrollRef = useRef(false);
 
   useEffect(() => {
     if (!id) return;
@@ -658,6 +661,8 @@ export default function RunDetail({ id, fullPage = false }: RunDetailProps) {
     setDone(false);
     setError(null);
     setSignalEvents([]);
+    setLoadingOlder(false);
+    olderOffsetRef.current = SESSION_MESSAGE_PAGE;
     getSession(id)
       .then((s) => {
         setSession(s);
@@ -756,6 +761,10 @@ export default function RunDetail({ id, fullPage = false }: RunDetailProps) {
   }, [id]);
 
   useEffect(() => {
+    if (suppressAutoScrollRef.current) {
+      suppressAutoScrollRef.current = false;
+      return;
+    }
     if (fullPage) {
       bottomRef.current?.scrollIntoView({ behavior: "smooth" });
     }
@@ -768,6 +777,46 @@ export default function RunDetail({ id, fullPage = false }: RunDetailProps) {
       else updated.delete(stepId);
       return updated;
     });
+  };
+
+  const hiddenOlderCount = useMemo(() => {
+    if (!session) return 0;
+    return session.branches.reduce((n, b) => {
+      const total = b.message_total ?? b.messages.length;
+      return n + Math.max(0, total - b.messages.length);
+    }, 0);
+  }, [session]);
+
+  const handleLoadOlder = () => {
+    if (!id || loadingOlder) return;
+    setLoadingOlder(true);
+    suppressAutoScrollRef.current = true;
+    const offset = olderOffsetRef.current;
+    getSession(id, { messageOffset: offset })
+      .then((older) => {
+        olderOffsetRef.current = offset + SESSION_MESSAGE_PAGE;
+        setSession((prev) => {
+          if (!prev) return prev;
+          const olderById = new Map(older.branches.map((b) => [b.id, b]));
+          return {
+            ...prev,
+            branches: prev.branches.map((b) => {
+              const page = olderById.get(b.id);
+              if (!page || page.messages.length === 0) return b;
+              const have = new Set(b.messages.map((m) => m.id));
+              const fresh = page.messages.filter((m) => !have.has(m.id));
+              if (fresh.length === 0) return b;
+              return {
+                ...b,
+                messages: [...fresh, ...b.messages],
+                message_total: page.message_total ?? b.message_total,
+              };
+            }),
+          };
+        });
+      })
+      .catch((e: unknown) => setError(String(e)))
+      .finally(() => setLoadingOlder(false));
   };
 
   const sessionStatus = done ? "completed" : live ? "running" : "completed";
@@ -892,7 +941,10 @@ export default function RunDetail({ id, fullPage = false }: RunDetailProps) {
     );
   }
 
-  const totalMessages = session.branches.reduce((n, b) => n + b.messages.length, 0);
+  const totalMessages = session.branches.reduce(
+    (n, b) => n + Math.max(b.message_total ?? 0, b.messages.length),
+    0,
+  );
   const endRef = session.ended_at ?? (done ? session.updated_at : null);
   const startRef = session.started_at ?? session.created_at;
   const durationSec =
@@ -969,6 +1021,18 @@ export default function RunDetail({ id, fullPage = false }: RunDetailProps) {
             </Suspense>
           </div>
         </div>
+      )}
+      {hiddenOlderCount > 0 && (
+        <button
+          type="button"
+          onClick={handleLoadOlder}
+          disabled={loadingOlder}
+          className="self-start rounded border border-edge bg-surface-raised px-3 py-1.5 font-mono text-[length:var(--t-xs)] text-content-secondary transition-colors hover:border-accent/50 hover:text-content-primary disabled:opacity-50"
+        >
+          {loadingOlder
+            ? "…"
+            : `${t("loadOlder")} · ${t("olderRemaining", { count: hiddenOlderCount })}`}
+        </button>
       )}
       <BranchesSection
         steps={steps}

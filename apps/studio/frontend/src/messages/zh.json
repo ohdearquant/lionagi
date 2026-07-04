@@ -236,7 +236,9 @@
       "noFiles": "未检测到文件操作。",
       "sectionInvocation": "调用",
       "invocationSiblingRuns": "同批运行",
-      "invocationArtifacts": "输出结果"
+      "invocationArtifacts": "输出结果",
+      "loadOlder": "加载更早的消息",
+      "olderRemaining": "还有 {count} 条更早的消息"
     },
     "masterAria": "历史列表",
     "detailAria": "条目详情"
