@@ -3,7 +3,7 @@ import { useEffect, useState } from "react";
 import PageHeader from "@/components/PageHeader";
 import Timestamp from "@/components/Timestamp";
 import { getTeam } from "@/lib/api";
-import type { TeamDetail } from "@/lib/api";
+import type { TeamDetail, TeamMessage } from "@/lib/api";
 import { errors } from "@/lib/copy";
 
 export const Route = createFileRoute("/teams/$id/")({
@@ -18,20 +18,20 @@ function JsonTree({ value }: { value: unknown }) {
   );
 }
 
-function TeamMessages({ messages }: { messages: unknown[] }) {
+function TeamMessages({ messages }: { messages: TeamMessage[] }) {
   return (
     <div className="flex flex-col gap-2">
-      {messages.map((msg, i) => {
-        const m = msg as Record<string, unknown>;
+      {messages.map((m) => {
+        const to = Array.isArray(m.to) ? m.to.join(", ") : m.to;
         return (
-          <div key={i} className="rounded border border-edge bg-surface-overlay p-3 text-body">
+          <div key={m.id} className="rounded border border-edge bg-surface-overlay p-3 text-body">
             <div className="mb-1 flex items-center gap-3 text-meta text-content-muted">
-              <span className="font-mono">{String(m.from ?? "?")}</span>
+              <span className="font-mono">{m.from}</span>
               <span>→</span>
-              <span className="font-mono">{String(m.to ?? "?")}</span>
-              {m.timestamp != null && <Timestamp value={m.timestamp as string | number | null} />}
+              <span className="font-mono">{to}</span>
+              {m.timestamp != null && <Timestamp value={m.timestamp} />}
             </div>
-            {m.content != null && <div className="text-content-secondary">{String(m.content)}</div>}
+            {m.content != null && <div className="text-content-secondary">{m.content}</div>}
           </div>
         );
       })}

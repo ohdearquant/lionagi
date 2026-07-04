@@ -5,10 +5,10 @@ export const Route = createFileRoute("/playbooks/new/")({
   component: NewWorkerPage,
 });
 
-// H-FE-983: POST /api/playbooks/{name} returns 501. This page previously
-// rendered a full canvas form whose Create button called that route. The
-// form is replaced with a hold-message until the backend is implemented.
-// Option A (implement the route) is tracked in the issue.
+// POST /api/playbooks/{name} returns 501. This page previously rendered a
+// full canvas form whose Create button called that route. The form is
+// replaced with a hold-message until the backend implements playbook
+// creation.
 
 function NewWorkerPage() {
   return (
