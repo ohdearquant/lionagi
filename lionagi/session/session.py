@@ -14,6 +14,7 @@ if TYPE_CHECKING:
 from pydantic import Field, JsonValue, PrivateAttr, field_serializer, model_validator
 from typing_extensions import Self
 
+from lionagi.protocols.memory import InMemoryStore, MemoryStore
 from lionagi.protocols.types import (
     ID,
     MESSAGE_FIELDS,
@@ -48,6 +49,27 @@ class Session(Node, Relational):
     _operation_manager: OperationManager = PrivateAttr(default_factory=OperationManager)
     _observer: Any = PrivateAttr(default=None)
     _hooks: Any = PrivateAttr(default=None)
+    _memory: MemoryStore | None = PrivateAttr(default=None)
+
+    def __init__(self, *, memory: MemoryStore | None = None, **kwargs: Any):
+        super().__init__(**kwargs)
+        # `_initialize_branches` (a model validator) already ran inside
+        # `super().__init__()` and, via `include_branches()`, may have read
+        # the `.memory` property and lazily created a store, wiring it into
+        # every branch taken in at construction time (including the default
+        # branch). When an explicit store is supplied here, swap it in and
+        # rewire any branch still holding that temporary store so the whole
+        # session — not just `self._memory` — ends up pointing at the
+        # explicit store. When no explicit store is supplied, leave
+        # `self._memory` as whatever `_initialize_branches` already set, so
+        # it stays the same instance every branch was wired to.
+        temp = self._memory
+        if memory is not None:
+            self._memory = memory
+            if temp is not None and temp is not memory:
+                for branch in self.branches:
+                    if branch._memory is temp:
+                        branch._memory = memory
 
     @field_serializer("user")
     def _serialize_user(self, value: SenderRecipient | None) -> JsonValue:
@@ -69,6 +91,12 @@ class Session(Node, Relational):
             branch._observer = self.observer
             if self._hooks is not None:
                 branch._hooks = self._hooks
+            if branch._memory is None:
+                # A branch keeps an explicitly supplied or previously
+                # adopted store; first claim wins. Reading the property
+                # lazily creates the session's own store on first use, then
+                # shares that one instance across every branch taken in.
+                branch._memory = self.memory
             if not self.exchange.has(branch.id):
                 self.exchange.register(branch.id)
             if self.default_branch is None:
@@ -121,6 +149,16 @@ class Session(Node, Relational):
 
             self._observer = SessionObserver(session=self)
         return self._observer
+
+    @property
+    def memory(self) -> MemoryStore:
+        """This session's memory store: an explicitly supplied backend, or a
+        lazily-created shared `InMemoryStore` on first access. Read-only —
+        the only way to give a `Session` its own store is the `memory=`
+        constructor parameter."""
+        if self._memory is None:
+            self._memory = InMemoryStore()
+        return self._memory
 
     def observe(
         self,
