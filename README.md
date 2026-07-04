@@ -50,7 +50,7 @@ class Assessment(BaseModel):
     reasons: list[str]
 
 async def main():
-    b = Branch(chat_model="openai/gpt-5.4", system="You are a careful reviewer.")
+    b = Branch(chat_model=" codex/gpt-5.5", system="You are a careful reviewer.")
     result = await b.operate(
         instruction="Assess the risk of enabling auto-merge on this repository.",
         response_format=Assessment,
