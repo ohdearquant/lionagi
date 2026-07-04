@@ -252,6 +252,16 @@ own follow-up ADR once `MemoryStore` has a live caller.
    private tooling? Doesn't block this ADR or the Protocol/verb-mapping work -- the interface is
    identical either way -- but affects how end users actually obtain and install the adapter.
 
+**Resolved (Leo disposition, 2026-07-04):** the connector lands in the khive monorepo now,
+owned by the khive seat, and the khive python SDK is the named public exit -- the connector
+ships publicly as part of that SDK when it ships, not as its own standalone package before it.
+Rationale: a standalone public package would commit to stability of khive's memory verb surface
+while it is still moving, and would spend the works-with-lionagi story before the SDK launch can
+use it; the irreversible step (public commitment) lands exactly once, at SDK time. A standalone
+public package is revisited only if concrete OSS demand appears before the SDK ships. The
+lionagi-side Protocol conformance fence (`tests/protocols/test_memory.py`) remains the
+acceptance gate for the connector regardless of where it lives.
+
 **Resolved during spec-gate (Leo, 2026-07-04):** the provenance schema gap (previously listed
 here as Open Question 1) is decided, not open -- see "Provenance: a documented lossy projection
 for v1" above. `KhiveMemoryStore` persists only native-home fields and explicitly drops the rest;
