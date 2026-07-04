@@ -772,3 +772,126 @@ def test_warn_if_cron_far_out_no_croniter_is_noop(monkeypatch):
     monkeypatch.setattr(builtins, "__import__", _fake_import)
     # Should not raise.
     sched_mod._warn_if_cron_far_out("0 0 29 2 *")
+
+
+# ---------------------------------------------------------------------------
+# Near-miss flag suggestions (li schedule ...)
+# ---------------------------------------------------------------------------
+
+
+def test_suggest_schedule_flag_synonym_map():
+    from lionagi.studio.cli import add_schedule_subparser, suggest_schedule_flag
+
+    parser = argparse.ArgumentParser()
+    sub = parser.add_subparsers(dest="command")
+    add_schedule_subparser(sub)  # populates _ALL_SCHEDULE_FLAGS
+
+    assert suggest_schedule_flag("--every") == "--interval"
+    assert suggest_schedule_flag("--at") == "--cron"
+    assert suggest_schedule_flag("--action") == "--action-kind"
+    assert suggest_schedule_flag("--on_success") == "--on-success"
+    assert suggest_schedule_flag("--on_fail") == "--on-fail"
+    assert suggest_schedule_flag("--max_runs") == "--max-runs"
+
+
+def test_suggest_schedule_flag_fuzzy_typo():
+    from lionagi.studio.cli import add_schedule_subparser, suggest_schedule_flag
+
+    parser = argparse.ArgumentParser()
+    sub = parser.add_subparsers(dest="command")
+    add_schedule_subparser(sub)
+
+    assert suggest_schedule_flag("--corn") == "--cron"
+
+
+def test_suggest_schedule_flag_no_match_returns_none():
+    from lionagi.studio.cli import add_schedule_subparser, suggest_schedule_flag
+
+    parser = argparse.ArgumentParser()
+    sub = parser.add_subparsers(dest="command")
+    add_schedule_subparser(sub)
+
+    assert suggest_schedule_flag("--completely-unrelated-xyz") is None
+
+
+def test_li_schedule_unrecognized_flag_suggests_correction(monkeypatch, capsys):
+    """`li schedule create ... --every 60` produces a did-you-mean, not argparse noise."""
+    from lionagi.cli.main import main
+
+    rc = main(["schedule", "create", "my-sched", "--every", "60"])
+
+    assert rc == 2
+    err = capsys.readouterr().err
+    assert "--every" in err
+    assert "--interval" in err
+
+
+def test_li_schedule_unrecognized_underscore_on_success_suggests_dash(monkeypatch, capsys):
+    from lionagi.cli.main import main
+
+    rc = main(
+        [
+            "schedule",
+            "create",
+            "my-sched",
+            "--cron",
+            "0 * * * *",
+            "--on_success",
+            '{"prompt": "x"}',
+        ]
+    )
+
+    assert rc == 2
+    err = capsys.readouterr().err
+    assert "--on_success" in err
+    assert "--on-success" in err
+
+
+def test_li_schedule_unrecognized_flag_with_no_suggestion(monkeypatch, capsys):
+    from lionagi.cli.main import main
+
+    rc = main(["schedule", "create", "my-sched", "--totally-bogus-flag", "x"])
+
+    assert rc == 2
+    err = capsys.readouterr().err
+    assert "unrecognized argument" in err
+
+
+def test_li_schedule_recognized_flags_still_dispatch(monkeypatch):
+    """Sanity check: the new interception path does not break normal dispatch."""
+    import lionagi.studio.cli as sched_mod
+    from lionagi.cli.main import main
+
+    monkeypatch.setattr(sched_mod, "_api", lambda path, **kw: {"schedules": []})
+
+    rc = main(["schedule", "list"])
+    assert rc == 0
+
+
+# ---------------------------------------------------------------------------
+# Help epilogs render for every subcommand
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "subcommand", ["list", "get", "create", "enable", "disable", "trigger", "delete", "runs"]
+)
+def test_schedule_subcommand_help_has_example_epilog(capsys, subcommand):
+    from lionagi.cli.main import main
+
+    with pytest.raises(SystemExit) as exc:
+        main(["schedule", subcommand, "--help"])
+    assert exc.value.code == 0
+
+    out = capsys.readouterr().out
+    assert "Example" in out
+
+
+def test_schedule_create_help_repeats_shallow_merge_caveat(capsys):
+    from lionagi.cli.main import main
+
+    with pytest.raises(SystemExit):
+        main(["schedule", "create", "--help"])
+
+    out = capsys.readouterr().out
+    assert "shallow-merge" in out or "shallow merge" in out
