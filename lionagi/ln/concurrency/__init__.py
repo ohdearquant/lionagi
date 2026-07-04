@@ -23,7 +23,15 @@ from .patterns import CompletionStream, bounded_map, gather, race, retry
 from .primitives import CapacityLimiter, Condition, Event, Lock, Queue, Semaphore
 from .resource_tracker import LeakInfo, LeakTracker, track_resource, untrack_resource
 from .task import TaskGroup, create_task_group
-from .utils import current_time, is_coro_func, maybe_await, run_async, run_sync, sleep
+from .utils import (
+    SigtermInterrupt,
+    current_time,
+    is_coro_func,
+    maybe_await,
+    run_async,
+    run_sync,
+    sleep,
+)
 
 ConcurrencyEvent = Event
 
@@ -67,4 +75,5 @@ __all__ = (
     "run_sync",
     "current_time",
     "sleep",
+    "SigtermInterrupt",
 )
