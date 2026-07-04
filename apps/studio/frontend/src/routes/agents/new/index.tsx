@@ -5,10 +5,9 @@ export const Route = createFileRoute("/agents/new/")({
   component: NewAgentPage,
 });
 
-// H-FE-983: POST /api/agents/{name} returns 501. This page previously
-// rendered an AgentProfileForm whose Create Agent button called that route.
-// The form is replaced with a hold-message until the backend is implemented.
-// Option A (implement the route) is tracked in the issue.
+// POST /api/agents/{name} returns 501. This page previously rendered an
+// AgentProfileForm whose Create Agent button called that route. The form is
+// replaced with a hold-message until the backend implements agent creation.
 
 function NewAgentPage() {
   return (

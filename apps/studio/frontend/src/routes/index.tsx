@@ -8,7 +8,7 @@ import StatusPill from "@/components/StatusPill";
 import Timestamp from "@/components/Timestamp";
 import Duration from "@/components/Duration";
 import TimeRangeChips, { type TimeRange, rangeToSeconds } from "@/components/TimeRangeChips";
-import { resolveApiBase, getShow, getStats } from "@/lib/api";
+import { getShow, getStats, listRuns, listShows } from "@/lib/api";
 import type { DbStats, StudioStats } from "@/lib/api";
 import type { RunSummary, ShowSummary } from "@/lib/types";
 
@@ -48,7 +48,6 @@ function isInRange(run: RunSummary, windowSec: number | null, nowSec: number): b
 
 function DashboardPage() {
   const t = useTranslations("dashboard");
-  const API_BASE = resolveApiBase();
   const [stats, setStats] = useState<StudioStats | null>(null);
   const [allRuns, setAllRuns] = useState<RunSummary[]>([]);
   const [shows, setShows] = useState<ShowSummary[]>([]);
@@ -61,15 +60,14 @@ function DashboardPage() {
 
     async function load() {
       try {
-        const [statsRes, runsRes, showsRes] = await Promise.all([
+        const [statsRes, runsRes, showsList] = await Promise.all([
           getStats(),
-          fetch(`${API_BASE}/api/runs?per_page=2000`).then((r) => r.json()),
-          fetch(`${API_BASE}/api/shows`).then((r) => r.json()),
+          listRuns({ per_page: 2000 }),
+          listShows(),
         ]);
         if (!active) return;
         setStats(statsRes);
         setAllRuns(runsRes.runs ?? []);
-        const showsList = showsRes ?? [];
         setShows(showsList);
         setFetchError(null);
         if (showsList.length > 0) {
@@ -108,7 +106,7 @@ function DashboardPage() {
       clearInterval(interval);
       clearInterval(tick);
     };
-  }, [t, API_BASE]);
+  }, [t]);
 
   const windowSec = rangeToSeconds(range);
 
