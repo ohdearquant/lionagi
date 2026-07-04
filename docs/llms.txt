@@ -43,4 +43,4 @@ When generating code that uses LionAGI, prefer these current APIs:
 - [Troubleshooting](https://lionagi.ai/reference/troubleshooting/)
 - [Migration: 0.22.5 to 0.22.6](https://lionagi.ai/migration/0.22.5-to-0.22.6/)
 - [Contributing](https://lionagi.ai/contributing/): development setup and guidelines
-- [Source on GitHub](https://github.com/khive-ai/lionagi): code, issues, and releases
+- [Source on GitHub](https://github.com/ohdearquant/lionagi): code, issues, and releases
