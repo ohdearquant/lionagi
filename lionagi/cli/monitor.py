@@ -331,6 +331,24 @@ def _trunc(s: str, n: int) -> str:
     return s[: n - 1] + "…"
 
 
+def _stdout_is_tty() -> bool:
+    """Evaluated at call time (not cached at import time) so a render
+    still reflects the actual stdout of the process at that moment —
+    e.g. stdout redirected after import, or a module imported once and
+    reused across both TTY and piped invocations."""
+    return sys.stdout.isatty()
+
+
+# Ceiling on a non-TTY column's *layout* width (header/separator/padding).
+# A single pathological long value (e.g. a malformed project string) must
+# never blow up every row's padding to that value's length — the
+# requirement is "grep never false-negatives on identifying columns", not
+# "pad every row to the longest value seen". Values longer than this still
+# render in full (Python format specs never clip a value shorter than its
+# field width), just without alignment padding past the ceiling.
+_NON_TTY_MAX_COL_WIDTH = 200
+
+
 def _format_table(rows: list[dict[str, Any]]) -> str:
     """Render a table of entity rows.
 
@@ -339,8 +357,9 @@ def _format_table(rows: list[dict[str, Any]]) -> str:
     On a TTY, identifying columns (id, project, phase) are truncated to
     fixed widths for a compact dashboard. Piped/redirected output (not a
     TTY — e.g. `li monitor | grep`) never truncates: columns widen to fit
-    the longest value so a grep against a project name or id can never
-    false-negative on a value cut short by a fixed column width.
+    the longest value (up to _NON_TTY_MAX_COL_WIDTH) so a grep against a
+    project name or id can never false-negative on a value cut short by a
+    fixed column width.
     """
     if not rows:
         return _dim("(no running entities)")
@@ -378,18 +397,25 @@ def _format_table(rows: list[dict[str, Any]]) -> str:
         for row in rows
     ]
 
-    if _IS_TTY:
+    if _stdout_is_tty():
         col = dict(col_min)  # noqa: N806
 
         def _field(key: str, value: str) -> str:
             return _trunc(value, col[key])
     else:
         col = {  # noqa: N806
-            key: max(width, len(headers[key]), max((len(r[key]) for r in raw_rows), default=0))
+            key: min(
+                max(width, len(headers[key]), max((len(r[key]) for r in raw_rows), default=0)),
+                _NON_TTY_MAX_COL_WIDTH,
+            )
             for key, width in col_min.items()
         }
 
         def _field(key: str, value: str) -> str:
+            # Never clip the value itself — only the layout width above is
+            # capped. A format spec width smaller than len(value) is a no-op
+            # (Python never truncates), so a pathological value still prints
+            # in full, just without alignment padding past the ceiling.
             return value
 
     header_parts = [

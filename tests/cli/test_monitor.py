@@ -5,6 +5,7 @@
 from __future__ import annotations
 
 import signal
+import sys
 import time
 import uuid
 from pathlib import Path
@@ -13,6 +14,7 @@ from typing import Any
 import pytest
 
 from lionagi.cli.monitor import (
+    _NON_TTY_MAX_COL_WIDTH,
     _cached_detect_project,
     _colour_status,
     _elapsed,
@@ -29,9 +31,22 @@ from lionagi.cli.monitor import (
     _show_project_matches,
     _show_to_row,
     _since_timestamp,
+    _stdout_is_tty,
     _trunc,
 )
 from lionagi.state.db import StateDB
+
+
+class _FakeStdout:
+    """Minimal stand-in for sys.stdout exposing only isatty() — enough to
+    drive call-time TTY detection without a real terminal/pipe."""
+
+    def __init__(self, is_tty: bool) -> None:
+        self._is_tty = is_tty
+
+    def isatty(self) -> bool:
+        return self._is_tty
+
 
 # ── Fixtures ──────────────────────────────────────────────────────────────────
 
@@ -282,8 +297,10 @@ def test_format_table_header():
 def test_format_table_non_tty_never_truncates_project(monkeypatch: pytest.MonkeyPatch) -> None:
     """Piped (non-TTY) output must never truncate identifying columns —
     a long project name used to come back as 'ohdearquant/l…', silently
-    breaking `li monitor | grep <full-name>`."""
-    monkeypatch.setattr("lionagi.cli.monitor._IS_TTY", False)
+    breaking `li monitor | grep <full-name>`. TTY-ness is patched on the
+    real sys.stdout (not the cached module global) to prove detection
+    happens at render time."""
+    monkeypatch.setattr(sys, "stdout", _FakeStdout(False))
     long_project = "ohdearquant/lionagi-super-long-repo-name"
     rows = [
         {
@@ -303,7 +320,7 @@ def test_format_table_non_tty_never_truncates_project(monkeypatch: pytest.Monkey
 def test_format_table_tty_still_truncates_project(monkeypatch: pytest.MonkeyPatch) -> None:
     """A TTY dashboard keeps the compact fixed-width behavior — only piped
     output widens/never-truncates."""
-    monkeypatch.setattr("lionagi.cli.monitor._IS_TTY", True)
+    monkeypatch.setattr(sys, "stdout", _FakeStdout(True))
     long_project = "ohdearquant/lionagi-super-long-repo-name"
     rows = [
         {
@@ -319,6 +336,85 @@ def test_format_table_tty_still_truncates_project(monkeypatch: pytest.MonkeyPatc
     output = _format_table(rows)
     assert long_project not in output
     assert "…" in output
+
+
+def test_format_table_tty_detected_at_call_time_not_import_time(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The same process/import must render both ways depending on stdout
+    *at call time* — a module imported while a TTY was attached, then
+    later invoked against redirected/piped stdout (or vice versa), must
+    not get stuck on whatever stdout looked like at import."""
+    long_project = "ohdearquant/lionagi-super-long-repo-name"
+    rows = [
+        {
+            "id": "abc123",
+            "type": "session",
+            "project": long_project,
+            "status": "running",
+            "phase": "agent",
+            "elapsed": "5m",
+            "agents": "1",
+        }
+    ]
+
+    monkeypatch.setattr(sys, "stdout", _FakeStdout(True))
+    tty_output = _format_table(rows)
+    assert long_project not in tty_output
+
+    monkeypatch.setattr(sys, "stdout", _FakeStdout(False))
+    piped_output = _format_table(rows)
+    assert long_project in piped_output
+
+
+def test_stdout_is_tty_reflects_current_stdout(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(sys, "stdout", _FakeStdout(True))
+    assert _stdout_is_tty() is True
+    monkeypatch.setattr(sys, "stdout", _FakeStdout(False))
+    assert _stdout_is_tty() is False
+
+
+def test_format_table_non_tty_caps_pathological_width(monkeypatch: pytest.MonkeyPatch) -> None:
+    """One pathologically long value must not blow up padding for every
+    row — layout width is capped at _NON_TTY_MAX_COL_WIDTH; the value
+    itself still prints in full (never clipped), just without alignment
+    padding past the cap."""
+    monkeypatch.setattr(sys, "stdout", _FakeStdout(False))
+    huge_project = "x" * 10_000
+    rows = [
+        {
+            "id": "abc123",
+            "type": "session",
+            "project": huge_project,
+            "status": "running",
+            "phase": "agent",
+            "elapsed": "5m",
+            "agents": "1",
+        },
+        {
+            "id": "def456",
+            "type": "session",
+            "project": "short-project",
+            "status": "running",
+            "phase": "agent",
+            "elapsed": "3m",
+            "agents": "1",
+        },
+    ]
+    output = _format_table(rows)
+    lines = output.splitlines()
+
+    # The full pathological value is still present — grep never misses it.
+    assert huge_project in output
+
+    # But layout (header separator, and every OTHER row's padding) must not
+    # scale with the 10k-char value: bounded by the column-width ceiling,
+    # not by the longest value seen.
+    separator = lines[1]
+    assert len(separator) < 10 * _NON_TTY_MAX_COL_WIDTH
+
+    short_line = next(line for line in lines if "short-project" in line)
+    assert len(short_line) < 10 * _NON_TTY_MAX_COL_WIDTH
 
 
 # ── Unit: row builders ────────────────────────────────────────────────────────
