@@ -571,6 +571,7 @@ async def setup_agent_persist(
     from lionagi.state import provenance as _provenance
 
     db = None
+    session = None
     try:
         # Claim the branch BEFORE touching the shared DB registry: a branch
         # still owned by a live persist session must be rejected here without
@@ -728,6 +729,13 @@ async def setup_agent_persist(
             exc,
             exc_info=True,
         )
+        # If the wrapper session already claimed the branch, release it so a
+        # later setup (or retry) can wrap the same branch again.
+        if session is not None:
+            try:
+                session.remove_branch(branch)
+            except Exception as release_exc:  # noqa: BLE001
+                _log.debug("branch ownership release failed: %s", release_exc)
         if db is not None:
             try:
                 await db.close()

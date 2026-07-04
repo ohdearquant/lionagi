@@ -556,6 +556,30 @@ async def test_rejected_second_setup_leaves_first_context_intact(
     await _teardown_live_persist(ctx3, status="completed")
 
 
+async def test_failed_setup_releases_branch_claim(
+    temp_db_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """Setup failing AFTER the wrapper session claims the branch must release
+    the claim, so a retry (or a later run) can wrap the branch again."""
+    import lionagi.cli._runs as _runs_mod
+
+    async def boom():
+        raise RuntimeError("simulated db-open failure")
+
+    monkeypatch.setattr(_runs_mod, "_open_shared_db", boom)
+
+    branch = Branch(name="b1")
+    ctx = await _setup_live_persist(branch)
+    assert ctx is None
+    assert branch._owning_session_id is None
+
+    monkeypatch.undo()
+    ctx2 = await _setup_live_persist(branch)
+    assert ctx2 is not None
+    await _teardown_live_persist(ctx2, status="completed")
+
+
 async def test_teardown_with_none_context_is_noop(temp_db_path: Path):
     """If setup returned None (failed), teardown(None) must be safe."""
     await _teardown_live_persist(None, status="completed")  # MUST NOT raise
