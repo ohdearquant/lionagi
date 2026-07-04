@@ -895,3 +895,58 @@ def test_schedule_create_help_repeats_shallow_merge_caveat(capsys):
 
     out = capsys.readouterr().out
     assert "shallow-merge" in out or "shallow merge" in out
+
+
+# ---------------------------------------------------------------------------
+# li schedule: surplus non-flag arguments must error (rc=2), not be ignored
+# ---------------------------------------------------------------------------
+
+
+def test_li_schedule_surplus_non_flag_argument_errors(monkeypatch, capsys):
+    """`li schedule list unexpected-extra` must not silently exit 0 and drop
+    the extra token — argparse would reject the equivalent direct parse."""
+    import lionagi.studio.cli as sched_mod
+    from lionagi.cli.main import main
+
+    api_called = []
+    monkeypatch.setattr(sched_mod, "_api", lambda *a, **kw: api_called.append(1))
+
+    rc = main(["schedule", "list", "unexpected-extra"])
+
+    assert rc == 2
+    assert not api_called
+    err = capsys.readouterr().err
+    assert "unrecognized argument" in err
+    assert "unexpected-extra" in err
+
+
+def test_li_schedule_surplus_extra_after_required_positional_errors(monkeypatch, capsys):
+    """A surplus positional after a subcommand's own required id (e.g.
+    `delete <id> <extra>`) must also error rather than silently execute."""
+    import lionagi.studio.cli as sched_mod
+    from lionagi.cli.main import main
+
+    api_called = []
+    monkeypatch.setattr(sched_mod, "_api", lambda *a, **kw: api_called.append(1))
+
+    rc = main(["schedule", "delete", "sched-123", "accidental-extra"])
+
+    assert rc == 2
+    assert not api_called
+    err = capsys.readouterr().err
+    assert "unrecognized argument" in err
+    assert "accidental-extra" in err
+
+
+def test_li_schedule_mixed_dash_and_bare_extras_both_reported(monkeypatch, capsys):
+    """A dash-prefixed unknown flag alongside a bare surplus token: the flag
+    gets a did-you-mean, the bare token gets a plain unrecognized-argument
+    error — neither is silently dropped."""
+    from lionagi.cli.main import main
+
+    rc = main(["schedule", "create", "my-sched", "--every", "60", "stray-token"])
+
+    assert rc == 2
+    err = capsys.readouterr().err
+    assert "--every" in err and "--interval" in err
+    assert "stray-token" in err

@@ -330,16 +330,20 @@ def main(argv: list[str] | None = None) -> int:
     # "did you mean --X?" suggestion instead of argparse's generic usage dump.
     if _argv and _argv[0] == "schedule":
         ns, extras = schedule_parser.parse_known_args(_argv[1:])
-        unknown = [e for e in extras if e.startswith("-") and e != "-"]
-        if unknown:
+        if extras:
             from lionagi.studio.cli import suggest_schedule_flag
 
-            for tok in unknown:
-                suggestion = suggest_schedule_flag(tok)
-                if suggestion:
-                    log_error(f"unrecognized argument {tok!r} — did you mean {suggestion!r}?")
-                else:
-                    log_error(f"unrecognized argument: {tok}")
+            # Any leftover token — flag-shaped or not — is unrecognized and
+            # must error like plain argparse would (rc=2); did-you-mean
+            # suggestions only make sense for dash-prefixed tokens, since a
+            # bare positional like a surplus id has no "real flag" to guess.
+            for tok in extras:
+                if tok.startswith("-") and tok != "-":
+                    suggestion = suggest_schedule_flag(tok)
+                    if suggestion:
+                        log_error(f"unrecognized argument {tok!r} — did you mean {suggestion!r}?")
+                        continue
+                log_error(f"unrecognized argument: {tok}")
             return 2
         return run_schedule(ns)
 
