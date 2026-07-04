@@ -177,7 +177,11 @@ export async function listRuns(params?: RunListParams): Promise<RunListResponse>
   if (params?.project) query.set("project", params.project);
   for (const value of params?.status ?? []) query.append("status", value);
   const suffix = query.toString() ? `?${query.toString()}` : "";
-  return fetchJson<RunListResponse>(`/api/runs${suffix}`);
+  // The daemon registers this list route with a trailing slash (unlike
+  // /api/runs/{run_id}); omitting it triggers Starlette's redirect-with-
+  // absolute-Location, which the browser then blocks as cross-origin
+  // whenever the frontend is served from a different origin than the daemon.
+  return fetchJson<RunListResponse>(`/api/runs/${suffix}`);
 }
 
 export async function getRun(runId: string): Promise<RunDetail> {
