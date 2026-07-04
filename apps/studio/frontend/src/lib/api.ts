@@ -431,7 +431,7 @@ export async function getShow(topic: string): Promise<ShowDetail> {
   return fetchJson<ShowDetail>(`/api/shows/${encodeURIComponent(topic)}`);
 }
 
-// H-FE-5: terminal {"type":"done"} event from shows.py MUST close the
+// The terminal {"type":"done"} event from the shows service MUST close the
 // stream. The closer runs BEFORE invoking the callback for done events so
 // that close() always runs even if the callback throws.
 export function streamShow(topic: string, onEvent: (event: ShowEvent) => void): () => void {
@@ -727,8 +727,7 @@ export async function saveDefinition(
   });
 }
 
-// H-FE-4: version is a query param per ADR-0016 and definitions.py:58-63,
-// not a path segment. Return type updated to include full rollback response.
+// version is a query param per ADR-0016 (not a path segment).
 export async function rollbackDefinition(
   kind: string,
   name: string,
@@ -970,13 +969,26 @@ export interface TeamListResponse {
   has_next: boolean;
 }
 
-export type TeamDetail = Record<string, unknown> & {
-  id?: string;
-  name?: string;
-  members?: unknown[];
-  messages?: unknown[];
-  created_at?: string | number | null;
-};
+// Shape written by `li team` (cli/team.py cmd_create/cmd_send) and returned
+// as-is by GET /api/teams/{id} (services/teams.py get_team reads the raw
+// JSON file, no adaptation).
+export interface TeamMessage {
+  id: string;
+  from: string;
+  to: string | string[];
+  content: string;
+  timestamp: string;
+  read_by?: Record<string, string>;
+  from_op?: string;
+}
+
+export interface TeamDetail {
+  id: string;
+  name: string;
+  members: string[];
+  messages: TeamMessage[];
+  created_at: string;
+}
 
 export async function listTeams(params?: {
   limit?: number;
