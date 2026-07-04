@@ -678,6 +678,7 @@ async def test_run_agent_preset_and_profile_single_system_message_with_both(monk
         raw_body=PROFILE_RAW_BODY,
         lion_system=True,
         artifact_defaults=None,
+        timeout=None,
     )
     import lionagi.cli.agent as agent_mod
 
@@ -738,6 +739,7 @@ async def test_run_agent_profile_without_preset_system_prompt_unchanged(monkeypa
         fast_mode=False,
         system_prompt=PROFILE_PROMPT,
         artifact_defaults=None,
+        timeout=None,
     )
     import lionagi.cli.agent as agent_mod
 

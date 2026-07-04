@@ -308,6 +308,8 @@ class AgentProfile:
     fast_mode: bool = False
     lion_system: bool = True
     artifact_defaults: dict | None = None
+    timeout: int | None = None
+    """Default --timeout (seconds) used when the CLI flag is not given."""
     extra: dict = field(default_factory=dict)
 
 
@@ -372,6 +374,23 @@ def load_agent_profile(name: str) -> AgentProfile:
     raise FileNotFoundError(msg)
 
 
+def _parse_profile_timeout(name: str, raw: Any) -> int | None:
+    """Validate the profile 'timeout' field; warn and ignore garbage rather than raising."""
+    if raw is None:
+        return None
+    from ._logging import warn
+
+    try:
+        value = int(raw)
+    except (TypeError, ValueError):
+        warn(f"agent profile {name!r}: ignoring invalid timeout {raw!r} (must be a positive int)")
+        return None
+    if value <= 0:
+        warn(f"agent profile {name!r}: ignoring non-positive timeout {value!r}")
+        return None
+    return value
+
+
 def _parse_profile(name: str, text: str) -> AgentProfile:
     frontmatter, body = _parse_frontmatter(text)
 
@@ -394,6 +413,7 @@ def _parse_profile(name: str, text: str) -> AgentProfile:
         fast_mode=bool(frontmatter.get("fast_mode", False)),
         lion_system=lion_system,
         artifact_defaults=frontmatter.get("artifact_defaults"),
+        timeout=_parse_profile_timeout(name, frontmatter.get("timeout")),
         extra={
             k: v
             for k, v in frontmatter.items()
@@ -405,6 +425,7 @@ def _parse_profile(name: str, text: str) -> AgentProfile:
                 "fast_mode",
                 "lion_system",
                 "artifact_defaults",
+                "timeout",
             )
         },
     )

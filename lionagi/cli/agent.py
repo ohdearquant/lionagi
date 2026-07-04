@@ -240,6 +240,8 @@ async def _run_agent(
             yolo = True
         if profile.fast_mode and not fast:
             fast = True
+        if profile.timeout and timeout is None:
+            timeout = profile.timeout
 
     branch: Branch | None = None
     if continue_last:
@@ -539,7 +541,7 @@ def add_agent_subparser(subparsers: argparse._SubParsersAction) -> argparse.Argu
         help=(
             "Load agent profile by name. Resolves "
             ".lionagi/agents/<NAME>/<NAME>.md first, then .lionagi/agents/<NAME>.md. "
-            "Profile provides system prompt, default model, effort, yolo. "
+            "Profile provides system prompt, default model, effort, yolo, timeout. "
             "CLI flags override profile settings."
         ),
     )
