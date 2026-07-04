@@ -329,7 +329,7 @@ interface ErrorEntry {
   summary?: string;
 }
 
-function ErrorsSection({ errors }: { errors: ErrorEntry[] }) {
+function ErrorsSection({ errors, partial }: { errors: ErrorEntry[]; partial?: boolean }) {
   const groups = useMemo(() => {
     const map = new Map<string, ErrorEntry[]>();
     for (const err of errors) {
@@ -356,7 +356,7 @@ function ErrorsSection({ errors }: { errors: ErrorEntry[] }) {
       <SectionHeader label="Errors" count={errors.length} errorTone={errors.length > 0} />
       {errors.length === 0 ? (
         <div className="flex items-center gap-2 rounded border border-edge bg-surface-raised px-4 py-3 text-sm text-status-success">
-          <span>{empty.branchErrors}</span>
+          <span>{partial ? "No errors in the loaded messages." : empty.branchErrors}</span>
         </div>
       ) : (
         <div className="flex flex-col gap-1.5">
@@ -445,13 +445,15 @@ function ErrorsSection({ errors }: { errors: ErrorEntry[] }) {
 
 // ── Files section ─────────────────────────────────────────────────────────────
 
-function FilesSection({ files }: { files: string[] }) {
+function FilesSection({ files, partial }: { files: string[]; partial?: boolean }) {
   return (
     <div id="files" className="scroll-mt-24">
       <SectionHeader label="Files" count={files.length} />
       {files.length === 0 ? (
         <div className="rounded border border-edge bg-surface-raised px-4 py-3 text-sm text-content-muted">
-          No file operations detected.
+          {partial
+            ? "No file operations detected in the loaded messages."
+            : "No file operations detected."}
         </div>
       ) : (
         <div className="rounded border border-edge bg-surface-raised px-3 py-2">
@@ -1082,8 +1084,8 @@ function RunDetailPage() {
               expandedSteps={expandedSteps}
               onToggleExpand={handleToggleExpand}
             />
-            <ErrorsSection errors={errors} />
-            <FilesSection files={files} />
+            <ErrorsSection errors={errors} partial={partialWindow} />
+            <FilesSection files={files} partial={partialWindow} />
             <EventsSection events={signalEvents} live={live && !done} />
           </div>
           <div ref={bottomRef} />
