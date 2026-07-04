@@ -201,6 +201,7 @@ interface OverviewData {
   messageCount: number;
   toolCallCount: number;
   errorCount: number;
+  partialWindow: boolean;
   showTopic?: string | null;
   showPlayName?: string | null;
   playbookName?: string | null;
@@ -214,9 +215,12 @@ function OverviewSection({ data }: { data: OverviewData }) {
       : []),
     { label: "Branches", value: String(data.branchCount) },
     { label: "Messages", value: String(data.messageCount) },
-    { label: "Tool calls", value: String(data.toolCallCount) },
     {
-      label: "Errors",
+      label: data.partialWindow ? "Tool calls (recent)" : "Tool calls",
+      value: String(data.toolCallCount),
+    },
+    {
+      label: data.partialWindow ? "Errors (recent)" : "Errors",
       value: String(data.errorCount),
       tone: data.errorCount > 0 ? ("error" as const) : ("ok" as const),
     },
@@ -934,6 +938,8 @@ function RunDetailPage() {
     0,
   );
 
+  const partialWindow = session.branches.some((b) => (b.message_total ?? 0) > b.messages.length);
+
   const durationSec =
     session.created_at != null && session.updated_at != null
       ? Math.max(0, Math.round(session.updated_at - session.created_at))
@@ -950,6 +956,7 @@ function RunDetailPage() {
     messageCount: totalMessages,
     toolCallCount,
     errorCount: errors.length,
+    partialWindow,
     showTopic: (session as unknown as Record<string, unknown>).show_topic as
       string | null | undefined,
     showPlayName: (session as unknown as Record<string, unknown>).show_play_name as
@@ -966,8 +973,13 @@ function RunDetailPage() {
       : []),
     ...(runGraph ? [{ id: "dag", label: "DAG", count: runGraph.nodes.length }] : []),
     { id: "branches", label: "Branches", count: session.branches.length },
-    { id: "errors", label: "Errors", count: errors.length, errorTone: errors.length > 0 },
-    { id: "files", label: "Files", count: files.length },
+    {
+      id: "errors",
+      label: partialWindow ? "Errors (recent)" : "Errors",
+      count: errors.length,
+      errorTone: errors.length > 0,
+    },
+    { id: "files", label: partialWindow ? "Files (recent)" : "Files", count: files.length },
     { id: "events", label: "Events", count: signalEvents.length },
   ];
 
