@@ -48,6 +48,16 @@ def test_parse_profile_resume_on_timeout_unrecognized_is_ignored(caplog):
     assert profile.resume_on_timeout is False
 
 
+@pytest.mark.parametrize("raw_yaml", ["true", "false", "yes", "sometimes"])
+def test_parse_profile_resume_on_timeout_rejects_non_once_values(raw_yaml, caplog):
+    """Only the literal string 'once' opts in; boolean aliases and other
+    strings must warn-and-ignore (parse as False), not opt in."""
+    text = f"---\nresume_on_timeout: {raw_yaml}\n---\nbody"
+    with caplog.at_level(logging.WARNING):
+        profile = _parse_profile("reviewer", text)
+    assert profile.resume_on_timeout is False
+
+
 # ---------------------------------------------------------------------------
 # Integration: _run_agent auto-resume wiring
 # ---------------------------------------------------------------------------

@@ -390,28 +390,29 @@ def load_agent_profile(name: str) -> AgentProfile:
 
 
 def _parse_profile_timeout(name: str, raw: Any) -> int | None:
-    """Validate the profile 'timeout' field; warn and ignore garbage rather than raising."""
+    """Validate the profile 'timeout' field; warn and ignore garbage rather than raising.
+
+    Only a genuine positive int is accepted — YAML booleans (True/False are
+    ints in Python) and floats (which int() would silently truncate) are
+    rejected rather than coerced.
+    """
     if raw is None:
         return None
     from ._logging import warn
 
-    try:
-        value = int(raw)
-    except (TypeError, ValueError):
+    if isinstance(raw, bool) or not isinstance(raw, int):
         warn(f"agent profile {name!r}: ignoring invalid timeout {raw!r} (must be a positive int)")
         return None
-    if value <= 0:
-        warn(f"agent profile {name!r}: ignoring non-positive timeout {value!r}")
+    if raw <= 0:
+        warn(f"agent profile {name!r}: ignoring non-positive timeout {raw!r}")
         return None
-    return value
+    return raw
 
 
 def _parse_profile_resume_on_timeout(name: str, raw: Any) -> bool:
-    """Validate the profile 'resume_on_timeout' field; only 'once' (or a truthy bool) opts in."""
+    """Validate the profile 'resume_on_timeout' field; only the literal string 'once' opts in."""
     if raw is None or raw is False:
         return False
-    if raw is True:
-        return True
     if isinstance(raw, str) and raw.strip().lower() == "once":
         return True
     from ._logging import warn

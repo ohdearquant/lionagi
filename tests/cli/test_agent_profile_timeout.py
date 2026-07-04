@@ -51,6 +51,16 @@ def test_parse_profile_timeout_absent_is_none():
     assert profile.timeout is None
 
 
+@pytest.mark.parametrize("raw_yaml", ["true", "false", "1.9", "3.0"])
+def test_parse_profile_timeout_rejects_bool_and_float(raw_yaml, caplog):
+    """YAML booleans and floats must warn-and-ignore, not coerce (bool is an
+    int subclass in Python; int(1.9) would silently truncate to 1)."""
+    text = f"---\ntimeout: {raw_yaml}\n---\nbody"
+    with caplog.at_level(logging.WARNING):
+        profile = _parse_profile("reviewer", text)
+    assert profile.timeout is None
+
+
 # ---------------------------------------------------------------------------
 # Integration: _run_agent precedence (explicit flag > profile > built-in default)
 # ---------------------------------------------------------------------------
