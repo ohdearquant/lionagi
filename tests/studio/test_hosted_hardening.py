@@ -180,6 +180,26 @@ class TestHostHeaderValidation:
         assert resp.status_code in (200, 204)
         assert resp.headers.get("access-control-allow-origin") == "https://lion-studio.khive.ai"
 
+    def test_preflight_with_bad_host_is_rejected(self, monkeypatch, tmp_path):
+        """Even a well-formed CORS preflight from an allowed origin must be
+        rejected when the Host header is invalid: Host validation runs
+        outside CORSMiddleware, so a rebound request can't fish a successful
+        preflight response out of the daemon."""
+        monkeypatch.delenv("CORS_ORIGINS", raising=False)
+        client = _make_client(monkeypatch, tmp_path)
+
+        resp = client.options(
+            "/health",
+            headers={
+                "Host": "evil.example.com",
+                "Origin": "https://lion-studio.khive.ai",
+                "Access-Control-Request-Method": "GET",
+            },
+        )
+        assert resp.status_code == 400
+        assert "Invalid Host header" in resp.json()["detail"]
+        assert resp.headers.get("access-control-allow-origin") is None
+
 
 @pytest.mark.integration
 class TestJsonContentTypeEnforcement:

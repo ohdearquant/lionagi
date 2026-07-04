@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import Any
 
 from fastapi import FastAPI, Request
+from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.middleware.cors import CORSMiddleware
 from starlette.responses import FileResponse, JSONResponse
 from starlette.staticfiles import StaticFiles
@@ -282,14 +283,6 @@ def _parse_host_authority(raw_host: str) -> str | None:
     return host.lower() if host else None
 
 
-def _is_cors_preflight(request: Request) -> bool:
-    """A genuine CORS preflight always carries both Origin and
-    Access-Control-Request-Method; anything else claiming to be OPTIONS is
-    an ordinary request and must still pass Host validation."""
-    return "origin" in request.headers and "access-control-request-method" in request.headers
-
-
-@app.middleware("http")
 async def validate_host_header(request: Request, call_next):
     """Reject requests whose Host header doesn't match an expected value.
 
@@ -298,13 +291,12 @@ async def validate_host_header(request: Request, call_next):
     rebinding) and, once past CORS/auth, reach the daemon as if it were a
     same-origin request. The browser sets Host to the actual connection
     target it resolved, so validating it here catches rebound requests that
-    same-origin checks alone don't cover. Only a genuine CORS preflight is
-    exempted: CORSMiddleware (mounted outermost) answers those before this
-    middleware ever runs, so any OPTIONS reaching here that *isn't* a real
-    preflight (no Origin/Access-Control-Request-Method) still gets checked.
+    same-origin checks alone don't cover. This dispatch is registered LAST
+    (outermost, outside even CORSMiddleware) so every request -- including
+    CORS preflight OPTIONS -- gets its Host checked before anything answers;
+    a legitimate preflight from the hosted SPA carries the loopback Host it
+    actually connected to and passes unaffected.
     """
-    if request.method == "OPTIONS" and _is_cors_preflight(request):
-        return await call_next(request)
     hostname = _parse_host_authority(request.headers.get("host", ""))
     bind_host = os.getenv("LIONAGI_STUDIO_HOST", HOST)
     allowed_hosts = {"localhost", "127.0.0.1", "::1"}
@@ -399,24 +391,23 @@ _dist = _resolve_frontend_dist()
 if _dist is not None:
     _mount_spa(app, _dist)
 
-# CORS middleware is registered LAST — after every router and the one direct
-# @app.get endpoint above and the optional SPA mount — so the method allowlist
-# is derived from the complete route table (see _collect_cors_methods).  Added
-# last, it sits outermost in the middleware stack: Starlette wraps middlewares
-# LIFO (the most-recently-added is the first to see an incoming request), so
-# registration order below top-to-bottom (require_studio_bearer_token ->
-# require_json_content_type -> validate_host_header -> CORSMiddleware) is the
-# REVERSE of execution order for an incoming request: CORS runs first (so
-# preflight is answered before anything else), then Host validation, then the
-# Content-Type/CSRF check, then the bearer-token gate, then the route. The
-# bearer-token and Content-Type middlewares let every OPTIONS through (real
-# preflight never reaches them -- CORSMiddleware answers it first); Host
-# validation is stricter and only exempts a *genuine* preflight (Origin +
-# Access-Control-Request-Method present), so a non-preflight OPTIONS probe
-# still gets its Host header checked.
+# Middleware registration order (Starlette wraps LIFO: the most-recently-added
+# middleware is the first to see an incoming request). CORSMiddleware is added
+# after every router, the direct @app.get endpoint, and the optional SPA mount
+# so its method allowlist is derived from the complete route table (see
+# _collect_cors_methods). Host validation is added AFTER CORSMiddleware and so
+# runs OUTERMOST: every request -- including CORS preflight OPTIONS -- has its
+# Host header checked before CORS can answer, closing the window where an
+# invalid-Host request could still receive a successful preflight response.
+# Execution order for an incoming request is therefore: Host validation ->
+# CORS (answers valid-Host preflight) -> Content-Type/CSRF check -> bearer-token
+# gate -> route. The bearer-token and Content-Type middlewares let every
+# OPTIONS through; a real preflight never reaches them because CORSMiddleware
+# answers it first.
 app.add_middleware(
     CORSMiddleware,
     allow_origins=CORS_ORIGINS,
     allow_methods=_collect_cors_methods(app),
     allow_headers=["*"],
 )
+app.add_middleware(BaseHTTPMiddleware, dispatch=validate_host_header)
