@@ -18,6 +18,7 @@ from lionagi.studio.cli import (
 from ._logging import configure_cli_logging, log_error
 from .agent import add_agent_subparser, run_agent
 from .casts import add_casts_subparser, run_casts
+from .dispatch import add_dispatch_subparser, run_dispatch
 from .engine import add_engine_subparser, run_engine
 from .invoke import add_invoke_subparser, run_invoke
 from .kill import add_kill_subparser, run_kill
@@ -299,6 +300,7 @@ def main(argv: list[str] | None = None) -> int:
     add_kill_subparser(sub)
     add_mirror_subparser(sub)
     add_monitor_subparser(sub)
+    add_dispatch_subparser(sub)
 
     # If the user is invoking `li o flow -p NAME`, inject the playbook's
     # declared args as flags on the flow sub-parser BEFORE argparse runs,
@@ -359,6 +361,9 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.command in ("monitor", "mon"):
         return run_monitor(args)
+
+    if args.command == "dispatch":
+        return run_dispatch(args)
 
     if args.command == "schedule":
         return run_schedule(args)
