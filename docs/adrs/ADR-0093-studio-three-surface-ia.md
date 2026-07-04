@@ -31,7 +31,8 @@ Constraints: daemon/API changes must be additive only; e2e tests never touch the
 state.db (a seeded temp-db harness exists); every retired path keeps a redirect; the stack
 stays React 19 + TanStack Router + Vite + Tailwind (CodeMirror and @tanstack/react-virtual are
 the only new dependencies); both themes ship together with established contrast floors;
-workflow definitions are YAML for now.
+workflow definitions serialize to YAML canonically, with TOML accepted and produced at the
+import/export boundary.
 
 ## Decision
 
@@ -49,6 +50,22 @@ A global **project lens** (top bar switcher, `?project=` + localStorage, per ADR
 scopes Operations fully; in Library it filters project-scoped items while keeping global items
 visible and labeled; System is never scoped. A **command palette** (⌘K) provides cross-surface
 jump and actions, which is what lets three destinations carry sixteen pages of reach.
+
+Two elements recovered from the desktop cockpit line (tag `desktop-v0.1.0-rc1`, never merged)
+are first-class in this architecture:
+
+- **The Leo operator panel** (founder-required): a dockable right-side panel present on every
+  surface — an operator chat that also *drives the UI* (its command channel can navigate,
+  filter, and open detail from conversation). Resurrected from the cockpit's panel + UI-command
+  components and their daemon chat/signals services; the shell reserves the right dock from
+  phase A, the live panel lands with its backend in phase B.
+- **The cockpit's visual language** is the style anchor for all phases: the dark canvas
+  chrome, signal chips, monospace accents, and status bar of that build, harmonized with the
+  current token system and shipped in both themes under the established contrast floors.
+
+The cockpit's engine-blueprint designer is *not* resurrected (founder: drop the engine
+canvas). Its canvas foundation — port-based nodes, chain-as-spine layout, draft/topology
+utilities — is reused for the **workflow canvas** in Library instead.
 
 ### Operations — the canvas
 
@@ -97,10 +114,13 @@ A single surface with a type rail (`?kind=script|agent|schedule|workflow|skill|p
 a catalog list per kind, and a **generous full-height editor** (`?id=`) — no per-kind routes,
 no cramped modals. Plays/playbooks present as **Scripts** everywhere in the UI (backend nouns
 unchanged; a subtitle maps the old name during transition). Schedules edit here; their firings
-live in Operations (`/?source=schedule&id=…` one click away). **Workflows** are a new kind:
-YAML definitions edited in CodeMirror with schema validation and a plan preview before save,
-backed by additive daemon endpoints (`POST /api/workflows/validate`, plan-preview). Every zero
-state invites creation with a primary CTA.
+live in Operations (`/?source=schedule&id=…` one click away). **Workflows** are a new kind
+with two synchronized editors over one definition: a CodeMirror text editor with schema
+validation and a plan preview before save, and a **workflow canvas** — a visual DAG editor
+built on the recovered cockpit canvas foundation — as the primary authoring surface.
+Definitions serialize to YAML canonically and **import/export as YAML or TOML** at the file
+boundary; both are backed by additive daemon endpoints (`POST /api/workflows/validate`,
+plan-preview). Every zero state invites creation with a primary CTA.
 
 ### System — the machine
 
@@ -119,8 +139,8 @@ Three routes plus params are the entire public URL surface:
 /system    (#maintenance anchor)
 ```
 
-Every legacy path redirects: `/runs→/?view=table` · `/runs/$id→/?run=$id` ·
-`/invocations→/?view=table&source=schedule` (legacy URL only; the noun does not reappear) ·
+Every retired path redirects: `/runs→/?view=table` · `/runs/$id→/?run=$id` ·
+`/invocations→/?view=table&source=schedule` (redirect only; the noun does not reappear) ·
 `/invocations/$id→/?run=$id` ·
 `/kanban→/?view=board` · `/playfield→/?view=stream&live=1` · `/shows→/?source=script` ·
 `/shows/$topic→/?source=script&topic=$topic` · `/schedules[/$id]→/library?kind=schedule[&id=$id]` ·
@@ -143,14 +163,18 @@ themes with screenshots in the PR body:
   projections have parity from day one; **detail routes** (`/runs/$id`, `/invocations/$id`,
   `/shows/$topic`) keep working unchanged. The existing shell PR is re-tasked in place: its
   API-path pinning suite, favicon, design tokens, and ProjectContext carry over; its
-  five-group rail is replaced. Hosted deploy and its visual gate ride this phase.
-- **B — Operations depth**: command palette (sequenced early in the phase), chain cards, SSE
-  live tail, centralized staleness adopted everywhere, cancel/re-fire actions. The slide-over
-  reaches full parity (Messages · Artifacts · Chain · Raw), and only then do the detail-route
-  redirects land.
-- **C — Library**: catalog + editors, YAML workflow editor with validate/plan-preview
-  (additive endpoints land here), script naming, inviting zero states.
-- **D — System + removal**: System page, legacy route files deleted (redirects stay),
+  five-group rail is replaced. The cockpit visual language lands here (tokens, chrome,
+  status bar) and the right dock is reserved for the Leo panel. Hosted deploy and its visual
+  gate ride this phase.
+- **B — Operations depth**: command palette (sequenced early in the phase), the **Leo
+  operator panel** live in the right dock (chat + UI-drive commands, daemon endpoints
+  resurrected from the cockpit line), chain cards, SSE live tail, centralized staleness
+  adopted everywhere, cancel/re-fire actions. The slide-over reaches full parity
+  (Messages · Artifacts · Chain · Raw), and only then do the detail-route redirects land.
+- **C — Library**: catalog + editors, workflow canvas + text editor with validate/plan-preview
+  and YAML/TOML import/export (additive endpoints land here), script naming, inviting zero
+  states.
+- **D — System + removal**: System page, retired route files deleted (redirects stay),
   i18n sweep (EN-first), contrast/a11y audit in both themes.
 
 ## Consequences
@@ -171,7 +195,7 @@ themes with screenshots in the PR body:
 - The slide-over must reach full parity with the old detail pages before their routes retire,
   or operators lose capability mid-migration (mitigation: redirects are staged — phase A
   redirects only list pages whose projections already have parity; detail routes redirect in
-  phase B once the slide-over reaches full tab parity; legacy route files are deleted in
+  phase B once the slide-over reaches full tab parity; the retired route files are deleted in
   phase D with all redirects staying).
 - Muscle memory and existing bookmarks break (mitigation: permanent redirects, palette).
 - Dense-table power workflows could regress inside a filter-driven canvas (mitigation:
@@ -194,12 +218,15 @@ role. The genuinely lost artifact is per-entity breadcrumbs, judged not worth a 
 | Four surfaces (separate Home) | A home page whose job is linking elsewhere is a page tax; attention chips on the canvas do the triage job in place |
 | Restyle existing pages (status quo, better tables) | Fails the "db reader" critique; leaves N status oracles and N thin pages |
 | ADR-0063 `work_items` backend model + Task Board | Requires new schema and services, violating the additive-only rider; frontend aggregation reaches the same operator surface now — 0063's UI layer is superseded, its schema stays dormant |
-| TOML workflow definitions alongside YAML | Deferred; YAML-only for now, format seam kept cheap to widen |
+| YAML-only workflow definitions (no TOML) | Founder wants both at the file boundary; YAML stays the canonical on-disk form, TOML handled by import/export conversion so the editor and daemon see one format |
+| Resurrect the cockpit's engine-blueprint designer | Founder dropped it; its canvas foundation is reused for the workflow canvas, which has a concrete artifact (a runnable definition) rather than a speculative blueprint |
 
 ## References
 
 - Founder design directives, 2026-07-04 (complete redesign; project-oriented scoping;
-  operation canvas; YAML workflow definitions; shows removal; play → script rename)
+  operation canvas; workflow definitions; shows removal; play → script rename; adopt the
+  desktop-cockpit visual style; Leo operator panel required; workflow canvas with YAML/TOML
+  import/export; engine canvas dropped)
 - Design-review rulings, 2026-06-11 (unified history timeline; canvas as command center;
   inviting zero states; contrast floors; generous editors)
 - Live QA examination, 2026-07-04: status-derivation drift across pages, unvirtualized
