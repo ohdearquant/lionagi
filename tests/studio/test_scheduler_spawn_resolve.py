@@ -138,6 +138,34 @@ def test_resolve_li_executable_falls_back_to_entry_point_module(monkeypatch, tmp
     assert prefix == [str(fake_python), "-m", "lionagi.cli.main"]
 
 
+def test_resolve_li_executable_relative_sys_executable_skips_entry_point_fallback(monkeypatch):
+    """A relative sys.executable (e.g. "python3" with no bin dir prefix) must
+    not leak through the console-entry-point fallback either: that tier
+    invokes sys.executable directly as the interpreter, so a relative value
+    there is exactly as unsafe as a relative shutil.which() hit. A registered
+    `li` entry point must NOT be used in this case."""
+
+    class _FakeEntryPoint:
+        name = "li"
+        value = "lionagi.cli.main:main"
+
+    monkeypatch.setattr(sched_subprocess.shutil, "which", lambda name: None)
+    monkeypatch.setattr(sched_subprocess.sys, "executable", "python3")
+    monkeypatch.setattr(
+        sched_subprocess.importlib_metadata,
+        "entry_points",
+        lambda group=None: [_FakeEntryPoint()],
+    )
+
+    prefix, detail = sched_subprocess.resolve_li_executable()
+
+    assert prefix is None
+    assert prefix != ["python3", "-m", "lionagi.cli.main"]
+    assert detail is not None
+    assert "sys.executable" in detail
+    assert "not absolute" in detail
+
+
 def test_resolve_li_executable_returns_none_and_names_every_tried_strategy_when_unresolved(
     monkeypatch, tmp_path
 ):

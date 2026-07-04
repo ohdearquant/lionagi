@@ -224,8 +224,14 @@ def resolve_li_executable() -> tuple[list[str] | None, str | None]:
     else:
         tried.append("shutil.which('li') found nothing on PATH")
 
+    # Both remaining strategies invoke sys.executable directly as the
+    # interpreter in the returned argv, so both require it to be absolute —
+    # a relative sys.executable would leak a relative prefix through either
+    # one, the same cwd-dependent/PATH-hijack problem as tier 1 above.
     python_path = Path(sys.executable) if sys.executable else None
-    if python_path is not None and python_path.is_absolute():
+    python_is_absolute = python_path is not None and python_path.is_absolute()
+
+    if python_is_absolute:
         venv_li = python_path.with_name("li")
         if venv_li.is_file() and os.access(venv_li, os.X_OK):
             return [str(venv_li)], None
@@ -233,16 +239,23 @@ def resolve_li_executable() -> tuple[list[str] | None, str | None]:
     else:
         tried.append(f"sys.executable is not an absolute path ({sys.executable!r})")
 
-    try:
-        entry_points = importlib_metadata.entry_points(group="console_scripts")
-    except Exception as exc:  # pragma: no cover - defensive, metadata API is stable
-        entry_points = []
-        tried.append(f"importlib.metadata.entry_points() raised {type(exc).__name__}: {exc}")
-    for ep in entry_points:
-        if ep.name == "li":
-            module = ep.value.split(":", 1)[0]
-            return [sys.executable, "-m", module], None
-    tried.append("no 'li' console_scripts entry point registered")
+    if python_is_absolute:
+        try:
+            entry_points = importlib_metadata.entry_points(group="console_scripts")
+        except Exception as exc:  # pragma: no cover - defensive, metadata API is stable
+            entry_points = []
+            tried.append(f"importlib.metadata.entry_points() raised {type(exc).__name__}: {exc}")
+        for ep in entry_points:
+            if ep.name == "li":
+                module = ep.value.split(":", 1)[0]
+                return [str(python_path), "-m", module], None
+        tried.append("no 'li' console_scripts entry point registered")
+    else:
+        tried.append(
+            "skipping console_scripts entry-point fallback: sys.executable is "
+            "not absolute, so `python -m <module>` would leak the same "
+            "relative prefix"
+        )
 
     return None, "; ".join(tried)
 
