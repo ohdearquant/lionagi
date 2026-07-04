@@ -153,11 +153,47 @@ def test_flow_threshold_more_lenient_than_agent():
 # ── Running, process dead ────────────────────────────────────────────────────
 
 
-def test_running_process_dead_with_messages_is_stale():
+def test_running_process_dead_but_recently_messaging_is_healthy():
+    """Externally-driven sessions expose no matchable pid; recent messages
+    outrank process visibility as life-evidence."""
     s = {
         "status": "running",
         "invocation_kind": "agent",
         "last_message_at": NOW - 200,
+        "message_count": 5,
+    }
+    h = classify_session_health(
+        s,
+        now=NOW,
+        process_alive=False,
+        has_artifacts=True,
+        has_stale_locks=False,
+    )
+    assert h == SessionHealth.HEALTHY
+
+
+def test_running_process_dead_quiet_hours_is_idle():
+    s = {
+        "status": "running",
+        "invocation_kind": "agent",
+        "last_message_at": NOW - 2 * 3600,
+        "message_count": 5,
+    }
+    h = classify_session_health(
+        s,
+        now=NOW,
+        process_alive=False,
+        has_artifacts=True,
+        has_stale_locks=False,
+    )
+    assert h == SessionHealth.IDLE
+
+
+def test_running_process_dead_past_threshold_is_stale():
+    s = {
+        "status": "running",
+        "invocation_kind": "agent",
+        "last_message_at": NOW - 7 * 3600,
         "message_count": 5,
     }
     h = classify_session_health(
@@ -188,8 +224,9 @@ def test_running_process_dead_no_output_is_orphaned():
     assert h == SessionHealth.ORPHANED
 
 
-def test_running_process_dead_no_messages_but_has_artifacts_is_stale():
-    """Artifacts present means the session produced *something* — not orphaned."""
+def test_running_process_dead_no_messages_but_has_artifacts_not_orphaned():
+    """Artifacts present means the session produced *something* — not orphaned.
+    Recent activity still classifies it alive despite the missing process."""
     s = {
         "status": "running",
         "invocation_kind": "agent",
@@ -203,7 +240,7 @@ def test_running_process_dead_no_messages_but_has_artifacts_is_stale():
         has_artifacts=True,
         has_stale_locks=False,
     )
-    assert h == SessionHealth.STALE
+    assert h == SessionHealth.HEALTHY
 
 
 # ── Edge cases ────────────────────────────────────────────────────────────────
