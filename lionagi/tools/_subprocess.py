@@ -6,6 +6,7 @@ from __future__ import annotations
 import re
 import subprocess
 import threading
+from collections.abc import Mapping
 
 from lionagi.ln._proc import terminate_process_group
 
@@ -45,7 +46,14 @@ def _subprocess_sync(
     timeout_sec: float,
     cwd: str | None,
     timeout_ms: int | None = None,
+    env: Mapping[str, str] | None = None,
 ) -> dict:
+    """Run ``cmd`` synchronously. ``env=None`` (the default) inherits the full
+    parent environment, matching every pre-existing caller. Pass an explicit
+    ``env`` mapping to run the child with only those variables — callers that
+    execute less-trusted or workspace-scoped commands (e.g. the ADR-0089
+    sandbox-backend seam) should build a minimal, named environment rather
+    than rely on this default."""
     try:
         proc = subprocess.Popen(  # noqa: S603
             cmd,
@@ -53,6 +61,7 @@ def _subprocess_sync(
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             cwd=cwd or None,
+            env=env,
             start_new_session=True,
         )
     except Exception as e:

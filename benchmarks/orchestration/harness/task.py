@@ -62,6 +62,10 @@ class RunResult:
     usage_source: str = "none"  # reported | estimated | mixed | none
     reasoning_disclosed: bool = True  # False ⇒ codex reasoning unbilled (cost is a floor)
     model: str = ""  # config model, for pricing at report time
+    # ADR-0089: which sandbox backend hosted this trial's workspace. "inprocess"
+    # is the pre-seam default; never pool "inprocess" and a real backend's
+    # numbers together when a report starts comparing across backends.
+    backend: str = "inprocess"
 
 
 @dataclass(slots=True)
