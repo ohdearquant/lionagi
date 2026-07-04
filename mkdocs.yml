@@ -1,6 +1,6 @@
 site_name: LionAGI
 site_description: Orchestrate multi-agent AI workflows from the command line or Python
-site_url: https://lionagi.ai/
+site_url: https://ohdearquant.github.io/lionagi/
 repo_url: https://github.com/ohdearquant/lionagi
 repo_name: ohdearquant/lionagi
 edit_uri: edit/main/docs/
