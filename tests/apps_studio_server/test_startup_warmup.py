@@ -95,7 +95,7 @@ def test_health_serves_before_checkpoint_completes(monkeypatch):
     monkeypatch.setattr(_CKPT, _blocking_ckpt)
 
     try:
-        with TestClient(app) as client:
+        with TestClient(app, base_url="http://127.0.0.1:8765") as client:
             assert gate.entered.wait(timeout=5), "warmup never started the checkpoint"
             assert recon_ran.is_set(), "reconciliation must run pre-yield, before serving"
             resp = client.get("/health")
@@ -119,7 +119,7 @@ def test_warmup_runs_checkpoint_with_startup_actor(monkeypatch):
 
     monkeypatch.setattr(_CKPT, _spy_ckpt)
 
-    with TestClient(app) as client:
+    with TestClient(app, base_url="http://127.0.0.1:8765") as client:
         assert client.get("/health").status_code == 200
         assert recon_ran.is_set()
         assert ckpt_done.wait(timeout=5), "deferred checkpoint did not run"
@@ -139,7 +139,7 @@ def test_shutdown_cancels_pending_checkpoint(monkeypatch):
 
     monkeypatch.setattr(_CKPT, _never)
 
-    with TestClient(app) as client:
+    with TestClient(app, base_url="http://127.0.0.1:8765") as client:
         assert gate.entered.wait(timeout=5), "warmup never started the checkpoint"
         assert client.get("/health").status_code == 200
     # Exiting the context ran shutdown while the checkpoint was still parked.
@@ -166,7 +166,7 @@ def test_checkpoint_failure_is_logged_not_fatal(monkeypatch):
     logger = logging.getLogger("lionagi.studio.app")
     logger.addHandler(spy)
     try:
-        with TestClient(app) as client:
+        with TestClient(app, base_url="http://127.0.0.1:8765") as client:
             assert client.get("/health").status_code == 200
             assert logged.wait(timeout=5), "checkpoint failure was not logged"
     finally:

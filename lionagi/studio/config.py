@@ -36,7 +36,15 @@ _raw_origins = os.environ.get("CORS_ORIGINS", "")
 CORS_ORIGINS: list[str] = (
     [o.strip() for o in _raw_origins.split(",") if o.strip()]
     if _raw_origins
-    else ["http://localhost:5173", "http://localhost:3000", "http://localhost:3765"]
+    else [
+        "http://localhost:5173",
+        "http://localhost:3000",
+        "http://localhost:3765",
+        # The hosted static SPA (lion-studio.khive.ai) drives a user's local
+        # daemon from a browser tab on this origin; an exact https origin,
+        # never a wildcard or subdomain pattern.
+        "https://lion-studio.khive.ai",
+    ]
 )
 
 # ── Launch admission config ───────────────────────────────────────────────────

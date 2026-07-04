@@ -324,7 +324,7 @@ def test_get_run_endpoint_returns_404_for_missing(tmp_path, monkeypatch):
 
     from lionagi.studio.app import app
 
-    client = TestClient(app)
+    client = TestClient(app, base_url="http://127.0.0.1:8765")
     r = client.get(f"/api/runs/{uuid.uuid4()}")
     assert r.status_code == 404
 

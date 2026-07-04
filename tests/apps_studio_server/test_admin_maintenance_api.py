@@ -35,7 +35,7 @@ def _make_client(tmp_path, monkeypatch):
 
     from lionagi.studio.app import app
 
-    return TestClient(app, raise_server_exceptions=False), db_path
+    return TestClient(app, raise_server_exceptions=False, base_url="http://127.0.0.1:8765"), db_path
 
 
 # ---------------------------------------------------------------------------

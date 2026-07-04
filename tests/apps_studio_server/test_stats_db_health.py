@@ -53,7 +53,7 @@ def _make_client(tmp_path, monkeypatch, db_path: Path) -> TestClient:
 
     from lionagi.studio.app import app
 
-    return TestClient(app)
+    return TestClient(app, base_url="http://127.0.0.1:8765")
 
 
 def test_stats_db_health_with_existing_db(tmp_path, monkeypatch):
@@ -117,7 +117,7 @@ def test_stats_size_comes_from_stats_db_path(tmp_path, monkeypatch):
 
     from lionagi.studio.app import app
 
-    client = TestClient(app)
+    client = TestClient(app, base_url="http://127.0.0.1:8765")
     r = client.get("/api/stats")
     assert r.status_code == 200
     db = r.json()["db"]
@@ -158,7 +158,7 @@ def test_invocation_bad_metadata_becomes_none(tmp_path, monkeypatch):
 
     from lionagi.studio.app import app
 
-    client = TestClient(app)
+    client = TestClient(app, base_url="http://127.0.0.1:8765")
     r = client.get(f"/api/invocations/{inv_id}")
     assert r.status_code == 200
     data = r.json()
@@ -181,7 +181,7 @@ def test_invocation_list_bad_metadata_becomes_none(tmp_path, monkeypatch):
 
     from lionagi.studio.app import app
 
-    client = TestClient(app)
+    client = TestClient(app, base_url="http://127.0.0.1:8765")
     r = client.get("/api/invocations")
     assert r.status_code == 200
     invocations = r.json()["invocations"]

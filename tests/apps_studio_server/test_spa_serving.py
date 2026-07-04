@@ -56,7 +56,7 @@ def spa_client(
     import lionagi.studio.app as app_mod
 
     reload(app_mod)
-    yield TestClient(app_mod.app, raise_server_exceptions=False)
+    yield TestClient(app_mod.app, raise_server_exceptions=False, base_url="http://127.0.0.1:8765")
 
     # Restore the API-only module singleton so it does not leak into later
     # tests in the same xdist worker.  Fixture finalizers run LIFO: this code
@@ -88,7 +88,7 @@ def no_dist_client(
     import lionagi.studio.app as app_mod
 
     reload(app_mod)
-    yield TestClient(app_mod.app, raise_server_exceptions=False)
+    yield TestClient(app_mod.app, raise_server_exceptions=False, base_url="http://127.0.0.1:8765")
 
     # The env var is still absent here (finalizers run LIFO, before monkeypatch
     # restores anything), so this reload restores the API-only singleton.

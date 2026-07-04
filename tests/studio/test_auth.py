@@ -57,7 +57,7 @@ def _make_client(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> TestClient:
             monkeypatch.setattr(mod, "_DB", str(fake_db))
 
     reload(app_mod)
-    return TestClient(app_mod.app, raise_server_exceptions=False)
+    return TestClient(app_mod.app, raise_server_exceptions=False, base_url="http://127.0.0.1:8765")
 
 
 @pytest.mark.integration

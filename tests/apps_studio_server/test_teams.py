@@ -18,7 +18,7 @@ def _make_client(monkeypatch, teams_root: Path) -> TestClient:
 
     from lionagi.studio.app import app
 
-    return TestClient(app)
+    return TestClient(app, base_url="http://127.0.0.1:8765")
 
 
 def _write_team(teams_root: Path, filename: str, data: dict) -> None:
