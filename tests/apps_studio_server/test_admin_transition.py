@@ -142,3 +142,88 @@ def test_transition_refused_when_heartbeat_changes_health(tmp_path, monkeypatch)
         f"Expected reason='changed_since_snapshot', got {skipped_entry['reason']!r}. "
         "The atomicity guard should report the heartbeat-race reason, not 'not_running:running'."
     )
+
+
+# ---------------------------------------------------------------------------
+# Test: an already-terminal session is never touched by the reconcile CAS
+# ---------------------------------------------------------------------------
+
+
+async def _seed_terminal_session(
+    db_path, session_id: str, *, status: str, reason_code: str
+) -> None:
+    from lionagi.state.db import StateDB
+
+    async with StateDB(db_path) as db:
+        pid = str(uuid.uuid4())
+        await db.create_progression(pid)
+        await db.create_session(
+            {
+                "id": session_id,
+                "progression_id": pid,
+                "name": "terminal-session",
+                "status": status,
+                "started_at": time.time() - 3600,
+            }
+        )
+        await db.execute(
+            "UPDATE sessions SET status_reason_code = ? WHERE id = ?",
+            (reason_code, session_id),
+        )
+
+
+def test_transition_sessions_leaves_already_terminal_session_untouched(tmp_path, monkeypatch):
+    """The reconcile's `WHERE status='running'` CAS (lionagi/studio/services/admin.py,
+    transition_sessions) is the ADR-0094 integrity-floor guard for this write path:
+    a session already in a terminal status must never be moved, and no spurious
+    status_transitions row may be recorded for it.
+
+    This is a black-box regression test of that safety property, not a re-test of
+    the SQL guard in isolation — it drives the real transition_sessions() call the
+    Studio admin routes use.
+    """
+    from lionagi.state.db import StateDB
+
+    db_path = tmp_path / "state.db"
+    sid = str(uuid.uuid4())
+    terminal_reason_code = "run.completed.ok"
+
+    _run(_seed_terminal_session(db_path, sid, status="completed", reason_code=terminal_reason_code))
+
+    import lionagi.state.db as state_db_mod
+    import lionagi.studio.services.admin as adm
+
+    monkeypatch.setattr(state_db_mod, "DEFAULT_DB_PATH", db_path)
+    monkeypatch.setattr(adm, "DEFAULT_DB_PATH", db_path)
+    monkeypatch.setattr(adm, "_DB", str(db_path))
+
+    result = _run(
+        adm.transition_sessions(
+            session_ids=[sid],
+            target_status="failed",
+            reason_code="run.failed.exception",
+            reason_summary="attempted reconcile of an already-terminal session",
+            actor="test",
+        )
+    )
+
+    assert sid not in result["transitioned"]
+    skipped_ids = [s["session_id"] for s in result["skipped"]]
+    assert sid in skipped_ids
+
+    async def _fetch():
+        async with StateDB(db_path) as db:
+            row = await db.get_session(sid)
+            transitions = await db.fetch_all(
+                "SELECT * FROM status_transitions WHERE entity_id = ?", (sid,)
+            )
+            return row, transitions
+
+    row, transitions = _run(_fetch())
+    assert row["status"] == "completed", "Terminal status must not be overwritten"
+    assert row["status_reason_code"] == terminal_reason_code, (
+        "Terminal reason code must not be overwritten"
+    )
+    assert transitions == [], (
+        "No status_transitions row may be recorded for a reconcile that never wrote"
+    )

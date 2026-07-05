@@ -12,6 +12,8 @@ from typing import Any
 
 import psutil
 
+from lionagi.state.db import PLAY_ACTIVE_STATUSES as _PLAY_ACTIVE_STATUSES
+
 from ._logging import log_error, warn
 from ._util import _TABLE_TO_ENTITY_TYPE
 from ._util import pid_alive as _pid_alive
@@ -157,10 +159,6 @@ def _terminate_pid(
 
 # Only sessions/invocations carry PIDs; plays/shows are orchestrators.
 _STALE_SWEEP_ORDER = ("sessions", "invocations")
-
-_PLAY_ACTIVE_STATUSES = frozenset(
-    {"pending", "prepared", "running", "running_complete", "gated", "redoing"}
-)
 
 
 async def _list_child_invocations(db: Any, session_id: str) -> list[dict[str, Any]]:

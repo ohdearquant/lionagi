@@ -11,6 +11,7 @@ from pathlib import Path
 
 import pytest
 
+from lionagi._paths import RUNS_ROOT
 from lionagi.cli.status import EXIT_UNKNOWN
 from lionagi.cli.wait import format_wait_line, run_wait, wait_for_terminal
 from lionagi.state.db import StateDB
@@ -68,6 +69,47 @@ async def _make_play(
     return play_id
 
 
+async def _make_invocation(db: StateDB, *, status: str = "completed") -> str:
+    iid = _uid()
+    await db.create_invocation(
+        {"id": iid, "skill": "test:wait", "started_at": 0.0, "status": status}
+    )
+    return iid
+
+
+async def _make_schedule(db: StateDB) -> str:
+    sid = _uid()
+    await db.create_schedule(
+        {
+            "id": sid,
+            "name": f"sched-{sid}",
+            "trigger_type": "interval",
+            "interval_sec": 60,
+            "action_kind": "agent",
+        }
+    )
+    return sid
+
+
+async def _make_schedule_run(
+    db: StateDB, schedule_id: str, *, status: str = "completed", invocation_id: str | None = None
+) -> str:
+    rid = _uid()
+    await db.create_schedule_run(
+        {
+            "id": rid,
+            "schedule_id": schedule_id,
+            "invocation_id": invocation_id,
+            "trigger_context": {},
+            "action_kind": "agent",
+            "action_args": [],
+            "status": status,
+            "fired_at": 0.0,
+        }
+    )
+    return rid
+
+
 # ── format_wait_line ─────────────────────────────────────────────────────────
 
 
@@ -123,7 +165,27 @@ async def test_wait_for_terminal_on_session_yields_correct_reason_and_artifact_d
     assert outcome["run_id"] == sid
     assert outcome["status"] == "completed"
     assert outcome["reason"] != "unknown"
-    assert outcome["artifact_dir"] == "/tmp/session-run"
+    # artifact_dir is the run directory (manifest container), not artifacts_path.
+    assert outcome["artifact_dir"] == str(RUNS_ROOT / sid)
+
+
+@pytest.mark.asyncio
+async def test_wait_for_terminal_artifact_dir_ignores_artifacts_path(
+    temp_db_path: Path,
+) -> None:
+    """artifact_dir must anchor on RUNS_ROOT / session_id even when the
+    session's artifacts_path column points somewhere else entirely — the
+    contract line always reports the run directory, never the artifacts
+    subdir."""
+    async with StateDB() as db:
+        sid = await _make_session(
+            db, status="completed", artifacts_path="/tmp/totally-unrelated-dir"
+        )
+
+    outcomes = await wait_for_terminal([sid])
+    assert len(outcomes) == 1
+    assert outcomes[0]["artifact_dir"] == str(RUNS_ROOT / sid)
+    assert outcomes[0]["artifact_dir"] != "/tmp/totally-unrelated-dir"
 
 
 @pytest.mark.asyncio
@@ -140,7 +202,29 @@ async def test_wait_for_terminal_on_play_yields_correct_reason_and_artifact_dir(
     outcome = outcomes[0]
     assert outcome["run_id"] == play_id
     assert outcome["status"] == "merged"
-    assert outcome["artifact_dir"] == "/tmp/play-session-run"
+    # Cross-kind: play resolves to its primary session's run dir, not the
+    # session's artifacts_path.
+    assert outcome["artifact_dir"] == str(RUNS_ROOT / sid)
+
+
+@pytest.mark.asyncio
+async def test_wait_for_terminal_on_schedule_run_yields_backing_session_run_dir(
+    temp_db_path: Path,
+) -> None:
+    """Cross-kind: schedule_run → invocation → primary session run dir."""
+    async with StateDB() as db:
+        sid = await _make_session(db, status="completed", artifacts_path="/tmp/sched-session-run")
+        inv_id = await _make_invocation(db, status="completed")
+        await db.execute("UPDATE sessions SET invocation_id = ? WHERE id = ?", (inv_id, sid))
+        sched_id = await _make_schedule(db)
+        run_id = await _make_schedule_run(db, sched_id, status="completed", invocation_id=inv_id)
+
+    outcomes = await wait_for_terminal([run_id])
+    assert len(outcomes) == 1
+    outcome = outcomes[0]
+    assert outcome["run_id"] == run_id
+    assert outcome["kind"] == "schedule_run"
+    assert outcome["artifact_dir"] == str(RUNS_ROOT / sid)
 
 
 @pytest.mark.asyncio
@@ -197,7 +281,7 @@ def test_run_wait_prints_contract_line_for_terminal_session(
     assert len(lines) == 1
     assert lines[0].startswith(f"{sid}\tstatus=completed\t")
     assert "reason=" in lines[0]
-    assert "artifact_dir=/tmp/cli-run" in lines[0]
+    assert f"artifact_dir={RUNS_ROOT / sid}" in lines[0]
     assert "exit_code=" in lines[0]
 
 

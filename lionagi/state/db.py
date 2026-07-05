@@ -242,8 +242,12 @@ _SESSION_STATUSES = VALID_SESSION_STATUSES
 INVOCATION_TERMINAL_STATUSES = SESSION_TERMINAL_STATUSES  # ADR-0025 vocabulary is shared
 SCHEDULE_RUN_TERMINAL_STATUSES = frozenset({"completed", "failed", "skipped", "cancelled"})
 SHOW_TERMINAL_STATUSES = frozenset({"completed", "aborted"})
-# Mirrors the "active" set kill.py's _persist_cancel already treats as
-# still-in-flight (_PLAY_ACTIVE_STATUSES); everything else is terminal.
+# Still-in-flight play statuses — the schema layer owns this vocabulary
+# (kill.py imports it rather than defining its own copy); everything else
+# in PLAY_TERMINAL_STATUSES below is terminal.
+PLAY_ACTIVE_STATUSES = frozenset(
+    {"pending", "prepared", "running", "running_complete", "gated", "redoing"}
+)
 PLAY_TERMINAL_STATUSES = frozenset(
     {"merged", "escalated", "gate_failed", "blocked", "aborted_after_finish"}
 )
@@ -256,6 +260,20 @@ TERMINAL_STATUSES_BY_ENTITY_TYPE: dict[str, frozenset[str]] = {
     "show": SHOW_TERMINAL_STATUSES,
     "play": PLAY_TERMINAL_STATUSES,
     "team": TEAM_TERMINAL_STATUSES,
+}
+
+# ── ADR-0094 status vocabulary (valid, not just terminal) ──────────────
+# update_status() rejects any new_status outside its entity_type's set here —
+# the terminal-overwrite floor above stops a terminal record from moving;
+# this stops ANY record (terminal or not) from being written to a status
+# that was never declared for its entity type.
+VALID_STATUSES_BY_ENTITY_TYPE: dict[str, frozenset[str]] = {
+    "session": VALID_SESSION_STATUSES,
+    "invocation": VALID_SESSION_STATUSES,  # shared vocabulary
+    "schedule_run": SCHEDULE_RUN_TERMINAL_STATUSES | frozenset({"pending", "running"}),
+    "show": SHOW_TERMINAL_STATUSES | frozenset({"pending", "running", "active"}),
+    "play": PLAY_ACTIVE_STATUSES | PLAY_TERMINAL_STATUSES,
+    "team": TEAM_TERMINAL_STATUSES | frozenset({"active"}),
 }
 
 
@@ -1464,6 +1482,12 @@ class StateDB:
             )
         canonical_type = _validate_entity_type_for_reason(entity_type)
         _validate_reason_code(reason_code)
+        valid_statuses = VALID_STATUSES_BY_ENTITY_TYPE.get(canonical_type)
+        if valid_statuses is not None and new_status not in valid_statuses:
+            raise ValueError(
+                f"update_status() called with new_status={new_status!r} for "
+                f"entity_type={canonical_type!r}; vocabulary is {sorted(valid_statuses)}."
+            )
         table = _reason_entity_table(canonical_type)
         now = time.time()
         terminal_statuses = TERMINAL_STATUSES_BY_ENTITY_TYPE.get(canonical_type, frozenset())
@@ -1576,8 +1600,21 @@ class StateDB:
         now: float,
     ) -> None:
         """The actual status + status_transitions write, factored out of
-        update_status() so both the ordinary and override paths share it."""
-        await conn.execute(
+        update_status() so both the ordinary and override paths share it.
+
+        The UPDATE's WHERE clause re-asserts `previous_status` (the value read
+        under the row lock in update_status()) so the compare-and-set is
+        enforced by storage itself, not only by the Python read-then-write
+        gap — a concurrent writer that changes the row between the SELECT and
+        this UPDATE loses the race at the database level. The
+        `status = :previous_status OR (status IS NULL AND :previous_status IS
+        NULL)` form is the portable NULL-safe equality: it matches a NULL
+        previous_status (sessions may have no status yet) on both SQLite and
+        PostgreSQL — unlike SQLite's `IS` extension (a NULL-safe `=` for any
+        operand pair), PostgreSQL's `IS` only accepts the NULL/TRUE/FALSE
+        keywords, not a bound parameter.
+        """
+        result = await conn.execute(
             text(
                 f"UPDATE {table} SET "  # noqa: S608
                 "  status = :status, "
@@ -1585,7 +1622,9 @@ class StateDB:
                 "  status_reason_summary = :reason_summary, "
                 "  status_evidence_refs = :evidence_refs, "
                 "  updated_at = :now "
-                "WHERE id = :id"
+                "WHERE id = :id "
+                "  AND (status = :previous_status "
+                "       OR (status IS NULL AND :previous_status IS NULL))"
             ).bindparams(bindparam("evidence_refs", type_=JSON)),
             {
                 "status": new_status,
@@ -1594,8 +1633,14 @@ class StateDB:
                 "evidence_refs": evidence_refs or [],
                 "now": now,
                 "id": entity_id,
+                "previous_status": previous_status,
             },
         )
+        if result.rowcount == 0:
+            raise RuntimeError(
+                f"status CAS lost for {canonical_type} {entity_id!r}: "
+                "row changed under update_status"
+            )
 
         await conn.execute(
             text(

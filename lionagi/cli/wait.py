@@ -23,6 +23,7 @@ import argparse
 from collections.abc import Callable
 from typing import Any
 
+from lionagi._paths import RUNS_ROOT
 from lionagi.state.db import TERMINAL_STATUSES_BY_ENTITY_TYPE
 from lionagi.state.reasons import VALID_REASON_CODES
 
@@ -81,16 +82,19 @@ async def _refetch(db: Any, kind: str, entity_id: str) -> dict[str, Any] | None:
 
 
 async def _artifact_dir_for(db: Any, kind: str, row: dict[str, Any]) -> str | None:
-    """The run directory backing *row* — never a per-kind internal layout,
-    only the artifacts_path a backing session already carries (ADR-0029)."""
+    """The run directory (the manifest container holding `run.json`) backing
+    *row* — always ``RUNS_ROOT / <a session id>``, never a per-kind artifact
+    layout. Resolved via the backing/primary session id, whether or not that
+    directory happens to exist on disk yet; only returns ``None`` when there
+    is no backing session id to anchor on."""
     if kind == "session":
-        return row.get("artifacts_path")
+        return str(RUNS_ROOT / row["id"])
     if kind == "invocation":
         primary = await _resolve_primary_session(db, "invocation", row)
-        return primary.get("artifacts_path") if primary else None
+        return str(RUNS_ROOT / primary["id"]) if primary else None
     if kind == "play":
         primary = await _resolve_primary_session(db, "play", row)
-        return primary.get("artifacts_path") if primary else None
+        return str(RUNS_ROOT / primary["id"]) if primary else None
     if kind == "schedule_run":
         invocation_id = row.get("invocation_id")
         if not invocation_id:
@@ -99,7 +103,7 @@ async def _artifact_dir_for(db: Any, kind: str, row: dict[str, Any]) -> str | No
         if inv is None:
             return None
         primary = await _resolve_primary_session(db, "invocation", inv)
-        return primary.get("artifacts_path") if primary else None
+        return str(RUNS_ROOT / primary["id"]) if primary else None
     return None
 
 

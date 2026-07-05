@@ -504,6 +504,22 @@ async def transition_sessions(
             # CAS: swap running→target only if the snapshot still holds, then
             # record the transition atomically. transaction() opens BEGIN
             # IMMEDIATE; a clean exit commits, any exception rolls back.
+            #
+            # This is an intentional, specialized snapshot-CAS write, not a
+            # bypass of the shared update_status() chokepoint: it can only
+            # ever move a session running→target (a legal forward transition;
+            # running is never terminal), so it can never overwrite a terminal
+            # status and never crosses the integrity floor. `WHERE
+            # status='running'` in the UPDATE below is the LOAD-BEARING guard
+            # for that — do not widen or drop that predicate. The additional
+            # last_message_at/updated_at snapshot equality guards are also
+            # load-bearing: they stop this reconcile from clobbering a session
+            # that became active again between health-classification and this
+            # write (the oscillation fix). Routing this through update_status()
+            # would regress that protection, since update_status()'s
+            # expected_statuses guard only compares on status, not on these
+            # snapshot columns. The transition is recorded into
+            # status_transitions below, same as update_status() would do.
             async with db.transaction() as conn:
                 result = await conn.execute(
                     text(

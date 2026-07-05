@@ -10,9 +10,12 @@ from __future__ import annotations
 
 import asyncio
 import json
+import time
 import uuid
+from unittest.mock import patch
 
 import pytest
+from sqlalchemy import text
 
 from lionagi.state.db import StateDB, TransitionRejectedError
 from lionagi.state.reasons import SessionReasons
@@ -44,6 +47,32 @@ async def _make_session(db: StateDB, *, status: str = "running") -> str:
     sid = _uid()
     await db.create_session({"id": sid, "progression_id": prog_id, "status": status})
     return sid
+
+
+async def _make_schedule_run(db: StateDB, *, status: str = "running") -> str:
+    sched_id = _uid()
+    await db.create_schedule(
+        {
+            "id": sched_id,
+            "name": f"sched-{sched_id}",
+            "trigger_type": "interval",
+            "interval_sec": 60,
+            "action_kind": "agent",
+        }
+    )
+    run_id = _uid()
+    await db.create_schedule_run(
+        {
+            "id": run_id,
+            "schedule_id": sched_id,
+            "trigger_context": {},
+            "action_kind": "agent",
+            "action_args": [],
+            "status": status,
+            "fired_at": time.time(),
+        }
+    )
+    return run_id
 
 
 # ── Rejection without override ──────────────────────────────────────────────
@@ -190,3 +219,88 @@ async def test_concurrent_stale_write_loses_to_guarded_write(db: StateDB) -> Non
 
     row = await db.get_session(sid)
     assert row["status"] == "completed"  # the first (newer) write wins
+
+
+# ── Status vocabulary — update_status() rejects unknown statuses ───────────
+
+
+@pytest.mark.asyncio
+async def test_update_status_rejects_unknown_status_for_session(db: StateDB) -> None:
+    """A status outside VALID_STATUSES_BY_ENTITY_TYPE must never persist,
+    regardless of whether the entity is currently terminal or not."""
+    sid = await _make_session(db, status="running")
+
+    with pytest.raises(ValueError, match="bogus_status"):
+        await db.update_status(
+            "session",
+            sid,
+            new_status="bogus_status",
+            reason_code=SessionReasons.HEALTH_STALE_NO_HEARTBEAT,
+            source="admin",
+        )
+
+    row = await db.get_session(sid)
+    assert row["status"] == "running"  # unchanged — the write never landed
+
+
+@pytest.mark.asyncio
+async def test_update_status_rejects_unknown_status_for_schedule_run(db: StateDB) -> None:
+    run_id = await _make_schedule_run(db, status="running")
+
+    with pytest.raises(ValueError, match="bogus_status"):
+        await db.update_status(
+            "schedule_run",
+            run_id,
+            new_status="bogus_status",
+            reason_code=SessionReasons.HEALTH_STALE_NO_HEARTBEAT,
+            source="admin",
+        )
+
+    row = await db.get_schedule_run(run_id)
+    assert row["status"] == "running"  # unchanged — the write never landed
+
+
+# ── Storage-level CAS — the UPDATE itself guards on previous_status ─────────
+
+
+@pytest.mark.asyncio
+async def test_storage_level_cas_rejects_row_changed_under_update_status(db: StateDB) -> None:
+    """_apply_status_write()'s UPDATE re-asserts previous_status at the SQL
+    level (not only via the Python expected_statuses check above it): if the
+    row changes between update_status()'s SELECT and its UPDATE, the write
+    affects zero rows and raises loudly instead of silently overwriting.
+
+    Real thread concurrency is flaky, so the race is simulated
+    deterministically: a second writer lands, on the SAME connection/
+    transaction, in between the read that update_status() already performed
+    and the guarded UPDATE — mirroring exactly the gap the SQL guard closes.
+    """
+    sid = await _make_session(db, status="running")
+
+    orig_apply = StateDB._apply_status_write
+
+    async def _apply_after_concurrent_write(self, conn, table, canonical_type, entity_id, **kwargs):
+        # Simulate a second writer landing between update_status()'s SELECT
+        # (already done — previous_status="running" is captured in kwargs)
+        # and this UPDATE.
+        await conn.execute(
+            text(f"UPDATE {table} SET status = 'completed' WHERE id = :id"),  # noqa: S608
+            {"id": entity_id},
+        )
+        return await orig_apply(self, conn, table, canonical_type, entity_id, **kwargs)
+
+    with patch.object(StateDB, "_apply_status_write", _apply_after_concurrent_write):
+        with pytest.raises(RuntimeError, match="status CAS lost"):
+            await db.update_status(
+                "session",
+                sid,
+                new_status="failed",
+                reason_code=SessionReasons.HEALTH_STALE_NO_HEARTBEAT,
+                source="executor",
+            )
+
+    # The whole transaction (the simulated concurrent write and the guarded
+    # write) rolled back on the raised error — the row is exactly as it was
+    # before update_status() was ever called, not silently left as "failed".
+    row = await db.get_session(sid)
+    assert row["status"] == "running"
