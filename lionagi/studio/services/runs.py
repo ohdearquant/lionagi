@@ -482,7 +482,7 @@ def _run_row(s: dict[str, Any], now: float, *, process_alive: bool | None = None
     branch_count / message_count / last_message_at, plus tri-state process
     liveness (None = unknown) so a process-dead run cannot render as healthy.
     """
-    from lionagi.state.health import SessionHealth, classify_session_health
+    from lionagi.state.health import classify_session_health
 
     health = classify_session_health(
         s,
@@ -491,9 +491,8 @@ def _run_row(s: dict[str, Any], now: float, *, process_alive: bool | None = None
         has_artifacts=bool(s.get("artifacts_path")),
         has_stale_locks=False,
     )
-    effective_health = (
-        SessionHealth.STALE.value if health == SessionHealth.UNRESPONSIVE else health.value
-    )
+    # Expose the classifier verdict verbatim; the dashboard maps UNRESPONSIVE→"stuck".
+    effective_health = health.value
     return {
         "run_id": s["id"],
         "id": s["id"],

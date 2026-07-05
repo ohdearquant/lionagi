@@ -222,12 +222,10 @@ describe("fleetReducer — counts strip", () => {
   });
 
   it("stuck agent raises attention count", () => {
-    const nowSec = 2_000_000;
     const s = dispatchOk(
       initialFleetState(),
       [],
-      [makeRun({ run_id: "r1", status: "running", started_at: nowSec - 4000 })],
-      nowSec,
+      [makeRun({ run_id: "r1", status: "running", effective_health: "unresponsive" })],
     );
     expect(s.counts.attention).toBe(1);
   });
@@ -246,7 +244,6 @@ describe("fleetReducer — attention flagging on org units", () => {
   });
 
   it("invocation with stuck child agent is flagged", () => {
-    const nowSec = 2_000_000;
     const s = dispatchOk(
       initialFleetState(),
       [makeInvocation({ id: "i1", status: "running", skill: "s" })],
@@ -255,10 +252,9 @@ describe("fleetReducer — attention flagging on org units", () => {
           run_id: "r1",
           status: "running",
           invocation_id: "i1",
-          started_at: nowSec - 4000,
+          effective_health: "unresponsive",
         }),
       ],
-      nowSec,
     );
     expect(s.orgUnits[0].needsAttention).toBe(true);
   });

@@ -104,9 +104,6 @@ const TERMINAL_STATUSES = new Set([
 ]);
 const GATED_STATUSES = new Set(["needs_review", "blocked", "gated"]);
 
-/** Runs stalled longer than this (seconds) are flagged "stuck". */
-const STUCK_THRESHOLD_SEC = 60 * 60;
-
 /** Failures older than this belong to History, not the attention queue. */
 const FAILED_ATTENTION_WINDOW_SEC = 24 * 60 * 60;
 
@@ -121,13 +118,6 @@ function failedRecently(
   const ref = endedAt ?? startedAt;
   if (ref == null) return false;
   return nowSec - ref <= FAILED_ATTENTION_WINDOW_SEC;
-}
-
-// ─── Derivation helpers ───────────────────────────────────────────────────────
-
-function elapsedSec(startedAt: number | null, nowSec: number): number | null {
-  if (startedAt == null) return null;
-  return nowSec - startedAt;
 }
 
 function buildAttentionItems(
@@ -164,13 +154,16 @@ function buildAttentionItems(
       reason = "failed";
     } else if (GATED_STATUSES.has(s)) {
       reason = "gated";
-    } else if (RUNNING_STATUSES.has(s)) {
-      const elapsed = elapsedSec(run.started_at ?? null, nowSec);
-      if (elapsed != null && elapsed > STUCK_THRESHOLD_SEC) reason = "stuck";
+    } else if (RUNNING_STATUSES.has(s) && run.effective_health === "unresponsive") {
+      // Stuck is the honest health verdict (alive but quiet past its threshold),
+      // never run age: a long-lived session still emitting activity is healthy.
+      reason = "stuck";
     }
     if (
       reason == null &&
-      (run.effective_health === "stale" || run.effective_health === "orphaned")
+      (run.effective_health === "stale" ||
+        run.effective_health === "orphaned" ||
+        run.effective_health === "zombie")
     ) {
       reason = "stale";
     }

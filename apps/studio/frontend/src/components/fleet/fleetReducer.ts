@@ -26,6 +26,7 @@ export interface AgentRow {
   id: string;
   name: string;
   status: string;
+  effectiveHealth: string | null;
   elapsedSec: number | null;
   branch_count: number;
   message_count: number;
@@ -117,7 +118,9 @@ const ATTENTION_STATUSES = new Set([
   "needs_review",
   "blocked",
 ]);
-const STUCK_THRESHOLD_SEC = 60 * 60;
+
+/** Health verdicts that flag a running row for attention. */
+const ATTENTION_HEALTH = new Set(["unresponsive", "stale", "orphaned", "zombie"]);
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 
@@ -135,8 +138,10 @@ function isActive(status: string): boolean {
 function needsAttention(row: AgentRow): boolean {
   const s = row.status.toLowerCase();
   if (ATTENTION_STATUSES.has(s)) return true;
-  if (RUNNING_STATUSES.has(s) && row.elapsedSec != null && row.elapsedSec > STUCK_THRESHOLD_SEC) {
-    return true;
+  // Flag a running row on its health verdict, never its age: a days-old session
+  // still emitting activity is healthy, not stuck.
+  if (RUNNING_STATUSES.has(s) && row.effectiveHealth != null) {
+    return ATTENTION_HEALTH.has(row.effectiveHealth);
   }
   return false;
 }
@@ -175,6 +180,7 @@ function buildOrgUnits(
       id: run.run_id,
       name: run.playbook_name ?? run.agent_name ?? run.run_id.slice(-12),
       status: run.status,
+      effectiveHealth: run.effective_health ?? null,
       elapsedSec: elapsed,
       branch_count: run.branch_count ?? 0,
       message_count: run.message_count ?? 0,
