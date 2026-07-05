@@ -50,10 +50,14 @@ async def get_activity_stats(window: str) -> dict[str, Any]:
     now_bucket_start = int(now // bucket_seconds) * bucket_seconds
     oldest_bucket_start = now_bucket_start - (bucket_count - 1) * bucket_seconds
 
-    async with StateDB(DEFAULT_DB_PATH) as db:
-        rows = await db.activity_stats(
-            window_start=oldest_bucket_start, bucket_seconds=bucket_seconds
-        )
+    # A dashboard read must not create/migrate the DB on a fresh workspace.
+    if not DEFAULT_DB_PATH.exists():
+        rows: list[dict[str, Any]] = []
+    else:
+        async with StateDB(DEFAULT_DB_PATH) as db:
+            rows = await db.activity_stats(
+                window_start=oldest_bucket_start, bucket_seconds=bucket_seconds
+            )
 
     buckets = [
         {
@@ -71,10 +75,10 @@ async def get_activity_stats(window: str) -> dict[str, Any]:
     total = 0
     for row in rows:
         bucket_start = int(row["bucket_start"])
-        raw_status = row["status"] or "completed"
         n = int(row["n"])
         total += n
-        bucket_key = _BUCKET_STATUS_MAP.get(raw_status)
+        # NULL/unknown statuses count in total only — no bucket, no rate.
+        bucket_key = _BUCKET_STATUS_MAP.get(row["status"])
         if bucket_key is None:
             continue
         if bucket_key == "completed":

@@ -19,7 +19,7 @@ from lionagi.state.db import StateDB  # noqa: E402
 async def _seed_session(
     db_path: Path,
     *,
-    status: str,
+    status: str | None,
     ended_at: float | None = None,
     started_at: float | None = None,
 ) -> None:
@@ -158,6 +158,120 @@ def test_running_sessions_counted_in_total_and_running_not_completion_denominato
     # denom excludes running -> completed=1, failed=0, cancelled=0 -> rate=1.0
     assert data["completion_rate"] == pytest.approx(1.0)
     assert data["buckets"][-1]["running"] == 1
+
+
+def test_status_aliases_fold_into_rendered_buckets(tmp_path, monkeypatch):
+    db_path = tmp_path / "state.db"
+    now = time.time()
+
+    async def seed():
+        await _seed_session(db_path, status="completed_empty", ended_at=now)
+        await _seed_session(db_path, status="timed_out", ended_at=now)
+        await _seed_session(db_path, status="aborted", ended_at=now)
+
+    import asyncio
+
+    asyncio.run(seed())
+
+    client = _make_client(monkeypatch, db_path)
+    data = client.get("/api/stats/activity").json()
+
+    last = data["buckets"][-1]
+    assert last["completed"] == 1
+    assert last["failed"] == 1
+    assert last["cancelled"] == 1
+    assert data["total"] == 3
+    # denom = 1 completed + 1 failed + 1 cancelled
+    assert data["completion_rate"] == pytest.approx(1 / 3)
+
+
+def test_null_and_unknown_statuses_count_in_total_only(tmp_path, monkeypatch):
+    db_path = tmp_path / "state.db"
+    now = time.time()
+
+    async def seed():
+        await _seed_session(db_path, status="completed", ended_at=now)
+        await _seed_session(db_path, status="running", ended_at=now)
+        await _seed_session(db_path, status="cancelled", ended_at=now)
+
+    import asyncio
+
+    asyncio.run(seed())
+
+    # create_session enforces the ADR-0025 vocabulary, but legacy rows can hold
+    # NULL or retired statuses — inject those directly to exercise the fold.
+    import sqlite3
+
+    with sqlite3.connect(db_path) as conn:
+        conn.execute(
+            "UPDATE sessions SET status = NULL WHERE id IN "
+            "(SELECT id FROM sessions WHERE status = 'running')"
+        )
+        conn.execute(
+            "UPDATE sessions SET status = 'paused' WHERE id IN "
+            "(SELECT id FROM sessions WHERE status = 'cancelled')"
+        )
+        conn.commit()
+
+    client = _make_client(monkeypatch, db_path)
+    data = client.get("/api/stats/activity").json()
+
+    assert data["total"] == 3
+    # NULL/unknown reach neither a bucket nor the completion-rate denominator
+    last = data["buckets"][-1]
+    assert last["completed"] == 1
+    assert last["failed"] == 0
+    assert last["cancelled"] == 0
+    assert last["running"] == 0
+    assert data["completion_rate"] == pytest.approx(1.0)
+
+
+def test_oldest_bucket_boundary_is_included(tmp_path, monkeypatch):
+    db_path = tmp_path / "state.db"
+    # Avoid seeding right before an hour rollover shifts the window mid-test.
+    if time.time() % 3600 > 3590:
+        time.sleep(12)
+    oldest_start = (int(time.time()) // 3600) * 3600 - 23 * 3600
+
+    async def seed():
+        await _seed_session(db_path, status="failed", ended_at=float(oldest_start))
+
+    import asyncio
+
+    asyncio.run(seed())
+
+    client = _make_client(monkeypatch, db_path)
+    data = client.get("/api/stats/activity?window=24h").json()
+
+    assert data["total"] == 1
+    assert data["buckets"][0]["t"] == oldest_start
+    assert data["buckets"][0]["failed"] == 1
+
+
+def test_running_session_with_only_created_at_anchors_to_creation(tmp_path, monkeypatch):
+    db_path = tmp_path / "state.db"
+
+    async def seed():
+        await _seed_session(db_path, status="running")
+
+    import asyncio
+
+    asyncio.run(seed())
+
+    client = _make_client(monkeypatch, db_path)
+    data = client.get("/api/stats/activity").json()
+
+    assert data["total"] == 1
+    assert data["buckets"][-1]["running"] == 1
+
+
+def test_missing_db_file_is_not_created_by_read(tmp_path, monkeypatch):
+    db_path = tmp_path / "state.db"
+    client = _make_client(monkeypatch, db_path)
+
+    r = client.get("/api/stats/activity")
+    assert r.status_code == 200
+    assert not db_path.exists()
 
 
 def test_bucket_list_is_dense_and_oldest_first(tmp_path, monkeypatch):
