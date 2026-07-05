@@ -5,9 +5,10 @@
 Ref resolution order: session id (state.db, prefix match) -> branch id
 (~/.lionagi/runs/*/branches/*.json, prefix match) -> run id (run.json manifest
 prefix match) -> file path. Distillation is mechanical (no LLM): a saved
-artifact/summary verbatim, else the initial instruction + final assistant
-message, else a loudly-marked head/tail truncation to fit budget. Budget is
-shared across all refs, allocated in argv order.
+artifact/summary verbatim, else the final assistant message + initial
+instruction, else a loudly-marked head/tail truncation to fit budget. Budget
+is shared across the combined injected block (including XML wrapper and
+inter-block separators), allocated in argv order.
 """
 
 from __future__ import annotations
@@ -46,7 +47,7 @@ class ContextCandidate:
     ref: str
     model: str | None
     step1_text: str | None = None  # saved artifact/summary, verbatim if it fits
-    step2_text: str | None = None  # initial instruction + final assistant message
+    step2_text: str | None = None  # final assistant message + initial instruction
     step3_head: str | None = None  # head half for loud truncation
     step3_tail: str | None = None  # tail half for loud truncation
 
@@ -221,7 +222,7 @@ async def _candidate_from_branch(db, branch_id: str, ref: str, kind: str) -> Con
     if branch_row.get("provider") and branch_row.get("model"):
         model = f"{branch_row['provider']}/{branch_row['model']}"
 
-    step2 = f"{initial_text}\n\n{final_text}" if initial_text else final_text
+    step2 = f"{final_text}\n\n{initial_text}" if initial_text else final_text
     return ContextCandidate(
         kind=kind,
         ref=ref,
@@ -299,22 +300,36 @@ def _wrap_block(candidate: ContextCandidate, text: str) -> str:
     )
 
 
+_BLOCK_SEPARATOR = "\n\n"
+
+
 def build_context_block(candidates: Sequence[ContextCandidate], budget_tokens: int) -> str:
-    """Assemble the XML-delimited context block(s), argv order, total-not-per-ref budget."""
+    """Assemble the XML-delimited context block(s), argv order, total-not-per-ref budget.
+
+    The budget bounds the COMBINED injected block, including the XML wrapper
+    (open/close tags) and the inter-block separator — not just the distilled
+    payload text. Wrapper overhead is charged against each ref's slice, in
+    argv order, before the remaining budget is handed to the distillation
+    ladder for that ref's payload.
+    """
     from lionagi.cli._logging import warn
 
     remaining = budget_tokens * _CHARS_PER_TOKEN
     blocks: list[str] = []
-    for candidate in candidates:
-        text, truncated = _distill(candidate, max(remaining, 0))
-        remaining -= len(text)
+    for i, candidate in enumerate(candidates):
+        overhead = len(_wrap_block(candidate, ""))
+        if i > 0:
+            overhead += len(_BLOCK_SEPARATOR)
+        text_budget = max(remaining - overhead, 0)
+        text, truncated = _distill(candidate, text_budget)
+        remaining -= overhead + len(text)
         if truncated:
             warn(
                 f"--context-from {candidate.ref!r}: content exceeded the "
                 f"{budget_tokens}-token budget, truncated (loud, not fatal)"
             )
         blocks.append(_wrap_block(candidate, text))
-    return "\n\n".join(blocks)
+    return _BLOCK_SEPARATOR.join(blocks)
 
 
 async def resolve_and_build_context_block(refs: Sequence[str], budget_tokens: int) -> str:

@@ -12,6 +12,7 @@ prompt in the new branch's first instruction.
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import time
@@ -23,6 +24,8 @@ from unittest.mock import AsyncMock
 import pytest
 
 from lionagi.cli._context_from import (
+    _CHARS_PER_TOKEN,
+    DEFAULT_CONTEXT_BUDGET_TOKENS,
     AmbiguousContextRefError,
     ContextCandidate,
     ContextFromError,
@@ -127,17 +130,18 @@ def test_ladder_uses_verbatim_artifact_when_it_fits():
 
 
 def test_ladder_falls_back_to_final_message_when_no_artifact():
+    # spec ladder rung 2: final assistant message FIRST, then the initial instruction.
     cand = ContextCandidate(
         kind="branch",
         ref="r1",
         model=None,
         step1_text=None,
-        step2_text="initial\n\nfinal",
+        step2_text="final\n\ninitial",
         step3_head="initial",
         step3_tail="final",
     )
     text, truncated = _distill(cand, budget_chars=1000)
-    assert text == "initial\n\nfinal"
+    assert text == "final\n\ninitial"
     assert truncated is False
 
 
@@ -168,15 +172,46 @@ def test_build_context_block_allocates_total_budget_in_argv_order(caplog):
     logger.handlers.clear()
     logger.propagate = True
 
+    budget_tokens = 60  # 240 chars total, enough for the first ref's wrapper + payload
     with caplog.at_level(logging.WARNING, logger="lionagi.cli.warn"):
-        block = build_context_block([first, second], budget_tokens=20)  # 80 chars total
+        block = build_context_block([first, second], budget_tokens=budget_tokens)
 
     # first ref gets its natural fit (60 chars verbatim final-message text)
     assert "F" * 60 in block
-    # second ref (tail) only had ~20 chars left -> loudly truncated, never silently dropped
+    # second ref (tail) only had budget left for wrapper + a loud marker
     assert 'ref="second"' in block
     assert "[...truncated...]" in block
     assert any("second" in rec.message for rec in caplog.records)
+    # the COMBINED block (delimiters + separators included) respects the total budget,
+    # not just the distilled payload text
+    assert len(block) <= budget_tokens * _CHARS_PER_TOKEN
+
+
+def test_build_context_block_total_budget_bounds_combined_wrapped_block(caplog):
+    """Regression: budget must bound the wrapped block (tags + separators), not payload only.
+
+    Two refs whose raw payloads alone (120 chars) fit comfortably under a naive
+    payload-only accounting of the budget, but the XML wrapper + separator overhead
+    means the true combined block must still respect the total budget.
+    """
+    first = ContextCandidate(kind="branch", ref="first", model="m", step2_text="F" * 60)
+    second = ContextCandidate(kind="branch", ref="second", model="m", step2_text="S" * 60)
+
+    logger = logging.getLogger("lionagi.cli.warn")
+    logger.handlers.clear()
+    logger.propagate = True
+
+    budget_tokens = 20  # 80 chars total -- tight enough that wrapper overhead dominates
+    with caplog.at_level(logging.WARNING, logger="lionagi.cli.warn"):
+        block = build_context_block([first, second], budget_tokens=budget_tokens)
+
+    # neither payload leaks through unbounded -- both refs are loudly truncated
+    assert "F" * 60 not in block
+    assert "S" * 60 not in block
+    assert block.count("[...truncated...]") == 2
+    # the combined block is far smaller than the un-bounded 236-char blowup the
+    # payload-only accounting produced (two 60-char payloads + wrapper tags)
+    assert len(block) < 200
 
 
 def test_file_ref_over_budget_truncates_loudly_no_verbatim_blowup(tmp_path):
@@ -208,6 +243,8 @@ async def test_resolve_session_id_ref(temp_db_path):
     assert cand.kind == "session"
     assert cand.step3_tail == "done, verdict: ok"
     assert cand.model == "anthropic/sonnet"
+    # ladder rung 2: final assistant message FIRST, then the initial instruction
+    assert cand.step2_text == "done, verdict: ok\n\ndo the task"
 
 
 @pytest.mark.asyncio
@@ -494,3 +531,228 @@ async def test_injected_block_present_above_prompt_in_first_instruction(monkeypa
     instruction = capture["instruction"]
     assert marker in instruction
     assert instruction.index(marker) < instruction.index("the user prompt")
+
+
+# ── Explicit `--context-budget 0` must be preserved, not defaulted ─────────
+
+
+@pytest.mark.asyncio
+async def test_context_budget_zero_passed_through_not_defaulted(monkeypatch, tmp_path):
+    """`context_budget=0` must reach `resolve_and_build_context_block` as `0`,
+    never silently upgraded to `DEFAULT_CONTEXT_BUDGET_TOKENS` by a truthiness
+    fallback (`context_budget or DEFAULT...` treats 0 as falsy)."""
+    import lionagi.cli.agent as agent_mod
+
+    capture: dict = {}
+    _wire_agent_stubs(monkeypatch, tmp_path, operate_return="ok", capture=capture)
+    monkeypatch.setattr(
+        agent_mod,
+        "allocate_run",
+        lambda: SimpleNamespace(
+            run_id="r",
+            artifact_root=tmp_path / "artifacts",
+            stream_dir=tmp_path / "stream",
+            branches_dir=tmp_path / "branches",
+            write_manifest=lambda data: None,
+        ),
+    )
+
+    captured_budget: dict = {}
+
+    async def fake_build(refs, budget_tokens):
+        captured_budget["value"] = budget_tokens
+        return '<prior-run-context ref="x" kind="file" model="unknown">\n[...truncated...]\n</prior-run-context>'
+
+    monkeypatch.setattr(agent_mod, "resolve_and_build_context_block", fake_build)
+
+    from lionagi.cli.agent import _run_agent
+
+    await _run_agent(
+        "claude/sonnet",
+        "the user prompt",
+        context_from=["some-ref"],
+        context_budget=0,
+    )
+
+    assert captured_budget["value"] == 0
+
+
+@pytest.mark.asyncio
+async def test_context_budget_zero_reaches_build_context_block_only_truncation_marker(
+    monkeypatch, temp_db_path, runs_root, tmp_path
+):
+    """End-to-end: `--context-budget 0` flows through the REAL resolve+build
+    pipeline (no mocking of `resolve_and_build_context_block`) and the
+    injected block contains only the loud truncation marker -- never the
+    verbatim source content."""
+    import lionagi.cli.agent as agent_mod
+
+    capture: dict = {}
+    _wire_agent_stubs(monkeypatch, tmp_path, operate_return="ok", capture=capture)
+    monkeypatch.setattr(
+        agent_mod,
+        "allocate_run",
+        lambda: SimpleNamespace(
+            run_id="r",
+            artifact_root=tmp_path / "artifacts",
+            stream_dir=tmp_path / "stream",
+            branches_dir=tmp_path / "branches",
+            write_manifest=lambda data: None,
+        ),
+    )
+
+    source = tmp_path / "prior.md"
+    source.write_text("verbatim prior findings that must not leak through at budget 0")
+
+    from lionagi.cli.agent import _run_agent
+
+    await _run_agent(
+        "claude/sonnet",
+        "the user prompt",
+        context_from=[str(source)],
+        context_budget=0,
+    )
+
+    instruction = capture["instruction"]
+    assert "[...truncated...]" in instruction
+    assert "verbatim prior findings" not in instruction
+
+
+def test_build_context_block_budget_zero_yields_only_truncation_marker():
+    cand = ContextCandidate(
+        kind="file",
+        ref="r1",
+        model=None,
+        step1_text="a saved artifact that would otherwise be used verbatim",
+        step2_text="initial\n\nfinal",
+        step3_head="initial",
+        step3_tail="final",
+    )
+    block = build_context_block([cand], budget_tokens=0)
+    assert "[...truncated...]" in block
+    assert "saved artifact" not in block
+    assert "initial" not in block
+    assert "final" not in block
+
+
+# ── CLI surface: exit codes, stderr content, precedence, argv ordering ─────
+
+
+def _base_cli_args(**overrides) -> SimpleNamespace:
+    defaults = dict(
+        query=["claude/sonnet", "hello"],
+        prompt_flag=None,
+        prompt_file=None,
+        yolo=False,
+        verbose=False,
+        theme=None,
+        resume=None,
+        continue_last=False,
+        effort=None,
+        agent=None,
+        cwd=None,
+        timeout=None,
+        fast=False,
+        invocation=None,
+        project=None,
+        bypass=False,
+        preset=None,
+        resume_on_timeout=False,
+        form=None,
+        context_from=None,
+        context_budget=None,
+    )
+    defaults.update(overrides)
+    return SimpleNamespace(**defaults)
+
+
+def test_cli_unresolvable_ref_exits_2_with_stderr(monkeypatch, temp_db_path, runs_root, caplog):
+    import lionagi.cli.agent as agent_mod
+    from lionagi.ln.concurrency import run_async as _real_run_async
+
+    monkeypatch.setattr(agent_mod, "run_async", _real_run_async)
+
+    logger = logging.getLogger("lionagi.cli.error")
+    logger.handlers.clear()
+    logger.propagate = True
+
+    args = _base_cli_args(context_from=["totally-unknown-ref-xyz"])
+
+    from lionagi.cli.agent import run_agent
+
+    with caplog.at_level(logging.ERROR, logger="lionagi.cli.error"):
+        rc = run_agent(args)
+
+    assert rc == 2
+    assert any("could not resolve" in rec.message for rec in caplog.records)
+
+
+def test_cli_ambiguous_prefix_exits_2_lists_candidates(monkeypatch, temp_db_path, caplog):
+    import lionagi.cli.agent as agent_mod
+    from lionagi.ln.concurrency import run_async as _real_run_async
+
+    monkeypatch.setattr(agent_mod, "run_async", _real_run_async)
+
+    sid1 = "abc11111" + uuid.uuid4().hex[:10]
+    sid2 = "abc22222" + uuid.uuid4().hex[:10]
+
+    async def _seed():
+        async with StateDB() as db:
+            await _make_session(db, id=sid1)
+            await _make_session(db, id=sid2)
+
+    asyncio.run(_seed())
+
+    logger = logging.getLogger("lionagi.cli.error")
+    logger.handlers.clear()
+    logger.propagate = True
+
+    args = _base_cli_args(context_from=["abc"])
+
+    from lionagi.cli.agent import run_agent
+
+    with caplog.at_level(logging.ERROR, logger="lionagi.cli.error"):
+        rc = run_agent(args)
+
+    assert rc == 2
+    messages = "\n".join(rec.message for rec in caplog.records)
+    assert "ambiguous" in messages
+    assert sid1 in messages
+    assert sid2 in messages
+
+
+@pytest.mark.asyncio
+async def test_ref_precedence_session_over_file_path(temp_db_path, runs_root, tmp_path):
+    """A ref that is simultaneously a valid file path AND a resolvable id must
+    resolve via the id ladder (session -> branch -> run) and never fall
+    through to the file-path escape hatch."""
+    ref = str(tmp_path / "collision")
+    Path(ref).write_text("file contents must lose to the session match")
+
+    async with StateDB() as db:
+        sid = await _make_session(db, id=ref)
+        bid, pid = await _make_branch(db, sid)
+        await _add_message(
+            db, pid, role="assistant", content={"assistant_response": "session wins"}
+        )
+
+        [cand] = await resolve_context_refs([ref])
+
+    assert cand.kind == "session"
+    assert cand.step3_tail == "session wins"
+
+
+@pytest.mark.asyncio
+async def test_repeated_identical_refs_preserve_argv_order(temp_db_path, runs_root, tmp_path):
+    f = tmp_path / "prior.md"
+    f.write_text("same content")
+
+    candidates = await resolve_context_refs([str(f), str(f)])
+    assert len(candidates) == 2
+    assert candidates[0].ref == candidates[1].ref == str(f)
+
+    block = build_context_block(candidates, budget_tokens=DEFAULT_CONTEXT_BUDGET_TOKENS)
+    assert block.count("same content") == 2
+    first_idx = block.index("same content")
+    second_idx = block.index("same content", first_idx + 1)
+    assert first_idx < second_idx

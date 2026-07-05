@@ -232,8 +232,11 @@ async def _run_agent(
             "(resume already carries the source context)."
         )
     if context_from:
+        effective_context_budget = (
+            context_budget if context_budget is not None else DEFAULT_CONTEXT_BUDGET_TOKENS
+        )
         context_block = await resolve_and_build_context_block(
-            context_from, context_budget or DEFAULT_CONTEXT_BUDGET_TOKENS
+            context_from, effective_context_budget
         )
         prompt = f"{context_block}\n\n{prompt}"
 
