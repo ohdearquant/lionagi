@@ -369,6 +369,7 @@
     "cal": {
       "today": "今天",
       "next": "下次",
+      "runCount": "×{count}",
       "more": "+{count} 项",
       "noItems": "这一天没有记录。",
       "prevPeriod": "上一个",
