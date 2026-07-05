@@ -25,3 +25,21 @@ On the CLI side, bare `li studio` (equivalently `li studio --web`) is the mode b
 for this deploy: it starts only the local daemon and prints/opens this hosted URL,
 without building or serving any frontend locally. See the root README's "Lion
 Studio" section for the other launch modes (`--docker`, `--no-frontend`, `--dev`).
+
+## Auth: loopback vs everything else
+
+The default daemon binds `127.0.0.1` and runs without auth — the browser tab and the
+daemon are the same person's machine, and the OS user boundary is the security boundary.
+
+For **any non-loopback backend** — an SSH/Cloudflare tunnel, a LAN bind (`--host 0.0.0.0`),
+or a reverse proxy in front of the daemon — token auth is a hard **MUST**, not a
+recommendation. An unauthenticated non-loopback daemon exposes your full run history and
+agent spawn control to anyone who can reach the port. Set a bearer token before exposing it:
+
+```bash
+export LIONAGI_STUDIO_AUTH_TOKEN="$(openssl rand -hex 32)"
+li studio start --no-frontend
+```
+
+The frontend prompts for the token and sends it as `Authorization: Bearer <token>` on
+every request. Rotate it like any credential; never commit it.
