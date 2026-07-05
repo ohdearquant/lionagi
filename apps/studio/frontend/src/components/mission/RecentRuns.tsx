@@ -8,11 +8,40 @@ import { useTranslations } from "use-intl";
 import SectionLabel from "@/components/ui/SectionLabel";
 import StatusPill from "@/components/ui/StatusPill";
 import Duration from "@/components/ui/Duration";
+import Skeleton from "@/components/ui/Skeleton";
 import type { RunSummary } from "@/lib/types";
 
 interface Props {
   runs: RunSummary[];
   nowSec: number;
+}
+
+/** Placeholder row count while the first fetch is in flight. */
+const SKELETON_ROWS = 4;
+
+/** Shimmering row placeholders, sized to match a real recent-run row. */
+export function RecentRunsSkeleton() {
+  return (
+    <div aria-hidden="true">
+      <div className="mb-2 flex items-center justify-between">
+        <Skeleton className="h-4 w-16" />
+        <Skeleton className="h-3 w-14" />
+      </div>
+      <div className="overflow-hidden rounded border border-edge">
+        {Array.from({ length: SKELETON_ROWS }, (_, i) => (
+          <div
+            key={i}
+            className="flex items-center gap-3 bg-surface-raised px-3 py-1.5"
+            style={{ borderTop: i === 0 ? undefined : "1px solid var(--edge-hairline)" }}
+          >
+            <Skeleton className="h-4 w-11 shrink-0 rounded" />
+            <Skeleton className="h-3 flex-1" />
+            <Skeleton className="h-3 w-10 shrink-0" />
+          </div>
+        ))}
+      </div>
+    </div>
+  );
 }
 
 function durationSec(run: RunSummary, nowSec: number): number | null {

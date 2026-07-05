@@ -9,32 +9,45 @@
 
 import { useTranslations } from "use-intl";
 import StaleBadge from "./StaleBadge";
-import AttentionQueue from "./AttentionQueue";
-import LiveBoard from "./LiveBoard";
-import RecentRuns from "./RecentRuns";
-import Pulse from "./Pulse";
+import AttentionQueue, { AttentionQueueSkeleton } from "./AttentionQueue";
+import LiveBoard, { LiveBoardSkeleton } from "./LiveBoard";
+import RecentRuns, { RecentRunsSkeleton } from "./RecentRuns";
+import Pulse, { PulseSkeleton } from "./Pulse";
 import ZeroState from "./ZeroState";
+import Skeleton from "@/components/ui/Skeleton";
 import { useLiveBoard } from "./useLiveBoard";
 
 export default function MissionControl() {
   const t = useTranslations("mission");
   const board = useLiveBoard();
   const runningCount = board.activeRuns.length + board.activeInvocations.length;
+  // Skeletons are for the FIRST fetch only. dataState leaves "loading" for
+  // good on the first DATA_OK/DATA_ERROR, so later polls (including a
+  // background refresh failure) never re-trigger this branch.
+  const isInitialLoad = board.dataState === "loading";
 
   return (
-    <div className="flex w-full flex-col gap-5 px-6 py-5" aria-label={t("page.ariaLabel")}>
+    <div
+      className="flex w-full flex-col gap-5 px-6 py-5"
+      aria-label={t("page.ariaLabel")}
+      aria-busy={isInitialLoad}
+    >
       {/* Page heading row with glanceable summary */}
       <div className="flex items-center justify-between">
         <div>
           <h1 className="text-[length:var(--t-base)] font-semibold text-content-primary">
             {t("page.title")}
           </h1>
-          <p className="mt-0.5 font-data tabular-nums text-[length:var(--t-xs)] text-content-muted">
-            {t("page.summary", {
-              running: runningCount,
-              attention: board.attentionItems.length,
-            })}
-          </p>
+          {isInitialLoad ? (
+            <Skeleton className="mt-1.5 h-3 w-40" />
+          ) : (
+            <p className="mt-0.5 font-data tabular-nums text-[length:var(--t-xs)] text-content-muted">
+              {t("page.summary", {
+                running: runningCount,
+                attention: board.attentionItems.length,
+              })}
+            </p>
+          )}
         </div>
         <StaleBadge
           dataState={board.dataState}
@@ -54,8 +67,20 @@ export default function MissionControl() {
        *   Then RUNNING NOW as a full-width strip, then RECENT RUNS.
        */}
       {/* Total-empty daemon: guided cards replace the board — any work
-          exists → the real board below. */}
-      {board.systemEmpty ? (
+          exists → the real board below. Before the first successful fetch,
+          skeletons stand in for all three shapes so nothing pops in at once. */}
+      {isInitialLoad ? (
+        <>
+          <AttentionQueueSkeleton />
+          <hr className="border-t border-edge" style={{ border: "none", borderTopWidth: "1px" }} />
+          <LiveBoardSkeleton />
+          <hr className="border-t border-edge" style={{ border: "none", borderTopWidth: "1px" }} />
+          <div className="grid grid-cols-1 gap-5 xl:grid-cols-2">
+            <PulseSkeleton />
+            <RecentRunsSkeleton />
+          </div>
+        </>
+      ) : board.systemEmpty ? (
         <ZeroState />
       ) : (
         <>

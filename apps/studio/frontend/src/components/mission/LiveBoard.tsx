@@ -11,12 +11,16 @@ import { useTranslations } from "use-intl";
 import SectionLabel from "@/components/ui/SectionLabel";
 import StatusDot from "@/components/ui/StatusDot";
 import Chip from "@/components/ui/Chip";
+import Skeleton from "@/components/ui/Skeleton";
 import type { RunSummary } from "@/lib/types";
 import type { InvocationSummary } from "@/lib/api";
 import { runDeepLink, invocationDeepLink } from "@/lib/runDeepLink";
 
 /** Health states meaning the process is gone even though the run is non-terminal. */
 const DEAD_HEALTH = new Set(["stale", "orphaned", "zombie", "unresponsive"]);
+
+/** Placeholder card count while the first fetch is in flight. */
+const SKELETON_CARDS = 4;
 
 interface Props {
   activeRuns: RunSummary[];
@@ -116,6 +120,35 @@ function InvocationCard({ inv, nowSec }: { inv: InvocationSummary; nowSec: numbe
         )}
       </div>
     </Link>
+  );
+}
+
+/** Shimmering card placeholders, sized to match a real RunCard/InvocationCard. */
+export function LiveBoardSkeleton() {
+  return (
+    <div aria-hidden="true">
+      <div className="mb-2">
+        <Skeleton className="h-4 w-28" />
+      </div>
+      <div className="grid grid-cols-1 gap-2 sm:grid-cols-2 lg:grid-cols-3 2xl:grid-cols-4">
+        {Array.from({ length: SKELETON_CARDS }, (_, i) => (
+          <div
+            key={i}
+            className="flex flex-col gap-2 rounded border border-edge bg-surface-raised p-3"
+          >
+            <div className="flex items-center gap-2">
+              <Skeleton className="h-2.5 w-2.5 shrink-0 rounded-full" />
+              <Skeleton className="h-3 flex-1" />
+              <Skeleton className="h-3 w-10 shrink-0" />
+            </div>
+            <div className="flex items-center gap-2">
+              <Skeleton className="h-4 w-12 shrink-0 rounded" />
+              <Skeleton className="h-3 flex-1" />
+            </div>
+          </div>
+        ))}
+      </div>
+    </div>
   );
 }
 
