@@ -41,5 +41,9 @@ export LIONAGI_STUDIO_AUTH_TOKEN="$(openssl rand -hex 32)"
 li studio start --no-frontend
 ```
 
-The frontend prompts for the token and sends it as `Authorization: Bearer <token>` on
-every request. Rotate it like any credential; never commit it.
+Clients send it as `Authorization: Bearer <token>` on every request. The hosted SPA has
+no token-entry UI today — it only attaches a token injected as
+`window.__STUDIO_AUTH_TOKEN__` (the desktop shell does this). So a token-protected
+non-loopback daemon is currently for API/desktop-shell use; treat the hosted page as
+loopback-only until a token prompt ships. Rotate the token like any credential; never
+commit it.
