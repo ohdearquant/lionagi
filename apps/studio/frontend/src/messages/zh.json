@@ -20,11 +20,19 @@
     "main": {
       "ariaLabel": "主要内容"
     },
+    "topbar": {
+      "khiveLink": "khive.ai",
+      "newTab": "在新标签页中打开"
+    },
     "footer": {
       "healthy": "后端正常",
       "unhealthy": "后端不可达",
       "db": "数据库",
-      "version": "v"
+      "version": "v",
+      "ecosystemPrefix": "Lion Studio 是",
+      "ecosystemLink": "khive.ai",
+      "ecosystemSuffix": "生态系统的一部分",
+      "ecosystemNewTab": "在新标签页中打开"
     },
     "tabs": {
       "overview": "总览",

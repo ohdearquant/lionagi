@@ -20,11 +20,19 @@
     "main": {
       "ariaLabel": "Main content"
     },
+    "topbar": {
+      "khiveLink": "khive.ai",
+      "newTab": "opens in a new tab"
+    },
     "footer": {
       "healthy": "Backend healthy",
       "unhealthy": "Backend unreachable",
       "db": "DB",
-      "version": "v"
+      "version": "v",
+      "ecosystemPrefix": "Lion Studio is part of the",
+      "ecosystemLink": "khive.ai",
+      "ecosystemSuffix": "ecosystem",
+      "ecosystemNewTab": "opens in a new tab"
     },
     "tabs": {
       "overview": "Overview",
