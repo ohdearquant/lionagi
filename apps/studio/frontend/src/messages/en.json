@@ -363,12 +363,16 @@
       "openRun": "Open run"
     },
     "cal": {
-      "prevMonth": "Previous month",
-      "nextMonth": "Next month",
       "today": "Today",
       "next": "next",
       "more": "+{count} more",
-      "noItems": "Nothing on this day."
+      "noItems": "Nothing on this day.",
+      "prevPeriod": "Previous",
+      "nextPeriod": "Next",
+      "viewMonth": "Month",
+      "viewWeek": "Week",
+      "viewDay": "Day",
+      "allDay": "all-day"
     },
     "create": {
       "title": "New Schedule",
