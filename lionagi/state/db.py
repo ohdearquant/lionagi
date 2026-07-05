@@ -271,7 +271,10 @@ VALID_STATUSES_BY_ENTITY_TYPE: dict[str, frozenset[str]] = {
     "session": VALID_SESSION_STATUSES,
     "invocation": VALID_SESSION_STATUSES,  # shared vocabulary
     "schedule_run": SCHEDULE_RUN_TERMINAL_STATUSES | frozenset({"pending", "running"}),
-    "show": SHOW_TERMINAL_STATUSES | frozenset({"pending", "running", "active"}),
+    # Shows live in {active, completed, aborted} and carry an "imported" marker
+    # for records reconstructed from an on-disk manifest — update_show() already
+    # validates against this same set before routing here.
+    "show": SHOW_TERMINAL_STATUSES | frozenset({"active", "imported"}),
     "play": PLAY_ACTIVE_STATUSES | PLAY_TERMINAL_STATUSES,
     "team": TEAM_TERMINAL_STATUSES | frozenset({"active"}),
 }

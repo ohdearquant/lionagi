@@ -17,7 +17,15 @@ from unittest.mock import patch
 import pytest
 from sqlalchemy import text
 
-from lionagi.state.db import StateDB, TransitionRejectedError
+from lionagi.state.db import (
+    _INVOCATION_STATUSES,
+    _PLAY_STATUSES,
+    _SHOW_STATUSES,
+    VALID_SESSION_STATUSES,
+    VALID_STATUSES_BY_ENTITY_TYPE,
+    StateDB,
+    TransitionRejectedError,
+)
 from lionagi.state.reasons import SessionReasons
 
 # ── Fixtures ────────────────────────────────────────────────────────────────
@@ -258,6 +266,27 @@ async def test_update_status_rejects_unknown_status_for_schedule_run(db: StateDB
 
     row = await db.get_schedule_run(run_id)
     assert row["status"] == "running"  # unchanged — the write never landed
+
+
+@pytest.mark.parametrize(
+    ("entity_type", "authoritative"),
+    [
+        ("session", VALID_SESSION_STATUSES),
+        ("invocation", _INVOCATION_STATUSES),
+        ("show", _SHOW_STATUSES),
+        ("play", _PLAY_STATUSES),
+    ],
+)
+def test_valid_vocabulary_admits_every_authoritative_status(
+    entity_type: str, authoritative: frozenset[str]
+) -> None:
+    """update_status()'s per-entity vocabulary must be a superset of the status
+    set that the entity's own writer (update_show/update_play/…) already blesses.
+    A legal write that the writer accepts but the floor rejects is a regression;
+    this pins the whole under-inclusion class, not one entity."""
+    vocab = VALID_STATUSES_BY_ENTITY_TYPE[entity_type]
+    missing = authoritative - vocab
+    assert not missing, f"{entity_type} vocabulary omits legal statuses: {sorted(missing)}"
 
 
 # ── Storage-level CAS — the UPDATE itself guards on previous_status ─────────
