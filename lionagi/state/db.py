@@ -1497,6 +1497,43 @@ class StateDB:
                 )
         return row["n"]
 
+    async def activity_stats(
+        self, *, window_start: float, bucket_seconds: int
+    ) -> list[dict[str, Any]]:
+        """Per-bucket (bucket_start, status, count) rows for the activity window.
+
+        Bucketed by the raw epoch-seconds anchor timestamp (ended_at for
+        terminal sessions, started_at/created_at while running) with a single
+        GROUP BY — no per-bucket queries and no row-by-row counting in Python.
+        ``window_start`` is expected to already be bucket-aligned (the caller
+        owns bucket-boundary math) so every returned row lands in a bucket the
+        caller asked for.
+        """
+        query = """
+            SELECT
+                CAST(
+                    COALESCE(ended_at, started_at, created_at) / :bucket_seconds
+                    AS INTEGER
+                ) * :bucket_seconds AS bucket_start,
+                status,
+                COUNT(*) AS n
+            FROM sessions
+            WHERE COALESCE(ended_at, started_at, created_at) >= :window_start
+            GROUP BY bucket_start, status
+        """  # noqa: S608
+        async with self._read() as conn:
+            rows = (
+                (
+                    await conn.execute(
+                        text(query),
+                        {"bucket_seconds": bucket_seconds, "window_start": window_start},
+                    )
+                )
+                .mappings()
+                .all()
+            )
+        return [dict(r) for r in rows]
+
     # ── Projects ──────────────────────────────────────────────────────
 
     async def _upsert_project_stmt(
