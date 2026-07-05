@@ -477,11 +477,17 @@ async def _run_agent(
         import anyio
 
         with anyio.CancelScope(shield=True):
+            # The CLI provider's real engine session id (e.g. a Claude Code
+            # session uuid), captured from a "system" stream chunk — the
+            # link teardown uses to tell a genuine failure from a wrapper
+            # exception racing an engine session that is still alive.
+            _engine_session_uid = getattr(branch.chat_model.endpoint, "session_id", None)
             effective_status = await teardown_agent_persist(
                 live,
                 status=_terminal_status,
                 exception=_terminal_exc,
                 cwd=cwd,
+                engine_session_uid=_engine_session_uid,
             )
             if effective_status != _terminal_status:
                 _terminal_status = effective_status

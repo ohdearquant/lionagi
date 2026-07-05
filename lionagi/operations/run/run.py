@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import contextlib
 import logging
 from collections.abc import AsyncGenerator
 from dataclasses import fields
@@ -39,21 +40,30 @@ logger = logging.getLogger(__name__)
 
 
 async def _stream_with_deadline(model, api_call, deadline: float | None):
-    """Iterate model.stream(api_call) with per-__anext__ anyio cancel scope; transparent passthrough when deadline is None."""
-    stream_iter = model.stream(api_call=api_call).__aiter__()
-    while True:
-        try:
-            if deadline is not None:
-                remaining = deadline - anyio.current_time()
-                if remaining <= 0:
-                    raise TimeoutError("run() stream timeout exceeded")
-                with anyio.fail_after(remaining):
+    """Iterate model.stream(api_call) with per-__anext__ anyio cancel scope; transparent passthrough when deadline is None.
+
+    Wraps the underlying stream in ``aclosing`` so an early exit (exception,
+    consumer abandonment) deterministically closes it instead of leaving it
+    to async-generator GC — for a CLI provider that close cascades down to
+    the subprocess reader's own ``finally`` and terminates the process
+    group; without it, an abandoned generator can leave the CLI subprocess
+    running to completion, orphaned, after the caller already gave up.
+    """
+    async with contextlib.aclosing(model.stream(api_call=api_call)) as agen:
+        stream_iter = agen.__aiter__()
+        while True:
+            try:
+                if deadline is not None:
+                    remaining = deadline - anyio.current_time()
+                    if remaining <= 0:
+                        raise TimeoutError("run() stream timeout exceeded")
+                    with anyio.fail_after(remaining):
+                        chunk = await stream_iter.__anext__()
+                else:
                     chunk = await stream_iter.__anext__()
-            else:
-                chunk = await stream_iter.__anext__()
-        except StopAsyncIteration:
-            break
-        yield chunk
+            except StopAsyncIteration:
+                break
+            yield chunk
 
 
 async def run(
@@ -183,9 +193,10 @@ async def run(
         api_call = await model.create_event(**kw)
         await model.executor.append(api_call)
 
+        stream_gen = _stream_with_deadline(model, api_call, _stream_deadline)
         try:
             try:
-                async for chunk in _stream_with_deadline(model, api_call, _stream_deadline):
+                async for chunk in stream_gen:
                     match chunk.type:
                         case "system":
                             if sid := chunk.metadata.get("session_id"):
@@ -297,6 +308,14 @@ async def run(
                 _run_exc = _exc
                 raise
         finally:
+            # Deterministically close the stream chain on ANY exit (normal
+            # StopAsyncIteration, an "error" chunk raise, a control-signal
+            # _StopStream, GeneratorExit) rather than leaving it to
+            # async-generator GC — for a CLI provider that cascades down to
+            # the subprocess reader's own cleanup and terminates the process
+            # group instead of leaving it running, orphaned, in the background.
+            with contextlib.suppress(Exception):
+                await stream_gen.aclose()
             model.streaming_process_func = prev_stream_func
             if param.stream_persist:
                 snapshot_dir = param.snapshot_dir or param.persist_dir

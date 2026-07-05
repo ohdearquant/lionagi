@@ -996,24 +996,72 @@ async def _resolve_schedule_run(db: Any, raw_id: str) -> dict[str, Any] | None:
     )
 
 
+async def _resolve_session_run(db: Any, raw_id: str) -> dict[str, Any] | None:
+    """Exact match then prefix match against the sessions table (agent/li agent run ids)."""
+    row = await db.get_session(raw_id)
+    if row:
+        return row
+    return await db.fetch_one(
+        "SELECT * FROM sessions WHERE id LIKE ?",
+        (raw_id + "%",),
+    )
+
+
+def _format_session_wait_line(row: dict[str, Any]) -> str:
+    name = row.get("agent_name") or row.get("invocation_kind") or "session"
+    artifacts = row.get("artifacts_path") or "-"
+    return f"{row['id']}  name={name}  status={row['status']}  artifacts={artifacts}"
+
+
+async def _poll_pending_sessions_once(
+    db: Any,
+    pending: dict[str, dict[str, Any]],
+    done: list[dict[str, Any]],
+) -> None:
+    """Session analogue of _poll_pending_once: no schedule chain, just terminal-status polling."""
+    from lionagi.state.db import SESSION_TERMINAL_STATUSES
+
+    for run_id in list(pending):
+        row = await db.get_session(run_id)
+        if row is None:
+            row = {**pending[run_id], "status": "failed"}
+            from ._logging import log_error
+
+            log_error(f"session {run_id!r} disappeared from state.db while waiting")
+        elif row["status"] not in SESSION_TERMINAL_STATUSES:
+            continue
+        print(_format_session_wait_line(row))
+        done.append(row)
+        del pending[run_id]
+
+
 async def _resolve_watched_runs(
     db: Any, ids: list[str]
-) -> tuple[dict[str, dict[str, Any]], list[str]]:
+) -> tuple[dict[str, dict[str, Any]], dict[str, dict[str, Any]], list[str]]:
     """Resolve every requested id once, up front. schedule_run ids are
     already-fired-run identifiers a caller obtained elsewhere (e.g. `li
     schedule trigger`), not something that might come into existence later,
     so — unlike the --follow discovery scan below — resolution itself is
     not retried on every poll tick.
+
+    An id that isn't a schedule_run is also tried against the sessions table
+    (agent/li agent run ids) so `li monitor run <session_id>` can drill into
+    an agent run's terminal status + artifacts, not just scheduler runs.
     """
     pending: dict[str, dict[str, Any]] = {}
+    session_pending: dict[str, dict[str, Any]] = {}
     unresolved: list[str] = []
     for raw_id in ids:
         row = await _resolve_schedule_run(db, raw_id)
-        if row is None:
-            unresolved.append(raw_id)
-        else:
+        if row is not None:
             pending[row["id"]] = row  # canonical id as key: dedupes prefix collisions
-    return pending, unresolved
+            continue
+        session_row = await _resolve_session_run(db, raw_id)
+        if session_row is not None:
+            session_pending[session_row["id"]] = session_row
+        else:
+            unresolved.append(raw_id)
+    return pending, session_pending, unresolved
 
 
 async def _schedule_name(db: Any, schedule_id: str, *, cache: dict[str, str]) -> str:
@@ -1356,7 +1404,7 @@ def _dispatch_wait(ids: list[str], *, interval: float, follow: bool, chain: bool
 
     schedule_names: dict[str, str] = {}
 
-    async def _resolve() -> tuple[dict[str, dict[str, Any]], list[str]]:
+    async def _resolve() -> tuple[dict[str, dict[str, Any]], dict[str, dict[str, Any]], list[str]]:
         async with StateDB() as db:
             return await _resolve_watched_runs(db, ids)
 
@@ -1366,12 +1414,14 @@ def _dispatch_wait(ids: list[str], *, interval: float, follow: bool, chain: bool
         # which ids exist or what state they're in, so there is no aggregate
         # to report. This is "still in progress", not success or failure.
         return EXIT_RUNNING
-    pending, unresolved = resolved
+    pending, session_pending, unresolved = resolved
     for raw_id in unresolved:
-        log_error(f"schedule_run {raw_id!r} not found")
+        log_error(f"run id {raw_id!r} not found (checked schedule_runs and sessions)")
 
     total_watched = len(pending)
+    total_sessions = len(session_pending)
     done: list[dict[str, Any]] = []
+    session_done: list[dict[str, Any]] = []
     chain_state = _new_chain_state(pending, chain=chain)
     processed = 0
 
@@ -1379,12 +1429,13 @@ def _dispatch_wait(ids: list[str], *, interval: float, follow: bool, chain: bool
         nonlocal processed
         async with StateDB() as db:
             await _poll_pending_once(db, pending, schedule_names, done)
+            await _poll_pending_sessions_once(db, session_pending, session_done)
             processed = await _advance_chains(
                 db, pending, done, chain_state=chain_state, processed=processed
             )
 
     def _chain_open() -> bool:
-        return bool(pending or chain_state["awaiting_grace"])
+        return bool(pending or session_pending or chain_state["awaiting_grace"])
 
     while _chain_open() and not interrupted:
         _run_tick(_tick())
@@ -1394,16 +1445,19 @@ def _dispatch_wait(ids: list[str], *, interval: float, follow: bool, chain: bool
 
     resolved_roots = chain_state["resolved_roots"]
     chain_tail_exit = chain_state["chain_tail_exit"]
+    from ._util import EXIT_CODE_BY_STATUS
+
+    session_ok = all(EXIT_CODE_BY_STATUS.get(r["status"], 1) == 0 for r in session_done)
     if unresolved:
         exit_code = EXIT_UNKNOWN
-    elif len(resolved_roots) < total_watched:
-        # Some watched chain never concluded before we had to stop — either
-        # still pending outright or still inside its grace window. `done`
-        # (mutated in _poll_pending_once) and `chain_state` (mutated in
-        # _advance_chains, see above) are the ground truth that survives a
-        # tick being interrupted mid-flight.
+    elif len(resolved_roots) < total_watched or len(session_done) < total_sessions:
+        # Some watched chain (or session) never concluded before we had to
+        # stop — either still pending outright or still inside its grace
+        # window. `done`/`session_done` (mutated in the poll helpers above)
+        # and `chain_state` (mutated in _advance_chains) are the ground
+        # truth that survives a tick being interrupted mid-flight.
         exit_code = EXIT_RUNNING
-    elif all(chain_tail_exit.get(root) == 0 for root in resolved_roots):
+    elif all(chain_tail_exit.get(root) == 0 for root in resolved_roots) and session_ok:
         # Final-link-wins: each resolved chain's most recently seen terminal
         # exit_code decides, not every link along the way.
         exit_code = 0

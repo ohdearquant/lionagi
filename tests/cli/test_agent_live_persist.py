@@ -1010,3 +1010,110 @@ async def test_teardown_verification_preserves_non_completed_reason(
     v = s["artifact_verification_json"]
     assert isinstance(v, dict)
     assert v["status"] == "failed"
+
+
+# ── Phantom 'failed' suppression: linked engine session is alive/completed ───
+
+
+async def test_teardown_suppresses_failed_when_linked_engine_session_running(
+    temp_db_path: Path,
+):
+    """A wrapper exception must not read as 'failed' while the real engine session is still running."""
+    from lionagi.state.claude_mirror import mirror_session, session_db_id
+
+    engine_uid = "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"
+    async with StateDB() as db:
+        await mirror_session(
+            db,
+            session_uid=engine_uid,
+            events=[
+                {
+                    "type": "assistant",
+                    "uuid": "e1",
+                    "timestamp": "2026-07-05T00:00:00.000Z",
+                    "message": {
+                        "role": "assistant",
+                        "content": [{"type": "text", "text": "working on it"}],
+                    },
+                }
+            ],
+            tool_names={},
+            status="running",
+        )
+
+    branch = Branch(name="b1")
+    ctx = await _setup_live_persist(branch, agent_name="implementer")
+    assert ctx is not None
+
+    exc = RuntimeError("abandoned stream reader")
+    final_status = await _teardown_live_persist(
+        ctx, status="failed", exception=exc, engine_session_uid=engine_uid
+    )
+
+    assert final_status == "running"
+    async with StateDB() as db:
+        s = await db.get_session(ctx["session_id"])
+    assert s is not None
+    assert s["status"] == "running"
+    assert s["node_metadata"]["linked_engine_session_id"] == session_db_id(engine_uid)
+
+
+async def test_teardown_suppresses_failed_when_linked_engine_session_completed(
+    temp_db_path: Path,
+):
+    """A wrapper exception must not read as 'failed' once the real engine session has completed."""
+    from lionagi.state.claude_mirror import mirror_session, session_db_id
+
+    engine_uid = "aaaaaaaa-bbbb-cccc-dddd-ffffffffffff"
+    async with StateDB() as db:
+        await mirror_session(
+            db,
+            session_uid=engine_uid,
+            events=[
+                {
+                    "type": "assistant",
+                    "uuid": "e1",
+                    "timestamp": "2026-07-05T00:00:00.000Z",
+                    "message": {
+                        "role": "assistant",
+                        "content": [{"type": "text", "text": "done"}],
+                    },
+                }
+            ],
+            tool_names={},
+            status="completed",
+        )
+
+    branch = Branch(name="b1")
+    ctx = await _setup_live_persist(branch, agent_name="reviewer")
+    assert ctx is not None
+
+    exc = RuntimeError("abandoned stream reader")
+    final_status = await _teardown_live_persist(
+        ctx, status="failed", exception=exc, engine_session_uid=engine_uid
+    )
+
+    assert final_status == "completed"
+    async with StateDB() as db:
+        s = await db.get_session(ctx["session_id"])
+    assert s is not None
+    assert s["status"] == "completed"
+    assert s["node_metadata"]["linked_engine_session_id"] == session_db_id(engine_uid)
+
+
+async def test_teardown_keeps_failed_without_linked_engine_session(temp_db_path: Path):
+    """No linked engine session (or no engine_session_uid at all) → a real failure stays failed."""
+    branch = Branch(name="b1")
+    ctx = await _setup_live_persist(branch, agent_name="implementer")
+    assert ctx is not None
+
+    exc = RuntimeError("genuine failure")
+    final_status = await _teardown_live_persist(
+        ctx, status="failed", exception=exc, engine_session_uid="no-such-session-uid"
+    )
+
+    assert final_status == "failed"
+    async with StateDB() as db:
+        s = await db.get_session(ctx["session_id"])
+    assert s is not None
+    assert s["status"] == "failed"

@@ -291,6 +291,23 @@ def resolve_run_reason(
     return RunReasons.FAILED_EXCEPTION, "Run failed.", None
 
 
+async def _linked_engine_session(
+    db: StateDB, engine_session_uid: str | None
+) -> dict[str, Any] | None:
+    """The claude-mirror session row for a CLI provider's real engine session, if mirrored yet.
+
+    ``engine_session_uid`` is the provider-native session id (e.g. a Claude Code
+    session uuid), captured from ``endpoint.session_id`` while streaming — the
+    same id ``claude_mirror`` derives its StateDB session id from, so this is
+    the link between a profile-typed agent session and its engine-typed twin.
+    """
+    if not engine_session_uid:
+        return None
+    from lionagi.state.claude_mirror import session_db_id
+
+    return await db.get_session(session_db_id(engine_session_uid))
+
+
 async def _teardown_common(
     db: StateDB,
     *,
@@ -304,6 +321,7 @@ async def _teardown_common(
     identity_markers: dict | None = None,
     escalated_evidence: list[dict] | None = None,
     cwd: str | None = None,
+    engine_session_uid: str | None = None,
 ) -> str:
     from lionagi.state.artifact_verifier import (
         missing_artifact_evidence,
@@ -341,11 +359,46 @@ async def _teardown_common(
     final_reason_summary = reason_summary
     final_evidence_refs = evidence_refs
 
+    # A profile-typed session's own async wrapper can raise (an abandoned
+    # subprocess reader, a stream-protocol hiccup) while the CLI provider's
+    # real engine session — mirrored separately from the on-disk transcript —
+    # is still alive or already completed. Reading that as "failed" is a
+    # phantom: the actual work is running or done. Suppress the demotion and
+    # link+propagate instead (ADR-0025 vocabulary: no new status value).
+    if final_status == "failed" and exception is not None:
+        linked = await _linked_engine_session(db, engine_session_uid)
+        if linked is not None and linked.get("status") in ("running", "completed"):
+            from lionagi.state.reasons import RunReasons
+
+            final_status = "completed" if linked["status"] == "completed" else "running"
+            final_reason_code = (
+                RunReasons.COMPLETED_OK if final_status == "completed" else RunReasons.STARTED_OK
+            )
+            final_reason_summary = (
+                f"suppressed phantom 'failed': linked engine session {linked['id']} "
+                f"is {linked['status']!r}"
+            )
+            final_evidence_refs = [
+                {"kind": "session", "id": linked["id"], "label": linked["status"]}
+            ]
+            metadata = dict(metadata or {})
+            metadata["linked_engine_session_id"] = linked["id"]
+
+            existing_node_meta = session_row.get("node_metadata") or {}
+            if isinstance(existing_node_meta, str):
+                existing_node_meta = json.loads(existing_node_meta)
+            await db.update_session(
+                session_id,
+                node_metadata=json.dumps(
+                    {**existing_node_meta, "linked_engine_session_id": linked["id"]}
+                ),
+            )
+
     if verification and verification["status"] == "failed":
         from lionagi.state.reasons import RunReasons
 
         missing = verification["missing_required"]
-        if status == "completed":
+        if final_status == "completed":
             final_status = "failed"
             final_reason_code = RunReasons.FAILED_MISSING_ARTIFACT
             final_reason_summary = missing_artifact_summary(missing)
@@ -472,6 +525,7 @@ async def teardown_persist(
     extras: dict | None = None,
     escalated_evidence: list[dict] | None = None,
     cwd: str | None = None,
+    engine_session_uid: str | None = None,
 ) -> str:
     if ctx is None:
         return status
@@ -490,6 +544,7 @@ async def teardown_persist(
             identity_markers=ctx.get("identity_markers"),
             escalated_evidence=escalated_evidence,
             cwd=cwd,
+            engine_session_uid=engine_session_uid,
         )
 
         from lionagi.hooks import unroute_message_persistence

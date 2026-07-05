@@ -25,6 +25,7 @@ from lionagi.cli.monitor import (
     _poll_pending_once,
     _query_schedule_runs_since,
     _resolve_schedule_run,
+    _resolve_session_run,
     _split_watched_ids,
     add_monitor_subparser,
     run_monitor_wait,
@@ -1374,3 +1375,100 @@ def test_cli_monitor_help_still_shows_dashboard_usage():
     )
     assert result.returncode == 0
     assert "--watch" in result.stdout
+
+
+# ── li monitor run: resolving agent session ids (issue: profile-typed agent
+# sessions previously errored with "schedule_run not found") ────────────────
+
+
+async def _make_agent_session(db: StateDB, *, status: str = "completed") -> str:
+    """A minimal 'sessions' row shaped like a li agent run, bypassing schedule_runs."""
+    from lionagi import Branch
+    from lionagi.cli._runs import setup_agent_persist, teardown_agent_persist
+
+    branch = Branch(name="b1")
+    ctx = await setup_agent_persist(branch, agent_name="implementer")
+    assert ctx is not None
+    await teardown_agent_persist(ctx, status=status)
+    return ctx["session_id"]
+
+
+@pytest.mark.asyncio
+async def test_resolve_session_run_exact_match(temp_db_path: Path) -> None:
+    async with StateDB() as db:
+        session_id = await _make_agent_session(db, status="completed")
+        row = await _resolve_session_run(db, session_id)
+    assert row is not None
+    assert row["id"] == session_id
+
+
+@pytest.mark.asyncio
+async def test_resolve_session_run_prefix_match(temp_db_path: Path) -> None:
+    async with StateDB() as db:
+        session_id = await _make_agent_session(db, status="completed")
+        row = await _resolve_session_run(db, session_id[:12])
+    assert row is not None
+    assert row["id"] == session_id
+
+
+@pytest.mark.asyncio
+async def test_resolve_session_run_not_found_returns_none(temp_db_path: Path) -> None:
+    async with StateDB() as db:
+        row = await _resolve_session_run(db, "no-such-session")
+    assert row is None
+
+
+@pytest.mark.asyncio
+async def test_dispatch_wait_resolves_completed_agent_session(
+    temp_db_path: Path, capsys: pytest.CaptureFixture
+) -> None:
+    """`li monitor run <session_id>` must resolve an agent session id — not
+    error 'schedule_run not found' — and report its terminal status."""
+    async with StateDB() as db:
+        session_id = await _make_agent_session(db, status="completed")
+
+    exit_code = _dispatch_wait([session_id], interval=5.0, follow=False)
+
+    assert exit_code == 0
+    out = capsys.readouterr().out
+    assert session_id in out
+    assert "status=completed" in out
+
+
+@pytest.mark.asyncio
+async def test_dispatch_wait_resolves_failed_agent_session_nonzero_exit(
+    temp_db_path: Path,
+) -> None:
+    async with StateDB() as db:
+        session_id = await _make_agent_session(db, status="failed")
+
+    exit_code = _dispatch_wait([session_id], interval=5.0, follow=False)
+    assert exit_code == 1
+
+
+@pytest.mark.asyncio
+async def test_dispatch_wait_agent_session_still_running_returns_exit_running(
+    temp_db_path: Path,
+) -> None:
+    """A session that never goes terminal + a real SIGINT mid-wait must
+    report EXIT_RUNNING, not hang forever or silently succeed."""
+    async with StateDB() as db:
+        from lionagi import Branch
+        from lionagi.cli._runs import setup_agent_persist
+
+        branch = Branch(name="b1")
+        ctx = await setup_agent_persist(branch, agent_name="implementer")
+        assert ctx is not None
+        session_id = ctx["session_id"]
+
+    def _send_interrupt() -> None:
+        time.sleep(0.3)
+        os.kill(os.getpid(), signal.SIGINT)
+
+    t = threading.Thread(target=_send_interrupt, daemon=True)
+    t.start()
+
+    exit_code = _dispatch_wait([session_id], interval=0.05, follow=False)
+    t.join(timeout=2)
+
+    assert exit_code == EXIT_RUNNING
