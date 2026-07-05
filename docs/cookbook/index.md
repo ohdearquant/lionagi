@@ -1,6 +1,6 @@
 # Cookbook
 
-Five runnable scenarios. Each ends with a `Next:` pointer to the next one.
+Runnable scenarios. Each ends with a `Next:` pointer to the next one.
 
 | Scenario | Command | What it covers |
 |----------|---------|----------------|
@@ -9,5 +9,15 @@ Five runnable scenarios. Each ends with a `Next:` pointer to the next one.
 | [Multi-model pipeline](multi-model-pipeline.md) | `li o flow` | DAG with dependency edges |
 | [Team coordination](team-coordination.md) | `li team` + `--team-mode` | Mid-flow messaging |
 | [Resumable background](resumable-background.md) | `li o flow --background` | Detach, monitor, resume |
+
+Reliability recipes — consuming and producing run completion per the completion contract
+(ADR-0094):
+
+| Scenario | Surface | What it covers |
+|----------|---------|----------------|
+| [Reliable review runs](reliable-review-runs.md) | `li agent` | Wait on the record, act on reason codes |
+| [Reliable multi-leg runs](reliable-multi-leg-runs.md) | `li o flow` | Run-level completion, tail-leg artifact truth |
+| [Reliable recurring runs](reliable-recurring-runs.md) | `li schedule` | Daemon cwd, UTC cron, unattended triage |
+| [Reliable artifact production](reliable-artifact-production.md) | any gated leg | Incremental writes, deadline-surviving evidence |
 
 Next: [Codebase audit](codebase-audit.md) — the simplest pattern.
