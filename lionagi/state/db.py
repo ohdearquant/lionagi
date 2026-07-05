@@ -1945,6 +1945,25 @@ class StateDB:
             row = (await conn.execute(text(query), params)).mappings().first()
         return int(row["n"]) if row else 0
 
+    async def schedule_run_streak(self, schedule_id: str) -> tuple[int, str | None]:
+        """Consecutive terminal 'failed' streak and most recent status, newest-first, capped at 50 rows."""
+        query = """SELECT status FROM schedule_runs
+                   WHERE schedule_id = :schedule_id AND chain_depth = 0
+                   ORDER BY fired_at DESC LIMIT 50"""  # noqa: S608
+        async with self._read() as conn:
+            rows = (await conn.execute(text(query), {"schedule_id": schedule_id})).mappings().all()
+        if not rows:
+            return 0, None
+        last_status = rows[0]["status"]
+        streak = 0
+        for row in rows:
+            status = row["status"]
+            if status in ("completed", "cancelled"):
+                break
+            if status == "failed":
+                streak += 1
+        return streak, last_status
+
     async def get_schedule_run(self, run_id: str) -> dict[str, Any] | None:
         async with self._read() as conn:
             row = (

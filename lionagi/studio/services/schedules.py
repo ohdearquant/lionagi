@@ -316,6 +316,9 @@ async def list_schedules(
             if row.get("max_runs"):
                 used = await db.count_schedule_runs(row["id"], chain_depth=0)
                 row["remaining_runs"] = max(row["max_runs"] - used, 0)
+            streak, last_status = await db.schedule_run_streak(row["id"])
+            row["consecutive_failures"] = streak
+            row["last_status"] = last_status
     return rows
 
 
@@ -330,6 +333,9 @@ async def get_schedule(schedule_id: str) -> dict[str, Any] | None:
         if row.get("max_runs"):
             used = await db.count_schedule_runs(schedule_id, chain_depth=0)
             row["remaining_runs"] = max(row["max_runs"] - used, 0)
+        streak, last_status = await db.schedule_run_streak(schedule_id)
+        row["consecutive_failures"] = streak
+        row["last_status"] = last_status
     row["recent_runs"] = runs
     return row
 
