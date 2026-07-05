@@ -176,3 +176,40 @@ class TestPlayFlagsAnywhere:
         code = main(["play", "--bypass"])
         assert code == 1
         assert "playbook NAME is required" in capsys.readouterr().err
+
+    def _make_named_playbook(self, tmp_path, monkeypatch, name, **spec_fields):
+        playbooks_dir = tmp_path / ".lionagi" / "playbooks"
+        playbooks_dir.mkdir(parents=True, exist_ok=True)
+        spec = {"model": "claude-code/opus-4-7", "prompt": "Do {input}"}
+        spec.update(spec_fields)
+        (playbooks_dir / f"{name}.playbook.yaml").write_text(yaml.dump(spec))
+        monkeypatch.setenv("HOME", str(tmp_path))
+
+    def test_flag_value_equal_to_name_across_sentinel(self, tmp_path, monkeypatch, capsys):
+        """A flag VALUE that string-equals NAME must survive when NAME is
+        selected from after the `--` sentinel: the flag value occurrence
+        must not be removed in NAME's place."""
+        self._make_named_playbook(tmp_path, monkeypatch, "foo")
+        code, run_flow = _run_with_flow_mock(["play", "--team-mode", "foo", "--", "foo", "task"])
+        assert code == 0, capsys.readouterr().err
+        assert run_flow.call_args.kwargs["prompt"] == "Do task"
+        assert run_flow.call_args.kwargs["team_name"] == "foo"
+        assert run_flow.call_args.kwargs["model_spec"] == "claude-code/opus-4-7"
+
+    def test_save_value_equal_to_name_across_sentinel(self, tmp_path, monkeypatch, capsys):
+        self._make_named_playbook(tmp_path, monkeypatch, "foo")
+        code, run_flow = _run_with_flow_mock(
+            ["play", "--bypass", "--save", "foo", "--", "foo", "task"]
+        )
+        assert code == 0, capsys.readouterr().err
+        assert run_flow.call_args.kwargs["prompt"] == "Do task"
+        assert run_flow.call_args.kwargs["bypass"] is True
+
+    def test_duplicate_name_within_head_partition_still_safe(self, tmp_path, monkeypatch, capsys):
+        """Identical strings within one partition rewrite equivalently, so
+        first-match removal stays correct with no sentinel involved."""
+        self._make_named_playbook(tmp_path, monkeypatch, "foo")
+        code, run_flow = _run_with_flow_mock(["play", "--team-mode", "foo", "foo", "task"])
+        assert code == 0, capsys.readouterr().err
+        assert run_flow.call_args.kwargs["prompt"] == "Do task"
+        assert run_flow.call_args.kwargs["team_name"] == "foo"

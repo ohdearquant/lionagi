@@ -252,8 +252,17 @@ def _handle_play_shortcut(argv: list[str]) -> list[str] | int:
             )
             return 1
         name = bare[0]
-        other = list(rest)
-        other.remove(name)
+        # Remove the NAME occurrence from the partition it was actually
+        # selected from, never by string value across the whole argv: an
+        # earlier flag VALUE equal to NAME (e.g. `--team-mode foo -- foo`)
+        # must not be deleted in its place. Within a single partition,
+        # identical strings rewrite equivalently, so first-match is safe.
+        if p_ns.query or p_extras:
+            head_tokens = list(p_head)
+            head_tokens.remove(name)
+            other = head_tokens + (["--", *p_post] if p_post else [])
+        else:
+            other = [*p_head, "--", *p_post[1:]]
 
     if "--help" in other or "-h" in other:
         return _print_playbook_help(name)
