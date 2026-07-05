@@ -201,6 +201,7 @@ interface OverviewData {
   messageCount: number;
   toolCallCount: number;
   errorCount: number;
+  partialWindow: boolean;
   showTopic?: string | null;
   showPlayName?: string | null;
   playbookName?: string | null;
@@ -214,9 +215,12 @@ function OverviewSection({ data }: { data: OverviewData }) {
       : []),
     { label: "Branches", value: String(data.branchCount) },
     { label: "Messages", value: String(data.messageCount) },
-    { label: "Tool calls", value: String(data.toolCallCount) },
     {
-      label: "Errors",
+      label: data.partialWindow ? "Tool calls (recent)" : "Tool calls",
+      value: String(data.toolCallCount),
+    },
+    {
+      label: data.partialWindow ? "Errors (recent)" : "Errors",
       value: String(data.errorCount),
       tone: data.errorCount > 0 ? ("error" as const) : ("ok" as const),
     },
@@ -325,7 +329,7 @@ interface ErrorEntry {
   summary?: string;
 }
 
-function ErrorsSection({ errors }: { errors: ErrorEntry[] }) {
+function ErrorsSection({ errors, partial }: { errors: ErrorEntry[]; partial?: boolean }) {
   const groups = useMemo(() => {
     const map = new Map<string, ErrorEntry[]>();
     for (const err of errors) {
@@ -352,7 +356,7 @@ function ErrorsSection({ errors }: { errors: ErrorEntry[] }) {
       <SectionHeader label="Errors" count={errors.length} errorTone={errors.length > 0} />
       {errors.length === 0 ? (
         <div className="flex items-center gap-2 rounded border border-edge bg-surface-raised px-4 py-3 text-sm text-status-success">
-          <span>{empty.branchErrors}</span>
+          <span>{partial ? "No errors in the loaded messages." : empty.branchErrors}</span>
         </div>
       ) : (
         <div className="flex flex-col gap-1.5">
@@ -441,13 +445,15 @@ function ErrorsSection({ errors }: { errors: ErrorEntry[] }) {
 
 // ── Files section ─────────────────────────────────────────────────────────────
 
-function FilesSection({ files }: { files: string[] }) {
+function FilesSection({ files, partial }: { files: string[]; partial?: boolean }) {
   return (
     <div id="files" className="scroll-mt-24">
       <SectionHeader label="Files" count={files.length} />
       {files.length === 0 ? (
         <div className="rounded border border-edge bg-surface-raised px-4 py-3 text-sm text-content-muted">
-          No file operations detected.
+          {partial
+            ? "No file operations detected in the loaded messages."
+            : "No file operations detected."}
         </div>
       ) : (
         <div className="rounded border border-edge bg-surface-raised px-3 py-2">
@@ -692,9 +698,7 @@ function RunDetailPage() {
           }
         }
         const graph = (s as unknown as Record<string, unknown>).graph as
-          | { nodes: WorkerGraph["nodes"]; edges: WorkerGraph["edges"] }
-          | null
-          | undefined;
+          { nodes: WorkerGraph["nodes"]; edges: WorkerGraph["edges"] } | null | undefined;
         if (graph && graph.nodes && graph.nodes.length > 0) {
           setRunGraph({
             name: s.name || id,
@@ -931,7 +935,12 @@ function RunDetailPage() {
     );
   }
 
-  const totalMessages = session.branches.reduce((n, b) => n + b.messages.length, 0);
+  const totalMessages = session.branches.reduce(
+    (n, b) => n + Math.max(b.message_total ?? 0, b.messages.length),
+    0,
+  );
+
+  const partialWindow = session.branches.some((b) => (b.message_total ?? 0) > b.messages.length);
 
   const durationSec =
     session.created_at != null && session.updated_at != null
@@ -949,18 +958,13 @@ function RunDetailPage() {
     messageCount: totalMessages,
     toolCallCount,
     errorCount: errors.length,
+    partialWindow,
     showTopic: (session as unknown as Record<string, unknown>).show_topic as
-      | string
-      | null
-      | undefined,
+      string | null | undefined,
     showPlayName: (session as unknown as Record<string, unknown>).show_play_name as
-      | string
-      | null
-      | undefined,
+      string | null | undefined,
     playbookName: (session as unknown as Record<string, unknown>).playbook_name as
-      | string
-      | null
-      | undefined,
+      string | null | undefined,
   };
 
   const expectedArtifactsCount = session.artifact_contract_json?.expected?.length ?? 0;
@@ -971,8 +975,13 @@ function RunDetailPage() {
       : []),
     ...(runGraph ? [{ id: "dag", label: "DAG", count: runGraph.nodes.length }] : []),
     { id: "branches", label: "Branches", count: session.branches.length },
-    { id: "errors", label: "Errors", count: errors.length, errorTone: errors.length > 0 },
-    { id: "files", label: "Files", count: files.length },
+    {
+      id: "errors",
+      label: partialWindow ? "Errors (recent)" : "Errors",
+      count: errors.length,
+      errorTone: errors.length > 0,
+    },
+    { id: "files", label: partialWindow ? "Files (recent)" : "Files", count: files.length },
     { id: "events", label: "Events", count: signalEvents.length },
   ];
 
@@ -1075,8 +1084,8 @@ function RunDetailPage() {
               expandedSteps={expandedSteps}
               onToggleExpand={handleToggleExpand}
             />
-            <ErrorsSection errors={errors} />
-            <FilesSection files={files} />
+            <ErrorsSection errors={errors} partial={partialWindow} />
+            <FilesSection files={files} partial={partialWindow} />
             <EventsSection events={signalEvents} live={live && !done} />
           </div>
           <div ref={bottomRef} />

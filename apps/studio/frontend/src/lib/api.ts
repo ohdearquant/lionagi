@@ -476,6 +476,8 @@ export interface SessionBranch {
   name: string;
   created_at: number;
   messages: SessionMessage[];
+  message_total?: number;
+  message_offset?: number;
   model?: string | null;
   provider?: string | null;
   agent_name?: string | null;
