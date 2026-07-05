@@ -74,25 +74,6 @@ function IconGrid() {
   );
 }
 
-function IconClock() {
-  return (
-    <svg
-      width="20"
-      height="20"
-      viewBox="0 0 24 24"
-      fill="none"
-      stroke="currentColor"
-      strokeWidth="1.5"
-      strokeLinecap="round"
-      strokeLinejoin="round"
-      aria-hidden="true"
-    >
-      <circle cx="12" cy="12" r="9" />
-      <path d="M12 7 L12 12 L15.5 14" />
-    </svg>
-  );
-}
-
 function IconGear() {
   return (
     <svg
@@ -181,13 +162,12 @@ const SPACES: Space[] = [
   { id: "home", href: "/", labelKey: "rail.home", icon: <IconTarget />, key: 1 },
   { id: "designer", href: "/designer", labelKey: "rail.designer", icon: <IconGraph />, key: 2 },
   { id: "library", href: "/library", labelKey: "rail.library", icon: <IconGrid />, key: 3 },
-  { id: "history", href: "/history", labelKey: "rail.history", icon: <IconClock />, key: 4 },
   {
     id: "schedules",
     href: "/schedules",
     labelKey: "rail.schedules",
     icon: <IconCalendar />,
-    key: 5,
+    key: 4,
   },
 ];
 
@@ -198,7 +178,7 @@ const SYSTEM_SPACE: Space = {
   href: "/system",
   labelKey: "rail.system",
   icon: <IconGear />,
-  key: 6,
+  key: 5,
 };
 
 function IconChat() {
@@ -249,9 +229,9 @@ export default function IconRail({
     (e: KeyboardEvent) => {
       if (!(e.metaKey || e.ctrlKey)) return;
       const n = parseInt(e.key, 10);
-      if (n >= 1 && n <= 6) {
+      if (n >= 1 && n <= 5) {
         e.preventDefault();
-        const space = n === 6 ? SYSTEM_SPACE : SPACES[n - 1];
+        const space = n === 5 ? SYSTEM_SPACE : SPACES[n - 1];
         if (space) void navigate({ to: space.href });
       }
     },

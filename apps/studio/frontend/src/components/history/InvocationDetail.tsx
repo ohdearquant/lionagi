@@ -78,8 +78,8 @@ export default function InvocationSection({ invocationId, currentSessionId }: Pr
               {siblings.map((s) => (
                 <Link
                   key={s.id}
-                  to="/history"
-                  search={{ tab: "run", sel: `run:${s.id}` }}
+                  to="/fleet"
+                  search={{ s: s.id }}
                   className="flex items-center gap-2 px-2.5 py-1.5 hover:bg-surface-overlay"
                 >
                   <StatusPill value={s.status ?? "pending"} />

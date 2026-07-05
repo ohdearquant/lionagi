@@ -42,14 +42,6 @@ export function buildRegistry(
       section: "Navigate",
     },
     {
-      id: "nav:history",
-      label: "History",
-      labelZh: "历史",
-      keywords: ["runs", "invocations", "shows", "timeline"],
-      href: "/history",
-      section: "Navigate",
-    },
-    {
       id: "nav:schedules",
       label: "Schedules",
       labelZh: "计划任务",

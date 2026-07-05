@@ -48,8 +48,7 @@ export default function RecentRuns({ runs, nowSec }: Props) {
         <SectionLabel
           trailing={
             <Link
-              to="/history"
-              search={{ tab: "run" }}
+              to="/fleet"
               className="font-data text-[length:var(--t-xs)] text-content-muted transition-colors duration-100"
             >
               {t("recent.viewAll")}

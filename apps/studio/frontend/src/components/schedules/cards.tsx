@@ -265,19 +265,19 @@ export function RunCard({ run, nowMs }: { run: RunRow; nowMs: number }) {
 
   async function handleRunClick() {
     if (!run.invocation_id) {
-      await navigate({ to: "/history", search: { tab: "run" } });
+      await navigate({ to: "/fleet" });
       return;
     }
     try {
       const inv = await getInvocation(run.invocation_id);
       const sessionId = inv.sessions[0]?.id;
       if (sessionId) {
-        await navigate({ to: "/history", search: { tab: "run", sel: `run:${sessionId}` } });
+        await navigate({ to: "/fleet", search: { s: sessionId } });
       } else {
-        await navigate({ to: "/history", search: { tab: "run" } });
+        await navigate({ to: "/fleet" });
       }
     } catch {
-      await navigate({ to: "/history", search: { tab: "run" } });
+      await navigate({ to: "/fleet" });
     }
   }
 
