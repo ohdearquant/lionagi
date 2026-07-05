@@ -170,7 +170,7 @@ function ItemLink({
   const id = item.id.slice(item.id.indexOf(":") + 1);
   if (item.kind === "run") {
     return (
-      <Link to="/runs/$id" params={{ id }} className={className} style={style}>
+      <Link to="/fleet" search={{ s: id }} className={className} style={style}>
         {children}
       </Link>
     );

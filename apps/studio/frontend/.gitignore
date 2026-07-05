@@ -25,3 +25,6 @@ npm-debug.log*
 # misc
 .DS_Store
 *.pem
+
+# tanstack router dev state
+.tanstack/

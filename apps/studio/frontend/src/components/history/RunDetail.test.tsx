@@ -78,31 +78,6 @@ describe("history.tsx — master-detail wiring", () => {
   });
 });
 
-// ─── runs/$id.tsx — deep-link route still works ───────────────────────────────
-
-describe("runs/$id.tsx — deep-link contract", () => {
-  let src: string;
-  beforeAll(() => {
-    src = fs.readFileSync(path.join(ROUTES_DIR, "runs/$id.tsx"), "utf-8");
-  });
-
-  it("imports RunDetail", () => {
-    expect(src).toMatch(/RunDetail/);
-  });
-
-  it("creates route for /runs/$id", () => {
-    expect(src).toMatch(/createFileRoute.*\/runs\/\$id/);
-  });
-
-  it("passes id prop to RunDetail", () => {
-    expect(src).toMatch(/<RunDetail.*id=/);
-  });
-
-  it("has a link back to history (not to /runs)", () => {
-    expect(src).toMatch(/to.*history/);
-  });
-});
-
 // ─── validateSearch logic — ?tab= + ?sel= ────────────────────────────────────
 
 const HISTORY_TABS = ["all", "run", "show"] as const;

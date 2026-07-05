@@ -265,8 +265,8 @@ export default function ShowDetail({ entry }: Props) {
                           </span>
                           {play.session_id && (
                             <Link
-                              to="/runs/$id"
-                              params={{ id: play.session_id }}
+                              to="/fleet"
+                              search={{ s: play.session_id }}
                               className="text-accent underline"
                             >
                               session →

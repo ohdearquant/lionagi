@@ -519,8 +519,8 @@ function ShowDetailPage() {
                                         </div>
                                         <div className="mt-1">
                                           <Link
-                                            to="/runs/$id"
-                                            params={{ id: play.session_id }}
+                                            to="/fleet"
+                                            search={{ s: play.session_id }}
                                             className="inline-flex items-center gap-1 text-body font-medium text-interactive-primary hover:underline"
                                           >
                                             {play.session_name ?? play.session_id}

@@ -72,8 +72,8 @@ export default function RecentRuns({ runs, nowSec }: Props) {
             return (
               <Link
                 key={run.run_id}
-                to="/runs/$id"
-                params={{ id: run.run_id }}
+                to="/fleet"
+                search={{ s: run.run_id }}
                 className="flex items-center gap-3 bg-surface-raised px-3 py-1.5 transition-colors duration-100 hover:bg-surface-overlay"
                 style={{ borderTop: idx === 0 ? undefined : "1px solid var(--edge-hairline)" }}
               >

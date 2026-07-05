@@ -46,8 +46,8 @@ function RunCard({ run, nowSec }: { run: RunSummary; nowSec: number }) {
 
   return (
     <Link
-      to="/runs/$id"
-      params={{ id: run.run_id }}
+      to="/fleet"
+      search={{ s: run.run_id }}
       className="group flex flex-col gap-2 rounded border border-edge bg-surface-raised p-3 transition-colors duration-100"
     >
       <div className="flex items-center gap-2">

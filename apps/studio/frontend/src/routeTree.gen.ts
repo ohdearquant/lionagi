@@ -25,7 +25,6 @@ import { Route as KanbanIndexRouteImport } from './routes/kanban/index'
 import { Route as InvocationsIndexRouteImport } from './routes/invocations/index'
 import { Route as EnginesIndexRouteImport } from './routes/engines/index'
 import { Route as AdminIndexRouteImport } from './routes/admin/index'
-import { Route as RunsIdRouteImport } from './routes/runs/$id'
 import { Route as InvocationsIdRouteImport } from './routes/invocations/$id'
 import { Route as ShowsTopicIndexRouteImport } from './routes/shows/$topic/index'
 import { Route as PlaybooksNewIndexRouteImport } from './routes/playbooks/new/index'
@@ -114,11 +113,6 @@ const AdminIndexRoute = AdminIndexRouteImport.update({
   path: '/admin/',
   getParentRoute: () => rootRouteImport,
 } as any)
-const RunsIdRoute = RunsIdRouteImport.update({
-  id: '/runs/$id',
-  path: '/runs/$id',
-  getParentRoute: () => rootRouteImport,
-} as any)
 const InvocationsIdRoute = InvocationsIdRouteImport.update({
   id: '/invocations/$id',
   path: '/invocations/$id',
@@ -163,7 +157,6 @@ export interface FileRoutesByFullPath {
   '/library': typeof LibraryRoute
   '/system': typeof SystemRoute
   '/invocations/$id': typeof InvocationsIdRoute
-  '/runs/$id': typeof RunsIdRoute
   '/admin/': typeof AdminIndexRoute
   '/engines/': typeof EnginesIndexRoute
   '/invocations/': typeof InvocationsIndexRoute
@@ -189,7 +182,6 @@ export interface FileRoutesByTo {
   '/library': typeof LibraryRoute
   '/system': typeof SystemRoute
   '/invocations/$id': typeof InvocationsIdRoute
-  '/runs/$id': typeof RunsIdRoute
   '/admin': typeof AdminIndexRoute
   '/engines': typeof EnginesIndexRoute
   '/invocations': typeof InvocationsIndexRoute
@@ -216,7 +208,6 @@ export interface FileRoutesById {
   '/library': typeof LibraryRoute
   '/system': typeof SystemRoute
   '/invocations/$id': typeof InvocationsIdRoute
-  '/runs/$id': typeof RunsIdRoute
   '/admin/': typeof AdminIndexRoute
   '/engines/': typeof EnginesIndexRoute
   '/invocations/': typeof InvocationsIndexRoute
@@ -244,7 +235,6 @@ export interface FileRouteTypes {
     | '/library'
     | '/system'
     | '/invocations/$id'
-    | '/runs/$id'
     | '/admin/'
     | '/engines/'
     | '/invocations/'
@@ -270,7 +260,6 @@ export interface FileRouteTypes {
     | '/library'
     | '/system'
     | '/invocations/$id'
-    | '/runs/$id'
     | '/admin'
     | '/engines'
     | '/invocations'
@@ -296,7 +285,6 @@ export interface FileRouteTypes {
     | '/library'
     | '/system'
     | '/invocations/$id'
-    | '/runs/$id'
     | '/admin/'
     | '/engines/'
     | '/invocations/'
@@ -323,7 +311,6 @@ export interface RootRouteChildren {
   LibraryRoute: typeof LibraryRoute
   SystemRoute: typeof SystemRoute
   InvocationsIdRoute: typeof InvocationsIdRoute
-  RunsIdRoute: typeof RunsIdRoute
   AdminIndexRoute: typeof AdminIndexRoute
   EnginesIndexRoute: typeof EnginesIndexRoute
   InvocationsIndexRoute: typeof InvocationsIndexRoute
@@ -456,13 +443,6 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof AdminIndexRouteImport
       parentRoute: typeof rootRouteImport
     }
-    '/runs/$id': {
-      id: '/runs/$id'
-      path: '/runs/$id'
-      fullPath: '/runs/$id'
-      preLoaderRoute: typeof RunsIdRouteImport
-      parentRoute: typeof rootRouteImport
-    }
     '/invocations/$id': {
       id: '/invocations/$id'
       path: '/invocations/$id'
@@ -523,7 +503,6 @@ const rootRouteChildren: RootRouteChildren = {
   LibraryRoute: LibraryRoute,
   SystemRoute: SystemRoute,
   InvocationsIdRoute: InvocationsIdRoute,
-  RunsIdRoute: RunsIdRoute,
   AdminIndexRoute: AdminIndexRoute,
   EnginesIndexRoute: EnginesIndexRoute,
   InvocationsIndexRoute: InvocationsIndexRoute,
