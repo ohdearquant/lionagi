@@ -19,11 +19,15 @@ route.
 # introspected by function_to_schema, which requires real (non-string)
 # parameter annotations.
 
+import asyncio
 import json
 import time
 import uuid
+from functools import partial
 from typing import Any
 
+import anyio
+from fastapi import HTTPException
 from pydantic import BaseModel
 
 from lionagi._errors import NotFoundError
@@ -36,17 +40,45 @@ from ._sse import sse_response
 # Session registry
 # ---------------------------------------------------------------------------
 
+# Bounded so a long-running server doesn't grow this dict forever: capacity
+# eviction drops the least-recently-used session, and idle eviction sweeps
+# sessions nobody has touched in a while. Both run lazily on create/access —
+# there is no background timer.
+_MAX_SESSIONS = 50
+_IDLE_EXPIRY_SECONDS = 2 * 60 * 60
+
 
 class LeoSession:
     def __init__(self, session_id: str) -> None:
         self.id = session_id
         self.branch: Any = None  # lionagi.session.branch.Branch, built lazily
+        self.created_at = time.time()
+        self.last_used_at = self.created_at
+        self.lock = asyncio.Lock()
 
 
 _SESSIONS: dict[str, LeoSession] = {}
 
 
+def _evict_idle(now: float) -> None:
+    stale = [
+        sid for sid, sess in _SESSIONS.items() if now - sess.last_used_at > _IDLE_EXPIRY_SECONDS
+    ]
+    for sid in stale:
+        del _SESSIONS[sid]
+
+
+def _evict_lru_if_full() -> None:
+    if len(_SESSIONS) < _MAX_SESSIONS:
+        return
+    lru_id = min(_SESSIONS, key=lambda sid: _SESSIONS[sid].last_used_at)
+    del _SESSIONS[lru_id]
+
+
 def create_session() -> LeoSession:
+    now = time.time()
+    _evict_idle(now)
+    _evict_lru_if_full()
     sid = str(uuid.uuid4())
     sess = LeoSession(sid)
     _SESSIONS[sid] = sess
@@ -54,7 +86,11 @@ def create_session() -> LeoSession:
 
 
 def get_session(session_id: str) -> LeoSession | None:
-    return _SESSIONS.get(session_id)
+    _evict_idle(time.time())
+    sess = _SESSIONS.get(session_id)
+    if sess is not None:
+        sess.last_used_at = time.time()
+    return sess
 
 
 # ---------------------------------------------------------------------------
@@ -67,9 +103,9 @@ _SYSTEM_PROMPT = (
     "schedules with read-only tools, and you drive the Studio UI itself.\n\n"
     "UI driving: when the operator asks to SEE something, do not just describe "
     "it — call show_in_ui to bring the right view up on their screen (failed "
-    "runs → space='history' with status='failed'; what's scheduled → "
-    "space='schedules'). Pair it with a read-only tool call so your text answer "
-    "carries the facts.\n\n"
+    "runs or a specific run/session → space='fleet' with status='failed'; "
+    "what's scheduled → space='schedules'). Pair it with a read-only tool call "
+    "so your text answer carries the facts.\n\n"
     "Routines: when the operator asks to set up a recurring task, work out the "
     "name, the cadence as a 5-field cron expression, and the prompt the "
     "scheduled agent should run, then call prefill_schedule. That opens the "
@@ -152,14 +188,15 @@ async def tool_list_playbooks() -> dict[str, Any]:
     """List available playbooks (read-only)."""
     from lionagi.studio.services import playbooks as pb_svc
 
-    return {"playbooks": pb_svc.list_playbooks()}
+    result = await anyio.to_thread.run_sync(pb_svc.list_playbooks)
+    return {"playbooks": result}
 
 
 async def tool_get_playbook(name: str) -> dict[str, Any]:
     """Get details for a specific playbook by name (read-only)."""
     from lionagi.studio.services import playbooks as pb_svc
 
-    result = pb_svc.get_playbook(name)
+    result = await anyio.to_thread.run_sync(partial(pb_svc.get_playbook, name))
     if result is None:
         return {"error": f"Playbook '{name}' not found"}
     return result
@@ -183,7 +220,6 @@ async def tool_studio_doctor() -> dict[str, Any]:
 
 _UI_SPACES = {
     "mission",
-    "history",
     "fleet",
     "designer",
     "library",
@@ -195,7 +231,7 @@ _UI_STATUSES = {"failed", "running", "completed", "cancelled", "pending"}
 
 
 async def tool_show_in_ui(space: str, status: str = "", tab: str = "") -> dict[str, Any]:
-    """Bring a Studio view up on the operator's screen. Spaces: mission, history, fleet, designer, library, schedules, system. For history, optional status filter (failed/running/completed/cancelled/pending) and tab (run/invocation/show)."""
+    """Bring a Studio view up on the operator's screen. Spaces: mission, fleet, designer, library, schedules, system. For fleet, optional status filter (failed/running/completed/cancelled/pending) and tab (run/invocation/show)."""
     space = space.strip().lower()
     if space not in _UI_SPACES:
         return {"error": f"Unknown space '{space}'. Choose one of: {', '.join(sorted(_UI_SPACES))}"}
@@ -293,7 +329,8 @@ async def _run_turn(sess: LeoSession, user_content: str):
 
     Scans only the messages the Branch.ReAct() call appends during this turn
     for tool outputs carrying proposed_action / ui_command, so a proposal
-    surfaced on an earlier turn never resurfaces on a later one.
+    surfaced on an earlier turn never resurfaces on a later one. Must only be
+    called while holding sess.lock (see send_leo_message_route).
     """
     from lionagi.protocols.messages.action_response import ActionResponse
 
@@ -324,6 +361,15 @@ async def _run_turn(sess: LeoSession, user_content: str):
     yield _emit({"type": "done", "ts": time.time()})
 
 
+async def _run_turn_locked(sess: LeoSession, user_content: str):
+    """Wrap _run_turn, releasing sess.lock once the stream is fully consumed or aborted."""
+    try:
+        async for chunk in _run_turn(sess, user_content):
+            yield chunk
+    finally:
+        sess.lock.release()
+
+
 @studio_route("/leo/sessions", method="POST", area="leo", name="create_leo_session")
 async def create_leo_session_route() -> dict[str, str]:
     sess = create_session()
@@ -342,4 +388,13 @@ async def send_leo_message_route(session_id: str, body: _MessageBody):
     if sess is None:
         raise NotFoundError(f"Leo session '{session_id}' not found")
 
-    return sse_response(_run_turn(sess, body.content))
+    if sess.lock.locked():
+        raise HTTPException(
+            status_code=409,
+            detail=f"Leo session '{session_id}' is already processing a message",
+        )
+    # No await between the check above and this acquire, so no other request
+    # can interleave: acquiring an unlocked asyncio.Lock never suspends.
+    await sess.lock.acquire()
+
+    return sse_response(_run_turn_locked(sess, body.content))

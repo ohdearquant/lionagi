@@ -7,6 +7,8 @@ No network or real LLM calls — the Branch is monkey-patched with a fake ReAct(
 
 from __future__ import annotations
 
+import threading
+import time
 from pathlib import Path
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock
@@ -73,6 +75,52 @@ def test_leo_create_session_unique_ids(tmp_path, monkeypatch):
     client = _make_client(tmp_path, monkeypatch)
     ids = {client.post("/api/leo/sessions").json()["id"] for _ in range(3)}
     assert len(ids) == 3
+
+
+# ---------------------------------------------------------------------------
+# Session registry bounds: capacity eviction (LRU) and idle expiry
+# ---------------------------------------------------------------------------
+
+
+def test_session_registry_evicts_lru_over_cap(monkeypatch):
+    from lionagi.studio.services import leo as leo_svc
+
+    monkeypatch.setattr(leo_svc, "_MAX_SESSIONS", 3)
+
+    ids = [leo_svc.create_session().id for _ in range(3)]
+    now = time.time()
+    leo_svc._SESSIONS[ids[0]].last_used_at = now + 10
+    leo_svc._SESSIONS[ids[1]].last_used_at = now  # oldest -> evicted
+    leo_svc._SESSIONS[ids[2]].last_used_at = now + 20
+
+    new_sess = leo_svc.create_session()
+
+    assert ids[1] not in leo_svc._SESSIONS
+    assert ids[0] in leo_svc._SESSIONS
+    assert ids[2] in leo_svc._SESSIONS
+    assert new_sess.id in leo_svc._SESSIONS
+    assert len(leo_svc._SESSIONS) == 3
+
+
+def test_session_registry_expires_idle_sessions():
+    from lionagi.studio.services import leo as leo_svc
+
+    sess = leo_svc.create_session()
+    sess.last_used_at = time.time() - leo_svc._IDLE_EXPIRY_SECONDS - 1
+
+    assert leo_svc.get_session(sess.id) is None
+    assert sess.id not in leo_svc._SESSIONS
+
+
+def test_session_registry_idle_eviction_runs_on_create():
+    from lionagi.studio.services import leo as leo_svc
+
+    stale = leo_svc.create_session()
+    stale.last_used_at = time.time() - leo_svc._IDLE_EXPIRY_SECONDS - 1
+
+    leo_svc.create_session()
+
+    assert stale.id not in leo_svc._SESSIONS
 
 
 # ---------------------------------------------------------------------------
@@ -168,8 +216,12 @@ def test_leo_tool_registry_shape():
 
 
 @pytest.mark.asyncio
-async def test_tool_launch_playbook_returns_proposal():
+async def test_tool_launch_playbook_returns_proposal(monkeypatch):
+    from lionagi.studio.services import launches as launches_svc
     from lionagi.studio.services.leo import tool_launch_playbook
+
+    mock_launch = AsyncMock()
+    monkeypatch.setattr(launches_svc, "launch", mock_launch)
 
     result = await tool_launch_playbook("my-playbook")
     assert "proposed_action" in result
@@ -178,28 +230,48 @@ async def test_tool_launch_playbook_returns_proposal():
     assert pa["params"]["name"] == "my-playbook"
     assert "endpoint" in pa
     # Must not have triggered any network call or service mutation
+    mock_launch.assert_not_called()
 
 
 @pytest.mark.asyncio
-async def test_tool_create_playbook_returns_proposal():
+async def test_tool_create_playbook_returns_proposal(monkeypatch):
+    from lionagi.studio.services import playbooks as playbooks_svc
     from lionagi.studio.services.leo import tool_create_playbook
+
+    mock_create = AsyncMock()
+    mock_update = MagicMock()
+    monkeypatch.setattr(playbooks_svc, "create_playbook", mock_create)
+    monkeypatch.setattr(playbooks_svc, "update_playbook", mock_update)
 
     result = await tool_create_playbook("new-pb", description="A test playbook")
     assert "proposed_action" in result
     pa = result["proposed_action"]
     assert pa["kind"] == "create_playbook"
     assert pa["params"]["name"] == "new-pb"
+    mock_create.assert_not_called()
+    mock_update.assert_not_called()
 
 
 @pytest.mark.asyncio
-async def test_tool_run_maintenance_returns_proposal():
+async def test_tool_run_maintenance_returns_proposal(monkeypatch):
+    from lionagi.studio.services import db_maintenance as db_maint_svc
     from lionagi.studio.services.leo import tool_run_maintenance
+
+    mock_vacuum = AsyncMock()
+    mock_checkpoint = AsyncMock()
+    mock_prune = AsyncMock()
+    monkeypatch.setattr(db_maint_svc, "vacuum_state_db", mock_vacuum)
+    monkeypatch.setattr(db_maint_svc, "checkpoint_state_db", mock_checkpoint)
+    monkeypatch.setattr(db_maint_svc, "prune_old_data", mock_prune)
 
     result = await tool_run_maintenance("vacuum")
     assert "proposed_action" in result
     pa = result["proposed_action"]
     assert pa["kind"] == "run_maintenance"
     assert pa["params"]["action"] == "vacuum"
+    mock_vacuum.assert_not_called()
+    mock_checkpoint.assert_not_called()
+    mock_prune.assert_not_called()
 
 
 @pytest.mark.asyncio
@@ -220,11 +292,11 @@ async def test_tool_run_maintenance_invalid_action():
 async def test_tool_show_in_ui_navigate_with_filter():
     from lionagi.studio.services.leo import tool_show_in_ui
 
-    result = await tool_show_in_ui("history", status="failed")
+    result = await tool_show_in_ui("fleet", status="failed")
     assert "ui_command" in result
     cmd = result["ui_command"]
     assert cmd["kind"] == "navigate"
-    assert cmd["space"] == "history"
+    assert cmd["space"] == "fleet"
     assert cmd["params"] == {"status": "failed"}
 
 
@@ -241,7 +313,7 @@ async def test_tool_show_in_ui_rejects_unknown_space():
 async def test_tool_show_in_ui_rejects_unknown_status():
     from lionagi.studio.services.leo import tool_show_in_ui
 
-    result = await tool_show_in_ui("history", status="exploded")
+    result = await tool_show_in_ui("fleet", status="exploded")
     assert "error" in result
     assert "ui_command" not in result
 
@@ -367,7 +439,7 @@ def test_leo_message_turn_ui_command_surfaced(tmp_path, monkeypatch):
     sess = leo_svc.get_session(sid)
     assert sess is not None
 
-    command = {"kind": "navigate", "space": "history", "params": {"status": "failed"}}
+    command = {"kind": "navigate", "space": "fleet", "params": {"status": "failed"}}
 
     fake_msg = ActionResponse(
         content={"function": "tool_show_in_ui", "output": {"ui_command": command}}
@@ -413,7 +485,7 @@ def test_leo_prior_turn_proposals_not_reemitted(tmp_path, monkeypatch):
             "function": "tool_launch_playbook",
             "output": {
                 "proposed_action": {"kind": "launch_playbook", "params": {}},
-                "ui_command": {"kind": "navigate", "space": "history", "params": {}},
+                "ui_command": {"kind": "navigate", "space": "fleet", "params": {}},
             },
         }
     )
@@ -434,6 +506,53 @@ def test_leo_prior_turn_proposals_not_reemitted(tmp_path, monkeypatch):
     assert "ui_command" not in types
     assert "text" in types
     assert "done" in types
+
+
+# ---------------------------------------------------------------------------
+# Concurrent turns on the same session: the second must 409, never interleave
+# ---------------------------------------------------------------------------
+
+
+def test_leo_concurrent_turn_second_gets_409(tmp_path, monkeypatch):
+    client = _make_client(tmp_path, monkeypatch)
+
+    with client:
+        sid = client.post("/api/leo/sessions").json()["id"]
+
+        from lionagi.studio.services import leo as leo_svc
+
+        sess = leo_svc.get_session(sid)
+        assert sess is not None
+
+        async def slow_react(**_kwargs):
+            import asyncio
+
+            await asyncio.sleep(0.3)
+            return "done"
+
+        branch = MagicMock()
+        branch.messages = []
+        branch.ReAct = AsyncMock(side_effect=slow_react)
+        sess.branch = branch
+
+        results: dict[str, Any] = {}
+
+        def _post(key: str) -> None:
+            results[key] = client.post(
+                f"/api/leo/sessions/{sid}/messages",
+                json={"content": "hello"},
+            )
+
+        t1 = threading.Thread(target=_post, args=("first",))
+        t1.start()
+        time.sleep(0.1)  # let the first request acquire the session lock
+        t2 = threading.Thread(target=_post, args=("second",))
+        t2.start()
+        t1.join(timeout=5)
+        t2.join(timeout=5)
+
+    assert results["first"].status_code == 200
+    assert results["second"].status_code == 409
 
 
 # ---------------------------------------------------------------------------
