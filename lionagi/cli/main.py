@@ -212,16 +212,68 @@ def _handle_play_shortcut(argv: list[str]) -> list[str] | int:
         return run_play_status(rest[1:])
     if head == "--resume":
         return ["o", "flow", *rest]
-    if head.startswith("-"):
-        log_error(
-            "li play NAME must come before flags\n"
-            'Usage: li play <name> "<prompt>" [--bypass --team-mode TEAM --timeout N ...]'
-        )
-        return 1
-    if "--help" in rest[1:] or "-h" in rest[1:]:
-        return _print_playbook_help(head)
-    # Rewrite `play <name> [...]` → `o flow -p <name> [...]`
-    return ["o", "flow", "-p", head, *rest[1:]]
+
+    if not head.startswith("-"):
+        # NAME already comes first — unchanged fast path. Custom playbook
+        # args declared in the playbook's own `args:` schema are only
+        # registered once NAME is known (via inject_playbook_schema_into_parser,
+        # downstream), so they can only be recognized when they follow NAME;
+        # this path leaves them untouched, exactly as before.
+        name, other = head, rest[1:]
+    else:
+        # A flag precedes NAME (`li play --bypass NAME "prompt"`). Probe with
+        # the flow subparser's own base flags (before playbook-specific
+        # schema injection) to separate recognized flag(+value) pairs from
+        # bare positional tokens — same sentinel-safe split-and-fold shape as
+        # the `agent`/`o flow` interception below, minus dispatch (we only
+        # need to locate NAME here; the real parse happens later once the
+        # playbook's own args: schema can be injected). Only base flags are
+        # understood at this point, so this path does not support custom
+        # playbook flags placed before NAME — they must follow it.
+        probe_parser = argparse.ArgumentParser(prog="li", add_help=False)
+        probe_sub = probe_parser.add_subparsers(dest="command")
+        fl_probe = add_orchestrate_subparser(probe_sub)["flow"]
+        if "--" in rest:
+            i = rest.index("--")
+            p_head, p_post = rest[:i], rest[i + 1 :]
+        else:
+            p_head, p_post = rest, []
+        # Keep the probe help-inert: argparse executes --help/-h during
+        # parse_known_args (printing flow help and exiting) before the
+        # playbook-specific help check below could run. Strip help tokens
+        # from the probe input only; the reconstruction below still works
+        # from the original partitions, so the help check sees them.
+        p_head_probe = [t for t in p_head if t not in ("--help", "-h")]
+        p_ns, p_extras = fl_probe.parse_known_args(p_head_probe)
+        unknown = [e for e in p_extras if e.startswith("-") and e != "-"]
+        if unknown:
+            log_error(f"unrecognized arguments: {' '.join(unknown)}")
+            return 1
+        bare = [*(p_ns.query or []), *p_extras, *p_post]
+        if not bare:
+            log_error(
+                "playbook NAME is required\n"
+                'Usage: li play <name> "<prompt>" [--bypass --team-mode TEAM --timeout N ...]\n'
+                "Flags may appear anywhere relative to NAME and the prompt."
+            )
+            return 1
+        name = bare[0]
+        # Remove the NAME occurrence from the partition it was actually
+        # selected from, never by string value across the whole argv: an
+        # earlier flag VALUE equal to NAME (e.g. `--team-mode foo -- foo`)
+        # must not be deleted in its place. Within a single partition,
+        # identical strings rewrite equivalently, so first-match is safe.
+        if p_ns.query or p_extras:
+            head_tokens = list(p_head)
+            head_tokens.remove(name)
+            other = head_tokens + (["--", *p_post] if p_post else [])
+        else:
+            other = [*p_head, "--", *p_post[1:]]
+
+    if "--help" in other or "-h" in other:
+        return _print_playbook_help(name)
+    # Rewrite `play [...] <name> [...]` → `o flow -p <name> [...]`
+    return ["o", "flow", "-p", name, *other]
 
 
 def _get_version() -> str:
@@ -328,6 +380,38 @@ def main(argv: list[str] | None = None) -> int:
             agent_parser.error(f"unrecognized arguments: {' '.join(unknown)}")
         args.query = [*(args.query or []), *extras, *post]
         return run_agent(args)
+
+    # `li o flow` / `li o fanout` (and their `orchestrate` alias) parse
+    # standalone for the same reason as `agent` above: nested subparser
+    # dispatch can't intermix flags with the [MODEL] PROMPT positionals.
+    # Both had the disease pre-fix — flow silently misassigned a
+    # flags-preceded prompt to the model slot (both positionals were
+    # nargs='?', so argparse's greedy left-to-right fill grabbed the first
+    # one), while fanout hard-rejected with "unrecognized arguments" (a flag
+    # between its two positionals split them into two separate groups
+    # argparse can't reconcile). Same sentinel-safe split + fold as `agent`.
+    if (
+        _argv
+        and _argv[0] in ("orchestrate", "o")
+        and len(_argv) > 1
+        and _argv[1] in ("fanout", "flow")
+    ):
+        sub_name = _argv[1]
+        sub_parser = orch_parsers[sub_name]
+        tail = _argv[2:]
+        if "--" in tail:
+            i = tail.index("--")
+            head, post = tail[:i], tail[i + 1 :]
+        else:
+            head, post = tail, []
+        args, extras = sub_parser.parse_known_args(head)
+        unknown = [e for e in extras if e.startswith("-") and e != "-"]
+        if unknown:
+            sub_parser.error(f"unrecognized arguments: {' '.join(unknown)}")
+        args.query = [*(args.query or []), *extras, *post]
+        args.command = "orchestrate"
+        args.orch_command = sub_name
+        return run_orchestrate(args)
 
     # `li schedule ...` parses its own subparser directly (mirroring the
     # `agent` special-case above) so an unrecognized flag gets a one-line

@@ -370,20 +370,21 @@ def add_orchestrate_subparser(
         description=(
             "Orchestrator decomposes task into N agent requests, "
             "fans out to workers, optionally synthesizes. "
-            "Effort can be embedded in model spec: claude/opus-4-7-high."
+            "Effort can be embedded in model spec: claude/opus-4-7-high. "
+            "Flags may appear anywhere relative to the positionals."
         ),
     )
     fo.add_argument(
-        "model",
-        nargs="?",
-        default=None,
+        "query",
+        nargs="*",
+        metavar="[MODEL] PROMPT",
         help=(
-            "Orchestrator model spec (provider/model-effort). "
-            "Also used as default worker model unless --workers specified. "
-            "Optional when -a/--agent provides a model."
+            "Orchestrator model spec (provider/model-effort) followed by the "
+            "task prompt. Model is also used as the default worker model "
+            "unless --workers is set; omit it when -a/--agent provides one. "
+            "A single positional is treated as the prompt."
         ),
     )
-    fo.add_argument("prompt", help="Task prompt for the orchestrator to decompose.")
     fo.add_argument(
         "-a",
         "--agent",
@@ -472,20 +473,20 @@ def add_orchestrate_subparser(
         description=(
             "Orchestrator analyzes the task, composes a DAG of agents "
             "with dependency edges, and executes with automatic "
-            "parallelism where dependencies allow."
+            "parallelism where dependencies allow. Flags may appear "
+            "anywhere relative to the positionals."
         ),
     )
     fl.add_argument(
-        "model",
-        nargs="?",
-        default=None,
-        help="Orchestrator model spec. Optional when -a/--agent provides one.",
-    )
-    fl.add_argument(
-        "prompt",
-        nargs="?",
-        default=None,
-        help="Task for the orchestrator to plan and execute.",
+        "query",
+        nargs="*",
+        metavar="[MODEL] PROMPT",
+        help=(
+            "Orchestrator model spec followed by the task prompt. Model is "
+            "optional when -a/--agent provides one; a single positional is "
+            "treated as the prompt. The prompt itself may instead come from "
+            "-f/--file or -p/--playbook."
+        ),
     )
     fl.add_argument(
         "-f",
@@ -715,6 +716,27 @@ def add_orchestrate_subparser(
     return {"fanout": fo, "flow": fl, "ctl": ctl}
 
 
+def _resolve_model_and_prompt(query: list[str]) -> tuple[str | None, str | None] | None:
+    """Assign a 0-2 token positional bucket to (model, prompt).
+
+    Mirrors the `li agent` [MODEL] PROMPT convention: a single token is the
+    prompt (model comes from -a/--agent, a spec file, or a playbook); two
+    tokens are (model, prompt) in order. Returns None after logging a clear
+    error when more than two positionals are given (e.g. an unquoted prompt).
+    """
+    if len(query) > 2:
+        log_error(
+            "too many positional arguments — expected [MODEL] PROMPT. "
+            "Did you forget to quote the prompt?"
+        )
+        return None
+    if len(query) == 2:
+        return query[0], query[1]
+    if len(query) == 1:
+        return None, query[0]
+    return None, None
+
+
 def _run_orch_command(coro, *, verbose: bool, extra_handlers: tuple = ()) -> tuple[object, int]:
     """Run an orchestration coroutine, map shared exceptions to exit codes.
 
@@ -742,9 +764,17 @@ def _run_orch_command(coro, *, verbose: bool, extra_handlers: tuple = ()) -> tup
 
 def run_orchestrate(args: argparse.Namespace) -> int:
     if args.orch_command == "fanout":
+        resolved = _resolve_model_and_prompt(getattr(args, "query", None) or [])
+        if resolved is None:
+            return 1
+        args.model, args.prompt = resolved
+
         has_model = args.model is not None or args.agent is not None
         if not has_model:
             log_error("model or --agent is required")
+            return 1
+        if not args.prompt:
+            log_error("prompt is required")
             return 1
 
         synth = args.with_synthesis
@@ -806,6 +836,11 @@ def run_orchestrate(args: argparse.Namespace) -> int:
             if not args.verbose:
                 print(output)
             return EXIT_CODE_BY_STATUS.get(terminal_status, 0)
+
+        resolved = _resolve_model_and_prompt(getattr(args, "query", None) or [])
+        if resolved is None:
+            return 1
+        args.model, args.prompt = resolved
 
         playbook_name = getattr(args, "playbook", None)
         playbook_artifacts: dict | None = None
