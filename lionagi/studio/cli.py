@@ -49,28 +49,36 @@ def _is_mount_allowed(resolved_path: Path, allowed_roots: list[Path]) -> bool:
     return False
 
 
-def _add_studio_flags(parser: argparse.ArgumentParser) -> None:
+def _add_studio_flags(parser: argparse.ArgumentParser, *, suppress_defaults: bool = False) -> None:
+    # The same flags are registered on both the parent `studio` parser and the
+    # `start` subparser. The subparser must SUPPRESS its defaults, otherwise its
+    # unset defaults overwrite values parsed at the parent level (e.g.
+    # `li studio --docker start` would silently lose --docker).
+    def _default(value):
+        return argparse.SUPPRESS if suppress_defaults else value
+
     parser.add_argument(
         "--port",
         type=int,
-        default=None,
+        default=_default(None),
         help="Backend API port (default: LIONAGI_STUDIO_PORT env or 8765)",
     )
     parser.add_argument(
         "--host",
-        default="127.0.0.1",
+        default=_default("127.0.0.1"),
         help="Host to bind (default: 127.0.0.1)",
     )
     parser.add_argument(
         "--frontend-port",
         type=int,
-        default=3000,
+        default=_default(3000),
         dest="frontend_port",
         help="Frontend port (default: 3000)",
     )
     parser.add_argument(
         "--no-open",
         action="store_true",
+        default=_default(False),
         dest="no_open",
         help="Don't open the hosted UI in a browser (--web only)",
     )
@@ -78,22 +86,26 @@ def _add_studio_flags(parser: argparse.ArgumentParser) -> None:
     mode.add_argument(
         "--web",
         action="store_true",
+        default=_default(False),
         help="Start the backend only; frontend is the hosted UI (default)",
     )
     mode.add_argument(
         "--docker",
         action="store_true",
+        default=_default(False),
         help="Run the bundled frontend + backend via Docker",
     )
     mode.add_argument(
         "--no-frontend",
         action="store_true",
+        default=_default(False),
         dest="no_frontend",
         help="Only start the backend API server",
     )
     mode.add_argument(
         "--dev",
         action="store_true",
+        default=_default(False),
         help="Run the in-repo frontend in dev mode (hot-reload, no build step)",
     )
 
@@ -106,12 +118,31 @@ def add_studio_subparser(subparsers: argparse._SubParsersAction) -> None:
     studio_sub.required = False
 
     start_parser = studio_sub.add_parser("start", help="Start Lion Studio")
-    _add_studio_flags(start_parser)
+    _add_studio_flags(start_parser, suppress_defaults=True)
+
+
+def _validate_mode_flags(args: argparse.Namespace) -> None:
+    # Mutual exclusion can be split across the parent parser and the `start`
+    # subparser (e.g. `li studio --docker start --web`), which argparse's
+    # per-parser groups cannot see. Validate the combined namespace.
+    selected = [
+        flag
+        for flag, attr in (
+            ("--web", "web"),
+            ("--docker", "docker"),
+            ("--no-frontend", "no_frontend"),
+            ("--dev", "dev"),
+        )
+        if getattr(args, attr, False)
+    ]
+    if len(selected) > 1:
+        raise SystemExit(f"li studio: mode flags are mutually exclusive: {' '.join(selected)}")
 
 
 def run_studio(args: argparse.Namespace) -> int:
     if not getattr(args, "studio_action", None):
         args.studio_action = "start"
+    _validate_mode_flags(args)
     return _studio_start(args)
 
 

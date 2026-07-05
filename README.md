@@ -172,13 +172,13 @@ li studio             # default: starts the local daemon and opens the hosted UI
                       # at https://lion-studio.khive.ai, which talks to your
                       # daemon at http://127.0.0.1:8765 — nothing is built locally
 li studio --docker    # self-contained: auto-pulls ghcr.io/ohdearquant/lion-studio
-                      # UI → http://localhost:3000   API → http://localhost:8765
+                      # UI + API → http://localhost:8765
 li studio --no-frontend  # backend API only, no UI
 li studio --dev       # from a source checkout: backend + in-repo frontend, hot reload
 ```
 
-`--web`, `--docker`, and `--no-frontend` are mutually exclusive; `--web` is the
-default when no flag is given. Pass `--no-open` to skip auto-opening the
+`--web`, `--docker`, `--no-frontend`, and `--dev` are mutually exclusive; `--web`
+is the default when no flag is given. Pass `--no-open` to skip auto-opening the
 hosted UI in your browser.
 
 ![Lion Studio — run detail with execution DAG, branches, and multi-agent orchestration](assets/studio.png)

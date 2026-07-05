@@ -199,6 +199,62 @@ def test_studio_mode_flags_are_mutually_exclusive():
     assert exc_info.value.code == 2
 
 
+def test_studio_mode_flag_before_start_is_preserved():
+    """`li studio --docker start` must take the Docker path (subparser defaults must not clobber parent flags)."""
+    with (
+        patch("lionagi.studio.cli._has_docker", return_value=True),
+        patch("lionagi.studio.cli._start_docker", return_value=0) as mock_docker,
+        patch("uvicorn.run"),
+    ):
+        from lionagi.cli.main import main
+
+        result = main(["studio", "--docker", "start"])
+
+    assert result == 0
+    mock_docker.assert_called_once()
+
+
+def test_studio_no_open_before_start_is_preserved():
+    """`li studio --no-open start` must not open a browser."""
+    with (
+        _stubbed_serve(),
+        patch("webbrowser.open") as mock_open,
+        patch("sys.stdout.isatty", return_value=True),
+    ):
+        from lionagi.cli.main import main
+
+        result = main(["studio", "--no-open", "start"])
+
+    assert result == 0
+    mock_open.assert_not_called()
+
+
+def test_studio_port_before_start_is_preserved():
+    """`li studio --port 9001 start` keeps the parent-level port."""
+    with _stubbed_serve() as mock_run:
+        from lionagi.cli.main import main
+
+        result = main(["studio", "--port", "9001", "start"])
+
+    assert result == 0
+    assert mock_run.call_args.kwargs.get("port") == 9001
+
+
+def test_studio_cross_level_mode_flags_are_mutually_exclusive():
+    """Mode flags split across parser levels (`li studio --docker start --web`) must be rejected."""
+    import pytest
+
+    from lionagi.cli.main import main
+
+    for argv in (
+        ["studio", "--docker", "start", "--web"],
+        ["studio", "--web", "start", "--docker"],
+        ["studio", "--no-frontend", "start", "--dev"],
+    ):
+        with pytest.raises(SystemExit):
+            main(argv)
+
+
 # ─── studio cwd / module resolution ─────────────
 
 
