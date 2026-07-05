@@ -53,8 +53,16 @@ li agent [model] prompt [flags]
 | `-a, --agent NAME` | none | Profile by name. Resolves `.lionagi/agents/<NAME>/<NAME>.md` first, then legacy `.lionagi/agents/<NAME>.md`. Sets model/effort/system/yolo. `cli/agent.py:167` |
 | `-r, --resume BRANCH_ID` | none | Resume prior branch. `cli/agent.py:178` |
 | `-c, --continue-last` | false | Resume most recent branch. `cli/agent.py:184` |
+| `--context-from REF` | none | Inject distilled context from a prior session id, branch id, run id, or file path into the new branch's first instruction (above the prompt). Repeatable — refs concatenate in argv order, sharing one budget. `cli/_context_from.py` |
+| `--context-budget N` | `8000` | Total token budget (~4 chars/token) for `--context-from` content, shared across all refs. |
 
-`-r` and `-c` are mutually exclusive (`cli/agent.py:49`). Common flags apply.
+`-r` and `-c` are mutually exclusive (`cli/agent.py:49`). `--context-from` is rejected together with `-r` / `-c` (resume already carries the source context). Common flags apply.
+
+`--context-from` resolves the ref in order — session id, branch id, run id, then file path — erroring loudly on an unresolvable or ambiguous (2+ match) ref rather than spawning with silently-missing context. Distillation is mechanical (no LLM): a saved artifact/summary verbatim if it fits, else the initial instruction plus final assistant message, else a loudly-marked head/tail truncation.
+
+```bash
+li agent -a reviewer --bypass --context-from 20260420T110143-a1b2c3 --prompt-file review.md
+```
 
 ```bash
 li agent claude/sonnet "What does Branch.operate() do?"
