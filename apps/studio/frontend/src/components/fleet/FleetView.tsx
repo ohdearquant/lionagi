@@ -1,7 +1,9 @@
-import { useState, useCallback, useEffect, useRef } from "react";
+import { useState, useCallback, useEffect, useMemo, useRef } from "react";
 import { Link } from "@tanstack/react-router";
 import { useTranslations } from "use-intl";
+import { listRuns } from "@/lib/api";
 import { useFleet } from "./useFleet";
+import { terminalRecentRows } from "./fleetReducer";
 import type { OrgUnit, AgentRow, RecentRow } from "./fleetReducer";
 import SessionDetail from "./SessionDetail";
 import FleetStaleBadge from "./FleetStaleBadge";
@@ -278,6 +280,10 @@ function HistorySection({
   selectedId,
   onSelect,
   nowSec,
+  visibleCount,
+  serverHasMore,
+  loadingMore,
+  onLoadMore,
 }: {
   rows: RecentRow[];
   filter: HistFilter;
@@ -285,9 +291,28 @@ function HistorySection({
   selectedId: string | null;
   onSelect: (id: string) => void;
   nowSec: number;
+  visibleCount: number;
+  serverHasMore: boolean;
+  loadingMore: boolean;
+  onLoadMore: () => void;
 }) {
   const t = useTranslations("fleet");
-  const filtered = rows.filter((r) => matchesHistFilter(r.status, filter));
+  const allFiltered = rows.filter((r) => matchesHistFilter(r.status, filter));
+  const filtered = allFiltered.slice(0, visibleCount);
+  const hasMore = allFiltered.length > visibleCount || serverHasMore;
+
+  // Lazy loading: the load-more button doubles as the sentinel — scrolling it
+  // into view fetches the next slice without a click (click still works).
+  const moreRef = useRef<HTMLButtonElement | null>(null);
+  useEffect(() => {
+    const el = moreRef.current;
+    if (!el || typeof IntersectionObserver === "undefined") return;
+    const io = new IntersectionObserver((entries) => {
+      if (entries.some((e) => e.isIntersecting)) onLoadMore();
+    });
+    io.observe(el);
+    return () => io.disconnect();
+  }, [onLoadMore, hasMore, loadingMore]);
   const chips: { key: HistFilter; label: string }[] = [
     { key: "all", label: t("history.all") },
     { key: "completed", label: t("history.completed") },
@@ -317,7 +342,8 @@ function HistorySection({
           </button>
         ))}
         <span className="shrink-0 font-data tabular-nums text-[length:var(--t-xs)] text-content-muted">
-          {filtered.length}
+          {allFiltered.length}
+          {serverHasMore ? "+" : ""}
         </span>
       </div>
 
@@ -355,6 +381,18 @@ function HistorySection({
           </button>
         ))
       )}
+
+      {hasMore && (
+        <button
+          ref={moreRef}
+          type="button"
+          onClick={onLoadMore}
+          disabled={loadingMore}
+          className="flex w-full items-center justify-center border-b border-edge px-4 py-2 font-data text-[length:var(--t-xs)] text-content-muted transition-colors duration-100 hover:bg-surface-overlay hover:text-content-secondary disabled:opacity-60"
+        >
+          {loadingMore ? t("history.loadingMore") : t("history.loadMore")}
+        </button>
+      )}
     </div>
   );
 }
@@ -383,13 +421,62 @@ export default function FleetView() {
   const [narrowExplicit, setNarrowExplicit] = useState(false);
   const [histFilter, setHistFilter] = useState<HistFilter>("all");
 
+  // History pagination. The 3s poll covers page 1 (200 runs); older pages are
+  // fetched on demand and kept here — polls never clobber them. The visible
+  // window grows in steps so a long history never renders all at once.
+  const HIST_PAGE_SIZE = 200;
+  const HIST_VISIBLE_STEP = 50;
+  const [histVisible, setHistVisible] = useState(HIST_VISIBLE_STEP);
+  const [olderRows, setOlderRows] = useState<RecentRow[]>([]);
+  // null until the first on-demand fetch; before that the poll's has_next
+  // (about page 1) is authoritative, after it the last fetched page's is.
+  const [pagedHasMore, setPagedHasMore] = useState<boolean | null>(null);
+  const serverHasMore = pagedHasMore ?? state.runsHasNext;
+  const [loadingMore, setLoadingMore] = useState(false);
+  const nextPageRef = useRef(2);
+
+  // Polled rows win on id collision (fresher status); older pages fill the tail.
+  const historyRows = useMemo(() => {
+    const seen = new Set(state.recent.map((r) => r.id));
+    const merged = [...state.recent];
+    for (const row of olderRows) {
+      if (!seen.has(row.id)) {
+        seen.add(row.id);
+        merged.push(row);
+      }
+    }
+    merged.sort((a, b) => (b.endedAtSec ?? 0) - (a.endedAtSec ?? 0));
+    return merged;
+  }, [state.recent, olderRows]);
+
+  const handleLoadMore = useCallback(() => {
+    // Reveal already-loaded rows first; hit the server only when exhausted.
+    if (histVisible < historyRows.length) {
+      setHistVisible((n) => n + HIST_VISIBLE_STEP);
+      return;
+    }
+    if (!serverHasMore || loadingMore) return;
+    setLoadingMore(true);
+    listRuns({ page: nextPageRef.current, per_page: HIST_PAGE_SIZE })
+      .then((resp) => {
+        nextPageRef.current += 1;
+        setPagedHasMore(resp.has_next);
+        setOlderRows((prev) => [...prev, ...terminalRecentRows(resp.runs)]);
+        setHistVisible((n) => n + HIST_VISIBLE_STEP);
+      })
+      .catch(() => {
+        // Transient fetch failure — leave state as-is; the sentinel retries.
+      })
+      .finally(() => setLoadingMore(false));
+  }, [histVisible, historyRows.length, serverHasMore, loadingMore]);
+
   // Derive effective selection: URL param first, else auto-select first row.
   // We track whether we've done the auto-select with a ref to avoid loops.
   const autoSelectedRef = useRef<string | null>(null);
   const allAgentIds = state.orgUnits.flatMap((u) => u.agents.map((a) => a.id));
   const urlIdValid =
     urlRunId != null &&
-    (allAgentIds.includes(urlRunId) || state.recent.some((r) => r.id === urlRunId));
+    (allAgentIds.includes(urlRunId) || historyRows.some((r) => r.id === urlRunId));
 
   // Auto-select first row when data arrives and nothing is selected
   useEffect(() => {
@@ -468,12 +555,16 @@ export default function FleetView() {
         )}
         {state.dataState !== "loading" && state.dataState !== "error" && (
           <HistorySection
-            rows={state.recent}
+            rows={historyRows}
             filter={histFilter}
             onFilter={setHistFilter}
             selectedId={selectedRunId}
             onSelect={handleSelectAgent}
             nowSec={state.nowSec}
+            visibleCount={histVisible}
+            serverHasMore={serverHasMore}
+            loadingMore={loadingMore}
+            onLoadMore={handleLoadMore}
           />
         )}
       </div>

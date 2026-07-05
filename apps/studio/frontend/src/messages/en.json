@@ -557,7 +557,9 @@
       "all": "All",
       "completed": "Completed",
       "failed": "Failed",
-      "empty": "No past sessions match this filter."
+      "empty": "No past sessions match this filter.",
+      "loadMore": "Load more",
+      "loadingMore": "Loading…"
     }
   },
   "mission": {

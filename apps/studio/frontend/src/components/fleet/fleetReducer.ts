@@ -63,6 +63,8 @@ export interface FleetState {
   orgUnits: OrgUnit[];
   counts: FleetCounts;
   recent: RecentRow[];
+  /** Whether the server has runs beyond the polled first page. */
+  runsHasNext: boolean;
   dataState: DataState;
   lastUpdatedMs: number | null;
   errorMessage: string | null;
@@ -76,6 +78,7 @@ export type FleetAction =
       type: "DATA_OK";
       invocations: InvocationSummary[];
       runs: RunSummary[];
+      runsHasNext: boolean;
       nowSec: number;
     }
   | { type: "DATA_ERROR"; message: string }
@@ -221,13 +224,12 @@ function buildOrgUnits(
   return units;
 }
 
-const RECENT_LIMIT = 50;
-
-function deriveRecent(runs: RunSummary[]): RecentRow[] {
+/** Terminal runs mapped to history rows, newest first. Shared with the
+ *  Fleet view's lazy pagination, which maps older pages the same way. */
+export function terminalRecentRows(runs: RunSummary[]): RecentRow[] {
   return runs
     .filter((r) => !isActive(r.status))
     .sort((a, b) => (b.ended_at ?? b.started_at ?? 0) - (a.ended_at ?? a.started_at ?? 0))
-    .slice(0, RECENT_LIMIT)
     .map((r) => ({
       id: r.run_id,
       name: r.playbook_name ?? r.agent_name ?? r.run_id.slice(-12),
@@ -254,6 +256,7 @@ export function initialFleetState(): FleetState {
     orgUnits: [],
     counts: { orchestrations: 0, agents: 0, attention: 0 },
     recent: [],
+    runsHasNext: false,
     dataState: "loading",
     lastUpdatedMs: null,
     errorMessage: null,
@@ -268,7 +271,7 @@ export function fleetReducer(state: FleetState, action: FleetAction): FleetState
       return { ...state, nowSec: action.nowSec };
 
     case "DATA_OK": {
-      const { invocations, runs, nowSec } = action;
+      const { invocations, runs, runsHasNext, nowSec } = action;
       const orgUnits = buildOrgUnits(invocations, runs, nowSec);
       const counts = deriveCounts(orgUnits);
       return {
@@ -276,7 +279,8 @@ export function fleetReducer(state: FleetState, action: FleetAction): FleetState
         nowSec,
         orgUnits,
         counts,
-        recent: deriveRecent(runs),
+        recent: terminalRecentRows(runs),
+        runsHasNext,
         dataState: "live",
         lastUpdatedMs: Date.now(),
         errorMessage: null,

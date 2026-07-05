@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { fleetReducer, initialFleetState } from "./fleetReducer";
+import { fleetReducer, initialFleetState, terminalRecentRows } from "./fleetReducer";
 import type { FleetState } from "./fleetReducer";
 import type { RunSummary } from "@/lib/types";
 import type { InvocationSummary } from "@/lib/api";
@@ -49,7 +49,7 @@ function dispatchOk(
   runs: RunSummary[],
   nowSec = 1_000_000,
 ): FleetState {
-  return fleetReducer(state, { type: "DATA_OK", invocations, runs, nowSec });
+  return fleetReducer(state, { type: "DATA_OK", invocations, runs, runsHasNext: false, nowSec });
 }
 
 // ─── Data state transitions ───────────────────────────────────────────────────
@@ -283,5 +283,21 @@ describe("fleetReducer — sort order", () => {
     );
     expect(s.orgUnits[0].id).toBe("i2");
     expect(s.orgUnits[1].id).toBe("i1");
+  });
+});
+
+// ─── terminalRecentRows ───────────────────────────────────────────────────────
+
+describe("terminalRecentRows", () => {
+  it("returns every terminal run (no cap) sorted newest first", () => {
+    const runs = Array.from({ length: 80 }, (_, i) =>
+      makeRun({ run_id: `r${i}`, status: "completed", ended_at: 1_000 + i }),
+    );
+    runs.push(makeRun({ run_id: "live", status: "running", started_at: 2_000 }));
+    const rows = terminalRecentRows(runs);
+    expect(rows).toHaveLength(80);
+    expect(rows[0].id).toBe("r79");
+    expect(rows[79].id).toBe("r0");
+    expect(rows.some((r) => r.id === "live")).toBe(false);
   });
 });

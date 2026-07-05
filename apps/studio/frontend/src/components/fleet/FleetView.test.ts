@@ -93,7 +93,13 @@ function makeInvocation(
 }
 
 function dispatchOk(invocations: InvocationSummary[], runs: RunSummary[], nowSec = 1_000_000) {
-  return fleetReducer(initialFleetState(), { type: "DATA_OK", invocations, runs, nowSec });
+  return fleetReducer(initialFleetState(), {
+    type: "DATA_OK",
+    invocations,
+    runs,
+    runsHasNext: false,
+    nowSec,
+  });
 }
 
 // ─── firstAgentId logic (inline, mirrors FleetView helper) ────────────────────

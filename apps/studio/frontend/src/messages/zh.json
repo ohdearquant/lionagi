@@ -557,7 +557,9 @@
       "all": "全部",
       "completed": "已完成",
       "failed": "失败",
-      "empty": "没有符合该过滤条件的历史会话。"
+      "empty": "没有符合该过滤条件的历史会话。",
+      "loadMore": "加载更多",
+      "loadingMore": "加载中…"
     }
   },
   "mission": {

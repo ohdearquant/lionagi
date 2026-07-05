@@ -59,6 +59,7 @@ export function useFleet(): FleetState {
             type: "DATA_OK",
             invocations: invsResp.invocations,
             runs: runsResp.runs,
+            runsHasNext: runsResp.has_next,
             nowSec,
           });
         }
