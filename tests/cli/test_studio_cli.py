@@ -220,6 +220,7 @@ def test_studio_no_open_before_start_is_preserved():
         _stubbed_serve(),
         patch("webbrowser.open") as mock_open,
         patch("sys.stdout.isatty", return_value=True),
+        patch("sys.stdin.isatty", return_value=True),
     ):
         from lionagi.cli.main import main
 
@@ -251,8 +252,9 @@ def test_studio_cross_level_mode_flags_are_mutually_exclusive():
         ["studio", "--web", "start", "--docker"],
         ["studio", "--no-frontend", "start", "--dev"],
     ):
-        with pytest.raises(SystemExit):
+        with pytest.raises(SystemExit) as exc_info:
             main(argv)
+        assert exc_info.value.code == 2
 
 
 # ─── studio cwd / module resolution ─────────────

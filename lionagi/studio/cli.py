@@ -136,7 +136,11 @@ def _validate_mode_flags(args: argparse.Namespace) -> None:
         if getattr(args, attr, False)
     ]
     if len(selected) > 1:
-        raise SystemExit(f"li studio: mode flags are mutually exclusive: {' '.join(selected)}")
+        print(
+            f"li studio: mode flags are mutually exclusive: {' '.join(selected)}",
+            file=sys.stderr,
+        )
+        raise SystemExit(2)
 
 
 def run_studio(args: argparse.Namespace) -> int:
