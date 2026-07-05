@@ -62,6 +62,11 @@
   --canvas-grid: color-mix(in srgb, var(--edge-hairline) 34%, transparent);
   --canvas-vignette: color-mix(in srgb, var(--accent) 6%, transparent);
 
+  /* Today-column tint — schedules calendar week/day grids. Separate from
+     --canvas-vignette so the calendar's "today" marker isn't semantically
+     tied to the designer-canvas substrate. */
+  --today-tint: color-mix(in srgb, var(--accent) 6%, transparent);
+
   /* Meta-label tracking — wide caps tracking is an en idiom; zh hanzi need
      nearly none and never uppercase (see .ui-uppercase) */
   --tracking-meta: 0.11em;
@@ -93,6 +98,7 @@
   /* Light paper can carry a slightly stronger grid, gentler vignette */
   --canvas-grid: color-mix(in srgb, var(--edge-hairline) 42%, transparent);
   --canvas-vignette: color-mix(in srgb, var(--accent) 4%, transparent);
+  --today-tint: color-mix(in srgb, var(--accent) 4%, transparent);
 
   /* Secondary ≥ #3a3d44 on white; muted ≥ #5c5f66 on white */
   --content-primary: #18181b;

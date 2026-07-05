@@ -10,6 +10,9 @@
  *
  * Month cells bucket by day; week/day views bucket by hour on a scrollable
  * hour grid. Clicking a day (or an hour cell) opens a detail strip below.
+ * Repeated fires of the same schedule inside one cell collapse into a single
+ * chip with a run-count badge — the detail strip below still lists every
+ * individual fire, so "expand" is just a click away.
  */
 import { useEffect, useMemo, useRef, useState } from "react";
 import { Link } from "@tanstack/react-router";
@@ -27,6 +30,11 @@ const STATUS_DOT: Record<string, string> = {
   skipped: "var(--content-muted)",
   cancelled: "var(--content-muted)",
 };
+
+/** Uniform chip shell — fixed height, truncating, consistent spacing —
+ * shared by month cells, hour cells, and the all-day row. */
+const CHIP_ROW =
+  "flex h-5 min-w-0 shrink-0 items-center gap-1 rounded bg-surface-overlay/50 px-1 text-meta leading-none";
 
 interface DayRun {
   kind: "run";
@@ -70,7 +78,10 @@ function startOfWeek(d: Date): Date {
 
 const MAX_VISIBLE_PER_DAY = 3;
 const MAX_VISIBLE_PER_HOUR = 3;
-const HOUR_ROW_PX = 44;
+const HOUR_ROW_PX = 56;
+/** Floor width for a day column in the week/day grids — narrower than this
+ * and chips stop being legible, so the grid scrolls horizontally instead. */
+const MIN_DAY_COL_PX = 128;
 /** Initial scroll target for hour grids — work usually starts around 07:00. */
 const SCROLL_TO_HOUR = 7;
 
@@ -140,6 +151,59 @@ function bucketItems(
     });
   }
   return map;
+}
+
+/** A same-schedule cluster of runs/fires collapsed into one chip. Polls pass
+ * through ungrouped (there is only ever one per day). */
+interface ChipGroup {
+  kind: "group";
+  sourceKind: "run" | "fire";
+  atMs: number;
+  scheduleName: string;
+  status?: string;
+  count: number;
+}
+
+type ChipEntry = DayPoll | ChipGroup;
+
+/**
+ * Collapse repeated fires/runs of the same schedule within one cell into a
+ * single ChipGroup carrying a count — a frequent schedule reads as one chip
+ * with a "×N" badge instead of a wall of near-identical rows. Order is by
+ * first occurrence; a group's displayed time/status track its latest item.
+ */
+function groupBySchedule(items: DayItem[]): ChipEntry[] {
+  const order: ChipEntry[] = [];
+  const groups = new Map<string, ChipGroup>();
+  for (const item of items) {
+    if (item.kind === "poll") {
+      order.push(item);
+      continue;
+    }
+    const scheduleId = item.kind === "run" ? item.run.schedule_id : item.schedule.id;
+    const scheduleName = item.kind === "run" ? item.run.scheduleName : item.schedule.name;
+    const groupKey = `${item.kind}:${scheduleId}`;
+    const existing = groups.get(groupKey);
+    if (existing) {
+      existing.count += 1;
+      if (item.atMs >= existing.atMs) {
+        existing.atMs = item.atMs;
+        if (item.kind === "run") existing.status = item.run.status;
+      }
+      continue;
+    }
+    const group: ChipGroup = {
+      kind: "group",
+      sourceKind: item.kind,
+      atMs: item.atMs,
+      scheduleName,
+      status: item.kind === "run" ? item.run.status : undefined,
+      count: 1,
+    };
+    groups.set(groupKey, group);
+    order.push(group);
+  }
+  return order;
 }
 
 export default function SchedulesCalendar({
@@ -288,38 +352,43 @@ export default function SchedulesCalendar({
 
   const selectedItems = selectedDay ? (byDay.get(selectedDay) ?? []) : [];
 
+  // Shared column template for the week/day header, all-day row, and every
+  // hour row — one min-width floor so all three tracks line up and stay in
+  // sync when the outer wrapper scrolls horizontally.
+  const dayGridCols = `48px repeat(${hourColumns.length}, minmax(${MIN_DAY_COL_PX}px, 1fr))`;
+
   const timeOf = (ms: number) =>
     new Date(ms).toLocaleTimeString(locale, { hour: "2-digit", minute: "2-digit", hour12: false });
 
-  const renderChip = (item: DayItem, key: number) =>
-    item.kind === "poll" ? (
-      <span
-        key={key}
-        className="flex min-w-0 items-center gap-1 text-meta leading-tight"
-        title={`${item.schedule.name} · polling`}
-      >
+  const renderChip = (entry: ChipEntry, key: number) =>
+    entry.kind === "poll" ? (
+      <span key={key} className={CHIP_ROW} title={`${entry.schedule.name} · polling`}>
         <span
           aria-hidden="true"
           className="h-1.5 w-1.5 shrink-0 animate-pulse rounded-full"
           style={{ background: "var(--status-running)" }}
         />
-        <span className="truncate text-content-secondary">{item.schedule.name}</span>
+        <span className="min-w-0 flex-1 truncate text-content-secondary">
+          {entry.schedule.name}
+        </span>
       </span>
     ) : (
       <span
         key={key}
-        className="flex min-w-0 items-center gap-1 text-meta leading-tight"
+        className={CHIP_ROW}
         title={
-          item.kind === "run"
-            ? `${item.run.scheduleName} · ${item.run.status}`
-            : `${item.schedule.name} · ${t("next")}`
+          entry.count > 1
+            ? `${entry.scheduleName} × ${entry.count}`
+            : entry.sourceKind === "run"
+              ? `${entry.scheduleName} · ${entry.status}`
+              : `${entry.scheduleName} · ${t("next")}`
         }
       >
-        {item.kind === "run" ? (
+        {entry.sourceKind === "run" ? (
           <span
             aria-hidden="true"
             className="h-1.5 w-1.5 shrink-0 rounded-full"
-            style={{ background: STATUS_DOT[item.run.status] ?? "var(--content-muted)" }}
+            style={{ background: STATUS_DOT[entry.status ?? ""] ?? "var(--content-muted)" }}
           />
         ) : (
           <span
@@ -328,12 +397,17 @@ export default function SchedulesCalendar({
             style={{ borderColor: "var(--accent)" }}
           />
         )}
-        <span className="shrink-0 font-data tabular-nums text-content-muted">
-          {timeOf(item.atMs)}
-        </span>
-        <span className="truncate text-content-secondary">
-          {item.kind === "run" ? item.run.scheduleName : item.schedule.name}
-        </span>
+        {entry.count === 1 && (
+          <span className="shrink-0 font-data tabular-nums text-content-muted">
+            {timeOf(entry.atMs)}
+          </span>
+        )}
+        <span className="min-w-0 flex-1 truncate text-content-secondary">{entry.scheduleName}</span>
+        {entry.count > 1 && (
+          <span className="shrink-0 rounded-sm bg-[var(--accent)]/15 px-1 font-data text-[10px] font-semibold tabular-nums text-[var(--accent)]">
+            {t("runCount", { count: entry.count })}
+          </span>
+        )}
       </span>
     );
 
@@ -411,10 +485,10 @@ export default function SchedulesCalendar({
           <div className="grid grid-cols-7 overflow-hidden rounded-lg border border-edge">
             {monthCells.map(({ date, inMonth }, i) => {
               const key = dayKey(date);
-              const items = byDay.get(key) ?? [];
+              const entries = groupBySchedule(byDay.get(key) ?? []);
               const isToday = key === todayKey;
               const isSelected = key === selectedDay;
-              const overflow = items.length - MAX_VISIBLE_PER_DAY;
+              const overflow = entries.length - MAX_VISIBLE_PER_DAY;
               return (
                 <button
                   key={key}
@@ -443,7 +517,7 @@ export default function SchedulesCalendar({
                   </span>
                   {/* Items area — overflow hidden to hold fixed row height. */}
                   <div className="flex flex-1 flex-col gap-0.5 overflow-hidden">
-                    {items.slice(0, MAX_VISIBLE_PER_DAY).map((item, j) => renderChip(item, j))}
+                    {entries.slice(0, MAX_VISIBLE_PER_DAY).map((entry, j) => renderChip(entry, j))}
                     {overflow > 0 && (
                       <span className="text-meta text-content-muted">
                         {t("more", { count: overflow })}
@@ -456,12 +530,12 @@ export default function SchedulesCalendar({
           </div>
         </>
       ) : (
-        <div className="overflow-hidden rounded-lg border border-edge">
+        // Horizontal scroll lives HERE, on the one shared ancestor of the
+        // header/all-day/hour-grid tracks — they scroll together in lockstep
+        // and the page body never gains a sideways scrollbar.
+        <div className="overflow-x-auto rounded-lg border border-edge">
           {/* Column header: gutter spacer + day headers. */}
-          <div
-            className="grid border-b border-edge"
-            style={{ gridTemplateColumns: `48px repeat(${hourColumns.length}, minmax(0, 1fr))` }}
-          >
+          <div className="grid border-b border-edge" style={{ gridTemplateColumns: dayGridCols }}>
             <div />
             {hourColumns.map((d) => {
               const key = dayKey(d);
@@ -473,7 +547,11 @@ export default function SchedulesCalendar({
                   onClick={() => setSelectedDay(selectedDay === key ? null : key)}
                   className={[
                     "flex items-center gap-1.5 border-l border-edge px-2 py-1.5 text-left transition-colors duration-100",
-                    selectedDay === key ? "bg-surface-overlay" : "hover:bg-surface-overlay/60",
+                    selectedDay === key
+                      ? "bg-surface-overlay"
+                      : isToday
+                        ? "bg-[var(--today-tint)] hover:bg-surface-overlay/60"
+                        : "hover:bg-surface-overlay/60",
                   ].join(" ")}
                 >
                   <span className="font-data text-meta uppercase tracking-wider text-content-muted">
@@ -498,19 +576,22 @@ export default function SchedulesCalendar({
           {hourColumns.some((d) =>
             (byDay.get(dayKey(d)) ?? []).some((item) => item.kind === "poll"),
           ) && (
-            <div
-              className="grid border-b border-edge"
-              style={{ gridTemplateColumns: `48px repeat(${hourColumns.length}, minmax(0, 1fr))` }}
-            >
+            <div className="grid border-b border-edge" style={{ gridTemplateColumns: dayGridCols }}>
               <div className="px-1.5 py-1 text-right font-data text-meta text-content-muted">
                 {t("allDay")}
               </div>
               {hourColumns.map((d) => {
-                const polls = (byDay.get(dayKey(d)) ?? []).filter((item) => item.kind === "poll");
+                const dk = dayKey(d);
+                const polls = (byDay.get(dk) ?? []).filter((item) => item.kind === "poll");
                 return (
                   <div
-                    key={dayKey(d)}
-                    className="flex flex-col gap-0.5 border-l border-edge px-1.5 py-1"
+                    key={dk}
+                    className={[
+                      "flex flex-col gap-0.5 border-l border-edge px-1.5 py-1",
+                      dk === todayKey ? "bg-[var(--today-tint)]" : "",
+                    ]
+                      .filter(Boolean)
+                      .join(" ")}
                   >
                     {polls.map((item, j) => renderChip(item, j))}
                   </div>
@@ -522,13 +603,7 @@ export default function SchedulesCalendar({
           {/* Hour grid — scrollable, opens at the working morning. */}
           <div ref={hourGridRef} className="max-h-[560px] overflow-y-auto">
             {Array.from({ length: 24 }, (_, hour) => (
-              <div
-                key={hour}
-                className="grid"
-                style={{
-                  gridTemplateColumns: `48px repeat(${hourColumns.length}, minmax(0, 1fr))`,
-                }}
-              >
+              <div key={hour} className="grid" style={{ gridTemplateColumns: dayGridCols }}>
                 <div
                   className="border-b border-edge px-1.5 pt-0.5 text-right font-data text-meta tabular-nums text-content-muted"
                   style={{ minHeight: HOUR_ROW_PX }}
@@ -537,28 +612,50 @@ export default function SchedulesCalendar({
                 </div>
                 {hourColumns.map((d) => {
                   const dk = dayKey(d);
-                  const items = byHour?.get(`${dk}H${hour}`) ?? [];
-                  const overflow = items.length - MAX_VISIBLE_PER_HOUR;
+                  const isToday = dk === todayKey;
+                  const entries = groupBySchedule(byHour?.get(`${dk}H${hour}`) ?? []);
+                  const overflow = entries.length - MAX_VISIBLE_PER_HOUR;
+                  const openHere = () => setSelectedDay(selectedDay === dk ? null : dk);
                   return (
-                    <button
+                    <div
                       key={dk}
-                      type="button"
-                      onClick={() => setSelectedDay(selectedDay === dk ? null : dk)}
+                      role="button"
+                      tabIndex={0}
+                      onClick={openHere}
+                      onKeyDown={(e) => {
+                        if (e.key === "Enter" || e.key === " ") {
+                          e.preventDefault();
+                          openHere();
+                        }
+                      }}
                       className={[
-                        "flex flex-col items-stretch gap-0.5 overflow-hidden border-b border-l border-edge p-1 text-left transition-colors duration-100",
+                        "flex cursor-pointer flex-col items-stretch gap-0.5 overflow-hidden border-b border-l border-edge p-1 text-left transition-colors duration-100 focus-visible:outline focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-[var(--accent)]",
                         selectedDay === dk
                           ? "bg-surface-overlay/40"
-                          : "hover:bg-surface-overlay/60",
+                          : isToday
+                            ? "bg-[var(--today-tint)] hover:bg-surface-overlay/60"
+                            : "hover:bg-surface-overlay/60",
                       ].join(" ")}
                       style={{ minHeight: HOUR_ROW_PX }}
                     >
-                      {items.slice(0, MAX_VISIBLE_PER_HOUR).map((item, j) => renderChip(item, j))}
+                      {entries
+                        .slice(0, MAX_VISIBLE_PER_HOUR)
+                        .map((entry, j) => renderChip(entry, j))}
                       {overflow > 0 && (
-                        <span className="text-meta text-content-muted">
+                        <button
+                          type="button"
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            switchMode("day");
+                            setAnchor(startOfDay(d));
+                            setSelectedDay(dk);
+                          }}
+                          className="w-fit text-meta text-content-muted underline-offset-2 hover:text-content-primary hover:underline"
+                        >
                           {t("more", { count: overflow })}
-                        </span>
+                        </button>
                       )}
-                    </button>
+                    </div>
                   );
                 })}
               </div>

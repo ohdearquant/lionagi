@@ -369,6 +369,7 @@
     "cal": {
       "today": "Today",
       "next": "next",
+      "runCount": "×{count}",
       "more": "+{count} more",
       "noItems": "Nothing on this day.",
       "prevPeriod": "Previous",
