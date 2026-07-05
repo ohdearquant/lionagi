@@ -196,23 +196,12 @@ describe("boardReducer — attention queue derivation", () => {
     expect(s.attentionItems[0].reason).toBe("stale");
   });
 
-  it("stale health does not demote a stuck run — stuck wins", () => {
-    const nowSec = 2_000_000;
-    const s = dispatchOk(
-      initialBoardState(),
-      [
-        makeRun({
-          run_id: "r1",
-          status: "running",
-          effective_health: "stale",
-          started_at: nowSec - 4000,
-        }),
-      ],
-      [],
-      nowSec,
-    );
+  it("orphaned health flags a running run as stale", () => {
+    const s = dispatchOk(initialBoardState(), [
+      makeRun({ run_id: "r1", status: "running", effective_health: "orphaned" }),
+    ]);
     expect(s.attentionItems).toHaveLength(1);
-    expect(s.attentionItems[0].reason).toBe("stuck");
+    expect(s.attentionItems[0].reason).toBe("stale");
   });
 
   it("stale health does not demote a gated run — gated wins", () => {
@@ -223,15 +212,10 @@ describe("boardReducer — attention queue derivation", () => {
     expect(s.attentionItems[0].reason).toBe("gated");
   });
 
-  it("stuck run (elapsed > threshold) appears in attention queue", () => {
-    const nowSec = 2_000_000;
-    const startedAt = nowSec - 4000; // 4000s > 3600s threshold
-    const s = dispatchOk(
-      initialBoardState(),
-      [makeRun({ run_id: "r1", status: "running", started_at: startedAt })],
-      [],
-      nowSec,
-    );
+  it("unresponsive health flags a running run as stuck", () => {
+    const s = dispatchOk(initialBoardState(), [
+      makeRun({ run_id: "r1", status: "running", effective_health: "unresponsive" }),
+    ]);
     expect(s.attentionItems[0].reason).toBe("stuck");
   });
 
@@ -248,11 +232,10 @@ describe("boardReducer — attention queue derivation", () => {
 
   it("sorts gated before stuck before failed before stale", () => {
     const nowSec = 2_000_000;
-    const stuckStart = nowSec - 4000;
     const s = dispatchOk(
       initialBoardState(),
       [
-        makeRun({ run_id: "stuck", status: "running", started_at: stuckStart }),
+        makeRun({ run_id: "stuck", status: "running", effective_health: "unresponsive" }),
         makeRun({ run_id: "failed", status: "failed", started_at: nowSec - 600 }),
         makeRun({ run_id: "gated", status: "gated" }),
         makeRun({ run_id: "stale", status: "running", effective_health: "stale" }),
@@ -269,15 +252,14 @@ describe("boardReducer — attention queue derivation", () => {
 
   it("deduplicates: a run that matches multiple criteria appears once (worst reason)", () => {
     const nowSec = 2_000_000;
-    const stuckStart = nowSec - 4000;
-    // Same run: failed AND stuck — should appear once as "failed"
+    // Same run: failed status AND stale health — should appear once as "failed"
     const s = dispatchOk(
       initialBoardState(),
       [
         makeRun({
           run_id: "r1",
           status: "failed",
-          started_at: stuckStart,
+          started_at: nowSec - 600,
           effective_health: "stale",
         }),
       ],

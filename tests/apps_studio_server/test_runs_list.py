@@ -198,22 +198,22 @@ async def _seed_running_session_with_activity(
         )
 
 
-def test_runs_list_threshold_crossing_session_reports_stale_not_unresponsive(tmp_path, monkeypatch):
-    """Running session past its kind-aware threshold → effective_health='stale'.
+def test_runs_list_threshold_crossing_alive_session_reports_unresponsive(tmp_path, monkeypatch):
+    """Running session, process alive, past its kind-aware threshold → 'unresponsive'.
 
-    The full ADR-0024 classifier returns UNRESPONSIVE (process alive + past
-    threshold), but the dashboard frontend counts effective_health==='stale'.
-    The runs list MUST map UNRESPONSIVE → 'stale' so the dashboard counter
-    stays correct.
+    The runs list exposes the classifier verdict verbatim: a live-but-quiet
+    session is UNRESPONSIVE, distinct from a process-dead 'stale' run. The
+    dashboard maps 'unresponsive' onto a "stuck" attention row.
     """
     db_path = tmp_path / "state.db"
     sid = str(uuid.uuid4())
-    # last_message_at = 7h ago; agent threshold = 6h → UNRESPONSIVE without fix
+    # last_message_at = 7h ago; agent threshold = 6h; process alive → UNRESPONSIVE
     old_activity = time.time() - 7 * 3600
     _run(_seed_running_session_with_activity(db_path, sid, last_message_at=old_activity))
     client = _make_client(tmp_path, monkeypatch, db_path)
-    # Pin liveness to True: this test asserts the UNRESPONSIVE→'stale' mapping,
-    # not the liveness oracle (the seeded session has no real process).
+    # Pin liveness to True so the classifier yields UNRESPONSIVE (alive + past
+    # threshold), not the process-dead STALE path — the seeded session has no
+    # real process to probe.
     monkeypatch.setattr("lionagi.studio.services.runs._session_liveness", lambda *a, **k: True)
 
     r = client.get("/api/runs")
@@ -221,9 +221,9 @@ def test_runs_list_threshold_crossing_session_reports_stale_not_unresponsive(tmp
     runs = r.json()["runs"]
     target = next((run for run in runs if run["id"] == sid), None)
     assert target is not None, "seeded session not found in runs list"
-    assert target["effective_health"] == "stale", (
-        f"expected 'stale', got {target['effective_health']!r}; "
-        "UNRESPONSIVE must be mapped to 'stale' for dashboard compatibility"
+    assert target["effective_health"] == "unresponsive", (
+        f"expected 'unresponsive', got {target['effective_health']!r}; "
+        "a live-but-quiet session must surface as UNRESPONSIVE, not collapsed to 'stale'"
     )
 
 
