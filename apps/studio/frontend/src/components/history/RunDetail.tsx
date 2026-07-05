@@ -6,7 +6,7 @@
  * /runs/$id full-page route. Caller is responsible for scroll context.
  */
 
-import { lazy, Suspense, useEffect, useMemo, useRef, useState } from "react";
+import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useTranslations } from "use-intl";
 import InvocationSection from "@/components/history/InvocationDetail";
 import OperationGraphSection from "@/components/history/OperationGraphSection";
@@ -779,14 +779,14 @@ export default function RunDetail({ id, fullPage = false }: RunDetailProps) {
     }
   }, [session, fullPage]);
 
-  const handleToggleExpand = (stepId: string, next: boolean) => {
+  const handleToggleExpand = useCallback((stepId: string, next: boolean) => {
     setExpandedSteps((prev) => {
       const updated = new Set(prev);
       if (next) updated.add(stepId);
       else updated.delete(stepId);
       return updated;
     });
-  };
+  }, []);
 
   const hiddenOlderCount = useMemo(() => {
     if (!session) return 0;
@@ -916,6 +916,17 @@ export default function RunDetail({ id, fullPage = false }: RunDetailProps) {
     [signalEvents],
   );
 
+  const execSteps = useMemo(
+    () =>
+      steps.map((s) => ({
+        step: s.step,
+        status: s.status,
+        result: s.result,
+        timestamp: s.timestamp ?? undefined,
+      })),
+    [steps],
+  );
+
   if (error) {
     return (
       <div className="flex items-center justify-center py-20">
@@ -1019,16 +1030,7 @@ export default function RunDetail({ id, fullPage = false }: RunDetailProps) {
           <SectionHeader label={t("sectionDag")} count={runGraph.nodes.length} />
           <div className="h-[280px] rounded border border-edge bg-surface-raised shadow-card overflow-hidden">
             <Suspense fallback={null}>
-              <WorkerCanvas
-                graph={runGraph}
-                editable={false}
-                execSteps={steps.map((s) => ({
-                  step: s.step,
-                  status: s.status,
-                  result: s.result,
-                  timestamp: s.timestamp ?? undefined,
-                }))}
-              />
+              <WorkerCanvas graph={runGraph} editable={false} execSteps={execSteps} />
             </Suspense>
           </div>
         </div>

@@ -802,6 +802,7 @@
     "colOutput": "输出",
     "charsCount": "{count, number} 字符",
     "moreLines": "+{count} 行",
+    "showEarlier": "显示更早的 {count, number} 条消息",
     "noArgs": "(无参数)",
     "noOutput": "(无输出)",
     "roleUser": "用户",

@@ -176,7 +176,7 @@ function pathFromArgs(args: Record<string, unknown>, summary: string): string[] 
   return out;
 }
 
-export default function RunStepCard({
+function RunStepCard({
   step,
   defaultExpanded = false,
   expanded: expandedProp,
@@ -594,6 +594,23 @@ export default function RunStepCard({
   );
 }
 
+// Memoized so a live session that appends to one branch only re-renders that
+// branch's card. The parent rebuilds every step object each tick, so we compare
+// by content: messages are append-only, so branch name + status + message count
+// captures whether this card actually changed.
+function stepPropsEqual(prev: RunStepCardProps, next: RunStepCardProps): boolean {
+  return (
+    prev.expanded === next.expanded &&
+    prev.defaultExpanded === next.defaultExpanded &&
+    prev.onToggleExpand === next.onToggleExpand &&
+    prev.step.step === next.step.step &&
+    prev.step.status === next.step.status &&
+    (prev.step.messages?.length ?? 0) === (next.step.messages?.length ?? 0)
+  );
+}
+
+export default React.memo(RunStepCard, stepPropsEqual);
+
 const TabButton = React.forwardRef<
   HTMLButtonElement,
   {
@@ -891,6 +908,8 @@ interface MessageFeedProps {
   stepKey?: string;
 }
 
+const MESSAGE_WINDOW = 80;
+
 function MessageFeed({
   messages,
   filters,
@@ -898,6 +917,11 @@ function MessageFeed({
   onToggleTool,
   stepKey = "",
 }: MessageFeedProps) {
+  const t = useTranslations("runCard");
+  // Render only the most recent window; long conversations reveal older turns
+  // on demand instead of mounting the whole history at once.
+  const [visibleCount, setVisibleCount] = useState(MESSAGE_WINDOW);
+
   // Precompute per-message assistant ordinals before JSX to avoid mutation during render
   const assistantOrdinals: number[] = new Array(messages.length);
   let ordinalCount = 0;
@@ -906,9 +930,21 @@ function MessageFeed({
     assistantOrdinals[i] = ordinalCount;
   }
 
+  const startIdx = Math.max(0, messages.length - visibleCount);
+
   return (
     <div className="flex flex-col">
-      {messages.map((m, i) => {
+      {startIdx > 0 && (
+        <button
+          type="button"
+          onClick={() => setVisibleCount((v) => v + MESSAGE_WINDOW * 4)}
+          className="border-b border-edge px-3 py-1.5 text-center font-mono text-[length:var(--t-xs)] text-content-muted hover:bg-surface-overlay hover:text-content-secondary"
+        >
+          {t("showEarlier", { count: startIdx })}
+        </button>
+      )}
+      {messages.slice(startIdx).map((m, offset) => {
+        const i = startIdx + offset;
         if (m.role === "system" && !filters.system) return null;
         if (m.role === "user" && !filters.user) return null;
         if (m.role === "assistant" && !filters.responses) return null;
