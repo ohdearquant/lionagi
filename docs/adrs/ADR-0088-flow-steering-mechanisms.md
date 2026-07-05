@@ -37,7 +37,7 @@ single-node flow or a flow whose open ops are all past preparation (stamped
 `rejected:no-pending-ops`), and it cannot redirect an op already mid-turn; and op-mode (`--as-op`)
 was reserved by ADR-0085 and is unbuilt.
 
-Field evidence from three lambda-seat interviews (2026-07-03) frames the priority. The number-one
+Field evidence from three operator interviews (2026-07-03) frames the priority. The number-one
 ask is trustworthy terminal status (tracked as issue #1672), not steering. The number-two ask is
 genuine pause/resume/steer for `li play`, because today the only lever for an off-track run is
 kill-and-restart, discarding sunk work, and most failures are "85% right, wrong turn near the end."
@@ -132,7 +132,7 @@ latency (~2s) and soft-pause boundary semantics from ADR-0085 are unchanged.
 | Amend ADR-0085 section 3 in place | Buries the new render contract and measurement gate in an eight-part document; a focused 0088 is cleaner and faster to sign off. |
 | Bake provider-specific transcript-resume into OSS | The live-mailbox steer (SendMessage to a running agent) is a firm-layer concern on top of OSS actor identity, not provider-specific resume logic in OSS lionagi. |
 
-## Open questions for sign-off (Leo / Fable)
+## Open questions for design sign-off
 
 1. **Render seam.** A1 (render in `operations/flow.py` `_prepare_operation`, engine-local, mid-run
    capable, couples the engine to the `operator_messages` key) versus A2 (render at the message /

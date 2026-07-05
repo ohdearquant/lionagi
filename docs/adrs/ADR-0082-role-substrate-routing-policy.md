@@ -249,8 +249,8 @@ roles:
     effort: high
 ```
 
-The shipped default pack should continue to omit model values until Ocean
-explicitly accepts a default cost/provider policy.
+The shipped default pack should continue to omit model values until
+maintainers explicitly accept a default cost/provider policy.
 
 ### Precedence
 
@@ -326,7 +326,7 @@ packs and dry-run stubs without starting external providers.
 - Preserves existing worker precedence and `--workers` behavior.
 - Maps model routing onto the ADR-0079 executor-provider path through existing
   `build_imodel_from_spec(...)`.
-- Keeps default provider/cost policy opt-in until Ocean accepts concrete
+- Keeps default provider/cost policy opt-in until maintainers accept concrete
   defaults.
 
 **Negative**
@@ -344,7 +344,7 @@ packs and dry-run stubs without starting external providers.
 | Add `model` or `substrate` directly to `Role` | Easy to inspect, but `Role` is the behavioral prompt/emission pattern. Runtime routing there would couple provider policy to the built-in persona library. |
 | Use user profile frontmatter only | Already works for custom profiles, but profiles shadow casts role bodies and require a full prompt file just to set a route. That is the gap ADR-0074 avoided with packs. |
 | Create standalone `casts/routing.yaml` | Clear name, but it duplicates `Pack`, which already owns per-role runtime config, modes, active roster, and policy. |
-| Hardcode the #1210 provider table in `default.yaml` now | Gives immediate defaults, but violates existing tests and the compatibility rule that shipped packs do not pin provider/cost policy. Ocean must accept concrete defaults first. |
+| Hardcode the #1210 provider table in `default.yaml` now | Gives immediate defaults, but violates existing tests and the compatibility rule that shipped packs do not pin provider/cost policy. Concrete defaults must be accepted first. |
 | Wait for ADR-0079 before any #1210 implementation | Avoids future migration, but unnecessarily blocks the existing model-spec route, which already maps to provider endpoints through `build_imodel_from_spec(...)`. |
 
 ## Migration and Compatibility
@@ -356,7 +356,7 @@ packs and dry-run stubs without starting external providers.
 4. Preserve existing precedence exactly.
 5. After ADR-0079 lands, add optional `execution_target` parsing to `RoleConfig`
    and map it to endpoint kwargs in the same branch builder path.
-6. If Ocean later accepts default role-provider policy, populate a separate
+6. If maintainers later accept default role-provider policy, populate a separate
    named routing pack first. Promote to default only with a follow-up ADR or ADR
    amendment.
 
@@ -364,7 +364,7 @@ Existing commands without `--pack` continue using the default pack with no
 provider hardcoding. Existing `--workers` and user profile frontmatter continue
 to win over pack routing.
 
-## Open Questions for Ocean
+## Open Questions
 
 - Should `--pack` accept only filesystem paths in the first slice, or also named
   packs under `~/.lionagi/packs/`?

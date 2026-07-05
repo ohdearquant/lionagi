@@ -145,7 +145,7 @@ This fork governs four things at once, which is why it is load-bearing rather th
 - **Secrets**: prompt-cells never receive provider keys in the box; exec-cells always do, via a
   reference or broker rather than raw env where the backend allows it (echoing 0080's own open
   question; this ADR does not resolve broker-vs-raw-env, see
-  [Open questions](#open-questions-for-ocean)).
+  [Open questions](#open-questions)).
 - **Egress**: a prompt-cell's provider call never crosses the backend's network, so backend choice
   cannot bias it.
 - **Teardown cost**: a prompt-cell's box holds no long-lived state, so teardown is cheap regardless
@@ -173,7 +173,7 @@ ADR-0080's backend-contract half (the `SandboxBackend` literal, `sandbox_exec_st
 absorbed into the contract defined above. ADR-0080's other half, wiring flow/play production
 operations through `DependencyAwareExecutor._execute_operation()` in `operations/flow.py`, is
 **explicitly out of scope for this ADR**. It is not silently absorbed (it has its own blast radius
-and its own Leo gate) and it is not left as codeless vaporware under this ADR's number: it
+and its own review gate) and it is not left as codeless vaporware under this ADR's number: it
 **reopens as a fresh, named future ADR when a second, non-benchmark consumer of this seam
 exists.** Until then, `lionagi/substrate/` is not built and `DependencyAwareExecutor` is untouched.
 
@@ -189,7 +189,7 @@ day-one requirement:
 | Daytona | Day 1 | Horizontal scale (sub-100ms cold start, hundreds of trials), the proven SWE-bench exec-cell path | Went closed-source 2026-06-11 and is managed-cloud-only going forward, with no self-host option; see the hard constraint below for why this ADR never treats Daytona as sufficient alone |
 | Docker | Slice 2, **required** | The zero-managed-vendor guarantee for exec-cells (see the hard constraint below); sovereign, local exec-cell repro | None new; universal, mature API |
 | Apple Container | Deferred, documented | microVM-per-container isolation this workload does not need | No official socket/REST API, CLI-and-XPC only; the `mocker` compatibility shim is CLI-only (no Docker Engine API), leaks on teardown (no `--rm` equivalent, ~10s graceful-stop tax per cell), and measures roughly 3.6x slower cold start than Docker Desktop in the shim author's own numbers. At a hundreds-of-trials workload, that teardown and cold-start tax compounds; buying unused microVM isolation at that cost is not justified for v1 |
-| Codespaces | Supported at the seam level; adapter deferred past v1; never the loop's default backend | Ocean named it explicitly. A batch or non-interactive execution profile the seam can express through `capabilities()`, and a concrete demonstration that the seam itself is pluggable to a backend this ADR did not have to build first | Minutes-scale cold boot without prebuilds and GiB-month-plus-core-hour billing are wrong-shaped for a default driver of hundreds of short trials; `capabilities()` reports its cold-start class as minutes-scale so callers batch around it or skip it per trial, rather than the seam hardcoding an exclusion. This is why it is supported, not why it is excluded |
+| Codespaces | Supported at the seam level; adapter deferred past v1; never the loop's default backend | It was named explicitly as a candidate backend. A batch or non-interactive execution profile the seam can express through `capabilities()`, and a concrete demonstration that the seam itself is pluggable to a backend this ADR did not have to build first | Minutes-scale cold boot without prebuilds and GiB-month-plus-core-hour billing are wrong-shaped for a default driver of hundreds of short trials; `capabilities()` reports its cold-start class as minutes-scale so callers batch around it or skip it per trial, rather than the seam hardcoding an exclusion. This is why it is supported, not why it is excluded |
 | wasmtime (khive-cloud plugin layer) | Out of scope | A different isolation tier (wasm-module, not OS/container) | Not evaluated further here |
 
 **Hard constraint (normative): the recursive measurement loop MUST be runnable with zero
@@ -202,7 +202,7 @@ service, and slice 2 does not ship without it. Any future roster change that wou
 MUST replace it with an equivalent zero-managed-vendor backend before it lands.
 
 Apple Container in-roster is a strategic call, not a technical one settled by this ADR; see
-[Open questions](#open-questions-for-ocean). Codespaces' in-roster status is settled above: it is
+[Open questions](#open-questions). Codespaces' in-roster status is settled above: it is
 supported, its adapter is deferred past v1, and it is never selected as the loop's default backend.
 
 ### 6. Measurement discipline (inherited from ADR-0088)
@@ -237,7 +237,7 @@ Two targets are defined for the first two loop slices:
 1. **Lionagi prompting system**: replicate the ADR-0088 steer-adherence fixture (op1 drafts a
    plan, a steer redirects it, op2 executes, `is_steer_adherent()` scores the artifact) as the
    first end-to-end proof that variants can be proposed, measured, and gated through the seam.
-2. **Notification-prompting surface**: defined here, not left open, per the advisor's pinning.
+2. **Notification-prompting surface**: defined here, not left open.
    The fixture is a run trace carrying a labeled ground-truth critical event (a stuck job, a
    terminal-status flip, a failed op). The notification surface produces a summary or alert. The
    machine-checkable cell is **critical-event surfacing recall/precision**: does the surface
@@ -275,8 +275,8 @@ A recursive loop on metered Daytona, multiplied by iterations and trials, is a r
 disk-floor risk. This ADR requires: a per-loop hard budget cap (`trials x iterations x est. $/trial`);
 a per-backend circuit breaker that halts on error-rate or spend threshold; auto-halt on either
 cap; and heavy artifacts written to external storage rather than the internal disk floor. **The
-spend ceiling and any unattended-cadence spend rate are Ocean's call**: this ADR frames the
-decision, it does not pick the number (see [Open questions](#open-questions-for-ocean)).
+spend ceiling and any unattended-cadence spend rate are a resource decision outside this ADR's scope**: this ADR frames the
+decision, it does not pick the number (see [Open questions](#open-questions)).
 
 ### 9. Observability harvest
 
@@ -336,9 +336,9 @@ involved), never for the provider call under test.
 | Adopt LangChain Deep Agents' `BaseSandbox` shape | Its `execute(command)`-only contract drops `capabilities()`, forcing backend branching back into callers: the leak this seam exists to prevent. Kept as convergent validation of the four-verb shape, not as the contract. |
 | Promote the seam into `lionagi/substrate/` now | Cosmetic package move ahead of a second consumer; risks becoming the exact vaporware package ADR-0079 never filled. Deferred until flow/play integration is taken up. |
 | Revise ADR-0079 and ADR-0080 in place instead of superseding | Leaves three overlapping Proposed sandbox designs live at once, which the packet and this ADR both judge worse than one document with an explicit lineage note. |
-| Ship the recursive loop as a sibling ADR gated on the seam | Considered, but Ocean framed the loop as the product; exiling it to a second document while it depends entirely on this seam's contract would separate a decision from its dependency without a real benefit. |
+| Ship the recursive loop as a sibling ADR gated on the seam | Considered, but the loop is framed as the product; exiling it to a second document while it depends entirely on this seam's contract would separate a decision from its dependency without a real benefit. |
 | All backends (worktree, Daytona, Docker, Apple Container, Codespaces) day one | Apple Container's teardown tax and ~3.6x cold-start penalty are not justified by a workload that does not need microVM isolation, and a Codespaces adapter is real implementation work with no day-one consumer; staged rollout matches backend cost/benefit to when each is actually needed. |
-| Exclude Codespaces from the roster entirely | Rejected: Ocean named it explicitly, and its cold-start class is a batch/non-interactive profile `capabilities()` can express honestly rather than a shape the seam should refuse to acknowledge. Supported-but-not-loop-default is the position that keeps the seam honest about what Codespaces is good for without making it the default driver. |
+| Exclude Codespaces from the roster entirely | Rejected: it was named explicitly as a candidate, and its cold-start class is a batch/non-interactive profile `capabilities()` can express honestly rather than a shape the seam should refuse to acknowledge. Supported-but-not-loop-default is the position that keeps the seam honest about what Codespaces is good for without making it the default driver. |
 | Use `harness/judge.py`'s LLM judge as the loop's promotion scorer | Reward-hackable by construction, and shares a model family with the proposer, creating a collusion risk. Rejected in favor of machine-checkable scorers only. |
 | Cache provider responses for cheap re-scoring | Would measure the cache, not the model, defeating the point of the measurement. Rejected inside the measurement path; permitted only for deterministic re-scoring of already-captured artifacts. |
 
@@ -383,8 +383,8 @@ involved), never for the provider call under test.
 
 - **Slice 1, seam + fidelity.** `SandboxBackend` Protocol, `Handle`, `capabilities()`; worktree
   `run_cell`; Daytona wrap; a `runner.py:run_once()` backend selector; reproduce the ADR-0088
-  adherence table through the seam. Backends: worktree/host and Daytona. **Goes to the Leo
-  spec-gate before this slice merges.**
+  adherence table through the seam. Backends: worktree/host and Daytona. **Goes through
+  design review before this slice merges.**
 - **Slice 2, zero-managed-vendor constraint + first loop target.** Docker backend, which satisfies
   the hard constraint that the loop never depend solely on a managed vendor; the recursive loop
   driver with an objective scorer, train/holdout split, human-approved promotion, and a budget
@@ -400,7 +400,7 @@ involved), never for the provider call under test.
   ex-ADR-0080 `DependencyAwareExecutor` integration); an Apple Container backend, if vendor risk
   ever forces reconsidering it.
 
-## Open Questions for Ocean
+## Open Questions
 
 - **Spend ceiling.** A per-loop hard budget cap and an unattended-cadence spend rate are
   resource decisions: frame is "cap at $X per loop, halt at Y% error rate; unattended runs only

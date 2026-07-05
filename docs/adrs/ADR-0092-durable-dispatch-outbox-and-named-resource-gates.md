@@ -1,6 +1,6 @@
 # ADR-0092: Durable Dispatch Outbox and Named Resource Gates
 
-**Status**: Accepted (spec gate signed 2026-07-04; rulings folded below)
+**Status**: Accepted (design review completed 2026-07-04; decisions folded below)
 **Date**: 2026-07-04
 **Builds on**: ADR-0062 (scheduled item state machine, proposed) · ADR-0061 (universal scheduler, proposed) · ADR-0083 (lifecycle signal contract) · ADR-0085 §5 (terminal notify hook, proposed) · ADR-0027 (scheduled runs) · ADR-0030 (attention queue)
 
@@ -17,7 +17,7 @@ Two concrete failure modes motivate this ADR:
 1. **Consumer dead at fire time.** An account-wide agent-session reset overnight
    2026-07-03/04 killed every agent seat for roughly 90 minutes. Scheduled
    notifications aimed at those seats had nowhere durable to land: nothing queued,
-   nothing re-delivered. The hard requirement from the spec-gate holder: an event
+   nothing re-delivered. Hard requirement: an event
    whose consumer is dead at fire time must survive and deliver on revival, never
    drop. The named use case is a post-reset revival heartbeat that pings each
    fleet seat, currently hand-rolled as a cron outside lionagi.
@@ -208,7 +208,7 @@ actions. Before the run starts, lionagi resolves the gate name through a
 advisory `fcntl.flock`** on that exact file (`LOCK_EX`, or `LOCK_EX|LOCK_NB`
 with a timeout), releasing it when the run ends.
 
-Hard constraint, per the spec-gate holder: **the gate composes with the
+Hard constraint: **the gate composes with the
 OS-level convention, it never replaces it.** Non-lionagi processes (cargo test
 suites, one-off scripts, other harnesses) keep acquiring the same flock
 directly, so:
@@ -237,7 +237,7 @@ them; v1 ships only the flag and the lock helper.
 
 ### Distinction preserved: revival-push vs condition-wait
 
-The fleet's dominant hand-rolled polling pattern (bounded sleep-loops on
+The dominant hand-rolled polling pattern (bounded sleep-loops on
 external state, for example PR merge-state watches) is a *condition-wait*,
 which is genuinely poll-shaped and distinct from revival *delivery*. This ADR
 serves the delivery case with push-to-durable-sink; condition-wait stays poll
@@ -327,18 +327,18 @@ Must NOT contain (v1):
 - Gate acquisition adds a blocking (or timeout-bounded) step in front of gated
   runs; ungated runs are unaffected.
 
-## Spec-gate rulings (signed 2026-07-04)
+## Design-review decisions (2026-07-04)
 
 1. **Transition machinery ordering**: ship the ~30-line guarded compare-and-swap
    fallback now; do not block on ADR-0062. Condition: the fallback mirrors
    0062's `transition()` signature and reason-code discipline exactly, so 0062
    absorbs it later as a refactor, not a migration.
 2. **Gate table ownership**: the canonical `gates:` name→lock-path table is
-   fleet-shared configuration owned by the fleet's global resource manager, not
+   shared host-level configuration owned by the host system's global resource manager, not
    by this harness — machine-level resource conventions span non-lionagi
-   processes. lionagi reads the fleet table and may add lionagi-private internal
-   gate names in its own settings only. The concrete fleet file path is proposed
-   in the implementation PR and placed by the fleet resource owner.
+   processes. lionagi reads that shared table and may add lionagi-private internal
+   gate names in its own settings only. The concrete shared file path is proposed
+   in the implementation PR and placed by the host resource owner.
    Wedged-live-holder handling: surfacing the holder pid in
    `li dispatch` / `li monitor` is sufficient for v1; a live holder is never
    auto-broken.

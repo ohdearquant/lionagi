@@ -9,7 +9,7 @@ Lion Studio's Runs page lists all sessions in a flat reverse-chronological list.
 count grows across multiple repositories (lionagi, ag2, khive-oss, khive-cloud, etc.), the list
 becomes unusable — there is no way to scope sessions to a specific project.
 
-The triggering need: Ocean works across 5–10 repos daily and wants sessions grouped by named
+The triggering need: a user working across 5–10 repos daily wants sessions grouped by named
 project in Studio, with GitHub integration potential. The question is how to detect which
 project a session belongs to at creation time.
 
@@ -43,7 +43,7 @@ is not practical):
 ```yaml
 project_overrides:
   "ag2ai/ag2": "ag2"
-  "/Users/lion/forks/ag2": "ag2"
+  "/path/to/forks/ag2": "ag2"
 ```
 
 Keys can be `org/repo` (matched against git remote) or absolute directory paths (prefix-matched
@@ -60,6 +60,7 @@ against cwd).
 ### 4. Schema changes
 
 Two new columns on `sessions`:
+
 - `project TEXT` — the resolved project name
 - `project_source TEXT` — detection method: `config_toml`, `global_override`, `git_remote`, or `null`
 
@@ -68,6 +69,7 @@ Two new columns on `sessions`:
 ### 5. Implementation module
 
 New module `lionagi/cli/_project.py`:
+
 - `detect_project(cwd: Path | None = None) -> tuple[str | None, str | None]`
   Returns `(project_name, project_source)`.
 - Called by all three `create_session` sites: `cli/agent.py`, `cli/orchestrate/_orchestration.py`,
@@ -76,6 +78,7 @@ New module `lionagi/cli/_project.py`:
 ## Consequences
 
 **Positive**
+
 - Fresh clone of any owned repo auto-detects project (zero config if `.lionagi/config.toml` committed)
 - Blast radius of missing config bounded to one repo, not global
 - Monorepos handled naturally via nested `.lionagi/config.toml` at subdirectory level
@@ -83,6 +86,7 @@ New module `lionagi/cli/_project.py`:
 - `project_source` column enables Studio to distinguish high-confidence from inferred labels
 
 **Negative**
+
 - Repos the user doesn't control require manual `project_overrides` in global settings
 - Non-git directories always land in "Unassigned" — no auto-detection path
 - New config file (`.lionagi/config.toml`) alongside existing `.lionagi/settings.yaml` —

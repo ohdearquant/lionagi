@@ -1,5 +1,5 @@
 /**
- * The single icon vocabulary. Contract (per Ocean live feedback):
+ * The single icon vocabulary. Contract (design review feedback):
  * viewBox "0 0 24 24", stroke currentColor, strokeWidth 1.5, round
  * caps/joins, fill none, literal shapes. At render sizes ≤ 12 pass
  * strokeWidth 2.25–2.5 so optical weight stays ~1px.

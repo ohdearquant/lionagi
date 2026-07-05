@@ -54,7 +54,7 @@ and Studio displays."
 
 The compelling use case: PR opens → codex review runs in a worktree →
 produces verdict artifact → if APPROVE, merge; if REQUEST_CHANGES, file
-issues. Today this requires a human (Ocean) reading the verdict and
+issues. Today this requires a human reading the verdict and
 typing the next command. The pieces exist but don't connect.
 
 ## Decision
@@ -243,7 +243,7 @@ steps:
     with:
       pr: "{{ trigger.pr_number }}"
       method: squash
-    requires_approval: true    # pause and ask Ocean
+    requires_approval: true    # pause for human approval
 
   - action: gh-comment
     condition: "{{ steps[0].outcome.verdict == 'REQUEST_CHANGES' }}"
@@ -260,8 +260,8 @@ Chains are **not** a workflow engine. They are a thin reactive layer:
 2. **Steps** execute sequentially. Each step is a skill invocation or a
    shell action.
 3. **Conditions** are Jinja2 expressions over prior step outcomes.
-4. **`requires_approval`** pauses the chain and notifies Ocean. The chain
-   resumes when Ocean approves (via Studio UI or CLI).
+4. **`requires_approval`** pauses the chain and notifies the operator. The chain
+   resumes when the operator approves (via Studio UI or CLI).
 5. **Timeouts** abort a step if it exceeds the limit.
 
 Chains produce invocations — each step creates an invocation with

@@ -104,8 +104,8 @@ principle). During a run, fed by the existing signal SSE stream
 Signals are already persisted (session_signals). History's run detail gets a
 **scrubber**: replay the entire signal log over the canvas at any speed. This
 is time-travel debugging for orchestration — *why did this run spawn 30 agents*
-has a visual answer. Since we haven't discovered good usage patterns yet
-(Ocean, 2026-06-11), replay is how we find them: dogfood runs, scrub, see
+has a visual answer. Since we haven't discovered good usage patterns yet,
+replay is how we find them: dogfood runs, scrub, see
 where reactions cascaded usefully vs noisily, codify what works as presets.
 
 ## 5. Authoring artifact — the spec the canvas emits

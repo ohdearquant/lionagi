@@ -67,10 +67,10 @@ conversation-summarization surface exists today under any name).
 
 Two positions were on the table (per #1683): lionagi core stays persistence-agnostic and only
 documents a seam external memory systems attach to, or core owns a minimal contract plus a
-default backend so the framework has a real out-of-the-box memory story. Ocean's ruling (#1683,
+default backend so the framework has a real out-of-the-box memory story. The design decision (#1683,
 2026-07-03) settles this as both, combined: a minimal async contract and one thin default backend
 in core, with the documented seam as the production path for anything beyond that default. This
-ADR encodes that ruling (contract shape, default backend choice, seam documentation, access
+ADR encodes that decision (contract shape, default backend choice, seam documentation, access
 surface, and the two dead-surface dispositions) as the design record #1683 asks for.
 
 ## Decision
@@ -347,7 +347,7 @@ concurrent access to `Branch.messages`.
 
 | Alternative | Why Rejected |
 |---|---|
-| Stay fully persistence-agnostic (position 2 alone, no default backend) | Rejected by Ocean's ruling: core would have zero out-of-the-box memory story, only documentation, which is weaker than "a real standalone memory story" the ruling asks for. |
+| Stay fully persistence-agnostic (position 2 alone, no default backend) | Rejected: core would have zero out-of-the-box memory story, only documentation, which is weaker than "a real standalone memory story" the ruling asks for. |
 | Own the whole 2025 epic scaffold (tiers, attention, consolidation, resource monitors, LlamaIndex) | Explicitly declined; no named consumer for any of it today, and each piece competes with or duplicates an existing, narrower mechanism (see [Explicitly declined](#4-explicitly-declined-in-core)). |
 | Default backend on `StateDB`/SQLite | Persistent "for free," but couples a core `Branch` feature to the CLI/Studio run-bookkeeping schema; every library consumer would depend on machinery scoped to a different purpose. Documented as a seam example instead. |
 | Default backend on stdlib `sqlite3` directly, own table, no `StateDB` coupling | Avoids the `StateDB` objection above, but still adds file-lifecycle questions (file location, cleanup, concurrent-process access) that the in-process default has none of; the ruling asks for one thin default, not a second shipped backend. Documented as a seam example, same as the `StateDB` option, not promoted to default. |
@@ -411,7 +411,7 @@ concurrent access to `Branch.messages`.
   and a worked vector-store-backed example in developer docs, demonstrating the seam without
   adding either as a core dependency.
 
-## Open Questions for Ocean
+## Open Questions
 
 - **Module location.** This ADR proposes `lionagi/protocols/memory.py`. An alternative is a new
   top-level `lionagi/memory/` package if the seam-documentation slice grows large enough to want

@@ -13,7 +13,7 @@ record of what triggered those sessions. The causal chain today:
 ??? → Session → Branch → Messages → Tool Calls → Artifacts
 ```
 
-The missing layer is **skill invocations**. When Ocean types `/show resolve
+The missing layer is **skill invocations**. When the operator types `/show resolve
 lionagi issues`, that single command produces:
 
 - 6 `li play` sessions (one per play)
@@ -267,7 +267,7 @@ User-created skills (files in `~/.lionagi/skills/`) work the same way.
   branches → messages.
 - Orchestrator skills get first-class lifecycle tracking without expanding
   the `invocation_kind` enum.
-- Invocations page gives Ocean a single view of "what did my system do
+- Invocations page gives the operator a single view of "what did my system do
   overnight" at the right granularity — skill-level, not session-level.
 - Grouped runs view reduces visual noise from multi-session orchestrations.
 - `li invoke` is opt-in — zero breakage for existing skills and CLI usage.

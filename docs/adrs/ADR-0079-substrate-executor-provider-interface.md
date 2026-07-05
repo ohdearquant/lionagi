@@ -383,7 +383,7 @@ fake process provider without launching Claude/Codex.
 5. Keep all existing model specs, aliases, and CLI flags compatible. No current
    caller must pass `ExecutionTarget`.
 
-## Open Questions for Ocean
+## Open Questions
 
 - Should arbitrary process specs be named `process/<profile>` to match `iModel`,
   or should a future parser accept a separate `executor://profile` syntax?

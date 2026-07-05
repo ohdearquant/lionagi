@@ -382,7 +382,7 @@ behind a fake `DaytonaSandbox` that records calls to `clone()`, `exec_stream()`,
    local operation invocation remains byte-for-byte equivalent in behavior.
 7. Add tests with fake Daytona/process adapters before enabling any CLI default.
 
-## Open Questions for Ocean
+## Open Questions
 
 - Should the first #1195 implementation isolate each worker operation, or should
   it run the whole flow/play invocation remotely first and defer per-op remote
