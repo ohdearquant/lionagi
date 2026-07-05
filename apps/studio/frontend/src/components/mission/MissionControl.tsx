@@ -12,6 +12,7 @@ import StaleBadge from "./StaleBadge";
 import AttentionQueue from "./AttentionQueue";
 import LiveBoard from "./LiveBoard";
 import RecentRuns from "./RecentRuns";
+import Pulse from "./Pulse";
 import { useLiveBoard } from "./useLiveBoard";
 
 export default function MissionControl() {
@@ -70,7 +71,11 @@ export default function MissionControl() {
 
       <hr className="border-t border-edge" style={{ border: "none", borderTopWidth: "1px" }} />
 
-      <RecentRuns runs={board.recentRuns} nowSec={board.nowSec} />
+      {/* Pulse + Recent share a row on wide screens; stack below 1280px. */}
+      <div className="grid grid-cols-1 gap-5 xl:grid-cols-2">
+        <Pulse />
+        <RecentRuns runs={board.recentRuns} nowSec={board.nowSec} />
+      </div>
     </div>
   );
 }
