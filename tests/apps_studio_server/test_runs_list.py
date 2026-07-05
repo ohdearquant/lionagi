@@ -268,3 +268,44 @@ def test_runs_list_unknown_liveness_recent_activity_stays_healthy(tmp_path, monk
     target = next((run for run in r.json()["runs"] if run["id"] == sid), None)
     assert target is not None
     assert target["effective_health"] == "healthy"
+
+
+def test_runs_list_node_metadata_dead_pid_reports_stale_without_monkeypatch(tmp_path, monkeypatch):
+    """End-to-end: a running session whose node_metadata records a pid that is
+    no longer running must report 'stale' through the real oracle — the list
+    query must surface node_metadata to the liveness check."""
+    import subprocess
+
+    proc = subprocess.Popen(["/bin/sleep", "0"])  # noqa: S603
+    proc.wait()
+    dead_pid = proc.pid
+
+    db_path = tmp_path / "state.db"
+    sid = str(uuid.uuid4())
+
+    async def _seed() -> None:
+        async with StateDB(db_path) as db:
+            pid = str(uuid.uuid4())
+            await db.create_progression(pid)
+            await db.create_session(
+                {
+                    "id": sid,
+                    "progression_id": pid,
+                    "name": "test-dead-pid",
+                    "status": "running",
+                    "invocation_kind": "agent",
+                    "started_at": time.time() - 60,
+                    "last_message_at": time.time() - 30,
+                    "artifacts_path": str(tmp_path),
+                    "node_metadata": {"pid": dead_pid},
+                }
+            )
+
+    _run(_seed())
+    client = _make_client(tmp_path, monkeypatch, db_path)
+
+    r = client.get("/api/runs")
+    assert r.status_code == 200
+    target = next((run for run in r.json()["runs"] if run["id"] == sid), None)
+    assert target is not None
+    assert target["effective_health"] == "stale"

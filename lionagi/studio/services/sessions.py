@@ -118,6 +118,7 @@ async def list_sessions() -> list[dict[str, Any]]:
                 s.agent_hash,
                 s.project,
                 s.project_source,
+                s.node_metadata,
                 COUNT(DISTINCT b.id) AS branch_count,
                 COALESCE(SUM(
                     json_array_length(p.collection)
@@ -137,6 +138,7 @@ async def list_sessions() -> list[dict[str, Any]]:
             "name": row["name"],
             "created_at": row["created_at"],
             "updated_at": row["updated_at"] or 0.0,
+            "node_metadata": row["node_metadata"],
             "branch_count": row["branch_count"],
             "message_count": row["message_count"],
             # ADR-0017: read status directly from column;

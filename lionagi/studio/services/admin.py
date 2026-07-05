@@ -177,8 +177,12 @@ def process_liveness(
     return None
 
 
-def _live_process_matches(session_id: str, artifacts_path: Path | None) -> bool:
-    return process_liveness({"id": session_id}, artifacts_path) is True
+def _live_process_matches(
+    session_id: str,
+    artifacts_path: Path | None,
+    ps_snapshot: str | None = None,
+) -> bool:
+    return process_liveness({"id": session_id}, artifacts_path, ps_snapshot) is True
 
 
 def _artifacts_path(row: Any) -> Path | None:
@@ -201,7 +205,13 @@ def _find_stale_lock(root: Path, *, cutoff: float) -> Path | None:
     return None
 
 
-def _classify_phantom(row: Any, *, now: float, stale_seconds: float) -> PhantomReason | None:
+def _classify_phantom(
+    row: Any,
+    *,
+    now: float,
+    stale_seconds: float,
+    ps_snapshot: str | None = None,
+) -> PhantomReason | None:
     ap = _artifacts_path(row)
     if ap and not ap.exists():
         return "missing_artifacts"
@@ -211,7 +221,7 @@ def _classify_phantom(row: Any, *, now: float, stale_seconds: float) -> PhantomR
             return "stale_lock"
     updated_at = row["updated_at"] or 0.0
     age = now - updated_at
-    if age >= stale_seconds and not _live_process_matches(row["id"], ap):
+    if age >= stale_seconds and not _live_process_matches(row["id"], ap, ps_snapshot):
         return "process_dead"
     return None
 
@@ -232,8 +242,11 @@ async def list_phantom_sessions(*, stale_hours: float = 1.0) -> list[dict[str, A
             """
         )
         rows = await cur.fetchall()
+    snapshot: str | None = None
     for row in rows:
-        reason = _classify_phantom(row, now=now, stale_seconds=stale_seconds)
+        if snapshot is None:
+            snapshot = _ps_snapshot()
+        reason = _classify_phantom(row, now=now, stale_seconds=stale_seconds, ps_snapshot=snapshot)
         if reason is not None:
             phantoms.append(
                 {
@@ -278,7 +291,7 @@ async def health_report() -> dict[str, Any]:
             """
             SELECT s.id, s.name, s.status, s.invocation_kind, s.agent_name,
                    s.playbook_name, s.started_at, s.ended_at, s.updated_at,
-                   s.last_message_at, s.artifacts_path,
+                   s.last_message_at, s.artifacts_path, s.node_metadata,
                    COALESCE(SUM(json_array_length(p.collection)), 0) AS message_count
             FROM sessions s
             LEFT JOIN branches b ON b.session_id = s.id
@@ -416,6 +429,7 @@ async def transition_sessions(
     transitioned: list[str] = []
     skipped: list[dict[str, str]] = []
     now = time.time()
+    txn_snapshot: str | None = None
 
     async with StateDB() as db:
         for sid in session_ids:
@@ -437,7 +451,9 @@ async def transition_sessions(
                 if artifacts is not None and artifacts.exists()
                 else False
             )
-            process_alive = process_liveness(current, artifacts)
+            if txn_snapshot is None:
+                txn_snapshot = _ps_snapshot()
+            process_alive = process_liveness(current, artifacts, txn_snapshot)
             health = classify_session_health(
                 current,
                 now=now,
@@ -451,7 +467,9 @@ async def transition_sessions(
                     "Only unhealthy sessions may be force-transitioned."
                 )
 
-            phantom_reason = _classify_phantom(current, now=now, stale_seconds=3600)
+            phantom_reason = _classify_phantom(
+                current, now=now, stale_seconds=3600, ps_snapshot=txn_snapshot
+            )
             classifier_code = _resolve_session_health_reason_code(
                 phantom_reason=phantom_reason,
                 health=health,
