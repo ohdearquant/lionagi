@@ -238,7 +238,13 @@ def _handle_play_shortcut(argv: list[str]) -> list[str] | int:
             p_head, p_post = rest[:i], rest[i + 1 :]
         else:
             p_head, p_post = rest, []
-        p_ns, p_extras = fl_probe.parse_known_args(p_head)
+        # Keep the probe help-inert: argparse executes --help/-h during
+        # parse_known_args (printing flow help and exiting) before the
+        # playbook-specific help check below could run. Strip help tokens
+        # from the probe input only; the reconstruction below still works
+        # from the original partitions, so the help check sees them.
+        p_head_probe = [t for t in p_head if t not in ("--help", "-h")]
+        p_ns, p_extras = fl_probe.parse_known_args(p_head_probe)
         unknown = [e for e in p_extras if e.startswith("-") and e != "-"]
         if unknown:
             log_error(f"unrecognized arguments: {' '.join(unknown)}")

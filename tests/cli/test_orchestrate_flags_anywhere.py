@@ -172,6 +172,17 @@ class TestPlayFlagsAnywhere:
         assert code == 0
         assert run_flow.call_args.kwargs["prompt"] == "Run 9. Task: do a thing"
 
+    def test_help_after_flags_reaches_playbook_help(self, tmp_path, monkeypatch, capsys):
+        """--help alongside pre-NAME flags must print the playbook's own help,
+        not let argparse's built-in --help fire mid-probe (flow help +
+        SystemExit before NAME is even resolved)."""
+        self._make_playbook(tmp_path, monkeypatch)
+        code = main(["play", "--bypass", "hello", "--help"])
+        assert code == 0
+        out = capsys.readouterr().out
+        assert "hello" in out
+        assert "usage: li orchestrate flow" not in out
+
     def test_missing_name_errors_clearly(self, capsys):
         code = main(["play", "--bypass"])
         assert code == 1
