@@ -1032,9 +1032,18 @@ async def _effective_session_status(db: Any, row: dict[str, Any]) -> dict[str, A
     just read) before returning — otherwise the synthesized in-memory value here is
     the only place the reconciliation ever lands, and the DB row itself stays stuck
     at "running" forever even after this function reports the true terminal status.
+
+    A profile row that is ALREADY terminal is authoritative and is never rewritten:
+    ADR-0094's terminal guard exists precisely to stop a persisted terminal status
+    (e.g. "failed") from being silently flipped to a different terminal status the
+    linked engine happens to report later (e.g. "completed"). Reconciliation only
+    ever advances a non-terminal profile row to the engine's terminal status.
     """
-    from lionagi.state.db import SESSION_TERMINAL_STATUSES
+    from lionagi.state.db import SESSION_TERMINAL_STATUSES, TransitionRejectedError
     from lionagi.state.reasons import RunReasons
+
+    if row["status"] in SESSION_TERMINAL_STATUSES:
+        return row
 
     node_metadata = row.get("node_metadata") or {}
     if isinstance(node_metadata, str):
@@ -1054,20 +1063,27 @@ async def _effective_session_status(db: Any, row: dict[str, Any]) -> dict[str, A
             "aborted": RunReasons.CANCELLED_SIGINT,
             "cancelled": RunReasons.CANCELLED_SYSTEM,
         }
-        await db.update_status(
-            "session",
-            row["id"],
-            new_status=linked["status"],
-            reason_code=reason_by_status.get(linked["status"], RunReasons.FAILED_EXCEPTION),
-            reason_summary=(
-                f"reconciled to linked engine session {linked_id} terminal status "
-                f"{linked['status']!r}"
-            ),
-            evidence_refs=[{"kind": "session", "id": linked_id, "label": linked["status"]}],
-            source="executor",
-            actor=row["id"],
-            expected_statuses={row["status"]},
-        )
+        try:
+            await db.update_status(
+                "session",
+                row["id"],
+                new_status=linked["status"],
+                reason_code=reason_by_status.get(linked["status"], RunReasons.FAILED_EXCEPTION),
+                reason_summary=(
+                    f"reconciled to linked engine session {linked_id} terminal status "
+                    f"{linked['status']!r}"
+                ),
+                evidence_refs=[{"kind": "session", "id": linked_id, "label": linked["status"]}],
+                source="executor",
+                actor=row["id"],
+                expected_statuses={row["status"]},
+            )
+        except TransitionRejectedError:
+            # The profile row went terminal between our read and this write (a race
+            # with another writer) — the persisted row is authoritative; report it
+            # instead of the synthesized status below, and never crash the monitor.
+            persisted = await db.get_session(row["id"])
+            return persisted if persisted is not None else row
     return {**row, "status": linked["status"]}
 
 

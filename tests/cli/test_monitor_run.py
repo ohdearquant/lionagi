@@ -1603,6 +1603,70 @@ async def test_dispatch_wait_persists_reconciled_status_to_profile_row(
 
 
 @pytest.mark.asyncio
+async def test_dispatch_wait_reconciliation_never_flips_an_already_terminal_row(
+    temp_db_path: Path,
+) -> None:
+    """A profile row that is ALREADY terminal ('failed') must never be
+    force-reconciled to a *different* terminal status the linked engine
+    later reports ('completed') -- ADR-0094's terminal guard rejects that
+    write, and `li monitor run` must report the persisted 'failed' status
+    (the terminal row is authoritative) instead of crashing on the
+    rejected transition."""
+    from lionagi import Branch
+    from lionagi.cli._runs import setup_agent_persist, teardown_agent_persist
+    from lionagi.providers._provider_errors import ProviderError
+    from lionagi.state.claude_mirror import mirror_session, session_db_id
+
+    engine_uid = "aaaaaaaa-bbbb-cccc-dddd-333333333335"
+    async with StateDB() as db:
+        await mirror_session(
+            db,
+            session_uid=engine_uid,
+            events=[
+                {
+                    "type": "assistant",
+                    "uuid": "e1",
+                    "timestamp": "2026-07-05T00:00:00.000Z",
+                    "message": {
+                        "role": "assistant",
+                        "content": [{"type": "text", "text": "working"}],
+                    },
+                }
+            ],
+            tool_names={},
+            status="running",
+        )
+
+        branch = Branch(name="b1")
+        ctx = await setup_agent_persist(branch, agent_name="implementer")
+        assert ctx is not None
+        session_id = ctx["session_id"]
+        final = await teardown_agent_persist(
+            ctx,
+            status="failed",
+            exception=ProviderError("abandoned stream reader"),
+            engine_session_uid=engine_uid,
+        )
+    assert final == "running"
+
+    async with StateDB() as db:
+        # The profile row resolved to failure on its own (independent of the
+        # linked engine mirror) and is now terminal -- while the linked engine
+        # later reports a *different* terminal status.
+        await _set_fields(db, "sessions", session_id, status="failed")
+        await _set_fields(db, "sessions", session_db_id(engine_uid), status="completed")
+
+    exit_code = _dispatch_wait([session_id], interval=0.05, follow=False, max_wait=1.0)
+
+    assert exit_code == 1
+
+    async with StateDB() as db:
+        persisted = await db.get_session(session_id)
+    assert persisted is not None
+    assert persisted["status"] == "failed"
+
+
+@pytest.mark.asyncio
 async def test_dispatch_wait_max_wait_bounds_a_stuck_session(temp_db_path: Path) -> None:
     """A session that never reconciles (no --max-wait would hang this forever)
     must give up after max_wait seconds and report EXIT_RUNNING."""
