@@ -411,7 +411,7 @@ def _wire_agent_stubs(
     async def fake_setup(*a, **kw):
         return None
 
-    async def fake_teardown(ctx, *, status="completed", exception=None, cwd=None):
+    async def fake_teardown(ctx, *, status="completed", exception=None, cwd=None, **kwargs):
         return status
 
     monkeypatch.setattr(agent_mod, "setup_agent_persist", fake_setup)

@@ -112,7 +112,9 @@ def _make_agent_mocks_with_bypass(monkeypatch, tmp_path, captured_kwargs: list):
     async def fake_setup(*a, **kw):
         return None
 
-    async def fake_teardown(ctx, *, status="completed", exception=None, cwd=None):
+    async def fake_teardown(
+        ctx, *, status="completed", exception=None, cwd=None, engine_session_uid=None
+    ):
         return status
 
     monkeypatch.setattr(agent_mod, "setup_agent_persist", fake_setup)
@@ -264,7 +266,9 @@ async def test_run_agent_timeout_preserves_partial_output(monkeypatch, tmp_path)
     async def fake_setup(*a, **kw):
         return None
 
-    async def fake_teardown(ctx, *, status="completed", exception=None, cwd=None):
+    async def fake_teardown(
+        ctx, *, status="completed", exception=None, cwd=None, engine_session_uid=None
+    ):
         return status
 
     monkeypatch.setattr(agent_mod, "setup_agent_persist", fake_setup)
@@ -335,7 +339,9 @@ async def test_run_agent_timeout_empty_partial_returns_empty_string(monkeypatch,
     async def fake_setup(*a, **kw):
         return None
 
-    async def fake_teardown(ctx, *, status="completed", exception=None, cwd=None):
+    async def fake_teardown(
+        ctx, *, status="completed", exception=None, cwd=None, engine_session_uid=None
+    ):
         return status
 
     monkeypatch.setattr(agent_mod, "setup_agent_persist", fake_setup)
@@ -412,7 +418,9 @@ async def test_run_agent_heartbeat_started_when_timeout_set(monkeypatch, tmp_pat
     async def fake_setup(*a, **kw):
         return None
 
-    async def fake_teardown(ctx, *, status="completed", exception=None, cwd=None):
+    async def fake_teardown(
+        ctx, *, status="completed", exception=None, cwd=None, engine_session_uid=None
+    ):
         return status
 
     monkeypatch.setattr(agent_mod, "setup_agent_persist", fake_setup)
@@ -477,7 +485,9 @@ async def test_run_agent_no_heartbeat_when_timeout_none(monkeypatch, tmp_path):
     async def fake_setup(*a, **kw):
         return None
 
-    async def fake_teardown(ctx, *, status="completed", exception=None, cwd=None):
+    async def fake_teardown(
+        ctx, *, status="completed", exception=None, cwd=None, engine_session_uid=None
+    ):
         return status
 
     monkeypatch.setattr(agent_mod, "setup_agent_persist", fake_setup)

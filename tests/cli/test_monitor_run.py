@@ -20,11 +20,13 @@ import pytest
 from lionagi.cli.monitor import (
     _advance_chains,
     _dispatch_wait,
+    _effective_session_status,
     _format_wait_line,
     _new_chain_state,
     _poll_pending_once,
     _query_schedule_runs_since,
     _resolve_schedule_run,
+    _resolve_session_run,
     _split_watched_ids,
     add_monitor_subparser,
     run_monitor_wait,
@@ -1374,3 +1376,414 @@ def test_cli_monitor_help_still_shows_dashboard_usage():
     )
     assert result.returncode == 0
     assert "--watch" in result.stdout
+
+
+# ── li monitor run: resolving agent session ids (issue: profile-typed agent
+# sessions previously errored with "schedule_run not found") ────────────────
+
+
+async def _make_agent_session(db: StateDB, *, status: str = "completed") -> str:
+    """A minimal 'sessions' row shaped like a li agent run, bypassing schedule_runs."""
+    from lionagi import Branch
+    from lionagi.cli._runs import setup_agent_persist, teardown_agent_persist
+
+    branch = Branch(name="b1")
+    ctx = await setup_agent_persist(branch, agent_name="implementer")
+    assert ctx is not None
+    await teardown_agent_persist(ctx, status=status)
+    return ctx["session_id"]
+
+
+@pytest.mark.asyncio
+async def test_resolve_session_run_exact_match(temp_db_path: Path) -> None:
+    async with StateDB() as db:
+        session_id = await _make_agent_session(db, status="completed")
+        row = await _resolve_session_run(db, session_id)
+    assert row is not None
+    assert row["id"] == session_id
+
+
+@pytest.mark.asyncio
+async def test_resolve_session_run_prefix_match(temp_db_path: Path) -> None:
+    async with StateDB() as db:
+        session_id = await _make_agent_session(db, status="completed")
+        row = await _resolve_session_run(db, session_id[:12])
+    assert row is not None
+    assert row["id"] == session_id
+
+
+@pytest.mark.asyncio
+async def test_resolve_session_run_not_found_returns_none(temp_db_path: Path) -> None:
+    async with StateDB() as db:
+        row = await _resolve_session_run(db, "no-such-session")
+    assert row is None
+
+
+@pytest.mark.asyncio
+async def test_dispatch_wait_resolves_completed_agent_session(
+    temp_db_path: Path, capsys: pytest.CaptureFixture
+) -> None:
+    """`li monitor run <session_id>` must resolve an agent session id — not
+    error 'schedule_run not found' — and report its terminal status."""
+    async with StateDB() as db:
+        session_id = await _make_agent_session(db, status="completed")
+
+    exit_code = _dispatch_wait([session_id], interval=5.0, follow=False)
+
+    assert exit_code == 0
+    out = capsys.readouterr().out
+    assert session_id in out
+    assert "status=completed" in out
+
+
+@pytest.mark.asyncio
+async def test_dispatch_wait_resolves_failed_agent_session_nonzero_exit(
+    temp_db_path: Path,
+) -> None:
+    async with StateDB() as db:
+        session_id = await _make_agent_session(db, status="failed")
+
+    exit_code = _dispatch_wait([session_id], interval=5.0, follow=False)
+    assert exit_code == 1
+
+
+@pytest.mark.asyncio
+async def test_dispatch_wait_agent_session_still_running_returns_exit_running(
+    temp_db_path: Path,
+) -> None:
+    """A session that never goes terminal + a real SIGINT mid-wait must
+    report EXIT_RUNNING, not hang forever or silently succeed."""
+    async with StateDB() as db:
+        from lionagi import Branch
+        from lionagi.cli._runs import setup_agent_persist
+
+        branch = Branch(name="b1")
+        ctx = await setup_agent_persist(branch, agent_name="implementer")
+        assert ctx is not None
+        session_id = ctx["session_id"]
+
+    def _send_interrupt() -> None:
+        time.sleep(0.3)
+        os.kill(os.getpid(), signal.SIGINT)
+
+    t = threading.Thread(target=_send_interrupt, daemon=True)
+    t.start()
+
+    exit_code = _dispatch_wait([session_id], interval=0.05, follow=False)
+    t.join(timeout=2)
+
+    assert exit_code == EXIT_RUNNING
+
+
+# ── li monitor run: linked_engine_session_id drill-in + bounded --max-wait ──
+
+
+@pytest.mark.asyncio
+async def test_dispatch_wait_follows_linked_engine_session_to_completion(
+    temp_db_path: Path, capsys: pytest.CaptureFixture
+) -> None:
+    """A profile-typed session teardown pinned at 'running' (linked engine
+    session was alive but not yet terminal) must resolve via the linked
+    engine row's status, not hang on its own frozen 'running' column."""
+    from lionagi import Branch
+    from lionagi.cli._runs import setup_agent_persist, teardown_agent_persist
+    from lionagi.providers._provider_errors import ProviderError
+    from lionagi.state.claude_mirror import mirror_session
+
+    engine_uid = "aaaaaaaa-bbbb-cccc-dddd-333333333333"
+    async with StateDB() as db:
+        await mirror_session(
+            db,
+            session_uid=engine_uid,
+            events=[
+                {
+                    "type": "assistant",
+                    "uuid": "e1",
+                    "timestamp": "2026-07-05T00:00:00.000Z",
+                    "message": {
+                        "role": "assistant",
+                        "content": [{"type": "text", "text": "working"}],
+                    },
+                }
+            ],
+            tool_names={},
+            status="running",
+        )
+
+        branch = Branch(name="b1")
+        ctx = await setup_agent_persist(branch, agent_name="implementer")
+        assert ctx is not None
+        session_id = ctx["session_id"]
+        final = await teardown_agent_persist(
+            ctx,
+            status="failed",
+            exception=ProviderError("abandoned stream reader"),
+            engine_session_uid=engine_uid,
+        )
+    assert final == "running"
+
+    def _flip_engine_to_completed() -> None:
+        import asyncio
+
+        from lionagi.state.claude_mirror import session_db_id
+
+        async def _go() -> None:
+            async with StateDB() as db2:
+                await _set_fields(db2, "sessions", session_db_id(engine_uid), status="completed")
+
+        time.sleep(0.25)
+        asyncio.run(_go())
+
+    t = threading.Thread(target=_flip_engine_to_completed, daemon=True)
+    t.start()
+
+    exit_code = _dispatch_wait([session_id], interval=0.05, follow=False)
+    t.join(timeout=5)
+
+    assert exit_code == 0
+    out = capsys.readouterr().out
+    assert session_id in out
+    assert "status=completed" in out
+
+
+@pytest.mark.asyncio
+async def test_dispatch_wait_persists_reconciled_status_to_profile_row(
+    temp_db_path: Path,
+) -> None:
+    """`li monitor run` resolving a profile session via its linked engine row must
+    not just SYNTHESIZE the terminal status in memory for this one call -- it must
+    PERSIST it through StateDB.update_status() so the profile session's own DB row
+    reads the reconciled terminal status too, not stuck at 'running' forever."""
+    from lionagi import Branch
+    from lionagi.cli._runs import setup_agent_persist, teardown_agent_persist
+    from lionagi.providers._provider_errors import ProviderError
+    from lionagi.state.claude_mirror import mirror_session, session_db_id
+
+    engine_uid = "aaaaaaaa-bbbb-cccc-dddd-333333333334"
+    async with StateDB() as db:
+        await mirror_session(
+            db,
+            session_uid=engine_uid,
+            events=[
+                {
+                    "type": "assistant",
+                    "uuid": "e1",
+                    "timestamp": "2026-07-05T00:00:00.000Z",
+                    "message": {
+                        "role": "assistant",
+                        "content": [{"type": "text", "text": "working"}],
+                    },
+                }
+            ],
+            tool_names={},
+            status="running",
+        )
+
+        branch = Branch(name="b1")
+        ctx = await setup_agent_persist(branch, agent_name="implementer")
+        assert ctx is not None
+        session_id = ctx["session_id"]
+        final = await teardown_agent_persist(
+            ctx,
+            status="failed",
+            exception=ProviderError("abandoned stream reader"),
+            engine_session_uid=engine_uid,
+        )
+    assert final == "running"
+
+    async with StateDB() as db:
+        await _set_fields(db, "sessions", session_db_id(engine_uid), status="completed")
+
+    exit_code = _dispatch_wait([session_id], interval=0.05, follow=False, max_wait=1.0)
+    assert exit_code == 0
+
+    async with StateDB() as db:
+        persisted = await db.get_session(session_id)
+    assert persisted is not None
+    assert persisted["status"] == "completed"
+
+
+@pytest.mark.asyncio
+async def test_dispatch_wait_reconciliation_never_flips_an_already_terminal_row(
+    temp_db_path: Path,
+) -> None:
+    """A profile row that is ALREADY terminal ('failed') must never be
+    force-reconciled to a *different* terminal status the linked engine
+    later reports ('completed') -- ADR-0094's terminal guard rejects that
+    write, and `li monitor run` must report the persisted 'failed' status
+    (the terminal row is authoritative) instead of crashing on the
+    rejected transition."""
+    from lionagi import Branch
+    from lionagi.cli._runs import setup_agent_persist, teardown_agent_persist
+    from lionagi.providers._provider_errors import ProviderError
+    from lionagi.state.claude_mirror import mirror_session, session_db_id
+
+    engine_uid = "aaaaaaaa-bbbb-cccc-dddd-333333333335"
+    async with StateDB() as db:
+        await mirror_session(
+            db,
+            session_uid=engine_uid,
+            events=[
+                {
+                    "type": "assistant",
+                    "uuid": "e1",
+                    "timestamp": "2026-07-05T00:00:00.000Z",
+                    "message": {
+                        "role": "assistant",
+                        "content": [{"type": "text", "text": "working"}],
+                    },
+                }
+            ],
+            tool_names={},
+            status="running",
+        )
+
+        branch = Branch(name="b1")
+        ctx = await setup_agent_persist(branch, agent_name="implementer")
+        assert ctx is not None
+        session_id = ctx["session_id"]
+        final = await teardown_agent_persist(
+            ctx,
+            status="failed",
+            exception=ProviderError("abandoned stream reader"),
+            engine_session_uid=engine_uid,
+        )
+    assert final == "running"
+
+    async with StateDB() as db:
+        # The profile row resolved to failure on its own (independent of the
+        # linked engine mirror) and is now terminal -- while the linked engine
+        # later reports a *different* terminal status.
+        await _set_fields(db, "sessions", session_id, status="failed")
+        await _set_fields(db, "sessions", session_db_id(engine_uid), status="completed")
+
+    exit_code = _dispatch_wait([session_id], interval=0.05, follow=False, max_wait=1.0)
+
+    assert exit_code == 1
+
+    async with StateDB() as db:
+        persisted = await db.get_session(session_id)
+    assert persisted is not None
+    assert persisted["status"] == "failed"
+
+
+@pytest.mark.asyncio
+async def test_effective_session_status_cas_mismatch_reports_persisted_status(
+    temp_db_path: Path,
+) -> None:
+    """`db.update_status()` returns `False` (rather than raising
+    `TransitionRejectedError`) when the persisted row simply no longer matches
+    `expected_statuses` at write time -- e.g. it moved between our stale read
+    and this write, but the guard rejects on the CAS mismatch before it ever
+    reaches ADR-0094's terminal check. `_effective_session_status()` must not
+    ignore that `False` and fall through to the synthesized linked-engine
+    status; it must re-read and report the persisted row instead."""
+    from lionagi import Branch
+    from lionagi.cli._runs import setup_agent_persist, teardown_agent_persist
+    from lionagi.providers._provider_errors import ProviderError
+    from lionagi.state.claude_mirror import mirror_session, session_db_id
+
+    engine_uid = "aaaaaaaa-bbbb-cccc-dddd-333333333336"
+    async with StateDB() as db:
+        await mirror_session(
+            db,
+            session_uid=engine_uid,
+            events=[
+                {
+                    "type": "assistant",
+                    "uuid": "e1",
+                    "timestamp": "2026-07-05T00:00:00.000Z",
+                    "message": {
+                        "role": "assistant",
+                        "content": [{"type": "text", "text": "working"}],
+                    },
+                }
+            ],
+            tool_names={},
+            status="running",
+        )
+
+        branch = Branch(name="b1")
+        ctx = await setup_agent_persist(branch, agent_name="implementer")
+        assert ctx is not None
+        session_id = ctx["session_id"]
+        final = await teardown_agent_persist(
+            ctx,
+            status="failed",
+            exception=ProviderError("abandoned stream reader"),
+            engine_session_uid=engine_uid,
+        )
+        assert final == "running"
+
+        # This is the stale read `_effective_session_status()` would act on --
+        # status="running", still linked to the engine session.
+        stale_row = await db.get_session(session_id)
+        assert stale_row is not None
+        assert stale_row["status"] == "running"
+
+        # Simulate the race: between that read and the reconciliation write,
+        # something else (e.g. the profile session's own executor) persisted
+        # this row to "failed", while the linked engine session went
+        # "completed" independently.
+        await _set_fields(db, "sessions", session_id, status="failed")
+        await _set_fields(db, "sessions", session_db_id(engine_uid), status="completed")
+
+        result = await _effective_session_status(db, stale_row)
+
+        assert result["status"] == "failed"
+
+        persisted = await db.get_session(session_id)
+        assert persisted is not None
+        assert persisted["status"] == "failed"
+
+
+@pytest.mark.asyncio
+async def test_dispatch_wait_max_wait_bounds_a_stuck_session(temp_db_path: Path) -> None:
+    """A session that never reconciles (no --max-wait would hang this forever)
+    must give up after max_wait seconds and report EXIT_RUNNING."""
+    async with StateDB() as db:
+        from lionagi import Branch
+        from lionagi.cli._runs import setup_agent_persist
+
+        branch = Branch(name="b1")
+        ctx = await setup_agent_persist(branch, agent_name="implementer")
+        assert ctx is not None
+        session_id = ctx["session_id"]
+
+    started = time.monotonic()
+    exit_code = _dispatch_wait([session_id], interval=0.05, follow=False, max_wait=0.3)
+    elapsed = time.monotonic() - started
+
+    assert exit_code == EXIT_RUNNING
+    assert elapsed < 3.0, "max_wait must bound the loop instead of hanging"
+
+
+@pytest.mark.asyncio
+async def test_dispatch_wait_default_max_wait_bounds_a_stuck_session_without_caller_bound(
+    temp_db_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The caller supplies no max_wait at all (the real production default path for
+    `li monitor run` / `li monitor --run` when --max-wait is omitted) and there is no
+    external interrupt -- the built-in bounded default must still stop the wait and
+    report EXIT_RUNNING instead of hanging forever. The module-level default is
+    monkeypatched down to keep this test fast; the caller-facing contract under test
+    is that omitting max_wait entirely still bounds the wait."""
+    import lionagi.cli.monitor as monitor_mod
+
+    monkeypatch.setattr(monitor_mod, "_DEFAULT_MAX_WAIT_SECONDS", 0.3)
+
+    async with StateDB() as db:
+        from lionagi import Branch
+        from lionagi.cli._runs import setup_agent_persist
+
+        branch = Branch(name="b1")
+        ctx = await setup_agent_persist(branch, agent_name="implementer")
+        assert ctx is not None
+        session_id = ctx["session_id"]
+
+    started = time.monotonic()
+    exit_code = _dispatch_wait([session_id], interval=0.05, follow=False)
+    elapsed = time.monotonic() - started
+
+    assert exit_code == EXIT_RUNNING
+    assert elapsed < 3.0, "the default bound must stop the loop instead of hanging"

@@ -463,7 +463,13 @@ async def stream_codex_cli(
                     obj.get("session_id", obj.get("id")),
                 )
                 session.model = obj.get("model")
-                sc = StreamChunk(type="system", metadata=obj)
+                # Codex's own event carries "thread_id" (thread.started) rather
+                # than "session_id" — normalize it into the metadata key every
+                # CLI provider's system chunk is expected to carry (mirrors
+                # claude_code.py), so run.py's engine-session-id capture
+                # (endpoint.session_id, used to link a profile-typed session
+                # to its engine-typed mirror at teardown) works for Codex too.
+                sc = StreamChunk(type="system", metadata={**obj, "session_id": session.session_id})
                 session.chunks.append(sc)
                 yield sc
 

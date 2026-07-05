@@ -53,7 +53,9 @@ def _wire_agent_stubs(monkeypatch, tmp_path, *, session_id: str | None):
     async def fake_setup(*a, **kw):
         return {"session_id": session_id} if session_id else None
 
-    async def fake_teardown(ctx, *, status="completed", exception=None, cwd=None):
+    async def fake_teardown(
+        ctx, *, status="completed", exception=None, cwd=None, engine_session_uid=None
+    ):
         return status
 
     monkeypatch.setattr(agent_mod, "setup_agent_persist", fake_setup)

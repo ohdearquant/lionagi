@@ -109,7 +109,9 @@ def _wire_agent_stubs(
         n = min(call_count["n"], len(_sids) - 1)
         return {"session_id": _sids[n]}
 
-    async def fake_teardown(ctx, *, status="completed", exception=None, cwd=None):
+    async def fake_teardown(
+        ctx, *, status="completed", exception=None, cwd=None, engine_session_uid=None
+    ):
         return status
 
     monkeypatch.setattr(agent_mod, "setup_agent_persist", fake_setup)
@@ -329,7 +331,9 @@ def _wire_agent_stubs_real_chat_model(
         n = min(call_count["n"], len(_sids) - 1)
         return {"session_id": _sids[n]}
 
-    async def fake_teardown(ctx, *, status="completed", exception=None, cwd=None):
+    async def fake_teardown(
+        ctx, *, status="completed", exception=None, cwd=None, engine_session_uid=None
+    ):
         return status
 
     monkeypatch.setattr(agent_mod, "setup_agent_persist", fake_setup)

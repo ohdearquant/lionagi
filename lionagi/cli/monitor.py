@@ -5,6 +5,7 @@
 from __future__ import annotations
 
 import argparse
+import json
 import re
 import signal
 import sys
@@ -961,6 +962,10 @@ def _watch_loop(
 # means the chain as a whole succeeded).
 
 _TERMINAL_SCHEDULE_RUN_STATUSES = frozenset({"completed", "failed", "cancelled", "skipped"})
+# Scripting wait bound applied when the caller doesn't supply --max-wait/max_wait —
+# a stuck session or run must not hang `li monitor run`/`li monitor --run` forever.
+# Pass max_wait=0 (or --max-wait 0) to opt into the old unbounded behavior explicitly.
+_DEFAULT_MAX_WAIT_SECONDS = 900.0
 _CHAIN_GRACE_TICKS = 2
 # Mirrors the scheduler engine's own chain-depth cap (lionagi/studio/scheduler/engine.py
 # _MAX_CHAIN_DEPTH) -- the engine never fires a chain child at or past this depth, so a
@@ -996,24 +1001,151 @@ async def _resolve_schedule_run(db: Any, raw_id: str) -> dict[str, Any] | None:
     )
 
 
+async def _resolve_session_run(db: Any, raw_id: str) -> dict[str, Any] | None:
+    """Exact match then prefix match against the sessions table (agent/li agent run ids)."""
+    row = await db.get_session(raw_id)
+    if row:
+        return row
+    return await db.fetch_one(
+        "SELECT * FROM sessions WHERE id LIKE ?",
+        (raw_id + "%",),
+    )
+
+
+def _format_session_wait_line(row: dict[str, Any]) -> str:
+    name = row.get("agent_name") or row.get("invocation_kind") or "session"
+    artifacts = row.get("artifacts_path") or "-"
+    return f"{row['id']}  name={name}  status={row['status']}  artifacts={artifacts}"
+
+
+async def _effective_session_status(db: Any, row: dict[str, Any]) -> dict[str, Any]:
+    """A profile-typed session (`li agent -a <profile>`) that teardown linked to a
+    claude/codex-mirror engine session (node_metadata.linked_engine_session_id, see
+    lionagi/cli/_runs.py) can be pinned at status="running" indefinitely once teardown
+    observed the engine alive but couldn't yet confirm a terminal state — nothing
+    later revisits that row to flip it. The linked engine row is the ground truth for
+    completion, so follow it here on every poll rather than trusting the profile row's
+    own (possibly stale) status column.
+
+    When the linked row has reached a terminal status, PERSIST that status onto the
+    profile row through StateDB.update_status() (CAS-guarded on the status this call
+    just read) before returning — otherwise the synthesized in-memory value here is
+    the only place the reconciliation ever lands, and the DB row itself stays stuck
+    at "running" forever even after this function reports the true terminal status.
+
+    A profile row that is ALREADY terminal is authoritative and is never rewritten:
+    ADR-0094's terminal guard exists precisely to stop a persisted terminal status
+    (e.g. "failed") from being silently flipped to a different terminal status the
+    linked engine happens to report later (e.g. "completed"). Reconciliation only
+    ever advances a non-terminal profile row to the engine's terminal status.
+    """
+    from lionagi.state.db import SESSION_TERMINAL_STATUSES, TransitionRejectedError
+    from lionagi.state.reasons import RunReasons
+
+    if row["status"] in SESSION_TERMINAL_STATUSES:
+        return row
+
+    node_metadata = row.get("node_metadata") or {}
+    if isinstance(node_metadata, str):
+        node_metadata = json.loads(node_metadata)
+    linked_id = node_metadata.get("linked_engine_session_id")
+    if not linked_id:
+        return row
+    linked = await db.get_session(linked_id)
+    if linked is None or linked["status"] == row["status"]:
+        return row
+    if linked["status"] in SESSION_TERMINAL_STATUSES:
+        reason_by_status = {
+            "completed": RunReasons.COMPLETED_OK,
+            "completed_empty": RunReasons.COMPLETED_EMPTY_NO_EVIDENCE,
+            "failed": RunReasons.FAILED_EXCEPTION,
+            "timed_out": RunReasons.TIMED_OUT_DEADLINE,
+            "aborted": RunReasons.CANCELLED_SIGINT,
+            "cancelled": RunReasons.CANCELLED_SYSTEM,
+        }
+        try:
+            updated = await db.update_status(
+                "session",
+                row["id"],
+                new_status=linked["status"],
+                reason_code=reason_by_status.get(linked["status"], RunReasons.FAILED_EXCEPTION),
+                reason_summary=(
+                    f"reconciled to linked engine session {linked_id} terminal status "
+                    f"{linked['status']!r}"
+                ),
+                evidence_refs=[{"kind": "session", "id": linked_id, "label": linked["status"]}],
+                source="executor",
+                actor=row["id"],
+                expected_statuses={row["status"]},
+            )
+        except TransitionRejectedError:
+            # The profile row went terminal between our read and this write (a race
+            # with another writer) — the persisted row is authoritative; report it
+            # instead of the synthesized status below, and never crash the monitor.
+            persisted = await db.get_session(row["id"])
+            return persisted if persisted is not None else row
+        if not updated:
+            # CAS mismatch: the persisted row changed between our read and this
+            # write but did not hit the terminal guard (e.g. it moved to a
+            # different non-terminal or terminal status). The write never landed,
+            # so the persisted row — not the synthesized value below — is
+            # authoritative.
+            persisted = await db.get_session(row["id"])
+            return persisted if persisted is not None else row
+    return {**row, "status": linked["status"]}
+
+
+async def _poll_pending_sessions_once(
+    db: Any,
+    pending: dict[str, dict[str, Any]],
+    done: list[dict[str, Any]],
+) -> None:
+    """Session analogue of _poll_pending_once: no schedule chain, just terminal-status polling."""
+    from lionagi.state.db import SESSION_TERMINAL_STATUSES
+
+    for run_id in list(pending):
+        row = await db.get_session(run_id)
+        if row is None:
+            row = {**pending[run_id], "status": "failed"}
+            from ._logging import log_error
+
+            log_error(f"session {run_id!r} disappeared from state.db while waiting")
+        else:
+            row = await _effective_session_status(db, row)
+            if row["status"] not in SESSION_TERMINAL_STATUSES:
+                continue
+        print(_format_session_wait_line(row))
+        done.append(row)
+        del pending[run_id]
+
+
 async def _resolve_watched_runs(
     db: Any, ids: list[str]
-) -> tuple[dict[str, dict[str, Any]], list[str]]:
+) -> tuple[dict[str, dict[str, Any]], dict[str, dict[str, Any]], list[str]]:
     """Resolve every requested id once, up front. schedule_run ids are
     already-fired-run identifiers a caller obtained elsewhere (e.g. `li
     schedule trigger`), not something that might come into existence later,
     so — unlike the --follow discovery scan below — resolution itself is
     not retried on every poll tick.
+
+    An id that isn't a schedule_run is also tried against the sessions table
+    (agent/li agent run ids) so `li monitor run <session_id>` can drill into
+    an agent run's terminal status + artifacts, not just scheduler runs.
     """
     pending: dict[str, dict[str, Any]] = {}
+    session_pending: dict[str, dict[str, Any]] = {}
     unresolved: list[str] = []
     for raw_id in ids:
         row = await _resolve_schedule_run(db, raw_id)
-        if row is None:
-            unresolved.append(raw_id)
-        else:
+        if row is not None:
             pending[row["id"]] = row  # canonical id as key: dedupes prefix collisions
-    return pending, unresolved
+            continue
+        session_row = await _resolve_session_run(db, raw_id)
+        if session_row is not None:
+            session_pending[session_row["id"]] = session_row
+        else:
+            unresolved.append(raw_id)
+    return pending, session_pending, unresolved
 
 
 async def _schedule_name(db: Any, schedule_id: str, *, cache: dict[str, str]) -> str:
@@ -1286,7 +1418,14 @@ async def _query_schedule_runs_since(db: Any, baseline: float) -> list[dict[str,
     )
 
 
-def _dispatch_wait(ids: list[str], *, interval: float, follow: bool, chain: bool = True) -> int:
+def _dispatch_wait(
+    ids: list[str],
+    *,
+    interval: float,
+    follow: bool,
+    chain: bool = True,
+    max_wait: float | None = None,
+) -> int:
     """Block until every id in `ids` reaches a terminal schedule_run status,
     printing one line per run the moment it lands; with --follow, keep
     watching (tail -f style) for newly created runs after the initial set
@@ -1313,6 +1452,12 @@ def _dispatch_wait(ids: list[str], *, interval: float, follow: bool, chain: bool
     landing mid-call surfaces as KeyboardInterrupt at the call site (see
     _run_tick below) far more often than it does for the dashboard, so that
     case is folded into the same clean-exit path instead of left to crash.
+
+    max_wait: None (the default, whether left unset by a Python caller or by
+    an unset --max-wait on the CLI) applies the bounded `_DEFAULT_MAX_WAIT_SECONDS`
+    fallback — a stuck session or run must not hang this call forever. Pass 0
+    (or a negative value) to opt into the old unbounded wait explicitly; any
+    positive value overrides the default bound.
     """
     from lionagi.ln.concurrency import run_async
     from lionagi.state.db import DEFAULT_DB_PATH, StateDB
@@ -1356,7 +1501,7 @@ def _dispatch_wait(ids: list[str], *, interval: float, follow: bool, chain: bool
 
     schedule_names: dict[str, str] = {}
 
-    async def _resolve() -> tuple[dict[str, dict[str, Any]], list[str]]:
+    async def _resolve() -> tuple[dict[str, dict[str, Any]], dict[str, dict[str, Any]], list[str]]:
         async with StateDB() as db:
             return await _resolve_watched_runs(db, ids)
 
@@ -1366,12 +1511,14 @@ def _dispatch_wait(ids: list[str], *, interval: float, follow: bool, chain: bool
         # which ids exist or what state they're in, so there is no aggregate
         # to report. This is "still in progress", not success or failure.
         return EXIT_RUNNING
-    pending, unresolved = resolved
+    pending, session_pending, unresolved = resolved
     for raw_id in unresolved:
-        log_error(f"schedule_run {raw_id!r} not found")
+        log_error(f"run id {raw_id!r} not found (checked schedule_runs and sessions)")
 
     total_watched = len(pending)
+    total_sessions = len(session_pending)
     done: list[dict[str, Any]] = []
+    session_done: list[dict[str, Any]] = []
     chain_state = _new_chain_state(pending, chain=chain)
     processed = 0
 
@@ -1379,31 +1526,47 @@ def _dispatch_wait(ids: list[str], *, interval: float, follow: bool, chain: bool
         nonlocal processed
         async with StateDB() as db:
             await _poll_pending_once(db, pending, schedule_names, done)
+            await _poll_pending_sessions_once(db, session_pending, session_done)
             processed = await _advance_chains(
                 db, pending, done, chain_state=chain_state, processed=processed
             )
 
     def _chain_open() -> bool:
-        return bool(pending or chain_state["awaiting_grace"])
+        return bool(pending or session_pending or chain_state["awaiting_grace"])
 
-    while _chain_open() and not interrupted:
+    # A stuck session (an unresolvable linked-engine mirror, a wedged
+    # subprocess) must not hang this loop forever — max_wait bounds total
+    # wall-clock; on expiry, whatever is still pending is reported the same
+    # way an interrupt would (EXIT_RUNNING below), not a silent hang. None
+    # falls back to the bounded default; 0/negative is the explicit opt-in
+    # to unbounded waiting.
+    effective_max_wait = _DEFAULT_MAX_WAIT_SECONDS if max_wait is None else max_wait
+    deadline = time.monotonic() + effective_max_wait if effective_max_wait > 0 else None
+
+    def _wait_expired() -> bool:
+        return deadline is not None and time.monotonic() >= deadline
+
+    while _chain_open() and not interrupted and not _wait_expired():
         _run_tick(_tick())
-        if not _chain_open() or interrupted:
+        if not _chain_open() or interrupted or _wait_expired():
             break
         _sleep_interval(interval)
 
     resolved_roots = chain_state["resolved_roots"]
     chain_tail_exit = chain_state["chain_tail_exit"]
+    from ._util import EXIT_CODE_BY_STATUS
+
+    session_ok = all(EXIT_CODE_BY_STATUS.get(r["status"], 1) == 0 for r in session_done)
     if unresolved:
         exit_code = EXIT_UNKNOWN
-    elif len(resolved_roots) < total_watched:
-        # Some watched chain never concluded before we had to stop — either
-        # still pending outright or still inside its grace window. `done`
-        # (mutated in _poll_pending_once) and `chain_state` (mutated in
-        # _advance_chains, see above) are the ground truth that survives a
-        # tick being interrupted mid-flight.
+    elif len(resolved_roots) < total_watched or len(session_done) < total_sessions:
+        # Some watched chain (or session) never concluded before we had to
+        # stop — either still pending outright or still inside its grace
+        # window. `done`/`session_done` (mutated in the poll helpers above)
+        # and `chain_state` (mutated in _advance_chains) are the ground
+        # truth that survives a tick being interrupted mid-flight.
         exit_code = EXIT_RUNNING
-    elif all(chain_tail_exit.get(root) == 0 for root in resolved_roots):
+    elif all(chain_tail_exit.get(root) == 0 for root in resolved_roots) and session_ok:
         # Final-link-wins: each resolved chain's most recently seen terminal
         # exit_code decides, not every link along the way.
         exit_code = 0
@@ -1473,6 +1636,18 @@ def run_monitor_wait(argv: list[str]) -> int:
             "its final link instead of exiting on the first terminal run."
         ),
     )
+    parser.add_argument(
+        "--max-wait",
+        type=float,
+        default=None,
+        metavar="SECS",
+        help=(
+            "Give up waiting after this many seconds and exit EXIT_RUNNING "
+            "for whatever is still pending, instead of blocking forever on a "
+            f"stuck session or run. Default: {_DEFAULT_MAX_WAIT_SECONDS:g}s. "
+            "Pass 0 for unlimited."
+        ),
+    )
     args = parser.parse_args(argv)
     watched_ids = _split_watched_ids(args.ids)
     if not watched_ids:
@@ -1480,7 +1655,13 @@ def run_monitor_wait(argv: list[str]) -> int:
         # of them survive comma-splitting (e.g. a lone "," or ""). Without
         # this check that degenerates into a silent, instant, exit-0 no-op.
         parser.error("no schedule_run ids given (only empty/comma-only tokens)")
-    return _dispatch_wait(watched_ids, interval=args.interval, follow=args.follow, chain=args.chain)
+    return _dispatch_wait(
+        watched_ids,
+        interval=args.interval,
+        follow=args.follow,
+        chain=args.chain,
+        max_wait=args.max_wait,
+    )
 
 
 # ── CLI registration ──────────────────────────────────────────────────────────
@@ -1575,6 +1756,18 @@ def add_monitor_subparser(subparsers: argparse._SubParsersAction) -> None:
             "following scheduler on_success/on_fail chain children by default."
         ),
     )
+    mon.add_argument(
+        "--max-wait",
+        type=float,
+        default=None,
+        metavar="SECS",
+        help=(
+            "With --run: give up waiting after this many seconds and exit "
+            "EXIT_RUNNING for whatever is still pending, instead of blocking "
+            f"forever on a stuck session or run. Default: {_DEFAULT_MAX_WAIT_SECONDS:g}s. "
+            "Pass 0 for unlimited."
+        ),
+    )
 
 
 def run_monitor(args: argparse.Namespace) -> int:
@@ -1591,7 +1784,11 @@ def run_monitor(args: argparse.Namespace) -> int:
             log_error("no schedule_run ids given (only empty/comma-only tokens)")
             return 2
         return _dispatch_wait(
-            watched_ids, interval=args.interval, follow=args.follow, chain=args.chain
+            watched_ids,
+            interval=args.interval,
+            follow=args.follow,
+            chain=args.chain,
+            max_wait=args.max_wait,
         )
 
     since: float | None = None

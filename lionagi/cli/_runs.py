@@ -17,6 +17,7 @@ from uuid import uuid4
 from lionagi._paths import RUNS_ROOT
 from lionagi.libs.path_safety import validate_path_component
 from lionagi.ln._utils import now_utc
+from lionagi.providers._provider_errors import ProviderError
 from lionagi.utils import LIONAGI_HOME
 
 if TYPE_CHECKING:
@@ -291,6 +292,43 @@ def resolve_run_reason(
     return RunReasons.FAILED_EXCEPTION, "Run failed.", None
 
 
+async def _linked_engine_session(
+    db: StateDB,
+    engine_session_uid: str | None,
+    *,
+    retries: int = 3,
+    retry_interval: float = 0.1,
+) -> dict[str, Any] | None:
+    """The claude/codex-mirror session row for a CLI provider's real engine session.
+
+    ``engine_session_uid`` is the provider-native session id (e.g. a Claude Code
+    session uuid or a Codex thread id), captured from ``endpoint.session_id`` while
+    streaming — the same id the mirror derives its StateDB session id from, so this
+    is the link between a profile-typed agent session and its engine-typed twin.
+
+    A present ``engine_session_uid`` means the engine session is real (it was
+    captured off a live stream chunk); the mirror row can simply not have been
+    written yet at teardown time. Retry a bounded number of times before giving
+    up — never spin unbounded waiting for a session that may never mirror.
+    """
+    if not engine_session_uid:
+        return None
+    import anyio
+
+    from lionagi.state.claude_mirror import session_db_id
+
+    db_id = session_db_id(engine_session_uid)
+    linked = await db.get_session(db_id)
+    if linked is not None:
+        return linked
+    for _ in range(retries):
+        await anyio.sleep(retry_interval)
+        linked = await db.get_session(db_id)
+        if linked is not None:
+            return linked
+    return None
+
+
 async def _teardown_common(
     db: StateDB,
     *,
@@ -304,6 +342,7 @@ async def _teardown_common(
     identity_markers: dict | None = None,
     escalated_evidence: list[dict] | None = None,
     cwd: str | None = None,
+    engine_session_uid: str | None = None,
 ) -> str:
     from lionagi.state.artifact_verifier import (
         missing_artifact_evidence,
@@ -341,11 +380,72 @@ async def _teardown_common(
     final_reason_summary = reason_summary
     final_evidence_refs = evidence_refs
 
+    # A profile-typed session's own async wrapper can raise a stream/transport
+    # error (the CLI provider's own reported "error" chunk that classify_provider_error
+    # could not attribute to a known quota/auth/context pattern, so it stays the base
+    # ProviderError) while the engine session it wraps — mirrored separately from the
+    # on-disk transcript — is still alive or already completed. Reading that as "failed"
+    # is a phantom: the actual work is running or done. Narrowly suppress the demotion
+    # for THIS known, unclassified-stream-error class only: an exact-type check (not
+    # isinstance) excludes the ProviderQuotaError/ProviderAuthError/ProviderContextError
+    # subclasses, so a genuine quota/auth/context failure always stays "failed" even
+    # with a linked engine session running/completed, exactly like a generic bug
+    # elsewhere in the wrapper (message persistence, artifact verification, hook
+    # handling, branch mutation) must still fail loud.
+    if final_status == "failed" and type(exception) is ProviderError and engine_session_uid:
+        from lionagi.state.claude_mirror import session_db_id
+        from lionagi.state.db import SESSION_TERMINAL_STATUSES
+        from lionagi.state.reasons import RunReasons
+
+        linked_id = session_db_id(engine_session_uid)
+        linked = await _linked_engine_session(db, engine_session_uid)
+
+        # Record the link durably regardless of whether the mirror row exists
+        # yet — the id is deterministic from engine_session_uid, so `li
+        # monitor run <profile_session_id>` can follow it and resolve the
+        # real status once the mirror row lands, even if this teardown's
+        # bounded wait ran out first.
+        metadata = dict(metadata or {})
+        metadata["linked_engine_session_id"] = linked_id
+        existing_node_meta = session_row.get("node_metadata") or {}
+        if isinstance(existing_node_meta, str):
+            existing_node_meta = json.loads(existing_node_meta)
+        await db.update_session(
+            session_id,
+            node_metadata=json.dumps({**existing_node_meta, "linked_engine_session_id": linked_id}),
+        )
+
+        if linked is not None and linked["status"] in SESSION_TERMINAL_STATUSES:
+            reason_by_status = {
+                "completed": RunReasons.COMPLETED_OK,
+                "completed_empty": RunReasons.COMPLETED_EMPTY_NO_EVIDENCE,
+                "failed": RunReasons.FAILED_EXCEPTION,
+                "timed_out": RunReasons.TIMED_OUT_DEADLINE,
+                "aborted": RunReasons.CANCELLED_SIGINT,
+                "cancelled": RunReasons.CANCELLED_SYSTEM,
+            }
+            final_status = linked["status"]
+            final_reason_code = reason_by_status.get(linked["status"], RunReasons.FAILED_EXCEPTION)
+            final_reason_summary = (
+                f"reconciled to linked engine session {linked_id} terminal status "
+                f"{linked['status']!r}"
+            )
+            final_evidence_refs = [{"kind": "session", "id": linked_id, "label": linked["status"]}]
+        elif linked is not None and linked["status"] == "running":
+            final_status = "running"
+            final_reason_code = RunReasons.STARTED_OK
+            final_reason_summary = (
+                f"suppressed phantom 'failed': linked engine session {linked_id} is still running"
+            )
+            final_evidence_refs = [{"kind": "session", "id": linked_id, "label": "running"}]
+        # else: engine uid was captured but no mirror row landed within the
+        # bounded wait — can't confirm the engine is alive, so `failed` stands.
+
     if verification and verification["status"] == "failed":
         from lionagi.state.reasons import RunReasons
 
         missing = verification["missing_required"]
-        if status == "completed":
+        if final_status == "completed":
             final_status = "failed"
             final_reason_code = RunReasons.FAILED_MISSING_ARTIFACT
             final_reason_summary = missing_artifact_summary(missing)
@@ -472,6 +572,7 @@ async def teardown_persist(
     extras: dict | None = None,
     escalated_evidence: list[dict] | None = None,
     cwd: str | None = None,
+    engine_session_uid: str | None = None,
 ) -> str:
     if ctx is None:
         return status
@@ -490,6 +591,7 @@ async def teardown_persist(
             identity_markers=ctx.get("identity_markers"),
             escalated_evidence=escalated_evidence,
             cwd=cwd,
+            engine_session_uid=engine_session_uid,
         )
 
         from lionagi.hooks import unroute_message_persistence

@@ -1010,3 +1010,275 @@ async def test_teardown_verification_preserves_non_completed_reason(
     v = s["artifact_verification_json"]
     assert isinstance(v, dict)
     assert v["status"] == "failed"
+
+
+# ── Phantom 'failed' suppression: linked engine session is alive/completed ───
+
+
+async def test_teardown_suppresses_failed_when_linked_engine_session_running(
+    temp_db_path: Path,
+):
+    """A stream/provider error must not read as 'failed' while the real engine session is still running."""
+    from lionagi.providers._provider_errors import ProviderError
+    from lionagi.state.claude_mirror import mirror_session, session_db_id
+
+    engine_uid = "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"
+    async with StateDB() as db:
+        await mirror_session(
+            db,
+            session_uid=engine_uid,
+            events=[
+                {
+                    "type": "assistant",
+                    "uuid": "e1",
+                    "timestamp": "2026-07-05T00:00:00.000Z",
+                    "message": {
+                        "role": "assistant",
+                        "content": [{"type": "text", "text": "working on it"}],
+                    },
+                }
+            ],
+            tool_names={},
+            status="running",
+        )
+
+    branch = Branch(name="b1")
+    ctx = await _setup_live_persist(branch, agent_name="implementer")
+    assert ctx is not None
+
+    exc = ProviderError("abandoned stream reader")
+    final_status = await _teardown_live_persist(
+        ctx, status="failed", exception=exc, engine_session_uid=engine_uid
+    )
+
+    assert final_status == "running"
+    async with StateDB() as db:
+        s = await db.get_session(ctx["session_id"])
+    assert s is not None
+    assert s["status"] == "running"
+    assert s["node_metadata"]["linked_engine_session_id"] == session_db_id(engine_uid)
+
+
+async def test_teardown_suppresses_failed_when_linked_engine_session_completed(
+    temp_db_path: Path,
+):
+    """A stream/provider error must not read as 'failed' once the real engine session has completed."""
+    from lionagi.providers._provider_errors import ProviderError
+    from lionagi.state.claude_mirror import mirror_session, session_db_id
+
+    engine_uid = "aaaaaaaa-bbbb-cccc-dddd-ffffffffffff"
+    async with StateDB() as db:
+        await mirror_session(
+            db,
+            session_uid=engine_uid,
+            events=[
+                {
+                    "type": "assistant",
+                    "uuid": "e1",
+                    "timestamp": "2026-07-05T00:00:00.000Z",
+                    "message": {
+                        "role": "assistant",
+                        "content": [{"type": "text", "text": "done"}],
+                    },
+                }
+            ],
+            tool_names={},
+            status="completed",
+        )
+
+    branch = Branch(name="b1")
+    ctx = await _setup_live_persist(branch, agent_name="reviewer")
+    assert ctx is not None
+
+    exc = ProviderError("abandoned stream reader")
+    final_status = await _teardown_live_persist(
+        ctx, status="failed", exception=exc, engine_session_uid=engine_uid
+    )
+
+    assert final_status == "completed"
+    async with StateDB() as db:
+        s = await db.get_session(ctx["session_id"])
+    assert s is not None
+    assert s["status"] == "completed"
+    assert s["node_metadata"]["linked_engine_session_id"] == session_db_id(engine_uid)
+
+
+async def test_teardown_keeps_failed_without_linked_engine_session(temp_db_path: Path):
+    """No linked engine session (or no engine_session_uid at all) → a real failure stays failed."""
+    from lionagi.providers._provider_errors import ProviderError
+
+    branch = Branch(name="b1")
+    ctx = await _setup_live_persist(branch, agent_name="implementer")
+    assert ctx is not None
+
+    exc = ProviderError("genuine failure")
+    final_status = await _teardown_live_persist(
+        ctx, status="failed", exception=exc, engine_session_uid="no-such-session-uid"
+    )
+
+    assert final_status == "failed"
+    async with StateDB() as db:
+        s = await db.get_session(ctx["session_id"])
+    assert s is not None
+    assert s["status"] == "failed"
+
+
+async def test_teardown_keeps_failed_for_real_wrapper_bug_even_when_linked_running(
+    temp_db_path: Path,
+):
+    """A genuine profile-layer exception (not a ProviderError) must stay 'failed' even
+    when a linked engine session is running/completed — suppression is narrowly scoped
+    to the CLI provider's own reported stream errors, not arbitrary wrapper bugs."""
+    from lionagi.state.claude_mirror import mirror_session
+
+    engine_uid = "aaaaaaaa-bbbb-cccc-dddd-111111111111"
+    async with StateDB() as db:
+        await mirror_session(
+            db,
+            session_uid=engine_uid,
+            events=[
+                {
+                    "type": "assistant",
+                    "uuid": "e1",
+                    "timestamp": "2026-07-05T00:00:00.000Z",
+                    "message": {
+                        "role": "assistant",
+                        "content": [{"type": "text", "text": "working on it"}],
+                    },
+                }
+            ],
+            tool_names={},
+            status="running",
+        )
+
+    branch = Branch(name="b1")
+    ctx = await _setup_live_persist(branch, agent_name="implementer")
+    assert ctx is not None
+
+    exc = RuntimeError("bug in artifact verification")
+    final_status = await _teardown_live_persist(
+        ctx, status="failed", exception=exc, engine_session_uid=engine_uid
+    )
+
+    assert final_status == "failed"
+    async with StateDB() as db:
+        s = await db.get_session(ctx["session_id"])
+    assert s is not None
+    assert s["status"] == "failed"
+
+
+@pytest.mark.parametrize(
+    "error_name,message",
+    [("ProviderQuotaError", "usage limit reached"), ("ProviderAuthError", "not logged in")],
+)
+async def test_teardown_keeps_failed_for_genuine_provider_error_even_when_linked_running(
+    temp_db_path: Path, error_name, message
+):
+    """ProviderQuotaError/ProviderAuthError are genuine, well-classified provider
+    failures -- unlike the generic unclassified stream/transport ProviderError, they
+    must never be suppressed into 'running'/'completed' just because a linked engine
+    session happens to still be alive."""
+    import lionagi.providers._provider_errors as provider_errors
+    from lionagi.state.claude_mirror import mirror_session
+
+    error_cls = getattr(provider_errors, error_name)
+    engine_uid = "aaaaaaaa-bbbb-cccc-dddd-222222222221"
+    async with StateDB() as db:
+        await mirror_session(
+            db,
+            session_uid=engine_uid,
+            events=[
+                {
+                    "type": "assistant",
+                    "uuid": "e1",
+                    "timestamp": "2026-07-05T00:00:00.000Z",
+                    "message": {
+                        "role": "assistant",
+                        "content": [{"type": "text", "text": "working on it"}],
+                    },
+                }
+            ],
+            tool_names={},
+            status="running",
+        )
+
+    branch = Branch(name="b1")
+    ctx = await _setup_live_persist(branch, agent_name="implementer")
+    assert ctx is not None
+
+    exc = error_cls(message)
+    final_status = await _teardown_live_persist(
+        ctx, status="failed", exception=exc, engine_session_uid=engine_uid
+    )
+
+    assert final_status == "failed"
+    async with StateDB() as db:
+        s = await db.get_session(ctx["session_id"])
+    assert s is not None
+    assert s["status"] == "failed"
+
+
+async def test_teardown_reconciles_after_delayed_mirror_row_creation(
+    temp_db_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    """The claude/codex mirror row for engine_session_uid may not exist YET at teardown
+    time (mirror-lag race) — _linked_engine_session must bounded-retry and pick it up
+    instead of immediately falling through to 'failed'."""
+    from lionagi.providers._provider_errors import ProviderError
+    from lionagi.state.claude_mirror import mirror_session, session_db_id
+
+    engine_uid = "aaaaaaaa-bbbb-cccc-dddd-222222222222"
+    branch = Branch(name="b1")
+    ctx = await _setup_live_persist(branch, agent_name="implementer")
+    assert ctx is not None
+
+    real_get_session = StateDB.get_session
+    calls: list[str] = []
+    created = False
+
+    async def delayed_get_session(self, session_id, *a, **kw):
+        nonlocal created
+        if session_id == session_db_id(engine_uid) and not created:
+            calls.append(session_id)
+            if len(calls) < 3:
+                # Row doesn't exist yet the first couple of lookups —
+                # simulate the mirror still catching up.
+                return None
+            created = True
+            # Write the mirror row through the SAME connection teardown is
+            # using (self) -- opening a second StateDB() to the same sqlite
+            # file from inside this monkeypatch recurses into SQLAlchemy's
+            # engine-connect event dispatch. mirror_session() itself calls
+            # db.get_session(sid) internally, so `created` must already be
+            # True before this await to avoid re-entering this branch.
+            await mirror_session(
+                self,
+                session_uid=engine_uid,
+                events=[
+                    {
+                        "type": "assistant",
+                        "uuid": "e1",
+                        "timestamp": "2026-07-05T00:00:00.000Z",
+                        "message": {
+                            "role": "assistant",
+                            "content": [{"type": "text", "text": "done"}],
+                        },
+                    }
+                ],
+                tool_names={},
+                status="completed",
+            )
+        return await real_get_session(self, session_id, *a, **kw)
+
+    monkeypatch.setattr(StateDB, "get_session", delayed_get_session)
+
+    exc = ProviderError("abandoned stream reader")
+    final_status = await _teardown_live_persist(
+        ctx,
+        status="failed",
+        exception=exc,
+        engine_session_uid=engine_uid,
+    )
+
+    assert len(calls) >= 3
+    assert final_status == "completed"
