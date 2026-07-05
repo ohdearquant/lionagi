@@ -18,11 +18,15 @@ const TERMINAL_STATUSES = new Set([
   "timed_out",
 ]);
 
+// Process-dead-but-non-terminal health states: muted and static — a dead
+// process must never pulse as if alive.
+const STALE_STATUSES = new Set(["stale", "orphaned", "zombie", "unresponsive"]);
+
 function statusColor(status: string): string {
   const s = status.toLowerCase();
   if (s === "failed" || s === "error" || s === "failure" || s === "timed_out")
     return "var(--status-failure)";
-  if (s === "cancelled") return "var(--content-muted)";
+  if (s === "cancelled" || STALE_STATUSES.has(s)) return "var(--content-muted)";
   if (s === "gated" || s === "needs_review" || s === "blocked") return "var(--status-pending)";
   if (s === "completed" || s === "done" || s === "success") return "var(--status-success)";
   return "var(--status-running)";
@@ -30,11 +34,12 @@ function statusColor(status: string): string {
 
 /**
  * Small circular status indicator. Pulses via `live-pulse-dot` CSS animation
- * when the status is non-terminal; static for terminal states.
+ * when the status is non-terminal; static for terminal and stale states.
  */
 export default function StatusDot({ status, className }: StatusDotProps) {
   const color = statusColor(status);
-  const isTerminal = TERMINAL_STATUSES.has(status.toLowerCase());
+  const s = status.toLowerCase();
+  const isTerminal = TERMINAL_STATUSES.has(s) || STALE_STATUSES.has(s);
   return (
     <span
       aria-hidden="true"

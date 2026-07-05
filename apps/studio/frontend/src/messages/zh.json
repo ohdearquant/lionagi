@@ -588,6 +588,7 @@
     },
     "liveBoard": {
       "title": "正在运行",
+      "staleLabel": "已失联",
       "empty": "当前无活跃运行或调用。",
       "emptyHint": "可用 li CLI 启动，或按 ⌘K 快速跳转。",
       "fleetLink": "智能体监控 →"

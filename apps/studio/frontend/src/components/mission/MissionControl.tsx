@@ -1,9 +1,10 @@
 /**
  * Mission Control — home space.
  *
- * The living system leads: running work first, then a compact attention
- * digest (never a wall of rows), then recent history. All numbers tick in
- * real time. No manual refresh. No page reload.
+ * Attention leads when something needs a human; otherwise the living
+ * system does: running work first, then recent history. The attention
+ * digest is compact (never a wall of rows). All numbers tick in real
+ * time. No manual refresh. No page reload.
  */
 
 import { useTranslations } from "use-intl";
@@ -44,45 +45,32 @@ export default function MissionControl() {
       <hr className="border-t border-edge" style={{ border: "none", borderTopWidth: "1px" }} />
 
       {/*
-       * Two-zone layout at ≥1280px:
-       *   left (flex 3): RUNNING NOW + NEEDS ATTENTION stacked
-       *   right (flex 2): RECENT RUNS column, full height
-       * Below 1280px: single-column vertical stack.
+       * Attention-first vertical stack:
+       *   NEEDS ATTENTION full-width at the top, only when non-empty —
+       *   when the system is clean the living board leads, no permanent
+       *   "all clear" band spending prime real estate on a null.
+       *   Then RUNNING NOW as a full-width strip, then RECENT RUNS.
        */}
-      <div className="flex flex-col gap-5 xl:grid xl:grid-cols-[3fr_2fr] xl:gap-6 xl:items-start">
-        {/* Left zone: live board + attention queue */}
-        <div className="flex flex-col gap-5">
-          <LiveBoard
-            activeRuns={board.activeRuns}
-            activeInvocations={board.activeInvocations}
+      {board.attentionItems.length > 0 && (
+        <>
+          <AttentionQueue
+            items={board.attentionItems}
             nowSec={board.nowSec}
+            dataState={board.dataState}
           />
+          <hr className="border-t border-edge" style={{ border: "none", borderTopWidth: "1px" }} />
+        </>
+      )}
 
-          {board.attentionItems.length > 0 && (
-            <>
-              <hr
-                className="border-t border-edge"
-                style={{ border: "none", borderTopWidth: "1px" }}
-              />
-              <AttentionQueue
-                items={board.attentionItems}
-                nowSec={board.nowSec}
-                dataState={board.dataState}
-              />
-            </>
-          )}
-        </div>
+      <LiveBoard
+        activeRuns={board.activeRuns}
+        activeInvocations={board.activeInvocations}
+        nowSec={board.nowSec}
+      />
 
-        {/* Right zone: recent terminal runs — hairline divider on wide layouts */}
-        <div className="xl:border-l xl:border-edge xl:pl-6">
-          {/* Hairline separator only on narrow (vertical) layouts */}
-          <hr
-            className="xl:hidden border-t border-edge"
-            style={{ border: "none", borderTopWidth: "1px" }}
-          />
-          <RecentRuns runs={board.recentRuns} nowSec={board.nowSec} />
-        </div>
-      </div>
+      <hr className="border-t border-edge" style={{ border: "none", borderTopWidth: "1px" }} />
+
+      <RecentRuns runs={board.recentRuns} nowSec={board.nowSec} />
     </div>
   );
 }
