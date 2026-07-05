@@ -238,6 +238,51 @@ export function terminalRecentRows(runs: RunSummary[]): RecentRow[] {
     }));
 }
 
+/** One fetched page of older history rows. */
+export interface HistoryPage {
+  rows: RecentRow[];
+  hasMore: boolean;
+}
+
+export interface HistoryPager {
+  inFlight(): boolean;
+  loadNext(): Promise<HistoryPage | null>;
+}
+
+/**
+ * Serializes on-demand history page fetches. The in-flight guard is plain
+ * closure state, flipped synchronously — React render state stays stale until
+ * commit, so two fires in the same tick (sentinel intersection plus a click)
+ * would otherwise both fetch the same page and double-advance past the next
+ * one. A concurrent call resolves to null without fetching; a failed fetch
+ * keeps its page number so the next fire retries it.
+ */
+export function createHistoryPager(
+  fetchPage: (page: number) => Promise<{ runs: RunSummary[]; has_next: boolean }>,
+  firstPage = 2,
+): HistoryPager {
+  let nextPage = firstPage;
+  let inFlight = false;
+  return {
+    inFlight: () => inFlight,
+    loadNext() {
+      if (inFlight) return Promise.resolve(null);
+      inFlight = true;
+      const page = nextPage;
+      nextPage = page + 1;
+      return fetchPage(page)
+        .then((resp) => ({ rows: terminalRecentRows(resp.runs), hasMore: resp.has_next }))
+        .catch(() => {
+          nextPage = page;
+          return null;
+        })
+        .finally(() => {
+          inFlight = false;
+        });
+    },
+  };
+}
+
 function deriveCounts(units: OrgUnit[]): FleetCounts {
   const orchestrations = units.filter((u) => u.id !== "__direct__").length;
   const agents = units.reduce((n, u) => n + u.agents.length, 0);

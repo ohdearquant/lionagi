@@ -1,5 +1,10 @@
 import { describe, it, expect } from "vitest";
-import { fleetReducer, initialFleetState, terminalRecentRows } from "./fleetReducer";
+import {
+  fleetReducer,
+  initialFleetState,
+  terminalRecentRows,
+  createHistoryPager,
+} from "./fleetReducer";
 import type { FleetState } from "./fleetReducer";
 import type { RunSummary } from "@/lib/types";
 import type { InvocationSummary } from "@/lib/api";
@@ -299,5 +304,69 @@ describe("terminalRecentRows", () => {
     expect(rows[0].id).toBe("r79");
     expect(rows[79].id).toBe("r0");
     expect(rows.some((r) => r.id === "live")).toBe(false);
+  });
+});
+
+// ─── createHistoryPager ───────────────────────────────────────────────────────
+
+describe("createHistoryPager", () => {
+  function deferredFetch() {
+    const calls: number[] = [];
+    let resolve!: (v: { runs: RunSummary[]; has_next: boolean }) => void;
+    let reject!: (e: unknown) => void;
+    const fetchPage = (page: number) => {
+      calls.push(page);
+      return new Promise<{ runs: RunSummary[]; has_next: boolean }>((res, rej) => {
+        resolve = res;
+        reject = rej;
+      });
+    };
+    return { calls, fetchPage, settle: () => resolve, fail: () => reject };
+  }
+
+  it("double-fire before the first fetch settles requests each page exactly once", async () => {
+    const d = deferredFetch();
+    const pager = createHistoryPager(d.fetchPage);
+
+    const first = pager.loadNext();
+    const second = pager.loadNext(); // same tick, before the first settles
+
+    expect(d.calls).toEqual([2]); // page 2 fetched once, not twice
+    await expect(second).resolves.toBeNull(); // duplicate fire is a no-op
+
+    d.settle()({
+      runs: [makeRun({ run_id: "a", status: "completed", ended_at: 1 })],
+      has_next: true,
+    });
+    const page = await first;
+    expect(page?.rows.map((r) => r.id)).toEqual(["a"]);
+    expect(page?.hasMore).toBe(true);
+
+    void pager.loadNext();
+    expect(d.calls).toEqual([2, 3]); // page 3 next — nothing skipped
+  });
+
+  it("a failed fetch retries the same page on the next fire", async () => {
+    const d = deferredFetch();
+    const pager = createHistoryPager(d.fetchPage);
+
+    const first = pager.loadNext();
+    d.fail()(new Error("network"));
+    await expect(first).resolves.toBeNull();
+
+    void pager.loadNext();
+    expect(d.calls).toEqual([2, 2]);
+    expect(pager.inFlight()).toBe(true);
+  });
+
+  it("reports inFlight only while a fetch is pending", async () => {
+    const d = deferredFetch();
+    const pager = createHistoryPager(d.fetchPage);
+    expect(pager.inFlight()).toBe(false);
+    const p = pager.loadNext();
+    expect(pager.inFlight()).toBe(true);
+    d.settle()({ runs: [], has_next: false });
+    await p;
+    expect(pager.inFlight()).toBe(false);
   });
 });

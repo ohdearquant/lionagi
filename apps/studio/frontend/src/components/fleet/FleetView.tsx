@@ -3,7 +3,8 @@ import { Link } from "@tanstack/react-router";
 import { useTranslations } from "use-intl";
 import { listRuns } from "@/lib/api";
 import { useFleet } from "./useFleet";
-import { terminalRecentRows } from "./fleetReducer";
+import { createHistoryPager } from "./fleetReducer";
+import type { HistoryPager } from "./fleetReducer";
 import type { OrgUnit, AgentRow, RecentRow } from "./fleetReducer";
 import SessionDetail from "./SessionDetail";
 import FleetStaleBadge from "./FleetStaleBadge";
@@ -433,7 +434,13 @@ export default function FleetView() {
   const [pagedHasMore, setPagedHasMore] = useState<boolean | null>(null);
   const serverHasMore = pagedHasMore ?? state.runsHasNext;
   const [loadingMore, setLoadingMore] = useState(false);
-  const nextPageRef = useRef(2);
+  // The pager serializes fetches with a synchronous guard so a sentinel fire
+  // and a click in the same tick can't fetch one page twice and skip the next.
+  const pagerRef = useRef<HistoryPager | null>(null);
+  if (pagerRef.current === null) {
+    pagerRef.current = createHistoryPager((page) => listRuns({ page, per_page: HIST_PAGE_SIZE }));
+  }
+  const pager = pagerRef.current;
 
   // Polled rows win on id collision (fresher status); older pages fill the tail.
   const historyRows = useMemo(() => {
@@ -455,20 +462,18 @@ export default function FleetView() {
       setHistVisible((n) => n + HIST_VISIBLE_STEP);
       return;
     }
-    if (!serverHasMore || loadingMore) return;
+    if (!serverHasMore || pager.inFlight()) return;
     setLoadingMore(true);
-    listRuns({ page: nextPageRef.current, per_page: HIST_PAGE_SIZE })
-      .then((resp) => {
-        nextPageRef.current += 1;
-        setPagedHasMore(resp.has_next);
-        setOlderRows((prev) => [...prev, ...terminalRecentRows(resp.runs)]);
+    void pager.loadNext().then((page) => {
+      // null = fetch failed — leave state as-is; the sentinel retries the page.
+      if (page) {
+        setPagedHasMore(page.hasMore);
+        setOlderRows((prev) => [...prev, ...page.rows]);
         setHistVisible((n) => n + HIST_VISIBLE_STEP);
-      })
-      .catch(() => {
-        // Transient fetch failure — leave state as-is; the sentinel retries.
-      })
-      .finally(() => setLoadingMore(false));
-  }, [histVisible, historyRows.length, serverHasMore, loadingMore]);
+      }
+      setLoadingMore(false);
+    });
+  }, [histVisible, historyRows.length, serverHasMore, pager]);
 
   // Derive effective selection: URL param first, else auto-select first row.
   // We track whether we've done the auto-select with a ref to avoid loops.
