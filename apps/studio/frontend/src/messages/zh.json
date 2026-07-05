@@ -804,6 +804,19 @@
       "fanout": "扇出",
       "engine": "引擎",
       "gate": "门控"
-    }
+    },
+    "yamlPaneTitle": "YAML",
+    "yamlApply": "应用",
+    "yamlDiscard": "放弃",
+    "yamlMoreErrors": "还有 {count} 条",
+    "importFile": "导入…",
+    "exportYaml": "导出 YAML",
+    "exportToml": "导出 TOML",
+    "importError": "无法读取文件",
+    "rackTitle": "工作流",
+    "rackNew": "新建",
+    "rackEmpty": "暂无工作流。",
+    "designerEmpty": "从左侧选择一个工作流，或新建一个开始设计。",
+    "designerEmptyCta": "新建工作流"
   }
 }

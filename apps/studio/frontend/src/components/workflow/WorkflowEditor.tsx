@@ -1,14 +1,16 @@
-import { useCallback, useMemo, useState } from "react";
+import { useCallback, useMemo, useRef, useState } from "react";
 import { useTranslations } from "use-intl";
 import FlowCanvas from "@/components/designer/FlowCanvas";
 import type { FlowNode } from "@/lib/designer/flow";
 import type { WorkflowNodeKind, EngineDef } from "@/lib/api";
 import { specToFlowModel } from "@/lib/workflow/flow";
 import { validateSpec } from "@/lib/workflow/validation";
+import { specToYaml, specToToml, textToSpec } from "@/lib/workflow/serialize";
 import { WorkflowDraftProvider, useWorkflowDraft } from "./WorkflowDraftContext";
 import WorkflowNodeCard from "./WorkflowNodeCard";
 import WorkflowNodePalette from "./WorkflowNodePalette";
 import WorkflowNodeInspector from "./WorkflowNodeInspector";
+import WorkflowYamlPane from "./WorkflowYamlPane";
 import type { WorkflowSpec } from "@/lib/api";
 
 interface WorkflowEditorProps {
@@ -16,6 +18,10 @@ interface WorkflowEditorProps {
   engineDefs: EngineDef[];
   onSave: (spec: WorkflowSpec) => Promise<void>;
   saving?: boolean;
+  /** Show the synchronized YAML pane and file import/export controls. */
+  withText?: boolean;
+  /** Basename for exported files (falls back to "workflow"). */
+  exportName?: string;
 }
 
 // Palette is 60px wide + 12px left inset; add 16px breathing room.
@@ -31,10 +37,22 @@ export default function WorkflowEditor(props: WorkflowEditorProps) {
   );
 }
 
+function downloadFile(name: string, contents: string, mime: string) {
+  const blob = new Blob([contents], { type: mime });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = name;
+  a.click();
+  URL.revokeObjectURL(url);
+}
+
 function WorkflowEditorInner({
   engineDefs,
   onSave,
   saving,
+  withText = false,
+  exportName,
 }: Omit<WorkflowEditorProps, "initialSpec">) {
   const t = useTranslations("workflow");
   const { state, moveNode, reset } = useWorkflowDraft();
@@ -43,6 +61,25 @@ function WorkflowEditorInner({
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [saveError, setSaveError] = useState<string | null>(null);
   const [savedOk, setSavedOk] = useState(false);
+  const [importError, setImportError] = useState<string | null>(null);
+  const fileInputRef = useRef<HTMLInputElement | null>(null);
+
+  const handleImportFile = useCallback(
+    (file: File) => {
+      setImportError(null);
+      void file.text().then((text) => {
+        const result = textToSpec(text, file.name);
+        if (!result.spec) {
+          setImportError(result.errors[0] ?? t("importError"));
+          return;
+        }
+        reset(result.spec);
+      });
+    },
+    [reset, t],
+  );
+
+  const baseName = (exportName ?? "workflow").replace(/[^\w.-]+/g, "-");
 
   const knownEngineDefIds = useMemo(() => new Set(engineDefs.map((d) => d.id)), [engineDefs]);
 
@@ -92,7 +129,46 @@ function WorkflowEditorInner({
         <span className="font-ui text-[length:var(--t-xs)] font-semibold uppercase tracking-[0.09em] text-content-muted">
           {t("editorTitle")}
         </span>
+        {withText && (
+          <>
+            <input
+              ref={fileInputRef}
+              type="file"
+              accept=".yaml,.yml,.toml"
+              className="hidden"
+              onChange={(e) => {
+                const file = e.target.files?.[0];
+                if (file) handleImportFile(file);
+                e.target.value = "";
+              }}
+            />
+            <button
+              type="button"
+              onClick={() => fileInputRef.current?.click()}
+              className="rounded px-2 py-0.5 text-[length:var(--t-xs)] text-content-muted transition-colors hover:text-content-primary"
+            >
+              {t("importFile")}
+            </button>
+            <button
+              type="button"
+              onClick={() => downloadFile(`${baseName}.yaml`, specToYaml(spec), "text/yaml")}
+              className="rounded px-2 py-0.5 text-[length:var(--t-xs)] text-content-muted transition-colors hover:text-content-primary"
+            >
+              {t("exportYaml")}
+            </button>
+            <button
+              type="button"
+              onClick={() => downloadFile(`${baseName}.toml`, specToToml(spec), "application/toml")}
+              className="rounded px-2 py-0.5 text-[length:var(--t-xs)] text-content-muted transition-colors hover:text-content-primary"
+            >
+              {t("exportToml")}
+            </button>
+          </>
+        )}
         <div className="flex-1" />
+        {importError && (
+          <span className="text-[length:var(--t-xs)] text-status-failure">{importError}</span>
+        )}
         {saveError && (
           <span className="text-[length:var(--t-xs)] text-status-failure">{saveError}</span>
         )}
@@ -147,6 +223,12 @@ function WorkflowEditorInner({
         >
           <WorkflowNodeInspector nodeId={selectedId} engineDefs={engineDefs} />
         </div>
+
+        {withText && (
+          <div className="flex w-[340px] shrink-0 flex-col border-l border-edge">
+            <WorkflowYamlPane />
+          </div>
+        )}
       </div>
     </div>
   );

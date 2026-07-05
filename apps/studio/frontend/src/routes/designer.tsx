@@ -1,18 +1,17 @@
 import { createFileRoute } from "@tanstack/react-router";
 import { lazy, Suspense } from "react";
 
-const DesignerCanvas = lazy(() => import("@/components/designer/DesignerCanvas"));
+const WorkflowDesigner = lazy(() => import("@/components/workflow/WorkflowDesigner"));
 
 export const Route = createFileRoute("/designer")({
-  validateSearch: (search: Record<string, unknown>): { id?: string; kind?: string } => ({
+  validateSearch: (search: Record<string, unknown>): { id?: string } => ({
     id: typeof search.id === "string" ? search.id : undefined,
-    kind: typeof search.kind === "string" ? search.kind : undefined,
   }),
   component: DesignerPage,
 });
 
 function DesignerPage() {
-  const { id, kind } = Route.useSearch();
+  const { id } = Route.useSearch();
   return (
     <Suspense
       fallback={
@@ -21,7 +20,7 @@ function DesignerPage() {
         </div>
       }
     >
-      <DesignerCanvas editDefId={id ?? null} initialKind={kind ?? null} />
+      <WorkflowDesigner defId={id ?? null} />
     </Suspense>
   );
 }

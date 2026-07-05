@@ -804,6 +804,19 @@
       "fanout": "Fan Out",
       "engine": "Engine",
       "gate": "Gate"
-    }
+    },
+    "yamlPaneTitle": "YAML",
+    "yamlApply": "Apply",
+    "yamlDiscard": "Discard",
+    "yamlMoreErrors": "+{count} more",
+    "importFile": "Import…",
+    "exportYaml": "Export YAML",
+    "exportToml": "Export TOML",
+    "importError": "Could not read file",
+    "rackTitle": "Workflows",
+    "rackNew": "New",
+    "rackEmpty": "No workflows yet.",
+    "designerEmpty": "Pick a workflow from the rack, or create one to start designing.",
+    "designerEmptyCta": "Create a workflow"
   }
 }
