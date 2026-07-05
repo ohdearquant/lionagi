@@ -9,6 +9,7 @@
 import { useState } from "react";
 import { useTranslations } from "use-intl";
 import SectionLabel from "@/components/ui/SectionLabel";
+import Skeleton from "@/components/ui/Skeleton";
 import { usePulse } from "./usePulse";
 import { CHART_H, chartWidth, sparklineRects } from "./sparkline";
 import type { SparkRect } from "./sparkline";
@@ -42,6 +43,25 @@ function Sparkline({ buckets }: { buckets: ActivityBucket[] }) {
         />
       ))}
     </svg>
+  );
+}
+
+/** Shimmering placeholder matching the sparkline + stats card. */
+export function PulseSkeleton() {
+  return (
+    <div aria-hidden="true">
+      <div className="mb-2 flex items-center justify-between">
+        <Skeleton className="h-4 w-16" />
+        <Skeleton className="h-5 w-20 rounded" />
+      </div>
+      <div className="rounded border border-edge bg-surface-raised px-4 py-3">
+        <Skeleton className="h-10 w-full" />
+        <div className="mt-2 flex items-center justify-between">
+          <Skeleton className="h-3 w-24" />
+          <Skeleton className="h-3 w-14" />
+        </div>
+      </div>
+    </div>
   );
 }
 

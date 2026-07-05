@@ -11,8 +11,12 @@ import { Link } from "@tanstack/react-router";
 import { useTranslations } from "use-intl";
 import SectionLabel from "@/components/ui/SectionLabel";
 import Chip from "@/components/ui/Chip";
+import Skeleton from "@/components/ui/Skeleton";
 import type { AttentionItem, AttentionReason } from "./boardReducer";
 import { runDeepLink, invocationDeepLink, scheduleDeepLink } from "@/lib/runDeepLink";
+
+/** Placeholder row count while the first fetch is in flight. */
+const SKELETON_ROWS = 3;
 
 interface Props {
   items: AttentionItem[];
@@ -22,6 +26,32 @@ interface Props {
 
 /** Individual rows are reserved for actionable items; overflow lives in History. */
 const MAX_ACTIONABLE_ROWS = 6;
+
+/** Shimmering row placeholders, sized to match a real AttentionRow. */
+export function AttentionQueueSkeleton() {
+  return (
+    <div aria-hidden="true">
+      <div className="mb-2 flex items-center justify-between">
+        <Skeleton className="h-4 w-28" />
+        <Skeleton className="h-3 w-16" />
+      </div>
+      <div className="overflow-hidden rounded border border-edge">
+        {Array.from({ length: SKELETON_ROWS }, (_, i) => (
+          <div
+            key={i}
+            className="flex items-center gap-3 bg-surface-raised px-3 py-2"
+            style={{ borderTop: i === 0 ? undefined : "1px solid var(--edge-hairline)" }}
+          >
+            <Skeleton className="h-3 w-16 shrink-0" />
+            <Skeleton className="h-3 flex-1" />
+            <Skeleton className="h-5 w-12 shrink-0 rounded" />
+            <Skeleton className="h-3 w-8 shrink-0" />
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
 
 const ACTIONABLE_REASONS: ReadonlySet<AttentionReason> = new Set(["streak", "gated", "stuck"]);
 
