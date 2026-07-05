@@ -133,6 +133,19 @@ function SchedulesSpace() {
     }
   };
 
+  // Detail selection lives in the URL (?s=<id>) so deep links, refresh, and
+  // back/forward all agree with what is on screen.
+  const openSchedule = (id: string) => {
+    void navigate({ to: "/schedules", search: (prev) => ({ ...prev, s: id }) });
+  };
+  const closeSchedule = () => {
+    void navigate({
+      to: "/schedules",
+      search: ({ s: _s, ...rest }) => rest,
+      replace: true,
+    });
+  };
+
   return (
     <main className="flex h-full w-full flex-col animate-page-enter">
       <header className="flex shrink-0 items-end justify-between gap-4 px-6 pb-4 pt-5">
@@ -164,7 +177,9 @@ function SchedulesSpace() {
           runs={runs}
           nowMs={nowMs}
           onChanged={refresh}
-          initialSelectedId={search.s}
+          selectedScheduleId={search.s ?? null}
+          onSelectSchedule={openSchedule}
+          onCloseDetail={closeSchedule}
         />
       ) : (
         <div className="min-h-0 flex-1 overflow-y-auto">

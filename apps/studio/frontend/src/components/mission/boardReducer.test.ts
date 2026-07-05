@@ -196,6 +196,33 @@ describe("boardReducer — attention queue derivation", () => {
     expect(s.attentionItems[0].reason).toBe("stale");
   });
 
+  it("stale health does not demote a stuck run — stuck wins", () => {
+    const nowSec = 2_000_000;
+    const s = dispatchOk(
+      initialBoardState(),
+      [
+        makeRun({
+          run_id: "r1",
+          status: "running",
+          effective_health: "stale",
+          started_at: nowSec - 4000,
+        }),
+      ],
+      [],
+      nowSec,
+    );
+    expect(s.attentionItems).toHaveLength(1);
+    expect(s.attentionItems[0].reason).toBe("stuck");
+  });
+
+  it("stale health does not demote a gated run — gated wins", () => {
+    const s = dispatchOk(initialBoardState(), [
+      makeRun({ run_id: "r1", status: "needs_review", effective_health: "stale" }),
+    ]);
+    expect(s.attentionItems).toHaveLength(1);
+    expect(s.attentionItems[0].reason).toBe("gated");
+  });
+
   it("stuck run (elapsed > threshold) appears in attention queue", () => {
     const nowSec = 2_000_000;
     const startedAt = nowSec - 4000; // 4000s > 3600s threshold

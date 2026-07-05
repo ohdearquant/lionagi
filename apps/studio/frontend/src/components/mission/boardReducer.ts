@@ -142,51 +142,34 @@ function buildAttentionItems(
 
   for (const run of runs) {
     const s = run.status.toLowerCase();
+    // Status-based reasons take precedence; stale health is the fallback so
+    // an actionable gated/stuck run never degrades into an informational row.
+    let reason: AttentionReason | null = null;
     if (FAILED_STATUSES.has(s)) {
       if (!failedRecently(run.ended_at, run.started_at, nowSec)) continue;
-      items.push({
-        id: `run:${run.run_id}`,
-        kind: "run",
-        name: run.playbook_name ?? run.agent_name ?? run.run_id.slice(-8),
-        reason: "failed",
-        startedAt: run.started_at ?? null,
-        href: `/runs/${run.run_id}`,
-        status: run.status,
-      });
-    } else if (run.effective_health === "stale" || run.effective_health === "orphaned") {
-      items.push({
-        id: `run:${run.run_id}`,
-        kind: "run",
-        name: run.playbook_name ?? run.agent_name ?? run.run_id.slice(-8),
-        reason: "stale",
-        startedAt: run.started_at ?? null,
-        href: `/runs/${run.run_id}`,
-        status: run.status,
-      });
+      reason = "failed";
+    } else if (GATED_STATUSES.has(s)) {
+      reason = "gated";
     } else if (RUNNING_STATUSES.has(s)) {
       const elapsed = elapsedSec(run.started_at ?? null, nowSec);
-      if (elapsed != null && elapsed > STUCK_THRESHOLD_SEC) {
-        items.push({
-          id: `run:${run.run_id}`,
-          kind: "run",
-          name: run.playbook_name ?? run.agent_name ?? run.run_id.slice(-8),
-          reason: "stuck",
-          startedAt: run.started_at ?? null,
-          href: `/runs/${run.run_id}`,
-          status: run.status,
-        });
-      }
-    } else if (GATED_STATUSES.has(s)) {
-      items.push({
-        id: `run:${run.run_id}`,
-        kind: "run",
-        name: run.playbook_name ?? run.agent_name ?? run.run_id.slice(-8),
-        reason: "gated",
-        startedAt: run.started_at ?? null,
-        href: `/runs/${run.run_id}`,
-        status: run.status,
-      });
+      if (elapsed != null && elapsed > STUCK_THRESHOLD_SEC) reason = "stuck";
     }
+    if (
+      reason == null &&
+      (run.effective_health === "stale" || run.effective_health === "orphaned")
+    ) {
+      reason = "stale";
+    }
+    if (reason == null) continue;
+    items.push({
+      id: `run:${run.run_id}`,
+      kind: "run",
+      name: run.playbook_name ?? run.agent_name ?? run.run_id.slice(-8),
+      reason,
+      startedAt: run.started_at ?? null,
+      href: `/runs/${run.run_id}`,
+      status: run.status,
+    });
   }
 
   for (const inv of invocations) {
