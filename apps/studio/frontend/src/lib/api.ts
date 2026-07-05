@@ -980,6 +980,27 @@ export async function getStats(): Promise<StudioStats> {
   return fetchJson<StudioStats>("/api/stats");
 }
 
+export type ActivityWindow = "24h" | "7d";
+
+export interface ActivityBucket {
+  t: number;
+  completed: number;
+  failed: number;
+  cancelled: number;
+  running: number;
+}
+
+export interface ActivityStats {
+  window: ActivityWindow;
+  buckets: ActivityBucket[];
+  completion_rate: number | null;
+  total: number;
+}
+
+export async function getActivityStats(window: ActivityWindow): Promise<ActivityStats> {
+  return fetchJson<ActivityStats>(`/api/stats/activity?window=${window}`);
+}
+
 // ─── Schedules (ADR-0027) ───────────────────────────────────────────────────
 
 export type GitHubEventFilter = "pr_merged" | "pr_opened" | "pr_updated" | "pr_closed";

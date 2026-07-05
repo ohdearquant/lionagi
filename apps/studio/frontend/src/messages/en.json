@@ -600,6 +600,21 @@
       "viewAll": "History →",
       "empty": "No terminal runs yet."
     },
+    "pulse": {
+      "title": "Pulse",
+      "windowLabel": "Activity window",
+      "window": {
+        "24h": "24h",
+        "7d": "7d"
+      },
+      "loading": "Loading activity…",
+      "error": "Activity unavailable · {message}",
+      "unreachable": "API unreachable",
+      "completionRate": "{rate}% completion",
+      "noTerminalRuns": "No terminal runs in window",
+      "total": "{count} total",
+      "staleHint": "showing last known · refresh failed"
+    },
     "stale": {
       "error": "error · {message}",
       "unreachable": "API unreachable",

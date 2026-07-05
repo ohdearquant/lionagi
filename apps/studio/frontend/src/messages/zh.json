@@ -600,6 +600,21 @@
       "viewAll": "历史记录 →",
       "empty": "暂无已完成的运行。"
     },
+    "pulse": {
+      "title": "系统脉搏",
+      "windowLabel": "活动窗口",
+      "window": {
+        "24h": "24小时",
+        "7d": "7天"
+      },
+      "loading": "正在加载活动数据…",
+      "error": "活动数据不可用 · {message}",
+      "unreachable": "无法连接 API",
+      "completionRate": "完成率 {rate}%",
+      "noTerminalRuns": "窗口内暂无已结束的运行",
+      "total": "共 {count} 次",
+      "staleHint": "显示上次数据 · 刷新失败"
+    },
     "stale": {
       "error": "错误 · {message}",
       "unreachable": "API 不可达",
