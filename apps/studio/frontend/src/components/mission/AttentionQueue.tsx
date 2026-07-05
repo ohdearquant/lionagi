@@ -12,6 +12,7 @@ import { useTranslations } from "use-intl";
 import SectionLabel from "@/components/ui/SectionLabel";
 import Chip from "@/components/ui/Chip";
 import type { AttentionItem, AttentionReason } from "./boardReducer";
+import { runDeepLink, invocationDeepLink } from "@/lib/runDeepLink";
 
 interface Props {
   items: AttentionItem[];
@@ -170,13 +171,13 @@ function ItemLink({
   const id = item.id.slice(item.id.indexOf(":") + 1);
   if (item.kind === "run") {
     return (
-      <Link to="/fleet" search={{ s: id }} className={className} style={style}>
+      <Link {...runDeepLink(id)} className={className} style={style}>
         {children}
       </Link>
     );
   }
   return (
-    <Link to="/history" search={{ tab: "run" }} className={className} style={style}>
+    <Link {...invocationDeepLink()} className={className} style={style}>
       {children}
     </Link>
   );

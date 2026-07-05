@@ -588,6 +588,7 @@
     },
     "liveBoard": {
       "title": "Running now",
+      "staleLabel": "Stale",
       "empty": "No active runs or invocations.",
       "emptyHint": "Launch one with the li CLI, or press ⌘K to jump anywhere.",
       "fleetLink": "Fleet →"

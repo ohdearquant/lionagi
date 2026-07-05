@@ -13,6 +13,10 @@ import StatusDot from "@/components/ui/StatusDot";
 import Chip from "@/components/ui/Chip";
 import type { RunSummary } from "@/lib/types";
 import type { InvocationSummary } from "@/lib/api";
+import { runDeepLink, invocationDeepLink } from "@/lib/runDeepLink";
+
+/** Health states meaning the process is gone even though the run is non-terminal. */
+const DEAD_HEALTH = new Set(["stale", "orphaned", "zombie", "unresponsive"]);
 
 interface Props {
   activeRuns: RunSummary[];
@@ -39,21 +43,30 @@ function formatElapsed(sec: number | null): string {
 }
 
 function RunCard({ run, nowSec }: { run: RunSummary; nowSec: number }) {
+  const t = useTranslations("mission");
   const elapsed = elapsedSec(run.started_at ?? undefined, nowSec);
   const name = run.playbook_name ?? run.agent_name ?? run.run_id.slice(-12);
+  // Honest staleness: a process-dead run must not render as a live one.
+  const dead = run.effective_health != null && DEAD_HEALTH.has(run.effective_health);
 
   return (
     <Link
-      to="/fleet"
-      search={{ s: run.run_id }}
+      {...runDeepLink(run.run_id)}
       className="group flex flex-col gap-2 rounded border border-edge bg-surface-raised p-3 transition-colors duration-100"
     >
       <div className="flex items-center gap-2">
-        <StatusDot status="running" />
+        <StatusDot status={dead ? "stale" : "running"} />
         <span className="min-w-0 flex-1 truncate font-data text-[length:var(--t-sm)] font-medium text-content-primary group-hover:opacity-80">
           {name}
         </span>
-        <span className="shrink-0 font-data tabular-nums text-[length:var(--t-xs)] text-status-running">
+        {dead && (
+          <span className="shrink-0 font-data text-[length:var(--t-xs)] uppercase text-content-muted">
+            {t("liveBoard.staleLabel")}
+          </span>
+        )}
+        <span
+          className={`shrink-0 font-data tabular-nums text-[length:var(--t-xs)] ${dead ? "text-content-muted" : "text-status-running"}`}
+        >
           {formatElapsed(elapsed)}
         </span>
       </div>
@@ -78,8 +91,7 @@ function InvocationCard({ inv, nowSec }: { inv: InvocationSummary; nowSec: numbe
 
   return (
     <Link
-      to="/history"
-      search={{ tab: "run" }}
+      {...invocationDeepLink()}
       className="group flex flex-col gap-2 rounded border border-edge bg-surface-raised p-3 transition-colors duration-100"
     >
       <div className="flex items-center gap-2">
