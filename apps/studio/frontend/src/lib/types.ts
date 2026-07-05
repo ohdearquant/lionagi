@@ -352,6 +352,8 @@ export interface ScheduleSummary {
   overlap_policy: string;
   project: string | null;
   github_filter?: { event?: string; base?: string; state?: string } | null;
+  consecutive_failures?: number;
+  last_status?: string | null;
   created_at: number;
   updated_at: number;
 }

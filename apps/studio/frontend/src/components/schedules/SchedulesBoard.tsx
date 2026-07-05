@@ -85,16 +85,21 @@ export default function SchedulesBoard({
   runs,
   nowMs,
   onChanged,
+  initialSelectedId,
 }: {
   schedules: ScheduleSummary[];
   runs: RunRow[];
   nowMs: number;
   onChanged: () => void;
+  /** Deep-link target: opens this schedule's detail on mount. */
+  initialSelectedId?: string | null;
 }) {
   const t = useTranslations("schedules.lanes");
   const lanes = deriveLanes(schedules, runs, nowMs);
   const lastRuns = latestRunBySchedule(runs);
-  const [selectedScheduleId, setSelectedScheduleId] = useState<string | null>(null);
+  const [selectedScheduleId, setSelectedScheduleId] = useState<string | null>(
+    initialSelectedId ?? null,
+  );
 
   return (
     <>

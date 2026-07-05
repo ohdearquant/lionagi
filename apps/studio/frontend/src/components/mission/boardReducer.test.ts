@@ -1,7 +1,7 @@
 import { describe, it, expect } from "vitest";
 import { boardReducer, initialBoardState } from "./boardReducer";
 import type { BoardState } from "./boardReducer";
-import type { RunSummary } from "@/lib/types";
+import type { RunSummary, ScheduleSummary } from "@/lib/types";
 import type { InvocationSummary } from "@/lib/api";
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
@@ -48,8 +48,41 @@ function dispatchOk(
   runs: RunSummary[],
   invocations: InvocationSummary[] = [],
   nowSec = 1_000_000,
+  schedules: ScheduleSummary[] | null = null,
 ): BoardState {
-  return boardReducer(state, { type: "DATA_OK", runs, invocations, nowSec });
+  return boardReducer(state, { type: "DATA_OK", runs, invocations, schedules, nowSec });
+}
+
+function makeSchedule(
+  overrides: Partial<ScheduleSummary> & { id: string; name: string },
+): ScheduleSummary {
+  const base: ScheduleSummary = {
+    id: overrides.id,
+    name: overrides.name,
+    description: null,
+    enabled: 1,
+    trigger_type: "cron",
+    cron_expr: "0 * * * *",
+    interval_sec: null,
+    github_repo: null,
+    poll_interval_sec: null,
+    action_kind: "agent",
+    action_model: null,
+    action_prompt: null,
+    action_agent: null,
+    action_playbook: null,
+    action_project: null,
+    on_success: null,
+    on_fail: null,
+    last_fired_at: null,
+    next_fire_at: null,
+    missed_fire_policy: "skip",
+    overlap_policy: "skip",
+    project: null,
+    created_at: 0,
+    updated_at: 0,
+  };
+  return { ...base, ...overrides };
 }
 
 // ─── Three distinct non-data states ──────────────────────────────────────────
@@ -186,7 +219,7 @@ describe("boardReducer — attention queue derivation", () => {
     expect(s.attentionItems[0].kind).toBe("invocation");
   });
 
-  it("sorts failed before stale before stuck before gated", () => {
+  it("sorts gated before stuck before failed before stale", () => {
     const nowSec = 2_000_000;
     const stuckStart = nowSec - 4000;
     const s = dispatchOk(
@@ -201,10 +234,10 @@ describe("boardReducer — attention queue derivation", () => {
       nowSec,
     );
     const reasons = s.attentionItems.map((i) => i.reason);
-    expect(reasons[0]).toBe("failed");
-    expect(reasons[1]).toBe("stale");
-    expect(reasons[2]).toBe("stuck");
-    expect(reasons[3]).toBe("gated");
+    expect(reasons[0]).toBe("gated");
+    expect(reasons[1]).toBe("stuck");
+    expect(reasons[2]).toBe("failed");
+    expect(reasons[3]).toBe("stale");
   });
 
   it("deduplicates: a run that matches multiple criteria appears once (worst reason)", () => {
@@ -273,5 +306,79 @@ describe("boardReducer — TICK", () => {
     expect(ticked.nowSec).toBe(9_999_999);
     expect(ticked.activeRuns).toHaveLength(1);
     expect(ticked.dataState).toBe("live");
+  });
+});
+
+// ─── Schedule failure streaks ─────────────────────────────────────────────────
+
+describe("boardReducer — schedule failure streaks", () => {
+  it("surfaces a streak row when consecutive_failures reaches the threshold", () => {
+    const sched = makeSchedule({
+      id: "sch-1",
+      name: "nightly-sync",
+      consecutive_failures: 3,
+      last_status: "failed",
+      last_fired_at: 999_000,
+    });
+    const s = dispatchOk(initialBoardState(), [], [], 1_000_000, [sched]);
+    expect(s.attentionItems).toHaveLength(1);
+    const item = s.attentionItems[0];
+    expect(item.reason).toBe("streak");
+    expect(item.kind).toBe("schedule");
+    expect(item.streakCount).toBe(3);
+    expect(item.name).toBe("nightly-sync");
+  });
+
+  it("ignores schedules below the threshold", () => {
+    const sched = makeSchedule({ id: "sch-1", name: "s", consecutive_failures: 2 });
+    const s = dispatchOk(initialBoardState(), [], [], 1_000_000, [sched]);
+    expect(s.attentionItems).toHaveLength(0);
+  });
+
+  it("ignores disabled schedules regardless of streak", () => {
+    const sched = makeSchedule({
+      id: "sch-1",
+      name: "s",
+      enabled: 0,
+      consecutive_failures: 9,
+    });
+    const s = dispatchOk(initialBoardState(), [], [], 1_000_000, [sched]);
+    expect(s.attentionItems).toHaveLength(0);
+  });
+
+  it("orders streak rows above gated and failed items", () => {
+    const failedRun = makeRun({
+      run_id: "r1",
+      status: "failed",
+      started_at: 999_990,
+      ended_at: 999_995,
+    });
+    const gatedRun = makeRun({ run_id: "r2", status: "needs_review", started_at: 999_990 });
+    const sched = makeSchedule({ id: "sch-1", name: "s", consecutive_failures: 4 });
+    const s = dispatchOk(initialBoardState(), [failedRun, gatedRun], [], 1_000_000, [sched]);
+    expect(s.attentionItems.map((i) => i.reason)).toEqual(["streak", "gated", "failed"]);
+  });
+
+  it("keeps the last-known schedules when the schedules fetch degrades to null", () => {
+    const sched = makeSchedule({ id: "sch-1", name: "s", consecutive_failures: 5 });
+    let s = dispatchOk(initialBoardState(), [], [], 1_000_000, [sched]);
+    expect(s.attentionItems).toHaveLength(1);
+    s = dispatchOk(s, [], [], 1_000_001, null);
+    expect(s.schedules).toHaveLength(1);
+    expect(s.attentionItems).toHaveLength(1);
+  });
+
+  it("clears the streak row once a fresh fetch reports recovery", () => {
+    const failing = makeSchedule({ id: "sch-1", name: "s", consecutive_failures: 3 });
+    const recovered = makeSchedule({
+      id: "sch-1",
+      name: "s",
+      consecutive_failures: 0,
+      last_status: "completed",
+    });
+    let s = dispatchOk(initialBoardState(), [], [], 1_000_000, [failing]);
+    expect(s.attentionItems).toHaveLength(1);
+    s = dispatchOk(s, [], [], 1_000_001, [recovered]);
+    expect(s.attentionItems).toHaveLength(0);
   });
 });

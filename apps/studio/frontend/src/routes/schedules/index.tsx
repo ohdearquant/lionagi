@@ -11,13 +11,21 @@ import SchedulesBoard from "@/components/schedules/SchedulesBoard";
 import SchedulesCalendar from "@/components/schedules/SchedulesCalendar";
 import { useSchedulesData } from "@/components/schedules/data";
 
-// ?create=1 (+ name/cron/prompt/desc) opens the create form pre-filled — the
-// deep-link surface Leo drives when the operator asks for a new routine. The
-// operator still reviews and submits; nothing is created from the URL alone.
+// ?create=1 (+ name/cron/prompt/desc) opens the create form pre-filled — a
+// deep-link surface for proposing a new routine. The operator still reviews
+// and submits; nothing is created from the URL alone. ?s=<id> opens that
+// schedule's detail (deep link from attention rows).
 export const Route = createFileRoute("/schedules/")({
   validateSearch: (
     search: Record<string, unknown>,
-  ): { create?: string; name?: string; cron?: string; prompt?: string; desc?: string } => {
+  ): {
+    create?: string;
+    name?: string;
+    cron?: string;
+    prompt?: string;
+    desc?: string;
+    s?: string;
+  } => {
     const pick = (key: string) =>
       typeof search[key] === "string" && search[key] ? { [key]: search[key] as string } : {};
     return {
@@ -26,6 +34,7 @@ export const Route = createFileRoute("/schedules/")({
       ...pick("cron"),
       ...pick("prompt"),
       ...pick("desc"),
+      ...pick("s"),
     };
   },
   component: SchedulesSpace,
@@ -150,7 +159,13 @@ function SchedulesSpace() {
       ) : schedules.length === 0 ? (
         <EmptyState onNew={() => setShowModal(true)} />
       ) : view === "board" ? (
-        <SchedulesBoard schedules={schedules} runs={runs} nowMs={nowMs} onChanged={refresh} />
+        <SchedulesBoard
+          schedules={schedules}
+          runs={runs}
+          nowMs={nowMs}
+          onChanged={refresh}
+          initialSelectedId={search.s}
+        />
       ) : (
         <div className="min-h-0 flex-1 overflow-y-auto">
           <SchedulesCalendar schedules={schedules} runs={runs} />
