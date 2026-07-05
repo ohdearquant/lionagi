@@ -577,7 +577,7 @@ function EventsSection({ events, live }: { events: SignalEvent[]; live: boolean 
           )}
         </div>
       ) : (
-        <div className="rounded border border-edge bg-surface-raised">
+        <div className="max-h-72 overflow-y-auto rounded border border-edge bg-surface-raised">
           <div className="flex flex-col divide-y divide-edge-subtle">
             {events.map((ev) => {
               const badge = KIND_BADGE[ev.kind] ?? {
@@ -692,7 +692,9 @@ export default function RunDetail({ id, fullPage = false }: RunDetailProps) {
           }
         }
         const graph = (s as unknown as Record<string, unknown>).graph as
-          { nodes: WorkerGraph["nodes"]; edges: WorkerGraph["edges"] } | null | undefined;
+          | { nodes: WorkerGraph["nodes"]; edges: WorkerGraph["edges"] }
+          | null
+          | undefined;
         if (graph && graph.nodes && graph.nodes.length > 0) {
           setRunGraph({
             name: s.name || id,
@@ -970,11 +972,17 @@ export default function RunDetail({ id, fullPage = false }: RunDetailProps) {
     errorCount: errors.length,
     partialWindow,
     showTopic: (session as unknown as Record<string, unknown>).show_topic as
-      string | null | undefined,
+      | string
+      | null
+      | undefined,
     showPlayName: (session as unknown as Record<string, unknown>).show_play_name as
-      string | null | undefined,
+      | string
+      | null
+      | undefined,
     playbookName: (session as unknown as Record<string, unknown>).playbook_name as
-      string | null | undefined,
+      | string
+      | null
+      | undefined,
   };
 
   const content = (
