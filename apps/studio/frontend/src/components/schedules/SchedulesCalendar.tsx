@@ -707,8 +707,7 @@ export default function SchedulesCalendar({
                   </span>
                   {item.run.invocation_id && (
                     <Link
-                      to="/history"
-                      search={{ tab: "run" }}
+                      to="/fleet"
                       className="shrink-0 text-meta text-accent underline-offset-2 hover:underline"
                     >
                       {item.run.invocation_id.slice(0, 8)} →

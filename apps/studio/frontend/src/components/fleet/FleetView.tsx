@@ -204,8 +204,8 @@ function EmptyState({ recent, nowSec }: { recent: RecentRow[]; nowSec: number })
             {recent.map((row) => (
               <Link
                 key={row.id}
-                to="/history"
-                search={{ sel: `run:${row.id}` }}
+                to="/fleet"
+                search={{ s: row.id }}
                 className="flex items-center gap-3 border-t border-edge px-3 py-2 transition-colors duration-100 hover:bg-surface-overlay"
               >
                 <StatusDot status={row.status} />

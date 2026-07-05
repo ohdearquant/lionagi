@@ -634,8 +634,7 @@ function SimpleDetail({ kind, name, description, onBack }: SimpleDetailProps) {
                   {stats.recent.map((inv, i) => (
                     <Link
                       key={inv.id}
-                      to="/history"
-                      search={{ tab: "run" }}
+                      to="/fleet"
                       className="flex items-center gap-2 px-2.5 py-2 font-data text-[length:var(--t-sm)] text-content-primary hover:underline"
                       style={{
                         borderTop: i > 0 ? "1px solid var(--edge-hairline)" : undefined,

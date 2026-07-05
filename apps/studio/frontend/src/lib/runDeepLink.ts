@@ -8,8 +8,8 @@ export function runDeepLink(runId: string): { to: "/fleet"; search: { s: string 
 }
 
 /** Invocation counterpart of runDeepLink — same single-cutover rationale. */
-export function invocationDeepLink(): { to: "/history"; search: { tab: "run" } } {
-  return { to: "/history", search: { tab: "run" } };
+export function invocationDeepLink(): { to: "/fleet" } {
+  return { to: "/fleet" };
 }
 
 /** Schedule counterpart — opens the board with the schedule's detail visible. */

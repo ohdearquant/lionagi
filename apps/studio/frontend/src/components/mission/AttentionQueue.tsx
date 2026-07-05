@@ -105,7 +105,7 @@ export default function AttentionQueue({ items, nowSec }: Props) {
           <span id="attention-heading">{t("attention.title")}</span>
         </SectionLabel>
         <Link
-          to="/history"
+          to="/fleet"
           className="font-data text-[length:var(--t-xs)] text-content-muted transition-colors duration-100"
         >
           {t("attention.viewAll")}
@@ -118,7 +118,7 @@ export default function AttentionQueue({ items, nowSec }: Props) {
         ))}
         {actionable.length > MAX_ACTIONABLE_ROWS && (
           <Link
-            to="/history"
+            to="/fleet"
             className="flex items-center justify-center bg-surface-raised px-3 py-2 font-data text-[length:var(--t-xs)] text-content-muted transition-colors duration-100"
             style={{ borderTop: "1px solid var(--edge-hairline)" }}
           >
@@ -148,7 +148,7 @@ export default function AttentionQueue({ items, nowSec }: Props) {
   );
 }
 
-/** One line per reason: count + most recent item + age, linking into History. */
+/** One line per reason: count + most recent item + age, linking into Fleet. */
 function DigestRow({
   reason,
   group,
@@ -164,7 +164,7 @@ function DigestRow({
   const latest = group[0];
   return (
     <Link
-      to="/history"
+      to="/fleet"
       className="flex items-center gap-3 bg-surface-raised px-3 py-2 transition-colors duration-100 hover:bg-surface-overlay"
       style={{ borderTop: first ? undefined : "1px solid var(--edge-hairline)" }}
     >
