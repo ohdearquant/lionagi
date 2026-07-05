@@ -5,10 +5,11 @@ on:
     branches: [ main, develop ]
     paths-ignore:
       - '**/*.ipynb'
+  # No paths-ignore on pull_request: ci-gate is a required status check, so the
+  # workflow must report on every PR — a filtered-out PR would block on a check
+  # that never runs.
   pull_request:
     branches: [ main, develop ]
-    paths-ignore:
-      - '**/*.ipynb'
 
 permissions:
   contents: read
@@ -197,6 +198,25 @@ jobs:
       run: sudo apt-get install -y ripgrep
     - name: Lint marketplace
       run: scripts/ci.sh lint-marketplace
+
+  # Single aggregate context for branch protection. Required status checks must
+  # reference this job, never the matrix legs directly: matrix names shift with
+  # the event (PRs run a subset of Python versions) and a renamed leg would
+  # strand PRs on a check that never reports. Skip-aware: a skipped dependency
+  # passes the gate; failure or cancellation fails it.
+  ci-gate:
+    if: always()
+    needs: [lint, docs, test, frontend, studio-e2e, vscode, marketplace]
+    runs-on: ubuntu-latest
+    steps:
+    - name: Check aggregate result
+      run: |
+        results='${{ join(needs.*.result, ' ') }}'
+        echo "job results: $results"
+        case "$results" in
+          *failure*|*cancelled*) echo "a required job failed or was cancelled"; exit 1 ;;
+          *) echo "all required jobs succeeded or were skipped" ;;
+        esac
 
   publish:
     needs: [lint, test]
