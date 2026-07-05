@@ -376,7 +376,9 @@
       "viewMonth": "Month",
       "viewWeek": "Week",
       "viewDay": "Day",
-      "allDay": "all-day"
+      "allDay": "all-day",
+      "emptyDay": "No firings",
+      "rangeBadge": "{count, plural, one {# firing {start}–{end}} other {# firings {start}–{end}}}"
     },
     "create": {
       "title": "New Schedule",
