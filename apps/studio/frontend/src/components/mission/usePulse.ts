@@ -6,7 +6,7 @@
  * granularity (hours/days), so a fast cadence buys nothing.
  */
 
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useEffect, useState } from "react";
 import { getActivityStats } from "@/lib/api";
 import type { ActivityStats, ActivityWindow } from "@/lib/api";
 
@@ -14,6 +14,7 @@ const REFRESH_INTERVAL_MS = 45_000;
 
 export interface PulseState {
   data: ActivityStats | null;
+  /** null = no failure; "" = failure without a message (localize at render). */
   error: string | null;
   loading: boolean;
 }
@@ -24,39 +25,40 @@ export function usePulse(window_: ActivityWindow): PulseState {
     error: null,
     loading: true,
   });
-  const activeRef = useRef(true);
-
-  const refresh = useCallback(async () => {
-    try {
-      const data = await getActivityStats(window_);
-      if (!activeRef.current) return;
-      setState({ data, error: null, loading: false });
-    } catch (err) {
-      if (!activeRef.current) return;
-      setState((prev) => ({
-        // Keep last-known data on a failed refresh; only the error surfaces.
-        data: prev.data,
-        error: err instanceof Error ? err.message : "API unreachable",
-        loading: false,
-      }));
-    }
-  }, [window_]);
 
   useEffect(() => {
-    activeRef.current = true;
-    setState((prev) => ({ ...prev, loading: prev.data === null }));
-    void refresh();
+    // Effect-local guard: a response from a previous window selection can
+    // never commit state after this effect is cleaned up.
+    let active = true;
+    setState({ data: null, error: null, loading: true });
 
+    async function refresh() {
+      try {
+        const data = await getActivityStats(window_);
+        if (!active) return;
+        setState({ data, error: null, loading: false });
+      } catch (err) {
+        if (!active) return;
+        setState((prev) => ({
+          // Keep last-known data on a failed refresh; only the error surfaces.
+          data: prev.data,
+          error: err instanceof Error ? err.message : "",
+          loading: false,
+        }));
+      }
+    }
+
+    void refresh();
     const timer = setInterval(() => void refresh(), REFRESH_INTERVAL_MS);
     const onFocus = () => void refresh();
     window.addEventListener("focus", onFocus);
 
     return () => {
-      activeRef.current = false;
+      active = false;
       clearInterval(timer);
       window.removeEventListener("focus", onFocus);
     };
-  }, [refresh]);
+  }, [window_]);
 
   return state;
 }

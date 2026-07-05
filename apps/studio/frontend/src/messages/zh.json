@@ -609,6 +609,7 @@
       },
       "loading": "正在加载活动数据…",
       "error": "活动数据不可用 · {message}",
+      "unreachable": "无法连接 API",
       "completionRate": "完成率 {rate}%",
       "noTerminalRuns": "窗口内暂无已结束的运行",
       "total": "共 {count} 次",

@@ -51,6 +51,8 @@ export default function Pulse() {
   const { data, error, loading } = usePulse(window_);
 
   const ratePct = data?.completion_rate != null ? Math.round(data.completion_rate * 100) : null;
+  // "" marks a failure without a usable message — localize the fallback.
+  const errorMessage = error === null ? null : error || t("pulse.unreachable");
 
   return (
     <section aria-labelledby="pulse-heading">
@@ -85,7 +87,7 @@ export default function Pulse() {
           <p className="text-[length:var(--t-sm)] text-content-muted">{t("pulse.loading")}</p>
         ) : data === null ? (
           <p className="text-[length:var(--t-sm)] text-content-muted">
-            {t("pulse.error", { message: error ?? "" })}
+            {t("pulse.error", { message: errorMessage ?? "" })}
           </p>
         ) : (
           <>

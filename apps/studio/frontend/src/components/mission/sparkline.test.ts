@@ -55,6 +55,13 @@ describe("sparklineRects", () => {
     expect(rects.map((r) => r.kind)).toEqual(["completed", "running"]);
   });
 
+  it("all-zero buckets render one baseline stub each, evenly spaced", () => {
+    const rects = sparklineRects([bucket({ t: 0 }), bucket({ t: 3600 }), bucket({ t: 7200 })]);
+    expect(rects).toHaveLength(3);
+    expect(rects.every((r) => r.kind === "stub" && r.height === 1)).toBe(true);
+    expect(rects.map((r) => r.x)).toEqual([0, BAR_W + BAR_GAP, 2 * (BAR_W + BAR_GAP)]);
+  });
+
   it("tiny buckets next to a busy one keep a visible minimum height", () => {
     const rects = sparklineRects([
       bucket({ t: 0, completed: 1000 }),

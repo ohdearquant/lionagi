@@ -609,6 +609,7 @@
       },
       "loading": "Loading activity…",
       "error": "Activity unavailable · {message}",
+      "unreachable": "API unreachable",
       "completionRate": "{rate}% completion",
       "noTerminalRuns": "No terminal runs in window",
       "total": "{count} total",
