@@ -169,6 +169,45 @@ jobs:
           apps/studio/frontend/test-results/
         retention-days: 7
 
+  # Detect whether Studio Docker image inputs changed, to gate the build below.
+  changes:
+    runs-on: ubuntu-latest
+    outputs:
+      studio: ${{ steps.filter.outputs.studio }}
+    steps:
+    - uses: actions/checkout@v7
+    - uses: dorny/paths-filter@v3
+      id: filter
+      with:
+        filters: |
+          studio:
+            - 'apps/studio/**'
+            - 'lionagi/studio/**'
+            - 'pyproject.toml'
+            - '.github/workflows/ci.yml'
+
+  # Build the Studio image (Vite SPA + FastAPI single-origin) whenever its inputs
+  # change, so a broken image is caught on the PR that breaks it instead of at
+  # release time — release.yml is the only other place the Dockerfile is built.
+  # Build only, no push; layers cached via the GitHub Actions cache. Skipped (and
+  # skip-passed by ci-gate) when nothing image-relevant changed.
+  studio-docker:
+    needs: changes
+    if: needs.changes.outputs.studio == 'true'
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v7
+    - name: Set up Docker Buildx
+      uses: docker/setup-buildx-action@v4
+    - name: Build Studio image (no push)
+      uses: docker/build-push-action@v7
+      with:
+        context: .
+        file: apps/studio/Dockerfile
+        push: false
+        cache-from: type=gha
+        cache-to: type=gha,mode=max
+
   vscode:
     runs-on: ubuntu-latest
     defaults:
@@ -206,7 +245,7 @@ jobs:
   # passes the gate; failure or cancellation fails it.
   ci-gate:
     if: always()
-    needs: [lint, docs, test, frontend, studio-e2e, vscode, marketplace]
+    needs: [lint, docs, test, frontend, studio-e2e, studio-docker, vscode, marketplace]
     runs-on: ubuntu-latest
     steps:
     - name: Check aggregate result
