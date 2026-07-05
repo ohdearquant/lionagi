@@ -31,7 +31,6 @@ from fastapi import HTTPException
 from pydantic import BaseModel
 
 from lionagi._errors import NotFoundError
-from lionagi.config import settings
 
 from ..registry import studio_route
 from ._sse import sse_response
@@ -119,14 +118,25 @@ _SYSTEM_PROMPT = (
 
 
 def build_branch() -> Any:
-    """Construct a Branch with the studio default model and all Leo tools registered."""
+    """Construct a Branch with the Claude CLI model and all Leo tools registered."""
+    import os
+
     from lionagi.service.manager import iModel
     from lionagi.session.branch import Branch
 
-    chat_model = iModel(
-        provider=settings.LIONAGI_CHAT_PROVIDER,
-        model=settings.LIONAGI_CHAT_MODEL,
-    )
+    provider = os.environ.get("LIONAGI_STUDIO_LEO_PROVIDER", "claude_code")
+    model = os.environ.get("LIONAGI_STUDIO_LEO_MODEL", "sonnet")
+    if provider == "claude_code":
+        # The Claude CLI subprocess carries its own auth — no API key needed.
+        chat_model = iModel(
+            provider="claude_code",
+            endpoint="query_cli",
+            model=model,
+            api_key="dummy",
+            permission_mode="bypassPermissions",
+        )
+    else:
+        chat_model = iModel(provider=provider, model=model)
     return Branch(
         system=_SYSTEM_PROMPT,
         chat_model=chat_model,
@@ -339,7 +349,7 @@ async def _run_turn(sess: LeoSession, user_content: str):
 
     before = len(sess.branch.messages)
     try:
-        text = await sess.branch.ReAct(instruction=user_content)
+        text = await sess.branch.ReAct(instruction=user_content, tools=True)
     except Exception as exc:
         yield _emit({"type": "error", "detail": str(exc)})
         yield _emit({"type": "done", "ts": time.time()})
