@@ -863,5 +863,12 @@
     "rackEmpty": "暂无工作流。",
     "designerEmpty": "从左侧选择一个工作流，或新建一个开始设计。",
     "designerEmptyCta": "新建工作流"
+  },
+  "daemon": {
+    "title": "Studio 无法连接到本地守护进程（{base}）",
+    "bootstrapInstall": "pip install \"lionagi[studio]\"",
+    "bootstrapRun": "li studio",
+    "authNote": "设置 LIONAGI_STUDIO_AUTH_TOKEN 可为该守护进程要求持有者令牌。",
+    "retry": "重试"
   }
 }
