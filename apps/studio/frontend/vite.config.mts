@@ -18,7 +18,7 @@ export default defineConfig({
   },
   server: {
     proxy: {
-      '/api': 'http://localhost:8765',
+      '/api': process.env.STUDIO_API_URL ?? 'http://localhost:8765',
     },
   },
   test: {

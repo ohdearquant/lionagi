@@ -801,6 +801,24 @@ Index("idx_engine_defs_name", engine_defs.c.name)
 Index("idx_engine_defs_kind", engine_defs.c.kind)
 Index("idx_engine_defs_updated", engine_defs.c.updated_at)
 
+# ── workflow_defs ─────────────────────────────────────────────────────────────
+# Named workflow definitions authored in the Studio Designer. spec_json holds
+# the versioned node/edge graph; validation lives in the studio service layer.
+
+workflow_defs = Table(
+    "workflow_defs",
+    metadata,
+    Column("id", Text, primary_key=True),
+    Column("name", Text, nullable=False, unique=True),
+    Column("description", Text),
+    Column("spec_json", JSON),
+    Column("created_at", Float, nullable=False),
+    Column("updated_at", Float, nullable=False),
+)
+
+Index("idx_workflow_defs_name", workflow_defs.c.name)
+Index("idx_workflow_defs_updated", workflow_defs.c.updated_at)
+
 # ── session_controls (ADR-0085 part 1: run control plane transport) ────────────
 # One row per operator control verb queued against a live session. A poller task
 # in `cli/orchestrate/flow.py`'s `_execute_dag` (the same lifecycle as the
