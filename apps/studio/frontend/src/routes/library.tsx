@@ -143,8 +143,10 @@ function useLibraryData() {
   }, []);
 
   useEffect(() => {
+    // Return reload()'s cleanup so an unmount mid-flight flips its alive flag
+    // and the resolved fetch can't setState on the stale component.
     // eslint-disable-next-line react-hooks/set-state-in-effect -- reload() calls setState inside async callbacks; synchronous reset is needed to clear stale items before the fetch resolves
-    void reload();
+    return reload();
   }, [reload]);
 
   return { items, loading, error, reload, allAgents, allEngines };
