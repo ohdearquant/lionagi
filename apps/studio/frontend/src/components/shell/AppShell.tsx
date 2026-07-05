@@ -5,6 +5,7 @@ import LeoPanel from "@/components/leo/LeoPanel";
 import IconRail from "./IconRail";
 import CommandPalette from "./CommandPalette";
 import StatusFooter from "./StatusFooter";
+import TopBar from "./TopBar";
 
 const LEO_OPEN_KEY = "studio:leo-open";
 
@@ -103,6 +104,9 @@ export default function AppShell({ children, locale, onLocaleChange }: Props) {
 
         {/* Main area */}
         <div className="flex flex-1 flex-col overflow-hidden">
+          {/* Top bar */}
+          <TopBar />
+
           {/* Content */}
           <main
             id="main-content"
