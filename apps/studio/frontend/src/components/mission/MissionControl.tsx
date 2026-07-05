@@ -13,6 +13,7 @@ import AttentionQueue from "./AttentionQueue";
 import LiveBoard from "./LiveBoard";
 import RecentRuns from "./RecentRuns";
 import Pulse from "./Pulse";
+import ZeroState from "./ZeroState";
 import { useLiveBoard } from "./useLiveBoard";
 
 export default function MissionControl() {
@@ -52,30 +53,41 @@ export default function MissionControl() {
        *   "all clear" band spending prime real estate on a null.
        *   Then RUNNING NOW as a full-width strip, then RECENT RUNS.
        */}
-      {board.attentionItems.length > 0 && (
+      {/* Total-empty daemon: guided cards replace the board — any work
+          exists → the real board below. */}
+      {board.systemEmpty ? (
+        <ZeroState />
+      ) : (
         <>
-          <AttentionQueue
-            items={board.attentionItems}
+          {board.attentionItems.length > 0 && (
+            <>
+              <AttentionQueue
+                items={board.attentionItems}
+                nowSec={board.nowSec}
+                dataState={board.dataState}
+              />
+              <hr
+                className="border-t border-edge"
+                style={{ border: "none", borderTopWidth: "1px" }}
+              />
+            </>
+          )}
+
+          <LiveBoard
+            activeRuns={board.activeRuns}
+            activeInvocations={board.activeInvocations}
             nowSec={board.nowSec}
-            dataState={board.dataState}
           />
+
           <hr className="border-t border-edge" style={{ border: "none", borderTopWidth: "1px" }} />
+
+          {/* Pulse + Recent share a row on wide screens; stack below 1280px. */}
+          <div className="grid grid-cols-1 gap-5 xl:grid-cols-2">
+            <Pulse />
+            <RecentRuns runs={board.recentRuns} nowSec={board.nowSec} />
+          </div>
         </>
       )}
-
-      <LiveBoard
-        activeRuns={board.activeRuns}
-        activeInvocations={board.activeInvocations}
-        nowSec={board.nowSec}
-      />
-
-      <hr className="border-t border-edge" style={{ border: "none", borderTopWidth: "1px" }} />
-
-      {/* Pulse + Recent share a row on wide screens; stack below 1280px. */}
-      <div className="grid grid-cols-1 gap-5 xl:grid-cols-2">
-        <Pulse />
-        <RecentRuns runs={board.recentRuns} nowSec={board.nowSec} />
-      </div>
     </div>
   );
 }

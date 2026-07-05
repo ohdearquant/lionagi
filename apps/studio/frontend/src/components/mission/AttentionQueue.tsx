@@ -35,7 +35,9 @@ const REASON_COLOR: Record<AttentionReason, string> = {
 
 function elapsedLabel(startedAt: number | null, nowSec: number): string {
   if (startedAt == null) return "—";
-  const s = nowSec - startedAt;
+  // Timestamps are float epochs — floor so sub-minute ages never render
+  // fractional seconds.
+  const s = Math.max(0, Math.floor(nowSec - startedAt));
   if (s < 60) return `${s}s`;
   const m = Math.floor(s / 60);
   if (m < 60) return `${m}m`;
@@ -215,13 +217,23 @@ function AttentionRow({
         {t(`attention.reason.${item.reason}` as Parameters<typeof t>[0])}
       </span>
 
-      {/* Name */}
-      <ItemLink
-        item={item}
-        className="min-w-0 flex-1 truncate font-data text-[length:var(--t-sm)] text-content-primary transition-opacity duration-100 hover:opacity-70"
-      >
-        {item.name}
-      </ItemLink>
+      {/* Name + optional one-line failure reason */}
+      <div className="flex min-w-0 flex-1 items-baseline gap-2">
+        <ItemLink
+          item={item}
+          className="min-w-0 max-w-full shrink truncate font-data text-[length:var(--t-sm)] text-content-primary transition-opacity duration-100 hover:opacity-70"
+        >
+          {item.name}
+        </ItemLink>
+        {item.reasonSummary && (
+          <span
+            className="min-w-0 flex-1 truncate font-data text-[length:var(--t-xs)] text-content-muted"
+            title={item.reasonSummary}
+          >
+            {item.reasonSummary}
+          </span>
+        )}
+      </div>
 
       {/* Consecutive-failure count on streak rows */}
       {item.streakCount != null && (

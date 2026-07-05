@@ -118,6 +118,8 @@ async def list_sessions() -> list[dict[str, Any]]:
                 s.agent_hash,
                 s.project,
                 s.project_source,
+                s.status_reason_code,
+                s.status_reason_summary,
                 s.node_metadata,
                 COUNT(DISTINCT b.id) AS branch_count,
                 COALESCE(SUM(
@@ -167,6 +169,9 @@ async def list_sessions() -> list[dict[str, Any]]:
             # ADR-0026: project detection.
             "project": row["project"],
             "project_source": row["project_source"],
+            # ADR-0028: denormalized status reason for the hot read path.
+            "status_reason_code": row["status_reason_code"],
+            "status_reason_summary": row["status_reason_summary"],
         }
         for row in rows
     ]

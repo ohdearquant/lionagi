@@ -25,8 +25,20 @@ export interface BoardState {
   recentRuns: RunSummary[];
   /** Enabled schedules — feeds failure-streak attention rows. */
   schedules: ScheduleSummary[];
+  /**
+   * True once a schedules fetch has succeeded. Until then the empty
+   * schedules array is a placeholder, not knowledge — it must not feed
+   * the systemEmpty derivation.
+   */
+  schedulesKnown: boolean;
   /** Items needing operator attention. */
   attentionItems: AttentionItem[];
+  /**
+   * True when the daemon has no work at all (no runs, invocations, or
+   * schedules) — gates the zero-state guided cards. Stays false until
+   * the first successful fetch so loading never flashes the cards.
+   */
+  systemEmpty: boolean;
   /** Data freshness state (3 distinct states + loading). */
   dataState: DataState;
   /** Epoch ms of the last successful data update. */
@@ -47,6 +59,8 @@ export interface AttentionItem {
   status: string;
   /** Consecutive-failure count — present on "streak" items only. */
   streakCount?: number;
+  /** One-line failure reason — present on "failed" items when the run carries one. */
+  reasonSummary?: string;
 }
 
 // ─── Actions ─────────────────────────────────────────────────────────────────
@@ -169,6 +183,9 @@ function buildAttentionItems(
       startedAt: run.started_at ?? null,
       href: `/runs/${run.run_id}`,
       status: run.status,
+      ...(reason === "failed" && run.status_reason_summary
+        ? { reasonSummary: run.status_reason_summary }
+        : {}),
     });
   }
 
@@ -245,7 +262,9 @@ export function initialBoardState(): BoardState {
     activeInvocations: [],
     recentRuns: [],
     schedules: [],
+    schedulesKnown: false,
     attentionItems: [],
+    systemEmpty: false,
     dataState: "loading",
     lastUpdatedMs: null,
     errorMessage: null,
@@ -262,10 +281,15 @@ export function boardReducer(state: BoardState, action: BoardAction): BoardState
     case "DATA_OK": {
       const { runs, invocations, nowSec } = action;
       const schedules = action.schedules ?? state.schedules;
+      const schedulesKnown = state.schedulesKnown || action.schedules !== null;
       const activeRuns = deriveActiveRuns(runs);
       const activeInvocations = deriveActiveInvocations(invocations);
       const recentRuns = deriveRecentRuns(runs);
       const attentionItems = buildAttentionItems(runs, invocations, schedules, nowSec);
+      // A degraded schedules fetch before the first successful one leaves an
+      // empty placeholder list — never declare the system empty from it.
+      const systemEmpty =
+        schedulesKnown && runs.length === 0 && invocations.length === 0 && schedules.length === 0;
       return {
         ...state,
         nowSec,
@@ -273,7 +297,9 @@ export function boardReducer(state: BoardState, action: BoardAction): BoardState
         activeInvocations,
         recentRuns,
         schedules,
+        schedulesKnown,
         attentionItems,
+        systemEmpty,
         dataState: "live",
         lastUpdatedMs: Date.now(),
         errorMessage: null,

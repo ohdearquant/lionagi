@@ -409,3 +409,93 @@ describe("boardReducer — schedule failure streaks", () => {
     expect(s.attentionItems).toHaveLength(0);
   });
 });
+
+describe("failure reason summaries", () => {
+  it("carries the run's status_reason_summary on failed items", () => {
+    const run = makeRun({
+      run_id: "r1",
+      status: "failed",
+      started_at: 999_000,
+      ended_at: 999_500,
+      status_reason_summary: "ProviderQuotaError: usage limit reached",
+    });
+    const s = dispatchOk(initialBoardState(), [run]);
+    expect(s.attentionItems[0].reasonSummary).toBe("ProviderQuotaError: usage limit reached");
+  });
+
+  it("omits reasonSummary when the run has none or is not failed", () => {
+    const bare = makeRun({
+      run_id: "r1",
+      status: "failed",
+      started_at: 999_000,
+      ended_at: 999_500,
+    });
+    const gated = makeRun({
+      run_id: "r2",
+      status: "needs_review",
+      started_at: 999_000,
+      status_reason_summary: "should not surface on gated rows",
+    });
+    const s = dispatchOk(initialBoardState(), [bare, gated]);
+    const byId = new Map(s.attentionItems.map((i) => [i.id, i]));
+    expect(byId.get("run:r1")?.reasonSummary).toBeUndefined();
+    expect(byId.get("run:r2")?.reasonSummary).toBeUndefined();
+  });
+});
+
+describe("systemEmpty", () => {
+  it("starts false while loading", () => {
+    expect(initialBoardState().systemEmpty).toBe(false);
+  });
+
+  it("turns true only when a successful fetch reports no work at all", () => {
+    const s = dispatchOk(initialBoardState(), [], [], 1_000_000, []);
+    expect(s.systemEmpty).toBe(true);
+  });
+
+  it("stays false when any run, invocation, or schedule exists", () => {
+    const withRun = dispatchOk(initialBoardState(), [
+      makeRun({ run_id: "r1", status: "completed", started_at: 1, ended_at: 2 }),
+    ]);
+    expect(withRun.systemEmpty).toBe(false);
+
+    const withInv = dispatchOk(
+      initialBoardState(),
+      [],
+      [makeInvocation({ id: "i1", status: "completed", skill: "s" })],
+      1_000_000,
+      [],
+    );
+    expect(withInv.systemEmpty).toBe(false);
+
+    const withSched = dispatchOk(initialBoardState(), [], [], 1_000_000, [
+      makeSchedule({ id: "sch-1", name: "s" }),
+    ]);
+    expect(withSched.systemEmpty).toBe(false);
+  });
+
+  it("respects last-known schedules when the schedules fetch degrades to null", () => {
+    const sched = makeSchedule({ id: "sch-1", name: "s" });
+    let s = dispatchOk(initialBoardState(), [], [], 1_000_000, [sched]);
+    expect(s.systemEmpty).toBe(false);
+    s = dispatchOk(s, [], [], 1_000_001, null);
+    expect(s.systemEmpty).toBe(false);
+  });
+
+  it("stays false when the first schedules fetch is degraded — empty placeholder is not knowledge", () => {
+    let s = dispatchOk(initialBoardState(), [], [], 1_000_000, null);
+    expect(s.systemEmpty).toBe(false);
+    expect(s.schedulesKnown).toBe(false);
+    // Once schedules are confirmed empty, the zero state may show.
+    s = dispatchOk(s, [], [], 1_000_001, []);
+    expect(s.systemEmpty).toBe(true);
+    expect(s.schedulesKnown).toBe(true);
+  });
+
+  it("stays true across later degraded schedule fetches once schedules were confirmed", () => {
+    let s = dispatchOk(initialBoardState(), [], [], 1_000_000, []);
+    expect(s.systemEmpty).toBe(true);
+    s = dispatchOk(s, [], [], 1_000_001, null);
+    expect(s.systemEmpty).toBe(true);
+  });
+});

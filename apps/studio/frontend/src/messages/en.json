@@ -619,6 +619,23 @@
       "error": "error · {message}",
       "unreachable": "API unreachable",
       "lastUpdated": "stale · last updated {age}s ago"
+    },
+    "zeroState": {
+      "heading": "Get started",
+      "agent": {
+        "title": "Create an agent",
+        "body": "Define a reusable agent profile — model, effort, and tools — then run it from anywhere.",
+        "cta": "Open Library"
+      },
+      "schedule": {
+        "title": "Schedule a workflow",
+        "body": "Put an agent or playbook on a cron, interval, or repo-event trigger and let it run unattended.",
+        "cta": "Open Schedules"
+      },
+      "cli": {
+        "title": "Run from the terminal",
+        "body": "Fire a one-shot agent run from the CLI — it appears here the moment it starts."
+      }
     }
   },
   "designer": {
