@@ -1322,6 +1322,29 @@ def test_run_monitor_wait_empty_string_token_rejected_as_usage_error():
 # ── CLI wiring: `li monitor run --help` / `li monitor --help` subprocess ────
 
 
+# ── ADR-0094 regression: `li monitor run` output format is untouched ───────
+
+
+@pytest.mark.asyncio
+async def test_monitor_run_output_format_byte_identical_after_adr_0094(
+    temp_db_path: Path, capsys: pytest.CaptureFixture
+) -> None:
+    """The new `li wait` verb (ADR-0094) must not change a single byte of
+    `li monitor run`'s own line format — it is a distinct contract
+    (`name=`/`chain_depth=`, no `reason=`/`artifact_dir=`)."""
+    async with StateDB() as db:
+        sched_id = await _make_schedule(db, name="regression-check")
+        run_id = await _make_schedule_run(db, sched_id, status="completed", exit_code=0)
+
+    exit_code = run_monitor_wait([run_id])
+    out = capsys.readouterr().out
+    assert exit_code == 0
+    assert (
+        out.strip()
+        == f"{run_id}  name=regression-check  chain_depth=0  status=completed  exit_code=0"
+    )
+
+
 def test_cli_monitor_run_help_subprocess():
     import subprocess
     import sys

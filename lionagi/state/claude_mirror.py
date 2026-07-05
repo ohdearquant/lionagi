@@ -315,6 +315,13 @@ async def reconcile_session_status(
     below bumps ``updated_at``, so keying liveness off it would let a just-marked
     ``completed`` session read as fresh again on the next pass and oscillate back
     to ``running``.
+
+    ADR-0094's integrity floor treats ``completed`` as terminal on the sessions
+    table for orchestrated runs, so reactivating a mirror session out of
+    ``completed`` goes through the sanctioned override path — it is a real,
+    deliberate, well-understood write (not a repair), so it is attributed to a
+    fixed system actor rather than a human operator, and it lands in
+    admin_events like any other override.
     """
     from lionagi.state.reasons import RunReasons
 
@@ -323,12 +330,21 @@ async def reconcile_session_status(
         return
     live = (now - float(existing.get("last_message_at") or 0.0)) <= live_window
     desired = "running" if live else "completed"
-    if existing.get("status") == desired:
+    previous = existing.get("status")
+    if previous == desired:
         return
+    reactivating = previous == "completed" and desired == "running"
     await db.update_session(
         session_db_id(session_uid),
         status=desired,
         reason_code=RunReasons.STARTED_OK if desired == "running" else RunReasons.COMPLETED_OK,
+        override=reactivating,
+        override_actor="claude-mirror-reconcile" if reactivating else None,
+        override_justification=(
+            "mirror session dormancy reactivation: transcript resumed within live_window"
+            if reactivating
+            else None
+        ),
     )
 
 

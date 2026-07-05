@@ -1,0 +1,192 @@
+# Copyright (c) 2023-2026, HaiyangLi <quantocean.li at gmail dot com>
+# SPDX-License-Identifier: Apache-2.0
+
+"""ADR-0094 integrity floor: `update_status()` is the single write path and
+refuses to move a terminal entity without an explicit, justified override.
+Every rejection and every override is recorded in admin_events; a guarded
+CAS write always beats a stale concurrent write."""
+
+from __future__ import annotations
+
+import asyncio
+import json
+import uuid
+
+import pytest
+
+from lionagi.state.db import StateDB, TransitionRejectedError
+from lionagi.state.reasons import SessionReasons
+
+# ── Fixtures ────────────────────────────────────────────────────────────────
+
+
+@pytest.fixture
+async def db():
+    state = StateDB(":memory:")
+    await state.open()
+    yield state
+    await state.close()
+
+
+def _uid() -> str:
+    return str(uuid.uuid4())
+
+
+def _details(event: dict) -> dict:
+    """admin_events.details round-trips as a JSON string on sqlite."""
+    raw = event["details"]
+    return json.loads(raw) if isinstance(raw, str) else raw
+
+
+async def _make_session(db: StateDB, *, status: str = "running") -> str:
+    prog_id = _uid()
+    await db.create_progression(prog_id)
+    sid = _uid()
+    await db.create_session({"id": sid, "progression_id": prog_id, "status": status})
+    return sid
+
+
+# ── Rejection without override ──────────────────────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_terminal_to_running_rejected_without_override(db: StateDB) -> None:
+    sid = await _make_session(db, status="completed")
+
+    with pytest.raises(TransitionRejectedError):
+        await db.update_status(
+            "session",
+            sid,
+            new_status="running",
+            reason_code=SessionReasons.HEALTH_STALE_NO_HEARTBEAT,
+            source="admin",
+        )
+
+    row = await db.get_session(sid)
+    assert row["status"] == "completed"  # untouched — the write never landed
+
+
+@pytest.mark.asyncio
+async def test_rejected_transition_is_recorded_in_admin_events(db: StateDB) -> None:
+    sid = await _make_session(db, status="completed")
+
+    with pytest.raises(TransitionRejectedError):
+        await db.update_status(
+            "session",
+            sid,
+            new_status="running",
+            reason_code=SessionReasons.HEALTH_STALE_NO_HEARTBEAT,
+            source="admin",
+        )
+
+    events = await db.list_admin_events(action="status_transition_rejected", target_id=sid)
+    assert len(events) == 1
+    details = _details(events[0])
+    assert details["entity_type"] == "session"
+    assert details["previous_status"] == "completed"
+    assert details["attempted_status"] == "running"
+
+
+# ── Override path ────────────────────────────────────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_terminal_to_running_succeeds_with_override(db: StateDB) -> None:
+    sid = await _make_session(db, status="completed")
+
+    applied = await db.update_status(
+        "session",
+        sid,
+        new_status="running",
+        reason_code=SessionReasons.HEALTH_STALE_NO_HEARTBEAT,
+        source="admin",
+        override=True,
+        override_actor="ocean",
+        override_justification="operational repair: mis-marked completed",
+    )
+
+    assert applied is True
+    row = await db.get_session(sid)
+    assert row["status"] == "running"
+
+
+@pytest.mark.asyncio
+async def test_override_is_recorded_in_admin_events(db: StateDB) -> None:
+    sid = await _make_session(db, status="completed")
+
+    await db.update_status(
+        "session",
+        sid,
+        new_status="running",
+        reason_code=SessionReasons.HEALTH_STALE_NO_HEARTBEAT,
+        source="admin",
+        override=True,
+        override_actor="ocean",
+        override_justification="operational repair: mis-marked completed",
+    )
+
+    events = await db.list_admin_events(action="status_transition_override", target_id=sid)
+    assert len(events) == 1
+    details = _details(events[0])
+    assert details["previous_status"] == "completed"
+    assert details["new_status"] == "running"
+    assert details["justification"] == "operational repair: mis-marked completed"
+    assert events[0]["actor"] == "ocean"
+
+
+def test_override_requires_actor_and_justification() -> None:
+    async def _run() -> None:
+        state = StateDB(":memory:")
+        await state.open()
+        try:
+            sid = await _make_session(state, status="completed")
+            with pytest.raises(ValueError):
+                await state.update_status(
+                    "session",
+                    sid,
+                    new_status="running",
+                    reason_code=SessionReasons.HEALTH_STALE_NO_HEARTBEAT,
+                    source="admin",
+                    override=True,
+                )
+        finally:
+            await state.close()
+
+    asyncio.run(_run())
+
+
+# ── Concurrent stale write loses to the guarded write ───────────────────────
+
+
+@pytest.mark.asyncio
+async def test_concurrent_stale_write_loses_to_guarded_write(db: StateDB) -> None:
+    """A writer holding a stale `running` snapshot must not clobber a newer
+    terminal write that landed first — CAS on expected_statuses guards it."""
+    sid = await _make_session(db, status="running")
+
+    # The "newer" writer marks the session terminal first.
+    applied_first = await db.update_status(
+        "session",
+        sid,
+        new_status="completed",
+        reason_code=SessionReasons.HEALTH_STALE_NO_HEARTBEAT,
+        source="executor",
+        expected_statuses={"running"},
+    )
+    assert applied_first is True
+
+    # A second writer, still holding its stale "running" snapshot from
+    # before the first write landed, tries to CAS from "running" too — it
+    # must lose (skip), not silently overwrite the now-terminal status.
+    applied_second = await db.update_status(
+        "session",
+        sid,
+        new_status="failed",
+        reason_code=SessionReasons.HEALTH_STALE_NO_HEARTBEAT,
+        source="executor",
+        expected_statuses={"running"},
+    )
+    assert applied_second is False
+
+    row = await db.get_session(sid)
+    assert row["status"] == "completed"  # the first (newer) write wins

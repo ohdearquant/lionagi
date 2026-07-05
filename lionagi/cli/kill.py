@@ -224,19 +224,24 @@ async def _persist_cancel(
     evidence: dict[str, Any],
 ) -> None:
     """Write cancelled status + status_transition row."""
-    play_terminal = {"merged", "escalated", "gate_failed", "blocked", "aborted_after_finish"}
+    from lionagi.state.db import (
+        PLAY_TERMINAL_STATUSES,
+        SHOW_TERMINAL_STATUSES,
+        TransitionRejectedError,
+    )
+
     if entity_type == "play":
         row = await db.fetch_one("SELECT status FROM plays WHERE id = ?", (entity_id,))
         if row is None:
             return
-        if row["status"] in play_terminal:
+        if row["status"] in PLAY_TERMINAL_STATUSES:
             return
         target_status = "blocked"
     elif entity_type == "show":
         row = await db.fetch_one("SELECT status FROM shows WHERE id = ?", (entity_id,))
         if row is None:
             return
-        if row["status"] in ("completed", "aborted"):
+        if row["status"] in SHOW_TERMINAL_STATUSES:
             return
         target_status = "aborted"
     else:
@@ -254,16 +259,22 @@ async def _persist_cancel(
             return
         target_status = "cancelled"
 
-    await db.update_status(
-        entity_type,
-        entity_id,
-        new_status=target_status,
-        reason_code=reason_code,
-        reason_summary=reason_summary,
-        evidence_refs=[evidence],
-        source="admin",
-        actor="user",
-    )
+    try:
+        await db.update_status(
+            entity_type,
+            entity_id,
+            new_status=target_status,
+            reason_code=reason_code,
+            reason_summary=reason_summary,
+            evidence_refs=[evidence],
+            source="admin",
+            actor="user",
+        )
+    except TransitionRejectedError:
+        # The entity went terminal between the pre-check above and this
+        # write (e.g. it finished on its own right as `li kill` reached
+        # it) — nothing to cancel, same as the pre-check `return`s above.
+        pass
 
 
 async def _kill_one(
