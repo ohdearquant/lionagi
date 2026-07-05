@@ -388,11 +388,11 @@ export default function IconRail({
           type="button"
           onClick={onToggleLocale}
           aria-label={locale === "en" ? t("rail.switchToZh") : t("rail.switchToEn")}
-          className="flex h-8 w-8 items-center justify-center rounded font-data text-[length:var(--t-xs)] font-medium uppercase tracking-widest text-content-muted transition-colors duration-100"
+          className="flex h-8 w-8 items-center justify-center rounded font-data text-[length:var(--t-xs)] font-medium text-content-muted transition-colors duration-100"
           title={locale === "en" ? t("rail.switchToZh") : t("rail.switchToEn")}
         >
           <span className="opacity-[0.55] transition-opacity hover:opacity-100">
-            {locale === "en" ? "ZH" : "EN"}
+            {locale === "en" ? "文" : "EN"}
           </span>
         </button>
       </div>
