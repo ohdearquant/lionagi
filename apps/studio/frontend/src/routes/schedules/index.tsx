@@ -11,13 +11,21 @@ import SchedulesBoard from "@/components/schedules/SchedulesBoard";
 import SchedulesCalendar from "@/components/schedules/SchedulesCalendar";
 import { useSchedulesData } from "@/components/schedules/data";
 
-// ?create=1 (+ name/cron/prompt/desc) opens the create form pre-filled — the
-// deep-link surface Leo drives when the operator asks for a new routine. The
-// operator still reviews and submits; nothing is created from the URL alone.
+// ?create=1 (+ name/cron/prompt/desc) opens the create form pre-filled — a
+// deep-link surface for proposing a new routine. The operator still reviews
+// and submits; nothing is created from the URL alone. ?s=<id> opens that
+// schedule's detail (deep link from attention rows).
 export const Route = createFileRoute("/schedules/")({
   validateSearch: (
     search: Record<string, unknown>,
-  ): { create?: string; name?: string; cron?: string; prompt?: string; desc?: string } => {
+  ): {
+    create?: string;
+    name?: string;
+    cron?: string;
+    prompt?: string;
+    desc?: string;
+    s?: string;
+  } => {
     const pick = (key: string) =>
       typeof search[key] === "string" && search[key] ? { [key]: search[key] as string } : {};
     return {
@@ -26,6 +34,7 @@ export const Route = createFileRoute("/schedules/")({
       ...pick("cron"),
       ...pick("prompt"),
       ...pick("desc"),
+      ...pick("s"),
     };
   },
   component: SchedulesSpace,
@@ -124,6 +133,19 @@ function SchedulesSpace() {
     }
   };
 
+  // Detail selection lives in the URL (?s=<id>) so deep links, refresh, and
+  // back/forward all agree with what is on screen.
+  const openSchedule = (id: string) => {
+    void navigate({ to: "/schedules", search: (prev) => ({ ...prev, s: id }) });
+  };
+  const closeSchedule = () => {
+    void navigate({
+      to: "/schedules",
+      search: ({ s: _s, ...rest }) => rest,
+      replace: true,
+    });
+  };
+
   return (
     <main className="flex h-full w-full flex-col animate-page-enter">
       <header className="flex shrink-0 items-end justify-between gap-4 px-6 pb-4 pt-5">
@@ -150,7 +172,15 @@ function SchedulesSpace() {
       ) : schedules.length === 0 ? (
         <EmptyState onNew={() => setShowModal(true)} />
       ) : view === "board" ? (
-        <SchedulesBoard schedules={schedules} runs={runs} nowMs={nowMs} onChanged={refresh} />
+        <SchedulesBoard
+          schedules={schedules}
+          runs={runs}
+          nowMs={nowMs}
+          onChanged={refresh}
+          selectedScheduleId={search.s ?? null}
+          onSelectSchedule={openSchedule}
+          onCloseDetail={closeSchedule}
+        />
       ) : (
         <div className="min-h-0 flex-1 overflow-y-auto">
           <SchedulesCalendar schedules={schedules} runs={runs} />

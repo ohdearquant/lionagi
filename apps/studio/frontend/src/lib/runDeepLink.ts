@@ -11,3 +11,11 @@ export function runDeepLink(runId: string): { to: "/fleet"; search: { s: string 
 export function invocationDeepLink(): { to: "/history"; search: { tab: "run" } } {
   return { to: "/history", search: { tab: "run" } };
 }
+
+/** Schedule counterpart — opens the board with the schedule's detail visible. */
+export function scheduleDeepLink(scheduleId: string): {
+  to: "/schedules";
+  search: { s: string };
+} {
+  return { to: "/schedules", search: { s: scheduleId } };
+}

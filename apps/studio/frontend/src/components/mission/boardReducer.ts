@@ -7,7 +7,7 @@
  * layer — reducer and components are unchanged.
  */
 
-import type { RunSummary } from "@/lib/types";
+import type { RunSummary, ScheduleSummary } from "@/lib/types";
 import type { InvocationSummary } from "@/lib/api";
 
 // ─── State shape ─────────────────────────────────────────────────────────────
@@ -23,6 +23,8 @@ export interface BoardState {
   activeInvocations: InvocationSummary[];
   /** Last 10 terminal runs (completed/failed/cancelled). */
   recentRuns: RunSummary[];
+  /** Enabled schedules — feeds failure-streak attention rows. */
+  schedules: ScheduleSummary[];
   /** Items needing operator attention. */
   attentionItems: AttentionItem[];
   /** Data freshness state (3 distinct states + loading). */
@@ -33,16 +35,18 @@ export interface BoardState {
   errorMessage: string | null;
 }
 
-export type AttentionReason = "failed" | "stale" | "stuck" | "gated";
+export type AttentionReason = "streak" | "failed" | "stale" | "stuck" | "gated";
 
 export interface AttentionItem {
   id: string;
-  kind: "run" | "invocation";
+  kind: "run" | "invocation" | "schedule";
   name: string;
   reason: AttentionReason;
   startedAt: number | null;
   href: string;
   status: string;
+  /** Consecutive-failure count — present on "streak" items only. */
+  streakCount?: number;
 }
 
 // ─── Actions ─────────────────────────────────────────────────────────────────
@@ -53,6 +57,8 @@ export type BoardAction =
       type: "DATA_OK";
       runs: RunSummary[];
       invocations: InvocationSummary[];
+      /** null = schedules fetch failed this cycle — keep the last-known list. */
+      schedules: ScheduleSummary[] | null;
       nowSec: number;
     }
   | { type: "DATA_ERROR"; message: string }
@@ -90,6 +96,9 @@ const STUCK_THRESHOLD_SEC = 60 * 60;
 /** Failures older than this belong to History, not the attention queue. */
 const FAILED_ATTENTION_WINDOW_SEC = 24 * 60 * 60;
 
+/** Schedules failing this many consecutive runs get an attention row. */
+export const STREAK_ATTENTION_THRESHOLD = 3;
+
 function failedRecently(
   endedAt: number | null | undefined,
   startedAt: number | null | undefined,
@@ -110,57 +119,57 @@ function elapsedSec(startedAt: number | null, nowSec: number): number | null {
 function buildAttentionItems(
   runs: RunSummary[],
   invocations: InvocationSummary[],
+  schedules: ScheduleSummary[],
   nowSec: number,
 ): AttentionItem[] {
   const items: AttentionItem[] = [];
 
+  for (const sched of schedules) {
+    if (!sched.enabled) continue;
+    const streak = sched.consecutive_failures ?? 0;
+    if (streak < STREAK_ATTENTION_THRESHOLD) continue;
+    items.push({
+      id: `sched:${sched.id}`,
+      kind: "schedule",
+      name: sched.name,
+      reason: "streak",
+      startedAt: sched.last_fired_at ?? null,
+      href: "/schedules",
+      status: sched.last_status ?? "failed",
+      streakCount: streak,
+    });
+  }
+
   for (const run of runs) {
     const s = run.status.toLowerCase();
+    // Status-based reasons take precedence; stale health is the fallback so
+    // an actionable gated/stuck run never degrades into an informational row.
+    let reason: AttentionReason | null = null;
     if (FAILED_STATUSES.has(s)) {
       if (!failedRecently(run.ended_at, run.started_at, nowSec)) continue;
-      items.push({
-        id: `run:${run.run_id}`,
-        kind: "run",
-        name: run.playbook_name ?? run.agent_name ?? run.run_id.slice(-8),
-        reason: "failed",
-        startedAt: run.started_at ?? null,
-        href: `/runs/${run.run_id}`,
-        status: run.status,
-      });
-    } else if (run.effective_health === "stale" || run.effective_health === "orphaned") {
-      items.push({
-        id: `run:${run.run_id}`,
-        kind: "run",
-        name: run.playbook_name ?? run.agent_name ?? run.run_id.slice(-8),
-        reason: "stale",
-        startedAt: run.started_at ?? null,
-        href: `/runs/${run.run_id}`,
-        status: run.status,
-      });
+      reason = "failed";
+    } else if (GATED_STATUSES.has(s)) {
+      reason = "gated";
     } else if (RUNNING_STATUSES.has(s)) {
       const elapsed = elapsedSec(run.started_at ?? null, nowSec);
-      if (elapsed != null && elapsed > STUCK_THRESHOLD_SEC) {
-        items.push({
-          id: `run:${run.run_id}`,
-          kind: "run",
-          name: run.playbook_name ?? run.agent_name ?? run.run_id.slice(-8),
-          reason: "stuck",
-          startedAt: run.started_at ?? null,
-          href: `/runs/${run.run_id}`,
-          status: run.status,
-        });
-      }
-    } else if (GATED_STATUSES.has(s)) {
-      items.push({
-        id: `run:${run.run_id}`,
-        kind: "run",
-        name: run.playbook_name ?? run.agent_name ?? run.run_id.slice(-8),
-        reason: "gated",
-        startedAt: run.started_at ?? null,
-        href: `/runs/${run.run_id}`,
-        status: run.status,
-      });
+      if (elapsed != null && elapsed > STUCK_THRESHOLD_SEC) reason = "stuck";
     }
+    if (
+      reason == null &&
+      (run.effective_health === "stale" || run.effective_health === "orphaned")
+    ) {
+      reason = "stale";
+    }
+    if (reason == null) continue;
+    items.push({
+      id: `run:${run.run_id}`,
+      kind: "run",
+      name: run.playbook_name ?? run.agent_name ?? run.run_id.slice(-8),
+      reason,
+      startedAt: run.started_at ?? null,
+      href: `/runs/${run.run_id}`,
+      status: run.status,
+    });
   }
 
   for (const inv of invocations) {
@@ -189,12 +198,13 @@ function buildAttentionItems(
     }
   }
 
-  // Sort: failed first, then stale, stuck, gated; within group by recency
+  // Sort: streak first, then gated, stuck, failed, stale; within group by recency
   const ORDER: Record<AttentionReason, number> = {
-    failed: 0,
-    stale: 1,
+    streak: 0,
+    gated: 1,
     stuck: 2,
-    gated: 3,
+    failed: 3,
+    stale: 4,
   };
   items.sort((a, b) => {
     const od = ORDER[a.reason] - ORDER[b.reason];
@@ -234,6 +244,7 @@ export function initialBoardState(): BoardState {
     activeRuns: [],
     activeInvocations: [],
     recentRuns: [],
+    schedules: [],
     attentionItems: [],
     dataState: "loading",
     lastUpdatedMs: null,
@@ -250,16 +261,18 @@ export function boardReducer(state: BoardState, action: BoardAction): BoardState
 
     case "DATA_OK": {
       const { runs, invocations, nowSec } = action;
+      const schedules = action.schedules ?? state.schedules;
       const activeRuns = deriveActiveRuns(runs);
       const activeInvocations = deriveActiveInvocations(invocations);
       const recentRuns = deriveRecentRuns(runs);
-      const attentionItems = buildAttentionItems(runs, invocations, nowSec);
+      const attentionItems = buildAttentionItems(runs, invocations, schedules, nowSec);
       return {
         ...state,
         nowSec,
         activeRuns,
         activeInvocations,
         recentRuns,
+        schedules,
         attentionItems,
         dataState: "live",
         lastUpdatedMs: Date.now(),

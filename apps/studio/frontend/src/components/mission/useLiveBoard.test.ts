@@ -20,7 +20,7 @@ import type { BoardState } from "./boardReducer";
 describe("watchdog stale-badge hysteresis — reducer contract", () => {
   it("live → stale on MARK_STALE", () => {
     let s = initialBoardState();
-    s = boardReducer(s, { type: "DATA_OK", runs: [], invocations: [], nowSec: 0 });
+    s = boardReducer(s, { type: "DATA_OK", runs: [], invocations: [], schedules: null, nowSec: 0 });
     expect(s.dataState).toBe("live");
     s = boardReducer(s, { type: "MARK_STALE" });
     expect(s.dataState).toBe("stale");
@@ -41,7 +41,7 @@ describe("watchdog stale-badge hysteresis — reducer contract", () => {
 
   it("stale is idempotent: MARK_STALE on already-stale stays stale", () => {
     let s: BoardState = initialBoardState();
-    s = boardReducer(s, { type: "DATA_OK", runs: [], invocations: [], nowSec: 0 });
+    s = boardReducer(s, { type: "DATA_OK", runs: [], invocations: [], schedules: null, nowSec: 0 });
     s = boardReducer(s, { type: "MARK_STALE" });
     s = boardReducer(s, { type: "MARK_STALE" });
     expect(s.dataState).toBe("stale");
@@ -49,10 +49,10 @@ describe("watchdog stale-badge hysteresis — reducer contract", () => {
 
   it("stale clears on DATA_OK (live resumption)", () => {
     let s: BoardState = initialBoardState();
-    s = boardReducer(s, { type: "DATA_OK", runs: [], invocations: [], nowSec: 0 });
+    s = boardReducer(s, { type: "DATA_OK", runs: [], invocations: [], schedules: null, nowSec: 0 });
     s = boardReducer(s, { type: "MARK_STALE" });
     expect(s.dataState).toBe("stale");
-    s = boardReducer(s, { type: "DATA_OK", runs: [], invocations: [], nowSec: 1 });
+    s = boardReducer(s, { type: "DATA_OK", runs: [], invocations: [], schedules: null, nowSec: 1 });
     expect(s.dataState).toBe("live");
   });
 });
@@ -74,7 +74,13 @@ describe("watchdog timing — 5s silence gate", () => {
     // Simulate the watchdog interval logic directly
     let state: BoardState = initialBoardState();
     // Make it live first
-    state = boardReducer(state, { type: "DATA_OK", runs: [], invocations: [], nowSec: 0 });
+    state = boardReducer(state, {
+      type: "DATA_OK",
+      runs: [],
+      invocations: [],
+      schedules: null,
+      nowSec: 0,
+    });
     expect(state.dataState).toBe("live");
 
     // Simulate 4900ms passing — watchdog should NOT fire (< 5s)
@@ -93,7 +99,13 @@ describe("watchdog timing — 5s silence gate", () => {
 
   it("marks stale after 5s silence", () => {
     let state: BoardState = initialBoardState();
-    state = boardReducer(state, { type: "DATA_OK", runs: [], invocations: [], nowSec: 0 });
+    state = boardReducer(state, {
+      type: "DATA_OK",
+      runs: [],
+      invocations: [],
+      schedules: null,
+      nowSec: 0,
+    });
 
     let lastSuccessAt = Date.now();
     const STALE_THRESHOLD_MS = 5_000;
@@ -110,7 +122,13 @@ describe("watchdog timing — 5s silence gate", () => {
 
   it("clears stale after 2 successful fetches (stable resumption)", () => {
     let state: BoardState = initialBoardState();
-    state = boardReducer(state, { type: "DATA_OK", runs: [], invocations: [], nowSec: 0 });
+    state = boardReducer(state, {
+      type: "DATA_OK",
+      runs: [],
+      invocations: [],
+      schedules: null,
+      nowSec: 0,
+    });
     state = boardReducer(state, { type: "MARK_STALE" });
     expect(state.dataState).toBe("stale");
 
@@ -124,7 +142,13 @@ describe("watchdog timing — 5s silence gate", () => {
     let cleared = !wasStale || successStreak >= STABLE_RESUMPTION_COUNT;
     if (cleared) {
       wasStale = false;
-      state = boardReducer(state, { type: "DATA_OK", runs: [], invocations: [], nowSec: 1 });
+      state = boardReducer(state, {
+        type: "DATA_OK",
+        runs: [],
+        invocations: [],
+        schedules: null,
+        nowSec: 1,
+      });
     }
     expect(successStreak).toBe(1);
     // Still stale because we haven't cleared yet
@@ -135,7 +159,13 @@ describe("watchdog timing — 5s silence gate", () => {
     cleared = !wasStale || successStreak >= STABLE_RESUMPTION_COUNT;
     if (cleared) {
       wasStale = false;
-      state = boardReducer(state, { type: "DATA_OK", runs: [], invocations: [], nowSec: 2 });
+      state = boardReducer(state, {
+        type: "DATA_OK",
+        runs: [],
+        invocations: [],
+        schedules: null,
+        nowSec: 2,
+      });
     }
     expect(successStreak).toBe(2);
     expect(state.dataState).toBe("live");
@@ -143,7 +173,13 @@ describe("watchdog timing — 5s silence gate", () => {
 
   it("single success does not clear stale (anti-flap)", () => {
     let state: BoardState = initialBoardState();
-    state = boardReducer(state, { type: "DATA_OK", runs: [], invocations: [], nowSec: 0 });
+    state = boardReducer(state, {
+      type: "DATA_OK",
+      runs: [],
+      invocations: [],
+      schedules: null,
+      nowSec: 0,
+    });
     state = boardReducer(state, { type: "MARK_STALE" });
 
     let wasStale = true;
@@ -154,7 +190,13 @@ describe("watchdog timing — 5s silence gate", () => {
     successStreak += 1;
     const cleared = !wasStale || successStreak >= STABLE_RESUMPTION_COUNT;
     if (cleared) {
-      state = boardReducer(state, { type: "DATA_OK", runs: [], invocations: [], nowSec: 1 });
+      state = boardReducer(state, {
+        type: "DATA_OK",
+        runs: [],
+        invocations: [],
+        schedules: null,
+        nowSec: 1,
+      });
     }
 
     // Still stale — anti-flap gate held

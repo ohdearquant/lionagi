@@ -11,7 +11,7 @@
  */
 
 import { useEffect, useReducer, useRef } from "react";
-import { listRuns, listInvocations } from "@/lib/api";
+import { listRuns, listInvocations, listSchedules } from "@/lib/api";
 import { boardReducer, initialBoardState } from "./boardReducer";
 import type { BoardState } from "./boardReducer";
 
@@ -50,9 +50,12 @@ export function useLiveBoard(): BoardState {
       if (!active) return;
       try {
         const nowSec = Math.floor(Date.now() / 1000);
-        const [runsResp, invsResp] = await Promise.all([
+        // Schedules feed streak rows only — a failed fetch must not take
+        // down the whole board, so it degrades to null (keep last-known).
+        const [runsResp, invsResp, schedulesResp] = await Promise.all([
           listRuns({ per_page: 200 }),
           listInvocations({ limit: 100 }),
+          listSchedules({ enabled: true }).catch(() => null),
         ]);
         if (!active) return;
 
@@ -66,6 +69,7 @@ export function useLiveBoard(): BoardState {
             type: "DATA_OK",
             runs: runsResp.runs,
             invocations: invsResp.invocations,
+            schedules: schedulesResp?.schedules ?? null,
             nowSec,
           });
         }

@@ -12,7 +12,7 @@ import { useTranslations } from "use-intl";
 import SectionLabel from "@/components/ui/SectionLabel";
 import Chip from "@/components/ui/Chip";
 import type { AttentionItem, AttentionReason } from "./boardReducer";
-import { runDeepLink, invocationDeepLink } from "@/lib/runDeepLink";
+import { runDeepLink, invocationDeepLink, scheduleDeepLink } from "@/lib/runDeepLink";
 
 interface Props {
   items: AttentionItem[];
@@ -23,9 +23,10 @@ interface Props {
 /** Individual rows are reserved for actionable items; overflow lives in History. */
 const MAX_ACTIONABLE_ROWS = 6;
 
-const ACTIONABLE_REASONS: ReadonlySet<AttentionReason> = new Set(["gated", "stuck"]);
+const ACTIONABLE_REASONS: ReadonlySet<AttentionReason> = new Set(["streak", "gated", "stuck"]);
 
 const REASON_COLOR: Record<AttentionReason, string> = {
+  streak: "var(--status-failure)",
   failed: "var(--status-failure)",
   stale: "var(--status-pending)",
   stuck: "var(--status-pending)",
@@ -176,6 +177,13 @@ function ItemLink({
       </Link>
     );
   }
+  if (item.kind === "schedule") {
+    return (
+      <Link {...scheduleDeepLink(id)} className={className} style={style}>
+        {children}
+      </Link>
+    );
+  }
   return (
     <Link {...invocationDeepLink()} className={className} style={style}>
       {children}
@@ -214,6 +222,16 @@ function AttentionRow({
       >
         {item.name}
       </ItemLink>
+
+      {/* Consecutive-failure count on streak rows */}
+      {item.streakCount != null && (
+        <span
+          className="shrink-0 font-data tabular-nums text-[length:var(--t-xs)] font-semibold"
+          style={{ color: "var(--status-failure)" }}
+        >
+          {t("attention.streakCount", { count: item.streakCount })}
+        </span>
+      )}
 
       {/* Kind badge */}
       <Chip mono className="shrink-0">

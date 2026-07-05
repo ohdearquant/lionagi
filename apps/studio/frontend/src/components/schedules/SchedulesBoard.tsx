@@ -6,7 +6,6 @@
  * Each column is an independent scrollable surface. The row scrolls
  * horizontally on narrow viewports rather than wrapping — board behavior.
  */
-import { useState } from "react";
 import { useTranslations } from "use-intl";
 import Badge from "@/components/ui/Badge";
 import type { ScheduleSummary } from "@/lib/types";
@@ -85,16 +84,22 @@ export default function SchedulesBoard({
   runs,
   nowMs,
   onChanged,
+  selectedScheduleId,
+  onSelectSchedule,
+  onCloseDetail,
 }: {
   schedules: ScheduleSummary[];
   runs: RunRow[];
   nowMs: number;
   onChanged: () => void;
+  /** URL-synced detail selection (?s=<id>) — owned by the route. */
+  selectedScheduleId: string | null;
+  onSelectSchedule: (id: string) => void;
+  onCloseDetail: () => void;
 }) {
   const t = useTranslations("schedules.lanes");
   const lanes = deriveLanes(schedules, runs, nowMs);
   const lastRuns = latestRunBySchedule(runs);
-  const [selectedScheduleId, setSelectedScheduleId] = useState<string | null>(null);
 
   return (
     <>
@@ -114,7 +119,7 @@ export default function SchedulesBoard({
                 lastRun={lastRuns.get(s.id)}
                 nowMs={nowMs}
                 onChanged={onChanged}
-                onOpen={setSelectedScheduleId}
+                onOpen={onSelectSchedule}
               />
             </CardShell>
           ))}
@@ -135,7 +140,7 @@ export default function SchedulesBoard({
                 lastRun={lastRuns.get(s.id)}
                 nowMs={nowMs}
                 onChanged={onChanged}
-                onOpen={setSelectedScheduleId}
+                onOpen={onSelectSchedule}
               />
             </CardShell>
           ))}
@@ -185,7 +190,7 @@ export default function SchedulesBoard({
                 lastRun={lastRuns.get(s.id)}
                 nowMs={nowMs}
                 onChanged={onChanged}
-                onOpen={setSelectedScheduleId}
+                onOpen={onSelectSchedule}
               />
             </CardShell>
           ))}
@@ -194,7 +199,7 @@ export default function SchedulesBoard({
       {selectedScheduleId && (
         <ScheduleDetailModal
           scheduleId={selectedScheduleId}
-          onClose={() => setSelectedScheduleId(null)}
+          onClose={onCloseDetail}
           onChanged={onChanged}
         />
       )}

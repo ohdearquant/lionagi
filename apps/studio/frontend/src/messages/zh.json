@@ -578,13 +578,15 @@
       "viewAll": "查看全部 →",
       "open": "打开 →",
       "reason": {
+        "streak": "连续失败",
         "failed": "失败",
         "stale": "停滞 · 长时间无活动",
         "stuck": "卡住 · 无进展",
         "gated": "待审批"
       },
       "more": "还有 {count} 项，去历史中查看 →",
-      "digestLatest": "最近：{name} · {age}前"
+      "digestLatest": "最近：{name} · {age}前",
+      "streakCount": "连续失败 {count} 次"
     },
     "liveBoard": {
       "title": "正在运行",

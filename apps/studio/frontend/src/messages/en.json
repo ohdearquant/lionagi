@@ -578,13 +578,15 @@
       "viewAll": "View all →",
       "open": "Open →",
       "reason": {
+        "streak": "failing repeatedly",
         "failed": "failed",
         "stale": "stale · no activity",
         "stuck": "stuck · no progress",
         "gated": "awaiting approval"
       },
       "more": "+{count} more — view all in History →",
-      "digestLatest": "latest: {name} · {age} ago"
+      "digestLatest": "latest: {name} · {age} ago",
+      "streakCount": "{count}× failed"
     },
     "liveBoard": {
       "title": "Running now",
