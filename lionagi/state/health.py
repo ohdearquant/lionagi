@@ -42,11 +42,17 @@ def classify_session_health(
     session: dict[str, Any],
     *,
     now: float,
-    process_alive: bool,
+    process_alive: bool | None,
     has_artifacts: bool,
     has_stale_locks: bool,
 ) -> SessionHealth:
-    """Classify a session dict into a SessionHealth level; pure function, caller supplies liveness signals."""
+    """Classify a session dict into a SessionHealth level; pure function, caller supplies liveness signals.
+
+    ``process_alive`` is tri-state: True = observed alive, False = confirmed
+    dead (positive evidence — a recorded pid that is no longer running),
+    None = unknown (no recorded pid and no process match, the normal case
+    for externally-driven sessions mirrored into the DB).
+    """
     status = session.get("status") or "completed"
 
     # Terminal sessions: done means done, unless they left litter.
@@ -71,18 +77,23 @@ def classify_session_health(
     kind = session.get("invocation_kind")
     threshold = STALE_THRESHOLDS.get(kind, DEFAULT_STALE_THRESHOLD)
 
-    if not process_alive:
+    if process_alive is not True:
         # Orphan check first: the session was advertised but never
         # produced a single message AND no artifacts on disk. This is
         # a session that crashed before doing anything; transitioning
         # it to failed is harmless, deleting it is also safe.
         if not has_artifacts and (session.get("message_count") or 0) == 0:
             return SessionHealth.ORPHANED
-        # Recent messages are stronger life-evidence than process
-        # visibility: externally-driven sessions (CLI seats mirrored
-        # into the DB) expose no matchable pid, so a missing process
-        # only means dead once activity has also gone quiet past the
-        # kind threshold.
+        if process_alive is False:
+            # Confirmed dead: positive evidence (a recorded pid no longer
+            # running) outranks the activity guard below — the process is
+            # gone no matter how fresh the last message is.
+            return SessionHealth.STALE
+        # Unknown liveness: recent messages are stronger life-evidence
+        # than process visibility — externally-driven sessions (CLI seats
+        # mirrored into the DB) expose no matchable pid, so an unmatched
+        # process only means dead once activity has also gone quiet past
+        # the kind threshold.
         if idle_seconds <= threshold:
             if idle_seconds > IDLE_THRESHOLD:
                 return SessionHealth.IDLE

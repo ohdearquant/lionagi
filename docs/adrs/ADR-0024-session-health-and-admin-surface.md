@@ -78,10 +78,28 @@ class SessionHealth(str, Enum):
     HEALTHY = "healthy"           # running, messages flowing (process visibility optional)
     IDLE = "idle"                 # running, no messages for >1h but under threshold
     UNRESPONSIVE = "unresponsive" # running, process alive, no messages for >threshold
-    STALE = "stale"               # running, process dead, no messages for >threshold
+    STALE = "stale"               # running, process confirmed dead — or liveness unknown and quiet >threshold
     ORPHANED = "orphaned"         # running, no process, no artifacts, no messages
     ZOMBIE = "zombie"             # completed/failed but resources not cleaned up
 ```
+
+`process_alive` is tri-state (`bool | None`):
+
+- `True` — observed alive: a recorded pid is running (with process start-time
+  verification when one was recorded), or the session id appears in the
+  process table.
+- `False` — confirmed dead: a recorded pid is no longer running, or its start
+  time no longer matches the recorded one (pid recycled). Positive death
+  evidence skips the activity guard, so the session classifies STALE
+  immediately regardless of how fresh its last message is.
+- `None` — unknown: no recorded pid and no process match. This is the normal
+  case for externally-driven sessions mirrored into the DB, so the activity
+  guard applies: recent messages keep the session HEALTHY/IDLE, and only quiet
+  past the kind threshold classifies STALE.
+
+Limitation: a bare recycled pid (recorded pid, no recorded start time, pid
+reused by an unrelated process) reads alive. This is rare and fails toward
+treating the session as live rather than falsely dead.
 
 Classification logic:
 
@@ -90,7 +108,7 @@ def classify_session_health(
     session: dict,
     *,
     now: float,
-    process_alive: bool,
+    process_alive: bool | None,
     has_artifacts: bool,
     has_stale_locks: bool,
 ) -> SessionHealth:
@@ -114,15 +132,20 @@ def classify_session_health(
     kind = session.get("invocation_kind")
     threshold = STALE_THRESHOLDS.get(kind, DEFAULT_STALE_THRESHOLD)
 
-    if not process_alive:
+    if process_alive is not True:
         # Orphan check first — no artifacts AND no messages means
         # the session never produced output (regardless of age).
         if not has_artifacts and session.get("message_count", 0) == 0:
             return SessionHealth.ORPHANED
-        # Recent messages outrank process visibility: externally-driven
-        # sessions (CLI seats mirrored into the DB) expose no matchable
-        # pid, so a missing process only means dead once activity has
-        # also gone quiet past the kind threshold.
+        if process_alive is False:
+            # Confirmed dead: positive evidence outranks the activity
+            # guard below — the process is gone no matter how fresh
+            # the last message is.
+            return SessionHealth.STALE
+        # Unknown liveness: recent messages outrank process visibility —
+        # externally-driven sessions (CLI seats mirrored into the DB)
+        # expose no matchable pid, so an unmatched process only means
+        # dead once activity has also gone quiet past the kind threshold.
         if idle_seconds <= threshold:
             if idle_seconds > 3600:  # 1 hour
                 return SessionHealth.IDLE

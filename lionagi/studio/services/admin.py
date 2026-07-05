@@ -98,11 +98,8 @@ def _find_pid_file(root: Path) -> int | None:
     return None
 
 
-def _live_process_matches(session_id: str, artifacts_path: Path | None) -> bool:
-    if artifacts_path and artifacts_path.exists():
-        pid = _find_pid_file(artifacts_path)
-        if pid is not None:
-            return _pid_is_live(pid)
+def _ps_snapshot() -> str:
+    """One ``ps`` capture, shareable across rows; empty string when unavailable."""
     try:
         result = subprocess.run(
             ["ps", "-axo", "pid=,command="],  # noqa: S607
@@ -111,9 +108,77 @@ def _live_process_matches(session_id: str, artifacts_path: Path | None) -> bool:
             timeout=2,
             check=False,
         )
-        return session_id in result.stdout
+        return result.stdout
     except Exception:
-        return False
+        return ""
+
+
+# Process start-time comparison tolerance (clock-tick rounding).
+_PID_CREATE_TIME_TOLERANCE = 1.0
+
+
+def process_liveness(
+    session: dict[str, Any],
+    artifacts_path: Path | None,
+    ps_snapshot: str | None = None,
+) -> bool | None:
+    """Tri-state process liveness for a running session.
+
+    True = observed alive; False = confirmed dead (a recorded pid that is no
+    longer running, with start-time verification when one was recorded);
+    None = unknown (no recorded pid and no process match — normal for
+    externally-driven sessions that expose no matchable pid). Limitation:
+    a bare recycled pid (no recorded start time) reads alive — rare, and it
+    fails toward treating the session as live rather than falsely dead.
+    """
+    pid: int | None = None
+    create_time: float | None = None
+
+    meta = session.get("node_metadata")
+    if isinstance(meta, str):
+        try:
+            meta = json.loads(meta)
+        except ValueError:
+            meta = None
+    if isinstance(meta, dict):
+        raw_pid = meta.get("pid")
+        if raw_pid is not None:
+            try:
+                pid = int(raw_pid)
+            except (TypeError, ValueError):
+                pid = None
+        raw_ct = meta.get("pid_create_time")
+        if isinstance(raw_ct, int | float):
+            create_time = float(raw_ct)
+
+    if pid is None and artifacts_path is not None and artifacts_path.exists():
+        pid = _find_pid_file(artifacts_path)
+
+    if pid is not None:
+        if not _pid_is_live(pid):
+            return False
+        if create_time is not None:
+            try:
+                import psutil
+
+                actual = psutil.Process(pid).create_time()
+                if abs(actual - create_time) > _PID_CREATE_TIME_TOLERANCE:
+                    return False  # pid recycled; the recorded process is gone
+            except Exception:
+                # Best-effort check: the pid-is-live test above already
+                # passed, so an unreadable start time reads as alive.
+                _log.debug("pid %s start-time check failed", pid, exc_info=True)
+        return True
+
+    session_id = session.get("id") or ""
+    snapshot = ps_snapshot if ps_snapshot is not None else _ps_snapshot()
+    if session_id and session_id in snapshot:
+        return True
+    return None
+
+
+def _live_process_matches(session_id: str, artifacts_path: Path | None) -> bool:
+    return process_liveness({"id": session_id}, artifacts_path) is True
 
 
 def _artifacts_path(row: Any) -> Path | None:
@@ -227,6 +292,7 @@ async def health_report() -> dict[str, Any]:
     by_status: Counter[str] = Counter()
     by_health: Counter[str] = Counter()
     unhealthy: list[dict[str, Any]] = []
+    snapshot: str | None = None
 
     for row in rows:
         sess = {k: row[k] for k in row.keys()}
@@ -241,7 +307,9 @@ async def health_report() -> dict[str, Any]:
             has_stale_locks = _find_stale_lock(artifacts, cutoff=cutoff) is not None
 
         if status == "running":
-            process_alive = _live_process_matches(row["id"], artifacts)
+            if snapshot is None:
+                snapshot = _ps_snapshot()
+            process_alive = process_liveness(sess, artifacts, snapshot)
         else:
             process_alive = False
 
@@ -369,7 +437,7 @@ async def transition_sessions(
                 if artifacts is not None and artifacts.exists()
                 else False
             )
-            process_alive = _live_process_matches(current["id"], artifacts)
+            process_alive = process_liveness(current, artifacts)
             health = classify_session_health(
                 current,
                 now=now,

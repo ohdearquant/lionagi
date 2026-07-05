@@ -240,7 +240,7 @@ def test_admin_transition_rejects_healthy_session(tmp_path, monkeypatch):
 
     # Simulate a live process so the classifier returns HEALTHY
     # (idle_seconds ≈ 0, process alive → HEALTHY).
-    monkeypatch.setattr(admin_mod, "_live_process_matches", lambda *_: True)
+    monkeypatch.setattr(admin_mod, "process_liveness", lambda *a, **k: True)
 
     client = _make_client(tmp_path, monkeypatch, db_path)
     r = client.post(
@@ -267,7 +267,7 @@ def test_admin_transition_guard_re_evaluates_health_per_call(tmp_path, monkeypat
     _run(_seed_running_session(db_path, sid))
 
     # Simulate a live process so health is driven by activity threshold.
-    monkeypatch.setattr(admin_mod, "_live_process_matches", lambda *_: True)
+    monkeypatch.setattr(admin_mod, "process_liveness", lambda *a, **k: True)
 
     # Set last_message_at to ~2h ago and kind=agent (threshold=6h).
     # idle_seconds=2h > IDLE_THRESHOLD(1h) but < 6h → IDLE → refused.
