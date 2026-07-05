@@ -22,6 +22,11 @@ from lionagi.protocols.generic.log import DataLoggerConfig
 from lionagi.state import provenance as _provenance
 from lionagi.state.artifact_verifier import resolve_artifact_contract
 
+from ._context_from import (
+    DEFAULT_CONTEXT_BUDGET_TOKENS,
+    ContextFromError,
+    resolve_and_build_context_block,
+)
 from ._logging import hint, log_error
 from ._providers import (
     BACKENDS,
@@ -204,6 +209,8 @@ async def _run_agent(
     bypass: bool = False,
     preset: str | None = None,
     resume_on_timeout: bool = False,
+    context_from: list[str] | None = None,
+    context_budget: int | None = None,
     _auto_resumed: bool = False,
 ) -> tuple[str, str, str, str, str | None]:
     """Execute one agent turn; returns (result, provider, branch_id, terminal_status, session_id).
@@ -219,6 +226,20 @@ async def _run_agent(
         raise ConfigurationError(
             "--preset only applies to new branches; cannot combine with --resume / --continue-last."
         )
+    if context_from and (resume or continue_last):
+        raise ContextFromError(
+            "--context-from cannot be combined with --resume / -r or --continue-last / -c "
+            "(resume already carries the source context)."
+        )
+    if context_from:
+        effective_context_budget = (
+            context_budget if context_budget is not None else DEFAULT_CONTEXT_BUDGET_TOKENS
+        )
+        context_block = await resolve_and_build_context_block(
+            context_from, effective_context_budget
+        )
+        if context_block:
+            prompt = f"{context_block}\n\n{prompt}"
 
     # Cache cancellation exception class while event loop is running;
     # cancelled_exc_classes() in the error path needs it after loop exit.
@@ -397,6 +418,8 @@ async def _run_agent(
 
     run = allocate_run()
     branch_id = str(branch.id)
+    if context_from:
+        run.write_manifest({"branch_id": branch_id, "context_from": list(context_from)})
 
     resolved_model_spec = _provenance.resolve_model_spec(provider, model)
     artifact_contract = resolve_artifact_contract(
@@ -551,7 +574,9 @@ def add_agent_subparser(subparsers: argparse._SubParsersAction) -> argparse.Argu
             "Use -r / -c to continue a previous conversation. "
             "Use -a to load a profile from .lionagi/agents/. "
             "Use --preset to apply a built-in agent configuration. "
-            "Use --form to load and validate structured inputs before invoking."
+            "Use --form to load and validate structured inputs before invoking. "
+            "Use --context-from to hand a new agent distilled context from a "
+            "prior session/branch/run/file."
         ),
     )
     agent.add_argument(
@@ -624,6 +649,32 @@ def add_agent_subparser(subparsers: argparse._SubParsersAction) -> argparse.Argu
             "The spec declares typed fields and values; validation runs "
             "BEFORE any LLM call. Exits rc=1 on validation error. "
             "Validated values are injected into the prompt as structured context."
+        ),
+    )
+
+    agent.add_argument(
+        "--context-from",
+        dest="context_from",
+        metavar="REF",
+        action="append",
+        default=None,
+        help=(
+            "Inject distilled context from a prior session id, branch id, run id, "
+            "or file path into this new branch's first instruction, above the "
+            "prompt. Repeatable (concatenated in argv order); the total budget "
+            "(see --context-budget) is shared across all refs. Rejected in "
+            "combination with -r / --resume or -c / --continue-last."
+        ),
+    )
+    agent.add_argument(
+        "--context-budget",
+        dest="context_budget",
+        type=int,
+        default=None,
+        metavar="N",
+        help=(
+            f"Total token budget for --context-from content "
+            f"(default {DEFAULT_CONTEXT_BUDGET_TOKENS}; ~4 chars/token)."
         ),
     )
 
@@ -733,8 +784,13 @@ def run_agent(args: argparse.Namespace) -> int:
                 bypass=getattr(args, "bypass", False),
                 preset=getattr(args, "preset", None),
                 resume_on_timeout=getattr(args, "resume_on_timeout", False),
+                context_from=getattr(args, "context_from", None),
+                context_budget=getattr(args, "context_budget", None),
             )
         )
+    except ContextFromError as exc:
+        log_error(str(exc))
+        return 2
     except KeyboardInterrupt:
         return EXIT_CODE_BY_STATUS["aborted"]
     except SigtermInterrupt as exc:

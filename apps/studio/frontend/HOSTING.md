@@ -20,3 +20,30 @@ daemon running on their machine, the same way it would if opened from `localhost
 There is no login and no server-side state for the hosted deploy to manage — if the
 daemon isn't running, the app shows a state explaining how to start it and keeps
 retrying rather than rendering broken panels.
+
+On the CLI side, bare `li studio` (equivalently `li studio --web`) is the mode built
+for this deploy: it starts only the local daemon and prints/opens this hosted URL,
+without building or serving any frontend locally. See the root README's "Lion
+Studio" section for the other launch modes (`--docker`, `--no-frontend`, `--dev`).
+
+## Auth: loopback vs everything else
+
+The default daemon binds `127.0.0.1` and runs without auth — the browser tab and the
+daemon are the same person's machine, and the OS user boundary is the security boundary.
+
+For **any non-loopback backend** — an SSH/Cloudflare tunnel, a LAN bind (`--host 0.0.0.0`),
+or a reverse proxy in front of the daemon — token auth is a hard **MUST**, not a
+recommendation. An unauthenticated non-loopback daemon exposes your full run history and
+agent spawn control to anyone who can reach the port. Set a bearer token before exposing it:
+
+```bash
+export LIONAGI_STUDIO_AUTH_TOKEN="$(openssl rand -hex 32)"
+li studio start --no-frontend
+```
+
+Clients send it as `Authorization: Bearer <token>` on every request. The hosted SPA has
+no token-entry UI today — it only attaches a token injected as
+`window.__STUDIO_AUTH_TOKEN__` (the desktop shell does this). So a token-protected
+non-loopback daemon is currently for API/desktop-shell use; treat the hosted page as
+loopback-only until a token prompt ships. Rotate the token like any credential; never
+commit it.

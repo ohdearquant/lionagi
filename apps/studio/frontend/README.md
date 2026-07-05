@@ -44,7 +44,7 @@ Talks to the Lion Studio backend at `process.env.NEXT_PUBLIC_STUDIO_API_BASE`
 uv pip install -e '.[studio]'
 
 # Start backend
-li studio start --frontend-mode none --port 8765
+li studio start --no-frontend --port 8765
 
 # In another shell: start frontend (dev mode)
 cd apps/studio/frontend

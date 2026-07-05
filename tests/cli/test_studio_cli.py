@@ -77,6 +77,186 @@ def test_studio_bare_uses_default_port(monkeypatch):
     assert kwargs.get("port") == 8765
 
 
+# ─── frontend-mode flags: --web (default) / --docker / --no-frontend ────────
+
+
+def test_studio_bare_defaults_to_hosted_web_mode(capsys):
+    """Bare ``li studio`` prints the hosted URL and starts the backend only."""
+    with _stubbed_serve() as mock_run:
+        from lionagi.cli.main import main
+
+        result = main(["studio"])
+
+    assert result == 0
+    mock_run.assert_called_once()
+    out = capsys.readouterr().out
+    assert "https://lion-studio.khive.ai" in out
+    assert "127.0.0.1:8765" in out
+
+
+def test_studio_web_flag_matches_default(capsys):
+    """``li studio --web`` is explicit but behaves identically to bare invocation."""
+    with _stubbed_serve() as mock_run:
+        from lionagi.cli.main import main
+
+        result = main(["studio", "--web"])
+
+    assert result == 0
+    mock_run.assert_called_once()
+    assert "https://lion-studio.khive.ai" in capsys.readouterr().out
+
+
+def test_studio_web_does_not_build_local_frontend():
+    """--web must never call the local frontend builder."""
+    with (
+        patch("uvicorn.run"),
+        patch("lionagi.studio.cli._ensure_frontend_built") as mock_build,
+    ):
+        from lionagi.cli.main import main
+
+        result = main(["studio", "--web"])
+
+    assert result == 0
+    mock_build.assert_not_called()
+
+
+def test_studio_web_opens_browser_when_interactive(monkeypatch):
+    """A TTY session opens the hosted URL unless --no-open is set."""
+    import lionagi.studio.cli as studio_cli
+
+    monkeypatch.setattr(studio_cli.sys.stdin, "isatty", lambda: True)
+    monkeypatch.setattr(studio_cli.sys.stdout, "isatty", lambda: True)
+    with patch("webbrowser.open") as mock_open, patch("uvicorn.run"):
+        from lionagi.cli.main import main
+
+        result = main(["studio", "--web"])
+
+    assert result == 0
+    mock_open.assert_called_once_with("https://lion-studio.khive.ai")
+
+
+def test_studio_web_no_open_flag_suppresses_browser(monkeypatch):
+    """--no-open skips opening a browser even in an interactive session."""
+    import lionagi.studio.cli as studio_cli
+
+    monkeypatch.setattr(studio_cli.sys.stdin, "isatty", lambda: True)
+    monkeypatch.setattr(studio_cli.sys.stdout, "isatty", lambda: True)
+    with patch("webbrowser.open") as mock_open, patch("uvicorn.run"):
+        from lionagi.cli.main import main
+
+        result = main(["studio", "--web", "--no-open"])
+
+    assert result == 0
+    mock_open.assert_not_called()
+
+
+def test_studio_no_frontend_flag_skips_hosted_messaging(capsys):
+    """--no-frontend stays backend-only with no hosted-URL messaging."""
+    with _stubbed_serve() as mock_run:
+        from lionagi.cli.main import main
+
+        result = main(["studio", "--no-frontend"])
+
+    assert result == 0
+    mock_run.assert_called_once()
+    assert "lion-studio.khive.ai" not in capsys.readouterr().out
+
+
+def test_studio_docker_flag_invokes_docker_path():
+    """--docker dispatches to the Docker launch path, not the hosted or local one."""
+    with (
+        patch("lionagi.studio.cli._has_docker", return_value=True),
+        patch("lionagi.studio.cli._start_docker", return_value=0) as mock_docker,
+        patch("uvicorn.run"),
+    ):
+        from lionagi.cli.main import main
+
+        result = main(["studio", "--docker"])
+
+    assert result == 0
+    mock_docker.assert_called_once()
+
+
+def test_studio_docker_flag_without_docker_installed_errors(capsys):
+    """--docker without the docker binary available fails loudly instead of falling back."""
+    with patch("lionagi.studio.cli._has_docker", return_value=False), patch("uvicorn.run"):
+        from lionagi.cli.main import main
+
+        result = main(["studio", "--docker"])
+
+    assert result == 1
+    assert "Docker not found" in capsys.readouterr().err
+
+
+def test_studio_mode_flags_are_mutually_exclusive():
+    """Combining two mode flags (e.g. --web and --docker) is a usage error."""
+    import pytest
+
+    from lionagi.cli.main import main
+
+    with pytest.raises(SystemExit) as exc_info:
+        main(["studio", "--web", "--docker"])
+    assert exc_info.value.code == 2
+
+
+def test_studio_mode_flag_before_start_is_preserved():
+    """`li studio --docker start` must take the Docker path (subparser defaults must not clobber parent flags)."""
+    with (
+        patch("lionagi.studio.cli._has_docker", return_value=True),
+        patch("lionagi.studio.cli._start_docker", return_value=0) as mock_docker,
+        patch("uvicorn.run"),
+    ):
+        from lionagi.cli.main import main
+
+        result = main(["studio", "--docker", "start"])
+
+    assert result == 0
+    mock_docker.assert_called_once()
+
+
+def test_studio_no_open_before_start_is_preserved():
+    """`li studio --no-open start` must not open a browser."""
+    with (
+        _stubbed_serve(),
+        patch("webbrowser.open") as mock_open,
+        patch("sys.stdout.isatty", return_value=True),
+        patch("sys.stdin.isatty", return_value=True),
+    ):
+        from lionagi.cli.main import main
+
+        result = main(["studio", "--no-open", "start"])
+
+    assert result == 0
+    mock_open.assert_not_called()
+
+
+def test_studio_port_before_start_is_preserved():
+    """`li studio --port 9001 start` keeps the parent-level port."""
+    with _stubbed_serve() as mock_run:
+        from lionagi.cli.main import main
+
+        result = main(["studio", "--port", "9001", "start"])
+
+    assert result == 0
+    assert mock_run.call_args.kwargs.get("port") == 9001
+
+
+def test_studio_cross_level_mode_flags_are_mutually_exclusive():
+    """Mode flags split across parser levels (`li studio --docker start --web`) must be rejected."""
+    import pytest
+
+    from lionagi.cli.main import main
+
+    for argv in (
+        ["studio", "--docker", "start", "--web"],
+        ["studio", "--web", "start", "--docker"],
+        ["studio", "--no-frontend", "start", "--dev"],
+    ):
+        with pytest.raises(SystemExit) as exc_info:
+            main(argv)
+        assert exc_info.value.code == 2
+
+
 # ─── studio cwd / module resolution ─────────────
 
 
