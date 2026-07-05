@@ -192,7 +192,9 @@ def test_build_context_block_total_budget_bounds_combined_wrapped_block(caplog):
 
     Two refs whose raw payloads alone (120 chars) fit comfortably under a naive
     payload-only accounting of the budget, but the XML wrapper + separator overhead
-    means the true combined block must still respect the total budget.
+    means even the FIRST ref's minimum wrapped block (wrapper + loud marker) does
+    not fit this budget -- so the honest total-budget contract is to skip
+    injection entirely rather than silently emit an over-budget block.
     """
     first = ContextCandidate(kind="branch", ref="first", model="m", step2_text="F" * 60)
     second = ContextCandidate(kind="branch", ref="second", model="m", step2_text="S" * 60)
@@ -201,17 +203,45 @@ def test_build_context_block_total_budget_bounds_combined_wrapped_block(caplog):
     logger.handlers.clear()
     logger.propagate = True
 
-    budget_tokens = 20  # 80 chars total -- tight enough that wrapper overhead dominates
+    budget_tokens = 20  # 80 chars total -- less than even one ref's wrapper + marker
     with caplog.at_level(logging.WARNING, logger="lionagi.cli.warn"):
         block = build_context_block([first, second], budget_tokens=budget_tokens)
 
-    # neither payload leaks through unbounded -- both refs are loudly truncated
+    # neither payload leaks through unbounded -- injection is skipped entirely
     assert "F" * 60 not in block
     assert "S" * 60 not in block
-    assert block.count("[...truncated...]") == 2
-    # the combined block is far smaller than the un-bounded 236-char blowup the
-    # payload-only accounting produced (two 60-char payloads + wrapper tags)
-    assert len(block) < 200
+    assert block == ""
+    assert any("too small" in rec.message for rec in caplog.records)
+    # mutation-sensitive: a regression to the old unbounded accounting produced a
+    # 191-char block for this exact scenario, which would fail this bound
+    assert len(block) <= budget_tokens * _CHARS_PER_TOKEN
+
+
+def test_build_context_block_skips_injection_when_budget_too_small_for_first_ref(caplog):
+    """Nonzero-but-insufficient TOTAL budget across multiple refs: skip entirely.
+
+    A single ref always gets at least a loud-marker-only block (see
+    `test_build_context_block_budget_zero_yields_only_truncation_marker` --
+    there's nothing to drop it in favor of). With two or more refs, the
+    combined budget is a hard ceiling: if even the first ref's minimum
+    wrapped block can't fit, no block is emitted at all, plus a loud stderr
+    warning -- never a silently over-budget block.
+    """
+    first = ContextCandidate(kind="branch", ref="only", model="m", step2_text="X" * 60)
+    second = ContextCandidate(kind="branch", ref="also", model="m", step2_text="Y" * 60)
+
+    logger = logging.getLogger("lionagi.cli.warn")
+    logger.handlers.clear()
+    logger.propagate = True
+
+    budget_tokens = 1  # 4 chars total -- far below wrapper + marker overhead
+    with caplog.at_level(logging.WARNING, logger="lionagi.cli.warn"):
+        block = build_context_block([first, second], budget_tokens=budget_tokens)
+
+    assert block == ""
+    assert "X" * 60 not in block
+    assert "Y" * 60 not in block
+    assert any("too small" in rec.message for rec in caplog.records)
 
 
 def test_file_ref_over_budget_truncates_loudly_no_verbatim_blowup(tmp_path):

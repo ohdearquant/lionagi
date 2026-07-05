@@ -238,7 +238,8 @@ async def _run_agent(
         context_block = await resolve_and_build_context_block(
             context_from, effective_context_budget
         )
-        prompt = f"{context_block}\n\n{prompt}"
+        if context_block:
+            prompt = f"{context_block}\n\n{prompt}"
 
     # Cache cancellation exception class while event loop is running;
     # cancelled_exc_classes() in the error path needs it after loop exit.

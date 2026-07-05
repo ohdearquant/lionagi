@@ -308,18 +308,75 @@ def build_context_block(candidates: Sequence[ContextCandidate], budget_tokens: i
 
     The budget bounds the COMBINED injected block, including the XML wrapper
     (open/close tags) and the inter-block separator — not just the distilled
-    payload text. Wrapper overhead is charged against each ref's slice, in
-    argv order, before the remaining budget is handed to the distillation
-    ladder for that ref's payload.
+    payload text. Wrapper + loud-marker overhead is reserved FIRST, in argv
+    order, before the remaining budget is handed to the distillation ladder
+    for payload text.
+
+    A single ref always yields at least one loud-marker-only block (never an
+    empty result) even at a budget too tight to fit it, including
+    `budget_tokens == 0` (an explicit "marker only, no payload" request, not
+    "no budget passed"): there is nothing left to drop it in favor of, and a
+    silently-missing context block is worse than a slightly over-budget loud
+    marker for the one ref the caller asked for.
+
+    With multiple refs, the total budget is a hard ceiling: wrapper +
+    separator + minimum loud-marker overhead is reserved for each ref, in
+    argv order, and any ref (and all after it, since the reserved budget only
+    shrinks) that cannot fit even that minimum is dropped entirely rather
+    than pushing the combined block over budget. If even the first ref
+    cannot fit, injection is skipped entirely (no block at all).
     """
     from lionagi.cli._logging import warn
 
-    remaining = budget_tokens * _CHARS_PER_TOKEN
-    blocks: list[str] = []
-    for i, candidate in enumerate(candidates):
+    if not candidates:
+        return ""
+
+    total_budget = budget_tokens * _CHARS_PER_TOKEN
+
+    if len(candidates) == 1:
+        candidate = candidates[0]
         overhead = len(_wrap_block(candidate, ""))
-        if i > 0:
-            overhead += len(_BLOCK_SEPARATOR)
+        text, truncated = _distill(candidate, max(total_budget - overhead, 0))
+        if truncated:
+            warn(
+                f"--context-from {candidate.ref!r}: content exceeded the "
+                f"{budget_tokens}-token budget, truncated (loud, not fatal)"
+            )
+        return _wrap_block(candidate, text)
+
+    marker_min = len(_TRUNCATION_MARKER.strip())
+
+    # Reserve wrapper + separator + minimum loud-marker overhead for each
+    # candidate, in argv order, dropping any candidate (and all after it,
+    # since the reserved budget only shrinks) that cannot fit even that
+    # minimum within what remains of the total budget.
+    fitted: list[tuple[ContextCandidate, int]] = []
+    reserved = 0
+    for candidate in candidates:
+        overhead = len(_wrap_block(candidate, "")) + (len(_BLOCK_SEPARATOR) if fitted else 0)
+        if reserved + overhead + marker_min > total_budget:
+            break
+        fitted.append((candidate, overhead))
+        reserved += overhead
+
+    if not fitted:
+        warn(
+            f"--context-from: total budget ({budget_tokens} tokens) is too small to "
+            "fit even the minimum wrapped context block; skipping context "
+            "injection entirely (no context was added)"
+        )
+        return ""
+
+    if len(fitted) < len(candidates):
+        dropped = [c.ref for c in candidates[len(fitted) :]]
+        warn(
+            f"--context-from: total budget ({budget_tokens} tokens) has no room left "
+            f"for {dropped!r}; dropped entirely rather than exceeding the budget"
+        )
+
+    remaining = total_budget
+    blocks: list[str] = []
+    for candidate, overhead in fitted:
         text_budget = max(remaining - overhead, 0)
         text, truncated = _distill(candidate, text_budget)
         remaining -= overhead + len(text)
