@@ -373,8 +373,8 @@ CREATE TABLE IF NOT EXISTS invocations (
   started_at      REAL    NOT NULL,
   ended_at        REAL,
   status          TEXT    NOT NULL DEFAULT 'running' CHECK(
-                    status IN ('running', 'completed', 'failed',
-                               'timed_out', 'aborted', 'cancelled')
+                    status IN ('running', 'completed', 'completed_empty',
+                               'failed', 'timed_out', 'aborted', 'cancelled')
                   ),
   session_count   INTEGER NOT NULL DEFAULT 0,
   created_at      REAL    NOT NULL,

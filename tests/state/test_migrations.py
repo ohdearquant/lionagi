@@ -246,6 +246,114 @@ async def test_schedule_runs_upgrade_path(old_schema_db):
     assert adr28_cols <= actual, f"Missing cols: {adr28_cols - actual}"
 
 
+async def test_drop_legacy_invocations_status_check_with_fk_referencing_rows(tmp_path):
+    """Rebuilding invocations for the completion-trust gate must not choke on
+    real FK-referencing child rows (sessions.invocation_id, artifacts.invocation_id).
+
+    `invocations` is an FK target; dropping it while foreign_keys enforcement
+    is (still) active raises a FOREIGN KEY constraint failure even though the
+    data was already copied into the replacement table first. The migration
+    must actually disable enforcement for the drop, not just attempt to.
+    """
+    from sqlalchemy import text
+
+    from lionagi.state.db import StateDB
+
+    db_path = tmp_path / "legacy.db"
+
+    # Build a legacy-shaped DB by hand: invocations with the pre-gate 6-value
+    # CHECK, plus a session row and an artifact row that both FK-reference it.
+    async with aiosqlite.connect(str(db_path)) as raw:
+        await raw.execute("PRAGMA foreign_keys = ON")
+        await raw.execute(
+            """
+            CREATE TABLE invocations (
+              id              TEXT    PRIMARY KEY,
+              skill           TEXT    NOT NULL,
+              plugin          TEXT,
+              prompt          TEXT,
+              started_at      REAL    NOT NULL,
+              ended_at        REAL,
+              status          TEXT    NOT NULL DEFAULT 'running' CHECK(
+                                status IN ('running', 'completed', 'failed',
+                                           'timed_out', 'aborted', 'cancelled')
+                              ),
+              session_count   INTEGER NOT NULL DEFAULT 0,
+              created_at      REAL    NOT NULL,
+              updated_at      REAL    NOT NULL,
+              node_metadata   JSON
+            )
+            """
+        )
+        await raw.execute(
+            """
+            CREATE TABLE sessions (
+              id              TEXT    PRIMARY KEY,
+              created_at      REAL    NOT NULL,
+              progression_id  TEXT    NOT NULL,
+              updated_at      REAL    NOT NULL,
+              invocation_id   TEXT    REFERENCES invocations(id)
+            )
+            """
+        )
+        await raw.execute(
+            """
+            CREATE TABLE artifacts (
+              id              TEXT    PRIMARY KEY,
+              created_at      REAL    NOT NULL,
+              invocation_id   TEXT    REFERENCES invocations(id)
+            )
+            """
+        )
+        await raw.execute(
+            "INSERT INTO invocations (id, skill, started_at, created_at, updated_at) "
+            "VALUES ('inv-1', 'agent', 1.0, 1.0, 1.0)"
+        )
+        await raw.execute(
+            "INSERT INTO sessions (id, created_at, progression_id, updated_at, invocation_id) "
+            "VALUES ('sess-1', 1.0, 'prog-1', 1.0, 'inv-1')"
+        )
+        await raw.execute(
+            "INSERT INTO artifacts (id, created_at, invocation_id) VALUES ('art-1', 1.0, 'inv-1')"
+        )
+        await raw.commit()
+
+    state = StateDB(db_path)
+    await state.open()
+    try:
+        async with state._read() as conn:
+            row = (
+                (
+                    await conn.execute(
+                        text(
+                            "SELECT sql FROM sqlite_master WHERE type='table' AND name='invocations'"
+                        )
+                    )
+                )
+                .mappings()
+                .first()
+            )
+            assert "'completed_empty'" in row["sql"]
+
+            inv = (
+                (await conn.execute(text("SELECT * FROM invocations WHERE id='inv-1'")))
+                .mappings()
+                .first()
+            )
+            assert inv is not None
+
+            # The FK-referencing rows in other tables survived the rebuild
+            # untouched — the migration only ever touches `invocations`.
+            sess = (
+                (await conn.execute(text("SELECT invocation_id FROM sessions WHERE id='sess-1'")))
+                .mappings()
+                .first()
+            )
+            assert sess["invocation_id"] == "inv-1"
+    finally:
+        await state.close()
+
+
 async def test_statedb_open_exposes_migration_columns():
     """StateDB.open() on a fresh :memory: DB has all migration columns.
 

@@ -59,8 +59,14 @@ async def _run_fanout(
     invocation_id: str | None = None,
     project: str | None = None,
     pack: str | None = None,
-) -> str:
-    """Three-phase fan-out: decompose → fan out → synthesize."""
+) -> tuple[str, str]:
+    """Three-phase fan-out: decompose → fan out → synthesize.
+
+    Returns ``(result, terminal_status)`` — mirrors `_run_flow`'s contract so
+    the completion-trust gate's `completed_empty` (and any other status the
+    teardown path settles on) reaches the caller's exit code instead of being
+    silently dropped in favour of a hardcoded success.
+    """
     env = await setup_orchestration(
         pattern_name="Fanout",
         model_spec=model_spec,
@@ -109,6 +115,7 @@ async def _run_fanout(
 
     # ADR-0025: distinguish timed_out / aborted / cancelled / failed.
     _terminal_status = "completed"
+    result: str = ""
     try:
         if timeout:
             with move_on_after(timeout) as cancel_scope:
@@ -121,16 +128,20 @@ async def _run_fanout(
                     msg += f" ({n_saved} worker results already saved to {env.run.artifact_root})"
                 log_error(msg)
                 raise LionTimeoutError(msg)
-            return result
-        return await _run_fanout_inner(model_spec, prompt, **inner_kw)
+        else:
+            result = await _run_fanout_inner(model_spec, prompt, **inner_kw)
     except BaseException as exc:
         _terminal_status = classify_exception(exc)
         raise
     finally:
         with CancelScope(shield=True):
-            await stop_live_persist(env, status=_terminal_status)
+            effective_status = await stop_live_persist(env, status=_terminal_status)
+            if effective_status != _terminal_status:
+                _terminal_status = effective_status
             for _br in env.session.branches:
                 await _br.mdls.shutdown()
+
+    return result, _terminal_status
 
 
 async def _run_fanout_inner(

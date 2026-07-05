@@ -75,8 +75,8 @@ Replace the binary "phantom or not" with a graduated health model:
 from enum import Enum
 
 class SessionHealth(str, Enum):
-    HEALTHY = "healthy"           # running, process alive, messages flowing
-    IDLE = "idle"                 # running, process alive, no messages for >1h
+    HEALTHY = "healthy"           # running, messages flowing (process visibility optional)
+    IDLE = "idle"                 # running, no messages for >1h but under threshold
     UNRESPONSIVE = "unresponsive" # running, process alive, no messages for >threshold
     STALE = "stale"               # running, process dead, no messages for >threshold
     ORPHANED = "orphaned"         # running, no process, no artifacts, no messages
@@ -119,7 +119,14 @@ def classify_session_health(
         # the session never produced output (regardless of age).
         if not has_artifacts and session.get("message_count", 0) == 0:
             return SessionHealth.ORPHANED
-        # Process is dead with some output — stale.
+        # Recent messages outrank process visibility: externally-driven
+        # sessions (CLI seats mirrored into the DB) expose no matchable
+        # pid, so a missing process only means dead once activity has
+        # also gone quiet past the kind threshold.
+        if idle_seconds <= threshold:
+            if idle_seconds > 3600:  # 1 hour
+                return SessionHealth.IDLE
+            return SessionHealth.HEALTHY
         return SessionHealth.STALE
 
     # Process is alive

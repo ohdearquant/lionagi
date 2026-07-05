@@ -816,6 +816,7 @@ async def stop_live_persist(
         exception=exception,
         extras=extras,
         escalated_evidence=escalated_evidence,
+        cwd=env.cwd,
     )
     env._live_persist = None
     return final_status

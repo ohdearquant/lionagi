@@ -582,7 +582,13 @@ async def get_run(run_id: str) -> dict[str, Any] | None:
 
     state_root: Path | None = artifact_root.parent if artifact_root else None
 
-    message_count = sum(len(b.get("messages") or []) for b in branches if isinstance(b, dict))
+    # Branch message lists are tail-windowed pages; message_total carries the
+    # full progression length (fall back to page length for older payloads).
+    message_count = sum(
+        b.get("message_total") or len(b.get("messages") or [])
+        for b in branches
+        if isinstance(b, dict)
+    )
     last_message_at = max(
         (
             m.get("timestamp")

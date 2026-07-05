@@ -669,3 +669,84 @@ async def test_session_exists_returns_false_when_db_file_absent(patched_sessions
     # Do not create the DB file
 
     assert await svc.session_exists("any-id") is False
+
+
+# ---------------------------------------------------------------------------
+# Message pagination — detail responses window from the progression tail
+# ---------------------------------------------------------------------------
+
+
+async def seed_paginated_session(db_path: Path, *, count: int = 10) -> list[str]:
+    """Session with one branch holding `count` messages; returns message ids in order."""
+    await seed_session(db_path, session_id="sess-paged")
+    msg_ids = [f"pmsg-{i}" for i in range(count)]
+    await seed_branch(db_path, branch_id="br-paged", session_id="sess-paged", msg_ids=msg_ids)
+    async with StateDB(db_path) as db:
+        for i, mid in enumerate(msg_ids):
+            await db.insert_message(
+                {
+                    "id": mid,
+                    "created_at": 100.0 + i,
+                    "content": {"text": f"m{i}"},
+                    "sender": "worker",
+                    "recipient": "user",
+                    "role": "assistant",
+                    "node_metadata": {},
+                }
+            )
+    return msg_ids
+
+
+async def test_get_session_windows_newest_messages_by_default(patched_sessions_db):
+    svc, db_path = patched_sessions_db
+    await seed_paginated_session(db_path, count=10)
+
+    result = await svc.get_session("sess-paged", message_limit=3)
+
+    branch = result["branches"][0]
+    assert [m["id"] for m in branch["messages"]] == ["pmsg-7", "pmsg-8", "pmsg-9"]
+    assert branch["message_total"] == 10
+    assert branch["message_offset"] == 0
+
+
+async def test_get_session_offset_pages_older_history(patched_sessions_db):
+    svc, db_path = patched_sessions_db
+    await seed_paginated_session(db_path, count=10)
+
+    result = await svc.get_session("sess-paged", message_limit=3, message_offset=3)
+
+    branch = result["branches"][0]
+    assert [m["id"] for m in branch["messages"]] == ["pmsg-4", "pmsg-5", "pmsg-6"]
+    assert branch["message_offset"] == 3
+
+
+async def test_get_session_offset_clamps_at_oldest_message(patched_sessions_db):
+    svc, db_path = patched_sessions_db
+    await seed_paginated_session(db_path, count=10)
+
+    result = await svc.get_session("sess-paged", message_limit=3, message_offset=9)
+
+    branch = result["branches"][0]
+    assert [m["id"] for m in branch["messages"]] == ["pmsg-0"]
+
+
+async def test_get_session_offset_past_total_returns_empty_page(patched_sessions_db):
+    svc, db_path = patched_sessions_db
+    await seed_paginated_session(db_path, count=10)
+
+    result = await svc.get_session("sess-paged", message_limit=3, message_offset=50)
+
+    branch = result["branches"][0]
+    assert branch["messages"] == []
+    assert branch["message_total"] == 10
+
+
+async def test_get_session_limit_clamped_to_max(patched_sessions_db):
+    svc, db_path = patched_sessions_db
+    await seed_paginated_session(db_path, count=5)
+
+    result = await svc.get_session("sess-paged", message_limit=10_000)
+
+    branch = result["branches"][0]
+    assert len(branch["messages"]) == 5
+    assert branch["message_total"] == 5

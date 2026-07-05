@@ -222,7 +222,10 @@ async def _resolve_invocation_terminal_flow(
         evidence_refs = [{"kind": "session", "id": s["id"]} for s in sessions if s.get("id")]
         metadata: dict = {"child_statuses": child_statuses}
 
-        # Precedence: timed_out > failed > aborted > cancelled > completed.
+        # Precedence: timed_out > failed > aborted > cancelled > completed_empty
+        # > completed. completed_empty outranks completed so one silently
+        # empty leg still taints the whole flow's terminal status instead of
+        # being averaged away by its siblings' real completions.
         if child_statuses:
             if any(s == "timed_out" for s in child_statuses):
                 return (
@@ -253,6 +256,17 @@ async def _resolve_invocation_terminal_flow(
                     "cancelled",
                     RunReasons.CANCELLED_SYSTEM,
                     "Flow was cancelled because at least one child session was cancelled.",
+                    evidence_refs,
+                    metadata,
+                )
+            if any(s == "completed_empty" for s in child_statuses) and all(
+                s in ("completed", "completed_empty") for s in child_statuses
+            ):
+                return (
+                    "completed_empty",
+                    RunReasons.COMPLETED_EMPTY_NO_EVIDENCE,
+                    "Flow exited clean but at least one child session produced no "
+                    "commits ahead of base and no artifacts.",
                     evidence_refs,
                     metadata,
                 )

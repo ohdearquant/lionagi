@@ -123,7 +123,8 @@ invocations = Table(
         "status",
         Text,
         CheckConstraint(
-            "status IN ('running','completed','failed','timed_out','aborted','cancelled')",
+            "status IN ('running','completed','completed_empty','failed',"
+            "'timed_out','aborted','cancelled')",
             name="ck_invocations_status",
         ),
         nullable=False,

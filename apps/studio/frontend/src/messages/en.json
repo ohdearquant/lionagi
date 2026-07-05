@@ -238,7 +238,11 @@
       "invocationSiblingRuns": "Sibling runs",
       "invocationArtifacts": "Outcomes",
       "loadOlder": "Load older messages",
-      "olderRemaining": "{count} older messages"
+      "olderRemaining": "{count} older messages",
+      "statToolCallsRecent": "Tool calls (recent)",
+      "statErrorsRecent": "Errors (recent)",
+      "noBranchErrorsPartial": "No errors in the loaded messages.",
+      "noFilesPartial": "No file operations detected in the loaded messages."
     },
     "masterAria": "History list",
     "detailAria": "Item detail"

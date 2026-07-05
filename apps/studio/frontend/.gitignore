@@ -28,3 +28,9 @@ npm-debug.log*
 
 # tanstack router dev state
 .tanstack/
+
+# playwright
+/playwright-report/
+/test-results/
+/blob-report/
+/playwright/.cache/

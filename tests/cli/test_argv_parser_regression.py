@@ -81,7 +81,7 @@ async def _fake_run_fanout(
     fast: bool = False,
     verbose: bool = False,
     **kwargs: Any,
-) -> str:
+) -> tuple[str, str]:
     _CAPTURED["fanout"] = {
         "model_spec": model_spec,
         "prompt": prompt,
@@ -90,7 +90,7 @@ async def _fake_run_fanout(
         "fast": fast,
         "verbose": verbose,
     }
-    return "output"
+    return "output", "completed"
 
 
 # ---------------------------------------------------------------------------
@@ -164,6 +164,49 @@ class TestAgentParserPromptInjection:
         assert c["yolo"] is False, f"yolo=True after hostile prompt {hostile!r}"
         assert c["fast"] is False, f"fast=True after hostile prompt {hostile!r}"
         assert c["verbose"] is False, f"verbose=True after hostile prompt {hostile!r}"
+
+
+class TestFanoutTerminalStatusExitCode:
+    """li o fanout must propagate the completion-trust gate's terminal status
+    to the process exit code — a demoted `completed_empty` leg exiting 0
+    would silently break schedule on_success/on_fail chaining."""
+
+    def _build(self) -> list[str]:
+        from lionagi.studio.scheduler.subprocess import build_argv
+
+        sched = {
+            "id": "test",
+            "action_kind": "fanout",
+            "action_model": "sonnet",
+            "action_prompt": "do the thing",
+            "action_project": None,
+            "action_extra_args": [],
+        }
+        argv, _ = build_argv(sched, {})
+        return _argv_without_wrapper(argv)
+
+    def test_completed_empty_exits_nonzero(self, monkeypatch) -> None:
+        _reset()
+
+        async def _fake_run_fanout_empty(*args, **kwargs) -> tuple[str, str]:
+            return "output", "completed_empty"
+
+        import lionagi.cli.orchestrate as orch_mod
+        import lionagi.cli.orchestrate.fanout as fanout_mod
+        from lionagi.cli._util import EXIT_CODE_BY_STATUS
+        from lionagi.cli.main import main
+
+        monkeypatch.setattr(fanout_mod, "_run_fanout", _fake_run_fanout_empty)
+        monkeypatch.setattr(orch_mod, "_run_fanout", _fake_run_fanout_empty)
+
+        rc = main(self._build())
+        assert rc == EXIT_CODE_BY_STATUS["completed_empty"]
+        assert rc != 0
+
+    def test_completed_exits_zero(self) -> None:
+        _reset()
+        rc = _run_main_with_argv(self._build())
+        assert rc == 0
 
 
 # ---------------------------------------------------------------------------

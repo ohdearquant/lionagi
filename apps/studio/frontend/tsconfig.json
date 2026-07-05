@@ -17,6 +17,12 @@
       "@/*": ["./src/*"]
     }
   },
-  "include": ["src/**/*.ts", "src/**/*.tsx", "vite.config.mts"],
+  "include": [
+    "src/**/*.ts",
+    "src/**/*.tsx",
+    "vite.config.mts",
+    "playwright.config.ts",
+    "e2e/**/*.ts"
+  ],
   "exclude": ["node_modules", "app/**", "next.config.mjs", "next-env.d.ts"]
 }

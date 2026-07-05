@@ -62,9 +62,18 @@ async def _make_session(db: StateDB, *, invocation_id: str | None = None, **fiel
 
 
 def test_invocation_status_vocabulary_matches_adr0025():
-    """Invocations share the ADR-0025 terminal set + 'running'."""
+    """Invocations share the ADR-0025 terminal set (now seven values, with
+    'completed_empty' for the completion-trust gate) + 'running'."""
     assert _INVOCATION_STATUSES == frozenset(
-        {"running", "completed", "failed", "timed_out", "aborted", "cancelled"}
+        {
+            "running",
+            "completed",
+            "completed_empty",
+            "failed",
+            "timed_out",
+            "aborted",
+            "cancelled",
+        }
     )
 
 

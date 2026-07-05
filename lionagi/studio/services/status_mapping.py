@@ -9,8 +9,8 @@ from __future__ import annotations
 #   pending, prepared, running, running_complete, gated, gate_failed,
 #   redoing, merged, escalated, blocked, aborted_after_finish
 #
-# ADR-0025 sessions.status vocabulary (6 values; supersedes ADR-0017):
-#   running, completed, failed, timed_out, aborted, cancelled
+# ADR-0025 sessions.status vocabulary (7 values; supersedes ADR-0017):
+#   running, completed, completed_empty, failed, timed_out, aborted, cancelled
 DISPLAY_MAP: dict[str, str] = {
     # play statuses (ADR-0011)
     "pending": "pending",
@@ -26,6 +26,7 @@ DISPLAY_MAP: dict[str, str] = {
     "aborted_after_finish": "aborted",
     # session statuses (ADR-0025)
     "completed": "completed",
+    "completed_empty": "completed_empty",
     "failed": "failed",
     "timed_out": "timed_out",
     "aborted": "aborted",

@@ -202,6 +202,7 @@ interface OverviewData {
   messageCount: number;
   toolCallCount: number;
   errorCount: number;
+  partialWindow: boolean;
   showTopic?: string | null;
   showPlayName?: string | null;
   playbookName?: string | null;
@@ -216,9 +217,12 @@ function OverviewSection({ data }: { data: OverviewData }) {
       : []),
     { label: t("statBranches"), value: String(data.branchCount) },
     { label: t("statMessages"), value: String(data.messageCount) },
-    { label: t("statToolCalls"), value: String(data.toolCallCount) },
     {
-      label: t("statErrors"),
+      label: data.partialWindow ? t("statToolCallsRecent") : t("statToolCalls"),
+      value: String(data.toolCallCount),
+    },
+    {
+      label: data.partialWindow ? t("statErrorsRecent") : t("statErrors"),
       value: String(data.errorCount),
       tone: data.errorCount > 0 ? ("error" as const) : ("ok" as const),
     },
@@ -328,7 +332,7 @@ interface ErrorEntry {
   summary?: string;
 }
 
-function ErrorsSection({ errors }: { errors: ErrorEntry[] }) {
+function ErrorsSection({ errors, partial }: { errors: ErrorEntry[]; partial?: boolean }) {
   const t = useTranslations("history.detail");
   const groups = useMemo(() => {
     const map = new Map<string, ErrorEntry[]>();
@@ -360,7 +364,7 @@ function ErrorsSection({ errors }: { errors: ErrorEntry[] }) {
       />
       {errors.length === 0 ? (
         <div className="flex items-center gap-2 rounded border border-edge bg-surface-raised px-4 py-3 text-sm text-status-success">
-          <span>{t("noBranchErrors")}</span>
+          <span>{partial ? t("noBranchErrorsPartial") : t("noBranchErrors")}</span>
         </div>
       ) : (
         <div className="flex flex-col gap-1.5">
@@ -455,14 +459,14 @@ function ErrorsSection({ errors }: { errors: ErrorEntry[] }) {
 
 // ── Files section ─────────────────────────────────────────────────────────────
 
-function FilesSection({ files }: { files: string[] }) {
+function FilesSection({ files, partial }: { files: string[]; partial?: boolean }) {
   const t = useTranslations("history.detail");
   return (
     <div id="run-files" className="scroll-mt-4">
       <SectionHeader label={t("sectionFiles")} count={files.length} />
       {files.length === 0 ? (
         <div className="rounded border border-edge bg-surface-raised px-4 py-3 text-sm text-content-muted">
-          {t("noFiles")}
+          {partial ? t("noFilesPartial") : t("noFiles")}
         </div>
       ) : (
         <div className="max-h-56 overflow-y-auto rounded border border-edge bg-surface-raised px-3 py-2">
@@ -688,9 +692,7 @@ export default function RunDetail({ id, fullPage = false }: RunDetailProps) {
           }
         }
         const graph = (s as unknown as Record<string, unknown>).graph as
-          | { nodes: WorkerGraph["nodes"]; edges: WorkerGraph["edges"] }
-          | null
-          | undefined;
+          { nodes: WorkerGraph["nodes"]; edges: WorkerGraph["edges"] } | null | undefined;
         if (graph && graph.nodes && graph.nodes.length > 0) {
           setRunGraph({
             name: s.name || id,
@@ -952,6 +954,7 @@ export default function RunDetail({ id, fullPage = false }: RunDetailProps) {
   );
   const endRef = session.ended_at ?? (done ? session.updated_at : null);
   const startRef = session.started_at ?? session.created_at;
+  const partialWindow = session.branches.some((b) => (b.message_total ?? 0) > b.messages.length);
   const durationSec =
     startRef != null && endRef != null ? Math.max(0, Math.round(endRef - startRef)) : null;
   const toolCallCount = steps.reduce((n, s) => {
@@ -965,18 +968,13 @@ export default function RunDetail({ id, fullPage = false }: RunDetailProps) {
     messageCount: totalMessages,
     toolCallCount,
     errorCount: errors.length,
+    partialWindow,
     showTopic: (session as unknown as Record<string, unknown>).show_topic as
-      | string
-      | null
-      | undefined,
+      string | null | undefined,
     showPlayName: (session as unknown as Record<string, unknown>).show_play_name as
-      | string
-      | null
-      | undefined,
+      string | null | undefined,
     playbookName: (session as unknown as Record<string, unknown>).playbook_name as
-      | string
-      | null
-      | undefined,
+      string | null | undefined,
   };
 
   const content = (
@@ -1045,8 +1043,8 @@ export default function RunDetail({ id, fullPage = false }: RunDetailProps) {
         expandedSteps={expandedSteps}
         onToggleExpand={handleToggleExpand}
       />
-      <ErrorsSection errors={errors} />
-      <FilesSection files={files} />
+      <ErrorsSection errors={errors} partial={partialWindow} />
+      <FilesSection files={files} partial={partialWindow} />
       {opGraph.nodes.length > 0 && (
         <div id="run-op-graph" className="scroll-mt-4">
           <SectionHeader label={t("sectionOpGraph")} count={opGraph.nodes.length} />

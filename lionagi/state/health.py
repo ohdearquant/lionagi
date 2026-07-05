@@ -50,7 +50,7 @@ def classify_session_health(
     status = session.get("status") or "completed"
 
     # Terminal sessions: done means done, unless they left litter.
-    if status in {"completed", "failed", "timed_out", "aborted", "cancelled"}:
+    if status in {"completed", "completed_empty", "failed", "timed_out", "aborted", "cancelled"}:
         if has_stale_locks:
             return SessionHealth.ZOMBIE
         # ``has_artifacts`` alone isn't enough to mark zombie — artifacts
@@ -78,6 +78,15 @@ def classify_session_health(
         # it to failed is harmless, deleting it is also safe.
         if not has_artifacts and (session.get("message_count") or 0) == 0:
             return SessionHealth.ORPHANED
+        # Recent messages are stronger life-evidence than process
+        # visibility: externally-driven sessions (CLI seats mirrored
+        # into the DB) expose no matchable pid, so a missing process
+        # only means dead once activity has also gone quiet past the
+        # kind threshold.
+        if idle_seconds <= threshold:
+            if idle_seconds > IDLE_THRESHOLD:
+                return SessionHealth.IDLE
+            return SessionHealth.HEALTHY
         return SessionHealth.STALE
 
     # Process alive — classify by activity gap.

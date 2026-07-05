@@ -258,6 +258,12 @@ def resolve_run_reason(
 
     if status == "completed":
         return RunReasons.COMPLETED_OK, "Run completed successfully.", None
+    if status == "completed_empty":
+        return (
+            RunReasons.COMPLETED_EMPTY_NO_EVIDENCE,
+            "Run exited clean but produced no commits ahead of base and no artifacts.",
+            None,
+        )
     if status == "timed_out":
         return RunReasons.TIMED_OUT_DEADLINE, "Run exceeded the configured timeout.", None
     if status == "aborted":
@@ -285,6 +291,7 @@ async def _teardown_common(
     extras: dict | None = None,
     identity_markers: dict | None = None,
     escalated_evidence: list[dict] | None = None,
+    cwd: str | None = None,
 ) -> str:
     from lionagi.state.artifact_verifier import (
         missing_artifact_evidence,
@@ -338,6 +345,48 @@ async def _teardown_common(
                 str(entry.get("id", "")) for entry in missing
             ]
 
+    # Completion-trust gate: a leg that declared no artifact contract (or
+    # declared one but produced nothing) still must not read as a trustworthy
+    # "completed" on faith alone. Fall back to a cheap local git check — HEAD
+    # ahead of its base ref, or a dirty working tree — before accepting the
+    # loop's own "I'm done" as ground truth. A run whose deliverable is its
+    # response text (research/read-only agents) is legitimate work too, so a
+    # durable assistant message counts as evidence in its own right — this
+    # gate only demotes runs with neither a file/git trace nor a real answer.
+    # Only fires when nothing else already made the run loud.
+    if final_status == "completed" and not (verification and verification.get("produced")):
+        from lionagi.state.completion_evidence import (
+            check_completion_evidence,
+            has_completion_evidence,
+        )
+        from lionagi.state.reasons import RunReasons
+
+        evidence = check_completion_evidence(cwd)
+        if evidence["checked"]:
+            has_output = await _has_assistant_output_evidence(db, all_msgs)
+            metadata = dict(metadata or {})
+            metadata["completion_evidence"] = evidence
+            metadata["has_assistant_output"] = has_output
+            if not has_completion_evidence(evidence) and not has_output:
+                final_status = "completed_empty"
+                final_reason_code = RunReasons.COMPLETED_EMPTY_NO_EVIDENCE
+                base_label = evidence.get("base_ref") or "base"
+                final_reason_summary = (
+                    f"No commits ahead of {base_label}, no artifacts produced, and no "
+                    "assistant response recorded; working tree clean."
+                )
+                final_evidence_refs = [
+                    {
+                        "kind": "git_evidence",
+                        "id": "completion_check",
+                        "label": (
+                            f"base={base_label} "
+                            f"commits_ahead={evidence.get('commits_ahead')} "
+                            f"dirty={evidence.get('dirty')}"
+                        ),
+                    }
+                ]
+
     # Escalation backstop: a leg that never declared an artifact (so the check
     # above has nothing to verify) but gave up mid-run via EscalationRequest
     # still must not read as a clean completion. Only fires when nothing else
@@ -369,6 +418,32 @@ async def _teardown_common(
     return final_status
 
 
+async def _has_assistant_output_evidence(db: StateDB, message_ids: list[str]) -> bool:
+    """A run whose deliverable is its response text (a research/read-only
+    agent, a chat answer) is legitimate work even though it left no commit,
+    dirty tree, or artifact. Walk the progression newest-first and treat any
+    non-empty assistant message as durable completion evidence.
+    """
+    for message_id in reversed(message_ids):
+        msg = await db.get_message(message_id)
+        if not msg or msg.get("role") != "assistant":
+            continue
+        content = msg.get("content")
+        if isinstance(content, str):
+            try:
+                content = json.loads(content)
+            except (ValueError, TypeError):
+                content = {"assistant_response": content}
+        text_val = ""
+        if isinstance(content, dict):
+            text_val = str(content.get("assistant_response") or content.get("content") or "")
+        elif content:
+            text_val = str(content)
+        if text_val.strip():
+            return True
+    return False
+
+
 def _resolve_project(project: str | None) -> tuple[str | None, str | None]:
     if project:
         return project, "explicit"
@@ -384,6 +459,7 @@ async def teardown_persist(
     exception: BaseException | None = None,
     extras: dict | None = None,
     escalated_evidence: list[dict] | None = None,
+    cwd: str | None = None,
 ) -> str:
     if ctx is None:
         return status
@@ -401,6 +477,7 @@ async def teardown_persist(
             extras=extras,
             identity_markers=ctx.get("identity_markers"),
             escalated_evidence=escalated_evidence,
+            cwd=cwd,
         )
 
         from lionagi.hooks import unroute_message_persistence

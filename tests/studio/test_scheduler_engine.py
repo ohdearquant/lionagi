@@ -79,6 +79,24 @@ async def test_resolve_terminal_completed_ok():
 
 
 @pytest.mark.asyncio
+async def test_resolve_terminal_completed_empty_child_taints_invocation():
+    """A completed_empty child (completion-trust gate) must not be silently
+    averaged away by a sibling's real completion — the invocation as a whole
+    stays untrustworthy so schedule on_fail chaining can see it."""
+    from lionagi.studio.services.scheduler_state import resolve_invocation_terminal
+
+    svc = _make_svc()
+    svc.list_sessions_for_invocation.return_value = [
+        {"id": "s1", "status": "completed"},
+        {"id": "s2", "status": "completed_empty"},
+    ]
+    status, rc, rs, refs, meta = await resolve_invocation_terminal(
+        svc, "inv-1", fallback_status="completed"
+    )
+    assert status == "completed_empty"
+
+
+@pytest.mark.asyncio
 async def test_resolve_terminal_failed_child():
     from lionagi.studio.services.scheduler_state import resolve_invocation_terminal
 
