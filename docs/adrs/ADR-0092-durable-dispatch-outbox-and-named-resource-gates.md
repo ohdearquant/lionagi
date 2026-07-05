@@ -17,7 +17,7 @@ Two concrete failure modes motivate this ADR:
 1. **Consumer dead at fire time.** An account-wide agent-session reset overnight
    2026-07-03/04 killed every agent seat for roughly 90 minutes. Scheduled
    notifications aimed at those seats had nowhere durable to land: nothing queued,
-   nothing re-delivered. The hard requirement from the spec-gate holder: an event
+   nothing re-delivered. Hard requirement: an event
    whose consumer is dead at fire time must survive and deliver on revival, never
    drop. The named use case is a post-reset revival heartbeat that pings each
    fleet seat, currently hand-rolled as a cron outside lionagi.
@@ -208,7 +208,7 @@ actions. Before the run starts, lionagi resolves the gate name through a
 advisory `fcntl.flock`** on that exact file (`LOCK_EX`, or `LOCK_EX|LOCK_NB`
 with a timeout), releasing it when the run ends.
 
-Hard constraint, per the spec-gate holder: **the gate composes with the
+Hard constraint: **the gate composes with the
 OS-level convention, it never replaces it.** Non-lionagi processes (cargo test
 suites, one-off scripts, other harnesses) keep acquiring the same flock
 directly, so:

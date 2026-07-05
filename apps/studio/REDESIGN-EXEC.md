@@ -5,7 +5,6 @@ Working doc for the presentation-layer rebuild. **Authority: DESIGN-SYSTEM.md**
 DESIGN-CANVAS.md (Designer/canvas grammar) > this file, which adds the
 file-level implementation contract. On any conflict, DESIGN-SYSTEM.md wins.
 Branch: `feat/studio-cockpit-redesign`.
-Worktree: `/Users/lion/projects/lionagi-redesign`.
 
 Design bar (verbatim): "smooth as fuck, super optimized for speed,
 looks elegant and sleek, user friendly"; engine building must be a **graphic
@@ -101,7 +100,7 @@ light-flash). i18n: new `shell.*` strings in en.json + zh.json.
   timeline (runs+invocations+shows merged), day-grouped, strong filters, detail
   w/ DAG + transcripts; System = health/maintenance/schedules/settings.
 
-## Wave 1.5 — Tab IA + Copilot (directives 2026-06-11, λ-led)
+## Wave 1.5 — Tab IA + Copilot (directives 2026-06-11)
 
 - **Tabs, not pages** ("太多pages了，用户用不来的"): the 5 rail spaces are the
   ONLY pages. Everything else is a tab inside a space, rendered as child
@@ -123,7 +122,7 @@ light-flash). i18n: new `shell.*` strings in en.json + zh.json.
   streaming chat panel per DESIGN-SYSTEM (drawer contract, mono for
   tool-calls, terminal-state motion).
 - **zh quality pass** ("很多中文很奇怪，直接翻译根本就错了"): after all wave
-  branches merge, λ rewrites BOTH locale files in one pass — native
+  branches merge, rewrite BOTH locale files in one pass — native
   developer-tool register (阿里云/飞书 style), not word-for-word translation.
   No new zh strings ship without reading like product Chinese.
 - **Coherence pass**: three agents produced three styling dialects (inline
@@ -214,9 +213,9 @@ systems, operator consoles, event-sourcing replay). These refine the waves above
   only the tail (e.g. snapshot @2000, replay 400 ≈ 60ms vs 360ms full).
 - Long-range seeks show progress; never block the UI thread.
 
-### λ direct-read addenda (full briefings re-read 2026-06-11 — BINDING)
+### Direct-read addenda (full briefings re-read 2026-06-11 — BINDING)
 
-Rules the distillation missed; from λ's own read of the composed material.
+Rules the distillation missed; from a direct read of the composed material.
 
 **Canvas validation (Designer)**
 - **Command ports have exactly one owner.** Events fan out; commands do not

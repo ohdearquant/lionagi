@@ -1,4 +1,4 @@
-# Lion Studio v2 — seed-demo redesign (λ-designed, 2026-06-11)
+# Lion Studio v2 — seed-demo redesign (2026-06-11)
 
 Mandate: full creative authority — add/remove pages, remove information
 display, alter presentation. Fix: some pages information-overloaded, some blank.
@@ -37,7 +37,7 @@ Light theme is first-class: secondary text ≥ #3a3d44 on white, hairlines visib
 4. **History** — unified timeline. Run detail gains an **Invocations tab**.
    `/invocations/$id` standalone page DIES (route redirects into History).
 5. **Schedules** — kanban board (lanes: upcoming / today / running / done) +
-   month calendar toggle. λ-designed.
+   month calendar toggle.
 
 System/settings → gear at rail bottom, not a primary space. Playfield folds into
 Canvas as a secondary tab or dies if redundant. Shows already live in History.
@@ -77,9 +77,9 @@ canvas IS the launch console** — design-by-direct-manipulation:
 - W2: IA restructure (rail, Command merge, invocations fold, settings gear).
 - W3: Canvas rebuild per §3.
 - W4: Schedules kanban/calendar.
-- W5: coherence + perf (code-split reactflow chunk) + λ dogfood at 4 widths
+- W5: coherence + perf (code-split reactflow chunk) + dogfood at 4 widths
   both themes + commit per wave.
 
 Gates per wave: tsc, eslint 0 errors, vitest green, build, restart 8801,
-λ screenshots before declaring done. Prettier hook aborts commits while
+screenshot-verify before declaring done. Prettier hook aborts commits while
 reformatting — always `git log -1` to verify a commit actually landed.

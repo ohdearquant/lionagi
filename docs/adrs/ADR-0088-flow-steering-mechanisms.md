@@ -37,7 +37,7 @@ single-node flow or a flow whose open ops are all past preparation (stamped
 `rejected:no-pending-ops`), and it cannot redirect an op already mid-turn; and op-mode (`--as-op`)
 was reserved by ADR-0085 and is unbuilt.
 
-Field evidence from three lambda-seat interviews (2026-07-03) frames the priority. The number-one
+Field evidence from three operator interviews (2026-07-03) frames the priority. The number-one
 ask is trustworthy terminal status (tracked as issue #1672), not steering. The number-two ask is
 genuine pause/resume/steer for `li play`, because today the only lever for an off-track run is
 kill-and-restart, discarding sunk work, and most failures are "85% right, wrong turn near the end."

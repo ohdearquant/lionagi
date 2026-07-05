@@ -43,7 +43,7 @@ is not practical):
 ```yaml
 project_overrides:
   "ag2ai/ag2": "ag2"
-  "/Users/lion/forks/ag2": "ag2"
+  "/path/to/forks/ag2": "ag2"
 ```
 
 Keys can be `org/repo` (matched against git remote) or absolute directory paths (prefix-matched
