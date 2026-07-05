@@ -25,6 +25,12 @@ export interface BoardState {
   recentRuns: RunSummary[];
   /** Enabled schedules — feeds failure-streak attention rows. */
   schedules: ScheduleSummary[];
+  /**
+   * True once a schedules fetch has succeeded. Until then the empty
+   * schedules array is a placeholder, not knowledge — it must not feed
+   * the systemEmpty derivation.
+   */
+  schedulesKnown: boolean;
   /** Items needing operator attention. */
   attentionItems: AttentionItem[];
   /**
@@ -256,6 +262,7 @@ export function initialBoardState(): BoardState {
     activeInvocations: [],
     recentRuns: [],
     schedules: [],
+    schedulesKnown: false,
     attentionItems: [],
     systemEmpty: false,
     dataState: "loading",
@@ -274,11 +281,15 @@ export function boardReducer(state: BoardState, action: BoardAction): BoardState
     case "DATA_OK": {
       const { runs, invocations, nowSec } = action;
       const schedules = action.schedules ?? state.schedules;
+      const schedulesKnown = state.schedulesKnown || action.schedules !== null;
       const activeRuns = deriveActiveRuns(runs);
       const activeInvocations = deriveActiveInvocations(invocations);
       const recentRuns = deriveRecentRuns(runs);
       const attentionItems = buildAttentionItems(runs, invocations, schedules, nowSec);
-      const systemEmpty = runs.length === 0 && invocations.length === 0 && schedules.length === 0;
+      // A degraded schedules fetch before the first successful one leaves an
+      // empty placeholder list — never declare the system empty from it.
+      const systemEmpty =
+        schedulesKnown && runs.length === 0 && invocations.length === 0 && schedules.length === 0;
       return {
         ...state,
         nowSec,
@@ -286,6 +297,7 @@ export function boardReducer(state: BoardState, action: BoardAction): BoardState
         activeInvocations,
         recentRuns,
         schedules,
+        schedulesKnown,
         attentionItems,
         systemEmpty,
         dataState: "live",

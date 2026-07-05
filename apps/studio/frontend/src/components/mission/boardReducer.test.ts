@@ -481,4 +481,21 @@ describe("systemEmpty", () => {
     s = dispatchOk(s, [], [], 1_000_001, null);
     expect(s.systemEmpty).toBe(false);
   });
+
+  it("stays false when the first schedules fetch is degraded — empty placeholder is not knowledge", () => {
+    let s = dispatchOk(initialBoardState(), [], [], 1_000_000, null);
+    expect(s.systemEmpty).toBe(false);
+    expect(s.schedulesKnown).toBe(false);
+    // Once schedules are confirmed empty, the zero state may show.
+    s = dispatchOk(s, [], [], 1_000_001, []);
+    expect(s.systemEmpty).toBe(true);
+    expect(s.schedulesKnown).toBe(true);
+  });
+
+  it("stays true across later degraded schedule fetches once schedules were confirmed", () => {
+    let s = dispatchOk(initialBoardState(), [], [], 1_000_000, []);
+    expect(s.systemEmpty).toBe(true);
+    s = dispatchOk(s, [], [], 1_000_001, null);
+    expect(s.systemEmpty).toBe(true);
+  });
 });
