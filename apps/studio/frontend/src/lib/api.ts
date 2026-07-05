@@ -54,6 +54,15 @@ export function resolveApiBase(): string {
     if (port === "3000" || port === "5173") {
       return `${window.location.protocol}//${window.location.hostname}:8765`;
     }
+    const host = window.location.hostname;
+    const isLocalHost = host === "localhost" || host === "127.0.0.1" || host === "::1";
+    // Hosted static deploy (e.g. lion-studio.khive.ai on Vercel): the page is
+    // served over https from a non-local hostname, which the local daemon
+    // never does — a precise signal that this is the SPA driving the
+    // operator's own daemon rather than a same-origin/dev deployment.
+    if (window.location.protocol === "https:" && !isLocalHost) {
+      return "http://127.0.0.1:8765";
+    }
     // Production / single-origin deployment: use same origin (relative URLs).
     return "";
   }

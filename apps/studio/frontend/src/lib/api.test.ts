@@ -109,6 +109,54 @@ describe("resolveApiBase", () => {
     const result = resolveApiBase();
     expect(result).toBe("");
   });
+
+  it("defaults to the local daemon for a hosted https deploy on a non-local hostname", () => {
+    // https://lion-studio.khive.ai — static SPA on Vercel driving the
+    // operator's own local daemon. The daemon never serves https, so this
+    // combination is a reliable signal for the hosted-mode default.
+    vi.stubGlobal("window", {
+      ...window,
+      __STUDIO_API_BASE__: undefined,
+      location: {
+        ...window.location,
+        port: "",
+        hostname: "lion-studio.khive.ai",
+        protocol: "https:",
+      },
+    });
+    const result = resolveApiBase();
+    expect(result).toBe("http://127.0.0.1:8765");
+  });
+
+  it("does not apply the hosted-https default over plain http on a remote hostname", () => {
+    vi.stubGlobal("window", {
+      ...window,
+      __STUDIO_API_BASE__: undefined,
+      location: {
+        ...window.location,
+        port: "",
+        hostname: "lion-studio.khive.ai",
+        protocol: "http:",
+      },
+    });
+    const result = resolveApiBase();
+    expect(result).toBe("");
+  });
+
+  it("does not apply the hosted-https default for https on localhost", () => {
+    vi.stubGlobal("window", {
+      ...window,
+      __STUDIO_API_BASE__: undefined,
+      location: {
+        ...window.location,
+        port: "",
+        hostname: "localhost",
+        protocol: "https:",
+      },
+    });
+    const result = resolveApiBase();
+    expect(result).toBe("");
+  });
 });
 
 describe("resolveAuthToken", () => {

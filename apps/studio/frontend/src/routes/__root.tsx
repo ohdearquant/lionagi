@@ -2,6 +2,7 @@ import { createRootRoute, Outlet } from "@tanstack/react-router";
 import { useEffect, useState } from "react";
 import { IntlProvider } from "use-intl";
 import AppShell from "@/components/shell/AppShell";
+import NoDaemonGate from "@/components/shell/NoDaemonGate";
 import "../globals.css";
 
 import enMessages from "@/messages/en.json";
@@ -40,9 +41,11 @@ function RootComponent() {
 
   return (
     <IntlProvider locale={locale} messages={messages}>
-      <AppShell locale={locale} onLocaleChange={handleLocaleChange}>
-        <Outlet />
-      </AppShell>
+      <NoDaemonGate>
+        <AppShell locale={locale} onLocaleChange={handleLocaleChange}>
+          <Outlet />
+        </AppShell>
+      </NoDaemonGate>
     </IntlProvider>
   );
 }

@@ -863,5 +863,12 @@
     "rackEmpty": "No workflows yet.",
     "designerEmpty": "Pick a workflow from the rack, or create one to start designing.",
     "designerEmptyCta": "Create a workflow"
+  },
+  "daemon": {
+    "title": "Studio couldn't reach the local daemon at {base}",
+    "bootstrapInstall": "pip install \"lionagi[studio]\"",
+    "bootstrapRun": "li studio",
+    "authNote": "Set LIONAGI_STUDIO_AUTH_TOKEN to require a bearer token for this daemon.",
+    "retry": "Retry"
   }
 }
