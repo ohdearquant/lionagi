@@ -810,6 +810,7 @@
     "colOutput": "Output",
     "charsCount": "{count, number} chars",
     "moreLines": "+{count} more",
+    "showEarlier": "Show {count, number} earlier messages",
     "noArgs": "(no args)",
     "noOutput": "(no output)",
     "roleUser": "user",
