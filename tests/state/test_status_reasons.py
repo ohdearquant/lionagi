@@ -288,6 +288,9 @@ class TestUpdateStatusAtomic:
             new_status="failed",
             reason_code=RunReasons.FAILED_EXCEPTION,
             reason_summary="RuntimeError: x",
+            override=True,
+            override_actor="test",
+            override_justification="exercise multi-transition audit accumulation",
         )
         async with db._read() as conn:
             row = (
@@ -316,6 +319,9 @@ class TestUpdateStatusAtomic:
             sid,
             new_status="failed",
             reason_code=RunReasons.FAILED_EXCEPTION,
+            override=True,
+            override_actor="test",
+            override_justification="exercise alias route + table resolution",
         )
         async with db._read() as conn:
             rows = (

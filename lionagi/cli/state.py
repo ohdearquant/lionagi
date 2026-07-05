@@ -585,6 +585,7 @@ async def _doctor(
     import time as _time
 
     from lionagi.state.db import StateDB
+    from lionagi.state.reasons import SessionReasons
 
     cutoff = _time.time() - (stale_hours * 3600)
 
@@ -614,28 +615,30 @@ async def _doctor(
         swept_count = 0
         if dry_run:
             swept_count = len(victims)
-        elif victims:
-            # Re-assert status='running' in the UPDATE to avoid race with
-            # sessions that finish between select and update.
-            placeholders = ",".join(f":v{i}" for i in range(len(victims)))
-            id_params = {f"v{i}": vid for i, vid in enumerate(victims)}
-            params = {
-                "new_status": new_status,
-                "ended_at": _time.time(),
-                "cutoff": cutoff,
-                **id_params,
-            }
-            async with db._tx() as conn:
-                result = await conn.execute(
-                    text(
-                        f"UPDATE sessions SET status = :new_status, ended_at = :ended_at "  # noqa: S608
-                        f"WHERE status = 'running' "
-                        f"  AND (started_at IS NULL OR started_at < :cutoff) "
-                        f"  AND id IN ({placeholders})"
-                    ),
-                    params,
+        else:
+            # Per-row, through the single guarded write path (ADR-0094):
+            # expected_statuses={"running"} re-asserts the CAS the old bulk
+            # UPDATE did inline, and routes the sweep through update_status()
+            # so it gets a reason_code + status_transitions audit row instead
+            # of a raw column write.
+            for vid in victims:
+                transitioned = await db.update_status(
+                    "session",
+                    vid,
+                    new_status=new_status,
+                    reason_code=SessionReasons.HEALTH_STALE_NO_HEARTBEAT,
+                    reason_summary=f"doctor sweep: running longer than {stale_hours}h",
+                    source="admin",
+                    actor="doctor",
+                    expected_statuses={"running"},
                 )
-                swept_count = result.rowcount or 0
+                if transitioned:
+                    swept_count += 1
+                    async with db._tx() as conn:
+                        await conn.execute(
+                            text("UPDATE sessions SET ended_at = :ended_at WHERE id = :id"),
+                            {"ended_at": _time.time(), "id": vid},
+                        )
 
         return {"running": total, "swept": swept_count, "skipped": skipped}
 

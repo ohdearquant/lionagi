@@ -1,14 +1,16 @@
 # Copyright (c) 2023-2026, HaiyangLi <quantocean.li at gmail dot com>
 # SPDX-License-Identifier: Apache-2.0
-"""FAIL-before / PASS-after race-condition tests for update_status CAS guard
-and orphan-cleanup in prune_old_data.
+"""Race-condition tests for update_status CAS guard and orphan-cleanup in
+prune_old_data.
 
-Each race test has two sub-phases:
-  1. _unguarded_*: calls update_status WITHOUT expected_statuses (simulates
-     the old code path) — asserts the terminal-state overwrite DOES happen
-     (demonstrates the bug was real).
-  2. _guarded_*: calls update_status WITH expected_statuses (the fix) — asserts
-     the overwrite is BLOCKED and the winner status is preserved.
+Two independent protections cover the terminal-overwrite race:
+  1. _unguarded_*: calls update_status WITHOUT expected_statuses. The write path
+     protects terminal states unconditionally — an attempt to move an entity out
+     of a terminal status without an explicit override is rejected loudly
+     (TransitionRejectedError) and the terminal status is preserved.
+  2. _guarded_*: calls update_status WITH expected_statuses. A compare-and-set
+     miss (current status not in the expected set) is a benign skip — it returns
+     False and preserves the winner status, without raising.
 """
 
 from __future__ import annotations
@@ -22,7 +24,7 @@ from sqlalchemy import text
 
 pytest.importorskip("fastapi", reason="studio extra not installed")
 
-from lionagi.state.db import StateDB  # noqa: E402
+from lionagi.state.db import StateDB, TransitionRejectedError  # noqa: E402
 
 from ._helpers import run_async  # noqa: E402
 
@@ -96,12 +98,13 @@ async def _flip_status(db_path: Path, entity_type: str, entity_id: str, new_stat
 # ── FAIL-before: phantom session race ─────────────────────────────────────────
 
 
-def test_session_race_unguarded_overwrites_terminal(tmp_path, monkeypatch):
-    """WITHOUT the CAS guard, update_status blindly overwrites 'completed'→'failed'.
+def test_session_race_unguarded_write_rejected_by_floor(tmp_path, monkeypatch):
+    """An unguarded write out of a terminal session status is rejected loudly.
 
-    This is the FAIL-before demonstration: the bug existed because there was no
-    expected_statuses check.  The unguarded call (no expected_statuses) succeeds
-    even when the session has already reached a terminal state.
+    Terminal protection does not depend on the caller remembering to pass
+    expected_statuses: the write path itself refuses to move a session out of a
+    terminal status without an explicit override, so the reaper race cannot
+    corrupt a 'completed' session into 'failed'.
     """
     from lionagi.state.reasons import SessionReasons
 
@@ -115,8 +118,6 @@ def test_session_race_unguarded_overwrites_terminal(tmp_path, monkeypatch):
     run_async(_flip_status(db_path, "session", sid, "completed"))
     assert run_async(_get_status(db_path, "session", sid)) == "completed"
 
-    # Unguarded call — no expected_statuses — should succeed (return True) and
-    # overwrite the terminal status.  This is the BUG being demonstrated.
     async def _unguarded(db_path: Path, sid: str) -> bool:
         async with StateDB(db_path) as db:
             return await db.update_status(
@@ -127,14 +128,13 @@ def test_session_race_unguarded_overwrites_terminal(tmp_path, monkeypatch):
                 reason_summary="phantom_reaped",
                 source="system",
                 actor="test_unguarded",
-                # No expected_statuses — old code path
+                # No expected_statuses and no override — the floor rejects this.
             )
 
-    result = run_async(_unguarded(db_path, sid))
-    # The unguarded path always returns True and writes regardless of current status.
-    assert result is True
-    # Confirms the overwrite happened (this is the BUG — completed→failed).
-    assert run_async(_get_status(db_path, "session", sid)) == "failed"
+    with pytest.raises(TransitionRejectedError):
+        run_async(_unguarded(db_path, sid))
+    # Terminal status preserved; the overwrite never landed.
+    assert run_async(_get_status(db_path, "session", sid)) == "completed"
 
 
 # ── PASS-after: phantom session race ──────────────────────────────────────────
@@ -180,10 +180,12 @@ def test_session_race_guarded_preserves_terminal(tmp_path, monkeypatch):
 # ── FAIL-before: invocation race ──────────────────────────────────────────────
 
 
-def test_invocation_race_unguarded_overwrites_terminal(tmp_path, monkeypatch):
-    """WITHOUT the CAS guard, update_status blindly overwrites 'completed'→'timed_out'.
+def test_invocation_race_unguarded_write_rejected_by_floor(tmp_path, monkeypatch):
+    """An unguarded write out of a terminal invocation status is rejected loudly.
 
-    FAIL-before for the invocation deadline reaper race.
+    The deadline reaper cannot corrupt a 'completed' invocation into 'timed_out':
+    the write path refuses to leave a terminal status without an explicit
+    override, independent of expected_statuses.
     """
     from lionagi.state.reasons import RunReasons
 
@@ -206,13 +208,13 @@ def test_invocation_race_unguarded_overwrites_terminal(tmp_path, monkeypatch):
                 reason_summary="invocation_deadline_exceeded",
                 source="system",
                 actor="test_unguarded",
-                # No expected_statuses — old code path
+                # No expected_statuses and no override — the floor rejects this.
             )
 
-    result = run_async(_unguarded(db_path, iid))
-    assert result is True  # Unguarded: always writes
-    # BUG: completed overwritten with timed_out.
-    assert run_async(_get_status(db_path, "invocation", iid)) == "timed_out"
+    with pytest.raises(TransitionRejectedError):
+        run_async(_unguarded(db_path, iid))
+    # Terminal status preserved.
+    assert run_async(_get_status(db_path, "invocation", iid)) == "completed"
 
 
 # ── PASS-after: invocation race ───────────────────────────────────────────────

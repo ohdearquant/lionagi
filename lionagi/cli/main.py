@@ -330,6 +330,15 @@ def main(argv: list[str] | None = None) -> int:
 
         return run_monitor_wait(_argv[2:])
 
+    # `li wait <id> [<id2> ...] [--interval SECS]` — the ADR-0094 completion
+    # contract. Intercepted before argparse for the same reason as `monitor
+    # run` above: free-form positional ids must not go through subparser
+    # dispatch.
+    if _argv and _argv[0] == "wait":
+        from .wait import run_wait
+
+        return run_wait(_argv[1:])
+
     parser = argparse.ArgumentParser(
         prog="li",
         description="lionagi command line — spawn subagents via any CLI-backed provider.",
