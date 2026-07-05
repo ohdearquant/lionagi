@@ -175,7 +175,11 @@ def test_runs_list_project_null_filter(tmp_path, monkeypatch):
 
 
 async def _seed_running_session_with_activity(
-    db_path: Path, session_id: str, last_message_at: float, invocation_kind: str = "agent"
+    db_path: Path,
+    session_id: str,
+    last_message_at: float,
+    invocation_kind: str = "agent",
+    artifacts_path: str | None = None,
 ) -> None:
     async with StateDB(db_path) as db:
         pid = str(uuid.uuid4())
@@ -189,6 +193,7 @@ async def _seed_running_session_with_activity(
                 "invocation_kind": invocation_kind,
                 "started_at": last_message_at,
                 "last_message_at": last_message_at,
+                "artifacts_path": artifacts_path,
             }
         )
 
@@ -207,6 +212,9 @@ def test_runs_list_threshold_crossing_session_reports_stale_not_unresponsive(tmp
     old_activity = time.time() - 7 * 3600
     _run(_seed_running_session_with_activity(db_path, sid, last_message_at=old_activity))
     client = _make_client(tmp_path, monkeypatch, db_path)
+    # Pin liveness to True: this test asserts the UNRESPONSIVE→'stale' mapping,
+    # not the liveness oracle (the seeded session has no real process).
+    monkeypatch.setattr("lionagi.studio.services.runs._session_liveness", lambda *a, **k: True)
 
     r = client.get("/api/runs")
     assert r.status_code == 200
@@ -217,3 +225,87 @@ def test_runs_list_threshold_crossing_session_reports_stale_not_unresponsive(tmp
         f"expected 'stale', got {target['effective_health']!r}; "
         "UNRESPONSIVE must be mapped to 'stale' for dashboard compatibility"
     )
+
+
+def test_runs_list_confirmed_dead_process_reports_stale_despite_recent_activity(
+    tmp_path, monkeypatch
+):
+    """A running session whose recorded process is confirmed dead must report
+    'stale' even with fresh messages — positive death evidence outranks the
+    activity guard."""
+    db_path = tmp_path / "state.db"
+    sid = str(uuid.uuid4())
+    _run(
+        _seed_running_session_with_activity(
+            db_path, sid, last_message_at=time.time() - 30, artifacts_path=str(tmp_path)
+        )
+    )
+    client = _make_client(tmp_path, monkeypatch, db_path)
+    monkeypatch.setattr("lionagi.studio.services.runs._session_liveness", lambda *a, **k: False)
+
+    r = client.get("/api/runs")
+    assert r.status_code == 200
+    target = next((run for run in r.json()["runs"] if run["id"] == sid), None)
+    assert target is not None
+    assert target["effective_health"] == "stale"
+
+
+def test_runs_list_unknown_liveness_recent_activity_stays_healthy(tmp_path, monkeypatch):
+    """Unknown liveness (externally-driven session, no matchable pid) keeps the
+    activity guard: recent messages classify as healthy."""
+    db_path = tmp_path / "state.db"
+    sid = str(uuid.uuid4())
+    _run(
+        _seed_running_session_with_activity(
+            db_path, sid, last_message_at=time.time() - 30, artifacts_path=str(tmp_path)
+        )
+    )
+    client = _make_client(tmp_path, monkeypatch, db_path)
+    monkeypatch.setattr("lionagi.studio.services.runs._session_liveness", lambda *a, **k: None)
+
+    r = client.get("/api/runs")
+    assert r.status_code == 200
+    target = next((run for run in r.json()["runs"] if run["id"] == sid), None)
+    assert target is not None
+    assert target["effective_health"] == "healthy"
+
+
+def test_runs_list_node_metadata_dead_pid_reports_stale_without_monkeypatch(tmp_path, monkeypatch):
+    """End-to-end: a running session whose node_metadata records a pid that is
+    no longer running must report 'stale' through the real oracle — the list
+    query must surface node_metadata to the liveness check."""
+    import subprocess
+
+    proc = subprocess.Popen(["/bin/sleep", "0"])  # noqa: S603
+    proc.wait()
+    dead_pid = proc.pid
+
+    db_path = tmp_path / "state.db"
+    sid = str(uuid.uuid4())
+
+    async def _seed() -> None:
+        async with StateDB(db_path) as db:
+            pid = str(uuid.uuid4())
+            await db.create_progression(pid)
+            await db.create_session(
+                {
+                    "id": sid,
+                    "progression_id": pid,
+                    "name": "test-dead-pid",
+                    "status": "running",
+                    "invocation_kind": "agent",
+                    "started_at": time.time() - 60,
+                    "last_message_at": time.time() - 30,
+                    "artifacts_path": str(tmp_path),
+                    "node_metadata": {"pid": dead_pid},
+                }
+            )
+
+    _run(_seed())
+    client = _make_client(tmp_path, monkeypatch, db_path)
+
+    r = client.get("/api/runs")
+    assert r.status_code == 200
+    target = next((run for run in r.json()["runs"] if run["id"] == sid), None)
+    assert target is not None
+    assert target["effective_health"] == "stale"

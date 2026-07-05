@@ -467,18 +467,27 @@ def _adapt_detail(
     }
 
 
-def _run_row(s: dict[str, Any], now: float) -> dict[str, Any]:
+def _session_liveness(s: dict[str, Any], ps_snapshot: str | None = None) -> bool | None:
+    """Tri-state liveness for a running session row, via the shared admin oracle."""
+    from .admin import process_liveness
+
+    ap = s.get("artifacts_path")
+    return process_liveness(s, Path(ap) if ap else None, ps_snapshot)
+
+
+def _run_row(s: dict[str, Any], now: float, *, process_alive: bool | None = None) -> dict[str, Any]:
     """The canonical Run row shape. Shared by the list and detail routes so the
     two can never drift out of contract (the detail route used to drop fields the
     list route emits, e.g. invocation_id). Caller supplies a session dict carrying
-    branch_count / message_count / last_message_at.
+    branch_count / message_count / last_message_at, plus tri-state process
+    liveness (None = unknown) so a process-dead run cannot render as healthy.
     """
     from lionagi.state.health import SessionHealth, classify_session_health
 
     health = classify_session_health(
         s,
         now=now,
-        process_alive=True,
+        process_alive=process_alive,
         has_artifacts=bool(s.get("artifacts_path")),
         has_stale_locks=False,
     )
@@ -526,6 +535,7 @@ async def list_runs(
     status_set = _normalize_status_filter(status)
     now = time.time()
     out = []
+    snapshot: str | None = None
     for s in sessions:
         if playbook and playbook.lower() not in (s.get("playbook_name") or "").lower():
             continue
@@ -536,7 +546,14 @@ async def list_runs(
             continue
         if status_set and s.get("status") not in status_set:
             continue
-        out.append(_run_row(s, now))
+        alive: bool | None = None
+        if s.get("status") == "running":
+            if snapshot is None:
+                from .admin import _ps_snapshot
+
+                snapshot = _ps_snapshot()
+            alive = _session_liveness(s, snapshot)
+        out.append(_run_row(s, now, process_alive=alive))
     return out
 
 
@@ -600,15 +617,14 @@ async def get_run(run_id: str) -> dict[str, Any] | None:
         default=None,
     )
 
-    row = _run_row(
-        {
-            **session,
-            "branch_count": len(branches),
-            "message_count": message_count,
-            "last_message_at": last_message_at,
-        },
-        time.time(),
-    )
+    detail_session = {
+        **session,
+        "branch_count": len(branches),
+        "message_count": message_count,
+        "last_message_at": last_message_at,
+    }
+    alive = _session_liveness(detail_session) if detail_session.get("status") == "running" else None
+    row = _run_row(detail_session, time.time(), process_alive=alive)
 
     return {
         **row,
