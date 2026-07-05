@@ -70,6 +70,7 @@ class RunReasons:
     TIMED_OUT_DEADLINE = "run.timed_out.deadline"
     ABORTED_USER = "run.aborted.user"
     CANCELLED_SIGINT = "run.cancelled.sigint"  # issue #1055
+    CANCELLED_SIGTERM = "run.cancelled.sigterm"  # externally delivered SIGTERM (exit 143)
     CANCELLED_SYSTEM = "run.cancelled.system"
     CANCELLED_ORCHESTRATOR = "run.cancelled.orchestrator"
     # `li kill` — Phase 2 reason codes (issue #1094)
