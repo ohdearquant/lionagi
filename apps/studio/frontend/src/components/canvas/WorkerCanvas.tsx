@@ -8,16 +8,8 @@ import ReactFlow, {
   addEdge,
   useNodesState,
   useEdgesState,
-  MarkerType,
 } from "reactflow";
-import type {
-  Connection,
-  Edge,
-  Node,
-  OnSelectionChangeParams,
-  NodeMouseHandler,
-  EdgeMouseHandler,
-} from "reactflow";
+import type { Connection, Edge, Node, NodeMouseHandler, EdgeMouseHandler } from "reactflow";
 import "reactflow/dist/style.css";
 
 import StepNodeComponent from "./StepNode";

@@ -3256,6 +3256,116 @@ class StateDB:
             )
         return result.rowcount > 0
 
+    # ── Workflow definitions ───────────────────────────────────────────
+
+    @staticmethod
+    def _decode_workflow_def(row: Any) -> dict[str, Any]:
+        d = dict(row)
+        if isinstance(d.get("spec_json"), str):
+            try:
+                d["spec_json"] = json.loads(d["spec_json"])
+            except (json.JSONDecodeError, TypeError):
+                pass
+        return d
+
+    async def create_workflow_def(self, defn: dict[str, Any]) -> None:
+        now = time.time()
+        async with self._tx() as conn:
+            await conn.execute(
+                text(
+                    "INSERT INTO workflow_defs "
+                    "(id, name, description, spec_json, created_at, updated_at) "
+                    "VALUES (:id, :name, :description, :spec_json, :created_at, :updated_at)"
+                ).bindparams(bindparam("spec_json", type_=JSON)),
+                {
+                    "id": defn["id"],
+                    "name": defn["name"],
+                    "description": defn.get("description"),
+                    "spec_json": defn.get("spec_json"),
+                    "created_at": defn.get("created_at", now),
+                    "updated_at": defn.get("updated_at", now),
+                },
+            )
+
+    async def get_workflow_def(self, def_id: str) -> dict[str, Any] | None:
+        async with self._read() as conn:
+            row = (
+                (
+                    await conn.execute(
+                        text("SELECT * FROM workflow_defs WHERE id = :id"),
+                        {"id": def_id},
+                    )
+                )
+                .mappings()
+                .first()
+            )
+        return None if row is None else self._decode_workflow_def(row)
+
+    async def get_workflow_def_by_name(self, name: str) -> dict[str, Any] | None:
+        async with self._read() as conn:
+            row = (
+                (
+                    await conn.execute(
+                        text("SELECT * FROM workflow_defs WHERE name = :name"),
+                        {"name": name},
+                    )
+                )
+                .mappings()
+                .first()
+            )
+        return None if row is None else self._decode_workflow_def(row)
+
+    async def list_workflow_defs(
+        self,
+        *,
+        limit: int = 100,
+        offset: int = 0,
+    ) -> list[dict[str, Any]]:
+        async with self._read() as conn:
+            rows = (
+                (
+                    await conn.execute(
+                        text(
+                            "SELECT * FROM workflow_defs "
+                            "ORDER BY updated_at DESC LIMIT :limit OFFSET :offset"
+                        ),
+                        {"limit": limit, "offset": offset},
+                    )
+                )
+                .mappings()
+                .all()
+            )
+        return [self._decode_workflow_def(r) for r in rows]
+
+    async def update_workflow_def(self, def_id: str, **fields: Any) -> None:
+        allowed = {"name", "description", "spec_json"}
+        bad = set(fields) - allowed
+        if bad:
+            raise ValueError(f"Invalid workflow_def field(s): {bad}")
+        json_fields = {"spec_json"}
+        fields["updated_at"] = time.time()
+        sets_parts = []
+        bind_params = []
+        for k in fields:
+            sets_parts.append(f'"{k}" = :{k}')
+            if k in json_fields:
+                bind_params.append(bindparam(k, type_=JSON))
+        params = dict(fields)
+        params["_id"] = def_id
+        stmt = text(f"UPDATE workflow_defs SET {', '.join(sets_parts)} WHERE id = :_id")  # noqa: S608
+        if bind_params:
+            stmt = stmt.bindparams(*bind_params)
+        async with self._tx() as conn:
+            await conn.execute(stmt, params)
+
+    async def delete_workflow_def(self, def_id: str) -> bool:
+        async with self._tx() as conn:
+            result = await conn.execute(
+                text("DELETE FROM workflow_defs WHERE id = :id"),
+                {"id": def_id},
+            )
+        return result.rowcount > 0
+
     # ── Session controls (ADR-0085 part 1: run control plane transport) ────
     # session_controls rows are written by `li o ctl pause|resume|msg` and
     # consumed by the control poller task in cli/orchestrate/flow.py's

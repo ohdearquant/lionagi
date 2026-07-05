@@ -1,7 +1,8 @@
 // ADR-0021 §E: CIResultCard renders the lint/test/build/typecheck
 // matrix with per-command timings — the layout from the spec.
 
-import StatusPill from "@/components/StatusPill";
+import StatusPill from "@/components/ui/StatusPill";
+import { IconCheck, IconClose } from "@/components/ui/icons";
 
 interface CIRunCommand {
   command: string;
@@ -123,8 +124,14 @@ export default function CIResultCard({ name, content }: CIResultCardProps) {
                   <span className="tabular-nums text-content-secondary">
                     {formatDuration(cmd.duration_seconds)}
                   </span>
-                  <span className={cmd.passed ? "text-status-success" : "text-status-error"}>
-                    {cmd.passed ? "✓" : "✕"}
+                  <span
+                    className={`flex items-center ${cmd.passed ? "text-status-success" : "text-status-error"}`}
+                  >
+                    {cmd.passed ? (
+                      <IconCheck size={11} strokeWidth={2.5} />
+                    ) : (
+                      <IconClose size={11} strokeWidth={2.5} />
+                    )}
                   </span>
                 </span>
               </li>

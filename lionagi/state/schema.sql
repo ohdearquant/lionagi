@@ -653,6 +653,25 @@ CREATE INDEX IF NOT EXISTS idx_engine_defs_kind
 CREATE INDEX IF NOT EXISTS idx_engine_defs_updated
   ON engine_defs(updated_at DESC);
 
+-- ── Workflow definitions ──────────────────────────────────────────────────────
+-- Named, persisted workflow graphs authored in the Studio Designer.  The
+-- spec_json holds the canvas graph (nodes, edges, inputs, outputs) that the
+-- frontend renders and serializes to YAML.
+
+CREATE TABLE IF NOT EXISTS workflow_defs (
+  id          TEXT    PRIMARY KEY,
+  name        TEXT    NOT NULL UNIQUE,
+  description TEXT,
+  spec_json   JSON,
+  created_at  REAL    NOT NULL,
+  updated_at  REAL    NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_workflow_defs_name
+  ON workflow_defs(name);
+CREATE INDEX IF NOT EXISTS idx_workflow_defs_updated
+  ON workflow_defs(updated_at);
+
 -- ── Session controls (ADR-0085 part 1: run control plane transport) ───────────
 -- One row per operator control verb queued against a live session.  A poller
 -- task in cli/orchestrate/flow.py's _execute_dag (same lifecycle as the

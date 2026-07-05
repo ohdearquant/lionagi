@@ -8,7 +8,9 @@ import path from 'path'
 // 127.0.0.1, not localhost: the daemon binds IPv4 explicitly, and on hosts
 // where localhost resolves to ::1 first, proxying to it would fail even
 // though preview itself (bound to --host 127.0.0.1) is healthy.
-const apiTarget = `http://127.0.0.1:${process.env.STUDIO_E2E_API_PORT ?? '8765'}`
+// STUDIO_API_URL overrides the whole target (e.g. an isolated dev daemon).
+const apiTarget =
+  process.env.STUDIO_API_URL ?? `http://127.0.0.1:${process.env.STUDIO_E2E_API_PORT ?? '8765'}`
 
 export default defineConfig({
   plugins: [

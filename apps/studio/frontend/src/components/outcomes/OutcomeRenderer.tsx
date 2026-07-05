@@ -30,7 +30,7 @@ export default function OutcomeRenderer({ artifact }: OutcomeRendererProps) {
             <span className="font-mono">{artifact.id.slice(0, 8)}</span>
           </div>
           <div className="mb-1 text-body text-content-primary">{artifact.name}</div>
-          <pre className="overflow-x-auto rounded bg-surface-base p-2 text-meta font-mono text-content-secondary">
+          <pre className="max-h-64 overflow-auto rounded bg-surface-base p-2 text-meta font-mono text-content-secondary">
             {JSON.stringify(content, null, 2)}
           </pre>
         </div>

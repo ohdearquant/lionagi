@@ -2,7 +2,7 @@
 // gate (play-gate, show-gate, etc.) with feedback and notes surfaced
 // alongside, not buried in a text field.
 
-import StatusPill from "@/components/StatusPill";
+import StatusPill from "@/components/ui/StatusPill";
 
 interface GateVerdictContent {
   gate_passed?: boolean;

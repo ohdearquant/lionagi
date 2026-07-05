@@ -2,7 +2,7 @@
 // severity/category breakdown with blocking findings highlighted, not
 // as raw text. Mirrors the spec layout in the ADR.
 
-import StatusPill from "@/components/StatusPill";
+import StatusPill from "@/components/ui/StatusPill";
 
 interface Finding {
   severity: "critical" | "high" | "medium" | "low" | "info";

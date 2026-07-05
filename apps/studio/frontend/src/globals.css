@@ -1,54 +1,94 @@
+@import "./theme.css";
 @tailwind base;
 @tailwind components;
 @tailwind utilities;
 
 @layer base {
-  /* ── Light theme (default) ── */
+  /* Legacy tokens for existing pages — bridged from theme.css canonical values.
+     These keep legacy Tailwind classnames (bg-surface-nav, border-edge, etc.)
+     rendering correctly while the new shell uses the canonical theme tokens. */
   :root {
-    /* ─── Surface ─── */
-    --surface-base: #f8f8f7;
-    --surface-raised: #ffffff;
-    --surface-overlay: #f2f2f0;
-    --surface-nav: #ffffff;
-    --surface-input: #f0f0ee;
-    --surface-input-hover: #e8e8e6;
+    /* Surface aliases */
+    --surface-nav: var(--surface-raised);
+    --surface-input: color-mix(in srgb, var(--surface-overlay) 60%, var(--surface-raised) 40%);
+    --surface-input-hover: var(--surface-overlay);
 
-    /* ─── Shadow ─── */
-    --shadow-card: 0 1px 3px rgba(0, 0, 0, 0.06), 0 1px 2px rgba(0, 0, 0, 0.04);
-    --shadow-card-hover: 0 2px 6px rgba(0, 0, 0, 0.08), 0 1px 3px rgba(0, 0, 0, 0.05);
-    --shadow-header: 0 1px 0 var(--edge-default);
+    /* Shadow */
+    --shadow-card: 0 1px 3px rgba(0, 0, 0, 0.3), 0 1px 2px rgba(0, 0, 0, 0.2);
+    --shadow-card-hover: 0 2px 8px rgba(0, 0, 0, 0.4), 0 1px 4px rgba(0, 0, 0, 0.25);
+    --shadow-header: 0 1px 0 var(--edge-hairline);
 
-    /* ─── Content (text) ─── */
-    --content-primary: #18181b;
-    --content-secondary: #52525b;
-    --content-muted: #686875; /* was #6e6e7b; darkened to meet 4.5:1 on surface-input (#f0f0ee) */
+    /* Content alias */
     --content-inverse: #ffffff;
 
-    /* ─── Edge (borders, dividers) ─── */
-    --edge-default: #e4e4e7;
-    --edge-subtle: #ebebeb;
-    --edge-strong: #c4c4c8;
+    /* Edge aliases — map legacy names to canonical theme tokens */
+    --edge-default: var(--edge-hairline);
+    --edge-subtle: var(--edge-hairline);
 
-    /* ─── Interactive (buttons, links) ─── */
-    --interactive-primary: #16a34a;
-    --interactive-primary-hover: #15803d;
-    --interactive-secondary: #e8e8e6;
-    --interactive-secondary-hover: #d8d8d5;
-    --interactive-focus: rgba(22, 163, 74, 0.22);
+    /* Interactive */
+    --interactive-primary: var(--accent);
+    --interactive-primary-hover: #d4922e;
+    --interactive-secondary: var(--surface-overlay);
+    --interactive-secondary-hover: var(--surface-raised);
+    --interactive-focus: rgba(232, 163, 61, 0.22);
 
-    /* ─── Status ─── */
-    --status-success: #16a34a;
-    --status-success-bg: rgba(22, 163, 74, 0.08);
-    --status-running: #2563eb;
-    --status-running-bg: rgba(37, 99, 235, 0.08);
-    --status-error: #dc2626;
-    --status-error-bg: rgba(220, 38, 38, 0.08);
-    --status-warning: #c27f10;
-    --status-warning-bg: rgba(194, 127, 16, 0.08);
-    --status-selected: #7c3aed;
-    --status-selected-bg: rgba(124, 58, 237, 0.08);
+    /* Status bg variants (not in canonical theme — kept for legacy pages) */
+    --status-success-bg: rgba(79, 180, 119, 0.1);
+    --status-running-bg: rgba(91, 168, 245, 0.1);
+    --status-error: var(--status-failure);
+    --status-error-bg: rgba(229, 96, 76, 0.1);
+    --status-warning: var(--status-pending);
+    --status-warning-bg: rgba(232, 163, 61, 0.1);
+    --status-selected: #a78bfa;
+    --status-selected-bg: rgba(167, 139, 250, 0.1);
 
-    /* ─── Role colors ─── */
+    /* Role colors */
+    --role-researcher: #4fb477;
+    --role-implementer: #a78bfa;
+    --role-reviewer: #14b8a6;
+    --role-critic: var(--accent);
+    --role-analyst: #5ba8f5;
+    --role-architect: #f472b6;
+    --role-tester: #22d3ee;
+
+    /* DAG SVG palette */
+    --dag-pending-bg: #1c1c1e;
+    --dag-pending-border: #38383f;
+    --dag-pending-label: #62626e;
+    --dag-pending-dot: #38383f;
+    --dag-running-bg: #0d1a2d;
+    --dag-running-border: #5ba8f5;
+    --dag-running-label: #93c5fd;
+    --dag-running-dot: #5ba8f5;
+    --dag-completed-bg: #0c1e14;
+    --dag-completed-border: #4fb477;
+    --dag-completed-label: #86efac;
+    --dag-completed-dot: #4fb477;
+    --dag-failed-bg: #200f0f;
+    --dag-failed-border: #e5604c;
+    --dag-failed-label: #fca5a5;
+    --dag-failed-dot: #e5604c;
+    --dag-edge-pending: var(--edge-hairline);
+    --dag-edge-done: #4fb477;
+    --dag-hover-border: #62626e;
+    --dag-assign-text: #848484;
+  }
+
+  /* Light theme — legacy aliases inherit from theme.css [data-theme="light"] */
+  [data-theme="light"] {
+    --surface-nav: var(--surface-raised);
+    --surface-input: var(--surface-overlay);
+    --surface-input-hover: #e5e5e3;
+
+    --shadow-card: 0 1px 3px rgba(0, 0, 0, 0.06), 0 1px 2px rgba(0, 0, 0, 0.04);
+    --shadow-card-hover: 0 2px 6px rgba(0, 0, 0, 0.08), 0 1px 3px rgba(0, 0, 0, 0.05);
+    --shadow-header: 0 1px 0 var(--edge-hairline);
+
+    --interactive-primary: var(--accent);
+    --interactive-primary-hover: #d4922e;
+    --interactive-secondary: var(--surface-overlay);
+    --interactive-secondary-hover: var(--surface-raised);
+
     --role-researcher: #16a34a;
     --role-implementer: #7c3aed;
     --role-reviewer: #0d9488;
@@ -57,7 +97,6 @@
     --role-architect: #db2777;
     --role-tester: #0891b2;
 
-    /* ─── DAG SVG palette ─── */
     --dag-pending-bg: #f5f5f4;
     --dag-pending-border: #d4d4d4;
     --dag-pending-label: #737373;
@@ -77,112 +116,44 @@
     --dag-edge-pending: #d4d4d4;
     --dag-edge-done: #16a34a;
     --dag-hover-border: #737373;
-    --dag-assign-text: #707070; /* was #c4c4c4; darkened to meet 4.5:1 on dag-pending-bg (#f5f5f4) */
+    --dag-assign-text: #707070;
   }
 
-  /* ── Dark theme ── */
+  /* Legacy .dark class — mirrors :root (dark is default now) so old
+     theme-toggle code that sets/removes .dark still works correctly. */
   .dark {
-    /* ─── Surface ─── */
-    --surface-base: #111113;
-    --surface-raised: #18181b;
-    --surface-overlay: #1e1e22;
-    --surface-nav: #18181b;
-    --surface-input: #222226;
-    --surface-input-hover: #2a2a2f;
-
-    /* ─── Shadow ─── */
+    --surface-nav: var(--surface-raised);
+    --surface-input: color-mix(in srgb, var(--surface-overlay) 60%, var(--surface-raised) 40%);
+    --surface-input-hover: var(--surface-overlay);
     --shadow-card: 0 1px 3px rgba(0, 0, 0, 0.3), 0 1px 2px rgba(0, 0, 0, 0.2);
     --shadow-card-hover: 0 2px 8px rgba(0, 0, 0, 0.4), 0 1px 4px rgba(0, 0, 0, 0.25);
-    --shadow-header: 0 1px 0 var(--edge-default);
-
-    /* ─── Content (text) ─── */
-    --content-primary: #e4e4e7;
-    --content-secondary: #a1a1aa;
-    --content-muted: #9696a0;
-    --content-inverse: #ffffff;
-
-    /* ─── Edge (borders, dividers) ─── */
-    --edge-default: #2d2d32;
-    --edge-subtle: #242428;
-    --edge-strong: #3e3e45;
-
-    /* ─── Interactive (buttons, links) ─── */
-    --interactive-primary: #22c55e;
-    --interactive-primary-hover: #16a34a;
-    --interactive-secondary: #2d2d32;
-    --interactive-secondary-hover: #38383f;
-    --interactive-focus: rgba(34, 197, 94, 0.25);
-
-    /* ─── Status ─── */
-    --status-success: #22c55e;
-    --status-success-bg: rgba(34, 197, 94, 0.1);
-    --status-running: #60a5fa;
-    --status-running-bg: rgba(96, 165, 250, 0.1);
-    --status-error: #f87171;
-    --status-error-bg: rgba(248, 113, 113, 0.1);
-    --status-warning: #fbbf24;
-    --status-warning-bg: rgba(251, 191, 36, 0.1);
-    --status-selected: #a78bfa;
-    --status-selected-bg: rgba(167, 139, 250, 0.1);
-
-    /* ─── Role colors ─── */
-    --role-researcher: #22c55e;
-    --role-implementer: #a78bfa;
-    --role-reviewer: #14b8a6;
-    --role-critic: #fbbf24;
-    --role-analyst: #60a5fa;
-    --role-architect: #f472b6;
-    --role-tester: #22d3ee;
-
-    /* ─── DAG SVG palette ─── */
-    --dag-pending-bg: #1c1c1e;
-    --dag-pending-border: #38383f;
-    --dag-pending-label: #62626e;
-    --dag-pending-dot: #38383f;
-    --dag-running-bg: #0d1a2d;
-    --dag-running-border: #60a5fa;
-    --dag-running-label: #93c5fd;
-    --dag-running-dot: #60a5fa;
-    --dag-completed-bg: #0c1e14;
-    --dag-completed-border: #22c55e;
-    --dag-completed-label: #86efac;
-    --dag-completed-dot: #22c55e;
-    --dag-failed-bg: #200f0f;
-    --dag-failed-border: #f87171;
-    --dag-failed-label: #fca5a5;
-    --dag-failed-dot: #f87171;
-    --dag-edge-pending: #2d2d32;
-    --dag-edge-done: #22c55e;
-    --dag-hover-border: #62626e;
-    --dag-assign-text: #848484; /* was #3e3e45; lightened to meet 4.5:1 on dag-pending-bg (#1c1c1e) */
   }
 }
 
 /* ── Semantic typography utilities ──────────────────────────────────────────
-   text-meta   → 10px  (labels, counters, timestamps, chip labels)
-   text-body   → 12px  (content paragraphs, tool summaries)
-   text-label  → 13px  (step names, prominent identifiers)
-   text-heading → 14px (section headers; use sparingly)
-   text-[9px] is reserved only for UPPERCASE tracking labels (section dividers)
-   Do NOT use text-[10px] / text-[11px] / text-[12.5px] / text-[13px] inline.
+   text-meta   → --t-xs (11px) — chips, badges, counters, timestamps
+   text-body   → --t-sm (12px) — content paragraphs, tool summaries
+   text-label  → --t-base (13px) — step names, prominent identifiers
+   text-heading → --t-md (14px) — section headers; use sparingly
+   Do NOT use text-[9px] / text-[10px] / text-[11px] / text-[12.5px] inline.
 */
 @layer utilities {
   .text-meta {
-    font-size: 10px;
+    font-size: var(--t-xs);
     line-height: 1.4;
     letter-spacing: 0.01em;
   }
   .text-body {
-    font-size: 12px;
+    font-size: var(--t-sm);
     line-height: 1.55;
   }
   .text-label {
-    font-size: 13px;
+    font-size: var(--t-base);
     line-height: 1.4;
     letter-spacing: -0.005em;
   }
   .text-heading {
-    font-size: 14px;
+    font-size: var(--t-md);
     line-height: 1.3;
     letter-spacing: -0.01em;
   }
@@ -193,6 +164,56 @@
   }
   .shadow-card-hover {
     box-shadow: var(--shadow-card-hover);
+  }
+
+  /* Meta-label caps — en gets uppercase + wide tracking; zh keeps case and
+     nearly no tracking (wide-tracked hanzi read as broken spacing). */
+  .ui-uppercase {
+    text-transform: uppercase;
+    letter-spacing: var(--tracking-meta);
+  }
+  :lang(zh) .ui-uppercase {
+    text-transform: none;
+  }
+
+  /* One keyboard-focus contract. Hover may use surface-overlay;
+     focus-visible always shows the accent ring. */
+  .focus-ring {
+    outline: none;
+  }
+  .focus-ring:focus-visible {
+    box-shadow: var(--focus-ring);
+  }
+
+  /* Designer canvas substrate — 16px technical dot grid. Alignment
+     authority, not decoration; Designer-only. The vignette glow lives in
+     world space (anchored to the graph, not the container) so container
+     resizes never shift it. */
+  .designer-canvas {
+    background: radial-gradient(var(--canvas-grid) 0.65px, transparent 0.65px), var(--surface-base);
+    background-size:
+      16px 16px,
+      auto;
+  }
+  .designer-vignette {
+    background: radial-gradient(circle, var(--canvas-vignette), transparent 58%);
+    pointer-events: none;
+  }
+
+  /* Node inspector expands from its card — quick, no layout motion */
+  @keyframes inspector-in {
+    from {
+      opacity: 0;
+      transform: scale(0.97);
+    }
+    to {
+      opacity: 1;
+      transform: scale(1);
+    }
+  }
+  .inspector-in {
+    animation: inspector-in 120ms ease-out;
+    transform-origin: top left;
   }
 
   /* Skeleton pulse */
@@ -229,7 +250,7 @@
   }
 }
 .animate-page-enter {
-  animation: page-enter 0.2s ease-out both;
+  animation: page-enter 0.25s ease-out both;
 }
 
 /* ── Markdown rendering ────────────────────────────────────────────────────
@@ -238,7 +259,7 @@
 */
 .markdown-body {
   color: var(--content-secondary);
-  font-size: 13px;
+  font-size: var(--t-base);
   line-height: 1.65;
   font-family:
     ui-sans-serif,
@@ -417,4 +438,88 @@
 }
 .animate-fade-in {
   animation: fade-in 0.15s ease-out both;
+}
+
+/* ── Live pulse (running indicators) — terminal states never animate ──────── */
+@keyframes live-pulse {
+  0%,
+  100% {
+    opacity: 1;
+    transform: scale(1);
+  }
+  50% {
+    opacity: 0.35;
+    transform: scale(0.75);
+  }
+}
+.live-pulse-dot {
+  animation: live-pulse 1.8s ease-in-out infinite;
+}
+
+/* Leo markdown — compact rendering for the side panel */
+.leo-md p {
+  margin: 0.25em 0;
+}
+.leo-md p:first-child {
+  margin-top: 0;
+}
+.leo-md h1,
+.leo-md h2,
+.leo-md h3 {
+  font-size: var(--t-base);
+  font-weight: 600;
+  margin: 0.5em 0 0.25em;
+}
+.leo-md ul,
+.leo-md ol {
+  margin: 0.25em 0;
+  padding-left: 1.25em;
+}
+.leo-md li {
+  margin: 0.1em 0;
+}
+.leo-md code {
+  font-family: var(--font-data);
+  font-size: 0.9em;
+  background: var(--surface-overlay);
+  padding: 0.1em 0.3em;
+  border-radius: 3px;
+}
+.leo-md pre {
+  background: var(--surface-base);
+  border: 1px solid var(--edge-hairline);
+  border-radius: 4px;
+  padding: 0.5em;
+  overflow-x: auto;
+  margin: 0.4em 0;
+  font-size: var(--t-xs);
+}
+.leo-md pre code {
+  background: none;
+  padding: 0;
+}
+.leo-md a {
+  color: var(--accent);
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+.leo-md blockquote {
+  border-left: 2px solid var(--edge-strong);
+  padding-left: 0.75em;
+  margin: 0.4em 0;
+  color: var(--content-secondary);
+}
+.leo-md table {
+  border-collapse: collapse;
+  font-size: var(--t-xs);
+  margin: 0.4em 0;
+}
+.leo-md th,
+.leo-md td {
+  border: 1px solid var(--edge-hairline);
+  padding: 0.25em 0.5em;
+}
+.leo-md th {
+  font-weight: 600;
+  background: var(--surface-overlay);
 }

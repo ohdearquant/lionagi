@@ -1,5 +1,7 @@
 # dependencies
 node_modules/
+# CI installs with npm ci from package-lock.json; keep pnpm's lockfile local-only
+pnpm-lock.yaml
 
 # next.js
 .next/
@@ -25,6 +27,9 @@ npm-debug.log*
 # misc
 .DS_Store
 *.pem
+
+# tanstack router dev state
+.tanstack/
 
 # playwright
 /playwright-report/

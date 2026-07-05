@@ -390,7 +390,6 @@ function EdgePanel({
 // ─── Exec Result Panel ───────────────────────────────────
 
 function ExecResultPanel({
-  id,
   data,
   result,
 }: {

@@ -1,4 +1,4 @@
-import Badge from "@/components/Badge";
+import Badge from "@/components/ui/Badge";
 import type { ArtifactContract, ArtifactVerification } from "@/lib/types";
 
 function formatBytes(size: number): string {
@@ -31,7 +31,7 @@ export default function ExpectedArtifacts({ contract, verification }: ExpectedAr
     <div id="expected-artifacts" className="scroll-mt-24">
       <div className="mb-2 flex items-center gap-2">
         <h2 className="text-label font-semibold text-content-primary">Expected artifacts</h2>
-        <span className="rounded bg-surface-overlay px-1.5 py-0 font-mono text-[9px] text-content-muted">
+        <span className="rounded bg-surface-overlay px-1.5 py-0 font-mono text-[length:var(--t-xs)] text-content-muted">
           {expected.length}
         </span>
         {verification?.status && (
@@ -67,22 +67,24 @@ export default function ExpectedArtifacts({ contract, verification }: ExpectedAr
                   {required ? "REQUIRED" : "OPTIONAL"}
                 </Badge>
                 <div className="min-w-0">
-                  <div className="truncate font-mono text-[11px] font-semibold text-content-primary">
+                  <div className="truncate font-mono text-[length:var(--t-xs)] font-semibold text-content-primary">
                     {entry.id}
                   </div>
                   {entry.description && (
-                    <div className="mt-0.5 text-[10px] text-content-muted">{entry.description}</div>
+                    <div className="mt-0.5 text-[length:var(--t-xs)] text-content-muted">
+                      {entry.description}
+                    </div>
                   )}
                 </div>
                 <div
-                  className="min-w-0 truncate font-mono text-[11px] text-content-secondary"
+                  className="min-w-0 truncate font-mono text-[length:var(--t-xs)] text-content-secondary"
                   title={entry.path}
                 >
                   {entry.path}
                 </div>
                 <Badge tone={statusTone}>{statusLabel}</Badge>
                 {entry.source && (
-                  <div className="md:col-start-2 md:col-span-3 text-[10px] text-content-muted">
+                  <div className="md:col-start-2 md:col-span-3 text-[length:var(--t-xs)] text-content-muted">
                     declared by:{" "}
                     <span className="font-mono text-content-secondary">{entry.source}</span>
                   </div>

@@ -1,0 +1,25 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32">
+  <style>
+    .ring { stroke: #ffffff; stroke-opacity: 0.14; }
+    @media (prefers-color-scheme: dark) {
+      .ring { stroke-opacity: 0.28; }
+    }
+  </style>
+  <defs>
+    <linearGradient id="g" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#10b981" />
+      <stop offset="1" stop-color="#0d9488" />
+    </linearGradient>
+  </defs>
+  <rect x="1" y="1" width="30" height="30" rx="8" fill="url(#g)" />
+  <rect x="1" y="1" width="30" height="30" rx="8" fill="none" stroke-width="1" class="ring" />
+  <text
+    x="16"
+    y="23"
+    text-anchor="middle"
+    font-family="ui-sans-serif, system-ui, -apple-system, sans-serif"
+    font-size="18"
+    font-weight="700"
+    fill="#ffffff"
+  >L</text>
+</svg>

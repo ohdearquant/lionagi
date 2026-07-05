@@ -6,10 +6,10 @@
     <title>Lion Studio</title>
     <script>
       (function () {
-        var t = localStorage.getItem('theme');
-        if (t === 'dark') {
-          document.documentElement.classList.add('dark');
-        }
+        var t = localStorage.getItem('theme') || 'dark';
+        document.documentElement.setAttribute('data-theme', t);
+        if (t === 'dark') document.documentElement.classList.add('dark');
+        else document.documentElement.classList.remove('dark');
       })();
     </script>
   </head>

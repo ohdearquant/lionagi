@@ -147,7 +147,7 @@ export default function PlayDag({ plays, showMd, onNodeClick }: PlayDagProps) {
         background: statusBackground(play.meta.status),
         border: `1px solid ${statusColor(play.meta.status)}`,
         color: "var(--content-primary)",
-        fontSize: 10,
+        fontSize: "var(--t-xs)",
         fontFamily: "monospace",
         width: 180,
         borderRadius: 5,

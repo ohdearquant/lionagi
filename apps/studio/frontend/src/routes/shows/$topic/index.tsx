@@ -1,16 +1,22 @@
 import { createFileRoute, Link } from "@tanstack/react-router";
 import { lazy, Suspense, useCallback, useEffect, useMemo, useState } from "react";
 import React from "react";
-import Button from "@/components/Button";
-import Duration from "@/components/Duration";
-import PageHeader from "@/components/PageHeader";
-import StatusPill from "@/components/StatusPill";
-import Timestamp from "@/components/Timestamp";
+import Button from "@/components/ui/Button";
+import Duration from "@/components/ui/Duration";
+import PageHeader from "@/components/ui/PageHeader";
+import {
+  IconChevronDown,
+  IconChevronRight,
+  IconChevronUp,
+  IconDotFilled,
+  IconDotOutline,
+} from "@/components/ui/icons";
+import StatusPill from "@/components/ui/StatusPill";
+import Timestamp from "@/components/ui/Timestamp";
 import { getShow, streamShow } from "@/lib/api";
 import type { PlayMeta, ShowDetail, ShowEvent } from "@/lib/types";
-import { empty } from "@/lib/copy";
 
-const Markdown = lazy(() => import("@/components/Markdown"));
+const Markdown = lazy(() => import("@/components/ui/Markdown"));
 const PlayDag = lazy(() => import("@/components/shows/PlayDag"));
 
 export const Route = createFileRoute("/shows/$topic/")({
@@ -174,7 +180,7 @@ function ShowSummaryPanel({
             />
           </dl>
         ) : (
-          <p className="mt-2 text-body text-content-muted">{empty.plays}</p>
+          <p className="mt-2 text-body text-content-muted">{"No plays yet."}</p>
         )}
       </section>
 
@@ -299,7 +305,7 @@ function ShowDetailPage() {
   const summary = useMemo(() => extractSummary(show?.show_md ?? null), [show]);
 
   return (
-    <main className="mx-auto flex w-full max-w-[1600px] flex-col gap-4 px-4 py-6 text-content-primary animate-page-enter">
+    <main className="flex w-full flex-col gap-4 px-6 py-6 text-content-primary animate-page-enter">
       <PageHeader
         density="tight"
         breadcrumb={[
@@ -325,7 +331,9 @@ function ShowDetailPage() {
               variant="toggle"
               size="sm"
               active={live}
-              leading={live ? "●" : "○"}
+              leading={
+                live ? <IconDotFilled size={8} /> : <IconDotOutline size={8} strokeWidth={2.5} />
+              }
               onClick={() => setLive((v) => !v)}
             >
               {live ? "Live on" : "Live off"}
@@ -357,7 +365,13 @@ function ShowDetailPage() {
                 className="flex items-center justify-between text-left text-label font-semibold text-content-primary hover:text-content-secondary transition-colors"
               >
                 <span>Plan &amp; decisions</span>
-                <span className="text-content-muted text-body ml-2">{showPlan ? "▴" : "▾"}</span>
+                <span className="ml-2 flex items-center text-content-muted">
+                  {showPlan ? (
+                    <IconChevronUp size={10} strokeWidth={2.25} />
+                  ) : (
+                    <IconChevronDown size={10} strokeWidth={2.25} />
+                  )}
+                </span>
               </button>
               {showPlan ? (
                 <div className="overflow-auto rounded border border-edge bg-surface-raised p-4 max-h-[calc(100vh-18rem)]">
@@ -469,10 +483,14 @@ function ShowDetailPage() {
                               </td>
                               <td className="px-3 py-2">
                                 <span
-                                  className="text-body text-content-muted"
+                                  className="flex items-center text-content-muted"
                                   aria-label={isExpanded ? "Collapse" : "Expand"}
                                 >
-                                  {isExpanded ? "▴" : "▾"}
+                                  {isExpanded ? (
+                                    <IconChevronUp size={10} strokeWidth={2.25} />
+                                  ) : (
+                                    <IconChevronDown size={10} strokeWidth={2.25} />
+                                  )}
                                 </span>
                               </td>
                             </tr>
@@ -501,8 +519,8 @@ function ShowDetailPage() {
                                         </div>
                                         <div className="mt-1">
                                           <Link
-                                            to="/runs/$id"
-                                            params={{ id: play.session_id }}
+                                            to="/fleet"
+                                            search={{ s: play.session_id }}
                                             className="inline-flex items-center gap-1 text-body font-medium text-interactive-primary hover:underline"
                                           >
                                             {play.session_name ?? play.session_id}
@@ -589,7 +607,13 @@ function ShowDetailPage() {
                                         }
                                         className="flex items-center gap-1 text-meta uppercase tracking-[0.06em] text-content-muted hover:text-content-primary transition-colors"
                                       >
-                                        <span>{rawExpanded[play.name] ? "▾" : "▸"}</span>
+                                        <span className="flex items-center">
+                                          {rawExpanded[play.name] ? (
+                                            <IconChevronDown size={9} strokeWidth={2.25} />
+                                          ) : (
+                                            <IconChevronRight size={9} strokeWidth={2.25} />
+                                          )}
+                                        </span>
                                         <span>Raw data</span>
                                       </button>
                                       {rawExpanded[play.name] && (
@@ -601,7 +625,7 @@ function ShowDetailPage() {
                                                 text={JSON.stringify(play.meta, null, 2)}
                                               />
                                             </div>
-                                            <pre className="mt-1 overflow-auto rounded border border-edge bg-surface-raised p-2 font-mono text-meta text-content-secondary">
+                                            <pre className="mt-1 max-h-64 overflow-auto rounded border border-edge bg-surface-raised p-2 font-mono text-meta text-content-secondary">
                                               {JSON.stringify(play.meta, null, 2)}
                                             </pre>
                                           </div>
@@ -613,7 +637,7 @@ function ShowDetailPage() {
                                                   text={JSON.stringify(play.verdict, null, 2)}
                                                 />
                                               </div>
-                                              <pre className="mt-1 overflow-auto rounded border border-edge bg-surface-raised p-2 font-mono text-meta text-content-secondary">
+                                              <pre className="mt-1 max-h-64 overflow-auto rounded border border-edge bg-surface-raised p-2 font-mono text-meta text-content-secondary">
                                                 {JSON.stringify(play.verdict, null, 2)}
                                               </pre>
                                             </div>

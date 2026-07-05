@@ -4,6 +4,7 @@ import ModelConfigTable from "@/components/ModelConfigTable";
 
 const WorkerCanvas = lazy(() => import("@/components/canvas/WorkerCanvas"));
 import { getWorkerGraph, getWorkerRaw, listAgents, updateWorker, validateWorker } from "@/lib/api";
+import { IconChevronDown, IconChevronUp } from "@/components/ui/icons";
 import type {
   AgentProfileSummary,
   ModelConfig,
@@ -157,14 +158,19 @@ export default function GraphPlaybookEditor({ workerName }: { workerName: string
           value={description}
           onChange={(e) => setDescription(e.target.value)}
           placeholder="Playbook description..."
-          className="flex-1 rounded-md border border-transparent bg-transparent px-2 py-1 text-body text-content-secondary placeholder-content-muted hover:border-edge focus:border-edge-strong focus:outline-none"
+          className="flex-1 rounded-md border border-transparent bg-transparent px-2 py-1 text-body text-content-secondary placeholder:text-content-muted hover:border-edge focus:border-edge-strong focus:outline-none"
         />
 
         <button
           onClick={() => setShowModels((v) => !v)}
           className="rounded-md bg-interactive-secondary px-3 py-1 text-meta text-content-secondary hover:bg-interactive-secondary-hover hover:text-content-primary"
         >
-          Models {showModels ? "▴" : "▾"}
+          Models{" "}
+          {showModels ? (
+            <IconChevronUp size={9} strokeWidth={2.25} className="inline" />
+          ) : (
+            <IconChevronDown size={9} strokeWidth={2.25} className="inline" />
+          )}
         </button>
 
         <button

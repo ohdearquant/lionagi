@@ -22,7 +22,9 @@
     "react-markdown": "^10.1.0",
     "reactflow": "^11.11.4",
     "remark-gfm": "^4.0.1",
-    "use-intl": "^4.13.0"
+    "smol-toml": "^1.7.0",
+    "use-intl": "^4.13.0",
+    "yaml": "^2.9.0"
   },
   "devDependencies": {
     "@eslint/eslintrc": "^3.3.5",

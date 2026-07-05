@@ -159,6 +159,7 @@ ALL_TABLES = {
     "session_signals",
     "engine_runs",
     "engine_defs",
+    "workflow_defs",
     "session_controls",
     "dispatch_outbox",
 }
@@ -175,7 +176,7 @@ async def sqlite_meta_engine(tmp_path):
     await engine.dispose()
 
 
-async def test_metadata_creates_all_23_tables(sqlite_meta_engine):
+async def test_metadata_creates_all_24_tables(sqlite_meta_engine):
     """metadata.create_all() builds every expected table in SQLite."""
     async with sqlite_meta_engine.connect() as conn:
         tables = await conn.run_sync(lambda sync_conn: set(sa.inspect(sync_conn).get_table_names()))
