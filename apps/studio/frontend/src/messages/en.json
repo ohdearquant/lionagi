@@ -579,15 +579,8 @@
     "liveBoard": {
       "title": "Running now",
       "empty": "No active runs or invocations.",
-      "emptyHint": "Start an engine below, or ⌘K → Launch…",
+      "emptyHint": "Launch one with the li CLI, or press ⌘K to jump anywhere.",
       "fleetLink": "Fleet →"
-    },
-    "launchDeck": {
-      "research": "Recursive exploration tree — researcher, analyst, and critic per node",
-      "review": "Dimension fanout with adversarial verification of findings",
-      "coding": "Plan → implement → test → fix loop gated by your test command",
-      "hypothesis": "Evidence → hypothesis → experiment cascade with validation",
-      "planning": "Orchestrated task DAG that expands reactively as work lands"
     },
     "recent": {
       "title": "Recent",

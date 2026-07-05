@@ -13,8 +13,6 @@ import StatusDot from "@/components/ui/StatusDot";
 import Chip from "@/components/ui/Chip";
 import type { RunSummary } from "@/lib/types";
 import type { InvocationSummary } from "@/lib/api";
-import { ENGINE_KINDS } from "@/lib/designer/topology";
-import { IconArrowRight } from "@/components/ui/icons";
 
 interface Props {
   activeRuns: RunSummary[];
@@ -148,35 +146,6 @@ export default function LiveBoard({ activeRuns, activeInvocations, nowSec }: Pro
           <p className="text-[length:var(--t-sm)] text-content-muted">
             {t("liveBoard.empty")} {t("liveBoard.emptyHint")}
           </p>
-          {/* Launch deck — concrete engine starting points, not a redirect CTA */}
-          <div
-            className="grid gap-2"
-            style={{ gridTemplateColumns: "repeat(auto-fill, minmax(200px, 1fr))" }}
-          >
-            {ENGINE_KINDS.map((k) => (
-              <Link
-                key={k}
-                to="/designer"
-                search={{ kind: k }}
-                className="group flex flex-col gap-1.5 rounded border border-edge bg-surface-raised p-3 transition-colors duration-100"
-              >
-                <span className="flex items-center justify-between">
-                  <span className="font-data text-[length:var(--t-sm)] font-semibold text-content-primary">
-                    {k}
-                  </span>
-                  <span
-                    className="flex items-center text-accent opacity-0 transition-opacity duration-100 group-hover:opacity-100"
-                    aria-hidden="true"
-                  >
-                    <IconArrowRight size={12} strokeWidth={2} />
-                  </span>
-                </span>
-                <span className="text-[length:var(--t-xs)] leading-snug text-content-muted">
-                  {t(`launchDeck.${k}` as Parameters<typeof t>[0])}
-                </span>
-              </Link>
-            ))}
-          </div>
         </div>
       ) : (
         <div className="grid grid-cols-1 gap-2 sm:grid-cols-2 lg:grid-cols-3 2xl:grid-cols-4">

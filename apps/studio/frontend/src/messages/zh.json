@@ -579,15 +579,8 @@
     "liveBoard": {
       "title": "正在运行",
       "empty": "当前无活跃运行或调用。",
-      "emptyHint": "从下方选择一个引擎开始，或 ⌘K 输入「启动」",
+      "emptyHint": "可用 li CLI 启动，或按 ⌘K 快速跳转。",
       "fleetLink": "智能体监控 →"
-    },
-    "launchDeck": {
-      "research": "递归探索树 — 每个节点由 researcher、analyst、critic 顺序协作",
-      "review": "多维度并行评审，发现项经对抗式校验",
-      "coding": "计划 → 实现 → 测试 → 修复循环，由你的测试命令把关",
-      "hypothesis": "证据 → 假设 → 实验级联，逐步验证",
-      "planning": "编排式任务图，随结果落地反应式扩展"
     },
     "recent": {
       "title": "近期",
