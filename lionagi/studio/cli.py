@@ -17,6 +17,7 @@ from typing import Any
 from lionagi.cli._logging import warn
 
 _STUDIO_IMAGE = "ghcr.io/ohdearquant/lion-studio:latest"
+_HOSTED_URL = "https://lion-studio.khive.ai"
 
 # Keys the scheduler engine's chain-fire merge (`{**schedule, **chain_action}`,
 # see studio/scheduler/engine.py) actually understands. Anything else would
@@ -48,41 +49,64 @@ def _is_mount_allowed(resolved_path: Path, allowed_roots: list[Path]) -> bool:
     return False
 
 
-def _add_studio_flags(parser: argparse.ArgumentParser) -> None:
+def _add_studio_flags(parser: argparse.ArgumentParser, *, suppress_defaults: bool = False) -> None:
+    # The same flags are registered on both the parent `studio` parser and the
+    # `start` subparser. The subparser must SUPPRESS its defaults, otherwise its
+    # unset defaults overwrite values parsed at the parent level (e.g.
+    # `li studio --docker start` would silently lose --docker).
+    def _default(value):
+        return argparse.SUPPRESS if suppress_defaults else value
+
     parser.add_argument(
         "--port",
         type=int,
-        default=None,
+        default=_default(None),
         help="Backend API port (default: LIONAGI_STUDIO_PORT env or 8765)",
     )
     parser.add_argument(
         "--host",
-        default="127.0.0.1",
+        default=_default("127.0.0.1"),
         help="Host to bind (default: 127.0.0.1)",
     )
     parser.add_argument(
         "--frontend-port",
         type=int,
-        default=3000,
+        default=_default(3000),
         dest="frontend_port",
         help="Frontend port (default: 3000)",
     )
     parser.add_argument(
+        "--no-open",
+        action="store_true",
+        default=_default(False),
+        dest="no_open",
+        help="Don't open the hosted UI in a browser (--web only)",
+    )
+    mode = parser.add_mutually_exclusive_group()
+    mode.add_argument(
+        "--web",
+        action="store_true",
+        default=_default(False),
+        help="Start the backend only; frontend is the hosted UI (default)",
+    )
+    mode.add_argument(
+        "--docker",
+        action="store_true",
+        default=_default(False),
+        help="Run the bundled frontend + backend via Docker",
+    )
+    mode.add_argument(
         "--no-frontend",
         action="store_true",
+        default=_default(False),
         dest="no_frontend",
         help="Only start the backend API server",
     )
-    parser.add_argument(
+    mode.add_argument(
         "--dev",
         action="store_true",
-        help="Run frontend in dev mode (hot-reload, no build step)",
-    )
-    parser.add_argument(
-        "--no-docker",
-        action="store_true",
-        dest="no_docker",
-        help="Don't use Docker even if available",
+        default=_default(False),
+        help="Run the in-repo frontend in dev mode (hot-reload, no build step)",
     )
 
 
@@ -94,12 +118,35 @@ def add_studio_subparser(subparsers: argparse._SubParsersAction) -> None:
     studio_sub.required = False
 
     start_parser = studio_sub.add_parser("start", help="Start Lion Studio")
-    _add_studio_flags(start_parser)
+    _add_studio_flags(start_parser, suppress_defaults=True)
+
+
+def _validate_mode_flags(args: argparse.Namespace) -> None:
+    # Mutual exclusion can be split across the parent parser and the `start`
+    # subparser (e.g. `li studio --docker start --web`), which argparse's
+    # per-parser groups cannot see. Validate the combined namespace.
+    selected = [
+        flag
+        for flag, attr in (
+            ("--web", "web"),
+            ("--docker", "docker"),
+            ("--no-frontend", "no_frontend"),
+            ("--dev", "dev"),
+        )
+        if getattr(args, attr, False)
+    ]
+    if len(selected) > 1:
+        print(
+            f"li studio: mode flags are mutually exclusive: {' '.join(selected)}",
+            file=sys.stderr,
+        )
+        raise SystemExit(2)
 
 
 def run_studio(args: argparse.Namespace) -> int:
     if not getattr(args, "studio_action", None):
         args.studio_action = "start"
+    _validate_mode_flags(args)
     return _studio_start(args)
 
 
@@ -151,30 +198,38 @@ def _studio_start(args: argparse.Namespace) -> int:
     )
     host: str = getattr(args, "host", "127.0.0.1")
     no_frontend: bool = getattr(args, "no_frontend", False)
-    no_docker: bool = getattr(args, "no_docker", False)
+    use_docker: bool = getattr(args, "docker", False)
     dev_mode: bool = getattr(args, "dev", False)
+    no_open: bool = getattr(args, "no_open", False)
     frontend_port: int = getattr(args, "frontend_port", 3000)
-
-    frontend_dir = _find_frontend_dir()
 
     if no_frontend:
         return _start_backend_only(host, port)
 
-    if dev_mode or frontend_dir:
-        return _start_local(host, port, frontend_port, frontend_dir, dev_mode)
+    if dev_mode:
+        frontend_dir = _find_frontend_dir()
+        return _start_local(host, port, frontend_port, frontend_dir, dev_mode=True)
 
-    if not no_docker and _has_docker():
+    if use_docker:
+        if not _has_docker():
+            print("Error: Docker not found. Install it from https://docker.com/", file=sys.stderr)
+            return 1
         return _start_docker(host, port, frontend_port)
 
-    # Fallback: backend only
-    print("Lion Studio: starting backend only (no frontend available)")
+    # Default (bare `li studio` / `--web`): hosted frontend, local daemon only.
+    return _start_hosted(host, port, no_open)
+
+
+def _start_hosted(host: str, port: int, no_open: bool) -> int:
+    daemon_url = f"http://127.0.0.1:{port}"
+    print(f"Lion Studio: {_HOSTED_URL}")
+    print(f"  connects to your local daemon at {daemon_url}")
     print()
-    print("To get the full UI, either:")
-    print(f"  1. Install Docker and run: li studio        (auto-pulls {_STUDIO_IMAGE})")
-    print("  2. Clone the repo and build once:")
-    print("       git clone https://github.com/ohdearquant/lionagi.git")
-    print("       cd lionagi && li studio")
-    print()
+    if not no_open and sys.stdin.isatty() and sys.stdout.isatty():
+        import webbrowser
+
+        with contextlib.suppress(Exception):
+            webbrowser.open(_HOSTED_URL)
     return _start_backend_only(host, port)
 
 
