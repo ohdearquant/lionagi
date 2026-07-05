@@ -1472,3 +1472,95 @@ async def test_dispatch_wait_agent_session_still_running_returns_exit_running(
     t.join(timeout=2)
 
     assert exit_code == EXIT_RUNNING
+
+
+# ── li monitor run: linked_engine_session_id drill-in + bounded --max-wait ──
+
+
+@pytest.mark.asyncio
+async def test_dispatch_wait_follows_linked_engine_session_to_completion(
+    temp_db_path: Path, capsys: pytest.CaptureFixture
+) -> None:
+    """A profile-typed session teardown pinned at 'running' (linked engine
+    session was alive but not yet terminal) must resolve via the linked
+    engine row's status, not hang on its own frozen 'running' column."""
+    from lionagi import Branch
+    from lionagi.cli._runs import setup_agent_persist, teardown_agent_persist
+    from lionagi.providers._provider_errors import ProviderError
+    from lionagi.state.claude_mirror import mirror_session
+
+    engine_uid = "aaaaaaaa-bbbb-cccc-dddd-333333333333"
+    async with StateDB() as db:
+        await mirror_session(
+            db,
+            session_uid=engine_uid,
+            events=[
+                {
+                    "type": "assistant",
+                    "uuid": "e1",
+                    "timestamp": "2026-07-05T00:00:00.000Z",
+                    "message": {
+                        "role": "assistant",
+                        "content": [{"type": "text", "text": "working"}],
+                    },
+                }
+            ],
+            tool_names={},
+            status="running",
+        )
+
+        branch = Branch(name="b1")
+        ctx = await setup_agent_persist(branch, agent_name="implementer")
+        assert ctx is not None
+        session_id = ctx["session_id"]
+        final = await teardown_agent_persist(
+            ctx,
+            status="failed",
+            exception=ProviderError("abandoned stream reader"),
+            engine_session_uid=engine_uid,
+        )
+    assert final == "running"
+
+    def _flip_engine_to_completed() -> None:
+        import asyncio
+
+        from lionagi.state.claude_mirror import session_db_id
+
+        async def _go() -> None:
+            async with StateDB() as db2:
+                await _set_fields(db2, "sessions", session_db_id(engine_uid), status="completed")
+
+        time.sleep(0.25)
+        asyncio.run(_go())
+
+    t = threading.Thread(target=_flip_engine_to_completed, daemon=True)
+    t.start()
+
+    exit_code = _dispatch_wait([session_id], interval=0.05, follow=False)
+    t.join(timeout=5)
+
+    assert exit_code == 0
+    out = capsys.readouterr().out
+    assert session_id in out
+    assert "status=completed" in out
+
+
+@pytest.mark.asyncio
+async def test_dispatch_wait_max_wait_bounds_a_stuck_session(temp_db_path: Path) -> None:
+    """A session that never reconciles (no --max-wait would hang this forever)
+    must give up after max_wait seconds and report EXIT_RUNNING."""
+    async with StateDB() as db:
+        from lionagi import Branch
+        from lionagi.cli._runs import setup_agent_persist
+
+        branch = Branch(name="b1")
+        ctx = await setup_agent_persist(branch, agent_name="implementer")
+        assert ctx is not None
+        session_id = ctx["session_id"]
+
+    started = time.monotonic()
+    exit_code = _dispatch_wait([session_id], interval=0.05, follow=False, max_wait=0.3)
+    elapsed = time.monotonic() - started
+
+    assert exit_code == EXIT_RUNNING
+    assert elapsed < 3.0, "max_wait must bound the loop instead of hanging"

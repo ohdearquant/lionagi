@@ -5,6 +5,7 @@
 from __future__ import annotations
 
 import argparse
+import json
 import re
 import signal
 import sys
@@ -1013,6 +1014,27 @@ def _format_session_wait_line(row: dict[str, Any]) -> str:
     return f"{row['id']}  name={name}  status={row['status']}  artifacts={artifacts}"
 
 
+async def _effective_session_status(db: Any, row: dict[str, Any]) -> dict[str, Any]:
+    """A profile-typed session (`li agent -a <profile>`) that teardown linked to a
+    claude/codex-mirror engine session (node_metadata.linked_engine_session_id, see
+    lionagi/cli/_runs.py) can be pinned at status="running" indefinitely once teardown
+    observed the engine alive but couldn't yet confirm a terminal state — nothing
+    later revisits that row to flip it. The linked engine row is the ground truth for
+    completion, so follow it here on every poll rather than trusting the profile row's
+    own (possibly stale) status column.
+    """
+    node_metadata = row.get("node_metadata") or {}
+    if isinstance(node_metadata, str):
+        node_metadata = json.loads(node_metadata)
+    linked_id = node_metadata.get("linked_engine_session_id")
+    if not linked_id:
+        return row
+    linked = await db.get_session(linked_id)
+    if linked is None or linked["status"] == row["status"]:
+        return row
+    return {**row, "status": linked["status"]}
+
+
 async def _poll_pending_sessions_once(
     db: Any,
     pending: dict[str, dict[str, Any]],
@@ -1028,8 +1050,10 @@ async def _poll_pending_sessions_once(
             from ._logging import log_error
 
             log_error(f"session {run_id!r} disappeared from state.db while waiting")
-        elif row["status"] not in SESSION_TERMINAL_STATUSES:
-            continue
+        else:
+            row = await _effective_session_status(db, row)
+            if row["status"] not in SESSION_TERMINAL_STATUSES:
+                continue
         print(_format_session_wait_line(row))
         done.append(row)
         del pending[run_id]
@@ -1334,7 +1358,14 @@ async def _query_schedule_runs_since(db: Any, baseline: float) -> list[dict[str,
     )
 
 
-def _dispatch_wait(ids: list[str], *, interval: float, follow: bool, chain: bool = True) -> int:
+def _dispatch_wait(
+    ids: list[str],
+    *,
+    interval: float,
+    follow: bool,
+    chain: bool = True,
+    max_wait: float | None = None,
+) -> int:
     """Block until every id in `ids` reaches a terminal schedule_run status,
     printing one line per run the moment it lands; with --follow, keep
     watching (tail -f style) for newly created runs after the initial set
@@ -1437,9 +1468,18 @@ def _dispatch_wait(ids: list[str], *, interval: float, follow: bool, chain: bool
     def _chain_open() -> bool:
         return bool(pending or session_pending or chain_state["awaiting_grace"])
 
-    while _chain_open() and not interrupted:
+    # A stuck session (an unresolvable linked-engine mirror, a wedged
+    # subprocess) must not hang this loop forever — max_wait bounds total
+    # wall-clock; on expiry, whatever is still pending is reported the same
+    # way an interrupt would (EXIT_RUNNING below), not a silent hang.
+    deadline = time.monotonic() + max_wait if max_wait is not None else None
+
+    def _wait_expired() -> bool:
+        return deadline is not None and time.monotonic() >= deadline
+
+    while _chain_open() and not interrupted and not _wait_expired():
         _run_tick(_tick())
-        if not _chain_open() or interrupted:
+        if not _chain_open() or interrupted or _wait_expired():
             break
         _sleep_interval(interval)
 
@@ -1527,6 +1567,17 @@ def run_monitor_wait(argv: list[str]) -> int:
             "its final link instead of exiting on the first terminal run."
         ),
     )
+    parser.add_argument(
+        "--max-wait",
+        type=float,
+        default=None,
+        metavar="SECS",
+        help=(
+            "Give up waiting after this many seconds and exit EXIT_RUNNING "
+            "for whatever is still pending, instead of blocking forever on a "
+            "stuck session or run. Default: no limit."
+        ),
+    )
     args = parser.parse_args(argv)
     watched_ids = _split_watched_ids(args.ids)
     if not watched_ids:
@@ -1534,7 +1585,13 @@ def run_monitor_wait(argv: list[str]) -> int:
         # of them survive comma-splitting (e.g. a lone "," or ""). Without
         # this check that degenerates into a silent, instant, exit-0 no-op.
         parser.error("no schedule_run ids given (only empty/comma-only tokens)")
-    return _dispatch_wait(watched_ids, interval=args.interval, follow=args.follow, chain=args.chain)
+    return _dispatch_wait(
+        watched_ids,
+        interval=args.interval,
+        follow=args.follow,
+        chain=args.chain,
+        max_wait=args.max_wait,
+    )
 
 
 # ── CLI registration ──────────────────────────────────────────────────────────

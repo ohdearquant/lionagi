@@ -224,6 +224,63 @@ async def test_run_error_chunk_raises_and_restores_streaming_processor():
     assert model.streaming_process_func is sentinel
 
 
+async def test_run_preserves_primary_exception_when_aclose_raises_cancelled_error():
+    """The CLI close chain (ndjson_from_cli -> aterminate_process_group ->
+    asyncio.wait_for) can raise asyncio.CancelledError, a BaseException a
+    plain `except Exception` does not catch. Left unguarded, that would
+    escape run()'s cleanup finally and REPLACE the real "error" chunk
+    RuntimeError that was already propagating -- the caller would see a
+    misleading CancelledError instead of the actual provider failure."""
+    import asyncio
+
+    async def stream(api_call=None):
+        try:
+            yield StreamChunk(type="error", content="boom")
+        except GeneratorExit:
+            raise asyncio.CancelledError("cleanup cancelled mid-close")
+
+    model, _ = _make_fake_cli_model([])
+    model.stream = stream
+
+    branch = Branch()
+    branch.chat_model = model
+
+    with pytest.raises(RuntimeError, match="boom"):
+        async for _ in run(branch, "go", RunParam()):
+            pass
+
+
+async def test_run_caller_abandonment_closes_stream_without_raising():
+    """A consumer that stops iterating early (explicit aclose() after
+    consuming into the middle of the stream) triggers GeneratorExit through
+    run()'s own async generator; the finally block's stream_gen.aclose() must
+    complete cleanly (no leaked exception, no traceback) and the underlying
+    CLI stream must be closed."""
+    closed = False
+
+    async def stream(api_call=None):
+        nonlocal closed
+        try:
+            yield StreamChunk(type="tool_use", tool_name="do_thing", tool_input={}, tool_id="t1")
+            yield StreamChunk(type="text", content="never reached")
+        finally:
+            closed = True
+
+    model, _ = _make_fake_cli_model([])
+    model.stream = stream
+
+    branch = Branch()
+    branch.chat_model = model
+
+    agen = run(branch, "go", RunParam())
+    async for msg in agen:
+        if isinstance(msg, ActionRequest):
+            break  # abandon mid-stream, after the wrapper actually started streaming
+    await agen.aclose()
+
+    assert closed, "abandoning the consumer must still close the underlying CLI stream"
+
+
 async def test_run_stream_persist_writes_final_state_and_removes_buffer(tmp_path):
     """stream_persist=True writes branch JSON and removes buffer JSONL."""
     model, _ = _make_fake_cli_model([StreamChunk(type="text", content="done")])
