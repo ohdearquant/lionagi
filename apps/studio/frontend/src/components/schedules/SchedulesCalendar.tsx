@@ -1,5 +1,5 @@
 /**
- * SchedulesCalendar — month grid, week grid, and day grid over real data.
+ * SchedulesCalendar — month grid, agenda week, and day grid over real data.
  *
  * Past cells show actual runs (status-colored dots). Future cells show:
  *   - interval schedules: projected fires within the visible range
@@ -8,10 +8,13 @@
  *   - github_poll schedules: a "polling" indicator on today only
  *     (poll triggers have no discrete per-day fire time)
  *
- * Month cells bucket by day; week/day views bucket by hour on a scrollable
- * hour grid. Clicking a day (or an hour cell) opens a detail strip below.
+ * Month cells bucket by day. The week view is an agenda: seven day columns,
+ * each listing its firings chronologically as full-width chips — no hour
+ * grid, since firings are few and bursty rather than evenly spread across a
+ * work day. The day view keeps the scrollable hour grid. Clicking a day (or
+ * an hour cell, or a week agenda column) opens a detail strip below.
  * Repeated fires of the same schedule inside one cell collapse into a single
- * chip with a run-count badge — the detail strip below still lists every
+ * chip with a count badge — the detail strip below still lists every
  * individual fire, so "expand" is just a click away.
  */
 import { useEffect, useMemo, useRef, useState } from "react";
@@ -35,6 +38,11 @@ const STATUS_DOT: Record<string, string> = {
  * shared by month cells, hour cells, and the all-day row. */
 const CHIP_ROW =
   "flex h-5 min-w-0 shrink-0 items-center gap-1 rounded bg-surface-overlay/50 px-1 text-meta leading-none";
+
+/** Full-width agenda chip shell — one line, same type scale as CHIP_ROW but
+ * sized for a week agenda column instead of a cramped grid cell. */
+const AGENDA_CHIP_ROW =
+  "flex w-full min-w-0 items-center gap-1.5 rounded border border-edge/60 bg-surface-overlay/50 px-1.5 py-1 text-meta leading-none";
 
 interface DayRun {
   kind: "run";
@@ -206,6 +214,78 @@ function groupBySchedule(items: DayItem[]): ChipEntry[] {
   return order;
 }
 
+/** A run of consecutive same-schedule firings inside the same hour, shown
+ * as one agenda chip carrying a time-range badge (e.g. "9 firings 09:00–09:50")
+ * instead of a bare count. */
+interface AgendaGroup {
+  kind: "agendaGroup";
+  sourceKind: "run" | "fire";
+  startMs: number;
+  endMs: number;
+  scheduleName: string;
+  status?: string;
+  count: number;
+}
+
+type AgendaEntry = DayPoll | AgendaGroup;
+
+/**
+ * Build the agenda for one day column: chronological, with consecutive
+ * same-schedule firings inside the same hour collapsed into one AgendaGroup.
+ * Unlike groupBySchedule (whole-cell collapse for month/hour grids), a gap in
+ * the hour or a different schedule always starts a fresh group — the badge's
+ * time range stays a true, contiguous span.
+ */
+function groupAgendaByHour(items: DayItem[]): AgendaEntry[] {
+  const out: AgendaEntry[] = [];
+  let current: AgendaGroup | null = null;
+  let currentScheduleId: string | null = null;
+  for (const item of items) {
+    if (item.kind === "poll") {
+      out.push(item);
+      current = null;
+      continue;
+    }
+    const scheduleId = item.kind === "run" ? item.run.schedule_id : item.schedule.id;
+    const scheduleName = item.kind === "run" ? item.run.scheduleName : item.schedule.name;
+    const hour = new Date(item.atMs).getHours();
+    if (
+      current &&
+      currentScheduleId === scheduleId &&
+      current.sourceKind === item.kind &&
+      new Date(current.endMs).getHours() === hour
+    ) {
+      current.count += 1;
+      current.endMs = item.atMs;
+      if (item.kind === "run") current.status = item.run.status;
+      continue;
+    }
+    current = {
+      kind: "agendaGroup",
+      sourceKind: item.kind,
+      startMs: item.atMs,
+      endMs: item.atMs,
+      scheduleName,
+      status: item.kind === "run" ? item.run.status : undefined,
+      count: 1,
+    };
+    currentScheduleId = scheduleId;
+    out.push(current);
+  }
+  return out;
+}
+
+/** Truncate long schedule names in the middle so both the meaningful prefix
+ * and suffix stay visible; the full name always remains in the title attr. */
+function truncateMiddle(text: string, max = 30): string {
+  if (text.length <= max) return text;
+  const half = Math.floor((max - 1) / 2);
+  return `${text.slice(0, half)}…${text.slice(text.length - half)}`;
+}
+
+export { groupAgendaByHour, truncateMiddle };
+export type { AgendaEntry, AgendaGroup };
+
 export default function SchedulesCalendar({
   schedules,
   runs,
@@ -250,12 +330,13 @@ export default function SchedulesCalendar({
     [schedules, runs, range, today],
   );
 
-  // Hour-granularity buckets — week/day grids only.
+  // Hour-granularity buckets — day grid only (the week view is an agenda
+  // bucketed by day, reusing byDay below).
   const byHour = useMemo(
     () =>
-      mode === "month"
-        ? null
-        : bucketItems(schedules, runs, range.startMs, range.endMs, today, hourKey),
+      mode === "day"
+        ? bucketItems(schedules, runs, range.startMs, range.endMs, today, hourKey)
+        : null,
     [mode, schedules, runs, range, today],
   );
 
@@ -411,6 +492,67 @@ export default function SchedulesCalendar({
       </span>
     );
 
+  const renderAgendaChip = (entry: AgendaEntry, key: number) =>
+    entry.kind === "poll" ? (
+      <span key={key} className={AGENDA_CHIP_ROW} title={`${entry.schedule.name} · polling`}>
+        <span
+          aria-hidden="true"
+          className="h-1.5 w-1.5 shrink-0 animate-pulse rounded-full"
+          style={{ background: "var(--status-running)" }}
+        />
+        <span className="min-w-0 flex-1 truncate text-content-secondary">
+          {truncateMiddle(entry.schedule.name)}
+        </span>
+      </span>
+    ) : (
+      <span
+        key={key}
+        className={AGENDA_CHIP_ROW}
+        title={
+          entry.count > 1
+            ? `${entry.scheduleName} · ${t("rangeBadge", {
+                count: entry.count,
+                start: timeOf(entry.startMs),
+                end: timeOf(entry.endMs),
+              })}`
+            : entry.sourceKind === "run"
+              ? `${entry.scheduleName} · ${entry.status}`
+              : `${entry.scheduleName} · ${t("next")}`
+        }
+      >
+        {entry.sourceKind === "run" ? (
+          <span
+            aria-hidden="true"
+            className="h-1.5 w-1.5 shrink-0 rounded-full"
+            style={{ background: STATUS_DOT[entry.status ?? ""] ?? "var(--content-muted)" }}
+          />
+        ) : (
+          <span
+            aria-hidden="true"
+            className="h-1.5 w-1.5 shrink-0 rounded-full border"
+            style={{ borderColor: "var(--accent)" }}
+          />
+        )}
+        {entry.count === 1 && (
+          <span className="shrink-0 font-data tabular-nums text-content-muted">
+            {timeOf(entry.startMs)}
+          </span>
+        )}
+        <span className="min-w-0 flex-1 truncate text-content-secondary">
+          {truncateMiddle(entry.scheduleName)}
+        </span>
+        {entry.count > 1 && (
+          <span className="shrink-0 rounded-sm bg-[var(--accent)]/15 px-1 font-data text-[10px] font-semibold tabular-nums text-[var(--accent)]">
+            {t("rangeBadge", {
+              count: entry.count,
+              start: timeOf(entry.startMs),
+              end: timeOf(entry.endMs),
+            })}
+          </span>
+        )}
+      </span>
+    );
+
   return (
     <div className="flex flex-col gap-3 px-6 pb-6">
       {/* Period nav + view switcher */}
@@ -529,6 +671,91 @@ export default function SchedulesCalendar({
             })}
           </div>
         </>
+      ) : mode === "week" ? (
+        // Agenda week: 7 equal day columns, each a chronological chip list —
+        // no hour gutter, no all-day row. Firings are few and bursty, not
+        // evenly spread across a work day, so a time grid is mostly empty.
+        <div className="overflow-hidden rounded-lg border border-edge">
+          {/* Column header — day-of-week + date, today gets the accent circle. */}
+          <div className="grid grid-cols-7 border-b border-edge">
+            {hourColumns.map((d) => {
+              const key = dayKey(d);
+              const isToday = key === todayKey;
+              return (
+                <button
+                  key={key}
+                  type="button"
+                  onClick={() => setSelectedDay(selectedDay === key ? null : key)}
+                  className={[
+                    "flex items-center gap-1.5 border-l border-edge px-2 py-1.5 text-left transition-colors duration-100 first:border-l-0",
+                    selectedDay === key
+                      ? "bg-surface-overlay"
+                      : isToday
+                        ? "bg-[var(--today-tint)] hover:bg-surface-overlay/60"
+                        : "hover:bg-surface-overlay/60",
+                  ].join(" ")}
+                >
+                  <span className="font-data text-meta uppercase tracking-wider text-content-muted">
+                    {d.toLocaleDateString(locale, { weekday: "short" })}
+                  </span>
+                  <span
+                    className={[
+                      "font-data text-meta tabular-nums",
+                      isToday
+                        ? "flex h-5 w-5 items-center justify-center rounded-full bg-[var(--accent)] font-semibold text-black"
+                        : "text-content-secondary",
+                    ].join(" ")}
+                  >
+                    {d.getDate()}
+                  </span>
+                </button>
+              );
+            })}
+          </div>
+
+          {/* Day columns — agenda chips, top-aligned, scroll inside the
+              column rather than stretching every column to match the
+              busiest day. */}
+          <div className="grid grid-cols-7">
+            {hourColumns.map((d) => {
+              const dk = dayKey(d);
+              const isToday = dk === todayKey;
+              const dayItems = byDay.get(dk) ?? [];
+              const polls = dayItems.filter((item): item is DayPoll => item.kind === "poll");
+              const timed = dayItems.filter((item) => item.kind !== "poll");
+              const entries: AgendaEntry[] = [...polls, ...groupAgendaByHour(timed)];
+              const openHere = () => setSelectedDay(selectedDay === dk ? null : dk);
+              return (
+                <div
+                  key={dk}
+                  role="button"
+                  tabIndex={0}
+                  onClick={openHere}
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter" || e.key === " ") {
+                      e.preventDefault();
+                      openHere();
+                    }
+                  }}
+                  className={[
+                    "flex max-h-[420px] flex-col items-stretch gap-1 overflow-y-auto border-l border-edge p-1.5 text-left transition-colors duration-100 first:border-l-0 focus-visible:outline focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-[var(--accent)]",
+                    selectedDay === dk
+                      ? "bg-surface-overlay/40"
+                      : isToday
+                        ? "bg-[var(--today-tint)] hover:bg-surface-overlay/60"
+                        : "hover:bg-surface-overlay/60",
+                  ].join(" ")}
+                >
+                  {entries.length === 0 ? (
+                    <span className="pt-1 text-meta text-content-muted">{t("emptyDay")}</span>
+                  ) : (
+                    entries.map((entry, j) => renderAgendaChip(entry, j))
+                  )}
+                </div>
+              );
+            })}
+          </div>
+        </div>
       ) : (
         // Horizontal scroll lives HERE, on the one shared ancestor of the
         // header/all-day/hour-grid tracks — they scroll together in lockstep

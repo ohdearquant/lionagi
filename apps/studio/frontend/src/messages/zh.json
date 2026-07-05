@@ -376,7 +376,9 @@
       "viewMonth": "月",
       "viewWeek": "周",
       "viewDay": "日",
-      "allDay": "全天"
+      "allDay": "全天",
+      "emptyDay": "无触发记录",
+      "rangeBadge": "{count} 次触发 {start}–{end}"
     },
     "create": {
       "title": "新建计划",
