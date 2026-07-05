@@ -30,6 +30,7 @@ from .utils import (
     maybe_await,
     run_async,
     run_sync,
+    sigterm_received,
     sleep,
 )
 
@@ -76,4 +77,5 @@ __all__ = (
     "current_time",
     "sleep",
     "SigtermInterrupt",
+    "sigterm_received",
 )

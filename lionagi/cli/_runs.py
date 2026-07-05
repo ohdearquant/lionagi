@@ -269,6 +269,18 @@ def resolve_run_reason(
     if status == "aborted":
         return RunReasons.CANCELLED_SIGINT, "User pressed Ctrl-C (SIGINT).", None
     if status == "cancelled":
+        from lionagi.ln.concurrency.utils import SigtermInterrupt, sigterm_received
+
+        # At teardown the surfaced exception is usually a plain CancelledError
+        # even when an external SIGTERM caused it — SigtermInterrupt is only
+        # raised after the worker thread joins, after this record is stamped.
+        # The handler's process-wide latch is the reliable signal.
+        if isinstance(exception, SigtermInterrupt) or sigterm_received():
+            return (
+                RunReasons.CANCELLED_SIGTERM,
+                "sigterm_external: process received an external SIGTERM mid-run.",
+                None,
+            )
         return (
             RunReasons.CANCELLED_SYSTEM,
             "Task cancelled by the runtime (anyio CancelledError).",

@@ -25,6 +25,7 @@ __all__ = (
     "sleep",
     "current_time",
     "SigtermInterrupt",
+    "sigterm_received",
 )
 
 
@@ -45,6 +46,19 @@ async def run_sync(func: Callable[P, R], *args: P.args, **kwargs: P.kwargs) -> R
         func_with_kwargs = partial(func, **kwargs)
         return await anyio.to_thread.run_sync(func_with_kwargs, *args)
     return await anyio.to_thread.run_sync(func, *args)
+
+
+# Process-wide latch set by run_async's SIGTERM handler the moment the signal
+# arrives. SigtermInterrupt itself is only raised after the worker thread has
+# joined — by then teardown code has already classified a plain CancelledError
+# and stamped the terminal record. Persist paths consult this flag so an
+# external SIGTERM stays distinguishable from an internal runtime cancel.
+_SIGTERM_RECEIVED = threading.Event()
+
+
+def sigterm_received() -> bool:
+    """True if run_async's SIGTERM handler has fired in this process."""
+    return _SIGTERM_RECEIVED.is_set()
 
 
 class SigtermInterrupt(BaseException):
@@ -110,6 +124,10 @@ def run_async(coro: Awaitable[T]) -> T:
     def _make_handler(requested: threading.Event, old_handler: Any) -> Callable[[int, Any], None]:
         def _handler(signum: int, frame: Any) -> None:
             requested.set()
+            if signum == signal.SIGTERM:
+                # Latch process-wide so teardown code that only sees a plain
+                # CancelledError can still report the cancel as external.
+                _SIGTERM_RECEIVED.set()
             try:
                 child_loop, task = _loop_and_task_future.result(timeout=0.5)
             except Exception:  # noqa: BLE001
