@@ -59,7 +59,7 @@ async def test_status_enum_alone_is_a_filter():
 
 @pytest.mark.asyncio
 async def test_compositional_type_status_field():
-    """observe(Type, EventStatus.COMPLETED, Type.q.duration > N) — Ocean's
+    """observe(Type, EventStatus.COMPLETED, Type.q.duration > N) —
     three-way composition: only a completed AND slow event reacts."""
     s = Session()
     slow_ok: list[Call] = []

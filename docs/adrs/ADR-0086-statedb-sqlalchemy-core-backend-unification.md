@@ -126,7 +126,7 @@ The five `BEGIN IMMEDIATE` windows map as follows:
 
 | Alternative | Why Rejected |
 |-------------|--------------|
-| Additive backend interface (SQLite stays raw aiosqlite; separate PG backend) | Two full implementations to keep in parity forever; perpetuates the studio raw path. Lower risk but loses the "one code path" goal Ocean chose. |
+| Additive backend interface (SQLite stays raw aiosqlite; separate PG backend) | Two full implementations to keep in parity forever; perpetuates the studio raw path. Lower risk but loses the "one code path" goal. |
 | Hand-written dialect layer over raw drivers (aiosqlite + asyncpg, no SQLAlchemy) | Reinvents paramstyle/JSON/DDL translation that SA already does; leaves the declared `sqlalchemy` dependency unused. |
 | Phased dialect-shim that string-rewrites SQLite SQL to PG | Fragile (regex-rewriting `json_each` etc.); a too-clever compatibility layer that review would rightly flag. |
 

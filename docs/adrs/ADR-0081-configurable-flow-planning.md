@@ -471,7 +471,7 @@ selection, and dry-run output without invoking real providers.
 Existing commands without planning flags continue to plan the same DAG with the
 same orchestrator/default model and the same `max_ops` behavior.
 
-## Open Questions for Ocean
+## Open Questions
 
 - Preferred CLI names: `--planner-model` vs `--planning-model`, and `--plan`
   vs `--custom-plan`.

@@ -12,24 +12,23 @@ slice 1 (Protocol types + `InMemoryStore` + a Protocol-level test fence) nor sli
 (`Branch`/`Session` access surface) has landed in code yet -- only the ADR document itself is
 merged.
 
-Separately, Ocean issued a P0/strategic directive (relayed by Leo, gtd anchor `5018674e`) to
-integrate khive -- Ocean's own knowledge/graph/memory substrate, already the memory layer across
+Separately, a P0/strategic decision was made to
+integrate khive -- an external knowledge/graph/memory substrate, already the memory layer across
 the wider Lion ecosystem -- as a pluggable backend behind exactly this seam. The explicit posture
 constraint: khive must stay an opt-in backend, never a hard dependency, so lionagi's Apache-2.0
 OSS core stays clean and khive remains something users choose to plug in, not something baked
 into lionagi's own package graph. This keeps lionagi acting as a distribution funnel toward khive
 rather than coupling the OSS project to a commercial product.
 
-This ADR is a joint product of a lambda:lionagi / lambda:khive design conversation (opened and
-closed 2026-07-04), scoped against both codebases' actual source rather than paraphrased
-assumptions, and captures Leo's sequencing ruling to bundle ADR-0090 slice 1 with this integration
+This ADR is scoped against both codebases' actual source rather than paraphrased
+assumptions, and captures the sequencing decision to bundle ADR-0090 slice 1 with this integration
 rather than landing it separately first.
 
 ## Decision
 
 ### Sequencing: bundle ADR-0090 slice 1, do not serialize it
 
-(Leo ruling, 2026-07-04.) ADR-0090 slice 1 (the `MemoryItem`/`MemoryQuery`/`MemoryStore` Protocol
+(Decision, 2026-07-04.) ADR-0090 slice 1 (the `MemoryItem`/`MemoryQuery`/`MemoryStore` Protocol
 types, `InMemoryStore`, and a Protocol-level test fence exercising the Protocol directly, not just
 the default implementation) lands as part of this same effort, with `KhiveMemoryStore` as the
 concrete second implementor that fence already anticipated. ADR-0090 slice 2 (the
@@ -43,7 +42,7 @@ duplicated here, to avoid the two documents drifting out of sync.
 
 The adapter class itself is implemented in khive's own codebase, or in a thin separate connector
 package, importing lionagi's public `MemoryStore` Protocol. It does not live inside `lionagi/`.
-This is a deliberate, confirmed architecture call (Leo, 2026-07-04; khive concurs on the technical
+This is a deliberate, confirmed architecture call (khive concurs on the technical
 merits): it makes "pluggable, not a hard dependency" and "no commercial specifics in the public
 OSS repo" true by construction, rather than by ongoing discipline. lionagi's own repo carries zero
 khive-specific code, zero khive-specific imports, and zero khive naming beyond what the
@@ -52,7 +51,7 @@ seam-documentation slice of ADR-0090 already allows as a generic example.
 Whether the connector package itself ships as public (a thin MCP wire-protocol client with no
 khive internals, riding along with lionagi's OSS distribution) or from khive's private tooling is
 a packaging/licensing call, not a technical one -- flagged as an Open Question below, since
-khive's core is currently a private repo and this is Leo's/Ocean's call to make, not assumed here.
+khive's core is currently a private repo and this packaging call is not assumed here.
 
 ### Transport: existing MCP stdio, no bypass needed
 
@@ -146,7 +145,7 @@ echoes back exactly the fields listed above and nothing else. A true opaque roun
 `metadata` is unreachable today without a khive-side schema change -- there is no field to stash
 it in and no field to read it back out of.
 
-Decision (Leo, 2026-07-04): `KhiveMemoryStore` persists only the `MemoryItem` fields that have a
+Decision (2026-07-04): `KhiveMemoryStore` persists only the `MemoryItem` fields that have a
 native khive home, and explicitly **drops** the rest, rather than smuggling `metadata` into
 `content` or a synthetic tag as a workaround:
 
@@ -200,7 +199,7 @@ own follow-up ADR once `MemoryStore` has a live caller.
 | Alternative | Why Rejected |
 |---|---|
 | Ship `KhiveMemoryStore` inside `lionagi/` (e.g. gated behind an optional extra) | Puts khive-specific code and naming inside the public Apache-2.0 repo; extra-gating only prevents the *dependency* from installing by default, it doesn't prevent the *code and references* from being visible in the public source tree. Violates the never-leak-commercial-in-public-repo constraint by visibility, not just by installability. |
-| Land ADR-0090 slices 1-2 as their own separate PR(s) first, khive integration strictly afterward | Leo's explicit ruling: bundle instead. Landing the Protocol in a vacuum, with only `InMemoryStore` as an implementor, doesn't prove the seam generalizes -- `KhiveMemoryStore` as an immediate second implementor is the real test of whether the Protocol is shaped correctly, which is exactly what slice 1's own test-fence language anticipated. |
+| Land ADR-0090 slices 1-2 as their own separate PR(s) first, khive integration strictly afterward | Explicit ruling: bundle instead. Landing the Protocol in a vacuum, with only `InMemoryStore` as an implementor, doesn't prove the seam generalizes -- `KhiveMemoryStore` as an immediate second implementor is the real test of whether the Protocol is shaped correctly, which is exactly what slice 1's own test-fence language anticipated. |
 | Build a bespoke lionagi-side khive HTTP/embedded client instead of reusing MCP | Duplicates transport machinery lionagi already has (pooled, persistent `register_mcp_server`/`MCPConnectionPool`), and khive confirmed the MCP path already holds a persistent session with a warm daemon underneath -- no latency case for a bypass. |
 | Fold kg into `MemoryStore.search(filters=...)` | kg's closed entity/edge enums and GQL/SPARQL query grammar don't compress into a generic `dict[str, Any]` without losing validation and expressiveness. Confirmed with khive; deserves its own `GraphStore` seam instead. |
 | Fold `gtd.*`/`comm.*` into `MemoryStore` | Task-lifecycle and messaging primitives, not memory-shaped. Already coverable as plain MCP tools via `register_mcp_server` -- no new Protocol needed for these at all. |
@@ -223,7 +222,7 @@ own follow-up ADR once `MemoryStore` has a live caller.
 
 **Negative**
 
-- Slice 1 and slice 2 landing together (per Leo's bundling ruling) is a larger single PR than
+- Slice 1 and slice 2 landing together (per the bundling decision) is a larger single PR than
   either slice alone would have been -- more surface for one review pass.
 - `MemoryItem`'s inherited `metadata` (branch_id, source, etc., from `Element`) has no matching
   khive-side field today and is explicitly **dropped** by `KhiveMemoryStore`, not round-tripped --
@@ -241,10 +240,10 @@ own follow-up ADR once `MemoryStore` has a live caller.
   on its own without also reverting the Protocol/`InMemoryStore`/test-fence foundation slice 1
   provides.
 - Before slice 2 merges, confirm the `include_branches()` sharing bug flagged in ADR-0090's own
-  advisor review is actually resolved in current code -- check the live state of that path rather
+  review is actually resolved in current code -- check the live state of that path rather
   than assuming it was fixed as part of ADR-0090 landing.
 
-## Open Questions (for Leo / Ocean)
+## Open Questions
 
 1. **Connector-package packaging/licensing.** khive's core is currently a private repo. Should
    the `KhiveMemoryStore` connector package itself be public (a thin MCP wire-protocol client
@@ -252,8 +251,8 @@ own follow-up ADR once `MemoryStore` has a live caller.
    private tooling? Doesn't block this ADR or the Protocol/verb-mapping work -- the interface is
    identical either way -- but affects how end users actually obtain and install the adapter.
 
-**Resolved (Leo disposition, 2026-07-04):** the connector lands in the khive monorepo now,
-owned by the khive seat, and the khive python SDK is the named public exit -- the connector
+**Resolved (2026-07-04):** the connector lands in the khive monorepo now,
+and the khive python SDK is the named public exit -- the connector
 ships publicly as part of that SDK when it ships, not as its own standalone package before it.
 Rationale: a standalone public package would commit to stability of khive's memory verb surface
 while it is still moving, and would spend the works-with-lionagi story before the SDK launch can
@@ -262,7 +261,7 @@ public package is revisited only if concrete OSS demand appears before the SDK s
 lionagi-side Protocol conformance fence (`tests/protocols/test_memory.py`) remains the
 acceptance gate for the connector regardless of where it lives.
 
-**Resolved during spec-gate (Leo, 2026-07-04):** the provenance schema gap (previously listed
+**Resolved (2026-07-04):** the provenance schema gap (previously listed
 here as Open Question 1) is decided, not open -- see "Provenance: a documented lossy projection
 for v1" above. `KhiveMemoryStore` persists only native-home fields and explicitly drops the rest;
 no opaque round-tripping workaround. The migration path is a future khive-side schema addition,
@@ -272,9 +271,5 @@ not a lionagi-side encoding trick.
 
 - ADR-0090: Minimal Memory Contract and Pluggable Backend Seam
   (`docs/adrs/ADR-0090-minimal-memory-contract-and-backend-seam.md`), PR #1687
-- khive ADR-049 (khived daemon, accepted/shipped) -- cited by lambda:khive, lives in khive's own
+- khive ADR-049 (khived daemon, accepted/shipped), lives in khive's own
   repo, not reproduced here
-- gtd anchor `5018674e` (Ocean directive, relayed by Leo)
-- comm thread `a7d4d75b` (lambda:lionagi <-> lambda:leo scoping exchange)
-- comm thread `e64077aa` (lambda:lionagi <-> lambda:khive transport/field-mapping/kg-placement
-  exchange)

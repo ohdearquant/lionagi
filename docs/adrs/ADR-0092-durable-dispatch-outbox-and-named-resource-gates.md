@@ -1,6 +1,6 @@
 # ADR-0092: Durable Dispatch Outbox and Named Resource Gates
 
-**Status**: Accepted (spec gate signed 2026-07-04; rulings folded below)
+**Status**: Accepted (design review completed 2026-07-04; decisions folded below)
 **Date**: 2026-07-04
 **Builds on**: ADR-0062 (scheduled item state machine, proposed) · ADR-0061 (universal scheduler, proposed) · ADR-0083 (lifecycle signal contract) · ADR-0085 §5 (terminal notify hook, proposed) · ADR-0027 (scheduled runs) · ADR-0030 (attention queue)
 
@@ -237,7 +237,7 @@ them; v1 ships only the flag and the lock helper.
 
 ### Distinction preserved: revival-push vs condition-wait
 
-The fleet's dominant hand-rolled polling pattern (bounded sleep-loops on
+The dominant hand-rolled polling pattern (bounded sleep-loops on
 external state, for example PR merge-state watches) is a *condition-wait*,
 which is genuinely poll-shaped and distinct from revival *delivery*. This ADR
 serves the delivery case with push-to-durable-sink; condition-wait stays poll
@@ -327,18 +327,18 @@ Must NOT contain (v1):
 - Gate acquisition adds a blocking (or timeout-bounded) step in front of gated
   runs; ungated runs are unaffected.
 
-## Spec-gate rulings (signed 2026-07-04)
+## Design-review decisions (2026-07-04)
 
 1. **Transition machinery ordering**: ship the ~30-line guarded compare-and-swap
    fallback now; do not block on ADR-0062. Condition: the fallback mirrors
    0062's `transition()` signature and reason-code discipline exactly, so 0062
    absorbs it later as a refactor, not a migration.
 2. **Gate table ownership**: the canonical `gates:` name→lock-path table is
-   fleet-shared configuration owned by the fleet's global resource manager, not
+   shared host-level configuration owned by the host system's global resource manager, not
    by this harness — machine-level resource conventions span non-lionagi
-   processes. lionagi reads the fleet table and may add lionagi-private internal
-   gate names in its own settings only. The concrete fleet file path is proposed
-   in the implementation PR and placed by the fleet resource owner.
+   processes. lionagi reads that shared table and may add lionagi-private internal
+   gate names in its own settings only. The concrete shared file path is proposed
+   in the implementation PR and placed by the host resource owner.
    Wedged-live-holder handling: surfacing the holder pid in
    `li dispatch` / `li monitor` is sufficient for v1; a live holder is never
    auto-broken.

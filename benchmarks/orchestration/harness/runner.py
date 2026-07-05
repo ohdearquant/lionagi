@@ -43,7 +43,7 @@ logger = logging.getLogger("orchbench.runner")
 # must stay generous — this bounds a runaway subprocess, not typical trials.
 _CELL_TIMEOUT_S = 1800
 
-# Ocean's allowed model set → canonical CLI specs (the bare `claude` alias is
+# Allowed model set → canonical CLI specs (the bare `claude` alias is
 # claude_code; `claude/x` provider isn't the CLI provider, so map to claude-code).
 _MODEL_ALIASES = {
     "claude/haiku": "claude-code/haiku",

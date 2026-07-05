@@ -18,7 +18,7 @@ the primary creation and execution surface:
 - "After creation, redirect to the new agent's detail and show clear next actions"
 
 These recommendations optimize for a user who lives in the browser. Lion Studio's
-actual user (Ocean) lives in the terminal. Playbooks are authored in an editor
+actual user lives in the terminal. Playbooks are authored in an editor
 and run via `li play`. Agents are defined as markdown files. Shows are orchestrated
 by Claude Code agents using the show skill. The CLI is the creation and execution
 surface; Studio is the observation and editing surface.
@@ -54,6 +54,7 @@ primary interface for observation, inspection, editing, and debugging.**
 
 The playbook detail page has a "Run" button. This is a convenience shortcut that
 shells out to the CLI, not a full execution surface. It does not support:
+
 - Input variable binding
 - Execution mode selection
 - Team mode configuration
@@ -86,6 +87,7 @@ with defaults" — a debugging convenience, not a production workflow.
 ## Consequences
 
 **Positive**
+
 - Studio stays focused: observe + inspect + edit + debug. No feature creep toward
   replicating CLI capabilities in the browser.
 - Simpler UI: no complex forms for run configuration, input binding, or team setup.
@@ -93,8 +95,9 @@ with defaults" — a debugging convenience, not a production workflow.
 - Correct mental model: Studio is a dashboard/IDE, not a control plane.
 
 **Negative**
+
 - Collaborators who don't use the CLI cannot create or run things from Studio alone.
-  This is acceptable for the current user base (Ocean + occasional collaborators).
+  This is acceptable for the current user base (a single primary operator + occasional collaborators).
 - The Run button on playbooks is a partial exception that may confuse expectations.
   Mitigate by keeping it visually de-emphasized and not adding execution options.
 - Some inspector features (e.g., "re-run this failed play") require switching to

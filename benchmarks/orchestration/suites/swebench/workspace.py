@@ -1,6 +1,6 @@
 """Isolated per-task workspaces — clone the bug's repo, never touch real files.
 
-Safety model (Ocean: "don't ruin my computer"):
+Safety model (never touch real files):
   - All clones live under ``~/.lionagi/swebench-work`` (scratch, outside any real
     project). The agent NEVER sees the user's actual repos.
   - One cached full clone per upstream repo (django, sphinx); each task gets its

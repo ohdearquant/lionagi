@@ -7,7 +7,7 @@ file-level implementation contract. On any conflict, DESIGN-SYSTEM.md wins.
 Branch: `feat/studio-cockpit-redesign`.
 Worktree: `/Users/lion/projects/lionagi-redesign`.
 
-Ocean's verbatim bar (2026-06-11): "smooth as fuck, super optimized for speed,
+Design bar (verbatim): "smooth as fuck, super optimized for speed,
 looks elegant and sleek, user friendly"; engine building must be a **graphic
 node-composition interface with individual node configuration**, including
 **signal emission configuration and signal observation patterns** — not a modal.
@@ -38,8 +38,8 @@ node-composition interface with individual node configuration**, including
   --edge-hairline: rgba(255,255,255,0.10); --edge-strong: rgba(255,255,255,0.18);
   --content-primary: #E8E6E1; --content-secondary: rgba(232,230,225,0.70);
   --content-muted: rgba(232,230,225,0.50);
-  /* secondary/muted raised from spec'd 0.55/0.35 — Ocean live verdict
-     2026-06-11: "too dark, not readable" on dense tables. Floor is binding. */
+  /* secondary/muted raised from spec'd 0.55/0.35 — design verdict:
+     "too dark, not readable" on dense tables. Floor is binding. */
   --accent: #E8A33D;            /* lion amber — attention + primary actions ONLY */
   --status-running: #5BA8F5; --status-success: #4FB477;
   --status-pending: #E8A33D; --status-failure: #E5604C;
@@ -265,6 +265,5 @@ Rules the distillation missed; from λ's own read of the composed material.
 
 ## Dogfood loop (every wave)
 
-λ boots `li studio` from the worktree, screenshots every surface (light+dark),
-fixes promptly, iterates until sleek. Screenshots →
-`.khive/workspaces/20260611/redesign-dogfood/`.
+Boot `li studio` from the worktree, screenshot every surface (light+dark),
+fix promptly, iterate until sleek.

@@ -1,6 +1,6 @@
 # Lion Studio v2 — seed-demo redesign (λ-designed, 2026-06-11)
 
-Ocean's mandate: full creative authority — add/remove pages, remove information
+Mandate: full creative authority — add/remove pages, remove information
 display, alter presentation. Fix: some pages information-overloaded, some blank.
 Rethink the canvas from scratch. Bar: seed-fundraising demo quality.
 
