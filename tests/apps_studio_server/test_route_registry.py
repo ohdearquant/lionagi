@@ -247,6 +247,7 @@ _MIGRATED_AREAS = {
     "engine-defs",
     "workflow-defs",
     "sessions",
+    "leo",
     "admin",
     "schedules",
     "stats",
