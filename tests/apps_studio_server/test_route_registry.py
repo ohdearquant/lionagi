@@ -245,6 +245,7 @@ _MIGRATED_AREAS = {
     "launches",
     "projects",
     "engine-defs",
+    "workflow-defs",
     "sessions",
     "admin",
     "schedules",
