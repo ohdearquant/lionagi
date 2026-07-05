@@ -1064,7 +1064,7 @@ async def _effective_session_status(db: Any, row: dict[str, Any]) -> dict[str, A
             "cancelled": RunReasons.CANCELLED_SYSTEM,
         }
         try:
-            await db.update_status(
+            updated = await db.update_status(
                 "session",
                 row["id"],
                 new_status=linked["status"],
@@ -1082,6 +1082,14 @@ async def _effective_session_status(db: Any, row: dict[str, Any]) -> dict[str, A
             # The profile row went terminal between our read and this write (a race
             # with another writer) — the persisted row is authoritative; report it
             # instead of the synthesized status below, and never crash the monitor.
+            persisted = await db.get_session(row["id"])
+            return persisted if persisted is not None else row
+        if not updated:
+            # CAS mismatch: the persisted row changed between our read and this
+            # write but did not hit the terminal guard (e.g. it moved to a
+            # different non-terminal or terminal status). The write never landed,
+            # so the persisted row — not the synthesized value below — is
+            # authoritative.
             persisted = await db.get_session(row["id"])
             return persisted if persisted is not None else row
     return {**row, "status": linked["status"]}

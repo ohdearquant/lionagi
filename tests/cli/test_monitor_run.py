@@ -20,6 +20,7 @@ import pytest
 from lionagi.cli.monitor import (
     _advance_chains,
     _dispatch_wait,
+    _effective_session_status,
     _format_wait_line,
     _new_chain_state,
     _poll_pending_once,
@@ -1664,6 +1665,76 @@ async def test_dispatch_wait_reconciliation_never_flips_an_already_terminal_row(
         persisted = await db.get_session(session_id)
     assert persisted is not None
     assert persisted["status"] == "failed"
+
+
+@pytest.mark.asyncio
+async def test_effective_session_status_cas_mismatch_reports_persisted_status(
+    temp_db_path: Path,
+) -> None:
+    """`db.update_status()` returns `False` (rather than raising
+    `TransitionRejectedError`) when the persisted row simply no longer matches
+    `expected_statuses` at write time -- e.g. it moved between our stale read
+    and this write, but the guard rejects on the CAS mismatch before it ever
+    reaches ADR-0094's terminal check. `_effective_session_status()` must not
+    ignore that `False` and fall through to the synthesized linked-engine
+    status; it must re-read and report the persisted row instead."""
+    from lionagi import Branch
+    from lionagi.cli._runs import setup_agent_persist, teardown_agent_persist
+    from lionagi.providers._provider_errors import ProviderError
+    from lionagi.state.claude_mirror import mirror_session, session_db_id
+
+    engine_uid = "aaaaaaaa-bbbb-cccc-dddd-333333333336"
+    async with StateDB() as db:
+        await mirror_session(
+            db,
+            session_uid=engine_uid,
+            events=[
+                {
+                    "type": "assistant",
+                    "uuid": "e1",
+                    "timestamp": "2026-07-05T00:00:00.000Z",
+                    "message": {
+                        "role": "assistant",
+                        "content": [{"type": "text", "text": "working"}],
+                    },
+                }
+            ],
+            tool_names={},
+            status="running",
+        )
+
+        branch = Branch(name="b1")
+        ctx = await setup_agent_persist(branch, agent_name="implementer")
+        assert ctx is not None
+        session_id = ctx["session_id"]
+        final = await teardown_agent_persist(
+            ctx,
+            status="failed",
+            exception=ProviderError("abandoned stream reader"),
+            engine_session_uid=engine_uid,
+        )
+        assert final == "running"
+
+        # This is the stale read `_effective_session_status()` would act on --
+        # status="running", still linked to the engine session.
+        stale_row = await db.get_session(session_id)
+        assert stale_row is not None
+        assert stale_row["status"] == "running"
+
+        # Simulate the race: between that read and the reconciliation write,
+        # something else (e.g. the profile session's own executor) persisted
+        # this row to "failed", while the linked engine session went
+        # "completed" independently.
+        await _set_fields(db, "sessions", session_id, status="failed")
+        await _set_fields(db, "sessions", session_db_id(engine_uid), status="completed")
+
+        result = await _effective_session_status(db, stale_row)
+
+        assert result["status"] == "failed"
+
+        persisted = await db.get_session(session_id)
+        assert persisted is not None
+        assert persisted["status"] == "failed"
 
 
 @pytest.mark.asyncio
