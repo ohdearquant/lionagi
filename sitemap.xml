@@ -381,6 +381,10 @@
          <lastmod>2026-07-05</lastmod>
     </url>
     <url>
+         <loc>https://ohdearquant.github.io/lionagi/adrs/ADR-0094-run-completion-contract/</loc>
+         <lastmod>2026-07-05</lastmod>
+    </url>
+    <url>
          <loc>https://ohdearquant.github.io/lionagi/adrs/DECISION_LOG/</loc>
          <lastmod>2026-07-05</lastmod>
     </url>
@@ -450,6 +454,22 @@
     </url>
     <url>
          <loc>https://ohdearquant.github.io/lionagi/cookbook/multi-model-pipeline/</loc>
+         <lastmod>2026-07-05</lastmod>
+    </url>
+    <url>
+         <loc>https://ohdearquant.github.io/lionagi/cookbook/reliable-artifact-production/</loc>
+         <lastmod>2026-07-05</lastmod>
+    </url>
+    <url>
+         <loc>https://ohdearquant.github.io/lionagi/cookbook/reliable-multi-leg-runs/</loc>
+         <lastmod>2026-07-05</lastmod>
+    </url>
+    <url>
+         <loc>https://ohdearquant.github.io/lionagi/cookbook/reliable-recurring-runs/</loc>
+         <lastmod>2026-07-05</lastmod>
+    </url>
+    <url>
+         <loc>https://ohdearquant.github.io/lionagi/cookbook/reliable-review-runs/</loc>
          <lastmod>2026-07-05</lastmod>
     </url>
     <url>
