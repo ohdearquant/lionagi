@@ -1,5 +1,7 @@
 # dependencies
 node_modules/
+# CI installs with npm ci from package-lock.json; keep pnpm's lockfile local-only
+pnpm-lock.yaml
 
 # next.js
 .next/
