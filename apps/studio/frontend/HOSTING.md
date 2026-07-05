@@ -20,3 +20,8 @@ daemon running on their machine, the same way it would if opened from `localhost
 There is no login and no server-side state for the hosted deploy to manage — if the
 daemon isn't running, the app shows a state explaining how to start it and keeps
 retrying rather than rendering broken panels.
+
+On the CLI side, bare `li studio` (equivalently `li studio --web`) is the mode built
+for this deploy: it starts only the local daemon and prints/opens this hosted URL,
+without building or serving any frontend locally. See the root README's "Lion
+Studio" section for the other launch modes (`--docker`, `--no-frontend`, `--dev`).

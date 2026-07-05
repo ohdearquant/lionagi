@@ -17,6 +17,7 @@ from typing import Any
 from lionagi.cli._logging import warn
 
 _STUDIO_IMAGE = "ghcr.io/ohdearquant/lion-studio:latest"
+_HOSTED_URL = "https://lion-studio.khive.ai"
 
 # Keys the scheduler engine's chain-fire merge (`{**schedule, **chain_action}`,
 # see studio/scheduler/engine.py) actually understands. Anything else would
@@ -68,21 +69,32 @@ def _add_studio_flags(parser: argparse.ArgumentParser) -> None:
         help="Frontend port (default: 3000)",
     )
     parser.add_argument(
+        "--no-open",
+        action="store_true",
+        dest="no_open",
+        help="Don't open the hosted UI in a browser (--web only)",
+    )
+    mode = parser.add_mutually_exclusive_group()
+    mode.add_argument(
+        "--web",
+        action="store_true",
+        help="Start the backend only; frontend is the hosted UI (default)",
+    )
+    mode.add_argument(
+        "--docker",
+        action="store_true",
+        help="Run the bundled frontend + backend via Docker",
+    )
+    mode.add_argument(
         "--no-frontend",
         action="store_true",
         dest="no_frontend",
         help="Only start the backend API server",
     )
-    parser.add_argument(
+    mode.add_argument(
         "--dev",
         action="store_true",
-        help="Run frontend in dev mode (hot-reload, no build step)",
-    )
-    parser.add_argument(
-        "--no-docker",
-        action="store_true",
-        dest="no_docker",
-        help="Don't use Docker even if available",
+        help="Run the in-repo frontend in dev mode (hot-reload, no build step)",
     )
 
 
@@ -151,30 +163,38 @@ def _studio_start(args: argparse.Namespace) -> int:
     )
     host: str = getattr(args, "host", "127.0.0.1")
     no_frontend: bool = getattr(args, "no_frontend", False)
-    no_docker: bool = getattr(args, "no_docker", False)
+    use_docker: bool = getattr(args, "docker", False)
     dev_mode: bool = getattr(args, "dev", False)
+    no_open: bool = getattr(args, "no_open", False)
     frontend_port: int = getattr(args, "frontend_port", 3000)
-
-    frontend_dir = _find_frontend_dir()
 
     if no_frontend:
         return _start_backend_only(host, port)
 
-    if dev_mode or frontend_dir:
-        return _start_local(host, port, frontend_port, frontend_dir, dev_mode)
+    if dev_mode:
+        frontend_dir = _find_frontend_dir()
+        return _start_local(host, port, frontend_port, frontend_dir, dev_mode=True)
 
-    if not no_docker and _has_docker():
+    if use_docker:
+        if not _has_docker():
+            print("Error: Docker not found. Install it from https://docker.com/", file=sys.stderr)
+            return 1
         return _start_docker(host, port, frontend_port)
 
-    # Fallback: backend only
-    print("Lion Studio: starting backend only (no frontend available)")
+    # Default (bare `li studio` / `--web`): hosted frontend, local daemon only.
+    return _start_hosted(host, port, no_open)
+
+
+def _start_hosted(host: str, port: int, no_open: bool) -> int:
+    daemon_url = f"http://127.0.0.1:{port}"
+    print(f"Lion Studio: {_HOSTED_URL}")
+    print(f"  connects to your local daemon at {daemon_url}")
     print()
-    print("To get the full UI, either:")
-    print(f"  1. Install Docker and run: li studio        (auto-pulls {_STUDIO_IMAGE})")
-    print("  2. Clone the repo and build once:")
-    print("       git clone https://github.com/ohdearquant/lionagi.git")
-    print("       cd lionagi && li studio")
-    print()
+    if not no_open and sys.stdin.isatty() and sys.stdout.isatty():
+        import webbrowser
+
+        with contextlib.suppress(Exception):
+            webbrowser.open(_HOSTED_URL)
     return _start_backend_only(host, port)
 
 
