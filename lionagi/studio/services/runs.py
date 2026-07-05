@@ -522,6 +522,8 @@ def _run_row(s: dict[str, Any], now: float, *, process_alive: bool | None = None
         "message_count": s.get("message_count", 0),
         "project": s.get("project"),
         "project_source": s.get("project_source"),
+        "status_reason_code": s.get("status_reason_code"),
+        "status_reason_summary": s.get("status_reason_summary"),
     }
 
 

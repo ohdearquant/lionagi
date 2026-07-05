@@ -27,6 +27,12 @@ export interface BoardState {
   schedules: ScheduleSummary[];
   /** Items needing operator attention. */
   attentionItems: AttentionItem[];
+  /**
+   * True when the daemon has no work at all (no runs, invocations, or
+   * schedules) — gates the zero-state guided cards. Stays false until
+   * the first successful fetch so loading never flashes the cards.
+   */
+  systemEmpty: boolean;
   /** Data freshness state (3 distinct states + loading). */
   dataState: DataState;
   /** Epoch ms of the last successful data update. */
@@ -47,6 +53,8 @@ export interface AttentionItem {
   status: string;
   /** Consecutive-failure count — present on "streak" items only. */
   streakCount?: number;
+  /** One-line failure reason — present on "failed" items when the run carries one. */
+  reasonSummary?: string;
 }
 
 // ─── Actions ─────────────────────────────────────────────────────────────────
@@ -169,6 +177,9 @@ function buildAttentionItems(
       startedAt: run.started_at ?? null,
       href: `/runs/${run.run_id}`,
       status: run.status,
+      ...(reason === "failed" && run.status_reason_summary
+        ? { reasonSummary: run.status_reason_summary }
+        : {}),
     });
   }
 
@@ -246,6 +257,7 @@ export function initialBoardState(): BoardState {
     recentRuns: [],
     schedules: [],
     attentionItems: [],
+    systemEmpty: false,
     dataState: "loading",
     lastUpdatedMs: null,
     errorMessage: null,
@@ -266,6 +278,7 @@ export function boardReducer(state: BoardState, action: BoardAction): BoardState
       const activeInvocations = deriveActiveInvocations(invocations);
       const recentRuns = deriveRecentRuns(runs);
       const attentionItems = buildAttentionItems(runs, invocations, schedules, nowSec);
+      const systemEmpty = runs.length === 0 && invocations.length === 0 && schedules.length === 0;
       return {
         ...state,
         nowSec,
@@ -274,6 +287,7 @@ export function boardReducer(state: BoardState, action: BoardAction): BoardState
         recentRuns,
         schedules,
         attentionItems,
+        systemEmpty,
         dataState: "live",
         lastUpdatedMs: Date.now(),
         errorMessage: null,

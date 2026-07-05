@@ -91,6 +91,9 @@ export interface RunSummary {
   // ADR-0026: project detection for session organization.
   project?: string | null;
   project_source?: string | null;
+  // ADR-0028: denormalized status reason (machine code + one-line summary).
+  status_reason_code?: string | null;
+  status_reason_summary?: string | null;
   // ADR-0029: artifact contract and verification result.
   artifact_contract_json?: ArtifactContract | null;
   artifact_verification_json?: ArtifactVerification | null;
