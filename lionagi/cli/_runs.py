@@ -381,15 +381,18 @@ async def _teardown_common(
     final_evidence_refs = evidence_refs
 
     # A profile-typed session's own async wrapper can raise a stream/transport
-    # error (the CLI provider's own reported "error" chunk, classified as a
-    # ProviderError by classify_provider_error) while the engine session it
-    # wraps — mirrored separately from the on-disk transcript — is still alive
-    # or already completed. Reading that as "failed" is a phantom: the actual
-    # work is running or done. Narrowly suppress the demotion for THIS known
-    # class only: a generic bug elsewhere in the wrapper (message persistence,
-    # artifact verification, hook handling, branch mutation) must still fail
-    # loud even when a linked engine session happens to be running/completed.
-    if final_status == "failed" and isinstance(exception, ProviderError) and engine_session_uid:
+    # error (the CLI provider's own reported "error" chunk that classify_provider_error
+    # could not attribute to a known quota/auth/context pattern, so it stays the base
+    # ProviderError) while the engine session it wraps — mirrored separately from the
+    # on-disk transcript — is still alive or already completed. Reading that as "failed"
+    # is a phantom: the actual work is running or done. Narrowly suppress the demotion
+    # for THIS known, unclassified-stream-error class only: an exact-type check (not
+    # isinstance) excludes the ProviderQuotaError/ProviderAuthError/ProviderContextError
+    # subclasses, so a genuine quota/auth/context failure always stays "failed" even
+    # with a linked engine session running/completed, exactly like a generic bug
+    # elsewhere in the wrapper (message persistence, artifact verification, hook
+    # handling, branch mutation) must still fail loud.
+    if final_status == "failed" and type(exception) is ProviderError and engine_session_uid:
         from lionagi.state.claude_mirror import session_db_id
         from lionagi.state.db import SESSION_TERMINAL_STATUSES
         from lionagi.state.reasons import RunReasons

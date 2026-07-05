@@ -1546,6 +1546,63 @@ async def test_dispatch_wait_follows_linked_engine_session_to_completion(
 
 
 @pytest.mark.asyncio
+async def test_dispatch_wait_persists_reconciled_status_to_profile_row(
+    temp_db_path: Path,
+) -> None:
+    """`li monitor run` resolving a profile session via its linked engine row must
+    not just SYNTHESIZE the terminal status in memory for this one call -- it must
+    PERSIST it through StateDB.update_status() so the profile session's own DB row
+    reads the reconciled terminal status too, not stuck at 'running' forever."""
+    from lionagi import Branch
+    from lionagi.cli._runs import setup_agent_persist, teardown_agent_persist
+    from lionagi.providers._provider_errors import ProviderError
+    from lionagi.state.claude_mirror import mirror_session, session_db_id
+
+    engine_uid = "aaaaaaaa-bbbb-cccc-dddd-333333333334"
+    async with StateDB() as db:
+        await mirror_session(
+            db,
+            session_uid=engine_uid,
+            events=[
+                {
+                    "type": "assistant",
+                    "uuid": "e1",
+                    "timestamp": "2026-07-05T00:00:00.000Z",
+                    "message": {
+                        "role": "assistant",
+                        "content": [{"type": "text", "text": "working"}],
+                    },
+                }
+            ],
+            tool_names={},
+            status="running",
+        )
+
+        branch = Branch(name="b1")
+        ctx = await setup_agent_persist(branch, agent_name="implementer")
+        assert ctx is not None
+        session_id = ctx["session_id"]
+        final = await teardown_agent_persist(
+            ctx,
+            status="failed",
+            exception=ProviderError("abandoned stream reader"),
+            engine_session_uid=engine_uid,
+        )
+    assert final == "running"
+
+    async with StateDB() as db:
+        await _set_fields(db, "sessions", session_db_id(engine_uid), status="completed")
+
+    exit_code = _dispatch_wait([session_id], interval=0.05, follow=False, max_wait=1.0)
+    assert exit_code == 0
+
+    async with StateDB() as db:
+        persisted = await db.get_session(session_id)
+    assert persisted is not None
+    assert persisted["status"] == "completed"
+
+
+@pytest.mark.asyncio
 async def test_dispatch_wait_max_wait_bounds_a_stuck_session(temp_db_path: Path) -> None:
     """A session that never reconciles (no --max-wait would hang this forever)
     must give up after max_wait seconds and report EXIT_RUNNING."""
@@ -1564,3 +1621,34 @@ async def test_dispatch_wait_max_wait_bounds_a_stuck_session(temp_db_path: Path)
 
     assert exit_code == EXIT_RUNNING
     assert elapsed < 3.0, "max_wait must bound the loop instead of hanging"
+
+
+@pytest.mark.asyncio
+async def test_dispatch_wait_default_max_wait_bounds_a_stuck_session_without_caller_bound(
+    temp_db_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The caller supplies no max_wait at all (the real production default path for
+    `li monitor run` / `li monitor --run` when --max-wait is omitted) and there is no
+    external interrupt -- the built-in bounded default must still stop the wait and
+    report EXIT_RUNNING instead of hanging forever. The module-level default is
+    monkeypatched down to keep this test fast; the caller-facing contract under test
+    is that omitting max_wait entirely still bounds the wait."""
+    import lionagi.cli.monitor as monitor_mod
+
+    monkeypatch.setattr(monitor_mod, "_DEFAULT_MAX_WAIT_SECONDS", 0.3)
+
+    async with StateDB() as db:
+        from lionagi import Branch
+        from lionagi.cli._runs import setup_agent_persist
+
+        branch = Branch(name="b1")
+        ctx = await setup_agent_persist(branch, agent_name="implementer")
+        assert ctx is not None
+        session_id = ctx["session_id"]
+
+    started = time.monotonic()
+    exit_code = _dispatch_wait([session_id], interval=0.05, follow=False)
+    elapsed = time.monotonic() - started
+
+    assert exit_code == EXIT_RUNNING
+    assert elapsed < 3.0, "the default bound must stop the loop instead of hanging"

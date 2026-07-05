@@ -962,6 +962,10 @@ def _watch_loop(
 # means the chain as a whole succeeded).
 
 _TERMINAL_SCHEDULE_RUN_STATUSES = frozenset({"completed", "failed", "cancelled", "skipped"})
+# Scripting wait bound applied when the caller doesn't supply --max-wait/max_wait —
+# a stuck session or run must not hang `li monitor run`/`li monitor --run` forever.
+# Pass max_wait=0 (or --max-wait 0) to opt into the old unbounded behavior explicitly.
+_DEFAULT_MAX_WAIT_SECONDS = 900.0
 _CHAIN_GRACE_TICKS = 2
 # Mirrors the scheduler engine's own chain-depth cap (lionagi/studio/scheduler/engine.py
 # _MAX_CHAIN_DEPTH) -- the engine never fires a chain child at or past this depth, so a
@@ -1022,7 +1026,16 @@ async def _effective_session_status(db: Any, row: dict[str, Any]) -> dict[str, A
     later revisits that row to flip it. The linked engine row is the ground truth for
     completion, so follow it here on every poll rather than trusting the profile row's
     own (possibly stale) status column.
+
+    When the linked row has reached a terminal status, PERSIST that status onto the
+    profile row through StateDB.update_status() (CAS-guarded on the status this call
+    just read) before returning — otherwise the synthesized in-memory value here is
+    the only place the reconciliation ever lands, and the DB row itself stays stuck
+    at "running" forever even after this function reports the true terminal status.
     """
+    from lionagi.state.db import SESSION_TERMINAL_STATUSES
+    from lionagi.state.reasons import RunReasons
+
     node_metadata = row.get("node_metadata") or {}
     if isinstance(node_metadata, str):
         node_metadata = json.loads(node_metadata)
@@ -1032,6 +1045,29 @@ async def _effective_session_status(db: Any, row: dict[str, Any]) -> dict[str, A
     linked = await db.get_session(linked_id)
     if linked is None or linked["status"] == row["status"]:
         return row
+    if linked["status"] in SESSION_TERMINAL_STATUSES:
+        reason_by_status = {
+            "completed": RunReasons.COMPLETED_OK,
+            "completed_empty": RunReasons.COMPLETED_EMPTY_NO_EVIDENCE,
+            "failed": RunReasons.FAILED_EXCEPTION,
+            "timed_out": RunReasons.TIMED_OUT_DEADLINE,
+            "aborted": RunReasons.CANCELLED_SIGINT,
+            "cancelled": RunReasons.CANCELLED_SYSTEM,
+        }
+        await db.update_status(
+            "session",
+            row["id"],
+            new_status=linked["status"],
+            reason_code=reason_by_status.get(linked["status"], RunReasons.FAILED_EXCEPTION),
+            reason_summary=(
+                f"reconciled to linked engine session {linked_id} terminal status "
+                f"{linked['status']!r}"
+            ),
+            evidence_refs=[{"kind": "session", "id": linked_id, "label": linked["status"]}],
+            source="executor",
+            actor=row["id"],
+            expected_statuses={row["status"]},
+        )
     return {**row, "status": linked["status"]}
 
 
@@ -1392,6 +1428,12 @@ def _dispatch_wait(
     landing mid-call surfaces as KeyboardInterrupt at the call site (see
     _run_tick below) far more often than it does for the dashboard, so that
     case is folded into the same clean-exit path instead of left to crash.
+
+    max_wait: None (the default, whether left unset by a Python caller or by
+    an unset --max-wait on the CLI) applies the bounded `_DEFAULT_MAX_WAIT_SECONDS`
+    fallback — a stuck session or run must not hang this call forever. Pass 0
+    (or a negative value) to opt into the old unbounded wait explicitly; any
+    positive value overrides the default bound.
     """
     from lionagi.ln.concurrency import run_async
     from lionagi.state.db import DEFAULT_DB_PATH, StateDB
@@ -1471,8 +1513,11 @@ def _dispatch_wait(
     # A stuck session (an unresolvable linked-engine mirror, a wedged
     # subprocess) must not hang this loop forever — max_wait bounds total
     # wall-clock; on expiry, whatever is still pending is reported the same
-    # way an interrupt would (EXIT_RUNNING below), not a silent hang.
-    deadline = time.monotonic() + max_wait if max_wait is not None else None
+    # way an interrupt would (EXIT_RUNNING below), not a silent hang. None
+    # falls back to the bounded default; 0/negative is the explicit opt-in
+    # to unbounded waiting.
+    effective_max_wait = _DEFAULT_MAX_WAIT_SECONDS if max_wait is None else max_wait
+    deadline = time.monotonic() + effective_max_wait if effective_max_wait > 0 else None
 
     def _wait_expired() -> bool:
         return deadline is not None and time.monotonic() >= deadline
@@ -1575,7 +1620,8 @@ def run_monitor_wait(argv: list[str]) -> int:
         help=(
             "Give up waiting after this many seconds and exit EXIT_RUNNING "
             "for whatever is still pending, instead of blocking forever on a "
-            "stuck session or run. Default: no limit."
+            f"stuck session or run. Default: {_DEFAULT_MAX_WAIT_SECONDS:g}s. "
+            "Pass 0 for unlimited."
         ),
     )
     args = parser.parse_args(argv)
@@ -1686,6 +1732,18 @@ def add_monitor_subparser(subparsers: argparse._SubParsersAction) -> None:
             "following scheduler on_success/on_fail chain children by default."
         ),
     )
+    mon.add_argument(
+        "--max-wait",
+        type=float,
+        default=None,
+        metavar="SECS",
+        help=(
+            "With --run: give up waiting after this many seconds and exit "
+            "EXIT_RUNNING for whatever is still pending, instead of blocking "
+            f"forever on a stuck session or run. Default: {_DEFAULT_MAX_WAIT_SECONDS:g}s. "
+            "Pass 0 for unlimited."
+        ),
+    )
 
 
 def run_monitor(args: argparse.Namespace) -> int:
@@ -1702,7 +1760,11 @@ def run_monitor(args: argparse.Namespace) -> int:
             log_error("no schedule_run ids given (only empty/comma-only tokens)")
             return 2
         return _dispatch_wait(
-            watched_ids, interval=args.interval, follow=args.follow, chain=args.chain
+            watched_ids,
+            interval=args.interval,
+            follow=args.follow,
+            chain=args.chain,
+            max_wait=args.max_wait,
         )
 
     since: float | None = None

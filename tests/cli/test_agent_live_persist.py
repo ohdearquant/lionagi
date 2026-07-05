@@ -1167,6 +1167,57 @@ async def test_teardown_keeps_failed_for_real_wrapper_bug_even_when_linked_runni
     assert s["status"] == "failed"
 
 
+@pytest.mark.parametrize(
+    "error_name,message",
+    [("ProviderQuotaError", "usage limit reached"), ("ProviderAuthError", "not logged in")],
+)
+async def test_teardown_keeps_failed_for_genuine_provider_error_even_when_linked_running(
+    temp_db_path: Path, error_name, message
+):
+    """ProviderQuotaError/ProviderAuthError are genuine, well-classified provider
+    failures -- unlike the generic unclassified stream/transport ProviderError, they
+    must never be suppressed into 'running'/'completed' just because a linked engine
+    session happens to still be alive."""
+    import lionagi.providers._provider_errors as provider_errors
+    from lionagi.state.claude_mirror import mirror_session
+
+    error_cls = getattr(provider_errors, error_name)
+    engine_uid = "aaaaaaaa-bbbb-cccc-dddd-222222222221"
+    async with StateDB() as db:
+        await mirror_session(
+            db,
+            session_uid=engine_uid,
+            events=[
+                {
+                    "type": "assistant",
+                    "uuid": "e1",
+                    "timestamp": "2026-07-05T00:00:00.000Z",
+                    "message": {
+                        "role": "assistant",
+                        "content": [{"type": "text", "text": "working on it"}],
+                    },
+                }
+            ],
+            tool_names={},
+            status="running",
+        )
+
+    branch = Branch(name="b1")
+    ctx = await _setup_live_persist(branch, agent_name="implementer")
+    assert ctx is not None
+
+    exc = error_cls(message)
+    final_status = await _teardown_live_persist(
+        ctx, status="failed", exception=exc, engine_session_uid=engine_uid
+    )
+
+    assert final_status == "failed"
+    async with StateDB() as db:
+        s = await db.get_session(ctx["session_id"])
+    assert s is not None
+    assert s["status"] == "failed"
+
+
 async def test_teardown_reconciles_after_delayed_mirror_row_creation(
     temp_db_path: Path, monkeypatch: pytest.MonkeyPatch
 ):
