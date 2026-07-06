@@ -1,0 +1,8 @@
+name: minimal
+description: Smallest possible playbook — prompt only, positional text appended.
+
+model: claude-code/sonnet-4-6
+
+prompt: |
+  You are a patient teacher. Explain the following topic in plain language,
+  with one concrete example.

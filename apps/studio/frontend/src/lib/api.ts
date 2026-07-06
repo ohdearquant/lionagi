@@ -388,6 +388,71 @@ export async function startRun(workerName: string): Promise<{ run_id: string }> 
   });
 }
 
+// ─── User playbooks (list) + built-in playbook templates ─────────────────────
+//
+// "Playbooks" are YAML CLI templates read from ~/.lionagi/playbooks (the same
+// files `li play <name>` resolves). Built-in templates are read-only package
+// data shipped with lionagi (examples/playbooks/, bundled) — Studio's onboarding
+// set for the Workflows page. installBuiltinPlaybook() idempotently copies a
+// template into the user's own playbooks dir; it never overwrites a copy the
+// user has since customized.
+
+export interface PlaybookSummary {
+  name: string;
+  path?: string;
+  description?: string;
+}
+
+export async function listPlaybooks(): Promise<{ playbooks: PlaybookSummary[] }> {
+  return fetchJson<{ playbooks: PlaybookSummary[] }>("/api/playbooks/");
+}
+
+export interface PlaybookArgSpec {
+  type?: string;
+  default?: unknown;
+  help?: string;
+}
+
+export interface BuiltinPlaybookSummary {
+  name: string;
+  description: string;
+  args: Record<string, PlaybookArgSpec>;
+  argument_hint: string;
+  installed: boolean;
+}
+
+export async function listBuiltinPlaybooks(): Promise<{ playbooks: BuiltinPlaybookSummary[] }> {
+  return fetchJson<{ playbooks: BuiltinPlaybookSummary[] }>("/api/playbook-templates/");
+}
+
+export async function getBuiltinPlaybookRaw(name: string): Promise<WorkerRaw> {
+  return fetchJson<WorkerRaw>(`/api/playbook-templates/${encodeURIComponent(name)}`);
+}
+
+export interface InstallBuiltinPlaybookResult {
+  installed: boolean;
+  playbook: PlaybookSummary;
+}
+
+export async function installBuiltinPlaybook(name: string): Promise<InstallBuiltinPlaybookResult> {
+  return fetchJson<InstallBuiltinPlaybookResult>(
+    `/api/playbook-templates/${encodeURIComponent(name)}/install`,
+    { method: "POST" },
+  );
+}
+
+// Real, working launch path for playbooks. startRun() above (POST
+// /api/playbooks/{name}/run) is a 501 stub (# TODO(lift-backend-writes) in
+// services/playbooks.py) — this goes through /api/launches instead, mirroring
+// the launch_playbook Leo action already wired in confirmLeoAction below.
+export async function launchPlaybook(name: string): Promise<LaunchResult> {
+  return fetchJson<LaunchResult>(`/api/launches/`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ action_kind: "play", action_playbook: name }),
+  });
+}
+
 // ─── Agents ───────────────────────────────────────────────────────────────────
 
 export async function listAgents(): Promise<{ agents: AgentProfileSummary[] }> {

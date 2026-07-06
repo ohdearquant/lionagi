@@ -1,0 +1,14 @@
+name: chatgpt-orchestrate
+description: >
+  CC-compatible example — uses `argument-hint` only (no explicit `args:`
+  schema). Flags are parsed from the hint string. All bare `[--flag]`
+  become bool; `[--flag VALUE]` become string. No type coercion.
+argument-hint: '[--tabs N] [--poll] [--harvest]'
+
+model: claude-code/opus-4-7
+
+prompt: |
+  Fire {tabs} parallel ChatGPT sessions on the topic below. Poll for
+  completion: {poll}. Harvest results into a consolidated report: {harvest}.
+
+  Topic: {input}

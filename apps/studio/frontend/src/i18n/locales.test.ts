@@ -5,9 +5,8 @@
  * - LOCALES/RTL_LOCALES metadata shape (16 codes, ar/ur marked rtl).
  * - applyDocumentLocale flips <html lang>/<html dir> for rtl vs ltr locales.
  * - Every messages/*.json file has the exact same leaf-key set as en.json
- *   (770 leaves: 766 from the schedules + status/verdict keystone keys plus
- *   4 Mission Control overview leaves — liveBoard.durationStatus,
- *   recent.repeatedGroup, recent.expand, recent.collapse).
+ *   (791 leaves: 766 base + 4 Mission Control overview leaves plus
+ *   21 library.template.* built-in workflow template keys).
  * - Every locale's messages parse under a real ICU translator with no
  *   FORMATTING_ERROR, including the true {count, plural, ...} strings and
  *   the pre-existing bare-{plural} anti-pattern in prunePhantoms.
@@ -195,8 +194,8 @@ describe("applyDocumentLocale — <html lang>/<html dir> wiring", () => {
 });
 
 describe("messages — leaf-key parity across all 16 locales", () => {
-  it("en.json has 770 leaves (766 base + 4 Mission Control overview leaves)", () => {
-    expect(EN_LEAVES.size).toBe(770);
+  it("en.json has 791 leaves (766 base + 4 Mission Control overview + 21 library.template.* keys)", () => {
+    expect(EN_LEAVES.size).toBe(791);
   });
 
   it.each(LOCALES.map((l) => l.code))(

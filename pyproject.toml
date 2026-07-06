@@ -244,6 +244,7 @@ packages = ["lionagi"]
 artifacts = [
     "lionagi/py.typed",
     "lionagi/casts/packs/*.yaml",
+    "lionagi/studio/builtin_playbooks/*.playbook.yaml",
 ]
 
 [tool.hatch.build]
