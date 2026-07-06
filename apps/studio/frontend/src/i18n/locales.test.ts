@@ -192,8 +192,8 @@ describe("applyDocumentLocale — <html lang>/<html dir> wiring", () => {
 });
 
 describe("messages — leaf-key parity across all 16 locales", () => {
-  it("en.json has 762 leaves (743 base + shell.rail.selectLanguage + schedules table/trigger/error keys)", () => {
-    expect(EN_LEAVES.size).toBe(762);
+  it("en.json has 765 leaves (762 + schedules cards view/paused/not-scheduled keys)", () => {
+    expect(EN_LEAVES.size).toBe(765);
   });
 
   it.each(LOCALES.map((l) => l.code))(

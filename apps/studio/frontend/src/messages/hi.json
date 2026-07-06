@@ -355,7 +355,9 @@
       "overdue": "{delta} से ओवरड्यू",
       "watching": "नए इवेंट पर फ़ायर करता है",
       "last": "पिछला",
-      "never": "कभी रन नहीं हुआ"
+      "never": "कभी रन नहीं हुआ",
+      "paused": "रोका गया",
+      "notScheduled": "निर्धारित नहीं"
     },
     "run": {
       "elapsed": "{delta} बीत गया",
@@ -495,6 +497,7 @@
       "invalidJson": "{field} में अमान्य JSON",
       "sectionHistory": "इतिहास"
     },
+    "viewCards": "कार्ड",
     "viewTable": "तालिका",
     "table": {
       "colName": "नाम",

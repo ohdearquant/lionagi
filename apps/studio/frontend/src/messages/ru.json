@@ -355,7 +355,9 @@
       "overdue": "просрочено на {delta}",
       "watching": "срабатывает на новые события",
       "last": "последний",
-      "never": "никогда не запускалось"
+      "never": "никогда не запускалось",
+      "paused": "Приостановлено",
+      "notScheduled": "Не запланировано"
     },
     "run": {
       "elapsed": "прошло {delta}",
@@ -495,6 +497,7 @@
       "invalidJson": "Некорректный JSON в {field}",
       "sectionHistory": "История"
     },
+    "viewCards": "Карточки",
     "viewTable": "Таблица",
     "table": {
       "colName": "Имя",

@@ -62,7 +62,10 @@ export function TextArea({ mono, rows = 3, className, ...rest }: TextAreaProps) 
     <textarea
       rows={rows}
       {...rest}
-      className={cls("resize-y py-1.5", FIELD_CLASS, mono && "font-data", className)}
+      // shrink-0: keep the rows height inside flex-column scroll containers,
+      // where the flexbox default (flex-shrink:1) would otherwise collapse the
+      // field to a sliver.
+      className={cls("shrink-0 resize-y py-1.5", FIELD_CLASS, mono && "font-data", className)}
     />
   );
 }

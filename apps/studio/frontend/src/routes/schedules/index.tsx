@@ -8,6 +8,7 @@ import { useEffect, useMemo, useState } from "react";
 import { useTranslations } from "use-intl";
 import Button from "@/components/ui/Button";
 import CreateScheduleModal from "@/components/schedules/CreateScheduleModal";
+import ScheduleCards from "@/components/schedules/ScheduleCards";
 import SchedulesTable from "@/components/schedules/SchedulesTable";
 import ScheduleDetailModal from "@/components/schedules/ScheduleDetailModal";
 import SchedulesCalendar from "@/components/schedules/SchedulesCalendar";
@@ -42,7 +43,7 @@ export const Route = createFileRoute("/schedules/")({
   component: SchedulesSpace,
 });
 
-type View = "table" | "calendar";
+type View = "cards" | "table" | "calendar";
 
 function ViewToggle({ view, onChange }: { view: View; onChange: (v: View) => void }) {
   const t = useTranslations("schedules");
@@ -63,6 +64,7 @@ function ViewToggle({ view, onChange }: { view: View; onChange: (v: View) => voi
   );
   return (
     <div className="flex items-center gap-0.5 rounded-md border border-edge p-0.5">
+      {seg("cards", t("viewCards"))}
       {seg("table", t("viewTable"))}
       {seg("calendar", t("calendar"))}
     </div>
@@ -100,7 +102,7 @@ function TableSkeleton() {
 function SchedulesSpace() {
   const t = useTranslations("schedules");
   const { schedules, runs, nowMs, loading, error, refresh } = useSchedulesData();
-  const [view, setView] = useState<View>("table");
+  const [view, setView] = useState<View>("cards");
   const [showModal, setShowModal] = useState(false);
   const search = Route.useSearch();
   const navigate = useNavigate({ from: "/schedules/" });
@@ -170,6 +172,14 @@ function SchedulesSpace() {
         <TableSkeleton />
       ) : schedules.length === 0 ? (
         <EmptyState onNew={() => setShowModal(true)} />
+      ) : view === "cards" ? (
+        <ScheduleCards
+          schedules={schedules}
+          runs={runs}
+          nowMs={nowMs}
+          onChanged={refresh}
+          onOpen={openSchedule}
+        />
       ) : view === "table" ? (
         <SchedulesTable
           schedules={schedules}

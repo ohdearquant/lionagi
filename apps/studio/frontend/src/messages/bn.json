@@ -355,7 +355,9 @@
       "overdue": "{delta} ওভারডিউ",
       "watching": "নতুন ইভেন্টে ফায়ার করে",
       "last": "শেষ",
-      "never": "কখনও রান হয়নি"
+      "never": "কখনও রান হয়নি",
+      "paused": "বিরতিতে",
+      "notScheduled": "নির্ধারিত নয়"
     },
     "run": {
       "elapsed": "{delta} কেটেছে",
@@ -495,6 +497,7 @@
       "invalidJson": "{field}-এ অবৈধ JSON",
       "sectionHistory": "ইতিহাস"
     },
+    "viewCards": "কার্ড",
     "viewTable": "টেবিল",
     "table": {
       "colName": "নাম",

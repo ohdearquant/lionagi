@@ -15,7 +15,15 @@ import type { ScheduleSummary } from "@/lib/types";
 import EnabledToggle from "./EnabledToggle";
 import { classifyError } from "./errorClassify";
 import { humanTrigger } from "./trigger";
-import { KNOWN_RUN_STATUSES, formatDelta, latestRunBySchedule, toMs, type RunRow } from "./data";
+import {
+  KNOWN_RUN_STATUSES,
+  formatDelta,
+  latestRunBySchedule,
+  nextFireState,
+  toMs,
+  type RunRow,
+} from "./data";
+import { IconPause } from "@/components/ui/icons";
 
 export type SortDir = "asc" | "desc";
 
@@ -32,19 +40,24 @@ export function sortByNextFire(schedules: ScheduleSummary[], dir: SortDir): Sche
 function NextFireCell({ schedule, nowMs }: { schedule: ScheduleSummary; nowMs: number }) {
   const t = useTranslations("schedules");
   const locale = useLocale();
+  const state = nextFireState(schedule, nowMs);
 
-  if (schedule.trigger_type === "github_poll") {
+  if (state.kind === "paused") {
+    return (
+      <span className="inline-flex items-center gap-1 text-meta text-content-muted">
+        <IconPause size={11} strokeWidth={2} />
+        {t("card.paused")}
+      </span>
+    );
+  }
+  if (state.kind === "watching") {
     return <span className="text-meta text-content-secondary">{t("card.watching")}</span>;
   }
-  if (schedule.next_fire_at == null) {
+  if (state.kind === "unscheduled") {
     return <span className="text-meta text-content-muted">{t("table.notScheduled")}</span>;
   }
 
-  const fireMs = toMs(schedule.next_fire_at);
-  const delta = fireMs - nowMs;
-  const overdue = delta < 0;
-  const soon = !overdue && delta < 3_600_000;
-  const absolute = new Date(fireMs).toLocaleString(locale, {
+  const absolute = new Date(state.fireMs).toLocaleString(locale, {
     month: "short",
     day: "numeric",
     hour: "2-digit",
@@ -58,16 +71,16 @@ function NextFireCell({ schedule, nowMs }: { schedule: ScheduleSummary; nowMs: n
       <span
         className="text-meta"
         style={{
-          color: overdue
+          color: state.overdue
             ? "var(--status-warning)"
-            : soon
+            : state.soon
               ? "var(--accent)"
               : "var(--content-secondary)",
         }}
       >
-        {overdue
-          ? t("card.overdue", { delta: formatDelta(-delta) })
-          : t("card.in", { delta: formatDelta(delta) })}
+        {state.overdue
+          ? t("card.overdue", { delta: formatDelta(-state.deltaMs) })
+          : t("card.in", { delta: formatDelta(state.deltaMs) })}
       </span>
     </div>
   );
