@@ -213,17 +213,21 @@ def _classify_phantom(
     ps_snapshot: str | None = None,
 ) -> PhantomReason | None:
     ap = _artifacts_path(row)
+    node_metadata = row["node_metadata"] if "node_metadata" in row.keys() else None
+    session = {"id": row["id"], "node_metadata": node_metadata}
+    # A running session is never a phantom while its process is observably alive.
+    if process_liveness(session, ap, ps_snapshot) is True:
+        return None
+    # Not yet stale: it may simply not have written artifacts yet, so give it
+    # the benefit of the doubt rather than reap a fresh/quiet session.
+    updated_at = row["updated_at"] or 0.0
+    if now - updated_at < stale_seconds:
+        return None
     if ap and not ap.exists():
         return "missing_artifacts"
-    if ap and ap.exists():
-        cutoff = now - stale_seconds
-        if _find_stale_lock(ap, cutoff=cutoff) is not None:
-            return "stale_lock"
-    updated_at = row["updated_at"] or 0.0
-    age = now - updated_at
-    if age >= stale_seconds and not _live_process_matches(row["id"], ap, ps_snapshot):
-        return "process_dead"
-    return None
+    if ap and ap.exists() and _find_stale_lock(ap, cutoff=now - stale_seconds) is not None:
+        return "stale_lock"
+    return "process_dead"
 
 
 async def list_phantom_sessions(*, stale_hours: float = 1.0) -> list[dict[str, Any]]:
@@ -235,7 +239,8 @@ async def list_phantom_sessions(*, stale_hours: float = 1.0) -> list[dict[str, A
     async with _open_db(_DB) as db:
         cur = await db.execute(
             """
-            SELECT id, name, playbook_name, started_at, updated_at, artifacts_path, status
+            SELECT id, name, playbook_name, started_at, updated_at, artifacts_path,
+                   status, node_metadata
             FROM sessions
             WHERE status = 'running'
             ORDER BY updated_at DESC
