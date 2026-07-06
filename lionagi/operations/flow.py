@@ -638,6 +638,7 @@ class ReactiveExecutor(DependencyAwareExecutor):
         self.node_builder = node_builder
         self.max_spawn = max_spawn
         self._spawn_count = 0
+        self._dropped_spawns: list[dict[str, Any]] = []
         self._running = False
         self._tg: Any = None
         self._graph_lock = threading.Lock()
@@ -686,6 +687,7 @@ class ReactiveExecutor(DependencyAwareExecutor):
             "skipped_operations": list(self.skipped_operations),
             "spawned_operations": self._spawn_count,
             "escalated_operations": list(self._escalated_ids),
+            "dropped_spawns": self._dropped_spawns,
         }
         self._validate_execution_results(result)
         return result
@@ -840,8 +842,21 @@ class ReactiveExecutor(DependencyAwareExecutor):
         except Exception:  # noqa: BLE001, S110
             pass  # best-effort; never break the escalation path
 
+    def _record_dropped_spawn(
+        self, reason: str, *, assignee: Any, emitter_id: Any, **extra: Any
+    ) -> None:
+        entry: dict[str, Any] = {"reason": reason, "assignee": assignee, "emitter_id": emitter_id}
+        entry.update(extra)
+        self._dropped_spawns.append(entry)
+
     def _inject_request(self, req: Any, *, emitter: Operation | None) -> bool:
+        emitter_id = emitter.id if emitter is not None else None
+        assignee = getattr(req, "assignee", None)
         if id(req) in self._seen_reqs:
+            # The same req surfaced twice (bus emission + post-completion result
+            # scan can both see it) — a de-dup, not a spawn failure; the first
+            # sighting already ran.
+            self._record_dropped_spawn("duplicate", assignee=assignee, emitter_id=emitter_id)
             return False
         self._seen_reqs.add(id(req))
         builder = self.node_builder or _default_node_builder
@@ -849,10 +864,13 @@ class ReactiveExecutor(DependencyAwareExecutor):
             child = builder(req, emitter)
         except Exception as e:
             logger.warning("spawn node_builder failed: %s", e)
+            self._record_dropped_spawn(
+                "builder_error", assignee=assignee, emitter_id=emitter_id, error=str(e)[:500]
+            )
             return False
         if child is None:
+            self._record_dropped_spawn("null_child", assignee=assignee, emitter_id=emitter_id)
             return False
-        emitter_id = emitter.id if emitter is not None else None
         if self._accept_node(
             child, emitter_id=emitter_id, independent=getattr(req, "independent", False)
         ):
@@ -891,6 +909,12 @@ class ReactiveExecutor(DependencyAwareExecutor):
                     self.max_spawn,
                     str(child.id)[:8],
                 )
+                self._record_dropped_spawn(
+                    "max_spawn_exceeded",
+                    assignee=child.metadata.get("assignee"),
+                    emitter_id=emitter_id,
+                    op_id=str(child.id),
+                )
                 return False
 
             newly_added = self.graph.internal_nodes.get(child.id, None) is None
@@ -910,6 +934,12 @@ class ReactiveExecutor(DependencyAwareExecutor):
                     self.graph.remove_node(child.id)
                     self.completion_events.pop(child.id, None)
                 logger.warning("rejected spawn %s: would create a cycle", str(child.id)[:8])
+                self._record_dropped_spawn(
+                    "cycle",
+                    assignee=child.metadata.get("assignee"),
+                    emitter_id=emitter_id,
+                    op_id=str(child.id),
+                )
                 return False
 
             self._spawn_count += 1
@@ -995,7 +1025,15 @@ async def flow(
     max_spawn: int = 50,
     executor_ref: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    """Execute a graph with dependency management and optional reactive self-expansion."""
+    """Execute a graph with dependency management and optional reactive self-expansion.
+
+    Returns ``{completed_operations, operation_results, final_context,
+    skipped_operations}`` always; with ``reactive=True`` also
+    ``spawned_operations`` (successful-spawn count), ``escalated_operations``
+    (emitter ids), and ``dropped_spawns`` (rejected spawn/inject attempts as
+    ``{reason, assignee, emitter_id, ...}``; reasons: builder_error,
+    null_child, cycle, max_spawn_exceeded, duplicate).
+    """
 
     if not parallel:
         max_concurrent = 1
