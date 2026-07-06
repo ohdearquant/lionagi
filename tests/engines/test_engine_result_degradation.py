@@ -115,16 +115,15 @@ async def test_research_verbose_root_spawn_budget_race_degrades_not_crashes(monk
 
 
 @pytest.mark.asyncio
-async def test_review_root_gather_budget_error_does_not_raise(monkeypatch):
+async def test_review_root_gather_budget_error_degrades_to_structured_partial(monkeypatch):
     """A too-tight max_agents hitting the root dimension fan-out (ln_gather in
-    ReviewEngine._run) must not raise EngineBudgetError to the caller.
+    ReviewEngine._run) must not raise EngineBudgetError to the caller, and — with
+    the base structured-empty default — must return an honest structured partial.
 
-    ReviewEngine has no _partial_export override yet (a separate PR gives the
-    base a structured honest-partial default) — the base default still
-    returns None, so the returned value here is None, not a rich EngineResult.
-    What this test guarantees is the crash-stop: no exception, and the run's
-    own degrade signal (_budget_notified) is recorded even though this PR
-    does not yet surface it through the return value for this engine.
+    ReviewEngine has no _partial_export override (it cannot honestly synthesize a
+    verdict from zero completed dimensions), so it inherits the base default:
+    an EngineResult flagged degraded with reason "budget", carrying the events
+    collected before the cap and an EMPTY .text (no fabricated verdict).
     """
     eng = ReviewEngine(dimensions=("correctness", "security"), max_agents=1, repair_retries=0)
     run = eng.new_run()
@@ -135,9 +134,34 @@ async def test_review_root_gather_budget_error_does_not_raise(monkeypatch):
 
     result = await eng.run("some artifact text")
 
-    assert result is None, f"expected the base _partial_export default (None), got {result!r}"
+    assert isinstance(result, EngineResult), f"expected EngineResult, got {type(result)}"
+    assert result.degraded is True
+    assert result.degrade_reason == "budget"
+    assert result.text == "", "the base default must NOT fabricate a synthesized verdict"
+    # Structure survives the degrade: the collected-events accessor is live even
+    # when nothing completed (the whole point of the structured-partial contract).
+    assert isinstance(result.events_by_type(IssueFound), list)
     assert run.agents_made == 1, "only one dimension reviewer should have been made"
     assert run._budget_notified is True, "the budget-exhaustion signal must still be recorded"
+
+
+@pytest.mark.asyncio
+async def test_planning_root_budget_error_degrades_to_structured_partial(monkeypatch):
+    """PlanningEngine's root plan stage hitting the cap must also inherit the
+    base structured-empty default: no crash, an EngineResult flagged
+    degraded=budget with empty .text (no fabricated plan)."""
+    eng = PlanningEngine(max_agents=0)
+    run = eng.new_run()
+    monkeypatch.setattr(run, "make_agent", _budget_gated_make_agent(run))
+    monkeypatch.setattr(eng, "new_run", lambda **kw: run)
+
+    result = await eng.run("plan the migration")
+
+    assert isinstance(result, EngineResult), f"expected EngineResult, got {type(result)}"
+    assert result.degraded is True
+    assert result.degrade_reason == "budget"
+    assert result.text == "", "the base default must NOT fabricate a synthesized plan"
+    assert run._budget_notified is True
 
 
 # ---------------------------------------------------------------------------

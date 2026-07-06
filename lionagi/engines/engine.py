@@ -884,8 +884,18 @@ class Engine:
         return self._wrap_result(result, run, degrade_reason=degrade_reason)
 
     async def _partial_export(self, run: EngineRun, *args: Any, **kwargs: Any) -> Any:
-        """Called under asyncio.shield after budget cancellation; override in subclasses to return a partial result. Default returns None."""
-        return None
+        """Called under asyncio.shield after budget/deadline cancellation.
+
+        Default returns "" — the honest structured-empty partial. _wrap_result
+        promotes it to an EngineResult carrying degraded=True, the reason, the
+        collected events (events_by_type), and skipped, WITHOUT fabricating any
+        synthesis text. An engine that lacks an override (e.g. ReviewEngine with
+        zero completed dimensions, PlanningEngine with no plan) thus surfaces
+        "here is what I collected; I did not finish" rather than a raw None that
+        silently discards the degrade flag and every in-flight event. Engines
+        that can honestly synthesize a partial override this to add .text.
+        """
+        return ""
 
     async def _run(self, run: EngineRun, *args: Any, **kwargs: Any) -> Any:
         raise NotImplementedError("Engine subclass must implement _run(run, ...)")

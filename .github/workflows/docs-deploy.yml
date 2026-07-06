@@ -38,5 +38,26 @@ jobs:
           echo "$GITHUB_WORKSPACE/.venv/bin" >> $GITHUB_PATH
           uv sync
 
-      - name: Deploy documentation
-        run: uv run mkdocs gh-deploy --force
+      - name: Build documentation
+        run: uv run mkdocs build --clean
+
+      # The Vercel git integration watches every branch of this repo, including
+      # gh-pages. The lion-studio Vercel project has its Root Directory set to
+      # apps/studio/frontend, which does not exist in the docs site, so every
+      # gh-pages push produced a failed "Root Directory does not exist" Vercel
+      # deployment. Publish vercel.json disabling git deployments both at the
+      # site root and at the project's Root Directory path, so Vercel reads the
+      # git.deploymentEnabled=false flag wherever it resolves config from.
+      - name: Disable Vercel deployments for the docs branch
+        run: |
+          printf '{"git":{"deploymentEnabled":false}}' > site/vercel.json
+          mkdir -p site/apps/studio/frontend
+          printf '{"git":{"deploymentEnabled":false}}' > site/apps/studio/frontend/vercel.json
+
+      - name: Publish to gh-pages
+        run: |
+          uv run ghp-import \
+            --no-jekyll --push --force \
+            --remote origin --branch gh-pages \
+            --message "docs: deploy ${GITHUB_SHA}" \
+            site
