@@ -219,7 +219,7 @@
     "detail": {
       "empty": "Pilih item untuk diperiksa",
       "back": "Kembali ke daftar",
-      "sectionOverview": "ikhtisar",
+      "sectionOverview": "Ikhtisar",
       "sectionBranches": "Branch",
       "sectionErrors": "Kesalahan",
       "sectionFiles": "File",
@@ -407,7 +407,7 @@
       "cronExpr": "Ekspresi cron",
       "cronHint": "cron 5-field standar (min hr dom mon dow)",
       "intervalSec": "Interval (detik)",
-      "githubRepo": "repo GitHub",
+      "githubRepo": "Repo GitHub",
       "githubEvent": "Filter peristiwa",
       "githubEventPrMerged": "PR digabung",
       "githubEventPrOpened": "PR dibuka",
@@ -772,7 +772,7 @@
     }
   },
   "runCard": {
-    "tabOverview": "ikhtisar",
+    "tabOverview": "Ikhtisar",
     "tabFiles": "File",
     "tabCommands": "Perintah",
     "tabErrors": "Kesalahan",
