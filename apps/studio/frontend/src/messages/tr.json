@@ -590,10 +590,11 @@
       "open": "aç →",
       "reason": {
         "streak": "tekrar tekrar başarısız oluyor",
-        "failed": "başarısız",
+        "failed": "altyapı hatası",
         "stale": "hareketsiz · etkinlik yok",
         "stuck": "takıldı · ilerleme yok",
-        "gated": "onay bekliyor"
+        "gated": "onay bekliyor",
+        "orphaned": "yetim · daemon yeniden başlatıldı"
       },
       "more": "{count, plural, one {+# daha — tümünü geçmişte gör →} other {+# daha — tümünü geçmişte gör →}}",
       "digestLatest": "en son: {name} · {age} önce",
@@ -601,7 +602,8 @@
     },
     "liveBoard": {
       "title": "şu anda çalışıyor",
-      "staleLabel": "Hareketsiz",
+      "staleLabel": "sessiz — kontrol et?",
+      "durationStatus": "{duration} süredir açık · son etkinlik {age} önce",
       "empty": "aktif çalıştırma veya çağrı yok.",
       "emptyHint": "li CLI ile bir tane başlat veya herhangi bir yere atlamak için ⌘K’ye bas.",
       "fleetLink": "ajan filosu →"
@@ -609,7 +611,10 @@
     "recent": {
       "title": "son",
       "viewAll": "geçmiş →",
-      "empty": "Henüz sonlanmış çalıştırma yok."
+      "empty": "Henüz sonlanmış çalıştırma yok.",
+      "repeatedGroup": "{name} {status} × {count}, {span} içinde",
+      "expand": "{count} göster →",
+      "collapse": "Gizle"
     },
     "pulse": {
       "title": "nabız",

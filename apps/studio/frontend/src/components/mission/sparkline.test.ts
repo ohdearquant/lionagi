@@ -12,6 +12,7 @@ import {
   MIN_BAR_H,
   bucketTotal,
   chartWidth,
+  completionRateFromBuckets,
   sparklineRects,
 } from "./sparkline";
 import type { ActivityBucket } from "@/lib/api";
@@ -85,5 +86,39 @@ describe("chartWidth / bucketTotal", () => {
     expect(bucketTotal(bucket({ t: 0, completed: 1, failed: 2, cancelled: 3, running: 4 }))).toBe(
       10,
     );
+  });
+});
+
+describe("completionRateFromBuckets", () => {
+  it("returns null when there is no completed/failed activity at all", () => {
+    expect(completionRateFromBuckets([bucket({ t: 0 })])).toBeNull();
+  });
+
+  it("returns null when only cancelled/running activity exists (no verdict yet)", () => {
+    const rate = completionRateFromBuckets([bucket({ t: 0, cancelled: 5, running: 3 })]);
+    expect(rate).toBeNull();
+  });
+
+  it("excludes cancelled from the denominator — the Ocean 7/6 Pulse bug", () => {
+    // 2 completed, 1 failed, 1 cancelled: old server-side denom (completed+
+    // failed+cancelled) gave 2/4 = 0.5. The correct rate ignores cancelled
+    // entirely: 2/3.
+    const rate = completionRateFromBuckets([
+      bucket({ t: 0, completed: 2, failed: 1, cancelled: 1 }),
+    ]);
+    expect(rate).toBeCloseTo(2 / 3);
+  });
+
+  it("excludes running from the denominator", () => {
+    const rate = completionRateFromBuckets([bucket({ t: 0, completed: 1, running: 5 })]);
+    expect(rate).toBeCloseTo(1);
+  });
+
+  it("sums across all buckets in the window, not just one", () => {
+    const rate = completionRateFromBuckets([
+      bucket({ t: 0, completed: 3, failed: 1 }),
+      bucket({ t: 3600, completed: 1, failed: 1 }),
+    ]);
+    expect(rate).toBeCloseTo(4 / 6);
   });
 });

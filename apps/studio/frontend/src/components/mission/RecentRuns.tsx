@@ -1,8 +1,15 @@
 /**
  * Recent terminal runs strip — last 10 completed/failed/cancelled.
  * Compact mono rows: verdict glyph, name, duration, status.
+ *
+ * Consecutive runs sharing the same name and outcome collapse into one
+ * expandable summary line (`reviewer failed × 8 in 20m`) instead of a wall
+ * of identical rows — a repeated incident is one line, not eight.
+ * Orphaned (daemon-restart) failures render gray/neutral, never red, and
+ * never share a group with a genuine failure of the same name.
  */
 
+import { useState } from "react";
 import { Link } from "@tanstack/react-router";
 import { useTranslations } from "use-intl";
 import SectionLabel from "@/components/ui/SectionLabel";
@@ -10,6 +17,8 @@ import StatusPill from "@/components/ui/StatusPill";
 import Duration from "@/components/ui/Duration";
 import Skeleton from "@/components/ui/Skeleton";
 import type { RunSummary } from "@/lib/types";
+import { groupConsecutiveRecentRuns, groupSpanSec } from "./recentGroups";
+import type { RecentGroup } from "./recentGroups";
 
 interface Props {
   runs: RunSummary[];
@@ -50,6 +59,15 @@ function durationSec(run: RunSummary, nowSec: number): number | null {
   return Math.max(0, end - run.started_at);
 }
 
+function formatSpan(sec: number): string {
+  if (sec < 60) return `${sec}s`;
+  const m = Math.floor(sec / 60);
+  if (m < 60) return `${m}m`;
+  const h = Math.floor(m / 60);
+  const mm = m - h * 60;
+  return mm > 0 ? `${h}h ${mm}m` : `${h}h`;
+}
+
 const KNOWN_STATUSES = new Set([
   "running",
   "completed",
@@ -64,12 +82,27 @@ const KNOWN_STATUSES = new Set([
 export default function RecentRuns({ runs, nowSec }: Props) {
   const t = useTranslations("mission");
   const tStatus = useTranslations("history.status");
+  const [expanded, setExpanded] = useState<ReadonlySet<string>>(() => new Set());
 
   // Localize known lifecycle statuses; unknown values fall back to the pill default
   const statusLabel = (status: string): string | undefined => {
     const s = status.toLowerCase();
     return KNOWN_STATUSES.has(s) ? tStatus(s as Parameters<typeof tStatus>[0]) : undefined;
   };
+
+  function toggle(key: string) {
+    setExpanded((prev) => {
+      const next = new Set(prev);
+      if (next.has(key)) {
+        next.delete(key);
+      } else {
+        next.add(key);
+      }
+      return next;
+    });
+  }
+
+  const groups = groupConsecutiveRecentRuns(runs);
 
   return (
     <section aria-labelledby="recent-runs-heading">
@@ -94,29 +127,144 @@ export default function RecentRuns({ runs, nowSec }: Props) {
         </div>
       ) : (
         <div className="overflow-hidden rounded border border-edge">
-          {runs.map((run, idx) => {
-            const name = run.playbook_name ?? run.agent_name ?? run.run_id.slice(-12);
-            const dur = durationSec(run, nowSec);
-            return (
-              <Link
-                key={run.run_id}
-                to="/fleet"
-                search={{ s: run.run_id }}
-                className="flex items-center gap-3 bg-surface-raised px-3 py-1.5 transition-colors duration-100 hover:bg-surface-overlay"
-                style={{ borderTop: idx === 0 ? undefined : "1px solid var(--edge-hairline)" }}
-              >
-                <StatusPill value={run.status} kind="lifecycle" label={statusLabel(run.status)} />
-                <span className="min-w-0 flex-1 truncate font-data text-[length:var(--t-sm)] text-content-secondary">
-                  {name}
-                </span>
-                <span className="shrink-0 font-data text-[length:var(--t-xs)] text-content-muted">
-                  <Duration value={dur} />
-                </span>
-              </Link>
-            );
-          })}
+          {groups.map((group, idx) => (
+            <RecentGroupRows
+              key={group.key}
+              group={group}
+              nowSec={nowSec}
+              first={idx === 0}
+              expanded={expanded.has(group.key)}
+              onToggle={() => toggle(group.key)}
+              statusLabel={statusLabel}
+              t={t}
+            />
+          ))}
         </div>
       )}
     </section>
+  );
+}
+
+function RunRow({
+  run,
+  nowSec,
+  first,
+  orphaned,
+  statusLabel,
+  t,
+}: {
+  run: RunSummary;
+  nowSec: number;
+  first: boolean;
+  orphaned: boolean;
+  statusLabel: (status: string) => string | undefined;
+  t: ReturnType<typeof useTranslations>;
+}) {
+  const name = run.playbook_name ?? run.agent_name ?? run.run_id.slice(-12);
+  const dur = durationSec(run, nowSec);
+  return (
+    <Link
+      to="/fleet"
+      search={{ s: run.run_id }}
+      className="flex items-center gap-3 bg-surface-raised px-3 py-1.5 transition-colors duration-100 hover:bg-surface-overlay"
+      style={{ borderTop: first ? undefined : "1px solid var(--edge-hairline)" }}
+    >
+      {orphaned ? (
+        <StatusPill
+          value={run.status}
+          kind="lifecycle"
+          tone="neutral"
+          label={t("attention.reason.orphaned")}
+        />
+      ) : (
+        <StatusPill value={run.status} kind="lifecycle" label={statusLabel(run.status)} />
+      )}
+      <span className="min-w-0 flex-1 truncate font-data text-[length:var(--t-sm)] text-content-secondary">
+        {name}
+      </span>
+      <span className="shrink-0 font-data text-[length:var(--t-xs)] text-content-muted">
+        <Duration value={dur} />
+      </span>
+    </Link>
+  );
+}
+
+function RecentGroupRows({
+  group,
+  nowSec,
+  first,
+  expanded,
+  onToggle,
+  statusLabel,
+  t,
+}: {
+  group: RecentGroup;
+  nowSec: number;
+  first: boolean;
+  expanded: boolean;
+  onToggle: () => void;
+  statusLabel: (status: string) => string | undefined;
+  t: ReturnType<typeof useTranslations>;
+}) {
+  if (group.runs.length === 1) {
+    return (
+      <RunRow
+        run={group.runs[0]}
+        nowSec={nowSec}
+        first={first}
+        orphaned={group.orphaned}
+        statusLabel={statusLabel}
+        t={t}
+      />
+    );
+  }
+
+  const span = formatSpan(groupSpanSec(group));
+  const label = statusLabel(group.status) ?? group.status;
+
+  return (
+    <div>
+      <button
+        type="button"
+        onClick={onToggle}
+        aria-expanded={expanded}
+        className="flex w-full items-center gap-3 bg-surface-raised px-3 py-1.5 text-left transition-colors duration-100 hover:bg-surface-overlay"
+        style={{ borderTop: first ? undefined : "1px solid var(--edge-hairline)" }}
+      >
+        {group.orphaned ? (
+          <StatusPill
+            value={group.status}
+            kind="lifecycle"
+            tone="neutral"
+            label={t("attention.reason.orphaned")}
+          />
+        ) : (
+          <StatusPill value={group.status} kind="lifecycle" label={statusLabel(group.status)} />
+        )}
+        <span className="min-w-0 flex-1 truncate font-data text-[length:var(--t-sm)] text-content-secondary">
+          {t("recent.repeatedGroup", {
+            name: group.name,
+            status: label,
+            count: group.runs.length,
+            span,
+          })}
+        </span>
+        <span className="shrink-0 font-data text-[length:var(--t-xs)] text-content-muted">
+          {expanded ? t("recent.collapse") : t("recent.expand", { count: group.runs.length })}
+        </span>
+      </button>
+      {expanded &&
+        group.runs.map((run) => (
+          <RunRow
+            key={run.run_id}
+            run={run}
+            nowSec={nowSec}
+            first={false}
+            orphaned={group.orphaned}
+            statusLabel={statusLabel}
+            t={t}
+          />
+        ))}
+    </div>
   );
 }

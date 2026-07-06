@@ -47,7 +47,7 @@ export interface BoardState {
   errorMessage: string | null;
 }
 
-export type AttentionReason = "streak" | "failed" | "stale" | "stuck" | "gated";
+export type AttentionReason = "streak" | "failed" | "stale" | "stuck" | "gated" | "orphaned";
 
 export interface AttentionItem {
   id: string;
@@ -104,6 +104,18 @@ const TERMINAL_STATUSES = new Set([
 ]);
 const GATED_STATUSES = new Set(["needs_review", "blocked", "gated"]);
 
+/**
+ * A "failed" run whose status_reason_summary carries this value was reaped
+ * by a daemon-restart sweep (a housekeeping event), not a real work failure.
+ * It must never render red or count as an actionable "infra failure".
+ * Exported so recentGroups.ts shares the same classification rather than
+ * re-declaring it.
+ * TODO(unify): route through deriveDisplayStatus once status/verdict
+ * derivation is unified — this string match is a stand-in until orphaned
+ * becomes a first-class terminal state.
+ */
+export const ORPHANED_REASON_SUMMARY = "phantom_reaped";
+
 /** Failures older than this belong to History, not the attention queue. */
 const FAILED_ATTENTION_WINDOW_SEC = 24 * 60 * 60;
 
@@ -151,7 +163,7 @@ function buildAttentionItems(
     let reason: AttentionReason | null = null;
     if (FAILED_STATUSES.has(s)) {
       if (!failedRecently(run.ended_at, run.started_at, nowSec)) continue;
-      reason = "failed";
+      reason = run.status_reason_summary === ORPHANED_REASON_SUMMARY ? "orphaned" : "failed";
     } else if (GATED_STATUSES.has(s)) {
       reason = "gated";
     } else if (RUNNING_STATUSES.has(s) && run.effective_health === "unresponsive") {
@@ -208,13 +220,16 @@ function buildAttentionItems(
     }
   }
 
-  // Sort: streak first, then gated, stuck, failed, stale; within group by recency
+  // Sort: streak first, then gated, stuck, failed, stale, orphaned; within
+  // group by recency. Orphaned sorts last — it is pure housekeeping, never
+  // more urgent than a real failure or a health warning.
   const ORDER: Record<AttentionReason, number> = {
     streak: 0,
     gated: 1,
     stuck: 2,
     failed: 3,
     stale: 4,
+    orphaned: 5,
   };
   items.sort((a, b) => {
     const od = ORDER[a.reason] - ORDER[b.reason];
@@ -229,6 +244,15 @@ function buildAttentionItems(
     seen.add(item.id);
     return true;
   });
+}
+
+/**
+ * "Need attention" is a claim on a human's time. Orphaned rows are pure
+ * housekeeping (a daemon-restart sweep) with nothing for a human to act
+ * on, so they stay visible in the digest but never inflate this count.
+ */
+export function attentionNeedsHumanCount(items: AttentionItem[]): number {
+  return items.filter((i) => i.reason !== "orphaned").length;
 }
 
 function deriveActiveRuns(runs: RunSummary[]): RunSummary[] {

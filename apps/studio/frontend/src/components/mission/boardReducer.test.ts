@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { boardReducer, initialBoardState } from "./boardReducer";
+import { attentionNeedsHumanCount, boardReducer, initialBoardState } from "./boardReducer";
 import type { BoardState } from "./boardReducer";
 import type { RunSummary, ScheduleSummary } from "@/lib/types";
 import type { InvocationSummary } from "@/lib/api";
@@ -268,6 +268,95 @@ describe("boardReducer — attention queue derivation", () => {
     );
     expect(s.attentionItems).toHaveLength(1);
     expect(s.attentionItems[0].reason).toBe("failed");
+  });
+});
+
+// ─── Orphaned (daemon-restart) reclassification ───────────────────────────────
+
+describe("boardReducer — orphaned (phantom_reaped) reclassification", () => {
+  it("a failed run reaped by a daemon restart is reclassified as orphaned, not failed", () => {
+    const s = dispatchOk(initialBoardState(), [
+      makeRun({
+        run_id: "r1",
+        status: "failed",
+        started_at: 1_000_000 - 600,
+        status_reason_summary: "phantom_reaped",
+      }),
+    ]);
+    expect(s.attentionItems).toHaveLength(1);
+    expect(s.attentionItems[0].reason).toBe("orphaned");
+  });
+
+  it("a genuinely failed run (no phantom_reaped reason) stays classified as failed", () => {
+    const s = dispatchOk(initialBoardState(), [
+      makeRun({
+        run_id: "r1",
+        status: "failed",
+        started_at: 1_000_000 - 600,
+        status_reason_summary: "AgentCrashed: traceback ...",
+      }),
+    ]);
+    expect(s.attentionItems).toHaveLength(1);
+    expect(s.attentionItems[0].reason).toBe("failed");
+  });
+
+  it("orphaned rows sort after stale — pure housekeeping, never the most urgent", () => {
+    const nowSec = 2_000_000;
+    const s = dispatchOk(
+      initialBoardState(),
+      [
+        makeRun({
+          run_id: "orphaned",
+          status: "failed",
+          started_at: nowSec - 600,
+          status_reason_summary: "phantom_reaped",
+        }),
+        makeRun({ run_id: "stale", status: "running", effective_health: "stale" }),
+        makeRun({ run_id: "failed", status: "failed", started_at: nowSec - 600 }),
+      ],
+      [],
+      nowSec,
+    );
+    expect(s.attentionItems.map((i) => i.reason)).toEqual(["failed", "stale", "orphaned"]);
+  });
+
+  it("attentionNeedsHumanCount excludes orphaned rows but counts everything else", () => {
+    const nowSec = 2_000_000;
+    const s = dispatchOk(
+      initialBoardState(),
+      [
+        makeRun({
+          run_id: "orphaned1",
+          status: "failed",
+          started_at: nowSec - 600,
+          status_reason_summary: "phantom_reaped",
+        }),
+        makeRun({
+          run_id: "orphaned2",
+          status: "failed",
+          started_at: nowSec - 700,
+          status_reason_summary: "phantom_reaped",
+        }),
+        makeRun({ run_id: "failed", status: "failed", started_at: nowSec - 600 }),
+        makeRun({ run_id: "gated", status: "gated" }),
+      ],
+      [],
+      nowSec,
+    );
+    expect(s.attentionItems).toHaveLength(4);
+    expect(attentionNeedsHumanCount(s.attentionItems)).toBe(2);
+  });
+
+  it("attentionNeedsHumanCount is 0 when only orphaned housekeeping rows are present", () => {
+    const s = dispatchOk(initialBoardState(), [
+      makeRun({
+        run_id: "orphaned1",
+        status: "failed",
+        started_at: 1_000_000 - 600,
+        status_reason_summary: "phantom_reaped",
+      }),
+    ]);
+    expect(attentionNeedsHumanCount(s.attentionItems)).toBe(0);
   });
 });
 

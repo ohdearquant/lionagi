@@ -590,10 +590,11 @@
       "open": "Open →",
       "reason": {
         "streak": "failing repeatedly",
-        "failed": "failed",
+        "failed": "infra failure",
         "stale": "stale · no activity",
         "stuck": "stuck · no progress",
-        "gated": "awaiting approval"
+        "gated": "awaiting approval",
+        "orphaned": "orphaned · daemon restart"
       },
       "more": "+{count} more — view all in History →",
       "digestLatest": "latest: {name} · {age} ago",
@@ -601,7 +602,8 @@
     },
     "liveBoard": {
       "title": "Running now",
-      "staleLabel": "Stale",
+      "staleLabel": "quiet — check?",
+      "durationStatus": "up {duration} · last activity {age} ago",
       "empty": "No active runs or invocations.",
       "emptyHint": "Launch one with the li CLI, or press ⌘K to jump anywhere.",
       "fleetLink": "Fleet →"
@@ -609,7 +611,10 @@
     "recent": {
       "title": "Recent",
       "viewAll": "History →",
-      "empty": "No terminal runs yet."
+      "empty": "No terminal runs yet.",
+      "repeatedGroup": "{name} {status} × {count} in {span}",
+      "expand": "Show {count} →",
+      "collapse": "Hide"
     },
     "pulse": {
       "title": "Pulse",

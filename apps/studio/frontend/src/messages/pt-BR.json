@@ -590,10 +590,11 @@
       "open": "Abrir →",
       "reason": {
         "streak": "falhando repetidamente",
-        "failed": "com falha",
+        "failed": "falha de infra",
         "stale": "desatualizado · sem atividade",
         "stuck": "travado · sem progresso",
-        "gated": "aguardando aprovação"
+        "gated": "aguardando aprovação",
+        "orphaned": "órfão · reinício do daemon"
       },
       "more": "+{count, plural, one {# a mais} other {# a mais}} — ver tudo em Histórico →",
       "digestLatest": "mais recente: {name} · há {age}",
@@ -601,7 +602,8 @@
     },
     "liveBoard": {
       "title": "Em execução agora",
-      "staleLabel": "Desatualizado",
+      "staleLabel": "silencioso — verificar?",
+      "durationStatus": "ativo há {duration} · última atividade há {age}",
       "empty": "Nenhuma execução ou invocação ativa.",
       "emptyHint": "Inicie uma com a CLI li, ou pressione ⌘K para ir a qualquer lugar.",
       "fleetLink": "Frota →"
@@ -609,7 +611,10 @@
     "recent": {
       "title": "Recentes",
       "viewAll": "Histórico →",
-      "empty": "Ainda não há execuções finalizadas."
+      "empty": "Ainda não há execuções finalizadas.",
+      "repeatedGroup": "{name} {status} × {count} em {span}",
+      "expand": "Mostrar {count} →",
+      "collapse": "Ocultar"
     },
     "pulse": {
       "title": "Pulso",

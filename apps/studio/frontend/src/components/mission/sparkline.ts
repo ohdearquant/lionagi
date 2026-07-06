@@ -27,6 +27,30 @@ export function bucketTotal(b: ActivityBucket): number {
   return b.completed + b.failed + b.cancelled + b.running;
 }
 
+/**
+ * Completion rate recomputed client-side from the dense per-bucket counts,
+ * excluding cancelled runs from the denominator (deliberate stops are not
+ * failures) and excluding running entirely (no verdict yet).
+ *
+ * This intentionally ignores the server's own `completion_rate` field:
+ * that field's denominator still includes cancelled runs. It also cannot
+ * exclude orphaned (phantom-reaped, daemon-restart) failures from the
+ * `failed` count — the backend buckets don't carry a per-row reason
+ * breakdown, only aggregate status counts. TODO(unify): once the backend
+ * exposes a reason-level split on /api/stats/activity, subtract orphaned
+ * failures from `failed` here too.
+ */
+export function completionRateFromBuckets(buckets: ActivityBucket[]): number | null {
+  let completed = 0;
+  let failed = 0;
+  for (const b of buckets) {
+    completed += b.completed;
+    failed += b.failed;
+  }
+  const denom = completed + failed;
+  return denom > 0 ? completed / denom : null;
+}
+
 export function chartWidth(bucketCount: number): number {
   return Math.max(BAR_W, bucketCount * (BAR_W + BAR_GAP) - BAR_GAP);
 }

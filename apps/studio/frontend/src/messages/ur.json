@@ -590,10 +590,11 @@
       "open": "کھولیں →",
       "reason": {
         "streak": "بار بار ناکام",
-        "failed": "ناکام",
+        "failed": "انفرا ناکامی",
         "stale": "سٹیل · کوئی سرگرمی نہیں",
         "stuck": "اٹکا ہوا · کوئی پیش رفت نہیں",
-        "gated": "منظوری کا منتظر"
+        "gated": "منظوری کا منتظر",
+        "orphaned": "یتیم · ڈیمن دوبارہ شروع"
       },
       "more": "{count, plural, one {+# مزید — History میں سب دیکھیں →} other {+# مزید — History میں سب دیکھیں →}}",
       "digestLatest": "تازہ ترین: ⁨{name}⁩ · ⁨{age}⁩ پہلے",
@@ -601,7 +602,8 @@
     },
     "liveBoard": {
       "title": "ابھی چل رہا ہے",
-      "staleLabel": "سٹیل",
+      "staleLabel": "خاموش — چیک کریں؟",
+      "durationStatus": "{duration} سے چل رہا ہے · آخری سرگرمی {age} پہلے",
       "empty": "کوئی فعال رن یا انووکیشن نہیں۔",
       "emptyHint": "li CLI سے ایک لانچ کریں، یا کہیں بھی جانے کے لیے ⌘K دبائیں۔",
       "fleetLink": "ایجنٹ فلیٹ →"
@@ -609,7 +611,10 @@
     "recent": {
       "title": "حالیہ",
       "viewAll": "ہسٹری →",
-      "empty": "ابھی تک کوئی مکمل رن نہیں ہے۔"
+      "empty": "ابھی تک کوئی مکمل رن نہیں ہے۔",
+      "repeatedGroup": "{name} {status} × {count}، {span} میں",
+      "expand": "{count} دکھائیں →",
+      "collapse": "چھپائیں"
     },
     "pulse": {
       "title": "پلس",
