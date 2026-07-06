@@ -82,6 +82,7 @@
     "filterAll": "Alle",
     "filterAgent": "Agent",
     "filterWorkflow": "Workflow",
+    "filterPlaybook": "Playbook",
     "filterSkill": "Skill",
     "filterPlugin": "Plugin",
     "filterEngine": "Engine",

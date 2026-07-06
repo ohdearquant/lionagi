@@ -1,11 +1,19 @@
 import type React from "react";
-import { IconAgent, IconPlaybook, IconSkill, IconPlugin, IconEngine } from "@/components/ui/icons";
+import {
+  IconAgent,
+  IconFanout,
+  IconPlaybook,
+  IconSkill,
+  IconPlugin,
+  IconEngine,
+} from "@/components/ui/icons";
 
-export type LibraryKind = "agent" | "workflow" | "skill" | "plugin" | "engine";
+export type LibraryKind = "agent" | "workflow" | "playbook" | "skill" | "plugin" | "engine";
 
 const KIND_COLORS: Record<LibraryKind, string> = {
   agent: "var(--status-running)",
-  workflow: "var(--accent)",
+  workflow: "#4DBFB4",
+  playbook: "var(--accent)",
   skill: "var(--status-success)",
   plugin: "#9B8AF5",
   engine: "var(--content-muted)",
@@ -13,7 +21,8 @@ const KIND_COLORS: Record<LibraryKind, string> = {
 
 const KIND_ICONS: Record<LibraryKind, React.ComponentType<{ className?: string }>> = {
   agent: IconAgent,
-  workflow: IconPlaybook,
+  workflow: IconFanout,
+  playbook: IconPlaybook,
   skill: IconSkill,
   plugin: IconPlugin,
   engine: IconEngine,

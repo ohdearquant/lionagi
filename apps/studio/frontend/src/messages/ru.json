@@ -82,6 +82,7 @@
     "filterAll": "Все",
     "filterAgent": "Агент",
     "filterWorkflow": "Рабочий процесс",
+    "filterPlaybook": "Плейбук",
     "filterSkill": "Навык",
     "filterPlugin": "Плагин",
     "filterEngine": "Движок",

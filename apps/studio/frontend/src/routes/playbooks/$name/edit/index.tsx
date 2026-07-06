@@ -4,7 +4,7 @@ export const Route = createFileRoute("/playbooks/$name/edit/")({
   beforeLoad: ({ params }) => {
     throw redirect({
       to: "/library",
-      search: { tab: "workflow", sel: `workflow:custom:${params.name}` },
+      search: { tab: "playbook", sel: `playbook:custom:${params.name}` },
     });
   },
   component: () => null,

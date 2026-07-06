@@ -82,6 +82,7 @@
     "filterAll": "Semua",
     "filterAgent": "Agen",
     "filterWorkflow": "Alur kerja",
+    "filterPlaybook": "Playbook",
     "filterSkill": "Skill",
     "filterPlugin": "Plugin",
     "filterEngine": "Mesin",

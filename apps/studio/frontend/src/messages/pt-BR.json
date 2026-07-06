@@ -82,6 +82,7 @@
     "filterAll": "Todos",
     "filterAgent": "Agente",
     "filterWorkflow": "Fluxo de trabalho",
+    "filterPlaybook": "Playbook",
     "filterSkill": "Skill",
     "filterPlugin": "Plugin",
     "filterEngine": "Engine",
