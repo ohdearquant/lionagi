@@ -28,7 +28,7 @@ import type { InvocationSummary } from "@/lib/api";
 import type { AgentProfileSummary } from "@/lib/types";
 import type { EngineDef } from "@/lib/api";
 
-const LIBRARY_TABS = ["all", "agent", "workflow", "skill", "plugin", "engine"] as const;
+const LIBRARY_TABS = ["all", "agent", "workflow", "playbook", "skill", "plugin", "engine"] as const;
 type LibraryTab = (typeof LIBRARY_TABS)[number];
 
 export const Route = createFileRoute("/library")({
@@ -43,16 +43,16 @@ export const Route = createFileRoute("/library")({
   component: LibraryPage,
 });
 
-// Sub-partitions of the "workflow" kind: read-only bundled templates, the
-// user's own materialized copies, and DB-backed graph designs (Designer UI).
-// Distinct from LibraryKind (which stays a closed, shared union) so the
-// KindBadge component doesn't need to know about this split.
-type WorkflowSubKind = "builtin" | "custom" | "graph";
+// Sub-partitions of the "playbook" kind: read-only bundled templates vs. the
+// user's own materialized copies. Distinct from LibraryKind (which stays a
+// closed, shared union) so the KindBadge component doesn't need to know
+// about this split.
+type PlaybookSubKind = "builtin" | "custom";
 
 interface LibraryItem {
   key: string;
   kind: LibraryKind;
-  subKind?: WorkflowSubKind;
+  subKind?: PlaybookSubKind;
   name: string;
   description?: string;
   meta?: string;
@@ -96,14 +96,16 @@ function useLibraryData() {
             });
           }
         }
-        // Built-in templates first, then the user's own playbooks, then
-        // DB-backed graph designs — surfacing the shipped templates the
-        // Workflows page was missing entirely (DESIGN-BRIEF §3).
+        // Built-in templates first, then the user's own playbooks — surfacing
+        // the shipped templates the Workflows page was missing entirely
+        // (DESIGN-BRIEF §3). These are agent+prompt templates, not graphs, so
+        // they live under the "playbook" kind, separate from "workflow"
+        // (DB-backed graph designs, Designer UI).
         if (builtinsRes.status === "fulfilled") {
           for (const p of builtinsRes.value.playbooks) {
             out.push({
-              key: `workflow:builtin:${p.name}`,
-              kind: "workflow",
+              key: `playbook:builtin:${p.name}`,
+              kind: "playbook",
               subKind: "builtin",
               name: p.name,
               description: p.description,
@@ -114,8 +116,8 @@ function useLibraryData() {
         if (playbooksRes.status === "fulfilled") {
           for (const p of playbooksRes.value.playbooks) {
             out.push({
-              key: `workflow:custom:${p.name}`,
-              kind: "workflow",
+              key: `playbook:custom:${p.name}`,
+              kind: "playbook",
               subKind: "custom",
               name: p.name,
               description: p.description ?? undefined,
@@ -126,9 +128,8 @@ function useLibraryData() {
         if (workflowsRes.status === "fulfilled") {
           for (const w of workflowsRes.value) {
             out.push({
-              key: `workflow:graph:${w.id}`,
+              key: `workflow:${w.id}`,
               kind: "workflow",
-              subKind: "graph",
               name: w.name,
               description: w.description ?? undefined,
               meta: w.id,
@@ -194,45 +195,62 @@ function useLibraryData() {
   return { items, loading, error, reload, allAgents, allEngines };
 }
 
-const WORKFLOW_SUB_KINDS: WorkflowSubKind[] = ["builtin", "custom", "graph"];
+const PLAYBOOK_SUB_KINDS: PlaybookSubKind[] = ["builtin", "custom"];
+const LIBRARY_KINDS: LibraryKind[] = ["agent", "workflow", "playbook", "skill", "plugin", "engine"];
 
 /**
- * Parse a ?sel param into kind + name (+ subKind for "workflow" items, which
- * split three ways: builtin template / user's own playbook / graph design).
+ * Parse a ?sel param into kind + name (+ subKind for "playbook" items, which
+ * split two ways: builtin template / user's own installed copy).
  */
 function parseSel(
   sel: string | undefined,
-): { kind: LibraryKind; name: string; subKind?: WorkflowSubKind } | null {
+): { kind: LibraryKind; name: string; subKind?: PlaybookSubKind } | null {
   if (!sel) return null;
   const colon = sel.indexOf(":");
   if (colon === -1) return null;
   const kind = sel.slice(0, colon) as LibraryKind;
   const rest = sel.slice(colon + 1);
-  const valid: LibraryKind[] = ["agent", "workflow", "skill", "plugin", "engine"];
-  if (!valid.includes(kind) || !rest) return null;
+  if (!LIBRARY_KINDS.includes(kind) || !rest) return null;
 
-  if (kind === "workflow") {
+  if (kind === "playbook") {
     const colon2 = rest.indexOf(":");
     if (colon2 !== -1) {
       const maybeSubKind = rest.slice(0, colon2);
       const name = rest.slice(colon2 + 1);
-      if (WORKFLOW_SUB_KINDS.includes(maybeSubKind as WorkflowSubKind) && name) {
-        return { kind, name, subKind: maybeSubKind as WorkflowSubKind };
+      if (PLAYBOOK_SUB_KINDS.includes(maybeSubKind as PlaybookSubKind) && name) {
+        return { kind, name, subKind: maybeSubKind as PlaybookSubKind };
       }
     }
-    // Backward-compat: pre-split "workflow:<name>" links (old bookmarks, the
-    // legacy /playbooks/$name redirect shims) predate the subKind split —
-    // "workflow" used to mean only the graph-design kind, so treat those as
-    // "graph" rather than dropping the link.
-    return { kind, name: rest, subKind: "graph" };
+    return null;
+  }
+
+  if (kind === "workflow") {
+    // Backward-compat: pre-split "workflow:<subKind>:<name>" links (old
+    // bookmarks, the legacy /playbooks/$name redirect shims) predate the
+    // playbook/workflow split, where "workflow" carried builtin/custom
+    // playbook rows alongside graph designs under a subKind. Graph links
+    // drop the subKind entirely now; builtin/custom links resolve to the
+    // new "playbook" kind instead of dropping the bookmark.
+    const colon2 = rest.indexOf(":");
+    if (colon2 !== -1) {
+      const legacySubKind = rest.slice(0, colon2);
+      const name = rest.slice(colon2 + 1);
+      if (legacySubKind === "graph" && name) {
+        return { kind: "workflow", name };
+      }
+      if ((legacySubKind === "builtin" || legacySubKind === "custom") && name) {
+        return { kind: "playbook", name, subKind: legacySubKind };
+      }
+    }
+    return { kind, name: rest };
   }
 
   return { kind, name: rest };
 }
 
-function encodeSel(kind: LibraryKind, name: string, subKind?: WorkflowSubKind): string {
-  if (kind === "workflow") {
-    return `workflow:${subKind ?? "graph"}:${name}`;
+function encodeSel(kind: LibraryKind, name: string, subKind?: PlaybookSubKind): string {
+  if (kind === "playbook") {
+    return `playbook:${subKind ?? "custom"}:${name}`;
   }
   return `${kind}:${name}`;
 }
@@ -254,6 +272,7 @@ function LibraryPage() {
     { value: "all", label: t("filterAll") },
     { value: "agent", label: t("filterAgent") },
     { value: "workflow", label: t("filterWorkflow") },
+    { value: "playbook", label: t("filterPlaybook") },
     { value: "skill", label: t("filterSkill") },
     { value: "plugin", label: t("filterPlugin") },
     { value: "engine", label: t("filterEngine") },
@@ -288,7 +307,7 @@ function LibraryPage() {
           (i) =>
             i.kind === parsed.kind &&
             i.name === parsed.name &&
-            (parsed.kind !== "workflow" || i.subKind === parsed.subKind),
+            (parsed.kind !== "playbook" || i.subKind === parsed.subKind),
         )
       ) {
         return;
@@ -343,9 +362,8 @@ function LibraryPage() {
     parsed?.kind === "engine" ? allEngines.find((e) => e.name === parsed?.name) : null;
 
   const selectedWorkflowId =
-    parsed?.kind === "workflow" && parsed.subKind === "graph"
-      ? (items.find((i) => i.kind === "workflow" && i.subKind === "graph" && i.name === parsed.name)
-          ?.meta ?? parsed.name)
+    parsed?.kind === "workflow"
+      ? (items.find((i) => i.kind === "workflow" && i.name === parsed.name)?.meta ?? parsed.name)
       : null;
 
   const isEmpty = !loading && filtered.length === 0;
@@ -494,7 +512,7 @@ function LibraryPage() {
             setShowCreate(false);
             void reload();
             void navigate({
-              search: (prev) => ({ ...prev, sel: encodeSel("workflow", name, "graph") }),
+              search: (prev) => ({ ...prev, sel: encodeSel("workflow", name) }),
               replace: false,
             });
           }}
@@ -507,12 +525,9 @@ function LibraryPage() {
     );
   } else if (parsed?.kind === "agent" && selectedAgent) {
     detailPane = <AgentDetail agent={selectedAgent} onBack={handleBack} />;
-  } else if (parsed?.kind === "workflow" && parsed.subKind === "graph" && selectedWorkflowId) {
+  } else if (parsed?.kind === "workflow" && selectedWorkflowId) {
     detailPane = <WorkflowDetail id={selectedWorkflowId} onBack={handleBack} />;
-  } else if (
-    parsed?.kind === "workflow" &&
-    (parsed.subKind === "builtin" || parsed.subKind === "custom")
-  ) {
+  } else if (parsed?.kind === "playbook") {
     detailPane = (
       <PlaybookTemplateDetail
         name={parsed.name}
@@ -521,7 +536,7 @@ function LibraryPage() {
         onCloned={(clonedName) => {
           void reload();
           void navigate({
-            search: (prev) => ({ ...prev, sel: encodeSel("workflow", clonedName, "custom") }),
+            search: (prev) => ({ ...prev, sel: encodeSel("playbook", clonedName, "custom") }),
             replace: false,
           });
         }}

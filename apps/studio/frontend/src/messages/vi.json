@@ -82,6 +82,7 @@
     "filterAll": "tất cả",
     "filterAgent": "tác nhân",
     "filterWorkflow": "quy trình làm việc",
+    "filterPlaybook": "playbook",
     "filterSkill": "kỹ năng",
     "filterPlugin": "plugin",
     "filterEngine": "engine",

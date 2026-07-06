@@ -82,6 +82,7 @@
     "filterAll": "الكل",
     "filterAgent": "وكيل",
     "filterWorkflow": "سير عمل",
+    "filterPlaybook": "دليل التشغيل",
     "filterSkill": "مهارة",
     "filterPlugin": "مكوّن إضافي",
     "filterEngine": "محرّك",

@@ -82,6 +82,7 @@
     "filterAll": "すべて",
     "filterAgent": "エージェント",
     "filterWorkflow": "ワークフロー",
+    "filterPlaybook": "プレイブック",
     "filterSkill": "スキル",
     "filterPlugin": "プラグイン",
     "filterEngine": "エンジン",

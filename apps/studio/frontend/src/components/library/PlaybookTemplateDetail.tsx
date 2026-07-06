@@ -1,6 +1,6 @@
 /**
  * Detail pane for a built-in playbook template or a user's own installed
- * playbook (the two "workflow" sub-kinds that back the Studio Workflows page
+ * playbook (the two "playbook" sub-kinds that back the Studio Playbooks page
  * per DESIGN-BRIEF §3). Both read from the same declarative shape via
  * rawToDeclarative(); the only difference is which endpoint the raw YAML
  * comes from and whether "Clone to customize" is offered.

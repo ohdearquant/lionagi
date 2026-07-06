@@ -82,6 +82,7 @@
     "filterAll": "tümü",
     "filterAgent": "ajan",
     "filterWorkflow": "iş akışı",
+    "filterPlaybook": "playbook",
     "filterSkill": "beceri",
     "filterPlugin": "eklenti",
     "filterEngine": "motor",
