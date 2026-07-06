@@ -72,11 +72,6 @@ def _default_reason_code_for_entity_status(entity_type: str, status: str) -> str
     return None
 
 
-def _default_reason_code_for_status(status: str) -> str:
-    """Legacy run-only resolver; prefer _default_reason_code_for_entity_status."""
-    return _RUN_DEFAULTS.get(status, _RunReasons.FAILED_EXCEPTION)
-
-
 _SCHEMA_PATH = Path(__file__).parent / "schema.sql"
 DEFAULT_DB_PATH = LIONAGI_HOME / "state.db"
 
