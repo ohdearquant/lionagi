@@ -639,7 +639,7 @@
       "open": "فتح ←",
       "reason": {
         "streak": "يفشل بشكل متكرر",
-        "failed": "فشل",
+        "failed": "فشل بنية تحتية",
         "stale": "قديم · لا نشاط",
         "stuck": "عالق · لا تقدم",
         "gated": "بانتظار الموافقة"
@@ -650,7 +650,8 @@
     },
     "liveBoard": {
       "title": "قيد التشغيل الآن",
-      "staleLabel": "قديم",
+      "staleLabel": "صامت — تحقق؟",
+      "durationStatus": "قيد التشغيل منذ {duration} · آخر نشاط منذ {age}",
       "empty": "لا توجد تشغيلات أو استدعاءات نشطة.",
       "emptyHint": "شغّل واحدًا باستخدام li CLI، أو اضغط ⌘K للانتقال إلى أي مكان.",
       "fleetLink": "أسطول الوكلاء ←"
@@ -658,7 +659,10 @@
     "recent": {
       "title": "الأخيرة",
       "viewAll": "السجل ←",
-      "empty": "لا توجد تشغيلات منتهية بعد."
+      "empty": "لا توجد تشغيلات منتهية بعد.",
+      "repeatedGroup": "{name} {status} × {count} خلال {span}",
+      "expand": "إظهار {count} ←",
+      "collapse": "إخفاء"
     },
     "pulse": {
       "title": "النبض",

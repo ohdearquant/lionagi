@@ -639,7 +639,7 @@
       "open": "mở →",
       "reason": {
         "streak": "thất bại lặp lại",
-        "failed": "thất bại",
+        "failed": "lỗi hạ tầng",
         "stale": "cũ · không có hoạt động",
         "stuck": "kẹt · không tiến triển",
         "gated": "đang chờ phê duyệt"
@@ -650,7 +650,8 @@
     },
     "liveBoard": {
       "title": "đang chạy",
-      "staleLabel": "cũ",
+      "staleLabel": "im lặng — kiểm tra?",
+      "durationStatus": "chạy {duration} · hoạt động gần nhất {age} trước",
       "empty": "không có lần chạy hoặc lần gọi đang hoạt động.",
       "emptyHint": "khởi chạy một lần bằng li CLI, hoặc nhấn ⌘K để nhảy tới bất kỳ đâu.",
       "fleetLink": "nhóm tác nhân →"
@@ -658,7 +659,10 @@
     "recent": {
       "title": "gần đây",
       "viewAll": "lịch sử →",
-      "empty": "chưa có lần chạy đã kết thúc nào."
+      "empty": "chưa có lần chạy đã kết thúc nào.",
+      "repeatedGroup": "{name} {status} × {count} trong {span}",
+      "expand": "Hiện {count} →",
+      "collapse": "Ẩn"
     },
     "pulse": {
       "title": "xung",

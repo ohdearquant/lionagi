@@ -639,7 +639,7 @@
       "open": "Buka →",
       "reason": {
         "streak": "gagal berulang kali",
-        "failed": "gagal",
+        "failed": "kegagalan infra",
         "stale": "usang · tidak ada aktivitas",
         "stuck": "macet · tidak ada kemajuan",
         "gated": "menunggu persetujuan"
@@ -650,7 +650,8 @@
     },
     "liveBoard": {
       "title": "Sedang berjalan",
-      "staleLabel": "Usang",
+      "staleLabel": "sepi — periksa?",
+      "durationStatus": "aktif {duration} · aktivitas terakhir {age} lalu",
       "empty": "Tidak ada eksekusi atau invokasi aktif.",
       "emptyHint": "Luncurkan satu dengan CLI li, atau tekan ⌘K untuk lompat ke mana saja.",
       "fleetLink": "Armada agen →"
@@ -658,7 +659,10 @@
     "recent": {
       "title": "Terbaru",
       "viewAll": "Riwayat →",
-      "empty": "Belum ada eksekusi yang selesai."
+      "empty": "Belum ada eksekusi yang selesai.",
+      "repeatedGroup": "{name} {status} × {count} dalam {span}",
+      "expand": "Tampilkan {count} →",
+      "collapse": "Sembunyikan"
     },
     "pulse": {
       "title": "Pulsa",

@@ -639,7 +639,7 @@
       "open": "Abrir →",
       "reason": {
         "streak": "fallando repetidamente",
-        "failed": "fallido",
+        "failed": "fallo de infraestructura",
         "stale": "inactivo · sin actividad",
         "stuck": "bloqueado · sin progreso",
         "gated": "esperando aprobación"
@@ -650,7 +650,8 @@
     },
     "liveBoard": {
       "title": "En ejecución ahora",
-      "staleLabel": "Sin actividad",
+      "staleLabel": "inactivo — ¿revisar?",
+      "durationStatus": "activo {duration} · última actividad hace {age}",
       "empty": "No hay ejecuciones ni invocaciones activas.",
       "emptyHint": "Lanza una con la li CLI o pulsa ⌘K para saltar a cualquier lugar.",
       "fleetLink": "Flota →"
@@ -658,7 +659,10 @@
     "recent": {
       "title": "Reciente",
       "viewAll": "Historial →",
-      "empty": "Aún no hay ejecuciones finalizadas."
+      "empty": "Aún no hay ejecuciones finalizadas.",
+      "repeatedGroup": "{name} {status} × {count} en {span}",
+      "expand": "Mostrar {count} →",
+      "collapse": "Ocultar"
     },
     "pulse": {
       "title": "Pulso",

@@ -639,7 +639,7 @@
       "open": "打开 →",
       "reason": {
         "streak": "连续失败",
-        "failed": "失败",
+        "failed": "基础设施故障",
         "stale": "停滞 · 长时间无活动",
         "stuck": "卡住 · 无进展",
         "gated": "待审批"
@@ -650,7 +650,8 @@
     },
     "liveBoard": {
       "title": "正在运行",
-      "staleLabel": "已失联",
+      "staleLabel": "静默 — 检查?",
+      "durationStatus": "运行 {duration} · 最近活动 {age} 前",
       "empty": "当前无活跃运行或调用。",
       "emptyHint": "可用 li CLI 启动，或按 ⌘K 快速跳转。",
       "fleetLink": "智能体监控 →"
@@ -658,7 +659,10 @@
     "recent": {
       "title": "近期",
       "viewAll": "历史记录 →",
-      "empty": "暂无已完成的运行。"
+      "empty": "暂无已完成的运行。",
+      "repeatedGroup": "{name} {status} × {count} 次，{span}内",
+      "expand": "显示 {count} 项 →",
+      "collapse": "收起"
     },
     "pulse": {
       "title": "系统脉搏",

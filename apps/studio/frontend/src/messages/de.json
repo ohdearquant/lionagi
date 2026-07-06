@@ -639,7 +639,7 @@
       "open": "Öffnen →",
       "reason": {
         "streak": "wiederholt fehlgeschlagen",
-        "failed": "fehlgeschlagen",
+        "failed": "Infrastrukturfehler",
         "stale": "veraltet · keine Aktivität",
         "stuck": "blockiert · kein Fortschritt",
         "gated": "wartet auf Genehmigung"
@@ -650,7 +650,8 @@
     },
     "liveBoard": {
       "title": "Läuft jetzt",
-      "staleLabel": "Veraltet",
+      "staleLabel": "still — prüfen?",
+      "durationStatus": "läuft seit {duration} · letzte Aktivität vor {age}",
       "empty": "Keine aktiven Ausführungen oder Aufrufe.",
       "emptyHint": "Starte eine mit der li CLI, oder drücke ⌘K, um überallhin zu springen.",
       "fleetLink": "Flotte →"
@@ -658,7 +659,10 @@
     "recent": {
       "title": "Letzte",
       "viewAll": "Verlauf →",
-      "empty": "Noch keine beendeten Ausführungen."
+      "empty": "Noch keine beendeten Ausführungen.",
+      "repeatedGroup": "{name} {status} × {count} in {span}",
+      "expand": "{count} anzeigen →",
+      "collapse": "Ausblenden"
     },
     "pulse": {
       "title": "Puls",
