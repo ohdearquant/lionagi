@@ -32,7 +32,7 @@
       "ecosystemNewTab": "abre em nova aba"
     },
     "tabs": {
-      "overview": "Visão Geral",
+      "overview": "Visão geral",
       "fleet": "Frota",
       "homeAria": "Abas da página inicial"
     },
@@ -219,7 +219,7 @@
     "detail": {
       "empty": "Selecione um item para visualizar",
       "back": "Voltar à lista",
-      "sectionOverview": "Visão Geral",
+      "sectionOverview": "Visão geral",
       "sectionBranches": "Branches",
       "sectionErrors": "Erros",
       "sectionFiles": "Arquivos",
@@ -403,7 +403,7 @@
       "triggerType": "Tipo de acionador",
       "triggerCron": "Cron",
       "triggerInterval": "Intervalo",
-      "triggerGithub": "GitHub Poll",
+      "triggerGithub": "Poll do GitHub",
       "cronExpr": "Expressão cron",
       "cronHint": "cron padrão de 5 campos (min hora dia/mês mês dia/semana)",
       "intervalSec": "Intervalo (segundos)",
@@ -772,7 +772,7 @@
     }
   },
   "runCard": {
-    "tabOverview": "Visão Geral",
+    "tabOverview": "Visão geral",
     "tabFiles": "Arquivos",
     "tabCommands": "Comandos",
     "tabErrors": "Erros",
