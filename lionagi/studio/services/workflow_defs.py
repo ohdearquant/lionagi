@@ -23,9 +23,11 @@ class NameConflictError(Exception):
 
 
 # Closed set of node kinds — must match the Designer frontend's WorkflowNodeKind.
-_VALID_NODE_KINDS: frozenset[str] = frozenset(
-    {"input", "chat", "parse", "fanout", "engine", "gate"}
-)
+# 'gate' was removed (conditions now live on edges, not gate nodes — see the
+# workflow-exec spec, Fork 1). A saved def still carrying a 'gate' node fails
+# validation here (create/update) and load (get_workflow_def_route) with an
+# actionable, node-naming error rather than a generic 422.
+_VALID_NODE_KINDS: frozenset[str] = frozenset({"input", "chat", "parse", "fanout", "engine"})
 
 _MAX_NODES = 200
 _MAX_EDGES = 400
@@ -65,6 +67,8 @@ def _validate_spec(spec: dict[str, Any] | None) -> None:
                 f"node {node_id!r} has invalid kind {kind!r}. "
                 f"Valid kinds: {sorted(_VALID_NODE_KINDS)}"
             )
+        if kind == "chat":
+            _validate_chat_config(node_id, node.get("config"))
         pos = node.get("pos")
         if not isinstance(pos, dict) or not all(
             isinstance(pos.get(axis), int | float) and not isinstance(pos.get(axis), bool)
@@ -86,11 +90,36 @@ def _validate_spec(spec: dict[str, Any] | None) -> None:
             target = edge.get(endpoint)
             if target not in node_ids:
                 raise ValueError(f"edge {edge_id!r} {endpoint} references unknown node {target!r}")
+        condition = edge.get("condition")
+        if condition is not None and (not isinstance(condition, str) or not condition.strip()):
+            raise ValueError(f"edge {edge_id!r} condition must be a non-empty string")
 
     for field in ("inputs", "outputs"):
         vals = spec.get(field, [])
         if not isinstance(vals, list) or not all(isinstance(v, str) for v in vals):
             raise ValueError(f"spec_json.{field} must be an array of strings")
+
+
+def _validate_chat_config(node_id: str, config: Any) -> None:
+    """WorkflowChatConfig: {prompt: str (required), model?: str}."""
+    if not isinstance(config, dict) or not config.get("prompt"):
+        raise ValueError(f"node {node_id!r} (kind 'chat') requires config.prompt")
+    if not isinstance(config["prompt"], str):
+        raise ValueError(f"node {node_id!r} config.prompt must be a string")
+    model = config.get("model")
+    if model is not None and not isinstance(model, str):
+        raise ValueError(f"node {node_id!r} config.model must be a string")
+
+
+def _find_gate_node_ids(spec: dict[str, Any] | None) -> list[str]:
+    """Ids of any 'gate' nodes in *spec* — the kind was removed; see _VALID_NODE_KINDS."""
+    if not isinstance(spec, dict):
+        return []
+    return [
+        node.get("id")
+        for node in spec.get("nodes", [])
+        if isinstance(node, dict) and node.get("kind") == "gate"
+    ]
 
 
 def _validate_name(name: str) -> None:
@@ -206,6 +235,17 @@ async def get_workflow_def_route(def_id: str) -> dict[str, Any]:
     data = await get_workflow_def(def_id)
     if data is None:
         raise HTTPException(status_code=404, detail=f"Workflow definition '{def_id}' not found")
+    gate_ids = _find_gate_node_ids(data.get("spec_json"))
+    if gate_ids:
+        raise HTTPException(
+            status_code=422,
+            detail=(
+                f"Workflow definition {def_id!r} contains removed 'gate' node(s) "
+                f"{gate_ids!r}. The 'gate' node kind was removed — conditions now "
+                "live on edges (WorkflowEdge.condition). Edit the definition to "
+                "remove or replace these nodes before it can be loaded."
+            ),
+        )
     return data
 
 
@@ -233,3 +273,31 @@ async def delete_workflow_def_route(def_id: str) -> dict[str, Any]:
     if not ok:
         raise HTTPException(status_code=404, detail=f"Workflow definition '{def_id}' not found")
     return {"ok": True}
+
+
+class RunWorkflowDefRequest(BaseModel):
+    inputs: dict[str, Any] | None = None
+
+
+@studio_route(
+    "/workflow-defs/{def_id}/run",
+    method="POST",
+    area="workflow-defs",
+    status_code=202,
+    name="run_workflow_def",
+)
+async def run_workflow_def_route(def_id: str, body: RunWorkflowDefRequest) -> dict[str, Any]:
+    """Compile *def_id* and execute it via Session.flow; returns {run_id, status}.
+
+    run_id is the same id GET /api/sessions/{id} and Fleet/History already read —
+    the run appears there like any other flow run (no new telemetry surface).
+    """
+    from .workflow_compile import WorkflowCompileError
+    from .workflow_run import WorkflowNotFoundError, run_workflow_def
+
+    try:
+        return await run_workflow_def(def_id, body.inputs)
+    except WorkflowNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except WorkflowCompileError as exc:
+        raise HTTPException(status_code=422, detail=exc.to_dict()) from exc

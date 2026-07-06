@@ -168,3 +168,118 @@ def test_route_registration():
     assert ("GET", "/workflow-defs/{def_id}") in paths
     assert ("PUT", "/workflow-defs/{def_id}") in paths
     assert ("DELETE", "/workflow-defs/{def_id}") in paths
+    assert ("POST", "/workflow-defs/{def_id}/run") in paths
+
+
+# ─── gate-kind removal (workflow-exec Fork 1) ───────────────────────────────
+
+
+async def test_gate_kind_rejected_at_create(patched_svc):
+    svc, _ = patched_svc
+    spec = _spec()
+    spec["nodes"][0]["kind"] = "gate"
+    with pytest.raises(ValueError, match="invalid kind"):
+        await svc.create_workflow_def({"name": "gate-create", "spec_json": spec})
+
+
+async def test_gate_node_load_guard_names_the_node(patched_svc):
+    """A legacy row saved before the validator change fails GET with an actionable error."""
+    svc, _ = patched_svc
+    # Seed the db/tables, then write a legacy row directly (bypassing
+    # _validate_spec, which now rejects 'gate' — this simulates data saved
+    # before the kind was removed).
+    await svc.create_workflow_def({"name": "seed"})
+
+    import time
+    import uuid
+
+    from fastapi import HTTPException
+
+    from lionagi.state.db import StateDB
+
+    spec = _spec()
+    spec["nodes"][0]["kind"] = "gate"
+    def_id = uuid.uuid4().hex[:12]
+    now = time.time()
+    async with StateDB() as db:
+        await db.create_workflow_def(
+            {
+                "id": def_id,
+                "name": "legacy-gate",
+                "description": None,
+                "spec_json": spec,
+                "created_at": now,
+                "updated_at": now,
+            }
+        )
+
+    with pytest.raises(HTTPException) as exc_info:
+        await svc.get_workflow_def_route(def_id)
+    assert exc_info.value.status_code == 422
+    assert "n1" in str(exc_info.value.detail)
+    assert "gate" in str(exc_info.value.detail)
+
+
+# ─── chat node config (WorkflowChatConfig) ──────────────────────────────────
+
+
+def _spec_with_chat(config: dict[str, Any]) -> dict[str, Any]:
+    spec = _spec()
+    spec["nodes"].append(
+        {"id": "n3", "kind": "chat", "label": "Chat", "pos": {"x": 100, "y": 0}, "config": config}
+    )
+    return spec
+
+
+async def test_chat_node_missing_prompt_raises(patched_svc):
+    svc, _ = patched_svc
+    with pytest.raises(ValueError, match="prompt"):
+        await svc.create_workflow_def({"name": "nochatprompt", "spec_json": _spec_with_chat({})})
+
+
+async def test_chat_node_non_string_prompt_raises(patched_svc):
+    svc, _ = patched_svc
+    spec = _spec_with_chat({"prompt": 5})
+    with pytest.raises(ValueError, match="prompt"):
+        await svc.create_workflow_def({"name": "badprompt", "spec_json": spec})
+
+
+async def test_chat_node_non_string_model_raises(patched_svc):
+    svc, _ = patched_svc
+    spec = _spec_with_chat({"prompt": "hi", "model": 5})
+    with pytest.raises(ValueError, match="model"):
+        await svc.create_workflow_def({"name": "badmodel", "spec_json": spec})
+
+
+async def test_chat_node_valid_config_passes(patched_svc):
+    svc, _ = patched_svc
+    spec = _spec_with_chat({"prompt": "hi", "model": "gpt-4"})
+    result = await svc.create_workflow_def({"name": "goodchat", "spec_json": spec})
+    assert "id" in result
+
+
+# ─── edge condition field (WorkflowEdge.condition) ──────────────────────────
+
+
+async def test_edge_condition_empty_string_raises(patched_svc):
+    svc, _ = patched_svc
+    spec = _spec()
+    spec["edges"][0]["condition"] = "   "
+    with pytest.raises(ValueError, match="condition"):
+        await svc.create_workflow_def({"name": "badcond", "spec_json": spec})
+
+
+async def test_edge_condition_non_string_raises(patched_svc):
+    svc, _ = patched_svc
+    spec = _spec()
+    spec["edges"][0]["condition"] = 42
+    with pytest.raises(ValueError, match="condition"):
+        await svc.create_workflow_def({"name": "badcond2", "spec_json": spec})
+
+
+async def test_edge_condition_valid_string_passes(patched_svc):
+    svc, _ = patched_svc
+    spec = _spec()
+    spec["edges"][0]["condition"] = "result == 'go'"
+    result = await svc.create_workflow_def({"name": "goodcond", "spec_json": spec})
+    assert "id" in result
