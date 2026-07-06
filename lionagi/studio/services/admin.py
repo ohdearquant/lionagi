@@ -177,14 +177,6 @@ def process_liveness(
     return None
 
 
-def _live_process_matches(
-    session_id: str,
-    artifacts_path: Path | None,
-    ps_snapshot: str | None = None,
-) -> bool:
-    return process_liveness({"id": session_id}, artifacts_path, ps_snapshot) is True
-
-
 def _artifacts_path(row: Any) -> Path | None:
     ap = row["artifacts_path"] if "artifacts_path" in row.keys() else None
     if ap:

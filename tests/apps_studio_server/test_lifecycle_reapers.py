@@ -4,6 +4,8 @@
 
 from __future__ import annotations
 
+import os
+import subprocess
 import time
 import uuid
 from pathlib import Path
@@ -38,6 +40,7 @@ async def _seed_session(
     updated_at: float | None = None,
     artifacts_path: str | None = None,
     agent_name: str | None = None,
+    node_metadata: dict | None = None,
 ) -> str:
     sid = session_id or str(uuid.uuid4())
     now = time.time()
@@ -52,6 +55,7 @@ async def _seed_session(
                 "status": status,
                 "started_at": started_at or now,
                 "agent_name": agent_name,
+                "node_metadata": node_metadata,
             }
         )
         updates: dict = {}
@@ -270,20 +274,28 @@ def test_reap_stale_invocations_per_kind_override(tmp_path, monkeypatch):
 
 
 def test_reap_null_status_sessions_dead_process(tmp_path, monkeypatch):
-    """Null-status session with dead process is transitioned to failed."""
+    """Null-status session with dead process, stale past the grace, is reaped."""
     db_path = tmp_path / "state.db"
     _monkey_db(monkeypatch, db_path)
 
-    sid = run_async(_seed_session(db_path, status=None, artifacts_path=None))
+    stale_time = time.time() - 7200  # past default 1h grace
+    sid = run_async(
+        _seed_session(
+            db_path,
+            status=None,
+            artifacts_path=None,
+            started_at=stale_time,
+            updated_at=stale_time,
+        )
+    )
 
-    # Patch _live_process_matches to report the process as dead.
     import lionagi.studio.services.lifecycle as lc_mod
 
-    monkeypatch.setattr(lc_mod, "_live_process_matches", lambda _sid, _ap: False)
+    monkeypatch.setattr(lc_mod, "process_liveness", lambda *_a, **_k: False)
 
     from lionagi.studio.services.lifecycle import reap_null_status_sessions
 
-    count = run_async(reap_null_status_sessions())
+    count = run_async(reap_null_status_sessions(stale_hours=1.0))
     assert count == 1
 
     sess = run_async(_get_session(db_path, sid))
@@ -302,11 +314,11 @@ def test_reap_null_status_sessions_skips_live_process(tmp_path, monkeypatch):
 
     import lionagi.studio.services.lifecycle as lc_mod
 
-    monkeypatch.setattr(lc_mod, "_live_process_matches", lambda _sid, _ap: True)
+    monkeypatch.setattr(lc_mod, "process_liveness", lambda *_a, **_k: True)
 
     from lionagi.studio.services.lifecycle import reap_null_status_sessions
 
-    count = run_async(reap_null_status_sessions())
+    count = run_async(reap_null_status_sessions(stale_hours=1.0))
     assert count == 0
 
     sess = run_async(_get_session(db_path, sid))
@@ -323,15 +335,137 @@ def test_reap_null_status_sessions_skips_terminal(tmp_path, monkeypatch):
 
     import lionagi.studio.services.lifecycle as lc_mod
 
-    monkeypatch.setattr(lc_mod, "_live_process_matches", lambda _sid, _ap: False)
+    monkeypatch.setattr(lc_mod, "process_liveness", lambda *_a, **_k: False)
 
     from lionagi.studio.services.lifecycle import reap_null_status_sessions
 
-    count = run_async(reap_null_status_sessions())
+    count = run_async(reap_null_status_sessions(stale_hours=1.0))
     assert count == 0
 
     sess = run_async(_get_session(db_path, sid))
     assert sess["status"] == "completed"
+
+
+def test_reap_null_status_sessions_live_recorded_pid_not_reaped(tmp_path, monkeypatch):
+    """A fresh null-status session with a LIVE recorded node_metadata.pid is not reaped.
+
+    Load-bearing regression check: the old id-only liveness check
+    (``_live_process_matches``) never saw ``node_metadata``, so it fell
+    through to ``None`` (unknown) -> reaped with no staleness grace. This
+    fails on that old code and passes once liveness honors the recorded pid.
+    """
+    db_path = tmp_path / "state.db"
+    _monkey_db(monkeypatch, db_path)
+
+    sid = run_async(
+        _seed_session(
+            db_path,
+            status=None,
+            artifacts_path=None,
+            node_metadata={"pid": os.getpid()},
+        )
+    )
+
+    from lionagi.studio.services.lifecycle import reap_null_status_sessions
+
+    count = run_async(reap_null_status_sessions(stale_hours=1.0))
+    assert count == 0
+
+    sess = run_async(_get_session(db_path, sid))
+    assert sess["status"] is None
+
+
+def test_reap_null_status_sessions_stale_dead_recorded_pid_reaped(tmp_path, monkeypatch):
+    """A stale null-status session with a DEAD recorded pid is still reaped (cleanup preserved)."""
+    db_path = tmp_path / "state.db"
+    _monkey_db(monkeypatch, db_path)
+
+    proc = subprocess.Popen(["/bin/sleep", "0"])  # noqa: S603
+    proc.wait()
+    dead_pid = proc.pid
+
+    stale_time = time.time() - 7200  # past the 1h grace
+    sid = run_async(
+        _seed_session(
+            db_path,
+            status=None,
+            artifacts_path=None,
+            started_at=stale_time,
+            updated_at=stale_time,
+            node_metadata={"pid": dead_pid},
+        )
+    )
+
+    from lionagi.studio.services.lifecycle import reap_null_status_sessions
+
+    count = run_async(reap_null_status_sessions(stale_hours=1.0))
+    assert count == 1
+
+    sess = run_async(_get_session(db_path, sid))
+    assert sess is not None
+    assert sess["status"] == "failed"
+    assert run_async(_count_transitions(db_path, sid)) >= 1
+
+
+def test_reap_null_status_sessions_stale_live_recorded_pid_not_reaped(tmp_path, monkeypatch):
+    """A stale null-status session with a LIVE recorded pid is not reaped.
+
+    Isolates the recorded-pid path from the staleness grace: the row is old
+    enough that the grace no longer protects it, so only honoring the live
+    ``node_metadata.pid`` keeps it alive. If liveness ever stops reading
+    ``node_metadata``, this stale row reaps and the test fails.
+    """
+    db_path = tmp_path / "state.db"
+    _monkey_db(monkeypatch, db_path)
+
+    stale_time = time.time() - 7200  # past the 1h grace
+    sid = run_async(
+        _seed_session(
+            db_path,
+            status=None,
+            artifacts_path=None,
+            started_at=stale_time,
+            updated_at=stale_time,
+            node_metadata={"pid": os.getpid()},
+        )
+    )
+
+    from lionagi.studio.services.lifecycle import reap_null_status_sessions
+
+    count = run_async(reap_null_status_sessions(stale_hours=1.0))
+    assert count == 0
+
+    sess = run_async(_get_session(db_path, sid))
+    assert sess["status"] is None
+
+
+def test_reap_null_status_sessions_fresh_unknown_liveness_not_reaped(tmp_path, monkeypatch):
+    """A fresh null-status session with unknown liveness is skipped within the grace period.
+
+    No recorded pid, no artifacts/pidfile, session id not in the ps snapshot ->
+    liveness is unknown (None). A recent updated_at keeps it inside the
+    staleness grace, so it must not be reaped yet.
+    """
+    db_path = tmp_path / "state.db"
+    _monkey_db(monkeypatch, db_path)
+
+    sid = run_async(
+        _seed_session(
+            db_path,
+            status=None,
+            artifacts_path=None,
+            started_at=time.time() - 5,
+            updated_at=time.time() - 5,
+        )
+    )
+
+    from lionagi.studio.services.lifecycle import reap_null_status_sessions
+
+    count = run_async(reap_null_status_sessions(stale_hours=1.0))
+    assert count == 0
+
+    sess = run_async(_get_session(db_path, sid))
+    assert sess["status"] is None
 
 
 # ── automatic phantom reaper ─────────────────────────────────────────────────

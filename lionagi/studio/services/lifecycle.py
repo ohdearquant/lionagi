@@ -12,7 +12,7 @@ from lionagi.state.db import DEFAULT_DB_PATH, StateDB
 from lionagi.state.reasons import RunReasons, SessionReasons
 
 from . import admin as admin_svc
-from .admin import _artifacts_path, _live_process_matches
+from .admin import _artifacts_path, _ps_snapshot, process_liveness
 
 _log = logging.getLogger(__name__)
 
@@ -157,13 +157,24 @@ async def reap_stale_invocations(
 # ── null-status session detector ─────────────────────────────────────────────
 
 
-async def reap_null_status_sessions() -> int:
+async def reap_null_status_sessions(*, stale_hours: float | None = None) -> int:
     """Transition null-status sessions whose process is dead to ``failed``.
 
     Sessions get ``status=NULL`` when the process crashes before writing a
     terminal status (crash, OOM, SIGKILL).  Guard is ``status IS NULL`` so
-    already-terminal rows are never touched.
+    already-terminal rows are never touched.  Liveness honors the recorded
+    ``node_metadata.pid`` via ``process_liveness()``; when a row is not
+    observably alive it still gets a staleness grace (mirroring
+    ``_classify_phantom``) before it is reaped, so a fresh/quiet null-status
+    session is not punished for a momentary window before it writes its own
+    status.
     """
+    from lionagi.studio.config import PHANTOM_STALE_HOURS
+
+    if stale_hours is None:
+        stale_hours = PHANTOM_STALE_HOURS
+    stale_seconds = stale_hours * 3600
+
     if not DEFAULT_DB_PATH.exists():
         return 0
 
@@ -173,14 +184,25 @@ async def reap_null_status_sessions() -> int:
     try:
         async with StateDB() as db:
             rows = await db.fetch_all(
-                "SELECT id, artifacts_path, started_at, ended_at FROM sessions WHERE status IS NULL"
+                "SELECT id, artifacts_path, started_at, ended_at, updated_at, node_metadata "
+                "FROM sessions WHERE status IS NULL"
             )
 
+        ps_snapshot: str | None = None
         for row in rows:
             sid = row["id"]
             artifacts = _artifacts_path(row)
-            if _live_process_matches(sid, artifacts):
+            session = {"id": sid, "node_metadata": row.get("node_metadata")}
+            if ps_snapshot is None:
+                ps_snapshot = _ps_snapshot()
+            if process_liveness(session, artifacts, ps_snapshot) is True:
                 # Process still alive — skip, it may write its own status.
+                continue
+
+            updated_at = row.get("updated_at") or row.get("started_at") or 0.0
+            if now - updated_at < stale_seconds:
+                # Not confirmed alive, but too fresh to reap — give it the
+                # benefit of the doubt, same as _classify_phantom does.
                 continue
 
             _log.info("Reaping null-status session %s: process is dead", sid)
