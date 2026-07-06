@@ -17,6 +17,11 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from lionagi.agent import AgentSpec, create_agent
 from lionagi.ln.concurrency import Semaphore, gather
+from lionagi.ln.concurrency._compat import (
+    ExceptionGroup,
+    get_exception_group_exceptions,
+    is_exception_group,
+)
 from lionagi.ln.types import TypeFilter
 from lionagi.session.session import Session
 from lionagi.session.signal import NodeCompleted, NodeFailed, NodeQueued, NodeStarted, Signal
@@ -400,14 +405,20 @@ class EngineRun:
             self._run_task.cancel()
 
     async def wait_quiescence(self) -> None:
-        """Block until all spawned tasks settle; re-raise any non-cancellation failures."""
+        """Block until all spawned tasks settle; re-raise any non-cancellation, non-budget failures.
+
+        A spawned task hitting EngineBudgetError is a benign "expansion
+        stopped" signal (discretionary work declined, not a crash) — the same
+        grace already given to asyncio.CancelledError here.
+        """
         task_errors: list[BaseException] = []
         while self._active:
             results = await gather(*list(self._active), return_exceptions=True)
             task_errors.extend(
                 r
                 for r in results
-                if isinstance(r, BaseException) and not isinstance(r, asyncio.CancelledError)
+                if isinstance(r, BaseException)
+                and not isinstance(r, asyncio.CancelledError | EngineBudgetError)
             )
         if task_errors:
             for exc in task_errors:
@@ -590,6 +601,45 @@ class ChainRun(EngineRun):
         return self.store.get(event_type, [])
 
 
+class EngineResult(str):
+    """Return type of Engine.run(): a str (back-compat) carrying the run's structured outcome.
+
+    ``str(result)`` and ``result.text`` are the same synthesized text. ``.run``
+    is a live EngineRun handle — do not retain it past reading the result, it
+    keeps the whole Session (and its branches) alive.
+    """
+
+    text: str
+    skipped: list[str]
+    degraded: bool
+    degrade_reason: str
+    run: EngineRun
+    _events_by_type: Callable[[type], list[Any]]
+
+    def __new__(
+        cls,
+        text: str,
+        *,
+        events_by_type: Callable[[type], list[Any]],
+        skipped: list[str],
+        degraded: bool,
+        run: EngineRun,
+        degrade_reason: str = "",
+    ) -> EngineResult:
+        self = super().__new__(cls, text)
+        self.text = str(self)
+        self._events_by_type = events_by_type
+        self.skipped = list(skipped)
+        self.degraded = bool(degraded)
+        self.degrade_reason = degrade_reason
+        self.run = run
+        return self
+
+    def events_by_type(self, event_type: type) -> list[Any]:
+        """Snapshot of the run's stored events matching *event_type*."""
+        return self._events_by_type(event_type)
+
+
 class Engine:
     """Stateless event-driven engine base; subclasses implement ``_run()``. See docs/reference/engines.md for parameter details."""
 
@@ -657,6 +707,61 @@ class Engine:
     ) -> EngineRun:
         return self.run_context_cls(self, session=session, on_event=on_event)
 
+    async def _degrade_export(self, run: EngineRun, args: tuple, kwargs: dict) -> Any:
+        """Cancel in-flight spawned tasks, then run _partial_export shielded + timeout-bounded.
+
+        Shared by the deadline (CancelledError) and root-budget (EngineBudgetError)
+        degrade paths in run(). Returns _UNSET if the export itself failed or
+        timed out (logged, not raised) — CancelledError from an external cancel
+        during the shielded phase still propagates.
+        """
+        # Cancel any background tasks spawned via run.spawn() so synthesis
+        # sees a stable snapshot and no work burns tokens past budget
+        # exhaustion.  cancel_active() is a no-op if _active is already empty.
+        if run._active:
+            await run.cancel_active()
+        # Synthesize and export under asyncio.shield so the await runs outside
+        # the cancelled scope.  A hard timeout bounds the phase so a hung
+        # synthesis call cannot extend the run indefinitely.
+        partial_coro = self._partial_export(run, *args, **kwargs)
+        partial_task = asyncio.ensure_future(partial_coro)
+        try:
+            return await asyncio.wait_for(
+                asyncio.shield(partial_task),
+                timeout=_PARTIAL_EXPORT_TIMEOUT_S,
+            )
+        except asyncio.CancelledError:
+            # The caller cancelled Engine.run() while we were in the
+            # partial-export phase.  wait_for converts its own internal
+            # timeout into TimeoutError, so a CancelledError here is always
+            # external — clean up partial_task and re-raise so the caller's
+            # cancellation is honoured.
+            if not partial_task.done():
+                partial_task.cancel()
+                with contextlib.suppress(asyncio.CancelledError, Exception):
+                    await partial_task
+            raise
+        except (asyncio.TimeoutError, Exception) as exc:
+            logger.warning("partial export after degrade failed: %s", exc)
+            if not partial_task.done():
+                partial_task.cancel()
+                with contextlib.suppress(asyncio.CancelledError, Exception):
+                    await partial_task
+            return _UNSET
+
+    def _wrap_result(self, result: Any, run: EngineRun, *, degrade_reason: str) -> Any:
+        """Wrap a str _run()/_partial_export() result into EngineResult; pass through anything else unchanged (e.g. CodingEngine's structured CodeResultRecorded)."""
+        if not isinstance(result, str) or isinstance(result, EngineResult):
+            return result
+        return EngineResult(
+            result,
+            events_by_type=run.by_type,
+            skipped=list(run._emission_failures),
+            degraded=bool(degrade_reason),
+            degrade_reason=degrade_reason,
+            run=run,
+        )
+
     async def run(
         self,
         *args: Any,
@@ -677,9 +782,17 @@ class Engine:
         # spawned background tasks, but also sequential awaits inside _run().
         run_task = asyncio.ensure_future(self._run(run, *args, **kwargs))
         run._run_task = run_task
+        result: Any = _UNSET
         partial_result: Any = _UNSET
+        degrade_reason: str = ""
         try:
-            return await run_task
+            result = await run_task
+            # R5: a run that reached the success path may still have silently
+            # dropped a discretionary budget-capped subtree (wait_quiescence
+            # filters EngineBudgetError out of task_errors) — flag it rather
+            # than returning a clean-looking result that hides the truncation.
+            if run._budget_notified:
+                degrade_reason = "budget"
         except asyncio.CancelledError:
             # Distinguish internal cancellation (engine's own deadline/budget
             # watchdog) from external cancellation (the caller cancelled run()).
@@ -696,44 +809,26 @@ class Engine:
                 current is not None and hasattr(current, "cancelling") and current.cancelling() > 0
             )
             if run._budget_notified and not caller_cancelled:
-                # Internal cancellation only.
-                # Step 1: cancel any background tasks spawned via run.spawn()
-                # so synthesis sees a stable snapshot and no work burns tokens
-                # past budget exhaustion.  cancel_active() is a no-op if
-                # _active is already empty (idempotent).
-                if run._active:
-                    await run.cancel_active()
-                # Step 2: synthesize and export under asyncio.shield so the
-                # await runs outside the cancelled scope.  A hard timeout
-                # bounds the phase so a hung synthesis call cannot extend the
-                # run indefinitely.
-                partial_coro = self._partial_export(run, *args, **kwargs)
-                partial_task = asyncio.ensure_future(partial_coro)
-                try:
-                    partial_result = await asyncio.wait_for(
-                        asyncio.shield(partial_task),
-                        timeout=_PARTIAL_EXPORT_TIMEOUT_S,
-                    )
-                except asyncio.CancelledError:
-                    # The caller cancelled Engine.run() while we were in the
-                    # partial-export phase.  wait_for converts its own internal
-                    # timeout into TimeoutError, so a CancelledError here is
-                    # always external — clean up partial_task and re-raise so
-                    # the caller's cancellation is honoured.
-                    if not partial_task.done():
-                        partial_task.cancel()
-                        with contextlib.suppress(asyncio.CancelledError, Exception):
-                            await partial_task
-                    raise
-                except (asyncio.TimeoutError, Exception) as exc:
-                    logger.warning("partial export after budget cancellation failed: %s", exc)
-                    if not partial_task.done():
-                        partial_task.cancel()
-                        with contextlib.suppress(asyncio.CancelledError, Exception):
-                            await partial_task
+                # Internal cancellation only — the deadline watchdog is the
+                # only thing that cancels run_task, so this is a deadline hit.
+                degrade_reason = "deadline"
+                partial_result = await self._degrade_export(run, args, kwargs)
             else:
                 # External cancellation — surface it after cleanup (below).
                 raise
+        except (EngineBudgetError, ExceptionGroup) as exc:
+            # A root-level (non-spawned) make_agent() call hit the budget and
+            # raised straight out of _run() — e.g. a review's dimension
+            # fan-out gather, or a sequential plan/implement stage. Route to
+            # partial-export instead of letting it crash the run. Masking
+            # guard: a mixed ExceptionGroup (budget + a real error) must not
+            # be laundered into a partial — re-raise so the real error surfaces.
+            if is_exception_group(exc) and not all(
+                isinstance(e, EngineBudgetError) for e in get_exception_group_exceptions(exc)
+            ):
+                raise
+            degrade_reason = "budget"
+            partial_result = await self._degrade_export(run, args, kwargs)
         finally:
             # Copy per-run emission diagnostics back onto the engine instance so
             # the CLI read site (getattr(engine, "_emission_failures", [])) sees
@@ -775,7 +870,10 @@ class Engine:
                 except Exception:
                     logger.exception("engine active-task drain failed")
         if partial_result is not _UNSET:
-            return partial_result
+            result = partial_result
+        if result is _UNSET:
+            result = None
+        return self._wrap_result(result, run, degrade_reason=degrade_reason)
 
     async def _partial_export(self, run: EngineRun, *args: Any, **kwargs: Any) -> Any:
         """Called under asyncio.shield after budget cancellation; override in subclasses to return a partial result. Default returns None."""
