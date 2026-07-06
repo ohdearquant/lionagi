@@ -26,7 +26,8 @@ import DrawerBackButton from "@/components/ui/DrawerBackButton";
 import DrawerHeader from "@/components/ui/DrawerHeader";
 import SectionLabel from "@/components/ui/SectionLabel";
 import Button from "@/components/ui/Button";
-import StatusPill from "@/components/ui/StatusPill";
+import StatusVerdictChips from "@/components/ui/StatusVerdictChips";
+import { deriveDisplayStatus } from "@/lib/runStatus";
 import Duration from "@/components/ui/Duration";
 import { useToast } from "@/components/ui/Toast";
 
@@ -48,6 +49,7 @@ const KNOWN_STATUSES = new Set([
   "timed_out",
   "aborted",
   "skipped",
+  "orphaned",
 ]);
 
 export function PlaybookTemplateDetail({
@@ -277,7 +279,10 @@ export function PlaybookTemplateDetail({
             </div>
           )}
 
-          {/* Recent runs — status-only (no verdict data source exists yet). */}
+          {/* Recent runs — status through the §0 keystone (deriveDisplayStatus),
+              so a phantom-reaped run never reads as a hard failure here. No
+              verdict data source exists for template runs yet, so the verdict
+              chip stays off. */}
           <div>
             <SectionLabel className="mb-1.5">{t("recentRunsTitle")}</SectionLabel>
             {runsLoading ? (
@@ -294,10 +299,9 @@ export function PlaybookTemplateDetail({
                     className="flex items-center gap-3 bg-surface-raised px-3 py-1.5"
                     style={{ borderTop: i === 0 ? undefined : "1px solid var(--edge-hairline)" }}
                   >
-                    <StatusPill
-                      value={run.status}
-                      kind="lifecycle"
-                      label={statusLabel(run.status)}
+                    <StatusVerdictChips
+                      run={run}
+                      statusLabel={statusLabel(deriveDisplayStatus(run))}
                     />
                     <span className="min-w-0 flex-1 truncate font-data text-[length:var(--t-sm)] text-content-secondary">
                       {run.run_id.slice(-12)}

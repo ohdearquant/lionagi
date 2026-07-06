@@ -318,9 +318,11 @@ describe("PlaybookTemplateDetail — detail pane contract", () => {
     expect(src).toMatch(/isBuiltin\s*\?\s*getBuiltinPlaybookRaw/);
   });
 
-  it("reuses StatusPill for recent runs — no forked status/verdict chip component", () => {
-    expect(src).toMatch(/import StatusPill from/);
-    expect(src).toMatch(/<StatusPill/);
+  it("renders recent-run status through the §0 keystone, never raw run.status", () => {
+    expect(src).toMatch(/import StatusVerdictChips from/);
+    expect(src).toMatch(/deriveDisplayStatus/);
+    expect(src).toMatch(/<StatusVerdictChips/);
+    expect(src).not.toMatch(/<StatusPill/);
   });
 
   it("renders Run and Clone actions wired to launchPlaybook / installBuiltinPlaybook", () => {
