@@ -337,24 +337,12 @@
   "schedules": {
     "title": "شیڈولز",
     "subtitle": "cron، interval، اور GitHub ٹرگرز پر مستقل آٹومیشنز",
-    "board": "بورڈ",
     "calendar": "کیلنڈر",
     "newSchedule": "نیا شیڈول",
     "loadError": "شیڈولز لوڈ نہیں ہو سکے۔",
     "emptyTitle": "ابھی کوئی شیڈول نہیں",
     "emptyBody": "انجن اور ایجنٹ رنز کو cron، مقررہ interval، یا GitHub ایونٹس پر خودکار بنائیں۔",
     "emptyCta": "پہلا شیڈول بنائیں",
-    "lanes": {
-      "upcoming": "آنے والے",
-      "today": "آج",
-      "running": "چل رہا ہے",
-      "done": "مکمل",
-      "paused": "روکا ہوا",
-      "emptyUpcoming": "کیو میں کچھ نہیں",
-      "emptyToday": "آج کوئی رن شیڈول نہیں ہے",
-      "emptyRunning": "آئیڈل",
-      "emptyDone": "ابھی کوئی رن نہیں"
-    },
     "card": {
       "enable": "شیڈول فعال کریں",
       "disable": "شیڈول غیر فعال کریں",
@@ -498,14 +486,48 @@
       "overlapSkip": "چھوڑیں",
       "overlapQueue": "کیو میں ڈالیں",
       "overlapKillOld": "پرانا ختم کریں",
-      "sideRecentRuns": "حالیہ رنز",
       "noRuns": "ابھی کوئی رن نہیں",
       "ago": " پہلے",
       "cancel": "منسوخ کریں",
       "save": "تبدیلیاں محفوظ کریں",
       "saving": "محفوظ ہو رہا ہے…",
       "saveFailed": "محفوظ نہیں ہو سکا۔",
-      "invalidJson": "⁨{field}⁩ میں JSON درست نہیں"
+      "invalidJson": "⁨{field}⁩ میں JSON درست نہیں",
+      "sectionHistory": "تاریخ"
+    },
+    "viewTable": "جدول",
+    "table": {
+      "colName": "نام",
+      "colTrigger": "ٹرگر",
+      "colEnabled": "فعال",
+      "colLastRun": "آخری اجراء",
+      "colNextFire": "اگلا اجراء",
+      "colActions": "اعمال",
+      "neverRun": "کبھی نہیں",
+      "notScheduled": "—",
+      "editAction": "ترمیم کریں"
+    },
+    "trigger": {
+      "everyMinute": "ہر منٹ",
+      "everyMinutes": "ہر {n} منٹ",
+      "daily": "روزانہ {time} UTC",
+      "weekly": "ہفتہ وار {day} {time} UTC",
+      "hourlyAt": "ہر گھنٹے :{minute} پر",
+      "onEvent": "{event} پر",
+      "eventPrMerged": "PR ضم شدہ",
+      "eventPrOpened": "PR کھلا",
+      "eventPrUpdated": "PR اپ ڈیٹ شدہ",
+      "eventPrClosed": "PR بند"
+    },
+    "error": {
+      "spawnFailed": "ایجنٹ شروع کرنے میں ناکامی",
+      "network": "نیٹ ورک خرابی",
+      "timeout": "وقت ختم",
+      "permission": "اجازت مسترد",
+      "missingDependency": "انحصار غائب",
+      "notFound": "فائل نہیں ملی",
+      "showDetails": "مکمل خرابی دکھائیں",
+      "hideDetails": "مکمل خرابی چھپائیں"
     }
   },
   "fleet": {

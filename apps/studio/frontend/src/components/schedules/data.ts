@@ -1,12 +1,24 @@
 /**
- * Schedules space data layer — fetch + polling + lane derivation + time math.
- * Lane membership is derived from real fields only: next_fire_at places a
- * schedule in Today or Upcoming, run status places runs in Running or Done.
- * No firing projections are invented — only the scheduler's own next_fire_at.
+ * Schedules space data layer — fetch + polling + time math. One row per
+ * schedule; run history lives on the schedule detail page, not here.
  */
 import { useCallback, useEffect, useRef, useState } from "react";
 import { listScheduleRuns, listSchedules } from "@/lib/api";
 import type { ScheduleRunSummary, ScheduleSummary } from "@/lib/types";
+
+// Statuses with a history.status translation; unknown values fall back to
+// StatusPill's built-in humanization.
+export const KNOWN_RUN_STATUSES = new Set([
+  "running",
+  "completed",
+  "failed",
+  "cancelled",
+  "pending",
+  "queued",
+  "timed_out",
+  "aborted",
+  "skipped",
+]);
 
 /** Epoch values arrive in seconds or ms depending on producer — normalize to ms. */
 export function toMs(value: number): number {
@@ -123,53 +135,7 @@ export function useSchedulesData(): SchedulesData {
   return { schedules, runs, nowMs, loading, error, refresh: () => void load() };
 }
 
-// ─── Lane derivation ──────────────────────────────────────────────────────────
-
-export interface Lanes {
-  today: ScheduleSummary[];
-  upcoming: ScheduleSummary[];
-  paused: ScheduleSummary[];
-  running: RunRow[];
-  done: RunRow[];
-}
-
-const DONE_LANE_LIMIT = 15;
-
-export function deriveLanes(schedules: ScheduleSummary[], runs: RunRow[], nowMs: number): Lanes {
-  const endOfToday = new Date(nowMs);
-  endOfToday.setHours(23, 59, 59, 999);
-  const eodMs = endOfToday.getTime();
-
-  const today: ScheduleSummary[] = [];
-  const upcoming: ScheduleSummary[] = [];
-  const paused: ScheduleSummary[] = [];
-  for (const s of schedules) {
-    if (!s.enabled) {
-      paused.push(s);
-    } else if (s.next_fire_at != null && toMs(s.next_fire_at) <= eodMs) {
-      today.push(s);
-    } else {
-      upcoming.push(s);
-    }
-  }
-  const byNextFire = (a: ScheduleSummary, b: ScheduleSummary) =>
-    (a.next_fire_at ?? Infinity) - (b.next_fire_at ?? Infinity);
-  today.sort(byNextFire);
-  upcoming.sort(byNextFire);
-  paused.sort((a, b) => a.name.localeCompare(b.name));
-
-  const running = runs
-    .filter((r) => r.status === "running")
-    .sort((a, b) => b.fired_at - a.fired_at);
-  const done = runs
-    .filter((r) => r.status !== "running")
-    .sort((a, b) => (b.ended_at ?? b.fired_at) - (a.ended_at ?? a.fired_at))
-    .slice(0, DONE_LANE_LIMIT);
-
-  return { today, upcoming, paused, running, done };
-}
-
-/** Most recent run per schedule, for the "last fired" footer on cards. */
+/** Most recent run per schedule, for the table's "last run" column. */
 export function latestRunBySchedule(runs: RunRow[]): Map<string, RunRow> {
   const map = new Map<string, RunRow>();
   for (const r of runs) {

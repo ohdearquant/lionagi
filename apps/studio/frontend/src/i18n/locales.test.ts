@@ -5,7 +5,8 @@
  * - LOCALES/RTL_LOCALES metadata shape (16 codes, ar/ur marked rtl).
  * - applyDocumentLocale flips <html lang>/<html dir> for rtl vs ltr locales.
  * - Every messages/*.json file has the exact same leaf-key set as en.json
- *   (743 base leaves + the new shell.rail.selectLanguage key).
+ *   (762 leaves: 743 base + shell.rail.selectLanguage + the schedules
+ *   table/trigger/error keys added when the kanban board was replaced).
  * - Every locale's messages parse under a real ICU translator with no
  *   FORMATTING_ERROR, including the true {count, plural, ...} strings and
  *   the pre-existing bare-{plural} anti-pattern in prunePhantoms.
@@ -92,9 +93,11 @@ const SAMPLE_VALUES = {
   checkpointed: 3,
   color: "amber",
   count: 2,
+  day: "Monday",
   delta: "3m",
   detail: "boom",
   end: "11:00",
+  event: "PR merge",
   field: "payload",
   group: "alpha",
   id: "abc123",
@@ -102,6 +105,8 @@ const SAMPLE_VALUES = {
   label: "Tab",
   logPages: 10,
   message: "oops",
+  minute: "05",
+  n: 5,
   name: "worker",
   plural: "s",
   position: 1,
@@ -113,6 +118,7 @@ const SAMPLE_VALUES = {
   sessions: 3,
   start: "10:00",
   status: "ok",
+  time: "18:00",
   total: 5,
   version: "2",
 };
@@ -186,8 +192,8 @@ describe("applyDocumentLocale — <html lang>/<html dir> wiring", () => {
 });
 
 describe("messages — leaf-key parity across all 16 locales", () => {
-  it("en.json has 744 leaves (743 base + shell.rail.selectLanguage)", () => {
-    expect(EN_LEAVES.size).toBe(744);
+  it("en.json has 762 leaves (743 base + shell.rail.selectLanguage + schedules table/trigger/error keys)", () => {
+    expect(EN_LEAVES.size).toBe(762);
   });
 
   it.each(LOCALES.map((l) => l.code))(
