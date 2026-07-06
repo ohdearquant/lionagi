@@ -95,10 +95,7 @@ function LastRunCell({ run, nowMs }: { run: RunRow | undefined; nowMs: number })
         </span>
       </div>
       {errorLine && (
-        <span
-          className="truncate text-meta text-status-error"
-          title={run.error_detail ?? undefined}
-        >
+        <span className="truncate text-meta text-status-error" title={errorLine}>
           {errorLine}
         </span>
       )}

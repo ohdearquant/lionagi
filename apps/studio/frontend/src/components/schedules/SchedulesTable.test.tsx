@@ -112,6 +112,11 @@ describe("SchedulesTable — source contract", () => {
     expect(SRC).not.toMatch(/\{run\.error_detail\}/);
   });
 
+  it("never leaks the raw error_detail into a hover title — only the classified line", () => {
+    expect(SRC).not.toMatch(/title=\{run\.error_detail/);
+    expect(SRC).toContain("title={errorLine}");
+  });
+
   it("has a sortable Next fire header wired to the sort toggle", () => {
     expect(SRC).toContain("table.colNextFire");
     expect(SRC).toContain("setSortDir");
