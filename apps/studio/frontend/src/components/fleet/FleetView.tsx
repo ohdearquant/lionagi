@@ -10,6 +10,7 @@ import SessionDetail from "./SessionDetail";
 import FleetStaleBadge from "./FleetStaleBadge";
 import SplitPane from "@/components/ui/SplitPane";
 import StatusDot from "@/components/ui/StatusDot";
+import { deriveDisplayStatus } from "@/lib/runStatus";
 import { Route } from "@/routes/fleet";
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
@@ -208,7 +209,7 @@ function EmptyState({ recent, nowSec }: { recent: RecentRow[]; nowSec: number })
                 search={{ s: row.id }}
                 className="flex items-center gap-3 border-t border-edge px-3 py-2 transition-colors duration-100 hover:bg-surface-overlay"
               >
-                <StatusDot status={row.status} />
+                <StatusDot status={deriveDisplayStatus(row)} />
                 <span className="min-w-0 flex-1 truncate font-data text-[length:var(--t-sm)] text-content-primary">
                   {row.name}
                 </span>
@@ -267,11 +268,13 @@ function ErrorState({ message }: { message: string | null }) {
 
 type HistFilter = "all" | "completed" | "failed";
 
-function matchesHistFilter(status: string, filter: HistFilter): boolean {
+// Filters against the normalized display status, not the raw run.status —
+// a phantom-reaped row (raw status "failed") is orphaned housekeeping, not a
+// failure, so it must not match the "failed" chip (design-brief §0/§4).
+function matchesHistFilter(displayStatus: string, filter: HistFilter): boolean {
   if (filter === "all") return true;
-  const s = status.toLowerCase();
-  if (filter === "failed") return s === "failed" || s === "error" || s === "failure";
-  return s === "completed" || s === "done" || s === "success";
+  if (filter === "failed") return displayStatus === "failed";
+  return displayStatus === "completed";
 }
 
 function HistorySection({
@@ -298,7 +301,7 @@ function HistorySection({
   onLoadMore: () => void;
 }) {
   const t = useTranslations("fleet");
-  const allFiltered = rows.filter((r) => matchesHistFilter(r.status, filter));
+  const allFiltered = rows.filter((r) => matchesHistFilter(deriveDisplayStatus(r), filter));
   const filtered = allFiltered.slice(0, visibleCount);
   const hasMore = allFiltered.length > visibleCount || serverHasMore;
 
@@ -355,32 +358,37 @@ function HistorySection({
           </span>
         </div>
       ) : (
-        filtered.map((row) => (
-          <button
-            key={row.id}
-            type="button"
-            onClick={() => onSelect(row.id)}
-            aria-pressed={selectedId === row.id}
-            className={`flex w-full items-center gap-3 border-b border-edge border-l-2 px-4 py-2 text-left transition-colors duration-100 hover:bg-surface-overlay ${
-              selectedId === row.id ? "border-l-accent bg-surface-overlay" : "border-l-transparent"
-            }`}
-          >
-            <StatusDot status={row.status} />
-            <span className="min-w-0 flex-1 truncate font-data text-[length:var(--t-sm)] text-content-primary">
-              {row.name}
-            </span>
-            <span className="shrink-0 font-data text-[length:var(--t-xs)] text-content-muted">
-              {row.status.toLowerCase()}
-            </span>
-            <span className="min-w-[48px] shrink-0 text-right font-data tabular-nums text-[length:var(--t-xs)] text-content-muted">
-              {row.endedAtSec != null
-                ? t("empty.ago", {
-                    delta: formatElapsed(Math.max(0, Math.floor(nowSec - row.endedAtSec))),
-                  })
-                : "—"}
-            </span>
-          </button>
-        ))
+        filtered.map((row) => {
+          const derived = deriveDisplayStatus(row);
+          return (
+            <button
+              key={row.id}
+              type="button"
+              onClick={() => onSelect(row.id)}
+              aria-pressed={selectedId === row.id}
+              className={`flex w-full items-center gap-3 border-b border-edge border-l-2 px-4 py-2 text-left transition-colors duration-100 hover:bg-surface-overlay ${
+                selectedId === row.id
+                  ? "border-l-accent bg-surface-overlay"
+                  : "border-l-transparent"
+              }`}
+            >
+              <StatusDot status={derived} />
+              <span className="min-w-0 flex-1 truncate font-data text-[length:var(--t-sm)] text-content-primary">
+                {row.name}
+              </span>
+              <span className="shrink-0 font-data text-[length:var(--t-xs)] text-content-muted">
+                {derived}
+              </span>
+              <span className="min-w-[48px] shrink-0 text-right font-data tabular-nums text-[length:var(--t-xs)] text-content-muted">
+                {row.endedAtSec != null
+                  ? t("empty.ago", {
+                      delta: formatElapsed(Math.max(0, Math.floor(nowSec - row.endedAtSec))),
+                    })
+                  : "—"}
+              </span>
+            </button>
+          );
+        })
       )}
 
       {hasMore && (

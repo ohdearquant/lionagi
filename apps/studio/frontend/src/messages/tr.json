@@ -190,7 +190,8 @@
       "queued": "kuyrukta",
       "timed_out": "zaman aşımına uğradı",
       "aborted": "durduruldu",
-      "skipped": "atlandı"
+      "skipped": "atlandı",
+      "orphaned": "yetim"
     },
     "table": {
       "name": "ad",
@@ -806,7 +807,7 @@
     "filterTools": "araçlar",
     "filterUser": "kullanıcı",
     "filterSystem": "sistem",
-    "outcome": "sonuç",
+    "latestMessage": "Son mesaj",
     "viewFullConversation": "tam konuşmayı gör →",
     "noFinalResponse": "son yanıt kaydedilmedi.",
     "statToolCalls": "araç çağrıları",

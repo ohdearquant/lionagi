@@ -8,6 +8,7 @@ import {
 import type { FleetState } from "./fleetReducer";
 import type { RunSummary } from "@/lib/types";
 import type { InvocationSummary } from "@/lib/api";
+import { deriveDisplayStatus } from "@/lib/runStatus";
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 
@@ -300,6 +301,52 @@ describe("terminalRecentRows", () => {
     expect(rows[0].id).toBe("r79");
     expect(rows[79].id).toBe("r0");
     expect(rows.some((r) => r.id === "live")).toBe(false);
+  });
+});
+
+// ─── Status/verdict unification (design-brief §0/§0b) ────────────────────────
+// Fleet must never re-derive lifecycle status on its own — it went through
+// deriveDisplayStatus() the same as boardReducer and RunDetail, closing the
+// list-vs-detail bug on this view specifically (Ocean's original repro).
+
+describe("fleetReducer — status unification", () => {
+  it("terminalRecentRows preserves status_reason_code/summary — it must not drop them", () => {
+    const rows = terminalRecentRows([
+      makeRun({
+        run_id: "r1",
+        status: "failed",
+        status_reason_code: "session.health.phantom_process_dead",
+        status_reason_summary: "phantom_reaped",
+      }),
+    ]);
+    expect(rows[0].status_reason_code).toBe("session.health.phantom_process_dead");
+    expect(rows[0].status_reason_summary).toBe("phantom_reaped");
+  });
+
+  it("a phantom-reaped row's derived display status is orphaned, not failed", () => {
+    const rows = terminalRecentRows([
+      makeRun({ run_id: "r1", status: "failed", status_reason_summary: "phantom_reaped" }),
+    ]);
+    expect(deriveDisplayStatus(rows[0])).toBe("orphaned");
+  });
+
+  it("a zombie (stale-locks) reap still derives as a real failure", () => {
+    const rows = terminalRecentRows([
+      makeRun({
+        run_id: "r1",
+        status: "failed",
+        status_reason_code: "session.zombie.stale_locks",
+        status_reason_summary: "phantom_reaped",
+      }),
+    ]);
+    expect(deriveDisplayStatus(rows[0])).toBe("failed");
+  });
+
+  it("a 'timeout' alias run is treated as terminal — the local sets this replaced only knew 'timed_out'", () => {
+    const s = dispatchOk(initialFleetState(), [], [makeRun({ run_id: "r1", status: "timeout" })]);
+    expect(s.orgUnits).toHaveLength(0); // not active
+    const rows = terminalRecentRows([makeRun({ run_id: "r1", status: "timeout" })]);
+    expect(rows).toHaveLength(1); // shows up in history instead of vanishing
   });
 });
 

@@ -190,7 +190,8 @@
       "queued": "کیو میں",
       "timed_out": "وقت ختم",
       "aborted": "روکا گیا",
-      "skipped": "چھوڑا گیا"
+      "skipped": "چھوڑا گیا",
+      "orphaned": "یتیم"
     },
     "table": {
       "name": "نام",
@@ -806,7 +807,7 @@
     "filterTools": "ٹولز",
     "filterUser": "یوزر",
     "filterSystem": "سسٹم",
-    "outcome": "نتیجہ",
+    "latestMessage": "تازہ ترین پیغام",
     "viewFullConversation": "مکمل گفتگو دیکھیں →",
     "noFinalResponse": "کوئی آخری جواب ریکارڈ نہیں ہوا۔",
     "statToolCalls": "ٹول کالز",

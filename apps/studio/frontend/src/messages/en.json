@@ -190,7 +190,8 @@
       "queued": "queued",
       "timed_out": "timed out",
       "aborted": "aborted",
-      "skipped": "skipped"
+      "skipped": "skipped",
+      "orphaned": "orphaned"
     },
     "table": {
       "name": "Name",
@@ -806,7 +807,7 @@
     "filterTools": "tools",
     "filterUser": "user",
     "filterSystem": "system",
-    "outcome": "Outcome",
+    "latestMessage": "Latest message",
     "viewFullConversation": "View full conversation →",
     "noFinalResponse": "No final response recorded.",
     "statToolCalls": "Tool calls",

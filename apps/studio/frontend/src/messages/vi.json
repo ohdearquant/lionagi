@@ -190,7 +190,8 @@
       "queued": "đang chờ",
       "timed_out": "hết thời gian",
       "aborted": "đã dừng",
-      "skipped": "đã bỏ qua"
+      "skipped": "đã bỏ qua",
+      "orphaned": "mồ côi"
     },
     "table": {
       "name": "tên",
@@ -806,7 +807,7 @@
     "filterTools": "công cụ",
     "filterUser": "người dùng",
     "filterSystem": "hệ thống",
-    "outcome": "kết quả",
+    "latestMessage": "Tin nhắn mới nhất",
     "viewFullConversation": "xem toàn bộ hội thoại →",
     "noFinalResponse": "chưa ghi nhận phản hồi cuối.",
     "statToolCalls": "lệnh gọi công cụ",
