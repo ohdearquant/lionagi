@@ -7,10 +7,9 @@ from __future__ import annotations
 
 import logging
 from collections.abc import AsyncIterator, Callable
-from typing import Any
+from typing import TYPE_CHECKING, Any
 from urllib.parse import urlparse
 
-import httpx
 from pydantic import BaseModel, Field
 
 from lionagi.ln import is_ssrf_safe
@@ -20,6 +19,9 @@ from lionagi.service.types import StreamChunk
 from lionagi.utils import to_dict
 
 from ._config import AG2Configs
+
+if TYPE_CHECKING:
+    import httpx
 
 logger = logging.getLogger(__name__)
 
@@ -55,6 +57,8 @@ async def _post_json_with_retry(
     on_retry: Callable[[Exception, int, int], None] | None = None,
 ) -> httpx.Response | None:
     """POST with exponential backoff, retrying only on timeout/connect errors; max_retries<=0 makes no request."""
+    import httpx
+
     if max_retries <= 0:
         return None
 
@@ -103,6 +107,7 @@ async def _call_nlip_sdk(
     max_retries: int,
 ) -> dict[str, Any]:
     """Use nlip_sdk for proper NLIP message format."""
+    import httpx
     from nlip_sdk.nlip import NLIP_Factory, NLIP_Message
 
     last_content = ""
@@ -154,6 +159,8 @@ async def _call_direct(
     max_retries: int,
 ) -> dict[str, Any]:
     """Direct httpx fallback (no nlip_sdk): POSTs the last message as plain text."""
+    import httpx
+
     last_content = ""
     for msg in reversed(messages):
         content = msg.get("content", "")
