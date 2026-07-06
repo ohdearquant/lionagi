@@ -6,18 +6,22 @@
 from __future__ import annotations
 
 import logging
-from collections.abc import AsyncIterator
-from typing import Any
+from collections.abc import AsyncIterator, Callable
+from typing import TYPE_CHECKING, Any
 from urllib.parse import urlparse
 
 from pydantic import BaseModel, Field
 
 from lionagi.ln import is_ssrf_safe
 from lionagi.service.connections import AgenticEndpoint, EndpointConfig
+from lionagi.service.resilience import retry_with_backoff
 from lionagi.service.types import StreamChunk
 from lionagi.utils import to_dict
 
 from ._config import AG2Configs
+
+if TYPE_CHECKING:
+    import httpx
 
 logger = logging.getLogger(__name__)
 
@@ -43,6 +47,40 @@ def _assert_nlip_url_safe(url: str) -> None:
             "SSRF guard: NLIP URL blocked — hostname resolves to a private "
             f"or reserved IP address: {url!r}"
         )
+
+
+async def _post_json_with_retry(
+    client: httpx.AsyncClient,
+    url: str,
+    json_payload: dict[str, Any],
+    max_retries: int,
+    on_retry: Callable[[Exception, int, int], None] | None = None,
+) -> httpx.Response | None:
+    """POST with exponential backoff, retrying only on timeout/connect errors; max_retries<=0 makes no request."""
+    import httpx
+
+    if max_retries <= 0:
+        return None
+
+    attempt = 0
+
+    async def _post() -> httpx.Response:
+        nonlocal attempt
+        attempt += 1
+        try:
+            response = await client.post(url, json=json_payload)
+            response.raise_for_status()
+            return response
+        except (httpx.TimeoutException, httpx.ConnectError) as exc:
+            if on_retry is not None and attempt < max_retries:
+                on_retry(exc, attempt, max_retries)
+            raise
+
+    return await retry_with_backoff(
+        _post,
+        retry_exceptions=(httpx.TimeoutException, httpx.ConnectError),
+        max_retries=max_retries - 1,
+    )
 
 
 async def call_nlip_remote(
@@ -90,35 +128,28 @@ async def _call_nlip_sdk(
         if sanitized:
             nlip_msg.add_json({"messages": sanitized}, label="ag2_chat_history")
 
+    def _log_retry(exc: Exception, attempt: int, total: int) -> None:
+        if isinstance(exc, httpx.TimeoutException):
+            logger.warning("NLIP timeout (attempt %d/%d)", attempt, total)
+        else:
+            logger.warning("NLIP connect failed (attempt %d/%d)", attempt, total)
+
     async with httpx.AsyncClient(timeout=timeout) as client:
-        for attempt in range(max_retries):
-            try:
-                response = await client.post(
-                    f"{url.rstrip('/')}/nlip/",
-                    json=nlip_msg.model_dump(exclude_none=True),
-                )
-                response.raise_for_status()
+        response = await _post_json_with_retry(
+            client,
+            f"{url.rstrip('/')}/nlip/",
+            nlip_msg.model_dump(exclude_none=True),
+            max_retries,
+            on_retry=_log_retry,
+        )
+        if response is None:
+            return {"content": "", "context": None, "input_required": None}
 
-                data = response.json()
-                nlip_response = NLIP_Message.model_validate(data)
-                content = nlip_response.content if isinstance(nlip_response.content, str) else ""
+        data = response.json()
+        nlip_response = NLIP_Message.model_validate(data)
+        content = nlip_response.content if isinstance(nlip_response.content, str) else ""
 
-                return {
-                    "content": content,
-                    "context": None,
-                    "input_required": None,
-                }
-
-            except httpx.TimeoutException:
-                if attempt == max_retries - 1:
-                    raise
-                logger.warning("NLIP timeout (attempt %d/%d)", attempt + 1, max_retries)
-            except httpx.ConnectError:
-                if attempt == max_retries - 1:
-                    raise
-                logger.warning("NLIP connect failed (attempt %d/%d)", attempt + 1, max_retries)
-
-    return {"content": "", "context": None, "input_required": None}
+    return {"content": content, "context": None, "input_required": None}
 
 
 async def _call_direct(
@@ -144,31 +175,24 @@ async def _call_direct(
     }
 
     async with httpx.AsyncClient(timeout=timeout) as client:
-        for attempt in range(max_retries):
-            try:
-                response = await client.post(
-                    f"{url.rstrip('/')}/nlip/",
-                    json=payload,
-                )
-                response.raise_for_status()
-                data = response.json()
+        response = await _post_json_with_retry(
+            client,
+            f"{url.rstrip('/')}/nlip/",
+            payload,
+            max_retries,
+        )
+        if response is None:
+            return {"content": "", "context": None, "input_required": None}
 
-                content = ""
-                if isinstance(data, dict):
-                    content = data.get("content", "")
-                    if isinstance(content, dict):
-                        content = content.get("content", str(content))
+        data = response.json()
 
-                return {"content": content, "context": None, "input_required": None}
+    content = ""
+    if isinstance(data, dict):
+        content = data.get("content", "")
+        if isinstance(content, dict):
+            content = content.get("content", str(content))
 
-            except httpx.TimeoutException:
-                if attempt == max_retries - 1:
-                    raise
-            except httpx.ConnectError:
-                if attempt == max_retries - 1:
-                    raise
-
-    return {"content": "", "context": None, "input_required": None}
+    return {"content": content, "context": None, "input_required": None}
 
 
 logger = logging.getLogger(__name__)
