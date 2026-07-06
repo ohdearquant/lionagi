@@ -8,6 +8,7 @@ import anyio
 from fastapi import HTTPException
 
 from lionagi.libs.frontmatter import parse_frontmatter as _parse_frontmatter
+from lionagi.libs.path_safety import has_traversal
 
 from ..registry import studio_route
 from ._io import read_json_file as _read_json
@@ -161,7 +162,7 @@ def _resolve_marketplace_source(source_rel: str) -> Path | None:
     if not source_rel:
         return None
     source_path = Path(source_rel)
-    if source_path.is_absolute() or ".." in source_path.parts:
+    if source_path.is_absolute() or has_traversal(source_path):
         return None
     try:
         plugin_dir = (_REPO_ROOT / source_path).resolve()
