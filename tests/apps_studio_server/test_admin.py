@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import os
 import time
 import uuid
 from pathlib import Path
@@ -24,7 +25,10 @@ def _run(coro):
 
 
 async def _seed_running_session(
-    db_path: Path, session_id: str, artifacts_path: str | None = None
+    db_path: Path,
+    session_id: str,
+    artifacts_path: str | None = None,
+    updated_at: float | None = None,
 ) -> None:
     async with StateDB(db_path) as db:
         pid = str(uuid.uuid4())
@@ -42,6 +46,11 @@ async def _seed_running_session(
             await db.execute(
                 "UPDATE sessions SET artifacts_path = ? WHERE id = ?",
                 (artifacts_path, session_id),
+            )
+        if updated_at is not None:
+            await db.execute(
+                "UPDATE sessions SET updated_at = ? WHERE id = ?",
+                (updated_at, session_id),
             )
 
 
@@ -62,10 +71,12 @@ def _make_client(tmp_path, monkeypatch, db_path: Path) -> TestClient:
 
 
 def test_admin_doctor_reports_missing_artifacts_phantom(tmp_path, monkeypatch):
+    """Missing artifacts only counts once the session has also gone stale."""
     db_path = tmp_path / "state.db"
     sid = str(uuid.uuid4())
     missing_dir = str(tmp_path / "nonexistent_artifacts")
-    _run(_seed_running_session(db_path, sid, artifacts_path=missing_dir))
+    stale_time = time.time() - 7200  # past doctor's default 1h staleness gate
+    _run(_seed_running_session(db_path, sid, artifacts_path=missing_dir, updated_at=stale_time))
     client = _make_client(tmp_path, monkeypatch, db_path)
 
     r = client.get("/api/admin/doctor")
@@ -118,6 +129,79 @@ def test_admin_prune_rejects_empty_body(tmp_path, monkeypatch):
     client = _make_client(tmp_path, monkeypatch, db_path)
     r = client.post("/api/admin/prune", json={})
     assert r.status_code == 422
+
+
+# ─── _classify_phantom liveness/staleness gate (khive#1793) ──────────────────
+
+
+def test_fresh_running_session_missing_artifacts_not_reaped(tmp_path):
+    """A fresh running session whose artifacts dir doesn't exist yet is not a phantom."""
+    import lionagi.studio.services.admin as admin_svc
+
+    now = time.time()
+    missing = str(tmp_path / "not_yet_written")
+    row = {"id": str(uuid.uuid4()), "updated_at": now, "artifacts_path": missing}
+
+    reason = admin_svc._classify_phantom(row, now=now, stale_seconds=3600, ps_snapshot="")
+    assert reason is None
+
+
+def test_stale_dead_session_missing_artifacts_still_reaped(tmp_path):
+    """Cleanup is preserved: a stale, not-live session with missing artifacts still reaps."""
+    import lionagi.studio.services.admin as admin_svc
+
+    now = time.time()
+    missing = str(tmp_path / "ghost")
+    row = {"id": str(uuid.uuid4()), "updated_at": now - 7200, "artifacts_path": missing}
+
+    reason = admin_svc._classify_phantom(row, now=now, stale_seconds=3600, ps_snapshot="")
+    assert reason == "missing_artifacts"
+
+
+def test_alive_session_never_reaped(tmp_path):
+    """Liveness wins over both staleness and missing artifacts."""
+    import lionagi.studio.services.admin as admin_svc
+
+    now = time.time()
+    missing = str(tmp_path / "ghost2")
+    sid = str(uuid.uuid4())
+    row = {"id": sid, "updated_at": now - 7200, "artifacts_path": missing}
+
+    # session_id present in the ps snapshot signals a live process match.
+    reason = admin_svc._classify_phantom(row, now=now, stale_seconds=3600, ps_snapshot=sid)
+    assert reason is None
+
+
+def test_stale_lock_gated_on_staleness(tmp_path):
+    """A stale lock file only counts as zombie evidence once the session itself is stale."""
+    import lionagi.studio.services.admin as admin_svc
+
+    artifacts_dir = tmp_path / "artifacts"
+    artifacts_dir.mkdir()
+    lock = artifacts_dir / "session.lock"
+    lock.write_text("x")
+    old_mtime = time.time() - 7200
+    os.utime(lock, (old_mtime, old_mtime))
+
+    now = time.time()
+    fresh_row = {
+        "id": str(uuid.uuid4()),
+        "updated_at": now,
+        "artifacts_path": str(artifacts_dir),
+    }
+    assert (
+        admin_svc._classify_phantom(fresh_row, now=now, stale_seconds=3600, ps_snapshot="") is None
+    )
+
+    stale_row = {
+        "id": str(uuid.uuid4()),
+        "updated_at": now - 7200,
+        "artifacts_path": str(artifacts_dir),
+    }
+    assert (
+        admin_svc._classify_phantom(stale_row, now=now, stale_seconds=3600, ps_snapshot="")
+        == "stale_lock"
+    )
 
 
 # ─── /api/admin/health + /api/admin/transition ───────────────────────────────
