@@ -5,9 +5,9 @@
  * - LOCALES/RTL_LOCALES metadata shape (16 codes, ar/ur marked rtl).
  * - applyDocumentLocale flips <html lang>/<html dir> for rtl vs ltr locales.
  * - Every messages/*.json file has the exact same leaf-key set as en.json
- *   (766 leaves: 762 from the schedules table/trigger/error keys plus
- *   shell.rail.selectLanguage, history.status.orphaned, and the schedules
- *   cards view/paused/not-scheduled keys).
+ *   (770 leaves: 766 from the schedules + status/verdict keystone keys plus
+ *   4 Mission Control overview leaves — liveBoard.durationStatus,
+ *   recent.repeatedGroup, recent.expand, recent.collapse).
  * - Every locale's messages parse under a real ICU translator with no
  *   FORMATTING_ERROR, including the true {count, plural, ...} strings and
  *   the pre-existing bare-{plural} anti-pattern in prunePhantoms.
@@ -97,6 +97,7 @@ const SAMPLE_VALUES = {
   day: "Monday",
   delta: "3m",
   detail: "boom",
+  duration: "3h",
   end: "11:00",
   event: "PR merge",
   field: "payload",
@@ -117,6 +118,7 @@ const SAMPLE_VALUES = {
   runs: 4,
   sec: 30,
   sessions: 3,
+  span: "20m",
   start: "10:00",
   status: "ok",
   time: "18:00",
@@ -193,8 +195,8 @@ describe("applyDocumentLocale — <html lang>/<html dir> wiring", () => {
 });
 
 describe("messages — leaf-key parity across all 16 locales", () => {
-  it("en.json has 766 leaves (762 base + history.status.orphaned + schedules cards view/paused/not-scheduled)", () => {
-    expect(EN_LEAVES.size).toBe(766);
+  it("en.json has 770 leaves (766 base + 4 Mission Control overview leaves)", () => {
+    expect(EN_LEAVES.size).toBe(770);
   });
 
   it.each(LOCALES.map((l) => l.code))(

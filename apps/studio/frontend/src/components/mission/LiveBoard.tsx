@@ -4,6 +4,12 @@
  * Status dot pulses via CSS animation (opacity + transform only).
  * Elapsed duration ticks every second client-side via nowSec from reducer.
  * prefers-reduced-motion: static dot, no animation.
+ *
+ * Health axis is heartbeat freshness only, NEVER duration — a session up
+ * for days with recent activity is healthy, not alarming. Every card shows
+ * both facts side by side: total uptime, and how long since last activity.
+ * Only a genuinely stale heartbeat (effective_health) renders the
+ * "quiet — check?" flag; duration alone never does.
  */
 
 import { Link } from "@tanstack/react-router";
@@ -16,7 +22,11 @@ import type { RunSummary } from "@/lib/types";
 import type { InvocationSummary } from "@/lib/api";
 import { runDeepLink, invocationDeepLink } from "@/lib/runDeepLink";
 
-/** Health states meaning the process is gone even though the run is non-terminal. */
+/**
+ * Health states meaning the process is gone even though the run is
+ * non-terminal. TODO(unify): route through deriveDisplayStatus once
+ * status/verdict/health derivation is unified into one shared function.
+ */
 const DEAD_HEALTH = new Set(["stale", "orphaned", "zombie", "unresponsive"]);
 
 /** Placeholder card count while the first fetch is in flight. */
@@ -49,8 +59,14 @@ function formatElapsed(sec: number | null): string {
 function RunCard({ run, nowSec }: { run: RunSummary; nowSec: number }) {
   const t = useTranslations("mission");
   const elapsed = elapsedSec(run.started_at ?? undefined, nowSec);
+  // Last activity falls back to started_at when no heartbeat has landed yet
+  // — never to "no data", since a fresh run has always at least started.
+  const lastActivity = elapsedSec(run.last_message_at ?? run.started_at ?? undefined, nowSec);
   const name = run.playbook_name ?? run.agent_name ?? run.run_id.slice(-12);
   // Honest staleness: a process-dead run must not render as a live one.
+  // Health axis only — duration never factors into this flag.
+  // TODO(unify): route through deriveDisplayStatus once status/verdict/
+  // health derivation is unified into one shared function.
   const dead = run.effective_health != null && DEAD_HEALTH.has(run.effective_health);
 
   return (
@@ -68,10 +84,16 @@ function RunCard({ run, nowSec }: { run: RunSummary; nowSec: number }) {
             {t("liveBoard.staleLabel")}
           </span>
         )}
+      </div>
+
+      <div className="flex items-center gap-2">
         <span
-          className={`shrink-0 font-data tabular-nums text-[length:var(--t-xs)] ${dead ? "text-content-muted" : "text-status-running"}`}
+          className={`min-w-0 flex-1 truncate font-data tabular-nums text-[length:var(--t-xs)] ${dead ? "text-content-muted" : "text-status-running"}`}
         >
-          {formatElapsed(elapsed)}
+          {t("liveBoard.durationStatus", {
+            duration: formatElapsed(elapsed),
+            age: formatElapsed(lastActivity),
+          })}
         </span>
       </div>
 
@@ -91,7 +113,13 @@ function RunCard({ run, nowSec }: { run: RunSummary; nowSec: number }) {
 }
 
 function InvocationCard({ inv, nowSec }: { inv: InvocationSummary; nowSec: number }) {
+  const t = useTranslations("mission");
   const elapsed = elapsedSec(inv.started_at, nowSec);
+  // InvocationSummary carries no per-message heartbeat field — updated_at is
+  // the coarsest available proxy for "last activity" (bumped on any change
+  // to the invocation row, not strictly a heartbeat). Flagged as a data-field
+  // gap: a real invocation heartbeat would need a backend addition.
+  const lastActivity = elapsedSec(inv.updated_at ?? inv.started_at, nowSec);
 
   return (
     <Link
@@ -103,8 +131,14 @@ function InvocationCard({ inv, nowSec }: { inv: InvocationSummary; nowSec: numbe
         <span className="min-w-0 flex-1 truncate font-data text-[length:var(--t-sm)] font-medium text-content-primary group-hover:opacity-80">
           {inv.skill}
         </span>
-        <span className="shrink-0 font-data tabular-nums text-[length:var(--t-xs)] text-status-running">
-          {formatElapsed(elapsed)}
+      </div>
+
+      <div className="flex items-center gap-2">
+        <span className="min-w-0 flex-1 truncate font-data tabular-nums text-[length:var(--t-xs)] text-status-running">
+          {t("liveBoard.durationStatus", {
+            duration: formatElapsed(elapsed),
+            age: formatElapsed(lastActivity),
+          })}
         </span>
       </div>
 
@@ -139,7 +173,9 @@ export function LiveBoardSkeleton() {
             <div className="flex items-center gap-2">
               <Skeleton className="h-2.5 w-2.5 shrink-0 rounded-full" />
               <Skeleton className="h-3 flex-1" />
-              <Skeleton className="h-3 w-10 shrink-0" />
+            </div>
+            <div className="flex items-center gap-2">
+              <Skeleton className="h-3 w-32" />
             </div>
             <div className="flex items-center gap-2">
               <Skeleton className="h-4 w-12 shrink-0 rounded" />

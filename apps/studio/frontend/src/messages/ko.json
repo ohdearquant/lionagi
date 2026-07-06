@@ -616,7 +616,7 @@
       "open": "열기 →",
       "reason": {
         "streak": "반복 실패 중",
-        "failed": "실패",
+        "failed": "인프라 실패",
         "stale": "오래됨 · 활동 없음",
         "stuck": "멈춤 · 진행 없음",
         "gated": "승인 대기 중"
@@ -627,7 +627,8 @@
     },
     "liveBoard": {
       "title": "현재 실행 중",
-      "staleLabel": "오래됨",
+      "staleLabel": "조용함 — 확인?",
+      "durationStatus": "{duration} 동안 실행 중 · 마지막 활동 {age} 전",
       "empty": "활성 실행 또는 호출이 없습니다.",
       "emptyHint": "li CLI로 하나를 실행하거나 ⌘K를 눌러 어디로든 이동하세요.",
       "fleetLink": "에이전트 플릿 →"
@@ -635,7 +636,10 @@
     "recent": {
       "title": "최근",
       "viewAll": "기록 →",
-      "empty": "아직 종료된 실행이 없습니다."
+      "empty": "아직 종료된 실행이 없습니다.",
+      "repeatedGroup": "{name} {status} × {count}회, {span} 동안",
+      "expand": "{count}개 표시 →",
+      "collapse": "숨기기"
     },
     "pulse": {
       "title": "펄스",

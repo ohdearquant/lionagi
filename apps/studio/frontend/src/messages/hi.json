@@ -616,7 +616,7 @@
       "open": "खोलें →",
       "reason": {
         "streak": "बार-बार विफल",
-        "failed": "विफल",
+        "failed": "इंफ्रा विफलता",
         "stale": "स्टेल · कोई गतिविधि नहीं",
         "stuck": "अटका · कोई प्रगति नहीं",
         "gated": "मंज़ूरी की प्रतीक्षा"
@@ -627,7 +627,8 @@
     },
     "liveBoard": {
       "title": "अभी चल रहा",
-      "staleLabel": "स्टेल",
+      "staleLabel": "शांत — जांचें?",
+      "durationStatus": "{duration} से चालू · अंतिम गतिविधि {age} पहले",
       "empty": "कोई सक्रिय रन या इनवोकेशन नहीं।",
       "emptyHint": "li CLI से एक लॉन्च करें, या कहीं भी जाने के लिए ⌘K दबाएँ।",
       "fleetLink": "फ़्लीट →"
@@ -635,7 +636,10 @@
     "recent": {
       "title": "हाल का",
       "viewAll": "इतिहास →",
-      "empty": "अभी समाप्त हुए कोई रन नहीं।"
+      "empty": "अभी समाप्त हुए कोई रन नहीं।",
+      "repeatedGroup": "{name} {status} × {count}, {span} में",
+      "expand": "{count} दिखाएं →",
+      "collapse": "छिपाएं"
     },
     "pulse": {
       "title": "पल्स",

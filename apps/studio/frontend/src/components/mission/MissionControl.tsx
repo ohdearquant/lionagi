@@ -21,6 +21,9 @@ export default function MissionControl() {
   const t = useTranslations("mission");
   const board = useLiveBoard();
   const runningCount = board.activeRuns.length + board.activeInvocations.length;
+  // Orphaned (daemon-restart housekeeping) runs never enter the attention
+  // list — they carry no human action — so this count is the whole list.
+  const attentionCount = board.attentionItems.length;
   // Skeletons are for the FIRST fetch only. dataState leaves "loading" for
   // good on the first DATA_OK/DATA_ERROR, so later polls (including a
   // background refresh failure) never re-trigger this branch.
@@ -44,7 +47,7 @@ export default function MissionControl() {
             <p className="mt-0.5 font-data tabular-nums text-[length:var(--t-xs)] text-content-muted">
               {t("page.summary", {
                 running: runningCount,
-                attention: board.attentionItems.length,
+                attention: attentionCount,
               })}
             </p>
           )}

@@ -11,7 +11,7 @@ import { useTranslations } from "use-intl";
 import SectionLabel from "@/components/ui/SectionLabel";
 import Skeleton from "@/components/ui/Skeleton";
 import { usePulse } from "./usePulse";
-import { CHART_H, chartWidth, sparklineRects } from "./sparkline";
+import { CHART_H, chartWidth, completionRateFromBuckets, sparklineRects } from "./sparkline";
 import type { SparkRect } from "./sparkline";
 import type { ActivityBucket, ActivityWindow } from "@/lib/api";
 
@@ -70,7 +70,14 @@ export default function Pulse() {
   const [window_, setWindow] = useState<ActivityWindow>("24h");
   const { data, error, loading } = usePulse(window_);
 
-  const ratePct = data?.completion_rate != null ? Math.round(data.completion_rate * 100) : null;
+  // Recomputed from the dense per-bucket counts, not data.completion_rate —
+  // the server field's denominator still includes cancelled runs (Ocean
+  // 7/6: "31% completion" was an artifact of counting daemon-restart
+  // casualties as failures). This excludes cancelled entirely. It still
+  // cannot exclude orphaned/phantom-reaped failures from the failed count —
+  // that needs a backend reason-level breakdown (see sparkline.ts TODO).
+  const rate = data ? completionRateFromBuckets(data.buckets) : null;
+  const ratePct = rate != null ? Math.round(rate * 100) : null;
   // "" marks a failure without a usable message — localize the fallback.
   const errorMessage = error === null ? null : error || t("pulse.unreachable");
 

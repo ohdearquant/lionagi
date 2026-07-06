@@ -616,7 +616,7 @@
       "open": "開く →",
       "reason": {
         "streak": "連続して失敗",
-        "failed": "失敗",
+        "failed": "インフラ障害",
         "stale": "古い状態 · アクティビティなし",
         "stuck": "停止中 · 進捗なし",
         "gated": "承認待ち"
@@ -627,7 +627,8 @@
     },
     "liveBoard": {
       "title": "現在実行中",
-      "staleLabel": "古い状態",
+      "staleLabel": "静止 — 確認?",
+      "durationStatus": "稼働 {duration} · 最終アクティビティ {age} 前",
       "empty": "アクティブな実行または呼び出しはありません。",
       "emptyHint": "li CLIで起動するか、⌘Kで任意の場所へ移動できます。",
       "fleetLink": "エージェントフリート →"
@@ -635,7 +636,10 @@
     "recent": {
       "title": "最近",
       "viewAll": "履歴 →",
-      "empty": "終端実行はまだありません。"
+      "empty": "終端実行はまだありません。",
+      "repeatedGroup": "{name} {status} × {count}件、{span}以内",
+      "expand": "{count}件表示 →",
+      "collapse": "非表示"
     },
     "pulse": {
       "title": "パルス",
