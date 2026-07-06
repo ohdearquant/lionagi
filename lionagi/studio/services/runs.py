@@ -439,34 +439,6 @@ def _build_steps(
     return steps if steps else None
 
 
-def _adapt_detail(
-    run_id: str,
-    state_root: Path,
-    artifact_root: Path,
-    manifest: dict[str, Any],
-    branches: list[dict[str, Any]],
-) -> dict[str, Any]:
-    summary = _adapt_summary(manifest, run_id, state_root, artifact_root)
-    graph = _build_graph(manifest)
-    steps = manifest.get("steps")
-    if not steps:
-        steps = _build_steps(manifest, branches)
-
-    return {
-        **summary,
-        "error": manifest.get("error") or None,
-        "cwd": manifest.get("cwd") or None,
-        "steps": steps,
-        "graph": graph,
-        "manifest": manifest,
-        "branches": branches,
-        "artifact_contract_json": manifest.get("artifact_contract_json")
-        or manifest.get("artifact_contract"),
-        "artifact_verification_json": manifest.get("artifact_verification_json")
-        or manifest.get("artifact_verification"),
-    }
-
-
 def _session_liveness(s: dict[str, Any], ps_snapshot: str | None = None) -> bool | None:
     """Tri-state liveness for a running session row, via the shared admin oracle."""
     from .admin import process_liveness
