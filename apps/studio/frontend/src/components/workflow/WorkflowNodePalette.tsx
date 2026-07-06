@@ -8,7 +8,6 @@ const PALETTE_ITEMS: Array<{ kind: WorkflowNodeKind; glyph: string }> = [
   { kind: "parse", glyph: "⊞" },
   { kind: "fanout", glyph: "⋔" },
   { kind: "engine", glyph: "⊶" },
-  { kind: "gate", glyph: "◇" },
 ];
 
 export default function WorkflowNodePalette() {

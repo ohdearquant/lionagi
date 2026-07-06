@@ -172,7 +172,20 @@ async def run_workflow_def(
     status = "completed"
     exc: BaseException | None = None
     try:
-        result = await session.flow(graph, context=inputs or {})
+        from lionagi.cli.orchestrate._orchestration import register_branch_hook
+
+        result = await session.flow(
+            graph,
+            context=inputs or {},
+            # Flow-created clone branches (any op with a predecessor and no
+            # explicit branch_id — see FlowExecutor._preallocate_all_branches)
+            # are born AFTER _setup_run_persist already registered persistence
+            # for the branches that existed at setup time. Without this, a
+            # clone's transcript never persists even though the run-DAG
+            # signals still render (those persist via the session-level
+            # observer, not per-branch hooks).
+            on_branch_created=lambda b: register_branch_hook(ctx, b),
+        )
         op_results = result.get("operation_results", {}) if isinstance(result, dict) else {}
         if any(isinstance(v, dict) and "error" in v for v in op_results.values()):
             status = "failed"
