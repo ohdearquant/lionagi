@@ -338,24 +338,12 @@
   "schedules": {
     "title": "일정",
     "subtitle": "cron, interval 및 GitHub 트리거의 상시 자동화",
-    "board": "보드",
     "calendar": "캘린더",
     "newSchedule": "새 일정",
     "loadError": "일정을 로드하지 못했습니다.",
     "emptyTitle": "아직 일정 없음",
     "emptyBody": "cron, 고정 interval 또는 GitHub 이벤트로 엔진 및 에이전트 실행을 자동화하세요.",
     "emptyCta": "첫 일정 만들기",
-    "lanes": {
-      "upcoming": "예정",
-      "today": "오늘",
-      "running": "실행 중",
-      "done": "완료",
-      "paused": "일시 중지됨",
-      "emptyUpcoming": "대기 중인 항목 없음",
-      "emptyToday": "오늘 예정 없음",
-      "emptyRunning": "유휴",
-      "emptyDone": "아직 실행 없음"
-    },
     "card": {
       "enable": "일정 활성화",
       "disable": "일정 비활성화",
@@ -499,14 +487,48 @@
       "overlapSkip": "건너뛰기",
       "overlapQueue": "큐에 넣기",
       "overlapKillOld": "이전 실행 종료",
-      "sideRecentRuns": "최근 실행",
       "noRuns": "아직 실행 없음",
       "ago": " 전",
       "cancel": "취소",
       "save": "변경 사항 저장",
       "saving": "저장 중…",
       "saveFailed": "저장 실패.",
-      "invalidJson": "{field}의 JSON이 유효하지 않습니다"
+      "invalidJson": "{field}의 JSON이 유효하지 않습니다",
+      "sectionHistory": "기록"
+    },
+    "viewTable": "테이블",
+    "table": {
+      "colName": "이름",
+      "colTrigger": "트리거",
+      "colEnabled": "활성화",
+      "colLastRun": "마지막 실행",
+      "colNextFire": "다음 실행",
+      "colActions": "작업",
+      "neverRun": "실행 안 됨",
+      "notScheduled": "—",
+      "editAction": "편집"
+    },
+    "trigger": {
+      "everyMinute": "매분",
+      "everyMinutes": "{n}분마다",
+      "daily": "매일 {time} UTC",
+      "weekly": "매주{day} {time} UTC",
+      "hourlyAt": "매시 :{minute}",
+      "onEvent": "{event} 시",
+      "eventPrMerged": "PR 병합",
+      "eventPrOpened": "PR 열림",
+      "eventPrUpdated": "PR 업데이트",
+      "eventPrClosed": "PR 닫힘"
+    },
+    "error": {
+      "spawnFailed": "에이전트 시작 실패",
+      "network": "네트워크 오류",
+      "timeout": "시간 초과",
+      "permission": "권한 거부됨",
+      "missingDependency": "종속성 누락",
+      "notFound": "파일을 찾을 수 없음",
+      "showDetails": "전체 오류 보기",
+      "hideDetails": "전체 오류 숨기기"
     }
   },
   "fleet": {

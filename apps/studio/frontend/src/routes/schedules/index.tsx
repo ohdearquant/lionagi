@@ -1,13 +1,15 @@
 /**
- * Schedules space — standing automations as a time-flow board (upcoming →
- * today → running → done) with a month-calendar alternate view.
+ * Schedules space — a table, one row per standing automation, with a
+ * month-calendar alternate view. Run history lives on the schedule detail
+ * page, not in this list.
  */
 import { createFileRoute, useNavigate } from "@tanstack/react-router";
 import { useEffect, useMemo, useState } from "react";
 import { useTranslations } from "use-intl";
 import Button from "@/components/ui/Button";
 import CreateScheduleModal from "@/components/schedules/CreateScheduleModal";
-import SchedulesBoard from "@/components/schedules/SchedulesBoard";
+import SchedulesTable from "@/components/schedules/SchedulesTable";
+import ScheduleDetailModal from "@/components/schedules/ScheduleDetailModal";
 import SchedulesCalendar from "@/components/schedules/SchedulesCalendar";
 import { useSchedulesData } from "@/components/schedules/data";
 
@@ -40,7 +42,7 @@ export const Route = createFileRoute("/schedules/")({
   component: SchedulesSpace,
 });
 
-type View = "board" | "calendar";
+type View = "table" | "calendar";
 
 function ViewToggle({ view, onChange }: { view: View; onChange: (v: View) => void }) {
   const t = useTranslations("schedules");
@@ -61,7 +63,7 @@ function ViewToggle({ view, onChange }: { view: View; onChange: (v: View) => voi
   );
   return (
     <div className="flex items-center gap-0.5 rounded-md border border-edge p-0.5">
-      {seg("board", t("board"))}
+      {seg("table", t("viewTable"))}
       {seg("calendar", t("calendar"))}
     </div>
   );
@@ -85,14 +87,11 @@ function EmptyState({ onNew }: { onNew: () => void }) {
   );
 }
 
-function BoardSkeleton() {
+function TableSkeleton() {
   return (
-    <div className="flex min-h-0 flex-1 gap-3 px-6 pb-6">
-      {Array.from({ length: 4 }, (_, i) => (
-        <div key={i} className="flex flex-1 flex-col gap-2 rounded-lg border border-edge p-2 pt-11">
-          <div className="skeleton h-20 rounded-md" />
-          <div className="skeleton h-20 rounded-md" />
-        </div>
+    <div className="flex min-h-0 flex-1 flex-col gap-2 px-6 pb-6">
+      {Array.from({ length: 6 }, (_, i) => (
+        <div key={i} className="skeleton h-10 rounded-md" />
       ))}
     </div>
   );
@@ -101,7 +100,7 @@ function BoardSkeleton() {
 function SchedulesSpace() {
   const t = useTranslations("schedules");
   const { schedules, runs, nowMs, loading, error, refresh } = useSchedulesData();
-  const [view, setView] = useState<View>("board");
+  const [view, setView] = useState<View>("table");
   const [showModal, setShowModal] = useState(false);
   const search = Route.useSearch();
   const navigate = useNavigate({ from: "/schedules/" });
@@ -168,18 +167,16 @@ function SchedulesSpace() {
       )}
 
       {loading ? (
-        <BoardSkeleton />
+        <TableSkeleton />
       ) : schedules.length === 0 ? (
         <EmptyState onNew={() => setShowModal(true)} />
-      ) : view === "board" ? (
-        <SchedulesBoard
+      ) : view === "table" ? (
+        <SchedulesTable
           schedules={schedules}
           runs={runs}
           nowMs={nowMs}
           onChanged={refresh}
-          selectedScheduleId={search.s ?? null}
-          onSelectSchedule={openSchedule}
-          onCloseDetail={closeSchedule}
+          onOpen={openSchedule}
         />
       ) : (
         <div className="min-h-0 flex-1 overflow-y-auto">
@@ -189,6 +186,10 @@ function SchedulesSpace() {
 
       {showModal && (
         <CreateScheduleModal onClose={closeModal} onCreated={refresh} initial={prefill} />
+      )}
+
+      {search.s && (
+        <ScheduleDetailModal scheduleId={search.s} onClose={closeSchedule} onChanged={refresh} />
       )}
     </main>
   );

@@ -338,24 +338,12 @@
   "schedules": {
     "title": "शेड्यूल",
     "subtitle": "cron, इंटरवल और GitHub ट्रिगर पर स्थायी ऑटोमेशन",
-    "board": "बोर्ड",
     "calendar": "कैलेंडर",
     "newSchedule": "नया शेड्यूल",
     "loadError": "शेड्यूल लोड नहीं हो सके।",
     "emptyTitle": "अभी कोई शेड्यूल नहीं",
     "emptyBody": "cron, तय इंटरवल या GitHub इवेंट पर इंजन और एजेंट रन ऑटोमेट करें।",
     "emptyCta": "पहला शेड्यूल बनाएँ",
-    "lanes": {
-      "upcoming": "आगामी",
-      "today": "आज",
-      "running": "चल रहा है",
-      "done": "हो गया",
-      "paused": "रुका हुआ",
-      "emptyUpcoming": "क्यू में कुछ नहीं",
-      "emptyToday": "आज कुछ देय नहीं",
-      "emptyRunning": "निष्क्रिय",
-      "emptyDone": "अभी कोई रन नहीं"
-    },
     "card": {
       "enable": "शेड्यूल सक्षम करें",
       "disable": "शेड्यूल अक्षम करें",
@@ -499,14 +487,48 @@
       "overlapSkip": "छोड़ें",
       "overlapQueue": "क्यू करें",
       "overlapKillOld": "पुराना खत्म करें",
-      "sideRecentRuns": "हाल के रन",
       "noRuns": "अभी कोई रन नहीं",
       "ago": " पहले",
       "cancel": "रद्द करें",
       "save": "बदलाव सेव करें",
       "saving": "सेव हो रहा है…",
       "saveFailed": "सेव विफल।",
-      "invalidJson": "{field} में अमान्य JSON"
+      "invalidJson": "{field} में अमान्य JSON",
+      "sectionHistory": "इतिहास"
+    },
+    "viewTable": "तालिका",
+    "table": {
+      "colName": "नाम",
+      "colTrigger": "ट्रिगर",
+      "colEnabled": "सक्षम",
+      "colLastRun": "अंतिम रन",
+      "colNextFire": "अगला रन",
+      "colActions": "कार्रवाइयाँ",
+      "neverRun": "कभी नहीं",
+      "notScheduled": "—",
+      "editAction": "संपादित करें"
+    },
+    "trigger": {
+      "everyMinute": "हर मिनट",
+      "everyMinutes": "हर {n} मिनट",
+      "daily": "प्रतिदिन {time} UTC",
+      "weekly": "साप्ताहिक {day} {time} UTC",
+      "hourlyAt": "हर घंटे :{minute} पर",
+      "onEvent": "{event} पर",
+      "eventPrMerged": "PR मर्ज",
+      "eventPrOpened": "PR खुला",
+      "eventPrUpdated": "PR अपडेट",
+      "eventPrClosed": "PR बंद"
+    },
+    "error": {
+      "spawnFailed": "एजेंट शुरू करने में विफल",
+      "network": "नेटवर्क त्रुटि",
+      "timeout": "समय समाप्त",
+      "permission": "अनुमति अस्वीकृत",
+      "missingDependency": "निर्भरता गुम",
+      "notFound": "फ़ाइल नहीं मिली",
+      "showDetails": "पूरी त्रुटि दिखाएं",
+      "hideDetails": "पूरी त्रुटि छिपाएं"
     }
   },
   "fleet": {

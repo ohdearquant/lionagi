@@ -338,24 +338,12 @@
   "schedules": {
     "title": "Schedules",
     "subtitle": "Standing automations on cron, interval, and GitHub triggers",
-    "board": "Board",
     "calendar": "Calendar",
     "newSchedule": "New schedule",
     "loadError": "Failed to load schedules.",
     "emptyTitle": "No schedules yet",
     "emptyBody": "Automate engine and agent runs on a cron, a fixed interval, or GitHub events.",
     "emptyCta": "Create the first schedule",
-    "lanes": {
-      "upcoming": "Upcoming",
-      "today": "Today",
-      "running": "Running",
-      "done": "Done",
-      "paused": "Paused",
-      "emptyUpcoming": "Nothing queued",
-      "emptyToday": "Nothing due today",
-      "emptyRunning": "Idle",
-      "emptyDone": "No runs yet"
-    },
     "card": {
       "enable": "Enable schedule",
       "disable": "Disable schedule",
@@ -499,14 +487,48 @@
       "overlapSkip": "Skip",
       "overlapQueue": "Queue",
       "overlapKillOld": "Kill old",
-      "sideRecentRuns": "Recent runs",
       "noRuns": "No runs yet",
       "ago": " ago",
       "cancel": "Cancel",
       "save": "Save changes",
       "saving": "Saving…",
       "saveFailed": "Save failed.",
-      "invalidJson": "Invalid JSON in {field}"
+      "invalidJson": "Invalid JSON in {field}",
+      "sectionHistory": "History"
+    },
+    "viewTable": "Table",
+    "table": {
+      "colName": "Name",
+      "colTrigger": "Trigger",
+      "colEnabled": "Enabled",
+      "colLastRun": "Last run",
+      "colNextFire": "Next fire",
+      "colActions": "Actions",
+      "neverRun": "Never",
+      "notScheduled": "—",
+      "editAction": "Edit"
+    },
+    "trigger": {
+      "everyMinute": "every minute",
+      "everyMinutes": "every {n}m",
+      "daily": "daily {time} UTC",
+      "weekly": "weekly {day} {time} UTC",
+      "hourlyAt": "hourly at :{minute}",
+      "onEvent": "on {event}",
+      "eventPrMerged": "PR merge",
+      "eventPrOpened": "PR open",
+      "eventPrUpdated": "PR update",
+      "eventPrClosed": "PR close"
+    },
+    "error": {
+      "spawnFailed": "agent spawn failed",
+      "network": "network error",
+      "timeout": "timed out",
+      "permission": "permission denied",
+      "missingDependency": "missing dependency",
+      "notFound": "file not found",
+      "showDetails": "Show full error",
+      "hideDetails": "Hide full error"
     }
   },
   "fleet": {
