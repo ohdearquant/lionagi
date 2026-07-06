@@ -53,13 +53,6 @@ class FlowPlanError(LionError):
     """Orchestrator failed to produce a usable plan."""
 
 
-def _raw_response_snippet(res, limit: int = 800) -> str:
-    text = (str(res).strip() if res is not None else "") or "(empty response)"
-    if len(text) > limit:
-        text = f"{text[:limit]}… [+{len(text) - limit} chars truncated]"
-    return text
-
-
 async def _persist_session_phase(env, phase: str) -> None:
     """Best-effort write of the live execution phase to the session row."""
     ctx = getattr(env, "_live_persist", None)

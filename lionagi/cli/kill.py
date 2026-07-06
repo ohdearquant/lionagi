@@ -161,21 +161,6 @@ def _terminate_pid(
 _STALE_SWEEP_ORDER = ("sessions", "invocations")
 
 
-async def _list_child_invocations(db: Any, session_id: str) -> list[dict[str, Any]]:
-    rows = await db.fetch_all("SELECT * FROM invocations WHERE status = 'running'", ())
-    result = []
-    for d in rows:
-        child_row = await db.fetch_one(
-            "SELECT 1 FROM sessions WHERE invocation_id = ? LIMIT 1",
-            (d["id"],),
-        )
-        if child_row is not None:
-            result.append(d)
-        elif d.get("id") == session_id:
-            result.append(d)
-    return result
-
-
 async def _list_running_children(
     db: Any, entity_type: str, entity_id: str
 ) -> list[tuple[str, str, dict[str, Any]]]:

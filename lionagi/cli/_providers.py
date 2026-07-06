@@ -328,12 +328,6 @@ class AgentProfile:
     extra: dict = field(default_factory=dict)
 
 
-def _find_lionagi_dir() -> Path | None:
-    """Find first .lionagi/ directory (backward compat)."""
-    dirs = _find_lionagi_dirs()
-    return dirs[0] if dirs else None
-
-
 def _resolve_profile_path(agents_dir: Path, name: str) -> Path | None:
     """Return profile path for NAME: directory layout (<name>/<name>.md) before flat (<name>.md)."""
     dir_candidate = agents_dir / name / f"{name}.md"
