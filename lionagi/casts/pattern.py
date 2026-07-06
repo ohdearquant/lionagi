@@ -99,7 +99,7 @@ class Mode(Pattern):
         """Load a built-in mode by canonical name."""
         obj = _load_builtin(_MODES_PKG, name, "MODE")
         if obj is None:
-            raise ValueError(f"Unknown mode: {name!r}")
+            raise ValueError(f"Unknown mode: {name!r}. Available: {', '.join(list_modes())}")
         return obj
 
 
@@ -143,7 +143,7 @@ class Role(Pattern):
         """Load a built-in role by canonical name."""
         obj = _load_builtin(_ROLES_PKG, name, "ROLE")
         if obj is None:
-            raise ValueError(f"Unknown role: {name!r}")
+            raise ValueError(f"Unknown role: {name!r}. Available: {', '.join(list_roles())}")
         return obj
 
 

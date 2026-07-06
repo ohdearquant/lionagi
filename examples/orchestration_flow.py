@@ -8,6 +8,10 @@ nodes into the running DAG).
 Requires a codex CLI installation and API access.
 
     uv run python examples/orchestration_flow.py
+
+Production users: don't drive this reactive substrate directly — use
+lionagi/engines/ instead, which adds an agent budget cap, a deadline, and a
+quality gate before allowing expansion.
 """
 
 from __future__ import annotations
