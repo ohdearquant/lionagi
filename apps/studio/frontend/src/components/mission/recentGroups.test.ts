@@ -48,7 +48,7 @@ describe("groupConsecutiveRecentRuns", () => {
     expect(groups).toHaveLength(1);
     expect(groups[0].runs).toHaveLength(3);
     expect(groups[0].name).toBe("reviewer");
-    expect(groups[0].status).toBe("failed");
+    expect(groups[0].displayStatus).toBe("failed");
     expect(groups[0].key).toBe("r3");
   });
 
@@ -91,8 +91,8 @@ describe("groupConsecutiveRecentRuns", () => {
     ];
     const groups = groupConsecutiveRecentRuns(runs);
     expect(groups).toHaveLength(2);
-    expect(groups[0].orphaned).toBe(true);
-    expect(groups[1].orphaned).toBe(false);
+    expect(groups[0].displayStatus).toBe("orphaned");
+    expect(groups[1].displayStatus).toBe("failed");
   });
 
   it("consecutive orphaned failures collapse into one orphaned group", () => {
@@ -114,7 +114,7 @@ describe("groupConsecutiveRecentRuns", () => {
     ];
     const groups = groupConsecutiveRecentRuns(runs);
     expect(groups).toHaveLength(1);
-    expect(groups[0].orphaned).toBe(true);
+    expect(groups[0].displayStatus).toBe("orphaned");
     expect(groups[0].runs).toHaveLength(2);
   });
 
@@ -129,8 +129,7 @@ describe("groupSpanSec", () => {
       key: "r1",
       runs: [makeRun({ run_id: "r1", status: "failed", ended_at: 100 })],
       name: "reviewer",
-      status: "failed",
-      orphaned: false,
+      displayStatus: "failed",
     };
     expect(groupSpanSec(group)).toBe(0);
   });
@@ -144,8 +143,7 @@ describe("groupSpanSec", () => {
         makeRun({ run_id: "r1", status: "failed", ended_at: 1000 }),
       ],
       name: "reviewer",
-      status: "failed",
-      orphaned: false,
+      displayStatus: "failed",
     };
     expect(groupSpanSec(group)).toBe(300);
   });

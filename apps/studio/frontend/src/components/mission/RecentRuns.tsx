@@ -204,7 +204,7 @@ function RecentGroupRows({
   // deriveDisplayStatus, not a per-row branch.
   const lead = group.runs[0];
   const span = formatSpan(groupSpanSec(group));
-  const label = statusLabel(deriveDisplayStatus(lead)) ?? group.status;
+  const label = statusLabel(group.displayStatus) ?? group.displayStatus;
 
   return (
     <div>
