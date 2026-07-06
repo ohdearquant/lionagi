@@ -113,7 +113,13 @@ def _make_agent_mocks_with_bypass(monkeypatch, tmp_path, captured_kwargs: list):
         return None
 
     async def fake_teardown(
-        ctx, *, status="completed", exception=None, cwd=None, engine_session_uid=None
+        ctx,
+        *,
+        status="completed",
+        exception=None,
+        cwd=None,
+        engine_session_uid=None,
+        defer_terminal=False,
     ):
         return status
 
@@ -267,7 +273,13 @@ async def test_run_agent_timeout_preserves_partial_output(monkeypatch, tmp_path)
         return None
 
     async def fake_teardown(
-        ctx, *, status="completed", exception=None, cwd=None, engine_session_uid=None
+        ctx,
+        *,
+        status="completed",
+        exception=None,
+        cwd=None,
+        engine_session_uid=None,
+        defer_terminal=False,
     ):
         return status
 
@@ -340,7 +352,13 @@ async def test_run_agent_timeout_empty_partial_returns_empty_string(monkeypatch,
         return None
 
     async def fake_teardown(
-        ctx, *, status="completed", exception=None, cwd=None, engine_session_uid=None
+        ctx,
+        *,
+        status="completed",
+        exception=None,
+        cwd=None,
+        engine_session_uid=None,
+        defer_terminal=False,
     ):
         return status
 
@@ -419,7 +437,13 @@ async def test_run_agent_heartbeat_started_when_timeout_set(monkeypatch, tmp_pat
         return None
 
     async def fake_teardown(
-        ctx, *, status="completed", exception=None, cwd=None, engine_session_uid=None
+        ctx,
+        *,
+        status="completed",
+        exception=None,
+        cwd=None,
+        engine_session_uid=None,
+        defer_terminal=False,
     ):
         return status
 
@@ -486,7 +510,13 @@ async def test_run_agent_no_heartbeat_when_timeout_none(monkeypatch, tmp_path):
         return None
 
     async def fake_teardown(
-        ctx, *, status="completed", exception=None, cwd=None, engine_session_uid=None
+        ctx,
+        *,
+        status="completed",
+        exception=None,
+        cwd=None,
+        engine_session_uid=None,
+        defer_terminal=False,
     ):
         return status
 

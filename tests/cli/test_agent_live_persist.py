@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 import threading
 from pathlib import Path
 from unittest import mock
@@ -587,6 +588,95 @@ async def test_failed_setup_releases_branch_claim(
 async def test_teardown_with_none_context_is_noop(temp_db_path: Path):
     """If setup returned None (failed), teardown(None) must be safe."""
     await _teardown_live_persist(None, status="completed")  # MUST NOT raise
+
+
+# ── defer_terminal: auto-resume must not stamp a premature terminal status ────
+
+
+async def test_teardown_defer_terminal_leaves_session_running(
+    temp_db_path: Path,
+):
+    """defer_terminal=True (an auto-resume leg is about to fire on this same
+    session) must skip the status write entirely, leaving the session at
+    'running' for the resumed leg to own the real terminal write."""
+    branch = Branch(name="b1")
+    ctx = await _setup_live_persist(branch)
+
+    result = await _teardown_live_persist(ctx, status="timed_out", defer_terminal=True)
+
+    assert result == "timed_out"
+    async with StateDB() as db:
+        s = await db.get_session(ctx["session_id"])
+    assert s["status"] == "running"
+    assert s["ended_at"] is None
+
+
+async def test_teardown_defer_terminal_still_detaches_hooks(
+    temp_db_path: Path,
+):
+    """Even when the status write is deferred, non-status bookkeeping (hook
+    unroute) still runs so a closed-DB handler cannot fire later."""
+    from lionagi.hooks.bus import HookPoint
+
+    branch = Branch(name="b1")
+    ctx = await _setup_live_persist(branch)
+    bus = branch._hooks
+
+    await _teardown_live_persist(ctx, status="timed_out", defer_terminal=True)
+
+    assert ctx["hook"] not in bus.handlers_for(HookPoint.MESSAGE_ADD)
+    assert branch._persist_via_bus not in branch.on_message_added
+
+
+async def test_teardown_non_resume_timeout_stamps_terminal_unchanged(
+    temp_db_path: Path,
+):
+    """defer_terminal defaults to False: a genuine (non-auto-resume) timeout
+    still stamps a terminal 'timed_out' status exactly as before this fix."""
+    branch = Branch(name="b1")
+    ctx = await _setup_live_persist(branch)
+
+    result = await _teardown_live_persist(ctx, status="timed_out")
+
+    assert result == "timed_out"
+    async with StateDB() as db:
+        s = await db.get_session(ctx["session_id"])
+    assert s["status"] == "timed_out"
+    assert s["ended_at"] is not None
+
+
+# ── ADR-0094 terminal-race: a second teardown must not crash past callers ─────
+
+
+async def test_teardown_terminal_race_returns_persisted_status_no_warning(
+    temp_db_path: Path,
+    caplog: pytest.LogCaptureFixture,
+):
+    """Two independent teardowns racing the same already-terminal session
+    (mirrors an auto-resumed leg's teardown landing after another writer
+    already finalized the row): the second write must not raise past
+    teardown_persist, must not log at warning level, and must return the
+    already-persisted terminal status rather than the one it attempted."""
+    branch = Branch(name="b1")
+    ctx1 = await _setup_live_persist(branch)
+    first = await _teardown_live_persist(ctx1, status="completed")
+    assert first == "completed"
+
+    # A second leg attaches to the SAME session/branch row (mirrors an
+    # auto-resume leg reusing the branch after the first leg's teardown).
+    ctx2 = await _setup_live_persist(branch)
+    assert ctx2 is not None
+    assert ctx2["session_id"] == ctx1["session_id"]
+
+    with caplog.at_level(logging.WARNING):
+        second = await _teardown_live_persist(ctx2, status="failed", exception=RuntimeError("boom"))
+
+    assert second == "completed"  # the persisted terminal status wins
+    assert not any(rec.levelno >= logging.WARNING for rec in caplog.records)
+
+    async with StateDB() as db:
+        s = await db.get_session(ctx1["session_id"])
+    assert s["status"] == "completed"
 
 
 # ── End-to-end: no aiosqlite thread leak across setup+teardown ────────────────

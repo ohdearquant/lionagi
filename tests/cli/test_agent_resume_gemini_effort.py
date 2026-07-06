@@ -172,7 +172,13 @@ async def test_fresh_run_unaffected_by_reapply_effort(monkeypatch, tmp_path):
         return None
 
     async def fake_teardown(
-        ctx, *, status="completed", exception=None, cwd=None, engine_session_uid=None
+        ctx,
+        *,
+        status="completed",
+        exception=None,
+        cwd=None,
+        engine_session_uid=None,
+        defer_terminal=False,
     ):
         return status
 

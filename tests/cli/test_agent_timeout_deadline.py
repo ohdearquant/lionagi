@@ -129,7 +129,13 @@ def _make_agent_mocks(monkeypatch, tmp_path, captured_instruction):
         return None
 
     async def fake_teardown(
-        ctx, *, status="completed", exception=None, cwd=None, engine_session_uid=None
+        ctx,
+        *,
+        status="completed",
+        exception=None,
+        cwd=None,
+        engine_session_uid=None,
+        defer_terminal=False,
     ):
         return status
 

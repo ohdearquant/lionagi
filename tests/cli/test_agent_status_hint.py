@@ -54,7 +54,13 @@ def _wire_agent_stubs(monkeypatch, tmp_path, *, session_id: str | None):
         return {"session_id": session_id} if session_id else None
 
     async def fake_teardown(
-        ctx, *, status="completed", exception=None, cwd=None, engine_session_uid=None
+        ctx,
+        *,
+        status="completed",
+        exception=None,
+        cwd=None,
+        engine_session_uid=None,
+        defer_terminal=False,
     ):
         return status
 

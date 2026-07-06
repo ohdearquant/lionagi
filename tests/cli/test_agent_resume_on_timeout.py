@@ -110,7 +110,13 @@ def _wire_agent_stubs(
         return {"session_id": _sids[n]}
 
     async def fake_teardown(
-        ctx, *, status="completed", exception=None, cwd=None, engine_session_uid=None
+        ctx,
+        *,
+        status="completed",
+        exception=None,
+        cwd=None,
+        engine_session_uid=None,
+        defer_terminal=False,
     ):
         return status
 
@@ -332,7 +338,13 @@ def _wire_agent_stubs_real_chat_model(
         return {"session_id": _sids[n]}
 
     async def fake_teardown(
-        ctx, *, status="completed", exception=None, cwd=None, engine_session_uid=None
+        ctx,
+        *,
+        status="completed",
+        exception=None,
+        cwd=None,
+        engine_session_uid=None,
+        defer_terminal=False,
     ):
         return status
 
@@ -431,3 +443,161 @@ async def test_profile_resume_on_timeout_opts_in(monkeypatch, tmp_path):
 
     assert call_count["n"] == 2
     assert status == "completed"
+
+
+# ---------------------------------------------------------------------------
+# Real-persistence regression: the ADR-0094 terminal-guard race between an
+# auto-resume leg's premature terminal stamp and the resumed leg's own
+# teardown. Unlike _wire_agent_stubs (which stubs teardown_agent_persist
+# entirely), these tests leave setup_agent_persist/teardown_agent_persist
+# wired to the real StateDB-backed implementation, so a wiring regression in
+# the defer_terminal plumbing shows up as a real TransitionRejectedError.
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture
+def temp_db_path(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+    db_path = tmp_path / "state.db"
+    monkeypatch.setattr("lionagi.state.db.DEFAULT_DB_PATH", db_path)
+    return db_path
+
+
+def _wire_agent_stubs_real_persist(
+    monkeypatch,
+    tmp_path: Path,
+    *,
+    operate_side_effect,
+):
+    """Like _wire_agent_stubs_real_chat_model, but setup_agent_persist /
+    teardown_agent_persist are left untouched (the real StateDB-backed
+    implementation), so the auto-resume terminal-status race is exercised
+    for real instead of through a stub that echoes status unconditionally."""
+    import lionagi.cli.agent as agent_mod
+    from lionagi import Branch, iModel
+    from lionagi.service.manager import iModelManager
+
+    call_count = {"n": 0}
+
+    async def fake_operate(self, instruction=None, **kw):
+        idx = call_count["n"]
+        call_count["n"] += 1
+        snapshot_dir = kw.get("snapshot_dir")
+        if snapshot_dir is not None:
+            Path(snapshot_dir).mkdir(parents=True, exist_ok=True)
+            (Path(snapshot_dir) / f"{self.id}.json").write_text(json.dumps(self.to_dict()))
+        return operate_side_effect(idx)
+
+    monkeypatch.setattr(Branch, "operate", fake_operate)
+    monkeypatch.setattr(iModelManager, "shutdown", AsyncMock())
+    monkeypatch.setattr(agent_mod, "resolve_persisted_effort", lambda *a, **kw: None)
+    monkeypatch.setattr(
+        agent_mod,
+        "build_chat_model",
+        lambda provider, model, *a, **kw: iModel(provider=provider, model=model, api_key="dummy"),
+    )
+    monkeypatch.setattr(agent_mod, "save_last_branch_pointer", lambda *a, **kw: None)
+    monkeypatch.setattr(
+        agent_mod,
+        "_provenance",
+        SimpleNamespace(
+            resolve_model_spec=lambda p, m: f"{p}/{m}",
+            agent_definition_hash=lambda n: "abc",
+        ),
+    )
+    monkeypatch.setattr(agent_mod, "resolve_artifact_contract", lambda **_: None)
+    monkeypatch.setattr(
+        agent_mod,
+        "allocate_run",
+        lambda: SimpleNamespace(
+            run_id="r",
+            artifact_root=tmp_path / "artifacts",
+            stream_dir=tmp_path / "stream",
+            branches_dir=tmp_path / "branches",
+        ),
+    )
+
+    def fake_find_branch(bid):
+        snapshot_path = tmp_path / "branches" / f"{bid}.json"
+        return "run-x", snapshot_path
+
+    monkeypatch.setattr(agent_mod, "find_branch", fake_find_branch)
+    return call_count
+
+
+@pytest.mark.asyncio
+async def test_auto_resume_real_teardown_no_terminal_guard_rejection(
+    monkeypatch, tmp_path, temp_db_path, caplog
+):
+    """Regression: leg-1 times out (resume_on_timeout=True), leg-2 concludes
+    with a durable response. Exercises the REAL teardown/StateDB path
+    end-to-end: without the defer_terminal fix, leg-1's teardown stamps the
+    session terminal ('timed_out') before the auto-resume decision, and
+    leg-2's own teardown then hits the ADR-0094 guard, losing the durable
+    'concluded' response behind a TransitionRejectedError logged at warning
+    level."""
+
+    def side_effect(i):
+        if i == 0:
+            raise TimeoutError("first leg timed out")
+        return "concluded"
+
+    call_count = _wire_agent_stubs_real_persist(
+        monkeypatch, tmp_path, operate_side_effect=side_effect
+    )
+
+    from lionagi.cli.agent import _run_agent
+    from lionagi.state.db import StateDB
+
+    with caplog.at_level(logging.WARNING):
+        result, _provider, _bid, status, session_id = await _run_agent(
+            "claude_code/sonnet",
+            "hello",
+            timeout=30,
+            resume_on_timeout=True,
+        )
+
+    assert call_count["n"] == 2
+    assert status == "completed"
+    assert result == "concluded"
+    assert not any(
+        "TransitionRejectedError" in rec.message or "teardown failed" in rec.message
+        for rec in caplog.records
+    )
+
+    async with StateDB() as db:
+        s = await db.get_session(session_id)
+    assert s is not None
+    assert s["status"] == "completed"
+    assert s["ended_at"] is not None
+
+
+@pytest.mark.asyncio
+async def test_no_auto_resume_opt_in_real_teardown_stamps_timed_out(
+    monkeypatch, tmp_path, temp_db_path
+):
+    """resume_on_timeout=False (default): defer_terminal must NOT fire, and
+    the real teardown stamps a genuine 'timed_out' terminal status exactly
+    as before this fix."""
+
+    def side_effect(i):
+        raise TimeoutError("boom")
+
+    call_count = _wire_agent_stubs_real_persist(
+        monkeypatch, tmp_path, operate_side_effect=side_effect
+    )
+
+    from lionagi.cli.agent import _run_agent
+    from lionagi.state.db import StateDB
+
+    _result, _provider, _bid, status, session_id = await _run_agent(
+        "claude_code/sonnet", "hello", timeout=30
+    )
+
+    assert call_count["n"] == 1
+    assert status == "timed_out"
+
+    async with StateDB() as db:
+        s = await db.get_session(session_id)
+    assert s is not None
+    assert s["status"] == "timed_out"
+    assert s["ended_at"] is not None

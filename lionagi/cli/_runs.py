@@ -343,12 +343,23 @@ async def _teardown_common(
     escalated_evidence: list[dict] | None = None,
     cwd: str | None = None,
     engine_session_uid: str | None = None,
+    defer_terminal: bool = False,
 ) -> str:
     from lionagi.state.artifact_verifier import (
         missing_artifact_evidence,
         missing_artifact_summary,
         verify_artifact_contract,
     )
+
+    if defer_terminal:
+        # A recursive auto-resume leg is about to run on this same session
+        # (see _run_agent's finally block) and will own the real terminal
+        # write. Stamping ended_at/status here would leave the session
+        # terminal while the resumed leg is still working, so the resumed
+        # leg's own teardown hits the ADR-0094 terminal guard. Skip every
+        # DB mutation and let the caller's non-status bookkeeping (hook
+        # unroute, usage emit, observer detach) run as usual.
+        return status
 
     all_msgs = await db.get_progression(session_prog_id)
     update_kwargs: dict[str, Any] = {"ended_at": time.time()}
@@ -516,17 +527,32 @@ async def _teardown_common(
         )
         final_evidence_refs = escalated_evidence
 
-    await db.update_status(
-        "session",
-        session_id,
-        new_status=final_status,
-        reason_code=final_reason_code,
-        reason_summary=final_reason_summary,
-        evidence_refs=final_evidence_refs,
-        source="executor",
-        actor=session_id,
-        metadata=metadata,
-    )
+    from lionagi.state.db import TransitionRejectedError
+
+    try:
+        await db.update_status(
+            "session",
+            session_id,
+            new_status=final_status,
+            reason_code=final_reason_code,
+            reason_summary=final_reason_summary,
+            evidence_refs=final_evidence_refs,
+            source="executor",
+            actor=session_id,
+            metadata=metadata,
+        )
+    except TransitionRejectedError:
+        # Another writer (a concurrent teardown, or a resumed leg that raced
+        # this one) already moved the session to a terminal status between
+        # our read above and this write. That row is authoritative — read it
+        # back instead of raising past callers as an uncaught traceback.
+        persisted = await db.get_session(session_id) or {}
+        final_status = persisted.get("status", final_status)
+        _log.debug(
+            "session %s already terminal (%s); skipped duplicate status write",
+            session_id,
+            final_status,
+        )
     return final_status
 
 
@@ -573,6 +599,7 @@ async def teardown_persist(
     escalated_evidence: list[dict] | None = None,
     cwd: str | None = None,
     engine_session_uid: str | None = None,
+    defer_terminal: bool = False,
 ) -> str:
     if ctx is None:
         return status
@@ -592,6 +619,7 @@ async def teardown_persist(
             escalated_evidence=escalated_evidence,
             cwd=cwd,
             engine_session_uid=engine_session_uid,
+            defer_terminal=defer_terminal,
         )
 
         from lionagi.hooks import unroute_message_persistence
@@ -604,7 +632,15 @@ async def teardown_persist(
             unroute_message_persistence(branch, h)
 
         session_obj = ctx.get("session")
-        if session_obj is not None:
+        # persist_session_end's own fallback branch (row not yet terminal)
+        # writes status straight through update_session() -- a plain column
+        # SET with no ADR-0094 guard. Emitting SESSION_END here would let that
+        # fallback re-introduce the exact premature terminal stamp
+        # defer_terminal just skipped, through a side door _teardown_common
+        # never touches. The resumed leg's own (non-deferred) teardown emits
+        # SESSION_END once for the whole session, carrying the cumulative
+        # branch usage for both legs, so nothing is lost by skipping it here.
+        if session_obj is not None and not defer_terminal:
             err_str = str(exception) if exception is not None else None
             _usage: dict = {}
             _branch = ctx.get("branch")
