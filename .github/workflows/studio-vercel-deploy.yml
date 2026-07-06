@@ -1,0 +1,85 @@
+name: Deploy Lion Studio (Vercel)
+
+# Redeploys the Lion Studio frontend (apps/studio/frontend) to Vercel production
+# when a version is released AND the studio changed since the previous release.
+# Kept separate from release.yml so it never touches the PyPI/Docker publish jobs.
+# Also fireable on demand from the Actions tab (workflow_dispatch), which deploys
+# unconditionally — the manual escape hatch for an out-of-band studio deploy.
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: studio-vercel-deploy
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0 # tags + full history needed to diff the studio across releases
+
+      - name: Decide whether to deploy
+        id: decide
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            echo "Manual dispatch — deploying Lion Studio unconditionally."
+            echo "deploy=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          current="${GITHUB_REF_NAME}"
+          previous="$(git tag --sort=-v:refname | grep -v "^${current}$" | head -n1 || true)"
+          if [ -z "$previous" ]; then
+            echo "No previous release tag — deploying Lion Studio (first release-time deploy)."
+            echo "deploy=true" >> "$GITHUB_OUTPUT"
+          elif git diff --quiet "$previous" "$current" -- apps/studio/frontend; then
+            echo "Lion Studio unchanged between $previous and $current — nothing to deploy."
+            echo "deploy=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "Lion Studio changed between $previous and $current — deploying to Vercel."
+            echo "deploy=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Check Vercel credentials
+        id: creds
+        if: steps.decide.outputs.deploy == 'true'
+        env:
+          VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
+        run: |
+          if [ -z "$VERCEL_TOKEN" ]; then
+            echo "::warning::VERCEL_TOKEN is not set — skipping the Lion Studio Vercel deploy. Provision VERCEL_TOKEN, VERCEL_ORG_ID and VERCEL_PROJECT_ID as repository secrets to enable it."
+            echo "ready=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "ready=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Set up Node
+        if: steps.creds.outputs.ready == 'true'
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Deploy to Vercel (production)
+        if: steps.creds.outputs.ready == 'true'
+        working-directory: apps/studio/frontend
+        env:
+          VERCEL_ORG_ID: ${{ secrets.VERCEL_ORG_ID }}
+          VERCEL_PROJECT_ID: ${{ secrets.VERCEL_PROJECT_ID }}
+          VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
+        run: |
+          npm install --global vercel@latest
+          vercel pull --yes --environment=production --token="$VERCEL_TOKEN"
+          vercel build --prod --token="$VERCEL_TOKEN"
+          url="$(vercel deploy --prebuilt --prod --token="$VERCEL_TOKEN")"
+          echo "Deployed Lion Studio: $url"
+          {
+            echo "### Lion Studio deployed to Vercel :rocket:"
+            echo "$url"
+          } >> "$GITHUB_STEP_SUMMARY"
