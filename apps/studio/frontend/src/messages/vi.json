@@ -190,7 +190,8 @@
       "queued": "đang chờ",
       "timed_out": "hết thời gian",
       "aborted": "đã dừng",
-      "skipped": "đã bỏ qua"
+      "skipped": "đã bỏ qua",
+      "orphaned": "mồ côi"
     },
     "table": {
       "name": "tên",
@@ -337,24 +338,12 @@
   "schedules": {
     "title": "lịch chạy",
     "subtitle": "tự động hóa cố định trên cron, interval và trigger GitHub",
-    "board": "bảng",
     "calendar": "lịch",
     "newSchedule": "lịch chạy mới",
     "loadError": "không tải được lịch chạy.",
     "emptyTitle": "chưa có lịch chạy",
     "emptyBody": "tự động hóa lần chạy engine và tác nhân bằng cron, interval cố định hoặc sự kiện GitHub.",
     "emptyCta": "tạo lịch chạy đầu tiên",
-    "lanes": {
-      "upcoming": "sắp tới",
-      "today": "hôm nay",
-      "running": "đang chạy",
-      "done": "xong",
-      "paused": "tạm dừng",
-      "emptyUpcoming": "không có gì trong hàng đợi",
-      "emptyToday": "hôm nay không có lịch đến hạn",
-      "emptyRunning": "nhàn rỗi",
-      "emptyDone": "chưa có lần chạy"
-    },
     "card": {
       "enable": "bật lịch chạy",
       "disable": "tắt lịch chạy",
@@ -367,7 +356,9 @@
       "overdue": "trễ {delta}",
       "watching": "kích hoạt khi có sự kiện mới",
       "last": "gần nhất",
-      "never": "chưa từng chạy"
+      "never": "chưa từng chạy",
+      "paused": "Đã tạm dừng",
+      "notScheduled": "Chưa lên lịch"
     },
     "run": {
       "elapsed": "đã qua {delta}",
@@ -498,14 +489,49 @@
       "overlapSkip": "bỏ qua",
       "overlapQueue": "xếp hàng",
       "overlapKillOld": "hủy lần chạy cũ",
-      "sideRecentRuns": "lần chạy gần đây",
       "noRuns": "chưa có lần chạy",
       "ago": " trước",
       "cancel": "hủy",
       "save": "lưu thay đổi",
       "saving": "đang lưu…",
       "saveFailed": "lưu thất bại.",
-      "invalidJson": "JSON không hợp lệ trong {field}"
+      "invalidJson": "JSON không hợp lệ trong {field}",
+      "sectionHistory": "lịch sử"
+    },
+    "viewCards": "Thẻ",
+    "viewTable": "bảng",
+    "table": {
+      "colName": "tên",
+      "colTrigger": "kích hoạt",
+      "colEnabled": "bật",
+      "colLastRun": "lần chạy gần nhất",
+      "colNextFire": "lần chạy tiếp theo",
+      "colActions": "hành động",
+      "neverRun": "chưa từng chạy",
+      "notScheduled": "—",
+      "editAction": "sửa"
+    },
+    "trigger": {
+      "everyMinute": "mỗi phút",
+      "everyMinutes": "mỗi {n} phút",
+      "daily": "hàng ngày {time} UTC",
+      "weekly": "hàng tuần {day} {time} UTC",
+      "hourlyAt": "mỗi giờ vào phút :{minute}",
+      "onEvent": "khi {event}",
+      "eventPrMerged": "PR đã gộp",
+      "eventPrOpened": "PR đã mở",
+      "eventPrUpdated": "PR cập nhật",
+      "eventPrClosed": "PR đã đóng"
+    },
+    "error": {
+      "spawnFailed": "khởi chạy tác nhân thất bại",
+      "network": "lỗi mạng",
+      "timeout": "hết thời gian",
+      "permission": "từ chối quyền truy cập",
+      "missingDependency": "thiếu phụ thuộc",
+      "notFound": "không tìm thấy tệp",
+      "showDetails": "hiện lỗi đầy đủ",
+      "hideDetails": "ẩn lỗi đầy đủ"
     }
   },
   "fleet": {
@@ -593,8 +619,7 @@
         "failed": "lỗi hạ tầng",
         "stale": "cũ · không có hoạt động",
         "stuck": "kẹt · không tiến triển",
-        "gated": "đang chờ phê duyệt",
-        "orphaned": "mồ côi · daemon khởi động lại"
+        "gated": "đang chờ phê duyệt"
       },
       "more": "{count, plural, other {+# nữa — xem tất cả trong lịch sử →}}",
       "digestLatest": "mới nhất: {name} · {age} trước",
@@ -789,7 +814,7 @@
     "filterTools": "công cụ",
     "filterUser": "người dùng",
     "filterSystem": "hệ thống",
-    "outcome": "kết quả",
+    "latestMessage": "Tin nhắn mới nhất",
     "viewFullConversation": "xem toàn bộ hội thoại →",
     "noFinalResponse": "chưa ghi nhận phản hồi cuối.",
     "statToolCalls": "lệnh gọi công cụ",

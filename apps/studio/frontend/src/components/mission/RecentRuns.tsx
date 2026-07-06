@@ -13,9 +13,10 @@ import { useState } from "react";
 import { Link } from "@tanstack/react-router";
 import { useTranslations } from "use-intl";
 import SectionLabel from "@/components/ui/SectionLabel";
-import StatusPill from "@/components/ui/StatusPill";
+import StatusVerdictChips from "@/components/ui/StatusVerdictChips";
 import Duration from "@/components/ui/Duration";
 import Skeleton from "@/components/ui/Skeleton";
+import { deriveDisplayStatus } from "@/lib/runStatus";
 import type { RunSummary } from "@/lib/types";
 import { groupConsecutiveRecentRuns, groupSpanSec } from "./recentGroups";
 import type { RecentGroup } from "./recentGroups";
@@ -77,6 +78,7 @@ const KNOWN_STATUSES = new Set([
   "queued",
   "timed_out",
   "aborted",
+  "orphaned",
 ]);
 
 export default function RecentRuns({ runs, nowSec }: Props) {
@@ -149,16 +151,12 @@ function RunRow({
   run,
   nowSec,
   first,
-  orphaned,
   statusLabel,
-  t,
 }: {
   run: RunSummary;
   nowSec: number;
   first: boolean;
-  orphaned: boolean;
   statusLabel: (status: string) => string | undefined;
-  t: ReturnType<typeof useTranslations>;
 }) {
   const name = run.playbook_name ?? run.agent_name ?? run.run_id.slice(-12);
   const dur = durationSec(run, nowSec);
@@ -169,16 +167,7 @@ function RunRow({
       className="flex items-center gap-3 bg-surface-raised px-3 py-1.5 transition-colors duration-100 hover:bg-surface-overlay"
       style={{ borderTop: first ? undefined : "1px solid var(--edge-hairline)" }}
     >
-      {orphaned ? (
-        <StatusPill
-          value={run.status}
-          kind="lifecycle"
-          tone="neutral"
-          label={t("attention.reason.orphaned")}
-        />
-      ) : (
-        <StatusPill value={run.status} kind="lifecycle" label={statusLabel(run.status)} />
-      )}
+      <StatusVerdictChips run={run} statusLabel={statusLabel(deriveDisplayStatus(run))} />
       <span className="min-w-0 flex-1 truncate font-data text-[length:var(--t-sm)] text-content-secondary">
         {name}
       </span>
@@ -207,20 +196,15 @@ function RecentGroupRows({
   t: ReturnType<typeof useTranslations>;
 }) {
   if (group.runs.length === 1) {
-    return (
-      <RunRow
-        run={group.runs[0]}
-        nowSec={nowSec}
-        first={first}
-        orphaned={group.orphaned}
-        statusLabel={statusLabel}
-        t={t}
-      />
-    );
+    return <RunRow run={group.runs[0]} nowSec={nowSec} first={first} statusLabel={statusLabel} />;
   }
 
+  // Every run in a group shares one derived display status, so the newest run
+  // stands in for the whole group's chip — orphaned handling lives in
+  // deriveDisplayStatus, not a per-row branch.
+  const lead = group.runs[0];
   const span = formatSpan(groupSpanSec(group));
-  const label = statusLabel(group.status) ?? group.status;
+  const label = statusLabel(deriveDisplayStatus(lead)) ?? group.status;
 
   return (
     <div>
@@ -231,16 +215,7 @@ function RecentGroupRows({
         className="flex w-full items-center gap-3 bg-surface-raised px-3 py-1.5 text-left transition-colors duration-100 hover:bg-surface-overlay"
         style={{ borderTop: first ? undefined : "1px solid var(--edge-hairline)" }}
       >
-        {group.orphaned ? (
-          <StatusPill
-            value={group.status}
-            kind="lifecycle"
-            tone="neutral"
-            label={t("attention.reason.orphaned")}
-          />
-        ) : (
-          <StatusPill value={group.status} kind="lifecycle" label={statusLabel(group.status)} />
-        )}
+        <StatusVerdictChips run={lead} statusLabel={label} />
         <span className="min-w-0 flex-1 truncate font-data text-[length:var(--t-sm)] text-content-secondary">
           {t("recent.repeatedGroup", {
             name: group.name,
@@ -260,9 +235,7 @@ function RecentGroupRows({
             run={run}
             nowSec={nowSec}
             first={false}
-            orphaned={group.orphaned}
             statusLabel={statusLabel}
-            t={t}
           />
         ))}
     </div>

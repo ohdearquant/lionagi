@@ -11,7 +11,7 @@
  */
 
 import type { RunSummary } from "@/lib/types";
-import { ORPHANED_REASON_SUMMARY } from "./boardReducer";
+import { isOrphanedReason } from "@/lib/runStatus";
 
 export interface RecentGroup {
   /** Stable key for React lists — the newest run's id. */
@@ -30,9 +30,7 @@ function runName(run: RunSummary): string {
 }
 
 function isOrphaned(run: RunSummary): boolean {
-  return (
-    run.status.toLowerCase() === "failed" && run.status_reason_summary === ORPHANED_REASON_SUMMARY
-  );
+  return isOrphanedReason(run);
 }
 
 /**

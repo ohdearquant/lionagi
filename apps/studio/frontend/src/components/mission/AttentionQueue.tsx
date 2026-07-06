@@ -2,10 +2,11 @@
  * Attention digest — compact section of Mission Control.
  *
  * Actionable items (gated, stuck) get individual rows with one-click open.
- * Informational items (failed, stale, orphaned) collapse into one digest
- * row per reason — count + latest + link into History — never a wall of
- * red. Orphaned (daemon-restart housekeeping) is gray/neutral, never red,
- * and excluded from the "need attention" headline count.
+ * Informational items (failed, stale) collapse into one digest row per
+ * reason — count + latest + link into History — never a wall of red.
+ * Orphaned (daemon-restart housekeeping) runs never reach the attention
+ * list at all — they surface only in the Recent history strip as a neutral
+ * chip, so nothing here is pure housekeeping noise.
  */
 
 import type { CSSProperties, ReactNode } from "react";
@@ -14,7 +15,7 @@ import { useTranslations } from "use-intl";
 import SectionLabel from "@/components/ui/SectionLabel";
 import Chip from "@/components/ui/Chip";
 import Skeleton from "@/components/ui/Skeleton";
-import { attentionNeedsHumanCount, type AttentionItem, type AttentionReason } from "./boardReducer";
+import { type AttentionItem, type AttentionReason } from "./boardReducer";
 import { runDeepLink, invocationDeepLink, scheduleDeepLink } from "@/lib/runDeepLink";
 
 /** Placeholder row count while the first fetch is in flight. */
@@ -63,8 +64,6 @@ const REASON_COLOR: Record<AttentionReason, string> = {
   stale: "var(--status-pending)",
   stuck: "var(--status-pending)",
   gated: "var(--accent)",
-  // Housekeeping, never red: a daemon-restart sweep is not a work failure.
-  orphaned: "var(--content-muted)",
 };
 
 function elapsedLabel(startedAt: number | null, nowSec: number): string {
@@ -84,10 +83,11 @@ export default function AttentionQueue({ items, nowSec }: Props) {
   const t = useTranslations("mission");
 
   const actionable = items.filter((i) => ACTIONABLE_REASONS.has(i.reason));
-  // Informational digests, one row per cause — orphaned (daemon-restart
-  // sweeps) is its own gray/neutral bucket so it never pads the red count.
+  // Informational digests, one row per cause. Orphaned runs are excluded
+  // upstream (they never enter the attention list), so every row here is a
+  // real failure or a stalled run — nothing pure-housekeeping.
   const digests: { reason: AttentionReason; group: AttentionItem[] }[] = (
-    ["failed", "stale", "orphaned"] as const
+    ["failed", "stale"] as const
   )
     .map((reason) => ({ reason, group: items.filter((i) => i.reason === reason) }))
     .filter((d) => d.group.length > 0);
@@ -104,7 +104,7 @@ export default function AttentionQueue({ items, nowSec }: Props) {
                 color: "var(--accent)",
               }}
             >
-              {attentionNeedsHumanCount(items)}
+              {items.length}
             </span>
           }
         >

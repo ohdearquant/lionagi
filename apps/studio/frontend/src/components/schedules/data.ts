@@ -1,12 +1,24 @@
 /**
- * Schedules space data layer — fetch + polling + lane derivation + time math.
- * Lane membership is derived from real fields only: next_fire_at places a
- * schedule in Today or Upcoming, run status places runs in Running or Done.
- * No firing projections are invented — only the scheduler's own next_fire_at.
+ * Schedules space data layer — fetch + polling + time math. One row per
+ * schedule; run history lives on the schedule detail page, not here.
  */
 import { useCallback, useEffect, useRef, useState } from "react";
 import { listScheduleRuns, listSchedules } from "@/lib/api";
 import type { ScheduleRunSummary, ScheduleSummary } from "@/lib/types";
+
+// Statuses with a history.status translation; unknown values fall back to
+// StatusPill's built-in humanization.
+export const KNOWN_RUN_STATUSES = new Set([
+  "running",
+  "completed",
+  "failed",
+  "cancelled",
+  "pending",
+  "queued",
+  "timed_out",
+  "aborted",
+  "skipped",
+]);
 
 /** Epoch values arrive in seconds or ms depending on producer — normalize to ms. */
 export function toMs(value: number): number {
@@ -123,53 +135,52 @@ export function useSchedulesData(): SchedulesData {
   return { schedules, runs, nowMs, loading, error, refresh: () => void load() };
 }
 
-// ─── Lane derivation ──────────────────────────────────────────────────────────
+// ─── Next-fire derivation ─────────────────────────────────────────────────────
+// A disabled schedule never fires, so its stored next_fire_at is stale and must
+// never be shown as an upcoming (or overdue) firing. Enabled state is checked
+// FIRST here — every surface that shows "next fire" derives it through this so
+// they can't disagree.
 
-export interface Lanes {
-  today: ScheduleSummary[];
-  upcoming: ScheduleSummary[];
-  paused: ScheduleSummary[];
-  running: RunRow[];
-  done: RunRow[];
+const SOON_MS = 3_600_000; // within the hour
+
+export type NextFireState =
+  | { kind: "paused" }
+  | { kind: "watching" }
+  | { kind: "unscheduled" }
+  | { kind: "fire"; fireMs: number; deltaMs: number; overdue: boolean; soon: boolean };
+
+export function nextFireState(s: ScheduleSummary, nowMs: number): NextFireState {
+  if (!s.enabled) return { kind: "paused" };
+  if (s.trigger_type === "github_poll") return { kind: "watching" };
+  if (s.next_fire_at == null) return { kind: "unscheduled" };
+  const fireMs = toMs(s.next_fire_at);
+  const deltaMs = fireMs - nowMs;
+  return {
+    kind: "fire",
+    fireMs,
+    deltaMs,
+    overdue: deltaMs < 0,
+    soon: deltaMs >= 0 && deltaMs < SOON_MS,
+  };
 }
 
-const DONE_LANE_LIMIT = 15;
-
-export function deriveLanes(schedules: ScheduleSummary[], runs: RunRow[], nowMs: number): Lanes {
-  const endOfToday = new Date(nowMs);
-  endOfToday.setHours(23, 59, 59, 999);
-  const eodMs = endOfToday.getTime();
-
-  const today: ScheduleSummary[] = [];
-  const upcoming: ScheduleSummary[] = [];
-  const paused: ScheduleSummary[] = [];
-  for (const s of schedules) {
-    if (!s.enabled) {
-      paused.push(s);
-    } else if (s.next_fire_at != null && toMs(s.next_fire_at) <= eodMs) {
-      today.push(s);
-    } else {
-      upcoming.push(s);
-    }
-  }
-  const byNextFire = (a: ScheduleSummary, b: ScheduleSummary) =>
-    (a.next_fire_at ?? Infinity) - (b.next_fire_at ?? Infinity);
-  today.sort(byNextFire);
-  upcoming.sort(byNextFire);
-  paused.sort((a, b) => a.name.localeCompare(b.name));
-
-  const running = runs
-    .filter((r) => r.status === "running")
-    .sort((a, b) => b.fired_at - a.fired_at);
-  const done = runs
-    .filter((r) => r.status !== "running")
-    .sort((a, b) => (b.ended_at ?? b.fired_at) - (a.ended_at ?? a.fired_at))
-    .slice(0, DONE_LANE_LIMIT);
-
-  return { today, upcoming, paused, running, done };
+/**
+ * Card ordering: live schedules first (soonest firing at the top), paused ones
+ * sink to the bottom — the reverse of showing a disabled schedule as "overdue".
+ */
+export function sortSchedulesForCards(schedules: ScheduleSummary[]): ScheduleSummary[] {
+  return [...schedules].sort((a, b) => {
+    const ea = a.enabled ? 0 : 1;
+    const eb = b.enabled ? 0 : 1;
+    if (ea !== eb) return ea - eb;
+    if (a.next_fire_at == null && b.next_fire_at == null) return a.name.localeCompare(b.name);
+    if (a.next_fire_at == null) return 1;
+    if (b.next_fire_at == null) return -1;
+    return a.next_fire_at - b.next_fire_at;
+  });
 }
 
-/** Most recent run per schedule, for the "last fired" footer on cards. */
+/** Most recent run per schedule, for the table's "last run" column. */
 export function latestRunBySchedule(runs: RunRow[]): Map<string, RunRow> {
   const map = new Map<string, RunRow>();
   for (const r of runs) {

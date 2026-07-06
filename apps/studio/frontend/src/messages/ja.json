@@ -190,7 +190,8 @@
       "queued": "キュー中",
       "timed_out": "タイムアウト",
       "aborted": "中止",
-      "skipped": "スキップ"
+      "skipped": "スキップ",
+      "orphaned": "孤立"
     },
     "table": {
       "name": "名前",
@@ -337,24 +338,12 @@
   "schedules": {
     "title": "スケジュール",
     "subtitle": "cron、インターバル、GitHubトリガーの常設オートメーション",
-    "board": "ボード",
     "calendar": "カレンダー",
     "newSchedule": "新規スケジュール",
     "loadError": "スケジュールの読み込みに失敗しました。",
     "emptyTitle": "スケジュールはまだありません",
     "emptyBody": "cron、固定間隔、GitHubイベントでエンジンとエージェントの実行を自動化します。",
     "emptyCta": "最初のスケジュールを作成",
-    "lanes": {
-      "upcoming": "予定",
-      "today": "今日",
-      "running": "実行中",
-      "done": "完了",
-      "paused": "一時停止",
-      "emptyUpcoming": "キューはありません",
-      "emptyToday": "今日の予定はありません",
-      "emptyRunning": "アイドル",
-      "emptyDone": "実行はまだありません"
-    },
     "card": {
       "enable": "スケジュールを有効化",
       "disable": "スケジュールを無効化",
@@ -367,7 +356,9 @@
       "overdue": "{delta}遅延",
       "watching": "新しいイベントでトリガー",
       "last": "前回",
-      "never": "未実行"
+      "never": "未実行",
+      "paused": "一時停止中",
+      "notScheduled": "未スケジュール"
     },
     "run": {
       "elapsed": "{delta}経過",
@@ -498,14 +489,49 @@
       "overlapSkip": "スキップ",
       "overlapQueue": "キュー",
       "overlapKillOld": "古い実行を終了",
-      "sideRecentRuns": "最近の実行",
       "noRuns": "実行はまだありません",
       "ago": "前",
       "cancel": "キャンセル",
       "save": "変更を保存",
       "saving": "保存中…",
       "saveFailed": "保存に失敗しました。",
-      "invalidJson": "{field}のJSONが無効です"
+      "invalidJson": "{field}のJSONが無効です",
+      "sectionHistory": "履歴"
+    },
+    "viewCards": "カード",
+    "viewTable": "テーブル",
+    "table": {
+      "colName": "名前",
+      "colTrigger": "トリガー",
+      "colEnabled": "有効",
+      "colLastRun": "前回の実行",
+      "colNextFire": "次回の実行",
+      "colActions": "操作",
+      "neverRun": "未実行",
+      "notScheduled": "—",
+      "editAction": "編集"
+    },
+    "trigger": {
+      "everyMinute": "毎分",
+      "everyMinutes": "{n}分ごと",
+      "daily": "毎日 {time} UTC",
+      "weekly": "毎週{day} {time} UTC",
+      "hourlyAt": "毎時 :{minute}",
+      "onEvent": "{event}時",
+      "eventPrMerged": "PRマージ",
+      "eventPrOpened": "PRオープン",
+      "eventPrUpdated": "PR更新",
+      "eventPrClosed": "PRクローズ"
+    },
+    "error": {
+      "spawnFailed": "エージェントの起動に失敗",
+      "network": "ネットワークエラー",
+      "timeout": "タイムアウト",
+      "permission": "権限がありません",
+      "missingDependency": "依存関係が不足",
+      "notFound": "ファイルが見つかりません",
+      "showDetails": "エラー全文を表示",
+      "hideDetails": "エラー全文を隠す"
     }
   },
   "fleet": {
@@ -593,8 +619,7 @@
         "failed": "インフラ障害",
         "stale": "古い状態 · アクティビティなし",
         "stuck": "停止中 · 進捗なし",
-        "gated": "承認待ち",
-        "orphaned": "孤立 · デーモン再起動"
+        "gated": "承認待ち"
       },
       "more": "+{count, plural, other {# 件 — 履歴ですべて表示 →}}",
       "digestLatest": "最新: {name} · {age}前",
@@ -789,7 +814,7 @@
     "filterTools": "ツール",
     "filterUser": "ユーザー",
     "filterSystem": "システム",
-    "outcome": "結果",
+    "latestMessage": "最新メッセージ",
     "viewFullConversation": "会話全体を表示 →",
     "noFinalResponse": "最終応答は記録されていません。",
     "statToolCalls": "ツール呼び出し",

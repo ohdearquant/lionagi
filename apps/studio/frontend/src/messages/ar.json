@@ -190,7 +190,8 @@
       "queued": "في قائمة الانتظار",
       "timed_out": "انتهت مهلته",
       "aborted": "تم إيقافه",
-      "skipped": "تم تخطيه"
+      "skipped": "تم تخطيه",
+      "orphaned": "يتيم"
     },
     "table": {
       "name": "الاسم",
@@ -337,24 +338,12 @@
   "schedules": {
     "title": "الجداول",
     "subtitle": "أتمتات دائمة عبر cron أو الفواصل الزمنية أو مشغّلات GitHub",
-    "board": "اللوحة",
     "calendar": "التقويم",
     "newSchedule": "جدول جديد",
     "loadError": "فشل تحميل الجداول.",
     "emptyTitle": "لا توجد جداول بعد",
     "emptyBody": "أتمت تشغيلات المحركات والوكلاء عبر cron أو فاصل ثابت أو أحداث GitHub.",
     "emptyCta": "إنشاء أول جدول",
-    "lanes": {
-      "upcoming": "القادمة",
-      "today": "اليوم",
-      "running": "قيد التشغيل",
-      "done": "تم",
-      "paused": "متوقف مؤقتًا",
-      "emptyUpcoming": "لا شيء في الصف",
-      "emptyToday": "لا شيء مستحق اليوم",
-      "emptyRunning": "خامل",
-      "emptyDone": "لا توجد تشغيلات بعد"
-    },
     "card": {
       "enable": "تفعيل الجدول",
       "disable": "تعطيل الجدول",
@@ -367,7 +356,9 @@
       "overdue": "متأخر {delta}",
       "watching": "ينطلق عند الأحداث الجديدة",
       "last": "الأخير",
-      "never": "لم يُشغّل قط"
+      "never": "لم يُشغّل قط",
+      "paused": "متوقف مؤقتًا",
+      "notScheduled": "غير مجدول"
     },
     "run": {
       "elapsed": "انقضى {delta}",
@@ -498,14 +489,49 @@
       "overlapSkip": "تخطي",
       "overlapQueue": "وضع في الصف",
       "overlapKillOld": "إنهاء القديم",
-      "sideRecentRuns": "التشغيلات الأخيرة",
       "noRuns": "لا توجد تشغيلات بعد",
       "ago": " مضت",
       "cancel": "إلغاء",
       "save": "حفظ التغييرات",
       "saving": "جارٍ الحفظ…",
       "saveFailed": "فشل الحفظ.",
-      "invalidJson": "JSON غير صالح في {field}"
+      "invalidJson": "JSON غير صالح في {field}",
+      "sectionHistory": "السجل"
+    },
+    "viewCards": "بطاقات",
+    "viewTable": "جدول",
+    "table": {
+      "colName": "الاسم",
+      "colTrigger": "المشغّل",
+      "colEnabled": "مُفعَّل",
+      "colLastRun": "آخر تشغيل",
+      "colNextFire": "التشغيل القادم",
+      "colActions": "الإجراءات",
+      "neverRun": "لم يُشغَّل قط",
+      "notScheduled": "—",
+      "editAction": "تعديل"
+    },
+    "trigger": {
+      "everyMinute": "كل دقيقة",
+      "everyMinutes": "كل {n} دقيقة",
+      "daily": "يوميًا {time} UTC",
+      "weekly": "أسبوعيًا {day} {time} UTC",
+      "hourlyAt": "كل ساعة عند :{minute}",
+      "onEvent": "عند {event}",
+      "eventPrMerged": "دمج الطلب",
+      "eventPrOpened": "فتح الطلب",
+      "eventPrUpdated": "تحديث الطلب",
+      "eventPrClosed": "إغلاق الطلب"
+    },
+    "error": {
+      "spawnFailed": "فشل بدء تشغيل الوكيل",
+      "network": "خطأ في الشبكة",
+      "timeout": "انتهت المهلة",
+      "permission": "تم رفض الإذن",
+      "missingDependency": "تبعية مفقودة",
+      "notFound": "الملف غير موجود",
+      "showDetails": "إظهار الخطأ الكامل",
+      "hideDetails": "إخفاء الخطأ الكامل"
     }
   },
   "fleet": {
@@ -593,8 +619,7 @@
         "failed": "فشل بنية تحتية",
         "stale": "قديم · لا نشاط",
         "stuck": "عالق · لا تقدم",
-        "gated": "بانتظار الموافقة",
-        "orphaned": "يتيم · إعادة تشغيل الخدمة"
+        "gated": "بانتظار الموافقة"
       },
       "more": "+{count, plural, zero {لا مزيد — عرض الكل في السجل ←} one {# آخر — عرض الكل في السجل ←} two {# آخران — عرض الكل في السجل ←} few {# أخرى — عرض الكل في السجل ←} many {# آخر — عرض الكل في السجل ←} other {# آخر — عرض الكل في السجل ←}}",
       "digestLatest": "الأحدث: {name} · منذ {age}",
@@ -789,7 +814,7 @@
     "filterTools": "الأدوات",
     "filterUser": "المستخدم",
     "filterSystem": "النظام",
-    "outcome": "النتيجة",
+    "latestMessage": "أحدث رسالة",
     "viewFullConversation": "عرض المحادثة الكاملة ←",
     "noFinalResponse": "لم يُسجّل رد نهائي.",
     "statToolCalls": "استدعاءات الأدوات",

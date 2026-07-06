@@ -9,6 +9,7 @@
 
 import type { RunSummary, ScheduleSummary } from "@/lib/types";
 import type { InvocationSummary } from "@/lib/api";
+import { deriveDisplayStatus, isOrphanedReason } from "@/lib/runStatus";
 
 // ─── State shape ─────────────────────────────────────────────────────────────
 
@@ -47,7 +48,7 @@ export interface BoardState {
   errorMessage: string | null;
 }
 
-export type AttentionReason = "streak" | "failed" | "stale" | "stuck" | "gated" | "orphaned";
+export type AttentionReason = "streak" | "failed" | "stale" | "stuck" | "gated";
 
 export interface AttentionItem {
   id: string;
@@ -80,6 +81,10 @@ export type BoardAction =
 
 // ─── Status classification constants ─────────────────────────────────────────
 
+// Invocations (skill orchestrations) have no reason_code/reason_summary axis
+// and no orphaned bucket — they keep their own lightweight classification.
+// Runs go through deriveDisplayStatus() below; do not add run lifecycle
+// checks against these sets.
 const RUNNING_STATUSES = new Set([
   "running",
   "executing",
@@ -88,33 +93,7 @@ const RUNNING_STATUSES = new Set([
   "open",
 ]);
 const FAILED_STATUSES = new Set(["failed", "error", "failure"]);
-const TERMINAL_STATUSES = new Set([
-  "completed",
-  "done",
-  "success",
-  "finished",
-  "running_complete",
-  "director-managed-complete",
-  "failed",
-  "error",
-  "failure",
-  "cancelled",
-  "aborted",
-  "timed_out",
-]);
 const GATED_STATUSES = new Set(["needs_review", "blocked", "gated"]);
-
-/**
- * A "failed" run whose status_reason_summary carries this value was reaped
- * by a daemon-restart sweep (a housekeeping event), not a real work failure.
- * It must never render red or count as an actionable "infra failure".
- * Exported so recentGroups.ts shares the same classification rather than
- * re-declaring it.
- * TODO(unify): route through deriveDisplayStatus once status/verdict
- * derivation is unified — this string match is a stand-in until orphaned
- * becomes a first-class terminal state.
- */
-export const ORPHANED_REASON_SUMMARY = "phantom_reaped";
 
 /** Failures older than this belong to History, not the attention queue. */
 const FAILED_ATTENTION_WINDOW_SEC = 24 * 60 * 60;
@@ -157,16 +136,22 @@ function buildAttentionItems(
   }
 
   for (const run of runs) {
+    // DESIGN-BRIEF §0: a daemon-restart reap is housekeeping, never attention
+    // — it must not surface here as "failed" or under any other reason.
+    if (isOrphanedReason(run)) continue;
     const s = run.status.toLowerCase();
+    const derived = deriveDisplayStatus(run);
     // Status-based reasons take precedence; stale health is the fallback so
     // an actionable gated/stuck run never degrades into an informational row.
+    // Gating is a separate attention check, not a lifecycle status — it stays
+    // a raw-string match since deriveDisplayStatus has no "gated" bucket.
     let reason: AttentionReason | null = null;
-    if (FAILED_STATUSES.has(s)) {
+    if (derived === "failed") {
       if (!failedRecently(run.ended_at, run.started_at, nowSec)) continue;
-      reason = run.status_reason_summary === ORPHANED_REASON_SUMMARY ? "orphaned" : "failed";
+      reason = "failed";
     } else if (GATED_STATUSES.has(s)) {
       reason = "gated";
-    } else if (RUNNING_STATUSES.has(s) && run.effective_health === "unresponsive") {
+    } else if (derived === "running" && run.effective_health === "unresponsive") {
       // Stuck is the honest health verdict (alive but quiet past its threshold),
       // never run age: a long-lived session still emitting activity is healthy.
       reason = "stuck";
@@ -220,16 +205,13 @@ function buildAttentionItems(
     }
   }
 
-  // Sort: streak first, then gated, stuck, failed, stale, orphaned; within
-  // group by recency. Orphaned sorts last — it is pure housekeeping, never
-  // more urgent than a real failure or a health warning.
+  // Sort: streak first, then gated, stuck, failed, stale; within group by recency
   const ORDER: Record<AttentionReason, number> = {
     streak: 0,
     gated: 1,
     stuck: 2,
     failed: 3,
     stale: 4,
-    orphaned: 5,
   };
   items.sort((a, b) => {
     const od = ORDER[a.reason] - ORDER[b.reason];
@@ -246,22 +228,16 @@ function buildAttentionItems(
   });
 }
 
-/**
- * "Need attention" is a claim on a human's time. Orphaned rows are pure
- * housekeeping (a daemon-restart sweep) with nothing for a human to act
- * on, so they stay visible in the digest but never inflate this count.
- */
-export function attentionNeedsHumanCount(items: AttentionItem[]): number {
-  return items.filter((i) => i.reason !== "orphaned").length;
-}
-
 function deriveActiveRuns(runs: RunSummary[]): RunSummary[] {
-  return runs.filter((r) => RUNNING_STATUSES.has(r.status.toLowerCase()));
+  return runs.filter((r) => deriveDisplayStatus(r) === "running");
 }
 
 function deriveRecentRuns(runs: RunSummary[]): RunSummary[] {
   return runs
-    .filter((r) => TERMINAL_STATUSES.has(r.status.toLowerCase()))
+    .filter((r) => {
+      const derived = deriveDisplayStatus(r);
+      return derived !== "running" && derived !== "queued";
+    })
     .sort((a, b) => (b.started_at ?? 0) - (a.started_at ?? 0))
     .slice(0, 10);
 }

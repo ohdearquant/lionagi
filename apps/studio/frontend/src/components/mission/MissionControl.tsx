@@ -16,15 +16,14 @@ import Pulse, { PulseSkeleton } from "./Pulse";
 import ZeroState from "./ZeroState";
 import Skeleton from "@/components/ui/Skeleton";
 import { useLiveBoard } from "./useLiveBoard";
-import { attentionNeedsHumanCount } from "./boardReducer";
 
 export default function MissionControl() {
   const t = useTranslations("mission");
   const board = useLiveBoard();
   const runningCount = board.activeRuns.length + board.activeInvocations.length;
-  // Orphaned rows (daemon-restart housekeeping) are visible in the digest
-  // but carry no human action — they must not inflate "need attention".
-  const attentionCount = attentionNeedsHumanCount(board.attentionItems);
+  // Orphaned (daemon-restart housekeeping) runs never enter the attention
+  // list — they carry no human action — so this count is the whole list.
+  const attentionCount = board.attentionItems.length;
   // Skeletons are for the FIRST fetch only. dataState leaves "loading" for
   // good on the first DATA_OK/DATA_ERROR, so later polls (including a
   // background refresh failure) never re-trigger this branch.

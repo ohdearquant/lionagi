@@ -37,3 +37,47 @@ describe("history/ — no Drawer overlay import (master-detail doctrine §4)", (
     });
   }
 });
+
+// ─── SSE done-refetch stale-write race guard (MAJ-3) ─────────────────────────
+// The 'done' handler refetches status/reason fields after streamSession
+// reports completion. Without a same-session guard, navigating A→B before
+// A's refetch resolves lets A's data clobber B's freshly-fetched state.
+
+describe("history/RunDetail.tsx — SSE done-refetch is guarded against a stale-session write", () => {
+  it("the refetch merge is gated on prev.id matching the fetched session's id", () => {
+    const src = fs.readFileSync(path.join(HISTORY_DIR, "RunDetail.tsx"), "utf-8");
+    expect(src).toMatch(/prev\.id === fresh\.id/);
+  });
+
+  it("the streamSession effect cancels its refetch on cleanup", () => {
+    const src = fs.readFileSync(path.join(HISTORY_DIR, "RunDetail.tsx"), "utf-8");
+    expect(src).toMatch(/cancelled = true/);
+  });
+});
+
+describe("stale-write guard predicate (mirrors the done handler's merge condition)", () => {
+  function mergeIfSameSession(
+    prev: { id: string; status: string } | null,
+    fresh: { id: string; status: string },
+  ): { id: string; status: string } | null {
+    if (!prev || prev.id !== fresh.id) return prev;
+    return { ...prev, status: fresh.status };
+  }
+
+  it("merges when the fresh fetch matches the currently-viewed session", () => {
+    const prev = { id: "run-a", status: "running" };
+    const result = mergeIfSameSession(prev, { id: "run-a", status: "completed" });
+    expect(result?.status).toBe("completed");
+  });
+
+  it("drops a stale fetch for a session the viewer has since navigated away from", () => {
+    const prev = { id: "run-b", status: "running" };
+    const result = mergeIfSameSession(prev, { id: "run-a", status: "completed" });
+    expect(result?.id).toBe("run-b");
+    expect(result?.status).toBe("running");
+  });
+
+  it("no-ops when there is no current session", () => {
+    expect(mergeIfSameSession(null, { id: "run-a", status: "completed" })).toBeNull();
+  });
+});

@@ -190,7 +190,8 @@
       "queued": "排队中",
       "timed_out": "已超时",
       "aborted": "已中止",
-      "skipped": "已跳过"
+      "skipped": "已跳过",
+      "orphaned": "孤立"
     },
     "table": {
       "name": "名称",
@@ -337,24 +338,12 @@
   "schedules": {
     "title": "计划任务",
     "subtitle": "基于 cron、固定间隔与 GitHub 触发的常驻自动化",
-    "board": "看板",
     "calendar": "日历",
     "newSchedule": "新建计划",
     "loadError": "加载计划任务失败。",
     "emptyTitle": "还没有计划任务",
     "emptyBody": "通过 cron、固定间隔或 GitHub 事件自动运行引擎与智能体。",
     "emptyCta": "创建第一个计划",
-    "lanes": {
-      "upcoming": "即将到来",
-      "today": "今天",
-      "running": "运行中",
-      "done": "已结束",
-      "paused": "已暂停",
-      "emptyUpcoming": "暂无排队",
-      "emptyToday": "今天没有触发",
-      "emptyRunning": "空闲",
-      "emptyDone": "暂无运行记录"
-    },
     "card": {
       "enable": "启用计划",
       "disable": "停用计划",
@@ -367,7 +356,9 @@
       "overdue": "已逾期 {delta}",
       "watching": "新事件到达时触发",
       "last": "上次",
-      "never": "从未运行"
+      "never": "从未运行",
+      "paused": "已暂停",
+      "notScheduled": "未排期"
     },
     "run": {
       "elapsed": "已运行 {delta}",
@@ -498,14 +489,49 @@
       "overlapSkip": "跳过",
       "overlapQueue": "排队",
       "overlapKillOld": "终止旧任务",
-      "sideRecentRuns": "最近执行",
       "noRuns": "暂无执行记录",
       "ago": " 前",
       "cancel": "取消",
       "save": "保存更改",
       "saving": "保存中…",
       "saveFailed": "保存失败。",
-      "invalidJson": "{field} 中的 JSON 格式无效"
+      "invalidJson": "{field} 中的 JSON 格式无效",
+      "sectionHistory": "历史记录"
+    },
+    "viewCards": "卡片",
+    "viewTable": "表格",
+    "table": {
+      "colName": "名称",
+      "colTrigger": "触发条件",
+      "colEnabled": "已启用",
+      "colLastRun": "上次运行",
+      "colNextFire": "下次触发",
+      "colActions": "操作",
+      "neverRun": "从未运行",
+      "notScheduled": "—",
+      "editAction": "编辑"
+    },
+    "trigger": {
+      "everyMinute": "每分钟",
+      "everyMinutes": "每 {n} 分钟",
+      "daily": "每天 {time} UTC",
+      "weekly": "每周{day} {time} UTC",
+      "hourlyAt": "每小时 :{minute}",
+      "onEvent": "{event}时",
+      "eventPrMerged": "PR 合并",
+      "eventPrOpened": "PR 打开",
+      "eventPrUpdated": "PR 更新",
+      "eventPrClosed": "PR 关闭"
+    },
+    "error": {
+      "spawnFailed": "代理启动失败",
+      "network": "网络错误",
+      "timeout": "已超时",
+      "permission": "权限被拒绝",
+      "missingDependency": "缺少依赖",
+      "notFound": "文件未找到",
+      "showDetails": "显示完整错误",
+      "hideDetails": "隐藏完整错误"
     }
   },
   "fleet": {
@@ -593,8 +619,7 @@
         "failed": "基础设施故障",
         "stale": "停滞 · 长时间无活动",
         "stuck": "卡住 · 无进展",
-        "gated": "待审批",
-        "orphaned": "孤立 · 守护进程重启"
+        "gated": "待审批"
       },
       "more": "还有 {count} 项，去历史中查看 →",
       "digestLatest": "最近：{name} · {age}前",
@@ -789,7 +814,7 @@
     "filterTools": "工具",
     "filterUser": "用户",
     "filterSystem": "系统",
-    "outcome": "结果",
+    "latestMessage": "最新消息",
     "viewFullConversation": "查看完整对话 →",
     "noFinalResponse": "未记录最终回复。",
     "statToolCalls": "工具调用",
