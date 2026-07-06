@@ -190,7 +190,8 @@
       "queued": "đang chờ",
       "timed_out": "hết thời gian",
       "aborted": "đã dừng",
-      "skipped": "đã bỏ qua"
+      "skipped": "đã bỏ qua",
+      "orphaned": "mồ côi"
     },
     "table": {
       "name": "tên",

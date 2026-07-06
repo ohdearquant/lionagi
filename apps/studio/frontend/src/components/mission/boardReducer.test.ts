@@ -250,6 +250,32 @@ describe("boardReducer — attention queue derivation", () => {
     expect(reasons[3]).toBe("stale");
   });
 
+  it("a phantom-reaped run never appears in the attention queue — housekeeping, not failure (DESIGN-BRIEF §0)", () => {
+    const s = dispatchOk(initialBoardState(), [
+      makeRun({
+        run_id: "r1",
+        status: "failed",
+        started_at: 1_000_000 - 600,
+        status_reason_summary: "phantom_reaped",
+      }),
+    ]);
+    expect(s.attentionItems).toHaveLength(0);
+  });
+
+  it("a zombie (stale-locks) reap still surfaces as a real failure", () => {
+    const s = dispatchOk(initialBoardState(), [
+      makeRun({
+        run_id: "r1",
+        status: "failed",
+        started_at: 1_000_000 - 600,
+        status_reason_code: "session.zombie.stale_locks",
+        status_reason_summary: "phantom_reaped",
+      }),
+    ]);
+    expect(s.attentionItems).toHaveLength(1);
+    expect(s.attentionItems[0].reason).toBe("failed");
+  });
+
   it("deduplicates: a run that matches multiple criteria appears once (worst reason)", () => {
     const nowSec = 2_000_000;
     // Same run: failed status AND stale health — should appear once as "failed"

@@ -190,7 +190,8 @@
       "queued": "en file d'attente",
       "timed_out": "expiré",
       "aborted": "interrompu",
-      "skipped": "ignoré"
+      "skipped": "ignoré",
+      "orphaned": "orphelin"
     },
     "table": {
       "name": "Nom",

@@ -190,7 +190,8 @@
       "queued": "diantrekan",
       "timed_out": "waktu habis",
       "aborted": "dihentikan",
-      "skipped": "dilewati"
+      "skipped": "dilewati",
+      "orphaned": "yatim"
     },
     "table": {
       "name": "Nama",

@@ -190,7 +190,8 @@
       "queued": "queued",
       "timed_out": "timed out",
       "aborted": "aborted",
-      "skipped": "skipped"
+      "skipped": "skipped",
+      "orphaned": "orphaned"
     },
     "table": {
       "name": "Name",

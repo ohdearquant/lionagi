@@ -190,7 +190,8 @@
       "queued": "কিউড",
       "timed_out": "টাইম আউট",
       "aborted": "অ্যাবর্টেড",
-      "skipped": "স্কিপড"
+      "skipped": "স্কিপড",
+      "orphaned": "অনাথ"
     },
     "table": {
       "name": "নাম",

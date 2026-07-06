@@ -190,7 +190,8 @@
       "queued": "kuyrukta",
       "timed_out": "zaman aşımına uğradı",
       "aborted": "durduruldu",
-      "skipped": "atlandı"
+      "skipped": "atlandı",
+      "orphaned": "yetim"
     },
     "table": {
       "name": "ad",

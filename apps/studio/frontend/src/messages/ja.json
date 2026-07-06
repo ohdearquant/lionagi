@@ -190,7 +190,8 @@
       "queued": "キュー中",
       "timed_out": "タイムアウト",
       "aborted": "中止",
-      "skipped": "スキップ"
+      "skipped": "スキップ",
+      "orphaned": "孤立"
     },
     "table": {
       "name": "名前",

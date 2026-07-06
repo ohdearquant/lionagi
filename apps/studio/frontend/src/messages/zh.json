@@ -190,7 +190,8 @@
       "queued": "排队中",
       "timed_out": "已超时",
       "aborted": "已中止",
-      "skipped": "已跳过"
+      "skipped": "已跳过",
+      "orphaned": "孤立"
     },
     "table": {
       "name": "名称",

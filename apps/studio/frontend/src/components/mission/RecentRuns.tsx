@@ -6,9 +6,10 @@
 import { Link } from "@tanstack/react-router";
 import { useTranslations } from "use-intl";
 import SectionLabel from "@/components/ui/SectionLabel";
-import StatusPill from "@/components/ui/StatusPill";
+import StatusVerdictChips from "@/components/ui/StatusVerdictChips";
 import Duration from "@/components/ui/Duration";
 import Skeleton from "@/components/ui/Skeleton";
+import { deriveDisplayStatus } from "@/lib/runStatus";
 import type { RunSummary } from "@/lib/types";
 
 interface Props {
@@ -59,6 +60,7 @@ const KNOWN_STATUSES = new Set([
   "queued",
   "timed_out",
   "aborted",
+  "orphaned",
 ]);
 
 export default function RecentRuns({ runs, nowSec }: Props) {
@@ -105,7 +107,7 @@ export default function RecentRuns({ runs, nowSec }: Props) {
                 className="flex items-center gap-3 bg-surface-raised px-3 py-1.5 transition-colors duration-100 hover:bg-surface-overlay"
                 style={{ borderTop: idx === 0 ? undefined : "1px solid var(--edge-hairline)" }}
               >
-                <StatusPill value={run.status} kind="lifecycle" label={statusLabel(run.status)} />
+                <StatusVerdictChips run={run} statusLabel={statusLabel(deriveDisplayStatus(run))} />
                 <span className="min-w-0 flex-1 truncate font-data text-[length:var(--t-sm)] text-content-secondary">
                   {name}
                 </span>

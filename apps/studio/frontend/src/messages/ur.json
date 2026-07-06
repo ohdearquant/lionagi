@@ -190,7 +190,8 @@
       "queued": "کیو میں",
       "timed_out": "وقت ختم",
       "aborted": "روکا گیا",
-      "skipped": "چھوڑا گیا"
+      "skipped": "چھوڑا گیا",
+      "orphaned": "یتیم"
     },
     "table": {
       "name": "نام",

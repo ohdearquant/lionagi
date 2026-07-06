@@ -9,6 +9,7 @@
 
 import type { RunSummary, ScheduleSummary } from "@/lib/types";
 import type { InvocationSummary } from "@/lib/api";
+import { isOrphanedReason } from "@/lib/runStatus";
 
 // ─── State shape ─────────────────────────────────────────────────────────────
 
@@ -145,6 +146,9 @@ function buildAttentionItems(
   }
 
   for (const run of runs) {
+    // DESIGN-BRIEF §0: a daemon-restart reap is housekeeping, never attention
+    // — it must not surface here as "failed" or under any other reason.
+    if (isOrphanedReason(run)) continue;
     const s = run.status.toLowerCase();
     // Status-based reasons take precedence; stale health is the fallback so
     // an actionable gated/stuck run never degrades into an informational row.

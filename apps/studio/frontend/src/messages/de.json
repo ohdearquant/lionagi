@@ -190,7 +190,8 @@
       "queued": "eingereiht",
       "timed_out": "Zeitüberschreitung",
       "aborted": "abgebrochen",
-      "skipped": "übersprungen"
+      "skipped": "übersprungen",
+      "orphaned": "verwaist"
     },
     "table": {
       "name": "Name",
