@@ -82,6 +82,7 @@
     "filterAll": "全部",
     "filterAgent": "智能体",
     "filterWorkflow": "工作流",
+    "filterPlaybook": "剧本",
     "filterSkill": "技能",
     "filterPlugin": "插件",
     "filterEngine": "引擎",
