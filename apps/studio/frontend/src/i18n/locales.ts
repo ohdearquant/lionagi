@@ -36,3 +36,14 @@ export function applyDocumentLocale(locale: string): void {
   document.documentElement.lang = locale;
   document.documentElement.dir = RTL_LOCALES.includes(locale) ? "rtl" : "ltr";
 }
+
+/** Reads the persisted NEXT_LOCALE cookie, falling back to "en" for missing/unknown codes. */
+export function getLocaleFromCookie(): string {
+  const raw = document.cookie
+    .split(";")
+    .map((c) => c.trim())
+    .find((c) => c.startsWith("NEXT_LOCALE="))
+    ?.split("=")[1];
+  const known = LOCALES.some((l) => l.code === raw);
+  return known && raw ? raw : "en";
+}

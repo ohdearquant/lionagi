@@ -11,7 +11,6 @@ const LEO_OPEN_KEY = "studio:leo-open";
 
 interface Props {
   children: ReactNode;
-  locale: string;
   onLocaleChange: (l: string) => void;
 }
 
@@ -30,7 +29,7 @@ function applyTheme(theme: "dark" | "light") {
   localStorage.setItem("theme", theme);
 }
 
-export default function AppShell({ children, locale, onLocaleChange }: Props) {
+export default function AppShell({ children, onLocaleChange }: Props) {
   const t = useTranslations("shell");
   const [dark, setDark] = useState(() => getTheme() === "dark");
   const [paletteOpen, setPaletteOpen] = useState(false);
@@ -56,12 +55,6 @@ export default function AppShell({ children, locale, onLocaleChange }: Props) {
     setDark(next);
     applyTheme(next ? "dark" : "light");
   }, [dark]);
-
-  // Binary en/zh flip kept for the command palette's "Switch language" action;
-  // the rail's own selector calls onLocaleChange directly with any of the 16 codes.
-  const toggleLocale = useCallback(() => {
-    onLocaleChange(locale === "en" ? "zh" : "en");
-  }, [locale, onLocaleChange]);
 
   useEffect(() => {
     function handleKey(e: KeyboardEvent) {
@@ -130,7 +123,6 @@ export default function AppShell({ children, locale, onLocaleChange }: Props) {
           open={paletteOpen}
           onClose={() => setPaletteOpen(false)}
           toggleTheme={toggleTheme}
-          toggleLocale={toggleLocale}
         />
       </div>
     </ToastProvider>

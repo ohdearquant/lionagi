@@ -3,7 +3,7 @@ import { useEffect, useState } from "react";
 import { IntlProvider } from "use-intl";
 import AppShell from "@/components/shell/AppShell";
 import NoDaemonGate from "@/components/shell/NoDaemonGate";
-import { applyDocumentLocale } from "@/i18n/locales";
+import { applyDocumentLocale, getLocaleFromCookie, LOCALES } from "@/i18n/locales";
 import "../globals.css";
 
 import enMessages from "@/messages/en.json";
@@ -23,27 +23,12 @@ import arMessages from "@/messages/ar.json";
 import ruMessages from "@/messages/ru.json";
 import jaMessages from "@/messages/ja.json";
 
-const VALID_LOCALES = [
-  "en",
-  "zh",
-  "es",
-  "fr",
-  "hi",
-  "bn",
-  "de",
-  "id",
-  "pt-BR",
-  "ko",
-  "tr",
-  "ur",
-  "vi",
-  "ar",
-  "ru",
-  "ja",
-] as const;
-type Locale = (typeof VALID_LOCALES)[number];
+// LOCALES (src/i18n/locales.ts) is the single source of truth for which
+// codes are valid — derived here, not hand-copied, so dropping a locale
+// there can't silently desync from the messages wiring below.
+const VALID_LOCALES: readonly string[] = LOCALES.map((l) => l.code);
 
-const MESSAGES: Record<Locale, typeof enMessages> = {
+const MESSAGES: Record<string, typeof enMessages> = {
   en: enMessages,
   zh: zhMessages,
   es: esMessages,
@@ -62,34 +47,25 @@ const MESSAGES: Record<Locale, typeof enMessages> = {
   ja: jaMessages,
 };
 
-function getLocaleFromCookie(): Locale {
-  const raw = document.cookie
-    .split(";")
-    .map((c) => c.trim())
-    .find((c) => c.startsWith("NEXT_LOCALE="))
-    ?.split("=")[1];
-  return (VALID_LOCALES as readonly string[]).includes(raw ?? "") ? (raw as Locale) : "en";
-}
-
 function RootComponent() {
-  const [locale, setLocale] = useState<Locale>(getLocaleFromCookie);
-  const messages = MESSAGES[locale];
+  const [locale, setLocale] = useState<string>(getLocaleFromCookie);
+  const messages = MESSAGES[locale] ?? enMessages;
 
   useEffect(() => {
     applyDocumentLocale(locale);
   }, [locale]);
 
   function handleLocaleChange(next: string) {
-    if ((VALID_LOCALES as readonly string[]).includes(next)) {
+    if (VALID_LOCALES.includes(next)) {
       document.cookie = `NEXT_LOCALE=${next};path=/;max-age=31536000;SameSite=Lax`;
-      setLocale(next as Locale);
+      setLocale(next);
     }
   }
 
   return (
     <IntlProvider locale={locale} messages={messages}>
       <NoDaemonGate>
-        <AppShell locale={locale} onLocaleChange={handleLocaleChange}>
+        <AppShell onLocaleChange={handleLocaleChange}>
           <Outlet />
         </AppShell>
       </NoDaemonGate>

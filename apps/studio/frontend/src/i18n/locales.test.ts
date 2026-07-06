@@ -9,8 +9,13 @@
  * - Every locale's messages parse under a real ICU translator with no
  *   FORMATTING_ERROR, including the true {count, plural, ...} strings and
  *   the pre-existing bare-{plural} anti-pattern in prunePhantoms.
+ * - __root.tsx's own VALID_LOCALES/MESSAGES wiring covers every LOCALES
+ *   code (fails if a locale is dropped or mismapped there, independent of
+ *   the messages/*.json files themselves being fine).
  */
 import { describe, it, expect } from "vitest";
+import * as fs from "node:fs";
+import * as path from "node:path";
 import { createTranslator } from "use-intl";
 import { LOCALES, RTL_LOCALES, applyDocumentLocale } from "./locales";
 
@@ -230,4 +235,33 @@ describe("messages — every locale parses under a real ICU translator", () => {
       }
     },
   );
+});
+
+describe("__root.tsx — root wiring covers every LOCALES code", () => {
+  const rootSrc = fs.readFileSync(path.resolve(__dirname, "../routes/__root.tsx"), "utf-8");
+
+  // Derive file-code -> import-binding straight from __root.tsx's own import
+  // statements, so this test tracks whatever the file actually does rather
+  // than a second hardcoded copy of the mapping.
+  const bindingForCode: Record<string, string> = {};
+  for (const m of rootSrc.matchAll(/import (\w+) from "@\/messages\/([\w.-]+)\.json"/g)) {
+    bindingForCode[m[2]] = m[1];
+  }
+
+  it.each(LOCALES.map((l) => l.code))(
+    "%s has a message import in __root.tsx wired into MESSAGES under the matching key",
+    (code) => {
+      const binding = bindingForCode[code];
+      expect(binding, `no "@/messages/${code}.json" import found in __root.tsx`).toBeDefined();
+
+      const key = /^[A-Za-z_$][\w$]*$/.test(code) ? code : `"${code}"`;
+      const escapedKey = key.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+      const wired = new RegExp(`${escapedKey}:\\s*${binding}\\b`);
+      expect(rootSrc, `MESSAGES does not map ${key} to ${binding}`).toMatch(wired);
+    },
+  );
+
+  it.each(LOCALES.map((l) => l.code))("%s's wired-in messages module is non-empty", (code) => {
+    expect(Object.keys(MESSAGES[code]).length).toBeGreaterThan(0);
+  });
 });

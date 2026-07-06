@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState, type ReactElement } from "react";
+import { useCallback, useEffect, useId, useRef, useState, type ReactElement } from "react";
 import { Link, useLocation, useNavigate } from "@tanstack/react-router";
 import { useLocale, useTranslations } from "use-intl";
 import { LOCALES } from "@/i18n/locales";
@@ -200,6 +200,105 @@ function IconChat() {
   );
 }
 
+interface LangListboxProps {
+  id: string;
+  locale: string;
+  labelText: string;
+  onSelect: (code: string) => void;
+  onClose: () => void;
+  triggerRef: React.RefObject<HTMLButtonElement | null>;
+}
+
+// Mounted fresh each time the rail's language menu opens (see IconRail),
+// so activeIndex's lazy initializer — not an effect — is what resets the
+// highlight to the current locale on open; effects here only touch the
+// DOM (focus), never derive state from props.
+function LangListbox({ id, locale, labelText, onSelect, onClose, triggerRef }: LangListboxProps) {
+  const [activeIndex, setActiveIndex] = useState(() => {
+    const idx = LOCALES.findIndex((l) => l.code === locale);
+    return idx >= 0 ? idx : 0;
+  });
+  const listRef = useRef<HTMLUListElement>(null);
+
+  useEffect(() => {
+    listRef.current?.focus();
+  }, []);
+
+  const optionId = useCallback((code: string) => `${id}-opt-${code}`, [id]);
+
+  const handleKeyDown = useCallback(
+    (e: React.KeyboardEvent) => {
+      if (e.key === "Escape") {
+        e.preventDefault();
+        onClose();
+        triggerRef.current?.focus();
+      } else if (e.key === "ArrowDown") {
+        e.preventDefault();
+        setActiveIndex((i) => Math.min(i + 1, LOCALES.length - 1));
+      } else if (e.key === "ArrowUp") {
+        e.preventDefault();
+        setActiveIndex((i) => Math.max(i - 1, 0));
+      } else if (e.key === "Enter" || e.key === " ") {
+        e.preventDefault();
+        const selected = LOCALES[activeIndex];
+        if (selected) {
+          onSelect(selected.code);
+          onClose();
+          triggerRef.current?.focus();
+        }
+      }
+    },
+    [activeIndex, onClose, onSelect, triggerRef],
+  );
+
+  return (
+    <ul
+      ref={listRef}
+      id={id}
+      role="listbox"
+      tabIndex={0}
+      aria-label={labelText}
+      aria-activedescendant={optionId(LOCALES[activeIndex].code)}
+      onKeyDown={handleKeyDown}
+      className="absolute bottom-0 start-full ms-1 z-50 max-h-72 w-44 overflow-y-auto rounded border border-edge bg-surface-overlay py-1 shadow-card focus:outline-none"
+    >
+      {LOCALES.map((l, idx) => {
+        const active = l.code === locale;
+        return (
+          <li
+            key={l.code}
+            id={optionId(l.code)}
+            role="option"
+            aria-selected={active}
+            dir={l.dir}
+            onClick={() => {
+              onSelect(l.code);
+              onClose();
+              triggerRef.current?.focus();
+            }}
+            onKeyDown={(e) => {
+              if (e.key === "Enter" || e.key === " ") {
+                e.preventDefault();
+                onSelect(l.code);
+                onClose();
+                triggerRef.current?.focus();
+              }
+            }}
+            onMouseEnter={() => setActiveIndex(idx)}
+            className={`flex cursor-pointer items-center px-3 py-1.5 text-start text-[length:var(--t-sm)] transition-colors duration-100 ${
+              active
+                ? "bg-surface-raised text-content-primary"
+                : "text-content-secondary hover:bg-surface-raised hover:text-content-primary"
+            } ${idx === activeIndex ? "ring-1 ring-inset ring-accent" : ""}`}
+          >
+            {l.native}
+          </li>
+        );
+      })}
+    </ul>
+  );
+}
+
 interface Props {
   dark: boolean;
   onToggleTheme: () => void;
@@ -229,7 +328,7 @@ export default function IconRail({
   const [langOpen, setLangOpen] = useState(false);
   const langMenuRef = useRef<HTMLDivElement>(null);
   const langTriggerRef = useRef<HTMLButtonElement>(null);
-  const langOptionRefs = useRef<(HTMLButtonElement | null)[]>([]);
+  const langListboxId = useId();
 
   useEffect(() => {
     if (!langOpen) return;
@@ -241,30 +340,6 @@ export default function IconRail({
     window.addEventListener("pointerdown", handlePointerDown);
     return () => window.removeEventListener("pointerdown", handlePointerDown);
   }, [langOpen]);
-
-  useEffect(() => {
-    if (!langOpen) return;
-    const activeIdx = LOCALES.findIndex((l) => l.code === locale);
-    langOptionRefs.current[activeIdx >= 0 ? activeIdx : 0]?.focus();
-  }, [langOpen, locale]);
-
-  const handleLangKeyDown = useCallback((e: React.KeyboardEvent) => {
-    if (e.key === "Escape") {
-      e.preventDefault();
-      setLangOpen(false);
-      langTriggerRef.current?.focus();
-      return;
-    }
-    const options = langOptionRefs.current;
-    const current = options.findIndex((el) => el === document.activeElement);
-    if (e.key === "ArrowDown") {
-      e.preventDefault();
-      options[Math.min(current + 1, options.length - 1)]?.focus();
-    } else if (e.key === "ArrowUp") {
-      e.preventDefault();
-      options[Math.max(current - 1, 0)]?.focus();
-    }
-  }, []);
 
   const handleKey = useCallback(
     (e: KeyboardEvent) => {
@@ -413,6 +488,7 @@ export default function IconRail({
             aria-label={t("rail.selectLanguage")}
             aria-haspopup="listbox"
             aria-expanded={langOpen}
+            aria-controls={langListboxId}
             className="flex h-8 w-8 items-center justify-center rounded font-data text-[length:var(--t-xs)] font-medium text-content-muted transition-colors duration-100"
             title={t("rail.selectLanguage")}
           >
@@ -422,39 +498,14 @@ export default function IconRail({
           </button>
 
           {langOpen && (
-            <ul
-              role="listbox"
-              aria-label={t("rail.selectLanguage")}
-              onKeyDown={handleLangKeyDown}
-              className="absolute bottom-0 left-full z-50 ml-1 max-h-72 w-44 overflow-y-auto rounded border border-edge bg-surface-overlay py-1 shadow-card"
-            >
-              {LOCALES.map((l, idx) => {
-                const active = l.code === locale;
-                return (
-                  <li key={l.code} role="option" aria-selected={active}>
-                    <button
-                      ref={(el) => {
-                        langOptionRefs.current[idx] = el;
-                      }}
-                      type="button"
-                      onClick={() => {
-                        onLocaleChange(l.code);
-                        setLangOpen(false);
-                        langTriggerRef.current?.focus();
-                      }}
-                      dir={l.dir}
-                      className={`flex w-full items-center px-3 py-1.5 text-left text-[length:var(--t-sm)] transition-colors duration-100 ${
-                        active
-                          ? "bg-surface-raised text-content-primary"
-                          : "text-content-secondary hover:bg-surface-raised hover:text-content-primary"
-                      }`}
-                    >
-                      {l.native}
-                    </button>
-                  </li>
-                );
-              })}
-            </ul>
+            <LangListbox
+              id={langListboxId}
+              locale={locale}
+              labelText={t("rail.selectLanguage")}
+              onSelect={onLocaleChange}
+              onClose={() => setLangOpen(false)}
+              triggerRef={langTriggerRef}
+            />
           )}
         </div>
       </div>

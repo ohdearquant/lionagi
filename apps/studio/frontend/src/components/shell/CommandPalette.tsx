@@ -7,11 +7,10 @@ interface Props {
   open: boolean;
   onClose: () => void;
   toggleTheme: () => void;
-  toggleLocale: () => void;
 }
 
 /** Inner palette — mounted with a fresh key each time `open` goes true. */
-function PaletteInner({ onClose, toggleTheme, toggleLocale }: Omit<Props, "open">) {
+function PaletteInner({ onClose, toggleTheme }: Omit<Props, "open">) {
   const t = useTranslations("shell");
   const locale = useLocale();
   const navigate = useNavigate();
@@ -32,7 +31,7 @@ function PaletteInner({ onClose, toggleTheme, toggleLocale }: Omit<Props, "open"
     [navigate, onClose],
   );
 
-  const commands: Command[] = buildRegistry(doNavigate, toggleTheme, toggleLocale);
+  const commands: Command[] = buildRegistry(doNavigate, toggleTheme);
   const filtered = commands.filter((c) => fuzzyMatch(query, c));
 
   const execute = useCallback(
@@ -214,7 +213,7 @@ function PaletteInner({ onClose, toggleTheme, toggleLocale }: Omit<Props, "open"
 }
 
 /** Outer wrapper — mounts PaletteInner with a fresh key each time `open` toggles true. */
-export default function CommandPalette({ open, onClose, toggleTheme, toggleLocale }: Props) {
+export default function CommandPalette({ open, onClose, toggleTheme }: Props) {
   const [epoch, setEpoch] = useState(0);
 
   const prevOpenRef = useRef(open);
@@ -227,12 +226,5 @@ export default function CommandPalette({ open, onClose, toggleTheme, toggleLocal
 
   if (!open) return null;
 
-  return (
-    <PaletteInner
-      key={epoch}
-      onClose={onClose}
-      toggleTheme={toggleTheme}
-      toggleLocale={toggleLocale}
-    />
-  );
+  return <PaletteInner key={epoch} onClose={onClose} toggleTheme={toggleTheme} />;
 }
