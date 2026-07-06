@@ -22,6 +22,7 @@ from .engine import (
     Engine,
     EngineBudgetError,
     EngineEvent,
+    EngineResult,
     EngineRun,
     JudgeVerdict,
 )
@@ -61,6 +62,7 @@ __all__ = (
     "ChainRun",
     "EngineEvent",
     "EngineBudgetError",
+    "EngineResult",
     "JudgeVerdict",
     # planning (Planned-DAG shape — li o flow as an engine)
     "PlanningEngine",
