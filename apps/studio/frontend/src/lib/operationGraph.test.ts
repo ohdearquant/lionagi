@@ -250,6 +250,55 @@ describe("buildOperationGraph — cause edges", () => {
     const g = buildOperationGraph([ev("1", "NodeQueued", "op-a", {})]);
     expect(g.nodes[0]!.causeOpId).toBeNull();
   });
+
+  // The engine emits `depends_on` (all predecessors) + `parent_id` (sole
+  // predecessor) on Node* signals; `cause_op_id` is never set by that path.
+  it("builds an edge from parent_id", () => {
+    const events = [
+      ev("1", "NodeQueued", "op-parent", {}, 1),
+      ev("2", "NodeQueued", "op-child", { parent_id: "op-parent" }, 2),
+    ];
+    const g = buildOperationGraph(events);
+    expect(g.edges).toEqual([{ source: "op-parent", target: "op-child" }]);
+    expect(g.nodes[1]!.causeOpId).toBe("op-parent");
+  });
+
+  it("builds one edge per predecessor from depends_on (fan-in)", () => {
+    const events = [
+      ev("1", "NodeQueued", "op-a", {}, 1),
+      ev("2", "NodeQueued", "op-b", {}, 2),
+      ev("3", "NodeQueued", "op-join", { depends_on: ["op-a", "op-b"] }, 3),
+    ];
+    const g = buildOperationGraph(events);
+    expect(g.edges).toHaveLength(2);
+    expect(g.edges).toContainEqual({ source: "op-a", target: "op-join" });
+    expect(g.edges).toContainEqual({ source: "op-b", target: "op-join" });
+  });
+
+  it("dedupes edges across depends_on, parent_id and cause_op_id", () => {
+    const events = [
+      ev("1", "NodeQueued", "op-parent", {}, 1),
+      ev("2", "NodeStarted", "op-child", { depends_on: ["op-parent"], parent_id: "op-parent" }, 2),
+      ev("3", "NodeCompleted", "op-child", { cause_op_id: "op-parent" }, 3),
+    ];
+    const g = buildOperationGraph(events);
+    expect(g.edges).toEqual([{ source: "op-parent", target: "op-child" }]);
+  });
+
+  it("ignores a self-referential predecessor", () => {
+    const events = [ev("1", "NodeQueued", "op-a", { depends_on: ["op-a"], parent_id: "op-a" }, 1)];
+    const g = buildOperationGraph(events);
+    expect(g.edges).toHaveLength(0);
+  });
+
+  it("ignores non-string entries in depends_on", () => {
+    const events = [
+      ev("1", "NodeQueued", "op-a", {}, 1),
+      ev("2", "NodeQueued", "op-b", { depends_on: ["op-a", 42, null, ""] }, 2),
+    ];
+    const g = buildOperationGraph(events);
+    expect(g.edges).toEqual([{ source: "op-a", target: "op-b" }]);
+  });
 });
 
 describe("buildOperationGraph — multiple operations", () => {
