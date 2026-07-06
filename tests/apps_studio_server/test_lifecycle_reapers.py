@@ -407,6 +407,38 @@ def test_reap_null_status_sessions_stale_dead_recorded_pid_reaped(tmp_path, monk
     assert run_async(_count_transitions(db_path, sid)) >= 1
 
 
+def test_reap_null_status_sessions_stale_live_recorded_pid_not_reaped(tmp_path, monkeypatch):
+    """A stale null-status session with a LIVE recorded pid is not reaped.
+
+    Isolates the recorded-pid path from the staleness grace: the row is old
+    enough that the grace no longer protects it, so only honoring the live
+    ``node_metadata.pid`` keeps it alive. If liveness ever stops reading
+    ``node_metadata``, this stale row reaps and the test fails.
+    """
+    db_path = tmp_path / "state.db"
+    _monkey_db(monkeypatch, db_path)
+
+    stale_time = time.time() - 7200  # past the 1h grace
+    sid = run_async(
+        _seed_session(
+            db_path,
+            status=None,
+            artifacts_path=None,
+            started_at=stale_time,
+            updated_at=stale_time,
+            node_metadata={"pid": os.getpid()},
+        )
+    )
+
+    from lionagi.studio.services.lifecycle import reap_null_status_sessions
+
+    count = run_async(reap_null_status_sessions(stale_hours=1.0))
+    assert count == 0
+
+    sess = run_async(_get_session(db_path, sid))
+    assert sess["status"] is None
+
+
 def test_reap_null_status_sessions_fresh_unknown_liveness_not_reaped(tmp_path, monkeypatch):
     """A fresh null-status session with unknown liveness is skipped within the grace period.
 
