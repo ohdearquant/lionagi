@@ -553,6 +553,10 @@ export interface SessionDetail {
   effort?: string | null;
   agent_hash?: string | null;
   invocation_id?: string | null;
+  // ADR-0028: denormalized status reason (services/sessions.py get_session
+  // already returns these; the type was just missing them).
+  status_reason_code?: string | null;
+  status_reason_summary?: string | null;
   // ADR-0029: artifact contract and verification result.
   artifact_contract_json?: ArtifactContract | null;
   artifact_verification_json?: ArtifactVerification | null;

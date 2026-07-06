@@ -9,6 +9,7 @@
 
 import type { RunSummary, ScheduleSummary } from "@/lib/types";
 import type { InvocationSummary } from "@/lib/api";
+import { deriveDisplayStatus, isOrphanedReason } from "@/lib/runStatus";
 
 // ─── State shape ─────────────────────────────────────────────────────────────
 
@@ -80,6 +81,10 @@ export type BoardAction =
 
 // ─── Status classification constants ─────────────────────────────────────────
 
+// Invocations (skill orchestrations) have no reason_code/reason_summary axis
+// and no orphaned bucket — they keep their own lightweight classification.
+// Runs go through deriveDisplayStatus() below; do not add run lifecycle
+// checks against these sets.
 const RUNNING_STATUSES = new Set([
   "running",
   "executing",
@@ -88,20 +93,6 @@ const RUNNING_STATUSES = new Set([
   "open",
 ]);
 const FAILED_STATUSES = new Set(["failed", "error", "failure"]);
-const TERMINAL_STATUSES = new Set([
-  "completed",
-  "done",
-  "success",
-  "finished",
-  "running_complete",
-  "director-managed-complete",
-  "failed",
-  "error",
-  "failure",
-  "cancelled",
-  "aborted",
-  "timed_out",
-]);
 const GATED_STATUSES = new Set(["needs_review", "blocked", "gated"]);
 
 /** Failures older than this belong to History, not the attention queue. */
@@ -145,16 +136,22 @@ function buildAttentionItems(
   }
 
   for (const run of runs) {
+    // DESIGN-BRIEF §0: a daemon-restart reap is housekeeping, never attention
+    // — it must not surface here as "failed" or under any other reason.
+    if (isOrphanedReason(run)) continue;
     const s = run.status.toLowerCase();
+    const derived = deriveDisplayStatus(run);
     // Status-based reasons take precedence; stale health is the fallback so
     // an actionable gated/stuck run never degrades into an informational row.
+    // Gating is a separate attention check, not a lifecycle status — it stays
+    // a raw-string match since deriveDisplayStatus has no "gated" bucket.
     let reason: AttentionReason | null = null;
-    if (FAILED_STATUSES.has(s)) {
+    if (derived === "failed") {
       if (!failedRecently(run.ended_at, run.started_at, nowSec)) continue;
       reason = "failed";
     } else if (GATED_STATUSES.has(s)) {
       reason = "gated";
-    } else if (RUNNING_STATUSES.has(s) && run.effective_health === "unresponsive") {
+    } else if (derived === "running" && run.effective_health === "unresponsive") {
       // Stuck is the honest health verdict (alive but quiet past its threshold),
       // never run age: a long-lived session still emitting activity is healthy.
       reason = "stuck";
@@ -232,12 +229,15 @@ function buildAttentionItems(
 }
 
 function deriveActiveRuns(runs: RunSummary[]): RunSummary[] {
-  return runs.filter((r) => RUNNING_STATUSES.has(r.status.toLowerCase()));
+  return runs.filter((r) => deriveDisplayStatus(r) === "running");
 }
 
 function deriveRecentRuns(runs: RunSummary[]): RunSummary[] {
   return runs
-    .filter((r) => TERMINAL_STATUSES.has(r.status.toLowerCase()))
+    .filter((r) => {
+      const derived = deriveDisplayStatus(r);
+      return derived !== "running" && derived !== "queued";
+    })
     .sort((a, b) => (b.started_at ?? 0) - (a.started_at ?? 0))
     .slice(0, 10);
 }

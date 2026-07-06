@@ -23,8 +23,7 @@ import { useLocale, useTranslations } from "use-intl";
 import IconButton from "@/components/ui/IconButton";
 import StatusPill from "@/components/ui/StatusPill";
 import type { ScheduleSummary } from "@/lib/types";
-import { KNOWN_RUN_STATUSES } from "./cards";
-import { toMs, type RunRow } from "./data";
+import { KNOWN_RUN_STATUSES, toMs, type RunRow } from "./data";
 
 const STATUS_DOT: Record<string, string> = {
   running: "var(--status-running)",

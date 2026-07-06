@@ -213,7 +213,8 @@
       "queued": "কিউড",
       "timed_out": "টাইম আউট",
       "aborted": "অ্যাবর্টেড",
-      "skipped": "স্কিপড"
+      "skipped": "স্কিপড",
+      "orphaned": "অনাথ"
     },
     "table": {
       "name": "নাম",
@@ -360,24 +361,12 @@
   "schedules": {
     "title": "শিডিউল",
     "subtitle": "cron, interval ও GitHub ট্রিগারে স্থায়ী অটোমেশন",
-    "board": "বোর্ড",
     "calendar": "ক্যালেন্ডার",
     "newSchedule": "নতুন শিডিউল",
     "loadError": "শিডিউল লোড করতে ব্যর্থ।",
     "emptyTitle": "এখনও কোনো শিডিউল নেই",
     "emptyBody": "cron, নির্দিষ্ট interval বা GitHub ইভেন্টে ইঞ্জিন ও এজেন্ট রান অটোমেট করুন।",
     "emptyCta": "প্রথম শিডিউল তৈরি করুন",
-    "lanes": {
-      "upcoming": "আসন্ন",
-      "today": "আজ",
-      "running": "রানিং",
-      "done": "সম্পন্ন",
-      "paused": "পজ করা",
-      "emptyUpcoming": "কিছু কিউড নেই",
-      "emptyToday": "আজ কিছু ডিউ নেই",
-      "emptyRunning": "আইডল",
-      "emptyDone": "এখনও কোনো রান নেই"
-    },
     "card": {
       "enable": "শিডিউল সক্রিয় করুন",
       "disable": "শিডিউল নিষ্ক্রিয় করুন",
@@ -390,7 +379,9 @@
       "overdue": "{delta} ওভারডিউ",
       "watching": "নতুন ইভেন্টে ফায়ার করে",
       "last": "শেষ",
-      "never": "কখনও রান হয়নি"
+      "never": "কখনও রান হয়নি",
+      "paused": "বিরতিতে",
+      "notScheduled": "নির্ধারিত নয়"
     },
     "run": {
       "elapsed": "{delta} কেটেছে",
@@ -521,14 +512,49 @@
       "overlapSkip": "স্কিপ",
       "overlapQueue": "কিউ",
       "overlapKillOld": "পুরনোটি বন্ধ করুন",
-      "sideRecentRuns": "সাম্প্রতিক রান",
       "noRuns": "এখনও কোনো রান নেই",
       "ago": " আগে",
       "cancel": "বাতিল",
       "save": "পরিবর্তন সেভ করুন",
       "saving": "সেভ হচ্ছে…",
       "saveFailed": "সেভ ব্যর্থ।",
-      "invalidJson": "{field}-এ অবৈধ JSON"
+      "invalidJson": "{field}-এ অবৈধ JSON",
+      "sectionHistory": "ইতিহাস"
+    },
+    "viewCards": "কার্ড",
+    "viewTable": "টেবিল",
+    "table": {
+      "colName": "নাম",
+      "colTrigger": "ট্রিগার",
+      "colEnabled": "সক্ষম",
+      "colLastRun": "শেষ রান",
+      "colNextFire": "পরবর্তী রান",
+      "colActions": "ক্রিয়া",
+      "neverRun": "কখনও না",
+      "notScheduled": "—",
+      "editAction": "সম্পাদনা করুন"
+    },
+    "trigger": {
+      "everyMinute": "প্রতি মিনিটে",
+      "everyMinutes": "প্রতি {n} মিনিটে",
+      "daily": "প্রতিদিন {time} UTC",
+      "weekly": "সাপ্তাহিক {day} {time} UTC",
+      "hourlyAt": "প্রতি ঘণ্টায় :{minute}",
+      "onEvent": "{event} এ",
+      "eventPrMerged": "PR মার্জ",
+      "eventPrOpened": "PR খোলা",
+      "eventPrUpdated": "PR আপডেট",
+      "eventPrClosed": "PR বন্ধ"
+    },
+    "error": {
+      "spawnFailed": "এজেন্ট চালু করা ব্যর্থ",
+      "network": "নেটওয়ার্ক ত্রুটি",
+      "timeout": "সময় শেষ",
+      "permission": "অনুমতি প্রত্যাখ্যাত",
+      "missingDependency": "নির্ভরতা অনুপস্থিত",
+      "notFound": "ফাইল পাওয়া যায়নি",
+      "showDetails": "সম্পূর্ণ ত্রুটি দেখান",
+      "hideDetails": "সম্পূর্ণ ত্রুটি লুকান"
     }
   },
   "fleet": {
@@ -807,7 +833,7 @@
     "filterTools": "টুল",
     "filterUser": "ইউজার",
     "filterSystem": "সিস্টেম",
-    "outcome": "আউটকাম",
+    "latestMessage": "সর্বশেষ বার্তা",
     "viewFullConversation": "সম্পূর্ণ কনভারসেশন দেখুন →",
     "noFinalResponse": "কোনো চূড়ান্ত রেসপন্স রেকর্ড করা হয়নি।",
     "statToolCalls": "টুল কল",

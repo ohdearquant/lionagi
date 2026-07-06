@@ -110,6 +110,9 @@ const TONE_BY_TAXONOMY: Record<StatusTaxonomy, Record<string, StatusTone>> = {
     timed_out: "pending", // deliberate bound — amber, not red
     aborted: "neutral", // user Ctrl-C
     cancelled: "neutral", // system / orchestrator cancellation
+    // DESIGN-BRIEF §0/§4: a daemon-restart reap is housekeeping, not a
+    // failure — distinct gray tone, never red.
+    orphaned: "neutral",
   },
   health: {
     // ADR-0024: six-level derived health. Pre-sorted by severity for the
@@ -127,6 +130,9 @@ const TONE_BY_TAXONOMY: Record<StatusTaxonomy, Record<string, StatusTone>> = {
     approve_with_suggestions: "ok",
     "approve-with-fixes": "pending",
     request_changes: "pending",
+    // DESIGN-BRIEF §4: request-changes is the system working as designed —
+    // amber, never red. Dash form is the canonical value from lib/runStatus.
+    "request-changes": "pending",
     reject: "failed",
     rejected: "failed",
   },

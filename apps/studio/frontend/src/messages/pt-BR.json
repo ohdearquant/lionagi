@@ -213,7 +213,8 @@
       "queued": "na fila",
       "timed_out": "tempo limite esgotado",
       "aborted": "interrompido",
-      "skipped": "ignorado"
+      "skipped": "ignorado",
+      "orphaned": "órfão"
     },
     "table": {
       "name": "Nome",
@@ -360,24 +361,12 @@
   "schedules": {
     "title": "Agendamentos",
     "subtitle": "Automações permanentes em acionadores cron, intervalo e GitHub",
-    "board": "Quadro",
     "calendar": "Calendário",
     "newSchedule": "Novo agendamento",
     "loadError": "Falha ao carregar agendamentos.",
     "emptyTitle": "Ainda não há agendamentos",
     "emptyBody": "Automatize execuções de engine e agente em um cron, intervalo fixo ou eventos do GitHub.",
     "emptyCta": "Criar o primeiro agendamento",
-    "lanes": {
-      "upcoming": "Próximos",
-      "today": "Hoje",
-      "running": "Em execução",
-      "done": "Concluído",
-      "paused": "Pausado",
-      "emptyUpcoming": "Nada na fila",
-      "emptyToday": "Nada previsto para hoje",
-      "emptyRunning": "Ocioso",
-      "emptyDone": "Ainda não há execuções"
-    },
     "card": {
       "enable": "Habilitar agendamento",
       "disable": "Desabilitar agendamento",
@@ -390,7 +379,9 @@
       "overdue": "atrasado {delta}",
       "watching": "monitorando novos eventos",
       "last": "último",
-      "never": "nunca executado"
+      "never": "nunca executado",
+      "paused": "Pausado",
+      "notScheduled": "Não agendado"
     },
     "run": {
       "elapsed": "{delta} decorridos",
@@ -521,14 +512,49 @@
       "overlapSkip": "Ignorar",
       "overlapQueue": "Enfileirar",
       "overlapKillOld": "Encerrar antigo",
-      "sideRecentRuns": "Execuções recentes",
       "noRuns": "Ainda não há execuções",
       "ago": " atrás",
       "cancel": "Cancelar",
       "save": "Salvar alterações",
       "saving": "Salvando…",
       "saveFailed": "Falha ao salvar.",
-      "invalidJson": "JSON inválido em {field}"
+      "invalidJson": "JSON inválido em {field}",
+      "sectionHistory": "Histórico"
+    },
+    "viewCards": "Cartões",
+    "viewTable": "Tabela",
+    "table": {
+      "colName": "Nome",
+      "colTrigger": "Gatilho",
+      "colEnabled": "Ativado",
+      "colLastRun": "Última execução",
+      "colNextFire": "Próxima execução",
+      "colActions": "Ações",
+      "neverRun": "Nunca",
+      "notScheduled": "—",
+      "editAction": "Editar"
+    },
+    "trigger": {
+      "everyMinute": "a cada minuto",
+      "everyMinutes": "a cada {n}m",
+      "daily": "diariamente {time} UTC",
+      "weekly": "semanalmente {day} {time} UTC",
+      "hourlyAt": "a cada hora às :{minute}",
+      "onEvent": "em {event}",
+      "eventPrMerged": "PR mesclado",
+      "eventPrOpened": "PR aberto",
+      "eventPrUpdated": "PR atualizado",
+      "eventPrClosed": "PR fechado"
+    },
+    "error": {
+      "spawnFailed": "falha ao iniciar o agente",
+      "network": "erro de rede",
+      "timeout": "tempo esgotado",
+      "permission": "permissão negada",
+      "missingDependency": "dependência ausente",
+      "notFound": "arquivo não encontrado",
+      "showDetails": "Mostrar erro completo",
+      "hideDetails": "Ocultar erro completo"
     }
   },
   "fleet": {
@@ -807,7 +833,7 @@
     "filterTools": "ferramentas",
     "filterUser": "usuário",
     "filterSystem": "sistema",
-    "outcome": "Resultado",
+    "latestMessage": "Última mensagem",
     "viewFullConversation": "Ver conversa completa →",
     "noFinalResponse": "Nenhuma resposta final registrada.",
     "statToolCalls": "Chamadas de ferramenta",

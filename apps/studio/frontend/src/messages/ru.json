@@ -213,7 +213,8 @@
       "queued": "в очереди",
       "timed_out": "превышено время ожидания",
       "aborted": "прервано",
-      "skipped": "пропущено"
+      "skipped": "пропущено",
+      "orphaned": "осиротевший"
     },
     "table": {
       "name": "Имя",
@@ -360,24 +361,12 @@
   "schedules": {
     "title": "Регулярная автоматизация по cron, интервалу и триггерам GitHub",
     "subtitle": "Постоянные автоматизации по cron, интервалу и триггерам GitHub",
-    "board": "Доска",
     "calendar": "Календарь",
     "newSchedule": "Новое расписание",
     "loadError": "Не удалось загрузить расписания.",
     "emptyTitle": "Расписаний пока нет",
     "emptyBody": "Автоматизируйте запуски движков и агентов по cron, фиксированному интервалу или событиям GitHub.",
     "emptyCta": "Создать первое расписание",
-    "lanes": {
-      "upcoming": "Предстоящие",
-      "today": "Сегодня",
-      "running": "Выполняется",
-      "done": "Готово",
-      "paused": "Приостановлено",
-      "emptyUpcoming": "Очередь пуста",
-      "emptyToday": "На сегодня ничего нет",
-      "emptyRunning": "Простой",
-      "emptyDone": "Запусков пока нет"
-    },
     "card": {
       "enable": "Включить расписание",
       "disable": "Отключить расписание",
@@ -390,7 +379,9 @@
       "overdue": "просрочено на {delta}",
       "watching": "срабатывает на новые события",
       "last": "последний",
-      "never": "никогда не запускалось"
+      "never": "никогда не запускалось",
+      "paused": "Приостановлено",
+      "notScheduled": "Не запланировано"
     },
     "run": {
       "elapsed": "прошло {delta}",
@@ -521,14 +512,49 @@
       "overlapSkip": "Пропустить",
       "overlapQueue": "Поставить в очередь",
       "overlapKillOld": "Завершить старый",
-      "sideRecentRuns": "Последние запуски",
       "noRuns": "Запусков пока нет",
       "ago": " назад",
       "cancel": "Отмена",
       "save": "Сохранить изменения",
       "saving": "Сохранение…",
       "saveFailed": "Не удалось сохранить.",
-      "invalidJson": "Некорректный JSON в {field}"
+      "invalidJson": "Некорректный JSON в {field}",
+      "sectionHistory": "История"
+    },
+    "viewCards": "Карточки",
+    "viewTable": "Таблица",
+    "table": {
+      "colName": "Имя",
+      "colTrigger": "Триггер",
+      "colEnabled": "Включено",
+      "colLastRun": "Последний запуск",
+      "colNextFire": "Следующий запуск",
+      "colActions": "Действия",
+      "neverRun": "Никогда",
+      "notScheduled": "—",
+      "editAction": "Изменить"
+    },
+    "trigger": {
+      "everyMinute": "каждую минуту",
+      "everyMinutes": "каждые {n} мин",
+      "daily": "ежедневно {time} UTC",
+      "weekly": "еженедельно {day} {time} UTC",
+      "hourlyAt": "ежечасно в :{minute}",
+      "onEvent": "при {event}",
+      "eventPrMerged": "PR слит",
+      "eventPrOpened": "PR открыт",
+      "eventPrUpdated": "PR обновлён",
+      "eventPrClosed": "PR закрыт"
+    },
+    "error": {
+      "spawnFailed": "не удалось запустить агент",
+      "network": "сетевая ошибка",
+      "timeout": "истекло время ожидания",
+      "permission": "доступ запрещён",
+      "missingDependency": "отсутствует зависимость",
+      "notFound": "файл не найден",
+      "showDetails": "Показать полную ошибку",
+      "hideDetails": "Скрыть полную ошибку"
     }
   },
   "fleet": {
@@ -807,7 +833,7 @@
     "filterTools": "инструменты",
     "filterUser": "пользователь",
     "filterSystem": "система",
-    "outcome": "Результат",
+    "latestMessage": "Последнее сообщение",
     "viewFullConversation": "Показать полный диалог →",
     "noFinalResponse": "Финальный ответ не записан.",
     "statToolCalls": "Вызовы инструментов",
