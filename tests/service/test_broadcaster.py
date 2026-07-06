@@ -320,3 +320,79 @@ class TestBroadcasterCoroutineOnlyRegression:
         await self.TaskBroadcaster.broadcast(event)
 
         assert results == ["done"], "async subscriber coroutine was not awaited"
+
+
+##################################################
+#  maybe_await widening: non-coroutine awaitables #
+##################################################
+
+
+class _FlagAwaitable:
+    """Bare `__await__`-only awaitable (not a coroutine, not a Task/Future)."""
+
+    def __init__(self, flag: list) -> None:
+        self._flag = flag
+
+    def __await__(self):
+        async def _mark():
+            self._flag.append(True)
+
+        return _mark().__await__()
+
+
+class TestBroadcasterMaybeAwaitWidening:
+    """Verify broadcast awaits ANY awaitable via maybe_await, not just coroutines (opposite contract of the class above; see PR description)."""
+
+    @pytest.fixture(autouse=True)
+    def fresh_broadcaster(self):
+        class _WideningBroadcaster(Broadcaster):
+            _event_type = SampleEvent
+
+        self.WideningBroadcaster = _WideningBroadcaster
+        yield
+        _WideningBroadcaster._subscribers.clear()
+        _WideningBroadcaster._instance = None
+
+    @pytest.mark.asyncio
+    async def test_sync_subscriber_returning_bare_awaitable_is_awaited(self):
+        flag = []
+
+        def sync_callback_returns_bare_awaitable(event):
+            return _FlagAwaitable(flag)
+
+        self.WideningBroadcaster.subscribe(sync_callback_returns_bare_awaitable)
+        await self.WideningBroadcaster.broadcast(SampleEvent())
+
+        assert flag == [True], (
+            "broadcast() did not await a bare __await__-only awaitable returned "
+            "by a sync subscriber"
+        )
+
+    @pytest.mark.asyncio
+    async def test_sync_subscriber_returning_future_is_awaited(self):
+        loop = asyncio.get_running_loop()
+        future = loop.create_future()
+        loop.call_soon(future.set_result, None)
+        observed = []
+
+        def sync_callback_returns_future(event):
+            observed.append("called")
+            return future
+
+        self.WideningBroadcaster.subscribe(sync_callback_returns_future)
+        await self.WideningBroadcaster.broadcast(SampleEvent())
+
+        assert observed == ["called"]
+        assert future.done(), "broadcast() did not await the Future returned by a sync subscriber"
+
+    @pytest.mark.asyncio
+    async def test_async_subscriber_coroutine_still_awaited(self):
+        results = []
+
+        async def async_callback(event):
+            results.append("done")
+
+        self.WideningBroadcaster.subscribe(async_callback)
+        await self.WideningBroadcaster.broadcast(SampleEvent())
+
+        assert results == ["done"]
