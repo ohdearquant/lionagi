@@ -337,24 +337,12 @@
   "schedules": {
     "title": "Penjadwalan",
     "subtitle": "Otomasi tetap pada pemicu cron, interval, dan GitHub",
-    "board": "Papan",
     "calendar": "Kalender",
     "newSchedule": "Penjadwalan baru",
     "loadError": "Gagal memuat penjadwalan.",
     "emptyTitle": "Belum ada penjadwalan",
     "emptyBody": "Otomatiskan eksekusi mesin dan agen pada cron, interval tetap, atau peristiwa GitHub.",
     "emptyCta": "Buat penjadwalan pertama",
-    "lanes": {
-      "upcoming": "Akan datang",
-      "today": "Hari ini",
-      "running": "Berjalan",
-      "done": "Selesai",
-      "paused": "Dijeda",
-      "emptyUpcoming": "Tidak ada antrean",
-      "emptyToday": "Tidak ada yang jatuh tempo hari ini",
-      "emptyRunning": "Menganggur",
-      "emptyDone": "Belum ada eksekusi"
-    },
     "card": {
       "enable": "Aktifkan penjadwalan",
       "disable": "Nonaktifkan penjadwalan",
@@ -498,14 +486,48 @@
       "overlapSkip": "Lewati",
       "overlapQueue": "Antrekan",
       "overlapKillOld": "Hentikan yang lama",
-      "sideRecentRuns": "Eksekusi terbaru",
       "noRuns": "Belum ada eksekusi",
       "ago": " yang lalu",
       "cancel": "Batal",
       "save": "Simpan perubahan",
       "saving": "Menyimpan…",
       "saveFailed": "Gagal menyimpan.",
-      "invalidJson": "JSON tidak valid di {field}"
+      "invalidJson": "JSON tidak valid di {field}",
+      "sectionHistory": "Riwayat"
+    },
+    "viewTable": "Tabel",
+    "table": {
+      "colName": "Nama",
+      "colTrigger": "Pemicu",
+      "colEnabled": "Diaktifkan",
+      "colLastRun": "Terakhir dijalankan",
+      "colNextFire": "Berikutnya",
+      "colActions": "Tindakan",
+      "neverRun": "Belum pernah",
+      "notScheduled": "—",
+      "editAction": "Edit"
+    },
+    "trigger": {
+      "everyMinute": "setiap menit",
+      "everyMinutes": "setiap {n}m",
+      "daily": "harian {time} UTC",
+      "weekly": "mingguan {day} {time} UTC",
+      "hourlyAt": "setiap jam pukul :{minute}",
+      "onEvent": "saat {event}",
+      "eventPrMerged": "PR digabungkan",
+      "eventPrOpened": "PR dibuka",
+      "eventPrUpdated": "PR diperbarui",
+      "eventPrClosed": "PR ditutup"
+    },
+    "error": {
+      "spawnFailed": "gagal memulai agen",
+      "network": "kesalahan jaringan",
+      "timeout": "waktu habis",
+      "permission": "izin ditolak",
+      "missingDependency": "dependensi hilang",
+      "notFound": "berkas tidak ditemukan",
+      "showDetails": "Tampilkan error lengkap",
+      "hideDetails": "Sembunyikan error lengkap"
     }
   },
   "fleet": {

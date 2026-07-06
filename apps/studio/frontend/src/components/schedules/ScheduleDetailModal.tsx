@@ -1,24 +1,32 @@
 import { useEffect, useRef, useState } from "react";
+import { useNavigate } from "@tanstack/react-router";
 import { useLocale, useTranslations } from "use-intl";
 import Button from "@/components/ui/Button";
 import ConfirmButton from "@/components/ui/ConfirmButton";
 import SectionLabel from "@/components/ui/SectionLabel";
 import { FieldLabel, Input, TextArea, Select } from "@/components/ui/Field";
 import IconButton from "@/components/ui/IconButton";
-import { IconClose } from "@/components/ui/icons";
+import StatusPill from "@/components/ui/StatusPill";
+import { IconArrowUpRight, IconClose } from "@/components/ui/icons";
 import { useToast } from "@/components/ui/Toast";
 import ErrorBanner from "@/components/ui/ErrorBanner";
 import EnabledToggle from "./EnabledToggle";
 import TemplateVarChips from "./TemplateVarChips";
-import { formatDelta, formatInterval, toMs } from "./data";
+import { classifyError } from "./errorClassify";
+import { KNOWN_RUN_STATUSES, formatDelta, formatInterval, toMs } from "./data";
 import {
   getSchedule,
+  getInvocation,
   updateSchedule,
   deleteSchedule,
   triggerSchedule,
   listScheduleRuns,
 } from "@/lib/api";
 import type { ScheduleDetail, ScheduleRunSummary } from "@/lib/types";
+
+// Run history is a first-class section on the detail page (not a 5-item
+// sidebar afterthought) — fetch enough of it to read as a real timeline.
+const DETAIL_RUNS_LIMIT = 50;
 
 type TriggerType = "cron" | "interval" | "github_poll";
 type ActionKind = "agent" | "flow" | "fanout" | "play";
@@ -157,13 +165,17 @@ export default function ScheduleDetailModal({
 }) {
   const t = useTranslations("schedules.detail");
   const tc = useTranslations("schedules.card");
+  const tError = useTranslations("schedules.error");
+  const tStatus = useTranslations("history.status");
   const locale = useLocale();
   const { toast } = useToast();
+  const navigate = useNavigate();
   const nameInputRef = useRef<HTMLInputElement>(null);
 
   const [detail, setDetail] = useState<ScheduleDetail | null>(null);
   const [loadErr, setLoadErr] = useState(false);
   const [recentRuns, setRecentRuns] = useState<ScheduleRunSummary[]>([]);
+  const [expandedRunIds, setExpandedRunIds] = useState<Set<string>>(new Set());
 
   const [form, setForm] = useState<DetailForm | null>(null);
   const [baseline, setBaseline] = useState<DetailForm | null>(null);
@@ -179,7 +191,7 @@ export default function ScheduleDetailModal({
       try {
         const [d, runsResp] = await Promise.all([
           getSchedule(scheduleId),
-          listScheduleRuns(scheduleId, { limit: 5 }),
+          listScheduleRuns(scheduleId, { limit: DETAIL_RUNS_LIMIT }),
         ]);
         if (!alive) return;
         setDetail(d);
@@ -278,6 +290,26 @@ export default function ScheduleDetailModal({
       onClose();
     } catch {
       toast(t("deleteFailed"), "error");
+    }
+  }
+
+  function toggleExpanded(runId: string) {
+    setExpandedRunIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(runId)) next.delete(runId);
+      else next.add(runId);
+      return next;
+    });
+  }
+
+  async function handleOpenRun(run: ScheduleRunSummary) {
+    if (!run.invocation_id) return;
+    try {
+      const inv = await getInvocation(run.invocation_id);
+      const sessionId = inv.sessions[0]?.id;
+      await navigate({ to: "/fleet", search: sessionId ? { s: sessionId } : {} });
+    } catch {
+      await navigate({ to: "/fleet" });
     }
   }
 
@@ -567,6 +599,76 @@ export default function ScheduleDetailModal({
                   mono
                 />
               </FieldLabel>
+
+              {/* History — the run timeline that used to live in the kanban
+                  Done column; a classified one-liner shows for every failed
+                  run, with the raw traceback expandable per-row. */}
+              <SectionLabel className="mt-1 border-t border-edge pt-3">
+                {t("sectionHistory")}
+              </SectionLabel>
+              {recentRuns.length === 0 ? (
+                <p className="text-meta text-content-muted">{t("noRuns")}</p>
+              ) : (
+                <div className="flex flex-col gap-1.5">
+                  {recentRuns.map((r) => {
+                    const firedMs = toMs(r.fired_at);
+                    const durationMs = r.ended_at != null ? toMs(r.ended_at) - firedMs : null;
+                    const statusLabel = KNOWN_RUN_STATUSES.has(r.status)
+                      ? tStatus(r.status as Parameters<typeof tStatus>[0])
+                      : undefined;
+                    const errorLine =
+                      r.status === "failed" ? classifyError(r.error_detail, tError) : null;
+                    const expanded = expandedRunIds.has(r.id);
+                    return (
+                      <div
+                        key={r.id}
+                        className="flex flex-col gap-1 rounded border border-edge px-2.5 py-1.5"
+                      >
+                        <div className="flex items-center gap-2 text-meta">
+                          <StatusPill value={r.status} taxonomy="session" label={statusLabel} />
+                          <span className="min-w-0 flex-1 text-content-secondary">
+                            {formatDelta(nowMs - firedMs)}
+                            {t("ago")}
+                          </span>
+                          {durationMs != null && durationMs >= 1000 && (
+                            <span className="shrink-0 font-data tabular-nums text-content-muted">
+                              {formatDelta(durationMs)}
+                            </span>
+                          )}
+                          {r.invocation_id && (
+                            <IconButton
+                              aria-label={tc("openRun")}
+                              title={tc("openRun")}
+                              onClick={() => void handleOpenRun(r)}
+                            >
+                              <IconArrowUpRight size={12} strokeWidth={2} />
+                            </IconButton>
+                          )}
+                        </div>
+                        {errorLine && (
+                          <div className="flex items-start justify-between gap-2">
+                            <span className="min-w-0 flex-1 truncate text-meta text-status-error">
+                              {errorLine}
+                            </span>
+                            <button
+                              type="button"
+                              onClick={() => toggleExpanded(r.id)}
+                              className="shrink-0 text-meta text-content-muted underline-offset-2 hover:text-content-primary hover:underline"
+                            >
+                              {expanded ? tError("hideDetails") : tError("showDetails")}
+                            </button>
+                          </div>
+                        )}
+                        {expanded && r.error_detail && (
+                          <pre className="max-h-48 overflow-auto whitespace-pre-wrap break-words rounded bg-surface-overlay p-2 font-data text-[length:var(--t-xs)] text-content-secondary">
+                            {r.error_detail}
+                          </pre>
+                        )}
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
             </div>
 
             {/* Sidebar */}
@@ -619,41 +721,6 @@ export default function ScheduleDetailModal({
                     </Select>
                   </FieldLabel>
                 </div>
-              </div>
-
-              {/* Recent runs */}
-              <div>
-                <SectionLabel className="mb-2">{t("sideRecentRuns")}</SectionLabel>
-                {recentRuns.length === 0 ? (
-                  <p className="text-meta text-content-muted">{t("noRuns")}</p>
-                ) : (
-                  <div className="flex flex-col gap-1.5">
-                    {recentRuns.map((r) => {
-                      const firedMs = toMs(r.fired_at);
-                      const durationMs = r.ended_at != null ? toMs(r.ended_at) - firedMs : null;
-                      return (
-                        <div key={r.id} className="flex items-center gap-1.5 text-meta">
-                          <span
-                            aria-hidden
-                            className="h-1.5 w-1.5 shrink-0 rounded-full"
-                            style={{
-                              background: STATUS_DOT[r.status] ?? "var(--content-muted)",
-                            }}
-                          />
-                          <span className="min-w-0 flex-1 truncate text-content-secondary">
-                            {formatDelta(nowMs - firedMs)}
-                            {t("ago")}
-                          </span>
-                          {durationMs != null && durationMs >= 1000 && (
-                            <span className="shrink-0 font-data tabular-nums text-content-muted">
-                              {formatDelta(durationMs)}
-                            </span>
-                          )}
-                        </div>
-                      );
-                    })}
-                  </div>
-                )}
               </div>
             </div>
           </div>

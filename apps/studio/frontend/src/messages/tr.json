@@ -337,24 +337,12 @@
   "schedules": {
     "title": "zamanlamalar",
     "subtitle": "cron, interval ve GitHub tetikleyicilerinde kalıcı otomasyonlar",
-    "board": "pano",
     "calendar": "takvim",
     "newSchedule": "yeni zamanlama",
     "loadError": "zamanlamalar yüklenemedi.",
     "emptyTitle": "henüz zamanlama yok",
     "emptyBody": "motor ve ajan çalıştırmalarını cron, sabit interval veya GitHub olaylarıyla otomatikleştir.",
     "emptyCta": "ilk zamanlamayı oluştur",
-    "lanes": {
-      "upcoming": "yaklaşan",
-      "today": "bugün",
-      "running": "çalışıyor",
-      "done": "tamam",
-      "paused": "duraklatıldı",
-      "emptyUpcoming": "kuyrukta bir şey yok",
-      "emptyToday": "bugün vadesi gelen yok",
-      "emptyRunning": "boşta",
-      "emptyDone": "henüz çalıştırma yok"
-    },
     "card": {
       "enable": "zamanlamayı etkinleştir",
       "disable": "zamanlamayı devre dışı bırak",
@@ -498,14 +486,48 @@
       "overlapSkip": "atla",
       "overlapQueue": "kuyruğa al",
       "overlapKillOld": "eskisini sonlandır",
-      "sideRecentRuns": "son çalıştırmalar",
       "noRuns": "henüz çalıştırma yok",
       "ago": " önce",
       "cancel": "iptal",
       "save": "değişiklikleri kaydet",
       "saving": "kaydediliyor…",
       "saveFailed": "kaydetme başarısız.",
-      "invalidJson": "{field} içinde geçersiz JSON"
+      "invalidJson": "{field} içinde geçersiz JSON",
+      "sectionHistory": "geçmiş"
+    },
+    "viewTable": "tablo",
+    "table": {
+      "colName": "ad",
+      "colTrigger": "tetikleyici",
+      "colEnabled": "etkin",
+      "colLastRun": "son çalışma",
+      "colNextFire": "sonraki çalışma",
+      "colActions": "eylemler",
+      "neverRun": "hiç çalışmadı",
+      "notScheduled": "—",
+      "editAction": "düzenle"
+    },
+    "trigger": {
+      "everyMinute": "her dakika",
+      "everyMinutes": "her {n}dk",
+      "daily": "günlük {time} UTC",
+      "weekly": "haftalık {day} {time} UTC",
+      "hourlyAt": "her saat :{minute}",
+      "onEvent": "{event} anında",
+      "eventPrMerged": "PR birleştirildi",
+      "eventPrOpened": "PR açıldı",
+      "eventPrUpdated": "PR güncellendi",
+      "eventPrClosed": "PR kapatıldı"
+    },
+    "error": {
+      "spawnFailed": "ajan başlatılamadı",
+      "network": "ağ hatası",
+      "timeout": "zaman aşımı",
+      "permission": "izin reddedildi",
+      "missingDependency": "eksik bağımlılık",
+      "notFound": "dosya bulunamadı",
+      "showDetails": "tam hatayı göster",
+      "hideDetails": "tam hatayı gizle"
     }
   },
   "fleet": {

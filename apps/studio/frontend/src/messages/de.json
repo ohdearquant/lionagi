@@ -337,24 +337,12 @@
   "schedules": {
     "title": "Zeitpläne",
     "subtitle": "Dauerhafte Automatisierungen über cron-, Intervall- und GitHub-Auslöser",
-    "board": "Board",
     "calendar": "Kalender",
     "newSchedule": "Neuer Zeitplan",
     "loadError": "Zeitpläne konnten nicht geladen werden.",
     "emptyTitle": "Noch keine Zeitpläne",
     "emptyBody": "Automatisiere Engine- und Agent-Ausführungen per cron, festem Intervall oder GitHub-Ereignissen.",
     "emptyCta": "Ersten Zeitplan erstellen",
-    "lanes": {
-      "upcoming": "Demnächst",
-      "today": "Heute",
-      "running": "Läuft",
-      "done": "Fertig",
-      "paused": "Pausiert",
-      "emptyUpcoming": "Nichts geplant",
-      "emptyToday": "Heute nichts fällig",
-      "emptyRunning": "Leerlauf",
-      "emptyDone": "Noch keine Ausführungen"
-    },
     "card": {
       "enable": "Zeitplan aktivieren",
       "disable": "Zeitplan deaktivieren",
@@ -498,14 +486,48 @@
       "overlapSkip": "Überspringen",
       "overlapQueue": "Einreihen",
       "overlapKillOld": "Alte beenden",
-      "sideRecentRuns": "Letzte Ausführungen",
       "noRuns": "Noch keine Ausführungen",
       "ago": " zuvor",
       "cancel": "Abbrechen",
       "save": "Änderungen speichern",
       "saving": "Wird gespeichert…",
       "saveFailed": "Speichern fehlgeschlagen.",
-      "invalidJson": "Ungültiges JSON in {field}"
+      "invalidJson": "Ungültiges JSON in {field}",
+      "sectionHistory": "Verlauf"
+    },
+    "viewTable": "Tabelle",
+    "table": {
+      "colName": "Name",
+      "colTrigger": "Auslöser",
+      "colEnabled": "Aktiviert",
+      "colLastRun": "Letzter Lauf",
+      "colNextFire": "Nächster Lauf",
+      "colActions": "Aktionen",
+      "neverRun": "Nie",
+      "notScheduled": "—",
+      "editAction": "Bearbeiten"
+    },
+    "trigger": {
+      "everyMinute": "jede Minute",
+      "everyMinutes": "alle {n}m",
+      "daily": "täglich {time} UTC",
+      "weekly": "wöchentlich {day} {time} UTC",
+      "hourlyAt": "stündlich um :{minute}",
+      "onEvent": "bei {event}",
+      "eventPrMerged": "PR gemergt",
+      "eventPrOpened": "PR geöffnet",
+      "eventPrUpdated": "PR aktualisiert",
+      "eventPrClosed": "PR geschlossen"
+    },
+    "error": {
+      "spawnFailed": "Agent-Start fehlgeschlagen",
+      "network": "Netzwerkfehler",
+      "timeout": "Zeitüberschreitung",
+      "permission": "Zugriff verweigert",
+      "missingDependency": "fehlende Abhängigkeit",
+      "notFound": "Datei nicht gefunden",
+      "showDetails": "Vollständigen Fehler anzeigen",
+      "hideDetails": "Vollständigen Fehler ausblenden"
     }
   },
   "fleet": {
