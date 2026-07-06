@@ -283,3 +283,98 @@ def test_list_runs_without_tag_filter_still_attaches_tags_field(tmp_path, monkey
     target = next((run for run in r.json()["runs"] if run["id"] == sid), None)
     assert target is not None
     assert target["tags"] == ["x"]
+
+
+# ── P2a: a tag READ must never create a partial db on a fresh install ────────
+
+
+def test_list_runs_tag_filter_on_fresh_install_does_not_create_db(tmp_path, monkeypatch):
+    """GET /api/runs?tag=x on a brand-new install (no state.db) must not create
+
+    a partial db containing only the run_tags table -- that would leave every
+    later `SELECT ... FROM sessions` 500ing (codex P2a, PR #1834).
+    """
+    db_path = tmp_path / "state.db"
+    _patch_db(monkeypatch, db_path)
+    assert not db_path.exists()
+
+    import lionagi.studio.services.runs as runs_mod
+
+    result = _run(runs_mod.list_runs(tag=["x"]))
+
+    assert result == []
+    assert not db_path.exists(), "a tag read created a (partial) db file"
+
+
+def test_tags_for_sessions_on_fresh_install_does_not_create_db(tmp_path, monkeypatch):
+    db_path = tmp_path / "state.db"
+    _patch_db(monkeypatch, db_path)
+    assert not db_path.exists()
+
+    import lionagi.studio.services.run_tags as run_tags
+
+    assert _run(run_tags.tags_for_sessions([str(uuid.uuid4())])) == {}
+    assert not db_path.exists()
+
+
+def test_session_ids_with_tags_on_fresh_install_does_not_create_db(tmp_path, monkeypatch):
+    db_path = tmp_path / "state.db"
+    _patch_db(monkeypatch, db_path)
+    assert not db_path.exists()
+
+    import lionagi.studio.services.run_tags as run_tags
+
+    assert _run(run_tags.session_ids_with_tags(["x"])) is None
+    assert not db_path.exists()
+
+
+def test_add_tag_on_fresh_install_initializes_full_schema_not_just_run_tags(tmp_path, monkeypatch):
+    """add_tag on a fresh install must apply the FULL schema (sessions, etc.),
+
+    not just the run_tags table -- otherwise the db is left partial and a
+    later sessions query 500s (codex P2a, PR #1834).
+    """
+    db_path = tmp_path / "state.db"
+    _patch_db(monkeypatch, db_path)
+    assert not db_path.exists()
+
+    import lionagi.studio.services.run_tags as run_tags
+    import lionagi.studio.services.sessions as sessions_mod
+
+    sid = str(uuid.uuid4())
+    _run(run_tags.add_tag(sid, "urgent"))
+
+    assert db_path.exists()
+    # A `sessions` query must not raise -- it would if only run_tags existed.
+    assert _run(sessions_mod.list_sessions()) == []
+    tagmap = _run(run_tags.tags_for_sessions([sid]))
+    assert tagmap == {sid: ["urgent"]}
+
+
+# ── P2b: free-form tags containing "/" must round-trip through the DELETE route ──
+
+
+def test_remove_run_tag_route_handles_slash_in_tag(tmp_path, monkeypatch):
+    """A tag like 'team/backend' must be deletable through the actual route.
+
+    The DELETE path param must capture the rest of the path (codex P2b,
+    PR #1834) -- exercised here via TestClient, not by calling remove_tag()
+    directly, so the routing itself is proven.
+    """
+    db_path = tmp_path / "state.db"
+    _run(_init_db(db_path))
+    client = _make_client(db_path, monkeypatch)
+
+    sid = str(uuid.uuid4())
+    r = client.post(f"/api/sessions/{sid}/tags", json={"tag": "team/backend"})
+    assert r.status_code == 200
+    assert r.json()["tags"] == ["team/backend"]
+
+    r2 = client.delete(f"/api/sessions/{sid}/tags/team/backend")
+    assert r2.status_code == 200
+    assert r2.json()["tags"] == []
+
+    import lionagi.studio.services.run_tags as run_tags
+
+    tagmap = _run(run_tags.tags_for_sessions([sid]))
+    assert sid not in tagmap

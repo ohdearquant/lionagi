@@ -510,7 +510,7 @@ async def list_runs(
 
     sessions = await _sessions_svc.list_sessions()
     status_set = _normalize_status_filter(status)
-    tagged = await run_tags.session_ids_with_tags(tag) if tag else None
+    tagged = await run_tags.session_ids_with_tags(tag) if (tag and sessions) else None
     now = time.time()
     out = []
     snapshot: str | None = None

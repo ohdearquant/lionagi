@@ -9,7 +9,7 @@ from typing import Any
 from fastapi import HTTPException
 from pydantic import BaseModel
 
-from lionagi.state.db import DEFAULT_DB_PATH
+from lionagi.state.db import DEFAULT_DB_PATH, StateDB
 
 from ..registry import studio_route
 from ._db import open_db as _open_db
@@ -36,6 +36,14 @@ async def add_tag(session_id: str, tag: str) -> None:
     clean = (tag or "").strip()
     if not clean:
         raise HTTPException(status_code=422, detail="tag must not be empty")
+
+    if not DEFAULT_DB_PATH.exists():
+        # A tag write on a fresh install must not leave a partial db behind
+        # (only run_tags, no sessions/etc). Apply the full schema first via
+        # StateDB so every table exists before this module adds run_tags.
+        _db = StateDB()
+        await _db.open()
+        await _db.close()
 
     now = time.time()
     async with _open_db(_DB) as db:
@@ -65,6 +73,8 @@ async def tags_for_sessions(session_ids: list[str]) -> dict[str, list[str]]:
     sessions with no tags are simply absent from the result (caller defaults
     to []).
     """
+    if not DEFAULT_DB_PATH.exists():
+        return {}
     if not session_ids:
         return {}
 
@@ -91,6 +101,8 @@ async def session_ids_with_tags(tags: list[str]) -> set[str] | None:
     requested" — callers must treat None as pass-through, not as "no matches".
     A non-empty list with no matching sessions returns an empty set.
     """
+    if not DEFAULT_DB_PATH.exists():
+        return None
     if not tags:
         return None
 
@@ -121,7 +133,7 @@ async def add_run_tag(session_id: str, body: TagBody) -> dict[str, Any]:
 
 
 @studio_route(
-    "/sessions/{session_id}/tags/{tag}",
+    "/sessions/{session_id}/tags/{tag:path}",
     method="DELETE",
     area="sessions",
     name="remove_run_tag",
