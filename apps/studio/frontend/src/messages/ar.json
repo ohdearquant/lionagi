@@ -356,7 +356,9 @@
       "overdue": "متأخر {delta}",
       "watching": "ينطلق عند الأحداث الجديدة",
       "last": "الأخير",
-      "never": "لم يُشغّل قط"
+      "never": "لم يُشغّل قط",
+      "paused": "متوقف مؤقتًا",
+      "notScheduled": "غير مجدول"
     },
     "run": {
       "elapsed": "انقضى {delta}",
@@ -496,6 +498,7 @@
       "invalidJson": "JSON غير صالح في {field}",
       "sectionHistory": "السجل"
     },
+    "viewCards": "بطاقات",
     "viewTable": "جدول",
     "table": {
       "colName": "الاسم",

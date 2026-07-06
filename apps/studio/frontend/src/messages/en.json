@@ -356,7 +356,9 @@
       "overdue": "overdue {delta}",
       "watching": "fires on new events",
       "last": "last",
-      "never": "never run"
+      "never": "never run",
+      "paused": "Paused",
+      "notScheduled": "Not scheduled"
     },
     "run": {
       "elapsed": "{delta} elapsed",
@@ -496,6 +498,7 @@
       "invalidJson": "Invalid JSON in {field}",
       "sectionHistory": "History"
     },
+    "viewCards": "Cards",
     "viewTable": "Table",
     "table": {
       "colName": "Name",

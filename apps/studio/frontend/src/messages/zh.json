@@ -356,7 +356,9 @@
       "overdue": "已逾期 {delta}",
       "watching": "新事件到达时触发",
       "last": "上次",
-      "never": "从未运行"
+      "never": "从未运行",
+      "paused": "已暂停",
+      "notScheduled": "未排期"
     },
     "run": {
       "elapsed": "已运行 {delta}",
@@ -496,6 +498,7 @@
       "invalidJson": "{field} 中的 JSON 格式无效",
       "sectionHistory": "历史记录"
     },
+    "viewCards": "卡片",
     "viewTable": "表格",
     "table": {
       "colName": "名称",

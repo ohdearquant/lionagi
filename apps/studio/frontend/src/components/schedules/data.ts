@@ -135,6 +135,51 @@ export function useSchedulesData(): SchedulesData {
   return { schedules, runs, nowMs, loading, error, refresh: () => void load() };
 }
 
+// ─── Next-fire derivation ─────────────────────────────────────────────────────
+// A disabled schedule never fires, so its stored next_fire_at is stale and must
+// never be shown as an upcoming (or overdue) firing. Enabled state is checked
+// FIRST here — every surface that shows "next fire" derives it through this so
+// they can't disagree.
+
+const SOON_MS = 3_600_000; // within the hour
+
+export type NextFireState =
+  | { kind: "paused" }
+  | { kind: "watching" }
+  | { kind: "unscheduled" }
+  | { kind: "fire"; fireMs: number; deltaMs: number; overdue: boolean; soon: boolean };
+
+export function nextFireState(s: ScheduleSummary, nowMs: number): NextFireState {
+  if (!s.enabled) return { kind: "paused" };
+  if (s.trigger_type === "github_poll") return { kind: "watching" };
+  if (s.next_fire_at == null) return { kind: "unscheduled" };
+  const fireMs = toMs(s.next_fire_at);
+  const deltaMs = fireMs - nowMs;
+  return {
+    kind: "fire",
+    fireMs,
+    deltaMs,
+    overdue: deltaMs < 0,
+    soon: deltaMs >= 0 && deltaMs < SOON_MS,
+  };
+}
+
+/**
+ * Card ordering: live schedules first (soonest firing at the top), paused ones
+ * sink to the bottom — the reverse of showing a disabled schedule as "overdue".
+ */
+export function sortSchedulesForCards(schedules: ScheduleSummary[]): ScheduleSummary[] {
+  return [...schedules].sort((a, b) => {
+    const ea = a.enabled ? 0 : 1;
+    const eb = b.enabled ? 0 : 1;
+    if (ea !== eb) return ea - eb;
+    if (a.next_fire_at == null && b.next_fire_at == null) return a.name.localeCompare(b.name);
+    if (a.next_fire_at == null) return 1;
+    if (b.next_fire_at == null) return -1;
+    return a.next_fire_at - b.next_fire_at;
+  });
+}
+
 /** Most recent run per schedule, for the table's "last run" column. */
 export function latestRunBySchedule(runs: RunRow[]): Map<string, RunRow> {
   const map = new Map<string, RunRow>();

@@ -356,7 +356,9 @@
       "overdue": "terlambat {delta}",
       "watching": "dipicu oleh peristiwa baru",
       "last": "terakhir",
-      "never": "tidak pernah dijalankan"
+      "never": "tidak pernah dijalankan",
+      "paused": "Dijeda",
+      "notScheduled": "Tidak dijadwalkan"
     },
     "run": {
       "elapsed": "{delta} berlalu",
@@ -496,6 +498,7 @@
       "invalidJson": "JSON tidak valid di {field}",
       "sectionHistory": "Riwayat"
     },
+    "viewCards": "Kartu",
     "viewTable": "Tabel",
     "table": {
       "colName": "Nama",

@@ -356,7 +356,9 @@
       "overdue": "atrasado {delta}",
       "watching": "monitorando novos eventos",
       "last": "último",
-      "never": "nunca executado"
+      "never": "nunca executado",
+      "paused": "Pausado",
+      "notScheduled": "Não agendado"
     },
     "run": {
       "elapsed": "{delta} decorridos",
@@ -496,6 +498,7 @@
       "invalidJson": "JSON inválido em {field}",
       "sectionHistory": "Histórico"
     },
+    "viewCards": "Cartões",
     "viewTable": "Tabela",
     "table": {
       "colName": "Nome",

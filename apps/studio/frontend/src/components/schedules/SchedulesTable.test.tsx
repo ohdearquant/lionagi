@@ -88,6 +88,20 @@ describe("sortByNextFire — next-fire column sort", () => {
     sortByNextFire(list, "asc");
     expect(list).toEqual(copy);
   });
+
+  it("sinks a disabled schedule below enabled ones despite a soon stale next_fire_at", () => {
+    const paused = schedule({ id: "paused", name: "a-paused", enabled: 0, next_fire_at: 50 });
+    const live = schedule({ id: "live", name: "z-live", enabled: 1, next_fire_at: 500 });
+    // Paused sorts last in BOTH directions — its stale timestamp is not a real fire.
+    expect(sortByNextFire([paused, live], "asc").map((s) => s.id)).toEqual(["live", "paused"]);
+    expect(sortByNextFire([paused, live], "desc").map((s) => s.id)).toEqual(["live", "paused"]);
+  });
+
+  it("sinks a disabled schedule with a future stale next_fire_at too", () => {
+    const paused = schedule({ id: "paused", name: "paused", enabled: 0, next_fire_at: 9_000 });
+    const live = schedule({ id: "live", name: "live", enabled: 1, next_fire_at: 1_000 });
+    expect(sortByNextFire([paused, live], "asc").map((s) => s.id)).toEqual(["live", "paused"]);
+  });
 });
 
 // ─── Source contract — one flat table, real wiring, no kanban ──────────────

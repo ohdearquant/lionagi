@@ -356,7 +356,9 @@
       "overdue": "{delta} 지연",
       "watching": "새 이벤트에서 실행됨",
       "last": "마지막",
-      "never": "실행된 적 없음"
+      "never": "실행된 적 없음",
+      "paused": "일시중지됨",
+      "notScheduled": "예약 안 됨"
     },
     "run": {
       "elapsed": "{delta} 경과",
@@ -496,6 +498,7 @@
       "invalidJson": "{field}의 JSON이 유효하지 않습니다",
       "sectionHistory": "기록"
     },
+    "viewCards": "카드",
     "viewTable": "테이블",
     "table": {
       "colName": "이름",

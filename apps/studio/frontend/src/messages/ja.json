@@ -356,7 +356,9 @@
       "overdue": "{delta}遅延",
       "watching": "新しいイベントでトリガー",
       "last": "前回",
-      "never": "未実行"
+      "never": "未実行",
+      "paused": "一時停止中",
+      "notScheduled": "未スケジュール"
     },
     "run": {
       "elapsed": "{delta}経過",
@@ -496,6 +498,7 @@
       "invalidJson": "{field}のJSONが無効です",
       "sectionHistory": "履歴"
     },
+    "viewCards": "カード",
     "viewTable": "テーブル",
     "table": {
       "colName": "名前",

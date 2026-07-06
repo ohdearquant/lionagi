@@ -356,7 +356,9 @@
       "overdue": "{delta} gecikti",
       "watching": "yeni olaylarda tetiklenir",
       "last": "son",
-      "never": "hiç çalışmadı"
+      "never": "hiç çalışmadı",
+      "paused": "Duraklatıldı",
+      "notScheduled": "Zamanlanmadı"
     },
     "run": {
       "elapsed": "{delta} geçti",
@@ -496,6 +498,7 @@
       "invalidJson": "{field} içinde geçersiz JSON",
       "sectionHistory": "geçmiş"
     },
+    "viewCards": "Kartlar",
     "viewTable": "tablo",
     "table": {
       "colName": "ad",

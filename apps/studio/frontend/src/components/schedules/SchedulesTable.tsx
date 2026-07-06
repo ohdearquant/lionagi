@@ -15,36 +15,58 @@ import type { ScheduleSummary } from "@/lib/types";
 import EnabledToggle from "./EnabledToggle";
 import { classifyError } from "./errorClassify";
 import { humanTrigger } from "./trigger";
-import { KNOWN_RUN_STATUSES, formatDelta, latestRunBySchedule, toMs, type RunRow } from "./data";
+import {
+  KNOWN_RUN_STATUSES,
+  formatDelta,
+  latestRunBySchedule,
+  nextFireState,
+  toMs,
+  type RunRow,
+} from "./data";
+import { IconPause } from "@/components/ui/icons";
 
 export type SortDir = "asc" | "desc";
+
+// A paused schedule's next_fire_at is stale and not actionable, so it has no
+// sort key — it sinks below enabled schedules (in both directions), matching
+// the "Paused" cell rather than interleaving among real firings.
+function fireSortKey(s: ScheduleSummary): number | null {
+  return s.enabled && s.next_fire_at != null ? s.next_fire_at : null;
+}
 
 export function sortByNextFire(schedules: ScheduleSummary[], dir: SortDir): ScheduleSummary[] {
   const mul = dir === "asc" ? 1 : -1;
   return [...schedules].sort((a, b) => {
-    if (a.next_fire_at == null && b.next_fire_at == null) return a.name.localeCompare(b.name);
-    if (a.next_fire_at == null) return 1;
-    if (b.next_fire_at == null) return -1;
-    return (a.next_fire_at - b.next_fire_at) * mul;
+    const ka = fireSortKey(a);
+    const kb = fireSortKey(b);
+    if (ka == null && kb == null) return a.name.localeCompare(b.name);
+    if (ka == null) return 1;
+    if (kb == null) return -1;
+    return (ka - kb) * mul;
   });
 }
 
 function NextFireCell({ schedule, nowMs }: { schedule: ScheduleSummary; nowMs: number }) {
   const t = useTranslations("schedules");
   const locale = useLocale();
+  const state = nextFireState(schedule, nowMs);
 
-  if (schedule.trigger_type === "github_poll") {
+  if (state.kind === "paused") {
+    return (
+      <span className="inline-flex items-center gap-1 text-meta text-content-muted">
+        <IconPause size={11} strokeWidth={2} />
+        {t("card.paused")}
+      </span>
+    );
+  }
+  if (state.kind === "watching") {
     return <span className="text-meta text-content-secondary">{t("card.watching")}</span>;
   }
-  if (schedule.next_fire_at == null) {
+  if (state.kind === "unscheduled") {
     return <span className="text-meta text-content-muted">{t("table.notScheduled")}</span>;
   }
 
-  const fireMs = toMs(schedule.next_fire_at);
-  const delta = fireMs - nowMs;
-  const overdue = delta < 0;
-  const soon = !overdue && delta < 3_600_000;
-  const absolute = new Date(fireMs).toLocaleString(locale, {
+  const absolute = new Date(state.fireMs).toLocaleString(locale, {
     month: "short",
     day: "numeric",
     hour: "2-digit",
@@ -58,16 +80,16 @@ function NextFireCell({ schedule, nowMs }: { schedule: ScheduleSummary; nowMs: n
       <span
         className="text-meta"
         style={{
-          color: overdue
+          color: state.overdue
             ? "var(--status-warning)"
-            : soon
+            : state.soon
               ? "var(--accent)"
               : "var(--content-secondary)",
         }}
       >
-        {overdue
-          ? t("card.overdue", { delta: formatDelta(-delta) })
-          : t("card.in", { delta: formatDelta(delta) })}
+        {state.overdue
+          ? t("card.overdue", { delta: formatDelta(-state.deltaMs) })
+          : t("card.in", { delta: formatDelta(state.deltaMs) })}
       </span>
     </div>
   );

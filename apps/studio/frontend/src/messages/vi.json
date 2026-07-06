@@ -356,7 +356,9 @@
       "overdue": "trễ {delta}",
       "watching": "kích hoạt khi có sự kiện mới",
       "last": "gần nhất",
-      "never": "chưa từng chạy"
+      "never": "chưa từng chạy",
+      "paused": "Đã tạm dừng",
+      "notScheduled": "Chưa lên lịch"
     },
     "run": {
       "elapsed": "đã qua {delta}",
@@ -496,6 +498,7 @@
       "invalidJson": "JSON không hợp lệ trong {field}",
       "sectionHistory": "lịch sử"
     },
+    "viewCards": "Thẻ",
     "viewTable": "bảng",
     "table": {
       "colName": "tên",

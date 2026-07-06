@@ -166,6 +166,7 @@ export default function ScheduleDetailModal({
   const t = useTranslations("schedules.detail");
   const tc = useTranslations("schedules.card");
   const tError = useTranslations("schedules.error");
+  const tRun = useTranslations("schedules.run");
   const tStatus = useTranslations("history.status");
   const locale = useLocale();
   const { toast } = useToast();
@@ -363,20 +364,28 @@ export default function ScheduleDetailModal({
               {/* Meta strip */}
               <div className="mt-1 flex items-center gap-2 font-data text-[length:var(--t-xs)] text-content-muted">
                 <span>{triggerSummary(detail, (s) => tc("every", { interval: s }))}</span>
-                {detail.next_fire_at != null && (
+                {/* A paused schedule never fires — show "Paused", not a stale next-fire time. */}
+                {!enabled ? (
                   <>
                     <span aria-hidden>·</span>
-                    <span>
-                      {t("nextFire")}{" "}
-                      {new Date(toMs(detail.next_fire_at)).toLocaleString(locale, {
-                        month: "short",
-                        day: "numeric",
-                        hour: "2-digit",
-                        minute: "2-digit",
-                        hour12: false,
-                      })}
-                    </span>
+                    <span>{tc("paused")}</span>
                   </>
+                ) : (
+                  detail.next_fire_at != null && (
+                    <>
+                      <span aria-hidden>·</span>
+                      <span>
+                        {t("nextFire")}{" "}
+                        {new Date(toMs(detail.next_fire_at)).toLocaleString(locale, {
+                          month: "short",
+                          day: "numeric",
+                          hour: "2-digit",
+                          minute: "2-digit",
+                          hour12: false,
+                        })}
+                      </span>
+                    </>
+                  )
                 )}
                 {detail.recent_runs[0] && (
                   <>
@@ -414,7 +423,7 @@ export default function ScheduleDetailModal({
               <TextArea
                 value={form.description}
                 onChange={(e) => set("description", e.target.value)}
-                rows={2}
+                rows={3}
                 placeholder={t("descriptionPlaceholder")}
               />
 
@@ -637,8 +646,8 @@ export default function ScheduleDetailModal({
                           )}
                           {r.invocation_id && (
                             <IconButton
-                              aria-label={tc("openRun")}
-                              title={tc("openRun")}
+                              aria-label={tRun("openRun")}
+                              title={tRun("openRun")}
                               onClick={() => void handleOpenRun(r)}
                             >
                               <IconArrowUpRight size={12} strokeWidth={2} />

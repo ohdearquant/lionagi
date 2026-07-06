@@ -356,7 +356,9 @@
       "overdue": "⁨{delta}⁩ تاخیر سے",
       "watching": "نئے ایونٹس پر ٹرگر ہوتا ہے",
       "last": "آخری",
-      "never": "کبھی نہیں چلا"
+      "never": "کبھی نہیں چلا",
+      "paused": "موقوف",
+      "notScheduled": "شیڈول نہیں"
     },
     "run": {
       "elapsed": "⁨{delta}⁩ گزر چکا",
@@ -496,6 +498,7 @@
       "invalidJson": "⁨{field}⁩ میں JSON درست نہیں",
       "sectionHistory": "تاریخ"
     },
+    "viewCards": "کارڈز",
     "viewTable": "جدول",
     "table": {
       "colName": "نام",
