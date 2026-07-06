@@ -16,7 +16,6 @@ __all__ = (
     "RelationError",
     "OperationError",
     "ExecutionError",
-    "AccessError",
     "ConfigurationError",
     "TimeoutError",
     "ItemNotFoundError",
@@ -139,14 +138,6 @@ class OperationError(LionError, ValueError):
 
 class ExecutionError(LionError, RuntimeError):
     pass
-
-
-class AccessError(LionError):
-    """Exception raised when access is denied."""
-
-    default_message = "Access denied"
-    default_status_code = 403
-    __slots__ = ()
 
 
 class ConfigurationError(LionError, ValueError):

@@ -54,11 +54,6 @@ def resolve_handler(name: str) -> HookHandler:
         raise KeyError(f"Unknown hook handler {name!r}. Registered: {sorted(_REGISTRY)}") from exc
 
 
-def registered_handlers() -> list[str]:
-    """Sorted list of registered handler names (for diagnostics)."""
-    return sorted(_REGISTRY)
-
-
 def load_hooks_for_agent(
     agent_hooks: dict[str, list[str]] | None,
 ) -> dict[HookPoint, list[HookHandler]]:
