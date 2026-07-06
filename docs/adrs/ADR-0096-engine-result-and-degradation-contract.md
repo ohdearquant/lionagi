@@ -1,6 +1,6 @@
 # ADR-0096: Engine Result & Degradation Contract
 
-**Status**: Proposed (advisor-hardened) — pending λ:leo spec gate + Fable sign-off before dependent impl
+**Status**: Accepted — λ:leo spec gate + Fable sign-off (one gate) 2026-07-06, APPROVE-WITH-AMENDMENT; the R5 success-path amendment is folded in below per the gate verdict. Dependent implementation may start.
 **Date**: 2026-07-06
 **Scope**: `lionagi/engines/` — the return value and failure semantics of `Engine.run()`. Extends ADR-0075 (engine design) and ADR-0077 (autonomy protections); does not relitigate them.
 **Authored by**: `advisor` subagent (engine: Opus 4.8 xhigh) from packet `.khive/workspaces/20260706/engine-adr/PACKET.md`. All code cites re-verified at source at main `a38add627`.
@@ -71,17 +71,19 @@ The cheapest path: document that ReviewEngine/PlanningEngine don't degrade and t
 ```text
                 Engine.run(prompt) ─────────────► EngineResult   (the RETURNS face, Fork C)
                      │                                 ▲   ▲
-   success path ─────┤                                 │   │
+   success path ─────┤   if run._budget_notified ──────┤   │   (R5: a completed-but-truncated
+                     │      → degraded=True             │   │    run still reports it)
                      │                                 │   └── .degraded / .skipped  (gap-4, Fork C)
    budget/deadline ──┤──► _partial_export(run) ────────┘
         degrade      │        (base default = honest structured partial, Fork B)
         (Fork A)     │
                      └──► EngineBudgetError is a CONTROL signal, never an escape:
-                          • spawned/gathered discretionary  → stop that branch, continue
+                          • spawned/gathered discretionary  → stop that branch, continue,
+                              BUT the success return sets degraded=True if _budget_notified (R5)
                           • root mandatory pipeline          → route to _partial_export, flag degraded
 ```
 
-Every arrow terminates in the same `EngineResult`. That is why it is one ADR.
+Every arrow terminates in the same `EngineResult`. That is why it is one ADR. Note the two ways `degraded=True` is reached: the degrade path (budget/deadline routes through `_partial_export`) **and** the success path (a run that filtered a discretionary budget raise and still completed — R5 below).
 
 ---
 
@@ -93,10 +95,11 @@ Every arrow terminates in the same `EngineResult`. That is why it is one ADR.
 | **A2. Defend inside `make_agent`** (return a sentinel instead of raising) | One site | Changes `make_agent`'s contract for *all* callers, including terminal `exempt=True` stages and the root mandatory calls that *should* surface a misconfig; erases the ability to distinguish "expansion declined" from "pipeline can't run" | Cheap now, expensive later — collapses two semantics into one, then needs re-splitting when misconfig-visibility is demanded |
 | **A3 (RECOMMENDED). Two-point central fix: (i) `wait_quiescence` treats `EngineBudgetError` as benign (mirror the existing `CancelledError` filter, `engine.py:410`); (ii) `run()`'s handler also catches `EngineBudgetError` → route to `_partial_export`, flag `degraded`** | Fixes all three crash shapes at two central sites; no per-callsite churn; spawned discretionary work degrades exactly like `spawn()` and like hypothesis's `_guard` already do; root mandatory shortfall becomes a flagged degraded result, not a crash and not a silent success | `run()` catching `EngineBudgetError` must not swallow a *mixed* `ExceptionGroup` (budget + a real error) — must re-raise if any non-budget error is present; needs care | Flat: new engines inherit correct behavior for free; the semantics live in the base, not in each author's memory |
 
-**Recommendation: A3.** `EngineBudgetError` is a control signal; it belongs to the base runtime, not to each engine author. Two edits:
+**Recommendation: A3.** `EngineBudgetError` is a control signal; it belongs to the base runtime, not to each engine author. Three edits:
 
 1. **`wait_quiescence` (`engine.py:402-419`)** — extend the filter at `engine.py:410` so `EngineBudgetError` is excluded from `task_errors` alongside `asyncio.CancelledError`. This converts every *spawned/gathered discretionary* budget raise (research `_explore`, review `_verify`) into a benign "expansion stopped," matching what `spawn()` and hypothesis `_guard` already do. This is the safe immediate hotfix (T1).
 2. **`run()` (`engine.py:660-778`)** — widen the `except asyncio.CancelledError` arm (`engine.py:683`) to a sibling `except EngineBudgetError` arm that routes to `_partial_export` (the same `_partial_export` + shield + `_PARTIAL_EXPORT_TIMEOUT_S` machinery, `engine.py:710-733`) and builds an `EngineResult` with `degraded=True, degrade_reason="budget"`. This catches the *root mandatory* raw-raise (review gather, coding/planning sequential). **Guard:** if the caught object is an `ExceptionGroup` containing any non-`EngineBudgetError`, re-raise it — a real crash must not be laundered into a partial (T4 masking guard).
+3. **Success-path degraded flag (R5 — required by the spec gate).** Edit 1 is only half a fix: once `wait_quiescence` *swallows* a discretionary budget raise, the run reaches the **success** path (`run()` returns the normal `_run()` result, no exception), so edit 2's `except` arm never fires for that case. Without more, a completed-but-truncated run returns a clean-looking `EngineResult` with `degraded=False` — which is exactly the silent truncation T1 warns about, now *permanent* rather than an interim window. Therefore `run()` **must**, on its success return, set `degraded=True, degrade_reason="budget"` whenever `run._budget_notified` is set (`engine.py:182` init, flipped in `_notify_budget_once`, `engine.py:215-223`; the CancelledError arm already reads this same flag at `engine.py:686-690`). `.skipped` still distinguishes a dropped discretionary branch (skipped empty / expansion-only) from a missing mandatory stage. This closes the seam that edit 1 would otherwise institutionalize.
 
 The existing `exempt=True` terminal stages (research synth `research.py:274`, review verdict `review.py:219`, planning synth `planning.py:130`, coding verify `coding.py:857`) are untouched — they already bypass the budget gate and must, so partial-export can synthesize.
 
@@ -141,7 +144,7 @@ class EngineResult(str):
 ```
 
 - **gap-3** is answered by `.events_by_type()` + `.run` — structured domain events (`IssueFound`, `FindingEmitted`, `JudgeVerdict`) are now reachable *with the protections intact*, no `_run`-bypass. `run()` already holds the `run` handle in both the success (`engine.py:682`) and degrade (`engine.py:710`) paths; it wraps the `_run`/`_partial_export` text into `EngineResult` at the return boundary (`engine.py:777-778`), so engine authors keep returning `str` from `_run` and the wrapping is central.
-- **gap-4** is answered by `.skipped` + `.degraded` — sourced from `run._emission_failures` (already populated at `engine.py:328`, copied to the engine at `engine.py:742`). For `ReviewEngine`, `.skipped` maps the failed reviewer agents to dimension names, so "the `correctness` dimension never reported" is a first-class field, not a silence.
+- **gap-4** is answered by `.skipped` + `.degraded`. `.skipped` is sourced from `run._emission_failures` (already populated at `engine.py:328`, copied to the engine at `engine.py:742`); for `ReviewEngine` it maps the failed reviewer agents to dimension names, so "the `correctness` dimension never reported" is a first-class field, not a silence. `.degraded` is set on **both** return paths (Fork A): the degrade path (edit 2) sets it directly, and the success path (edit 3 / R5) sets it from `run._budget_notified` — so a run that completed after silently dropping a budget-capped subtree still reports `degraded=True`, never a clean-looking success.
 
 ---
 
@@ -167,10 +170,10 @@ class EngineResult(str):
 
 ## Risks & open questions for the spec gate
 
-- **R1 (for the gate to rule):** should the `wait_quiescence` `EngineBudgetError` filter (Fork A part 1) ship as an **immediate hotfix PR ahead** of the full contract (T1 sequencing), accepting the interim window where truncation is crash-free but not yet flagged `degraded`? Advisor recommendation: **yes**, because crash→silent-empty strictly beats crash→data-loss, *conditional on* the Fork C follow-up being committed in the same milestone to close the gap-4 silence.
-- **R2:** `degrade_reason` vocabulary — is `{"", "budget", "deadline"}` sufficient, or does the gate want a richer taxonomy (e.g. `"budget:root"` vs `"budget:expansion"`) so a misconfigured `max_agents` is distinguishable from expected expansion-capping? Advisor lean: two-value is enough for v1; `.skipped` already distinguishes "mandatory stage missing" from "discretionary branch dropped."
-- **R3:** `.run` exposure — expose the live handle at all, or snapshot-only (`.events_by_type()`)? Exposing it is the power-user affordance for #122 CI-gate callers; hiding it is safer. Advisor lean: expose but document as live/non-retainable.
-- **R4 (Ocean-level, flagged not decided):** none. This is an engine-layer API contract, reversible, non-strategic — squarely a spec-gate/Fable call, not an Ocean fork.
+- **R1 — GATE RULING: YES.** The `wait_quiescence` `EngineBudgetError` filter (Fork A edit 1) ships as an immediate hotfix PR **ahead** of the full contract, *conditional on Fork C landing in the same milestone*. With the R5 success-path flag (edit 3) folded in, there is **no interim silent window** — the hotfix carries edit 1 + edit 3 together, so a truncated run is crash-free *and* flagged `degraded` from the first PR; the silence T1 warned about is named in the ADR, not hidden.
+- **R2 — GATE RULING: two-value vocab** `degrade_reason ∈ {"budget", "deadline"}` for v1 (plus `""` for a clean run). `.skipped` carries the root-vs-expansion distinction, so `"budget:root"`/`"budget:expansion"` granularity is not needed now.
+- **R3 — GATE RULING: expose `.run`**, documented as a live handle ("live; do not retain"). The power-user affordance for #122 CI-gate callers is worth the retention footgun given the docstring warning + the snapshot `.events_by_type()` alternative.
+- **R4 (Ocean-level):** none. This is an engine-layer API contract, reversible, non-strategic — a spec-gate/Fable call, not an Ocean fork. (Confirmed: the gate signed off without Ocean escalation.)
 
 ---
 
@@ -178,6 +181,7 @@ class EngineResult(str):
 
 - **MAY** add `EngineResult(str)` as the return type of `Engine.run()`, with `.text`, `.events_by_type()`, `.skipped`, `.degraded`, `.degrade_reason`, `.run`.
 - **MAY** extend `wait_quiescence`'s error filter (`engine.py:410`) to exclude `EngineBudgetError`, and add an `except EngineBudgetError` arm to `run()` (`engine.py:683`) that routes to `_partial_export`.
+- **MUST** (R5) set `degraded=True, degrade_reason="budget"` on `run()`'s **success-path** return whenever `run._budget_notified` is set (`engine.py:182`/`:215-223`) — otherwise edit 1's filter turns the crash into a permanent silent truncation.
 - **MAY** replace base `_partial_export`'s `return None` (`engine.py:782`) with the honest structured `EngineResult` default; **MAY** update the three existing overrides to set `.text` on it.
 - **MAY NOT** change the reactive substrate (`operations/flow.py`, `session.flow`, `spawn`/`wait_quiescence` *quiescence model*) beyond the one error-filter line — ADR-0075/0077 ground is fixed.
 - **MAY NOT** make `EngineResult` anything other than a `str` subclass — the moment it stops being a `str`, back-compat at the one owed boundary breaks.
@@ -190,7 +194,8 @@ class EngineResult(str):
   3. A test that a *mixed* failure (one spawned task raises `EngineBudgetError`, a sibling raises `ValueError`) still surfaces the `ValueError` — masking guard.
   4. A test that `ReviewEngine` with a deadline hit and `correctness` emission-failed returns `.skipped == ["correctness"]` and `.degraded is True` (gap-4 closed).
   5. A back-compat test: `isinstance(await engine.run(x), str)` and `str(result) == result.text` for all five engines.
-  6. Full `tests/engines/` (190 baseline) stays green.
+  6. **(R5)** A test that an *expansion-capped* research run that **completes** (a discretionary `_explore` budget raise is filtered by `wait_quiescence`, the run reaches the success path) returns an `EngineResult` with `.degraded is True`, `.degrade_reason == "budget"`, and **non-empty** `.text` — and **no** `ExceptionGroup`/`EngineBudgetError` escapes. This is the anti-silent-truncation guard for edit 1 + edit 3.
+  7. Full `tests/engines/` (190 baseline) stays green.
 
 ---
 
