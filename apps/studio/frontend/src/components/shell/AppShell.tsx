@@ -11,7 +11,6 @@ const LEO_OPEN_KEY = "studio:leo-open";
 
 interface Props {
   children: ReactNode;
-  locale: string;
   onLocaleChange: (l: string) => void;
 }
 
@@ -30,7 +29,7 @@ function applyTheme(theme: "dark" | "light") {
   localStorage.setItem("theme", theme);
 }
 
-export default function AppShell({ children, locale, onLocaleChange }: Props) {
+export default function AppShell({ children, onLocaleChange }: Props) {
   const t = useTranslations("shell");
   const [dark, setDark] = useState(() => getTheme() === "dark");
   const [paletteOpen, setPaletteOpen] = useState(false);
@@ -56,12 +55,6 @@ export default function AppShell({ children, locale, onLocaleChange }: Props) {
     setDark(next);
     applyTheme(next ? "dark" : "light");
   }, [dark]);
-
-  const toggleLocale = useCallback(() => {
-    const next = locale === "en" ? "zh" : "en";
-    document.cookie = `NEXT_LOCALE=${next};path=/;max-age=31536000;SameSite=Lax`;
-    onLocaleChange(next);
-  }, [locale, onLocaleChange]);
 
   useEffect(() => {
     function handleKey(e: KeyboardEvent) {
@@ -97,7 +90,7 @@ export default function AppShell({ children, locale, onLocaleChange }: Props) {
         <IconRail
           dark={dark}
           onToggleTheme={toggleTheme}
-          onToggleLocale={toggleLocale}
+          onLocaleChange={onLocaleChange}
           leoOpen={leoOpen}
           onToggleLeo={toggleLeo}
         />
@@ -130,7 +123,6 @@ export default function AppShell({ children, locale, onLocaleChange }: Props) {
           open={paletteOpen}
           onClose={() => setPaletteOpen(false)}
           toggleTheme={toggleTheme}
-          toggleLocale={toggleLocale}
         />
       </div>
     </ToastProvider>

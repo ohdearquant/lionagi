@@ -9,7 +9,8 @@
       "system": "System",
       "toggleTheme": "Toggle theme",
       "switchToZh": "Switch to Chinese",
-      "switchToEn": "Switch to English"
+      "switchToEn": "Switch to English",
+      "selectLanguage": "Select language"
     },
     "palette": {
       "ariaLabel": "Command palette",

@@ -13,7 +13,6 @@ export type CommandRegistry = Command[];
 export function buildRegistry(
   navigate: (href: string) => void,
   toggleTheme: () => void,
-  toggleLocale: () => void,
 ): CommandRegistry {
   return [
     /* ── Primary spaces ── */
@@ -124,11 +123,14 @@ export function buildRegistry(
       section: "Actions",
     },
     {
-      id: "action:toggle-locale",
-      label: "Switch language",
-      labelZh: "切换语言",
-      keywords: ["language", "locale", "chinese", "english"],
-      action: toggleLocale,
+      // Routes to the system settings selector (all 16 locales) instead of
+      // flipping a binary en/zh toggle, which would silently reset any of
+      // the other 14 locales back to English.
+      id: "action:select-language",
+      label: "Select language",
+      labelZh: "选择语言",
+      keywords: ["language", "locale", "translate", "i18n"],
+      href: "/system",
       section: "Actions",
     },
   ];

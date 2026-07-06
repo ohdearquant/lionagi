@@ -9,7 +9,8 @@
       "system": "系统",
       "toggleTheme": "切换主题",
       "switchToZh": "切换到中文",
-      "switchToEn": "切换到英文"
+      "switchToEn": "切换到英文",
+      "selectLanguage": "选择语言"
     },
     "palette": {
       "ariaLabel": "命令面板",
