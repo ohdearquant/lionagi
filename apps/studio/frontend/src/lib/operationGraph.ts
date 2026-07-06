@@ -95,11 +95,27 @@ export function buildOperationGraph(events: SignalEvent[]): OperationGraphState 
         const prev = elapsedByOp.get(ev.op_id) ?? 0;
         if (elapsed > prev) elapsedByOp.set(ev.op_id, elapsed);
       }
+      // The engine emits `depends_on` (all graph predecessors) and `parent_id`
+      // (the sole predecessor, when there is exactly one) on every Node* signal;
+      // some emitters instead set the singular `cause_op_id`. Read all three so
+      // the run DAG renders edges regardless of which the emitter populated.
       const causeOpId = payload.cause_op_id;
-      if (typeof causeOpId === "string" && causeOpId) {
-        causeOpIdByOp.set(ev.op_id, causeOpId);
-        const edgeKey = `${causeOpId}→${ev.op_id}`;
-        edgeSet.add(edgeKey);
+      const parentId = payload.parent_id;
+      const primaryCause =
+        (typeof causeOpId === "string" && causeOpId) ||
+        (typeof parentId === "string" && parentId) ||
+        null;
+      if (primaryCause) {
+        if (!causeOpIdByOp.get(ev.op_id)) causeOpIdByOp.set(ev.op_id, primaryCause);
+        if (primaryCause !== ev.op_id) edgeSet.add(`${primaryCause}→${ev.op_id}`);
+      }
+      const dependsOn = payload.depends_on;
+      if (Array.isArray(dependsOn)) {
+        for (const dep of dependsOn) {
+          if (typeof dep === "string" && dep && dep !== ev.op_id) {
+            edgeSet.add(`${dep}→${ev.op_id}`);
+          }
+        }
       }
     }
   }
