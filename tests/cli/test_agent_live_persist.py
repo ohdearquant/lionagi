@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 import threading
 from pathlib import Path
 from unittest import mock
@@ -587,6 +588,150 @@ async def test_failed_setup_releases_branch_claim(
 async def test_teardown_with_none_context_is_noop(temp_db_path: Path):
     """If setup returned None (failed), teardown(None) must be safe."""
     await _teardown_live_persist(None, status="completed")  # MUST NOT raise
+
+
+# ── defer_terminal: auto-resume must not stamp a premature terminal status ────
+
+
+async def test_teardown_defer_terminal_leaves_session_running(
+    temp_db_path: Path,
+):
+    """defer_terminal=True (an auto-resume leg is about to fire on this same
+    session) must skip the status write entirely, leaving the session at
+    'running' for the resumed leg to own the real terminal write."""
+    branch = Branch(name="b1")
+    ctx = await _setup_live_persist(branch)
+
+    result = await _teardown_live_persist(ctx, status="timed_out", defer_terminal=True)
+
+    assert result == "timed_out"
+    async with StateDB() as db:
+        s = await db.get_session(ctx["session_id"])
+    assert s["status"] == "running"
+    assert s["ended_at"] is None
+
+
+async def test_teardown_defer_terminal_still_detaches_hooks(
+    temp_db_path: Path,
+):
+    """Even when the status write is deferred, non-status bookkeeping (hook
+    unroute) still runs so a closed-DB handler cannot fire later."""
+    from lionagi.hooks.bus import HookPoint
+
+    branch = Branch(name="b1")
+    ctx = await _setup_live_persist(branch)
+    bus = branch._hooks
+
+    await _teardown_live_persist(ctx, status="timed_out", defer_terminal=True)
+
+    assert ctx["hook"] not in bus.handlers_for(HookPoint.MESSAGE_ADD)
+    assert branch._persist_via_bus not in branch.on_message_added
+
+
+async def test_teardown_non_resume_timeout_stamps_terminal_unchanged(
+    temp_db_path: Path,
+):
+    """defer_terminal defaults to False: a genuine (non-auto-resume) timeout
+    still stamps a terminal 'timed_out' status exactly as before this fix."""
+    branch = Branch(name="b1")
+    ctx = await _setup_live_persist(branch)
+
+    result = await _teardown_live_persist(ctx, status="timed_out")
+
+    assert result == "timed_out"
+    async with StateDB() as db:
+        s = await db.get_session(ctx["session_id"])
+    assert s["status"] == "timed_out"
+    assert s["ended_at"] is not None
+
+
+# ── ADR-0094 terminal-race: a second teardown must not crash past callers ─────
+
+
+async def test_teardown_already_terminal_session_reports_attempted_status(
+    temp_db_path: Path,
+    caplog: pytest.LogCaptureFixture,
+):
+    """A teardown that reattaches to a session an EARLIER, unrelated run
+    already finalized (setup_agent_persist reuses an existing branch's
+    session without checking terminality) must not let the stale persisted
+    status masquerade as this invocation's outcome: a later leg's genuine
+    'failed' must not be silently reported back as the old 'completed'. The
+    rejection must still protect the DB row (ADR-0094 unchanged) — only the
+    caller-visible return value differs, and it's logged at warning level."""
+    branch = Branch(name="b1")
+    ctx1 = await _setup_live_persist(branch)
+    first = await _teardown_live_persist(ctx1, status="completed")
+    assert first == "completed"
+
+    # A later leg attaches to the SAME session/branch row, which is already
+    # terminal by the time this teardown even starts (mirrors a resume/
+    # follow-up reusing a branch whose session an earlier run finalized).
+    ctx2 = await _setup_live_persist(branch)
+    assert ctx2 is not None
+    assert ctx2["session_id"] == ctx1["session_id"]
+
+    with caplog.at_level(logging.WARNING):
+        second = await _teardown_live_persist(ctx2, status="failed", exception=RuntimeError("boom"))
+
+    assert second == "failed"  # this invocation's honest outcome, not "completed"
+    assert any(
+        rec.levelno >= logging.WARNING and "completed" in rec.message and "failed" in rec.message
+        for rec in caplog.records
+    )
+
+    # The DB record itself is untouched — ADR-0094 still protects it.
+    async with StateDB() as db:
+        s = await db.get_session(ctx1["session_id"])
+    assert s["status"] == "completed"
+
+
+async def test_teardown_concurrent_race_non_terminal_entry_returns_winner_status(
+    temp_db_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+):
+    """A true concurrent race: this teardown observes the session non-
+    terminal at entry, but a separate writer finalizes the row between that
+    read and this teardown's own update_status() call. Unlike the already-
+    terminal-on-entry case above, this is the benign race the catch's
+    read-back path exists for: return the winner's persisted status at
+    debug level, not a warning."""
+    from lionagi.state.db import StateDB as _StateDB
+    from lionagi.state.reasons import RunReasons
+
+    branch = Branch(name="b1")
+    ctx = await _setup_live_persist(branch)
+
+    real_update_status = _StateDB.update_status
+    calls = {"n": 0}
+
+    async def racing_update_status(self, *a, **kw):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            # A separate writer finalizes the row first, simulating a
+            # concurrent teardown of this same in-flight session.
+            async with _StateDB() as other:
+                await other.update_status(
+                    "session",
+                    ctx["session_id"],
+                    new_status="completed",
+                    reason_code=RunReasons.COMPLETED_OK,
+                    source="executor",
+                )
+        return await real_update_status(self, *a, **kw)
+
+    monkeypatch.setattr(_StateDB, "update_status", racing_update_status)
+
+    with caplog.at_level(logging.WARNING):
+        result = await _teardown_live_persist(ctx, status="failed", exception=RuntimeError("boom"))
+
+    assert result == "completed"  # the race winner's persisted status
+    assert not any(rec.levelno >= logging.WARNING for rec in caplog.records)
+
+    async with StateDB() as db:
+        s = await db.get_session(ctx["session_id"])
+    assert s["status"] == "completed"
 
 
 # ── End-to-end: no aiosqlite thread leak across setup+teardown ────────────────

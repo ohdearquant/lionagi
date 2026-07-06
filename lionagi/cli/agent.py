@@ -487,6 +487,13 @@ async def _run_agent(
             log_error(f"{type(exc).__name__}: {exc}")
         raise
     finally:
+        # Known before teardown runs: an auto-resume leg is about to fire on
+        # this same session, so this leg's teardown must not stamp a terminal
+        # status the resumed leg would then be blocked from overwriting by
+        # the ADR-0094 terminal guard.
+        will_auto_resume = (
+            _terminal_status == "timed_out" and resume_on_timeout and not _auto_resumed
+        )
         if _heartbeat_task is not None:
             _heartbeat_task.cancel()
             import asyncio as _asyncio2
@@ -511,6 +518,7 @@ async def _run_agent(
                 exception=_terminal_exc,
                 cwd=cwd,
                 engine_session_uid=_engine_session_uid,
+                defer_terminal=will_auto_resume,
             )
             if effective_status != _terminal_status:
                 _terminal_status = effective_status
