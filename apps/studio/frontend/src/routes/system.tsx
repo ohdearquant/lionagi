@@ -5,6 +5,7 @@ import Timestamp from "@/components/ui/Timestamp";
 import { API_BASE, getAdminDoctor, runMaintenance } from "@/lib/api";
 import type { AdminDoctorResponse, MaintenanceAction } from "@/lib/api";
 import { IconHealth, IconTool, IconSettings } from "@/components/ui/icons";
+import { LOCALES } from "@/i18n/locales";
 
 // Old tab values are accepted so deep links keep working; the page itself
 // renders every section in one column.
@@ -261,8 +262,7 @@ function SettingsSection() {
     applyTheme(next);
   }
 
-  function toggleLocale() {
-    const next = locale === "en" ? "zh" : "en";
+  function selectLocale(next: string) {
     document.cookie = `NEXT_LOCALE=${next};path=/;max-age=31536000;SameSite=Lax`;
     setLocale(next);
     // Reload to pick up new message bundle
@@ -295,14 +295,18 @@ function SettingsSection() {
 
         <div className={rowCls}>
           <span className={labelCls}>{t("settings.language")}</span>
-          <div className="flex items-center gap-3">
-            <span className={valueCls}>
-              {locale === "zh" ? t("settings.chinese") : t("settings.english")}
-            </span>
-            <button className={btnBase} onClick={toggleLocale}>
-              {locale === "zh" ? t("settings.switchToEn") : t("settings.switchToZh")}
-            </button>
-          </div>
+          <select
+            className={btnBase}
+            value={locale}
+            onChange={(e) => selectLocale(e.target.value)}
+            aria-label={t("settings.language")}
+          >
+            {LOCALES.map((l) => (
+              <option key={l.code} value={l.code}>
+                {l.native}
+              </option>
+            ))}
+          </select>
         </div>
 
         <div className={rowCls}>

@@ -89,15 +89,17 @@ export default function StatusFooter() {
       {/* Ecosystem note */}
       <span className="ml-auto truncate">
         {t("footer.ecosystemPrefix")}{" "}
-        <a
-          href="https://khive.ai"
-          target="_blank"
-          rel="noopener noreferrer"
-          title={t("footer.ecosystemLink")}
-          className="text-content-muted underline decoration-edge-strong underline-offset-2 transition-colors duration-100 hover:text-content-primary"
-        >
-          {t("footer.ecosystemLink")}
-        </a>{" "}
+        <bdi>
+          <a
+            href="https://khive.ai"
+            target="_blank"
+            rel="noopener noreferrer"
+            title={t("footer.ecosystemLink")}
+            className="text-content-muted underline decoration-edge-strong underline-offset-2 transition-colors duration-100 hover:text-content-primary"
+          >
+            {t("footer.ecosystemLink")}
+          </a>
+        </bdi>{" "}
         {t("footer.ecosystemSuffix")}
         <span className="sr-only"> ({t("footer.ecosystemNewTab")})</span>
       </span>

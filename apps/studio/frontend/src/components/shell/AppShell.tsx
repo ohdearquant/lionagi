@@ -57,10 +57,10 @@ export default function AppShell({ children, locale, onLocaleChange }: Props) {
     applyTheme(next ? "dark" : "light");
   }, [dark]);
 
+  // Binary en/zh flip kept for the command palette's "Switch language" action;
+  // the rail's own selector calls onLocaleChange directly with any of the 16 codes.
   const toggleLocale = useCallback(() => {
-    const next = locale === "en" ? "zh" : "en";
-    document.cookie = `NEXT_LOCALE=${next};path=/;max-age=31536000;SameSite=Lax`;
-    onLocaleChange(next);
+    onLocaleChange(locale === "en" ? "zh" : "en");
   }, [locale, onLocaleChange]);
 
   useEffect(() => {
@@ -97,7 +97,7 @@ export default function AppShell({ children, locale, onLocaleChange }: Props) {
         <IconRail
           dark={dark}
           onToggleTheme={toggleTheme}
-          onToggleLocale={toggleLocale}
+          onLocaleChange={onLocaleChange}
           leoOpen={leoOpen}
           onToggleLeo={toggleLeo}
         />
