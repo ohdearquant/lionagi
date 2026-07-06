@@ -139,23 +139,27 @@ function ScheduleCard({
   }
 
   return (
-    // eslint-disable-next-line jsx-a11y/no-static-element-interactions, jsx-a11y/click-events-have-key-events
+    // Stretched-link card: the title is a real (keyboard-focusable) button
+    // whose ::after overlay makes the whole card open the detail; the toggle
+    // and action buttons sit above the overlay (relative z-10), so they stay
+    // independently clickable without nesting interactive elements.
     <div
-      onClick={() => onOpen(schedule.id)}
       className={[
-        "shadow-card hover:shadow-card-hover group flex cursor-pointer flex-col gap-3 rounded-lg border border-edge bg-surface-raised p-4 transition-shadow duration-150",
+        "shadow-card hover:shadow-card-hover group relative flex flex-col gap-3 rounded-lg border border-edge bg-surface-raised p-4 transition-shadow duration-150",
         schedule.enabled ? "" : "opacity-70",
       ].join(" ")}
     >
       {/* Name + enabled toggle */}
       <div className="flex items-start gap-2">
         <div className="min-w-0 flex-1">
-          <p
-            className="truncate font-data text-body font-semibold text-content-primary"
+          <button
+            type="button"
+            onClick={() => onOpen(schedule.id)}
             title={schedule.name}
+            className="block max-w-full cursor-pointer truncate rounded text-left font-data text-body font-semibold text-content-primary after:absolute after:inset-0 after:content-[''] focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-interactive-primary"
           >
             {schedule.name}
-          </p>
+          </button>
           {schedule.description && (
             <p
               className="mt-0.5 line-clamp-2 text-meta text-content-muted"
@@ -165,12 +169,14 @@ function ScheduleCard({
             </p>
           )}
         </div>
-        {/* EnabledToggle stops click propagation itself, so toggling never opens the card. */}
-        <EnabledToggle
-          scheduleId={schedule.id}
-          enabled={Boolean(schedule.enabled)}
-          onToggled={onChanged}
-        />
+        {/* EnabledToggle stops click propagation itself; z-10 keeps it above the title overlay. */}
+        <div className="relative z-10">
+          <EnabledToggle
+            scheduleId={schedule.id}
+            enabled={Boolean(schedule.enabled)}
+            onToggled={onChanged}
+          />
+        </div>
       </div>
 
       {/* Trigger */}
@@ -184,10 +190,10 @@ function ScheduleCard({
       {/* Last run */}
       <LastRun run={lastRun} nowMs={nowMs} />
 
-      {/* Footer: next fire + actions */}
+      {/* Footer: next fire + actions (z-10 above the title overlay) */}
       <div className="mt-auto flex items-center justify-between gap-2 border-t border-edge pt-3">
         <NextFire schedule={schedule} nowMs={nowMs} />
-        <div className="flex items-center gap-1">
+        <div className="relative z-10 flex items-center gap-1">
           <button
             type="button"
             disabled={triggering}
@@ -199,10 +205,7 @@ function ScheduleCard({
           <IconButton
             aria-label={t("table.editAction")}
             title={t("table.editAction")}
-            onClick={(e) => {
-              e.stopPropagation();
-              onOpen(schedule.id);
-            }}
+            onClick={() => onOpen(schedule.id)}
           >
             <IconPencil size={13} strokeWidth={2} />
           </IconButton>

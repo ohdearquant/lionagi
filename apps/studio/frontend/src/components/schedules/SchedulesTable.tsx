@@ -27,13 +27,22 @@ import { IconPause } from "@/components/ui/icons";
 
 export type SortDir = "asc" | "desc";
 
+// A paused schedule's next_fire_at is stale and not actionable, so it has no
+// sort key — it sinks below enabled schedules (in both directions), matching
+// the "Paused" cell rather than interleaving among real firings.
+function fireSortKey(s: ScheduleSummary): number | null {
+  return s.enabled && s.next_fire_at != null ? s.next_fire_at : null;
+}
+
 export function sortByNextFire(schedules: ScheduleSummary[], dir: SortDir): ScheduleSummary[] {
   const mul = dir === "asc" ? 1 : -1;
   return [...schedules].sort((a, b) => {
-    if (a.next_fire_at == null && b.next_fire_at == null) return a.name.localeCompare(b.name);
-    if (a.next_fire_at == null) return 1;
-    if (b.next_fire_at == null) return -1;
-    return (a.next_fire_at - b.next_fire_at) * mul;
+    const ka = fireSortKey(a);
+    const kb = fireSortKey(b);
+    if (ka == null && kb == null) return a.name.localeCompare(b.name);
+    if (ka == null) return 1;
+    if (kb == null) return -1;
+    return (ka - kb) * mul;
   });
 }
 

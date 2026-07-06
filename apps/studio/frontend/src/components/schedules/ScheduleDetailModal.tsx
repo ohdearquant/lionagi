@@ -166,6 +166,7 @@ export default function ScheduleDetailModal({
   const t = useTranslations("schedules.detail");
   const tc = useTranslations("schedules.card");
   const tError = useTranslations("schedules.error");
+  const tRun = useTranslations("schedules.run");
   const tStatus = useTranslations("history.status");
   const locale = useLocale();
   const { toast } = useToast();
@@ -645,8 +646,8 @@ export default function ScheduleDetailModal({
                           )}
                           {r.invocation_id && (
                             <IconButton
-                              aria-label={tc("openRun")}
-                              title={tc("openRun")}
+                              aria-label={tRun("openRun")}
+                              title={tRun("openRun")}
                               onClick={() => void handleOpenRun(r)}
                             >
                               <IconArrowUpRight size={12} strokeWidth={2} />
