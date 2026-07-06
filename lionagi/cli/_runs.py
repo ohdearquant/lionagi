@@ -527,7 +527,12 @@ async def _teardown_common(
         )
         final_evidence_refs = escalated_evidence
 
-    from lionagi.state.db import TransitionRejectedError
+    from lionagi.state.db import SESSION_TERMINAL_STATUSES, TransitionRejectedError
+
+    # Snapshot of the status this teardown itself observed when it started
+    # (session_row was read above, before any status-changing write in this
+    # function) -- the signal that tells apart the two rejection causes below.
+    pre_write_status = session_row.get("status")
 
     try:
         await db.update_status(
@@ -542,17 +547,36 @@ async def _teardown_common(
             metadata=metadata,
         )
     except TransitionRejectedError:
-        # Another writer (a concurrent teardown, or a resumed leg that raced
-        # this one) already moved the session to a terminal status between
-        # our read above and this write. That row is authoritative — read it
-        # back instead of raising past callers as an uncaught traceback.
-        persisted = await db.get_session(session_id) or {}
-        final_status = persisted.get("status", final_status)
-        _log.debug(
-            "session %s already terminal (%s); skipped duplicate status write",
-            session_id,
-            final_status,
-        )
+        if pre_write_status in SESSION_TERMINAL_STATUSES and pre_write_status != final_status:
+            # This teardown's OWN view of the session was already terminal
+            # before it attempted anything (e.g. a later resume/follow-up
+            # reattached to a session an earlier, unrelated run already
+            # finalized). The rejection is correctly protecting that earlier
+            # record -- but the caller must still hear THIS invocation's
+            # honest outcome, not the stale persisted one, or a genuine
+            # failure/timeout would silently read back as success.
+            _log.warning(
+                "session %s already terminal at %r; this invocation's %r "
+                "outcome was not persisted (ADR-0094 protects the earlier "
+                "terminal record)",
+                session_id,
+                pre_write_status,
+                final_status,
+            )
+        else:
+            # Benign race: this teardown observed the row non-terminal at
+            # entry, but another writer (e.g. a concurrent teardown of the
+            # same in-flight session) finalized it first. Read back the
+            # now-persisted status instead of raising past callers -- it
+            # reflects the outcome that actually won the race for this same
+            # live invocation.
+            persisted = await db.get_session(session_id) or {}
+            final_status = persisted.get("status", final_status)
+            _log.debug(
+                "session %s already terminal (%s); skipped duplicate status write",
+                session_id,
+                final_status,
+            )
     return final_status
 
 
