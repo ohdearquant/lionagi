@@ -10,7 +10,7 @@ import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } fro
 import { useTranslations } from "use-intl";
 import InvocationSection from "@/components/history/InvocationDetail";
 import OperationGraphSection from "@/components/history/OperationGraphSection";
-import Badge from "@/components/ui/Badge";
+import StatusVerdictChips from "@/components/ui/StatusVerdictChips";
 import ExpectedArtifacts from "@/components/runs/ExpectedArtifacts";
 import RunStepCard from "@/components/RunStepCard";
 import { IconChevronDown, IconChevronRight } from "@/components/ui/icons";
@@ -18,6 +18,7 @@ import { getSession, streamSession, streamSignals, SESSION_MESSAGE_PAGE } from "
 import type { SessionDetail, SessionBranch, SessionMessage, SignalEvent } from "@/lib/api";
 import { buildOperationGraph, laneFor } from "@/lib/operationGraph";
 import type { OperationStatus } from "@/lib/operationGraph";
+import { deriveDisplayStatus } from "@/lib/runStatus";
 import type { RunMessage, RunStep, WorkerGraph } from "@/lib/types";
 
 const WorkerCanvas = lazy(() => import("@/components/canvas/WorkerCanvas"));
@@ -709,11 +710,33 @@ export default function RunDetail({ id, fullPage = false }: RunDetailProps) {
 
   useEffect(() => {
     if (!id) return;
+    let cancelled = false;
     const stop = streamSession(id, (event) => {
       if (event.type === "heartbeat") return;
       if (event.type === "done") {
         setDone(true);
         setLive(false);
+        // The initial fetch's status/reason fields are now stale (the run
+        // just finished) — refetch so the terminal status/verdict derivation
+        // reflects the real outcome instead of the pre-completion snapshot.
+        // Guarded on id: if the viewer navigates to a different run before
+        // this resolves, it must not clobber that run's freshly-fetched state.
+        getSession(id)
+          .then((fresh) => {
+            if (cancelled) return;
+            setSession((prev) =>
+              prev && prev.id === fresh.id
+                ? {
+                    ...prev,
+                    status: fresh.status,
+                    status_reason_code: fresh.status_reason_code,
+                    status_reason_summary: fresh.status_reason_summary,
+                    ended_at: fresh.ended_at,
+                  }
+                : prev,
+            );
+          })
+          .catch(() => {});
         return;
       }
       setLive(true);
@@ -747,7 +770,10 @@ export default function RunDetail({ id, fullPage = false }: RunDetailProps) {
         });
       }
     });
-    return stop;
+    return () => {
+      cancelled = true;
+      stop();
+    };
   }, [id]);
 
   useEffect(() => {
@@ -974,8 +1000,18 @@ export default function RunDetail({ id, fullPage = false }: RunDetailProps) {
     return n + (s.messages ?? []).filter((m) => m.role === "tool_call").length;
   }, 0);
 
+  // DESIGN-BRIEF §0: derive from the real status_reason fields, not the
+  // done/live booleans — those conflate every terminal status (including
+  // failed and orphaned) into a hardcoded "completed" label.
+  const runForStatus = {
+    status: session.status ?? (done ? "completed" : "running"),
+    status_reason_code: session.status_reason_code,
+    status_reason_summary: session.status_reason_summary,
+  };
+  const displayStatus = deriveDisplayStatus(runForStatus);
+
   const overviewData: OverviewData = {
-    status: done ? "completed" : live ? "running" : "idle",
+    status: displayStatus,
     durationSec,
     branchCount: session.branches.length,
     messageCount: totalMessages,
@@ -1003,9 +1039,7 @@ export default function RunDetail({ id, fullPage = false }: RunDetailProps) {
         <span className="min-w-0 flex-1 truncate font-mono text-[length:var(--t-base)] font-semibold text-content-primary">
           {session.name || session.id.slice(0, 8)}
         </span>
-        <Badge tone={done ? "ok" : live ? "running" : "default"}>
-          {done ? "completed" : live ? "running" : "idle"}
-        </Badge>
+        <StatusVerdictChips run={runForStatus} />
         {live && !done && (
           <span className="flex shrink-0 items-center gap-1 text-[length:var(--t-xs)] text-status-success">
             <span className="relative flex h-1.5 w-1.5">

@@ -190,7 +190,8 @@
       "queued": "في قائمة الانتظار",
       "timed_out": "انتهت مهلته",
       "aborted": "تم إيقافه",
-      "skipped": "تم تخطيه"
+      "skipped": "تم تخطيه",
+      "orphaned": "يتيم"
     },
     "table": {
       "name": "الاسم",
@@ -809,7 +810,7 @@
     "filterTools": "الأدوات",
     "filterUser": "المستخدم",
     "filterSystem": "النظام",
-    "outcome": "النتيجة",
+    "latestMessage": "أحدث رسالة",
     "viewFullConversation": "عرض المحادثة الكاملة ←",
     "noFinalResponse": "لم يُسجّل رد نهائي.",
     "statToolCalls": "استدعاءات الأدوات",

@@ -126,26 +126,6 @@ interface CommandSummary {
   totalBytes: number;
 }
 
-const VERDICT_RE =
-  /\b(APPROVE-WITH-FIXES|APPROVE-WITH-SUGGESTIONS|APPROVE|REJECT|REQUEST CHANGES|PASS|FAIL|BLOCK)\b/i;
-
-function extractVerdict(text: string): string | null {
-  if (!text) return null;
-  const m = text.match(VERDICT_RE);
-  return m ? m[1].toUpperCase() : null;
-}
-
-const VERDICT_TONE: Record<string, "ok" | "pending" | "failed"> = {
-  APPROVE: "ok",
-  "APPROVE-WITH-SUGGESTIONS": "ok",
-  "APPROVE-WITH-FIXES": "pending",
-  PASS: "ok",
-  REJECT: "failed",
-  "REQUEST CHANGES": "failed",
-  FAIL: "failed",
-  BLOCK: "failed",
-};
-
 function isReadTool(fn: string): boolean {
   return /Read|read_file|cat|sed|head|tail|nl|less|more|ls/i.test(fn);
 }
@@ -276,19 +256,6 @@ function RunStepCard({
       cs.totalBytes += (t.output || "").length;
     }
 
-    // Verdict from last assistant (or first that has a verdict pattern)
-    let verdict: string | null = null;
-    if (lastAssistant?.content) verdict = extractVerdict(lastAssistant.content);
-    if (!verdict) {
-      for (const a of assistantList) {
-        const v = extractVerdict(a.content || "");
-        if (v) {
-          verdict = v;
-          break;
-        }
-      }
-    }
-
     // Duration: first → last timestamp
     let firstTs: number | null = null;
     let lastTs: number | null = null;
@@ -300,7 +267,6 @@ function RunStepCard({
     const durationSec = firstTs != null && lastTs != null ? Math.round(lastTs - firstTs) : null;
 
     return {
-      verdict,
       toolCount: toolMessages.length,
       failedCount: failedTools.length,
       files: Array.from(fileMap.values()).sort((a, b) => {
@@ -314,7 +280,7 @@ function RunStepCard({
       firstTs,
       lastTs,
     };
-  }, [messages, lastAssistant, assistantList]);
+  }, [messages]);
 
   const tone = STATUS_TONE[step.status] ?? "pending";
 
@@ -367,14 +333,6 @@ function RunStepCard({
             )}
             {result.model && (
               <span className="font-mono text-meta text-content-muted">{result.model}</span>
-            )}
-            {summary.verdict && (
-              <Badge
-                tone={VERDICT_TONE[summary.verdict] ?? "pending"}
-                className="rounded font-mono"
-              >
-                {summary.verdict}
-              </Badge>
             )}
             <span className="ml-auto flex items-center gap-2 font-mono text-meta text-content-muted">
               <span>{t("countTools", { count: summary.toolCount })}</span>
@@ -669,7 +627,6 @@ function OverviewPanel({
   onJumpToConversation,
 }: {
   summary: {
-    verdict: string | null;
     toolCount: number;
     failedCount: number;
     files: FileChange[];
@@ -686,13 +643,8 @@ function OverviewPanel({
       <div className="lg:col-span-2 rounded border border-edge bg-surface-raised p-3">
         <div className="mb-1.5 flex items-center gap-2">
           <span className="text-[length:var(--t-xs)] font-semibold uppercase tracking-wider text-content-muted">
-            {t("outcome")}
+            {t("latestMessage")}
           </span>
-          {summary.verdict && (
-            <Badge tone={VERDICT_TONE[summary.verdict] ?? "pending"} className="rounded font-mono">
-              {summary.verdict}
-            </Badge>
-          )}
         </div>
         {lastAssistant?.content ? (
           <>

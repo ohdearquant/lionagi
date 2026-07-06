@@ -190,7 +190,8 @@
       "queued": "キュー中",
       "timed_out": "タイムアウト",
       "aborted": "中止",
-      "skipped": "スキップ"
+      "skipped": "スキップ",
+      "orphaned": "孤立"
     },
     "table": {
       "name": "名前",
@@ -809,7 +810,7 @@
     "filterTools": "ツール",
     "filterUser": "ユーザー",
     "filterSystem": "システム",
-    "outcome": "結果",
+    "latestMessage": "最新メッセージ",
     "viewFullConversation": "会話全体を表示 →",
     "noFinalResponse": "最終応答は記録されていません。",
     "statToolCalls": "ツール呼び出し",

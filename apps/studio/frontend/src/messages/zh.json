@@ -190,7 +190,8 @@
       "queued": "排队中",
       "timed_out": "已超时",
       "aborted": "已中止",
-      "skipped": "已跳过"
+      "skipped": "已跳过",
+      "orphaned": "孤立"
     },
     "table": {
       "name": "名称",
@@ -809,7 +810,7 @@
     "filterTools": "工具",
     "filterUser": "用户",
     "filterSystem": "系统",
-    "outcome": "结果",
+    "latestMessage": "最新消息",
     "viewFullConversation": "查看完整对话 →",
     "noFinalResponse": "未记录最终回复。",
     "statToolCalls": "工具调用",

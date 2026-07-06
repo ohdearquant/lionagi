@@ -190,7 +190,8 @@
       "queued": "eingereiht",
       "timed_out": "Zeitüberschreitung",
       "aborted": "abgebrochen",
-      "skipped": "übersprungen"
+      "skipped": "übersprungen",
+      "orphaned": "verwaist"
     },
     "table": {
       "name": "Name",
@@ -809,7 +810,7 @@
     "filterTools": "Tools",
     "filterUser": "Benutzer",
     "filterSystem": "System",
-    "outcome": "Ergebnis",
+    "latestMessage": "Letzte Nachricht",
     "viewFullConversation": "Vollständige Konversation anzeigen →",
     "noFinalResponse": "Keine finale Antwort aufgezeichnet.",
     "statToolCalls": "Toolaufrufe",

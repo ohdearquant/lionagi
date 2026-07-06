@@ -190,7 +190,8 @@
       "queued": "क्यू में",
       "timed_out": "टाइम आउट",
       "aborted": "अबॉर्ट किया गया",
-      "skipped": "छोड़ा गया"
+      "skipped": "छोड़ा गया",
+      "orphaned": "अनाथ"
     },
     "table": {
       "name": "नाम",
@@ -809,7 +810,7 @@
     "filterTools": "टूल",
     "filterUser": "यूज़र",
     "filterSystem": "सिस्टम",
-    "outcome": "नतीजा",
+    "latestMessage": "नवीनतम संदेश",
     "viewFullConversation": "पूरी बातचीत देखें →",
     "noFinalResponse": "कोई अंतिम रिस्पॉन्स रिकॉर्ड नहीं।",
     "statToolCalls": "टूल कॉल",

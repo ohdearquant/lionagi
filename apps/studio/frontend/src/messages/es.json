@@ -190,7 +190,8 @@
       "queued": "en cola",
       "timed_out": "agotó el tiempo",
       "aborted": "abortado",
-      "skipped": "omitido"
+      "skipped": "omitido",
+      "orphaned": "huérfano"
     },
     "table": {
       "name": "Nombre",
@@ -809,7 +810,7 @@
     "filterTools": "herramientas",
     "filterUser": "usuario",
     "filterSystem": "sistema",
-    "outcome": "Resultado",
+    "latestMessage": "Último mensaje",
     "viewFullConversation": "Ver conversación completa →",
     "noFinalResponse": "No hay respuesta final registrada.",
     "statToolCalls": "Llamadas a herramienta",

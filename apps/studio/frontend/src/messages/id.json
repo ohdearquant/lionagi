@@ -190,7 +190,8 @@
       "queued": "diantrekan",
       "timed_out": "waktu habis",
       "aborted": "dihentikan",
-      "skipped": "dilewati"
+      "skipped": "dilewati",
+      "orphaned": "yatim"
     },
     "table": {
       "name": "Nama",
@@ -809,7 +810,7 @@
     "filterTools": "alat",
     "filterUser": "pengguna",
     "filterSystem": "sistem",
-    "outcome": "Hasil",
+    "latestMessage": "Pesan terbaru",
     "viewFullConversation": "Lihat percakapan lengkap →",
     "noFinalResponse": "Tidak ada respons akhir yang tercatat.",
     "statToolCalls": "Pemanggilan alat",
