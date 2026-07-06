@@ -10,10 +10,11 @@
  */
 
 import { describe, it, expect } from "vitest";
-import { fleetReducer, initialFleetState } from "./fleetReducer";
+import { fleetReducer, initialFleetState, terminalRecentRows } from "./fleetReducer";
 import type { OrgUnit } from "./fleetReducer";
 import type { InvocationSummary } from "@/lib/api";
 import type { RunSummary } from "@/lib/types";
+import { deriveDisplayStatus } from "@/lib/runStatus";
 
 // ─── No Drawer import guard ───────────────────────────────────────────────────
 // Verifies at the module level that fleet/ components do not import the overlay Drawer.
@@ -205,6 +206,49 @@ describe("detailActive contract", () => {
     };
     handleBack();
     expect(narrowExplicit).toBe(false);
+  });
+});
+
+// ─── History filter chips: normalized status, not raw run.status ─────────────
+// Mirrors matchesHistFilter in FleetView.tsx (design-brief §0/§4): a
+// phantom-reaped row (raw status "failed") must not match the "failed" chip.
+
+function matchesHistFilter(displayStatus: string, filter: "all" | "completed" | "failed"): boolean {
+  if (filter === "all") return true;
+  if (filter === "failed") return displayStatus === "failed";
+  return displayStatus === "completed";
+}
+
+describe("fleet history filter — normalized status", () => {
+  it("a phantom-reaped row does not match the 'failed' filter", () => {
+    const [row] = terminalRecentRows([
+      makeRun({ run_id: "r1", status: "failed", status_reason_summary: "phantom_reaped" }),
+    ]);
+    expect(matchesHistFilter(deriveDisplayStatus(row), "failed")).toBe(false);
+  });
+
+  it("a phantom-reaped row still appears under 'all'", () => {
+    const [row] = terminalRecentRows([
+      makeRun({ run_id: "r1", status: "failed", status_reason_summary: "phantom_reaped" }),
+    ]);
+    expect(matchesHistFilter(deriveDisplayStatus(row), "all")).toBe(true);
+  });
+
+  it("a genuine failure still matches the 'failed' filter", () => {
+    const [row] = terminalRecentRows([makeRun({ run_id: "r1", status: "failed" })]);
+    expect(matchesHistFilter(deriveDisplayStatus(row), "failed")).toBe(true);
+  });
+
+  it("a zombie reap still matches the 'failed' filter — resource leak, not housekeeping", () => {
+    const [row] = terminalRecentRows([
+      makeRun({
+        run_id: "r1",
+        status: "failed",
+        status_reason_code: "session.zombie.stale_locks",
+        status_reason_summary: "phantom_reaped",
+      }),
+    ]);
+    expect(matchesHistFilter(deriveDisplayStatus(row), "failed")).toBe(true);
   });
 });
 

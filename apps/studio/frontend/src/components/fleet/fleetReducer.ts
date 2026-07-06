@@ -17,6 +17,7 @@
 
 import type { RunSummary } from "@/lib/types";
 import type { InvocationSummary } from "@/lib/api";
+import { deriveDisplayStatus, type RunStatusInput } from "@/lib/runStatus";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -56,6 +57,8 @@ export interface RecentRow {
   id: string;
   name: string;
   status: string;
+  status_reason_code?: string | null;
+  status_reason_summary?: string | null;
   endedAtSec: number | null;
 }
 
@@ -87,29 +90,6 @@ export type FleetAction =
 
 // ─── Status sets ──────────────────────────────────────────────────────────────
 
-const RUNNING_STATUSES = new Set([
-  "running",
-  "executing",
-  "in_progress",
-  "director-managed",
-  "open",
-]);
-
-const TERMINAL_STATUSES = new Set([
-  "completed",
-  "done",
-  "success",
-  "finished",
-  "running_complete",
-  "director-managed-complete",
-  "failed",
-  "error",
-  "failure",
-  "cancelled",
-  "aborted",
-  "timed_out",
-]);
-
 const ATTENTION_STATUSES = new Set([
   "failed",
   "error",
@@ -130,9 +110,12 @@ function elapsedSec(startedAt: number | null | undefined, nowSec: number): numbe
   return Math.max(0, Math.floor(nowSec - startedAt));
 }
 
-function isActive(status: string): boolean {
-  const s = status.toLowerCase();
-  return !TERMINAL_STATUSES.has(s);
+// Active/terminal is the same lifecycle axis RunDetail and the mission board
+// use — route it through the one shared classifier so Fleet never drifts
+// from either (the exact list-vs-detail bug this closes, on the fleet view).
+function isActive(entity: RunStatusInput): boolean {
+  const derived = deriveDisplayStatus(entity);
+  return derived === "running" || derived === "queued";
 }
 
 function needsAttention(row: AgentRow): boolean {
@@ -140,7 +123,7 @@ function needsAttention(row: AgentRow): boolean {
   if (ATTENTION_STATUSES.has(s)) return true;
   // Flag a running row on its health verdict, never its age: a days-old session
   // still emitting activity is healthy, not stuck.
-  if (RUNNING_STATUSES.has(s) && row.effectiveHealth != null) {
+  if (deriveDisplayStatus(row) === "running" && row.effectiveHealth != null) {
     return ATTENTION_HEALTH.has(row.effectiveHealth);
   }
   return false;
@@ -153,7 +136,7 @@ function buildOrgUnits(
   runs: RunSummary[],
   nowSec: number,
 ): OrgUnit[] {
-  const activeInvocations = invocations.filter((inv) => isActive(inv.status));
+  const activeInvocations = invocations.filter((inv) => isActive(inv));
 
   // Build a lookup of invocation id → index in result array
   const invMap = new Map<string, OrgUnit>();
@@ -173,7 +156,7 @@ function buildOrgUnits(
   const directAgents: AgentRow[] = [];
 
   for (const run of runs) {
-    if (!isActive(run.status)) continue;
+    if (!isActive(run)) continue;
 
     const elapsed = elapsedSec(run.started_at ?? null, nowSec);
     const row: AgentRow = {
@@ -234,12 +217,14 @@ function buildOrgUnits(
  *  Fleet view's lazy pagination, which maps older pages the same way. */
 export function terminalRecentRows(runs: RunSummary[]): RecentRow[] {
   return runs
-    .filter((r) => !isActive(r.status))
+    .filter((r) => !isActive(r))
     .sort((a, b) => (b.ended_at ?? b.started_at ?? 0) - (a.ended_at ?? a.started_at ?? 0))
     .map((r) => ({
       id: r.run_id,
       name: r.playbook_name ?? r.agent_name ?? r.run_id.slice(-12),
       status: r.status,
+      status_reason_code: r.status_reason_code,
+      status_reason_summary: r.status_reason_summary,
       endedAtSec: r.ended_at ?? r.started_at ?? null,
     }));
 }

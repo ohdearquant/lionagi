@@ -710,6 +710,7 @@ export default function RunDetail({ id, fullPage = false }: RunDetailProps) {
 
   useEffect(() => {
     if (!id) return;
+    let cancelled = false;
     const stop = streamSession(id, (event) => {
       if (event.type === "heartbeat") return;
       if (event.type === "done") {
@@ -718,10 +719,13 @@ export default function RunDetail({ id, fullPage = false }: RunDetailProps) {
         // The initial fetch's status/reason fields are now stale (the run
         // just finished) — refetch so the terminal status/verdict derivation
         // reflects the real outcome instead of the pre-completion snapshot.
+        // Guarded on id: if the viewer navigates to a different run before
+        // this resolves, it must not clobber that run's freshly-fetched state.
         getSession(id)
           .then((fresh) => {
+            if (cancelled) return;
             setSession((prev) =>
-              prev
+              prev && prev.id === fresh.id
                 ? {
                     ...prev,
                     status: fresh.status,
@@ -766,7 +770,10 @@ export default function RunDetail({ id, fullPage = false }: RunDetailProps) {
         });
       }
     });
-    return stop;
+    return () => {
+      cancelled = true;
+      stop();
+    };
   }, [id]);
 
   useEffect(() => {

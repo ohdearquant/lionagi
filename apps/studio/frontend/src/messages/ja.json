@@ -785,7 +785,7 @@
     "filterTools": "ツール",
     "filterUser": "ユーザー",
     "filterSystem": "システム",
-    "outcome": "結果",
+    "latestMessage": "最新メッセージ",
     "viewFullConversation": "会話全体を表示 →",
     "noFinalResponse": "最終応答は記録されていません。",
     "statToolCalls": "ツール呼び出し",

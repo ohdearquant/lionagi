@@ -785,7 +785,7 @@
     "filterTools": "инструменты",
     "filterUser": "пользователь",
     "filterSystem": "система",
-    "outcome": "Результат",
+    "latestMessage": "Последнее сообщение",
     "viewFullConversation": "Показать полный диалог →",
     "noFinalResponse": "Финальный ответ не записан.",
     "statToolCalls": "Вызовы инструментов",

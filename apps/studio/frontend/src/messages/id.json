@@ -785,7 +785,7 @@
     "filterTools": "alat",
     "filterUser": "pengguna",
     "filterSystem": "sistem",
-    "outcome": "Hasil",
+    "latestMessage": "Pesan terbaru",
     "viewFullConversation": "Lihat percakapan lengkap →",
     "noFinalResponse": "Tidak ada respons akhir yang tercatat.",
     "statToolCalls": "Pemanggilan alat",

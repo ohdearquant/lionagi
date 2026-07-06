@@ -785,7 +785,7 @@
     "filterTools": "도구",
     "filterUser": "사용자",
     "filterSystem": "시스템",
-    "outcome": "결과",
+    "latestMessage": "최신 메시지",
     "viewFullConversation": "전체 대화 보기 →",
     "noFinalResponse": "기록된 최종 응답이 없습니다.",
     "statToolCalls": "도구 호출",

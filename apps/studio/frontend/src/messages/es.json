@@ -785,7 +785,7 @@
     "filterTools": "herramientas",
     "filterUser": "usuario",
     "filterSystem": "sistema",
-    "outcome": "Resultado",
+    "latestMessage": "Último mensaje",
     "viewFullConversation": "Ver conversación completa →",
     "noFinalResponse": "No hay respuesta final registrada.",
     "statToolCalls": "Llamadas a herramienta",

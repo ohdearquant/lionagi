@@ -643,7 +643,7 @@ function OverviewPanel({
       <div className="lg:col-span-2 rounded border border-edge bg-surface-raised p-3">
         <div className="mb-1.5 flex items-center gap-2">
           <span className="text-[length:var(--t-xs)] font-semibold uppercase tracking-wider text-content-muted">
-            {t("outcome")}
+            {t("latestMessage")}
           </span>
         </div>
         {lastAssistant?.content ? (

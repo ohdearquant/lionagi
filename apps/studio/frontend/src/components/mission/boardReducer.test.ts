@@ -330,6 +330,12 @@ describe("boardReducer — active/recent derivation", () => {
     const s = dispatchOk(initialBoardState(), [makeRun({ run_id: "r1", status: "running" })]);
     expect(s.recentRuns).toHaveLength(0);
   });
+
+  it("a 'timeout' alias run surfaces in recentRuns — the local TERMINAL_STATUSES set this replaced only knew 'timed_out'", () => {
+    const s = dispatchOk(initialBoardState(), [makeRun({ run_id: "r1", status: "timeout" })]);
+    expect(s.recentRuns).toHaveLength(1);
+    expect(s.activeRuns).toHaveLength(0);
+  });
 });
 
 // ─── TICK action ─────────────────────────────────────────────────────────────
