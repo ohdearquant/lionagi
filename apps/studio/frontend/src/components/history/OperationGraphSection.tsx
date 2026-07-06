@@ -61,24 +61,45 @@ function NodeCard({ node, live }: { node: OperationNode; live: boolean }) {
   );
 }
 
-// ── Layer computation (longest-path layering) ─────────────────────────────────
+// ── Layer computation (longest-path layering over edges) ──────────────────────
 
-function computeLayers(nodes: OperationNode[]): OperationNode[][] {
+// Depth is the longest path from any root, computed over ALL edges — not just a
+// node's single causeOpId. Fan-in nodes (multiple predecessors, causeOpId null
+// because parent_id was absent) must land after every predecessor, else their
+// edges render backwards through the cards.
+export function computeLayers(
+  nodes: OperationNode[],
+  edges: OperationGraphState["edges"],
+): OperationNode[][] {
   if (nodes.length === 0) return [];
 
-  const indexByOp = new Map(nodes.map((n, i) => [n.opId, i]));
-  const depths = new Array<number>(nodes.length).fill(0);
-
-  for (let i = 0; i < nodes.length; i++) {
-    const n = nodes[i]!;
-    if (n.causeOpId) {
-      const parentIdx = indexByOp.get(n.causeOpId);
-      if (parentIdx !== undefined) {
-        depths[i] = (depths[parentIdx] ?? 0) + 1;
-      }
-    }
+  const known = new Set(nodes.map((n) => n.opId));
+  const predsByOp = new Map<string, string[]>();
+  for (const e of edges) {
+    if (!known.has(e.source) || !known.has(e.target)) continue;
+    (predsByOp.get(e.target) ?? predsByOp.set(e.target, []).get(e.target)!).push(e.source);
   }
 
+  const depthCache = new Map<string, number>();
+  const onStack = new Set<string>();
+  const depthOf = (op: string): number => {
+    const cached = depthCache.get(op);
+    if (cached !== undefined) return cached;
+    const preds = predsByOp.get(op);
+    if (!preds || preds.length === 0) {
+      depthCache.set(op, 0);
+      return 0;
+    }
+    if (onStack.has(op)) return 0; // cycle guard — graph should be acyclic
+    onStack.add(op);
+    let d = 0;
+    for (const p of preds) d = Math.max(d, depthOf(p) + 1);
+    onStack.delete(op);
+    depthCache.set(op, d);
+    return d;
+  };
+
+  const depths = nodes.map((n) => depthOf(n.opId));
   const maxDepth = Math.max(...depths);
   const layers: OperationNode[][] = Array.from({ length: maxDepth + 1 }, () => []);
   for (let i = 0; i < nodes.length; i++) {
@@ -114,7 +135,7 @@ export default function OperationGraphSection({
     );
   }
 
-  const layers = computeLayers(nodes);
+  const layers = computeLayers(nodes, edges);
   const colWidth = 176;
   const colGap = 40;
   const cardHeight = 60;
