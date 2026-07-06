@@ -66,6 +66,15 @@ class EngineBudgetError(RuntimeError):
     """The run's hard agent budget is exhausted; no further agents may be made."""
 
 
+def _is_all_budget_error(exc: BaseException) -> bool:
+    """True iff every leaf exception is an EngineBudgetError, recursing into nested groups."""
+    if isinstance(exc, EngineBudgetError):
+        return True
+    if is_exception_group(exc):
+        return all(_is_all_budget_error(e) for e in get_exception_group_exceptions(exc))
+    return False
+
+
 def _event_dict(event: Any) -> dict[str, Any]:
     if hasattr(event, "model_dump"):
         try:
@@ -821,11 +830,10 @@ class Engine:
             # raised straight out of _run() — e.g. a review's dimension
             # fan-out gather, or a sequential plan/implement stage. Route to
             # partial-export instead of letting it crash the run. Masking
-            # guard: a mixed ExceptionGroup (budget + a real error) must not
-            # be laundered into a partial — re-raise so the real error surfaces.
-            if is_exception_group(exc) and not all(
-                isinstance(e, EngineBudgetError) for e in get_exception_group_exceptions(exc)
-            ):
+            # guard: a non-budget leaf anywhere in the group (including
+            # nested groups) must not be laundered into a partial — re-raise
+            # so the real error surfaces.
+            if not _is_all_budget_error(exc):
                 raise
             degrade_reason = "budget"
             partial_result = await self._degrade_export(run, args, kwargs)

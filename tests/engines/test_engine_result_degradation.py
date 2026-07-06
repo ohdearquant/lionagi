@@ -16,7 +16,11 @@ from lionagi.engines.planning import PlanningEngine
 from lionagi.engines.research import FindingEmitted, ResearchEngine
 from lionagi.engines.review import IssueFound, ReviewEngine
 from lionagi.ln import gather as ln_gather
-from lionagi.ln.concurrency._compat import get_exception_group_exceptions, is_exception_group
+from lionagi.ln.concurrency._compat import (
+    ExceptionGroup,
+    get_exception_group_exceptions,
+    is_exception_group,
+)
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -166,6 +170,75 @@ async def test_masking_guard_reraises_real_error_in_mixed_group():
     subs = get_exception_group_exceptions(exc) if is_exception_group(exc) else [exc]
     assert any(isinstance(e, ValueError) for e in subs), (
         f"the genuine ValueError must surface, got {exc!r}"
+    )
+
+
+def _leaves(exc: BaseException) -> list[BaseException]:
+    """Flatten an (optionally nested) exception group into its leaf exceptions."""
+    if is_exception_group(exc):
+        out: list[BaseException] = []
+        for e in get_exception_group_exceptions(exc):
+            out.extend(_leaves(e))
+        return out
+    return [exc]
+
+
+@pytest.mark.asyncio
+async def test_masking_guard_degrades_nested_all_budget_group():
+    """A NESTED group whose every leaf is EngineBudgetError (a group inside a
+    group, not just a flat list) must still degrade, not crash — the masking
+    guard's predicate must recurse, not just inspect the top-level children.
+
+    This test engine overrides _partial_export (a test-local fixture, not one
+    of the five shipped engines) purely so the degrade path produces a str
+    and the resulting EngineResult's .degraded/.degrade_reason are directly
+    inspectable, without relying on the internal _budget_notified flag.
+    """
+
+    class _NestedBudgetEngine(Engine):
+        async def _run(self, run: Any, *a: Any, **kw: Any) -> Any:
+            raise ExceptionGroup(
+                "outer", [ExceptionGroup("inner", [EngineBudgetError("out of budget")])]
+            )
+
+        async def _partial_export(self, run: Any, *a: Any, **kw: Any) -> str:
+            return "partial output from nested budget group"
+
+    eng = _NestedBudgetEngine(max_agents=1)
+    result = await eng.run()
+
+    assert isinstance(result, EngineResult), f"expected EngineResult, got {type(result)}"
+    assert result.degraded is True
+    assert result.degrade_reason == "budget"
+    assert result.text == "partial output from nested budget group"
+
+
+@pytest.mark.asyncio
+async def test_masking_guard_reraises_real_error_buried_in_nested_group():
+    """A genuine error buried two levels deep in a nested group (alongside a
+    budget error at the same depth) must still surface — the recursive
+    masking guard must not treat "not top-level EngineBudgetError" as license
+    to swallow it, nor mistake a nested all-budget subgroup for safety when a
+    sibling leaf is real."""
+
+    class _NestedMixedEngine(Engine):
+        async def _run(self, run: Any, *a: Any, **kw: Any) -> Any:
+            raise ExceptionGroup(
+                "outer",
+                [
+                    ExceptionGroup(
+                        "inner", [EngineBudgetError("out of budget"), ValueError("genuine bug")]
+                    )
+                ],
+            )
+
+    eng = _NestedMixedEngine(max_agents=1)
+    with pytest.raises(BaseException) as exc_info:
+        await eng.run()
+
+    leaves = _leaves(exc_info.value)
+    assert any(isinstance(e, ValueError) for e in leaves), (
+        f"the genuine ValueError must surface from the nested group, got {exc_info.value!r}"
     )
 
 
