@@ -60,6 +60,7 @@ async def test_spawn_injects_node_into_running_graph():
     assert "spawner" in executed
     assert "follow_up" in executed  # injected node actually ran
     assert result["spawned_operations"] == 1
+    assert result["dropped_spawns"] == []
     # both the original and injected op are in the results
     assert len(result["completed_operations"]) == 2
 
@@ -110,6 +111,9 @@ async def test_spawn_cap_enforced():
 
     # exactly the cap is honored — 1 initial + 5 injected, then refused
     assert result["spawned_operations"] == 5
+    dropped = [d for d in result["dropped_spawns"] if d["reason"] == "max_spawn_exceeded"]
+    assert len(dropped) == 1
+    assert dropped[0]["op_id"]  # the rejected child's id is traceable
 
 
 @pytest.mark.asyncio
@@ -177,6 +181,77 @@ def test_cycle_injection_rejected():
     # inject existing node `a` after `b` => edge b -> a, closing a<->b cycle
     assert executor.inject(a, after=b, independent=False) is False
     assert graph.is_acyclic()  # graph left clean (edge reverted)
+
+    dropped = [d for d in executor._dropped_spawns if d["reason"] == "cycle"]
+    assert len(dropped) == 1
+    assert dropped[0]["op_id"] == str(a.id)
+
+
+def test_builder_error_recorded_as_dropped_spawn():
+    """A node_builder exception is recorded with reason + error, not just logged."""
+    from lionagi.operations.flow import ReactiveExecutor
+    from lionagi.protocols.graph.graph import Graph
+
+    def raising_builder(req: SpawnRequest, emitter: Operation) -> Operation:
+        raise ValueError("unknown assignee: ghost")
+
+    session = _session_with_ops()
+    executor = ReactiveExecutor(session, Graph(), node_builder=raising_builder)
+    req = SpawnRequest(instruction="x", assignee="ghost")
+
+    assert executor._inject_request(req, emitter=None) is False
+    assert executor._dropped_spawns == [
+        {
+            "reason": "builder_error",
+            "assignee": "ghost",
+            "emitter_id": None,
+            "error": "unknown assignee: ghost",
+        }
+    ]
+
+
+def test_null_child_recorded_as_dropped_spawn():
+    """A node_builder returning None is recorded, no op_id (no child was built)."""
+    from lionagi.operations.flow import ReactiveExecutor
+    from lionagi.protocols.graph.graph import Graph
+
+    def none_builder(req: SpawnRequest, emitter: Operation) -> Operation | None:
+        return None
+
+    session = _session_with_ops()
+    executor = ReactiveExecutor(session, Graph(), node_builder=none_builder)
+    req = SpawnRequest(instruction="x")
+
+    assert executor._inject_request(req, emitter=None) is False
+    assert executor._dropped_spawns == [
+        {"reason": "null_child", "assignee": None, "emitter_id": None}
+    ]
+
+
+def test_duplicate_request_recorded_as_dropped_spawn():
+    """The same SpawnRequest object seen twice: first succeeds, second is a de-dup."""
+    from lionagi.operations.flow import ReactiveExecutor
+    from lionagi.protocols.graph.graph import Graph
+
+    class _DummyTG:
+        def start_soon(self, *a, **k):
+            pass
+
+    def node_builder(req: SpawnRequest, emitter: Operation) -> Operation:
+        return create_operation("op", parameters={})
+
+    session = _session_with_ops()
+    executor = ReactiveExecutor(session, Graph(), node_builder=node_builder)
+    executor._running = True
+    executor._tg = _DummyTG()
+    req = SpawnRequest(instruction="x", independent=True)
+
+    assert executor._inject_request(req, emitter=None) is True
+    assert executor._inject_request(req, emitter=None) is False  # same object: duplicate
+
+    dropped = [d for d in executor._dropped_spawns if d["reason"] == "duplicate"]
+    assert len(dropped) == 1
+    assert "op_id" not in dropped[0]  # dropped before a child was built
 
 
 @pytest.mark.asyncio
