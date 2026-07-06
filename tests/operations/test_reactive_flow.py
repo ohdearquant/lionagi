@@ -114,6 +114,8 @@ async def test_spawn_cap_enforced():
     dropped = [d for d in result["dropped_spawns"] if d["reason"] == "max_spawn_exceeded"]
     assert len(dropped) == 1
     assert dropped[0]["op_id"]  # the rejected child's id is traceable
+    # pin the exact entry shape so a regression dropping/adding a key is caught
+    assert set(dropped[0]) == {"reason", "assignee", "emitter_id", "op_id"}
 
 
 @pytest.mark.asyncio
@@ -185,6 +187,7 @@ def test_cycle_injection_rejected():
     dropped = [d for d in executor._dropped_spawns if d["reason"] == "cycle"]
     assert len(dropped) == 1
     assert dropped[0]["op_id"] == str(a.id)
+    assert set(dropped[0]) == {"reason", "assignee", "emitter_id", "op_id"}
 
 
 def test_builder_error_recorded_as_dropped_spawn():
@@ -252,6 +255,7 @@ def test_duplicate_request_recorded_as_dropped_spawn():
     dropped = [d for d in executor._dropped_spawns if d["reason"] == "duplicate"]
     assert len(dropped) == 1
     assert "op_id" not in dropped[0]  # dropped before a child was built
+    assert set(dropped[0]) == {"reason", "assignee", "emitter_id"}
 
 
 @pytest.mark.asyncio
