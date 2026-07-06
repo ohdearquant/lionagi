@@ -213,8 +213,10 @@ def _classify_phantom(
     ps_snapshot: str | None = None,
 ) -> PhantomReason | None:
     ap = _artifacts_path(row)
+    node_metadata = row["node_metadata"] if "node_metadata" in row.keys() else None
+    session = {"id": row["id"], "node_metadata": node_metadata}
     # A running session is never a phantom while its process is observably alive.
-    if _live_process_matches(row["id"], ap, ps_snapshot):
+    if process_liveness(session, ap, ps_snapshot) is True:
         return None
     # Not yet stale: it may simply not have written artifacts yet, so give it
     # the benefit of the doubt rather than reap a fresh/quiet session.
@@ -237,7 +239,8 @@ async def list_phantom_sessions(*, stale_hours: float = 1.0) -> list[dict[str, A
     async with _open_db(_DB) as db:
         cur = await db.execute(
             """
-            SELECT id, name, playbook_name, started_at, updated_at, artifacts_path, status
+            SELECT id, name, playbook_name, started_at, updated_at, artifacts_path,
+                   status, node_metadata
             FROM sessions
             WHERE status = 'running'
             ORDER BY updated_at DESC

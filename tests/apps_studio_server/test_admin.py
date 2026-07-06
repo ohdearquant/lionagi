@@ -172,6 +172,23 @@ def test_alive_session_never_reaped(tmp_path):
     assert reason is None
 
 
+def test_stale_session_live_recorded_pid_not_reaped(tmp_path):
+    """A recorded node_metadata pid that is live wins even with an empty ps snapshot."""
+    import lionagi.studio.services.admin as admin_svc
+
+    now = time.time()
+    missing = str(tmp_path / "ghost3")
+    row = {
+        "id": str(uuid.uuid4()),
+        "updated_at": now - 7200,
+        "artifacts_path": missing,
+        "node_metadata": {"pid": os.getpid()},
+    }
+
+    reason = admin_svc._classify_phantom(row, now=now, stale_seconds=3600, ps_snapshot="")
+    assert reason is None
+
+
 def test_stale_lock_gated_on_staleness(tmp_path):
     """A stale lock file only counts as zombie evidence once the session itself is stale."""
     import lionagi.studio.services.admin as admin_svc
