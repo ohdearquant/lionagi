@@ -13,7 +13,7 @@ from functools import partial
 from pathlib import Path
 from typing import Any
 
-from lionagi.libs.path_safety import contain_and_resolve
+from lionagi.libs.path_safety import contain_and_resolve, has_traversal
 from lionagi.libs.schema.as_readable import as_readable
 from lionagi.ln._proc import aterminate_process_group
 
@@ -156,7 +156,7 @@ def resolve_cli_workspace(repo: Path | None, workspace: str | None) -> Path:
     if ws_path.is_absolute():
         raise ValueError(f"Workspace path must be relative, got absolute: {workspace}")
 
-    if ".." in ws_path.parts:
+    if has_traversal(ws_path):
         raise ValueError(f"Directory traversal detected in workspace path: {workspace}")
 
     return contain_and_resolve(ws_path, repo)

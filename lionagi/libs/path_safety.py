@@ -71,7 +71,7 @@ def check_path_safe(
             f"{field_name} entry {value!r} is a Windows drive-letter path — "
             "only repo-relative paths inside the repository are allowed."
         )
-    if ".." in p.parts:
+    if has_traversal(p):
         raise ValueError(
             f"{field_name} entry {value!r} contains directory traversal ('..') — "
             "only paths that remain inside the repository are allowed."
@@ -143,7 +143,7 @@ def contain_paths_in_root(
 def check_add_dir_safe(value: str, field_name: str) -> str:
     """Validate add_dir entry: allow absolute, reject traversal only (read-grant semantics)."""
     p = Path(value)
-    if ".." in p.parts:
+    if has_traversal(p):
         raise ValueError(
             f"{field_name} entry {value!r} contains directory traversal ('..') — "
             "use an explicit absolute path to grant access to directories outside "
