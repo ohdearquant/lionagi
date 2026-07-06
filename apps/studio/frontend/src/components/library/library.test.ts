@@ -259,3 +259,172 @@ describe("components/library/KindBadge.tsx — workflow kind", () => {
     expect(src).not.toMatch(/"playbook"/);
   });
 });
+
+// ─── Built-in playbook templates — Workflows page (DESIGN-BRIEF §3) ──────────
+//
+// The Workflows page used to render nothing: useLibraryData() never fetched
+// playbooks at all. These tests cover the fix: built-in templates + the
+// user's own playbooks are fetched and surfaced as "workflow" rows split by
+// subKind, with a real detail pane (not a stub) for both.
+
+describe("routes/library.tsx — built-in + user playbooks are fetched", () => {
+  const src = fs.readFileSync(path.join(ROUTES_DIR, "library.tsx"), "utf-8");
+
+  it("imports listBuiltinPlaybooks and listPlaybooks from lib/api", () => {
+    expect(src).toMatch(/listBuiltinPlaybooks/);
+    expect(src).toMatch(/listPlaybooks/);
+  });
+
+  it("useLibraryData pushes builtin-subKind and custom-subKind workflow rows", () => {
+    expect(src).toMatch(/subKind:\s*"builtin"/);
+    expect(src).toMatch(/subKind:\s*"custom"/);
+    expect(src).toMatch(/subKind:\s*"graph"/);
+  });
+
+  it("imports PlaybookTemplateDetail for the builtin/custom detail pane", () => {
+    expect(src).toMatch(/import\s*\{\s*PlaybookTemplateDetail\s*\}\s*from/);
+  });
+
+  it("dispatches builtin/custom subKind to PlaybookTemplateDetail, graph subKind to WorkflowDetail", () => {
+    expect(src).toMatch(/subKind === "graph"[\s\S]{0,80}<WorkflowDetail/);
+    expect(src).toMatch(/<PlaybookTemplateDetail/);
+  });
+});
+
+describe("PlaybookTemplateDetail — detail pane contract", () => {
+  const filePath = path.join(LIBRARY_DIR, "PlaybookTemplateDetail.tsx");
+  const src = fs.readFileSync(filePath, "utf-8");
+
+  it("exists at components/library/PlaybookTemplateDetail.tsx", () => {
+    expect(fs.existsSync(filePath)).toBe(true);
+  });
+
+  it("exports PlaybookTemplateDetail", () => {
+    expect(src).toMatch(/export function PlaybookTemplateDetail/);
+  });
+
+  it("accepts onBack and onCloned props", () => {
+    expect(src).toMatch(/onBack\?/);
+    expect(src).toMatch(/onCloned\?/);
+  });
+
+  it("does not import shell/Drawer", () => {
+    expect(src).not.toMatch(/from.*shell\/Drawer/);
+  });
+
+  it("fetches the builtin endpoint when isBuiltin, the user playbook endpoint otherwise", () => {
+    expect(src).toMatch(/getBuiltinPlaybookRaw/);
+    expect(src).toMatch(/getWorkerRaw/);
+    expect(src).toMatch(/isBuiltin\s*\?\s*getBuiltinPlaybookRaw/);
+  });
+
+  it("reuses StatusPill for recent runs — no forked status/verdict chip component", () => {
+    expect(src).toMatch(/import StatusPill from/);
+    expect(src).toMatch(/<StatusPill/);
+  });
+
+  it("renders Run and Clone actions wired to launchPlaybook / installBuiltinPlaybook", () => {
+    expect(src).toMatch(/launchPlaybook/);
+    expect(src).toMatch(/installBuiltinPlaybook/);
+  });
+
+  it("does not fabricate a step/DAG graph — no WorkerGraph or WorkflowEditor import", () => {
+    expect(src).not.toMatch(/WorkerGraph/);
+    expect(src).not.toMatch(/WorkflowEditor/);
+  });
+});
+
+// ─── URL sel param — 3-part workflow encoding (builtin/custom/graph) ─────────
+
+describe("library URL sel param — workflow subKind encoding", () => {
+  // Mirrors the real parseSel/encodeSel in routes/library.tsx verbatim, same
+  // rationale as the plain kind:name block above: validate the contract
+  // without importing the route module (router side-effects).
+
+  type LibraryKind = "agent" | "workflow" | "skill" | "plugin" | "engine";
+  type WorkflowSubKind = "builtin" | "custom" | "graph";
+  const WORKFLOW_SUB_KINDS: WorkflowSubKind[] = ["builtin", "custom", "graph"];
+
+  function encodeSel(kind: LibraryKind, name: string, subKind?: WorkflowSubKind): string {
+    if (kind === "workflow") {
+      return `workflow:${subKind ?? "graph"}:${name}`;
+    }
+    return `${kind}:${name}`;
+  }
+
+  function parseSel(
+    sel: string | undefined,
+  ): { kind: LibraryKind; name: string; subKind?: WorkflowSubKind } | null {
+    if (!sel) return null;
+    const colon = sel.indexOf(":");
+    if (colon === -1) return null;
+    const kind = sel.slice(0, colon) as LibraryKind;
+    const rest = sel.slice(colon + 1);
+    const valid: LibraryKind[] = ["agent", "workflow", "skill", "plugin", "engine"];
+    if (!valid.includes(kind) || !rest) return null;
+
+    if (kind === "workflow") {
+      const colon2 = rest.indexOf(":");
+      if (colon2 !== -1) {
+        const maybeSubKind = rest.slice(0, colon2);
+        const name = rest.slice(colon2 + 1);
+        if (WORKFLOW_SUB_KINDS.includes(maybeSubKind as WorkflowSubKind) && name) {
+          return { kind, name, subKind: maybeSubKind as WorkflowSubKind };
+        }
+      }
+      return { kind, name: rest, subKind: "graph" };
+    }
+
+    return { kind, name: rest };
+  }
+
+  it("encodes workflow:<subKind>:<name>", () => {
+    expect(encodeSel("workflow", "research", "builtin")).toBe("workflow:builtin:research");
+    expect(encodeSel("workflow", "my-copy", "custom")).toBe("workflow:custom:my-copy");
+    expect(encodeSel("workflow", "review-flow", "graph")).toBe("workflow:graph:review-flow");
+  });
+
+  it("defaults to graph subKind when none is passed (non-workflow-split call sites)", () => {
+    expect(encodeSel("workflow", "review-flow")).toBe("workflow:graph:review-flow");
+  });
+
+  it("non-workflow kinds are unaffected by subKind", () => {
+    expect(encodeSel("agent", "my-agent")).toBe("agent:my-agent");
+  });
+
+  it("parses each subKind round-trip", () => {
+    expect(parseSel("workflow:builtin:research")).toEqual({
+      kind: "workflow",
+      name: "research",
+      subKind: "builtin",
+    });
+    expect(parseSel("workflow:custom:my-copy")).toEqual({
+      kind: "workflow",
+      name: "my-copy",
+      subKind: "custom",
+    });
+    expect(parseSel("workflow:graph:review-flow")).toEqual({
+      kind: "workflow",
+      name: "review-flow",
+      subKind: "graph",
+    });
+  });
+
+  it("backward-compat: pre-split workflow:<name> (no subKind) resolves as graph", () => {
+    expect(parseSel("workflow:review-flow")).toEqual({
+      kind: "workflow",
+      name: "review-flow",
+      subKind: "graph",
+    });
+  });
+
+  it("non-workflow kinds still parse without a subKind field", () => {
+    expect(parseSel("agent:my-agent")).toEqual({ kind: "agent", name: "my-agent" });
+  });
+
+  it("returns null for invalid kind or empty sel", () => {
+    expect(parseSel("unknown:foo")).toBeNull();
+    expect(parseSel(undefined)).toBeNull();
+    expect(parseSel("")).toBeNull();
+  });
+});

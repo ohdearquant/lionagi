@@ -1,0 +1,29 @@
+name: audit
+description: Parametric audit — typed args schema with template interpolation.
+argument-hint: '[--mode MODE] [--workers N]'
+
+model: claude-code/opus-4-7
+agent: orchestrator
+effort: high
+
+args:
+  mode:
+    type: str
+    default: dry
+    help: "audit mode: dry | security | dead-code | api-surface"
+  workers:
+    type: int
+    default: 8
+    help: "number of parallel codex workers"
+  strict:
+    type: bool
+    default: false
+    help: "fail on any finding above MEDIUM severity"
+
+prompt: |
+  Run a {mode} audit with {workers} parallel workers. Strict mode: {strict}.
+
+  Target scope: {input}
+
+  Each worker audits ONE module independently. Consolidation happens after
+  all workers return.

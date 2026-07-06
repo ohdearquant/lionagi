@@ -1,0 +1,138 @@
+name: test-coverage
+description: Iterative test coverage improvement — audit, plan, implement, verify, repeat until target.
+argument-hint: '[--target N] [--focus MODULE]'
+
+model: claude-code/opus-4-7
+agent: orchestrator
+effort: high
+max-ops: 40
+show-graph: true
+
+args:
+  target:
+    type: int
+    default: 85
+    help: "target line coverage percentage (e.g. 85 means 85%)"
+  focus:
+    type: str
+    default: auto
+    help: "module or package to focus on; 'auto' = orchestrator selects lowest-coverage modules"
+
+prompt: |
+  Improve test coverage for this project until the target is reached or
+  gains saturate. Work iteratively and do NOT write low-value tests just
+  to inflate numbers.
+
+  Target coverage: {target}%
+  Focus:          {focus}
+  Scope:          {input}
+
+  ─────────────────────────────────────────────
+  PHASE 0 — BASELINE AUDIT
+  ─────────────────────────────────────────────
+  Determine the current coverage baseline:
+
+  1. Find the project's test runner and coverage tool. Look for config files
+     such as pytest.ini, pyproject.toml [tool.pytest], jest.config.*, vitest.config.*,
+     go.sum, Makefile targets, or a README section titled "Testing".
+  2. Run the coverage report. Common commands:
+       Python:     uv run pytest --cov --cov-report=term-missing
+       Node/TS:    npx vitest run --coverage   OR   npx jest --coverage
+       Go:         go test ./... -coverprofile=cover.out && go tool cover -func cover.out
+       Ruby:       bundle exec rspec --format progress
+     Adapt to whatever the project actually uses — do NOT assume.
+  3. Parse the output to identify:
+     - Overall current coverage percentage.
+     - Per-module or per-file breakdown.
+     - Which files have the lowest coverage (sort ascending).
+  4. If {focus} is not "auto", restrict your attention to that module or
+     package but still report overall project coverage for context.
+  5. If current coverage >= {target}%, report the result and stop —
+     the target is already met.
+
+  ─────────────────────────────────────────────
+  PHASE 1 — PLAN THE BATCH
+  ─────────────────────────────────────────────
+  Select up to 5 files to improve in this round. Prioritise:
+  - Files with < 60% coverage that have real business logic.
+  - Files whose untested paths represent a real risk (error handlers,
+    boundary conditions, branching logic).
+  - Prefer unit tests over integration tests. Integration tests are
+    appropriate only when a unit cannot be tested in isolation.
+
+  For each selected file, read it in full and note:
+  - Which lines are uncovered (use the coverage report's "missing" column).
+  - What those lines actually do (not just what they look like).
+  - What inputs or conditions are required to reach them.
+  - Whether a test already exists for the enclosing function (extend it)
+    or whether a new test is needed.
+
+  ─────────────────────────────────────────────
+  PHASE 2 — IMPLEMENT TESTS
+  ─────────────────────────────────────────────
+  Write new or extended tests for the planned files.
+
+  Hard constraints:
+  - Every test must make a meaningful assertion — no `assert True` or
+    trivial no-op checks.
+  - Tests must be independent: each can run alone without relying on
+    another test's side effects.
+  - Match the project's existing test naming conventions, fixture patterns,
+    and import style exactly.
+  - Do NOT delete or modify existing tests.
+  - Do NOT add `# pragma: no cover` or equivalent exclusions to avoid coverage.
+  - Prefer parametrized / table-driven tests when testing multiple inputs
+    for the same function.
+
+  ─────────────────────────────────────────────
+  PHASE 3 — VERIFY
+  ─────────────────────────────────────────────
+  Re-run the full coverage report. Record:
+  - New overall coverage percentage.
+  - Coverage gain from this round (new% - baseline%).
+  - Per-file improvements.
+
+  If the new coverage passes all tests (zero failures) AND the gain is
+  measurable, proceed to the Loop Decision.
+
+  If any tests fail: fix them before recording any coverage result.
+
+  ─────────────────────────────────────────────
+  LOOP DECISION
+  ─────────────────────────────────────────────
+  After Phase 3, decide whether to continue:
+
+  CONTINUE another round (go back to Phase 1) if:
+    - Current coverage < {target}%, AND
+    - Gain this round was >= 5 percentage points.
+
+  STOP if:
+    - Current coverage >= {target}% (target reached), OR
+    - Gain this round was < 5 percentage points (gains have saturated —
+      further rounds are unlikely to be worth the effort).
+
+  Maximum rounds: 5 (regardless of saturation — prevent infinite loops).
+
+  ─────────────────────────────────────────────
+  FINAL REPORT
+  ─────────────────────────────────────────────
+  After stopping, produce a summary:
+
+  ## Coverage Improvement Report
+
+  | Round | Coverage Before | Coverage After | Gain | Files Improved |
+  |-------|----------------|----------------|------|----------------|
+  | 1     | ...%           | ...%           | +...%| ...            |
+  | ...   |                |                |      |                |
+
+  **Final coverage**: ...%
+  **Target**: {target}%
+  **Status**: TARGET MET | SATURATED (explain why further gains are hard)
+
+  ### Files with remaining gaps
+  List any files still below 70% with a note on why they are hard to cover
+  (e.g., "requires live database", "platform-specific code", "generated").
+
+  ### Recommendations
+  Up to three concrete suggestions for reaching higher coverage if the
+  target was not met.

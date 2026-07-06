@@ -1,0 +1,97 @@
+name: feature
+description: End-to-end feature implementation — research, design, implement, test, critic gate.
+argument-hint: '[--scope MODULE]'
+
+model: claude-code/opus-4-7
+agent: orchestrator
+effort: high
+max-ops: 30
+show-graph: true
+
+args:
+  scope:
+    type: str
+    default: auto
+    help: "module or layer to focus on: 'auto' = orchestrator decides from context"
+
+prompt: |
+  Implement the following feature end-to-end. Work in phases and do NOT skip ahead.
+
+  Feature request: {input}
+  Scope hint: {scope}
+
+  ─────────────────────────────────────────────
+  PHASE 0 — CODEBASE SCAN (no coding yet)
+  ─────────────────────────────────────────────
+  Before writing a single line of code, do an exhaustive scan:
+  - List all source files in the project.
+  - Search for every existing module, class, function, or pattern that is
+    relevant to the feature (search by keyword, not just file name).
+  - Identify the exact files that will need to change and the files that
+    will need new tests.
+  - Read each of those files in full. Understand existing conventions,
+    naming patterns, error handling style, and test layout.
+  - If scope is not "auto", focus on the named module or layer but still
+    scan for cross-cutting concerns.
+
+  Do NOT proceed to Phase 1 until you can answer:
+    1. What existing code does this feature build on?
+    2. What must NOT be broken?
+    3. Where exactly will the new code live?
+
+  ─────────────────────────────────────────────
+  PHASE 1 — DESIGN
+  ─────────────────────────────────────────────
+  Write a concise design note (not a file — just in your output) that covers:
+  - Public API: function/class signatures with types.
+  - Data flow: inputs → transformations → outputs.
+  - Error handling: which errors are raised and how callers handle them.
+  - Integration points: which existing modules are called and how.
+  - Test plan: what unit tests and integration tests are needed.
+
+  Confirm the design is consistent with existing conventions before proceeding.
+
+  ─────────────────────────────────────────────
+  PHASE 2 — TESTS FIRST
+  ─────────────────────────────────────────────
+  Write tests before any implementation. Tests must be runnable and must
+  FAIL at this point (because the implementation does not exist yet).
+
+  Requirements:
+  - One test file per new module/class introduced.
+  - Cover happy path, edge cases, and at least two error conditions.
+  - No stubs, no `pass`, no `todo!()` — real assertions against real behavior.
+  - Use the project's existing test framework and conventions exactly.
+
+  ─────────────────────────────────────────────
+  PHASE 3 — IMPLEMENTATION
+  ─────────────────────────────────────────────
+  Implement the feature to make the tests pass.
+
+  Hard constraints:
+  - No placeholder or stub implementations. Every function must do its job.
+  - Match existing naming, formatting, and import conventions.
+  - If {scope} names a module, keep changes within that module unless
+    an integration point requires touching a second module (document why).
+  - Run the test suite after implementation. If tests fail, fix them before
+    continuing — do not move on with a broken state.
+
+  ─────────────────────────────────────────────
+  PHASE 4 — CRITIC GATE
+  ─────────────────────────────────────────────
+  Pause and review your own work critically:
+  - Do all tests pass?
+  - Is there any code path not covered by tests?
+  - Does the public API match the design from Phase 1?
+  - Are there any edge cases the design missed?
+  - Is there any dead code or unused import?
+
+  Fix anything found before declaring done.
+
+  ─────────────────────────────────────────────
+  DONE CRITERIA
+  ─────────────────────────────────────────────
+  - All new and existing tests pass.
+  - No stubs, no skipped tests, no TODO comments left in new code.
+  - Implementation is consistent with the design note.
+  - A one-paragraph summary of what was built and what was changed.

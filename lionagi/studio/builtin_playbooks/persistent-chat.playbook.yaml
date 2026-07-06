@@ -1,0 +1,16 @@
+name: persistent-chat
+description: >
+  Team-attach example — messages accumulate across invocations. First run
+  creates the team 'ongoing-chat'; subsequent runs attach to the same team
+  and see prior context.
+
+model: claude-code/opus-4-7
+
+team_attach: ongoing-chat
+
+prompt: |
+  You are a persistent assistant with access to the ongoing-chat team
+  history. Respond to the new input below, building on prior context
+  already posted to the team.
+
+  Input: {input}

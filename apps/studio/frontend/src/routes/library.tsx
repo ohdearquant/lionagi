@@ -3,6 +3,7 @@ import { useCallback, useEffect, useState, type ReactNode } from "react";
 import { useTranslations } from "use-intl";
 import { AgentDetail } from "@/components/library/AgentDetail";
 import { WorkflowDetail, CreateWorkflowPanel } from "@/components/library/WorkflowDetail";
+import { PlaybookTemplateDetail } from "@/components/library/PlaybookTemplateDetail";
 import { KindBadge } from "@/components/library/KindBadge";
 import SplitPane from "@/components/ui/SplitPane";
 import TabBar from "@/components/shell/TabBar";
@@ -20,6 +21,8 @@ import {
   listPlugins,
   listEngineDefs,
   listInvocations,
+  listBuiltinPlaybooks,
+  listPlaybooks,
 } from "@/lib/api";
 import type { InvocationSummary } from "@/lib/api";
 import type { AgentProfileSummary } from "@/lib/types";
@@ -40,9 +43,16 @@ export const Route = createFileRoute("/library")({
   component: LibraryPage,
 });
 
+// Sub-partitions of the "workflow" kind: read-only bundled templates, the
+// user's own materialized copies, and DB-backed graph designs (Designer UI).
+// Distinct from LibraryKind (which stays a closed, shared union) so the
+// KindBadge component doesn't need to know about this split.
+type WorkflowSubKind = "builtin" | "custom" | "graph";
+
 interface LibraryItem {
   key: string;
   kind: LibraryKind;
+  subKind?: WorkflowSubKind;
   name: string;
   description?: string;
   meta?: string;
@@ -62,80 +72,112 @@ function useLibraryData() {
 
     Promise.allSettled([
       listAgents(),
+      listBuiltinPlaybooks(),
+      listPlaybooks(),
       listWorkflowDefs(),
       listSkills(),
       listPlugins(),
       listEngineDefs(),
-    ]).then(([agentsRes, workflowsRes, skillsRes, pluginsRes, enginesRes]) => {
-      if (!alive) return;
+    ]).then(
+      ([agentsRes, builtinsRes, playbooksRes, workflowsRes, skillsRes, pluginsRes, enginesRes]) => {
+        if (!alive) return;
 
-      const out: LibraryItem[] = [];
+        const out: LibraryItem[] = [];
 
-      if (agentsRes.status === "fulfilled") {
-        setAllAgents(agentsRes.value.agents);
-        for (const a of agentsRes.value.agents) {
-          out.push({
-            key: `agent:${a.name}`,
-            kind: "agent",
-            name: a.name,
-            description: a.description ?? undefined,
-            meta: a.model ?? undefined,
-          });
+        if (agentsRes.status === "fulfilled") {
+          setAllAgents(agentsRes.value.agents);
+          for (const a of agentsRes.value.agents) {
+            out.push({
+              key: `agent:${a.name}`,
+              kind: "agent",
+              name: a.name,
+              description: a.description ?? undefined,
+              meta: a.model ?? undefined,
+            });
+          }
         }
-      }
-      if (workflowsRes.status === "fulfilled") {
-        for (const w of workflowsRes.value) {
-          out.push({
-            key: `workflow:${w.id}`,
-            kind: "workflow",
-            name: w.name,
-            description: w.description ?? undefined,
-            meta: w.id,
-          });
+        // Built-in templates first, then the user's own playbooks, then
+        // DB-backed graph designs — surfacing the shipped templates the
+        // Workflows page was missing entirely (DESIGN-BRIEF §3).
+        if (builtinsRes.status === "fulfilled") {
+          for (const p of builtinsRes.value.playbooks) {
+            out.push({
+              key: `workflow:builtin:${p.name}`,
+              kind: "workflow",
+              subKind: "builtin",
+              name: p.name,
+              description: p.description,
+              meta: p.description,
+            });
+          }
         }
-      }
-      if (skillsRes.status === "fulfilled") {
-        for (const s of skillsRes.value.skills) {
-          out.push({
-            key: `skill:${s.name}`,
-            kind: "skill",
-            name: s.name,
-            description: s.description ?? undefined,
-          });
+        if (playbooksRes.status === "fulfilled") {
+          for (const p of playbooksRes.value.playbooks) {
+            out.push({
+              key: `workflow:custom:${p.name}`,
+              kind: "workflow",
+              subKind: "custom",
+              name: p.name,
+              description: p.description ?? undefined,
+              meta: p.description ?? undefined,
+            });
+          }
         }
-      }
-      if (pluginsRes.status === "fulfilled") {
-        // The same plugin can be listed by several sources (marketplace +
-        // installed cache); detail lookup is by name, so one row suffices.
-        const seenPlugins = new Set<string>();
-        for (const p of pluginsRes.value.plugins) {
-          if (seenPlugins.has(p.name)) continue;
-          seenPlugins.add(p.name);
-          out.push({
-            key: `plugin:${p.name}`,
-            kind: "plugin",
-            name: p.name,
-            description: p.description ?? undefined,
-            meta: `v${p.version}`,
-          });
+        if (workflowsRes.status === "fulfilled") {
+          for (const w of workflowsRes.value) {
+            out.push({
+              key: `workflow:graph:${w.id}`,
+              kind: "workflow",
+              subKind: "graph",
+              name: w.name,
+              description: w.description ?? undefined,
+              meta: w.id,
+            });
+          }
         }
-      }
-      if (enginesRes.status === "fulfilled") {
-        setAllEngines(enginesRes.value);
-        for (const e of enginesRes.value) {
-          out.push({
-            key: `engine:${e.id}`,
-            kind: "engine",
-            name: e.name,
-            description: e.description ?? undefined,
-            meta: e.kind,
-          });
+        if (skillsRes.status === "fulfilled") {
+          for (const s of skillsRes.value.skills) {
+            out.push({
+              key: `skill:${s.name}`,
+              kind: "skill",
+              name: s.name,
+              description: s.description ?? undefined,
+            });
+          }
         }
-      }
+        if (pluginsRes.status === "fulfilled") {
+          // The same plugin can be listed by several sources (marketplace +
+          // installed cache); detail lookup is by name, so one row suffices.
+          const seenPlugins = new Set<string>();
+          for (const p of pluginsRes.value.plugins) {
+            if (seenPlugins.has(p.name)) continue;
+            seenPlugins.add(p.name);
+            out.push({
+              key: `plugin:${p.name}`,
+              kind: "plugin",
+              name: p.name,
+              description: p.description ?? undefined,
+              meta: `v${p.version}`,
+            });
+          }
+        }
+        if (enginesRes.status === "fulfilled") {
+          setAllEngines(enginesRes.value);
+          for (const e of enginesRes.value) {
+            out.push({
+              key: `engine:${e.id}`,
+              kind: "engine",
+              name: e.name,
+              description: e.description ?? undefined,
+              meta: e.kind,
+            });
+          }
+        }
 
-      setItems(out);
-      setLoading(false);
-    });
+        setItems(out);
+        setLoading(false);
+      },
+    );
 
     return () => {
       alive = false;
@@ -152,19 +194,46 @@ function useLibraryData() {
   return { items, loading, error, reload, allAgents, allEngines };
 }
 
-/** Parse a ?sel param into kind + name. */
-function parseSel(sel: string | undefined): { kind: LibraryKind; name: string } | null {
+const WORKFLOW_SUB_KINDS: WorkflowSubKind[] = ["builtin", "custom", "graph"];
+
+/**
+ * Parse a ?sel param into kind + name (+ subKind for "workflow" items, which
+ * split three ways: builtin template / user's own playbook / graph design).
+ */
+function parseSel(
+  sel: string | undefined,
+): { kind: LibraryKind; name: string; subKind?: WorkflowSubKind } | null {
   if (!sel) return null;
   const colon = sel.indexOf(":");
   if (colon === -1) return null;
   const kind = sel.slice(0, colon) as LibraryKind;
-  const name = sel.slice(colon + 1);
+  const rest = sel.slice(colon + 1);
   const valid: LibraryKind[] = ["agent", "workflow", "skill", "plugin", "engine"];
-  if (!valid.includes(kind) || !name) return null;
-  return { kind, name };
+  if (!valid.includes(kind) || !rest) return null;
+
+  if (kind === "workflow") {
+    const colon2 = rest.indexOf(":");
+    if (colon2 !== -1) {
+      const maybeSubKind = rest.slice(0, colon2);
+      const name = rest.slice(colon2 + 1);
+      if (WORKFLOW_SUB_KINDS.includes(maybeSubKind as WorkflowSubKind) && name) {
+        return { kind, name, subKind: maybeSubKind as WorkflowSubKind };
+      }
+    }
+    // Backward-compat: pre-split "workflow:<name>" links (old bookmarks, the
+    // legacy /playbooks/$name redirect shims) predate the subKind split —
+    // "workflow" used to mean only the graph-design kind, so treat those as
+    // "graph" rather than dropping the link.
+    return { kind, name: rest, subKind: "graph" };
+  }
+
+  return { kind, name: rest };
 }
 
-function encodeSel(kind: LibraryKind, name: string): string {
+function encodeSel(kind: LibraryKind, name: string, subKind?: WorkflowSubKind): string {
+  if (kind === "workflow") {
+    return `workflow:${subKind ?? "graph"}:${name}`;
+  }
   return `${kind}:${name}`;
 }
 
@@ -213,7 +282,15 @@ function LibraryPage() {
     // in `filtered`, so it falls through to select-first.
     if (sel) {
       const parsed = parseSel(sel);
-      if (parsed && filtered.some((i) => i.kind === parsed.kind && i.name === parsed.name)) {
+      if (
+        parsed &&
+        filtered.some(
+          (i) =>
+            i.kind === parsed.kind &&
+            i.name === parsed.name &&
+            (parsed.kind !== "workflow" || i.subKind === parsed.subKind),
+        )
+      ) {
         return;
       }
     }
@@ -222,7 +299,7 @@ function LibraryPage() {
     const first = filtered[0];
     if (first) {
       void navigate({
-        search: (prev) => ({ ...prev, sel: encodeSel(first.kind, first.name) }),
+        search: (prev) => ({ ...prev, sel: encodeSel(first.kind, first.name, first.subKind) }),
         replace: true,
       });
     } else {
@@ -243,7 +320,7 @@ function LibraryPage() {
       setShowCreate(false);
       setDetailActive(true);
       void navigate({
-        search: (prev) => ({ ...prev, sel: encodeSel(item.kind, item.name) }),
+        search: (prev) => ({ ...prev, sel: encodeSel(item.kind, item.name, item.subKind) }),
         replace: false,
       });
     },
@@ -266,8 +343,9 @@ function LibraryPage() {
     parsed?.kind === "engine" ? allEngines.find((e) => e.name === parsed?.name) : null;
 
   const selectedWorkflowId =
-    parsed?.kind === "workflow"
-      ? (items.find((i) => i.kind === "workflow" && i.name === parsed.name)?.meta ?? parsed.name)
+    parsed?.kind === "workflow" && parsed.subKind === "graph"
+      ? (items.find((i) => i.kind === "workflow" && i.subKind === "graph" && i.name === parsed.name)
+          ?.meta ?? parsed.name)
       : null;
 
   const isEmpty = !loading && filtered.length === 0;
@@ -416,7 +494,7 @@ function LibraryPage() {
             setShowCreate(false);
             void reload();
             void navigate({
-              search: (prev) => ({ ...prev, sel: encodeSel("workflow", name) }),
+              search: (prev) => ({ ...prev, sel: encodeSel("workflow", name, "graph") }),
               replace: false,
             });
           }}
@@ -429,8 +507,26 @@ function LibraryPage() {
     );
   } else if (parsed?.kind === "agent" && selectedAgent) {
     detailPane = <AgentDetail agent={selectedAgent} onBack={handleBack} />;
-  } else if (parsed?.kind === "workflow" && selectedWorkflowId) {
+  } else if (parsed?.kind === "workflow" && parsed.subKind === "graph" && selectedWorkflowId) {
     detailPane = <WorkflowDetail id={selectedWorkflowId} onBack={handleBack} />;
+  } else if (
+    parsed?.kind === "workflow" &&
+    (parsed.subKind === "builtin" || parsed.subKind === "custom")
+  ) {
+    detailPane = (
+      <PlaybookTemplateDetail
+        name={parsed.name}
+        isBuiltin={parsed.subKind === "builtin"}
+        onBack={handleBack}
+        onCloned={(clonedName) => {
+          void reload();
+          void navigate({
+            search: (prev) => ({ ...prev, sel: encodeSel("workflow", clonedName, "custom") }),
+            replace: false,
+          });
+        }}
+      />
+    );
   } else if (parsed?.kind === "skill" || parsed?.kind === "plugin") {
     const item = filtered.find((i) => i.kind === parsed.kind && i.name === parsed.name);
     detailPane = (
