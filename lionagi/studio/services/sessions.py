@@ -1,11 +1,13 @@
 from __future__ import annotations
 
 import asyncio
+import base64
 import json
 import time
 from typing import Any
 
 import aiosqlite
+from fastapi import HTTPException
 
 from lionagi._errors import NotFoundError
 from lionagi.state.db import DEFAULT_DB_PATH, SESSION_TERMINAL_STATUSES
@@ -215,17 +217,256 @@ DEFAULT_MESSAGE_LIMIT = 200
 MAX_MESSAGE_LIMIT = 1000
 
 
+class MessageCursorError(ValueError):
+    """A message_cursor is malformed, session-mismatched, or references a stale anchor."""
+
+
+def _encode_message_cursor(session_id: str, limit: int, branch_anchors: dict[str, str]) -> str:
+    payload = {"v": 1, "session_id": session_id, "limit": limit, "branch_anchors": branch_anchors}
+    raw = json.dumps(payload, separators=(",", ":")).encode()
+    return base64.urlsafe_b64encode(raw).decode().rstrip("=")
+
+
+def _decode_message_cursor(token: str, *, session_id: str, limit: int) -> dict[str, str]:
+    try:
+        padded = token + "=" * (-len(token) % 4)
+        payload = json.loads(base64.urlsafe_b64decode(padded.encode()))
+    except Exception as exc:
+        raise MessageCursorError(f"Malformed message_cursor: {token!r}") from exc
+    if not isinstance(payload, dict) or payload.get("v") != 1:
+        raise MessageCursorError(f"Unsupported message_cursor: {token!r}")
+    if payload.get("session_id") != session_id:
+        raise MessageCursorError("message_cursor belongs to a different session")
+    if payload.get("limit") != limit:
+        raise MessageCursorError("message_cursor does not match message_limit")
+    anchors = payload.get("branch_anchors")
+    if not isinstance(anchors, dict):
+        raise MessageCursorError("message_cursor is missing branch_anchors")
+    return anchors
+
+
+def _window_message_ids(
+    msg_ids: list[str],
+    *,
+    branch_id: str,
+    limit: int,
+    cursor_anchors: dict[str, str] | None,
+    legacy_offset: int,
+) -> tuple[list[str], bool, str | None]:
+    """Return (window_ids, has_older, next_anchor) for one branch's progression.
+
+    `cursor_anchors` is None when the caller passed no message_cursor at all; an
+    empty-of-this-branch cursor (branch id absent from the map) means the prior
+    page already reached this branch's oldest message, so it yields nothing more.
+    """
+    if cursor_anchors is not None:
+        anchor = cursor_anchors.get(branch_id)
+        if anchor is None:
+            return [], False, None
+        if anchor not in msg_ids:
+            raise MessageCursorError(
+                f"message_cursor anchor not found in branch {branch_id!r} progression"
+            )
+        end = msg_ids.index(anchor)
+    elif legacy_offset:
+        total = len(msg_ids)
+        end = max(0, total - legacy_offset)
+    else:
+        end = len(msg_ids)
+
+    start = max(0, end - limit)
+    window_ids = msg_ids[start:end]
+    has_older = start > 0
+    next_anchor = window_ids[0] if has_older and window_ids else None
+    return window_ids, has_older, next_anchor
+
+
+def _short_lion_class(lion_class: str) -> str:
+    """Strip a fully-qualified lion_class path down to its bare class name.
+
+    Persisted rows carry the canonical dotted path (see message_types seed data
+    in state/schema.sql), e.g. 'lionagi.protocols.messages.action_request.ActionRequest';
+    older/legacy rows may carry just 'ActionRequest'. Compare on the short form so both
+    shapes match.
+    """
+    return lion_class.rsplit(".", 1)[-1] if lion_class else lion_class
+
+
+_ACTION_LION_CLASSES = (
+    "lionagi.protocols.messages.action_request.ActionRequest",
+    "lionagi.protocols.messages.action_response.ActionResponse",
+    "ActionRequest",
+    "ActionResponse",
+)
+
+
+def _init_message_stats() -> dict[str, Any]:
+    return {
+        "message_count": 0,
+        "roles": {},
+        "branches": {},
+        "tool_call_count": 0,
+        "error_count": 0,
+        "errors": [],
+        "files": [],
+    }
+
+
+async def _fetch_messages_by_ids(
+    db: aiosqlite.Connection, msg_ids: list[str]
+) -> list[dict[str, Any]]:
+    """Hydrate message rows for msg_ids, chunked to stay under SQLite's bound-variable limit."""
+    if not msg_ids:
+        return []
+    rows_by_id: dict[str, dict[str, Any]] = {}
+    for chunk_start in range(0, len(msg_ids), 500):
+        chunk = msg_ids[chunk_start : chunk_start + 500]
+        placeholders = ",".join("?" for _ in chunk)
+        cur = await db.execute(
+            f"""
+            SELECT m.id, m.created_at, m.content, m.sender, m.role,
+                   mt.lion_class AS lion_class_str
+            FROM messages m
+            LEFT JOIN message_types mt ON m.lion_class = mt.type_id
+            WHERE m.id IN ({placeholders})
+            """,  # noqa: S608
+            chunk,
+        )
+        for row in await cur.fetchall():
+            rows_by_id[row["id"]] = _format_message(row)
+    return [rows_by_id[mid] for mid in msg_ids if mid in rows_by_id]
+
+
+async def _fetch_role_counts(db: aiosqlite.Connection, msg_ids: list[str]) -> dict[str, int]:
+    """Role histogram over msg_ids via SQL GROUP BY — no message content is hydrated."""
+    counts: dict[str, int] = {}
+    if not msg_ids:
+        return counts
+    for chunk_start in range(0, len(msg_ids), 500):
+        chunk = msg_ids[chunk_start : chunk_start + 500]
+        placeholders = ",".join("?" for _ in chunk)
+        cur = await db.execute(
+            f"SELECT role, COUNT(*) AS n FROM messages WHERE id IN ({placeholders}) GROUP BY role",  # noqa: S608
+            chunk,
+        )
+        for row in await cur.fetchall():
+            role = row["role"] or ""
+            if role:
+                counts[role] = counts.get(role, 0) + row["n"]
+    return counts
+
+
+async def _fetch_action_messages(
+    db: aiosqlite.Connection, msg_ids: list[str]
+) -> list[dict[str, Any]]:
+    """Hydrate only the ActionRequest/ActionResponse rows among msg_ids, in progression order.
+
+    Tool/error/file aggregates only ever need these two message kinds; skipping every
+    other message keeps the full-session aggregate pass cheap regardless of session size.
+    Matches both the canonical fully-qualified lion_class paths persisted by the runtime
+    (state/schema.sql message_types seed) and legacy short-name values.
+    """
+    if not msg_ids:
+        return []
+    rows_by_id: dict[str, dict[str, Any]] = {}
+    class_placeholders = ",".join("?" for _ in _ACTION_LION_CLASSES)
+    for chunk_start in range(0, len(msg_ids), 500):
+        chunk = msg_ids[chunk_start : chunk_start + 500]
+        placeholders = ",".join("?" for _ in chunk)
+        cur = await db.execute(
+            f"""
+            SELECT m.id, m.created_at, m.content, m.sender, m.role,
+                   mt.lion_class AS lion_class_str
+            FROM messages m
+            JOIN message_types mt ON m.lion_class = mt.type_id
+            WHERE m.id IN ({placeholders}) AND mt.lion_class IN ({class_placeholders})
+            """,  # noqa: S608
+            [*chunk, *_ACTION_LION_CLASSES],
+        )
+        for row in await cur.fetchall():
+            rows_by_id[row["id"]] = _format_message(row)
+    return [rows_by_id[mid] for mid in msg_ids if mid in rows_by_id]
+
+
+def _branch_message_stats(
+    message_count: int,
+    roles: dict[str, int],
+    action_messages: list[dict[str, Any]],
+) -> dict[str, Any]:
+    """Full-branch stats computed over the full progression, never a display window.
+
+    `message_count`/`roles` come from SQL aggregates; `action_messages` holds only the
+    ActionRequest/ActionResponse rows, since tool/error/file summaries never need anything else.
+    """
+    from .runs import _detect_status
+
+    response_by_id: dict[str, dict[str, Any]] = {
+        m["id"]: m
+        for m in action_messages
+        if _short_lion_class(m.get("lion_class", "")) == "ActionResponse"
+    }
+
+    tool_call_count = 0
+    error_count = 0
+    errors: list[dict[str, Any]] = []
+    files: set[str] = set()
+    for m in action_messages:
+        if _short_lion_class(m.get("lion_class", "")) != "ActionRequest":
+            continue
+
+        content = m.get("content") if isinstance(m.get("content"), dict) else {}
+        tool_call_count += 1
+        function = content.get("function") or ""
+        arguments = content.get("arguments")
+        arguments = arguments if isinstance(arguments, dict) else {}
+        file_path = arguments.get("file_path") or arguments.get("path")
+        if isinstance(file_path, str) and file_path:
+            files.add(file_path)
+
+        response_id = content.get("action_response_id")
+        response_msg = response_by_id.get(response_id) if response_id else None
+        output_text = ""
+        if response_msg and isinstance(response_msg.get("content"), dict):
+            output_text = str(response_msg["content"].get("output", ""))
+        status, _exit_code = _detect_status(output_text, function)
+        if status == "error":
+            error_count += 1
+            errors.append(
+                {
+                    "function": function,
+                    "sender": m.get("sender", ""),
+                    "timestamp": m.get("timestamp"),
+                    "output": output_text,
+                }
+            )
+
+    return {
+        "message_count": message_count,
+        "roles": roles,
+        "tool_call_count": tool_call_count,
+        "error_count": error_count,
+        "errors": errors,
+        "files": sorted(files),
+    }
+
+
 async def get_session(
     session_id: str,
     *,
     message_limit: int = DEFAULT_MESSAGE_LIMIT,
     message_offset: int = 0,
+    message_cursor: str | None = None,
 ) -> dict[str, Any] | None:
     if not DEFAULT_DB_PATH.exists():
         return None
 
     message_limit = max(1, min(message_limit, MAX_MESSAGE_LIMIT))
     message_offset = max(0, message_offset)
+    cursor_anchors = (
+        _decode_message_cursor(message_cursor, session_id=session_id, limit=message_limit)
+        if message_cursor
+        else None
+    )
 
     async with _open_db(_DB) as db:
         cur = await db.execute(
@@ -235,7 +476,7 @@ async def get_session(
                       playbook_name, agent_name, invocation_kind,
                       show_topic, show_play_name, artifacts_path,
                       artifact_contract_json, artifact_verification_json,
-                      source_kind, status, started_at, ended_at,
+                      source_kind, status, started_at, ended_at, last_message_at,
                       model, provider, effort, agent_hash, invocation_id,
                       node_metadata, project, project_source,
                       status_reason_code, status_reason_summary, status_evidence_refs
@@ -274,8 +515,11 @@ async def get_session(
         branch_rows = await branch_cur.fetchall()
 
         branches = []
+        full_stats = _init_message_stats()
+        next_branch_anchors: dict[str, str] = {}
         for br in branch_rows:
-            messages = []
+            branch_id = br["id"]
+            full_msg_ids: list[str] = []
             message_total = 0
             prog_id = br["progression_id"]
             if prog_id:
@@ -286,44 +530,61 @@ async def get_session(
                 prog_row = await prog_cur.fetchone()
                 if prog_row and prog_row["collection"]:
                     try:
-                        msg_ids = json.loads(prog_row["collection"])
+                        full_msg_ids = json.loads(prog_row["collection"])
                     except (json.JSONDecodeError, TypeError):
-                        msg_ids = []
+                        full_msg_ids = []
+                    message_total = len(full_msg_ids)
 
-                    message_total = len(msg_ids)
-                    # Window from the tail: offset 0 = the newest page,
-                    # each page further back prepends older history.
-                    if message_offset:
-                        end = max(0, message_total - message_offset)
-                        msg_ids = msg_ids[max(0, end - message_limit) : end]
-                    else:
-                        msg_ids = msg_ids[-message_limit:]
+            # Window from the tail: offset/cursor 0 = the newest page,
+            # each page further back prepends older history.
+            window_ids, has_older, next_anchor = _window_message_ids(
+                full_msg_ids,
+                branch_id=branch_id,
+                limit=message_limit,
+                cursor_anchors=cursor_anchors,
+                legacy_offset=message_offset if cursor_anchors is None else 0,
+            )
+            if next_anchor:
+                next_branch_anchors[branch_id] = next_anchor
 
-                    if msg_ids:
-                        placeholders = ",".join("?" for _ in msg_ids)
-                        msg_cur = await db.execute(
-                            f"""
-                            SELECT m.id, m.created_at, m.content, m.sender, m.role,
-                                   mt.lion_class AS lion_class_str
-                            FROM messages m
-                            LEFT JOIN message_types mt ON m.lion_class = mt.type_id
-                            WHERE m.id IN ({placeholders})
-                            """,  # noqa: S608
-                            msg_ids,
-                        )
-                        msg_rows = await msg_cur.fetchall()
-                        by_id = {r["id"]: _format_message(r) for r in msg_rows}
-                        messages = [by_id[mid] for mid in msg_ids if mid in by_id]
+            window_messages = await _fetch_messages_by_ids(db, window_ids)
+            by_id = {m["id"]: m for m in window_messages}
+            messages = [by_id[mid] for mid in window_ids if mid in by_id]
+
+            role_counts = await _fetch_role_counts(db, full_msg_ids)
+            action_messages = await _fetch_action_messages(db, full_msg_ids)
+            # message_count is the DB role-aggregate, not the progression length
+            # (message_total): a progression can reference ids whose message row
+            # was never persisted (or was pruned), so the two can diverge.
+            message_count = sum(role_counts.values())
+            branch_stats = _branch_message_stats(message_count, role_counts, action_messages)
+
+            full_stats["message_count"] += branch_stats["message_count"]
+            for role, count in branch_stats["roles"].items():
+                full_stats["roles"][role] = full_stats["roles"].get(role, 0) + count
+            full_stats["branches"][branch_id] = {
+                "message_count": branch_stats["message_count"],
+                "roles": branch_stats["roles"],
+            }
+            full_stats["tool_call_count"] += branch_stats["tool_call_count"]
+            full_stats["error_count"] += branch_stats["error_count"]
+            full_stats["errors"].extend(branch_stats["errors"])
+            full_stats["files"].extend(branch_stats["files"])
 
             br_keys = br.keys()
             branches.append(
                 {
-                    "id": br["id"],
+                    "id": branch_id,
                     "name": br["name"],
                     "created_at": br["created_at"],
                     "messages": messages,
                     "message_total": message_total,
                     "message_offset": message_offset,
+                    "message_limit": message_limit,
+                    "message_window_count": len(messages),
+                    "messages_truncated": message_total > len(messages),
+                    "message_has_older": has_older,
+                    "message_stats": full_stats["branches"][branch_id],
                     "model": br["model"],
                     "provider": br["provider"],
                     "agent_name": br["agent_name"],
@@ -332,6 +593,13 @@ async def get_session(
                     "ended_at": br["ended_at"] if "ended_at" in br_keys else None,
                 }
             )
+
+        full_stats["files"] = sorted(set(full_stats["files"]))
+        message_next_cursor = (
+            _encode_message_cursor(session_id, message_limit, next_branch_anchors)
+            if next_branch_anchors
+            else None
+        )
 
     started_at = session_row["started_at"]
     ended_at = session_row["ended_at"]
@@ -357,8 +625,14 @@ async def get_session(
         "started_at": started_at,
         "ended_at": ended_at,
         "duration_ms": duration_ms,
+        # ADR-0019: full-session aggregate, not derived from the windowed page.
+        "last_message_at": session_row["last_message_at"],
         "source_show": source_show,
         "branches": branches,
+        "message_limit": message_limit,
+        "message_cursor": message_cursor,
+        "message_next_cursor": message_next_cursor,
+        "message_stats": full_stats,
         # ADR-0022: provenance disclosure — same fields exposed on list_sessions().
         "model": session_row["model"],
         "provider": session_row["provider"],
@@ -499,10 +773,17 @@ async def get_session_route(
     session_id: str,
     message_limit: int = DEFAULT_MESSAGE_LIMIT,
     message_offset: int = 0,
+    message_cursor: str | None = None,
 ) -> dict[str, Any]:
-    session = await get_session(
-        session_id, message_limit=message_limit, message_offset=message_offset
-    )
+    try:
+        session = await get_session(
+            session_id,
+            message_limit=message_limit,
+            message_offset=message_offset,
+            message_cursor=message_cursor,
+        )
+    except MessageCursorError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
     if session is None:
         raise NotFoundError(f"Session '{session_id}' not found")
     return session

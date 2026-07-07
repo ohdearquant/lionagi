@@ -447,3 +447,222 @@ async def test_get_run_zombie_recorded_pid_reports_stale(patched_runs_svc, monke
     result = await svc.get_run(sid)
     assert result is not None
     assert result["effective_health"] == "stale"
+
+
+# ---------------------------------------------------------------------------
+# get_run() / _build_steps_from_db() over the default 200-message window
+# ---------------------------------------------------------------------------
+
+
+async def seed_over_limit_branch(
+    db_path: Path,
+    *,
+    session_id: str,
+    branch_id: str,
+    count: int = 205,
+    action_pair_at: tuple[int, int] | None = None,
+    file_path: str = "",
+    error_output: str = "",
+) -> list[str]:
+    """Seed one branch with `count` messages, alternating user/assistant roles.
+
+    When `action_pair_at` is given as (request_index, response_index), those
+    two positions hold a paired ActionRequest/ActionResponse instead of a
+    plain message, carrying `file_path` and `error_output`.
+    """
+    msg_ids = [f"{branch_id}-msg-{i}" for i in range(count)]
+    await seed_branch(db_path, branch_id=branch_id, session_id=session_id, msg_ids=msg_ids)
+    async with StateDB(db_path) as db:
+        for i, mid in enumerate(msg_ids):
+            if action_pair_at and i == action_pair_at[0]:
+                await db.insert_message(
+                    {
+                        "id": mid,
+                        "created_at": 100.0 + i,
+                        "content": {
+                            "function": "Write",
+                            "arguments": {"file_path": file_path},
+                            "action_response_id": msg_ids[action_pair_at[1]],
+                        },
+                        "sender": "worker",
+                        "recipient": "user",
+                        "role": "action",
+                        "node_metadata": {"lion_class": "ActionRequest"},
+                    }
+                )
+            elif action_pair_at and i == action_pair_at[1]:
+                await db.insert_message(
+                    {
+                        "id": mid,
+                        "created_at": 100.0 + i,
+                        "content": {"function": "Write", "output": error_output},
+                        "sender": "worker",
+                        "recipient": "user",
+                        "role": "action",
+                        "node_metadata": {"lion_class": "ActionResponse"},
+                    }
+                )
+            else:
+                await db.insert_message(
+                    {
+                        "id": mid,
+                        "created_at": 100.0 + i,
+                        "content": {"text": f"m{i}"},
+                        "sender": "worker",
+                        "recipient": "user",
+                        "role": "assistant" if i % 2 else "user",
+                        "node_metadata": {},
+                    }
+                )
+    return msg_ids
+
+
+async def test_get_run_over_limit_session_uses_full_counts_and_window_metadata(patched_runs_svc):
+    svc, db_path = patched_runs_svc
+    sid = str(uuid.uuid4())
+    await seed_session(db_path, session_id=sid, status="completed")
+    await seed_over_limit_branch(db_path, session_id=sid, branch_id=f"{sid}-br", count=205)
+
+    result = await svc.get_run(sid)
+
+    assert result is not None
+    branch = result["branches"][0]
+    assert result["message_count"] == 205
+    assert branch["message_total"] == 205
+    assert branch["message_window_count"] == 200
+    assert branch["messages_truncated"] is True
+    assert branch["message_has_older"] is True
+    assert len(branch["messages"]) == 200
+    assert result["message_next_cursor"]
+    assert result["message_stats"]["message_count"] == 205
+
+
+async def test_get_run_over_limit_session_computes_full_aggregates_from_all_messages(
+    patched_runs_svc,
+):
+    svc, db_path = patched_runs_svc
+    sid = str(uuid.uuid4())
+    branch_id = f"{sid}-br"
+    await seed_session(db_path, session_id=sid, status="completed")
+    # The action pair sits at the oldest two positions, outside the newest-200 window.
+    await seed_over_limit_branch(
+        db_path,
+        session_id=sid,
+        branch_id=branch_id,
+        count=205,
+        action_pair_at=(0, 1),
+        file_path="/tmp/outside_window.txt",
+        error_output="process exited with code 1.",
+    )
+
+    result = await svc.get_run(sid)
+
+    assert result is not None
+    stats = result["message_stats"]
+    assert stats["tool_call_count"] == 1
+    assert stats["error_count"] == 1
+    assert "/tmp/outside_window.txt" in stats["files"]
+    assert any(e["output"] == "process exited with code 1." for e in stats["errors"])
+
+    branch = result["branches"][0]
+    window_ids = {m["id"] for m in branch["messages"]}
+    assert f"{branch_id}-msg-0" not in window_ids
+    assert f"{branch_id}-msg-1" not in window_ids
+
+
+async def test_build_steps_from_db_uses_full_branch_stats_for_windowed_messages(patched_runs_svc):
+    svc, db_path = patched_runs_svc
+    sid = str(uuid.uuid4())
+    await seed_session(db_path, session_id=sid, status="completed")
+    await seed_over_limit_branch(db_path, session_id=sid, branch_id=f"{sid}-br", count=205)
+
+    result = await svc.get_run(sid)
+
+    assert result is not None
+    step = result["steps"][0]
+    assert step["result"]["message_count"] == 205
+    assert step["result"]["roles"] == {"user": 103, "assistant": 102}
+
+
+async def test_build_steps_from_db_zero_db_aggregate_is_not_swallowed_by_progression_length(
+    patched_runs_svc,
+):
+    """A stale progression referencing pruned/never-persisted message ids aggregates to a
+    real DB message_count of 0; the step result must report that 0, not fall back to the
+    (larger, wrong) progression length via a truthiness `x or y` check."""
+    svc, db_path = patched_runs_svc
+    sid = str(uuid.uuid4())
+    branch_id = f"{sid}-br"
+    await seed_session(db_path, session_id=sid, status="completed")
+    # Progression references two ids; neither was ever persisted as a message row.
+    await seed_branch(db_path, branch_id=branch_id, session_id=sid, msg_ids=["stale-0", "stale-1"])
+
+    result = await svc.get_run(sid)
+
+    assert result is not None
+    branch = result["branches"][0]
+    assert branch["message_total"] == 2  # progression length, kept separate
+    step = result["steps"][0]
+    assert step["result"]["message_count"] == 0  # real DB aggregate, not progression length
+
+
+async def test_get_run_last_message_at_reflects_full_session_not_windowed_page(patched_runs_svc):
+    """Regression: last_message_at must report the session's newest message timestamp
+    regardless of which page of messages the caller is currently viewing, not the max
+    timestamp within the current display window."""
+    svc, db_path = patched_runs_svc
+    sid = str(uuid.uuid4())
+    branch_id = f"{sid}-br"
+    await seed_session(db_path, session_id=sid, status="completed")
+    msg_ids = [f"{branch_id}-msg-{i}" for i in range(10)]
+    await seed_branch(db_path, branch_id=branch_id, session_id=sid, msg_ids=msg_ids)
+    async with StateDB(db_path) as db:
+        for i, mid in enumerate(msg_ids):
+            await db.insert_message(
+                {
+                    "id": mid,
+                    "created_at": float(i),
+                    "content": {"text": f"m{i}"},
+                    "sender": "worker",
+                    "recipient": "user",
+                    "role": "assistant" if i % 2 else "user",
+                    "node_metadata": {},
+                }
+            )
+            await db.touch_session_activity(sid, at=float(i))
+
+    page1 = await svc.get_run(sid, message_limit=3, message_cursor=None)
+    assert page1 is not None
+    branch1 = page1["branches"][0]
+    assert [m["id"] for m in branch1["messages"]] == [f"{branch_id}-msg-{i}" for i in (7, 8, 9)]
+    assert page1["last_message_at"] == 9.0
+
+    cursor = page1["message_next_cursor"]
+    assert cursor
+
+    page2 = await svc.get_run(sid, message_limit=3, message_cursor=cursor)
+    assert page2 is not None
+    branch2 = page2["branches"][0]
+    assert [m["id"] for m in branch2["messages"]] == [f"{branch_id}-msg-{i}" for i in (4, 5, 6)]
+    assert page2["last_message_at"] == 9.0
+
+
+async def test_get_run_route_accepts_message_cursor_and_limit(patched_runs_svc):
+    svc, db_path = patched_runs_svc
+    sid = str(uuid.uuid4())
+    await seed_session(db_path, session_id=sid, status="completed")
+    await seed_over_limit_branch(db_path, session_id=sid, branch_id=f"{sid}-br", count=205)
+
+    page1 = await svc.get_run_route(sid, message_limit=3, message_cursor=None)
+    assert len(page1["branches"][0]["messages"]) == 3
+    cursor = page1["message_next_cursor"]
+    assert cursor
+
+    page2 = await svc.get_run_route(sid, message_limit=3, message_cursor=cursor)
+    ids1 = {m["id"] for m in page1["branches"][0]["messages"]}
+    ids2 = {m["id"] for m in page2["branches"][0]["messages"]}
+    assert ids1.isdisjoint(ids2)
+
+    with pytest.raises(fastapi.HTTPException) as exc_info:
+        await svc.get_run_route(sid, message_limit=3, message_cursor="not-a-valid-cursor")
+    assert exc_info.value.status_code == 400

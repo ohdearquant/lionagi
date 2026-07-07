@@ -750,3 +750,203 @@ async def test_get_session_limit_clamped_to_max(patched_sessions_db):
     branch = result["branches"][0]
     assert len(branch["messages"]) == 5
     assert branch["message_total"] == 5
+
+
+# ---------------------------------------------------------------------------
+# message_cursor — stable pagination under concurrent progression appends
+# ---------------------------------------------------------------------------
+
+
+async def test_get_session_cursor_pages_are_stable_under_concurrent_appends(patched_sessions_db):
+    svc, db_path = patched_sessions_db
+    msg_ids = await seed_paginated_session(db_path, count=10)
+
+    page1 = await svc.get_session("sess-paged", message_limit=3)
+    branch1 = page1["branches"][0]
+    assert [m["id"] for m in branch1["messages"]] == ["pmsg-7", "pmsg-8", "pmsg-9"]
+    assert branch1["messages_truncated"] is True
+    cursor = page1["message_next_cursor"]
+    assert cursor
+
+    # Concurrent writer appends two more messages to the live tail while the
+    # cursor from page 1 is still in flight.
+    new_ids = ["pmsg-10", "pmsg-11"]
+    async with StateDB(db_path) as db:
+        for i, mid in enumerate(new_ids, start=len(msg_ids)):
+            await db.insert_message(
+                {
+                    "id": mid,
+                    "created_at": 100.0 + i,
+                    "content": {"text": f"m{i}"},
+                    "sender": "worker",
+                    "recipient": "user",
+                    "role": "assistant",
+                    "node_metadata": {},
+                }
+            )
+            await db.append_to_progression("br-paged-prog", mid)
+
+    page2 = await svc.get_session("sess-paged", message_limit=3, message_cursor=cursor)
+    branch2 = page2["branches"][0]
+    assert [m["id"] for m in branch2["messages"]] == ["pmsg-4", "pmsg-5", "pmsg-6"]
+
+    ids1 = {m["id"] for m in branch1["messages"]}
+    ids2 = {m["id"] for m in branch2["messages"]}
+    assert ids1.isdisjoint(ids2), "cursor page must not duplicate rows from the tail page"
+    combined = ids1 | ids2
+    assert combined == {f"pmsg-{i}" for i in range(4, 10)}, (
+        "combined two-page slice must not skip any expected id"
+    )
+
+
+async def test_get_session_rejects_invalid_message_cursor(patched_sessions_db):
+    svc, db_path = patched_sessions_db
+    await seed_paginated_session(db_path, count=10)
+
+    with pytest.raises(svc.MessageCursorError):
+        await svc.get_session("sess-paged", message_limit=3, message_cursor="not-a-valid-cursor")
+
+
+async def test_get_session_full_aggregates_do_not_hydrate_every_message_row(
+    patched_sessions_db, monkeypatch
+):
+    """Regression: computing full-session aggregates must not force-hydrate the entire
+    progression on every detail read — only the display window is fetched in full."""
+    svc, db_path = patched_sessions_db
+    await seed_paginated_session(db_path, count=50)
+
+    calls: list[list[str]] = []
+    original = svc._fetch_messages_by_ids
+
+    async def spy(db, ids):
+        calls.append(list(ids))
+        return await original(db, ids)
+
+    monkeypatch.setattr(svc, "_fetch_messages_by_ids", spy)
+
+    result = await svc.get_session("sess-paged", message_limit=3)
+
+    assert len(calls) == 1
+    assert calls[0] == ["pmsg-47", "pmsg-48", "pmsg-49"]
+    assert result["message_stats"]["message_count"] == 50
+
+
+async def test_get_session_rejects_cursor_from_a_different_session(patched_sessions_db):
+    svc, db_path = patched_sessions_db
+    await seed_paginated_session(db_path, count=10)
+    await seed_session(db_path, session_id="sess-other")
+    await seed_branch(
+        db_path, branch_id="br-other", session_id="sess-other", msg_ids=["om-0", "om-1"]
+    )
+    async with StateDB(db_path) as db:
+        for i, mid in enumerate(["om-0", "om-1"]):
+            await db.insert_message(
+                {
+                    "id": mid,
+                    "created_at": 50.0 + i,
+                    "content": {"text": f"m{i}"},
+                    "sender": "worker",
+                    "recipient": "user",
+                    "role": "user",
+                    "node_metadata": {},
+                }
+            )
+
+    other_page = await svc.get_session("sess-other", message_limit=1)
+    foreign_cursor = other_page["message_next_cursor"]
+    assert foreign_cursor
+
+    with pytest.raises(svc.MessageCursorError):
+        await svc.get_session("sess-paged", message_limit=1, message_cursor=foreign_cursor)
+
+
+# ---------------------------------------------------------------------------
+# Action-stat aggregation must match the canonical persisted lion_class values
+# ---------------------------------------------------------------------------
+
+
+async def test_get_session_action_stats_match_canonical_fully_qualified_lion_class(
+    patched_sessions_db,
+):
+    """The runtime persists lion_class as the fully-qualified dotted path (see the
+    message_types seed rows in state/schema.sql), not the bare class name. Tool/error/
+    file aggregation must recognize that shape, not just a legacy short name."""
+    svc, db_path = patched_sessions_db
+    await seed_session(db_path, session_id="sess-canonical", status="completed")
+    msg_ids = ["req-0", "resp-0"]
+    await seed_branch(
+        db_path, branch_id="br-canonical", session_id="sess-canonical", msg_ids=msg_ids
+    )
+    async with StateDB(db_path) as db:
+        await db.insert_message(
+            {
+                "id": "req-0",
+                "created_at": 100.0,
+                "content": {
+                    "function": "Write",
+                    "arguments": {"file_path": "/tmp/canonical.txt"},
+                    "action_response_id": "resp-0",
+                },
+                "sender": "worker",
+                "recipient": "user",
+                "role": "action",
+                "node_metadata": {
+                    "lion_class": "lionagi.protocols.messages.action_request.ActionRequest"
+                },
+            }
+        )
+        await db.insert_message(
+            {
+                "id": "resp-0",
+                "created_at": 101.0,
+                "content": {"function": "Write", "output": "process exited with code 1."},
+                "sender": "worker",
+                "recipient": "user",
+                "role": "action",
+                "node_metadata": {
+                    "lion_class": "lionagi.protocols.messages.action_response.ActionResponse"
+                },
+            }
+        )
+
+    result = await svc.get_session("sess-canonical")
+
+    stats = result["message_stats"]
+    assert stats["tool_call_count"] == 1
+    assert stats["error_count"] == 1
+    assert "/tmp/canonical.txt" in stats["files"]
+
+
+async def test_get_session_message_count_is_db_aggregate_not_progression_length(
+    patched_sessions_db,
+):
+    """A progression can reference an id whose message row was never persisted (or was
+    pruned). message_count must reflect the DB role aggregate, not len(progression)."""
+    svc, db_path = patched_sessions_db
+    await seed_session(db_path, session_id="sess-stale-prog", status="completed")
+    # Two ids in the progression, only one has a persisted message row.
+    await seed_branch(
+        db_path,
+        branch_id="br-stale-prog",
+        session_id="sess-stale-prog",
+        msg_ids=["m0", "m1-never-persisted"],
+    )
+    async with StateDB(db_path) as db:
+        await db.insert_message(
+            {
+                "id": "m0",
+                "created_at": 100.0,
+                "content": {"text": "hello"},
+                "sender": "worker",
+                "recipient": "user",
+                "role": "assistant",
+                "node_metadata": {},
+            }
+        )
+
+    result = await svc.get_session("sess-stale-prog")
+
+    branch = result["branches"][0]
+    assert branch["message_total"] == 2  # progression length, kept as a separate field
+    assert result["message_stats"]["message_count"] == 1  # DB aggregate, not progression length
+    assert branch["message_stats"]["message_count"] == 1
