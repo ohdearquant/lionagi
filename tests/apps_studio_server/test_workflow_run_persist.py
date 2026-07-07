@@ -1,7 +1,7 @@
 # Copyright (c) 2023-2026, HaiyangLi <quantocean.li at gmail dot com>
 # SPDX-License-Identifier: Apache-2.0
 
-"""Regression test for the flow-created clone-branch persistence gap (codex P1, #1833).
+"""Regression test for the flow-created clone-branch persistence gap.
 
 `workflow_run._setup_run_persist` registers per-branch persistence
 (`register_branch_hook`) only for the branches present on `session.branches`
@@ -147,7 +147,7 @@ async def test_flow_clone_branch_transcript_persists(patched_env):
         branch_row = await db.get_branch(clone_branch_id)
         assert branch_row is not None, (
             "clone branch row missing from StateDB -- the clone was never "
-            "registered via register_branch_hook (the P1 bug)"
+            "registered via register_branch_hook"
         )
         assert branch_row["session_id"] == str(session.id)
 

@@ -131,7 +131,7 @@ class DependencyAwareExecutor:
         self._alcall = alcall_params or AlcallParams()
         self._default_branch = default_branch
         self.on_progress = None
-        # Persistence-only seam (ADR-0023b clone-persistence gap): a caller
+        # Persistence-only seam: a caller
         # (e.g. Studio's workflow_run) can pass a sync callback invoked with
         # every branch this executor clones during pre-allocation, so it can
         # wire per-branch persistence (register_branch_hook) on branches that
