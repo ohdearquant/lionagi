@@ -281,6 +281,25 @@ def _window_message_ids(
     return window_ids, has_older, next_anchor
 
 
+def _short_lion_class(lion_class: str) -> str:
+    """Strip a fully-qualified lion_class path down to its bare class name.
+
+    Persisted rows carry the canonical dotted path (see message_types seed data
+    in state/schema.sql), e.g. 'lionagi.protocols.messages.action_request.ActionRequest';
+    older/legacy rows may carry just 'ActionRequest'. Compare on the short form so both
+    shapes match.
+    """
+    return lion_class.rsplit(".", 1)[-1] if lion_class else lion_class
+
+
+_ACTION_LION_CLASSES = (
+    "lionagi.protocols.messages.action_request.ActionRequest",
+    "lionagi.protocols.messages.action_response.ActionResponse",
+    "ActionRequest",
+    "ActionResponse",
+)
+
+
 def _init_message_stats() -> dict[str, Any]:
     return {
         "message_count": 0,
@@ -344,10 +363,13 @@ async def _fetch_action_messages(
 
     Tool/error/file aggregates only ever need these two message kinds; skipping every
     other message keeps the full-session aggregate pass cheap regardless of session size.
+    Matches both the canonical fully-qualified lion_class paths persisted by the runtime
+    (state/schema.sql message_types seed) and legacy short-name values.
     """
     if not msg_ids:
         return []
     rows_by_id: dict[str, dict[str, Any]] = {}
+    class_placeholders = ",".join("?" for _ in _ACTION_LION_CLASSES)
     for chunk_start in range(0, len(msg_ids), 500):
         chunk = msg_ids[chunk_start : chunk_start + 500]
         placeholders = ",".join("?" for _ in chunk)
@@ -357,9 +379,9 @@ async def _fetch_action_messages(
                    mt.lion_class AS lion_class_str
             FROM messages m
             JOIN message_types mt ON m.lion_class = mt.type_id
-            WHERE m.id IN ({placeholders}) AND mt.lion_class IN ('ActionRequest', 'ActionResponse')
+            WHERE m.id IN ({placeholders}) AND mt.lion_class IN ({class_placeholders})
             """,  # noqa: S608
-            chunk,
+            [*chunk, *_ACTION_LION_CLASSES],
         )
         for row in await cur.fetchall():
             rows_by_id[row["id"]] = _format_message(row)
@@ -379,7 +401,9 @@ def _branch_message_stats(
     from .runs import _detect_status
 
     response_by_id: dict[str, dict[str, Any]] = {
-        m["id"]: m for m in action_messages if m.get("lion_class") == "ActionResponse"
+        m["id"]: m
+        for m in action_messages
+        if _short_lion_class(m.get("lion_class", "")) == "ActionResponse"
     }
 
     tool_call_count = 0
@@ -387,7 +411,7 @@ def _branch_message_stats(
     errors: list[dict[str, Any]] = []
     files: set[str] = set()
     for m in action_messages:
-        if m.get("lion_class") != "ActionRequest":
+        if _short_lion_class(m.get("lion_class", "")) != "ActionRequest":
             continue
 
         content = m.get("content") if isinstance(m.get("content"), dict) else {}
@@ -529,7 +553,11 @@ async def get_session(
 
             role_counts = await _fetch_role_counts(db, full_msg_ids)
             action_messages = await _fetch_action_messages(db, full_msg_ids)
-            branch_stats = _branch_message_stats(message_total, role_counts, action_messages)
+            # message_count is the DB role-aggregate, not the progression length
+            # (message_total): a progression can reference ids whose message row
+            # was never persisted (or was pruned), so the two can diverge.
+            message_count = sum(role_counts.values())
+            branch_stats = _branch_message_stats(message_count, role_counts, action_messages)
 
             full_stats["message_count"] += branch_stats["message_count"]
             for role, count in branch_stats["roles"].items():
