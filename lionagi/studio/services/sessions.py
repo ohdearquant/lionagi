@@ -36,6 +36,12 @@ def _graph_from_metadata(raw: str | None) -> dict[str, Any] | None:
         return None
     if not isinstance(meta, dict):
         return None
+    early_graph = meta.get("early_graph")
+    if isinstance(early_graph, dict) and early_graph.get("nodes"):
+        # Studio workflow-exec runs (ADR workflow-exec Fork 3): the compiled
+        # graph already carries the authored node ids + edges in this exact
+        # WorkerStepNode/WorkerLinkEdge shape — pass through, no re-derivation.
+        return early_graph
     agents = meta.get("agents") or []
     operations = meta.get("operations") or []
     if not operations:
