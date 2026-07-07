@@ -53,7 +53,7 @@ export default function SessionDetail({ runId, onBack, showBack = false }: Props
       {/* Full run detail — same pane History renders, so Fleet selection shows
           the conversation, DAG, files, and signal events instead of bare meta. */}
       <div className="flex-1 overflow-y-auto">
-        <RunDetail id={runId} fullPage />
+        <RunDetail id={runId} />
       </div>
     </div>
   );

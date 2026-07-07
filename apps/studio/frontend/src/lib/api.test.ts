@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, vi } from "vitest";
+import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import { resolveApiBase, resolveAuthToken } from "./api";
 
 describe("resolveApiBase", () => {
@@ -110,13 +110,29 @@ describe("resolveApiBase", () => {
     expect(result).toBe("");
   });
 
-  it("defaults to the local daemon for a hosted https deploy on a non-local hostname", () => {
-    // https://lion-studio.khive.ai — static SPA on Vercel driving the
-    // operator's own local daemon. The daemon never serves https, so this
-    // combination is a reliable signal for the hosted-mode default.
+  it("is same-origin for HTTPS on a non-local hostname (single-origin Docker deploy)", () => {
+    // https://server.example — Docker/reverse-proxy deployment serving the
+    // SPA and API from one origin behind TLS termination.
     vi.stubGlobal("window", {
       ...window,
       __STUDIO_API_BASE__: undefined,
+      location: {
+        ...window.location,
+        port: "",
+        hostname: "server.example",
+        protocol: "https:",
+      },
+    });
+    const result = resolveApiBase();
+    expect(result).toBe("");
+  });
+
+  it("still honors an explicit runtime override for a hosted-static deploy on HTTPS", () => {
+    // https://lion-studio.khive.ai — static SPA driving a separate local
+    // daemon must opt in explicitly rather than relying on a hostname guess.
+    vi.stubGlobal("window", {
+      ...window,
+      __STUDIO_API_BASE__: "http://127.0.0.1:8765",
       location: {
         ...window.location,
         port: "",
@@ -156,6 +172,42 @@ describe("resolveApiBase", () => {
     });
     const result = resolveApiBase();
     expect(result).toBe("");
+  });
+
+  describe("VITE_STUDIO_API_BASE (build-time env)", () => {
+    afterEach(() => {
+      vi.unstubAllEnvs();
+    });
+
+    it("uses VITE_STUDIO_API_BASE when no runtime override is set", () => {
+      vi.stubEnv("VITE_STUDIO_API_BASE", "https://api.hosted.example");
+      vi.stubGlobal("window", {
+        ...window,
+        __STUDIO_API_BASE__: undefined,
+        location: { ...window.location, port: "", hostname: "server.example", protocol: "https:" },
+      });
+      expect(resolveApiBase()).toBe("https://api.hosted.example");
+    });
+
+    it("ignores an empty VITE_STUDIO_API_BASE and falls through to origin logic", () => {
+      vi.stubEnv("VITE_STUDIO_API_BASE", "");
+      vi.stubGlobal("window", {
+        ...window,
+        __STUDIO_API_BASE__: undefined,
+        location: { ...window.location, port: "", hostname: "server.example", protocol: "http:" },
+      });
+      expect(resolveApiBase()).toBe("");
+    });
+
+    it("prefers the runtime override over VITE_STUDIO_API_BASE when both are set", () => {
+      vi.stubEnv("VITE_STUDIO_API_BASE", "https://api.hosted.example");
+      vi.stubGlobal("window", {
+        ...window,
+        __STUDIO_API_BASE__: "http://127.0.0.1:8765",
+        location: { ...window.location, port: "", hostname: "server.example", protocol: "https:" },
+      });
+      expect(resolveApiBase()).toBe("http://127.0.0.1:8765");
+    });
   });
 });
 

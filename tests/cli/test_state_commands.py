@@ -519,6 +519,48 @@ async def test_doctor_does_not_overwrite_session_that_completed_post_select(
     assert result["swept"] == 1
 
 
+async def test_doctor_status_and_ended_at_are_atomic(
+    temp_db_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """A crash immediately after the status-transitioning write commits must
+    not leave a terminal-status row with ``ended_at`` still NULL — status and
+    ``ended_at`` must land in the same transaction, not two sequential ones.
+    """
+    from lionagi.state.db import StateDB as _SDB
+
+    now = time.time()
+    old = now - (48 * 3600)
+    async with StateDB() as db:
+        sid = await _seed_session(db, status="running")
+        await db.execute(
+            "UPDATE sessions SET started_at = ? WHERE id = ?",
+            (old, sid),
+        )
+
+    real_tx = _SDB._tx
+    calls = {"n": 0}
+
+    @contextlib.asynccontextmanager
+    async def crash_after_first_tx(self):
+        calls["n"] += 1
+        async with real_tx(self) as conn:
+            yield conn
+        if calls["n"] == 1:
+            raise RuntimeError("simulated crash right after the status write commits")
+
+    monkeypatch.setattr(_SDB, "_tx", crash_after_first_tx)
+
+    with pytest.raises(RuntimeError, match="simulated crash"):
+        await _doctor(stale_hours=24, dry_run=False)
+
+    monkeypatch.setattr(_SDB, "_tx", real_tx)
+    async with StateDB() as db:
+        s = await db.get_session(sid)
+    assert s["status"] == "aborted"
+    assert s["ended_at"] is not None
+
+
 async def test_doctor_with_failed_new_status(temp_db_path: Path):
     """Operators can pick 'failed' instead of 'aborted'."""
     now = time.time()

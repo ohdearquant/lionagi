@@ -368,6 +368,7 @@ async def _teardown_common(
         return status
 
     all_msgs = await db.get_progression(session_prog_id)
+    completion_evidence_msgs = list(all_msgs)
     update_kwargs: dict[str, Any] = {"ended_at": time.time()}
     if all_msgs:
         update_kwargs["first_msg_id"] = all_msgs[0]
@@ -448,6 +449,9 @@ async def _teardown_common(
                 f"{linked['status']!r}"
             )
             final_evidence_refs = [{"kind": "session", "id": linked_id, "label": linked["status"]}]
+            linked_prog_id = linked.get("progression_id")
+            if linked_prog_id:
+                completion_evidence_msgs.extend(await db.get_progression(linked_prog_id))
         elif linked is not None and linked["status"] == "running":
             final_status = "running"
             final_reason_code = RunReasons.STARTED_OK
@@ -492,7 +496,7 @@ async def _teardown_common(
 
         evidence = check_completion_evidence(cwd)
         if evidence["checked"]:
-            has_output = await _has_assistant_output_evidence(db, all_msgs)
+            has_output = await _has_assistant_output_evidence(db, completion_evidence_msgs)
             metadata = dict(metadata or {})
             metadata["completion_evidence"] = evidence
             metadata["has_assistant_output"] = has_output
@@ -538,29 +542,23 @@ async def _teardown_common(
     # Snapshot of the status this teardown itself observed when it started
     # (session_row was read above, before any status-changing write in this
     # function) -- the signal that tells apart the two rejection causes below.
+    # Only the status is used as the CAS guard below, not updated_at: this
+    # same function may itself have already touched the row's updated_at
+    # (artifact verification, the linked-engine metadata write) between that
+    # snapshot and the guarded write, and none of those are the concurrent
+    # writer the guard exists to catch.
     pre_write_status = session_row.get("status")
 
-    try:
-        await db.update_status(
-            "session",
-            session_id,
-            new_status=final_status,
-            reason_code=final_reason_code,
-            reason_summary=final_reason_summary,
-            evidence_refs=final_evidence_refs,
-            source="executor",
-            actor=session_id,
-            metadata=metadata,
-        )
-    except TransitionRejectedError:
-        if pre_write_status in SESSION_TERMINAL_STATUSES and pre_write_status != final_status:
-            # This teardown's OWN view of the session was already terminal
-            # before it attempted anything (e.g. a later resume/follow-up
-            # reattached to a session an earlier, unrelated run already
-            # finalized). The rejection is correctly protecting that earlier
-            # record -- but the caller must still hear THIS invocation's
-            # honest outcome, not the stale persisted one, or a genuine
-            # failure/timeout would silently read back as success.
+    if pre_write_status in SESSION_TERMINAL_STATUSES:
+        # This teardown's OWN view of the session was already terminal before
+        # it attempted anything (e.g. a later resume/follow-up reattached to
+        # a session an earlier, unrelated run already finalized). Writing
+        # again would be a redundant terminal overwrite the ADR-0094 floor
+        # would reject -- skip it outright rather than attempt-and-catch, and
+        # report THIS invocation's honest outcome rather than the persisted
+        # one, or a genuine failure/timeout would silently read back as
+        # success.
+        if pre_write_status != final_status:
             _log.warning(
                 "session %s already terminal at %r; this invocation's %r "
                 "outcome was not persisted (ADR-0094 protects the earlier "
@@ -570,12 +568,42 @@ async def _teardown_common(
                 final_status,
             )
         else:
-            # Benign race: this teardown observed the row non-terminal at
-            # entry, but another writer (e.g. a concurrent teardown of the
-            # same in-flight session) finalized it first. Read back the
-            # now-persisted status instead of raising past callers -- it
-            # reflects the outcome that actually won the race for this same
-            # live invocation.
+            _log.debug(
+                "session %s already terminal at %r; skipping duplicate status write",
+                session_id,
+                pre_write_status,
+            )
+    else:
+        try:
+            written = await db.update_status(
+                "session",
+                session_id,
+                new_status=final_status,
+                reason_code=final_reason_code,
+                reason_summary=final_reason_summary,
+                evidence_refs=final_evidence_refs,
+                source="executor",
+                actor=session_id,
+                metadata=metadata,
+                expected_statuses={pre_write_status},
+            )
+            if not written:
+                # CAS miss: another writer (e.g. a concurrent teardown of the
+                # same in-flight session) touched the row between this
+                # teardown's snapshot and this write. Read back the
+                # now-persisted status instead of raising past callers -- it
+                # reflects the outcome that actually won the race for this
+                # same live invocation.
+                persisted = await db.get_session(session_id) or {}
+                final_status = persisted.get("status", final_status)
+                _log.debug(
+                    "session %s status changed under this teardown; using persisted status %s",
+                    session_id,
+                    final_status,
+                )
+        except TransitionRejectedError:
+            # Defensive fallback: the row became terminal between this
+            # teardown's snapshot and the write despite the CAS guard above.
             persisted = await db.get_session(session_id) or {}
             final_status = persisted.get("status", final_status)
             _log.debug(
