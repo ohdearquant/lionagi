@@ -299,6 +299,24 @@ async def compile_workflow_def(
                 raise WorkflowCompileError(
                     f"unknown engine_def_id {engine_def_id!r}", node_id=node_id
                 )
+            # A node's config.options override the EngineDef's stored options,
+            # but those node values are author-supplied and never went through
+            # the checks engine_defs enforces when a def is created (allowed
+            # keys, string-only, no leading-dash CLI-flag injection, no shell
+            # metacharacters, kind requirements). Re-validate the merged result
+            # so a saved workflow can't smuggle e.g. a shell-control test_cmd
+            # past those safeguards into a coding engine's command.
+            from .engine_defs import _validate_kind_options, _validate_options
+
+            engine_options = {
+                **(defn.get("options") or {}),
+                **(config.get("options") or {}),
+            }
+            try:
+                _validate_options(engine_options)
+                _validate_kind_options(defn.get("kind"), engine_options)
+            except ValueError as exc:
+                raise WorkflowCompileError(str(exc), node_id=node_id) from exc
             op_id = builder.add_operation(
                 "engine",
                 node_id=node_id,
@@ -306,10 +324,7 @@ async def compile_workflow_def(
                 engine_model=config.get("model") or defn.get("model"),
                 engine_max_depth=config.get("max_depth", defn.get("max_depth")),
                 engine_max_agents=config.get("max_agents", defn.get("max_agents")),
-                engine_options={
-                    **(defn.get("options") or {}),
-                    **(config.get("options") or {}),
-                },
+                engine_options=engine_options,
             )
         else:  # pragma: no cover — unreachable, prefiltered above
             raise WorkflowCompileError(f"unknown node kind {kind!r}", node_id=node_id)

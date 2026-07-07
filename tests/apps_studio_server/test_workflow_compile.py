@@ -224,6 +224,32 @@ async def test_compile_merges_node_engine_options_over_def():
     }
 
 
+@pytest.mark.parametrize(
+    "unsafe_cmd",
+    [
+        "pytest; rm -rf /",  # shell metacharacter injection
+        "--config=/etc/passwd",  # leading-dash CLI-flag injection
+    ],
+)
+async def test_compile_rejects_unsafe_node_engine_options(unsafe_cmd):
+    """A node's config.options override the def's stored options, but those
+    author-supplied values never passed engine_defs' validation. An unsafe
+    test_cmd (shell metacharacters, leading-dash flag) reaches a coding
+    engine's command verbatim, so the compiler must re-validate the merged
+    options and reject it — otherwise a saved workflow smuggles shell control
+    past the engine-def safeguards.
+    """
+
+    async def _resolve_coding(ref: str) -> dict[str, Any]:
+        return {"kind": "coding", "model": None, "options": {"test_cmd": "pytest"}}
+
+    spec = _make_spec()
+    spec["nodes"][2]["config"]["options"] = {"test_cmd": unsafe_cmd}
+    with pytest.raises(WorkflowCompileError) as exc_info:
+        await compile_workflow_def(spec, resolve_engine_def=_resolve_coding)
+    assert exc_info.value.node_id == "n3"
+
+
 async def test_compile_edge_condition_is_studio_expr_condition():
     graph, id_map = await compile_workflow_def(_make_spec(), resolve_engine_def=_resolve_ok)
     edge = next(iter(graph.internal_edges))
