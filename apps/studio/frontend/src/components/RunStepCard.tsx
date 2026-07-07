@@ -554,16 +554,49 @@ function RunStepCard({
 
 // Memoized so a live session that appends to one branch only re-renders that
 // branch's card. The parent rebuilds every step object each tick, so we compare
-// by content: messages are append-only, so branch name + status + message count
-// captures whether this card actually changed.
-function stepPropsEqual(prev: RunStepCardProps, next: RunStepCardProps): boolean {
+// by content rather than identity: messages are usually append-only, but a
+// tool call's `output`/`status` can be patched in place on an existing message
+// slot (paired action-response merge), so length alone would miss that update.
+export function runMessageMemoKey(message: RunMessage): string {
+  return [
+    message.role ?? "",
+    message.content ?? "",
+    message.timestamp ?? "",
+    message.function ?? "",
+    message.summary ?? "",
+    JSON.stringify(message.arguments ?? null),
+    message.output ?? "",
+    message.status ?? "",
+    message.exit_code ?? "",
+  ].join("");
+}
+
+export function runMessagesEqualForMemo(
+  prev: RunMessage[] | undefined,
+  next: RunMessage[] | undefined,
+): boolean {
+  const prevMessages = prev ?? [];
+  const nextMessages = next ?? [];
+  if (prevMessages.length !== nextMessages.length) return false;
+  for (let i = 0; i < prevMessages.length; i++) {
+    if (runMessageMemoKey(prevMessages[i]) !== runMessageMemoKey(nextMessages[i])) return false;
+  }
+  return true;
+}
+
+export function stepPropsEqual(prev: RunStepCardProps, next: RunStepCardProps): boolean {
+  const prevResult = (prev.step.result ?? {}) as StepResult;
+  const nextResult = (next.step.result ?? {}) as StepResult;
   return (
     prev.expanded === next.expanded &&
     prev.defaultExpanded === next.defaultExpanded &&
     prev.onToggleExpand === next.onToggleExpand &&
     prev.step.step === next.step.step &&
     prev.step.status === next.step.status &&
-    (prev.step.messages?.length ?? 0) === (next.step.messages?.length ?? 0)
+    prev.step.timestamp === next.step.timestamp &&
+    prevResult.agent === nextResult.agent &&
+    prevResult.model === nextResult.model &&
+    runMessagesEqualForMemo(prev.step.messages, next.step.messages)
   );
 }
 

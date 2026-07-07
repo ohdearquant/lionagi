@@ -631,14 +631,10 @@ async def _doctor(
                     source="admin",
                     actor="doctor",
                     expected_statuses={"running"},
+                    extra_fields={"ended_at": _time.time()},
                 )
                 if transitioned:
                     swept_count += 1
-                    async with db._tx() as conn:
-                        await conn.execute(
-                            text("UPDATE sessions SET ended_at = :ended_at WHERE id = :id"),
-                            {"ended_at": _time.time(), "id": vid},
-                        )
 
         return {"running": total, "swept": swept_count, "skipped": skipped}
 

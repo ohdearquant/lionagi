@@ -51,7 +51,8 @@ class SchedulerStateService(Protocol):
         source: str,
         actor: str,
         metadata: dict | None = None,
-    ) -> None: ...
+        expected_statuses: set[str | None] | frozenset[str | None] | None = None,
+    ) -> bool: ...
 
     async def list_sessions_for_invocation(self, invocation_id: str) -> list[dict[str, Any]]: ...
 
@@ -107,9 +108,10 @@ class _DBSchedulerStateService:
         source: str,
         actor: str,
         metadata: dict | None = None,
-    ) -> None:
+        expected_statuses: set[str | None] | frozenset[str | None] | None = None,
+    ) -> bool:
         async with StateDB() as db:
-            await db.update_status(
+            return await db.update_status(
                 entity_type,
                 entity_id,
                 new_status=new_status,
@@ -119,6 +121,7 @@ class _DBSchedulerStateService:
                 source=source,
                 actor=actor,
                 metadata=metadata,
+                expected_statuses=expected_statuses,
             )
 
     async def list_sessions_for_invocation(self, invocation_id: str) -> list[dict[str, Any]]:

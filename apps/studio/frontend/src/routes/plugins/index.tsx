@@ -1,9 +1,11 @@
 import { createFileRoute, redirect } from "@tanstack/react-router";
+import { preserveRetiredSearch, retiredRedirect } from "@/lib/retiredRoutes";
 
 export const Route = createFileRoute("/plugins/")({
-  beforeLoad: () => {
+  validateSearch: preserveRetiredSearch,
+  beforeLoad: ({ search }) => {
     // Tab IA: spaces are the only pages; this list now lives as a space tab.
-    throw redirect({ to: "/library", search: { tab: "plugin" } });
+    throw redirect(retiredRedirect("/library", search, { tab: "plugin" }));
   },
   component: () => null,
 });

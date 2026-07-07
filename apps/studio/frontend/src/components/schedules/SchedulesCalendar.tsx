@@ -18,6 +18,7 @@
  * individual fire, so "expand" is just a click away.
  */
 import { useEffect, useMemo, useRef, useState } from "react";
+import type { CSSProperties } from "react";
 import { Link } from "@tanstack/react-router";
 import { useLocale, useTranslations } from "use-intl";
 import IconButton from "@/components/ui/IconButton";
@@ -91,6 +92,16 @@ const HOUR_ROW_PX = 56;
 const MIN_DAY_COL_PX = 128;
 /** Initial scroll target for hour grids — work usually starts around 07:00. */
 const SCROLL_TO_HOUR = 7;
+
+/** Sticky left-edge gutter cells (hour labels, all-day label) — stay in view
+ * while the day grid scrolls horizontally. */
+const STICKY_GUTTER_STYLE: CSSProperties = { position: "sticky", left: 0, zIndex: 2 };
+/** Sticky column-header row — stays in view while the bounded calendar
+ * viewport (the header, the optional all-day row, and the 24 hour rows all
+ * share one scroll container) scrolls vertically. */
+const STICKY_HEADER_STYLE: CSSProperties = { position: "sticky", top: 0, zIndex: 3 };
+/** Sticky top-left corner spacer — pinned on both axes, above gutter and header. */
+const STICKY_CORNER_STYLE: CSSProperties = { ...STICKY_GUTTER_STYLE, top: 0, zIndex: 4 };
 
 /**
  * Bucket runs, projected fires, and poll indicators into cells keyed by
@@ -303,6 +314,7 @@ export default function SchedulesCalendar({
   const [anchor, setAnchor] = useState<Date>(() => startOfDay(today));
   const [selectedDay, setSelectedDay] = useState<string | null>(null);
   const hourGridRef = useRef<HTMLDivElement | null>(null);
+  const allDayRowRef = useRef<HTMLDivElement | null>(null);
 
   // Visible range per mode.
   const range = useMemo(() => {
@@ -366,10 +378,16 @@ export default function SchedulesCalendar({
     return [];
   }, [mode, anchor]);
 
-  // Scroll hour grids to the working morning on mode/anchor change.
+  // Scroll the bounded calendar viewport to the working morning on
+  // mode/anchor change. The sticky header's own height cancels out of this
+  // math — it stays visually pinned to the top of this container no matter
+  // the scroll offset — but the (non-sticky) all-day row still occupies real
+  // space above the hour rows whenever it renders, so its measured height
+  // has to be added in.
   useEffect(() => {
     if (mode !== "month" && hourGridRef.current) {
-      hourGridRef.current.scrollTop = SCROLL_TO_HOUR * HOUR_ROW_PX;
+      const allDayHeight = allDayRowRef.current?.offsetHeight ?? 0;
+      hourGridRef.current.scrollTop = allDayHeight + SCROLL_TO_HOUR * HOUR_ROW_PX;
     }
   }, [mode, anchor]);
 
@@ -756,13 +774,26 @@ export default function SchedulesCalendar({
           </div>
         </div>
       ) : (
-        // Horizontal scroll lives HERE, on the one shared ancestor of the
-        // header/all-day/hour-grid tracks — they scroll together in lockstep
-        // and the page body never gains a sideways scrollbar.
-        <div className="overflow-x-auto rounded-lg border border-edge">
-          {/* Column header: gutter spacer + day headers. */}
-          <div className="grid border-b border-edge" style={{ gridTemplateColumns: dayGridCols }}>
-            <div />
+        // Horizontal scroll lives HERE too — this is the ONE bounded
+        // calendar viewport (a single overflow-auto container) that owns the
+        // header, the optional all-day row, and the 24 hour rows, scrolling
+        // both axes together. The sticky top:0 header pins relative to THIS
+        // container as its rows scroll — it never claimed to pin against the
+        // page, and this container's own bounded height (not the page's) is
+        // what scrolls.
+        <div
+          ref={hourGridRef}
+          className="max-h-[640px] overflow-auto rounded-lg border border-edge"
+        >
+          {/* Column header: gutter spacer + day headers. Sticky on the
+              vertical axis so date headers stay visible while the bounded
+              calendar viewport scrolls; the leading spacer is additionally
+              pinned on the horizontal axis to match the hour gutter below it. */}
+          <div
+            className="grid border-b border-edge bg-surface-raised"
+            style={{ gridTemplateColumns: dayGridCols, ...STICKY_HEADER_STYLE }}
+          >
+            <div className="border-r border-edge bg-surface-raised" style={STICKY_CORNER_STYLE} />
             {hourColumns.map((d) => {
               const key = dayKey(d);
               const isToday = key === todayKey;
@@ -802,8 +833,15 @@ export default function SchedulesCalendar({
           {hourColumns.some((d) =>
             (byDay.get(dayKey(d)) ?? []).some((item) => item.kind === "poll"),
           ) && (
-            <div className="grid border-b border-edge" style={{ gridTemplateColumns: dayGridCols }}>
-              <div className="px-1.5 py-1 text-right font-data text-meta text-content-muted">
+            <div
+              ref={allDayRowRef}
+              className="grid border-b border-edge"
+              style={{ gridTemplateColumns: dayGridCols }}
+            >
+              <div
+                className="border-r border-edge bg-surface-raised px-1.5 py-1 text-right font-data text-meta text-content-muted"
+                style={STICKY_GUTTER_STYLE}
+              >
                 {t("allDay")}
               </div>
               {hourColumns.map((d) => {
@@ -826,67 +864,65 @@ export default function SchedulesCalendar({
             </div>
           )}
 
-          {/* Hour grid — scrollable, opens at the working morning. */}
-          <div ref={hourGridRef} className="max-h-[560px] overflow-y-auto">
-            {Array.from({ length: 24 }, (_, hour) => (
-              <div key={hour} className="grid" style={{ gridTemplateColumns: dayGridCols }}>
-                <div
-                  className="border-b border-edge px-1.5 pt-0.5 text-right font-data text-meta tabular-nums text-content-muted"
-                  style={{ minHeight: HOUR_ROW_PX }}
-                >
-                  {String(hour).padStart(2, "0")}:00
-                </div>
-                {hourColumns.map((d) => {
-                  const dk = dayKey(d);
-                  const isToday = dk === todayKey;
-                  const entries = groupBySchedule(byHour?.get(`${dk}H${hour}`) ?? []);
-                  const overflow = entries.length - MAX_VISIBLE_PER_HOUR;
-                  const openHere = () => setSelectedDay(selectedDay === dk ? null : dk);
-                  return (
-                    <div
-                      key={dk}
-                      role="button"
-                      tabIndex={0}
-                      onClick={openHere}
-                      onKeyDown={(e) => {
-                        if (e.key === "Enter" || e.key === " ") {
-                          e.preventDefault();
-                          openHere();
-                        }
-                      }}
-                      className={[
-                        "flex cursor-pointer flex-col items-stretch gap-0.5 overflow-hidden border-b border-l border-edge p-1 text-left transition-colors duration-100 focus-visible:outline focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-[var(--accent)]",
-                        selectedDay === dk
-                          ? "bg-surface-overlay/40"
-                          : isToday
-                            ? "bg-[var(--today-tint)] hover:bg-surface-overlay/60"
-                            : "hover:bg-surface-overlay/60",
-                      ].join(" ")}
-                      style={{ minHeight: HOUR_ROW_PX }}
-                    >
-                      {entries
-                        .slice(0, MAX_VISIBLE_PER_HOUR)
-                        .map((entry, j) => renderChip(entry, j))}
-                      {overflow > 0 && (
-                        <button
-                          type="button"
-                          onClick={(e) => {
-                            e.stopPropagation();
-                            switchMode("day");
-                            setAnchor(startOfDay(d));
-                            setSelectedDay(dk);
-                          }}
-                          className="w-fit text-meta text-content-muted underline-offset-2 hover:text-content-primary hover:underline"
-                        >
-                          {t("more", { count: overflow })}
-                        </button>
-                      )}
-                    </div>
-                  );
-                })}
+          {/* Hour grid — scrollable body of the same bounded viewport as the
+              header, opening at the working morning. */}
+          {Array.from({ length: 24 }, (_, hour) => (
+            <div key={hour} className="grid" style={{ gridTemplateColumns: dayGridCols }}>
+              <div
+                className="border-b border-r border-edge bg-surface-raised px-1.5 pt-0.5 text-right font-data text-meta tabular-nums text-content-muted"
+                style={{ minHeight: HOUR_ROW_PX, ...STICKY_GUTTER_STYLE }}
+              >
+                {String(hour).padStart(2, "0")}:00
               </div>
-            ))}
-          </div>
+              {hourColumns.map((d) => {
+                const dk = dayKey(d);
+                const isToday = dk === todayKey;
+                const entries = groupBySchedule(byHour?.get(`${dk}H${hour}`) ?? []);
+                const overflow = entries.length - MAX_VISIBLE_PER_HOUR;
+                return (
+                  // Plain, non-interactive div — the day header button above
+                  // already toggles the detail strip for this (single) day,
+                  // and the "+N more" affordance below is the sole
+                  // keyboard-reachable control in this cell. Giving this
+                  // wrapper a button-like ARIA role would nest a real
+                  // <button> inside it, leaving activation semantics
+                  // implementation-dependent across assistive tech.
+                  <div
+                    key={dk}
+                    className={[
+                      "flex flex-col items-stretch gap-0.5 overflow-hidden border-b border-l border-edge p-1 text-left transition-colors duration-100",
+                      selectedDay === dk
+                        ? "bg-surface-overlay/40"
+                        : isToday
+                          ? "bg-[var(--today-tint)]"
+                          : "",
+                    ].join(" ")}
+                    style={{ minHeight: HOUR_ROW_PX }}
+                  >
+                    {entries.slice(0, MAX_VISIBLE_PER_HOUR).map((entry, j) => renderChip(entry, j))}
+                    {overflow > 0 && (
+                      <button
+                        type="button"
+                        aria-label={`${t("more", { count: overflow })} ${t("viewDay")}`}
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          switchMode("day");
+                          setAnchor(startOfDay(d));
+                          setSelectedDay(dk);
+                        }}
+                        onKeyDown={(e) => {
+                          if (e.key === "Enter" || e.key === " ") e.stopPropagation();
+                        }}
+                        className="w-fit text-meta text-content-muted underline-offset-2 hover:text-content-primary hover:underline focus-visible:outline focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-[var(--accent)]"
+                      >
+                        {t("more", { count: overflow })}
+                      </button>
+                    )}
+                  </div>
+                );
+              })}
+            </div>
+          ))}
         </div>
       )}
 

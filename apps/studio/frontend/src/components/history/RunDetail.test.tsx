@@ -55,6 +55,28 @@ describe("history/RunDetail.tsx — SSE done-refetch is guarded against a stale-
   });
 });
 
+// ─── fullPage prop removal (dead branch, single live callsite) ────────────────
+
+describe("history/RunDetail.tsx — fullPage prop removed", () => {
+  const src = fs.readFileSync(path.join(HISTORY_DIR, "RunDetail.tsx"), "utf-8");
+
+  it("does not declare a fullPage prop", () => {
+    expect(src).not.toMatch(/fullPage/);
+  });
+
+  it("does not branch on a full-page vs. pane wrapper mode", () => {
+    expect(src).not.toMatch(/if \(fullPage\)/);
+  });
+});
+
+describe("fleet/SessionDetail.tsx — renders RunDetail without fullPage", () => {
+  it("passes only id to RunDetail", () => {
+    const src = fs.readFileSync(path.resolve(HISTORY_DIR, "../fleet/SessionDetail.tsx"), "utf-8");
+    expect(src).toMatch(/<RunDetail id={runId} \/>/);
+    expect(src).not.toMatch(/fullPage/);
+  });
+});
+
 describe("stale-write guard predicate (mirrors the done handler's merge condition)", () => {
   function mergeIfSameSession(
     prev: { id: string; status: string } | null,

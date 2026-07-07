@@ -1281,6 +1281,116 @@ async def test_stop_no_cwd_never_gates_on_git_evidence(
     assert s["status"] == "completed"
 
 
+async def test_teardown_skips_already_terminal_session_without_rejection_audit(
+    temp_db_path: Path,
+):
+    """A session already terminal (e.g. finalized by an earlier, concurrent
+    teardown of the same session) must not attempt a redundant terminal
+    overwrite — that trips the ADR-0094 floor and records a
+    status_transition_rejected admin event for a write that was never a real
+    integrity violation."""
+    env = _minimal_env()
+    await start_live_persist(env, invocation_kind="flow")
+    ctx = env._live_persist
+    assert ctx is not None
+
+    async with StateDB() as db:
+        await db.update_status(
+            "session",
+            ctx["session_id"],
+            new_status="failed",
+            reason_code="run.failed.exception",
+            source="executor",
+            actor=ctx["session_id"],
+        )
+
+    await stop_live_persist(env, status="completed")
+
+    async with StateDB() as db:
+        s = await db.get_session(ctx["session_id"])
+        rejections = await db.list_admin_events(
+            action="status_transition_rejected", target_id=ctx["session_id"]
+        )
+    assert s is not None
+    # This invocation's own outcome was not persisted -- the earlier terminal
+    # record (from the "other" writer) is what must survive.
+    assert s["status"] == "failed"
+    assert rejections == []
+
+
+async def test_reconciled_linked_engine_completed_with_output_stays_completed(
+    temp_db_path: Path,
+    tmp_path: Path,
+):
+    """A profile session reconciled to a linked engine session's terminal
+    'completed' status must not then be demoted to 'completed_empty' by the
+    completion-trust gate just because the *profile* session's own
+    progression carries no assistant output — the linked engine session's own
+    progression (real answer text) is legitimate completion evidence too."""
+    from lionagi.cli._runs import teardown_persist
+    from lionagi.providers._provider_errors import ProviderError
+    from lionagi.state.claude_mirror import mirror_session, session_db_id
+
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    _init_git_repo(repo)
+
+    env = _minimal_env()
+    env.cwd = str(repo)
+    await start_live_persist(env, invocation_kind="flow")
+    ctx = env._live_persist
+    assert ctx is not None
+
+    engine_uid = "12121212-3434-5656-7878-909090909090"
+    async with StateDB() as db:
+        await mirror_session(
+            db,
+            session_uid=engine_uid,
+            events=[
+                {
+                    "type": "user",
+                    "uuid": "e-u1",
+                    "timestamp": "2026-06-20T00:00:00.000Z",
+                    "sessionId": engine_uid,
+                    "message": {
+                        "role": "user",
+                        "content": [{"type": "text", "text": "what is the answer?"}],
+                    },
+                },
+                {
+                    "type": "assistant",
+                    "uuid": "e-a1",
+                    "timestamp": "2026-06-20T00:00:01.000Z",
+                    "sessionId": engine_uid,
+                    "message": {
+                        "role": "assistant",
+                        "model": "claude-opus-4-8",
+                        "content": [{"type": "text", "text": "The real answer is 42."}],
+                    },
+                },
+            ],
+            tool_names={},
+            status="completed",
+        )
+
+    final_status = await teardown_persist(
+        ctx,
+        status="failed",
+        exception=ProviderError("stream error"),
+        cwd=str(repo),
+        engine_session_uid=engine_uid,
+    )
+
+    async with StateDB() as db:
+        s = await db.get_session(ctx["session_id"])
+        linked = await db.get_session(session_db_id(engine_uid))
+    assert linked["status"] == "completed"
+    assert final_status == "completed"
+    assert s is not None
+    assert s["status"] == "completed"
+    assert s["status_reason_code"] != "run.completed_empty.no_evidence"
+
+
 async def test_missing_artifact_session_failure_propagates_to_invocation_status(
     temp_db_path: Path,
     tmp_path: Path,

@@ -257,6 +257,14 @@ TERMINAL_STATUSES_BY_ENTITY_TYPE: dict[str, frozenset[str]] = {
     "team": TEAM_TERMINAL_STATUSES,
 }
 
+# Same-row columns update_status() may set alongside a status write, in the
+# same transaction as the status/status_transitions write — keeps a caller
+# from splitting a status change and a dependent column (e.g. ended_at) into
+# two transactions that a crash between them could leave inconsistent.
+EXTRA_STATUS_WRITE_FIELDS_BY_ENTITY_TYPE: dict[str, frozenset[str]] = {
+    "session": frozenset({"ended_at"}),
+}
+
 # ── ADR-0094 status vocabulary (valid, not just terminal) ──────────────
 # update_status() rejects any new_status outside its entity_type's set here —
 # the terminal-overwrite floor above stops a terminal record from moving;
@@ -1444,6 +1452,7 @@ class StateDB:
         metadata: dict[str, Any] | None = None,
         expected_statuses: set[str | None] | frozenset[str | None] | None = None,
         expected_updated_at: float | None = None,
+        extra_fields: dict[str, Any] | None = None,
         override: bool = False,
         override_actor: str | None = None,
         override_justification: str | None = None,
@@ -1501,6 +1510,16 @@ class StateDB:
                 f"entity_type={canonical_type!r}; vocabulary is {sorted(valid_statuses)}."
             )
         table = _reason_entity_table(canonical_type)
+        if extra_fields:
+            allowed_extra = EXTRA_STATUS_WRITE_FIELDS_BY_ENTITY_TYPE.get(
+                canonical_type, frozenset()
+            )
+            unknown = set(extra_fields) - allowed_extra
+            if unknown:
+                raise ValueError(
+                    f"update_status() called with extra_fields keys {sorted(unknown)} for "
+                    f"entity_type={canonical_type!r}; allowed keys are {sorted(allowed_extra)}."
+                )
         now = time.time()
         terminal_statuses = TERMINAL_STATUSES_BY_ENTITY_TYPE.get(canonical_type, frozenset())
 
@@ -1589,6 +1608,7 @@ class StateDB:
                     metadata=metadata,
                     now=now,
                     expected_updated_at=expected_updated_at,
+                    extra_fields=extra_fields,
                 )
                 if not written:
                     # Optimistic-lock guard lost: the row's updated_at moved
@@ -1617,6 +1637,7 @@ class StateDB:
         metadata: dict[str, Any] | None,
         now: float,
         expected_updated_at: float | None = None,
+        extra_fields: dict[str, Any] | None = None,
     ) -> bool:
         """The actual status + status_transitions write, factored out of
         update_status() so both the ordinary and override paths share it.
@@ -1654,6 +1675,12 @@ class StateDB:
         if expected_updated_at is not None:
             version_guard = "  AND updated_at = :expected_updated_at "
             params["expected_updated_at"] = expected_updated_at
+        extra_set = ""
+        if extra_fields:
+            for field_name, field_value in extra_fields.items():
+                param_name = f"extra_{field_name}"
+                extra_set += f"  {field_name} = :{param_name}, "
+                params[param_name] = field_value
         result = await conn.execute(
             text(
                 f"UPDATE {table} SET "  # noqa: S608
@@ -1661,6 +1688,7 @@ class StateDB:
                 "  status_reason_code = :reason_code, "
                 "  status_reason_summary = :reason_summary, "
                 "  status_evidence_refs = :evidence_refs, "
+                f"{extra_set}"
                 "  updated_at = :now "
                 "WHERE id = :id "
                 "  AND (status = :previous_status "
