@@ -367,6 +367,8 @@ async def create_schedule(data: dict[str, Any]) -> dict[str, Any]:
         _svc_validate_cron_expr(data.get("cron_expr"), required=True)
     if data.get("trigger_type") == "interval":
         _svc_validate_interval_sec(data.get("interval_sec"), required=True)
+    if data.get("trigger_type") == "github_poll" and not data.get("github_repo"):
+        raise ValueError("github_repo is required when trigger_type is 'github_poll'")
 
     if data.get("action_kind") == "flow_yaml":
         yaml_text = data.get("action_flow_yaml") or ""
