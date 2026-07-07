@@ -54,11 +54,25 @@ async def run_sync(func: Callable[P, R], *args: P.args, **kwargs: P.kwargs) -> R
 # and stamped the terminal record. Persist paths consult this flag so an
 # external SIGTERM stays distinguishable from an internal runtime cancel.
 _SIGTERM_RECEIVED = threading.Event()
+_SIGTERM_RECEIVED_LOCK = threading.Lock()
 
 
 def sigterm_received() -> bool:
     """True if run_async's SIGTERM handler has fired in this process."""
     return _SIGTERM_RECEIVED.is_set()
+
+
+def consume_sigterm_received() -> bool:
+    """Read-and-clear the latch so one external SIGTERM labels one run.
+
+    Without consuming, the latch stays set for the lifetime of the process
+    and mislabels every later run/test's cancellation as SIGTERM-caused.
+    """
+    with _SIGTERM_RECEIVED_LOCK:
+        received = _SIGTERM_RECEIVED.is_set()
+        if received:
+            _SIGTERM_RECEIVED.clear()
+        return received
 
 
 class SigtermInterrupt(BaseException):
@@ -127,7 +141,8 @@ def run_async(coro: Awaitable[T]) -> T:
             if signum == signal.SIGTERM:
                 # Latch process-wide so teardown code that only sees a plain
                 # CancelledError can still report the cancel as external.
-                _SIGTERM_RECEIVED.set()
+                with _SIGTERM_RECEIVED_LOCK:
+                    _SIGTERM_RECEIVED.set()
             try:
                 child_loop, task = _loop_and_task_future.result(timeout=0.5)
             except Exception:  # noqa: BLE001

@@ -270,13 +270,19 @@ def resolve_run_reason(
     if status == "aborted":
         return RunReasons.CANCELLED_SIGINT, "User pressed Ctrl-C (SIGINT).", None
     if status == "cancelled":
-        from lionagi.ln.concurrency.utils import SigtermInterrupt, sigterm_received
+        from lionagi.ln.concurrency.utils import (
+            SigtermInterrupt,
+            consume_sigterm_received,
+        )
 
         # At teardown the surfaced exception is usually a plain CancelledError
         # even when an external SIGTERM caused it — SigtermInterrupt is only
         # raised after the worker thread joins, after this record is stamped.
-        # The handler's process-wide latch is the reliable signal.
-        if isinstance(exception, SigtermInterrupt) or sigterm_received():
+        # The handler's process-wide latch is the reliable signal. Consume it
+        # unconditionally (before the branch) so a later, unrelated run/test
+        # can't inherit a latch left set on the explicit-SigtermInterrupt path.
+        sigterm_latched = consume_sigterm_received()
+        if isinstance(exception, SigtermInterrupt) or sigterm_latched:
             return (
                 RunReasons.CANCELLED_SIGTERM,
                 "sigterm_external: process received an external SIGTERM mid-run.",

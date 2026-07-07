@@ -374,6 +374,10 @@ async def get_session(
         "status_evidence_refs": _parse_json_col(session_row["status_evidence_refs"]),
         "graph": _graph_from_metadata(session_row["node_metadata"]),
         "segments": (_parse_metadata(session_row["node_metadata"]) or {}).get("segments"),
+        # Raw node_metadata (carries pid/pid_create_time for running sessions)
+        # so callers like get_run()'s liveness check can find the recorded
+        # pid the same way list_sessions() already exposes it.
+        "node_metadata": session_row["node_metadata"],
     }
 
 

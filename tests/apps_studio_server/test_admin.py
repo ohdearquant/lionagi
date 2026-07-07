@@ -226,7 +226,16 @@ def test_stale_lock_gated_on_staleness(tmp_path):
 
 def test_admin_health_reports_status_and_health_buckets(tmp_path, monkeypatch):
     db_path = tmp_path / "state.db"
-    _run(_seed_running_session(db_path, str(uuid.uuid4())))
+    # A fresh artifacts dir keeps this session out of the ORPHANED bucket
+    # (no artifacts + no messages) so it classifies HEALTHY and by_status
+    # still reads "running" for it.
+    artifacts_dir = tmp_path / "artifacts"
+    artifacts_dir.mkdir()
+    _run(
+        _seed_running_session(
+            db_path, str(uuid.uuid4()), artifacts_path=str(artifacts_dir), updated_at=time.time()
+        )
+    )
     client = _make_client(tmp_path, monkeypatch, db_path)
     r = client.get("/api/admin/health")
     assert r.status_code == 200
@@ -239,6 +248,31 @@ def test_admin_health_reports_status_and_health_buckets(tmp_path, monkeypatch):
     assert sess["by_status"].get("running") == 1
     # All health buckets sum to total.
     assert sum(sess["by_health"].values()) == sess["total"]
+    # by_status must stay liveness-aware: total count is preserved either way.
+    assert sum(sess["by_status"].values()) == sess["total"]
+
+
+def test_admin_health_running_bucket_excludes_confirmed_dead_running_session(tmp_path, monkeypatch):
+    """A "running" DB row whose process is confirmed dead must not inflate
+    by_status.running — that bucket should reflect liveness, not the raw
+    (possibly stale) status column."""
+    db_path = tmp_path / "state.db"
+    _run(_seed_running_session(db_path, str(uuid.uuid4())))
+
+    import lionagi.studio.services.admin as admin_mod
+
+    monkeypatch.setattr(admin_mod, "process_liveness", lambda *a, **k: False)
+
+    client = _make_client(tmp_path, monkeypatch, db_path)
+    r = client.get("/api/admin/health")
+    assert r.status_code == 200
+    sess = r.json()["sessions"]
+
+    assert sess["by_status"].get("running", 0) == 0
+    # No artifacts + no messages recorded for this seed -> ORPHANED, not STALE.
+    assert sess["by_status"].get("orphaned", 0) == 1
+    assert sess["by_health"].get("orphaned", 0) == 1
+    assert sum(sess["by_status"].values()) == sess["total"]
 
 
 def test_admin_transition_marks_running_session_failed(tmp_path, monkeypatch):

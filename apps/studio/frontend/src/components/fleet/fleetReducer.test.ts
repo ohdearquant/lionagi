@@ -230,6 +230,17 @@ describe("fleetReducer — counts strip", () => {
     );
     expect(s.counts.attention).toBe(1);
   });
+
+  it("dead-health running run is not counted as an active Fleet agent", () => {
+    const s = dispatchOk(
+      initialFleetState(),
+      [],
+      [makeRun({ run_id: "r1", status: "running", effective_health: "stale" })],
+    );
+    expect(s.counts.agents).toBe(0);
+    expect(s.orgUnits).toHaveLength(0);
+    expect(s.recent[0].id).toBe("r1");
+  });
 });
 
 // ─── Attention flagging ───────────────────────────────────────────────────────

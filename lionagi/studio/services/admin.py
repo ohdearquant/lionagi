@@ -157,17 +157,25 @@ def process_liveness(
     if pid is not None:
         if not _pid_is_live(pid):
             return False
-        if create_time is not None:
-            try:
-                import psutil
+        try:
+            import psutil
 
-                actual = psutil.Process(pid).create_time()
+            proc = psutil.Process(pid)
+            # A zombie has exited but not been reaped; it is not a live
+            # worker even though the pid still resolves and _pid_is_live()
+            # reports it as present.
+            if proc.status() == psutil.STATUS_ZOMBIE:
+                return False
+            if create_time is not None:
+                actual = proc.create_time()
                 if abs(actual - create_time) > _PID_CREATE_TIME_TOLERANCE:
                     return False  # pid recycled; the recorded process is gone
-            except Exception:
-                # Best-effort check: the pid-is-live test above already
-                # passed, so an unreadable start time reads as alive.
-                _log.debug("pid %s start-time check failed", pid, exc_info=True)
+        except (psutil.NoSuchProcess, psutil.ZombieProcess):
+            return False
+        except Exception:
+            # Best-effort check: the pid-is-live test above already
+            # passed, so an unreadable status/start time reads as alive.
+            _log.debug("pid %s status/start-time check failed", pid, exc_info=True)
         return True
 
     session_id = session.get("id") or ""
@@ -307,7 +315,6 @@ async def health_report() -> dict[str, Any]:
     for row in rows:
         sess = {k: row[k] for k in row.keys()}
         status = sess.get("status") or "completed"
-        by_status[status] += 1
 
         artifacts = _artifacts_path(row)
         has_artifacts = artifacts is not None and artifacts.exists()
@@ -331,6 +338,18 @@ async def health_report() -> dict[str, Any]:
             has_stale_locks=has_stale_locks,
         )
         by_health[health.value] += 1
+
+        # A "running" row whose process is confirmed dead is not actually
+        # running; bucket it under its health verdict so by_status stays
+        # liveness-aware instead of echoing a stale DB status column.
+        status_bucket = status
+        if status == "running" and health in (
+            SessionHealth.STALE,
+            SessionHealth.ORPHANED,
+            SessionHealth.ZOMBIE,
+        ):
+            status_bucket = health.value
+        by_status[status_bucket] += 1
 
         if health not in (SessionHealth.HEALTHY, SessionHealth.IDLE):
             last_activity = (
