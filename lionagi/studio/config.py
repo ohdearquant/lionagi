@@ -60,6 +60,10 @@ MAX_SCHEDULED_CONCURRENT: int = int(os.environ.get("LIONAGI_STUDIO_MAX_SCHEDULED
 # ── Lifecycle reaper config ───────────────────────────────────────────────────
 # Default invocation deadline in seconds (2 hours). Override per action kind
 # via LIONAGI_STUDIO_INVOCATION_DEADLINE_<KIND>_SECONDS (e.g. _AGENT_SECONDS).
+# Pairs with per-schedule budget_usd/budget_tokens (schedules table, see
+# SchedulerEngine._check_budget): the budget gate is a pre-fire cumulative
+# check, not a mid-run kill, so this deadline is what bounds a single run's
+# worst-case spend.
 INVOCATION_DEADLINE_SECONDS: int = int(
     os.environ.get("LIONAGI_STUDIO_INVOCATION_DEADLINE_SECONDS", "7200")
 )

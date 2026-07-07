@@ -98,6 +98,28 @@ def _svc_validate_max_runs(max_runs: Any) -> None:
         raise ValueError(f"max_runs must be a positive integer, got {max_runs!r}")
 
 
+def _svc_validate_budget_usd(budget_usd: Any) -> None:
+    """Service-boundary check: reject a non-positive budget_usd.
+
+    None means unlimited (the column default) and is always accepted.
+    """
+    if budget_usd is None:
+        return
+    if isinstance(budget_usd, bool) or not isinstance(budget_usd, int | float) or budget_usd <= 0:
+        raise ValueError(f"budget_usd must be a positive number, got {budget_usd!r}")
+
+
+def _svc_validate_budget_tokens(budget_tokens: Any) -> None:
+    """Service-boundary check: reject a non-positive budget_tokens.
+
+    None means unlimited (the column default) and is always accepted.
+    """
+    if budget_tokens is None:
+        return
+    if isinstance(budget_tokens, bool) or not isinstance(budget_tokens, int) or budget_tokens <= 0:
+        raise ValueError(f"budget_tokens must be a positive integer, got {budget_tokens!r}")
+
+
 def _svc_validate_interval_sec(interval: Any, *, required: bool = False) -> None:
     """Service-boundary check: reject a missing or non-positive interval.
 
@@ -266,6 +288,8 @@ CREATE TABLE IF NOT EXISTS schedules (
     missed_fire_policy  TEXT    NOT NULL DEFAULT 'skip',
     overlap_policy      TEXT    NOT NULL DEFAULT 'skip',
     max_runs            INTEGER,
+    budget_usd          REAL,
+    budget_tokens       INTEGER,
     project             TEXT,
     created_at          REAL    NOT NULL,
     updated_at          REAL    NOT NULL
@@ -363,6 +387,8 @@ async def create_schedule(data: dict[str, Any]) -> dict[str, Any]:
     _svc_validate_extra_args(data.get("action_extra_args"))
     _svc_validate_github_repo(data.get("github_repo"))
     _svc_validate_max_runs(data.get("max_runs"))
+    _svc_validate_budget_usd(data.get("budget_usd"))
+    _svc_validate_budget_tokens(data.get("budget_tokens"))
     if data.get("trigger_type") == "cron":
         _svc_validate_cron_expr(data.get("cron_expr"), required=True)
     if data.get("trigger_type") == "interval":
@@ -428,6 +454,10 @@ async def update_schedule(schedule_id: str, fields: dict[str, Any]) -> bool:
             _svc_validate_github_repo(fields["github_repo"])
         if "max_runs" in fields:
             _svc_validate_max_runs(fields["max_runs"])
+        if "budget_usd" in fields:
+            _svc_validate_budget_usd(fields["budget_usd"])
+        if "budget_tokens" in fields:
+            _svc_validate_budget_tokens(fields["budget_tokens"])
 
         effective = {**schedule, **fields}
         effective_repo = effective.get("github_repo")
@@ -575,6 +605,8 @@ class CreateScheduleRequest(BaseModel):
     missed_fire_policy: str = "skip"
     overlap_policy: str = "skip"
     max_runs: int | None = None
+    budget_usd: float | None = None
+    budget_tokens: int | None = None
     project: str | None = None
 
 
@@ -600,6 +632,8 @@ class UpdateScheduleRequest(BaseModel):
     missed_fire_policy: str | None = None
     overlap_policy: str | None = None
     max_runs: int | None = None
+    budget_usd: float | None = None
+    budget_tokens: int | None = None
     project: str | None = None
 
 

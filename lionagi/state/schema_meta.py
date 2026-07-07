@@ -509,6 +509,9 @@ schedules = Table(
     # One-shot / bounded-run semantics: NULL means unlimited (see
     # schema.sql for the fuller comment on how the engine counts runs).
     Column("max_runs", Integer),
+    # Cumulative spend budget: NULL means unlimited (see schema.sql).
+    Column("budget_usd", Float),
+    Column("budget_tokens", Integer),
     Column("project", Text),
     Column("created_at", Float, nullable=False),
     Column("updated_at", Float, nullable=False),

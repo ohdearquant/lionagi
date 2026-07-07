@@ -117,6 +117,7 @@ class ScheduleReasons:
     SKIPPED_OVERLAP = "schedule.skipped.overlap"
     SKIPPED_MISSED_FIRE = "schedule.skipped.missed_fire"
     DEFERRED_CAPACITY = "schedule.deferred.capacity"
+    BUDGET_EXHAUSTED = "schedule.budget.exhausted"
 
 
 class DispatchReasons:

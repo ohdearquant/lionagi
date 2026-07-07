@@ -436,6 +436,12 @@ CREATE TABLE IF NOT EXISTS schedules (
   -- of fired top-level runs (chain children excluded) reaches max_runs, the
   -- engine auto-disables the schedule via the existing enabled flag.
   max_runs            INTEGER,
+  -- Cumulative spend budget: NULL means unlimited. Checked pre-fire against
+  -- the sum of total_cost_usd / (input_tokens + output_tokens) across the
+  -- schedule's prior sessions; either bound tripping auto-disables the
+  -- schedule the same way max_runs does.
+  budget_usd          REAL,
+  budget_tokens       INTEGER,
   project             TEXT,
   created_at          REAL    NOT NULL,
   updated_at          REAL    NOT NULL
