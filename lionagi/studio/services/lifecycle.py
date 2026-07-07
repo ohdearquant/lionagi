@@ -403,7 +403,8 @@ async def reap_stale_plays(*, stale_hours: float | None = None) -> int:
                             ):
                                 continue
 
-                    updated_at = row.get("updated_at") or row.get("started_at") or 0.0
+                    updated_at_raw = row.get("updated_at")
+                    updated_at = updated_at_raw or row.get("started_at") or 0.0
                     if now - updated_at < stale_seconds:
                         # Not confirmed alive, but too fresh to reap — benefit of the doubt.
                         continue
@@ -414,6 +415,10 @@ async def reap_stale_plays(*, stale_hours: float | None = None) -> int:
                         row["status"],
                         session_id,
                     )
+                    # expected_updated_at pins the transition to the exact row
+                    # version we validated: a claim landing between this read
+                    # and the write bumps updated_at, so the guarded write loses
+                    # the race and we skip rather than block a live play.
                     transitioned = await db.update_status(
                         "play",
                         play_id,
@@ -430,6 +435,7 @@ async def reap_stale_plays(*, stale_hours: float | None = None) -> int:
                             "updated_at": updated_at,
                         },
                         expected_statuses=_REAPABLE_PLAY_STATUSES,
+                        expected_updated_at=updated_at_raw,
                     )
                     if transitioned:
                         # Stamp ended_at only after the guarded transition wins,

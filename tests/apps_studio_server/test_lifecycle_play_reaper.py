@@ -379,3 +379,47 @@ def test_reap_stale_plays_skips_row_claimed_between_scan_and_write(tmp_path, mon
 
     play = run_async(_get_play(db_path, play_id))
     assert play["status"] == "running"
+
+
+def test_reap_stale_plays_version_guard_skips_claim_after_revalidation(tmp_path, monkeypatch):
+    """The tightest race: a stale reapable play is claimed AFTER the reaper's
+    fresh re-read validated it stale but BEFORE the guarded write lands — set to
+    ``running`` with a refreshed ``updated_at`` (still a reapable status, so the
+    status-membership CAS alone would over-reap it). The ``expected_updated_at``
+    optimistic-lock guard pins the transition to the exact row version the
+    reaper validated, so the bumped ``updated_at`` makes the write match zero
+    rows and the live play is left untouched."""
+    db_path = tmp_path / "state.db"
+    _monkey_db(monkeypatch, db_path)
+
+    show_id = run_async(_seed_show(db_path))
+    play_id = run_async(
+        _seed_play(db_path, show_id, status="running", session_id=None, updated_at=_STALE)
+    )
+
+    import lionagi.state.db as state_db_mod
+
+    original_update_status = state_db_mod.StateDB.update_status
+    claimed = {"done": False}
+
+    async def _claim_then_update(self, entity_type, entity_id, **kwargs):
+        # Apply the claim on entry to update_status — i.e. after the reaper's
+        # re-read already observed the row as stale and reapable, in the window
+        # before the guarded write. Bumping updated_at must defeat the write.
+        if entity_type == "play" and entity_id == play_id and not claimed["done"]:
+            claimed["done"] = True
+            await self.execute(
+                "UPDATE plays SET status = 'running', updated_at = ? WHERE id = ?",
+                (time.time(), play_id),
+            )
+        return await original_update_status(self, entity_type, entity_id, **kwargs)
+
+    monkeypatch.setattr(state_db_mod.StateDB, "update_status", _claim_then_update)
+
+    from lionagi.studio.services.lifecycle import reap_stale_plays
+
+    count = run_async(reap_stale_plays(stale_hours=6.0))
+    assert count == 0
+
+    play = run_async(_get_play(db_path, play_id))
+    assert play["status"] == "running"
