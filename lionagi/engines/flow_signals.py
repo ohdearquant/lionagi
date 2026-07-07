@@ -32,7 +32,14 @@ __all__ = ("flow_progress_signals",)
 
 
 def _build_node_edge_meta(graph: Any) -> dict[str, dict]:
-    """Map each Operation node's id to its {parent_id, depends_on} from the graph edges."""
+    """Map each Operation node's id to its {parent_id, depends_on, name} from the graph.
+
+    ``name`` is the node's authored id (``metadata['reference_id']``) when set —
+    e.g. the Studio designer box id ``chat1`` — or None. It is preferred over the
+    executor-supplied callback name so every lifecycle signal (not just queued)
+    maps back to the authored DAG; the executor names started/completed/failed
+    after the branch, which need not match the authored id.
+    """
     from lionagi.operations.node import Operation
 
     meta: dict[str, dict] = {}
@@ -43,6 +50,7 @@ def _build_node_edge_meta(graph: Any) -> dict[str, dict]:
         meta[str(node.id)] = {
             "parent_id": preds[0] if len(preds) == 1 else None,
             "depends_on": preds,
+            "name": node.metadata.get("reference_id"),
         }
     return meta
 
@@ -69,16 +77,22 @@ async def flow_progress_signals(
         meta = node_edge_meta.get(op_id) or {}
         parent_id = meta.get("parent_id")
         depends_on = meta.get("depends_on", [])
+        # Prefer the authored node id so every lifecycle signal maps back to the
+        # designer DAG; fall back to the executor's callback name for nodes with
+        # no reference_id (e.g. an engine's own ops, or reactive spawns).
+        sig_name = meta.get("name") or name
         if status == "queued":
             sig: Any = NodeQueued(
-                op_id=op_id, name=name, parent_id=parent_id, depends_on=depends_on
+                op_id=op_id, name=sig_name, parent_id=parent_id, depends_on=depends_on
             )
         elif status == "started":
-            sig = NodeStarted(op_id=op_id, name=name, parent_id=parent_id, depends_on=depends_on)
+            sig = NodeStarted(
+                op_id=op_id, name=sig_name, parent_id=parent_id, depends_on=depends_on
+            )
         elif status == "completed":
             sig = NodeCompleted(
                 op_id=op_id,
-                name=name,
+                name=sig_name,
                 elapsed=elapsed,
                 parent_id=parent_id,
                 depends_on=depends_on,
@@ -86,7 +100,7 @@ async def flow_progress_signals(
         elif status == "failed":
             sig = NodeFailed(
                 op_id=op_id,
-                name=name,
+                name=sig_name,
                 elapsed=elapsed,
                 parent_id=parent_id,
                 depends_on=depends_on,

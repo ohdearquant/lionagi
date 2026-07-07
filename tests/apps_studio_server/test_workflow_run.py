@@ -215,13 +215,16 @@ async def test_workflow_run_persists_node_lifecycle_signals(patched_env, tmp_pat
         "every started node must also complete"
     )
 
-    # The queued signals name the authored ids (flow.py passes reference_id as
-    # the signal name), which is how the frontend maps a signal back to the box
-    # the human drew.
-    queued_names = {s["payload"].get("name") for s in signals if s["kind"] == "NodeQueued"}
-    assert {"chat1", "eng1"} <= queued_names, (
-        f"queued signals must carry authored node ids; got {queued_names}"
-    )
+    # EVERY lifecycle signal — not just queued — must name the authored ids, so
+    # a live/SSE consumer can map a started/completed row back to the box the
+    # human drew without waiting for the queued row. (The executor names
+    # started/completed after the branch; flow_progress_signals overrides it
+    # with the node's reference_id.)
+    for kind in ("NodeQueued", "NodeStarted", "NodeCompleted"):
+        names = {s["payload"].get("name") for s in signals if s["kind"] == kind}
+        assert {"chat1", "eng1"} <= names, (
+            f"{kind} signals must carry authored node ids; got {names}"
+        )
 
 
 async def test_cancelled_run_is_recorded_as_cancelled(patched_env, monkeypatch):
