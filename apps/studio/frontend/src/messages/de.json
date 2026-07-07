@@ -914,6 +914,7 @@
     "edgeConditionHint": "Wird beim Speichern oder Ausführen überprüft.",
     "edgeConditionWarning": "Möglicherweise kein gültiger Ausdruck – wird beim Speichern erneut geprüft.",
     "edgeConditionTarget": "→ {target}",
+    "edgeConditionInputUnsupported": "Bedingungen werden auf Kanten von einem Input-Knoten aus nicht unterstützt – leiten Sie über einen Zwischenknoten.",
     "noOutgoingEdges": "Keine ausgehenden Kanten",
     "kinds": {
       "input": "Eingabe",

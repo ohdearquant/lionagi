@@ -914,6 +914,7 @@
     "edgeConditionHint": "được kiểm tra khi lưu hoặc chạy.",
     "edgeConditionWarning": "có thể không phải là biểu thức hợp lệ — sẽ được kiểm tra lại khi lưu.",
     "edgeConditionTarget": "→ {target}",
+    "edgeConditionInputUnsupported": "không hỗ trợ điều kiện trên cạnh xuất phát từ node đầu vào — hãy định tuyến qua một node trung gian.",
     "noOutgoingEdges": "không có cạnh ra",
     "kinds": {
       "input": "đầu vào",

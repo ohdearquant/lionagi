@@ -92,6 +92,7 @@ export default function WorkflowNodeInspector({ nodeId, engineDefs }: Props) {
 
         <OutgoingEdgesInspector
           edges={state.spec.edges.filter((e) => e.from === nodeId)}
+          sourceIsInput={node.kind === "input"}
           patchEdge={patchEdge}
           t={t}
         />
@@ -152,10 +153,12 @@ function EngineInspector({
 
 function OutgoingEdgesInspector({
   edges,
+  sourceIsInput,
   patchEdge,
   t,
 }: {
   edges: WorkflowEdge[];
+  sourceIsInput: boolean;
   patchEdge: (edgeId: string, patch: Partial<Omit<WorkflowEdge, "id">>) => void;
   t: ReturnType<typeof useTranslations>;
 }) {
@@ -174,25 +177,36 @@ function OutgoingEdgesInspector({
                 {t("edgeConditionTarget", { target: edge.to })}
                 {edge.label ? ` (${edge.label})` : ""}
               </span>
-              <input
-                type="text"
-                value={condition}
-                onChange={(e) => {
-                  if (e.nativeEvent instanceof InputEvent && e.nativeEvent.isComposing) return;
-                  patchEdge(edge.id, { condition: e.target.value });
-                }}
-                onKeyDown={(e) => {
-                  if (e.nativeEvent.isComposing) return;
-                }}
-                placeholder={t("edgeConditionPlaceholder")}
-                className="rounded border border-edge bg-surface-overlay px-2 py-1 font-data text-[length:var(--t-sm)] text-content-primary focus:outline-none focus:ring-1 focus:ring-accent"
-              />
-              <span
-                className="text-[length:var(--t-xs)]"
-                style={{ color: invalid ? "var(--status-warning)" : "var(--content-muted)" }}
-              >
-                {invalid ? t("edgeConditionWarning") : t("edgeConditionHint")}
-              </span>
+              {sourceIsInput ? (
+                // An edge from an input node carries no runtime gate — the
+                // compiler rejects a condition on it. Explain instead of
+                // offering an input that always fails on save.
+                <span className="text-[length:var(--t-xs)] text-content-muted">
+                  {t("edgeConditionInputUnsupported")}
+                </span>
+              ) : (
+                <>
+                  <input
+                    type="text"
+                    value={condition}
+                    onChange={(e) => {
+                      if (e.nativeEvent instanceof InputEvent && e.nativeEvent.isComposing) return;
+                      patchEdge(edge.id, { condition: e.target.value });
+                    }}
+                    onKeyDown={(e) => {
+                      if (e.nativeEvent.isComposing) return;
+                    }}
+                    placeholder={t("edgeConditionPlaceholder")}
+                    className="rounded border border-edge bg-surface-overlay px-2 py-1 font-data text-[length:var(--t-sm)] text-content-primary focus:outline-none focus:ring-1 focus:ring-accent"
+                  />
+                  <span
+                    className="text-[length:var(--t-xs)]"
+                    style={{ color: invalid ? "var(--status-warning)" : "var(--content-muted)" }}
+                  >
+                    {invalid ? t("edgeConditionWarning") : t("edgeConditionHint")}
+                  </span>
+                </>
+              )}
             </div>
           );
         })

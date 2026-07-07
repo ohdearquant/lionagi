@@ -914,6 +914,7 @@
     "edgeConditionHint": "Validated against the workflow grammar on save or run.",
     "edgeConditionWarning": "May not be a valid expression — checked again on save.",
     "edgeConditionTarget": "→ {target}",
+    "edgeConditionInputUnsupported": "Conditions aren't supported on edges from an input node — gate through an intermediate node.",
     "noOutgoingEdges": "No outgoing edges",
     "kinds": {
       "input": "Input",

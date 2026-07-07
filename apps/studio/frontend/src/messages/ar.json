@@ -914,6 +914,7 @@
     "edgeConditionHint": "يتم التحقق منه عند الحفظ أو التشغيل.",
     "edgeConditionWarning": "قد لا يكون تعبيرًا صالحًا — سيتم التحقق منه مرة أخرى عند الحفظ.",
     "edgeConditionTarget": "→ {target}",
+    "edgeConditionInputUnsupported": "لا تُدعم الشروط على الحواف الصادرة من عقدة إدخال — وجّه التدفق عبر عقدة وسيطة.",
     "noOutgoingEdges": "لا توجد حواف صادرة",
     "kinds": {
       "input": "إدخال",

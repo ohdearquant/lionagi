@@ -914,6 +914,7 @@
     "edgeConditionHint": "保存或运行时会校验该表达式的语法。",
     "edgeConditionWarning": "可能不是有效表达式，保存时会再次校验。",
     "edgeConditionTarget": "→ {target}",
+    "edgeConditionInputUnsupported": "来自输入节点的边不支持条件——请通过中间节点进行分支控制。",
     "noOutgoingEdges": "无出边",
     "kinds": {
       "input": "输入",

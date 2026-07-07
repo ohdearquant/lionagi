@@ -914,6 +914,7 @@
     "edgeConditionHint": "সংরক্ষণ বা চালানোর সময় এটি যাচাই করা হয়।",
     "edgeConditionWarning": "এটি একটি বৈধ এক্সপ্রেশন নাও হতে পারে — সংরক্ষণের সময় আবার যাচাই করা হবে।",
     "edgeConditionTarget": "→ {target}",
+    "edgeConditionInputUnsupported": "ইনপুট নোড থেকে আসা এজে শর্ত সমর্থিত নয় — একটি মধ্যবর্তী নোডের মাধ্যমে গেট করুন।",
     "noOutgoingEdges": "কোনো আউটগোয়িং এজ নেই",
     "kinds": {
       "input": "ইনপুট",

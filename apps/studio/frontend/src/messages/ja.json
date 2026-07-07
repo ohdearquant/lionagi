@@ -914,6 +914,7 @@
     "edgeConditionHint": "保存または実行時に構文が検証されます。",
     "edgeConditionWarning": "式が正しくない可能性があります。保存時に再度検証されます。",
     "edgeConditionTarget": "→ {target}",
+    "edgeConditionInputUnsupported": "入力ノードから出るエッジには条件を設定できません。中間ノードを介して分岐してください。",
     "noOutgoingEdges": "出力エッジがありません",
     "kinds": {
       "input": "入力",

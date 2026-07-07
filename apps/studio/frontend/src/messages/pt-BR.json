@@ -914,6 +914,7 @@
     "edgeConditionHint": "Validado ao salvar ou executar.",
     "edgeConditionWarning": "Pode não ser uma expressão válida — será verificada novamente ao salvar.",
     "edgeConditionTarget": "→ {target}",
+    "edgeConditionInputUnsupported": "Condições não são suportadas em arestas que partem de um nó de entrada — direcione por um nó intermediário.",
     "noOutgoingEdges": "Nenhuma aresta de saída",
     "kinds": {
       "input": "Entrada",

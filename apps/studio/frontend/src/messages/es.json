@@ -914,6 +914,7 @@
     "edgeConditionHint": "Se valida al guardar o ejecutar.",
     "edgeConditionWarning": "Puede que no sea una expresión válida — se volverá a comprobar al guardar.",
     "edgeConditionTarget": "→ {target}",
+    "edgeConditionInputUnsupported": "Las condiciones no son compatibles en aristas que parten de un nodo de entrada — enruta a través de un nodo intermedio.",
     "noOutgoingEdges": "Sin aristas salientes",
     "kinds": {
       "input": "Entrada",
