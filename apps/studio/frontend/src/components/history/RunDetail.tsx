@@ -2,8 +2,8 @@
  * RunDetail — run detail pane (DESIGN-SYSTEM §4 master-detail).
  *
  * Renders the full run content inline: summary grid, branches, errors, files,
- * events. Used both as the history detail pane and as the content of the
- * /runs/$id full-page route. Caller is responsible for scroll context.
+ * events. Used as the Fleet split-pane detail; the caller (SessionDetail) owns
+ * the scroll container.
  */
 
 import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
@@ -635,15 +635,9 @@ function EventsSection({ events, live }: { events: SignalEvent[]; live: boolean 
 export interface RunDetailProps {
   /** Session ID to load. */
   id: string;
-  /**
-   * When true, renders the full-page chrome (sticky header with back link,
-   * session sidebar, SectionNav). When false (history pane mode), renders
-   * content only in a scrollable column with a compact header.
-   */
-  fullPage?: boolean;
 }
 
-export default function RunDetail({ id, fullPage = false }: RunDetailProps) {
+export default function RunDetail({ id }: RunDetailProps) {
   const t = useTranslations("history.detail");
   const [session, setSession] = useState<SessionDetail | null>(null);
   const [runGraph, setRunGraph] = useState<WorkerGraph | null>(null);
@@ -799,11 +793,11 @@ export default function RunDetail({ id, fullPage = false }: RunDetailProps) {
     }
     // Scroll to the newest message once when a session first loads; polling
     // refreshes must not yank the operator's scroll position.
-    if (fullPage && session && !initialScrollDoneRef.current) {
+    if (session && !initialScrollDoneRef.current) {
       initialScrollDoneRef.current = true;
       bottomRef.current?.scrollIntoView({ behavior: "smooth" });
     }
-  }, [session, fullPage]);
+  }, [session]);
 
   const handleToggleExpand = useCallback((stepId: string, next: boolean) => {
     setExpandedSteps((prev) => {
@@ -1100,11 +1094,5 @@ export default function RunDetail({ id, fullPage = false }: RunDetailProps) {
     </div>
   );
 
-  if (fullPage) {
-    return content;
-  }
-
-  return (
-    <div className="flex h-full min-h-0 flex-col overflow-y-auto bg-surface-base">{content}</div>
-  );
+  return content;
 }

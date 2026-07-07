@@ -16,11 +16,16 @@ import { Route as DesignerRouteImport } from "./routes/designer";
 import { Route as IndexRouteImport } from "./routes/index";
 import { Route as SkillsIndexRouteImport } from "./routes/skills/index";
 import { Route as SchedulesIndexRouteImport } from "./routes/schedules/index";
+import { Route as RunsIndexRouteImport } from "./routes/runs/index";
 import { Route as PluginsIndexRouteImport } from "./routes/plugins/index";
+import { Route as PlayfieldIndexRouteImport } from "./routes/playfield/index";
 import { Route as PlaybooksIndexRouteImport } from "./routes/playbooks/index";
 import { Route as KanbanIndexRouteImport } from "./routes/kanban/index";
+import { Route as InvocationsIndexRouteImport } from "./routes/invocations/index";
 import { Route as EnginesIndexRouteImport } from "./routes/engines/index";
 import { Route as AdminIndexRouteImport } from "./routes/admin/index";
+import { Route as RunsIdRouteImport } from "./routes/runs/$id";
+import { Route as InvocationsIdRouteImport } from "./routes/invocations/$id";
 import { Route as PlaybooksNewIndexRouteImport } from "./routes/playbooks/new/index";
 import { Route as PlaybooksNameIndexRouteImport } from "./routes/playbooks/$name/index";
 import { Route as AdminMaintenanceIndexRouteImport } from "./routes/admin/maintenance/index";
@@ -62,9 +67,19 @@ const SchedulesIndexRoute = SchedulesIndexRouteImport.update({
   path: "/schedules/",
   getParentRoute: () => rootRouteImport,
 } as any);
+const RunsIndexRoute = RunsIndexRouteImport.update({
+  id: "/runs/",
+  path: "/runs/",
+  getParentRoute: () => rootRouteImport,
+} as any);
 const PluginsIndexRoute = PluginsIndexRouteImport.update({
   id: "/plugins/",
   path: "/plugins/",
+  getParentRoute: () => rootRouteImport,
+} as any);
+const PlayfieldIndexRoute = PlayfieldIndexRouteImport.update({
+  id: "/playfield/",
+  path: "/playfield/",
   getParentRoute: () => rootRouteImport,
 } as any);
 const PlaybooksIndexRoute = PlaybooksIndexRouteImport.update({
@@ -77,6 +92,11 @@ const KanbanIndexRoute = KanbanIndexRouteImport.update({
   path: "/kanban/",
   getParentRoute: () => rootRouteImport,
 } as any);
+const InvocationsIndexRoute = InvocationsIndexRouteImport.update({
+  id: "/invocations/",
+  path: "/invocations/",
+  getParentRoute: () => rootRouteImport,
+} as any);
 const EnginesIndexRoute = EnginesIndexRouteImport.update({
   id: "/engines/",
   path: "/engines/",
@@ -85,6 +105,16 @@ const EnginesIndexRoute = EnginesIndexRouteImport.update({
 const AdminIndexRoute = AdminIndexRouteImport.update({
   id: "/admin/",
   path: "/admin/",
+  getParentRoute: () => rootRouteImport,
+} as any);
+const RunsIdRoute = RunsIdRouteImport.update({
+  id: "/runs/$id",
+  path: "/runs/$id",
+  getParentRoute: () => rootRouteImport,
+} as any);
+const InvocationsIdRoute = InvocationsIdRouteImport.update({
+  id: "/invocations/$id",
+  path: "/invocations/$id",
   getParentRoute: () => rootRouteImport,
 } as any);
 const PlaybooksNewIndexRoute = PlaybooksNewIndexRouteImport.update({
@@ -119,11 +149,16 @@ export interface FileRoutesByFullPath {
   "/fleet": typeof FleetRoute;
   "/library": typeof LibraryRoute;
   "/system": typeof SystemRoute;
+  "/invocations/$id": typeof InvocationsIdRoute;
+  "/runs/$id": typeof RunsIdRoute;
   "/admin/": typeof AdminIndexRoute;
   "/engines/": typeof EnginesIndexRoute;
+  "/invocations/": typeof InvocationsIndexRoute;
   "/kanban/": typeof KanbanIndexRoute;
   "/playbooks/": typeof PlaybooksIndexRoute;
+  "/playfield/": typeof PlayfieldIndexRoute;
   "/plugins/": typeof PluginsIndexRoute;
+  "/runs/": typeof RunsIndexRoute;
   "/schedules/": typeof SchedulesIndexRoute;
   "/skills/": typeof SkillsIndexRoute;
   "/admin/health/": typeof AdminHealthIndexRoute;
@@ -138,11 +173,16 @@ export interface FileRoutesByTo {
   "/fleet": typeof FleetRoute;
   "/library": typeof LibraryRoute;
   "/system": typeof SystemRoute;
+  "/invocations/$id": typeof InvocationsIdRoute;
+  "/runs/$id": typeof RunsIdRoute;
   "/admin": typeof AdminIndexRoute;
   "/engines": typeof EnginesIndexRoute;
+  "/invocations": typeof InvocationsIndexRoute;
   "/kanban": typeof KanbanIndexRoute;
   "/playbooks": typeof PlaybooksIndexRoute;
+  "/playfield": typeof PlayfieldIndexRoute;
   "/plugins": typeof PluginsIndexRoute;
+  "/runs": typeof RunsIndexRoute;
   "/schedules": typeof SchedulesIndexRoute;
   "/skills": typeof SkillsIndexRoute;
   "/admin/health": typeof AdminHealthIndexRoute;
@@ -158,11 +198,16 @@ export interface FileRoutesById {
   "/fleet": typeof FleetRoute;
   "/library": typeof LibraryRoute;
   "/system": typeof SystemRoute;
+  "/invocations/$id": typeof InvocationsIdRoute;
+  "/runs/$id": typeof RunsIdRoute;
   "/admin/": typeof AdminIndexRoute;
   "/engines/": typeof EnginesIndexRoute;
+  "/invocations/": typeof InvocationsIndexRoute;
   "/kanban/": typeof KanbanIndexRoute;
   "/playbooks/": typeof PlaybooksIndexRoute;
+  "/playfield/": typeof PlayfieldIndexRoute;
   "/plugins/": typeof PluginsIndexRoute;
+  "/runs/": typeof RunsIndexRoute;
   "/schedules/": typeof SchedulesIndexRoute;
   "/skills/": typeof SkillsIndexRoute;
   "/admin/health/": typeof AdminHealthIndexRoute;
@@ -179,11 +224,16 @@ export interface FileRouteTypes {
     | "/fleet"
     | "/library"
     | "/system"
+    | "/invocations/$id"
+    | "/runs/$id"
     | "/admin/"
     | "/engines/"
+    | "/invocations/"
     | "/kanban/"
     | "/playbooks/"
+    | "/playfield/"
     | "/plugins/"
+    | "/runs/"
     | "/schedules/"
     | "/skills/"
     | "/admin/health/"
@@ -198,11 +248,16 @@ export interface FileRouteTypes {
     | "/fleet"
     | "/library"
     | "/system"
+    | "/invocations/$id"
+    | "/runs/$id"
     | "/admin"
     | "/engines"
+    | "/invocations"
     | "/kanban"
     | "/playbooks"
+    | "/playfield"
     | "/plugins"
+    | "/runs"
     | "/schedules"
     | "/skills"
     | "/admin/health"
@@ -217,11 +272,16 @@ export interface FileRouteTypes {
     | "/fleet"
     | "/library"
     | "/system"
+    | "/invocations/$id"
+    | "/runs/$id"
     | "/admin/"
     | "/engines/"
+    | "/invocations/"
     | "/kanban/"
     | "/playbooks/"
+    | "/playfield/"
     | "/plugins/"
+    | "/runs/"
     | "/schedules/"
     | "/skills/"
     | "/admin/health/"
@@ -237,11 +297,16 @@ export interface RootRouteChildren {
   FleetRoute: typeof FleetRoute;
   LibraryRoute: typeof LibraryRoute;
   SystemRoute: typeof SystemRoute;
+  InvocationsIdRoute: typeof InvocationsIdRoute;
+  RunsIdRoute: typeof RunsIdRoute;
   AdminIndexRoute: typeof AdminIndexRoute;
   EnginesIndexRoute: typeof EnginesIndexRoute;
+  InvocationsIndexRoute: typeof InvocationsIndexRoute;
   KanbanIndexRoute: typeof KanbanIndexRoute;
   PlaybooksIndexRoute: typeof PlaybooksIndexRoute;
+  PlayfieldIndexRoute: typeof PlayfieldIndexRoute;
   PluginsIndexRoute: typeof PluginsIndexRoute;
+  RunsIndexRoute: typeof RunsIndexRoute;
   SchedulesIndexRoute: typeof SchedulesIndexRoute;
   SkillsIndexRoute: typeof SkillsIndexRoute;
   AdminHealthIndexRoute: typeof AdminHealthIndexRoute;
@@ -302,11 +367,25 @@ declare module "@tanstack/react-router" {
       preLoaderRoute: typeof SchedulesIndexRouteImport;
       parentRoute: typeof rootRouteImport;
     };
+    "/runs/": {
+      id: "/runs/";
+      path: "/runs";
+      fullPath: "/runs/";
+      preLoaderRoute: typeof RunsIndexRouteImport;
+      parentRoute: typeof rootRouteImport;
+    };
     "/plugins/": {
       id: "/plugins/";
       path: "/plugins";
       fullPath: "/plugins/";
       preLoaderRoute: typeof PluginsIndexRouteImport;
+      parentRoute: typeof rootRouteImport;
+    };
+    "/playfield/": {
+      id: "/playfield/";
+      path: "/playfield";
+      fullPath: "/playfield/";
+      preLoaderRoute: typeof PlayfieldIndexRouteImport;
       parentRoute: typeof rootRouteImport;
     };
     "/playbooks/": {
@@ -323,6 +402,13 @@ declare module "@tanstack/react-router" {
       preLoaderRoute: typeof KanbanIndexRouteImport;
       parentRoute: typeof rootRouteImport;
     };
+    "/invocations/": {
+      id: "/invocations/";
+      path: "/invocations";
+      fullPath: "/invocations/";
+      preLoaderRoute: typeof InvocationsIndexRouteImport;
+      parentRoute: typeof rootRouteImport;
+    };
     "/engines/": {
       id: "/engines/";
       path: "/engines";
@@ -335,6 +421,20 @@ declare module "@tanstack/react-router" {
       path: "/admin";
       fullPath: "/admin/";
       preLoaderRoute: typeof AdminIndexRouteImport;
+      parentRoute: typeof rootRouteImport;
+    };
+    "/runs/$id": {
+      id: "/runs/$id";
+      path: "/runs/$id";
+      fullPath: "/runs/$id";
+      preLoaderRoute: typeof RunsIdRouteImport;
+      parentRoute: typeof rootRouteImport;
+    };
+    "/invocations/$id": {
+      id: "/invocations/$id";
+      path: "/invocations/$id";
+      fullPath: "/invocations/$id";
+      preLoaderRoute: typeof InvocationsIdRouteImport;
       parentRoute: typeof rootRouteImport;
     };
     "/playbooks/new/": {
@@ -381,11 +481,16 @@ const rootRouteChildren: RootRouteChildren = {
   FleetRoute: FleetRoute,
   LibraryRoute: LibraryRoute,
   SystemRoute: SystemRoute,
+  InvocationsIdRoute: InvocationsIdRoute,
+  RunsIdRoute: RunsIdRoute,
   AdminIndexRoute: AdminIndexRoute,
   EnginesIndexRoute: EnginesIndexRoute,
+  InvocationsIndexRoute: InvocationsIndexRoute,
   KanbanIndexRoute: KanbanIndexRoute,
   PlaybooksIndexRoute: PlaybooksIndexRoute,
+  PlayfieldIndexRoute: PlayfieldIndexRoute,
   PluginsIndexRoute: PluginsIndexRoute,
+  RunsIndexRoute: RunsIndexRoute,
   SchedulesIndexRoute: SchedulesIndexRoute,
   SkillsIndexRoute: SkillsIndexRoute,
   AdminHealthIndexRoute: AdminHealthIndexRoute,
