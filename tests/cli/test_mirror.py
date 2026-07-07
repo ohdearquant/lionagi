@@ -304,6 +304,108 @@ async def test_reconcile_idle_session_stays_completed_across_passes(temp_db_path
 
 
 @pytest.mark.asyncio
+async def test_reconcile_reactivates_cancelled_terminal_when_fresh(temp_db_path: Path) -> None:
+    # A mirror session independently marked "cancelled" (or any non-"completed"
+    # terminal status) must reactivate to "running" the same way a dormant
+    # "completed" one does, instead of raising the ADR-0094 terminal-status
+    # floor as an ordinary, unguarded transition attempt would.
+    async with StateDB() as db:
+        await mirror_session(
+            db, session_uid=SID, events=_conversation(), tool_names={}, status="running"
+        )
+        before = await db.get_session(session_db_id(SID))
+        await db.update_status(
+            "session",
+            session_db_id(SID),
+            new_status="cancelled",
+            reason_code="run.cancelled.system",
+            source="admin",
+            actor="test",
+        )
+        cancelled = await db.get_session(session_db_id(SID))
+        # "now" within the live window of the last message -> reactivate to running.
+        await reconcile_session_status(
+            db, SID, now=cancelled["last_message_at"] + 1, live_window=300
+        )
+        after = await db.get_session(session_db_id(SID))
+    assert before["status"] == "running"
+    assert cancelled["status"] == "cancelled"
+    assert after["status"] == "running"
+
+
+@pytest.mark.asyncio
+async def test_one_pass_non_completed_terminal_reactivation_does_not_crash(
+    temp_db_path: Path, tmp_path: Path
+) -> None:
+    # The CLI's per-tail-pass loop must not propagate a TransitionRejectedError
+    # out of _one_pass() when a live mirror session sits on a non-"completed"
+    # terminal status (e.g. independently marked "failed" or "cancelled").
+    root = tmp_path / "projects"
+    uid = "dddddddd-0000-0000-0000-00000000000d"
+    async with StateDB() as db:
+        await mirror_session(
+            db, session_uid=uid, events=_conversation(), tool_names={}, status="running"
+        )
+        await db.update_status(
+            "session",
+            session_db_id(uid),
+            new_status="failed",
+            reason_code="run.failed.exception",
+            source="admin",
+            actor="test",
+        )
+        _write_session_file(root / "-w-proj" / f"{uid}.jsonl", uid, age_secs=5)
+        await _one_pass(db, root, {}, {}, since=None, live_window=300)
+        row = await db.get_session(session_db_id(uid))
+    assert row["status"] == "running"
+
+
+@pytest.mark.asyncio
+async def test_one_pass_terminal_reactivation_does_not_skip_later_uid_or_lineage(
+    temp_db_path: Path, tmp_path: Path
+) -> None:
+    # A live, non-"completed" terminal session reconciled earlier in the same
+    # pass must not abort the loop before it reaches lineage resolution for an
+    # unrelated pair of sessions processed in the same pass.
+    root = tmp_path / "projects"
+    terminal_uid = "eeeeeeee-0000-0000-0000-00000000000e"
+    a, b = "aaaaaaaa-1111-0000-0000-000000000001", "bbbbbbbb-1111-0000-0000-000000000002"
+    async with StateDB() as db:
+        await mirror_session(
+            db, session_uid=terminal_uid, events=_conversation(), tool_names={}, status="running"
+        )
+        await db.update_status(
+            "session",
+            session_db_id(terminal_uid),
+            new_status="cancelled",
+            reason_code="run.cancelled.system",
+            source="admin",
+            actor="test",
+        )
+        _write_session_file(root / "-w-proj" / f"{terminal_uid}.jsonl", terminal_uid, age_secs=5)
+        _write_lineage_file(
+            root / "-w-proj" / f"{a}.jsonl",
+            [
+                _lineage_event(a, "a-1", None, "user", "start the work"),
+                _lineage_event(a, "a-leaf", "a-1", "assistant", "done, ending here"),
+            ],
+        )
+        _write_lineage_file(
+            root / "-w-proj" / f"{b}.jsonl",
+            [
+                _lineage_event(b, "b-1", "a-leaf", "user", "continuing from before"),
+                _lineage_event(b, "b-2", "b-1", "assistant", "picking it up"),
+            ],
+        )
+        await _one_pass(db, root, {}, {}, since=None, live_window=300)
+        terminal_row = await db.get_session(session_db_id(terminal_uid))
+        child = await db.get_session(session_db_id(b))
+    assert terminal_row["status"] == "running"
+    lineage = child["node_metadata"]["lineage"]
+    assert lineage["parent_session_uid"] == a
+
+
+@pytest.mark.asyncio
 async def test_mirror_session_repairs_partial_scaffold(
     temp_db_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

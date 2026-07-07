@@ -785,6 +785,45 @@ class SchedulerEngine:
             global_slot_claim=slot_claim,
         )
 
+    async def _guarded_terminal_status(
+        self,
+        entity_type: str,
+        entity_id: str,
+        *,
+        new_status: str,
+        reason_code: str,
+        reason_summary: str,
+        evidence_refs: list[dict],
+        source: str,
+        actor: str,
+        metadata: dict | None = None,
+    ) -> bool:
+        """Write a terminal ``schedule_run``/``invocation`` status without
+        crashing (or losing follow-on side effects) when the row is already
+        terminal — a concurrent writer (e.g. the deadline reaper) may have
+        finalized it first. Guarded on the row still being ``running``, so a
+        lost race is a checked no-op rather than a raised exception.
+        """
+        written = await self._svc.update_status(
+            entity_type,
+            entity_id,
+            new_status=new_status,
+            reason_code=reason_code,
+            reason_summary=reason_summary,
+            evidence_refs=evidence_refs,
+            source=source,
+            actor=actor,
+            metadata=metadata,
+            expected_statuses={"running"},
+        )
+        if not written:
+            _log.debug(
+                "%s %s already finalized; continuing scheduler side effects",
+                entity_type,
+                entity_id,
+            )
+        return written
+
     async def _check_max_runs(self, schedule: dict, chain_depth: int) -> None:
         """Auto-disable a schedule once its fired top-level runs hit max_runs.
 
@@ -934,7 +973,7 @@ class SchedulerEngine:
                 self._svc, inv_id, fallback_status="failed", exception=exc
             )
             await self._svc.update_invocation(inv_id, ended_at=_end_time)
-            await self._svc.update_status(
+            await self._guarded_terminal_status(
                 "invocation",
                 inv_id,
                 new_status=inv_status,
@@ -1016,7 +1055,7 @@ class SchedulerEngine:
                 ended_at=end_time,
                 error_detail=stderr_tail if exit_code != 0 else None,
             )
-            await self._svc.update_status(
+            await self._guarded_terminal_status(
                 "schedule_run",
                 run_id,
                 new_status=status,
@@ -1031,7 +1070,7 @@ class SchedulerEngine:
                 self._svc, inv_id, fallback_status=status, exit_code=exit_code
             )
             await self._svc.update_invocation(inv_id, ended_at=end_time)
-            await self._svc.update_status(
+            await self._guarded_terminal_status(
                 "invocation",
                 inv_id,
                 new_status=inv_status,
@@ -1088,17 +1127,22 @@ class SchedulerEngine:
                     run_id,
                     ended_at=_end_time,
                     error_detail="Scheduler shutdown",
+                )
+                await self._guarded_terminal_status(
+                    "schedule_run",
+                    run_id,
+                    new_status="cancelled",
                     reason_code=RunReasons.CANCELLED_SYSTEM,
-                    status="cancelled",
                     reason_summary="Schedule run cancelled by scheduler shutdown.",
                     evidence_refs=[{"kind": "schedule", "id": sid}],
-                    reason_actor=run_id,
+                    source="executor",
+                    actor=run_id,
                 )
                 inv_status, inv_rc, inv_rs, inv_ev, inv_meta = await resolve_invocation_terminal(
                     self._svc, inv_id, fallback_status="cancelled"
                 )
                 await self._svc.update_invocation(inv_id, ended_at=_end_time)
-                await self._svc.update_status(
+                await self._guarded_terminal_status(
                     "invocation",
                     inv_id,
                     new_status=inv_status,
@@ -1121,7 +1165,7 @@ class SchedulerEngine:
                 ended_at=_end_time,
                 error_detail="Internal scheduler error",
             )
-            await self._svc.update_status(
+            await self._guarded_terminal_status(
                 "schedule_run",
                 run_id,
                 new_status="failed",
@@ -1136,7 +1180,7 @@ class SchedulerEngine:
                 self._svc, inv_id, fallback_status="failed", exception=exc
             )
             await self._svc.update_invocation(inv_id, ended_at=_end_time)
-            await self._svc.update_status(
+            await self._guarded_terminal_status(
                 "invocation",
                 inv_id,
                 new_status=inv_status,
