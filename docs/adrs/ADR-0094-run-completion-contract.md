@@ -122,6 +122,17 @@ ranked backlog items — the completion verb must not ship without them holding:
   interleave a stale status over a newer terminal one; the write path must guard on the
   current status it believes it is transitioning from.
 
+  The status compare-and-set (the write UPDATE re-asserts `previous_status`) guards on status
+  alone. That is insufficient when the same status is both a legitimate live state and a
+  sweepable one — e.g. a reaper cannot distinguish a `running` row that is stale-and-dead from
+  one just re-claimed and live, since both are `running`. For that case `update_status` accepts
+  an optional keyword-only `expected_updated_at`: when supplied, the guarded UPDATE also
+  requires `updated_at` to still equal the caller's snapshot (an optimistic-lock version check
+  in the same transactional write, mirroring the `previous_status` CAS). A concurrent writer
+  bumps `updated_at`, so the guarded write matches zero rows and the transition is skipped —
+  returning `False`, distinct from the storage-anomaly `RuntimeError` the no-guard path raises.
+  Additive and byte-identical when omitted; existing callers are unaffected.
+
 ### 5. Compatibility
 
 Additive only. The new verb introduces no breaking change to any existing command, output

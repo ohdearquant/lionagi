@@ -35,6 +35,7 @@ function orderedSpec(spec: WorkflowSpec): Record<string, unknown> {
       from: e.from,
       to: e.to,
       ...(e.label ? { label: e.label } : {}),
+      ...(e.condition && e.condition.trim() ? { condition: e.condition } : {}),
     })),
     inputs: spec.inputs,
     outputs: spec.outputs,
@@ -123,6 +124,7 @@ export function coerceSpec(data: unknown): ParseResult {
       from,
       to,
       ...(typeof e.label === "string" && e.label ? { label: e.label } : {}),
+      ...(typeof e.condition === "string" && e.condition.trim() ? { condition: e.condition } : {}),
     });
   }
 

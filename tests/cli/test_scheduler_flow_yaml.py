@@ -527,3 +527,55 @@ def test_update_schedule_rejects_patch_with_malformed_yaml():
             mock_db.update_schedule.assert_not_called()
 
     asyncio.run(_run())
+
+
+def test_create_schedule_github_poll_requires_repo():
+    """create_schedule raises ValueError when a github_poll trigger has no github_repo.
+
+    Mirrors the cron/interval required-field guards — the check fires before any
+    DB write, so no state fixture is needed."""
+    import asyncio
+
+    from lionagi.studio.services.schedules import create_schedule
+
+    data = {
+        "name": "gh-no-repo",
+        "trigger_type": "github_poll",
+        "action_kind": "agent",
+        "action_prompt": "review",
+        # github_repo intentionally absent
+    }
+
+    async def _run():
+        await create_schedule(data)
+
+    try:
+        asyncio.run(_run())
+        raise AssertionError("Should have raised ValueError")
+    except ValueError as exc:
+        assert "github_repo" in str(exc)
+
+
+def test_create_schedule_rejects_non_positive_poll_interval():
+    """create_schedule raises ValueError when poll_interval_sec < 1 (fires pre-DB-write)."""
+    import asyncio
+
+    from lionagi.studio.services.schedules import create_schedule
+
+    data = {
+        "name": "gh-bad-poll",
+        "trigger_type": "github_poll",
+        "github_repo": "owner/name",
+        "poll_interval_sec": -1,
+        "action_kind": "agent",
+        "action_prompt": "review",
+    }
+
+    async def _run():
+        await create_schedule(data)
+
+    try:
+        asyncio.run(_run())
+        raise AssertionError("Should have raised ValueError")
+    except ValueError as exc:
+        assert "poll_interval_sec" in str(exc)

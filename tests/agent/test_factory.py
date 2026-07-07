@@ -351,12 +351,20 @@ async def test_agent_post_hooks_ignore_non_dict_results_and_keep_previous_result
 
 
 # ---------------------------------------------------------------------------
-# model spec without "/" — provider = model_name = ms.model (line 75)
+# model spec without "/" — provider resolves from settings default, not the
+# bare model string (a bare model used to become its own garbage provider,
+# which construction never rejected — it silently fell through to a generic
+# Endpoint and only failed later with a missing-API-key error).
 # ---------------------------------------------------------------------------
 
 
-async def test_create_agent_model_without_slash_uses_model_as_provider(monkeypatch):
+async def test_create_agent_model_without_slash_uses_settings_default_provider(monkeypatch):
+    import lionagi.config as config_mod
     import lionagi.service.imodel as imodel_mod
+
+    monkeypatch.setattr(
+        config_mod, "settings", config_mod.AppSettings(LIONAGI_CHAT_PROVIDER="anthropic")
+    )
 
     captured = {}
     real_init = imodel_mod.iModel.__init__
@@ -370,8 +378,48 @@ async def test_create_agent_model_without_slash_uses_model_as_provider(monkeypat
     config = AgentSpec.compose("implementer", model="gpt-4o")
     await create_agent(config, load_settings=False)
 
-    assert captured.get("provider") == "gpt-4o"
+    assert captured.get("provider") == "anthropic"
     assert captured.get("model") == "gpt-4o"
+
+
+async def test_create_agent_model_with_slash_provider_unchanged(monkeypatch):
+    import lionagi.service.imodel as imodel_mod
+
+    captured = {}
+    real_init = imodel_mod.iModel.__init__
+
+    def spy_init(self, *args, **kwargs):
+        captured.update(kwargs)
+        real_init(self, *args, **kwargs)
+
+    monkeypatch.setattr(imodel_mod.iModel, "__init__", spy_init)
+
+    config = AgentSpec.compose("implementer", model="anthropic/claude-sonnet-4")
+    await create_agent(config, load_settings=False)
+
+    assert captured.get("provider") == "anthropic"
+    assert captured.get("model") == "claude-sonnet-4"
+
+
+async def test_create_agent_backends_alias_unaffected(monkeypatch):
+    """BACKENDS aliases (e.g. 'claude') are already expanded to provider/model by
+    parse_model_spec, so they keep hitting the '/' branch untouched."""
+    import lionagi.service.imodel as imodel_mod
+
+    captured = {}
+    real_init = imodel_mod.iModel.__init__
+
+    def spy_init(self, *args, **kwargs):
+        captured.update(kwargs)
+        real_init(self, *args, **kwargs)
+
+    monkeypatch.setattr(imodel_mod.iModel, "__init__", spy_init)
+
+    config = AgentSpec.compose("implementer", model="claude")
+    await create_agent(config, load_settings=False)
+
+    assert captured.get("provider") == "claude_code"
+    assert captured.get("model") == "sonnet"
 
 
 # ---------------------------------------------------------------------------

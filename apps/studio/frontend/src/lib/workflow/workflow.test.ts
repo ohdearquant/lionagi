@@ -387,6 +387,48 @@ describe("workflowDraftReducer — addEdge", () => {
   });
 });
 
+describe("workflowDraftReducer — patchEdge", () => {
+  it("sets a condition on the matching edge", () => {
+    const spec = makeSpec({
+      edges: [edge("e1", "n1", "n2"), edge("e2", "n2", "n1")],
+    });
+    const state = initialState(spec);
+    const next = workflowDraftReducer(state, {
+      type: "patchEdge",
+      edgeId: "e1",
+      patch: { condition: 'verdict == "APPROVE"' },
+    });
+    expect(next.spec.edges.find((e) => e.id === "e1")?.condition).toBe('verdict == "APPROVE"');
+    expect(next.dirty).toBe(true);
+  });
+
+  it("clears a condition when patched with a blank string", () => {
+    const spec = makeSpec({
+      edges: [{ ...edge("e1", "n1", "n2"), condition: "x > 0" }],
+    });
+    const state = initialState(spec);
+    const next = workflowDraftReducer(state, {
+      type: "patchEdge",
+      edgeId: "e1",
+      patch: { condition: "   " },
+    });
+    expect(next.spec.edges.find((e) => e.id === "e1")?.condition).toBeUndefined();
+  });
+
+  it("does not affect other edges", () => {
+    const spec = makeSpec({
+      edges: [edge("e1", "n1", "n2"), edge("e2", "n2", "n1")],
+    });
+    const state = initialState(spec);
+    const next = workflowDraftReducer(state, {
+      type: "patchEdge",
+      edgeId: "e1",
+      patch: { condition: "x > 0" },
+    });
+    expect(next.spec.edges.find((e) => e.id === "e2")?.condition).toBeUndefined();
+  });
+});
+
 describe("workflowDraftReducer — removeEdge", () => {
   it("removes the edge by id", () => {
     const spec = makeSpec();

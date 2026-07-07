@@ -199,6 +199,42 @@ async def test_make_agent_no_emits_uses_role_contract():
 
 
 @pytest.mark.asyncio
+async def test_make_agent_fires_on_branch_created():
+    """make_agent must notify on_branch_created right after include_branches,
+    with the branch's final name already set — mirrors the seam flow.py's
+    _preallocate_all_branches already fires for flow-cloned branches."""
+    created: list[object] = []
+    run = Engine().new_run(on_branch_created=created.append)
+    b = await run.make_agent("researcher", name="r1")
+    assert created == [b]
+    assert created[0].name == "r1"  # fired after branch.name was set
+
+
+@pytest.mark.asyncio
+async def test_make_agent_no_on_branch_created_is_a_no_op():
+    """Default None must not affect any of the ~18 existing make_agent callers."""
+    run = _run()
+    b = await run.make_agent("researcher", name="r1")
+    assert b.name == "r1"  # no AttributeError / crash from the new hook
+
+
+@pytest.mark.asyncio
+async def test_engine_run_threads_on_branch_created_into_make_agent():
+    """Engine.run(..., on_branch_created=...) must reach EngineRun.make_agent
+    for sub-agents spawned mid-run, not just at construction time."""
+
+    class _SpawnsOneAgent(Engine):
+        async def _run(self, run, *args, **kwargs):
+            return await run.make_agent("researcher", name="sub1")
+
+    created: list[object] = []
+    result = await _SpawnsOneAgent().run("task", on_branch_created=created.append)
+    assert len(created) == 1
+    assert created[0] is result
+    assert created[0].name == "sub1"
+
+
+@pytest.mark.asyncio
 async def test_run_dag_emits_node_lifecycle_signals():
     """run_dag executes a DAG and tees NodeStarted/NodeCompleted onto the bus."""
     from lionagi.operations.builder import OperationGraphBuilder

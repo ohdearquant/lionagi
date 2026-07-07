@@ -351,6 +351,17 @@ async def _do_engine_run(args: argparse.Namespace) -> int:
     if _emission_failures:
         emission_error = "emission_missing: " + "; ".join(_emission_failures)
 
+    # A run where every agent made terminally errored (e.g. missing API key)
+    # must not be reported "completed" — fold the agent errors into the error
+    # column and mark the run failed instead of green.
+    _total_agent_failure: bool = getattr(engine, "_total_agent_failure", False)
+    if _total_agent_failure:
+        _agent_errors: list[str] = getattr(engine, "_agent_errors", [])
+        agent_error_text = "all sub-agents failed: " + "; ".join(_agent_errors)
+        emission_error = (
+            f"{emission_error}; {agent_error_text}" if emission_error else agent_error_text
+        )
+
     # Serialise result to stdout as JSON.
     # export_dir: the CLI knows what directory it passed; neither CodeResultRecorded
     # (lionagi/engines/coding.py:153 — fields: passed, measurements, caveats,
@@ -377,7 +388,7 @@ async def _do_engine_run(args: argparse.Namespace) -> int:
     await _maybe_update_db(
         db,
         run_id,
-        "completed",
+        "failed" if _total_agent_failure else "completed",
         ended_at=ended_at,
         export_dir=export_dir_for_db,
         error=emission_error,
@@ -385,7 +396,9 @@ async def _do_engine_run(args: argparse.Namespace) -> int:
     )
     if db is not None:
         await db.close()
-    return 0
+    # A run where every agent terminally errored is a failure: exit non-zero so
+    # shell/CI callers see it, matching the persisted "failed" status above.
+    return 1 if _total_agent_failure else 0
 
 
 async def _maybe_update_db(

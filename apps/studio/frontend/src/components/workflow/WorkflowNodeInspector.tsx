@@ -1,7 +1,24 @@
 import { useTranslations } from "use-intl";
-import type { WorkflowNode, EngineDef } from "@/lib/api";
+import type { WorkflowNode, WorkflowEdge, EngineDef } from "@/lib/api";
 import { useWorkflowDraft } from "./WorkflowDraftContext";
 import SectionLabel from "@/components/ui/SectionLabel";
+
+const MAX_CONDITION_LEN = 1000;
+
+/**
+ * Best-effort, non-authoritative check for an edge condition that is
+ * definitely invalid. The backend compiles conditions against a Python AST
+ * allow-list and is the source of truth (a bad expression comes back as a 422
+ * carrying the edge id). We only flag the one thing the client can be certain
+ * of without a tokenizer: the hard length cap. Pattern-matching for calls /
+ * lambda / f-strings / dunders was removed because every such token also
+ * appears legitimately inside string literals (`status == "off"`,
+ * `data["f"]`) or as an operator keyword before a group (`not (x)`,
+ * `y in ("a", "b")`), producing false "likely invalid" warnings on valid input.
+ */
+function looksInvalidCondition(expr: string): boolean {
+  return expr.trim().length > MAX_CONDITION_LEN;
+}
 
 interface Props {
   nodeId: string | null;
@@ -10,7 +27,7 @@ interface Props {
 
 export default function WorkflowNodeInspector({ nodeId, engineDefs }: Props) {
   const t = useTranslations("workflow");
-  const { state, patchNode, removeNode } = useWorkflowDraft();
+  const { state, patchNode, patchEdge, removeNode } = useWorkflowDraft();
   const [armedId, setArmedId] = useState<string | null>(null);
 
   if (!nodeId) {
@@ -69,9 +86,14 @@ export default function WorkflowNodeInspector({ nodeId, engineDefs }: Props) {
           <EngineInspector node={node} engineDefs={engineDefs} patchNode={patchNode} t={t} />
         )}
 
-        {node.kind === "gate" && <GateInspector node={node} patchNode={patchNode} t={t} />}
-
         {node.kind === "chat" && <ChatInspector node={node} patchNode={patchNode} t={t} />}
+
+        <OutgoingEdgesInspector
+          edges={state.spec.edges.filter((e) => e.from === nodeId)}
+          sourceIsInput={node.kind === "input"}
+          patchEdge={patchEdge}
+          t={t}
+        />
       </div>
     </div>
   );
@@ -127,34 +149,67 @@ function EngineInspector({
   );
 }
 
-function GateInspector({
-  node,
-  patchNode,
+function OutgoingEdgesInspector({
+  edges,
+  sourceIsInput,
+  patchEdge,
   t,
 }: {
-  node: WorkflowNode;
-  patchNode: (id: string, patch: Partial<Omit<WorkflowNode, "id">>) => void;
+  edges: WorkflowEdge[];
+  sourceIsInput: boolean;
+  patchEdge: (edgeId: string, patch: Partial<Omit<WorkflowEdge, "id">>) => void;
   t: ReturnType<typeof useTranslations>;
 }) {
-  const config = (node.config ?? {}) as { condition?: string };
   return (
-    <label className="flex flex-col gap-1">
-      <SectionLabel>{t("gateCondition")}</SectionLabel>
-      <input
-        type="text"
-        value={config.condition ?? ""}
-        onChange={(e) => {
-          if (e.nativeEvent instanceof InputEvent && e.nativeEvent.isComposing) return;
-          patchNode(node.id, { config: { ...config, condition: e.target.value } });
-        }}
-        onKeyDown={(e) => {
-          if (e.nativeEvent.isComposing) return;
-        }}
-        placeholder={t("gateConditionPlaceholder")}
-        className="rounded border border-edge bg-surface-overlay px-2 py-1 font-data text-[length:var(--t-sm)] text-content-primary focus:outline-none focus:ring-1 focus:ring-accent"
-      />
-      <span className="text-[length:var(--t-xs)] text-content-muted">{t("gateConditionHint")}</span>
-    </label>
+    <div className="flex flex-col gap-2">
+      <SectionLabel>{t("outgoingEdges")}</SectionLabel>
+      {edges.length === 0 ? (
+        <span className="text-[length:var(--t-xs)] text-content-muted">{t("noOutgoingEdges")}</span>
+      ) : (
+        edges.map((edge) => {
+          const condition = edge.condition ?? "";
+          const invalid = looksInvalidCondition(condition);
+          return (
+            <div key={edge.id} className="flex flex-col gap-1 rounded border border-edge p-2">
+              <span className="text-[length:var(--t-xs)] text-content-muted">
+                {t("edgeConditionTarget", { target: edge.to })}
+                {edge.label ? ` (${edge.label})` : ""}
+              </span>
+              {sourceIsInput ? (
+                // An edge from an input node carries no runtime gate — the
+                // compiler rejects a condition on it. Explain instead of
+                // offering an input that always fails on save.
+                <span className="text-[length:var(--t-xs)] text-content-muted">
+                  {t("edgeConditionInputUnsupported")}
+                </span>
+              ) : (
+                <>
+                  <input
+                    type="text"
+                    value={condition}
+                    onChange={(e) => {
+                      if (e.nativeEvent instanceof InputEvent && e.nativeEvent.isComposing) return;
+                      patchEdge(edge.id, { condition: e.target.value });
+                    }}
+                    onKeyDown={(e) => {
+                      if (e.nativeEvent.isComposing) return;
+                    }}
+                    placeholder={t("edgeConditionPlaceholder")}
+                    className="rounded border border-edge bg-surface-overlay px-2 py-1 font-data text-[length:var(--t-sm)] text-content-primary focus:outline-none focus:ring-1 focus:ring-accent"
+                  />
+                  <span
+                    className="text-[length:var(--t-xs)]"
+                    style={{ color: invalid ? "var(--status-warning)" : "var(--content-muted)" }}
+                  >
+                    {invalid ? t("edgeConditionWarning") : t("edgeConditionHint")}
+                  </span>
+                </>
+              )}
+            </div>
+          );
+        })
+      )}
+    </div>
   );
 }
 

@@ -203,22 +203,36 @@ async def github_poll(schedule: dict) -> list[dict[str, Any]]:
     cursor = schedule.get("github_cursor")
     prs = resp.json()
 
+    draft_filter = github_filter.get("draft")
     new_prs = []
     max_updated = cursor
     for pr in prs:
         updated = pr.get("updated_at", "")
-        if not cursor or updated > cursor:
-            new_prs.append(
-                {
-                    "pr_number": pr.get("number"),
-                    "pr_title": pr.get("title"),
-                    "pr_url": pr.get("html_url"),
-                    "pr_author": (pr.get("user") or {}).get("login"),
-                    "updated_at": updated,
-                }
-            )
-            if not max_updated or updated > max_updated:
-                max_updated = updated
+        if cursor and updated <= cursor:
+            continue
+        # New PR past the cursor high-water mark. Advance the cursor for it
+        # even if the draft filter drops it below, so a filtered PR is not
+        # re-listed on every poll — a draft toggle bumps updated_at and
+        # naturally re-qualifies the PR when its draft state changes.
+        if not max_updated or updated > max_updated:
+            max_updated = updated
+        is_draft = bool(pr.get("draft", False))
+        # Only a real JSON boolean narrows the fire set. A malformed non-bool
+        # draft filter is ignored (fail open to no filtering) rather than
+        # silently matching the wrong side — the string "false" is truthy.
+        if isinstance(draft_filter, bool) and is_draft != draft_filter:
+            continue
+        new_prs.append(
+            {
+                "pr_number": pr.get("number"),
+                "pr_title": pr.get("title"),
+                "pr_url": pr.get("html_url"),
+                "pr_author": (pr.get("user") or {}).get("login"),
+                "updated_at": updated,
+                "head_sha": (pr.get("head") or {}).get("sha"),
+                "draft": is_draft,
+            }
+        )
 
     # Update cursor on the schedule when new PRs found or etag refreshed
     update_fields: dict[str, Any] = {}

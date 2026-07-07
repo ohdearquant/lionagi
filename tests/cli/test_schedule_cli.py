@@ -62,6 +62,80 @@ def test_schedule_enable_disable_trigger_delete_accept_id():
         assert args.id == "sched-123"
 
 
+def test_schedule_limits_subcommand_registered():
+    """li schedule limits is a recognized subcommand and takes no positional."""
+    from lionagi.studio.cli import add_schedule_subparser
+
+    parser = argparse.ArgumentParser()
+    sub = parser.add_subparsers(dest="command")
+    add_schedule_subparser(sub)
+    args = parser.parse_args(["schedule", "limits"])
+    assert args.schedule_action == "limits"
+
+
+def test_schedule_limits_dispatches_to_api_and_prints_values(monkeypatch, capsys):
+    """run_schedule limits calls _api('/limits') and prints cap + inflight."""
+    import lionagi.studio.cli as sched_mod
+
+    monkeypatch.setattr(
+        sched_mod,
+        "_api",
+        lambda path, **kw: {"max_scheduled_concurrent": 4, "current_inflight": 1},
+    )
+
+    from lionagi.studio.cli import add_schedule_subparser, run_schedule
+
+    parser = argparse.ArgumentParser()
+    sub = parser.add_subparsers(dest="command")
+    add_schedule_subparser(sub)
+    args = parser.parse_args(["schedule", "limits"])
+    result = run_schedule(args)
+
+    assert result == 0
+    out = capsys.readouterr().out
+    assert "4" in out
+    assert "1" in out
+
+
+def test_schedule_limits_unlimited_display(monkeypatch, capsys):
+    """A cap of 0 (unlimited) prints 'unlimited' rather than the digit 0."""
+    import lionagi.studio.cli as sched_mod
+
+    monkeypatch.setattr(
+        sched_mod,
+        "_api",
+        lambda path, **kw: {"max_scheduled_concurrent": 0, "current_inflight": 2},
+    )
+
+    from lionagi.studio.cli import add_schedule_subparser, run_schedule
+
+    parser = argparse.ArgumentParser()
+    sub = parser.add_subparsers(dest="command")
+    add_schedule_subparser(sub)
+    args = parser.parse_args(["schedule", "limits"])
+    result = run_schedule(args)
+
+    assert result == 0
+    out = capsys.readouterr().out
+    assert "unlimited" in out
+
+
+def test_schedule_limits_api_error_returns_1(monkeypatch):
+    """When _api returns None (network error), run_schedule returns 1."""
+    import lionagi.studio.cli as sched_mod
+
+    monkeypatch.setattr(sched_mod, "_api", lambda path, **kw: None)
+
+    from lionagi.studio.cli import add_schedule_subparser, run_schedule
+
+    parser = argparse.ArgumentParser()
+    sub = parser.add_subparsers(dest="command")
+    add_schedule_subparser(sub)
+    args = parser.parse_args(["schedule", "limits"])
+    result = run_schedule(args)
+    assert result == 1
+
+
 def test_schedule_runs_subcommand():
     """li schedule runs <id> parses correctly."""
     from lionagi.studio.cli import add_schedule_subparser
@@ -950,3 +1024,147 @@ def test_li_schedule_mixed_dash_and_bare_extras_both_reported(monkeypatch, capsy
     err = capsys.readouterr().err
     assert "--every" in err and "--interval" in err
     assert "stray-token" in err
+
+
+# ---------------------------------------------------------------------------
+# _cmd_create: github / github_poll trigger authoring
+# ---------------------------------------------------------------------------
+
+
+def _run_create_argv(monkeypatch, argv_tail: list[str], api_response: dict | None = None) -> dict:
+    """Run `li schedule create my-sched <argv_tail>` with NO forced --cron, capturing
+    the JSON body posted to _api (returns {} when _api is never called)."""
+    import lionagi.studio.cli as sched_mod
+
+    captured: dict = {"called": False, "body": {}}
+
+    def _fake_api(path, method="GET", body=None):
+        captured["called"] = True
+        captured["body"] = body or {}
+        return api_response if api_response is not None else {"id": "sched-1", "name": "n"}
+
+    monkeypatch.setattr(sched_mod, "_api", _fake_api)
+
+    from lionagi.studio.cli import add_schedule_subparser, run_schedule
+
+    parser = argparse.ArgumentParser()
+    sub = parser.add_subparsers(dest="command")
+    add_schedule_subparser(sub)
+    args = parser.parse_args(["schedule", "create", "my-sched", *argv_tail])
+    result = run_schedule(args)
+    return {"result": result, "called": captured["called"], "body": captured["body"]}
+
+
+def test_schedule_create_github_flags_parse():
+    """create accepts --trigger-type github/github_poll and the github flags."""
+    from lionagi.studio.cli import add_schedule_subparser
+
+    parser = argparse.ArgumentParser()
+    sub = parser.add_subparsers(dest="command")
+    add_schedule_subparser(sub)
+    args = parser.parse_args(
+        [
+            "schedule",
+            "create",
+            "gh-sched",
+            "--trigger-type",
+            "github",
+            "--github-repo",
+            "owner/name",
+            "--github-filter",
+            '{"state": "open"}',
+            "--poll-interval",
+            "300",
+        ]
+    )
+    assert args.trigger_type == "github"
+    assert args.github_repo == "owner/name"
+    assert args.github_filter == '{"state": "open"}'
+    assert args.poll_interval == 300
+
+
+def test_schedule_create_normalizes_github_alias_to_github_poll(monkeypatch):
+    """--trigger-type github is stored as the canonical github_poll token."""
+    outcome = _run_create_argv(
+        monkeypatch,
+        ["--trigger-type", "github", "--github-repo", "owner/name", "--prompt", "review"],
+    )
+    assert outcome["result"] == 0
+    assert outcome["body"]["trigger_type"] == "github_poll"
+    assert outcome["body"]["github_repo"] == "owner/name"
+
+
+def test_schedule_create_github_poll_token_passthrough(monkeypatch):
+    """The canonical --trigger-type github_poll is preserved verbatim."""
+    outcome = _run_create_argv(
+        monkeypatch,
+        ["--trigger-type", "github_poll", "--github-repo", "owner/name", "--prompt", "review"],
+    )
+    assert outcome["result"] == 0
+    assert outcome["body"]["trigger_type"] == "github_poll"
+
+
+def test_schedule_create_github_filter_and_poll_interval_wired(monkeypatch):
+    """--github-filter parses to a dict and --poll-interval to poll_interval_sec."""
+    outcome = _run_create_argv(
+        monkeypatch,
+        [
+            "--trigger-type",
+            "github",
+            "--github-repo",
+            "owner/name",
+            "--github-filter",
+            '{"state": "open", "base": "main"}',
+            "--poll-interval",
+            "600",
+            "--prompt",
+            "review",
+        ],
+    )
+    assert outcome["result"] == 0
+    assert outcome["body"]["github_filter"] == {"state": "open", "base": "main"}
+    assert outcome["body"]["poll_interval_sec"] == 600
+
+
+def test_schedule_create_github_filter_invalid_json_errors(monkeypatch, capsys):
+    """A non-JSON --github-filter returns 1 and never posts to the API."""
+    outcome = _run_create_argv(
+        monkeypatch,
+        ["--trigger-type", "github", "--github-repo", "owner/name", "--github-filter", "{not json"],
+    )
+    assert outcome["result"] == 1
+    assert outcome["called"] is False
+    assert "must be valid JSON" in capsys.readouterr().err
+
+
+def test_schedule_create_github_filter_non_object_errors(monkeypatch, capsys):
+    """A JSON --github-filter that isn't an object returns 1 and never posts."""
+    outcome = _run_create_argv(
+        monkeypatch,
+        ["--trigger-type", "github", "--github-repo", "owner/name", "--github-filter", "[1, 2]"],
+    )
+    assert outcome["result"] == 1
+    assert outcome["called"] is False
+    assert "must be a JSON object" in capsys.readouterr().err
+
+
+def test_schedule_create_negative_poll_interval_errors(monkeypatch, capsys):
+    """A negative --poll-interval returns 1 and never posts to the API."""
+    outcome = _run_create_argv(
+        monkeypatch,
+        ["--trigger-type", "github", "--github-repo", "owner/name", "--poll-interval", "-5"],
+    )
+    assert outcome["result"] == 1
+    assert outcome["called"] is False
+    assert "must be a positive integer" in capsys.readouterr().err
+
+
+def test_schedule_create_zero_poll_interval_errors(monkeypatch, capsys):
+    """A zero --poll-interval returns 1 and never posts to the API."""
+    outcome = _run_create_argv(
+        monkeypatch,
+        ["--trigger-type", "github", "--github-repo", "owner/name", "--poll-interval", "0"],
+    )
+    assert outcome["result"] == 1
+    assert outcome["called"] is False
+    assert "must be a positive integer" in capsys.readouterr().err

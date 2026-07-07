@@ -73,6 +73,7 @@ async def test_emission_failures_written_to_db_error_on_completed(monkeypatch):
     # Engine that returns a result but has _emission_failures populated.
     mock_engine = MagicMock()
     mock_engine._emission_failures = ["planner x2", "summariser x1"]
+    mock_engine._total_agent_failure = False
 
     async def _mock_run(spec, *, on_event=None, **kwargs):
         return "partial result despite missing emissions"
@@ -111,6 +112,7 @@ async def test_no_emission_failures_error_column_stays_null(monkeypatch):
 
     mock_engine = MagicMock()
     mock_engine._emission_failures = []  # no failures
+    mock_engine._total_agent_failure = False
 
     async def _mock_run(spec, *, on_event=None, **kwargs):
         return "clean result"

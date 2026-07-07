@@ -614,6 +614,17 @@ def _cmd_get(args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_limits(args: argparse.Namespace) -> int:
+    result = _api("/limits")
+    if result is None:
+        return 1
+    cap = result.get("max_scheduled_concurrent")
+    cap_display = "unlimited" if not cap else str(cap)
+    print(f"Max concurrent fires: {cap_display}")
+    print(f"Current in-flight:    {result.get('current_inflight', 0)}")
+    return 0
+
+
 def _validate_chain_action_node(
     action: Any,
     label: str,
@@ -732,9 +743,13 @@ def _cmd_create(args: argparse.Namespace) -> int:
         print(f"Error: --max-runs must be a positive integer, got {max_runs}.", file=sys.stderr)
         return 1
 
+    # 'github' is a friendly alias; the DB CHECK and scheduler engine only
+    # recognize the canonical 'github_poll' token.
+    trigger_type = "github_poll" if args.trigger_type == "github" else args.trigger_type
+
     body: dict[str, Any] = {
         "name": args.name,
-        "trigger_type": args.trigger_type,
+        "trigger_type": trigger_type,
         "action_kind": args.action_kind,
     }
     if args.cron:
@@ -742,6 +757,23 @@ def _cmd_create(args: argparse.Namespace) -> int:
         _warn_if_cron_far_out(args.cron)
     if args.interval:
         body["interval_sec"] = args.interval
+    if getattr(args, "github_repo", None):
+        body["github_repo"] = args.github_repo
+    if getattr(args, "github_filter", None):
+        try:
+            parsed_filter = json.loads(args.github_filter)
+        except (ValueError, TypeError) as exc:
+            print(f"Error: --github-filter must be valid JSON: {exc}", file=sys.stderr)
+            return 1
+        if not isinstance(parsed_filter, dict):
+            print("Error: --github-filter must be a JSON object.", file=sys.stderr)
+            return 1
+        body["github_filter"] = parsed_filter
+    if getattr(args, "poll_interval", None) is not None:
+        if args.poll_interval < 1:
+            print("Error: --poll-interval must be a positive integer.", file=sys.stderr)
+            return 1
+        body["poll_interval_sec"] = args.poll_interval
     if max_runs is not None:
         body["max_runs"] = max_runs
     if args.prompt:
@@ -905,6 +937,14 @@ def add_schedule_subparser(subparsers: argparse._SubParsersAction) -> argparse.A
     )
     get_p.add_argument("id", help="Schedule ID.")
 
+    # limits
+    sched_sub.add_parser(
+        "limits",
+        help="Show the global concurrent-fire cap and current in-flight count.",
+        epilog="Example: li schedule limits",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+
     # create
     create_p = sched_sub.add_parser(
         "create",
@@ -929,11 +969,33 @@ def add_schedule_subparser(subparsers: argparse._SubParsersAction) -> argparse.A
         "--trigger-type",
         dest="trigger_type",
         default="cron",
-        choices=("cron", "interval", "github"),
-        help="Trigger type (default: cron).",
+        choices=("cron", "interval", "github", "github_poll"),
+        help="Trigger type (default: cron). 'github' is an alias for 'github_poll'.",
     )
     create_p.add_argument("--cron", metavar="EXPR", help='Cron expression, e.g. "0 * * * *".')
     create_p.add_argument("--interval", type=int, metavar="SECONDS", help="Interval in seconds.")
+    create_p.add_argument(
+        "--github-repo",
+        dest="github_repo",
+        metavar="OWNER/NAME",
+        help="GitHub repository to poll (required for --trigger-type github/github_poll).",
+    )
+    create_p.add_argument(
+        "--github-filter",
+        dest="github_filter",
+        metavar="JSON",
+        help=(
+            "JSON object filtering which PRs fire the trigger, e.g. "
+            '\'{"state": "open", "base": "main"}\'.'
+        ),
+    )
+    create_p.add_argument(
+        "--poll-interval",
+        dest="poll_interval",
+        type=int,
+        metavar="SECONDS",
+        help="How often to poll GitHub, in seconds (github_poll only).",
+    )
     create_p.add_argument(
         "--action-kind",
         dest="action_kind",
@@ -1036,6 +1098,7 @@ def add_schedule_subparser(subparsers: argparse._SubParsersAction) -> argparse.A
 _ACTION_MAP = {
     "list": _cmd_list,
     "get": _cmd_get,
+    "limits": _cmd_limits,
     "create": _cmd_create,
     "enable": _cmd_enable,
     "disable": _cmd_disable,
@@ -1050,7 +1113,8 @@ def run_schedule(args: argparse.Namespace) -> int:
     fn = _ACTION_MAP.get(action)
     if fn is None:
         print(
-            "Usage: li schedule <subcommand>  (list|get|create|enable|disable|trigger|delete|runs)"
+            "Usage: li schedule <subcommand>  "
+            "(list|get|limits|create|enable|disable|trigger|delete|runs)"
         )
         return 1
     return fn(args)

@@ -28,6 +28,10 @@ _log = logging.getLogger(__name__)
 
 _MAX_CHAIN_DEPTH = 10
 _TICK_INTERVAL = 30  # seconds
+# Deferred-capacity skipped-run records are throttled to one per schedule per
+# this many deferrals (the first deferral always emits), so sustained
+# saturation doesn't spam schedule_runs.
+_DEFERRED_RECORD_EVERY = 10
 
 
 class _MaxRunsClaim:
@@ -55,6 +59,30 @@ class _MaxRunsClaim:
             return
         self._released = True
         self._engine._release_max_runs_claim(self._schedule_id)
+
+
+class _GlobalSlotClaim:
+    """One-shot handle for an in-process global concurrent-fire slot.
+
+    Returned by ``_reserve_global_slot()`` when a top-level fire is allowed
+    to proceed under the daemon-wide concurrency ceiling. The holder
+    (``_fire()``) must call ``release()`` exactly once, from a ``finally``
+    block that covers every exit path, so the slot never survives past the
+    fire it was reserved for. ``release()`` is itself idempotent (a second
+    call is a no-op), same defense-in-depth rationale as ``_MaxRunsClaim``.
+    """
+
+    __slots__ = ("_engine", "_released")
+
+    def __init__(self, engine: SchedulerEngine) -> None:
+        self._engine = engine
+        self._released = False
+
+    def release(self) -> None:
+        if self._released:
+            return
+        self._released = True
+        self._engine._release_global_slot()
 
 
 def _resolve_scheduler_tzinfo(tz_name: str) -> ZoneInfo:
@@ -129,6 +157,10 @@ class SchedulerEngine:
         self._max_runs_inflight: dict[
             str, int
         ] = {}  # schedule_id -> claimed-not-yet-terminal count
+        # global concurrent-fire cap (single-process; see _reserve_global_slot).
+        self._global_slot_lock = asyncio.Lock()
+        self._global_inflight = 0
+        self._deferred_log_counts: dict[str, int] = {}  # schedule_id -> deferrals since last record
 
     async def start(self) -> None:
         _log.info("Scheduler engine starting")
@@ -258,12 +290,25 @@ class SchedulerEngine:
                 f"Schedule {schedule_id!r} has already reached its max_runs="
                 f"{schedule.get('max_runs')} limit; manual trigger refused."
             )
+        # A human is waiting on a manual trigger, so at-capacity is refused
+        # outright rather than deferred like the automatic fire paths below.
+        slot_allowed, slot_claim = await self._reserve_global_slot()
+        if not slot_allowed:
+            if claim is not None:
+                claim.release()
+            from lionagi.studio.config import MAX_SCHEDULED_CONCURRENT
+
+            raise ValueError(
+                f"Scheduler at capacity ({MAX_SCHEDULED_CONCURRENT} concurrent "
+                "fires); manual trigger refused. Retry shortly."
+            )
         run_id = uuid.uuid4().hex[:12]
         self._tracked_fire(
             schedule,
             run_id,
             trigger_context={"manual": True, "fired_at": time.time()},
             max_runs_claim=claim,
+            global_slot_claim=slot_claim,
         )
         return run_id
 
@@ -446,11 +491,31 @@ class SchedulerEngine:
         last = schedule.get("last_fired_at") or 0
         if now - last < poll_interval:
             return
+
+        # Reserve the global slot before polling: a filtered/no-slot poll
+        # must not fetch-and-advance-cursor-then-discard.
+        slot_allowed, slot_claim = await self._reserve_global_slot()
+        if not slot_allowed:
+            await self._maybe_record_deferred(schedule, now)
+            return
+
         from .github import github_poll
 
-        new_events = await github_poll(schedule)
-        if new_events:
-            allowed, claim = await self._reserve_max_runs_budget(schedule)
+        # Every await between reserving the slot and handing it to _fire()
+        # (github_poll, the max_runs reservation, or a cancellation at either)
+        # must release the slot on failure — otherwise a transient DB/count
+        # error mid-poll leaks the slot permanently and eventually saturates
+        # the cap until restart. A single finally covers all of them; once the
+        # claims are passed to _fire() (which owns their release from then on)
+        # handed_off is set so this finally leaves them alone.
+        max_runs_claim: _MaxRunsClaim | None = None
+        handed_off = False
+        try:
+            new_events = await github_poll(schedule)
+            if not new_events:
+                return
+
+            allowed, max_runs_claim = await self._reserve_max_runs_budget(schedule)
             if not allowed:
                 _log.info(
                     "Schedule %s (%s) has exhausted max_runs; skipping github_poll fire",
@@ -464,7 +529,20 @@ class SchedulerEngine:
                 "fired_at": now,
             }
             run_id = uuid.uuid4().hex[:12]
-            await self._fire(schedule, run_id, trigger_context=ctx, max_runs_claim=claim)
+            handed_off = True
+            await self._fire(
+                schedule,
+                run_id,
+                trigger_context=ctx,
+                max_runs_claim=max_runs_claim,
+                global_slot_claim=slot_claim,
+            )
+        finally:
+            if not handed_off:
+                if slot_claim is not None:
+                    slot_claim.release()
+                if max_runs_claim is not None:
+                    max_runs_claim.release()
 
     async def _reserve_max_runs_budget(self, schedule: dict) -> tuple[bool, _MaxRunsClaim | None]:
         """Atomically claim one top-level fire against schedule['max_runs'].
@@ -532,6 +610,59 @@ class SchedulerEngine:
         else:
             self._max_runs_inflight.pop(schedule_id, None)
 
+    async def _reserve_global_slot(self) -> tuple[bool, _GlobalSlotClaim | None]:
+        """Atomically claim one global concurrent-fire slot.
+
+        Returns ``(allowed, claim)``, mirroring ``_reserve_max_runs_budget()``.
+        ``allowed`` is False only when ``MAX_SCHEDULED_CONCURRENT`` is set
+        (nonzero) and every slot is already in use; callers must defer rather
+        than fire in that case. ``claim`` is a ``_GlobalSlotClaim`` token when
+        a slot was actually reserved, or ``None`` when the cap is unlimited
+        (0 — always allowed, no claim to release). Guarded by an engine-wide
+        lock for the same reason ``_max_runs_lock`` exists: the tick loop,
+        fire_now(), and github polling can all reserve concurrently. Chain
+        children never call this — only top-level fires consume a slot, same
+        rule as max_runs.
+        """
+        from lionagi.studio.config import MAX_SCHEDULED_CONCURRENT
+
+        if MAX_SCHEDULED_CONCURRENT <= 0:
+            return True, None
+        async with self._global_slot_lock:
+            if self._global_inflight >= MAX_SCHEDULED_CONCURRENT:
+                return False, None
+            self._global_inflight += 1
+            return True, _GlobalSlotClaim(self)
+
+    def _release_global_slot(self) -> None:
+        self._global_inflight = max(0, self._global_inflight - 1)
+
+    async def _maybe_record_deferred(self, schedule: dict, now: float) -> None:
+        """Emit a throttled skipped-run record for a capacity-deferred fire.
+
+        Every deferral increments a per-schedule counter; a record is only
+        written on the first deferral and every _DEFERRED_RECORD_EVERY-th one
+        after that, so sustained saturation doesn't spam schedule_runs.
+        """
+        sid = schedule["id"]
+        count = self._deferred_log_counts.get(sid, 0) + 1
+        self._deferred_log_counts[sid] = count
+        if count % _DEFERRED_RECORD_EVERY != 1:
+            return
+        skipped_run_id = uuid.uuid4().hex[:12]
+        await create_skipped_run(
+            self._svc,
+            run_id=skipped_run_id,
+            schedule=schedule,
+            trigger_context={"deferred_capacity": True, "fired_at": now},
+            now=now,
+            reason_code=ScheduleReasons.DEFERRED_CAPACITY,
+            reason_summary=(
+                "Schedule fire deferred: global concurrent-fire cap reached; will retry next tick."
+            ),
+            metadata={"deferral_count": count},
+        )
+
     async def _maybe_fire(self, schedule: dict, now: float) -> None:
         if schedule.get("overlap_policy") == "skip" and schedule["id"] in self._running:
             _log.debug("Skipping overlapping fire for %s", schedule["name"])
@@ -562,9 +693,26 @@ class SchedulerEngine:
             await self._svc.update_schedule(schedule["id"], enabled=0)
             return
 
+        slot_allowed, slot_claim = await self._reserve_global_slot()
+        if not slot_allowed:
+            if claim is not None:
+                # Give the max_runs reservation back -- we're deferring this
+                # fire, not consuming a run against its budget.
+                claim.release()
+            await self._maybe_record_deferred(schedule, now)
+            # Leave next_fire_at untouched (still due) so the next tick
+            # retries this schedule instead of skipping it.
+            return
+
         run_id = uuid.uuid4().hex[:12]
         ctx = {"scheduled": True, "fired_at": now, "next_fire_at": schedule.get("next_fire_at")}
-        self._tracked_fire(schedule, run_id, trigger_context=ctx, max_runs_claim=claim)
+        self._tracked_fire(
+            schedule,
+            run_id,
+            trigger_context=ctx,
+            max_runs_claim=claim,
+            global_slot_claim=slot_claim,
+        )
 
     async def _check_max_runs(self, schedule: dict, chain_depth: int) -> None:
         """Auto-disable a schedule once its fired top-level runs hit max_runs.
@@ -606,17 +754,19 @@ class SchedulerEngine:
         chain_parent_id: str | None = None,
         chain_depth: int = 0,
         max_runs_claim: _MaxRunsClaim | None = None,
+        global_slot_claim: _GlobalSlotClaim | None = None,
     ) -> None:
         """Thin wrapper around _fire_inner() that guarantees max_runs_claim
-        is released exactly once on every exit path.
+        and global_slot_claim are each released exactly once on every exit
+        path.
 
         Only top-level callers (_maybe_fire, fire_now, _tick_github) that
-        got an allowed reservation from _reserve_max_runs_budget() pass a
-        non-None max_runs_claim; chain children never do. The release lives
-        here — not inside _check_max_runs() — precisely so it still fires
-        even when _fire_inner() blows up before ever reaching
-        _check_max_runs() (e.g. create_invocation() raising), which is the
-        leak this wrapper exists to close.
+        got an allowed reservation from _reserve_max_runs_budget() /
+        _reserve_global_slot() pass a non-None claim; chain children never
+        do. The release lives here — not inside _check_max_runs() — precisely
+        so it still fires even when _fire_inner() blows up before ever
+        reaching _check_max_runs() (e.g. create_invocation() raising), which
+        is the leak this wrapper exists to close.
         """
         try:
             await self._fire_inner(
@@ -629,6 +779,8 @@ class SchedulerEngine:
         finally:
             if max_runs_claim is not None:
                 max_runs_claim.release()
+            if global_slot_claim is not None:
+                global_slot_claim.release()
 
     async def _fire_inner(
         self,

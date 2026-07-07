@@ -52,6 +52,11 @@ CORS_ORIGINS: list[str] = (
 # When saturated, POST /api/launches returns 429.
 MAX_LAUNCHES: int = int(os.environ.get("LIONAGI_STUDIO_MAX_LAUNCHES", "4"))
 
+# Maximum concurrent SCHEDULED fires (cron/interval/github_poll/manual-trigger).
+# Independent of MAX_LAUNCHES (which caps only the on-demand /api/launches surface).
+# 0 = unlimited. When saturated, a due fire defers to the next tick (never dropped).
+MAX_SCHEDULED_CONCURRENT: int = int(os.environ.get("LIONAGI_STUDIO_MAX_SCHEDULED_CONCURRENT", "4"))
+
 # ── Lifecycle reaper config ───────────────────────────────────────────────────
 # Default invocation deadline in seconds (2 hours). Override per action kind
 # via LIONAGI_STUDIO_INVOCATION_DEADLINE_<KIND>_SECONDS (e.g. _AGENT_SECONDS).
@@ -64,6 +69,10 @@ ZERO_SESSION_GRACE_SECONDS: int = int(
 )
 # Staleness threshold for phantom session classification.
 PHANTOM_STALE_HOURS: float = float(os.environ.get("LIONAGI_STUDIO_PHANTOM_STALE_HOURS", "1.0"))
+# Staleness threshold for the play-level reaper. Liveness-first means a play
+# whose child session process is still alive is never reaped regardless of
+# this value; it only bites orphaned/dead-runner rows.
+PLAY_STALE_HOURS: float = float(os.environ.get("LIONAGI_STUDIO_PLAY_STALE_HOURS", "6.0"))
 # Minimum seconds between consecutive periodic reaper runs (throttle).
 REAPER_INTERVAL_SECONDS: int = int(os.environ.get("LIONAGI_STUDIO_REAPER_INTERVAL_SECONDS", "300"))
 

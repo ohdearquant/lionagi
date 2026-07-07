@@ -298,7 +298,15 @@ async def compile_workflow_def(
             prompt = config.get("prompt")
             if not prompt or not isinstance(prompt, str):
                 raise WorkflowCompileError("chat node requires config.prompt", node_id=node_id)
-            op_id = builder.add_operation("chat", node_id=node_id, instruction=prompt)
+            # "chat_and_record", not the native "chat" operation: Branch.chat()
+            # does not add messages to the branch (by design — see its
+            # docstring), so a plain "chat" node would run through the
+            # persistence hook wired up in workflow_run.py without ever
+            # producing a message for it to persist. chat_and_record() records
+            # the turn through the same hooked a_add_message path communicate()
+            # uses, and returns the assistant response text for downstream
+            # routing/context.
+            op_id = builder.add_operation("chat_and_record", node_id=node_id, instruction=prompt)
         elif kind == "engine":
             engine_def_id = config.get("engine_def_id")
             if not engine_def_id or not isinstance(engine_def_id, str):
@@ -493,12 +501,18 @@ def _derive_engine_input(context: dict[str, Any] | None) -> str:
     return json.dumps(context, default=str)
 
 
-def make_engine_operation(session: Any) -> Callable[..., Awaitable[Any]]:
+def make_engine_operation(
+    session: Any, *, on_branch_created: Callable[[Any], None] | None = None
+) -> Callable[..., Awaitable[Any]]:
     """Build the 'engine' Branch-operation closure for one workflow run.
 
     Resolves the engine class per kind (reusing the CLI's kind registry —
     FindExisting, not a new one) and runs it in-process against the SAME
     session, so any sub-agent branches it spawns are wired into this run.
+
+    ``on_branch_created``, when given, is threaded into ``engine.run()`` so
+    each sub-agent branch the engine spawns (``Engine.make_agent``) gets
+    registered for persistence the same way flow-cloned branches already are.
     """
 
     async def _engine_op(
@@ -536,7 +550,15 @@ def make_engine_operation(session: Any) -> Callable[..., Awaitable[Any]]:
         spec_input = _derive_engine_input(context)
 
         engine = engine_class(**engine_kwargs)
-        result = await engine.run(spec_input, session=session, **run_kwargs)
+        result = await engine.run(
+            spec_input, session=session, on_branch_created=on_branch_created, **run_kwargs
+        )
+
+        if getattr(engine, "_total_agent_failure", False):
+            agent_errors = getattr(engine, "_agent_errors", [])
+            return {
+                "error": f"all {len(agent_errors)} sub-agent(s) failed: {'; '.join(agent_errors)}"
+            }
 
         if hasattr(result, "model_dump"):
             return result.model_dump(mode="json")

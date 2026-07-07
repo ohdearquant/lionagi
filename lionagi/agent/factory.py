@@ -55,7 +55,10 @@ async def create_agent(
         if "/" in ms.model:
             provider, model_name = ms.model.split("/", 1)
         else:
-            provider = model_name = ms.model
+            from lionagi.config import settings
+
+            provider = settings.LIONAGI_CHAT_PROVIDER
+            model_name = ms.model
 
         extra = {}
         effort = spec.effort or ms.effort

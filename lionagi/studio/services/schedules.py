@@ -367,6 +367,11 @@ async def create_schedule(data: dict[str, Any]) -> dict[str, Any]:
         _svc_validate_cron_expr(data.get("cron_expr"), required=True)
     if data.get("trigger_type") == "interval":
         _svc_validate_interval_sec(data.get("interval_sec"), required=True)
+    if data.get("trigger_type") == "github_poll" and not data.get("github_repo"):
+        raise ValueError("github_repo is required when trigger_type is 'github_poll'")
+    poll_interval_sec = data.get("poll_interval_sec")
+    if poll_interval_sec is not None and poll_interval_sec < 1:
+        raise ValueError("poll_interval_sec must be a positive integer")
 
     if data.get("action_kind") == "flow_yaml":
         yaml_text = data.get("action_flow_yaml") or ""
@@ -611,6 +616,21 @@ async def list_schedules_route(
 ) -> dict[str, Any]:
     rows = await list_schedules(enabled=enabled, trigger_type=trigger_type, project=project)
     return {"schedules": rows}
+
+
+@studio_route("/schedules/limits", method="GET", area="schedules", name="schedule_limits")
+async def schedule_limits_route() -> dict[str, Any]:
+    # A literal path registered before the /{schedule_id} param route below
+    # so "limits" resolves here rather than being captured as a schedule id
+    # (routes are matched in registration order — see registry.py).
+    from lionagi.studio import config
+
+    from ..scheduler.engine import scheduler
+
+    return {
+        "max_scheduled_concurrent": config.MAX_SCHEDULED_CONCURRENT,
+        "current_inflight": scheduler._global_inflight,
+    }
 
 
 @studio_route("/schedules/{schedule_id}", method="GET", area="schedules", name="get_schedule")
