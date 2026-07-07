@@ -284,6 +284,10 @@ class SchedulerEngine:
         schedule = await self._svc.get_schedule(schedule_id)
         if not schedule:
             return None
+        if await self._check_budget(schedule):
+            raise ValueError(
+                f"Schedule {schedule_id!r} has exhausted its budget; manual trigger refused."
+            )
         allowed, claim = await self._reserve_max_runs_budget(schedule)
         if not allowed:
             raise ValueError(
@@ -492,6 +496,10 @@ class SchedulerEngine:
         if now - last < poll_interval:
             return
 
+        if await self._check_budget(schedule):
+            await self._disable_for_budget_exhausted(schedule, now)
+            return
+
         # Reserve the global slot before polling: a filtered/no-slot poll
         # must not fetch-and-advance-cursor-then-discard.
         slot_allowed, slot_claim = await self._reserve_global_slot()
@@ -663,6 +671,65 @@ class SchedulerEngine:
             metadata={"deferral_count": count},
         )
 
+    async def _check_budget(self, schedule: dict) -> bool:
+        """Return True if the schedule has exhausted its configured spend budget.
+
+        Pre-fire cumulative gate, not a mid-run interrupt: a run already in
+        flight is not killed when it crosses the budget line, because its
+        cost is unknown until it terminates. So a schedule may overshoot its
+        budget by up to one run's cost before the next fire is refused. Pair
+        with LIONAGI_STUDIO_INVOCATION_DEADLINE_SECONDS to bound a single
+        run's worst-case spend.
+
+        Unlike max_runs / the global slot this is a pure DB read with
+        nothing to reserve or release -- both budget_usd and budget_tokens
+        unset means unbounded (always False). Either configured bound
+        tripping is sufficient to report exhausted.
+        """
+        budget_usd = schedule.get("budget_usd")
+        budget_tokens = schedule.get("budget_tokens")
+        if not budget_usd and not budget_tokens:
+            return False
+        spend = await self._svc.sum_schedule_spend(schedule["id"])
+        if budget_usd and spend["cost_usd"] >= budget_usd:
+            return True
+        if budget_tokens and spend["tokens"] >= budget_tokens:
+            return True
+        return False
+
+    async def _disable_for_budget_exhausted(self, schedule: dict, now: float) -> None:
+        """Auto-disable a schedule that has exhausted its spend budget, recording why.
+
+        Shared by the two tick-loop fire paths (_maybe_fire, _tick_github);
+        fire_now() refuses instead of disabling (mirrors max_runs).
+        """
+        _log.info(
+            "Schedule %s (%s) has exhausted its budget (budget_usd=%s, budget_tokens=%s); "
+            "disabling instead of firing",
+            schedule.get("name"),
+            schedule["id"],
+            schedule.get("budget_usd"),
+            schedule.get("budget_tokens"),
+        )
+        skipped_run_id = uuid.uuid4().hex[:12]
+        await create_skipped_run(
+            self._svc,
+            run_id=skipped_run_id,
+            schedule=schedule,
+            trigger_context={"budget_exhausted": True, "fired_at": now},
+            now=now,
+            reason_code=ScheduleReasons.BUDGET_EXHAUSTED,
+            reason_summary=(
+                "Schedule fire refused and the schedule disabled because its "
+                "configured spend budget is exhausted."
+            ),
+            metadata={
+                "budget_usd": schedule.get("budget_usd"),
+                "budget_tokens": schedule.get("budget_tokens"),
+            },
+        )
+        await self._svc.update_schedule(schedule["id"], enabled=0)
+
     async def _maybe_fire(self, schedule: dict, now: float) -> None:
         if schedule.get("overlap_policy") == "skip" and schedule["id"] in self._running:
             _log.debug("Skipping overlapping fire for %s", schedule["name"])
@@ -680,6 +747,10 @@ class SchedulerEngine:
             next_at = self._compute_next_fire(schedule, now)
             if next_at:
                 await self._svc.update_schedule(schedule["id"], next_fire_at=next_at)
+            return
+
+        if await self._check_budget(schedule):
+            await self._disable_for_budget_exhausted(schedule, now)
             return
 
         allowed, claim = await self._reserve_max_runs_budget(schedule)

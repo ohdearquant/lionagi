@@ -824,6 +824,8 @@ class StateDB:
                           overlap_policy      TEXT    NOT NULL DEFAULT 'skip'
                                               CHECK(overlap_policy IN ('skip', 'allow')),
                           max_runs            INTEGER,
+                          budget_usd          REAL,
+                          budget_tokens       INTEGER,
                           project             TEXT,
                           created_at          REAL    NOT NULL,
                           updated_at          REAL    NOT NULL
@@ -1953,16 +1955,16 @@ class StateDB:
                         action_kind, action_model, action_prompt, action_agent,
                         action_playbook, action_flow_yaml, action_project, action_extra_args,
                         on_success, on_fail, last_fired_at, next_fire_at,
-                        missed_fire_policy, overlap_policy, max_runs, project,
-                        created_at, updated_at)
+                        missed_fire_policy, overlap_policy, max_runs, budget_usd, budget_tokens,
+                        project, created_at, updated_at)
                        VALUES (:id, :name, :description, :enabled, :trigger_type,
                                :cron_expr, :interval_sec, :github_repo, :github_filter,
                                :github_cursor, :poll_interval_sec,
                                :action_kind, :action_model, :action_prompt, :action_agent,
                                :action_playbook, :action_flow_yaml, :action_project, :action_extra_args,
                                :on_success, :on_fail, :last_fired_at, :next_fire_at,
-                               :missed_fire_policy, :overlap_policy, :max_runs, :project,
-                               :created_at, :updated_at)"""
+                               :missed_fire_policy, :overlap_policy, :max_runs, :budget_usd, :budget_tokens,
+                               :project, :created_at, :updated_at)"""
                 ).bindparams(
                     bindparam("github_filter", type_=JSON),
                     bindparam("action_extra_args", type_=JSON),
@@ -1996,6 +1998,8 @@ class StateDB:
                     "missed_fire_policy": schedule.get("missed_fire_policy", "skip"),
                     "overlap_policy": schedule.get("overlap_policy", "skip"),
                     "max_runs": schedule.get("max_runs"),
+                    "budget_usd": schedule.get("budget_usd"),
+                    "budget_tokens": schedule.get("budget_tokens"),
                     "project": schedule.get("project"),
                     "created_at": schedule.get("created_at", now),
                     "updated_at": schedule.get("updated_at", now),
@@ -2087,6 +2091,8 @@ class StateDB:
             "missed_fire_policy",
             "overlap_policy",
             "max_runs",
+            "budget_usd",
+            "budget_tokens",
             "project",
         }
         bad = set(fields) - allowed
@@ -2235,6 +2241,30 @@ class StateDB:
         async with self._read() as conn:
             row = (await conn.execute(text(query), params)).mappings().first()
         return int(row["n"]) if row else 0
+
+    async def sum_schedule_spend(self, schedule_id: str) -> dict[str, Any]:
+        """Sum cost/token usage across every session a schedule has spawned.
+
+        Joins schedule_runs to sessions through invocation_id and totals
+        total_cost_usd / (input_tokens + output_tokens). Used for the
+        budget_usd / budget_tokens pre-fire gate: mirrors count_schedule_runs
+        but sums a spend column instead of counting rows.
+        """
+        query = (
+            "SELECT COALESCE(SUM(s.total_cost_usd), 0) AS cost_usd, "
+            "COALESCE(SUM(s.input_tokens), 0) AS input_tokens, "
+            "COALESCE(SUM(s.output_tokens), 0) AS output_tokens "
+            "FROM schedule_runs sr JOIN sessions s ON s.invocation_id = sr.invocation_id "
+            "WHERE sr.schedule_id = :schedule_id"
+        )
+        async with self._read() as conn:
+            row = (await conn.execute(text(query), {"schedule_id": schedule_id})).mappings().first()
+        if not row:
+            return {"cost_usd": 0.0, "tokens": 0}
+        return {
+            "cost_usd": float(row["cost_usd"] or 0),
+            "tokens": int(row["input_tokens"] or 0) + int(row["output_tokens"] or 0),
+        }
 
     async def schedule_run_streak(self, schedule_id: str) -> tuple[int, str | None]:
         """Consecutive terminal 'failed' streak and most recent status, newest-first, capped at 50 rows."""

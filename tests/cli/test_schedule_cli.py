@@ -1168,3 +1168,78 @@ def test_schedule_create_zero_poll_interval_errors(monkeypatch, capsys):
     assert outcome["result"] == 1
     assert outcome["called"] is False
     assert "must be a positive integer" in capsys.readouterr().err
+
+
+# ---------------------------------------------------------------------------
+# _cmd_create: --max-cost-usd / --max-tokens spend-budget flags
+# ---------------------------------------------------------------------------
+
+
+def test_schedule_create_max_cost_usd_wired_to_budget_usd(monkeypatch):
+    """--max-cost-usd parses to a float and wires body['budget_usd']."""
+    outcome = _run_create_argv(monkeypatch, ["--max-cost-usd", "12.5"])
+    assert outcome["result"] == 0
+    assert outcome["body"]["budget_usd"] == 12.5
+
+
+def test_schedule_create_max_tokens_wired_to_budget_tokens(monkeypatch):
+    """--max-tokens parses to an int and wires body['budget_tokens']."""
+    outcome = _run_create_argv(monkeypatch, ["--max-tokens", "50000"])
+    assert outcome["result"] == 0
+    assert outcome["body"]["budget_tokens"] == 50000
+
+
+def test_schedule_create_max_cost_usd_and_max_tokens_together(monkeypatch):
+    """Both flags can be set on the same schedule; either bound trips the gate."""
+    outcome = _run_create_argv(monkeypatch, ["--max-cost-usd", "5", "--max-tokens", "10000"])
+    assert outcome["result"] == 0
+    assert outcome["body"]["budget_usd"] == 5.0
+    assert outcome["body"]["budget_tokens"] == 10000
+
+
+def test_schedule_create_negative_max_cost_usd_errors(monkeypatch, capsys):
+    """A negative --max-cost-usd returns 1 and never posts to the API."""
+    outcome = _run_create_argv(monkeypatch, ["--max-cost-usd", "-1"])
+    assert outcome["result"] == 1
+    assert outcome["called"] is False
+    assert "finite positive number" in capsys.readouterr().err
+
+
+def test_schedule_create_zero_max_cost_usd_errors(monkeypatch, capsys):
+    """A zero --max-cost-usd returns 1 and never posts to the API."""
+    outcome = _run_create_argv(monkeypatch, ["--max-cost-usd", "0"])
+    assert outcome["result"] == 1
+    assert outcome["called"] is False
+    assert "finite positive number" in capsys.readouterr().err
+
+
+@pytest.mark.parametrize("bad_value", ["nan", "inf", "-inf"])
+def test_schedule_create_non_finite_max_cost_usd_errors(monkeypatch, capsys, bad_value):
+    """A non-finite --max-cost-usd (nan/inf/-inf) is rejected before hitting the API.
+
+    argparse's float() accepts these, and a plain ``<= 0`` check lets nan/inf slip
+    through — nan would round-trip to NULL in SQLite and silently unbound the gate.
+    """
+    # Use the --flag=value form: a bare "-inf" leading dash would be parsed as an
+    # option by argparse. The equals form passes it through as the value so our
+    # own finite-check is what rejects it.
+    outcome = _run_create_argv(monkeypatch, [f"--max-cost-usd={bad_value}"])
+    assert outcome["result"] == 1
+    assert outcome["called"] is False
+    assert "finite positive number" in capsys.readouterr().err
+
+
+def test_schedule_create_negative_max_tokens_errors(monkeypatch, capsys):
+    """A negative --max-tokens returns 1 and never posts to the API."""
+    outcome = _run_create_argv(monkeypatch, ["--max-tokens", "-5"])
+    assert outcome["result"] == 1
+    assert outcome["called"] is False
+    assert "must be a positive integer" in capsys.readouterr().err
+
+
+def test_schedule_create_zero_max_tokens_errors(monkeypatch, capsys):
+    """A zero --max-tokens returns 1 and never posts to the API."""
+    outcome = _run_create_argv(monkeypatch, ["--max-tokens", "0"])
+    assert outcome["result"] == 1
+    assert outcome["called"] is False
+    assert "must be a positive integer" in capsys.readouterr().err

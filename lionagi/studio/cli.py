@@ -7,6 +7,7 @@ from __future__ import annotations
 import argparse
 import contextlib
 import json
+import math
 import os
 import shutil
 import subprocess
@@ -776,6 +777,22 @@ def _cmd_create(args: argparse.Namespace) -> int:
         body["poll_interval_sec"] = args.poll_interval
     if max_runs is not None:
         body["max_runs"] = max_runs
+    if getattr(args, "max_cost_usd", None) is not None:
+        if not math.isfinite(args.max_cost_usd) or args.max_cost_usd <= 0:
+            print(
+                f"Error: --max-cost-usd must be a finite positive number, got {args.max_cost_usd}.",
+                file=sys.stderr,
+            )
+            return 1
+        body["budget_usd"] = args.max_cost_usd
+    if getattr(args, "max_tokens", None) is not None:
+        if args.max_tokens <= 0:
+            print(
+                f"Error: --max-tokens must be a positive integer, got {args.max_tokens}.",
+                file=sys.stderr,
+            )
+            return 1
+        body["budget_tokens"] = args.max_tokens
     if args.prompt:
         body["action_prompt"] = args.prompt
     if args.model:
@@ -1031,6 +1048,29 @@ def add_schedule_subparser(subparsers: argparse._SubParsersAction) -> argparse.A
         dest="once",
         action="store_true",
         help="Sugar for --max-runs 1 — fire once, then auto-disable.",
+    )
+    create_p.add_argument(
+        "--max-cost-usd",
+        dest="max_cost_usd",
+        type=float,
+        metavar="USD",
+        help=(
+            "Auto-disable this schedule once its cumulative session spend "
+            "reaches USD (default: unlimited). Pre-fire cumulative gate: an "
+            "in-flight run is not interrupted, so the schedule may overshoot "
+            "by up to one run's cost before the next fire is refused."
+        ),
+    )
+    create_p.add_argument(
+        "--max-tokens",
+        dest="max_tokens",
+        type=int,
+        metavar="N",
+        help=(
+            "Auto-disable this schedule once its cumulative session token "
+            "usage (input+output) reaches N (default: unlimited). Same "
+            "pre-fire cumulative semantics as --max-cost-usd."
+        ),
     )
     create_p.add_argument(
         "--on-success",
