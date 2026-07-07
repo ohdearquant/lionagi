@@ -304,7 +304,8 @@ async def compile_workflow_def(
             # persistence hook wired up in workflow_run.py without ever
             # producing a message for it to persist. chat_and_record() records
             # the turn through the same hooked a_add_message path communicate()
-            # uses, while returning the same plain-text result "chat" would.
+            # uses, and returns the assistant response text for downstream
+            # routing/context.
             op_id = builder.add_operation("chat_and_record", node_id=node_id, instruction=prompt)
         elif kind == "engine":
             engine_def_id = config.get("engine_def_id")
