@@ -554,6 +554,12 @@ def make_engine_operation(
             spec_input, session=session, on_branch_created=on_branch_created, **run_kwargs
         )
 
+        if getattr(engine, "_total_agent_failure", False):
+            agent_errors = getattr(engine, "_agent_errors", [])
+            return {
+                "error": f"all {len(agent_errors)} sub-agent(s) failed: {'; '.join(agent_errors)}"
+            }
+
         if hasattr(result, "model_dump"):
             return result.model_dump(mode="json")
         if isinstance(result, str):

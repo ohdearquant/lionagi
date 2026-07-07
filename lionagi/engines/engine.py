@@ -205,6 +205,9 @@ class EngineRun:
         # the engine_runs.error column even when the overall status is "completed".
         # Each entry is a string like "<agent> x<attempts>".
         self._emission_failures: list[str] = []
+        # Collects terminal sub-agent failures (e.g. missing API key) so a run
+        # where every agent errored can be surfaced as failed instead of green.
+        self._agent_errors: list[str] = []
 
     @property
     def events(self) -> Pile:
@@ -247,6 +250,8 @@ class EngineRun:
         return self.session.observe(*keys, handler=handler, role=role)
 
     def notify(self, kind: str, **data: Any) -> None:
+        if kind == "agent_error":
+            self._agent_errors.append(f"{data.get('agent')}: {data.get('error')}")
         if self.on_event:
             self.on_event({"type": kind, **data})
 
@@ -720,6 +725,8 @@ class Engine:
         # Reset per-run diagnostics on the engine instance so a reused engine
         # never carries emission failures from a previous run into the next one.
         self._emission_failures: list[str] = []
+        self._agent_errors: list[str] = []
+        self._total_agent_failure: bool = False
         watchdog: asyncio.Task | None = None
         if run._deadline is not None:
             watchdog = asyncio.ensure_future(run._deadline_watchdog())
@@ -780,6 +787,13 @@ class Engine:
             # the real list regardless of which return/exception path was taken.
             # Uses a fresh list copy so no shared-reference aliasing between runs.
             self._emission_failures = list(run._emission_failures)
+            # Copy per-run agent-failure diagnostics the same way; flag total
+            # failure only when every agent made for this run terminally
+            # errored, so partial/soft-empty runs are never over-flagged.
+            self._agent_errors = list(run._agent_errors)
+            self._total_agent_failure = (
+                run.agents_made > 0 and len(run._agent_errors) >= run.agents_made
+            )
             if watchdog is not None and not watchdog.done():
                 watchdog.cancel()
                 with contextlib.suppress(asyncio.CancelledError):

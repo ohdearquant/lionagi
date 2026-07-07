@@ -160,6 +160,7 @@ async def test_successful_engine_run_returns_0(monkeypatch, capsys):
         return "This is the research result."
 
     mock_engine = MagicMock()
+    mock_engine._total_agent_failure = False
     mock_engine.run = _mock_run
     MockEngineClass = MagicMock(return_value=mock_engine)
     monkeypatch.setattr(engine_mod, "_import_engine_class", lambda m, n: MockEngineClass)
@@ -186,6 +187,7 @@ async def test_engine_failure_returns_1(monkeypatch):
         raise RuntimeError("LLM unavailable")
 
     mock_engine = MagicMock()
+    mock_engine._total_agent_failure = False
     mock_engine.run = _mock_run_fail
     MockEngineClass = MagicMock(return_value=mock_engine)
     monkeypatch.setattr(engine_mod, "_import_engine_class", lambda m, n: MockEngineClass)
@@ -224,6 +226,7 @@ async def test_code_result_recorded_shape_serialized(monkeypatch, capsys):
         return pydantic_result
 
     mock_engine = MagicMock()
+    mock_engine._total_agent_failure = False
     mock_engine.run = _mock_run
     MockEngineClass = MagicMock(return_value=mock_engine)
     monkeypatch.setattr(engine_mod, "_import_engine_class", lambda m, n: MockEngineClass)
@@ -274,6 +277,7 @@ async def test_export_dir_persisted_from_args_coding(monkeypatch, capsys):
         return pydantic_result
 
     mock_engine = MagicMock()
+    mock_engine._total_agent_failure = False
     mock_engine.run = _mock_run
     MockEngineClass = MagicMock(return_value=mock_engine)
     monkeypatch.setattr(engine_mod, "_import_engine_class", lambda m, n: MockEngineClass)
@@ -340,6 +344,7 @@ async def test_export_dir_persisted_from_args_hypothesis(monkeypatch, capsys):
         return "Hypothesis: X causes Y because Z."
 
     mock_engine = MagicMock()
+    mock_engine._total_agent_failure = False
     mock_engine.run = _mock_run
     MockEngineClass = MagicMock(return_value=mock_engine)
     monkeypatch.setattr(engine_mod, "_import_engine_class", lambda m, n: MockEngineClass)
@@ -404,6 +409,7 @@ async def test_export_dir_none_when_not_passed(monkeypatch, capsys):
         return "Research findings."
 
     mock_engine = MagicMock()
+    mock_engine._total_agent_failure = False
     mock_engine.run = _mock_run
     MockEngineClass = MagicMock(return_value=mock_engine)
     monkeypatch.setattr(engine_mod, "_import_engine_class", lambda m, n: MockEngineClass)
@@ -466,6 +472,7 @@ async def test_cancelled_error_marks_row_cancelled(monkeypatch):
         raise asyncio.CancelledError("test cancel")
 
     mock_engine = MagicMock()
+    mock_engine._total_agent_failure = False
     mock_engine.run = _mock_run_cancel
     MockEngineClass = MagicMock(return_value=mock_engine)
     monkeypatch.setattr(engine_mod, "_import_engine_class", lambda m, n: MockEngineClass)
@@ -530,6 +537,7 @@ async def test_keyboard_interrupt_marks_row_cancelled(monkeypatch):
         raise KeyboardInterrupt("SIGINT simulation")
 
     mock_engine = MagicMock()
+    mock_engine._total_agent_failure = False
     mock_engine.run = _mock_run_interrupt
     MockEngineClass = MagicMock(return_value=mock_engine)
     monkeypatch.setattr(engine_mod, "_import_engine_class", lambda m, n: MockEngineClass)
@@ -593,6 +601,7 @@ async def test_db_insert_called_on_success(monkeypatch, capsys):
         return "done"
 
     mock_engine = MagicMock()
+    mock_engine._total_agent_failure = False
     mock_engine.run = _mock_run
     MockEngineClass = MagicMock(return_value=mock_engine)
     monkeypatch.setattr(engine_mod, "_import_engine_class", lambda m, n: MockEngineClass)
@@ -653,6 +662,7 @@ async def test_no_persist_skips_db(monkeypatch, capsys):
         return "no persist result"
 
     mock_engine = MagicMock()
+    mock_engine._total_agent_failure = False
     mock_engine.run = _mock_run
     MockEngineClass = MagicMock(return_value=mock_engine)
     monkeypatch.setattr(engine_mod, "_import_engine_class", lambda m, n: MockEngineClass)
@@ -912,6 +922,7 @@ async def test_engine_run_skips_signal_binding_on_session_id_collision(
         return "done"
 
     mock_engine = MagicMock()
+    mock_engine._total_agent_failure = False
     mock_engine.run = _mock_run
     monkeypatch.setattr(
         engine_mod, "_import_engine_class", lambda m, n: MagicMock(return_value=mock_engine)

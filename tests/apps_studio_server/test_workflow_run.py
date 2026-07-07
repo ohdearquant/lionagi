@@ -64,6 +64,20 @@ class _FakeEngine:
         return {"echo": spec_input}
 
 
+class _AllAgentsFailedFakeEngine:
+    """Stand-in for an Engine whose every sub-agent terminally errored (e.g.
+    missing API key) — sets the same diagnostics EngineRun/Engine.run() would
+    after a real all-agent-failed run, without any network calls."""
+
+    def __init__(self, **kwargs: Any) -> None:
+        self.kwargs = kwargs
+
+    async def run(self, spec_input: str, *, session: Any = None, **kwargs: Any) -> str:
+        self._agent_errors = ["worker-1: API key is required", "worker-2: API key is required"]
+        self._total_agent_failure = True
+        return ""
+
+
 def _mock_chat_branch(name: str = "workflow-default"):
     """Branch whose chat_model is mocked — copies the convention already
     established in tests/operations/test_edge_conditions_tdd.py."""
@@ -162,6 +176,54 @@ async def test_workflow_run_end_to_end(patched_env):
     assert set(edges_by_id) == {"e1", "e2"}
     assert edges_by_id["e2"]["condition"] == "result != None"
     assert edges_by_id["e2"]["mode"] == "code"
+
+
+async def test_workflow_run_all_agents_failed_reports_failed_not_completed(
+    patched_env, monkeypatch
+):
+    """An engine node whose every sub-agent terminally errored (all-auth-failed)
+    must surface as an {"error": ...} operation result and a run status of
+    'failed', not silently report 'completed' with an empty result."""
+    wf_svc, engine_defs_svc = patched_env
+
+    import lionagi.cli.engine as cli_engine
+
+    monkeypatch.setitem(
+        cli_engine._KIND_META,
+        "research",
+        {
+            **cli_engine._KIND_META["research"],
+            "cls_path": (
+                "tests.apps_studio_server.test_workflow_run",
+                "_AllAgentsFailedFakeEngine",
+            ),
+        },
+    )
+
+    engine_def = await engine_defs_svc.create_engine_def(
+        {"name": "all-fail-eng", "kind": "research"}
+    )
+
+    spec = _spec()
+    spec["nodes"][2]["config"]["engine_def_id"] = engine_def["id"]
+    created = await wf_svc.create_workflow_def({"name": "all-fail-flow", "spec_json": spec})
+    def_id = created["id"]
+
+    from lionagi.session.session import Session
+    from lionagi.studio.services.workflow_run import run_workflow_def
+
+    mock_branch = _mock_chat_branch()
+    session = Session(default_branch=mock_branch)
+
+    result = await run_workflow_def(def_id, {"topic": "GQA"}, _session=session)
+
+    assert result["status"] == "failed"
+
+    from lionagi.studio.services.sessions import get_session
+
+    session_row = await get_session(result["run_id"])
+    assert session_row is not None
+    assert session_row["status"] == "failed"
 
 
 async def test_workflow_run_persists_node_lifecycle_signals(patched_env, tmp_path):
