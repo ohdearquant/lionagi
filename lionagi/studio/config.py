@@ -64,6 +64,10 @@ ZERO_SESSION_GRACE_SECONDS: int = int(
 )
 # Staleness threshold for phantom session classification.
 PHANTOM_STALE_HOURS: float = float(os.environ.get("LIONAGI_STUDIO_PHANTOM_STALE_HOURS", "1.0"))
+# Staleness threshold for the play-level reaper. Liveness-first means a play
+# whose child session process is still alive is never reaped regardless of
+# this value; it only bites orphaned/dead-runner rows.
+PLAY_STALE_HOURS: float = float(os.environ.get("LIONAGI_STUDIO_PLAY_STALE_HOURS", "6.0"))
 # Minimum seconds between consecutive periodic reaper runs (throttle).
 REAPER_INTERVAL_SECONDS: int = int(os.environ.get("LIONAGI_STUDIO_REAPER_INTERVAL_SECONDS", "300"))
 
