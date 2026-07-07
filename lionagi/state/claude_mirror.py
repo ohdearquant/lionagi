@@ -316,13 +316,19 @@ async def reconcile_session_status(
     ``completed`` session read as fresh again on the next pass and oscillate back
     to ``running``.
 
-    ADR-0094's integrity floor treats ``completed`` as terminal on the sessions
-    table for orchestrated runs, so reactivating a mirror session out of
-    ``completed`` goes through the sanctioned override path — it is a real,
-    deliberate, well-understood write (not a repair), so it is attributed to a
-    fixed system actor rather than a human operator, and it lands in
-    admin_events like any other override.
+    ADR-0094's integrity floor treats every session terminal status (not just
+    ``completed``) as terminal on the sessions table for orchestrated runs, so
+    reactivating a mirror session out of any of them goes through the
+    sanctioned override path — it is a real, deliberate, well-understood write
+    (not a repair), so it is attributed to a fixed system actor rather than a
+    human operator, and it lands in admin_events like any other override. A
+    mirror session that is idle and already sitting on a non-``completed``
+    terminal status (e.g. it was independently marked ``failed`` or
+    ``cancelled``) is left alone rather than rewritten to ``completed`` — it is
+    already terminal, and only a live transcript resuming can justify pulling
+    it back to ``running``.
     """
+    from lionagi.state.db import SESSION_TERMINAL_STATUSES
     from lionagi.state.reasons import RunReasons
 
     existing = await db.get_session(session_db_id(session_uid))
@@ -333,19 +339,37 @@ async def reconcile_session_status(
     previous = existing.get("status")
     if previous == desired:
         return
-    reactivating = previous == "completed" and desired == "running"
-    await db.update_session(
+
+    previous_terminal = previous in SESSION_TERMINAL_STATUSES
+    if previous_terminal and desired != "running":
+        return
+
+    reactivating = previous_terminal and desired == "running"
+    written = await db.update_status(
+        "session",
         session_db_id(session_uid),
-        status=desired,
+        new_status=desired,
         reason_code=RunReasons.STARTED_OK if desired == "running" else RunReasons.COMPLETED_OK,
+        reason_summary=(
+            "mirror session reactivated because transcript resumed within live_window"
+            if reactivating
+            else "mirror session became idle"
+        ),
+        evidence_refs=[{"kind": "session", "id": session_db_id(session_uid)}],
+        source="system",
+        actor="claude-mirror-reconcile",
+        expected_statuses={previous},
+        expected_updated_at=existing.get("updated_at"),
         override=reactivating,
         override_actor="claude-mirror-reconcile" if reactivating else None,
         override_justification=(
-            "mirror session dormancy reactivation: transcript resumed within live_window"
+            "mirror session terminal reactivation: transcript resumed within live_window"
             if reactivating
             else None
         ),
     )
+    if not written:
+        return
 
 
 async def link_session_lineage(

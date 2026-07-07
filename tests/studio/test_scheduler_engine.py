@@ -499,6 +499,162 @@ async def test_fire_on_success_chain_fires():
     assert chained, "Expected a chained _fire() call at depth=1"
 
 
+@pytest.mark.asyncio
+async def test_fire_invocation_finalization_cas_miss_is_checked_and_does_not_raise():
+    """A concurrent finalizer (e.g. the deadline reaper) may already have
+    moved the invocation to a terminal status by the time _fire() records its
+    own outcome. The write must be guarded (so a lost race is a checked
+    no-op) and _fire() must not raise past that point — _check_max_runs()
+    must still run."""
+    from lionagi.studio.scheduler.engine import SchedulerEngine
+
+    svc = _make_svc()
+
+    async def _update_status(entity_type, entity_id, *, new_status, **kwargs):
+        if entity_type == "invocation":
+            assert "expected_statuses" in kwargs, (
+                "invocation terminal write must pass expected_statuses so a "
+                "reaper-lost race is a checked no-op, not an unguarded write"
+            )
+            return False  # another writer already finalized this invocation
+        return True
+
+    svc.update_status = AsyncMock(side_effect=_update_status)
+    engine = SchedulerEngine(svc=svc)
+    # max_runs makes _check_max_runs() actually call count_schedule_runs(),
+    # so its execution is directly observable as a side effect that must
+    # survive the guarded, no-op invocation write above.
+    schedule = _minimal_schedule(max_runs=100)
+
+    with (
+        patch(
+            "lionagi.studio.scheduler.subprocess.build_argv",
+            return_value=(["uv", "run", "li", "agent", "ping"], None),
+        ),
+        patch(
+            "lionagi.studio.scheduler.subprocess.spawn_and_wait",
+            new=AsyncMock(return_value=(0, "")),
+        ),
+    ):
+        await engine._fire(schedule, "run-cas", trigger_context={"scheduled": True})
+
+    svc.count_schedule_runs.assert_awaited()
+
+
+@pytest.mark.asyncio
+async def test_fire_exception_after_terminal_schedule_run_does_not_rewrite_failed():
+    """A late exception after the schedule_run terminal write already
+    succeeded (e.g. resolve_invocation_terminal blowing up) must not attempt
+    an unguarded terminal rewrite from the broad-except handler."""
+    from lionagi.studio.scheduler.engine import SchedulerEngine
+
+    svc = _make_svc()
+    schedule_run_terminal_calls: list[dict] = []
+
+    async def _update_status(entity_type, entity_id, *, new_status, **kwargs):
+        if entity_type == "schedule_run" and new_status in ("completed", "failed"):
+            schedule_run_terminal_calls.append(kwargs)
+            if len(schedule_run_terminal_calls) > 1:
+                assert "expected_statuses" in kwargs, (
+                    "a second schedule_run terminal write from the broad-except "
+                    "handler must be guarded, not an unconditional overwrite"
+                )
+                return False
+        return True
+
+    svc.update_status = AsyncMock(side_effect=_update_status)
+    engine = SchedulerEngine(svc=svc)
+    schedule = _minimal_schedule()
+
+    # resolve_invocation_terminal() raises on its first call (right after the
+    # schedule_run terminal write in the normal path), but the broad-except
+    # handler's own call to it must still succeed so the test can observe the
+    # handler's schedule_run rewrite attempt in isolation.
+    resolve_calls = {"n": 0}
+
+    async def _resolve_invocation_terminal(*args, **kwargs):
+        resolve_calls["n"] += 1
+        if resolve_calls["n"] == 1:
+            raise RuntimeError("boom")
+        return ("failed", "run.failed.exception", "boom", [], {})
+
+    with (
+        patch(
+            "lionagi.studio.scheduler.subprocess.build_argv",
+            return_value=(["uv", "run", "li", "agent", "ping"], None),
+        ),
+        patch(
+            "lionagi.studio.scheduler.subprocess.spawn_and_wait",
+            new=AsyncMock(return_value=(0, "")),
+        ),
+        patch(
+            "lionagi.studio.scheduler.engine.resolve_invocation_terminal",
+            new=AsyncMock(side_effect=_resolve_invocation_terminal),
+        ),
+    ):
+        await engine._fire(schedule, "run-late-exc", trigger_context={"scheduled": True})
+
+    assert len(schedule_run_terminal_calls) == 2
+
+
+@pytest.mark.asyncio
+async def test_fire_chain_runs_when_terminal_write_loses_cas():
+    """A lost CAS race on the invocation terminal write must not swallow
+    on_success chaining — the chain still fires even though the write
+    recording this run's own outcome was a no-op."""
+    from lionagi.state.db import TransitionRejectedError
+    from lionagi.studio.scheduler.engine import SchedulerEngine
+
+    svc = _make_svc()
+
+    async def _update_status(entity_type, entity_id, *, new_status, **kwargs):
+        if entity_type == "invocation":
+            if "expected_statuses" not in kwargs:
+                # Unguarded write against a row the reaper already finalized —
+                # the real DB layer raises the terminal-status floor here.
+                raise TransitionRejectedError("invocation", entity_id, "completed", new_status)
+            return False
+        return True
+
+    svc.update_status = AsyncMock(side_effect=_update_status)
+    engine = SchedulerEngine(svc=svc)
+    schedule = _minimal_schedule(
+        on_success={"kind": "agent", "prompt": "chained prompt", "model": "gpt-4.1-mini"}
+    )
+
+    fire_calls: list[tuple] = []
+    original_fire = engine._fire
+
+    async def _patched_fire(sched, run_id, *, trigger_context, chain_parent_id=None, chain_depth=0):
+        fire_calls.append((sched["id"], chain_depth))
+        if chain_depth > 0:
+            return
+        return await original_fire(
+            sched,
+            run_id,
+            trigger_context=trigger_context,
+            chain_parent_id=chain_parent_id,
+            chain_depth=chain_depth,
+        )
+
+    engine._fire = _patched_fire  # type: ignore[method-assign]
+
+    with (
+        patch(
+            "lionagi.studio.scheduler.subprocess.build_argv",
+            return_value=(["uv", "run", "li", "agent", "ping"], None),
+        ),
+        patch(
+            "lionagi.studio.scheduler.subprocess.spawn_and_wait",
+            new=AsyncMock(return_value=(0, "")),
+        ),
+    ):
+        await original_fire(schedule, "run-chain-cas", trigger_context={}, chain_depth=0)
+
+    chained = [c for c in fire_calls if c[1] == 1]
+    assert chained, "on_success chain must still fire when the invocation write lost its CAS"
+
+
 # ---------------------------------------------------------------------------
 # SchedulerEngine.fire_now() — delegates through service
 # ---------------------------------------------------------------------------
