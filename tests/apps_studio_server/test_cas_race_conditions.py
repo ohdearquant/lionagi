@@ -906,3 +906,88 @@ def test_shared_message_fk_survivor_check_preserves_it(tmp_path, monkeypatch):
     assert not run_async(_exists_msg(unshared_msg_id)), (
         "Unshared message (pruned lineage only) must be deleted"
     )
+
+
+# ── optimistic-lock version guard: expected_updated_at ────────────────────────
+
+
+async def _get_updated_at(db_path: Path, entity_type: str, entity_id: str) -> float | None:
+    table = "sessions" if entity_type == "session" else "invocations"
+    async with StateDB(db_path) as db:
+        row = await db.fetch_one(
+            f"SELECT updated_at FROM {table} WHERE id = ?",  # noqa: S608
+            (entity_id,),
+        )
+    return row["updated_at"] if row else None
+
+
+def test_version_guard_blocks_write_when_updated_at_moved(tmp_path, monkeypatch):
+    """expected_updated_at pins the transition to a row version.
+
+    A caller that decided to act on a stale snapshot (status still in the
+    expected set, but the row was re-touched by a concurrent writer) must NOT
+    win: the bumped updated_at makes the guarded write match zero rows and
+    update_status returns False without moving the status.
+    """
+    from lionagi.state.reasons import RunReasons
+
+    db_path = tmp_path / "state.db"
+    _patch_db(monkeypatch, db_path)
+
+    sid = run_async(_make_session(db_path, status="running"))
+    snapshot = run_async(_get_updated_at(db_path, "session", sid))
+
+    # Concurrent writer re-touches the row (status stays reapable, updated_at bumps).
+    run_async(_flip_status(db_path, "session", sid, "running"))
+    moved = run_async(_get_updated_at(db_path, "session", sid))
+    assert moved != snapshot
+
+    async def _guarded(db_path: Path, sid: str) -> bool:
+        async with StateDB(db_path) as db:
+            return await db.update_status(
+                "session",
+                sid,
+                new_status="failed",
+                reason_code=RunReasons.FAILED_EXCEPTION,
+                reason_summary="stale_snapshot_write",
+                source="system",
+                actor="test_version_guard",
+                expected_statuses={"running"},
+                expected_updated_at=snapshot,  # Stale version — must lose.
+            )
+
+    result = run_async(_guarded(db_path, sid))
+    assert result is False
+    # Status untouched, updated_at is the concurrent writer's value, not ours.
+    assert run_async(_get_status(db_path, "session", sid)) == "running"
+    assert run_async(_get_updated_at(db_path, "session", sid)) == moved
+
+
+def test_version_guard_allows_write_when_updated_at_matches(tmp_path, monkeypatch):
+    """expected_updated_at matching the current row version lets the transition
+    through — the guard only blocks when the row moved."""
+    from lionagi.state.reasons import RunReasons
+
+    db_path = tmp_path / "state.db"
+    _patch_db(monkeypatch, db_path)
+
+    sid = run_async(_make_session(db_path, status="running"))
+    snapshot = run_async(_get_updated_at(db_path, "session", sid))
+
+    async def _guarded(db_path: Path, sid: str) -> bool:
+        async with StateDB(db_path) as db:
+            return await db.update_status(
+                "session",
+                sid,
+                new_status="failed",
+                reason_code=RunReasons.FAILED_EXCEPTION,
+                reason_summary="fresh_snapshot_write",
+                source="system",
+                actor="test_version_guard",
+                expected_statuses={"running"},
+                expected_updated_at=snapshot,  # Current version — must win.
+            )
+
+    result = run_async(_guarded(db_path, sid))
+    assert result is True
+    assert run_async(_get_status(db_path, "session", sid)) == "failed"

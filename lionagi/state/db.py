@@ -1441,6 +1441,7 @@ class StateDB:
         actor: str | None = None,
         metadata: dict[str, Any] | None = None,
         expected_statuses: set[str | None] | frozenset[str | None] | None = None,
+        expected_updated_at: float | None = None,
         override: bool = False,
         override_actor: str | None = None,
         override_justification: str | None = None,
@@ -1452,8 +1453,19 @@ class StateDB:
         the set to match a SQL NULL status (e.g. ``{None}`` for null-status
         sessions, ``{"running", None}`` to accept either).
 
+        When *expected_updated_at* is provided, the guarded write additionally
+        requires the row's ``updated_at`` to still equal that value — an
+        optimistic-lock version check enforced by storage (the same mechanism
+        as the ``previous_status`` compare-and-set). A concurrent writer that
+        touched the row (any status write bumps ``updated_at``) loses the race
+        and the transition is skipped. This lets a caller that decided to act
+        on a stale snapshot (status membership alone cannot distinguish "still
+        stale" from "just re-touched", e.g. a reaper vs. a fresh claim on the
+        same reapable status) refuse to act once the row has moved.
+
         Returns ``True`` when the transition was applied, ``False`` when it was
-        skipped because the current status was not in *expected_statuses*.  All
+        skipped because the current status was not in *expected_statuses* or
+        the row's ``updated_at`` no longer matches *expected_updated_at*.  All
         existing callers that ignore the return value are unaffected.
 
         ADR-0094 integrity floor: once an entity's status is terminal (per
@@ -1560,7 +1572,7 @@ class StateDB:
                             "actor": override_actor,
                         },
                     )
-                await self._apply_status_write(
+                written = await self._apply_status_write(
                     conn,
                     table,
                     canonical_type,
@@ -1574,7 +1586,13 @@ class StateDB:
                     actor=actor,
                     metadata=metadata,
                     now=now,
+                    expected_updated_at=expected_updated_at,
                 )
+                if not written:
+                    # Optimistic-lock guard lost: the row's updated_at moved
+                    # between the caller's snapshot and this write, so a
+                    # concurrent writer owns the row now. Skip, do not reject.
+                    return False
 
         if rejected:
             raise TransitionRejectedError(canonical_type, entity_id, previous_status, new_status)
@@ -1596,7 +1614,8 @@ class StateDB:
         actor: str | None,
         metadata: dict[str, Any] | None,
         now: float,
-    ) -> None:
+        expected_updated_at: float | None = None,
+    ) -> bool:
         """The actual status + status_transitions write, factored out of
         update_status() so both the ordinary and override paths share it.
 
@@ -1611,7 +1630,28 @@ class StateDB:
         PostgreSQL — unlike SQLite's `IS` extension (a NULL-safe `=` for any
         operand pair), PostgreSQL's `IS` only accepts the NULL/TRUE/FALSE
         keywords, not a bound parameter.
+
+        When *expected_updated_at* is given, the WHERE also requires
+        `updated_at = :expected_updated_at`, an optimistic-lock version check:
+        a concurrent writer that touched the row bumped `updated_at`, so this
+        UPDATE matches zero rows and the caller learns the row moved. That is a
+        legitimate skip, not the storage anomaly the no-guard path raises on,
+        so return ``False`` instead of raising when the version guard is what
+        lost. Returns ``True`` when the row was written.
         """
+        params = {
+            "status": new_status,
+            "reason_code": reason_code,
+            "reason_summary": reason_summary,
+            "evidence_refs": evidence_refs or [],
+            "now": now,
+            "id": entity_id,
+            "previous_status": previous_status,
+        }
+        version_guard = ""
+        if expected_updated_at is not None:
+            version_guard = "  AND updated_at = :expected_updated_at "
+            params["expected_updated_at"] = expected_updated_at
         result = await conn.execute(
             text(
                 f"UPDATE {table} SET "  # noqa: S608
@@ -1623,18 +1663,15 @@ class StateDB:
                 "WHERE id = :id "
                 "  AND (status = :previous_status "
                 "       OR (status IS NULL AND :previous_status IS NULL))"
+                f"{version_guard}"
             ).bindparams(bindparam("evidence_refs", type_=JSON)),
-            {
-                "status": new_status,
-                "reason_code": reason_code,
-                "reason_summary": reason_summary,
-                "evidence_refs": evidence_refs or [],
-                "now": now,
-                "id": entity_id,
-                "previous_status": previous_status,
-            },
+            params,
         )
         if result.rowcount == 0:
+            if expected_updated_at is not None:
+                # Version guard lost: the row's updated_at moved under us.
+                # A legitimate concurrent writer owns the row — skip cleanly.
+                return False
             raise RuntimeError(
                 f"status CAS lost for {canonical_type} {entity_id!r}: "
                 "row changed under update_status"
@@ -1668,6 +1705,7 @@ class StateDB:
                 "metadata": metadata,
             },
         )
+        return True
 
     async def list_sessions(
         self,
