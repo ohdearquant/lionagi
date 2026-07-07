@@ -182,18 +182,23 @@ jobs:
         filters: |
           studio:
             - 'apps/studio/**'
-            - 'lionagi/studio/**'
+            - 'lionagi/**'
             - 'pyproject.toml'
+            - 'README.md'
+            - 'LICENSE'
+            - 'marketplace/**'
+            - '.claude-plugin/**'
             - '.github/workflows/ci.yml'
 
   # Build the Studio image (Vite SPA + FastAPI single-origin) whenever its inputs
   # change, so a broken image is caught on the PR that breaks it instead of at
   # release time — release.yml is the only other place the Dockerfile is built.
-  # Build only, no push; layers cached via the GitHub Actions cache. Skipped (and
-  # skip-passed by ci-gate) when nothing image-relevant changed.
+  # Build only, no push; layers cached via the GitHub Actions cache. Skipped only
+  # when the path-filter job succeeded and reported no image-relevant changes;
+  # ci-gate treats any other skip/failure/cancellation of this job as a failure.
   studio-docker:
     needs: changes
-    if: needs.changes.outputs.studio == 'true'
+    if: ${{ always() && needs.changes.result == 'success' && needs.changes.outputs.studio == 'true' }}
     runs-on: ubuntu-latest
     steps:
     - uses: actions/checkout@v7
@@ -241,21 +246,56 @@ jobs:
   # Single aggregate context for branch protection. Required status checks must
   # reference this job, never the matrix legs directly: matrix names shift with
   # the event (PRs run a subset of Python versions) and a renamed leg would
-  # strand PRs on a check that never reports. Skip-aware: a skipped dependency
-  # passes the gate; failure or cancellation fails it.
+  # strand PRs on a check that never reports. Fail-closed: every hard gate must
+  # report success; a skipped, failed, or cancelled hard gate fails the aggregate.
+  # studio-docker is the sole conditional exception, and only when the changes
+  # path-filter job itself succeeded and reported no Studio image inputs changed.
   ci-gate:
-    if: always()
-    needs: [lint, docs, test, frontend, studio-e2e, studio-docker, vscode, marketplace]
+    if: ${{ always() }}
+    needs: [lint, docs, test, frontend, studio-e2e, changes, studio-docker, vscode, marketplace]
     runs-on: ubuntu-latest
     steps:
     - name: Check aggregate result
+      env:
+        NEEDS_CONTEXT: ${{ toJSON(needs) }}
       run: |
-        results='${{ join(needs.*.result, ' ') }}'
-        echo "job results: $results"
-        case "$results" in
-          *failure*|*cancelled*) echo "a required job failed or was cancelled"; exit 1 ;;
-          *) echo "all required jobs succeeded or were skipped" ;;
-        esac
+        python - <<'PY'
+        import json
+        import os
+        import sys
+
+        needs = json.loads(os.environ["NEEDS_CONTEXT"])
+        hard_gates = [
+            "lint",
+            "docs",
+            "test",
+            "frontend",
+            "studio-e2e",
+            "changes",
+            "vscode",
+            "marketplace",
+        ]
+
+        bad = [
+            f"{name}={needs[name]['result']}"
+            for name in hard_gates
+            if needs[name]["result"] != "success"
+        ]
+
+        studio_changed = needs["changes"].get("outputs", {}).get("studio")
+        studio_result = needs["studio-docker"]["result"]
+        if studio_changed == "true":
+            if studio_result != "success":
+                bad.append(f"studio-docker={studio_result} while studio inputs changed")
+        elif studio_result not in ("success", "skipped"):
+            bad.append(f"studio-docker={studio_result} while studio inputs did not change")
+
+        if bad:
+            print("ci-gate failed:", ", ".join(bad))
+            sys.exit(1)
+
+        print("ci-gate passed: required jobs succeeded; studio-docker skip, if any, was path-filtered")
+        PY
 
   publish:
     needs: [lint, test]
