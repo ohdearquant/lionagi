@@ -9,6 +9,7 @@ from typing import Any
 from fastapi import HTTPException
 from pydantic import BaseModel
 
+from lionagi._errors import NotFoundError
 from lionagi.state.db import DEFAULT_DB_PATH, StateDB
 
 from ..registry import studio_route
@@ -133,6 +134,15 @@ class TagBody(BaseModel):
 
 @studio_route("/sessions/{session_id}/tags", method="POST", area="sessions", name="add_run_tag")
 async def add_run_tag(session_id: str, body: TagBody) -> dict[str, Any]:
+    # Reject tagging a session that does not exist, matching the other
+    # session-child endpoints (stream, signals). list_runs() only surfaces
+    # rows joined from `sessions`, so a tag written against a stale or
+    # mistyped id would succeed with 200 yet stay invisible in /api/runs —
+    # a silent orphan. 404 instead of writing one.
+    from .sessions import session_exists
+
+    if not await session_exists(session_id):
+        raise NotFoundError(f"Session '{session_id}' not found")
     await add_tag(session_id, body.tag)
     current = await tags_for_sessions([session_id])
     return {"session_id": session_id, "tags": current.get(session_id, [])}

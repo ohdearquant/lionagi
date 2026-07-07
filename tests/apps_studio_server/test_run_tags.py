@@ -203,9 +203,10 @@ def test_session_ids_with_tags_no_matches_returns_empty_set(tmp_path, monkeypatc
 def test_add_run_tag_route_returns_current_tags(tmp_path, monkeypatch):
     db_path = tmp_path / "state.db"
     _run(_init_db(db_path))
+    sid = str(uuid.uuid4())
+    _run(_seed_session(db_path, sid))
     client = _make_client(db_path, monkeypatch)
 
-    sid = str(uuid.uuid4())
     r = client.post(f"/api/sessions/{sid}/tags", json={"tag": "urgent"})
     assert r.status_code == 200
     data = r.json()
@@ -216,19 +217,33 @@ def test_add_run_tag_route_returns_current_tags(tmp_path, monkeypatch):
 def test_add_run_tag_route_rejects_empty_tag(tmp_path, monkeypatch):
     db_path = tmp_path / "state.db"
     _run(_init_db(db_path))
+    sid = str(uuid.uuid4())
+    _run(_seed_session(db_path, sid))
     client = _make_client(db_path, monkeypatch)
 
-    sid = str(uuid.uuid4())
     r = client.post(f"/api/sessions/{sid}/tags", json={"tag": "   "})
     assert r.status_code == 422
+
+
+def test_add_run_tag_route_404_for_unknown_session(tmp_path, monkeypatch):
+    # Tagging must reject a session that does not exist, matching the other
+    # session-child routes — otherwise the tag is written but stays invisible
+    # in /api/runs (which only surfaces rows joined from `sessions`).
+    db_path = tmp_path / "state.db"
+    _run(_init_db(db_path))
+    client = _make_client(db_path, monkeypatch)
+
+    r = client.post(f"/api/sessions/{uuid.uuid4()}/tags", json={"tag": "urgent"})
+    assert r.status_code == 404
 
 
 def test_remove_run_tag_route(tmp_path, monkeypatch):
     db_path = tmp_path / "state.db"
     _run(_init_db(db_path))
+    sid = str(uuid.uuid4())
+    _run(_seed_session(db_path, sid))
     client = _make_client(db_path, monkeypatch)
 
-    sid = str(uuid.uuid4())
     client.post(f"/api/sessions/{sid}/tags", json={"tag": "urgent"})
     r = client.delete(f"/api/sessions/{sid}/tags/urgent")
     assert r.status_code == 200
@@ -412,9 +427,10 @@ def test_remove_run_tag_route_handles_slash_in_tag(tmp_path, monkeypatch):
     """
     db_path = tmp_path / "state.db"
     _run(_init_db(db_path))
+    sid = str(uuid.uuid4())
+    _run(_seed_session(db_path, sid))
     client = _make_client(db_path, monkeypatch)
 
-    sid = str(uuid.uuid4())
     r = client.post(f"/api/sessions/{sid}/tags", json={"tag": "team/backend"})
     assert r.status_code == 200
     assert r.json()["tags"] == ["team/backend"]
