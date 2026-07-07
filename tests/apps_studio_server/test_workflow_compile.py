@@ -298,6 +298,18 @@ async def test_compile_edge_to_unknown_target_raises_with_edge_id():
     assert exc_info.value.edge_id == "e3"
 
 
+async def test_compile_condition_on_input_edge_is_rejected():
+    """A condition on an edge from an 'input' node is dropped with the edge, so
+    it cannot gate the target — the target would run unconditionally. The
+    compiler must reject it (with the edge id) rather than silently ignore it.
+    """
+    spec = _make_spec()
+    spec["edges"][0]["condition"] = "context['enabled'] == True"  # e1: n1(input) -> n2
+    with pytest.raises(WorkflowCompileError) as exc_info:
+        await compile_workflow_def(spec, resolve_engine_def=_resolve_ok)
+    assert exc_info.value.edge_id == "e1"
+
+
 async def test_compile_cycle_raises():
     spec = _make_spec()
     spec["edges"].append({"id": "e3", "from": "n3", "to": "n2"})  # n2->n3->n2

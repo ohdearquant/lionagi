@@ -331,7 +331,19 @@ async def compile_workflow_def(
             )
         src_op = id_map.get(src_wf)
         if src_op is None:
-            # Source is an 'input' node — no Operation-level edge needed.
+            # Source is an 'input' node — no Operation-level edge is created.
+            # A condition on such an edge cannot gate anything (the edge is
+            # dropped), so the target would run unconditionally — silently
+            # ignoring the guard. Reject it rather than compile a misleading
+            # unconditional run; gating on input must go through an
+            # intermediate executable node that carries the condition.
+            if e.get("condition"):
+                raise WorkflowCompileError(
+                    "a condition on an edge from an 'input' node is not "
+                    "supported (the edge carries no runtime gate); gate via an "
+                    "intermediate node instead",
+                    edge_id=edge_id,
+                )
             continue
 
         condition = None
