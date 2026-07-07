@@ -17,7 +17,7 @@
 
 import type { RunSummary } from "@/lib/types";
 import type { InvocationSummary } from "@/lib/api";
-import { deriveDisplayStatus, type RunStatusInput } from "@/lib/runStatus";
+import { deriveDisplayStatus, isEffectivelyActive, type RunStatusInput } from "@/lib/runStatus";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -113,9 +113,11 @@ function elapsedSec(startedAt: number | null | undefined, nowSec: number): numbe
 // Active/terminal is the same lifecycle axis RunDetail and the mission board
 // use — route it through the one shared classifier so Fleet never drifts
 // from either (the exact list-vs-detail bug this closes, on the fleet view).
+// Also excludes running rows the shared health classifier has confirmed
+// dead (stale/orphaned/zombie), so a killed process can't count as an
+// active Fleet agent just because its DB status column still says running.
 function isActive(entity: RunStatusInput): boolean {
-  const derived = deriveDisplayStatus(entity);
-  return derived === "running" || derived === "queued";
+  return isEffectivelyActive(entity);
 }
 
 function needsAttention(row: AgentRow): boolean {

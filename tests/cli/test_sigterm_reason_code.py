@@ -54,6 +54,35 @@ def test_cancelled_with_plain_cancel_but_latched_flag_maps_to_cancelled_sigterm(
     assert "sigterm_external" in summary
 
 
+def test_sigterm_latch_consumed_once_plain_later_cancel_stays_system():
+    # A latched SIGTERM must label exactly one resolution, not every
+    # subsequent cancel in the same process — otherwise an unrelated later
+    # run/test inherits an earlier run's external-SIGTERM verdict.
+    cu._SIGTERM_RECEIVED.set()
+    first_code, _, _ = resolve_run_reason(status="cancelled", exception=None)
+    assert first_code == RunReasons.CANCELLED_SIGTERM
+
+    second_code, second_summary, _ = resolve_run_reason(status="cancelled", exception=None)
+    assert second_code == RunReasons.CANCELLED_SYSTEM
+    assert "sigterm" not in second_summary.lower()
+
+
+def test_sigterm_interrupt_path_still_consumes_latch_so_next_run_stays_system():
+    # When the explicit SigtermInterrupt reaches teardown while the handler has
+    # also set the latch, the interrupt classifies this run — but the latch must
+    # still be consumed, or the next unrelated cancel inherits a stale SIGTERM.
+    cu._SIGTERM_RECEIVED.set()
+    first_code, _, _ = resolve_run_reason(
+        status="cancelled",
+        exception=SigtermInterrupt("process received SIGTERM"),
+    )
+    assert first_code == RunReasons.CANCELLED_SIGTERM
+
+    second_code, second_summary, _ = resolve_run_reason(status="cancelled", exception=None)
+    assert second_code == RunReasons.CANCELLED_SYSTEM
+    assert "sigterm" not in second_summary.lower()
+
+
 def test_cancelled_without_sigterm_stays_cancelled_system():
     code, summary, _ = resolve_run_reason(status="cancelled", exception=None)
     assert code == RunReasons.CANCELLED_SYSTEM
@@ -86,11 +115,15 @@ _SUBPROCESS_SCRIPT = textwrap.dedent("""\
         finally:
             # The persist teardown's view: the exception in flight is a plain
             # cancellation, but the handler has already latched the flag, so
-            # the resolved reason must be the external-SIGTERM one.
+            # the resolved reason must be the external-SIGTERM one. The latch
+            # is consumed by resolve_run_reason, so it must read back False
+            # afterward (a later run/test must not inherit this SIGTERM).
             with _anyio.CancelScope(shield=True):
+                flag_before = sigterm_received()
                 code, summary, _ = resolve_run_reason(status="cancelled", exception=None)
+                flag_after = sigterm_received()
                 with open(SENTINEL, "w") as f:
-                    f.write(f"{sigterm_received()}|{code}|{summary}")
+                    f.write(f"{flag_before}|{flag_after}|{code}|{summary}")
 
     try:
         run_async(long_running())
@@ -124,7 +157,8 @@ def test_external_sigterm_resolves_sigterm_reason_at_teardown(tmp_path):
             proc.wait()
 
     assert proc.returncode == 143
-    flag, code, summary = sentinel.read_text().split("|", 2)
-    assert flag == "True"
+    flag_before, flag_after, code, summary = sentinel.read_text().split("|", 3)
+    assert flag_before == "True"
+    assert flag_after == "False"
     assert code == "run.cancelled.sigterm"
     assert "sigterm_external" in summary

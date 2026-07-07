@@ -66,3 +66,28 @@ def test_no_pid_but_session_id_in_snapshot_is_alive():
 @pytest.mark.parametrize("meta", [None, "not-json", {"pid": "garbage"}])
 def test_unparseable_metadata_falls_through_to_unknown(meta):
     assert process_liveness({"id": "s1", "node_metadata": meta}, None, ps_snapshot="") is None
+
+
+def test_node_metadata_pid_with_matching_create_time_but_zombie_status_is_dead(monkeypatch):
+    """A zombie pid still resolves to _pid_is_live()==True (it exists in the
+    process table, unreaped) but is not a live worker; it must read dead."""
+    import lionagi.studio.services.admin as admin_mod
+
+    ct = 42.0
+    pid = os.getpid()
+    monkeypatch.setattr(admin_mod, "_pid_is_live", lambda _pid: True)
+
+    class _ZombieProcess:
+        def __init__(self, _pid):
+            pass
+
+        def status(self):
+            return psutil.STATUS_ZOMBIE
+
+        def create_time(self):
+            return ct
+
+    monkeypatch.setattr(psutil, "Process", _ZombieProcess)
+
+    session = {"id": "s1", "node_metadata": {"pid": pid, "pid_create_time": ct}}
+    assert process_liveness(session, None, ps_snapshot="") is False

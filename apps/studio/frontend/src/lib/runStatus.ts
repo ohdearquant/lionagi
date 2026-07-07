@@ -24,6 +24,7 @@ export interface RunStatusInput {
   status: string;
   status_reason_code?: string | null;
   status_reason_summary?: string | null;
+  effective_health?: "healthy" | "idle" | "unresponsive" | "stale" | "orphaned" | "zombie" | null;
 }
 
 const RUNNING_ALIASES = new Set(["running", "executing", "in_progress", "director-managed"]);
@@ -78,6 +79,26 @@ export function deriveDisplayStatus(run: RunStatusInput): DisplayStatus {
   // Unrecognized status: default toward "still going" rather than mislabeling
   // an unknown value as done or failed.
   return "running";
+}
+
+const DEAD_EFFECTIVE_HEALTH = new Set(["stale", "orphaned", "zombie"]);
+
+/**
+ * True when a run is both display-active (running/queued) AND, for running
+ * rows, not already confirmed dead by the shared health classifier. A row
+ * whose process is a stale/orphaned/zombie process is a Fleet/Mission bug
+ * lying in wait if isActive() only ever checks display status. Kept separate
+ * from deriveDisplayStatus() so mapping dead health here never changes the
+ * status chip a run renders elsewhere (e.g. Mission attention branching).
+ */
+export function isEffectivelyActive(run: RunStatusInput): boolean {
+  const derived = deriveDisplayStatus(run);
+  if (derived !== "running" && derived !== "queued") return false;
+  return !(
+    derived === "running" &&
+    run.effective_health != null &&
+    DEAD_EFFECTIVE_HEALTH.has(run.effective_health)
+  );
 }
 
 const VERDICT_ALIASES: Record<string, Verdict> = {

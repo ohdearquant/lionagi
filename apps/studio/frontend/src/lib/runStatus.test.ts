@@ -1,5 +1,10 @@
 import { describe, it, expect } from "vitest";
-import { deriveDisplayStatus, deriveVerdict, isOrphanedReason } from "./runStatus";
+import {
+  deriveDisplayStatus,
+  deriveVerdict,
+  isEffectivelyActive,
+  isOrphanedReason,
+} from "./runStatus";
 
 describe("deriveDisplayStatus", () => {
   it("maps a phantom-reaped run to orphaned, not failed — even though raw status is failed", () => {
@@ -105,5 +110,33 @@ describe("deriveVerdict", () => {
     expect(deriveVerdict(undefined)).toBe("none");
     expect(deriveVerdict("")).toBe("none");
     expect(deriveVerdict("some random assistant sentence mentioning reject casually")).toBe("none");
+  });
+});
+
+describe("isEffectivelyActive", () => {
+  it("treats stale/orphaned/zombie running rows as inactive", () => {
+    expect(isEffectivelyActive({ status: "running", effective_health: "stale" })).toBe(false);
+    expect(isEffectivelyActive({ status: "running", effective_health: "orphaned" })).toBe(false);
+    expect(isEffectivelyActive({ status: "running", effective_health: "zombie" })).toBe(false);
+  });
+
+  it("keeps healthy, idle, and unresponsive running rows active", () => {
+    expect(isEffectivelyActive({ status: "running", effective_health: "healthy" })).toBe(true);
+    expect(isEffectivelyActive({ status: "running", effective_health: "idle" })).toBe(true);
+    // unresponsive means alive but quiet, not dead — stays active.
+    expect(isEffectivelyActive({ status: "running", effective_health: "unresponsive" })).toBe(true);
+  });
+
+  it("keeps a running row active when effective_health is absent (unknown liveness)", () => {
+    expect(isEffectivelyActive({ status: "running" })).toBe(true);
+  });
+
+  it("queued rows remain active regardless of effective_health", () => {
+    expect(isEffectivelyActive({ status: "queued", effective_health: "stale" })).toBe(true);
+  });
+
+  it("non-active display statuses are inactive", () => {
+    expect(isEffectivelyActive({ status: "completed" })).toBe(false);
+    expect(isEffectivelyActive({ status: "failed" })).toBe(false);
   });
 });

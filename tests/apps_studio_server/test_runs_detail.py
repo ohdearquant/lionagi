@@ -422,3 +422,28 @@ async def test_get_run_surfaces_status_reason(patched_runs_svc):
     assert ok["status_reason_code"] is None
     assert ok["status_reason_summary"] is None
     assert ok["status_evidence_refs"] is None
+
+
+async def test_get_run_zombie_recorded_pid_reports_stale(patched_runs_svc, monkeypatch, tmp_path):
+    """A "running" row whose recorded pid is confirmed dead must not read
+    healthy just because it's inside the (nonexistent) zombie grace window —
+    the shared liveness oracle is the single source of truth here."""
+    svc, db_path = patched_runs_svc
+    import lionagi.studio.services.admin as admin_mod
+
+    artifacts = tmp_path / "artifacts"
+    artifacts.mkdir()
+    monkeypatch.setattr(admin_mod, "_pid_is_live", lambda _pid: False)
+
+    sid = str(uuid.uuid4())
+    await seed_session(
+        db_path,
+        session_id=sid,
+        status="running",
+        artifacts_path=str(artifacts),
+        node_metadata={"pid": 999999, "pid_create_time": 42.0},
+    )
+
+    result = await svc.get_run(sid)
+    assert result is not None
+    assert result["effective_health"] == "stale"
