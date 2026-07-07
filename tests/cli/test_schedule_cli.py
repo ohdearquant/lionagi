@@ -1202,7 +1202,7 @@ def test_schedule_create_negative_max_cost_usd_errors(monkeypatch, capsys):
     outcome = _run_create_argv(monkeypatch, ["--max-cost-usd", "-1"])
     assert outcome["result"] == 1
     assert outcome["called"] is False
-    assert "must be a positive number" in capsys.readouterr().err
+    assert "finite positive number" in capsys.readouterr().err
 
 
 def test_schedule_create_zero_max_cost_usd_errors(monkeypatch, capsys):
@@ -1210,7 +1210,23 @@ def test_schedule_create_zero_max_cost_usd_errors(monkeypatch, capsys):
     outcome = _run_create_argv(monkeypatch, ["--max-cost-usd", "0"])
     assert outcome["result"] == 1
     assert outcome["called"] is False
-    assert "must be a positive number" in capsys.readouterr().err
+    assert "finite positive number" in capsys.readouterr().err
+
+
+@pytest.mark.parametrize("bad_value", ["nan", "inf", "-inf"])
+def test_schedule_create_non_finite_max_cost_usd_errors(monkeypatch, capsys, bad_value):
+    """A non-finite --max-cost-usd (nan/inf/-inf) is rejected before hitting the API.
+
+    argparse's float() accepts these, and a plain ``<= 0`` check lets nan/inf slip
+    through — nan would round-trip to NULL in SQLite and silently unbound the gate.
+    """
+    # Use the --flag=value form: a bare "-inf" leading dash would be parsed as an
+    # option by argparse. The equals form passes it through as the value so our
+    # own finite-check is what rejects it.
+    outcome = _run_create_argv(monkeypatch, [f"--max-cost-usd={bad_value}"])
+    assert outcome["result"] == 1
+    assert outcome["called"] is False
+    assert "finite positive number" in capsys.readouterr().err
 
 
 def test_schedule_create_negative_max_tokens_errors(monkeypatch, capsys):

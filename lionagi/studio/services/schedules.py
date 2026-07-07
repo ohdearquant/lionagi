@@ -5,6 +5,7 @@
 from __future__ import annotations
 
 import logging
+import math
 import time
 import uuid
 from typing import Any
@@ -105,8 +106,13 @@ def _svc_validate_budget_usd(budget_usd: Any) -> None:
     """
     if budget_usd is None:
         return
-    if isinstance(budget_usd, bool) or not isinstance(budget_usd, int | float) or budget_usd <= 0:
-        raise ValueError(f"budget_usd must be a positive number, got {budget_usd!r}")
+    if (
+        isinstance(budget_usd, bool)
+        or not isinstance(budget_usd, int | float)
+        or not math.isfinite(budget_usd)
+        or budget_usd <= 0
+    ):
+        raise ValueError(f"budget_usd must be a finite positive number, got {budget_usd!r}")
 
 
 def _svc_validate_budget_tokens(budget_tokens: Any) -> None:

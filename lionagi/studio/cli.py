@@ -7,6 +7,7 @@ from __future__ import annotations
 import argparse
 import contextlib
 import json
+import math
 import os
 import shutil
 import subprocess
@@ -777,9 +778,9 @@ def _cmd_create(args: argparse.Namespace) -> int:
     if max_runs is not None:
         body["max_runs"] = max_runs
     if getattr(args, "max_cost_usd", None) is not None:
-        if args.max_cost_usd <= 0:
+        if not math.isfinite(args.max_cost_usd) or args.max_cost_usd <= 0:
             print(
-                f"Error: --max-cost-usd must be a positive number, got {args.max_cost_usd}.",
+                f"Error: --max-cost-usd must be a finite positive number, got {args.max_cost_usd}.",
                 file=sys.stderr,
             )
             return 1

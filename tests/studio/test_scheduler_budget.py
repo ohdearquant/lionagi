@@ -55,6 +55,31 @@ def _make_svc() -> AsyncMock:
 
 
 # ---------------------------------------------------------------------------
+# service-boundary validation — non-finite budgets must be rejected
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("bad_value", [float("nan"), float("inf"), float("-inf")])
+def test_svc_validate_budget_usd_rejects_non_finite(bad_value):
+    """A non-finite budget_usd is rejected at the service boundary.
+
+    A plain ``<= 0`` predicate lets nan/inf through; nan then round-trips to NULL
+    in SQLite and _check_budget treats the schedule as unbounded forever.
+    """
+    from lionagi.studio.services.schedules import _svc_validate_budget_usd
+
+    with pytest.raises(ValueError, match="finite positive number"):
+        _svc_validate_budget_usd(bad_value)
+
+
+@pytest.mark.parametrize("good_value", [0.01, 1, 12.5, 1000.0])
+def test_svc_validate_budget_usd_accepts_finite_positive(good_value):
+    from lionagi.studio.services.schedules import _svc_validate_budget_usd
+
+    _svc_validate_budget_usd(good_value)  # does not raise
+
+
+# ---------------------------------------------------------------------------
 # _check_budget — pure read, no reservation
 # ---------------------------------------------------------------------------
 
@@ -217,6 +242,10 @@ async def test_tick_github_disables_without_polling_when_over_budget():
     svc.create_schedule_run.assert_awaited_once()
     (run_payload,), _ = svc.create_schedule_run.await_args
     assert run_payload["trigger_context"]["budget_exhausted"] is True
+    # The budget check runs before slot reservation, so a bailed fire must leave
+    # the global concurrency counter untouched -- a regression that moved the
+    # check after _reserve_global_slot and returned without release would leak here.
+    assert engine._global_inflight == 0
 
 
 @pytest.mark.asyncio
