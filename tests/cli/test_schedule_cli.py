@@ -62,6 +62,80 @@ def test_schedule_enable_disable_trigger_delete_accept_id():
         assert args.id == "sched-123"
 
 
+def test_schedule_limits_subcommand_registered():
+    """li schedule limits is a recognized subcommand and takes no positional."""
+    from lionagi.studio.cli import add_schedule_subparser
+
+    parser = argparse.ArgumentParser()
+    sub = parser.add_subparsers(dest="command")
+    add_schedule_subparser(sub)
+    args = parser.parse_args(["schedule", "limits"])
+    assert args.schedule_action == "limits"
+
+
+def test_schedule_limits_dispatches_to_api_and_prints_values(monkeypatch, capsys):
+    """run_schedule limits calls _api('/limits') and prints cap + inflight."""
+    import lionagi.studio.cli as sched_mod
+
+    monkeypatch.setattr(
+        sched_mod,
+        "_api",
+        lambda path, **kw: {"max_scheduled_concurrent": 4, "current_inflight": 1},
+    )
+
+    from lionagi.studio.cli import add_schedule_subparser, run_schedule
+
+    parser = argparse.ArgumentParser()
+    sub = parser.add_subparsers(dest="command")
+    add_schedule_subparser(sub)
+    args = parser.parse_args(["schedule", "limits"])
+    result = run_schedule(args)
+
+    assert result == 0
+    out = capsys.readouterr().out
+    assert "4" in out
+    assert "1" in out
+
+
+def test_schedule_limits_unlimited_display(monkeypatch, capsys):
+    """A cap of 0 (unlimited) prints 'unlimited' rather than the digit 0."""
+    import lionagi.studio.cli as sched_mod
+
+    monkeypatch.setattr(
+        sched_mod,
+        "_api",
+        lambda path, **kw: {"max_scheduled_concurrent": 0, "current_inflight": 2},
+    )
+
+    from lionagi.studio.cli import add_schedule_subparser, run_schedule
+
+    parser = argparse.ArgumentParser()
+    sub = parser.add_subparsers(dest="command")
+    add_schedule_subparser(sub)
+    args = parser.parse_args(["schedule", "limits"])
+    result = run_schedule(args)
+
+    assert result == 0
+    out = capsys.readouterr().out
+    assert "unlimited" in out
+
+
+def test_schedule_limits_api_error_returns_1(monkeypatch):
+    """When _api returns None (network error), run_schedule returns 1."""
+    import lionagi.studio.cli as sched_mod
+
+    monkeypatch.setattr(sched_mod, "_api", lambda path, **kw: None)
+
+    from lionagi.studio.cli import add_schedule_subparser, run_schedule
+
+    parser = argparse.ArgumentParser()
+    sub = parser.add_subparsers(dest="command")
+    add_schedule_subparser(sub)
+    args = parser.parse_args(["schedule", "limits"])
+    result = run_schedule(args)
+    assert result == 1
+
+
 def test_schedule_runs_subcommand():
     """li schedule runs <id> parses correctly."""
     from lionagi.studio.cli import add_schedule_subparser

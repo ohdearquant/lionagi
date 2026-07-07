@@ -116,6 +116,7 @@ class ScheduleReasons:
     FIRED_DUE = "schedule.fired.due"
     SKIPPED_OVERLAP = "schedule.skipped.overlap"
     SKIPPED_MISSED_FIRE = "schedule.skipped.missed_fire"
+    DEFERRED_CAPACITY = "schedule.deferred.capacity"
 
 
 class DispatchReasons:

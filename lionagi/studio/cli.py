@@ -614,6 +614,17 @@ def _cmd_get(args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_limits(args: argparse.Namespace) -> int:
+    result = _api("/limits")
+    if result is None:
+        return 1
+    cap = result.get("max_scheduled_concurrent")
+    cap_display = "unlimited" if not cap else str(cap)
+    print(f"Max concurrent fires: {cap_display}")
+    print(f"Current in-flight:    {result.get('current_inflight', 0)}")
+    return 0
+
+
 def _validate_chain_action_node(
     action: Any,
     label: str,
@@ -926,6 +937,14 @@ def add_schedule_subparser(subparsers: argparse._SubParsersAction) -> argparse.A
     )
     get_p.add_argument("id", help="Schedule ID.")
 
+    # limits
+    sched_sub.add_parser(
+        "limits",
+        help="Show the global concurrent-fire cap and current in-flight count.",
+        epilog="Example: li schedule limits",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+
     # create
     create_p = sched_sub.add_parser(
         "create",
@@ -1079,6 +1098,7 @@ def add_schedule_subparser(subparsers: argparse._SubParsersAction) -> argparse.A
 _ACTION_MAP = {
     "list": _cmd_list,
     "get": _cmd_get,
+    "limits": _cmd_limits,
     "create": _cmd_create,
     "enable": _cmd_enable,
     "disable": _cmd_disable,
@@ -1093,7 +1113,8 @@ def run_schedule(args: argparse.Namespace) -> int:
     fn = _ACTION_MAP.get(action)
     if fn is None:
         print(
-            "Usage: li schedule <subcommand>  (list|get|create|enable|disable|trigger|delete|runs)"
+            "Usage: li schedule <subcommand>  "
+            "(list|get|limits|create|enable|disable|trigger|delete|runs)"
         )
         return 1
     return fn(args)
