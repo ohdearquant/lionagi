@@ -217,7 +217,10 @@ async def github_poll(schedule: dict) -> list[dict[str, Any]]:
         if not max_updated or updated > max_updated:
             max_updated = updated
         is_draft = bool(pr.get("draft", False))
-        if draft_filter is not None and is_draft != bool(draft_filter):
+        # Only a real JSON boolean narrows the fire set. A malformed non-bool
+        # draft filter is ignored (fail open to no filtering) rather than
+        # silently matching the wrong side — the string "false" is truthy.
+        if isinstance(draft_filter, bool) and is_draft != draft_filter:
             continue
         new_prs.append(
             {

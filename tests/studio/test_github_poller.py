@@ -8,8 +8,6 @@ from __future__ import annotations
 
 import asyncio
 
-import pytest
-
 from lionagi.studio.scheduler import github as gh_mod
 
 
@@ -151,3 +149,17 @@ def test_github_poll_cursor_advances_past_filtered_pr(monkeypatch):
     assert writes, "expected a cursor write"
     _sid, fields = writes[-1]
     assert fields.get("github_cursor") == "2026-07-07T12:00:00Z"
+
+
+def test_github_poll_non_bool_draft_filter_ignored(monkeypatch):
+    """A malformed non-bool draft filter (e.g. the string 'false') is ignored —
+    fail open to no filtering rather than silently matching the wrong side."""
+    _install(
+        monkeypatch,
+        [
+            _pr(1, "2026-07-07T10:00:00Z", draft=False),
+            _pr(2, "2026-07-07T09:00:00Z", draft=True),
+        ],
+    )
+    events = _poll({"id": "s1", "github_repo": "owner/name", "github_filter": {"draft": "false"}})
+    assert sorted(e["pr_number"] for e in events) == [1, 2]
