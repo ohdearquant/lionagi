@@ -287,8 +287,11 @@ jobs:
         if studio_changed == "true":
             if studio_result != "success":
                 bad.append(f"studio-docker={studio_result} while studio inputs changed")
-        elif studio_result not in ("success", "skipped"):
-            bad.append(f"studio-docker={studio_result} while studio inputs did not change")
+        elif studio_changed == "false":
+            if studio_result not in ("success", "skipped"):
+                bad.append(f"studio-docker={studio_result} while studio inputs did not change")
+        else:
+            bad.append(f"changes.outputs.studio={studio_changed!r} (expected 'true' or 'false')")
 
         if bad:
             print("ci-gate failed:", ", ".join(bad))

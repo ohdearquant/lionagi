@@ -266,6 +266,26 @@ def test_studio_no_docker_flag_before_start_is_preserved(capsys):
     assert "--no-docker is deprecated and ignored" in capsys.readouterr().err
 
 
+def test_studio_no_docker_combines_with_a_real_mode_flag(capsys):
+    """--no-docker must be ignorable alongside a real mode flag, not itself a mode.
+
+    Pins that --no-docker lives outside the mode mutual-exclusion group: `--no-docker --docker`
+    warns-and-ignores and still dispatches to the Docker path (a regression that moved the flag
+    into the exclusion group would make this a usage error instead)."""
+    with (
+        patch("lionagi.studio.cli._has_docker", return_value=True),
+        patch("lionagi.studio.cli._start_docker", return_value=0) as mock_docker,
+        patch("uvicorn.run"),
+    ):
+        from lionagi.cli.main import main
+
+        result = main(["studio", "--no-docker", "--docker"])
+
+    assert result == 0
+    mock_docker.assert_called_once()
+    assert "--no-docker is deprecated and ignored" in capsys.readouterr().err
+
+
 def test_studio_cross_level_mode_flags_are_mutually_exclusive():
     """Mode flags split across parser levels (`li studio --docker start --web`) must be rejected."""
     import pytest
