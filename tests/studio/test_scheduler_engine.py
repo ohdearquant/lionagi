@@ -370,7 +370,7 @@ async def test_fire_cancellation_records_cancelled_run():
 
     svc.update_schedule_run.assert_awaited()
     cancelled_calls = [
-        c for c in svc.update_schedule_run.await_args_list if c.kwargs.get("status") == "cancelled"
+        c for c in svc.update_status.await_args_list if c.kwargs.get("new_status") == "cancelled"
     ]
     assert cancelled_calls
 
@@ -653,6 +653,89 @@ async def test_fire_chain_runs_when_terminal_write_loses_cas():
 
     chained = [c for c in fire_calls if c[1] == 1]
     assert chained, "on_success chain must still fire when the invocation write lost its CAS"
+
+
+@pytest.mark.asyncio
+async def test_fire_invalid_action_invocation_cas_miss_is_checked_and_does_not_raise():
+    """The invalid-schedule-action branch (build_argv raising before any
+    process is spawned) finalizes the invocation it already created as
+    'running'. If a concurrent finalizer (e.g. the deadline reaper) wins that
+    row first, the write must be guarded (expected_statuses) so a lost race
+    is a checked no-op, not an unguarded write that raises past _fire() and
+    drops _check_max_runs()."""
+    from lionagi.studio.scheduler.engine import SchedulerEngine
+
+    svc = _make_svc()
+
+    async def _update_status(entity_type, entity_id, *, new_status, **kwargs):
+        if entity_type == "invocation":
+            assert "expected_statuses" in kwargs, (
+                "invalid-action invocation terminal write must pass "
+                "expected_statuses so a reaper-lost race is a checked "
+                "no-op, not an unguarded write"
+            )
+            return False  # another writer already finalized this invocation
+        return True
+
+    svc.update_status = AsyncMock(side_effect=_update_status)
+    engine = SchedulerEngine(svc=svc)
+    # max_runs makes _check_max_runs() actually call count_schedule_runs(),
+    # so its execution is directly observable as a side effect that must
+    # survive the guarded, no-op invocation write above.
+    schedule = _minimal_schedule(max_runs=100)
+
+    with patch(
+        "lionagi.studio.scheduler.subprocess.build_argv",
+        side_effect=RuntimeError("bad template"),
+    ):
+        await engine._fire(schedule, "run-invalid-action", trigger_context={"scheduled": True})
+
+    svc.count_schedule_runs.assert_awaited()
+
+
+@pytest.mark.asyncio
+async def test_fire_cancellation_schedule_run_cas_miss_does_not_skip_side_effects():
+    """Cancellation must not skip invocation finalization and
+    _check_max_runs() when the schedule_run cancellation write loses its CAS
+    race (e.g. another finalizer already moved the row to a terminal
+    status). The write must be a checked no-op, not an unguarded write that
+    raises and is swallowed by the handler's own except-and-log block."""
+    from lionagi.state.db import TransitionRejectedError
+    from lionagi.studio.scheduler.engine import SchedulerEngine
+
+    svc = _make_svc()
+
+    async def _update_schedule_run(run_id, *, status=None, **kwargs):
+        if status is not None:
+            # The real DB layer raises the terminal-status floor here because
+            # this call path (update_schedule_run -> _route_status_change ->
+            # update_status) does not pass expected_statuses.
+            raise TransitionRejectedError("schedule_run", run_id, "completed", status)
+
+    svc.update_schedule_run = AsyncMock(side_effect=_update_schedule_run)
+    engine = SchedulerEngine(svc=svc)
+    schedule = _minimal_schedule(max_runs=100)
+
+    with (
+        patch(
+            "lionagi.studio.scheduler.subprocess.build_argv",
+            return_value=(["uv", "run", "li", "agent", "ping"], None),
+        ),
+        patch(
+            "lionagi.studio.scheduler.subprocess.spawn_and_wait",
+            new=AsyncMock(side_effect=asyncio.CancelledError()),
+        ),
+    ):
+        with pytest.raises(asyncio.CancelledError):
+            await engine._fire(schedule, "run-cancel-cas", trigger_context={"scheduled": True})
+
+    # Invocation finalization must still be attempted despite the lost CAS
+    # race on the schedule_run status write above.
+    invocation_calls = [
+        c for c in svc.update_status.await_args_list if c.args and c.args[0] == "invocation"
+    ]
+    assert invocation_calls, "invocation finalization must still run after a cancellation CAS miss"
+    svc.count_schedule_runs.assert_awaited()
 
 
 # ---------------------------------------------------------------------------

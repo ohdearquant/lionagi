@@ -973,7 +973,7 @@ class SchedulerEngine:
                 self._svc, inv_id, fallback_status="failed", exception=exc
             )
             await self._svc.update_invocation(inv_id, ended_at=_end_time)
-            await self._svc.update_status(
+            await self._guarded_terminal_status(
                 "invocation",
                 inv_id,
                 new_status=inv_status,
@@ -1127,11 +1127,16 @@ class SchedulerEngine:
                     run_id,
                     ended_at=_end_time,
                     error_detail="Scheduler shutdown",
+                )
+                await self._guarded_terminal_status(
+                    "schedule_run",
+                    run_id,
+                    new_status="cancelled",
                     reason_code=RunReasons.CANCELLED_SYSTEM,
-                    status="cancelled",
                     reason_summary="Schedule run cancelled by scheduler shutdown.",
                     evidence_refs=[{"kind": "schedule", "id": sid}],
-                    reason_actor=run_id,
+                    source="executor",
+                    actor=run_id,
                 )
                 inv_status, inv_rc, inv_rs, inv_ev, inv_meta = await resolve_invocation_terminal(
                     self._svc, inv_id, fallback_status="cancelled"
