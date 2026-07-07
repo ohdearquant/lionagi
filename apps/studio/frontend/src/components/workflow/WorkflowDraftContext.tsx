@@ -17,7 +17,8 @@ export type WorkflowDraftAction =
   | { type: "patchNode"; nodeId: string; patch: Partial<Omit<WorkflowNode, "id">> }
   | { type: "moveNode"; nodeId: string; x: number; y: number }
   | { type: "addEdge"; edge: WorkflowEdge }
-  | { type: "removeEdge"; edgeId: string };
+  | { type: "removeEdge"; edgeId: string }
+  | { type: "patchEdge"; edgeId: string; patch: Partial<Omit<WorkflowEdge, "id">> };
 
 function nextId(prefix: string, existing: string[]): string {
   let i = existing.length + 1;
@@ -89,6 +90,20 @@ export function workflowDraftReducer(
       };
     }
 
+    case "patchEdge": {
+      const patch = { ...action.patch };
+      if (typeof patch.condition === "string" && !patch.condition.trim()) {
+        patch.condition = undefined;
+      }
+      return {
+        spec: {
+          ...spec,
+          edges: spec.edges.map((e) => (e.id === action.edgeId ? { ...e, ...patch } : e)),
+        },
+        dirty: true,
+      };
+    }
+
     default:
       return state;
   }
@@ -105,6 +120,7 @@ export interface WorkflowDraftValue {
   moveNode: (nodeId: string, x: number, y: number) => void;
   addEdge: (from: string, to: string, label?: string) => void;
   removeEdge: (edgeId: string) => void;
+  patchEdge: (edgeId: string, patch: Partial<Omit<WorkflowEdge, "id">>) => void;
   reset: (spec: WorkflowSpec) => void;
 }
 
@@ -160,6 +176,9 @@ export function WorkflowDraftProvider({
 
   const removeEdge = (edgeId: string) => dispatch({ type: "removeEdge", edgeId });
 
+  const patchEdge = (edgeId: string, patch: Partial<Omit<WorkflowEdge, "id">>) =>
+    dispatch({ type: "patchEdge", edgeId, patch });
+
   const reset = (spec: WorkflowSpec) => dispatch({ type: "reset", spec });
 
   return (
@@ -173,6 +192,7 @@ export function WorkflowDraftProvider({
         moveNode,
         addEdge,
         removeEdge,
+        patchEdge,
         reset,
       }}
     >

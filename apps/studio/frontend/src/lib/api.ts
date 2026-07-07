@@ -1319,6 +1319,7 @@ export interface WorkflowEdge {
   from: string;
   to: string;
   label?: string;
+  condition?: string;
 }
 
 export interface WorkflowSpec {

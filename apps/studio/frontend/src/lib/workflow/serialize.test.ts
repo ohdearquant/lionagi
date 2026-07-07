@@ -96,4 +96,45 @@ describe("workflow serialize", () => {
     expect(result.spec?.inputs).toEqual([]);
     expect(result.spec?.outputs).toEqual([]);
   });
+
+  it("round-trips an edge condition through YAML", () => {
+    const spec: WorkflowSpec = {
+      ...SPEC,
+      edges: [SPEC.edges[0], { ...SPEC.edges[1], condition: 'verdict == "APPROVE"' }],
+    };
+    const text = specToYaml(spec);
+    const result = yamlToSpec(text);
+    expect(result.errors).toEqual([]);
+    expect(result.spec).toEqual(spec);
+  });
+
+  it("round-trips an edge condition through TOML", () => {
+    const spec: WorkflowSpec = {
+      ...SPEC,
+      edges: [SPEC.edges[0], { ...SPEC.edges[1], condition: 'verdict == "APPROVE"' }],
+    };
+    const text = specToToml(spec);
+    const result = tomlToSpec(text);
+    expect(result.errors).toEqual([]);
+    expect(result.spec).toEqual(spec);
+  });
+
+  it("drops an empty or whitespace-only condition instead of emitting it", () => {
+    const spec: WorkflowSpec = {
+      ...SPEC,
+      edges: [
+        { ...SPEC.edges[0], condition: "" },
+        { ...SPEC.edges[1], condition: "   " },
+      ],
+    };
+    const yaml = specToYaml(spec);
+    expect(yaml).not.toContain("condition");
+    const yamlResult = yamlToSpec(yaml);
+    expect(yamlResult.spec?.edges.every((e) => e.condition === undefined)).toBe(true);
+
+    const toml = specToToml(spec);
+    expect(toml).not.toContain("condition");
+    const tomlResult = tomlToSpec(toml);
+    expect(tomlResult.spec?.edges.every((e) => e.condition === undefined)).toBe(true);
+  });
 });
