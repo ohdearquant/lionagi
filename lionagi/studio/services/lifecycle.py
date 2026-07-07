@@ -361,47 +361,59 @@ async def reap_stale_plays(*, stale_hours: float | None = None) -> int:
     try:
         async with StateDB() as db:
             placeholders = ",".join("?" * len(_REAPABLE_PLAY_STATUSES))
-            rows = await db.fetch_all(
-                f"SELECT id, session_id, started_at, updated_at, status, ended_at "  # noqa: S608
-                f"FROM plays WHERE status IN ({placeholders})",
+            candidates = await db.fetch_all(
+                f"SELECT id FROM plays WHERE status IN ({placeholders})",  # noqa: S608
                 tuple(sorted(_REAPABLE_PLAY_STATUSES)),
             )
 
         ps_snapshot: str | None = None
-        for row in rows:
-            play_id = row["id"]
-            session_id = row.get("session_id")
-
-            # Liveness FIRST: a play whose child session process is still
-            # alive is never reaped on staleness alone.
-            if session_id:
-                async with StateDB() as db:
-                    srow = await db.fetch_one(
-                        "SELECT id, artifacts_path, node_metadata FROM sessions WHERE id = ?",
-                        (session_id,),
-                    )
-                if srow is not None:
-                    if ps_snapshot is None:
-                        ps_snapshot = _ps_snapshot()
-                    session = {"id": srow["id"], "node_metadata": srow.get("node_metadata")}
-                    if process_liveness(session, _artifacts_path(srow), ps_snapshot) is True:
-                        continue
-
-            updated_at = row.get("updated_at") or row.get("started_at") or 0.0
-            if now - updated_at < stale_seconds:
-                # Not confirmed alive, but too fresh to reap — benefit of the doubt.
-                continue
-
-            _log.info(
-                "Reaping stale play %s: status=%s, session_id=%s",
-                play_id,
-                row.get("status"),
-                session_id,
-            )
+        for cand in candidates:
+            play_id = cand["id"]
             try:
                 async with StateDB() as db:
-                    if row.get("ended_at") is None:
-                        await db.update_play(play_id, ended_at=now)
+                    # Re-read fresh immediately before deciding. A play can be
+                    # legitimately claimed between the scan and here — set to
+                    # running, given a live child session, and refreshed to
+                    # updated_at=now. The status-membership CAS below would
+                    # still overwrite it (running is a reapable status), so the
+                    # full stale predicate is revalidated against current state.
+                    row = await db.fetch_one(
+                        "SELECT status, session_id, started_at, updated_at, ended_at "
+                        "FROM plays WHERE id = ?",
+                        (play_id,),
+                    )
+                    if row is None or row["status"] not in _REAPABLE_PLAY_STATUSES:
+                        continue
+
+                    session_id = row.get("session_id")
+                    # Liveness FIRST: a play whose child session process is
+                    # still alive is never reaped on staleness alone.
+                    if session_id:
+                        srow = await db.fetch_one(
+                            "SELECT id, artifacts_path, node_metadata FROM sessions WHERE id = ?",
+                            (session_id,),
+                        )
+                        if srow is not None:
+                            if ps_snapshot is None:
+                                ps_snapshot = _ps_snapshot()
+                            session = {"id": srow["id"], "node_metadata": srow.get("node_metadata")}
+                            if (
+                                process_liveness(session, _artifacts_path(srow), ps_snapshot)
+                                is True
+                            ):
+                                continue
+
+                    updated_at = row.get("updated_at") or row.get("started_at") or 0.0
+                    if now - updated_at < stale_seconds:
+                        # Not confirmed alive, but too fresh to reap — benefit of the doubt.
+                        continue
+
+                    _log.info(
+                        "Reaping stale play %s: status=%s, session_id=%s",
+                        play_id,
+                        row["status"],
+                        session_id,
+                    )
                     transitioned = await db.update_status(
                         "play",
                         play_id,
@@ -413,16 +425,20 @@ async def reap_stale_plays(*, stale_hours: float | None = None) -> int:
                         actor="studio_lifecycle_reaper",
                         metadata={
                             "detector": "stale_play_reaper",
-                            "prior_status": row.get("status"),
+                            "prior_status": row["status"],
                             "session_id": session_id,
                             "updated_at": updated_at,
                         },
                         expected_statuses=_REAPABLE_PLAY_STATUSES,
                     )
-                if transitioned:
-                    reaped += 1
-                else:
-                    _log.debug("Play %s skipped (status changed before CAS lock)", play_id)
+                    if transitioned:
+                        # Stamp ended_at only after the guarded transition wins,
+                        # so a lost CAS never mutates a row we did not reap.
+                        if row.get("ended_at") is None:
+                            await db.update_play(play_id, ended_at=now)
+                        reaped += 1
+                    else:
+                        _log.debug("Play %s skipped (status changed before CAS lock)", play_id)
             except LookupError:
                 pass
             except Exception:

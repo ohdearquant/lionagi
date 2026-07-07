@@ -338,3 +338,44 @@ def test_reap_stale_plays_cas_guard_skips_concurrently_transitioned_row(tmp_path
 
     play = run_async(_get_play(db_path, play_id))
     assert play["status"] == "merged"
+
+
+def test_reap_stale_plays_skips_row_claimed_between_scan_and_write(tmp_path, monkeypatch):
+    """A stale orphan in a reapable status that is legitimately claimed after the
+    scan — set to ``running`` with a refreshed ``updated_at`` — must NOT be
+    reaped. The reaper re-reads current state right before the write, so the
+    refreshed row is seen as no longer stale even though ``running`` is still a
+    reapable status (the status-membership CAS alone would over-reap it)."""
+    db_path = tmp_path / "state.db"
+    _monkey_db(monkeypatch, db_path)
+
+    show_id = run_async(_seed_show(db_path))
+    play_id = run_async(
+        _seed_play(db_path, show_id, status="prepared", session_id=None, updated_at=_STALE)
+    )
+
+    import lionagi.state.db as state_db_mod
+
+    original_fetch_one = state_db_mod.StateDB.fetch_one
+    claimed = {"done": False}
+
+    async def _claim_then_fetch(self, query, *args, **kwargs):
+        # Intercept the reaper's revalidating read of the play row and apply the
+        # claim just before it returns, so the reaper observes the fresh state.
+        if "FROM plays" in query and not claimed["done"]:
+            claimed["done"] = True
+            await self.execute(
+                "UPDATE plays SET status = 'running', updated_at = ? WHERE id = ?",
+                (time.time(), play_id),
+            )
+        return await original_fetch_one(self, query, *args, **kwargs)
+
+    monkeypatch.setattr(state_db_mod.StateDB, "fetch_one", _claim_then_fetch)
+
+    from lionagi.studio.services.lifecycle import reap_stale_plays
+
+    count = run_async(reap_stale_plays(stale_hours=6.0))
+    assert count == 0
+
+    play = run_async(_get_play(db_path, play_id))
+    assert play["status"] == "running"
