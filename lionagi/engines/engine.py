@@ -181,10 +181,12 @@ class EngineRun:
         *,
         session: Session | None = None,
         on_event: EventCallback | None = None,
+        on_branch_created: Callable[[Any], None] | None = None,
     ) -> None:
         self.engine = engine
         self.session = session if session is not None else Session()
         self.on_event = on_event
+        self._on_branch_created = on_branch_created
         self.root: str = ""
         self.agents_made: int = 0
         self._sem = Semaphore(engine.max_concurrent)
@@ -301,6 +303,8 @@ class EngineRun:
         if name:
             branch.name = name
         self.session.include_branches(branch)
+        if self._on_branch_created is not None:
+            self._on_branch_created(branch)
         return branch
 
     async def operate_with_repair(
@@ -642,8 +646,11 @@ class Engine:
         *,
         session: Session | None = None,
         on_event: EventCallback | None = None,
+        on_branch_created: Callable[[Any], None] | None = None,
     ) -> EngineRun:
-        return self.run_context_cls(self, session=session, on_event=on_event)
+        return self.run_context_cls(
+            self, session=session, on_event=on_event, on_branch_created=on_branch_created
+        )
 
     async def _degrade_export(self, run: EngineRun, args: tuple, kwargs: dict) -> Any:
         """Cancel in-flight spawned tasks, then run _partial_export shielded + timeout-bounded.
@@ -705,10 +712,11 @@ class Engine:
         *args: Any,
         session: Session | None = None,
         on_event: EventCallback | None = None,
+        on_branch_created: Callable[[Any], None] | None = None,
         **kwargs: Any,
     ) -> Any:
         """Execute the engine pipeline; on internal budget cancellation calls _partial_export instead of raising. External cancellation propagates as CancelledError."""
-        run = self.new_run(session=session, on_event=on_event)
+        run = self.new_run(session=session, on_event=on_event, on_branch_created=on_branch_created)
         # Reset per-run diagnostics on the engine instance so a reused engine
         # never carries emission failures from a previous run into the next one.
         self._emission_failures: list[str] = []

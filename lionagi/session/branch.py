@@ -670,6 +670,17 @@ class Branch(Element, Relational):
             return_ins_res_message=return_ins_res_message,
         )
 
+    async def chat_and_record(self, instruction: Instruction | JsonValue = None, **kwargs) -> str:
+        """Like ``chat()``, but also adds the turn to the branch through the
+        hooked async add-path (mirrors ``communicate()``'s recording), so
+        anything observing ``on_message_added`` — e.g. persistence — sees it.
+        """
+        kwargs.pop("return_ins_res_message", None)
+        ins, res = await self.chat(instruction, return_ins_res_message=True, **kwargs)
+        await self.msgs.a_add_message(instruction=ins)
+        await self.msgs.a_add_message(assistant_response=res)
+        return res.response
+
     async def parse(
         self,
         text: str,
