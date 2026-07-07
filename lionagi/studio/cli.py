@@ -758,7 +758,10 @@ def _cmd_create(args: argparse.Namespace) -> int:
             print("Error: --github-filter must be a JSON object.", file=sys.stderr)
             return 1
         body["github_filter"] = parsed_filter
-    if getattr(args, "poll_interval", None):
+    if getattr(args, "poll_interval", None) is not None:
+        if args.poll_interval < 1:
+            print("Error: --poll-interval must be a positive integer.", file=sys.stderr)
+            return 1
         body["poll_interval_sec"] = args.poll_interval
     if max_runs is not None:
         body["max_runs"] = max_runs

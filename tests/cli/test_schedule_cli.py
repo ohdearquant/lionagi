@@ -1072,3 +1072,25 @@ def test_schedule_create_github_filter_non_object_errors(monkeypatch, capsys):
     assert outcome["result"] == 1
     assert outcome["called"] is False
     assert "must be a JSON object" in capsys.readouterr().err
+
+
+def test_schedule_create_negative_poll_interval_errors(monkeypatch, capsys):
+    """A negative --poll-interval returns 1 and never posts to the API."""
+    outcome = _run_create_argv(
+        monkeypatch,
+        ["--trigger-type", "github", "--github-repo", "owner/name", "--poll-interval", "-5"],
+    )
+    assert outcome["result"] == 1
+    assert outcome["called"] is False
+    assert "must be a positive integer" in capsys.readouterr().err
+
+
+def test_schedule_create_zero_poll_interval_errors(monkeypatch, capsys):
+    """A zero --poll-interval returns 1 and never posts to the API."""
+    outcome = _run_create_argv(
+        monkeypatch,
+        ["--trigger-type", "github", "--github-repo", "owner/name", "--poll-interval", "0"],
+    )
+    assert outcome["result"] == 1
+    assert outcome["called"] is False
+    assert "must be a positive integer" in capsys.readouterr().err

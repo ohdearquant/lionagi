@@ -554,3 +554,28 @@ def test_create_schedule_github_poll_requires_repo():
         raise AssertionError("Should have raised ValueError")
     except ValueError as exc:
         assert "github_repo" in str(exc)
+
+
+def test_create_schedule_rejects_non_positive_poll_interval():
+    """create_schedule raises ValueError when poll_interval_sec < 1 (fires pre-DB-write)."""
+    import asyncio
+
+    from lionagi.studio.services.schedules import create_schedule
+
+    data = {
+        "name": "gh-bad-poll",
+        "trigger_type": "github_poll",
+        "github_repo": "owner/name",
+        "poll_interval_sec": -1,
+        "action_kind": "agent",
+        "action_prompt": "review",
+    }
+
+    async def _run():
+        await create_schedule(data)
+
+    try:
+        asyncio.run(_run())
+        raise AssertionError("Should have raised ValueError")
+    except ValueError as exc:
+        assert "poll_interval_sec" in str(exc)
