@@ -24,7 +24,7 @@ from lionagi.ln.concurrency._compat import (
 )
 from lionagi.ln.types import TypeFilter
 from lionagi.session.session import Session
-from lionagi.session.signal import NodeCompleted, NodeFailed, NodeQueued, NodeStarted, Signal
+from lionagi.session.signal import Signal
 
 if TYPE_CHECKING:
     from lionagi.protocols.generic.pile import Pile
@@ -482,76 +482,9 @@ class EngineRun:
         context: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         """Execute a prebuilt operation DAG on the run's session and return operation results."""
-        from lionagi.operations.node import Operation  # noqa: PLC0415
+        from .flow_signals import flow_progress_signals  # noqa: PLC0415
 
-        emits: list[asyncio.Future] = []
-
-        # Build a live lookup of op_id → {parent_id, depends_on} from graph
-        # edges.  Populated at start from the static graph, then updated as
-        # reactive spawns add new nodes (they write parent_id into metadata).
-        node_edge_meta: dict[str, dict] = {}
-        for node in graph.internal_nodes.values():
-            if not isinstance(node, Operation):
-                continue
-            preds = [
-                str(e.head) for e in graph.internal_edges.values() if str(e.tail) == str(node.id)
-            ]
-            node_edge_meta[str(node.id)] = {
-                "parent_id": preds[0] if len(preds) == 1 else None,
-                "depends_on": preds,
-            }
-
-        def _on_progress(op_id: str, name: str, status: str, elapsed: float) -> None:
-            meta = node_edge_meta.get(op_id) or {}
-            parent_id = meta.get("parent_id")
-            depends_on = meta.get("depends_on", [])
-            if status == "queued":
-                sig: Any = NodeQueued(
-                    op_id=op_id, name=name, parent_id=parent_id, depends_on=depends_on
-                )
-            elif status == "started":
-                sig = NodeStarted(
-                    op_id=op_id, name=name, parent_id=parent_id, depends_on=depends_on
-                )
-            elif status == "completed":
-                sig = NodeCompleted(
-                    op_id=op_id,
-                    name=name,
-                    elapsed=elapsed,
-                    parent_id=parent_id,
-                    depends_on=depends_on,
-                )
-            elif status == "failed":
-                sig = NodeFailed(
-                    op_id=op_id,
-                    name=name,
-                    elapsed=elapsed,
-                    parent_id=parent_id,
-                    depends_on=depends_on,
-                )
-            else:
-                return
-            # on_progress is sync (called from inside the executor); fan the
-            # signal onto the async bus. Collected so the caller can await the
-            # observers before reading state they populate. The suppress guards
-            # the no-running-loop case (nothing would observe anyway).
-            with contextlib.suppress(RuntimeError):
-                emits.append(asyncio.ensure_future(self.session.emit(sig)))
-
-        # Intercept NodeSpawned to update node_edge_meta for newly spawned nodes.
-        def _on_spawned(sig: Any, _ctx: Any) -> None:
-            if sig.op_id and sig.parent_id is not None:
-                node_edge_meta[sig.op_id] = {
-                    "parent_id": sig.parent_id,
-                    "depends_on": [sig.parent_id],
-                }
-            elif sig.op_id:
-                node_edge_meta.setdefault(sig.op_id, {"parent_id": None, "depends_on": []})
-
-        from lionagi.session.signal import NodeSpawned  # noqa: PLC0415
-
-        self.session.observe(NodeSpawned, handler=_on_spawned)
-        try:
+        async with flow_progress_signals(self.session, graph) as on_progress:
             result = await self.session.flow(
                 graph,
                 context=context,
@@ -561,13 +494,9 @@ class EngineRun:
                 max_spawn=max_spawn,
                 max_concurrent=max_concurrent,
                 verbose=verbose,
-                on_progress=_on_progress,
+                on_progress=on_progress,
                 executor_ref=executor_ref,
             )
-        finally:
-            self.session.observer.unobserve(_on_spawned)
-        if emits:
-            await gather(*emits, return_exceptions=True)
         return result
 
 

@@ -164,6 +164,69 @@ async def test_workflow_run_end_to_end(patched_env):
     assert edges_by_id["e2"]["mode"] == "code"
 
 
+async def test_workflow_run_persists_node_lifecycle_signals(patched_env, tmp_path):
+    """The authored workflow DAG must emit per-node lifecycle signals.
+
+    run_workflow_def drives session.flow directly (bypassing the engine, the
+    usual source of these signals). Without wiring on_progress the run persists
+    structure + results but no node-progress rows, so RunDetail/SSE cannot show
+    the DAG nodes moving to running/completed. This asserts NodeStarted and
+    NodeCompleted rows land in session_signals for every executable node, and
+    that their queued signals carry the AUTHORED node ids (reference_id) so the
+    animated run-DAG boxes correlate to what the human drew in the designer.
+    """
+    wf_svc, engine_defs_svc = patched_env
+    _FakeEngine.calls = []
+
+    engine_def = await engine_defs_svc.create_engine_def({"name": "sig-eng", "kind": "research"})
+    spec = _spec()
+    spec["nodes"][2]["config"]["engine_def_id"] = engine_def["id"]
+    created = await wf_svc.create_workflow_def({"name": "sig-flow", "spec_json": spec})
+
+    from lionagi.session.session import Session
+    from lionagi.studio.services.workflow_run import run_workflow_def
+
+    session = Session(default_branch=_mock_chat_branch())
+    result = await run_workflow_def(created["id"], {"topic": "GQA"}, _session=session)
+    assert result["status"] == "completed"
+
+    # Read signals back from a FRESH StateDB connection (the run's own db is
+    # closed by teardown) — the same path RunDetail/SSE reads.
+    from lionagi.state.db import StateDB
+
+    db = StateDB(tmp_path / "state.db")
+    await db.open()
+    try:
+        signals = await db.get_session_signals_after(str(session.id), 0)
+    finally:
+        await db.close()
+
+    by_kind: dict[str, set[str]] = {}
+    for s in signals:
+        by_kind.setdefault(s["kind"], set()).add(s["op_id"])
+
+    # The two executable nodes (chat1, eng1 — the "input" node compiles to no
+    # Operation) must each report started AND completed.
+    assert "NodeStarted" in by_kind and "NodeCompleted" in by_kind, (
+        f"missing lifecycle signals; got kinds {sorted(by_kind)}"
+    )
+    assert len(by_kind["NodeStarted"]) == 2
+    assert by_kind["NodeStarted"] == by_kind["NodeCompleted"], (
+        "every started node must also complete"
+    )
+
+    # EVERY lifecycle signal — not just queued — must name the authored ids, so
+    # a live/SSE consumer can map a started/completed row back to the box the
+    # human drew without waiting for the queued row. (The executor names
+    # started/completed after the branch; flow_progress_signals overrides it
+    # with the node's reference_id.)
+    for kind in ("NodeQueued", "NodeStarted", "NodeCompleted"):
+        names = {s["payload"].get("name") for s in signals if s["kind"] == kind}
+        assert {"chat1", "eng1"} <= names, (
+            f"{kind} signals must carry authored node ids; got {names}"
+        )
+
+
 async def test_cancelled_run_is_recorded_as_cancelled(patched_env, monkeypatch):
     """If session.flow is cancelled mid-run (Studio request/task cancelled),
     CancelledError (a BaseException) bypasses the `except Exception` handler.
