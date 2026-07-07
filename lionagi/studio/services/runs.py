@@ -671,6 +671,11 @@ def _build_steps_from_db(branches: list[dict[str, Any]]) -> list[dict[str, Any]]
     from the branch's full-session `message_stats` (falling back to
     `message_total` and finally the windowed page length for legacy payloads
     that predate message_stats).
+
+    The `message_stats.message_count` fallback is KEY-PRESENCE based, not
+    truthiness based: a stale progression referencing pruned/never-persisted
+    message ids legitimately aggregates to 0, and `0 or fallback` would
+    silently replace that correct zero with the (wrong) progression length.
     """
     if not branches:
         return None
@@ -682,9 +687,11 @@ def _build_steps_from_db(branches: list[dict[str, Any]]) -> list[dict[str, Any]]
         messages = b.get("messages") or []
         branch_stats = b.get("message_stats") if isinstance(b.get("message_stats"), dict) else {}
         role_counts = dict(branch_stats.get("roles") or {})
-        message_count = int(
-            branch_stats.get("message_count") or b.get("message_total") or len(messages)
-        )
+        if "message_count" in branch_stats:
+            message_count = branch_stats["message_count"]
+        else:
+            message_count = b.get("message_total") or len(messages)
+        message_count = int(message_count)
         steps.append(
             {
                 "step": name,

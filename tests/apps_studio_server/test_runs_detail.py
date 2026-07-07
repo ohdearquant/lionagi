@@ -584,6 +584,28 @@ async def test_build_steps_from_db_uses_full_branch_stats_for_windowed_messages(
     assert step["result"]["roles"] == {"user": 103, "assistant": 102}
 
 
+async def test_build_steps_from_db_zero_db_aggregate_is_not_swallowed_by_progression_length(
+    patched_runs_svc,
+):
+    """A stale progression referencing pruned/never-persisted message ids aggregates to a
+    real DB message_count of 0; the step result must report that 0, not fall back to the
+    (larger, wrong) progression length via a truthiness `x or y` check."""
+    svc, db_path = patched_runs_svc
+    sid = str(uuid.uuid4())
+    branch_id = f"{sid}-br"
+    await seed_session(db_path, session_id=sid, status="completed")
+    # Progression references two ids; neither was ever persisted as a message row.
+    await seed_branch(db_path, branch_id=branch_id, session_id=sid, msg_ids=["stale-0", "stale-1"])
+
+    result = await svc.get_run(sid)
+
+    assert result is not None
+    branch = result["branches"][0]
+    assert branch["message_total"] == 2  # progression length, kept separate
+    step = result["steps"][0]
+    assert step["result"]["message_count"] == 0  # real DB aggregate, not progression length
+
+
 async def test_get_run_last_message_at_reflects_full_session_not_windowed_page(patched_runs_svc):
     """Regression: last_message_at must report the session's newest message timestamp
     regardless of which page of messages the caller is currently viewing, not the max
