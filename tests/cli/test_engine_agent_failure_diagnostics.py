@@ -243,8 +243,11 @@ async def test_real_engine_total_agent_failure_propagates_to_cli(monkeypatch):
     monkeypatch.setattr(db_mod, "StateDB", lambda: mock_db)
 
     args = _build_args(kind="research", spec="test topic", no_persist=False)
-    await engine_mod._do_engine_run(args)
+    rc = await engine_mod._do_engine_run(args)
 
+    # Total agent failure must exit non-zero so shell/CI callers see it, not
+    # just the persisted DB status.
+    assert rc == 1
     failed = [c for c in mock_db.update_calls if c["status"] == "failed"]
     assert failed, f"no failed update; all calls: {mock_db.update_calls}"
     error_val = failed[0]["error"]

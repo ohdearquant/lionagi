@@ -396,7 +396,9 @@ async def _do_engine_run(args: argparse.Namespace) -> int:
     )
     if db is not None:
         await db.close()
-    return 0
+    # A run where every agent terminally errored is a failure: exit non-zero so
+    # shell/CI callers see it, matching the persisted "failed" status above.
+    return 1 if _total_agent_failure else 0
 
 
 async def _maybe_update_db(
