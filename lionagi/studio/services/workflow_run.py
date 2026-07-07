@@ -158,7 +158,6 @@ async def run_workflow_def(
     early_graph = build_early_graph(spec)
 
     session = _session if _session is not None else Session()
-    session.register_operation("engine", make_engine_operation(session))
 
     ctx = await _setup_run_persist(
         session,
@@ -170,10 +169,21 @@ async def run_workflow_def(
         },
     )
 
+    from lionagi.cli.orchestrate._orchestration import register_branch_hook
+
+    # ctx must exist before the "engine" operation is registered: engine
+    # sub-agent branches (Engine.make_agent) are born mid-run, the same way
+    # flow-cloned branches are, so they need the same on_branch_created seam
+    # used below for session.flow() rather than the setup-time-only loop in
+    # _setup_run_persist.
+    session.register_operation(
+        "engine",
+        make_engine_operation(session, on_branch_created=lambda b: register_branch_hook(ctx, b)),
+    )
+
     status = "completed"
     exc: BaseException | None = None
     try:
-        from lionagi.cli.orchestrate._orchestration import register_branch_hook
         from lionagi.engines.flow_signals import flow_progress_signals
 
         # Emit per-node lifecycle signals (NodeQueued/Started/Completed/Failed)
