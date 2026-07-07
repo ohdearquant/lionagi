@@ -18,6 +18,7 @@
  * individual fire, so "expand" is just a click away.
  */
 import { useEffect, useMemo, useRef, useState } from "react";
+import type { CSSProperties } from "react";
 import { Link } from "@tanstack/react-router";
 import { useLocale, useTranslations } from "use-intl";
 import IconButton from "@/components/ui/IconButton";
@@ -91,6 +92,14 @@ const HOUR_ROW_PX = 56;
 const MIN_DAY_COL_PX = 128;
 /** Initial scroll target for hour grids — work usually starts around 07:00. */
 const SCROLL_TO_HOUR = 7;
+
+/** Sticky left-edge gutter cells (hour labels, all-day label) — stay in view
+ * while the day grid scrolls horizontally. */
+const STICKY_GUTTER_STYLE: CSSProperties = { position: "sticky", left: 0, zIndex: 2 };
+/** Sticky column-header row — stays in view while the page scrolls vertically. */
+const STICKY_HEADER_STYLE: CSSProperties = { position: "sticky", top: 0, zIndex: 3 };
+/** Sticky top-left corner spacer — pinned on both axes, above gutter and header. */
+const STICKY_CORNER_STYLE: CSSProperties = { ...STICKY_GUTTER_STYLE, top: 0, zIndex: 4 };
 
 /**
  * Bucket runs, projected fires, and poll indicators into cells keyed by
@@ -760,9 +769,15 @@ export default function SchedulesCalendar({
         // header/all-day/hour-grid tracks — they scroll together in lockstep
         // and the page body never gains a sideways scrollbar.
         <div className="overflow-x-auto rounded-lg border border-edge">
-          {/* Column header: gutter spacer + day headers. */}
-          <div className="grid border-b border-edge" style={{ gridTemplateColumns: dayGridCols }}>
-            <div />
+          {/* Column header: gutter spacer + day headers. Sticky on the
+              vertical axis so date headers stay visible while the page
+              scrolls; the leading spacer is additionally pinned on the
+              horizontal axis to match the hour gutter below it. */}
+          <div
+            className="grid border-b border-edge bg-surface-raised"
+            style={{ gridTemplateColumns: dayGridCols, ...STICKY_HEADER_STYLE }}
+          >
+            <div className="border-r border-edge bg-surface-raised" style={STICKY_CORNER_STYLE} />
             {hourColumns.map((d) => {
               const key = dayKey(d);
               const isToday = key === todayKey;
@@ -803,7 +818,10 @@ export default function SchedulesCalendar({
             (byDay.get(dayKey(d)) ?? []).some((item) => item.kind === "poll"),
           ) && (
             <div className="grid border-b border-edge" style={{ gridTemplateColumns: dayGridCols }}>
-              <div className="px-1.5 py-1 text-right font-data text-meta text-content-muted">
+              <div
+                className="border-r border-edge bg-surface-raised px-1.5 py-1 text-right font-data text-meta text-content-muted"
+                style={STICKY_GUTTER_STYLE}
+              >
                 {t("allDay")}
               </div>
               {hourColumns.map((d) => {
@@ -831,8 +849,8 @@ export default function SchedulesCalendar({
             {Array.from({ length: 24 }, (_, hour) => (
               <div key={hour} className="grid" style={{ gridTemplateColumns: dayGridCols }}>
                 <div
-                  className="border-b border-edge px-1.5 pt-0.5 text-right font-data text-meta tabular-nums text-content-muted"
-                  style={{ minHeight: HOUR_ROW_PX }}
+                  className="border-b border-r border-edge bg-surface-raised px-1.5 pt-0.5 text-right font-data text-meta tabular-nums text-content-muted"
+                  style={{ minHeight: HOUR_ROW_PX, ...STICKY_GUTTER_STYLE }}
                 >
                   {String(hour).padStart(2, "0")}:00
                 </div>
@@ -841,26 +859,23 @@ export default function SchedulesCalendar({
                   const isToday = dk === todayKey;
                   const entries = groupBySchedule(byHour?.get(`${dk}H${hour}`) ?? []);
                   const overflow = entries.length - MAX_VISIBLE_PER_HOUR;
-                  const openHere = () => setSelectedDay(selectedDay === dk ? null : dk);
                   return (
+                    // Plain, non-interactive div — the day header button above
+                    // already toggles the detail strip for this (single) day,
+                    // and the "+N more" affordance below is the sole
+                    // keyboard-reachable control in this cell. Giving this
+                    // wrapper a button-like ARIA role would nest a real
+                    // <button> inside it, leaving activation semantics
+                    // implementation-dependent across assistive tech.
                     <div
                       key={dk}
-                      role="button"
-                      tabIndex={0}
-                      onClick={openHere}
-                      onKeyDown={(e) => {
-                        if (e.key === "Enter" || e.key === " ") {
-                          e.preventDefault();
-                          openHere();
-                        }
-                      }}
                       className={[
-                        "flex cursor-pointer flex-col items-stretch gap-0.5 overflow-hidden border-b border-l border-edge p-1 text-left transition-colors duration-100 focus-visible:outline focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-[var(--accent)]",
+                        "flex flex-col items-stretch gap-0.5 overflow-hidden border-b border-l border-edge p-1 text-left transition-colors duration-100",
                         selectedDay === dk
                           ? "bg-surface-overlay/40"
                           : isToday
-                            ? "bg-[var(--today-tint)] hover:bg-surface-overlay/60"
-                            : "hover:bg-surface-overlay/60",
+                            ? "bg-[var(--today-tint)]"
+                            : "",
                       ].join(" ")}
                       style={{ minHeight: HOUR_ROW_PX }}
                     >
@@ -870,13 +885,17 @@ export default function SchedulesCalendar({
                       {overflow > 0 && (
                         <button
                           type="button"
+                          aria-label={`${t("more", { count: overflow })} ${t("viewDay")}`}
                           onClick={(e) => {
                             e.stopPropagation();
                             switchMode("day");
                             setAnchor(startOfDay(d));
                             setSelectedDay(dk);
                           }}
-                          className="w-fit text-meta text-content-muted underline-offset-2 hover:text-content-primary hover:underline"
+                          onKeyDown={(e) => {
+                            if (e.key === "Enter" || e.key === " ") e.stopPropagation();
+                          }}
+                          className="w-fit text-meta text-content-muted underline-offset-2 hover:text-content-primary hover:underline focus-visible:outline focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-[var(--accent)]"
                         >
                           {t("more", { count: overflow })}
                         </button>

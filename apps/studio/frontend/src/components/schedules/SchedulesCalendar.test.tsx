@@ -193,3 +193,104 @@ describe("SchedulesCalendar — week view is an agenda, not a time grid", () => 
     expect(dayBranch).toContain("HOUR_ROW_PX");
   });
 });
+
+// ─── Source contract — "+N more" keyboard reachability ───────────────────
+
+describe("SchedulesCalendar — '+N more' is keyboard-reachable", () => {
+  const dayBranchStart = SRC.indexOf("Horizontal scroll lives HERE");
+  const detailStripStart = SRC.indexOf("{/* Day detail strip */}");
+  const dayBranch = SRC.slice(dayBranchStart, detailStripStart);
+  const hourCellStart = dayBranch.indexOf(
+    "{hourColumns.map((d) => {",
+    dayBranch.indexOf("Hour grid"),
+  );
+  const hourCellBranch = dayBranch.slice(hourCellStart);
+  const moreButtonStart = hourCellBranch.indexOf('aria-label={`${t("more"');
+  const moreButtonEnd = hourCellBranch.indexOf("</button>", moreButtonStart) + "</button>".length;
+  const moreButtonTagStart = hourCellBranch.lastIndexOf("<button", moreButtonStart);
+  const moreButton = hourCellBranch.slice(moreButtonTagStart, moreButtonEnd);
+
+  it('the hour-cell outer wrapper is not an interactive role="button" element', () => {
+    const wrapperStart = hourCellBranch.indexOf("<div\n");
+    const wrapperEnd = hourCellBranch.indexOf(">", wrapperStart);
+    const wrapperTag = hourCellBranch.slice(wrapperStart, wrapperEnd);
+    expect(wrapperTag).not.toContain('role="button"');
+    expect(wrapperTag).not.toContain("tabIndex");
+  });
+
+  it('renders a real <button type="button"> for the overflow affordance', () => {
+    expect(moreButton).toContain("<button");
+    expect(moreButton).toContain('type="button"');
+  });
+
+  it('is not nested inside another role="button" element', () => {
+    expect(hourCellBranch.slice(0, moreButtonTagStart)).not.toContain('role="button"');
+  });
+
+  it("has an aria-label mentioning the day view", () => {
+    expect(moreButton).toMatch(
+      /aria-label=\{`\$\{t\("more", \{ count: overflow \}\)\} \$\{t\("viewDay"\)\}`\}/,
+    );
+  });
+
+  it("stops Enter/Space propagation so no ancestor can consume the key", () => {
+    const onKeyDownStart = moreButton.indexOf("onKeyDown");
+    const onKeyDownBlock = moreButton.slice(
+      onKeyDownStart,
+      moreButton.indexOf("}}", onKeyDownStart),
+    );
+    expect(onKeyDownBlock).toContain('"Enter"');
+    expect(onKeyDownBlock).toContain('" "');
+    expect(onKeyDownBlock).toContain("stopPropagation");
+  });
+
+  it("clicking it switches to day mode, anchors to the date, and selects the day", () => {
+    expect(moreButton).toContain('switchMode("day")');
+    expect(moreButton).toContain("setAnchor(startOfDay(d))");
+    expect(moreButton).toContain("setSelectedDay(dk)");
+  });
+});
+
+// ─── Source contract — sticky gutter and header ──────────────────────────
+
+describe("SchedulesCalendar — sticky hour gutter and date headers", () => {
+  it("defines sticky style constants for the header, corner, and gutter", () => {
+    expect(SRC).toContain("const STICKY_GUTTER_STYLE");
+    expect(SRC).toContain("const STICKY_HEADER_STYLE");
+    expect(SRC).toContain("const STICKY_CORNER_STYLE");
+    expect(SRC).toMatch(
+      /STICKY_GUTTER_STYLE:\s*CSSProperties\s*=\s*\{\s*position:\s*"sticky",\s*left:\s*0/,
+    );
+    expect(SRC).toMatch(
+      /STICKY_HEADER_STYLE:\s*CSSProperties\s*=\s*\{\s*position:\s*"sticky",\s*top:\s*0/,
+    );
+  });
+
+  it("applies the sticky header style to the column-header row", () => {
+    const headerRowStart = SRC.indexOf("Column header: gutter spacer + day headers.");
+    const headerRowEnd = SRC.indexOf("{hourColumns.map((d) => {", headerRowStart);
+    const headerRow = SRC.slice(headerRowStart, headerRowEnd);
+    expect(headerRow).toContain("...STICKY_HEADER_STYLE");
+  });
+
+  it("applies the sticky corner style to the header's leading spacer", () => {
+    const headerRowStart = SRC.indexOf("Column header: gutter spacer + day headers.");
+    const headerRowEnd = SRC.indexOf("{hourColumns.map((d) => {", headerRowStart);
+    const headerRow = SRC.slice(headerRowStart, headerRowEnd);
+    expect(headerRow).toContain("style={STICKY_CORNER_STYLE}");
+  });
+
+  it("applies the sticky gutter style to the all-day leading gutter", () => {
+    const allDayStart = SRC.indexOf("All-day row — poll indicators");
+    const allDayHeaderEnd = SRC.indexOf('{t("allDay")}', allDayStart);
+    const allDayGutter = SRC.slice(allDayStart, allDayHeaderEnd);
+    expect(allDayGutter).toContain("style={STICKY_GUTTER_STYLE}");
+  });
+
+  it("applies the sticky gutter style to every hour label gutter cell", () => {
+    const hourGridStart = SRC.indexOf("Hour grid — scrollable");
+    const hourLabelEnd = SRC.indexOf('padStart(2, "0")}:00', hourGridStart);
+    const hourLabel = SRC.slice(hourGridStart, hourLabelEnd);
+    expect(hourLabel).toContain("...STICKY_GUTTER_STYLE");
+  });
+});
