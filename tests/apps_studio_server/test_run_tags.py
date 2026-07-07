@@ -154,6 +154,25 @@ def test_tags_for_sessions_batches_multiple_sessions_in_one_call(tmp_path, monke
     assert sid3 not in tagmap
 
 
+def test_tags_for_sessions_chunks_beyond_sql_variable_limit(tmp_path, monkeypatch):
+    # A run history larger than SQLite's bound-variable limit must not overflow
+    # the IN(...) list — tags_for_sessions chunks the lookup. Request more ids
+    # than _MAX_SQL_VARS, with a tagged session in each chunk.
+    db_path = tmp_path / "state.db"
+    _patch_db(monkeypatch, db_path)
+    _run(_init_db(db_path))
+
+    import lionagi.studio.services.run_tags as run_tags
+
+    ids = [str(uuid.uuid4()) for _ in range(run_tags._MAX_SQL_VARS + 50)]
+    first, last = ids[0], ids[-1]
+    _run(run_tags.add_tag(first, "front"))
+    _run(run_tags.add_tag(last, "back"))
+
+    tagmap = _run(run_tags.tags_for_sessions(ids))
+    assert tagmap == {first: ["front"], last: ["back"]}
+
+
 # ── session_ids_with_tags — the F8 SQL pre-filter (AND-composed) ────────────
 
 

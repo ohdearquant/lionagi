@@ -17,6 +17,10 @@ from ._db import open_db as _open_db
 
 _DB = str(DEFAULT_DB_PATH)
 
+# Keep each IN(...) bind list under SQLite's default SQLITE_MAX_VARIABLE_NUMBER
+# (999 on builds older than 3.32) so tag hydration cannot overflow it.
+_MAX_SQL_VARS = 900
+
 _ENSURE_TABLE_SQL = """
 CREATE TABLE IF NOT EXISTS run_tags (
     session_id TEXT NOT NULL,
@@ -85,19 +89,23 @@ async def tags_for_sessions(session_ids: list[str]) -> dict[str, list[str]]:
     if not session_ids:
         return {}
 
-    placeholders = ",".join("?" for _ in session_ids)
+    # Chunk the IN(...) list so a large run history cannot exceed SQLite's
+    # bound-variable limit (SQLITE_MAX_VARIABLE_NUMBER, 999 on older builds).
+    # Each session_id falls in exactly one chunk, so its tags all come back
+    # from a single ordered query.
+    out: dict[str, list[str]] = {}
     async with _open_db(_DB) as db:
         await _ensure_table(db)
-        cur = await db.execute(
-            f"SELECT session_id, tag FROM run_tags "  # noqa: S608
-            f"WHERE session_id IN ({placeholders}) ORDER BY tag",
-            session_ids,
-        )
-        rows = await cur.fetchall()
-
-    out: dict[str, list[str]] = {}
-    for r in rows:
-        out.setdefault(r["session_id"], []).append(r["tag"])
+        for i in range(0, len(session_ids), _MAX_SQL_VARS):
+            chunk = session_ids[i : i + _MAX_SQL_VARS]
+            placeholders = ",".join("?" for _ in chunk)
+            cur = await db.execute(
+                f"SELECT session_id, tag FROM run_tags "  # noqa: S608
+                f"WHERE session_id IN ({placeholders}) ORDER BY tag",
+                chunk,
+            )
+            for r in await cur.fetchall():
+                out.setdefault(r["session_id"], []).append(r["tag"])
     return out
 
 
