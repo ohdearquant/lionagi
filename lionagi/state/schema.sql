@@ -90,6 +90,16 @@ CREATE TABLE IF NOT EXISTS projects (
 CREATE INDEX IF NOT EXISTS idx_projects_source ON projects(source);
 CREATE INDEX IF NOT EXISTS idx_projects_updated ON projects(updated_at DESC);
 
+-- ── Run tags ──────────────────────────────────────────────────────────────
+-- User-defined m2m labels over runs (a run == a session). Free-form strings.
+CREATE TABLE IF NOT EXISTS run_tags (
+    session_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
+    tag        TEXT NOT NULL,
+    created_at REAL NOT NULL,
+    PRIMARY KEY (session_id, tag)
+);
+CREATE INDEX IF NOT EXISTS idx_run_tags_tag ON run_tags(tag);
+
 -- ── Sessions ──────────────────────────────────────────────────────────────
 -- Scope boundary.  Owns a progression (the session-level message pool)
 -- and zero or more branches.

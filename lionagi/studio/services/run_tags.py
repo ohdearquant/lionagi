@@ -1,0 +1,168 @@
+# Copyright (c) 2023-2026, HaiyangLi <quantocean.li at gmail dot com>
+# SPDX-License-Identifier: Apache-2.0
+
+from __future__ import annotations
+
+import time
+from typing import Any
+
+from fastapi import HTTPException
+from pydantic import BaseModel
+
+from lionagi._errors import NotFoundError
+from lionagi.state.db import DEFAULT_DB_PATH, StateDB
+
+from ..registry import studio_route
+from ._db import open_db as _open_db
+
+_DB = str(DEFAULT_DB_PATH)
+
+# Keep each IN(...) bind list under SQLite's default SQLITE_MAX_VARIABLE_NUMBER
+# (999 on builds older than 3.32) so tag hydration cannot overflow it.
+_MAX_SQL_VARS = 900
+
+_ENSURE_TABLE_SQL = """
+CREATE TABLE IF NOT EXISTS run_tags (
+    session_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
+    tag        TEXT NOT NULL,
+    created_at REAL NOT NULL,
+    PRIMARY KEY (session_id, tag)
+);
+CREATE INDEX IF NOT EXISTS idx_run_tags_tag ON run_tags(tag);
+"""
+
+
+async def _ensure_table(db) -> None:
+    await db.executescript(_ENSURE_TABLE_SQL)
+
+
+async def add_tag(session_id: str, tag: str) -> None:
+    """Attach a free-form tag to a run (session). Idempotent (INSERT OR IGNORE)."""
+    clean = (tag or "").strip()
+    if not clean:
+        raise HTTPException(status_code=422, detail="tag must not be empty")
+
+    if not DEFAULT_DB_PATH.exists():
+        # A tag write on a fresh install must not leave a partial db behind
+        # (only run_tags, no sessions/etc). Apply the full schema first via
+        # StateDB so every table exists before this module adds run_tags.
+        _db = StateDB()
+        await _db.open()
+        await _db.close()
+
+    now = time.time()
+    async with _open_db(_DB) as db:
+        await _ensure_table(db)
+        await db.execute(
+            "INSERT OR IGNORE INTO run_tags (session_id, tag, created_at) VALUES (?, ?, ?)",
+            (session_id, clean, now),
+        )
+        await db.commit()
+
+
+async def remove_tag(session_id: str, tag: str) -> None:
+    """Detach a tag from a run (session)."""
+    if not DEFAULT_DB_PATH.exists():
+        # Nothing to detach, and a delete must never create the db file
+        # (mirrors the read-path guards). Only add_tag initializes the full
+        # schema — a bare _ensure_table here would leave a run_tags-only db
+        # that makes every later sessions query fail.
+        return
+    async with _open_db(_DB) as db:
+        await _ensure_table(db)
+        await db.execute(
+            "DELETE FROM run_tags WHERE session_id = ? AND tag = ?",
+            (session_id, tag),
+        )
+        await db.commit()
+
+
+async def tags_for_sessions(session_ids: list[str]) -> dict[str, list[str]]:
+    """Batch-fetch tags for many sessions in ONE query (no N+1).
+
+    Returns {session_id: [tags...]} for sessions that carry at least one tag;
+    sessions with no tags are simply absent from the result (caller defaults
+    to []).
+    """
+    if not DEFAULT_DB_PATH.exists():
+        return {}
+    if not session_ids:
+        return {}
+
+    # Chunk the IN(...) list so a large run history cannot exceed SQLite's
+    # bound-variable limit (SQLITE_MAX_VARIABLE_NUMBER, 999 on older builds).
+    # Each session_id falls in exactly one chunk, so its tags all come back
+    # from a single ordered query.
+    out: dict[str, list[str]] = {}
+    async with _open_db(_DB) as db:
+        await _ensure_table(db)
+        for i in range(0, len(session_ids), _MAX_SQL_VARS):
+            chunk = session_ids[i : i + _MAX_SQL_VARS]
+            placeholders = ",".join("?" for _ in chunk)
+            cur = await db.execute(
+                f"SELECT session_id, tag FROM run_tags "  # noqa: S608
+                f"WHERE session_id IN ({placeholders}) ORDER BY tag",
+                chunk,
+            )
+            for r in await cur.fetchall():
+                out.setdefault(r["session_id"], []).append(r["tag"])
+    return out
+
+
+async def session_ids_with_tags(tags: list[str]) -> set[str] | None:
+    """The F8 SQL pre-filter: session_ids carrying ALL of `tags` (AND-composed).
+
+    Contract: an empty/None `tags` list returns None, meaning "no tag filter
+    requested" — callers must treat None as pass-through, not as "no matches".
+    A non-empty list with no matching sessions returns an empty set.
+    """
+    if not DEFAULT_DB_PATH.exists():
+        return None
+    if not tags:
+        return None
+
+    unique_tags = list(dict.fromkeys(tags))
+    placeholders = ",".join("?" for _ in unique_tags)
+    async with _open_db(_DB) as db:
+        await _ensure_table(db)
+        cur = await db.execute(
+            f"SELECT session_id FROM run_tags "  # noqa: S608
+            f"WHERE tag IN ({placeholders}) "
+            f"GROUP BY session_id HAVING COUNT(DISTINCT tag) = ?",
+            [*unique_tags, len(unique_tags)],
+        )
+        rows = await cur.fetchall()
+
+    return {r["session_id"] for r in rows}
+
+
+class TagBody(BaseModel):
+    tag: str
+
+
+@studio_route("/sessions/{session_id}/tags", method="POST", area="sessions", name="add_run_tag")
+async def add_run_tag(session_id: str, body: TagBody) -> dict[str, Any]:
+    # Reject tagging a session that does not exist, matching the other
+    # session-child endpoints (stream, signals). list_runs() only surfaces
+    # rows joined from `sessions`, so a tag written against a stale or
+    # mistyped id would succeed with 200 yet stay invisible in /api/runs —
+    # a silent orphan. 404 instead of writing one.
+    from .sessions import session_exists
+
+    if not await session_exists(session_id):
+        raise NotFoundError(f"Session '{session_id}' not found")
+    await add_tag(session_id, body.tag)
+    current = await tags_for_sessions([session_id])
+    return {"session_id": session_id, "tags": current.get(session_id, [])}
+
+
+@studio_route(
+    "/sessions/{session_id}/tags/{tag:path}",
+    method="DELETE",
+    area="sessions",
+    name="remove_run_tag",
+)
+async def remove_run_tag(session_id: str, tag: str) -> dict[str, Any]:
+    await remove_tag(session_id, tag)
+    current = await tags_for_sessions([session_id])
+    return {"session_id": session_id, "tags": current.get(session_id, [])}

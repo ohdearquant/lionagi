@@ -495,6 +495,7 @@ def _run_row(s: dict[str, Any], now: float, *, process_alive: bool | None = None
         "project_source": s.get("project_source"),
         "status_reason_code": s.get("status_reason_code"),
         "status_reason_summary": s.get("status_reason_summary"),
+        "tags": [],
     }
 
 
@@ -503,9 +504,13 @@ async def list_runs(
     status: str | list[str] | None = None,
     project: str | None = None,
     project_null: bool = False,
+    tag: list[str] | None = None,
 ) -> list[dict[str, Any]]:
+    from . import run_tags
+
     sessions = await _sessions_svc.list_sessions()
     status_set = _normalize_status_filter(status)
+    tagged = await run_tags.session_ids_with_tags(tag) if (tag and sessions) else None
     now = time.time()
     out = []
     snapshot: str | None = None
@@ -519,6 +524,8 @@ async def list_runs(
             continue
         if status_set and s.get("status") not in status_set:
             continue
+        if tagged is not None and s["id"] not in tagged:
+            continue
         alive: bool | None = None
         if s.get("status") == "running":
             if snapshot is None:
@@ -527,6 +534,10 @@ async def list_runs(
                 snapshot = _ps_snapshot()
             alive = _session_liveness(s, snapshot)
         out.append(_run_row(s, now, process_alive=alive))
+
+    tagmap = await run_tags.tags_for_sessions([r["id"] for r in out])
+    for r in out:
+        r["tags"] = tagmap.get(r["id"], [])
     return out
 
 
@@ -599,6 +610,11 @@ async def get_run(run_id: str) -> dict[str, Any] | None:
     alive = _session_liveness(detail_session) if detail_session.get("status") == "running" else None
     row = _run_row(detail_session, time.time(), process_alive=alive)
 
+    from . import run_tags
+
+    tagmap = await run_tags.tags_for_sessions([run_id])
+    row["tags"] = tagmap.get(run_id, [])
+
     return {
         **row,
         # Detail-only fields layered on top of the shared Run row.
@@ -665,9 +681,16 @@ async def list_runs_route(
     ),
     project: str | None = Query(default=None, description="Exact project name filter (ADR-0026)"),
     project_null: bool = Query(default=False, description="Filter to runs with no project"),
+    tag: list[str] | None = Query(  # noqa: B008
+        default=None, description="Repeated tag filter (AND-composed)"
+    ),
 ) -> dict[str, Any]:
     runs = await list_runs(
-        playbook=playbook, status=status, project=project, project_null=project_null
+        playbook=playbook,
+        status=status,
+        project=project,
+        project_null=project_null,
+        tag=tag,
     )
     return paginate_runs(runs, page=page, per_page=per_page)
 
