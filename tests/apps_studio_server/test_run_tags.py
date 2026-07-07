@@ -285,14 +285,14 @@ def test_list_runs_without_tag_filter_still_attaches_tags_field(tmp_path, monkey
     assert target["tags"] == ["x"]
 
 
-# ── P2a: a tag READ must never create a partial db on a fresh install ────────
+# ── a tag READ must never create a partial db on a fresh install ────────
 
 
 def test_list_runs_tag_filter_on_fresh_install_does_not_create_db(tmp_path, monkeypatch):
     """GET /api/runs?tag=x on a brand-new install (no state.db) must not create
 
     a partial db containing only the run_tags table -- that would leave every
-    later `SELECT ... FROM sessions` 500ing (codex P2a, PR #1834).
+    later `SELECT ... FROM sessions` 500ing.
     """
     db_path = tmp_path / "state.db"
     _patch_db(monkeypatch, db_path)
@@ -332,7 +332,7 @@ def test_add_tag_on_fresh_install_initializes_full_schema_not_just_run_tags(tmp_
     """add_tag on a fresh install must apply the FULL schema (sessions, etc.),
 
     not just the run_tags table -- otherwise the db is left partial and a
-    later sessions query 500s (codex P2a, PR #1834).
+    later sessions query 500s.
     """
     db_path = tmp_path / "state.db"
     _patch_db(monkeypatch, db_path)
@@ -351,15 +351,44 @@ def test_add_tag_on_fresh_install_initializes_full_schema_not_just_run_tags(tmp_
     assert tagmap == {sid: ["urgent"]}
 
 
-# ── P2b: free-form tags containing "/" must round-trip through the DELETE route ──
+def test_remove_tag_on_fresh_install_does_not_create_db(tmp_path, monkeypatch):
+    """A delete has nothing to detach on a fresh install and must NOT create
+    the db -- a bare _ensure_table would leave a run_tags-only partial db that
+    makes every later sessions query 500. Mirrors the read-path guards.
+    """
+    db_path = tmp_path / "state.db"
+    _patch_db(monkeypatch, db_path)
+    assert not db_path.exists()
+
+    import lionagi.studio.services.run_tags as run_tags
+
+    _run(run_tags.remove_tag(str(uuid.uuid4()), "urgent"))
+    assert not db_path.exists()
+
+
+def test_remove_tag_route_on_fresh_install_does_not_create_partial_db(tmp_path, monkeypatch):
+    """DELETE as the FIRST tag endpoint hit on a fresh install must return an
+    empty tag set and leave NO db behind (not even a run_tags-only one).
+    """
+    db_path = tmp_path / "state.db"
+    client = _make_client(db_path, monkeypatch)
+    assert not db_path.exists()
+
+    r = client.delete(f"/api/sessions/{uuid.uuid4()}/tags/urgent")
+    assert r.status_code == 200
+    assert r.json()["tags"] == []
+    assert not db_path.exists()
+
+
+# ── free-form tags containing "/" must round-trip through the DELETE route ──
 
 
 def test_remove_run_tag_route_handles_slash_in_tag(tmp_path, monkeypatch):
     """A tag like 'team/backend' must be deletable through the actual route.
 
-    The DELETE path param must capture the rest of the path (codex P2b,
-    PR #1834) -- exercised here via TestClient, not by calling remove_tag()
-    directly, so the routing itself is proven.
+    The DELETE path param must capture the rest of the path -- exercised here
+    via TestClient, not by calling remove_tag() directly, so the routing
+    itself is proven.
     """
     db_path = tmp_path / "state.db"
     _run(_init_db(db_path))

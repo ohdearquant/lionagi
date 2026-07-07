@@ -57,6 +57,12 @@ async def add_tag(session_id: str, tag: str) -> None:
 
 async def remove_tag(session_id: str, tag: str) -> None:
     """Detach a tag from a run (session)."""
+    if not DEFAULT_DB_PATH.exists():
+        # Nothing to detach, and a delete must never create the db file
+        # (mirrors the read-path guards). Only add_tag initializes the full
+        # schema — a bare _ensure_table here would leave a run_tags-only db
+        # that makes every later sessions query fail.
+        return
     async with _open_db(_DB) as db:
         await _ensure_table(db)
         await db.execute(
