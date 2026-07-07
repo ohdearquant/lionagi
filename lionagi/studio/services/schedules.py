@@ -618,6 +618,21 @@ async def list_schedules_route(
     return {"schedules": rows}
 
 
+@studio_route("/schedules/limits", method="GET", area="schedules", name="schedule_limits")
+async def schedule_limits_route() -> dict[str, Any]:
+    # A literal path registered before the /{schedule_id} param route below
+    # so "limits" resolves here rather than being captured as a schedule id
+    # (routes are matched in registration order — see registry.py).
+    from lionagi.studio import config
+
+    from ..scheduler.engine import scheduler
+
+    return {
+        "max_scheduled_concurrent": config.MAX_SCHEDULED_CONCURRENT,
+        "current_inflight": scheduler._global_inflight,
+    }
+
+
 @studio_route("/schedules/{schedule_id}", method="GET", area="schedules", name="get_schedule")
 async def get_schedule_route(schedule_id: str) -> dict[str, Any]:
     data = await get_schedule(schedule_id)
