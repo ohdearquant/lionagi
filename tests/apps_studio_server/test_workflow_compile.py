@@ -250,6 +250,54 @@ async def test_compile_rejects_unsafe_node_engine_options(unsafe_cmd):
     assert exc_info.value.node_id == "n3"
 
 
+@pytest.mark.parametrize(
+    "bad_budget", [{"max_agents": 9999}, {"max_depth": 0}, {"max_agents": "5"}]
+)
+async def test_compile_rejects_out_of_range_engine_budget(bad_budget):
+    """A node-level max_depth/max_agents override bypasses the EngineDef's
+    [1, 100]/int checks and reaches Engine(...) directly — a saved workflow
+    could spawn far more agents or recurse deeper than the def permits. The
+    compiler must re-validate the effective budget and reject it.
+    """
+    spec = _make_spec()
+    spec["nodes"][2]["config"].update(bad_budget)
+    with pytest.raises(WorkflowCompileError) as exc_info:
+        await compile_workflow_def(spec, resolve_engine_def=_resolve_ok)
+    assert exc_info.value.node_id == "n3"
+
+
+async def test_compile_null_budget_override_falls_back_to_def():
+    """An explicit null override must not discard the def's stricter budget."""
+
+    async def _resolve_with_budget(ref: str) -> dict[str, Any]:
+        return {"kind": "research", "model": None, "options": {}, "max_agents": 5}
+
+    spec = _make_spec()
+    spec["nodes"][2]["config"]["max_agents"] = None
+
+    graph, _id_map = await compile_workflow_def(spec, resolve_engine_def=_resolve_with_budget)
+
+    from lionagi.operations.node import Operation
+
+    engine_op = next(
+        n
+        for n in graph.internal_nodes.values()
+        if isinstance(n, Operation) and n.operation == "engine"
+    )
+    assert engine_op.parameters["engine_max_agents"] == 5  # def value, not None
+
+
+async def test_compile_non_mapping_engine_options_raises_with_node_id():
+    """A non-mapping config.options would raise TypeError on the ** merge,
+    escaping the ValueError wrapper as a 500. Reject it as a compile error.
+    """
+    spec = _make_spec()
+    spec["nodes"][2]["config"]["options"] = "bad"
+    with pytest.raises(WorkflowCompileError) as exc_info:
+        await compile_workflow_def(spec, resolve_engine_def=_resolve_ok)
+    assert exc_info.value.node_id == "n3"
+
+
 async def test_compile_non_mapping_config_raises_with_node_id():
     """A node whose config is not a mapping (e.g. a bare string) must surface a
     WorkflowCompileError with the node id, not an unstructured AttributeError —

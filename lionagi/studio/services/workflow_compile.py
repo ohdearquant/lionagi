@@ -310,22 +310,42 @@ async def compile_workflow_def(
                 raise WorkflowCompileError(
                     f"unknown engine_def_id {engine_def_id!r}", node_id=node_id
                 )
-            # A node's config.options override the EngineDef's stored options,
-            # but those node values are author-supplied and never went through
-            # the checks engine_defs enforces when a def is created (allowed
-            # keys, string-only, no leading-dash CLI-flag injection, no shell
-            # metacharacters, kind requirements). Re-validate the merged result
-            # so a saved workflow can't smuggle e.g. a shell-control test_cmd
-            # past those safeguards into a coding engine's command.
-            from .engine_defs import _validate_kind_options, _validate_options
+            # A node's config overrides (options, max_depth, max_agents) are
+            # author-supplied and never went through the checks engine_defs
+            # enforces at def creation (allowed option keys, string-only, no
+            # leading-dash CLI-flag injection, no shell metacharacters, kind
+            # requirements, budgets in [1, 100]). Re-validate the effective
+            # values so a saved workflow can't smuggle a shell-control test_cmd
+            # into a coding engine or set an unbounded agent/depth budget.
+            from .engine_defs import (
+                _validate_budget,
+                _validate_kind_options,
+                _validate_options,
+            )
 
-            engine_options = {
-                **(defn.get("options") or {}),
-                **(config.get("options") or {}),
-            }
+            node_options = config.get("options")
+            if node_options is not None and not isinstance(node_options, dict):
+                # A non-mapping options value would raise TypeError on the **
+                # unpack below, escaping the ValueError wrapper as a 500.
+                raise WorkflowCompileError(
+                    "engine node config.options must be a mapping, got "
+                    f"{type(node_options).__name__}",
+                    node_id=node_id,
+                )
+            engine_options = {**(defn.get("options") or {}), **(node_options or {})}
+
+            # A node override of None must fall back to the def's value rather
+            # than discard the (stricter) stored budget.
+            node_depth = config.get("max_depth")
+            engine_max_depth = defn.get("max_depth") if node_depth is None else node_depth
+            node_agents = config.get("max_agents")
+            engine_max_agents = defn.get("max_agents") if node_agents is None else node_agents
+
             try:
                 _validate_options(engine_options)
                 _validate_kind_options(defn.get("kind"), engine_options)
+                _validate_budget("max_depth", engine_max_depth)
+                _validate_budget("max_agents", engine_max_agents)
             except ValueError as exc:
                 raise WorkflowCompileError(str(exc), node_id=node_id) from exc
             op_id = builder.add_operation(
@@ -333,8 +353,8 @@ async def compile_workflow_def(
                 node_id=node_id,
                 engine_kind=defn.get("kind"),
                 engine_model=config.get("model") or defn.get("model"),
-                engine_max_depth=config.get("max_depth", defn.get("max_depth")),
-                engine_max_agents=config.get("max_agents", defn.get("max_agents")),
+                engine_max_depth=engine_max_depth,
+                engine_max_agents=engine_max_agents,
                 engine_options=engine_options,
             )
         else:  # pragma: no cover — unreachable, prefiltered above
