@@ -10,6 +10,7 @@ import logging
 import math
 import os
 import threading
+from collections.abc import Callable
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 from uuid import UUID
@@ -120,6 +121,7 @@ class DependencyAwareExecutor:
         default_branch: "Branch" = None,
         alcall_params: AlcallParams | None = None,
         executor_ref: dict[str, Any] | None = None,
+        on_branch_created: Callable[[Any], None] | None = None,
     ):
         self.session = session
         self.graph = graph
@@ -129,6 +131,13 @@ class DependencyAwareExecutor:
         self._alcall = alcall_params or AlcallParams()
         self._default_branch = default_branch
         self.on_progress = None
+        # Persistence-only seam: a caller
+        # (e.g. Studio's workflow_run) can pass a sync callback invoked with
+        # every branch this executor clones during pre-allocation, so it can
+        # wire per-branch persistence (register_branch_hook) on branches that
+        # did not exist yet when the caller set up persistence for the
+        # session's initial branches. Never touches execution/branch semantics.
+        self._on_branch_created = on_branch_created
         self.results = {}
         self.completion_events = {}
         self.operation_branches = {}
@@ -227,6 +236,9 @@ class DependencyAwareExecutor:
                             self.session.include_branches(branch_clone)
                 except Exception:
                     logger.debug("Skipping branch clone registration (likely mock in test).")
+
+                if self._on_branch_created is not None:
+                    self._on_branch_created(branch_clone)
 
                 if operation.metadata.get("inherit_context"):
                     branch_clone.metadata = branch_clone.metadata or {}
@@ -997,6 +1009,11 @@ class ReactiveExecutor(DependencyAwareExecutor):
 
         clone = base.clone(sender=self.session.id)
         self.session.include_branches(clone)
+        # NOTE: reactive self-expansion clones branches here too; a persisted
+        # reactive run would need the same self._on_branch_created(clone) call
+        # as _preallocate_all_branches to pick up mid-run spawned branches.
+        # Not wired: workflow_run (the only caller threading on_branch_created
+        # today) never runs with reactive=True.
         self.operation_branches[child.id] = clone
         child.branch_id = clone.id
 
@@ -1024,6 +1041,7 @@ async def flow(
     node_builder: Any = None,
     max_spawn: int = 50,
     executor_ref: dict[str, Any] | None = None,
+    on_branch_created: Callable[[Any], None] | None = None,
 ) -> dict[str, Any]:
     """Execute a graph with dependency management and optional reactive self-expansion.
 
@@ -1062,6 +1080,7 @@ async def flow(
             default_branch=branch,
             alcall_params=alcall_params,
             executor_ref=executor_ref,
+            on_branch_created=on_branch_created,
         )
     if on_progress is not None:
         executor.on_progress = on_progress

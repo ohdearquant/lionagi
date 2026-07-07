@@ -73,6 +73,16 @@ def _validate_kind_options(kind: str, options: dict[str, Any] | None) -> None:
         )
 
 
+def _validate_budget(field: str, val: Any) -> None:
+    """A max_depth/max_agents override must be an int in [1, 100] (or absent)."""
+    if val is None:
+        return
+    if not isinstance(val, int) or isinstance(val, bool):
+        raise ValueError(f"{field} must be an integer")
+    if not (1 <= val <= 100):
+        raise ValueError(f"{field} must be in [1, 100], got {val}")
+
+
 def _svc_validate_action_model(model: str | None) -> None:
     if not model:
         return
@@ -127,12 +137,7 @@ async def create_engine_def(data: dict[str, Any]) -> dict[str, Any]:
     _svc_validate_action_model(data.get("model"))
 
     for field in ("max_depth", "max_agents"):
-        val = data.get(field)
-        if val is not None:
-            if not isinstance(val, int) or isinstance(val, bool):
-                raise ValueError(f"{field} must be an integer")
-            if not (1 <= val <= 100):
-                raise ValueError(f"{field} must be in [1, 100], got {val}")
+        _validate_budget(field, data.get(field))
 
     _validate_options(data.get("options"))
     _validate_kind_options(kind, data.get("options"))
@@ -175,12 +180,7 @@ async def update_engine_def(def_id: str, fields: dict[str, Any]) -> dict[str, An
             _svc_validate_action_model(fields["model"])
         for field in ("max_depth", "max_agents"):
             if field in fields:
-                val = fields[field]
-                if val is not None:
-                    if not isinstance(val, int) or isinstance(val, bool):
-                        raise ValueError(f"{field} must be an integer")
-                    if not (1 <= val <= 100):
-                        raise ValueError(f"{field} must be in [1, 100], got {val}")
+                _validate_budget(field, fields[field])
         if "options" in fields:
             _validate_options(fields["options"])
 
