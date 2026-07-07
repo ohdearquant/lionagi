@@ -250,6 +250,18 @@ async def test_compile_rejects_unsafe_node_engine_options(unsafe_cmd):
     assert exc_info.value.node_id == "n3"
 
 
+async def test_compile_non_mapping_config_raises_with_node_id():
+    """A node whose config is not a mapping (e.g. a bare string) must surface a
+    WorkflowCompileError with the node id, not an unstructured AttributeError —
+    otherwise the run route returns 500 instead of the structured 422.
+    """
+    spec = _make_spec()
+    spec["nodes"][2]["config"] = "bad"
+    with pytest.raises(WorkflowCompileError) as exc_info:
+        await compile_workflow_def(spec, resolve_engine_def=_resolve_ok)
+    assert exc_info.value.node_id == "n3"
+
+
 async def test_compile_edge_condition_is_studio_expr_condition():
     graph, id_map = await compile_workflow_def(_make_spec(), resolve_engine_def=_resolve_ok)
     edge = next(iter(graph.internal_edges))

@@ -282,7 +282,18 @@ async def compile_workflow_def(
             # op uniformly via session.flow(context=...), so no graph edge is needed.
             continue
 
-        config = n.get("config") or {}
+        config = n.get("config")
+        if config is None:
+            config = {}
+        elif not isinstance(config, dict):
+            # A saved spec can carry a non-mapping config (e.g. config: "bad")
+            # that _validate_spec does not shape-check for every kind. Reject it
+            # here so the run route returns a structured 422 rather than letting
+            # config.get(...) raise AttributeError as an unstructured 500.
+            raise WorkflowCompileError(
+                f"node config must be a mapping, got {type(config).__name__}",
+                node_id=node_id,
+            )
         if kind == "chat":
             prompt = config.get("prompt")
             if not prompt or not isinstance(prompt, str):
