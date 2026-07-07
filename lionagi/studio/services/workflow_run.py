@@ -14,6 +14,7 @@ while still reusing the session-row/branch-hook/teardown-reason logic those help
 
 from __future__ import annotations
 
+import asyncio
 import time
 import uuid
 from typing import Any
@@ -189,6 +190,13 @@ async def run_workflow_def(
         op_results = result.get("operation_results", {}) if isinstance(result, dict) else {}
         if any(isinstance(v, dict) and "error" in v for v in op_results.values()):
             status = "failed"
+    except asyncio.CancelledError:
+        # A cancelled Studio request/task aborts session.flow with
+        # CancelledError, which is a BaseException and so bypasses the
+        # `except Exception` below. Record the run as cancelled (not the
+        # optimistic "completed" default) before re-propagating the cancel.
+        status = "cancelled"
+        raise
     except Exception as e:  # noqa: BLE001
         status = "failed"
         exc = e

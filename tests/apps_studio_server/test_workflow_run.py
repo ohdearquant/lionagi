@@ -11,6 +11,7 @@ the authored node ids and edges (the data get_session()["graph"] reads).
 
 from __future__ import annotations
 
+import asyncio
 from pathlib import Path
 from typing import Any
 from unittest.mock import AsyncMock
@@ -161,6 +162,42 @@ async def test_workflow_run_end_to_end(patched_env):
     assert set(edges_by_id) == {"e1", "e2"}
     assert edges_by_id["e2"]["condition"] == "result != None"
     assert edges_by_id["e2"]["mode"] == "code"
+
+
+async def test_cancelled_run_is_recorded_as_cancelled(patched_env, monkeypatch):
+    """If session.flow is cancelled mid-run (Studio request/task cancelled),
+    CancelledError (a BaseException) bypasses the `except Exception` handler.
+    The run must be recorded as 'cancelled', not left at the optimistic
+    'completed' default, and the cancellation must re-propagate.
+    """
+    wf_svc, engine_defs_svc = patched_env
+
+    engine_def = await engine_defs_svc.create_engine_def({"name": "cancel-eng", "kind": "research"})
+    spec = _spec()
+    spec["nodes"][2]["config"]["engine_def_id"] = engine_def["id"]
+    created = await wf_svc.create_workflow_def({"name": "cancel-flow", "spec_json": spec})
+    def_id = created["id"]
+
+    from lionagi.session.session import Session
+    from lionagi.studio.services.workflow_run import run_workflow_def
+
+    session = Session(default_branch=_mock_chat_branch())
+
+    async def _cancelled_flow(self, *args, **kwargs):
+        raise asyncio.CancelledError
+
+    # Session is a pydantic model (no instance-attr assignment); patch the
+    # bound method on the class for this test only.
+    monkeypatch.setattr(Session, "flow", _cancelled_flow)
+
+    with pytest.raises(asyncio.CancelledError):
+        await run_workflow_def(def_id, {"topic": "GQA"}, _session=session)
+
+    from lionagi.studio.services.sessions import get_session
+
+    row = await get_session(str(session.id))
+    assert row is not None
+    assert row["status"] == "cancelled"
 
 
 async def test_workflow_run_not_found_raises(patched_env):

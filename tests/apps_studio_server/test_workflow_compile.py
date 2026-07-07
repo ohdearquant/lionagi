@@ -192,6 +192,38 @@ async def test_compile_basic_graph():
     assert len(graph.internal_edges) == 1  # only n2->n3; n1 is 'input', dropped
 
 
+async def test_compile_merges_node_engine_options_over_def():
+    """A node's config.options override the referenced EngineDef's options
+    (node wins) while def-only keys are preserved — otherwise a per-node
+    test_cmd/export_dir override is silently discarded.
+    """
+
+    async def _resolve_with_opts(ref: str) -> dict[str, Any]:
+        return {
+            "kind": "research",
+            "model": None,
+            "options": {"test_cmd": "def_cmd", "export_dir": "def_dir"},
+        }
+
+    spec = _make_spec()
+    spec["nodes"][2]["config"]["options"] = {"test_cmd": "node_cmd"}
+
+    graph, _id_map = await compile_workflow_def(spec, resolve_engine_def=_resolve_with_opts)
+
+    from lionagi.operations.node import Operation
+
+    engine_ops = [
+        n
+        for n in graph.internal_nodes.values()
+        if isinstance(n, Operation) and n.operation == "engine"
+    ]
+    assert len(engine_ops) == 1
+    assert engine_ops[0].parameters["engine_options"] == {
+        "test_cmd": "node_cmd",  # node override wins
+        "export_dir": "def_dir",  # def-only key preserved
+    }
+
+
 async def test_compile_edge_condition_is_studio_expr_condition():
     graph, id_map = await compile_workflow_def(_make_spec(), resolve_engine_def=_resolve_ok)
     edge = next(iter(graph.internal_edges))

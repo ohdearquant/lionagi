@@ -306,7 +306,10 @@ async def compile_workflow_def(
                 engine_model=config.get("model") or defn.get("model"),
                 engine_max_depth=config.get("max_depth", defn.get("max_depth")),
                 engine_max_agents=config.get("max_agents", defn.get("max_agents")),
-                engine_options=dict(defn.get("options") or {}),
+                engine_options={
+                    **(defn.get("options") or {}),
+                    **(config.get("options") or {}),
+                },
             )
         else:  # pragma: no cover — unreachable, prefiltered above
             raise WorkflowCompileError(f"unknown node kind {kind!r}", node_id=node_id)
