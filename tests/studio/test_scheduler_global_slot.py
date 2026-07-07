@@ -257,6 +257,37 @@ async def test_tick_github_releases_slot_on_no_events(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_tick_github_releases_slot_when_max_runs_reservation_raises(monkeypatch):
+    # A failure in the max_runs reservation (e.g. a transient DB/count error)
+    # happens after the global slot is already reserved. The slot must still be
+    # released as the exception propagates — otherwise it leaks permanently and
+    # eventually saturates the cap.
+    import lionagi.studio.config as studio_config
+    from lionagi.studio.scheduler.engine import SchedulerEngine
+
+    monkeypatch.setattr(studio_config, "MAX_SCHEDULED_CONCURRENT", 1)
+    svc = _make_svc()
+    engine = SchedulerEngine(svc=svc)
+    schedule = _minimal_schedule(
+        trigger_type="github_poll", github_repo="acme/widgets", last_fired_at=0
+    )
+
+    async def _boom(_schedule):
+        raise RuntimeError("count query failed")
+
+    monkeypatch.setattr(engine, "_reserve_max_runs_budget", _boom)
+
+    with patch(
+        "lionagi.studio.scheduler.github.github_poll",
+        new=AsyncMock(return_value=[{"number": 1}]),
+    ):
+        with pytest.raises(RuntimeError, match="count query failed"):
+            await engine._tick_github(schedule, now=10_000.0)
+
+    assert engine._global_inflight == 0
+
+
+@pytest.mark.asyncio
 async def test_tick_github_fires_and_releases_slot_on_completion(monkeypatch):
     import lionagi.studio.config as studio_config
     from lionagi.studio.scheduler.engine import SchedulerEngine

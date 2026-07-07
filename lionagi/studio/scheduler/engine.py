@@ -501,41 +501,48 @@ class SchedulerEngine:
 
         from .github import github_poll
 
+        # Every await between reserving the slot and handing it to _fire()
+        # (github_poll, the max_runs reservation, or a cancellation at either)
+        # must release the slot on failure — otherwise a transient DB/count
+        # error mid-poll leaks the slot permanently and eventually saturates
+        # the cap until restart. A single finally covers all of them; once the
+        # claims are passed to _fire() (which owns their release from then on)
+        # handed_off is set so this finally leaves them alone.
+        max_runs_claim: _MaxRunsClaim | None = None
+        handed_off = False
         try:
             new_events = await github_poll(schedule)
-        except BaseException:
-            if slot_claim is not None:
-                slot_claim.release()
-            raise
+            if not new_events:
+                return
 
-        if not new_events:
-            if slot_claim is not None:
-                slot_claim.release()
-            return
-
-        allowed, claim = await self._reserve_max_runs_budget(schedule)
-        if not allowed:
-            if slot_claim is not None:
-                slot_claim.release()
-            _log.info(
-                "Schedule %s (%s) has exhausted max_runs; skipping github_poll fire",
-                schedule.get("name"),
-                schedule["id"],
+            allowed, max_runs_claim = await self._reserve_max_runs_budget(schedule)
+            if not allowed:
+                _log.info(
+                    "Schedule %s (%s) has exhausted max_runs; skipping github_poll fire",
+                    schedule.get("name"),
+                    schedule["id"],
+                )
+                return
+            ctx = {
+                "github_events": new_events,
+                "repo": schedule.get("github_repo"),
+                "fired_at": now,
+            }
+            run_id = uuid.uuid4().hex[:12]
+            handed_off = True
+            await self._fire(
+                schedule,
+                run_id,
+                trigger_context=ctx,
+                max_runs_claim=max_runs_claim,
+                global_slot_claim=slot_claim,
             )
-            return
-        ctx = {
-            "github_events": new_events,
-            "repo": schedule.get("github_repo"),
-            "fired_at": now,
-        }
-        run_id = uuid.uuid4().hex[:12]
-        await self._fire(
-            schedule,
-            run_id,
-            trigger_context=ctx,
-            max_runs_claim=claim,
-            global_slot_claim=slot_claim,
-        )
+        finally:
+            if not handed_off:
+                if slot_claim is not None:
+                    slot_claim.release()
+                if max_runs_claim is not None:
+                    max_runs_claim.release()
 
     async def _reserve_max_runs_budget(self, schedule: dict) -> tuple[bool, _MaxRunsClaim | None]:
         """Atomically claim one top-level fire against schedule['max_runs'].
