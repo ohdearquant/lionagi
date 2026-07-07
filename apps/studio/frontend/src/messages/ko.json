@@ -908,6 +908,13 @@
     "gateConditionHint": "두 번째 나가는 연결선은 else 브랜치입니다.",
     "chatPrompt": "프롬프트",
     "chatPromptPlaceholder": "이 chat 단계에 대한 지시…",
+    "outgoingEdges": "나가는 연결선",
+    "edgeCondition": "조건",
+    "edgeConditionPlaceholder": "output == \"ok\"",
+    "edgeConditionHint": "저장하거나 실행할 때 검증됩니다.",
+    "edgeConditionWarning": "유효한 표현식이 아닐 수 있습니다. 저장 시 다시 검증됩니다.",
+    "edgeConditionTarget": "→ {target}",
+    "noOutgoingEdges": "나가는 연결선이 없습니다",
     "kinds": {
       "input": "입력",
       "chat": "채팅",

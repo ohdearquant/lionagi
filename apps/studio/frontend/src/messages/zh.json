@@ -908,6 +908,13 @@
     "gateConditionHint": "第二条出边为 else 分支。",
     "chatPrompt": "提示词",
     "chatPromptPlaceholder": "此聊天步骤的指令…",
+    "outgoingEdges": "出边",
+    "edgeCondition": "条件",
+    "edgeConditionPlaceholder": "output == \"ok\"",
+    "edgeConditionHint": "保存或运行时会校验该表达式的语法。",
+    "edgeConditionWarning": "可能不是有效表达式，保存时会再次校验。",
+    "edgeConditionTarget": "→ {target}",
+    "noOutgoingEdges": "无出边",
     "kinds": {
       "input": "输入",
       "chat": "聊天",

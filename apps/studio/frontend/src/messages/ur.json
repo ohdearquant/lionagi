@@ -908,6 +908,13 @@
     "gateConditionHint": "دوسرا outgoing edge، else branch ہے۔",
     "chatPrompt": "پرامپٹ",
     "chatPromptPlaceholder": "اس چیٹ step کے لیے ہدایت…",
+    "outgoingEdges": "آؤٹ گوئنگ ایجز",
+    "edgeCondition": "شرط",
+    "edgeConditionPlaceholder": "output == \"ok\"",
+    "edgeConditionHint": "محفوظ کرنے یا چلانے پر اس کی تصدیق کی جاتی ہے۔",
+    "edgeConditionWarning": "ہو سکتا ہے یہ درست ایکسپریشن نہ ہو — محفوظ کرنے پر دوبارہ جانچا جائے گا۔",
+    "edgeConditionTarget": "→ {target}",
+    "noOutgoingEdges": "کوئی آؤٹ گوئنگ ایج نہیں",
     "kinds": {
       "input": "اِن پٹ",
       "chat": "چیٹ",

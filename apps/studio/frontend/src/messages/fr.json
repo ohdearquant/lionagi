@@ -908,6 +908,13 @@
     "gateConditionHint": "Le deuxième arc sortant est la branche else.",
     "chatPrompt": "Prompt",
     "chatPromptPlaceholder": "Instruction pour cette étape de chat…",
+    "outgoingEdges": "Arcs sortants",
+    "edgeCondition": "Condition",
+    "edgeConditionPlaceholder": "output == \"ok\"",
+    "edgeConditionHint": "Validée à l'enregistrement ou à l'exécution.",
+    "edgeConditionWarning": "Peut ne pas être une expression valide — sera revérifiée à l'enregistrement.",
+    "edgeConditionTarget": "→ {target}",
+    "noOutgoingEdges": "Aucun arc sortant",
     "kinds": {
       "input": "Entrée",
       "chat": "Chat",

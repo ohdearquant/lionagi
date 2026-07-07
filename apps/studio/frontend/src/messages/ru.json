@@ -908,6 +908,13 @@
     "gateConditionHint": "Второе исходящее ребро — ветка else.",
     "chatPrompt": "Промпт",
     "chatPromptPlaceholder": "Инструкция для этого шага чата…",
+    "outgoingEdges": "Исходящие рёбра",
+    "edgeCondition": "Условие",
+    "edgeConditionPlaceholder": "output == \"ok\"",
+    "edgeConditionHint": "Проверяется при сохранении или запуске.",
+    "edgeConditionWarning": "Возможно, это не является допустимым выражением — будет проверено повторно при сохранении.",
+    "edgeConditionTarget": "→ {target}",
+    "noOutgoingEdges": "Нет исходящих рёбер",
     "kinds": {
       "input": "Ввод",
       "chat": "Чат",

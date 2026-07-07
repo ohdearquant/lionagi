@@ -908,6 +908,13 @@
     "gateConditionHint": "দ্বিতীয় আউটগোয়িং এজটি else ব্রাঞ্চ।",
     "chatPrompt": "প্রম্পট",
     "chatPromptPlaceholder": "এই chat ধাপের নির্দেশনা…",
+    "outgoingEdges": "আউটগোয়িং এজ",
+    "edgeCondition": "শর্ত",
+    "edgeConditionPlaceholder": "output == \"ok\"",
+    "edgeConditionHint": "সংরক্ষণ বা চালানোর সময় এটি যাচাই করা হয়।",
+    "edgeConditionWarning": "এটি একটি বৈধ এক্সপ্রেশন নাও হতে পারে — সংরক্ষণের সময় আবার যাচাই করা হবে।",
+    "edgeConditionTarget": "→ {target}",
+    "noOutgoingEdges": "কোনো আউটগোয়িং এজ নেই",
     "kinds": {
       "input": "ইনপুট",
       "chat": "Chat",

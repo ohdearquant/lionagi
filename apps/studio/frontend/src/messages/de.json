@@ -908,6 +908,13 @@
     "gateConditionHint": "Die zweite ausgehende Kante ist der else-Branch.",
     "chatPrompt": "Prompt",
     "chatPromptPlaceholder": "Anweisung für diesen Chat-Schritt…",
+    "outgoingEdges": "Ausgehende Kanten",
+    "edgeCondition": "Bedingung",
+    "edgeConditionPlaceholder": "output == \"ok\"",
+    "edgeConditionHint": "Wird beim Speichern oder Ausführen überprüft.",
+    "edgeConditionWarning": "Möglicherweise kein gültiger Ausdruck – wird beim Speichern erneut geprüft.",
+    "edgeConditionTarget": "→ {target}",
+    "noOutgoingEdges": "Keine ausgehenden Kanten",
     "kinds": {
       "input": "Eingabe",
       "chat": "Chat",

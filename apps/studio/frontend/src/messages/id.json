@@ -908,6 +908,13 @@
     "gateConditionHint": "Edge keluar kedua adalah branch else.",
     "chatPrompt": "Prompt",
     "chatPromptPlaceholder": "Instruksi untuk langkah chat ini…",
+    "outgoingEdges": "Edge keluar",
+    "edgeCondition": "Kondisi",
+    "edgeConditionPlaceholder": "output == \"ok\"",
+    "edgeConditionHint": "Divalidasi saat menyimpan atau menjalankan.",
+    "edgeConditionWarning": "Mungkin bukan ekspresi yang valid — akan diperiksa lagi saat menyimpan.",
+    "edgeConditionTarget": "→ {target}",
+    "noOutgoingEdges": "Tidak ada edge keluar",
     "kinds": {
       "input": "Input",
       "chat": "Chat",

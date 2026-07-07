@@ -908,6 +908,13 @@
     "gateConditionHint": "La segunda arista saliente es la rama else.",
     "chatPrompt": "Prompt",
     "chatPromptPlaceholder": "Instrucción para este paso de chat…",
+    "outgoingEdges": "Aristas salientes",
+    "edgeCondition": "Condición",
+    "edgeConditionPlaceholder": "output == \"ok\"",
+    "edgeConditionHint": "Se valida al guardar o ejecutar.",
+    "edgeConditionWarning": "Puede que no sea una expresión válida — se volverá a comprobar al guardar.",
+    "edgeConditionTarget": "→ {target}",
+    "noOutgoingEdges": "Sin aristas salientes",
     "kinds": {
       "input": "Entrada",
       "chat": "Chat",

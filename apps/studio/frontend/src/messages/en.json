@@ -908,6 +908,13 @@
     "gateConditionHint": "Second outgoing edge is the else branch.",
     "chatPrompt": "Prompt",
     "chatPromptPlaceholder": "Instruction for this chat step…",
+    "outgoingEdges": "Outgoing edges",
+    "edgeCondition": "Condition",
+    "edgeConditionPlaceholder": "output == \"ok\"",
+    "edgeConditionHint": "Validated against the workflow grammar on save or run.",
+    "edgeConditionWarning": "May not be a valid expression — checked again on save.",
+    "edgeConditionTarget": "→ {target}",
+    "noOutgoingEdges": "No outgoing edges",
     "kinds": {
       "input": "Input",
       "chat": "Chat",

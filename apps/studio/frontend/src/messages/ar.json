@@ -908,6 +908,13 @@
     "gateConditionHint": "الحافة الصادرة الثانية هي فرع else.",
     "chatPrompt": "الموجّه",
     "chatPromptPlaceholder": "تعليمات خطوة المحادثة هذه…",
+    "outgoingEdges": "الحواف الصادرة",
+    "edgeCondition": "الشرط",
+    "edgeConditionPlaceholder": "output == \"ok\"",
+    "edgeConditionHint": "يتم التحقق منه عند الحفظ أو التشغيل.",
+    "edgeConditionWarning": "قد لا يكون تعبيرًا صالحًا — سيتم التحقق منه مرة أخرى عند الحفظ.",
+    "edgeConditionTarget": "→ {target}",
+    "noOutgoingEdges": "لا توجد حواف صادرة",
     "kinds": {
       "input": "إدخال",
       "chat": "محادثة",

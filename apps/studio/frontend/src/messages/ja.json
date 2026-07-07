@@ -908,6 +908,13 @@
     "gateConditionHint": "2本目の出力エッジがelseブランチです。",
     "chatPrompt": "プロンプト",
     "chatPromptPlaceholder": "このチャットステップの指示…",
+    "outgoingEdges": "出力エッジ",
+    "edgeCondition": "条件",
+    "edgeConditionPlaceholder": "output == \"ok\"",
+    "edgeConditionHint": "保存または実行時に構文が検証されます。",
+    "edgeConditionWarning": "式が正しくない可能性があります。保存時に再度検証されます。",
+    "edgeConditionTarget": "→ {target}",
+    "noOutgoingEdges": "出力エッジがありません",
     "kinds": {
       "input": "入力",
       "chat": "チャット",

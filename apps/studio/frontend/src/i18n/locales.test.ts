@@ -5,9 +5,11 @@
  * - LOCALES/RTL_LOCALES metadata shape (16 codes, ar/ur marked rtl).
  * - applyDocumentLocale flips <html lang>/<html dir> for rtl vs ltr locales.
  * - Every messages/*.json file has the exact same leaf-key set as en.json
- *   (792 leaves: 766 base + 4 Mission Control overview leaves + 21
+ *   (799 leaves: 766 base + 4 Mission Control overview leaves + 21
  *   library.template.* built-in workflow template keys + 1
- *   library.filterPlaybook key for the split-out Playbook library tab).
+ *   library.filterPlaybook key for the split-out Playbook library tab + 7
+ *   workflow.edgeCondition-prefixed / outgoingEdges / noOutgoingEdges keys
+ *   for edge condition authoring in the designer inspector).
  * - Every locale's messages parse under a real ICU translator with no
  *   FORMATTING_ERROR, including the true {count, plural, ...} strings and
  *   the pre-existing bare-{plural} anti-pattern in prunePhantoms.
@@ -121,6 +123,7 @@ const SAMPLE_VALUES = {
   span: "20m",
   start: "10:00",
   status: "ok",
+  target: "n2",
   time: "18:00",
   total: 5,
   version: "2",
@@ -195,8 +198,8 @@ describe("applyDocumentLocale — <html lang>/<html dir> wiring", () => {
 });
 
 describe("messages — leaf-key parity across all 16 locales", () => {
-  it("en.json has 792 leaves (766 base + 4 Mission Control overview + 21 library.template.* keys + 1 library.filterPlaybook key)", () => {
-    expect(EN_LEAVES.size).toBe(792);
+  it("en.json has 799 leaves (766 base + 4 Mission Control overview + 21 library.template.* keys + 1 library.filterPlaybook key + 7 edge-condition keys)", () => {
+    expect(EN_LEAVES.size).toBe(799);
   });
 
   it.each(LOCALES.map((l) => l.code))(

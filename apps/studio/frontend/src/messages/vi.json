@@ -908,6 +908,13 @@
     "gateConditionHint": "cạnh ra thứ hai là nhánh else.",
     "chatPrompt": "prompt",
     "chatPromptPlaceholder": "chỉ dẫn cho bước chat này…",
+    "outgoingEdges": "cạnh ra",
+    "edgeCondition": "điều kiện",
+    "edgeConditionPlaceholder": "output == \"ok\"",
+    "edgeConditionHint": "được kiểm tra khi lưu hoặc chạy.",
+    "edgeConditionWarning": "có thể không phải là biểu thức hợp lệ — sẽ được kiểm tra lại khi lưu.",
+    "edgeConditionTarget": "→ {target}",
+    "noOutgoingEdges": "không có cạnh ra",
     "kinds": {
       "input": "đầu vào",
       "chat": "chat",
