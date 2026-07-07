@@ -397,6 +397,14 @@
          <lastmod>2026-07-07</lastmod>
     </url>
     <url>
+         <loc>https://ohdearquant.github.io/lionagi/adrs/ADR-0098-resident-engine-work-queue/</loc>
+         <lastmod>2026-07-07</lastmod>
+    </url>
+    <url>
+         <loc>https://ohdearquant.github.io/lionagi/adrs/ADR-0099-escalation-node-builder-tier-bump/</loc>
+         <lastmod>2026-07-07</lastmod>
+    </url>
+    <url>
          <loc>https://ohdearquant.github.io/lionagi/adrs/DECISION_LOG/</loc>
          <lastmod>2026-07-07</lastmod>
     </url>
