@@ -7,8 +7,6 @@ dashboard, not a replacement)."""
 from __future__ import annotations
 
 import logging
-import os
-import signal
 import threading
 import time
 import uuid
@@ -664,25 +662,48 @@ async def test_dispatch_wait_polls_across_real_iterations_until_background_mutat
     assert run_id in capsys.readouterr().out
 
 
+def _interrupt_dispatch_on_tick(monkeypatch: pytest.MonkeyPatch, *, tick: int) -> None:
+    """Deterministically interrupt a ``_dispatch_wait`` poll/follow loop.
+
+    Firing ``os.kill(os.getpid(), SIGINT)`` from a wall-clock timer thread aims
+    at the shared pytest-xdist worker: if the signal lands after
+    ``_dispatch_wait`` has already returned (during teardown) or while a
+    KeyboardInterrupt-raising handler is momentarily installed, it escapes and
+    crashes the worker. Making ``run_async`` raise ``KeyboardInterrupt`` on the
+    ``tick``-th call exercises the exact clean-exit path ``_dispatch_wait``
+    takes when SIGINT lands mid-tick, with no signal that can outlive the call.
+    Call 1 is the initial resolve, call 2 the first bounded tick, later calls
+    the follow-tail ticks.
+    """
+    import lionagi.ln.concurrency as concurrency_mod
+
+    real_run_async = concurrency_mod.run_async
+    calls = {"n": 0}
+
+    def _fake_run_async(coro: Any) -> Any:
+        calls["n"] += 1
+        if calls["n"] == tick:
+            coro.close()
+            raise KeyboardInterrupt
+        return real_run_async(coro)
+
+    monkeypatch.setattr(concurrency_mod, "run_async", _fake_run_async)
+
+
 @pytest.mark.asyncio
 async def test_dispatch_wait_sigint_while_still_pending_returns_exit_running(
-    temp_db_path: Path,
+    temp_db_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """A run that never goes terminal + a real SIGINT mid-wait must report
+    """A run that never goes terminal + an interrupt mid-wait must report
     EXIT_RUNNING, not silently succeed."""
     async with StateDB() as db:
         sched_id = await _make_schedule(db)
         run_id = await _make_schedule_run(db, sched_id, status="running")
 
-    def _send_interrupt() -> None:
-        time.sleep(0.3)
-        os.kill(os.getpid(), signal.SIGINT)
-
-    t = threading.Thread(target=_send_interrupt, daemon=True)
-    t.start()
+    # call 1 resolves the still-running run; interrupt the first poll tick.
+    _interrupt_dispatch_on_tick(monkeypatch, tick=2)
 
     exit_code = _dispatch_wait([run_id], interval=0.05, follow=False)
-    t.join(timeout=2)
 
     assert exit_code == EXIT_RUNNING
 
@@ -1044,30 +1065,28 @@ async def test_query_schedule_runs_since_empty_when_nothing_newer(temp_db_path: 
 
 
 @pytest.mark.asyncio
-async def test_dispatch_wait_follow_sigint_clean(temp_db_path: Path) -> None:
+async def test_dispatch_wait_follow_sigint_clean(
+    temp_db_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     """Mirrors test_watch_mode_sigint_clean in test_monitor.py: --follow must
-    exit cleanly (not hang, not traceback) on SIGINT once the initial set has
-    drained."""
+    exit cleanly (not hang, not traceback) on interrupt once the initial set
+    has drained."""
     async with StateDB() as db:
         sched_id = await _make_schedule(db)
         run_id = await _make_schedule_run(db, sched_id, status="completed", exit_code=0)
 
-    def _send_interrupt() -> None:
-        time.sleep(0.3)
-        os.kill(os.getpid(), signal.SIGINT)
-
-    t = threading.Thread(target=_send_interrupt, daemon=True)
-    t.start()
+    # call 1 resolves, call 2 drains the initial set; interrupt the first
+    # follow-tail tick (call 3).
+    _interrupt_dispatch_on_tick(monkeypatch, tick=3)
 
     exit_code = _dispatch_wait([run_id], interval=0.05, follow=True)
-    t.join(timeout=2)
 
     assert exit_code == 0
 
 
 @pytest.mark.asyncio
 async def test_dispatch_wait_follow_preserves_initial_failure_exit_code(
-    temp_db_path: Path,
+    temp_db_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """Regression: --follow must not collapse an initial bounded-set FAILURE
     into a false success just because the follow phase was entered and later
@@ -1078,22 +1097,18 @@ async def test_dispatch_wait_follow_preserves_initial_failure_exit_code(
         sched_id = await _make_schedule(db)
         run_id = await _make_schedule_run(db, sched_id, status="failed", exit_code=1)
 
-    def _send_interrupt() -> None:
-        time.sleep(0.3)
-        os.kill(os.getpid(), signal.SIGINT)
-
-    t = threading.Thread(target=_send_interrupt, daemon=True)
-    t.start()
+    # call 1 resolves, call 2 drains the initial (failed) set; interrupt the
+    # first follow-tail tick (call 3).
+    _interrupt_dispatch_on_tick(monkeypatch, tick=3)
 
     exit_code = _dispatch_wait([run_id], interval=0.05, follow=True)
-    t.join(timeout=2)
 
     assert exit_code == 1
 
 
 @pytest.mark.asyncio
 async def test_dispatch_wait_follow_ignores_pre_existing_runs_reports_only_new(
-    temp_db_path: Path, capsys: pytest.CaptureFixture
+    temp_db_path: Path, capsys: pytest.CaptureFixture, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """Baseline-first discipline: a schedule_run that already existed before
     --follow started watching must never be (re-)reported during the follow
@@ -1105,25 +1120,33 @@ async def test_dispatch_wait_follow_ignores_pre_existing_runs_reports_only_new(
 
     new_run_id: dict[str, str] = {}
 
-    def _create_new_run_then_interrupt() -> None:
-        import asyncio
+    async def _create_new_run() -> None:
+        async with StateDB() as db2:
+            new_run_id["id"] = await _make_schedule_run(
+                db2, sched_id, status="completed", exit_code=0
+            )
 
-        async def _go() -> None:
-            async with StateDB() as db2:
-                new_run_id["id"] = await _make_schedule_run(
-                    db2, sched_id, status="completed", exit_code=0
-                )
+    # call 1 resolves, call 2 drains the watched set and enters follow; on the
+    # first follow-tail tick (call 3) create a new run (created after the
+    # baseline, so the same tick reports it), then interrupt the next tick.
+    import lionagi.ln.concurrency as concurrency_mod
 
-        time.sleep(0.25)
-        asyncio.run(_go())
-        time.sleep(0.4)
-        os.kill(os.getpid(), signal.SIGINT)
+    real_run_async = concurrency_mod.run_async
+    calls = {"n": 0}
 
-    t = threading.Thread(target=_create_new_run_then_interrupt, daemon=True)
-    t.start()
+    def _fake_run_async(coro: Any) -> Any:
+        calls["n"] += 1
+        if calls["n"] == 3:
+            real_run_async(_create_new_run())
+            return real_run_async(coro)
+        if calls["n"] == 4:
+            coro.close()
+            raise KeyboardInterrupt
+        return real_run_async(coro)
+
+    monkeypatch.setattr(concurrency_mod, "run_async", _fake_run_async)
 
     exit_code = _dispatch_wait([watched_id], interval=0.05, follow=True)
-    t.join(timeout=5)
 
     assert exit_code == 0
     out = capsys.readouterr().out
@@ -1449,9 +1472,9 @@ async def test_dispatch_wait_resolves_failed_agent_session_nonzero_exit(
 
 @pytest.mark.asyncio
 async def test_dispatch_wait_agent_session_still_running_returns_exit_running(
-    temp_db_path: Path,
+    temp_db_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """A session that never goes terminal + a real SIGINT mid-wait must
+    """A session that never goes terminal + an interrupt mid-wait must
     report EXIT_RUNNING, not hang forever or silently succeed."""
     async with StateDB() as db:
         from lionagi import Branch
@@ -1462,15 +1485,10 @@ async def test_dispatch_wait_agent_session_still_running_returns_exit_running(
         assert ctx is not None
         session_id = ctx["session_id"]
 
-    def _send_interrupt() -> None:
-        time.sleep(0.3)
-        os.kill(os.getpid(), signal.SIGINT)
-
-    t = threading.Thread(target=_send_interrupt, daemon=True)
-    t.start()
+    # call 1 resolves the still-running session; interrupt the first poll tick.
+    _interrupt_dispatch_on_tick(monkeypatch, tick=2)
 
     exit_code = _dispatch_wait([session_id], interval=0.05, follow=False)
-    t.join(timeout=2)
 
     assert exit_code == EXIT_RUNNING
 
