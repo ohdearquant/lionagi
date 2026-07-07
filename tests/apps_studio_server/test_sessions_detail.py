@@ -807,6 +807,30 @@ async def test_get_session_rejects_invalid_message_cursor(patched_sessions_db):
         await svc.get_session("sess-paged", message_limit=3, message_cursor="not-a-valid-cursor")
 
 
+async def test_get_session_full_aggregates_do_not_hydrate_every_message_row(
+    patched_sessions_db, monkeypatch
+):
+    """Regression: computing full-session aggregates must not force-hydrate the entire
+    progression on every detail read — only the display window is fetched in full."""
+    svc, db_path = patched_sessions_db
+    await seed_paginated_session(db_path, count=50)
+
+    calls: list[list[str]] = []
+    original = svc._fetch_messages_by_ids
+
+    async def spy(db, ids):
+        calls.append(list(ids))
+        return await original(db, ids)
+
+    monkeypatch.setattr(svc, "_fetch_messages_by_ids", spy)
+
+    result = await svc.get_session("sess-paged", message_limit=3)
+
+    assert len(calls) == 1
+    assert calls[0] == ["pmsg-47", "pmsg-48", "pmsg-49"]
+    assert result["message_stats"]["message_count"] == 50
+
+
 async def test_get_session_rejects_cursor_from_a_different_session(patched_sessions_db):
     svc, db_path = patched_sessions_db
     await seed_paginated_session(db_path, count=10)

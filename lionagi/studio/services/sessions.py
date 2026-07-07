@@ -318,23 +318,75 @@ async def _fetch_messages_by_ids(
     return [rows_by_id[mid] for mid in msg_ids if mid in rows_by_id]
 
 
-def _branch_message_stats(messages: list[dict[str, Any]]) -> dict[str, Any]:
-    """Full-branch stats computed over every message in the progression, never a display window."""
+async def _fetch_role_counts(db: aiosqlite.Connection, msg_ids: list[str]) -> dict[str, int]:
+    """Role histogram over msg_ids via SQL GROUP BY — no message content is hydrated."""
+    counts: dict[str, int] = {}
+    if not msg_ids:
+        return counts
+    for chunk_start in range(0, len(msg_ids), 500):
+        chunk = msg_ids[chunk_start : chunk_start + 500]
+        placeholders = ",".join("?" for _ in chunk)
+        cur = await db.execute(
+            f"SELECT role, COUNT(*) AS n FROM messages WHERE id IN ({placeholders}) GROUP BY role",  # noqa: S608
+            chunk,
+        )
+        for row in await cur.fetchall():
+            role = row["role"] or ""
+            if role:
+                counts[role] = counts.get(role, 0) + row["n"]
+    return counts
+
+
+async def _fetch_action_messages(
+    db: aiosqlite.Connection, msg_ids: list[str]
+) -> list[dict[str, Any]]:
+    """Hydrate only the ActionRequest/ActionResponse rows among msg_ids, in progression order.
+
+    Tool/error/file aggregates only ever need these two message kinds; skipping every
+    other message keeps the full-session aggregate pass cheap regardless of session size.
+    """
+    if not msg_ids:
+        return []
+    rows_by_id: dict[str, dict[str, Any]] = {}
+    for chunk_start in range(0, len(msg_ids), 500):
+        chunk = msg_ids[chunk_start : chunk_start + 500]
+        placeholders = ",".join("?" for _ in chunk)
+        cur = await db.execute(
+            f"""
+            SELECT m.id, m.created_at, m.content, m.sender, m.role,
+                   mt.lion_class AS lion_class_str
+            FROM messages m
+            JOIN message_types mt ON m.lion_class = mt.type_id
+            WHERE m.id IN ({placeholders}) AND mt.lion_class IN ('ActionRequest', 'ActionResponse')
+            """,  # noqa: S608
+            chunk,
+        )
+        for row in await cur.fetchall():
+            rows_by_id[row["id"]] = _format_message(row)
+    return [rows_by_id[mid] for mid in msg_ids if mid in rows_by_id]
+
+
+def _branch_message_stats(
+    message_count: int,
+    roles: dict[str, int],
+    action_messages: list[dict[str, Any]],
+) -> dict[str, Any]:
+    """Full-branch stats computed over the full progression, never a display window.
+
+    `message_count`/`roles` come from SQL aggregates; `action_messages` holds only the
+    ActionRequest/ActionResponse rows, since tool/error/file summaries never need anything else.
+    """
     from .runs import _detect_status
 
-    roles: dict[str, int] = {}
     response_by_id: dict[str, dict[str, Any]] = {
-        m["id"]: m for m in messages if m.get("lion_class") == "ActionResponse"
+        m["id"]: m for m in action_messages if m.get("lion_class") == "ActionResponse"
     }
 
     tool_call_count = 0
     error_count = 0
     errors: list[dict[str, Any]] = []
     files: set[str] = set()
-    for m in messages:
-        role = m.get("role") or ""
-        if role:
-            roles[role] = roles.get(role, 0) + 1
+    for m in action_messages:
         if m.get("lion_class") != "ActionRequest":
             continue
 
@@ -365,7 +417,7 @@ def _branch_message_stats(messages: list[dict[str, Any]]) -> dict[str, Any]:
             )
 
     return {
-        "message_count": len(messages),
+        "message_count": message_count,
         "roles": roles,
         "tool_call_count": tool_call_count,
         "error_count": error_count,
@@ -400,7 +452,7 @@ async def get_session(
                       playbook_name, agent_name, invocation_kind,
                       show_topic, show_play_name, artifacts_path,
                       artifact_contract_json, artifact_verification_json,
-                      source_kind, status, started_at, ended_at,
+                      source_kind, status, started_at, ended_at, last_message_at,
                       model, provider, effort, agent_hash, invocation_id,
                       node_metadata, project, project_source,
                       status_reason_code, status_reason_summary, status_evidence_refs
@@ -471,10 +523,13 @@ async def get_session(
             if next_anchor:
                 next_branch_anchors[branch_id] = next_anchor
 
-            all_messages = await _fetch_messages_by_ids(db, full_msg_ids)
-            by_id = {m["id"]: m for m in all_messages}
+            window_messages = await _fetch_messages_by_ids(db, window_ids)
+            by_id = {m["id"]: m for m in window_messages}
             messages = [by_id[mid] for mid in window_ids if mid in by_id]
-            branch_stats = _branch_message_stats(all_messages)
+
+            role_counts = await _fetch_role_counts(db, full_msg_ids)
+            action_messages = await _fetch_action_messages(db, full_msg_ids)
+            branch_stats = _branch_message_stats(message_total, role_counts, action_messages)
 
             full_stats["message_count"] += branch_stats["message_count"]
             for role, count in branch_stats["roles"].items():
@@ -542,6 +597,8 @@ async def get_session(
         "started_at": started_at,
         "ended_at": ended_at,
         "duration_ms": duration_ms,
+        # ADR-0019: full-session aggregate, not derived from the windowed page.
+        "last_message_at": session_row["last_message_at"],
         "source_show": source_show,
         "branches": branches,
         "message_limit": message_limit,

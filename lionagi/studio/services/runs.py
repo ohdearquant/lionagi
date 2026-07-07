@@ -571,8 +571,9 @@ async def get_run(
     """Return run detail from StateDB; flat-file run.json path was removed (write_manifest had zero callers).
 
     The response is a superset of the list Run row (via _run_row) plus detail-only
-    fields. get_session() omits the JOIN aggregates (branch_count / message_count /
-    last_message_at), so they are derived from the hydrated branches here.
+    fields. get_session() omits the JOIN aggregates (branch_count / message_count),
+    so they are derived from the hydrated branches here; last_message_at is read
+    straight from get_session()'s session-table aggregate.
     Fields absent from DB (state_root, artifact_root, task, error, cwd, manifest)
     return None/""/{} to keep the frontend contract unchanged.
     """
@@ -605,16 +606,22 @@ async def get_run(
             for b in branches
             if isinstance(b, dict)
         )
-    last_message_at = max(
-        (
-            m.get("timestamp")
-            for b in branches
-            if isinstance(b, dict)
-            for m in (b.get("messages") or [])
-            if isinstance(m, dict) and m.get("timestamp") is not None
-        ),
-        default=None,
-    )
+    # session["last_message_at"] is the DB-maintained full-session aggregate
+    # (bumped on every message write, see state/db.py); prefer it over
+    # recomputing from branches[].messages, which is only the display window
+    # and reports the wrong value once the caller pages to an older cursor.
+    last_message_at = session.get("last_message_at")
+    if last_message_at is None:
+        last_message_at = max(
+            (
+                m.get("timestamp")
+                for b in branches
+                if isinstance(b, dict)
+                for m in (b.get("messages") or [])
+                if isinstance(m, dict) and m.get("timestamp") is not None
+            ),
+            default=None,
+        )
 
     detail_session = {
         **session,

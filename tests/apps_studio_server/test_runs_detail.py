@@ -584,6 +584,47 @@ async def test_build_steps_from_db_uses_full_branch_stats_for_windowed_messages(
     assert step["result"]["roles"] == {"user": 103, "assistant": 102}
 
 
+async def test_get_run_last_message_at_reflects_full_session_not_windowed_page(patched_runs_svc):
+    """Regression: last_message_at must report the session's newest message timestamp
+    regardless of which page of messages the caller is currently viewing, not the max
+    timestamp within the current display window."""
+    svc, db_path = patched_runs_svc
+    sid = str(uuid.uuid4())
+    branch_id = f"{sid}-br"
+    await seed_session(db_path, session_id=sid, status="completed")
+    msg_ids = [f"{branch_id}-msg-{i}" for i in range(10)]
+    await seed_branch(db_path, branch_id=branch_id, session_id=sid, msg_ids=msg_ids)
+    async with StateDB(db_path) as db:
+        for i, mid in enumerate(msg_ids):
+            await db.insert_message(
+                {
+                    "id": mid,
+                    "created_at": float(i),
+                    "content": {"text": f"m{i}"},
+                    "sender": "worker",
+                    "recipient": "user",
+                    "role": "assistant" if i % 2 else "user",
+                    "node_metadata": {},
+                }
+            )
+            await db.touch_session_activity(sid, at=float(i))
+
+    page1 = await svc.get_run(sid, message_limit=3, message_cursor=None)
+    assert page1 is not None
+    branch1 = page1["branches"][0]
+    assert [m["id"] for m in branch1["messages"]] == [f"{branch_id}-msg-{i}" for i in (7, 8, 9)]
+    assert page1["last_message_at"] == 9.0
+
+    cursor = page1["message_next_cursor"]
+    assert cursor
+
+    page2 = await svc.get_run(sid, message_limit=3, message_cursor=cursor)
+    assert page2 is not None
+    branch2 = page2["branches"][0]
+    assert [m["id"] for m in branch2["messages"]] == [f"{branch_id}-msg-{i}" for i in (4, 5, 6)]
+    assert page2["last_message_at"] == 9.0
+
+
 async def test_get_run_route_accepts_message_cursor_and_limit(patched_runs_svc):
     svc, db_path = patched_runs_svc
     sid = str(uuid.uuid4())
