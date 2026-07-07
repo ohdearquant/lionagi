@@ -6,20 +6,18 @@ import SectionLabel from "@/components/ui/SectionLabel";
 const MAX_CONDITION_LEN = 1000;
 
 /**
- * Best-effort, non-authoritative check for obviously-invalid edge condition
- * expressions. The backend compiles conditions against a Python AST
- * allow-list and is the source of truth — this only flags common mistakes
- * (calls, lambdas, f-strings, dunder names) before a save/run round-trip.
+ * Best-effort, non-authoritative check for an edge condition that is
+ * definitely invalid. The backend compiles conditions against a Python AST
+ * allow-list and is the source of truth (a bad expression comes back as a 422
+ * carrying the edge id). We only flag the one thing the client can be certain
+ * of without a tokenizer: the hard length cap. Pattern-matching for calls /
+ * lambda / f-strings / dunders was removed because every such token also
+ * appears legitimately inside string literals (`status == "off"`,
+ * `data["f"]`) or as an operator keyword before a group (`not (x)`,
+ * `y in ("a", "b")`), producing false "likely invalid" warnings on valid input.
  */
 function looksInvalidCondition(expr: string): boolean {
-  const trimmed = expr.trim();
-  if (!trimmed) return false;
-  if (trimmed.length > MAX_CONDITION_LEN) return true;
-  if (/[a-zA-Z_][\w.]*\s*\(/.test(trimmed)) return true;
-  if (/\blambda\b/.test(trimmed)) return true;
-  if (/f["']/.test(trimmed)) return true;
-  if (/__/.test(trimmed)) return true;
-  return false;
+  return expr.trim().length > MAX_CONDITION_LEN;
 }
 
 interface Props {
