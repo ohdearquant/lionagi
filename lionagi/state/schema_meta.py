@@ -916,3 +916,18 @@ Index(
     sqlite_where=text("status IN ('pending', 'delivering')"),
     postgresql_where=text("status IN ('pending', 'delivering')"),
 )
+
+# ── run_tags ──────────────────────────────────────────────────────────────────
+# Free-form review labels attached to a run (session). Kept in the canonical
+# metadata (not only schema.sql) so StateDB.open()/create_all builds it on every
+# backend, keeping the SQLite, Postgres, and schema-parity paths consistent.
+
+run_tags = Table(
+    "run_tags",
+    metadata,
+    Column("session_id", Text, primary_key=True),
+    Column("tag", Text, primary_key=True),
+    Column("created_at", Float, nullable=False),
+)
+
+Index("idx_run_tags_tag", run_tags.c.tag)

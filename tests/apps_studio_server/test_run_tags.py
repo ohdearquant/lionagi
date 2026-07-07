@@ -380,6 +380,26 @@ def test_remove_tag_route_on_fresh_install_does_not_create_partial_db(tmp_path, 
     assert not db_path.exists()
 
 
+def test_statedb_open_creates_run_tags_table(tmp_path):
+    """run_tags lives in the canonical schema_meta, so StateDB.open() alone
+    (no service-side _ensure_table) creates it -- keeping the SQLite, Postgres,
+    and schema-parity paths consistent.
+    """
+    import sqlite3
+
+    db_path = tmp_path / "state.db"
+    _run(_init_db(db_path))  # StateDB open+close only, no _ensure_table
+
+    con = sqlite3.connect(db_path)
+    try:
+        rows = con.execute(
+            "SELECT name FROM sqlite_master WHERE type='table' AND name='run_tags'"
+        ).fetchall()
+    finally:
+        con.close()
+    assert rows == [("run_tags",)]
+
+
 # ── free-form tags containing "/" must round-trip through the DELETE route ──
 
 
