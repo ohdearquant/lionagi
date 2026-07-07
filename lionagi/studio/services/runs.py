@@ -562,7 +562,12 @@ def paginate_runs(
     }
 
 
-async def get_run(run_id: str) -> dict[str, Any] | None:
+async def get_run(
+    run_id: str,
+    *,
+    message_limit: int = _sessions_svc.DEFAULT_MESSAGE_LIMIT,
+    message_cursor: str | None = None,
+) -> dict[str, Any] | None:
     """Return run detail from StateDB; flat-file run.json path was removed (write_manifest had zero callers).
 
     The response is a superset of the list Run row (via _run_row) plus detail-only
@@ -571,7 +576,9 @@ async def get_run(run_id: str) -> dict[str, Any] | None:
     Fields absent from DB (state_root, artifact_root, task, error, cwd, manifest)
     return None/""/{} to keep the frontend contract unchanged.
     """
-    session = await _sessions_svc.get_session(run_id)
+    session = await _sessions_svc.get_session(
+        run_id, message_limit=message_limit, message_cursor=message_cursor
+    )
     if session is None:
         return None
 
@@ -583,13 +590,21 @@ async def get_run(run_id: str) -> dict[str, Any] | None:
 
     state_root: Path | None = artifact_root.parent if artifact_root else None
 
-    # Branch message lists are tail-windowed pages; message_total carries the
-    # full progression length (fall back to page length for older payloads).
-    message_count = sum(
-        b.get("message_total") or len(b.get("messages") or [])
-        for b in branches
-        if isinstance(b, dict)
+    # message_stats is computed over the full session progression (never the
+    # tail-windowed branches[].messages page), so the run-level count is
+    # correct regardless of the display window. Fall back to the windowed
+    # page length only for legacy payloads that predate message_stats.
+    message_stats = (
+        session.get("message_stats") if isinstance(session.get("message_stats"), dict) else None
     )
+    if message_stats is not None:
+        message_count = message_stats.get("message_count", 0)
+    else:
+        message_count = sum(
+            b.get("message_total") or len(b.get("messages") or [])
+            for b in branches
+            if isinstance(b, dict)
+        )
     last_message_at = max(
         (
             m.get("timestamp")
@@ -630,6 +645,10 @@ async def get_run(run_id: str) -> dict[str, Any] | None:
         "graph": session.get("graph"),
         "manifest": {},
         "branches": branches,
+        "message_limit": session.get("message_limit"),
+        "message_cursor": session.get("message_cursor"),
+        "message_next_cursor": session.get("message_next_cursor"),
+        "message_stats": message_stats,
         # Failure-reason contract consumed by the run-detail panel's banner.
         "status_reason_code": session.get("status_reason_code"),
         "status_reason_summary": session.get("status_reason_summary"),
@@ -638,7 +657,14 @@ async def get_run(run_id: str) -> dict[str, Any] | None:
 
 
 def _build_steps_from_db(branches: list[dict[str, Any]]) -> list[dict[str, Any]] | None:
-    """Build a steps list from DB-hydrated branch dicts."""
+    """Build a steps list from DB-hydrated branch dicts.
+
+    `messages` on each branch is a tail-windowed display page; `message_count`
+    and `roles` must reflect the full branch progression, so they are read
+    from the branch's full-session `message_stats` (falling back to
+    `message_total` and finally the windowed page length for legacy payloads
+    that predate message_stats).
+    """
     if not branches:
         return None
     steps = []
@@ -647,19 +673,19 @@ def _build_steps_from_db(branches: list[dict[str, Any]]) -> list[dict[str, Any]]
             continue
         name = b.get("name") or b.get("agent_name") or "agent"
         messages = b.get("messages") or []
-        role_counts: dict[str, int] = {}
-        for m in messages:
-            r = m.get("role", "")
-            if r:
-                role_counts[r] = role_counts.get(r, 0) + 1
+        branch_stats = b.get("message_stats") if isinstance(b.get("message_stats"), dict) else {}
+        role_counts = dict(branch_stats.get("roles") or {})
+        message_count = int(
+            branch_stats.get("message_count") or b.get("message_total") or len(messages)
+        )
         steps.append(
             {
                 "step": name,
-                "status": "completed" if messages else "pending",
+                "status": "completed" if message_count else "pending",
                 "result": {
                     "agent": name,
                     "model": b.get("model") or "",
-                    "message_count": len(messages),
+                    "message_count": message_count,
                     "roles": role_counts,
                 },
                 "messages": messages,
@@ -705,9 +731,16 @@ async def list_run_projects_route() -> dict[str, Any]:
 
 
 @studio_route("/runs/{run_id}", method="GET", area="runs", name="get_run")
-async def get_run_route(run_id: str) -> dict[str, Any]:
+async def get_run_route(
+    run_id: str,
+    message_limit: int = Query(default=_sessions_svc.DEFAULT_MESSAGE_LIMIT, ge=1, le=1000),
+    message_cursor: str | None = Query(default=None),
+) -> dict[str, Any]:
     # get_run reads from StateDB (same source as list_runs); no thread offload needed.
-    run = await get_run(run_id)
+    try:
+        run = await get_run(run_id, message_limit=message_limit, message_cursor=message_cursor)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
     if run is None:
         raise HTTPException(status_code=404, detail=f"Run '{run_id}' not found")
     return run

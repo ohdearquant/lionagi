@@ -750,3 +750,87 @@ async def test_get_session_limit_clamped_to_max(patched_sessions_db):
     branch = result["branches"][0]
     assert len(branch["messages"]) == 5
     assert branch["message_total"] == 5
+
+
+# ---------------------------------------------------------------------------
+# message_cursor — stable pagination under concurrent progression appends
+# ---------------------------------------------------------------------------
+
+
+async def test_get_session_cursor_pages_are_stable_under_concurrent_appends(patched_sessions_db):
+    svc, db_path = patched_sessions_db
+    msg_ids = await seed_paginated_session(db_path, count=10)
+
+    page1 = await svc.get_session("sess-paged", message_limit=3)
+    branch1 = page1["branches"][0]
+    assert [m["id"] for m in branch1["messages"]] == ["pmsg-7", "pmsg-8", "pmsg-9"]
+    assert branch1["messages_truncated"] is True
+    cursor = page1["message_next_cursor"]
+    assert cursor
+
+    # Concurrent writer appends two more messages to the live tail while the
+    # cursor from page 1 is still in flight.
+    new_ids = ["pmsg-10", "pmsg-11"]
+    async with StateDB(db_path) as db:
+        for i, mid in enumerate(new_ids, start=len(msg_ids)):
+            await db.insert_message(
+                {
+                    "id": mid,
+                    "created_at": 100.0 + i,
+                    "content": {"text": f"m{i}"},
+                    "sender": "worker",
+                    "recipient": "user",
+                    "role": "assistant",
+                    "node_metadata": {},
+                }
+            )
+            await db.append_to_progression("br-paged-prog", mid)
+
+    page2 = await svc.get_session("sess-paged", message_limit=3, message_cursor=cursor)
+    branch2 = page2["branches"][0]
+    assert [m["id"] for m in branch2["messages"]] == ["pmsg-4", "pmsg-5", "pmsg-6"]
+
+    ids1 = {m["id"] for m in branch1["messages"]}
+    ids2 = {m["id"] for m in branch2["messages"]}
+    assert ids1.isdisjoint(ids2), "cursor page must not duplicate rows from the tail page"
+    combined = ids1 | ids2
+    assert combined == {f"pmsg-{i}" for i in range(4, 10)}, (
+        "combined two-page slice must not skip any expected id"
+    )
+
+
+async def test_get_session_rejects_invalid_message_cursor(patched_sessions_db):
+    svc, db_path = patched_sessions_db
+    await seed_paginated_session(db_path, count=10)
+
+    with pytest.raises(svc.MessageCursorError):
+        await svc.get_session("sess-paged", message_limit=3, message_cursor="not-a-valid-cursor")
+
+
+async def test_get_session_rejects_cursor_from_a_different_session(patched_sessions_db):
+    svc, db_path = patched_sessions_db
+    await seed_paginated_session(db_path, count=10)
+    await seed_session(db_path, session_id="sess-other")
+    await seed_branch(
+        db_path, branch_id="br-other", session_id="sess-other", msg_ids=["om-0", "om-1"]
+    )
+    async with StateDB(db_path) as db:
+        for i, mid in enumerate(["om-0", "om-1"]):
+            await db.insert_message(
+                {
+                    "id": mid,
+                    "created_at": 50.0 + i,
+                    "content": {"text": f"m{i}"},
+                    "sender": "worker",
+                    "recipient": "user",
+                    "role": "user",
+                    "node_metadata": {},
+                }
+            )
+
+    other_page = await svc.get_session("sess-other", message_limit=1)
+    foreign_cursor = other_page["message_next_cursor"]
+    assert foreign_cursor
+
+    with pytest.raises(svc.MessageCursorError):
+        await svc.get_session("sess-paged", message_limit=1, message_cursor=foreign_cursor)
