@@ -83,6 +83,13 @@ def _add_studio_flags(parser: argparse.ArgumentParser, *, suppress_defaults: boo
         dest="no_open",
         help="Don't open the hosted UI in a browser (--web only)",
     )
+    parser.add_argument(
+        "--no-docker",
+        action="store_true",
+        default=_default(False),
+        dest="no_docker",
+        help=argparse.SUPPRESS,
+    )
     mode = parser.add_mutually_exclusive_group()
     mode.add_argument(
         "--web",
@@ -203,6 +210,13 @@ def _studio_start(args: argparse.Namespace) -> int:
     dev_mode: bool = getattr(args, "dev", False)
     no_open: bool = getattr(args, "no_open", False)
     frontend_port: int = getattr(args, "frontend_port", 3000)
+    no_docker: bool = getattr(args, "no_docker", False)
+
+    if no_docker:
+        warn(
+            "--no-docker is deprecated and ignored; Docker is now opt-in with "
+            "--docker. Use bare `li studio` or `li studio --web` for the hosted UI."
+        )
 
     if no_frontend:
         return _start_backend_only(host, port)

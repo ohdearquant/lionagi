@@ -241,6 +241,31 @@ def test_studio_port_before_start_is_preserved():
     assert mock_run.call_args.kwargs.get("port") == 9001
 
 
+def test_studio_no_docker_flag_is_deprecated_warn_and_ignore(capsys):
+    """--no-docker no longer exists as a mode; it must warn and fall through to hosted mode."""
+    with _stubbed_serve() as mock_run:
+        from lionagi.cli.main import main
+
+        result = main(["studio", "--no-docker"])
+
+    assert result == 0
+    mock_run.assert_called_once()
+    err = capsys.readouterr().err
+    assert "--no-docker is deprecated and ignored" in err
+
+
+def test_studio_no_docker_flag_before_start_is_preserved(capsys):
+    """`li studio --no-docker start` still warns and preserves parent-level flag handling."""
+    with _stubbed_serve() as mock_run:
+        from lionagi.cli.main import main
+
+        result = main(["studio", "--no-docker", "start"])
+
+    assert result == 0
+    mock_run.assert_called_once()
+    assert "--no-docker is deprecated and ignored" in capsys.readouterr().err
+
+
 def test_studio_cross_level_mode_flags_are_mutually_exclusive():
     """Mode flags split across parser levels (`li studio --docker start --web`) must be rejected."""
     import pytest
