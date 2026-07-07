@@ -93,7 +93,7 @@ CREATE INDEX IF NOT EXISTS idx_projects_updated ON projects(updated_at DESC);
 -- ── Run tags ──────────────────────────────────────────────────────────────
 -- User-defined m2m labels over runs (a run == a session). Free-form strings.
 CREATE TABLE IF NOT EXISTS run_tags (
-    session_id TEXT NOT NULL,
+    session_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
     tag        TEXT NOT NULL,
     created_at REAL NOT NULL,
     PRIMARY KEY (session_id, tag)

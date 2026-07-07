@@ -75,6 +75,7 @@ def test_add_tag_then_tags_for_sessions_returns_it(tmp_path, monkeypatch):
     import lionagi.studio.services.run_tags as run_tags
 
     sid = str(uuid.uuid4())
+    _run(_seed_session(db_path, sid))
     _run(run_tags.add_tag(sid, "needs-followup"))
 
     tagmap = _run(run_tags.tags_for_sessions([sid]))
@@ -89,6 +90,7 @@ def test_add_tag_twice_is_idempotent(tmp_path, monkeypatch):
     import lionagi.studio.services.run_tags as run_tags
 
     sid = str(uuid.uuid4())
+    _run(_seed_session(db_path, sid))
     _run(run_tags.add_tag(sid, "x"))
     _run(run_tags.add_tag(sid, "x"))
 
@@ -104,6 +106,7 @@ def test_remove_tag_removes_it(tmp_path, monkeypatch):
     import lionagi.studio.services.run_tags as run_tags
 
     sid = str(uuid.uuid4())
+    _run(_seed_session(db_path, sid))
     _run(run_tags.add_tag(sid, "x"))
     _run(run_tags.remove_tag(sid, "x"))
 
@@ -144,6 +147,8 @@ def test_tags_for_sessions_batches_multiple_sessions_in_one_call(tmp_path, monke
     import lionagi.studio.services.run_tags as run_tags
 
     sid1, sid2, sid3 = str(uuid.uuid4()), str(uuid.uuid4()), str(uuid.uuid4())
+    for sid in (sid1, sid2, sid3):
+        _run(_seed_session(db_path, sid))
     _run(run_tags.add_tag(sid1, "a"))
     _run(run_tags.add_tag(sid1, "b"))
     _run(run_tags.add_tag(sid2, "a"))
@@ -166,6 +171,8 @@ def test_tags_for_sessions_chunks_beyond_sql_variable_limit(tmp_path, monkeypatc
 
     ids = [str(uuid.uuid4()) for _ in range(run_tags._MAX_SQL_VARS + 50)]
     first, last = ids[0], ids[-1]
+    _run(_seed_session(db_path, first))
+    _run(_seed_session(db_path, last))
     _run(run_tags.add_tag(first, "front"))
     _run(run_tags.add_tag(last, "back"))
 
@@ -196,6 +203,8 @@ def test_session_ids_with_tags_and_composition(tmp_path, monkeypatch):
 
     both = str(uuid.uuid4())
     only_a = str(uuid.uuid4())
+    _run(_seed_session(db_path, both))
+    _run(_seed_session(db_path, only_a))
     _run(run_tags.add_tag(both, "a"))
     _run(run_tags.add_tag(both, "b"))
     _run(run_tags.add_tag(only_a, "a"))
@@ -364,10 +373,14 @@ def test_session_ids_with_tags_on_fresh_install_does_not_create_db(tmp_path, mon
 
 def test_add_tag_on_fresh_install_initializes_full_schema_not_just_run_tags(tmp_path, monkeypatch):
     """add_tag on a fresh install must apply the FULL schema (sessions, etc.),
-
     not just the run_tags table -- otherwise the db is left partial and a
     later sessions query 500s.
+
+    The run_tags -> sessions FK means tagging a nonexistent session fails, but
+    the schema-init must still run first so the db is never left partial.
     """
+    import sqlite3
+
     db_path = tmp_path / "state.db"
     _patch_db(monkeypatch, db_path)
     assert not db_path.exists()
@@ -376,13 +389,47 @@ def test_add_tag_on_fresh_install_initializes_full_schema_not_just_run_tags(tmp_
     import lionagi.studio.services.sessions as sessions_mod
 
     sid = str(uuid.uuid4())
-    _run(run_tags.add_tag(sid, "urgent"))
+    # No session row exists yet, so the tag insert trips the FK -- but only
+    # after the full schema is built (a run_tags-only partial db would 500 the
+    # sessions query below instead).
+    with pytest.raises(sqlite3.IntegrityError):
+        _run(run_tags.add_tag(sid, "urgent"))
 
     assert db_path.exists()
     # A `sessions` query must not raise -- it would if only run_tags existed.
     assert _run(sessions_mod.list_sessions()) == []
-    tagmap = _run(run_tags.tags_for_sessions([sid]))
-    assert tagmap == {sid: ["urgent"]}
+
+    # With the session seeded, the same tag now attaches, and dropping the
+    # session cascades the tag away (no orphan row survives a prune).
+    _run(_seed_session(db_path, sid))
+    _run(run_tags.add_tag(sid, "urgent"))
+    assert _run(run_tags.tags_for_sessions([sid])) == {sid: ["urgent"]}
+
+
+def test_pruning_a_session_cascades_its_tags(tmp_path, monkeypatch):
+    # add_run_tag rejects orphan tags on write; deleting the parent session
+    # must not reintroduce them. The run_tags -> sessions FK ON DELETE CASCADE
+    # removes the tag rows when admin.prune_sessions() drops the session.
+    db_path = tmp_path / "state.db"
+    _patch_db(monkeypatch, db_path)
+    _run(_init_db(db_path))
+
+    import lionagi.studio.services.admin as admin
+    import lionagi.studio.services.run_tags as run_tags
+
+    # admin freezes its own _DB / DEFAULT_DB_PATH at import; _patch_db does not
+    # touch them, so point prune at the tmp db too.
+    monkeypatch.setattr(admin, "DEFAULT_DB_PATH", db_path)
+    monkeypatch.setattr(admin, "_DB", str(db_path))
+
+    sid = str(uuid.uuid4())
+    _run(_seed_session(db_path, sid))
+    _run(run_tags.add_tag(sid, "keep"))
+    assert _run(run_tags.tags_for_sessions([sid])) == {sid: ["keep"]}
+
+    pruned = _run(admin.prune_sessions([sid]))
+    assert pruned == 1
+    assert _run(run_tags.tags_for_sessions([sid])) == {}
 
 
 def test_remove_tag_on_fresh_install_does_not_create_db(tmp_path, monkeypatch):

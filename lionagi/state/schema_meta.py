@@ -925,7 +925,12 @@ Index(
 run_tags = Table(
     "run_tags",
     metadata,
-    Column("session_id", Text, primary_key=True),
+    Column(
+        "session_id",
+        Text,
+        ForeignKey("sessions.id", ondelete="CASCADE"),
+        primary_key=True,
+    ),
     Column("tag", Text, primary_key=True),
     Column("created_at", Float, nullable=False),
 )

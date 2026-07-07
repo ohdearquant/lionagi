@@ -23,7 +23,7 @@ _MAX_SQL_VARS = 900
 
 _ENSURE_TABLE_SQL = """
 CREATE TABLE IF NOT EXISTS run_tags (
-    session_id TEXT NOT NULL,
+    session_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
     tag        TEXT NOT NULL,
     created_at REAL NOT NULL,
     PRIMARY KEY (session_id, tag)
