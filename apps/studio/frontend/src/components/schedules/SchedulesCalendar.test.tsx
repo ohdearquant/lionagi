@@ -293,4 +293,30 @@ describe("SchedulesCalendar — sticky hour gutter and date headers", () => {
     const hourLabel = SRC.slice(hourGridStart, hourLabelEnd);
     expect(hourLabel).toContain("...STICKY_GUTTER_STYLE");
   });
+
+  it("pins the sticky header to one bounded viewport it shares with the all-day row and hour rows, not the page", () => {
+    const dayBranchStart = SRC.indexOf("Horizontal scroll lives HERE");
+    const detailStripStart = SRC.indexOf("{/* Day detail strip */}");
+    const dayBranch = SRC.slice(dayBranchStart, detailStripStart);
+
+    // Exactly one scroll container for the whole day/week grid — no separate
+    // outer (horizontal-only) wrapper plus inner (vertical-only) hour body.
+    // That split is what let the header's sticky ancestor diverge from the
+    // page's actual vertical scroller in Chrome.
+    const overflowAutoClassMatches =
+      dayBranch.match(/className="[^"]*\boverflow-auto\b[^"]*"/g) ?? [];
+    expect(overflowAutoClassMatches).toHaveLength(1);
+    expect(dayBranch).not.toContain("overflow-x-auto");
+    expect(dayBranch).not.toContain("overflow-y-auto");
+
+    // The single scroll container carries hourGridRef directly, and both the
+    // header and the all-day row live inside it (not outside, not in a
+    // separately-scrolling child).
+    expect(dayBranch).toMatch(/ref=\{hourGridRef\}[^>]*overflow-auto/s);
+    expect(dayBranch).toContain("ref={allDayRowRef}");
+
+    // No claim that the header pins against page-level scrolling — it pins
+    // against this bounded container instead.
+    expect(dayBranch).not.toMatch(/stay visible while the page scrolls/);
+  });
 });
