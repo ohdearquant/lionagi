@@ -252,10 +252,14 @@ joint contract (`CLAIM_LEASE_CONTRACT.md`, v1, khive signed implementable 2026-0
   staying decoupled from `memory`).
 
 The host loop calls `gtd.claim(assignee, lease_seconds, worker_id, max_attempts?)`,
-`gtd.complete(id, worker_id, result)`, and `gtd.fail(id, worker_id, note)`. Both `complete` and
-`fail` are holder-checked: a stale holder (lease already expired and reclaimed by another worker)
-gets a typed `stale_lease` rejection rather than a silent double-complete over the new holder's
-work. khive owns and ships these three verbs in the `gtd` pack; lionagi's host loop consumes them
+`gtd.complete(id, worker_id, result)`, and `gtd.fail(id, worker_id, note)`. `worker_id` is
+**optional** on `complete`/`fail`: the holder-check applies only when the task carries a claim
+stamp (`worker_id` + lease in its properties), so the entire existing fleet `gtd` flow — tasks
+completed by humans, Leo, or khive without ever being claimed — keeps completing without a
+`worker_id`, zero breakage. A *claimed* task completed without a `worker_id`, or with the wrong
+one, is rejected (`missing_holder`). When the stamp is present, both `complete` and `fail` are
+holder-checked: a stale holder (lease already expired and reclaimed by another worker) gets a typed
+`stale_lease` rejection rather than a silent double-complete over the new holder's work. khive owns and ships these three verbs in the `gtd` pack; lionagi's host loop consumes them
 via MCP `request` only, never touching khive's database directly — the same transport posture
 ADR-0091 established for `memory.*`.
 
