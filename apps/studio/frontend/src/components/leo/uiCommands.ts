@@ -5,10 +5,11 @@
  * confirm flow.
  */
 import type { LeoUiCommand } from "@/lib/api";
+import type { RetiredSearch } from "@/lib/retiredRoutes";
 
 type NavigateFn = (opts: {
   to: string;
-  search?: Record<string, string>;
+  search?: RetiredSearch;
   replace?: boolean;
 }) => void | Promise<void>;
 
@@ -22,6 +23,21 @@ const SPACE_PATHS: Record<string, string> = {
 };
 
 /**
+ * Non-empty string params carry over as the target route's search — this is
+ * what lets a "navigate to schedules" command re-open a specific schedule
+ * (?s=<id>) instead of only the handful of keys a space happened to need
+ * historically.
+ */
+export function uiCommandSearch(params: Record<string, string> | undefined): RetiredSearch {
+  const out: RetiredSearch = {};
+  if (!params) return out;
+  for (const [key, value] of Object.entries(params)) {
+    if (typeof value === "string" && value.length > 0) out[key] = value;
+  }
+  return out;
+}
+
+/**
  * Execute one command. Returns a display label for the transcript chip when
  * applied, null when the command isn't recognized — unknown kinds render as
  * a quiet "couldn't apply" chip, never crash the stream.
@@ -30,9 +46,10 @@ export function applyUiCommand(cmd: LeoUiCommand, navigate: NavigateFn): string 
   if (cmd.kind === "navigate") {
     const path = SPACE_PATHS[cmd.space ?? ""];
     if (!path) return null;
-    const search: Record<string, string> = {};
-    if (cmd.params?.status) search.status = cmd.params.status;
-    if (cmd.params?.tab) search.tab = cmd.params.tab;
+    const search = uiCommandSearch(cmd.params);
+    // navigate() is TanStack's imperative navigate, so a repeat call with a
+    // new search value re-renders the already-mounted route's search state
+    // instead of requiring a fresh mount.
     void navigate({ to: path, search });
     const filters = Object.entries(search)
       .map(([k, v]) => `${k}=${v}`)

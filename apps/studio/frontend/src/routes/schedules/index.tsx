@@ -14,32 +14,34 @@ import ScheduleDetailModal from "@/components/schedules/ScheduleDetailModal";
 import SchedulesCalendar from "@/components/schedules/SchedulesCalendar";
 import { useSchedulesData } from "@/components/schedules/data";
 
+export interface ScheduleRouteSearch {
+  create?: string;
+  name?: string;
+  cron?: string;
+  prompt?: string;
+  desc?: string;
+  s?: string;
+}
+
+export function validateScheduleSearch(search: Record<string, unknown>): ScheduleRouteSearch {
+  const pick = (key: string) =>
+    typeof search[key] === "string" && search[key] ? { [key]: search[key] as string } : {};
+  return {
+    ...pick("create"),
+    ...pick("name"),
+    ...pick("cron"),
+    ...pick("prompt"),
+    ...pick("desc"),
+    ...pick("s"),
+  };
+}
+
 // ?create=1 (+ name/cron/prompt/desc) opens the create form pre-filled — a
 // deep-link surface for proposing a new routine. The operator still reviews
 // and submits; nothing is created from the URL alone. ?s=<id> opens that
 // schedule's detail (deep link from attention rows).
 export const Route = createFileRoute("/schedules/")({
-  validateSearch: (
-    search: Record<string, unknown>,
-  ): {
-    create?: string;
-    name?: string;
-    cron?: string;
-    prompt?: string;
-    desc?: string;
-    s?: string;
-  } => {
-    const pick = (key: string) =>
-      typeof search[key] === "string" && search[key] ? { [key]: search[key] as string } : {};
-    return {
-      ...pick("create"),
-      ...pick("name"),
-      ...pick("cron"),
-      ...pick("prompt"),
-      ...pick("desc"),
-      ...pick("s"),
-    };
-  },
+  validateSearch: validateScheduleSearch,
   component: SchedulesSpace,
 });
 
