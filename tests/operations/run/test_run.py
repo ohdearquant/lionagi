@@ -11,7 +11,7 @@ from unittest.mock import AsyncMock
 import pytest
 from pydantic import BaseModel
 
-from lionagi.operations.run.run import RunParam, run, run_and_collect
+from lionagi.operations.run.run import RunParam, _stream_with_deadline, run, run_and_collect
 from lionagi.operations.types import ChatParam
 from lionagi.protocols.messages import (
     ActionRequest,
@@ -508,6 +508,31 @@ async def test_run_honors_caller_timeout_on_slow_stream():
     assert elapsed < chunk_delay, (
         f"timeout fired at {elapsed:.2f}s but first chunk was due at {chunk_delay}s"
     )
+
+
+async def test_stream_deadline_preserves_timeout_when_inner_aclose_raises():
+    """A deadline TimeoutError must not be replaced by a cleanup failure from
+    closing the provider stream."""
+    import asyncio
+
+    import anyio
+
+    async def stream(api_call=None):
+        try:
+            yield StreamChunk(type="text", content="first")
+        except GeneratorExit:
+            raise asyncio.CancelledError("cleanup cancelled mid-close")
+
+    model = types.SimpleNamespace(stream=stream)
+    agen = _stream_with_deadline(model, object(), anyio.current_time() + 0.01)
+
+    first = await agen.__anext__()
+    assert first.content == "first"
+
+    await anyio.sleep(0.02)
+
+    with pytest.raises(TimeoutError, match="stream timeout exceeded"):
+        await agen.__anext__()
 
 
 async def test_run_no_timeout_when_kwarg_absent():

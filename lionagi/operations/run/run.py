@@ -3,7 +3,6 @@
 
 from __future__ import annotations
 
-import contextlib
 import logging
 import sys
 from collections.abc import AsyncGenerator
@@ -43,14 +42,15 @@ logger = logging.getLogger(__name__)
 async def _stream_with_deadline(model, api_call, deadline: float | None):
     """Iterate model.stream(api_call) with per-__anext__ anyio cancel scope; transparent passthrough when deadline is None.
 
-    Wraps the underlying stream in ``aclosing`` so an early exit (exception,
+    Closes the underlying stream explicitly so an early exit (exception,
     consumer abandonment) deterministically closes it instead of leaving it
     to async-generator GC — for a CLI provider that close cascades down to
     the subprocess reader's own ``finally`` and terminates the process
     group; without it, an abandoned generator can leave the CLI subprocess
     running to completion, orphaned, after the caller already gave up.
     """
-    async with contextlib.aclosing(model.stream(api_call=api_call)) as agen:
+    agen = model.stream(api_call=api_call)
+    try:
         stream_iter = agen.__aiter__()
         while True:
             try:
@@ -65,6 +65,20 @@ async def _stream_with_deadline(model, api_call, deadline: float | None):
             except StopAsyncIteration:
                 break
             yield chunk
+    finally:
+        _unwinding = sys.exc_info()[1] is not None
+        try:
+            await agen.aclose()
+        except Exception as close_exc:
+            logger.debug("run: inner stream aclose() raised during cleanup: %r", close_exc)
+        except BaseException as close_exc:
+            if not _unwinding:
+                raise
+            logger.debug(
+                "run: inner stream aclose() raised %r while another exception was already "
+                "propagating; suppressing the secondary cleanup failure",
+                close_exc,
+            )
 
 
 async def run(
