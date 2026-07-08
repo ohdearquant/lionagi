@@ -1,0 +1,32 @@
+{
+  "description": "Cross-repo instance index. Each source points at a repo's bench data folder pinned to a commit; instance files follow the Instance JSON schema in schema.py. The runner resolves instances from these pointers so one manifest drives cross-repo runs.",
+  "sources": [
+    {
+      "repo": "ohdearquant/lionagi",
+      "path": "benchmarks/orchestration/suites/lionbench/data/lionagi",
+      "pinned_commit": null,
+      "instances": [
+        "lionagi__1643",
+        "lionagi__1665",
+        "lionagi__1804",
+        "lionagi__1818",
+        "lionagi__1820",
+        "lionagi__1840",
+        "lionagi__1843",
+        "lionagi__1852"
+      ],
+      "notes": "In-repo source; pinned_commit null means resolve from the working checkout."
+    },
+    {
+      "repo": "ohdearquant/lattice",
+      "path": "bench/data/lattice",
+      "pinned_commit": "4c261125e0db3a7f9b9099a249a63dc6e700b1b3",
+      "instances": [
+        "lattice__393",
+        "lattice__699",
+        "lattice__716"
+      ],
+      "notes": "Numerics-parity instances with boundary-crossing cases; oracle kind cargo-test. Validation booleans recorded in each instance file."
+    }
+  ]
+}
