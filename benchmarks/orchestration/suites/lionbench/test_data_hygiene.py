@@ -29,12 +29,18 @@ _BANNED_SUBSTRINGS = (
     ".claude",
     "swebench-work",
     "_lionbench_wt_",
-    "lambda:",
     "private repo",
 )
 _UUID_RE = re.compile(
     r"\b[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}\b"
 )
+# Internal actor identifiers look like "lambda:leo"/"lambda:khive" — no space after
+# the colon. A bare "lambda:" substring also matches Python's own zero-arg lambda
+# syntax ("lambda: mock_db"), which is unavoidable in harvested test_patch content
+# (any repo with mocked callables uses it) and is not a leak. ruff-formatted Python
+# always inserts a space after the colon in that syntax, so "not followed by
+# whitespace" cleanly separates the two shapes.
+_LAMBDA_ACTOR_RE = re.compile(r"lambda:(?!\s)")
 
 
 def _iter_scalars(obj, path: str = "$"):
@@ -62,6 +68,8 @@ def _violations_in(path: Path, doc: dict) -> list[str]:
         for bad in _BANNED_SUBSTRINGS:
             if bad in value:
                 violations.append(f"{path}:{field_path} contains {bad!r}")
+        if _LAMBDA_ACTOR_RE.search(value):
+            violations.append(f"{path}:{field_path} contains an actor-identifier-shaped 'lambda:'")
         m = _UUID_RE.search(value)
         if m:
             violations.append(f"{path}:{field_path} contains a UUID-shaped token ({m.group(0)})")
