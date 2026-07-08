@@ -1,0 +1,33 @@
+{
+  "base_commit": "ee75969c415ed713af1c47b5d98e49239b40a32f",
+  "gold_patch": "diff --git a/lionagi/operations/run/run.py b/lionagi/operations/run/run.py\nindex 959de63f3..b1efe360c 100644\n--- a/lionagi/operations/run/run.py\n+++ b/lionagi/operations/run/run.py\n@@ -3,7 +3,6 @@\n \n from __future__ import annotations\n \n-import contextlib\n import logging\n import sys\n from collections.abc import AsyncGenerator\n@@ -43,14 +42,15 @@\n async def _stream_with_deadline(model, api_call, deadline: float | None):\n     \"\"\"Iterate model.stream(api_call) with per-__anext__ anyio cancel scope; transparent passthrough when deadline is None.\n \n-    Wraps the underlying stream in ``aclosing`` so an early exit (exception,\n+    Closes the underlying stream explicitly so an early exit (exception,\n     consumer abandonment) deterministically closes it instead of leaving it\n     to async-generator GC \u2014 for a CLI provider that close cascades down to\n     the subprocess reader's own ``finally`` and terminates the process\n     group; without it, an abandoned generator can leave the CLI subprocess\n     running to completion, orphaned, after the caller already gave up.\n     \"\"\"\n-    async with contextlib.aclosing(model.stream(api_call=api_call)) as agen:\n+    agen = model.stream(api_call=api_call)\n+    try:\n         stream_iter = agen.__aiter__()\n         while True:\n             try:\n@@ -65,6 +65,20 @@ async def _stream_with_deadline(model, api_call, deadline: float | None):\n             except StopAsyncIteration:\n                 break\n             yield chunk\n+    finally:\n+        _unwinding = sys.exc_info()[1] is not None\n+        try:\n+            await agen.aclose()\n+        except Exception as close_exc:\n+            logger.debug(\"run: inner stream aclose() raised during cleanup: %r\", close_exc)\n+        except BaseException as close_exc:\n+            if not _unwinding:\n+                raise\n+            logger.debug(\n+                \"run: inner stream aclose() raised %r while another exception was already \"\n+                \"propagating; suppressing the secondary cleanup failure\",\n+                close_exc,\n+            )\n \n \n async def run(\n",
+  "instance_id": "lionagi__1840",
+  "merged_at": "2026-07-07T20:33:04Z",
+  "needs_review": true,
+  "oracle": {
+    "command": "uv run --all-extras pytest tests/operations/run/test_run.py -q",
+    "held_out_paths": [
+      "tests/operations/run/test_run.py"
+    ],
+    "kind": "pytest",
+    "test_patch": "diff --git a/tests/operations/run/test_run.py b/tests/operations/run/test_run.py\nindex fb4334842..619ca2efe 100644\n--- a/tests/operations/run/test_run.py\n+++ b/tests/operations/run/test_run.py\n@@ -11,7 +11,7 @@\n import pytest\n from pydantic import BaseModel\n \n-from lionagi.operations.run.run import RunParam, run, run_and_collect\n+from lionagi.operations.run.run import RunParam, _stream_with_deadline, run, run_and_collect\n from lionagi.operations.types import ChatParam\n from lionagi.protocols.messages import (\n     ActionRequest,\n@@ -510,6 +510,31 @@ async def test_run_honors_caller_timeout_on_slow_stream():\n     )\n \n \n+async def test_stream_deadline_preserves_timeout_when_inner_aclose_raises():\n+    \"\"\"A deadline TimeoutError must not be replaced by a cleanup failure from\n+    closing the provider stream.\"\"\"\n+    import asyncio\n+\n+    import anyio\n+\n+    async def stream(api_call=None):\n+        try:\n+            yield StreamChunk(type=\"text\", content=\"first\")\n+        except GeneratorExit:\n+            raise asyncio.CancelledError(\"cleanup cancelled mid-close\")\n+\n+    model = types.SimpleNamespace(stream=stream)\n+    agen = _stream_with_deadline(model, object(), anyio.current_time() + 0.01)\n+\n+    first = await agen.__anext__()\n+    assert first.content == \"first\"\n+\n+    await anyio.sleep(0.02)\n+\n+    with pytest.raises(TimeoutError, match=\"stream timeout exceeded\"):\n+        await agen.__anext__()\n+\n+\n async def test_run_no_timeout_when_kwarg_absent():\n     \"\"\"Back-compat: callers that don't supply timeout get the legacy\n     unbounded behaviour (subject to chunk count, not wall clock).\"\"\"\n"
+  },
+  "provenance": {
+    "issue": 1800,
+    "nominated_by": "",
+    "pr": 1840,
+    "why": "stream close-cleanup exception silently replaces the real deadline TimeoutError"
+  },
+  "repo": "ohdearquant/lionagi",
+  "source_pr": "lionagi#1840",
+  "subject": "lionagi",
+  "task_text": "When a streamed provider call is aborted by a deadline timeout, the timeout error the caller expects to see can be silently replaced by an unrelated exception raised while the code tries to close the now-abandoned stream during cleanup. Because a specific caller matches on the timeout's exception type to mark a run as \"timed out\", losing that exception means the run's recorded outcome is misclassified as some other failure kind instead of a timeout, even though a timeout is exactly what happened.\n\nRequired behavior: when a streaming call is aborted because its deadline expired, the resulting timeout error must reach the caller unchanged, even if closing the underlying stream during cleanup itself raises an exception.",
+  "tier": "T1",
+  "validation": {
+    "gold_output": "",
+    "gold_passes": true,
+    "leak_review": "pass",
+    "null_fails": true,
+    "null_output": ""
+  }
+}
