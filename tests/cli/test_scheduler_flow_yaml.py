@@ -452,6 +452,82 @@ def test_legacy_schedules_table_upgraded_and_flow_yaml_insert_succeeds():
     asyncio.run(_run())
 
 
+def test_legacy_rebuild_yields_full_canonical_columns():
+    """Legacy-table rebuild must reproduce the FULL schema_meta column set.
+
+    Guards the drift risk the old hand-written ``schedules_new`` literal carried:
+    the rebuild DDL is now derived from ``schema_meta.schedules``, so a legacy
+    table (missing later-added columns) must come out of ``StateDB`` open with
+    every canonical column — including the self-health poller columns — and a
+    ``github_poll`` schedule carrying those columns must roundtrip.
+    """
+    import asyncio
+    import os
+    import tempfile
+    import uuid
+
+    import aiosqlite
+
+    from lionagi.state.db import StateDB
+    from lionagi.state.schema_meta import schedules as schedules_table
+
+    async def _run():
+        with tempfile.NamedTemporaryFile(suffix=".db", delete=False) as f:
+            db_path = f.name
+        try:
+            # Pre-PR minimal schedules table: old CHECK, none of the columns
+            # added after the original schema (no self-health columns).
+            async with aiosqlite.connect(db_path) as raw:
+                await raw.execute("""
+                    CREATE TABLE schedules (
+                        id           TEXT PRIMARY KEY,
+                        name         TEXT NOT NULL UNIQUE,
+                        trigger_type TEXT NOT NULL,
+                        action_kind  TEXT NOT NULL
+                            CHECK(action_kind IN ('agent', 'flow', 'fanout', 'play')),
+                        github_repo  TEXT,
+                        created_at   REAL NOT NULL,
+                        updated_at   REAL NOT NULL
+                    )
+                """)
+                await raw.commit()
+
+            async with StateDB(db_path) as db:
+                async with db._engine.connect() as conn:
+                    from sqlalchemy import text as _text
+
+                    rows = (
+                        (await conn.execute(_text("PRAGMA table_info(schedules)"))).mappings().all()
+                    )
+                got = {r["name"] for r in rows}
+                expected = {c.name for c in schedules_table.columns}
+                assert got == expected, (
+                    f"rebuilt table drifted from schema_meta; "
+                    f"missing={expected - got} extra={got - expected}"
+                )
+
+                # A github_poll schedule using the self-health columns roundtrips.
+                sid = uuid.uuid4().hex[:12]
+                await db.create_schedule(
+                    {
+                        "id": sid,
+                        "name": "poller-health-roundtrip",
+                        "trigger_type": "github_poll",
+                        "action_kind": "agent",
+                        "github_repo": "owner/repo",
+                    }
+                )
+                await db.update_schedule(sid, last_healthy_poll_at=123.0, poller_consecutive_401=2)
+                row = await db.get_schedule(sid)
+            assert row is not None
+            assert row["last_healthy_poll_at"] == 123.0
+            assert row["poller_consecutive_401"] == 2
+        finally:
+            os.unlink(db_path)
+
+    asyncio.run(_run())
+
+
 # ---------------------------------------------------------------------------
 # Regression tests: PATCH validation
 # ---------------------------------------------------------------------------
