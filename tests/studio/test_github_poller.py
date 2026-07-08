@@ -503,13 +503,15 @@ def _closed_page(hour: int, base_number: int, *, merges: dict[int, str] | None =
 
 
 def test_github_poll_merged_mode_cap_truncation_defers_unsafe_boundary_items(monkeypatch):
-    """Hitting _MERGED_MODE_MAX_PAGES (rather than a safe short-page/cursor
-    boundary) makes the scan incomplete: github_poll must not return, as
-    dispatchable, any item whose cursor field (merged_at) sits at or after
-    the oldest updated_at actually fetched -- advancing the cursor to that
-    item risks permanently skipping an unfetched, older, still-undispatched
-    merge. An item merged long before the fetched window entirely (safely
-    below that boundary) is unaffected and still returned.
+    """The 5th (cap) page is itself full, links to a 6th page, and hasn't
+    reached the cursor -- genuinely more data likely exists beyond it, but
+    the cap forbids fetching further. That makes the scan incomplete:
+    github_poll must not return, as dispatchable, any item whose cursor
+    field (merged_at) sits at or after the oldest updated_at actually
+    fetched -- advancing the cursor to that item risks permanently skipping
+    an unfetched, older, still-undispatched merge. An item merged long
+    before the fetched window entirely (safely below that boundary) is
+    unaffected and still returned.
     """
     pages = [
         _closed_page(15, 1000),
@@ -521,6 +523,7 @@ def test_github_poll_merged_mode_cap_truncation_defers_unsafe_boundary_items(mon
             1400,
             merges={5: "2026-07-06T11:44:00Z", 10: "2020-01-01T00:00:00Z"},
         ),
+        _closed_page(10, 1500),  # 6th page: proves page 5 had a real next link.
     ]
     client = _install_paginated(monkeypatch, pages)
     result = _poll_result(
@@ -528,9 +531,36 @@ def test_github_poll_merged_mode_cap_truncation_defers_unsafe_boundary_items(mon
     )
 
     assert result.scan_complete is False
-    # 5 requests: the cap (_MERGED_MODE_MAX_PAGES) was reached exactly.
+    # 5 requests: the cap (_MERGED_MODE_MAX_PAGES) was reached exactly --
+    # the 6th page is never fetched.
     assert len(client.requests) == 5
     assert [i.event["pr_number"] for i in result.items] == [1410]
+    assert result.items[0].dispatchable is True
+
+
+def test_github_poll_merged_mode_cap_reached_but_final_page_is_safe_terminal(monkeypatch):
+    """Four full pages followed by a short (terminal) fifth page containing
+    a merged PR at merged_at == updated_at == the floor. Hitting
+    _MERGED_MODE_MAX_PAGES here is incidental -- the 5th page itself is
+    short, which proves there is nothing beyond it, exactly like reaching a
+    short page on any earlier pass. The scan is COMPLETE and the boundary
+    PR must be returned and dispatchable, not deferred."""
+    pages = [
+        _closed_page(15, 1000),
+        _closed_page(14, 1100),
+        _closed_page(13, 1200),
+        _closed_page(12, 1300),
+        # Short (terminal) 5th page: one PR, merged at its own updated_at.
+        [_pr(1400, "2026-07-06T11:00:00Z", state="closed", merged_at="2026-07-06T11:00:00Z")],
+    ]
+    client = _install_paginated(monkeypatch, pages)
+    result = _poll_result(
+        {"id": "s1", "github_repo": "owner/name", "github_filter": {"event": "pr_merged"}}
+    )
+
+    assert result.scan_complete is True
+    assert len(client.requests) == 5
+    assert [i.event["pr_number"] for i in result.items] == [1400]
     assert result.items[0].dispatchable is True
 
 

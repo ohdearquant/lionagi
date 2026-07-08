@@ -430,10 +430,12 @@ async def test_merged_mode_truncated_scan_no_skip_no_duplicate_across_two_ticks(
     dispatched, once that event becomes safely reachable on a later poll."""
     schedule = _minimal_schedule(github_filter={"event": "pr_merged"})
 
-    # Tick 1: 5 full pages of closed PRs (hits _MERGED_MODE_MAX_PAGES).
-    # PR 1405 sits mid-page-5, merged_at close to the truncation boundary --
-    # unsafe to dispatch this poll. PR 1410 merged long before the fetched
-    # window -- safely below the boundary, dispatchable this poll.
+    # Tick 1: 5 full pages of closed PRs (hits _MERGED_MODE_MAX_PAGES). The
+    # 5th page itself is full and links to a 6th (never fetched) page, so it
+    # is genuinely unsafe -- not a short/terminal page. PR 1405 sits mid
+    # page 5, merged_at close to the truncation boundary -- unsafe to
+    # dispatch this poll. PR 1410 merged long before the fetched window --
+    # safely below the boundary, dispatchable this poll.
     pages_tick1 = [
         _closed_page(15, 1000),
         _closed_page(14, 1100),
@@ -444,6 +446,7 @@ async def test_merged_mode_truncated_scan_no_skip_no_duplicate_across_two_ticks(
             1400,
             merges={5: "2026-07-06T11:44:00Z", 10: "2020-01-01T00:00:00Z"},
         ),
+        _closed_page(10, 1500),  # 6th page: proves page 5 had a real next link.
     ]
 
     async def _fake_token():

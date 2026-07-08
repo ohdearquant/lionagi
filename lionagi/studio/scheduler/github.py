@@ -320,14 +320,29 @@ async def github_poll(schedule: dict) -> GithubPollResult:
         # further back is too (the API is sorted by updated_at desc), and
         # merged_at <= updated_at always holds for a merged PR, so nothing
         # beyond that point could be an undispatched merge either.
-        for _ in range(_MERGED_MODE_MAX_PAGES - 1):
-            if len(page) < per_page:
-                break
+        #
+        # The safe-boundary check runs at the TOP of every pass, including
+        # the pass evaluating the last page the cap allows fetching -- the
+        # cap alone never marks the scan unsafe; a page is only unsafe when
+        # it is full, has a next link, AND the cursor hasn't been reached,
+        # i.e. there is real, unproven data beyond it.
+        pages_fetched = 1
+        while True:
+            is_short_page = len(page) < per_page
             oldest_updated = page[-1].get("updated_at", "") if page else ""
-            if cursor and oldest_updated <= cursor:
-                break
+            cursor_reached = bool(cursor) and oldest_updated <= cursor
             next_url = _next_page_url(resp)
-            if not next_url:
+            if is_short_page or cursor_reached or not next_url:
+                # This page itself proves the boundary: nothing beyond it
+                # matters (short/no-next), or everything beyond it is
+                # already-seen ground (cursor reached). Safe regardless of
+                # how many pages the cap allowed fetching.
+                break
+            if pages_fetched >= _MERGED_MODE_MAX_PAGES:
+                # This page is full, links to a next page, and the cursor
+                # hasn't been reached -- real, unproven data likely exists
+                # beyond it, but the cap forbids fetching further.
+                scan_complete = False
                 break
             try:
                 resp = await client.get(next_url, headers=headers)
@@ -354,11 +369,7 @@ async def github_poll(schedule: dict) -> GithubPollResult:
                 break
             page = resp.json()
             prs.extend(page)
-        else:
-            # The for-loop ran out of pages to fetch (_MERGED_MODE_MAX_PAGES
-            # reached) without ever hitting one of the safe breaks above --
-            # there may still be more pages beyond this one.
-            scan_complete = False
+            pages_fetched += 1
 
     # In merged mode, once the scan is truncated (unsafe boundary), any
     # fetched PR whose cursor field (merged_at) sits at or past the oldest
