@@ -10,8 +10,9 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any
 
-from sqlalchemy import JSON, bindparam, event, inspect, text
+from sqlalchemy import JSON, MetaData, bindparam, event, inspect, text
 from sqlalchemy.exc import IntegrityError
+from sqlalchemy.schema import CreateTable
 
 from lionagi._paths import LIONAGI_HOME
 from lionagi.config import settings
@@ -37,6 +38,7 @@ from lionagi.state.reasons import (
     validate_reason_code as _validate_reason_code,
 )
 from lionagi.state.schema_meta import metadata
+from lionagi.state.schema_meta import schedules as _schedules_table
 from lionagi.state.schema_migrations import MIGRATION_COLUMNS as _MIGRATION_COLUMNS
 
 _RUN_DEFAULTS: dict[str, str] = {
@@ -794,57 +796,16 @@ class StateDB:
             cols = [r["name"] for r in cols_rows]
         col_list = ", ".join(cols)
 
+        # Derive the rebuild DDL from the canonical schema_meta Table rather than
+        # a hand-kept literal, so this migration path can never drift from the
+        # live schema (schema.sql / schema_meta.py parity is test-enforced).
+        rebuild_table = _schedules_table.to_metadata(MetaData(), name="schedules_new")
+        create_stmt = str(CreateTable(rebuild_table).compile(dialect=self._engine.dialect))
+
         async with self._engine.begin() as conn:
             await conn.execute(text("PRAGMA foreign_keys = OFF"))
             try:
-                await conn.execute(
-                    text(
-                        """
-                        CREATE TABLE schedules_new (
-                          id                  TEXT    PRIMARY KEY,
-                          name                TEXT    NOT NULL UNIQUE,
-                          description         TEXT,
-                          enabled             INTEGER NOT NULL DEFAULT 1
-                                              CHECK(enabled IN (0, 1)),
-                          trigger_type        TEXT    NOT NULL
-                                              CHECK(trigger_type IN ('cron', 'interval', 'github_poll')),
-                          cron_expr           TEXT,
-                          interval_sec        INTEGER,
-                          github_repo         TEXT,
-                          github_filter       JSON,
-                          github_cursor       TEXT,
-                          poll_interval_sec   INTEGER,
-                          action_kind         TEXT    NOT NULL
-                                              CHECK(action_kind IN ('agent', 'flow', 'fanout', 'play', 'flow_yaml')),
-                          action_model        TEXT,
-                          action_prompt       TEXT,
-                          action_agent        TEXT,
-                          action_playbook     TEXT,
-                          action_flow_yaml    TEXT,
-                          action_project      TEXT,
-                          action_extra_args   JSON    DEFAULT '[]',
-                          on_success          JSON,
-                          on_fail             JSON,
-                          last_fired_at       REAL,
-                          next_fire_at        REAL,
-                          missed_fire_policy  TEXT    NOT NULL DEFAULT 'skip'
-                                              CHECK(missed_fire_policy IN ('skip', 'run_once')),
-                          overlap_policy      TEXT    NOT NULL DEFAULT 'skip'
-                                              CHECK(overlap_policy IN ('skip', 'allow')),
-                          max_runs            INTEGER,
-                          budget_usd          REAL,
-                          budget_tokens       INTEGER,
-                          project             TEXT,
-                          threshold_config    JSON,
-                          last_alert_at       REAL,
-                          last_healthy_poll_at    REAL,
-                          poller_consecutive_401  INTEGER NOT NULL DEFAULT 0,
-                          created_at          REAL    NOT NULL,
-                          updated_at          REAL    NOT NULL
-                        )
-                        """
-                    )
-                )
+                await conn.execute(text(create_stmt))
                 insert_sql = (
                     f"INSERT INTO schedules_new ({col_list}) SELECT {col_list} FROM schedules"  # noqa: S608
                 )
