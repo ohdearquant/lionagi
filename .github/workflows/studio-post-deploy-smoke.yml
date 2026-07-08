@@ -1,0 +1,85 @@
+name: Studio post-deploy smoke
+
+# A broken Lion Studio deploy must never look green. The hosted SPA is
+# local-first: its own origin serves no API, so resolveApiBase() has to be
+# steered to the operator's loopback daemon by an injected
+# window.__STUDIO_API_BASE__. If that injection regresses (the Vite plugin is
+# removed, or Vercel stops exposing the VERCEL system env var the plugin gates
+# on) the SPA silently falls back to same-origin and every /api/* request
+# returns index.html -- the "Studio API returned HTML instead of JSON" break.
+# There is no CI-reachable JSON endpoint to hit (the hosted origin has no API
+# of its own -- that is the whole point of local-first), so the meaningful
+# post-deploy signal is the served HTML: assert the SPA shell plus the loopback
+# API-base injection are present. When they are not, this turns red instead of
+# shipping a green deploy that does not work.
+
+on:
+  deployment_status:
+  schedule:
+    - cron: "17 13 * * *" # daily drift catch: a Vercel setting flip won't wait for a push
+  workflow_dispatch:
+    inputs:
+      url:
+        description: "Studio URL to smoke"
+        required: false
+        default: "https://lion-studio.khive.ai"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: studio-post-deploy-smoke
+  cancel-in-progress: false
+
+jobs:
+  smoke:
+    # deployment_status fires for every environment and every state; gate on a
+    # successful Production deploy only. schedule/workflow_dispatch always run.
+    if: >-
+      github.event_name != 'deployment_status' ||
+      (github.event.deployment_status.state == 'success' &&
+       github.event.deployment_status.environment == 'Production')
+    runs-on: ubuntu-latest
+    steps:
+      - name: Smoke the hosted Studio
+        env:
+          STUDIO_URL: ${{ github.event.inputs.url || 'https://lion-studio.khive.ai' }}
+        run: |
+          set -euo pipefail
+          url="${STUDIO_URL%/}/"
+          echo "Smoking $url"
+          # The production alias can lag a few seconds behind the
+          # deployment_status event, so retry before failing.
+          attempt=0
+          max=10
+          injection_re='window\.__STUDIO_API_BASE__="http://127\.0\.0\.1:[0-9]+"'
+          while :; do
+            attempt=$((attempt + 1))
+            code=$(curl -sS -o /tmp/index.html -w '%{http_code}' "$url" || echo "000")
+            if [ "$code" = "200" ] \
+               && grep -q 'id="root"' /tmp/index.html \
+               && grep -Eq "$injection_re" /tmp/index.html; then
+              echo "OK: HTTP 200, SPA shell present, loopback API base injected."
+              grep -o 'window\.__STUDIO_API_BASE__="[^"]*"' /tmp/index.html | head -1
+              exit 0
+            fi
+            echo "attempt $attempt/$max not ready (http=$code)"
+            if [ "$attempt" -ge "$max" ]; then
+              echo "::error::Studio smoke FAILED for $url after $max attempts."
+              echo "  HTTP status: $code (want 200)"
+              if grep -q 'id="root"' /tmp/index.html; then
+                echo "  SPA shell (id=\"root\"): present"
+              else
+                echo "  SPA shell (id=\"root\"): MISSING"
+              fi
+              if grep -Eq "$injection_re" /tmp/index.html; then
+                echo "  loopback API base injection: present"
+              else
+                echo "  loopback API base injection: MISSING -- SPA falls back to same-origin and /api/* returns HTML."
+              fi
+              echo "  --- first 40 lines of served HTML ---"
+              head -40 /tmp/index.html || true
+              exit 1
+            fi
+            sleep 15
+          done
