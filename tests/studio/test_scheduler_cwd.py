@@ -100,7 +100,7 @@ async def test_resolve_action_cwd_uses_registered_project_path(tmp_path, monkeyp
     schedule = {"id": "sched-1", "action_project": "myproj"}
     result = await _resolve_action_cwd(schedule)
 
-    assert result == str(project_dir)
+    assert result == (str(project_dir), None)
     fake_get_project.assert_awaited_once_with("myproj")
 
 
@@ -122,7 +122,7 @@ async def test_resolve_action_cwd_falls_back_to_env_when_project_unresolved(tmp_
     schedule = {"id": "sched-2", "action_project": "unknown-project"}
     result = await _resolve_action_cwd(schedule)
 
-    assert result == str(env_dir)
+    assert result == (str(env_dir), None)
 
 
 @pytest.mark.asyncio
@@ -143,7 +143,7 @@ async def test_resolve_action_cwd_env_fallback_when_no_project_set(monkeypatch, 
     schedule = {"id": "sched-3", "action_project": None}
     result = await _resolve_action_cwd(schedule)
 
-    assert result == str(env_dir)
+    assert result == (str(env_dir), None)
     fake_get_project.assert_not_called()
 
 
@@ -159,14 +159,15 @@ async def test_resolve_action_cwd_returns_none_and_warns_when_unresolved(monkeyp
     with caplog.at_level(logging.WARNING, logger="lionagi.studio.scheduler.engine"):
         result = await _resolve_action_cwd(schedule)
 
-    assert result is None
+    assert result == (None, None)
     assert any("sched-4" in rec.getMessage() for rec in caplog.records)
 
 
 @pytest.mark.asyncio
 async def test_resolve_action_cwd_ignores_project_with_nonexistent_path(monkeypatch, tmp_path):
     """A registered project whose stored path no longer exists on disk must
-    not be trusted; falls through to env/None."""
+    not be trusted; falls through to env/None, and the caller learns which
+    path was stale so it can attribute a later spawn failure to it."""
     from lionagi.studio.scheduler.engine import _resolve_action_cwd
 
     fake_get_project = AsyncMock(
@@ -180,7 +181,56 @@ async def test_resolve_action_cwd_ignores_project_with_nonexistent_path(monkeypa
     schedule = {"id": "sched-5", "action_project": "stale"}
     result = await _resolve_action_cwd(schedule)
 
-    assert result is None
+    assert result == (None, "/no/such/directory/at/all")
+
+
+@pytest.mark.asyncio
+async def test_resolve_action_cwd_stale_project_path_logs_specific_warning(monkeypatch, caplog):
+    """The stale-project-path warning names the schedule, the project, and
+    the exact missing path -- not just the generic 'no resolvable cwd'."""
+    from lionagi.studio.scheduler.engine import _resolve_action_cwd
+
+    fake_get_project = AsyncMock(
+        return_value={"name": "stale", "path": "/pruned/worktree/xyz", "source": "studio"}
+    )
+    monkeypatch.setattr(
+        "lionagi.studio.services.projects.get_project", fake_get_project, raising=False
+    )
+    monkeypatch.delenv("LIONAGI_SCHEDULER_CWD", raising=False)
+
+    schedule = {"id": "sched-6", "action_project": "stale"}
+    with caplog.at_level(logging.WARNING, logger="lionagi.studio.scheduler.engine"):
+        await _resolve_action_cwd(schedule)
+
+    assert any(
+        "sched-6" in rec.getMessage() and "/pruned/worktree/xyz" in rec.getMessage()
+        for rec in caplog.records
+    )
+
+
+@pytest.mark.asyncio
+async def test_resolve_action_cwd_stale_project_path_overridden_by_env_fallback(
+    monkeypatch, tmp_path
+):
+    """A stale project path is not reported as the failure attribution when
+    LIONAGI_SCHEDULER_CWD resolves a usable directory anyway -- the run isn't
+    actually at risk of the missing-cwd failure mode in that case."""
+    from lionagi.studio.scheduler.engine import _resolve_action_cwd
+
+    fake_get_project = AsyncMock(
+        return_value={"name": "stale", "path": "/no/such/directory/at/all", "source": "studio"}
+    )
+    monkeypatch.setattr(
+        "lionagi.studio.services.projects.get_project", fake_get_project, raising=False
+    )
+    env_dir = tmp_path / "env-saves-the-day"
+    env_dir.mkdir()
+    monkeypatch.setenv("LIONAGI_SCHEDULER_CWD", str(env_dir))
+
+    schedule = {"id": "sched-7", "action_project": "stale"}
+    result = await _resolve_action_cwd(schedule)
+
+    assert result == (str(env_dir), None)
 
 
 # ---------------------------------------------------------------------------
@@ -255,3 +305,88 @@ async def test_fire_threads_resolved_cwd_into_spawn_and_wait(tmp_path, monkeypat
     spawn_mock.assert_awaited_once()
     _args, kwargs = spawn_mock.await_args
     assert kwargs.get("cwd") == str(project_dir)
+
+
+# ---------------------------------------------------------------------------
+# Status-reason attribution: a stale action_project path that later fails to
+# spawn is recorded with a specific reason_code, not a generic non-zero exit.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_fire_attributes_failure_to_missing_cwd(monkeypatch):
+    """A schedule whose registered project path no longer exists, and whose
+    process then exits non-zero (the daemon-inherited cwd wasn't a fit),
+    writes RunReasons.FAILED_MISSING_CWD instead of the generic
+    FAILED_EXIT_NONZERO -- so the failure is attributable without reading a
+    stack trace."""
+    from lionagi.state.reasons import RunReasons
+    from lionagi.studio.scheduler.engine import SchedulerEngine
+
+    fake_get_project = AsyncMock(return_value={"name": "gone", "path": "/no/such/directory/at/all"})
+    monkeypatch.setattr(
+        "lionagi.studio.services.projects.get_project", fake_get_project, raising=False
+    )
+    monkeypatch.delenv("LIONAGI_SCHEDULER_CWD", raising=False)
+
+    svc = _make_svc()
+    engine = SchedulerEngine(svc=svc)
+    schedule = _minimal_schedule(action_project="gone")
+
+    with (
+        patch(
+            "lionagi.studio.scheduler.subprocess.build_argv",
+            return_value=(["uv", "run", "li", "agent", "ping"], None),
+        ),
+        patch(
+            "lionagi.studio.scheduler.subprocess.spawn_and_wait",
+            new=AsyncMock(return_value=(1, "boom")),
+        ),
+    ):
+        await engine._fire(schedule, "run-cwd-002", trigger_context={"scheduled": True})
+
+    terminal_calls = [
+        c
+        for c in svc.update_status.await_args_list
+        if c.args[:2] == ("schedule_run", "run-cwd-002")
+        and c.kwargs.get("new_status") in ("completed", "failed")
+    ]
+    assert terminal_calls
+    (call,) = terminal_calls
+    assert call.kwargs["reason_code"] == RunReasons.FAILED_MISSING_CWD
+    assert "/no/such/directory/at/all" in call.kwargs["reason_summary"]
+
+
+@pytest.mark.asyncio
+async def test_fire_plain_nonzero_exit_keeps_generic_reason(monkeypatch):
+    """A schedule with no action_project (or a healthy one) that exits
+    non-zero keeps the pre-existing generic FAILED_EXIT_NONZERO reason --
+    this rewrite must not misattribute ordinary failures to a missing cwd."""
+    from lionagi.state.reasons import RunReasons
+    from lionagi.studio.scheduler.engine import SchedulerEngine
+
+    svc = _make_svc()
+    engine = SchedulerEngine(svc=svc)
+    schedule = _minimal_schedule()  # action_project=None
+
+    with (
+        patch(
+            "lionagi.studio.scheduler.subprocess.build_argv",
+            return_value=(["uv", "run", "li", "agent", "ping"], None),
+        ),
+        patch(
+            "lionagi.studio.scheduler.subprocess.spawn_and_wait",
+            new=AsyncMock(return_value=(1, "boom")),
+        ),
+    ):
+        await engine._fire(schedule, "run-cwd-003", trigger_context={"scheduled": True})
+
+    terminal_calls = [
+        c
+        for c in svc.update_status.await_args_list
+        if c.args[:2] == ("schedule_run", "run-cwd-003")
+        and c.kwargs.get("new_status") in ("completed", "failed")
+    ]
+    assert terminal_calls
+    (call,) = terminal_calls
+    assert call.kwargs["reason_code"] == RunReasons.FAILED_EXIT_NONZERO

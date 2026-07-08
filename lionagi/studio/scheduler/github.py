@@ -21,11 +21,15 @@ class GithubPollItem:
 
     ``event`` is always populated (even when ``dispatchable`` is False) so a
     caller can log which PR was seen without firing it. ``updated_at`` is the
-    PR's raw GitHub timestamp string, used as the cursor high-water mark.
-    ``dispatchable`` is False when ``github_filter`` (e.g. a draft filter)
-    excludes the PR from firing -- it is still returned, not silently
-    dropped, so the caller can advance the cursor past it without the PR
-    being re-listed on every subsequent poll.
+    cursor high-water-mark field for this item -- normally the PR's raw
+    GitHub ``updated_at``, but under ``github_filter={"event": "pr_merged"}``
+    it holds ``merged_at`` instead, since that's what the merged-PR mode
+    compares against the persisted cursor (the event dict's own
+    ``updated_at`` key still carries the PR's real ``updated_at`` either way,
+    for template rendering). ``dispatchable`` is False when ``github_filter``
+    (e.g. a draft filter) excludes the PR from firing -- it is still
+    returned, not silently dropped, so the caller can advance the cursor
+    past it without the PR being re-listed on every subsequent poll.
     """
 
     event: dict[str, Any]
@@ -199,8 +203,11 @@ async def github_poll(schedule: dict) -> list[GithubPollItem]:
         headers["If-None-Match"] = etag
 
     github_filter = schedule.get("github_filter") or {}
+    merged_mode = github_filter.get("event") == "pr_merged"
     params: dict[str, str] = {
-        "state": github_filter.get("state", "open"),
+        # pr_merged is only ever true on a closed PR, so merged mode always
+        # polls closed PRs regardless of any (nonsensical) explicit state.
+        "state": "closed" if merged_mode else github_filter.get("state", "open"),
         "sort": "updated",
         "direction": "desc",
         "per_page": "20",
@@ -237,8 +244,22 @@ async def github_poll(schedule: dict) -> list[GithubPollItem]:
     items: list[GithubPollItem] = []
     for pr in prs:
         updated = pr.get("updated_at", "")
-        if cursor and updated <= cursor:
+        if merged_mode:
+            merged_at = pr.get("merged_at")
+            if not merged_at:
+                # Closed but never merged -- not a "PR merged" event under
+                # this filter. It never fires and has no merge time to
+                # compare against the cursor, so it's simply not an item;
+                # it naturally drops off the API's top-N-by-updated window
+                # once nothing about it changes further.
+                continue
+            cursor_at = merged_at
+        else:
+            cursor_at = updated
+
+        if cursor and cursor_at <= cursor:
             continue
+
         is_draft = bool(pr.get("draft", False))
         # Only a real JSON boolean narrows the fire set. A malformed non-bool
         # draft filter is ignored (fail open to no filtering) rather than
@@ -253,10 +274,15 @@ async def github_poll(schedule: dict) -> list[GithubPollItem]:
             "head_sha": (pr.get("head") or {}).get("sha"),
             "draft": is_draft,
         }
-        items.append(GithubPollItem(event=event, updated_at=updated, dispatchable=dispatchable))
+        if merged_mode:
+            event["pr_merged_at"] = merged_at
+        items.append(GithubPollItem(event=event, updated_at=cursor_at, dispatchable=dispatchable))
 
-    # The API returns PRs sorted by updated_at desc; the caller advances the
-    # persisted cursor incrementally as it processes items in order, so they
-    # must come back oldest-first.
-    items.reverse()
+    # The API returns PRs sorted by updated_at desc, which is the cursor
+    # field itself in the default mode but only a close correlate of it in
+    # merged mode (merging a PR bumps updated_at, but the two aren't
+    # contractually identical) -- sort explicitly by the cursor field so the
+    # caller's incremental cursor advance stays monotone in both modes,
+    # rather than relying on a bare reversal of API order.
+    items.sort(key=lambda it: it.updated_at)
     return items

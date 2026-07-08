@@ -17,7 +17,7 @@ import asyncio
 from lionagi.studio.scheduler import github as gh_mod
 
 
-def _pr(number, updated, *, draft=False, sha=None):
+def _pr(number, updated, *, draft=False, sha=None, state="open", merged_at=None):
     return {
         "number": number,
         "title": f"PR {number}",
@@ -26,6 +26,8 @@ def _pr(number, updated, *, draft=False, sha=None):
         "updated_at": updated,
         "draft": draft,
         "head": {"sha": sha or f"sha{number}"},
+        "state": state,
+        "merged_at": merged_at,
     }
 
 
@@ -42,8 +44,10 @@ class _FakeResp:
 class _FakeClient:
     def __init__(self, prs):
         self._prs = prs
+        self.requests: list[dict] = []
 
     async def get(self, url, headers=None, params=None):
+        self.requests.append({"url": url, "params": params})
         return _FakeResp(self._prs)
 
 
@@ -53,8 +57,10 @@ def _install(monkeypatch, prs):
     async def _fake_token():
         return "faketoken"
 
+    client = _FakeClient(prs)
     monkeypatch.setattr(gh_mod, "_get_gh_token", _fake_token)
-    monkeypatch.setattr(gh_mod, "_get_client", lambda: _FakeClient(prs))
+    monkeypatch.setattr(gh_mod, "_get_client", lambda: client)
+    return client
 
 
 def _poll(schedule):
@@ -194,3 +200,136 @@ def test_github_poll_respects_cursor_high_water_mark(monkeypatch):
         {"id": "s1", "github_repo": "owner/name", "github_cursor": "2026-07-07T09:00:00Z"}
     )
     assert [i.event["pr_number"] for i in items] == [2]
+
+
+# ---------------------------------------------------------------------------
+# github_filter={"event": "pr_merged"} -- merged-PR mode
+# ---------------------------------------------------------------------------
+
+
+def test_github_poll_merged_mode_polls_closed_state(monkeypatch):
+    """github_filter={'event': 'pr_merged'} polls state=closed, overriding
+    any explicit (nonsensical) open/other state in the filter."""
+    client = _install(monkeypatch, [])
+    _poll(
+        {
+            "id": "s1",
+            "github_repo": "owner/name",
+            "github_filter": {"event": "pr_merged", "state": "open"},
+        }
+    )
+    assert client.requests[-1]["params"]["state"] == "closed"
+
+
+def test_github_poll_merged_mode_fires_only_on_merged_prs(monkeypatch):
+    """A merged PR is dispatchable; a closed-but-unmerged PR in the same
+    response never fires."""
+    _install(
+        monkeypatch,
+        [
+            _pr(1, "2026-07-07T10:00:00Z", state="closed", merged_at="2026-07-07T10:00:00Z"),
+            _pr(2, "2026-07-07T11:00:00Z", state="closed", merged_at=None),
+        ],
+    )
+    items = _poll(
+        {"id": "s1", "github_repo": "owner/name", "github_filter": {"event": "pr_merged"}}
+    )
+    assert [i.event["pr_number"] for i in items] == [1]
+    assert items[0].dispatchable is True
+
+
+def test_github_poll_merged_mode_threads_pr_merged_at_into_event(monkeypatch):
+    """The merged event dict carries pr_merged_at for {{pr_merged_at}}
+    template rendering, alongside the PR's own updated_at."""
+    _install(
+        monkeypatch,
+        [
+            _pr(
+                9,
+                "2026-07-07T10:05:00Z",
+                state="closed",
+                merged_at="2026-07-07T10:00:00Z",
+            )
+        ],
+    )
+    items = _poll(
+        {"id": "s1", "github_repo": "owner/name", "github_filter": {"event": "pr_merged"}}
+    )
+    assert len(items) == 1
+    ev = items[0].event
+    assert ev["pr_merged_at"] == "2026-07-07T10:00:00Z"
+    assert ev["updated_at"] == "2026-07-07T10:05:00Z"
+
+
+def test_github_poll_merged_mode_cursor_uses_merged_at(monkeypatch):
+    """The cursor high-water-mark field (GithubPollItem.updated_at) holds
+    merged_at, not the PR's raw updated_at, in merged mode -- a PR merged
+    before the stored cursor is excluded even if its updated_at is newer."""
+    _install(
+        monkeypatch,
+        [
+            _pr(
+                1,
+                "2026-07-07T12:00:00Z",  # updated_at is AFTER the cursor...
+                state="closed",
+                merged_at="2026-07-07T09:00:00Z",  # ...but merged_at is BEFORE it.
+            ),
+            _pr(
+                2,
+                "2026-07-07T11:00:00Z",
+                state="closed",
+                merged_at="2026-07-07T10:30:00Z",  # merged_at is AFTER the cursor.
+            ),
+        ],
+    )
+    items = _poll(
+        {
+            "id": "s1",
+            "github_repo": "owner/name",
+            "github_filter": {"event": "pr_merged"},
+            "github_cursor": "2026-07-07T10:00:00Z",
+        }
+    )
+    assert [i.event["pr_number"] for i in items] == [2]
+    assert items[0].updated_at == "2026-07-07T10:30:00Z"
+
+
+def test_github_poll_merged_mode_cursor_stays_monotone_when_api_order_diverges(monkeypatch):
+    """Items come back sorted by the cursor field (merged_at in this mode),
+    not by raw API order, even when the two orderings diverge."""
+    _install(
+        monkeypatch,
+        [
+            # API order (updated_at desc): PR 3 first, then PR 1, then PR 2 --
+            # but merged_at order is 1, 2, 3, a different sequence entirely.
+            _pr(3, "2026-07-07T13:00:00Z", state="closed", merged_at="2026-07-07T13:00:00Z"),
+            _pr(1, "2026-07-07T12:00:00Z", state="closed", merged_at="2026-07-07T09:00:00Z"),
+            _pr(2, "2026-07-07T11:00:00Z", state="closed", merged_at="2026-07-07T10:00:00Z"),
+        ],
+    )
+    items = _poll(
+        {"id": "s1", "github_repo": "owner/name", "github_filter": {"event": "pr_merged"}}
+    )
+    assert [i.event["pr_number"] for i in items] == [1, 2, 3]
+    assert [i.updated_at for i in items] == [
+        "2026-07-07T09:00:00Z",
+        "2026-07-07T10:00:00Z",
+        "2026-07-07T13:00:00Z",
+    ]
+
+
+def test_github_poll_open_pr_mode_untouched_by_merged_mode_changes(monkeypatch):
+    """The default (no event filter) open-PR mode is unaffected: it still
+    polls state=open and uses updated_at as the cursor field."""
+    client = _install(
+        monkeypatch,
+        [
+            _pr(2, "2026-07-07T11:00:00Z"),
+            _pr(1, "2026-07-07T10:00:00Z"),
+        ],
+    )
+    items = _poll({"id": "s1", "github_repo": "owner/name"})
+    assert client.requests[-1]["params"]["state"] == "open"
+    assert [i.event["pr_number"] for i in items] == [1, 2]
+    assert [i.updated_at for i in items] == ["2026-07-07T10:00:00Z", "2026-07-07T11:00:00Z"]
+    assert "pr_merged_at" not in items[0].event

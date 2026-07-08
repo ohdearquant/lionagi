@@ -188,6 +188,49 @@ def _svc_validate_github_repo(repo: str | None) -> None:
     _validate_github_repo(repo)
 
 
+# github_filter's known keys. "event" narrows *which* PR lifecycle moment
+# fires the trigger; the other three narrow *which PRs* are considered at
+# all. Only "pr_merged" has real dispatch semantics in github_poll() today
+# (state=closed poll, fires on newly-merged PRs only) -- "pr_opened",
+# "pr_updated", and "pr_closed" are accepted because the Studio frontend's
+# create-schedule form already ships all four as event choices (and defaults
+# new schedules to "pr_updated"; see apps/studio/frontend/src/components/
+# schedules/CreateScheduleModal.tsx), but are currently inert server-side:
+# github_poll() only branches on "pr_merged" and otherwise polls open PRs
+# unfiltered by event, the same as omitting the key entirely.
+_GITHUB_FILTER_ALLOWED_KEYS: frozenset[str] = frozenset({"state", "base", "draft", "event"})
+_GITHUB_FILTER_ALLOWED_EVENTS: frozenset[str] = frozenset(
+    {"pr_merged", "pr_opened", "pr_updated", "pr_closed"}
+)
+
+
+def _svc_validate_github_filter(github_filter: Any) -> None:
+    """Service-boundary check: reject unknown github_filter keys/values.
+
+    None means the field was not supplied (no-op). An empty dict matches
+    every PR, same as omitting the field, and is accepted. Unknown keys are
+    rejected outright rather than silently ignored -- a typo'd or
+    speculative filter key would otherwise match everything and fire on
+    every poll instead of failing loudly at create/update time.
+    """
+    if github_filter is None:
+        return
+    if not isinstance(github_filter, dict):
+        raise ValueError(f"github_filter must be an object, got {type(github_filter).__name__!r}")
+    unknown = set(github_filter) - _GITHUB_FILTER_ALLOWED_KEYS
+    if unknown:
+        raise ValueError(
+            f"github_filter has unknown key(s) {sorted(unknown)}; allowed keys are "
+            f"{sorted(_GITHUB_FILTER_ALLOWED_KEYS)}"
+        )
+    event = github_filter.get("event")
+    if event is not None and event not in _GITHUB_FILTER_ALLOWED_EVENTS:
+        raise ValueError(
+            f"github_filter.event {event!r} is not a supported value; allowed values "
+            f"are {sorted(_GITHUB_FILTER_ALLOWED_EVENTS)} (or omit the key)"
+        )
+
+
 def _svc_validate_prompt(prompt: str | None) -> None:
     """Service-boundary check: reject action_prompt == '--'.
 
@@ -392,6 +435,7 @@ async def create_schedule(data: dict[str, Any]) -> dict[str, Any]:
     _svc_validate_identifier(data.get("action_playbook"), "action_playbook")
     _svc_validate_extra_args(data.get("action_extra_args"))
     _svc_validate_github_repo(data.get("github_repo"))
+    _svc_validate_github_filter(data.get("github_filter"))
     _svc_validate_max_runs(data.get("max_runs"))
     _svc_validate_budget_usd(data.get("budget_usd"))
     _svc_validate_budget_tokens(data.get("budget_tokens"))
@@ -458,6 +502,8 @@ async def update_schedule(schedule_id: str, fields: dict[str, Any]) -> bool:
             _svc_validate_extra_args(fields["action_extra_args"])
         if "github_repo" in fields:
             _svc_validate_github_repo(fields["github_repo"])
+        if "github_filter" in fields:
+            _svc_validate_github_filter(fields["github_filter"])
         if "max_runs" in fields:
             _svc_validate_max_runs(fields["max_runs"])
         if "budget_usd" in fields:
