@@ -19,11 +19,16 @@ from lionagi.cli.orchestrate._notify import fire_terminal_notify
 
 
 def _capture_command(out_file: Path) -> str:
-    """A shell template that writes the substituted {payload} to *out_file*."""
+    """A shell template that writes the substituted {payload} to *out_file*.
+
+    {payload} renders to a double-quoted env-var reference (never raw text
+    on the command line), so it is passed here unquoted — the substitution
+    itself supplies the quoting.
+    """
     return (
         f"{shlex.quote(sys.executable)} -c "
         '"import pathlib, sys; pathlib.Path(sys.argv[1]).write_text(sys.argv[2])" '
-        f"{shlex.quote(str(out_file))} '{{payload}}'"
+        f"{shlex.quote(str(out_file))} {{payload}}"
     )
 
 
@@ -69,8 +74,9 @@ async def test_status_and_invocation_id_substitution(tmp_path: Path):
     out_file = tmp_path / "captured.txt"
     template = (
         f"{shlex.quote(sys.executable)} -c "
-        '"import pathlib, sys; pathlib.Path(sys.argv[1]).write_text(sys.argv[2])" '
-        f"{shlex.quote(str(out_file))} '{{status}}:{{invocation_id}}'"
+        '"import pathlib, sys; '
+        "pathlib.Path(sys.argv[1]).write_text(sys.argv[2] + ':' + sys.argv[3])\" "
+        f"{shlex.quote(str(out_file))} {{status}} {{invocation_id}}"
     )
     _write_project_settings(tmp_path, template)
 
@@ -179,3 +185,80 @@ async def test_timeout_is_swallowed_and_logged(tmp_path: Path, monkeypatch: pyte
 
     warn_mock.assert_called_once()
     assert "timed out" in warn_mock.call_args.args[0]
+
+
+async def test_single_quote_in_payload_field_cannot_break_out_of_shell_template(tmp_path: Path):
+    """A payload field containing a single quote plus trailing shell syntax
+    must not execute — {payload} is transported via an env var, never
+    textually substituted into the command line."""
+    canary = tmp_path / "pwned"
+    out_file = tmp_path / "captured.json"
+    malicious_cwd = f"' ; touch {shlex.quote(str(canary))} ; echo '"
+    _write_project_settings(tmp_path, _capture_command(out_file))
+
+    await fire_terminal_notify(
+        invocation_id="inv-1",
+        kind="flow",
+        playbook=None,
+        status="completed",
+        save_dir=None,
+        cwd=malicious_cwd,
+        exit_class="success",
+        started_at=0.0,
+        ended_at=1.0,
+        override_command=None,
+        project_dir=str(tmp_path),
+    )
+
+    assert not canary.exists()
+    payload = json.loads(out_file.read_text())
+    assert payload["cwd"] == malicious_cwd
+
+
+async def test_fires_with_null_invocation_id(tmp_path: Path):
+    """An invocation-less run must still fire the hook the caller asked
+    for — the payload just carries a null invocation_id."""
+    out_file = tmp_path / "captured.json"
+
+    await fire_terminal_notify(
+        invocation_id=None,
+        kind="flow",
+        playbook=None,
+        status="completed",
+        save_dir=None,
+        cwd="/repo",
+        exit_class="success",
+        started_at=0.0,
+        ended_at=1.0,
+        override_command=_capture_command(out_file),
+        project_dir=None,
+    )
+
+    payload = json.loads(out_file.read_text())
+    assert payload["invocation_id"] is None
+
+
+async def test_malformed_settings_yaml_is_swallowed_and_logged(tmp_path: Path):
+    """A broken .lionagi/settings.yaml must not raise out of
+    fire_terminal_notify after the run has already completed."""
+    lionagi_dir = tmp_path / ".lionagi"
+    lionagi_dir.mkdir(parents=True)
+    (lionagi_dir / "settings.yaml").write_text("notify: {on_terminal: [unterminated")
+
+    with patch.object(_notify, "warn") as warn_mock:
+        await fire_terminal_notify(
+            invocation_id="inv-1",
+            kind="flow",
+            playbook=None,
+            status="completed",
+            save_dir=None,
+            cwd="/repo",
+            exit_class="success",
+            started_at=0.0,
+            ended_at=1.0,
+            override_command=None,
+            project_dir=str(tmp_path),
+        )
+
+    warn_mock.assert_called_once()
+    assert "settings" in warn_mock.call_args.args[0]

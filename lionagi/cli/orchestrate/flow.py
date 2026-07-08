@@ -1443,14 +1443,18 @@ async def _run_flow(
             effective_status = await stop_live_persist(env, status=_terminal_status)
             if effective_status != _terminal_status:
                 _terminal_status = effective_status
-            if invocation_id:
-                import time as _time
+            import time as _time
 
-                from lionagi.cli.status import _classify
+            from lionagi.cli.status import _classify
+
+            # ended_at/notify_status are meaningful regardless of whether an
+            # invocation_id is tracked — an invocation-less --notify run must
+            # still fire (the caller asked for it), just with a null id.
+            _ended_at = _time.time()
+            _notify_status = _terminal_status
+            if invocation_id:
                 from lionagi.state.db import StateDB
 
-                _ended_at = _time.time()
-                _notify_status = _terminal_status
                 try:
                     (
                         inv_status,
@@ -1482,23 +1486,23 @@ async def _run_flow(
                         "Failed to finalize invocation %s", invocation_id
                     )
 
-                # Fire the terminal-notify hook exactly once, after the
-                # invocation's terminal status is as final as it gets here —
-                # never lets a hook failure affect the run's own status.
-                _, _notify_exit_class, _ = _classify("invocation", _notify_status)
-                await fire_terminal_notify(
-                    invocation_id=invocation_id,
-                    kind=_invocation_kind,
-                    playbook=playbook_name,
-                    status=_notify_status,
-                    save_dir=save_dir,
-                    cwd=cwd or os.getcwd(),
-                    exit_class=_notify_exit_class,
-                    started_at=_started_at,
-                    ended_at=_ended_at,
-                    override_command=notify,
-                    project_dir=cwd,
-                )
+            # Fire the terminal-notify hook exactly once, after the
+            # invocation's terminal status is as final as it gets here —
+            # never lets a hook failure affect the run's own status.
+            _, _notify_exit_class, _ = _classify("invocation", _notify_status)
+            await fire_terminal_notify(
+                invocation_id=invocation_id,
+                kind=_invocation_kind,
+                playbook=playbook_name,
+                status=_notify_status,
+                save_dir=save_dir,
+                cwd=cwd or os.getcwd(),
+                exit_class=_notify_exit_class,
+                started_at=_started_at,
+                ended_at=_ended_at,
+                override_command=notify,
+                project_dir=cwd,
+            )
             for _br in env.session.branches:
                 await _br.mdls.shutdown()
 

@@ -54,10 +54,12 @@ def _make_env(tmp_path: Path) -> OrchestrationEnv:
 
 
 def _capture_command(out_file: Path) -> str:
+    # {payload} renders to a double-quoted env-var reference, so it is
+    # passed here unquoted — the substitution itself supplies the quoting.
     return (
         f"{shlex.quote(sys.executable)} -c "
         '"import pathlib, sys; pathlib.Path(sys.argv[1]).write_text(sys.argv[2])" '
-        f"{shlex.quote(str(out_file))} '{{payload}}'"
+        f"{shlex.quote(str(out_file))} {{payload}}"
     )
 
 
@@ -287,3 +289,38 @@ async def test_run_flow_no_hook_configured_is_a_noop(
     assert result == "ok result"
     assert terminal_status == "completed"
     spawn.assert_not_called()
+
+
+async def test_run_flow_fires_hook_without_invocation_id(
+    temp_db_path: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    """A `--notify` run with no --invocation must still fire the hook the
+    caller asked for — the payload just carries a null invocation_id, and
+    no invocation-status DB write is attempted."""
+    monkeypatch.setenv("HOME", str(tmp_path / "isolated_home"))
+    env = _make_env(tmp_path)
+    out_file = tmp_path / "captured.json"
+
+    with (
+        patch(
+            "lionagi.cli.orchestrate.flow.setup_orchestration",
+            AsyncMock(return_value=env),
+        ),
+        patch(
+            "lionagi.cli.orchestrate.flow._run_flow_inner",
+            AsyncMock(return_value="ok result"),
+        ),
+    ):
+        result, terminal_status = await _run_flow(
+            "claude",
+            "do the thing",
+            invocation_id=None,
+            notify=_capture_command(out_file),
+        )
+
+    assert result == "ok result"
+    assert terminal_status == "completed"
+    payload = json.loads(out_file.read_text())
+    assert payload["invocation_id"] is None
+    assert payload["status"] == "completed"
+    assert payload["kind"] == "flow"

@@ -6,9 +6,16 @@ invocation reaches its terminal status.
 Resolved from `.lionagi/settings.yaml` (`notify.on_terminal`, project
 overrides global) or an explicit `--notify` override. lionagi ships no
 messaging integration here — the hook is just a shell command template with
-three substitution variables (`{payload}`, `{status}`, `{invocation_id}`),
-run with a short timeout. Failures are logged and never propagate: they must
-never affect the run's own terminal status or exit code.
+three substitution variables (`{payload}`, `{status}`, `{invocation_id}`).
+
+The substituted values never touch the shell command line as text: each
+placeholder is replaced with a reference to an environment variable set on
+the subprocess (e.g. `{payload}` → `"$LIONAGI_NOTIFY_PAYLOAD"`), so a quote
+or shell metacharacter inside a payload field (a playbook name, a path) can
+never break out of the template. The hook runs with a short timeout, and
+every failure mode — a malformed template, a missing/unreadable settings
+file, a nonzero exit, a timeout — is logged and swallowed: none of them may
+affect the run's own terminal status or exit code.
 """
 
 from __future__ import annotations
@@ -16,6 +23,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import os
 
 from lionagi.agent.settings import load_settings
 from lionagi.ln._proc import aterminate_process_group
@@ -28,12 +36,20 @@ logger = logging.getLogger(__name__)
 
 _HOOK_TIMEOUT = 10.0
 
+_PAYLOAD_ENV = "LIONAGI_NOTIFY_PAYLOAD"
+_STATUS_ENV = "LIONAGI_NOTIFY_STATUS"
+_INVOCATION_ID_ENV = "LIONAGI_NOTIFY_INVOCATION_ID"
 
-def _render_template(template: str, *, status: str, invocation_id: str, payload_json: str) -> str:
-    # {payload} is substituted last so its JSON body is never re-scanned by
-    # the earlier, narrower substitutions.
-    rendered = template.replace("{status}", status).replace("{invocation_id}", invocation_id)
-    return rendered.replace("{payload}", payload_json)
+
+def _render_template(template: str) -> str:
+    # Each placeholder becomes a double-quoted env-var reference, never the
+    # raw value — the shell expands it from the subprocess environment, so
+    # nothing in payload/status/invocation_id is ever parsed as shell syntax.
+    return (
+        template.replace("{payload}", f'"${_PAYLOAD_ENV}"')
+        .replace("{status}", f'"${_STATUS_ENV}"')
+        .replace("{invocation_id}", f'"${_INVOCATION_ID_ENV}"')
+    )
 
 
 async def _await_proc_dead(proc: asyncio.subprocess.Process, grace: float = 2.0) -> None:
@@ -47,7 +63,7 @@ async def _await_proc_dead(proc: asyncio.subprocess.Process, grace: float = 2.0)
 
 async def fire_terminal_notify(
     *,
-    invocation_id: str,
+    invocation_id: str | None,
     kind: str,
     playbook: str | None,
     status: str,
@@ -63,10 +79,17 @@ async def fire_terminal_notify(
 
     `override_command` (the CLI `--notify` flag) wins over the settings
     value. No template configured on either side is a silent no-op.
+    `invocation_id` is nullable — an invocation-less run (no `--invocation`)
+    still fires the hook the caller asked for; the payload just carries
+    `"invocation_id": null`.
     """
     command = override_command
     if not command:
-        settings = load_settings(project_dir=project_dir)
+        try:
+            settings = load_settings(project_dir=project_dir)
+        except Exception as exc:  # noqa: BLE001 — malformed settings must never affect the run
+            warn(f"notify.on_terminal settings resolution failed: {exc}")
+            return
         notify_cfg = settings.get("notify") if isinstance(settings, dict) else None
         command = notify_cfg.get("on_terminal") if isinstance(notify_cfg, dict) else None
     if not command:
@@ -83,12 +106,13 @@ async def fire_terminal_notify(
         "started_at": started_at,
         "ended_at": ended_at,
     }
-    rendered = _render_template(
-        command,
-        status=status,
-        invocation_id=invocation_id,
-        payload_json=json.dumps(payload),
-    )
+    rendered = _render_template(command)
+    hook_env = {
+        **os.environ,
+        _PAYLOAD_ENV: json.dumps(payload),
+        _STATUS_ENV: status,
+        _INVOCATION_ID_ENV: invocation_id or "",
+    }
 
     proc = None
     try:
@@ -96,6 +120,7 @@ async def fire_terminal_notify(
             rendered,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
+            env=hook_env,
             start_new_session=True,
         )
         _, stderr_bytes = await asyncio.wait_for(proc.communicate(), timeout=_HOOK_TIMEOUT)
