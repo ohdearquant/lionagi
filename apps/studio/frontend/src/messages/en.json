@@ -3,7 +3,6 @@
     "rail": {
       "ariaLabel": "Primary navigation",
       "home": "Mission Control",
-      "designer": "Designer",
       "library": "Library",
       "schedules": "Schedules",
       "system": "System",
@@ -200,10 +199,8 @@
     "clearStatusFilter": "Clear status filter",
     "empty": {
       "all": "No history yet.",
-      "allHint": "Launch something from Designer to see it here.",
       "filtered": "No items match your filter.",
-      "filteredHint": "Try a different kind or clear the search.",
-      "cta": "Open Designer →"
+      "filteredHint": "Try a different kind or clear the search."
     },
     "status": {
       "running": "running",
@@ -583,7 +580,6 @@
     },
     "empty": {
       "message": "No agents running — Fleet shows live orchestrations as they happen.",
-      "cta": "Open Designer →",
       "hint": "⌘K → fleet or monitor",
       "recent": "Recent sessions",
       "ago": "{delta} ago"
@@ -704,27 +700,6 @@
     }
   },
   "designer": {
-    "rack": {
-      "title": "Engines",
-      "blueprints": "Templates",
-      "blueprintsHint": "Built-in, read-only",
-      "saved": "Saved definitions",
-      "savedHint": "Your reusable engines",
-      "stages": "stages",
-      "loading": "Loading…",
-      "emptySaved": "Nothing saved yet. Configure a blueprint and hit Save.",
-      "collapse": "Collapse rack",
-      "expand": "Expand rack",
-      "delete": "delete {name}",
-      "deleteConfirm": "delete?"
-    },
-    "header": {
-      "saved": "saved",
-      "providerDefault": "provider default",
-      "template": "template",
-      "draft": "Unsaved draft",
-      "draftHint": "Templates are read-only. Saving creates a new definition."
-    },
     "flow": {
       "quiescence": "after all settle",
       "zoomIn": "Zoom in",
@@ -733,81 +708,6 @@
       "signals": "Signals",
       "filter": "Filter signals…",
       "showAll": "Show all"
-    },
-    "panel": {
-      "close": "Close",
-      "role": "role",
-      "modelStage": "model route",
-      "mode": "mode",
-      "spawns": "spawns",
-      "partOf": "part of",
-      "exempt": "runs past budget exhaustion",
-      "execution": "Runtime plan",
-      "executionNote": "Read-only · fixed by the engine",
-      "signals": "Signals",
-      "emits": "Emits",
-      "observes": "Observes",
-      "viaGroup": "via {group}",
-      "config": "Editable overrides",
-      "configNote": "Changes here affect the next launch. Everything else is engine-defined.",
-      "engineDefined": "Engine-defined",
-      "thisOperator": "This stage only",
-      "engineWide": "Whole engine",
-      "roleDefault": "engine default · {role}",
-      "bundle": "Role bundle",
-      "bundleNote": "Skills, modes, and structured output ride on the casts role — pick a different role above to swap the whole bundle.",
-      "structuredOutput": "Structured output",
-      "context": "Context",
-      "receives": "Receives",
-      "produces": "Produces",
-      "ctxFrom": "from {name}",
-      "toStore": "→ emission store",
-      "entryNote": "Entry point — receives the task prompt from the launch dock."
-    },
-    "toolbar": {
-      "addOperator": "Add Operator",
-      "addSignal": "Add Signal",
-      "signalName": "Signal name",
-      "signalPlaceholder": "e.g. FindingEmitted",
-      "color": "Color",
-      "colorAria": "color {color}",
-      "emittingOperator": "Emitting operator",
-      "none": "None",
-      "add": "Add",
-      "removeConfirm": "Remove?",
-      "yes": "Yes",
-      "no": "No",
-      "delete": "Delete",
-      "deleteSelectedTitle": "Delete selected operator",
-      "deleteDisabledTitle": "Select an operator to delete it",
-      "fitView": "Fit view",
-      "zoomIn": "Zoom in",
-      "zoomOut": "Zoom out"
-    },
-    "dock": {
-      "namePlaceholder": "engine name",
-      "promptPlaceholder": "What should this engine do? Describe the task and press Launch…",
-      "save": "Save as definition",
-      "saveChanges": "Save changes",
-      "saving": "Saving…",
-      "launch": "Launch",
-      "launching": "Launching…",
-      "launched": "Launched invocation",
-      "saved": "Definition saved",
-      "nameRequired": "Name the engine before saving",
-      "promptRequired": "Describe the task before launching",
-      "testCmdRequired": "The coding engine needs a test command — set it on the test stage",
-      "invalidBounds": "max_agents and max_depth must be between 1 and 100",
-      "advanced": "Advanced"
-    },
-    "advanced": {
-      "title": "Advanced",
-      "description": "Description",
-      "descriptionPlaceholder": "What does this engine do?",
-      "exportDir": "Export dir",
-      "engineDefaults": "Engine internals (read-only)",
-      "sourceRef": "transcribed from",
-      "requestPreview": "Request preview"
     },
     "edge": {
       "kindReaction": "reaction",
@@ -934,9 +834,7 @@
     "importError": "Could not read file",
     "rackTitle": "Workflows",
     "rackNew": "New",
-    "rackEmpty": "No workflows yet.",
-    "designerEmpty": "Pick a workflow from the rack, or create one to start designing.",
-    "designerEmptyCta": "Create a workflow"
+    "rackEmpty": "No workflows yet."
   },
   "daemon": {
     "title": "Studio couldn't reach the local daemon at {base}",

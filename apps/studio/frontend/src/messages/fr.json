@@ -3,7 +3,6 @@
     "rail": {
       "ariaLabel": "Navigation principale",
       "home": "Centre de contrôle",
-      "designer": "Concepteur",
       "library": "Bibliothèque",
       "schedules": "Planifications",
       "system": "Système",
@@ -200,10 +199,8 @@
     "clearStatusFilter": "Effacer le filtre de statut",
     "empty": {
       "all": "Aucun historique pour le moment.",
-      "allHint": "Lancez quelque chose depuis le Concepteur pour le voir ici.",
       "filtered": "Aucun élément ne correspond au filtre.",
-      "filteredHint": "Essayez un autre type ou effacez la recherche.",
-      "cta": "Ouvrir le Concepteur →"
+      "filteredHint": "Essayez un autre type ou effacez la recherche."
     },
     "status": {
       "running": "en cours",
@@ -583,7 +580,6 @@
     },
     "empty": {
       "message": "Aucun agent en cours — la Flotte affiche les orchestrations en direct au fur et à mesure.",
-      "cta": "Ouvrir le Concepteur →",
       "hint": "⌘K → fleet ou monitor",
       "recent": "Sessions récentes",
       "ago": "il y a {delta}"
@@ -704,27 +700,6 @@
     }
   },
   "designer": {
-    "rack": {
-      "title": "Moteurs",
-      "blueprints": "Modèles",
-      "blueprintsHint": "Intégré, lecture seule",
-      "saved": "Définitions enregistrées",
-      "savedHint": "Vos moteurs réutilisables",
-      "stages": "étapes",
-      "loading": "Chargement…",
-      "emptySaved": "Rien n’est encore enregistré. Configurez un modèle et cliquez sur Enregistrer.",
-      "collapse": "Réduire le rack",
-      "expand": "Développer le rack",
-      "delete": "supprimer {name}",
-      "deleteConfirm": "supprimer ?"
-    },
-    "header": {
-      "saved": "enregistré",
-      "providerDefault": "valeur par défaut du fournisseur",
-      "template": "modèle",
-      "draft": "Brouillon non enregistré",
-      "draftHint": "Les modèles sont en lecture seule. L’enregistrement crée une nouvelle définition."
-    },
     "flow": {
       "quiescence": "après stabilisation complète",
       "zoomIn": "Zoom avant",
@@ -733,81 +708,6 @@
       "signals": "Signaux",
       "filter": "Filtrer les signaux…",
       "showAll": "Tout afficher"
-    },
-    "panel": {
-      "close": "Fermer",
-      "role": "rôle",
-      "modelStage": "chemin du modèle",
-      "mode": "mode",
-      "spawns": "génère",
-      "partOf": "fait partie de",
-      "exempt": "s’exécute même après épuisement du budget",
-      "execution": "Plan d’exécution",
-      "executionNote": "Lecture seule · fixé par le moteur",
-      "signals": "Signaux",
-      "emits": "Émet",
-      "observes": "Observe",
-      "viaGroup": "via {group}",
-      "config": "Remplacements modifiables",
-      "configNote": "Les changements ici affectent le prochain lancement. Tout le reste est défini par le moteur.",
-      "engineDefined": "Défini par le moteur",
-      "thisOperator": "Cette étape uniquement",
-      "engineWide": "Moteur entier",
-      "roleDefault": "valeur par défaut du moteur · {role}",
-      "bundle": "Bundle de rôle",
-      "bundleNote": "Compétences, modes et sortie structurée dépendent du rôle casts",
-      "structuredOutput": "Sortie structurée",
-      "context": "Contexte",
-      "receives": "Reçoit",
-      "produces": "Produit",
-      "ctxFrom": "depuis {name}",
-      "toStore": "→ dépôt de signaux émis",
-      "entryNote": "Point d’entrée — reçoit le prompt de tâche depuis le dock de lancement."
-    },
-    "toolbar": {
-      "addOperator": "Ajouter un opérateur",
-      "addSignal": "Ajouter un signal",
-      "signalName": "Nom du signal",
-      "signalPlaceholder": "e.g. FindingEmitted",
-      "color": "Couleur",
-      "colorAria": "couleur {color}",
-      "emittingOperator": "Opérateur émetteur",
-      "none": "Aucun",
-      "add": "Ajouter",
-      "removeConfirm": "Supprimer ?",
-      "yes": "Oui",
-      "no": "Non",
-      "delete": "Supprimer",
-      "deleteSelectedTitle": "Supprimer l’opérateur sélectionné",
-      "deleteDisabledTitle": "Sélectionnez un opérateur pour le supprimer",
-      "fitView": "Ajuster la vue",
-      "zoomIn": "Zoom avant",
-      "zoomOut": "Zoom arrière"
-    },
-    "dock": {
-      "namePlaceholder": "nom du moteur",
-      "promptPlaceholder": "Que doit faire ce moteur ? Décrivez la tâche et appuyez sur Lancer…",
-      "save": "Enregistrer comme définition",
-      "saveChanges": "Enregistrer les modifications",
-      "saving": "Enregistrement…",
-      "launch": "Lancer",
-      "launching": "Lancement…",
-      "launched": "Invocation lancée",
-      "saved": "Définition enregistrée",
-      "nameRequired": "Nommez le moteur avant d’enregistrer",
-      "promptRequired": "Décrivez la tâche avant de lancer",
-      "testCmdRequired": "Le moteur de code nécessite une commande de test — définissez-la sur l’étape de test",
-      "invalidBounds": "max_agents et max_depth doivent être compris entre 1 et 100",
-      "advanced": "Avancé"
-    },
-    "advanced": {
-      "title": "Avancé",
-      "description": "Description",
-      "descriptionPlaceholder": "Que fait ce moteur ?",
-      "exportDir": "Répertoire d’export",
-      "engineDefaults": "Internes du moteur (lecture seule)",
-      "sourceRef": "transcrit depuis",
-      "requestPreview": "Aperçu de la requête"
     },
     "edge": {
       "kindReaction": "réaction",
@@ -934,9 +834,7 @@
     "importError": "Impossible de lire le fichier",
     "rackTitle": "Workflows",
     "rackNew": "Nouveau",
-    "rackEmpty": "Aucun workflow pour le moment.",
-    "designerEmpty": "Choisissez un workflow dans le rack ou créez-en un pour commencer la conception.",
-    "designerEmptyCta": "Créer un workflow"
+    "rackEmpty": "Aucun workflow pour le moment."
   },
   "daemon": {
     "title": "Studio n’a pas pu joindre le démon local à {base}",

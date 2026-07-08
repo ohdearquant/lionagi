@@ -3,7 +3,6 @@
     "rail": {
       "ariaLabel": "मुख्य नेविगेशन",
       "home": "मिशन कंट्रोल",
-      "designer": "डिज़ाइनर",
       "library": "लाइब्रेरी",
       "schedules": "शेड्यूल",
       "system": "सिस्टम",
@@ -200,10 +199,8 @@
     "clearStatusFilter": "स्थिति फ़िल्टर साफ़ करें",
     "empty": {
       "all": "अभी कोई इतिहास नहीं।",
-      "allHint": "यहाँ देखने के लिए डिज़ाइनर से कुछ लॉन्च करें।",
       "filtered": "कोई आइटम आपके फ़िल्टर से मेल नहीं खाता।",
-      "filteredHint": "कोई और प्रकार आज़माएँ या खोज साफ़ करें।",
-      "cta": "डिज़ाइनर खोलें →"
+      "filteredHint": "कोई और प्रकार आज़माएँ या खोज साफ़ करें।"
     },
     "status": {
       "running": "चल रहा है",
@@ -583,7 +580,6 @@
     },
     "empty": {
       "message": "कोई एजेंट नहीं चल रहा — फ़्लीट लाइव ऑर्केस्ट्रेशन होते ही दिखाता है।",
-      "cta": "डिज़ाइनर खोलें →",
       "hint": "⌘K → fleet या monitor",
       "recent": "हाल के सेशन",
       "ago": "{delta} पहले"
@@ -704,27 +700,6 @@
     }
   },
   "designer": {
-    "rack": {
-      "title": "इंजन",
-      "blueprints": "टेम्पलेट",
-      "blueprintsHint": "बिल्ट-इन, रीड-ओनली",
-      "saved": "सेव की गई डेफ़िनिशन",
-      "savedHint": "आपके पुन: उपयोग योग्य इंजन",
-      "stages": "स्टेज",
-      "loading": "लोड हो रहा है…",
-      "emptySaved": "अभी कुछ सेव नहीं। ब्लूप्रिंट कॉन्फ़िगर करें और सेव दबाएँ।",
-      "collapse": "रैक समेटें",
-      "expand": "रैक का विस्तार करें",
-      "delete": "{name} हटाएँ",
-      "deleteConfirm": "हटाएँ?"
-    },
-    "header": {
-      "saved": "सेव हुआ",
-      "providerDefault": "प्रोवाइडर डिफ़ॉल्ट",
-      "template": "टेम्पलेट",
-      "draft": "अनसेव्ड ड्राफ़्ट",
-      "draftHint": "टेम्पलेट रीड-ओनली हैं। सेव करने से नई डेफ़िनिशन बनेगी।"
-    },
     "flow": {
       "quiescence": "सब स्थिर होने के बाद",
       "zoomIn": "ज़ूम इन",
@@ -733,81 +708,6 @@
       "signals": "सिग्नल",
       "filter": "सिग्नल फ़िल्टर करें…",
       "showAll": "सभी दिखाएँ"
-    },
-    "panel": {
-      "close": "बंद करें",
-      "role": "रोल",
-      "modelStage": "मॉडल रूट",
-      "mode": "मोड",
-      "spawns": "स्पॉन करता है",
-      "partOf": "का हिस्सा",
-      "exempt": "बजट खत्म होने के बाद भी चलता है",
-      "execution": "रनटाइम प्लान",
-      "executionNote": "रीड-ओनली · इंजन द्वारा तय",
-      "signals": "सिग्नल",
-      "emits": "एमिट करता है",
-      "observes": "ऑब्ज़र्व करता है",
-      "viaGroup": "{group} के ज़रिए",
-      "config": "संपादन योग्य ओवरराइड",
-      "configNote": "यहाँ के बदलाव अगले लॉन्च को प्रभावित करते हैं। बाकी सब इंजन-परिभाषित है।",
-      "engineDefined": "इंजन-परिभाषित",
-      "thisOperator": "केवल यह स्टेज",
-      "engineWide": "पूरा इंजन",
-      "roleDefault": "इंजन डिफ़ॉल्ट · {role}",
-      "bundle": "रोल बंडल",
-      "bundleNote": "स्किल, मोड और स्ट्रक्चर्ड आउटपुट casts रोल पर चलते हैं — पूरा बंडल बदलने के लिए ऊपर कोई दूसरा रोल चुनें।",
-      "structuredOutput": "स्ट्रक्चर्ड आउटपुट",
-      "context": "कॉन्टेक्स्ट",
-      "receives": "प्राप्त करता है",
-      "produces": "उत्पन्न करता है",
-      "ctxFrom": "{name} से",
-      "toStore": "→ एमिशन स्टोर",
-      "entryNote": "एंट्री पॉइंट — लॉन्च डॉक से टास्क प्रॉम्प्ट प्राप्त करता है।"
-    },
-    "toolbar": {
-      "addOperator": "ऑपरेटर जोड़ें",
-      "addSignal": "सिग्नल जोड़ें",
-      "signalName": "सिग्नल नाम",
-      "signalPlaceholder": "e.g. FindingEmitted",
-      "color": "रंग",
-      "colorAria": "रंग {color}",
-      "emittingOperator": "एमिटिंग ऑपरेटर",
-      "none": "कोई नहीं",
-      "add": "जोड़ें",
-      "removeConfirm": "हटाएँ?",
-      "yes": "हाँ",
-      "no": "नहीं",
-      "delete": "हटाएँ",
-      "deleteSelectedTitle": "चुने गए ऑपरेटर को हटाएँ",
-      "deleteDisabledTitle": "हटाने के लिए ऑपरेटर चुनें",
-      "fitView": "व्यू फ़िट करें",
-      "zoomIn": "ज़ूम इन",
-      "zoomOut": "ज़ूम आउट"
-    },
-    "dock": {
-      "namePlaceholder": "इंजन नाम",
-      "promptPlaceholder": "यह इंजन क्या करे? टास्क लिखें और लॉन्च दबाएँ…",
-      "save": "डेफ़िनिशन के रूप में सेव करें",
-      "saveChanges": "बदलाव सेव करें",
-      "saving": "सेव हो रहा है…",
-      "launch": "लॉन्च करें",
-      "launching": "लॉन्च हो रहा है…",
-      "launched": "इनवोकेशन लॉन्च हुआ",
-      "saved": "डेफ़िनिशन सेव हुई",
-      "nameRequired": "सेव करने से पहले इंजन को नाम दें",
-      "promptRequired": "लॉन्च करने से पहले टास्क लिखें",
-      "testCmdRequired": "कोडिंग इंजन को टेस्ट कमांड चाहिए — इसे टेस्ट स्टेज पर सेट करें",
-      "invalidBounds": "max_agents और max_depth 1 और 100 के बीच होने चाहिए",
-      "advanced": "उन्नत"
-    },
-    "advanced": {
-      "title": "उन्नत",
-      "description": "विवरण",
-      "descriptionPlaceholder": "यह इंजन क्या करता है?",
-      "exportDir": "एक्सपोर्ट dir",
-      "engineDefaults": "इंजन आंतरिक हिस्से (रीड-ओनली)",
-      "sourceRef": "से ट्रांसक्राइब किया गया",
-      "requestPreview": "रिक्वेस्ट प्रीव्यू"
     },
     "edge": {
       "kindReaction": "रिएक्शन",
@@ -934,9 +834,7 @@
     "importError": "फ़ाइल पढ़ी नहीं जा सकी",
     "rackTitle": "वर्कफ़्लो",
     "rackNew": "नया",
-    "rackEmpty": "अभी कोई वर्कफ़्लो नहीं।",
-    "designerEmpty": "रैक से वर्कफ़्लो चुनें या डिज़ाइन शुरू करने के लिए एक बनाएँ।",
-    "designerEmptyCta": "वर्कफ़्लो बनाएँ"
+    "rackEmpty": "अभी कोई वर्कफ़्लो नहीं।"
   },
   "daemon": {
     "title": "Studio {base} पर लोकल डेमन तक नहीं पहुँच सका",

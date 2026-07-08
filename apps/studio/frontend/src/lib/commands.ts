@@ -11,7 +11,7 @@ export interface Command {
 export type CommandRegistry = Command[];
 
 export function buildRegistry(
-  navigate: (href: string) => void,
+  _navigate: (href: string) => void,
   toggleTheme: () => void,
 ): CommandRegistry {
   return [
@@ -22,14 +22,6 @@ export function buildRegistry(
       labelZh: "任务中心",
       keywords: ["home", "dashboard", "overview"],
       href: "/",
-      section: "Navigate",
-    },
-    {
-      id: "nav:designer",
-      label: "Designer",
-      labelZh: "设计器",
-      keywords: ["canvas", "graph", "playbook", "workflow", "dag"],
-      href: "/designer",
       section: "Navigate",
     },
     {
@@ -106,14 +98,6 @@ export function buildRegistry(
       section: "Library",
     },
     /* ── Actions ── */
-    {
-      id: "action:new-playbook",
-      label: "New Playbook",
-      labelZh: "新建剧本",
-      keywords: ["new", "create", "playbook"],
-      action: () => navigate("/designer"),
-      section: "Actions",
-    },
     {
       id: "action:toggle-theme",
       label: "Toggle theme",

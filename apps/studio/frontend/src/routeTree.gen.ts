@@ -12,7 +12,6 @@ import { Route as rootRouteImport } from "./routes/__root";
 import { Route as SystemRouteImport } from "./routes/system";
 import { Route as LibraryRouteImport } from "./routes/library";
 import { Route as FleetRouteImport } from "./routes/fleet";
-import { Route as DesignerRouteImport } from "./routes/designer";
 import { Route as IndexRouteImport } from "./routes/index";
 import { Route as SkillsIndexRouteImport } from "./routes/skills/index";
 import { Route as SchedulesIndexRouteImport } from "./routes/schedules/index";
@@ -45,11 +44,6 @@ const LibraryRoute = LibraryRouteImport.update({
 const FleetRoute = FleetRouteImport.update({
   id: "/fleet",
   path: "/fleet",
-  getParentRoute: () => rootRouteImport,
-} as any);
-const DesignerRoute = DesignerRouteImport.update({
-  id: "/designer",
-  path: "/designer",
   getParentRoute: () => rootRouteImport,
 } as any);
 const IndexRoute = IndexRouteImport.update({
@@ -145,7 +139,6 @@ const PlaybooksNameEditIndexRoute = PlaybooksNameEditIndexRouteImport.update({
 
 export interface FileRoutesByFullPath {
   "/": typeof IndexRoute;
-  "/designer": typeof DesignerRoute;
   "/fleet": typeof FleetRoute;
   "/library": typeof LibraryRoute;
   "/system": typeof SystemRoute;
@@ -169,7 +162,6 @@ export interface FileRoutesByFullPath {
 }
 export interface FileRoutesByTo {
   "/": typeof IndexRoute;
-  "/designer": typeof DesignerRoute;
   "/fleet": typeof FleetRoute;
   "/library": typeof LibraryRoute;
   "/system": typeof SystemRoute;
@@ -194,7 +186,6 @@ export interface FileRoutesByTo {
 export interface FileRoutesById {
   __root__: typeof rootRouteImport;
   "/": typeof IndexRoute;
-  "/designer": typeof DesignerRoute;
   "/fleet": typeof FleetRoute;
   "/library": typeof LibraryRoute;
   "/system": typeof SystemRoute;
@@ -220,7 +211,6 @@ export interface FileRouteTypes {
   fileRoutesByFullPath: FileRoutesByFullPath;
   fullPaths:
     | "/"
-    | "/designer"
     | "/fleet"
     | "/library"
     | "/system"
@@ -244,7 +234,6 @@ export interface FileRouteTypes {
   fileRoutesByTo: FileRoutesByTo;
   to:
     | "/"
-    | "/designer"
     | "/fleet"
     | "/library"
     | "/system"
@@ -268,7 +257,6 @@ export interface FileRouteTypes {
   id:
     | "__root__"
     | "/"
-    | "/designer"
     | "/fleet"
     | "/library"
     | "/system"
@@ -293,7 +281,6 @@ export interface FileRouteTypes {
 }
 export interface RootRouteChildren {
   IndexRoute: typeof IndexRoute;
-  DesignerRoute: typeof DesignerRoute;
   FleetRoute: typeof FleetRoute;
   LibraryRoute: typeof LibraryRoute;
   SystemRoute: typeof SystemRoute;
@@ -337,13 +324,6 @@ declare module "@tanstack/react-router" {
       path: "/fleet";
       fullPath: "/fleet";
       preLoaderRoute: typeof FleetRouteImport;
-      parentRoute: typeof rootRouteImport;
-    };
-    "/designer": {
-      id: "/designer";
-      path: "/designer";
-      fullPath: "/designer";
-      preLoaderRoute: typeof DesignerRouteImport;
       parentRoute: typeof rootRouteImport;
     };
     "/": {
@@ -477,7 +457,6 @@ declare module "@tanstack/react-router" {
 
 const rootRouteChildren: RootRouteChildren = {
   IndexRoute: IndexRoute,
-  DesignerRoute: DesignerRoute,
   FleetRoute: FleetRoute,
   LibraryRoute: LibraryRoute,
   SystemRoute: SystemRoute,
