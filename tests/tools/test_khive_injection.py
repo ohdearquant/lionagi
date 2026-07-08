@@ -472,10 +472,10 @@ def test_module_import_does_not_pull_in_mcp_transport():
 
         import lionagi.tools.khive_injection as mod_
 
+        # reload under the active blocker: any transport import would raise
         importlib.reload(mod_)
-
-    assert "fastmcp" not in sys.modules
-    assert "mcp" not in sys.modules
+        assert "fastmcp" not in sys.modules
+        assert "mcp" not in sys.modules
 
 
 def test_core_lionagi_import_is_clean():
@@ -485,9 +485,9 @@ def test_core_lionagi_import_is_clean():
     with _blocked_transport():
         import lionagi
 
+        # reload under the active blocker: any transport import would raise
         importlib.reload(lionagi)
-
-    assert "fastmcp" not in sys.modules
+        assert "fastmcp" not in sys.modules
 
 
 def test_truncate_cap_semantics():
