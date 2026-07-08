@@ -22,7 +22,7 @@ from lionagi.protocols.messages import (
 )
 from lionagi.providers._provider_errors import classify_provider_error
 
-from ..chat._prepare import _prepare_run_kwargs
+from ..chat._prepare import _apply_context_providers, _prepare_run_kwargs
 from ..types import ChatParam, ParseParam, RunParam
 
 if TYPE_CHECKING:
@@ -105,7 +105,11 @@ async def run(
 
     import time as _time  # noqa: PLC0415
 
-    ins, kw = _prepare_run_kwargs(branch, instruction, param)
+    pre_ins = await _apply_context_providers(branch, instruction, param)
+    try:
+        ins, kw = _prepare_run_kwargs(branch, instruction, param, ins=pre_ins)
+    finally:
+        branch._context_injection_slot = None
     await branch.msgs.a_add_message(instruction=ins)
 
     from lionagi.session._lifecycle_ctx import suppress_lifecycle_var

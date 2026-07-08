@@ -21,11 +21,11 @@ if TYPE_CHECKING:
     from lionagi.session.branch import Branch
 
 
-def _prepare_run_kwargs(
+def _build_instruction(
     branch: "Branch",
     instruction: JsonValue | Instruction,
     param: ChatParam,
-) -> tuple[Instruction, dict]:
+) -> Instruction:
     to_exclude = {"imodel", "imodel_kw", "include_token_usage_to_model", "progression"}
     if isinstance(param, RunParam):
         to_exclude.add("stream_persist")
@@ -37,7 +37,18 @@ def _prepare_run_kwargs(
     params["recipient"] = param.recipient or branch.id
     params["instruction"] = instruction
 
-    ins = branch.msgs.create_instruction(**params)
+    return branch.msgs.create_instruction(**params)
+
+
+def _prepare_run_kwargs(
+    branch: "Branch",
+    instruction: JsonValue | Instruction,
+    param: ChatParam,
+    *,
+    ins: Instruction | None = None,
+) -> tuple[Instruction, dict]:
+    if ins is None:
+        ins = _build_instruction(branch, instruction, param)
 
     _use_ins_content = None
     _contents = []
@@ -97,7 +108,9 @@ def _prepare_run_kwargs(
                 from lionagi.libs.schema.minimal_yaml import minimal_yaml
 
                 g = minimal_yaml(g).strip()
-            return branch.msgs.system.rendered + g
+            turn_injections = branch._context_injection_slot
+            injected = "\n".join(turn_injections) if turn_injections else ""
+            return branch.msgs.system.rendered + injected + g
 
         if len(_contents) == 0:
             _contents.append(ins.content.with_updates(guidance=f(ins.content)))
@@ -128,6 +141,37 @@ def _prepare_run_kwargs(
 
     kw["messages"] = chat_msgs
     return ins, kw
+
+
+async def _apply_context_providers(
+    branch: "Branch",
+    instruction: JsonValue | Instruction,
+    param: ChatParam,
+) -> Instruction | None:
+    """Gather registered ContextProviders and stash their rendered blocks in
+    the branch's per-turn injection slot, read by `f(c)` in `_prepare_run_kwargs`
+    and cleared right after. Returns the pre-built Instruction (reused by
+    `_prepare_run_kwargs` to avoid rebuilding it) or None when no providers
+    are registered — the zero-overhead path.
+
+    Injections render into the system-guidance fold, so a branch with no
+    system message has no render target: providers are not invoked (no
+    wasted retrieval or tokens) and the turn's report marks every registered
+    provider as skipped, observable via `branch.last_context_report`."""
+    if not branch._context_providers:
+        return None
+
+    from lionagi.protocols.context_providers import ProviderReport
+
+    if not branch.msgs.system:
+        branch._last_context_report = ProviderReport(skipped=list(branch._context_providers.names))
+        return None
+
+    ins = _build_instruction(branch, instruction, param)
+    report = await branch._context_providers.gather(branch, ins)
+    branch._last_context_report = report
+    branch._context_injection_slot = report.blocks
+    return ins
 
 
 def _collect_action_dicts(act_res_msgs):

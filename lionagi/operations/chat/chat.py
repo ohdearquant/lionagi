@@ -10,7 +10,7 @@ from lionagi.protocols.generic import EventStatus
 from lionagi.protocols.messages import AssistantResponse, Instruction
 
 from ..types import ChatParam
-from ._prepare import _prepare_run_kwargs
+from ._prepare import _apply_context_providers, _prepare_run_kwargs
 
 if TYPE_CHECKING:
     from lionagi.session.branch import Branch
@@ -22,7 +22,11 @@ async def chat(
     chat_param: ChatParam,
     return_ins_res_message: bool = False,
 ) -> tuple[Instruction, AssistantResponse] | str:
-    ins, kw = _prepare_run_kwargs(branch, instruction, chat_param)
+    pre_ins = await _apply_context_providers(branch, instruction, chat_param)
+    try:
+        ins, kw = _prepare_run_kwargs(branch, instruction, chat_param, ins=pre_ins)
+    finally:
+        branch._context_injection_slot = None
 
     imodel = chat_param.imodel or branch.chat_model
     if not chat_param._is_sentinel(chat_param.include_token_usage_to_model):
