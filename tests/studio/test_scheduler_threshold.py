@@ -463,6 +463,48 @@ async def test_maybe_fire_reservation_released_after_pre_persistence_failure_all
     mock_tracked.assert_called_once()
 
 
+@pytest.mark.asyncio
+async def test_maybe_fire_exception_between_reserve_and_fire_releases_threshold_claim():
+    """The reservation happens synchronously before the overlap/budget/
+    max_runs/global-slot gates run -- a raise from ANY of those gates (not
+    just a normal early-return) must still release threshold_claim via
+    _maybe_fire's own try/finally, not just _fire()'s. Otherwise a
+    transient error mid-gate (e.g. a DB blip in _reserve_max_runs_budget)
+    leaks the reservation permanently, muting the alert until an engine
+    restart -- worse than the duplicate it exists to prevent."""
+    from lionagi.studio.scheduler.engine import SchedulerEngine
+
+    svc = _make_svc()
+    svc.metric_value = AsyncMock(return_value=9.0)
+    engine = SchedulerEngine(svc=svc)
+    schedule = _minimal_schedule(
+        next_fire_at=1000.0,
+        threshold_config={
+            "metric": "failed_sessions",
+            "op": "gt",
+            "value": 5,
+            "window_minutes": 30,
+        },
+    )
+
+    with (
+        patch.object(
+            engine,
+            "_reserve_max_runs_budget",
+            AsyncMock(side_effect=RuntimeError("db blip")),
+        ),
+        pytest.raises(RuntimeError, match="db blip"),
+    ):
+        await engine._maybe_fire(schedule, now=1000.0)
+
+    assert schedule["id"] not in engine._threshold_pending
+    assert not engine._fire_tasks
+
+    with patch.object(engine, "_tracked_fire") as mock_tracked:
+        await engine._maybe_fire(schedule, now=1000.0)
+    mock_tracked.assert_called_once()
+
+
 # ---------------------------------------------------------------------------
 # _fire() / _fire_inner() — threshold cooldown stamp lands AFTER the
 # schedule_run row is durably persisted, not before the fire starts.

@@ -841,83 +841,100 @@ class SchedulerEngine:
             threshold_claim = _ThresholdCooldownClaim(self, sid)
             threshold_extra = breach
 
-        if schedule.get("overlap_policy") == "skip" and schedule["id"] in self._running:
-            _log.debug("Skipping overlapping fire for %s", schedule["name"])
-            if threshold_claim is not None:
-                threshold_claim.release()
-            skipped_run_id = uuid.uuid4().hex[:12]
-            await create_skipped_run(
-                self._svc,
-                run_id=skipped_run_id,
-                schedule=schedule,
-                trigger_context={"skipped_overlap": True, "fired_at": now},
-                now=now,
-                reason_code=ScheduleReasons.SKIPPED_OVERLAP,
-                reason_summary="Schedule fire skipped because overlap_policy=skip and a prior run is still active.",
-                metadata={"overlap_policy": schedule.get("overlap_policy")},
+        # Every await from here through _tracked_fire() (create_skipped_run,
+        # _check_budget, _reserve_max_runs_budget, _reserve_global_slot, or
+        # a cancellation at any of them) must release threshold_claim (and,
+        # once reserved, claim/slot_claim) on failure -- a raise mid-gate
+        # would otherwise leak the reservation permanently, muting the
+        # alert until an engine restart. handed_off flips True only once
+        # _tracked_fire() has actually launched and taken ownership of the
+        # claims, mirroring _tick_github's use of the same pattern for its
+        # own claims below.
+        claim: _MaxRunsClaim | None = None
+        slot_claim: _GlobalSlotClaim | None = None
+        handed_off = False
+        try:
+            if schedule.get("overlap_policy") == "skip" and schedule["id"] in self._running:
+                _log.debug("Skipping overlapping fire for %s", schedule["name"])
+                skipped_run_id = uuid.uuid4().hex[:12]
+                await create_skipped_run(
+                    self._svc,
+                    run_id=skipped_run_id,
+                    schedule=schedule,
+                    trigger_context={"skipped_overlap": True, "fired_at": now},
+                    now=now,
+                    reason_code=ScheduleReasons.SKIPPED_OVERLAP,
+                    reason_summary="Schedule fire skipped because overlap_policy=skip and a prior run is still active.",
+                    metadata={"overlap_policy": schedule.get("overlap_policy")},
+                )
+                next_at = self._compute_next_fire(schedule, now)
+                if next_at:
+                    await self._svc.update_schedule(schedule["id"], next_fire_at=next_at)
+                return
+
+            if await self._check_budget(schedule):
+                await self._disable_for_budget_exhausted(schedule, now)
+                return
+
+            allowed, claim = await self._reserve_max_runs_budget(schedule)
+            if not allowed:
+                _log.info(
+                    "Schedule %s (%s) has exhausted max_runs=%s; disabling instead of firing",
+                    schedule.get("name"),
+                    schedule["id"],
+                    schedule.get("max_runs"),
+                )
+                await self._svc.update_schedule(schedule["id"], enabled=0)
+                return
+
+            slot_allowed, slot_claim = await self._reserve_global_slot()
+            if not slot_allowed:
+                await self._maybe_record_deferred(schedule, now)
+                # Leave next_fire_at untouched (still due) so the next tick
+                # retries this schedule instead of skipping it. claim (and
+                # threshold_claim, if reserved) are given back by the
+                # finally below -- we're deferring this fire, not
+                # consuming a run against its budget or abandoning the
+                # cooldown.
+                return
+
+            run_id = uuid.uuid4().hex[:12]
+            ctx = {
+                "scheduled": True,
+                "fired_at": now,
+                "next_fire_at": schedule.get("next_fire_at"),
+            }
+            if threshold_extra:
+                ctx.update(threshold_extra)
+                # last_alert_at is NOT stamped here. Every gate above
+                # (overlap, budget, max_runs, global slot) has passed, but
+                # _fire_inner() can still fail before persisting any
+                # schedule_run row (e.g. create_invocation() raising) --
+                # stamping this early would consume the cooldown with zero
+                # durable record an alert was ever attempted, the exact
+                # silent-loss shape this feature exists to prevent. See
+                # _fire_inner's own stamp, which only fires once a
+                # schedule_run row actually exists. The in-process
+                # threshold_claim (released in _fire()'s finally once
+                # handed off) is what actually closes the duplicate-fire
+                # race in the meantime.
+            handed_off = True
+            self._tracked_fire(
+                schedule,
+                run_id,
+                trigger_context=ctx,
+                max_runs_claim=claim,
+                global_slot_claim=slot_claim,
+                threshold_cooldown_claim=threshold_claim,
             )
-            next_at = self._compute_next_fire(schedule, now)
-            if next_at:
-                await self._svc.update_schedule(schedule["id"], next_fire_at=next_at)
-            return
-
-        if await self._check_budget(schedule):
-            if threshold_claim is not None:
-                threshold_claim.release()
-            await self._disable_for_budget_exhausted(schedule, now)
-            return
-
-        allowed, claim = await self._reserve_max_runs_budget(schedule)
-        if not allowed:
-            if threshold_claim is not None:
-                threshold_claim.release()
-            _log.info(
-                "Schedule %s (%s) has exhausted max_runs=%s; disabling instead of firing",
-                schedule.get("name"),
-                schedule["id"],
-                schedule.get("max_runs"),
-            )
-            await self._svc.update_schedule(schedule["id"], enabled=0)
-            return
-
-        slot_allowed, slot_claim = await self._reserve_global_slot()
-        if not slot_allowed:
-            if claim is not None:
-                # Give the max_runs reservation back -- we're deferring this
-                # fire, not consuming a run against its budget.
-                claim.release()
-            if threshold_claim is not None:
-                # Give the cooldown reservation back too -- we're deferring
-                # this fire, not abandoning or completing it, so the next
-                # tick must be free to try again.
-                threshold_claim.release()
-            await self._maybe_record_deferred(schedule, now)
-            # Leave next_fire_at untouched (still due) so the next tick
-            # retries this schedule instead of skipping it.
-            return
-
-        run_id = uuid.uuid4().hex[:12]
-        ctx = {"scheduled": True, "fired_at": now, "next_fire_at": schedule.get("next_fire_at")}
-        if threshold_extra:
-            ctx.update(threshold_extra)
-            # last_alert_at is NOT stamped here. Every gate above (overlap,
-            # budget, max_runs, global slot) has passed, but _fire_inner()
-            # can still fail before persisting any schedule_run row (e.g.
-            # create_invocation() raising) -- stamping this early would
-            # consume the cooldown with zero durable record an alert was
-            # ever attempted, the exact silent-loss shape this feature
-            # exists to prevent. See _fire_inner's own stamp, which only
-            # fires once a schedule_run row actually exists. The in-process
-            # threshold_claim (released in _fire()'s finally) is what
-            # actually closes the duplicate-fire race in the meantime.
-        self._tracked_fire(
-            schedule,
-            run_id,
-            trigger_context=ctx,
-            max_runs_claim=claim,
-            global_slot_claim=slot_claim,
-            threshold_cooldown_claim=threshold_claim,
-        )
+        finally:
+            if not handed_off:
+                if claim is not None:
+                    claim.release()
+                if slot_claim is not None:
+                    slot_claim.release()
+                if threshold_claim is not None:
+                    threshold_claim.release()
 
     async def _guarded_terminal_status(
         self,
