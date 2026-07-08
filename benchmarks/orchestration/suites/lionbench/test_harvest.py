@@ -313,11 +313,79 @@ def test_scrub_task_text_strips_deleted_file_diff():
 
 def test_scrub_task_text_strips_binary_patch_blob():
     """`GIT binary patch` base85 blob lines have no fixed prefix shape (no +/-/
-    space guarantee) — they need their own always-drop-until-blank-line mode,
-    not the structural/content/extended-header checks."""
+    space guarantee) — they need their own always-drop mode, not the
+    structural/content/extended-header checks. Binary mode stays armed
+    through end-of-input here (no later `diff --git ` header), so the
+    trailing prose is eaten too — an accepted over-strip trade-off, not a
+    bug: a blank line is not a reliable end-of-binary-patch marker (see the
+    two-hunk test below), so there is no safe place to resume."""
     scrubbed = scrub_task_text(_PR_BODY_WITH_BINARY_PATCH)
     assert "diff --git" not in scrubbed
     assert "GIT binary patch" not in scrubbed
     assert "super_secret_blob_data" not in scrubbed
+    assert "check the logo renders" not in scrubbed
     assert "updates the logo asset" in scrubbed.lower()
-    assert "check the logo renders" in scrubbed
+
+
+_PR_BODY_WITH_TWO_HUNK_BINARY_PATCH = """\
+## Summary
+
+Tweaks an icon (real `git diff --binary` two-hunk shape for one file).
+
+diff --git a/assets/icon.png b/assets/icon.png
+index 1111111..2222222 100644
+GIT binary patch
+literal 15
+WcmZQz%u6lTP1G$;O)g3;`40dhZv~71_old_blob_secret
+
+literal 8
+PcmZQz%+E>DP5ci42%Q4X_new_blob_secret
+"""
+
+_PR_BODY_WITH_TWO_FILE_BINARY_DIFF = """\
+## Summary
+
+Updates two logo assets.
+
+diff --git a/assets/logo_a.png b/assets/logo_a.png
+index 1111111..2222222 100644
+GIT binary patch
+literal 15
+WcmZQz%u6lTP1G$;O)g3;`40dhZv~71_logo_a_secret
+
+literal 8
+PcmZQz%+E>DP5ci42%Q4X_logo_a_secret_2
+diff --git a/assets/logo_b.png b/assets/logo_b.png
+index 3333333..4444444 100644
+GIT binary patch
+literal 20
+WcmZQz%u6lTP1G$;O)g3;`40dhZv~71_logo_b_secret
+
+literal 9
+PcmZQz%+E>DP5ci42%Q4X_logo_b_secret_2
+"""
+
+
+def test_scrub_task_text_strips_two_hunk_binary_patch_internal_blank_line():
+    """Round-3 regression: real `git diff --binary` puts a blank line BETWEEN
+    a file's two binary hunk records (literal N / base85 / blank / literal M
+    / base85) — that blank line is not the end of the patch. The previous
+    fix disarmed binary mode on it and leaked the second hunk."""
+    scrubbed = scrub_task_text(_PR_BODY_WITH_TWO_HUNK_BINARY_PATCH)
+    assert "diff --git" not in scrubbed
+    assert "GIT binary patch" not in scrubbed
+    assert "_old_blob_secret" not in scrubbed
+    assert "_new_blob_secret" not in scrubbed
+    assert "tweaks an icon" in scrubbed.lower()
+
+
+def test_scrub_task_text_strips_two_file_binary_diff_with_internal_blank_lines():
+    """Two files, each a two-hunk binary patch (multiple internal blank
+    separators plus a second `diff --git ` header re-arming for the second
+    file) — zero base85/literal leakage across both files."""
+    scrubbed = scrub_task_text(_PR_BODY_WITH_TWO_FILE_BINARY_DIFF)
+    assert "diff --git" not in scrubbed
+    assert "GIT binary patch" not in scrubbed
+    assert "_logo_a_secret" not in scrubbed
+    assert "_logo_b_secret" not in scrubbed
+    assert "updates two logo assets" in scrubbed.lower()

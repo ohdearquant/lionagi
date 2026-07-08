@@ -179,10 +179,14 @@ def _strip_raw_diff_blocks(text: str) -> str:
     +/-/space-prefixed content line, or one of Git's extended-header lines
     (new/deleted file mode, rename/copy from/to, similarity index, ...). A
     `GIT binary patch` marker arms a nested binary-blob mode that drops every
-    line unconditionally (base85 patch data has no fixed shape) until the
-    blank line that always terminates it. The first line that fails every
-    check disarms diff-mode — so a markdown bullet list, which never starts
-    with a real `diff --git ` header, is never touched."""
+    line unconditionally (base85 patch data has no fixed shape, and a real
+    `git diff --binary` puts blank-line separators *between* the literal/delta
+    hunk records of a single file, so a blank line is not a reliable
+    end-of-binary-patch marker) — binary mode stays armed until the next
+    `diff --git ` header or end of input, never disarming on a blank line.
+    The first line that fails every diff-mode check disarms diff-mode — so a
+    markdown bullet list, which never starts with a real `diff --git ` header,
+    is never touched."""
     out_lines = []
     in_diff = False
     in_binary = False
@@ -193,8 +197,6 @@ def _strip_raw_diff_blocks(text: str) -> str:
             continue
         if in_diff:
             if in_binary:
-                if line.strip() == "":
-                    in_binary = False
                 continue
             if _BINARY_PATCH_START_RE.match(line):
                 in_binary = True

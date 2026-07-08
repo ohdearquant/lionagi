@@ -172,24 +172,53 @@ class LionagiAdapter:
         return await sandbox.git_diff(workdir)
 
 
-_UNSAFE_PROMPT_SUBSTITUTION_RE = re.compile(
-    r"\$\([^)]*\{prompt_path\}[^)]*\)|`[^`]*\{prompt_path\}[^`]*`"
-)
+_PROMPT_PATH_TOKEN = "{prompt_path}"  # noqa: S105 — a format placeholder, not a credential
+# The shell constructs that split a template into more than one command, or
+# capture a sub-command's output as a value: sequencing (`;`, `&`, newline),
+# pipes (`|`), backticks, and the three substitution forms (`$(`, `<(`, `>(`).
+# Banning this closed, principled set — rather than enumerating specific
+# attack payloads — is what makes the grammar positive: once none of these
+# are present, the whole template is guaranteed to be a single simple
+# command, so a redirection inside it necessarily targets that command's own
+# stdin (never a sub-command's, and never captured as a value).
+_COMPOUND_SHELL_CHARS_RE = re.compile(r"[;&|`\n]|\$\(|<\(|>\(")
 
 
 def _assert_file_mediated(template: str) -> None:
-    """Refuse an ``invocation_template`` that expands ``{prompt_path}``'s file
-    CONTENTS into the command line via shell command substitution (``$(...)``
-    or backticks) — that reintroduces untrusted ``task_text`` into argv even
-    though the Python-side command string only names the path. Applies to the
-    class defaults too (self-check), not just caller overrides."""
-    if _UNSAFE_PROMPT_SUBSTITUTION_RE.search(template):
+    """Positive grammar for ``{prompt_path}``, not a blacklist of bad forms.
+
+    Requires the template to be a single simple command (no `;`/`&`/`|`/
+    backticks/`$(...)`/`<(...)`/`>(...)`/newlines), and within that single
+    command, ``{prompt_path}`` must appear exactly once, as the operand of a
+    plain stdin redirection (``< {prompt_path}``, optional whitespace). Any
+    other shape — plain argv, ``$(cat {prompt_path})``, backticks,
+    ``read p < {prompt_path}; cmd "$p"``, process substitution — fails at
+    construction, whatever the surrounding syntax looks like: rejecting the
+    handful of shell constructs that can turn a safe-looking redirection into
+    a smuggled value is a closed rule, not an enumeration to keep extending
+    every time a new bypass shape shows up."""
+    if _COMPOUND_SHELL_CHARS_RE.search(template):
         raise ValueError(
-            "invocation_template expands {prompt_path} via shell command "
-            "substitution ($(...) or backticks) — this puts untrusted prompt "
-            "bytes into argv again. Reference {prompt_path} as a literal path "
-            "only (e.g. stdin redirection: '< {prompt_path}'), never inside "
-            "$(...) or `...`."
+            "invocation_template must be a single simple command: no ';', '&', "
+            "'|', backticks, '$(...)', '<(...)', '>(...)', or newlines. These "
+            "are exactly the constructs that let a later sub-command reuse "
+            "{prompt_path}'s contents (e.g. `read p < {prompt_path}; cmd "
+            '"$p"`) even when the redirection itself looks safe.'
+        )
+    occurrences = template.count(_PROMPT_PATH_TOKEN)
+    if occurrences != 1:
+        raise ValueError(
+            "invocation_template must reference {prompt_path} exactly once "
+            f"(found {occurrences}); the only accepted form is stdin "
+            "redirection: '...cmd... < {prompt_path}'."
+        )
+    pos = template.index(_PROMPT_PATH_TOKEN)
+    if not re.search(r"<\s*$", template[:pos]):
+        raise ValueError(
+            "invocation_template must reference {prompt_path} as the operand "
+            "of stdin redirection only (e.g. '...cmd... < {prompt_path}') — "
+            "found it used some other way (plain argv, inside quotes as a "
+            "value, etc.)."
         )
 
 

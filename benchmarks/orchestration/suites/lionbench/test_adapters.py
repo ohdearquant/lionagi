@@ -109,15 +109,54 @@ def test_claude_adapter_rejects_command_substitution_override():
     """The default templates are file-mediated, but invocation_template is a
     caller-overridable field — a caller passing back the old $(cat ...) shape
     must be rejected, not silently accepted with the leak reintroduced."""
-    with pytest.raises(ValueError, match="command substitution"):
+    with pytest.raises(ValueError, match="single simple command"):
         ClaudeCodeAdapter(
             invocation_template='claude -p "$(cat {prompt_path})" --dangerously-skip-permissions'
         )
 
 
 def test_codex_adapter_rejects_backtick_command_substitution_override():
-    with pytest.raises(ValueError, match="command substitution"):
+    with pytest.raises(ValueError, match="single simple command"):
         CodexAdapter(invocation_template="codex exec --full-auto `cat {prompt_path}`")
+
+
+def test_claude_adapter_rejects_process_substitution_override():
+    """`<(cat {prompt_path})` passes prompt bytes through a /dev/fd/... path
+    rather than a literal path, and only reaches that shape via a shell
+    construct we ban outright — must be rejected, not accepted."""
+    with pytest.raises(ValueError, match="single simple command"):
+        ClaudeCodeAdapter(
+            invocation_template="claude -p --dangerously-skip-permissions <(cat {prompt_path})"
+        )
+
+
+def test_claude_adapter_rejects_plain_argv_override():
+    """{prompt_path} used as a bare argv value (no redirection at all) is the
+    original leak shape in a different template — must be rejected."""
+    with pytest.raises(ValueError, match="stdin redirection"):
+        ClaudeCodeAdapter(
+            invocation_template="claude -p {prompt_path} --dangerously-skip-permissions"
+        )
+
+
+def test_claude_adapter_rejects_read_then_reuse_override():
+    """The round-3 bypass: {prompt_path} is redirected into a shell variable
+    by one sub-command, then that variable (not {prompt_path} itself) is
+    passed as argv to the real command — a per-occurrence-only check would
+    accept this since the redirection itself looks fine. The `;` sequencing
+    it requires is banned outright, so this never reaches the redirection
+    check at all."""
+    with pytest.raises(ValueError, match="single simple command"):
+        ClaudeCodeAdapter(invocation_template='read p < {prompt_path}; claude -p "$p"')
+
+
+def test_claude_adapter_accepts_stdin_redirection_form():
+    """The one good shape: {prompt_path} appears exactly once, as the operand
+    of a plain stdin redirection, in a single simple command."""
+    adapter = ClaudeCodeAdapter(
+        invocation_template="claude -p --dangerously-skip-permissions < {prompt_path}"
+    )
+    assert adapter.invocation_template == "claude -p --dangerously-skip-permissions < {prompt_path}"
 
 
 def test_lionagi_adapter_rejects_mcp_servers_not_wired():
