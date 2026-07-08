@@ -837,10 +837,21 @@
     "rackEmpty": "এখনও কোনো ওয়ার্কফ্লো নেই।"
   },
   "daemon": {
-    "title": "স্টুডিও {base}-এ থাকা লোকাল ডেমনের সাথে সংযোগ করতে পারেনি",
-    "bootstrapInstall": "pip install \"lionagi[studio]\"",
-    "bootstrapRun": "li studio",
-    "authNote": "এই ডেমনের জন্য bearer token আবশ্যক করতে LIONAGI_STUDIO_AUTH_TOKEN সেট করুন।",
-    "retry": "আবার চেষ্টা করুন"
+    "unreachable": {
+      "title": "Studio needs a local lionagi daemon",
+      "body": "Studio couldn't reach a daemon at {base}. Default port is 8765; your data stays on your machine.",
+      "install": "pip install \"lionagi[studio]\"",
+      "run": "li studio",
+      "runAlt": "li studio --no-open",
+      "runAltNote": "Already have this page open?"
+    },
+    "wrongApp": {
+      "title": "Another program is using this port",
+      "body": "Something answered at {base}, but it isn't a lionagi daemon.",
+      "fix": "Stop that program, or point the daemon at a different port:",
+      "command": "li studio --port 8766"
+    },
+    "retry": "Retry",
+    "dismiss": "Dismiss"
   }
 }

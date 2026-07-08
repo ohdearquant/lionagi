@@ -22,6 +22,7 @@ import type {
   WorkerStepNode,
   WorkerLinkEdge,
 } from "./types";
+import { reportConnectivityFailure } from "./connectivity";
 
 declare global {
   interface Window {
@@ -77,7 +78,16 @@ async function fetchJson<T>(path: string, init?: RequestInit): Promise<T> {
     (headers as Record<string, string>)["Authorization"] = `Bearer ${token}`;
   }
 
-  const response = await fetch(url, { redirect: "follow", ...init, headers });
+  let response: Response;
+  try {
+    response = await fetch(url, { redirect: "follow", ...init, headers });
+  } catch (err) {
+    // fetch() itself only throws for network-level failures (daemon not
+    // running, CORS, DNS) — never for HTTP error statuses. Let NoDaemonGate
+    // re-probe /health right away instead of waiting for its own poll tick.
+    reportConnectivityFailure();
+    throw err;
+  }
   if (!response.ok) {
     // Preserve the backend `detail` field (FastAPI/Pydantic validation errors,
     // our structured 409 body, etc.) so callers can surface it to the operator.
