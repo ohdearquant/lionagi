@@ -105,6 +105,21 @@ async def test_lionagi_adapter_returns_git_diff_and_captures_usage_and_tool_call
     assert "Something breaks." in spec["instruction"]
 
 
+def test_claude_adapter_rejects_command_substitution_override():
+    """The default templates are file-mediated, but invocation_template is a
+    caller-overridable field — a caller passing back the old $(cat ...) shape
+    must be rejected, not silently accepted with the leak reintroduced."""
+    with pytest.raises(ValueError, match="command substitution"):
+        ClaudeCodeAdapter(
+            invocation_template='claude -p "$(cat {prompt_path})" --dangerously-skip-permissions'
+        )
+
+
+def test_codex_adapter_rejects_backtick_command_substitution_override():
+    with pytest.raises(ValueError, match="command substitution"):
+        CodexAdapter(invocation_template="codex exec --full-auto `cat {prompt_path}`")
+
+
 def test_lionagi_adapter_rejects_mcp_servers_not_wired():
     with pytest.raises(NotImplementedError):
         LionagiAdapter("deepseek/deepseek-chat", mcp_servers={"khive": {}})

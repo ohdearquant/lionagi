@@ -29,6 +29,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import sys
 from pathlib import Path
 from typing import Protocol
@@ -171,6 +172,27 @@ class LionagiAdapter:
         return await sandbox.git_diff(workdir)
 
 
+_UNSAFE_PROMPT_SUBSTITUTION_RE = re.compile(
+    r"\$\([^)]*\{prompt_path\}[^)]*\)|`[^`]*\{prompt_path\}[^`]*`"
+)
+
+
+def _assert_file_mediated(template: str) -> None:
+    """Refuse an ``invocation_template`` that expands ``{prompt_path}``'s file
+    CONTENTS into the command line via shell command substitution (``$(...)``
+    or backticks) — that reintroduces untrusted ``task_text`` into argv even
+    though the Python-side command string only names the path. Applies to the
+    class defaults too (self-check), not just caller overrides."""
+    if _UNSAFE_PROMPT_SUBSTITUTION_RE.search(template):
+        raise ValueError(
+            "invocation_template expands {prompt_path} via shell command "
+            "substitution ($(...) or backticks) — this puts untrusted prompt "
+            "bytes into argv again. Reference {prompt_path} as a literal path "
+            "only (e.g. stdin redirection: '< {prompt_path}'), never inside "
+            "$(...) or `...`."
+        )
+
+
 class _CliHarnessAdapter:
     """Shared shape for external-CLI adapters: write the prompt to a file inside
     the sandbox, exec the CLI's non-interactive invocation, harvest via git_diff.
@@ -194,7 +216,10 @@ class _CliHarnessAdapter:
         system_prompt_extra: str | None = None,
     ):
         if invocation_template is not None:
+            _assert_file_mediated(invocation_template)
             self.invocation_template = invocation_template
+        else:
+            _assert_file_mediated(self.invocation_template)
         if env_keys is not None:
             self.env_keys = env_keys
         if mcp_servers is not None and self.mcp_flag_template is None:

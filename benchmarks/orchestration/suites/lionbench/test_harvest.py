@@ -197,3 +197,127 @@ def test_scrub_task_text_strips_unfenced_raw_diff_blocks():
     # the surrounding prose survives
     assert "raises when x is empty" in scrubbed
     assert "add a regression test" in scrubbed
+
+
+_PR_BODY_WITH_NEW_FILE_DIFF = """\
+## Summary
+
+Adds a helper module.
+
+diff --git a/pkg/new.py b/pkg/new.py
+new file mode 100644
+index 0000000..1111111
+--- /dev/null
++++ b/pkg/new.py
+@@ -0,0 +1,2 @@
++secret_fix_value = 1
++return secret_fix_value
+
+## Test plan
+- [ ] add a regression test
+"""
+
+_PR_BODY_WITH_RENAME_DIFF = """\
+## Summary
+
+Renames a module and tweaks a constant.
+
+diff --git a/pkg/old_name.py b/pkg/new_name.py
+similarity index 92%
+rename from pkg/old_name.py
+rename to pkg/new_name.py
+index abc123..def456 100644
+--- a/pkg/old_name.py
++++ b/pkg/new_name.py
+@@ -1,3 +1,3 @@
+ unchanged_context_line
+-old_secret_value
++new_secret_value
+
+## Test plan
+- [ ] add a regression test
+"""
+
+_PR_BODY_WITH_DELETED_FILE_DIFF = """\
+## Summary
+
+Removes a dead module.
+
+diff --git a/pkg/gone.py b/pkg/gone.py
+deleted file mode 100644
+index 1111111..0000000
+--- a/pkg/gone.py
++++ /dev/null
+@@ -1,2 +0,0 @@
+-deleted_secret_value = 1
+-return deleted_secret_value
+
+## Test plan
+- [ ] add a regression test
+"""
+
+_PR_BODY_WITH_BINARY_PATCH = """\
+## Summary
+
+Updates the logo asset.
+
+diff --git a/assets/logo.png b/assets/logo.png
+new file mode 100644
+index 0000000..abcdef1
+GIT binary patch
+literal 128
+zcmZ?wbhEHb6k=W1@$Vw+super_secret_blob_data
+literal 0
+HcmV?d00001
+
+## Test plan
+- [ ] check the logo renders
+"""
+
+
+def test_scrub_task_text_strips_new_file_diff():
+    """`new file mode` is an unprefixed extended-header line — a naive scanner
+    that disarms on the first non +/-/space/blank line lets the rest of a
+    new-file diff's content through. Must stay armed across it."""
+    scrubbed = scrub_task_text(_PR_BODY_WITH_NEW_FILE_DIFF)
+    assert "diff --git" not in scrubbed
+    assert "new file mode" not in scrubbed
+    assert "secret_fix_value" not in scrubbed
+    assert "raises" not in scrubbed  # sanity: this fixture has no such sentence
+    assert "adds a helper module" in scrubbed.lower()
+    assert "add a regression test" in scrubbed
+
+
+def test_scrub_task_text_strips_rename_diff():
+    """`similarity index` / `rename from` / `rename to` are unprefixed extended
+    headers too — same leak shape as new-file diffs."""
+    scrubbed = scrub_task_text(_PR_BODY_WITH_RENAME_DIFF)
+    assert "diff --git" not in scrubbed
+    assert "similarity index" not in scrubbed
+    assert "rename from" not in scrubbed
+    assert "rename to" not in scrubbed
+    assert "old_secret_value" not in scrubbed
+    assert "new_secret_value" not in scrubbed
+    assert "renames a module" in scrubbed.lower()
+    assert "add a regression test" in scrubbed
+
+
+def test_scrub_task_text_strips_deleted_file_diff():
+    scrubbed = scrub_task_text(_PR_BODY_WITH_DELETED_FILE_DIFF)
+    assert "diff --git" not in scrubbed
+    assert "deleted file mode" not in scrubbed
+    assert "deleted_secret_value" not in scrubbed
+    assert "removes a dead module" in scrubbed.lower()
+    assert "add a regression test" in scrubbed
+
+
+def test_scrub_task_text_strips_binary_patch_blob():
+    """`GIT binary patch` base85 blob lines have no fixed prefix shape (no +/-/
+    space guarantee) — they need their own always-drop-until-blank-line mode,
+    not the structural/content/extended-header checks."""
+    scrubbed = scrub_task_text(_PR_BODY_WITH_BINARY_PATCH)
+    assert "diff --git" not in scrubbed
+    assert "GIT binary patch" not in scrubbed
+    assert "super_secret_blob_data" not in scrubbed
+    assert "updates the logo asset" in scrubbed.lower()
+    assert "check the logo renders" in scrubbed

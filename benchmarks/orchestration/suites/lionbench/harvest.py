@@ -146,6 +146,16 @@ _DIFF_STRUCT_RE = re.compile(r"^(index [0-9a-f]|@@ .*@@)")
 # +/- prefixed (added/removed content, and the --- / +++ file markers, which
 # also start with -/+) or a single leading space (unified-diff context line).
 _DIFF_CONTENT_RE = re.compile(r"^[+\- ]")
+# Git's *extended* header lines: unprefixed (no +/-/space), so none of the
+# patterns above catch them, and a naive scanner disarms on the first one it
+# sees — leaking the rest of a new-file/deleted-file/rename/copy diff.
+_DIFF_EXTENDED_HEADER_RE = re.compile(
+    r"^(old mode |new mode |deleted file mode |new file mode |"
+    r"copy from |copy to |rename from |rename to |"
+    r"similarity index |dissimilarity index |"
+    r"Binary files |\\ No newline at end of file)"
+)
+_BINARY_PATCH_START_RE = re.compile(r"^GIT binary patch")
 _ISSUE_NUM_RE = re.compile(r"#\d+")
 _AUDIT_LABEL_RE = re.compile(r"\b[A-Z][A-Z0-9]*-\d+\b|\bFinding\s+\d+\b", re.IGNORECASE)
 _FIX_LANGUAGE_RE = re.compile(
@@ -163,19 +173,38 @@ def _split_sentences(text: str) -> list[str]:
 def _strip_raw_diff_blocks(text: str) -> str:
     """Drop unfenced raw diff blocks line-by-line, without touching prose outside them.
 
-    A `diff --git ` line arms diff-mode; while armed, structural lines (index/---/
-    +++/@@) and +/- content lines are dropped, along with blank lines in between
-    (diffs commonly have blank separators between hunks/files). The first line that
-    doesn't look like diff output disarms diff-mode again — so a markdown bullet
-    list, which never starts with a real `diff --git ` header, is never touched."""
+    A `diff --git ` line arms diff-mode. While armed, this is a leak scrubber —
+    it errs toward over-stripping, not under-stripping — so a line only survives
+    if it matches NONE of: blank, a structural line (index/@@ hunk header), a
+    +/-/space-prefixed content line, or one of Git's extended-header lines
+    (new/deleted file mode, rename/copy from/to, similarity index, ...). A
+    `GIT binary patch` marker arms a nested binary-blob mode that drops every
+    line unconditionally (base85 patch data has no fixed shape) until the
+    blank line that always terminates it. The first line that fails every
+    check disarms diff-mode — so a markdown bullet list, which never starts
+    with a real `diff --git ` header, is never touched."""
     out_lines = []
     in_diff = False
+    in_binary = False
     for line in text.split("\n"):
         if _DIFF_START_RE.match(line):
             in_diff = True
+            in_binary = False
             continue
         if in_diff:
-            if line.strip() == "" or _DIFF_STRUCT_RE.match(line) or _DIFF_CONTENT_RE.match(line):
+            if in_binary:
+                if line.strip() == "":
+                    in_binary = False
+                continue
+            if _BINARY_PATCH_START_RE.match(line):
+                in_binary = True
+                continue
+            if (
+                line.strip() == ""
+                or _DIFF_STRUCT_RE.match(line)
+                or _DIFF_CONTENT_RE.match(line)
+                or _DIFF_EXTENDED_HEADER_RE.match(line)
+            ):
                 continue
             in_diff = False
         out_lines.append(line)
