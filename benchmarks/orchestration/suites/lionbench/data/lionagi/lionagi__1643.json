@@ -1,0 +1,33 @@
+{
+  "base_commit": "c97bf2b00589b0874a2c4e6c2c4b720f91835915",
+  "gold_patch": "diff --git a/lionagi/studio/scheduler/subprocess.py b/lionagi/studio/scheduler/subprocess.py\nindex d2bfbf158..3499665f2 100644\n--- a/lionagi/studio/scheduler/subprocess.py\n+++ b/lionagi/studio/scheduler/subprocess.py\n@@ -231,6 +231,24 @@ def build_argv(schedule: dict, trigger_context: dict) -> tuple[list[str], str |\n         # the --agent profile's own default model. Passing an empty string as\n         # the model positional would instead be parsed as an explicit (blank)\n         # model spec, overriding the profile default and crashing Branch init.\n+        #\n+        # But omitting the model positional only holds the \"extra positionals\n+        # are rejected loudly\" invariant when there are no extra args to\n+        # append: with model omitted, a single action_extra_args token brings\n+        # the positional count back up to 2 (the same arity as [model,\n+        # prompt]), so the CLI's resolver would silently reparse the real\n+        # prompt as MODEL and the extra-args token as PROMPT instead of\n+        # failing. Reject that combination here rather than let it corrupt\n+        # argument positions at fire time.\n+        if not model and isinstance(extra, list) and extra:\n+            raise ValueError(\n+                \"action_extra_args is not supported together with an empty \"\n+                \"action_model for kind='agent': omitting the model \"\n+                \"positional makes the extra-args token(s) indistinguishable \"\n+                \"from an explicit [model, prompt] pair, which would silently \"\n+                \"misroute action_prompt as the model. Set action_model \"\n+                \"explicitly, or clear action_extra_args.\"\n+            )\n         positionals = [model, prompt] if model else [prompt]\n         argv += [\"agent\", *flags, \"--\", *positionals]\n \n",
+  "instance_id": "lionagi__1643",
+  "merged_at": "2026-07-03T16:43:31Z",
+  "needs_review": true,
+  "oracle": {
+    "command": "uv run --all-extras pytest tests/cli/test_argv_injection.py -q",
+    "held_out_paths": [
+      "tests/cli/test_argv_injection.py"
+    ],
+    "kind": "pytest",
+    "test_patch": "diff --git a/tests/cli/test_argv_injection.py b/tests/cli/test_argv_injection.py\nindex f6cc1438e..40cbd0f06 100644\n--- a/tests/cli/test_argv_injection.py\n+++ b/tests/cli/test_argv_injection.py\n@@ -121,6 +121,56 @@ def test_model_set_still_includes_positional_agent_kind(self):\n         positionals = argv[argv.index(\"--\") + 1 :]\n         assert positionals == [\"sonnet\", \"hello world\"]\n \n+    def test_model_empty_with_extra_args_raises(self):\n+        \"\"\"Regression: when kind='agent' omits the model positional (falsy\n+        action_model), a non-empty action_extra_args token collapses the CLI\n+        down to exactly 2 positionals -- the same arity as the historical\n+        [model, prompt] shape -- so `li agent`'s model/prompt resolver\n+        silently reparses the real prompt as MODEL and the extra-args token\n+        as PROMPT instead of failing loudly. This combination must raise at\n+        build time.\"\"\"\n+        from lionagi.studio.scheduler.subprocess import build_argv\n+\n+        with pytest.raises(ValueError, match=\"action_extra_args\"):\n+            build_argv(\n+                _schedule(\n+                    action_model=\"\",\n+                    action_agent=\"researcher\",\n+                    action_extra_args=[\"strict\"],\n+                ),\n+                {},\n+            )\n+\n+    def test_model_none_with_extra_args_raises(self):\n+        from lionagi.studio.scheduler.subprocess import build_argv\n+\n+        with pytest.raises(ValueError, match=\"action_extra_args\"):\n+            build_argv(\n+                _schedule(\n+                    action_model=None,\n+                    action_agent=\"researcher\",\n+                    action_extra_args=[\"strict\"],\n+                ),\n+                {},\n+            )\n+\n+    def test_model_set_with_extra_args_still_accepted(self):\n+        \"\"\"Non-empty action_model + action_extra_args is unaffected: the\n+        positional count is unambiguous (model, prompt) regardless of the\n+        extra tokens appended after them.\"\"\"\n+        from lionagi.studio.scheduler.subprocess import build_argv\n+\n+        argv, tmp = build_argv(\n+            _schedule(\n+                action_model=\"sonnet\",\n+                action_agent=\"researcher\",\n+                action_extra_args=[\"strict\"],\n+            ),\n+            {},\n+        )\n+        positionals = argv[argv.index(\"--\") + 1 :]\n+        assert positionals == [\"sonnet\", \"hello world\", \"strict\"]\n+\n     def test_model_valid_identifiers_accepted(self):\n         from lionagi.studio.scheduler.subprocess import build_argv\n \n"
+  },
+  "provenance": {
+    "issue": 1610,
+    "nominated_by": "",
+    "pr": 1643,
+    "why": "scheduler argv arity ambiguity, no issue at all"
+  },
+  "repo": "ohdearquant/lionagi",
+  "source_pr": "lionagi#1643",
+  "subject": "lionagi",
+  "task_text": "In the studio scheduler's `build_argv()`, the `kind == \"agent\"` branch omits the model positional when `action_model` is falsy (so an `--agent <profile>` default model can apply). When `action_model` is falsy AND `action_extra_args` is non-empty, the emitted argv collapses to exactly 2 positionals \u2014 the same arity as the historical `[model, prompt]` shape \u2014 so `li agent`'s model/prompt resolver silently reparses the real prompt text as MODEL and the first extra-args token as PROMPT, instead of the loud usage failure the file's documented safety invariant used to guarantee (\"agent/flow/fanout parsers do not accept extra positionals; non-empty action_extra_args causes those subcommands to exit at fire time\"). A schedule created with a falsy model and non-empty extra args passes creation validation and reaches this silent misparse.\n\nRequired behavior: this combination must fail loudly at argv-build time rather than silently misrouting the prompt; a non-empty `action_model` combined with extra args remains accepted (unambiguous 3-positional shape).",
+  "tier": "T1",
+  "validation": {
+    "gold_output": "",
+    "gold_passes": true,
+    "leak_review": "pass",
+    "null_fails": true,
+    "null_output": ""
+  }
+}

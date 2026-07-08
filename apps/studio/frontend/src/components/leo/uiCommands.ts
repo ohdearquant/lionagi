@@ -16,7 +16,6 @@ type NavigateFn = (opts: {
 const SPACE_PATHS: Record<string, string> = {
   mission: "/",
   fleet: "/fleet",
-  designer: "/designer",
   library: "/library",
   schedules: "/schedules",
   system: "/system",
