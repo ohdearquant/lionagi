@@ -319,7 +319,42 @@ def test_propose_route_creates_pending_approval(tmp_path, monkeypatch):
     assert body["action_kind"] == "launch_playbook"
 
 
+def _auth(token: str) -> dict[str, str]:
+    return {"Authorization": f"Bearer {token}"}
+
+
 def test_grant_route_succeeds_for_human_browser_caller(tmp_path, monkeypatch):
+    monkeypatch.setenv("LIONAGI_STUDIO_AUTH_TOKEN", "test-token")
+    client = _make_client(tmp_path / "state.db", monkeypatch)
+    approval_id = client.post(
+        "/api/approvals/",
+        json={"action_kind": "launch_playbook", "params": {"name": "demo"}},
+        headers=_auth("test-token"),
+    ).json()["id"]
+
+    resp = client.post(f"/api/approvals/{approval_id}/grant", headers=_auth("test-token"))
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["status"] == "granted"
+
+
+def test_deny_route_succeeds_for_human_browser_caller(tmp_path, monkeypatch):
+    monkeypatch.setenv("LIONAGI_STUDIO_AUTH_TOKEN", "test-token")
+    client = _make_client(tmp_path / "state.db", monkeypatch)
+    approval_id = client.post(
+        "/api/approvals/",
+        json={"action_kind": "launch_playbook", "params": {"name": "demo"}},
+        headers=_auth("test-token"),
+    ).json()["id"]
+
+    resp = client.post(f"/api/approvals/{approval_id}/deny", headers=_auth("test-token"))
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["status"] == "denied"
+
+
+def test_grant_route_403_when_no_auth_token_configured(tmp_path, monkeypatch):
+    """With no token configured there is no human credential to distinguish,
+    so granting fails closed rather than being open to any local caller."""
+    monkeypatch.delenv("LIONAGI_STUDIO_AUTH_TOKEN", raising=False)
     client = _make_client(tmp_path / "state.db", monkeypatch)
     approval_id = client.post(
         "/api/approvals/",
@@ -327,20 +362,26 @@ def test_grant_route_succeeds_for_human_browser_caller(tmp_path, monkeypatch):
     ).json()["id"]
 
     resp = client.post(f"/api/approvals/{approval_id}/grant")
-    assert resp.status_code == 200, resp.text
-    assert resp.json()["status"] == "granted"
+    assert resp.status_code == 403, resp.text
+    check = client.get(f"/api/approvals/{approval_id}")
+    assert check.json()["status"] == "pending"
 
 
-def test_deny_route_succeeds_for_human_browser_caller(tmp_path, monkeypatch):
+def test_grant_route_rejected_without_correct_bearer(tmp_path, monkeypatch):
+    """A caller that simply omits the service marker still cannot grant: the
+    route positively requires the configured bearer credential."""
+    monkeypatch.setenv("LIONAGI_STUDIO_AUTH_TOKEN", "test-token")
     client = _make_client(tmp_path / "state.db", monkeypatch)
     approval_id = client.post(
         "/api/approvals/",
         json={"action_kind": "launch_playbook", "params": {"name": "demo"}},
+        headers=_auth("test-token"),
     ).json()["id"]
 
-    resp = client.post(f"/api/approvals/{approval_id}/deny")
-    assert resp.status_code == 200, resp.text
-    assert resp.json()["status"] == "denied"
+    resp = client.post(f"/api/approvals/{approval_id}/grant", headers=_auth("wrong-token"))
+    assert resp.status_code in (401, 403), resp.text
+    check = client.get(f"/api/approvals/{approval_id}", headers=_auth("test-token"))
+    assert check.json()["status"] == "pending"
 
 
 def test_grant_route_403_for_operator_service_principal(tmp_path, monkeypatch):
@@ -395,6 +436,7 @@ def test_get_route_returns_current_state(tmp_path, monkeypatch):
 
 
 def test_grant_route_404_for_unknown_id(tmp_path, monkeypatch):
+    monkeypatch.setenv("LIONAGI_STUDIO_AUTH_TOKEN", "test-token")
     client = _make_client(tmp_path / "state.db", monkeypatch)
-    resp = client.post("/api/approvals/does-not-exist/grant")
+    resp = client.post("/api/approvals/does-not-exist/grant", headers=_auth("test-token"))
     assert resp.status_code == 404

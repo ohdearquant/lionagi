@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import time
 import uuid
 from typing import Any
@@ -80,7 +81,27 @@ def _is_service_principal(request: Request) -> bool:
 
 
 def _require_human_principal(request: Request) -> None:
+    """Grant/deny are reserved for the human principal: the browser session's
+    bearer credential. Enforced positively — the caller must PRESENT the
+    configured token — not by trusting callers to identify themselves. With no
+    token configured there is no human credential to distinguish, so granting
+    is unavailable entirely (fail closed) rather than open to any local caller.
+    The service-marker header check stays as defense in depth."""
     if _is_service_principal(request):
+        raise HTTPException(
+            status_code=403,
+            detail="approvals may only be granted or denied by the human operator principal",
+        )
+    token = os.getenv("LIONAGI_STUDIO_AUTH_TOKEN")
+    if not token:
+        raise HTTPException(
+            status_code=403,
+            detail=(
+                "approval granting requires a configured auth token "
+                "(set LIONAGI_STUDIO_AUTH_TOKEN); refusing on an open daemon"
+            ),
+        )
+    if request.headers.get("authorization") != f"Bearer {token}":
         raise HTTPException(
             status_code=403,
             detail="approvals may only be granted or denied by the human operator principal",
