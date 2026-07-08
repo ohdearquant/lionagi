@@ -1242,3 +1242,78 @@ async def test_new_db_has_artifact_columns(db: StateDB):
     cols = {r["name"] for r in rows}
     assert "artifact_contract_json" in cols
     assert "artifact_verification_json" in cols
+
+
+# ── readonly=True: no schema application, no create-on-open ──────────────────
+
+
+async def test_readonly_open_rejects_missing_file(tmp_path):
+    """readonly=True against a path with no existing file raises loudly and
+    never creates one — a read-only consumer must not have a database-creation
+    side effect."""
+    db_path = tmp_path / "does_not_exist.db"
+    state = StateDB(db_path, readonly=True)
+    with pytest.raises(FileNotFoundError):
+        await state.open()
+    assert not db_path.exists()
+
+
+async def test_readonly_open_never_calls_apply_schema(tmp_path, monkeypatch):
+    """readonly=True skips _apply_schema() entirely — the read-only open path
+    must never reconcile columns, run metadata.create_all, or seed rows."""
+    db_path = tmp_path / "seeded.db"
+    # Seed a real file via a normal (writable) open first.
+    seed = StateDB(db_path)
+    await seed.open()
+    prog_id = uid()
+    await seed.create_progression(prog_id)
+    await seed.create_session({"id": uid(), "progression_id": prog_id, "status": "completed"})
+    await seed.close()
+
+    async def _boom(self):
+        raise AssertionError("_apply_schema() must not be called in readonly mode")
+
+    monkeypatch.setattr(StateDB, "_apply_schema", _boom)
+
+    ro = StateDB(db_path, readonly=True)
+    async with ro as db:
+        rows = await db.fetch_all("SELECT COUNT(*) AS n FROM sessions")
+    assert rows[0]["n"] == 1
+
+
+async def test_readonly_open_skips_write_lock_event(tmp_path):
+    """readonly=True must not install the BEGIN IMMEDIATE connect-event —
+    that event only exists to reserve a write lock, which a read-only
+    accessor has no business taking."""
+    db_path = tmp_path / "no_write_lock.db"
+    seed = StateDB(db_path)
+    await seed.open()
+    await seed.close()
+
+    ro = StateDB(db_path, readonly=True)
+    await ro.open()
+    try:
+        async with ro._read() as conn:
+            from sqlalchemy import text
+
+            row = (await conn.execute(text("PRAGMA query_only"))).first()
+            assert row[0] == 1
+    finally:
+        await ro.close()
+
+
+async def test_readonly_rejects_write_attempt(tmp_path):
+    """Defense in depth: even if a future code path tried to write through a
+    readonly=True StateDB, SQLite itself refuses (mode=ro + query_only=1)."""
+    db_path = tmp_path / "reject_write.db"
+    seed = StateDB(db_path)
+    await seed.open()
+    await seed.close()
+
+    ro = StateDB(db_path, readonly=True)
+    await ro.open()
+    try:
+        with pytest.raises(Exception, match="readonly|read-only"):
+            await ro.execute("INSERT INTO schema_meta (key, value) VALUES ('x', 'y')")
+    finally:
+        await ro.close()

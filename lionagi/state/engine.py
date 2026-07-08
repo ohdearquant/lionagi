@@ -153,3 +153,53 @@ def make_engine(url: str, **overrides):
         kwargs["connect_args"] = connect_args
     kwargs.update(overrides)
     return create_async_engine(url, **kwargs)
+
+
+_SQLITE_ASYNC_PREFIX = "sqlite+aiosqlite:///"
+
+
+def make_readonly_engine(url: str, **overrides):
+    """Read-only AsyncEngine over an EXISTING SQLite file.
+
+    Opens the file through SQLite's own URI read-only mode (`mode=ro`) rather
+    than `make_engine()`'s normal path, so:
+
+    - no schema/PRAGMA write ever reaches the file (the OS-level open is
+      read-only; SQLite raises if any statement attempts to write)
+    - none of `make_engine()`'s mutating connect-time PRAGMAs are applied
+      (`journal_mode`, `synchronous`, `wal_autocheckpoint` all persist into
+      the database file itself and are skipped here on purpose)
+    - only `busy_timeout` (session-scoped, never persisted) and `query_only`
+      (belt-and-suspenders: SQLite itself rejects any write statement) are
+      set
+
+    Sqlite only — a caller wanting a genuinely read-only Postgres connection
+    should use a read-only DB role instead; there is no equivalent "connect
+    without side effects" mode to fake at this layer for Postgres.
+    """
+    from sqlalchemy.event import listen
+    from sqlalchemy.ext.asyncio import create_async_engine
+
+    dialect = dialect_of(url)
+    if dialect != "sqlite":
+        raise ValueError(f"make_readonly_engine() only supports sqlite, got dialect={dialect!r}")
+    if not url.startswith(_SQLITE_ASYNC_PREFIX):
+        raise ValueError(f"unexpected sqlite URL shape for read-only open: {url!r}")
+
+    raw_path = url[len(_SQLITE_ASYNC_PREFIX) :]
+    if raw_path == ":memory:":
+        raise ValueError("make_readonly_engine() requires an on-disk database, not :memory:")
+
+    ro_url = f"{_SQLITE_ASYNC_PREFIX}file:{raw_path}?mode=ro&uri=true"
+    kwargs: dict = {"echo": False, "json_serializer": _dumps_with_uuid}
+    kwargs.update(overrides)
+    engine = create_async_engine(ro_url, **kwargs)
+
+    def _apply_readonly_pragmas(dbapi_conn, _connection_record):
+        cursor = dbapi_conn.cursor()
+        cursor.execute(f"PRAGMA busy_timeout = {_SQLITE_BUSY_TIMEOUT_MS}")
+        cursor.execute("PRAGMA query_only = 1")
+        cursor.close()
+
+    listen(engine.sync_engine, "connect", _apply_readonly_pragmas)
+    return engine

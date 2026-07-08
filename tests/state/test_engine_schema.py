@@ -12,7 +12,13 @@ import pytest
 import sqlalchemy as sa
 from sqlalchemy.ext.asyncio import create_async_engine
 
-from lionagi.state.engine import dialect_of, make_engine, mask_db_url, normalize_state_db_url
+from lionagi.state.engine import (
+    dialect_of,
+    make_engine,
+    make_readonly_engine,
+    mask_db_url,
+    normalize_state_db_url,
+)
 from lionagi.state.schema_meta import metadata
 
 # ── normalize_state_db_url ────────────────────────────────────────────────────
@@ -133,6 +139,52 @@ def test_make_engine_sqlite_creates_engine():
     import asyncio
 
     asyncio.run(engine.dispose())
+
+
+# ── make_readonly_engine ──────────────────────────────────────────────────────
+
+
+def test_make_readonly_engine_rejects_postgres():
+    with pytest.raises(ValueError, match="only supports sqlite"):
+        make_readonly_engine("postgresql+asyncpg://host/db")
+
+
+def test_make_readonly_engine_rejects_memory():
+    with pytest.raises(ValueError, match=":memory:"):
+        make_readonly_engine("sqlite+aiosqlite:///:memory:")
+
+
+async def test_make_readonly_engine_can_read_existing_file(tmp_path):
+    db_file = tmp_path / "ro_test.db"
+    write_engine = create_async_engine(f"sqlite+aiosqlite:///{db_file}", echo=False)
+    async with write_engine.begin() as conn:
+        await conn.execute(sa.text("CREATE TABLE t (id INTEGER PRIMARY KEY, v TEXT)"))
+        await conn.execute(sa.text("INSERT INTO t (v) VALUES ('hello')"))
+    await write_engine.dispose()
+
+    ro_engine = make_readonly_engine(f"sqlite+aiosqlite:///{db_file}")
+    try:
+        async with ro_engine.connect() as conn:
+            rows = (await conn.execute(sa.text("SELECT v FROM t"))).all()
+            assert [r[0] for r in rows] == ["hello"]
+    finally:
+        await ro_engine.dispose()
+
+
+async def test_make_readonly_engine_rejects_writes(tmp_path):
+    db_file = tmp_path / "ro_write_test.db"
+    write_engine = create_async_engine(f"sqlite+aiosqlite:///{db_file}", echo=False)
+    async with write_engine.begin() as conn:
+        await conn.execute(sa.text("CREATE TABLE t (id INTEGER PRIMARY KEY, v TEXT)"))
+    await write_engine.dispose()
+
+    ro_engine = make_readonly_engine(f"sqlite+aiosqlite:///{db_file}")
+    try:
+        with pytest.raises(Exception, match="readonly|read-only"):
+            async with ro_engine.begin() as conn:
+                await conn.execute(sa.text("INSERT INTO t (v) VALUES ('nope')"))
+    finally:
+        await ro_engine.dispose()
 
 
 # ── Schema-parity: MetaData vs schema.sql (SQLite leg, always runs) ──────────

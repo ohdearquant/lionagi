@@ -18,7 +18,12 @@ from lionagi._paths import LIONAGI_HOME
 from lionagi.config import settings
 from lionagi.ln import json_dumps as _json_dumps
 from lionagi.ln.concurrency import Lock
-from lionagi.state.engine import dialect_of, make_engine, normalize_state_db_url
+from lionagi.state.engine import (
+    dialect_of,
+    make_engine,
+    make_readonly_engine,
+    normalize_state_db_url,
+)
 from lionagi.state.reasons import (
     PlayReasons as _PlayReasons,
 )
@@ -389,7 +394,13 @@ def _install_begin_immediate(sync_engine) -> None:
 class StateDB:
     """Async SQLAlchemy state layer for sessions, branches, messages, and progressions."""
 
-    def __init__(self, path: str | Path | None = None, *, url: str | None = None):
+    def __init__(
+        self,
+        path: str | Path | None = None,
+        *,
+        url: str | None = None,
+        readonly: bool = False,
+    ):
         raw = url if url is not None else path
         if raw is None:
             raw = settings.LIONAGI_STATE_DB_URL  # may be None
@@ -397,6 +408,11 @@ class StateDB:
             raw = DEFAULT_DB_PATH  # module-level; tests can monkeypatch db_mod.DEFAULT_DB_PATH
         self.url = normalize_state_db_url(raw)
         self.dialect = dialect_of(self.url)  # "sqlite" | "postgresql"
+        # Read-only mode: open() skips schema application, the BEGIN IMMEDIATE
+        # write-lock event, and every mutating PRAGMA, and opens the file via
+        # SQLite's own read-only URI mode instead — see make_readonly_engine().
+        # A missing file is a loud error, never a silent create.
+        self.readonly = readonly
         self._engine = None
         # Per-(kind, name) lock to serialize version increment for save_definition.
         self._definition_locks: dict[tuple[str, str], Lock] = {}
@@ -430,7 +446,20 @@ class StateDB:
         if self.dialect == "sqlite":
             p = self.path
             if p is not None and str(p) != ":memory:":
-                p.parent.mkdir(parents=True, exist_ok=True)
+                if self.readonly:
+                    if not p.exists():
+                        raise FileNotFoundError(
+                            f"state.db not found at {p} — read-only open requires an "
+                            "existing database file (it will never be created)"
+                        )
+                else:
+                    p.parent.mkdir(parents=True, exist_ok=True)
+        if self.readonly:
+            # No make_engine(), no _install_begin_immediate(), no _apply_schema():
+            # every one of those mutates the file (PRAGMAs persisted into the
+            # header, schema/seed writes, a reserved BEGIN IMMEDIATE write lock).
+            self._engine = make_readonly_engine(self.url)
+            return
         self._engine = make_engine(self.url)
         if self.dialect == "sqlite":
             _install_begin_immediate(self._engine.sync_engine)

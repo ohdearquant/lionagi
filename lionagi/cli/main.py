@@ -32,6 +32,7 @@ from .orchestrate import (
 )
 from .skill import run_skill
 from .state import add_state_subparser, run_state
+from .stats import add_stats_subparser, run_stats
 from .team import add_team_subparser, run_team
 
 
@@ -364,6 +365,7 @@ def main(argv: list[str] | None = None) -> int:
     add_monitor_subparser(sub)
     add_dispatch_subparser(sub)
     add_doctor_subparser(sub)
+    add_stats_subparser(sub)
 
     # If the user is invoking `li o flow -p NAME`, inject the playbook's
     # declared args as flags on the flow sub-parser BEFORE argparse runs,
@@ -487,6 +489,9 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.command == "doctor":
         return run_doctor(args)
+
+    if args.command == "stats":
+        return run_stats(args)
 
     parser.print_help()
     return 1
