@@ -277,9 +277,14 @@ async def test_tick_github_releases_slot_when_max_runs_reservation_raises(monkey
 
     monkeypatch.setattr(engine, "_reserve_max_runs_budget", _boom)
 
+    from lionagi.studio.scheduler.github import GithubPollItem
+
+    poll_result = [
+        GithubPollItem(event={"pr_number": 1}, updated_at="2026-07-07T10:00:00Z", dispatchable=True)
+    ]
     with patch(
         "lionagi.studio.scheduler.github.github_poll",
-        new=AsyncMock(return_value=[{"number": 1}]),
+        new=AsyncMock(return_value=poll_result),
     ):
         with pytest.raises(RuntimeError, match="count query failed"):
             await engine._tick_github(schedule, now=10_000.0)
@@ -299,10 +304,15 @@ async def test_tick_github_fires_and_releases_slot_on_completion(monkeypatch):
         trigger_type="github_poll", github_repo="acme/widgets", last_fired_at=0
     )
 
+    from lionagi.studio.scheduler.github import GithubPollItem
+
+    poll_result = [
+        GithubPollItem(event={"pr_number": 1}, updated_at="2026-07-07T10:00:00Z", dispatchable=True)
+    ]
     with (
         patch(
             "lionagi.studio.scheduler.github.github_poll",
-            new=AsyncMock(return_value=[{"number": 1}]),
+            new=AsyncMock(return_value=poll_result),
         ),
         patch(
             "lionagi.studio.scheduler.subprocess.build_argv",

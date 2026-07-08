@@ -500,57 +500,109 @@ class SchedulerEngine:
             await self._disable_for_budget_exhausted(schedule, now)
             return
 
-        # Reserve the global slot before polling: a filtered/no-slot poll
-        # must not fetch-and-advance-cursor-then-discard.
-        slot_allowed, slot_claim = await self._reserve_global_slot()
+        # Reserve one global slot before polling: a filtered/no-slot poll
+        # must not fetch-and-advance-cursor-then-discard. This first slot is
+        # handed to whichever event ends up firing first below; any further
+        # dispatched events in the same poll reserve their own slot.
+        slot_allowed, pre_slot_claim = await self._reserve_global_slot()
         if not slot_allowed:
             await self._maybe_record_deferred(schedule, now)
             return
 
         from .github import github_poll
 
-        # Every await between reserving the slot and handing it to _fire()
-        # (github_poll, the max_runs reservation, or a cancellation at either)
-        # must release the slot on failure — otherwise a transient DB/count
-        # error mid-poll leaks the slot permanently and eventually saturates
-        # the cap until restart. A single finally covers all of them; once the
-        # claims are passed to _fire() (which owns their release from then on)
-        # handed_off is set so this finally leaves them alone.
-        max_runs_claim: _MaxRunsClaim | None = None
-        handed_off = False
+        sid = schedule["id"]
+        # Every await between reserving pre_slot_claim and handing it off to
+        # the first dispatched _fire() (github_poll, that event's max_runs
+        # reservation, or a cancellation at either) must release it on
+        # failure — otherwise a transient DB/count error mid-poll leaks the
+        # slot permanently. pre_slot_claim is nulled out the moment it is
+        # either handed to _fire() (which owns its release from then on) or
+        # released inline (e.g. a max_runs refusal on the first event), so
+        # this finally only ever fires for the untouched case.
         try:
-            new_events = await github_poll(schedule)
-            if not new_events:
+            polled = await github_poll(schedule)
+            if not polled:
                 return
 
-            allowed, max_runs_claim = await self._reserve_max_runs_budget(schedule)
-            if not allowed:
+            cursor = schedule.get("github_cursor")
+            drop_reason: str | None = None
+            dropped_prs: list[Any] = []
+
+            for idx, item in enumerate(polled):
+                if not item.dispatchable:
+                    # Filtered-out PRs (e.g. drafts under a non-draft filter)
+                    # consume no budget; the cursor can always advance past
+                    # them so they aren't re-listed forever.
+                    cursor = item.updated_at
+                    continue
+
+                if pre_slot_claim is not None:
+                    slot_claim, pre_slot_claim = pre_slot_claim, None
+                else:
+                    slot_allowed, slot_claim = await self._reserve_global_slot()
+                    if not slot_allowed:
+                        drop_reason = "global concurrent-fire cap reached"
+                        dropped_prs = [
+                            e.event.get("pr_number") for e in polled[idx:] if e.dispatchable
+                        ]
+                        break
+
+                # slot_claim is now reserved for this event specifically. A
+                # failure (refusal *or* a raised exception) anywhere before
+                # it is handed off to _fire() must still release it, or a
+                # transient error here leaks the slot permanently.
+                slot_handed_off = False
+                try:
+                    allowed, max_runs_claim = await self._reserve_max_runs_budget(schedule)
+                    if not allowed:
+                        drop_reason = f"max_runs={schedule.get('max_runs')} exhausted"
+                        dropped_prs = [
+                            e.event.get("pr_number") for e in polled[idx:] if e.dispatchable
+                        ]
+                        break
+
+                    ctx = {
+                        "github_events": [item.event],
+                        "repo": schedule.get("github_repo"),
+                        "fired_at": now,
+                    }
+                    run_id = uuid.uuid4().hex[:12]
+                    slot_handed_off = True
+                    await self._fire(
+                        schedule,
+                        run_id,
+                        trigger_context=ctx,
+                        max_runs_claim=max_runs_claim,
+                        global_slot_claim=slot_claim,
+                    )
+                    # Only advance the cursor past a dispatchable event once
+                    # it has actually been fired — the invariant this
+                    # rewrite exists to hold. Any event left undispatched by
+                    # a break above (and everything after it, since PRs are
+                    # processed oldest-first) must be re-listed on the next
+                    # poll.
+                    cursor = item.updated_at
+                finally:
+                    if not slot_handed_off:
+                        slot_claim.release()
+
+            if drop_reason and dropped_prs:
                 _log.info(
-                    "Schedule %s (%s) has exhausted max_runs; skipping github_poll fire",
+                    "Schedule %s (%s): %d github event(s) not dispatched this "
+                    "poll (%s); PR(s) %s deferred to the next poll",
                     schedule.get("name"),
-                    schedule["id"],
+                    sid,
+                    len(dropped_prs),
+                    drop_reason,
+                    dropped_prs,
                 )
-                return
-            ctx = {
-                "github_events": new_events,
-                "repo": schedule.get("github_repo"),
-                "fired_at": now,
-            }
-            run_id = uuid.uuid4().hex[:12]
-            handed_off = True
-            await self._fire(
-                schedule,
-                run_id,
-                trigger_context=ctx,
-                max_runs_claim=max_runs_claim,
-                global_slot_claim=slot_claim,
-            )
+
+            if cursor != schedule.get("github_cursor"):
+                await self._svc.update_schedule(sid, github_cursor=cursor)
         finally:
-            if not handed_off:
-                if slot_claim is not None:
-                    slot_claim.release()
-                if max_runs_claim is not None:
-                    max_runs_claim.release()
+            if pre_slot_claim is not None:
+                pre_slot_claim.release()
 
     async def _reserve_max_runs_budget(self, schedule: dict) -> tuple[bool, _MaxRunsClaim | None]:
         """Atomically claim one top-level fire against schedule['max_runs'].

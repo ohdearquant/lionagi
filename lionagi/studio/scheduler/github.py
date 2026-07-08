@@ -7,13 +7,31 @@ from __future__ import annotations
 import asyncio
 import logging
 import re
+from dataclasses import dataclass
 from typing import Any
 
 import httpx
 
-from lionagi.state.db import StateDB
-
 _log = logging.getLogger(__name__)
+
+
+@dataclass(frozen=True, slots=True)
+class GithubPollItem:
+    """One PR observed by a poll, past the previously stored cursor.
+
+    ``event`` is always populated (even when ``dispatchable`` is False) so a
+    caller can log which PR was seen without firing it. ``updated_at`` is the
+    PR's raw GitHub timestamp string, used as the cursor high-water mark.
+    ``dispatchable`` is False when ``github_filter`` (e.g. a draft filter)
+    excludes the PR from firing -- it is still returned, not silently
+    dropped, so the caller can advance the cursor past it without the PR
+    being re-listed on every subsequent poll.
+    """
+
+    event: dict[str, Any]
+    updated_at: str
+    dispatchable: bool
+
 
 _client: httpx.AsyncClient | None = None
 
@@ -128,8 +146,21 @@ async def _get_gh_token() -> str | None:
     return None
 
 
-async def github_poll(schedule: dict) -> list[dict[str, Any]]:
-    """Poll GitHub for new/updated PRs. Returns list of new PR dicts."""
+async def github_poll(schedule: dict) -> list[GithubPollItem]:
+    """Poll GitHub for PRs newer than the stored cursor.
+
+    Returns items ordered oldest-``updated_at``-first (the GitHub API itself
+    returns them newest-first) so a caller advancing the persisted cursor
+    incrementally, one dispatched item at a time, stays monotone.
+
+    Does NOT persist ``github_cursor`` -- that is the caller's job now
+    (``SchedulerEngine._tick_github``). Fire-per-event budget gating means
+    some of the dispatchable items returned here may not actually get fired
+    this poll (max_runs/global-slot exhaustion), and those must be re-listed
+    on the next poll rather than silently skipped, so only the caller -- who
+    knows what it actually dispatched -- can decide how far the cursor is
+    safe to advance.
+    """
     repo = schedule.get("github_repo")
     if not repo:
         return []
@@ -199,51 +230,33 @@ async def github_poll(schedule: dict) -> list[dict[str, Any]]:
     if remaining < 10:
         _log.warning("GitHub rate limit low: %d remaining for %s", remaining, repo)
 
-    new_etag = resp.headers.get("etag")
     cursor = schedule.get("github_cursor")
     prs = resp.json()
 
     draft_filter = github_filter.get("draft")
-    new_prs = []
-    max_updated = cursor
+    items: list[GithubPollItem] = []
     for pr in prs:
         updated = pr.get("updated_at", "")
         if cursor and updated <= cursor:
             continue
-        # New PR past the cursor high-water mark. Advance the cursor for it
-        # even if the draft filter drops it below, so a filtered PR is not
-        # re-listed on every poll — a draft toggle bumps updated_at and
-        # naturally re-qualifies the PR when its draft state changes.
-        if not max_updated or updated > max_updated:
-            max_updated = updated
         is_draft = bool(pr.get("draft", False))
         # Only a real JSON boolean narrows the fire set. A malformed non-bool
         # draft filter is ignored (fail open to no filtering) rather than
         # silently matching the wrong side — the string "false" is truthy.
-        if isinstance(draft_filter, bool) and is_draft != draft_filter:
-            continue
-        new_prs.append(
-            {
-                "pr_number": pr.get("number"),
-                "pr_title": pr.get("title"),
-                "pr_url": pr.get("html_url"),
-                "pr_author": (pr.get("user") or {}).get("login"),
-                "updated_at": updated,
-                "head_sha": (pr.get("head") or {}).get("sha"),
-                "draft": is_draft,
-            }
-        )
+        dispatchable = not (isinstance(draft_filter, bool) and is_draft != draft_filter)
+        event = {
+            "pr_number": pr.get("number"),
+            "pr_title": pr.get("title"),
+            "pr_url": pr.get("html_url"),
+            "pr_author": (pr.get("user") or {}).get("login"),
+            "updated_at": updated,
+            "head_sha": (pr.get("head") or {}).get("sha"),
+            "draft": is_draft,
+        }
+        items.append(GithubPollItem(event=event, updated_at=updated, dispatchable=dispatchable))
 
-    # Update cursor on the schedule when new PRs found or etag refreshed
-    update_fields: dict[str, Any] = {}
-    if max_updated and max_updated != cursor:
-        update_fields["github_cursor"] = max_updated
-    if new_etag and not update_fields:
-        # No new PRs but etag changed -- update cursor to avoid redundant refetches
-        # We don't have a dedicated etag column; skip persisting etag alone
-        pass
-    if update_fields:
-        async with StateDB() as db:
-            await db.update_schedule(schedule["id"], **update_fields)
-
-    return new_prs
+    # The API returns PRs sorted by updated_at desc; the caller advances the
+    # persisted cursor incrementally as it processes items in order, so they
+    # must come back oldest-first.
+    items.reverse()
+    return items
