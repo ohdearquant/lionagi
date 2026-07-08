@@ -247,9 +247,11 @@ async def test_tick_github_releases_slot_on_no_events(monkeypatch):
         trigger_type="github_poll", github_repo="acme/widgets", last_fired_at=0
     )
 
+    from lionagi.studio.scheduler.github import GithubPollResult
+
     with patch(
         "lionagi.studio.scheduler.github.github_poll",
-        new=AsyncMock(return_value=[]),
+        new=AsyncMock(return_value=GithubPollResult(items=[], scan_complete=True)),
     ):
         await engine._tick_github(schedule, now=10_000.0)
 
@@ -277,11 +279,16 @@ async def test_tick_github_releases_slot_when_max_runs_reservation_raises(monkey
 
     monkeypatch.setattr(engine, "_reserve_max_runs_budget", _boom)
 
-    from lionagi.studio.scheduler.github import GithubPollItem
+    from lionagi.studio.scheduler.github import GithubPollItem, GithubPollResult
 
-    poll_result = [
-        GithubPollItem(event={"pr_number": 1}, updated_at="2026-07-07T10:00:00Z", dispatchable=True)
-    ]
+    poll_result = GithubPollResult(
+        items=[
+            GithubPollItem(
+                event={"pr_number": 1}, updated_at="2026-07-07T10:00:00Z", dispatchable=True
+            )
+        ],
+        scan_complete=True,
+    )
     with patch(
         "lionagi.studio.scheduler.github.github_poll",
         new=AsyncMock(return_value=poll_result),
@@ -314,11 +321,16 @@ async def test_tick_github_max_runs_refusal_does_not_crash_when_cap_unlimited(mo
 
     monkeypatch.setattr(engine, "_reserve_max_runs_budget", _refuse)
 
-    from lionagi.studio.scheduler.github import GithubPollItem
+    from lionagi.studio.scheduler.github import GithubPollItem, GithubPollResult
 
-    poll_result = [
-        GithubPollItem(event={"pr_number": 1}, updated_at="2026-07-07T10:00:00Z", dispatchable=True)
-    ]
+    poll_result = GithubPollResult(
+        items=[
+            GithubPollItem(
+                event={"pr_number": 1}, updated_at="2026-07-07T10:00:00Z", dispatchable=True
+            )
+        ],
+        scan_complete=True,
+    )
     with patch(
         "lionagi.studio.scheduler.github.github_poll",
         new=AsyncMock(return_value=poll_result),
@@ -344,11 +356,16 @@ async def test_tick_github_fires_and_releases_slot_on_completion(monkeypatch):
         trigger_type="github_poll", github_repo="acme/widgets", last_fired_at=0
     )
 
-    from lionagi.studio.scheduler.github import GithubPollItem
+    from lionagi.studio.scheduler.github import GithubPollItem, GithubPollResult
 
-    poll_result = [
-        GithubPollItem(event={"pr_number": 1}, updated_at="2026-07-07T10:00:00Z", dispatchable=True)
-    ]
+    poll_result = GithubPollResult(
+        items=[
+            GithubPollItem(
+                event={"pr_number": 1}, updated_at="2026-07-07T10:00:00Z", dispatchable=True
+            )
+        ],
+        scan_complete=True,
+    )
     with (
         patch(
             "lionagi.studio.scheduler.github.github_poll",

@@ -19,7 +19,7 @@ import pytest
 
 from lionagi.studio.scheduler import github as gh_mod
 from lionagi.studio.scheduler.engine import SchedulerEngine
-from lionagi.studio.scheduler.github import GithubPollItem
+from lionagi.studio.scheduler.github import GithubPollItem, GithubPollResult
 
 
 def _minimal_schedule(**overrides) -> dict:
@@ -109,7 +109,10 @@ async def test_multi_event_poll_fires_once_per_dispatchable_event():
 
     p_build, p_spawn = _spawn_patches()
     with (
-        patch("lionagi.studio.scheduler.github.github_poll", new=AsyncMock(return_value=polled)),
+        patch(
+            "lionagi.studio.scheduler.github.github_poll",
+            new=AsyncMock(return_value=GithubPollResult(items=polled, scan_complete=True)),
+        ),
         p_build,
         p_spawn,
     ):
@@ -143,7 +146,10 @@ async def test_single_event_poll_behavior_unchanged():
 
     p_build, p_spawn = _spawn_patches()
     with (
-        patch("lionagi.studio.scheduler.github.github_poll", new=AsyncMock(return_value=polled)),
+        patch(
+            "lionagi.studio.scheduler.github.github_poll",
+            new=AsyncMock(return_value=GithubPollResult(items=polled, scan_complete=True)),
+        ),
         p_build,
         p_spawn,
     ):
@@ -185,7 +191,10 @@ async def test_max_runs_exhaustion_mid_batch_stops_cursor_before_undispatched(ca
 
     p_build, p_spawn = _spawn_patches()
     with (
-        patch("lionagi.studio.scheduler.github.github_poll", new=AsyncMock(return_value=polled)),
+        patch(
+            "lionagi.studio.scheduler.github.github_poll",
+            new=AsyncMock(return_value=GithubPollResult(items=polled, scan_complete=True)),
+        ),
         p_build,
         p_spawn,
         caplog.at_level("INFO"),
@@ -233,7 +242,10 @@ async def test_global_slot_exhaustion_mid_batch_stops_cursor_before_undispatched
 
     p_build, p_spawn = _spawn_patches()
     with (
-        patch("lionagi.studio.scheduler.github.github_poll", new=AsyncMock(return_value=polled)),
+        patch(
+            "lionagi.studio.scheduler.github.github_poll",
+            new=AsyncMock(return_value=GithubPollResult(items=polled, scan_complete=True)),
+        ),
         patch.object(engine, "_reserve_global_slot", side_effect=_reserve_limited),
         p_build,
         p_spawn,
@@ -269,7 +281,10 @@ async def test_filtered_event_between_dispatched_events_still_advances_cursor():
 
     p_build, p_spawn = _spawn_patches()
     with (
-        patch("lionagi.studio.scheduler.github.github_poll", new=AsyncMock(return_value=polled)),
+        patch(
+            "lionagi.studio.scheduler.github.github_poll",
+            new=AsyncMock(return_value=GithubPollResult(items=polled, scan_complete=True)),
+        ),
         p_build,
         p_spawn,
     ):
@@ -286,7 +301,7 @@ async def test_filtered_event_between_dispatched_events_still_advances_cursor():
 # ---------------------------------------------------------------------------
 
 
-def _pr(number, updated):
+def _pr(number, updated, *, state="open", merged_at=None):
     return {
         "number": number,
         "title": f"PR {number}",
@@ -295,14 +310,18 @@ def _pr(number, updated):
         "updated_at": updated,
         "draft": False,
         "head": {"sha": f"sha{number}"},
+        "state": state,
+        "merged_at": merged_at,
     }
 
 
 class _FakeResp:
-    def __init__(self, prs):
+    def __init__(self, prs, link=None):
         self._prs = prs
         self.status_code = 200
         self.headers = {"x-ratelimit-remaining": "100", "etag": '"abc"'}
+        if link:
+            self.headers["link"] = link
 
     def json(self):
         return self._prs
@@ -314,6 +333,27 @@ class _FakeClient:
 
     async def get(self, url, headers=None, params=None):
         return _FakeResp(self._prs)
+
+
+class _FakePaginatedClient:
+    """Serves a fixed page sequence, each carrying a Link: rel="next" header
+    except the last -- mirrors the fake used in test_github_poller.py for
+    exercising github_poll()'s merged-mode pagination loop end to end."""
+
+    def __init__(self, pages: list[list[dict]]):
+        self._pages = pages
+        self.requests: list[dict] = []
+
+    async def get(self, url, headers=None, params=None):
+        page_index = len(self.requests)
+        self.requests.append({"url": url, "params": params})
+        prs = self._pages[page_index] if page_index < len(self._pages) else []
+        has_next = page_index + 1 < len(self._pages)
+        link = None
+        if has_next:
+            next_url = f"https://api.github.com/repos/acme/widgets/pulls?page={page_index + 2}"
+            link = f'<{next_url}>; rel="next"'
+        return _FakeResp(prs, link=link)
 
 
 @pytest.mark.asyncio
@@ -360,5 +400,98 @@ async def test_undispatched_event_is_relisted_on_next_poll(monkeypatch, caplog):
 
     # Simulate the next tick's poll with the persisted cursor.
     schedule_next = {**schedule, "github_cursor": persisted_cursor}
-    items = await gh_mod.github_poll(schedule_next)
+    items = (await gh_mod.github_poll(schedule_next)).items
     assert [i.event["pr_number"] for i in items] == [2]
+
+
+# ---------------------------------------------------------------------------
+# Truncated merged-mode scan: no permanent skip, no duplicate dispatch
+# across two consecutive ticks.
+# ---------------------------------------------------------------------------
+
+
+def _closed_page(hour: int, base_number: int, *, merges: dict[int, str] | None = None):
+    """20 closed PRs at a fixed hour, minutes descending -- one fake
+    "page" of a merged-mode poll response. ``merges`` maps a within-page
+    index to a merged_at value for that PR (closed-but-unmerged otherwise)."""
+    merges = merges or {}
+    items = []
+    for i in range(20):
+        minute = 59 - i * 3
+        updated_at = f"2026-07-06T{hour:02d}:{minute:02d}:00Z"
+        items.append(_pr(base_number + i, updated_at, state="closed", merged_at=merges.get(i)))
+    return items
+
+
+@pytest.mark.asyncio
+async def test_merged_mode_truncated_scan_no_skip_no_duplicate_across_two_ticks(monkeypatch):
+    """A merged-mode poll that hits the page cap must not permanently skip an
+    event too close to the unproven boundary, nor re-fire an event it already
+    dispatched, once that event becomes safely reachable on a later poll."""
+    schedule = _minimal_schedule(github_filter={"event": "pr_merged"})
+
+    # Tick 1: 5 full pages of closed PRs (hits _MERGED_MODE_MAX_PAGES).
+    # PR 1405 sits mid-page-5, merged_at close to the truncation boundary --
+    # unsafe to dispatch this poll. PR 1410 merged long before the fetched
+    # window -- safely below the boundary, dispatchable this poll.
+    pages_tick1 = [
+        _closed_page(15, 1000),
+        _closed_page(14, 1100),
+        _closed_page(13, 1200),
+        _closed_page(12, 1300),
+        _closed_page(
+            11,
+            1400,
+            merges={5: "2026-07-06T11:44:00Z", 10: "2020-01-01T00:00:00Z"},
+        ),
+    ]
+
+    async def _fake_token():
+        return "faketoken"
+
+    monkeypatch.setattr(gh_mod, "_get_gh_token", _fake_token)
+    monkeypatch.setattr(gh_mod, "_get_client", lambda: _FakePaginatedClient(pages_tick1))
+
+    svc = _make_svc()
+    fired_prs: list[int] = []
+
+    async def _create_schedule_run(payload):
+        fired_prs.append(payload["trigger_context"]["github_events"][0]["pr_number"])
+
+    svc.create_schedule_run = AsyncMock(side_effect=_create_schedule_run)
+    svc.count_schedule_runs = AsyncMock(side_effect=lambda *a, **k: len(fired_prs))
+
+    engine = SchedulerEngine(svc=svc)
+
+    p_build, p_spawn = _spawn_patches()
+    with p_build, p_spawn:
+        await engine._tick_github(schedule, now=10_000.0)
+
+    # Only the safely-below-the-boundary PR fired. PR 1405 (unsafe) did not.
+    assert fired_prs == [1410]
+
+    persisted_cursor = None
+    for call in svc.update_schedule.await_args_list:
+        if "github_cursor" in call.kwargs:
+            persisted_cursor = call.kwargs["github_cursor"]
+    assert persisted_cursor == "2020-01-01T00:00:00Z"
+
+    # Tick 2: the underlying data has moved on (real GitHub would no longer
+    # surface the now-stale closed-unmerged noise ahead of PR 1405) -- a
+    # single short page is enough this time, so the scan completes safely.
+    pages_tick2 = [
+        [
+            _pr(2000, "2026-07-06T12:00:00Z", state="closed", merged_at=None),
+            _pr(1405, "2026-07-06T11:44:00Z", state="closed", merged_at="2026-07-06T11:44:00Z"),
+        ]
+    ]
+    monkeypatch.setattr(gh_mod, "_get_client", lambda: _FakePaginatedClient(pages_tick2))
+
+    schedule_next = {**schedule, "github_cursor": persisted_cursor, "last_fired_at": 10_000.0}
+    p_build2, p_spawn2 = _spawn_patches()
+    with p_build2, p_spawn2:
+        await engine._tick_github(schedule_next, now=20_000.0)
+
+    # PR 1405 is now dispatched exactly once; PR 1410 (already dispatched in
+    # tick 1) is not re-fired.
+    assert fired_prs == [1410, 1405]

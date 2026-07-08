@@ -8,7 +8,7 @@ import asyncio
 import logging
 import re
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, NamedTuple
 
 import httpx
 
@@ -37,6 +37,25 @@ class GithubPollItem:
     dispatchable: bool
 
 
+class GithubPollResult(NamedTuple):
+    """Return shape of ``github_poll()``.
+
+    ``scan_complete`` is False only when merged-mode pagination stopped for
+    an UNSAFE reason -- the ``_MERGED_MODE_MAX_PAGES`` cap was hit, or a
+    pagination fetch/status error truncated the scan -- rather than a safe
+    boundary (a short page, no ``rel="next"`` link, or the stored cursor was
+    reached). ``items`` has already had any event that could not be proven
+    complete filtered out in that case (see the truncation-safety filter in
+    ``github_poll``), so a caller does not need to re-derive that from item
+    counts; ``scan_complete`` exists for observability -- e.g. logging that
+    some events near the cursor boundary are being held for a later poll,
+    when a deeper or safely-bounded scan may resolve them.
+    """
+
+    items: list[GithubPollItem]
+    scan_complete: bool
+
+
 _client: httpx.AsyncClient | None = None
 
 # Merged-PR mode's dispatch key (merged_at) differs from the API's sort key
@@ -52,6 +71,18 @@ _client: httpx.AsyncClient | None = None
 # it is found on a later poll once the shallower unmerged noise ages out of
 # GitHub's "recently updated" ordering. Bounded latency, not bounded
 # correctness.
+#
+# That "cursor never advances past anything unseen" guarantee only holds
+# when the scan reaches a SAFE boundary (a short page, no next link, or the
+# stored cursor was reached): pages are sorted by updated_at desc, so
+# stopping there proves every unfetched PR has an older updated_at, and
+# merged_at <= updated_at, than everything already scanned. Stopping for an
+# UNSAFE reason instead -- the page cap above, or a pagination fetch/status
+# error -- proves nothing about what lies beyond the last fetched page.
+# github_poll() tracks this as GithubPollResult.scan_complete and drops any
+# item too close to that unproven boundary (see the truncation-safety
+# filter below) rather than risk advancing the cursor past an event an
+# unfetched page might still hold.
 _MERGED_MODE_MAX_PAGES = 5
 
 _LINK_NEXT_RE = re.compile(r'<([^>]+)>\s*;\s*rel="next"')
@@ -182,7 +213,7 @@ async def _get_gh_token() -> str | None:
     return None
 
 
-async def github_poll(schedule: dict) -> list[GithubPollItem]:
+async def github_poll(schedule: dict) -> GithubPollResult:
     """Poll GitHub for PRs newer than the stored cursor.
 
     Returns items ordered oldest-``updated_at``-first (the GitHub API itself
@@ -195,11 +226,12 @@ async def github_poll(schedule: dict) -> list[GithubPollItem]:
     this poll (max_runs/global-slot exhaustion), and those must be re-listed
     on the next poll rather than silently skipped, so only the caller -- who
     knows what it actually dispatched -- can decide how far the cursor is
-    safe to advance.
+    safe to advance. See ``GithubPollResult.scan_complete`` for the
+    equivalent truncation-safety concern in merged mode.
     """
     repo = schedule.get("github_repo")
     if not repo:
-        return []
+        return GithubPollResult(items=[], scan_complete=True)
 
     # Defense-in-depth: validate format before interpolating into the API URL.
     # The service write boundary applies the same check via _svc_validate_github_repo
@@ -215,12 +247,12 @@ async def github_poll(schedule: dict) -> list[GithubPollItem]:
             schedule.get("name"),
             repo,
         )
-        return []
+        return GithubPollResult(items=[], scan_complete=True)
 
     token = await _get_gh_token()
     if not token:
         _log.warning("No GitHub token available for polling %s", repo)
-        return []
+        return GithubPollResult(items=[], scan_complete=True)
 
     headers: dict[str, str] = {
         "Authorization": f"Bearer {token}",
@@ -256,14 +288,14 @@ async def github_poll(schedule: dict) -> list[GithubPollItem]:
         )
     except httpx.HTTPError:
         _log.exception("GitHub API request failed for %s", repo)
-        return []
+        return GithubPollResult(items=[], scan_complete=True)
 
     if resp.status_code == 304:
-        return []
+        return GithubPollResult(items=[], scan_complete=True)
 
     if resp.status_code != 200:
         _log.warning("GitHub API returned %d for %s", resp.status_code, repo)
-        return []
+        return GithubPollResult(items=[], scan_complete=True)
 
     remaining = int(resp.headers.get("x-ratelimit-remaining", "60"))
     if remaining < 10:
@@ -273,6 +305,12 @@ async def github_poll(schedule: dict) -> list[GithubPollItem]:
     per_page = int(params["per_page"])
     page = resp.json()
     prs = list(page)
+
+    # True once the scan has reached a boundary that PROVES no unfetched
+    # page could hold an event this poll needs to worry about (see the
+    # scan_complete docstring on GithubPollResult). Flipped to False below
+    # only when the loop stops for a reason that does NOT prove that.
+    scan_complete = True
 
     if merged_mode:
         # Page forward while the most recently fetched page was full (a
@@ -296,22 +334,44 @@ async def github_poll(schedule: dict) -> list[GithubPollItem]:
             except httpx.HTTPError:
                 _log.warning(
                     "GitHub API pagination request failed for %s while paging "
-                    "for merged PRs; using %d PR(s) fetched so far",
+                    "for merged PRs; using %d PR(s) fetched so far -- events "
+                    "too close to the unproven boundary are held for a later poll",
                     repo,
                     len(prs),
                 )
+                scan_complete = False
                 break
             if resp.status_code != 200:
                 _log.warning(
                     "GitHub API returned %d for %s during merged-PR pagination; "
-                    "using %d PR(s) fetched so far",
+                    "using %d PR(s) fetched so far -- events too close to the "
+                    "unproven boundary are held for a later poll",
                     resp.status_code,
                     repo,
                     len(prs),
                 )
+                scan_complete = False
                 break
             page = resp.json()
             prs.extend(page)
+        else:
+            # The for-loop ran out of pages to fetch (_MERGED_MODE_MAX_PAGES
+            # reached) without ever hitting one of the safe breaks above --
+            # there may still be more pages beyond this one.
+            scan_complete = False
+
+    # In merged mode, once the scan is truncated (unsafe boundary), any
+    # fetched PR whose cursor field (merged_at) sits at or past the oldest
+    # updated_at we actually fetched cannot be safely dispatched: we can't
+    # prove an unfetched page doesn't hold an older, still-undispatched
+    # merge, and the cursor can't advance past this PR without risking that
+    # merge being skipped forever. Deferring it (dropping it from this
+    # poll's items entirely, not just marking it non-dispatchable) also
+    # avoids a duplicate fire -- since the cursor stays behind it, it is
+    # re-fetched and reconsidered on a later poll instead.
+    unsafe_floor: str | None = None
+    if merged_mode and not scan_complete and prs:
+        unsafe_floor = min(pr.get("updated_at", "") for pr in prs)
 
     draft_filter = github_filter.get("draft")
     items: list[GithubPollItem] = []
@@ -331,6 +391,9 @@ async def github_poll(schedule: dict) -> list[GithubPollItem]:
             cursor_at = updated
 
         if cursor and cursor_at <= cursor:
+            continue
+
+        if unsafe_floor is not None and cursor_at >= unsafe_floor:
             continue
 
         is_draft = bool(pr.get("draft", False))
@@ -358,4 +421,4 @@ async def github_poll(schedule: dict) -> list[GithubPollItem]:
     # caller's incremental cursor advance stays monotone in both modes,
     # rather than relying on a bare reversal of API order.
     items.sort(key=lambda it: it.updated_at)
-    return items
+    return GithubPollResult(items=items, scan_complete=scan_complete)

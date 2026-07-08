@@ -542,7 +542,17 @@ class SchedulerEngine:
         # released inline (e.g. a max_runs refusal on the first event), so
         # this finally only ever fires for the untouched case.
         try:
-            polled = await github_poll(schedule)
+            poll_result = await github_poll(schedule)
+            polled = poll_result.items
+            if not poll_result.scan_complete:
+                _log.info(
+                    "Schedule %s (%s): merged-PR scan truncated this poll "
+                    "(page cap reached or a pagination fetch error) -- "
+                    "event(s) too close to the unproven boundary are held "
+                    "back for a later poll",
+                    schedule.get("name"),
+                    sid,
+                )
             if not polled:
                 return
 

@@ -14,6 +14,8 @@ from __future__ import annotations
 
 import asyncio
 
+import httpx
+
 from lionagi.studio.scheduler import github as gh_mod
 
 
@@ -87,6 +89,33 @@ def _install(monkeypatch, prs):
     return client
 
 
+class _FakeErrorClient:
+    """Serves *page0* with a next link, then raises httpx.HTTPError on any
+    subsequent pagination fetch -- for exercising github_poll's truncation
+    handling when a pagination request itself fails mid-scan."""
+
+    def __init__(self, page0):
+        self._page0 = page0
+        self.requests: list[dict] = []
+
+    async def get(self, url, headers=None, params=None):
+        self.requests.append({"url": url, "params": params})
+        if len(self.requests) == 1:
+            next_url = "https://api.github.com/repos/owner/name/pulls?page=2"
+            return _FakeResp(self._page0, link=f'<{next_url}>; rel="next"')
+        raise httpx.HTTPError("boom")
+
+
+def _install_error(monkeypatch, page0):
+    async def _fake_token():
+        return "faketoken"
+
+    client = _FakeErrorClient(page0)
+    monkeypatch.setattr(gh_mod, "_get_gh_token", _fake_token)
+    monkeypatch.setattr(gh_mod, "_get_client", lambda: client)
+    return client
+
+
 def _install_paginated(monkeypatch, pages):
     """Wire the poller's token and HTTP client to a multi-page fake."""
 
@@ -100,6 +129,10 @@ def _install_paginated(monkeypatch, pages):
 
 
 def _poll(schedule):
+    return asyncio.run(gh_mod.github_poll(schedule)).items
+
+
+def _poll_result(schedule):
     return asyncio.run(gh_mod.github_poll(schedule))
 
 
@@ -455,3 +488,69 @@ def test_github_poll_merged_mode_stops_paging_once_cursor_reached(monkeypatch):
     # Only the initial fetch -- page1's oldest item already reached the
     # cursor, so the pagination loop never follows Link: rel="next".
     assert len(client.requests) == 1
+
+
+def _closed_page(hour: int, base_number: int, *, merges: dict[int, str] | None = None):
+    """20 closed PRs at a fixed hour, minutes descending. ``merges`` maps a
+    within-page index to a merged_at value for that PR (unmerged otherwise)."""
+    merges = merges or {}
+    items = []
+    for i in range(20):
+        minute = 59 - i * 3
+        updated_at = f"2026-07-06T{hour:02d}:{minute:02d}:00Z"
+        items.append(_pr(base_number + i, updated_at, state="closed", merged_at=merges.get(i)))
+    return items
+
+
+def test_github_poll_merged_mode_cap_truncation_defers_unsafe_boundary_items(monkeypatch):
+    """Hitting _MERGED_MODE_MAX_PAGES (rather than a safe short-page/cursor
+    boundary) makes the scan incomplete: github_poll must not return, as
+    dispatchable, any item whose cursor field (merged_at) sits at or after
+    the oldest updated_at actually fetched -- advancing the cursor to that
+    item risks permanently skipping an unfetched, older, still-undispatched
+    merge. An item merged long before the fetched window entirely (safely
+    below that boundary) is unaffected and still returned.
+    """
+    pages = [
+        _closed_page(15, 1000),
+        _closed_page(14, 1100),
+        _closed_page(13, 1200),
+        _closed_page(12, 1300),
+        _closed_page(
+            11,
+            1400,
+            merges={5: "2026-07-06T11:44:00Z", 10: "2020-01-01T00:00:00Z"},
+        ),
+    ]
+    client = _install_paginated(monkeypatch, pages)
+    result = _poll_result(
+        {"id": "s1", "github_repo": "owner/name", "github_filter": {"event": "pr_merged"}}
+    )
+
+    assert result.scan_complete is False
+    # 5 requests: the cap (_MERGED_MODE_MAX_PAGES) was reached exactly.
+    assert len(client.requests) == 5
+    assert [i.event["pr_number"] for i in result.items] == [1410]
+    assert result.items[0].dispatchable is True
+
+
+def test_github_poll_merged_mode_pagination_error_defers_unsafe_boundary_items(monkeypatch):
+    """A pagination fetch/status error mid-scan is exactly as unsafe as
+    hitting the page cap -- the scan stopped without proving there's no
+    unfetched page beyond it, so the same truncation-safety filter applies
+    to whatever was fetched before the failure."""
+    page0 = _closed_page(
+        11,
+        1400,
+        merges={5: "2026-07-06T11:44:00Z", 10: "2020-01-01T00:00:00Z"},
+    )
+    client = _install_error(monkeypatch, page0)
+    result = _poll_result(
+        {"id": "s1", "github_repo": "owner/name", "github_filter": {"event": "pr_merged"}}
+    )
+
+    assert result.scan_complete is False
+    # 2 requests: the initial fetch, plus the pagination fetch that raised.
+    assert len(client.requests) == 2
+    assert [i.event["pr_number"] for i in result.items] == [1410]
+    assert result.items[0].dispatchable is True
