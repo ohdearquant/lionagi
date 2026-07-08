@@ -75,6 +75,25 @@ async def _create_sandbox(
     raise last if last else RuntimeError("sandbox create failed")
 
 
+async def strip_self_leak(sandbox, workdir: str) -> bool:
+    """Unconditionally remove ``bench/`` from a just-checked-out workspace.
+
+    Layout ruling (bench-v0 design contract §11 addendum): instances live in
+    per-repo PUBLIC ``bench/`` folders. Any ``base_commit`` at/after a repo's
+    ``bench/`` folder existing has the instance corpus — including this very
+    instance's own ``gold_patch`` — sitting INSIDE the agent's checkout. There
+    is no clean "is this instance affected" ordering test worth trusting (a
+    repo could rename/move the folder, backfill it, etc.), so the guard runs
+    unconditionally on every instance rather than trying to reason about which
+    ones are safe. Returns whether ``bench/`` was actually present (for
+    logging), not whether the instance needed it."""
+    check = await sandbox.exec(f"test -d {workdir}/bench && echo yes || echo no", cwd=workdir)
+    present = check.stdout.strip() == "yes"
+    if present:
+        await sandbox.exec(f"rm -rf {workdir}/bench", cwd=workdir)
+    return present
+
+
 async def run_one(instance: Instance, adapter_name: str, adapter, *, run_id: str) -> dict:
     """Run one (instance, adapter) cell inside a fresh sandbox; return a scored record."""
     t0 = time.monotonic()
@@ -87,6 +106,7 @@ async def run_one(instance: Instance, adapter_name: str, adapter, *, run_id: str
         await sb.clone(
             f"https://github.com/{instance.repo}.git", workdir, commit=instance.base_commit
         )
+        await strip_self_leak(sb, workdir)
         await sb.exec("pip install -e . -q", cwd=workdir, timeout=900)
 
         try:

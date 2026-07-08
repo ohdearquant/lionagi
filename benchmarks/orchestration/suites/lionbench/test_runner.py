@@ -4,13 +4,70 @@ re-derived; harness/stats.py owns its own correctness tests)."""
 
 from __future__ import annotations
 
+import subprocess
 import sys
+from dataclasses import dataclass
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from runner import contamination_split, enforce_derivation_split, summarize  # noqa: E402
+import pytest  # noqa: E402
+from runner import (  # noqa: E402
+    contamination_split,
+    enforce_derivation_split,
+    strip_self_leak,
+    summarize,
+)
 from schema import Instance, OracleSpec  # noqa: E402
+
+
+@dataclass
+class _ExecResult:
+    exit_code: int
+    stdout: str
+
+    @property
+    def ok(self) -> bool:
+        return self.exit_code == 0
+
+
+class _RealShellSandbox:
+    """Runs `exec` against a REAL local directory via subprocess — strip_self_leak
+    only issues plain `test -d`/`rm -rf` shell commands, so this is a faithful
+    stand-in for DaytonaSandbox.exec without touching Daytona/network at all."""
+
+    async def exec(self, command: str, *, cwd: str | None = None, **_):
+        r = subprocess.run(  # noqa: S602 — fixed test-only shell command, no untrusted input
+            command, shell=True, cwd=cwd, capture_output=True, text=True, check=False
+        )
+        return _ExecResult(exit_code=r.returncode, stdout=r.stdout)
+
+
+@pytest.mark.asyncio
+async def test_strip_self_leak_removes_bench_dir_from_real_workspace(tmp_path):
+    workdir = tmp_path / "repo"
+    (workdir / "bench" / "lionagi").mkdir(parents=True)
+    (workdir / "bench" / "lionagi" / "lionagi__1665.json").write_text("{}")
+    (workdir / "lionagi" / "lndl").mkdir(parents=True)
+    (workdir / "lionagi" / "lndl" / "lexer.py").write_text("# real source, unrelated")
+
+    present = await strip_self_leak(_RealShellSandbox(), str(workdir))
+
+    assert present is True
+    assert not (workdir / "bench").exists()
+    assert (workdir / "lionagi" / "lndl" / "lexer.py").exists()  # untouched
+
+
+@pytest.mark.asyncio
+async def test_strip_self_leak_is_a_noop_when_bench_absent(tmp_path):
+    workdir = tmp_path / "repo"
+    workdir.mkdir()
+    (workdir / "lionagi").mkdir()
+
+    present = await strip_self_leak(_RealShellSandbox(), str(workdir))
+
+    assert present is False
+    assert (workdir / "lionagi").exists()
 
 
 def _r(instance_id, subject, adapter, passed, merged_at):
