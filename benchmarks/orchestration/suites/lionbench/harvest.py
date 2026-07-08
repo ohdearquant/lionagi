@@ -4,7 +4,9 @@
         --repo ohdearquant/lionagi --pr 1843 [--out DIR]
 
 Pipeline per nomination (DESIGN_CONTRACT §7):
-  a. resolve the merge commit + base_commit (first parent) + full diff + PR/issue body via `gh`.
+  a. resolve base_commit (the PR's baseRefOid — these repos squash-merge, so the merge
+     commit's own parent is main's tip at merge time, NOT the PR's base; see harvest()) +
+     full diff + PR/issue body via `gh`.
   b. split the diff into test_patch (tests/, test_*.py, *_test.py, conftest.py) and gold_patch
      (everything else); reject if either side is empty.
   c. scrub the PR/issue text into a draft task_text (``needs_review=True`` — a human finalizes it).
@@ -72,7 +74,7 @@ def gh_pr_view(repo: str, pr: int) -> dict:
             "--repo",
             repo,
             "--json",
-            "mergeCommit,body,title,number,mergedAt,state",
+            "mergeCommit,baseRefOid,body,title,number,mergedAt,state",
         ]
     )
     return json.loads(out)
@@ -80,12 +82,6 @@ def gh_pr_view(repo: str, pr: int) -> dict:
 
 def gh_pr_diff(repo: str, pr: int) -> str:
     return _gh(["pr", "diff", str(pr), "--repo", repo])
-
-
-def gh_commit_parents(repo: str, sha: str) -> list[str]:
-    out = _gh(["api", f"repos/{repo}/commits/{sha}"])
-    data = json.loads(out)
-    return [p["sha"] for p in data.get("parents", [])]
 
 
 def gh_issue_body(repo: str, issue: int) -> str:
@@ -135,9 +131,15 @@ def split_diff(diff_text: str) -> tuple[str, str]:
 
 
 _FENCE_RE = re.compile(r"```.*?```", re.DOTALL)
-_DIFF_LINE_RE = re.compile(
-    r"^(diff --git |index [0-9a-f]|--- |\+\+\+ |@@ |[+-][^+-].*)$", re.MULTILINE
-)
+# Structural diff-header lines only (diff --git / index / ---, +++ / @@ hunk marker).
+# Deliberately NOT a bare "line starts with + or -" pattern: real diff *content*
+# lines almost always live inside a fenced code block (already stripped by
+# _FENCE_RE above), and a bare +/- prefix match is a false-positive magnet —
+# it nukes ordinary markdown bullet lists ("- **file.py** — did X") in PR
+# bodies, which is exactly the prose we want to KEEP (confirmed live against
+# PR #1665's body, which lost both its bulleted fix-summary lines to this
+# before the fix).
+_DIFF_LINE_RE = re.compile(r"^(diff --git |index [0-9a-f]|--- |\+\+\+ |@@ .*@@)$", re.MULTILINE)
 _ISSUE_NUM_RE = re.compile(r"#\d+")
 _AUDIT_LABEL_RE = re.compile(r"\b[A-Z][A-Z0-9]*-\d+\b|\bFinding\s+\d+\b", re.IGNORECASE)
 _FIX_LANGUAGE_RE = re.compile(
@@ -180,7 +182,14 @@ def infer_held_out_paths(test_patch: str) -> list[str]:
 
 
 def default_oracle_command(held_out_paths: list[str]) -> str:
-    return f"uv run pytest {' '.join(held_out_paths)} -q"
+    # --all-extras: this repo's test suite spans optional extras (studio's
+    # fastapi/uvicorn, etc.) — a plain `uv run pytest` only syncs the base
+    # project deps, so any held-out test that imports an extra-gated module
+    # fails at COLLECTION (ModuleNotFoundError), which is indistinguishable
+    # from a real regression unless you inspect the traceback. Confirmed live
+    # against PR #1643 (tests/cli/test_argv_injection.py imports
+    # lionagi.studio.services.schedules -> fastapi).
+    return f"uv run --all-extras pytest {' '.join(held_out_paths)} -q"
 
 
 # ---------------------------------------------------------------------------
@@ -206,15 +215,18 @@ def harvest(
     if view.get("state") != "MERGED":
         save_rejection(instance_id, "PR is not merged", out_dir, subject=subject)
         return None
-    merge_sha = (view.get("mergeCommit") or {}).get("oid")
-    if not merge_sha:
-        save_rejection(instance_id, "no merge commit recorded", out_dir, subject=subject)
+    # base_commit = the PR's baseRefOid, NOT the merge commit's first parent.
+    # These repos squash-merge onto main: the merge commit is a brand-new commit
+    # whose single parent is main's tip AT MERGE TIME, which has almost always
+    # moved past the PR's actual base — using it as base_commit silently pulls
+    # in unrelated later history. baseRefOid is "world before the fix" for a
+    # squash merge (verified against LIONAGI_NOMINATIONS.md's methodology, and
+    # confirmed live: PR #1665's merge-commit parent b01d8190.. != its
+    # baseRefOid b1fd2ad2..).
+    base_commit = view.get("baseRefOid")
+    if not base_commit:
+        save_rejection(instance_id, "no baseRefOid recorded", out_dir, subject=subject)
         return None
-    parents = gh_commit_parents(repo, merge_sha)
-    if not parents:
-        save_rejection(instance_id, "merge commit has no parents", out_dir, subject=subject)
-        return None
-    base_commit = parents[0]
 
     diff = gh_pr_diff(repo, pr)
     test_patch, gold_patch = split_diff(diff)
@@ -299,9 +311,11 @@ def main() -> None:
         validate=not args.no_validate,
     )
     if instance is None:
-        print(f"REJECTED {args.repo}#{args.pr} — see rejected/ for reason")
+        print(
+            f"REJECTED {args.repo}#{args.pr} — see {args.out}/{args.subject}/rejected/ for reason"
+        )
         raise SystemExit(1)
-    print(f"OK {instance.instance_id} — {args.out}/{instance.instance_id}.json")
+    print(f"OK {instance.instance_id} — {args.out}/{args.subject}/{instance.instance_id}.json")
 
 
 if __name__ == "__main__":

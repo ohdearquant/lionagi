@@ -171,7 +171,7 @@ def save_instance(instance: Instance, data_dir: Path) -> Path:
     sdir = _subject_dir(data_dir, instance.subject)
     sdir.mkdir(parents=True, exist_ok=True)
     path = sdir / f"{instance.instance_id}.json"
-    path.write_text(json.dumps(instance.to_dict(), indent=2, sort_keys=True))
+    path.write_text(json.dumps(instance.to_dict(), indent=2, sort_keys=True) + "\n")
     _write_manifest(sdir)
     return path
 
@@ -181,14 +181,14 @@ def save_rejection(instance_id: str, reason: str, data_dir: Path, subject: str =
     rej_dir = _subject_dir(data_dir, subject) / "rejected"
     rej_dir.mkdir(parents=True, exist_ok=True)
     path = rej_dir / f"{instance_id}.json"
-    path.write_text(json.dumps({"instance_id": instance_id, "reason": reason}, indent=2))
+    path.write_text(json.dumps({"instance_id": instance_id, "reason": reason}, indent=2) + "\n")
     return path
 
 
 def _write_manifest(subject_dir: Path) -> None:
     ids = sorted(p.stem for p in Path(subject_dir).glob("*.json") if p.stem != MANIFEST_STEM)
     manifest = {"instances": ids, "n": len(ids)}
-    (Path(subject_dir) / f"{MANIFEST_STEM}.json").write_text(json.dumps(manifest, indent=2))
+    (Path(subject_dir) / f"{MANIFEST_STEM}.json").write_text(json.dumps(manifest, indent=2) + "\n")
 
 
 def list_subjects(data_dir: Path) -> list[str]:

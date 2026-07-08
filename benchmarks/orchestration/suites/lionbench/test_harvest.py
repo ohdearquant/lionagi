@@ -91,7 +91,9 @@ def test_infer_held_out_paths_dedupes_in_order():
 
 
 def test_default_oracle_command_joins_paths():
-    assert default_oracle_command(["a.py", "b.py"]) == "uv run pytest a.py b.py -q"
+    # --all-extras: held-out tests can import extra-gated modules (e.g. studio's
+    # fastapi) that a plain `uv run pytest` won't have installed (PR #1643).
+    assert default_oracle_command(["a.py", "b.py"]) == "uv run --all-extras pytest a.py b.py -q"
 
 
 def test_linked_issue_detects_closing_keyword():
@@ -138,3 +140,26 @@ def test_scrub_task_text_combines_issue_body():
 
 def test_scrub_task_text_empty_input_is_empty():
     assert scrub_task_text("", None) == ""
+
+
+_PR_BODY_WITH_MARKDOWN_BULLETS = """\
+## What
+
+Something broke. Two coupled fixes:
+
+- **`pkg/a.py`** — did the first thing, unrelated to any diff hunk.
+- **`pkg/b.py`** — did the second thing.
+
+## Tests
+- `tests/test_a.py` — coverage for the first thing.
+"""
+
+
+def test_scrub_task_text_preserves_markdown_bullet_lists():
+    """A bare '- ' prefix is an ordinary markdown bullet, not a diff line — the
+    scrub must not treat every dash-prefixed line as diff noise (real
+    regression: this nuked PR #1665's bulleted fix summary before the fix)."""
+    scrubbed = scrub_task_text(_PR_BODY_WITH_MARKDOWN_BULLETS)
+    assert "did the first thing" in scrubbed
+    assert "did the second thing" in scrubbed
+    assert "coverage for the first thing" in scrubbed
