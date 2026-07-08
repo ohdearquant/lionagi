@@ -92,10 +92,11 @@ def test_warning_rule_cooldown_suppresses_then_refires(monkeypatch):
 def test_jit_guidance_fires_exactly_once(monkeypatch):
     from lionagi.tools.context.context import ContextTool
 
+    # Default rules + DEFAULT token cap — regression guard for the cap being
+    # sized so the shipped configuration can actually deliver its own guidance.
     engine = _make_engine(
         monkeypatch, used=65_000, limit=100_000
     )  # 65% -> JIT threshold, no warning
-    engine.max_tokens = 10_000  # don't let the token cap trim the full guidance text out
     first = engine.evaluate()
     assert ContextTool.GUIDANCE in first
 
@@ -104,6 +105,48 @@ def test_jit_guidance_fires_exactly_once(monkeypatch):
 
     third = engine.evaluate()
     assert ContextTool.GUIDANCE not in (third or "")
+
+
+def test_default_cap_delivers_jit_guidance_exactly_once(monkeypatch):
+    """Regression: under the DEFAULT rule set and DEFAULT token cap, the JIT
+    guidance must be delivered — either on the first eligible call or a later
+    one — and exactly once, never silently consumed by a cap-drop."""
+    from lionagi.tools.context.context import ContextTool
+
+    engine = _make_engine(monkeypatch, used=65_000, limit=100_000)
+    delivered = []
+    for _ in range(5):
+        msg = engine.evaluate()
+        if msg and ContextTool.GUIDANCE in msg:
+            delivered.append(msg)
+    assert len(delivered) == 1
+
+
+def test_once_rule_dropped_by_cap_is_not_marked_fired(monkeypatch):
+    """A once-policy rule whose message is dropped by the token cap must remain
+    eligible — firing state is only committed for messages that actually survive
+    the merge, never for candidates the cap trimmed away."""
+    filler = NudgeRule(
+        id="filler", condition=lambda ctx: True, message="filler", policy="always", priority=100
+    )
+    once_rule = NudgeRule(
+        id="big_once", condition=lambda ctx: True, message="X" * 200, policy="once", priority=50
+    )
+    engine = _make_engine(monkeypatch, used=1_000, limit=100_000, rules=[filler, once_rule])
+    engine.max_tokens = 5  # filler survives (considered first); big_once gets dropped
+
+    first = engine.evaluate()
+    assert "filler" in first
+    assert "X" * 200 not in first
+    assert engine._fired.get("big_once", 0) == 0  # dropped by cap, not consumed
+
+    engine.max_tokens = 10_000  # now both fit
+    second = engine.evaluate()
+    assert "X" * 200 in second
+    assert engine._fired.get("big_once", 0) == 1
+
+    third = engine.evaluate()
+    assert "X" * 200 not in third  # delivered for real -> policy=once suppresses further
 
 
 def test_jit_guidance_does_not_fire_below_threshold(monkeypatch):
@@ -264,3 +307,49 @@ def test_default_nudge_rules_are_fresh_each_call():
     b = default_nudge_rules()
     assert a is not b
     assert [r.id for r in a] == [r.id for r in b]
+
+
+# ---------------------------------------------------------------------------
+# Per-rule exception containment — a raising rule never breaks evaluate()
+# ---------------------------------------------------------------------------
+
+
+def test_raising_condition_is_contained_other_rules_still_fire(monkeypatch):
+    def bad_condition(ctx):
+        raise RuntimeError("boom")
+
+    bad_rule = NudgeRule(
+        id="bad", condition=bad_condition, message="should never appear", policy="always"
+    )
+    good_rule = NudgeRule(id="good", condition=lambda ctx: True, message="GOOD", policy="always")
+    engine = _make_engine(monkeypatch, used=100, limit=100_000, rules=[bad_rule, good_rule])
+
+    msg = engine.evaluate()
+    assert msg is not None
+    assert "GOOD" in msg
+    assert "should never appear" not in msg
+
+
+def test_raising_render_is_contained_other_rules_still_fire(monkeypatch):
+    def bad_message(ctx):
+        raise RuntimeError("boom")
+
+    bad_rule = NudgeRule(id="bad", condition=lambda ctx: True, message=bad_message, policy="always")
+    good_rule = NudgeRule(id="good", condition=lambda ctx: True, message="GOOD", policy="always")
+    engine = _make_engine(monkeypatch, used=100, limit=100_000, rules=[bad_rule, good_rule])
+
+    msg = engine.evaluate()
+    assert msg is not None
+    assert "GOOD" in msg
+
+
+def test_raising_rule_is_never_marked_fired(monkeypatch):
+    def bad_condition(ctx):
+        raise RuntimeError("boom")
+
+    bad_rule = NudgeRule(id="bad", condition=bad_condition, message="x", policy="once")
+    engine = _make_engine(monkeypatch, used=100, limit=100_000, rules=[bad_rule])
+
+    engine.evaluate()
+    engine.evaluate()
+    assert engine._fired.get("bad", 0) == 0

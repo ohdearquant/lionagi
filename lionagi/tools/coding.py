@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import base64
+import logging
 import re
 import shlex
 from collections.abc import Callable, Sequence
@@ -34,6 +35,8 @@ from .file.reader import _read_sync as _file_read_sync
 if TYPE_CHECKING:
     from lionagi.agent.nudge import NudgeEngine, NudgeRule
     from lionagi.session.branch import Branch
+
+logger = logging.getLogger(__name__)
 
 
 # ---------------------------------------------------------------------------
@@ -690,13 +693,20 @@ class CodingToolkit(LionTool):
         ) -> dict | None:
             if engine is None:
                 return result
-            ok = (
-                result.get("success", result.get("return_code") == 0)
-                if isinstance(result, dict)
-                else True
-            )
-            engine.record_call(tool_name, action, ok)
-            status = engine.evaluate(files_tracked=len(file_state))
+            try:
+                ok = (
+                    result.get("success", result.get("return_code") == 0)
+                    if isinstance(result, dict)
+                    else True
+                )
+                engine.record_call(tool_name, action, ok)
+                status = engine.evaluate(files_tracked=len(file_state))
+            except Exception:
+                logger.warning(
+                    "NudgeEngine evaluation failed; returning tool result unmodified",
+                    exc_info=True,
+                )
+                return result
             if status and isinstance(result, dict):
                 result["system"] = status
             return result

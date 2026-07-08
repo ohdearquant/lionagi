@@ -689,9 +689,55 @@ async def test_system_status_emitted_via_postprocessor(tmp_path):
     bash = next(t for t in tools if t.func_callable.__name__ == "bash")
 
     # The postprocessor (created by _build_postprocessor) calls _notify_post,
-    # which in turn calls _system_status. Invoke it directly with a fake result.
+    # which drives the bound NudgeEngine. Invoke it directly with a fake result.
     assert bash.postprocessor is not None
     fake_result = {"return_code": 0, "stdout": "hi", "stderr": "", "timed_out": False}
     out = await bash.postprocessor(fake_result)
     assert "system" in out
     assert "context" in out["system"]
+
+
+async def test_notify_post_survives_raising_custom_nudge_rule(tmp_path):
+    """A custom rule that raises must never destroy the original tool result."""
+    from lionagi.agent.nudge import NudgeRule
+    from lionagi.session.branch import Branch
+
+    def _boom(ctx):
+        raise RuntimeError("custom rule blew up")
+
+    bad_rule = NudgeRule(id="bad", condition=_boom, message="never seen", policy="always")
+
+    b = Branch()
+    tk = CodingToolkit(notify=True, workspace_root=str(tmp_path), nudge_rules=[bad_rule])
+    tools = tk.bind(b)
+    bash = next(t for t in tools if t.func_callable.__name__ == "bash")
+
+    fake_result = {"return_code": 0, "stdout": "hi", "stderr": "", "timed_out": False}
+    out = await bash.postprocessor(fake_result)
+    # The original tool output must survive even though the engine's own
+    # evaluation blew up handling the custom rule.
+    assert out["stdout"] == "hi"
+    assert out["return_code"] == 0
+
+
+async def test_notify_post_survives_engine_evaluate_exception(tmp_path, monkeypatch):
+    """A belt-and-suspenders guard: if NudgeEngine.evaluate() itself raises, the
+    tool result must still come back unmodified rather than being lost."""
+    import lionagi.agent.nudge as nudge_mod
+    from lionagi.session.branch import Branch
+
+    def _raise_evaluate(self, *, files_tracked=0):
+        raise RuntimeError("engine evaluate blew up")
+
+    monkeypatch.setattr(nudge_mod.NudgeEngine, "evaluate", _raise_evaluate)
+
+    b = Branch()
+    tk = CodingToolkit(notify=True, workspace_root=str(tmp_path))
+    tools = tk.bind(b)
+    bash = next(t for t in tools if t.func_callable.__name__ == "bash")
+
+    fake_result = {"return_code": 0, "stdout": "hi", "stderr": "", "timed_out": False}
+    out = await bash.postprocessor(fake_result)
+    assert out["stdout"] == "hi"
+    assert out["return_code"] == 0
+    assert "system" not in out

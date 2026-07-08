@@ -11,6 +11,7 @@ into a single suffix, highest priority first, dropped once a token cap is hit.
 
 from __future__ import annotations
 
+import logging
 import time
 from collections import deque
 from collections.abc import Callable
@@ -22,6 +23,8 @@ from lionagi.service.token_calculator import TokenCalculator
 
 if TYPE_CHECKING:
     from lionagi.session.branch import Branch
+
+logger = logging.getLogger(__name__)
 
 __all__ = (
     "NudgeContext",
@@ -156,7 +159,7 @@ class NudgeEngine:
         branch: Branch,
         rules: list[NudgeRule] | None = None,
         ring_size: int = 20,
-        max_tokens: int = 150,
+        max_tokens: int = 250,
     ):
         self.branch = branch
         self.rules = list(rules) if rules is not None else default_nudge_rules()
@@ -171,16 +174,36 @@ class NudgeEngine:
         self._ring.append(ToolCallRecord(tool_name=tool_name, action=action, ok=ok, ts=time.time()))
 
     def evaluate(self, *, files_tracked: int = 0) -> str | None:
-        """Build a NudgeContext, fire eligible rules, and return the merged suffix."""
+        """Build a NudgeContext, fire eligible rules, and return the merged suffix.
+
+        Firing bookkeeping (once/cooldown state) is only committed for rules whose
+        message actually survives the token-cap merge — a message dropped by the
+        cap must not be silently consumed as if it had been delivered. A rule whose
+        condition or message raises is skipped and logged; it never breaks the
+        other rules or the caller.
+        """
         self._call_count += 1
         ctx = self._build_context(files_tracked)
-        triggered: list[tuple[NudgeRule, str]] = []
+        candidates: list[tuple[NudgeRule, str]] = []
         for rule in self.rules:
-            if self._should_fire(rule, ctx):
-                triggered.append((rule, rule.render(ctx)))
-                self._mark_fired(rule)
-        triggered.sort(key=lambda pair: -pair[0].priority)
-        return self._merge(triggered)
+            try:
+                eligible = self._should_fire(rule, ctx)
+            except Exception:
+                logger.warning("nudge rule %r condition raised; skipping", rule.id, exc_info=True)
+                continue
+            if not eligible:
+                continue
+            try:
+                msg = rule.render(ctx)
+            except Exception:
+                logger.warning("nudge rule %r render raised; skipping", rule.id, exc_info=True)
+                continue
+            candidates.append((rule, msg))
+        candidates.sort(key=lambda pair: -pair[0].priority)
+        merged, survivors = self._merge(candidates)
+        for rule in survivors:
+            self._mark_fired(rule)
+        return merged
 
     def _build_context(self, files_tracked: int) -> NudgeContext:
         from lionagi.protocols.messages import ActionResponse
@@ -223,15 +246,24 @@ class NudgeEngine:
         self._fired[rule.id] = self._fired.get(rule.id, 0) + 1
         self._last_fired_at[rule.id] = self._call_count
 
-    def _merge(self, triggered: list[tuple[NudgeRule, str]]) -> str | None:
-        if not triggered:
-            return None
-        kept: list[str] = []
+    def _merge(self, candidates: list[tuple[NudgeRule, str]]) -> tuple[str | None, list[NudgeRule]]:
+        """Merge candidate messages under the token cap; return (text, surviving rules).
+
+        Only rules present in the returned survivor list actually had their message
+        delivered — callers must gate once/cooldown bookkeeping on that list, not on
+        `candidates`, or a cap-dropped message is wrongly treated as delivered.
+        """
+        if not candidates:
+            return None, []
+        kept_msgs: list[str] = []
+        kept_rules: list[NudgeRule] = []
         used_tokens = 0
-        for _rule, msg in triggered:
+        for rule, msg in candidates:
             cost = TokenCalculator.tokenize(msg) if msg else 0
-            if kept and used_tokens + cost > self.max_tokens:
+            if kept_msgs and used_tokens + cost > self.max_tokens:
                 continue
-            kept.append(msg)
+            kept_msgs.append(msg)
+            kept_rules.append(rule)
             used_tokens += cost
-        return " ".join(kept) if kept else None
+        merged = " ".join(kept_msgs) if kept_msgs else None
+        return merged, kept_rules
