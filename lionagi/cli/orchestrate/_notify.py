@@ -94,6 +94,9 @@ async def fire_terminal_notify(
         command = notify_cfg.get("on_terminal") if isinstance(notify_cfg, dict) else None
     if not command:
         return
+    if not isinstance(command, str):
+        warn(f"notify.on_terminal must be a string, got {type(command).__name__}: {command!r}")
+        return
 
     payload = {
         "invocation_id": invocation_id,

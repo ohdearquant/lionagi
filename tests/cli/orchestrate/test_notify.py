@@ -262,3 +262,35 @@ async def test_malformed_settings_yaml_is_swallowed_and_logged(tmp_path: Path):
 
     warn_mock.assert_called_once()
     assert "settings" in warn_mock.call_args.args[0]
+
+
+async def test_wrong_typed_settings_value_is_a_warned_noop(tmp_path: Path):
+    """notify.on_terminal as a list (or any non-str) must not raise —
+    warned no-op, same containment guarantee as every other failure mode."""
+    lionagi_dir = tmp_path / ".lionagi"
+    lionagi_dir.mkdir(parents=True)
+    (lionagi_dir / "settings.yaml").write_text(
+        yaml.dump({"notify": {"on_terminal": ["not", "a", "string"]}})
+    )
+
+    with (
+        patch.object(_notify, "warn") as warn_mock,
+        patch("asyncio.create_subprocess_shell") as spawn,
+    ):
+        await fire_terminal_notify(
+            invocation_id="inv-1",
+            kind="flow",
+            playbook=None,
+            status="completed",
+            save_dir=None,
+            cwd="/repo",
+            exit_class="success",
+            started_at=0.0,
+            ended_at=1.0,
+            override_command=None,
+            project_dir=str(tmp_path),
+        )
+
+    spawn.assert_not_called()
+    warn_mock.assert_called_once()
+    assert "on_terminal" in warn_mock.call_args.args[0]
