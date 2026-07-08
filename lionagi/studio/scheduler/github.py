@@ -39,6 +39,23 @@ class GithubPollItem:
 
 _client: httpx.AsyncClient | None = None
 
+# Merged-PR mode's dispatch key (merged_at) differs from the API's sort key
+# (updated_at): a page full of closed-but-never-merged PRs produces no item
+# at all (see the pr_merged branch in github_poll), so it can push an older,
+# still-undispatched merged PR out of the first page and, without
+# pagination, past the poller's reach permanently -- the cursor would never
+# learn the merge happened. _MERGED_MODE_MAX_PAGES bounds how far
+# github_poll() will page forward hunting for it: worst case
+# _MERGED_MODE_MAX_PAGES * per_page (100) closed PRs inspected in one poll.
+# A merge event buried deeper than that in a single burst is simply not
+# found *this* poll -- the cursor never advances past anything unseen, so
+# it is found on a later poll once the shallower unmerged noise ages out of
+# GitHub's "recently updated" ordering. Bounded latency, not bounded
+# correctness.
+_MERGED_MODE_MAX_PAGES = 5
+
+_LINK_NEXT_RE = re.compile(r'<([^>]+)>\s*;\s*rel="next"')
+
 # CWE-918 defense-in-depth: github_repo must be exactly "owner/name" -- one
 # slash, no path traversal sequences, no URL-special chars.
 #
@@ -118,6 +135,21 @@ def _validate_github_repo(repo: str) -> None:
             f"github_repo {repo!r}: repo name {name!r} is a path-traversal "
             "singleton and is not a valid repository name."
         )
+
+
+def _next_page_url(resp: httpx.Response) -> str | None:
+    """Extract the RFC 5988 ``rel="next"`` URL from a GitHub API response's
+    ``Link`` header, or ``None`` on the last page.
+
+    Parsed with a plain regex rather than ``httpx.Response.links`` so a
+    lightweight test double (a bare ``headers`` dict) works the same as a
+    real ``httpx.Response``.
+    """
+    link_header = resp.headers.get("link")
+    if not link_header:
+        return None
+    m = _LINK_NEXT_RE.search(link_header)
+    return m.group(1) if m else None
 
 
 def _get_client() -> httpx.AsyncClient:
@@ -238,7 +270,48 @@ async def github_poll(schedule: dict) -> list[GithubPollItem]:
         _log.warning("GitHub rate limit low: %d remaining for %s", remaining, repo)
 
     cursor = schedule.get("github_cursor")
-    prs = resp.json()
+    per_page = int(params["per_page"])
+    page = resp.json()
+    prs = list(page)
+
+    if merged_mode:
+        # Page forward while the most recently fetched page was full (a
+        # short page means there's nothing more) AND its oldest PR (last in
+        # updated_at-desc order) is still newer than the cursor -- once an
+        # item's updated_at has fallen to or below the cursor, every PR
+        # further back is too (the API is sorted by updated_at desc), and
+        # merged_at <= updated_at always holds for a merged PR, so nothing
+        # beyond that point could be an undispatched merge either.
+        for _ in range(_MERGED_MODE_MAX_PAGES - 1):
+            if len(page) < per_page:
+                break
+            oldest_updated = page[-1].get("updated_at", "") if page else ""
+            if cursor and oldest_updated <= cursor:
+                break
+            next_url = _next_page_url(resp)
+            if not next_url:
+                break
+            try:
+                resp = await client.get(next_url, headers=headers)
+            except httpx.HTTPError:
+                _log.warning(
+                    "GitHub API pagination request failed for %s while paging "
+                    "for merged PRs; using %d PR(s) fetched so far",
+                    repo,
+                    len(prs),
+                )
+                break
+            if resp.status_code != 200:
+                _log.warning(
+                    "GitHub API returned %d for %s during merged-PR pagination; "
+                    "using %d PR(s) fetched so far",
+                    resp.status_code,
+                    repo,
+                    len(prs),
+                )
+                break
+            page = resp.json()
+            prs.extend(page)
 
     draft_filter = github_filter.get("draft")
     items: list[GithubPollItem] = []

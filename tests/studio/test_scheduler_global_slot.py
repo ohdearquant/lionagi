@@ -293,6 +293,46 @@ async def test_tick_github_releases_slot_when_max_runs_reservation_raises(monkey
 
 
 @pytest.mark.asyncio
+async def test_tick_github_max_runs_refusal_does_not_crash_when_cap_unlimited(monkeypatch):
+    # With MAX_SCHEDULED_CONCURRENT=0 (unlimited), _reserve_global_slot()
+    # returns (True, None) -- an allowed no-op claim, same shape as every
+    # other call site. The per-event finally block that releases the slot
+    # on a dropped/refused event must guard for that None claim rather than
+    # unconditionally calling .release() on it.
+    import lionagi.studio.config as studio_config
+    from lionagi.studio.scheduler.engine import SchedulerEngine
+
+    monkeypatch.setattr(studio_config, "MAX_SCHEDULED_CONCURRENT", 0)
+    svc = _make_svc()
+    engine = SchedulerEngine(svc=svc)
+    schedule = _minimal_schedule(
+        trigger_type="github_poll", github_repo="acme/widgets", last_fired_at=0
+    )
+
+    async def _refuse(_schedule):
+        return False, None
+
+    monkeypatch.setattr(engine, "_reserve_max_runs_budget", _refuse)
+
+    from lionagi.studio.scheduler.github import GithubPollItem
+
+    poll_result = [
+        GithubPollItem(event={"pr_number": 1}, updated_at="2026-07-07T10:00:00Z", dispatchable=True)
+    ]
+    with patch(
+        "lionagi.studio.scheduler.github.github_poll",
+        new=AsyncMock(return_value=poll_result),
+    ):
+        # Must complete without raising AttributeError on slot_claim.release().
+        await engine._tick_github(schedule, now=10_000.0)
+
+    # Refused for lack of max_runs budget -- the cursor must not advance
+    # past the undispatched event, so it is re-listed on the next poll.
+    assert engine._global_inflight == 0
+    svc.update_schedule.assert_not_called()
+
+
+@pytest.mark.asyncio
 async def test_tick_github_fires_and_releases_slot_on_completion(monkeypatch):
     import lionagi.studio.config as studio_config
     from lionagi.studio.scheduler.engine import SchedulerEngine

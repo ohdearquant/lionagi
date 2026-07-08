@@ -32,10 +32,12 @@ def _pr(number, updated, *, draft=False, sha=None, state="open", merged_at=None)
 
 
 class _FakeResp:
-    def __init__(self, prs):
+    def __init__(self, prs, link=None):
         self._prs = prs
         self.status_code = 200
         self.headers = {"x-ratelimit-remaining": "100", "etag": '"abc"'}
+        if link:
+            self.headers["link"] = link
 
     def json(self):
         return self._prs
@@ -51,6 +53,28 @@ class _FakeClient:
         return _FakeResp(self._prs)
 
 
+class _FakePaginatedClient:
+    """Fake client serving a fixed sequence of pages. Every response but the
+    last carries a ``Link: rel="next"`` header (the real GitHub API shape),
+    so github_poll's merged-mode pagination loop follows it exactly the way
+    it would follow a real Link header."""
+
+    def __init__(self, pages: list[list[dict]]):
+        self._pages = pages
+        self.requests: list[dict] = []
+
+    async def get(self, url, headers=None, params=None):
+        page_index = len(self.requests)
+        self.requests.append({"url": url, "params": params})
+        prs = self._pages[page_index] if page_index < len(self._pages) else []
+        has_next = page_index + 1 < len(self._pages)
+        link = None
+        if has_next:
+            next_url = f"https://api.github.com/repos/owner/name/pulls?page={page_index + 2}"
+            link = f'<{next_url}>; rel="next"'
+        return _FakeResp(prs, link=link)
+
+
 def _install(monkeypatch, prs):
     """Wire the poller's token and HTTP client to fakes."""
 
@@ -58,6 +82,18 @@ def _install(monkeypatch, prs):
         return "faketoken"
 
     client = _FakeClient(prs)
+    monkeypatch.setattr(gh_mod, "_get_gh_token", _fake_token)
+    monkeypatch.setattr(gh_mod, "_get_client", lambda: client)
+    return client
+
+
+def _install_paginated(monkeypatch, pages):
+    """Wire the poller's token and HTTP client to a multi-page fake."""
+
+    async def _fake_token():
+        return "faketoken"
+
+    client = _FakePaginatedClient(pages)
     monkeypatch.setattr(gh_mod, "_get_gh_token", _fake_token)
     monkeypatch.setattr(gh_mod, "_get_client", lambda: client)
     return client
@@ -333,3 +369,89 @@ def test_github_poll_open_pr_mode_untouched_by_merged_mode_changes(monkeypatch):
     assert [i.event["pr_number"] for i in items] == [1, 2]
     assert [i.updated_at for i in items] == ["2026-07-07T10:00:00Z", "2026-07-07T11:00:00Z"]
     assert "pr_merged_at" not in items[0].event
+
+
+def test_github_poll_merged_mode_pages_past_closed_unmerged_noise(monkeypatch):
+    """Starvation shape: a full first page of closed-but-never-merged PRs (all
+    newer than the cursor) would, without pagination, push an older but still
+    undispatched merged PR on page 2 out of reach forever -- the merged PR's
+    updated_at is older than every unmerged PR on page 1, but its merged_at is
+    still after the cursor, so it must be found and dispatched.
+
+    Page 1 is exactly per_page (20) items long -- the poller's own signal
+    that there may be more -- and its oldest item's updated_at is still newer
+    than the cursor, so github_poll must follow the Link: rel="next" header
+    onto page 2 rather than stopping at page 1.
+    """
+    cursor = "2026-06-01T00:00:00Z"
+    page1 = [
+        _pr(
+            100 + n,
+            f"2026-07-06T{10 - n // 10:02d}:{59 - (n % 10) * 5:02d}:00Z",
+            state="closed",
+            merged_at=None,
+        )
+        for n in range(20)
+    ]
+    # Sanity: page1 is a full page, strictly newer than the cursor throughout.
+    assert len(page1) == 20
+    assert all(pr["updated_at"] > cursor for pr in page1)
+
+    merged_pr = _pr(
+        50,
+        "2026-07-06T09:00:00Z",  # older than every page-1 item's updated_at...
+        state="closed",
+        merged_at="2026-06-15T00:00:00Z",  # ...but merged after the cursor.
+    )
+    page2 = [merged_pr]
+
+    client = _install_paginated(monkeypatch, [page1, page2])
+    items = _poll(
+        {
+            "id": "s1",
+            "github_repo": "owner/name",
+            "github_filter": {"event": "pr_merged"},
+            "github_cursor": cursor,
+        }
+    )
+
+    assert [i.event["pr_number"] for i in items] == [50]
+    assert items[0].dispatchable is True
+    # One initial fetch plus exactly one pagination fetch -- page 2 was short
+    # (1 < per_page), so the loop stops there rather than paging further.
+    assert len(client.requests) == 2
+
+
+def test_github_poll_merged_mode_stops_paging_once_cursor_reached(monkeypatch):
+    """Once a fetched page's oldest item has fallen to/below the cursor,
+    github_poll stops paging even if that page is full -- everything past
+    that point is already-seen ground, merged or not."""
+    cursor = "2026-07-06T09:30:00Z"
+    page1 = [
+        _pr(
+            100 + n,
+            f"2026-07-06T{10 - n // 10:02d}:{59 - (n % 10) * 5:02d}:00Z",
+            state="closed",
+            merged_at=None,
+        )
+        for n in range(20)
+    ]
+    # Oldest item on page1 must already be at/under the cursor.
+    assert page1[-1]["updated_at"] <= cursor
+
+    page2 = [_pr(50, "2026-07-06T08:00:00Z", state="closed", merged_at="2026-06-15T00:00:00Z")]
+
+    client = _install_paginated(monkeypatch, [page1, page2])
+    items = _poll(
+        {
+            "id": "s1",
+            "github_repo": "owner/name",
+            "github_filter": {"event": "pr_merged"},
+            "github_cursor": cursor,
+        }
+    )
+
+    assert items == []
+    # Only the initial fetch -- page1's oldest item already reached the
+    # cursor, so the pagination loop never follows Link: rel="next".
+    assert len(client.requests) == 1

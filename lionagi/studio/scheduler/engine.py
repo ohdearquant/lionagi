@@ -605,7 +605,11 @@ class SchedulerEngine:
                     # poll.
                     cursor = item.updated_at
                 finally:
-                    if not slot_handed_off:
+                    # slot_claim is None when MAX_SCHEDULED_CONCURRENT is
+                    # unlimited (0) -- _reserve_global_slot() returns an
+                    # allowed no-op claim in that case, same as every other
+                    # call site in this module.
+                    if not slot_handed_off and slot_claim is not None:
                         slot_claim.release()
 
             if drop_reason and dropped_prs:
