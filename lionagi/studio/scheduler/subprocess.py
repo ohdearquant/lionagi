@@ -166,7 +166,14 @@ def _render_template(template: str, context: dict) -> str:
             val = events[0].get(key)
             if val is not None:
                 return str(val)
-        return context.get(key, m.group(0))
+        # A present-but-non-string value (e.g. the numeric metric/value/
+        # threshold fields threshold-alert fires put directly on
+        # trigger_context) must be stringified same as the github_events
+        # branch above -- re.sub's replacement callback requires a str
+        # return, and returning the raw value crashes on anything but str.
+        if key in context:
+            return str(context[key])
+        return m.group(0)
 
     return _TEMPLATE_RE.sub(_replace, template)
 

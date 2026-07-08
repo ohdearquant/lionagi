@@ -239,3 +239,15 @@ def test_render_action_prompt_substitutes_trigger_context_vars():
 def test_render_action_prompt_returns_none_when_no_prompt_template():
     assert sched_subprocess.render_action_prompt({"action_prompt": None}, {}) is None
     assert sched_subprocess.render_action_prompt({}, {}) is None
+
+
+def test_render_action_prompt_stringifies_non_string_context_values():
+    """A present-but-non-string trigger_context value (e.g. the numeric
+    metric/value/threshold fields a threshold-alert fire puts directly on
+    trigger_context) must be stringified, not passed through raw -- re.sub's
+    replacement callback requires a str return."""
+    schedule = {"action_prompt": "{{metric}} breached {{threshold}} (observed {{value}})"}
+    result = sched_subprocess.render_action_prompt(
+        schedule, {"metric": "failed_sessions", "threshold": 5, "value": 9.0}
+    )
+    assert result == "failed_sessions breached 5 (observed 9.0)"

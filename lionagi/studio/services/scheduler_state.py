@@ -31,6 +31,8 @@ class SchedulerStateService(Protocol):
 
     async def sum_schedule_spend(self, schedule_id: str) -> dict[str, Any]: ...
 
+    async def metric_value(self, metric: str, window_start: float) -> float: ...
+
     async def create_schedule_run(self, run: dict[str, Any]) -> None: ...
 
     async def update_schedule_run(self, run_id: str, **fields: Any) -> None: ...
@@ -79,6 +81,10 @@ class _DBSchedulerStateService:
     async def sum_schedule_spend(self, schedule_id: str) -> dict[str, Any]:
         async with StateDB() as db:
             return await db.sum_schedule_spend(schedule_id)
+
+    async def metric_value(self, metric: str, window_start: float) -> float:
+        async with StateDB() as db:
+            return await db.metric_value(metric, window_start)
 
     async def create_schedule_run(self, run: dict[str, Any]) -> None:
         async with StateDB() as db:

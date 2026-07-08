@@ -94,6 +94,10 @@ MIGRATION_COLUMNS: dict[str, list[tuple[str, str]]] = {
         # Cumulative spend budget: NULL means unlimited.
         ("budget_usd", "REAL"),
         ("budget_tokens", "INTEGER"),
+        # Metric threshold alerts: {metric, op, value, window_minutes}
+        # config blob + the cooldown timestamp of the last breach fire.
+        ("threshold_config", "JSON"),
+        ("last_alert_at", "REAL"),
     ],
     "schedule_runs": [
         # ADR-0028: schedule_runs originally had no updated_at.

@@ -835,6 +835,8 @@ class StateDB:
                           budget_usd          REAL,
                           budget_tokens       INTEGER,
                           project             TEXT,
+                          threshold_config    JSON,
+                          last_alert_at       REAL,
                           created_at          REAL    NOT NULL,
                           updated_at          REAL    NOT NULL
                         )
@@ -1984,7 +1986,7 @@ class StateDB:
                         action_playbook, action_flow_yaml, action_project, action_extra_args,
                         on_success, on_fail, last_fired_at, next_fire_at,
                         missed_fire_policy, overlap_policy, max_runs, budget_usd, budget_tokens,
-                        project, created_at, updated_at)
+                        project, threshold_config, last_alert_at, created_at, updated_at)
                        VALUES (:id, :name, :description, :enabled, :trigger_type,
                                :cron_expr, :interval_sec, :github_repo, :github_filter,
                                :github_cursor, :poll_interval_sec,
@@ -1992,12 +1994,13 @@ class StateDB:
                                :action_playbook, :action_flow_yaml, :action_project, :action_extra_args,
                                :on_success, :on_fail, :last_fired_at, :next_fire_at,
                                :missed_fire_policy, :overlap_policy, :max_runs, :budget_usd, :budget_tokens,
-                               :project, :created_at, :updated_at)"""
+                               :project, :threshold_config, :last_alert_at, :created_at, :updated_at)"""
                 ).bindparams(
                     bindparam("github_filter", type_=JSON),
                     bindparam("action_extra_args", type_=JSON),
                     bindparam("on_success", type_=JSON),
                     bindparam("on_fail", type_=JSON),
+                    bindparam("threshold_config", type_=JSON),
                 ),
                 {
                     "id": schedule["id"],
@@ -2029,6 +2032,8 @@ class StateDB:
                     "budget_usd": schedule.get("budget_usd"),
                     "budget_tokens": schedule.get("budget_tokens"),
                     "project": schedule.get("project"),
+                    "threshold_config": schedule.get("threshold_config"),
+                    "last_alert_at": schedule.get("last_alert_at"),
                     "created_at": schedule.get("created_at", now),
                     "updated_at": schedule.get("updated_at", now),
                 },
@@ -2122,11 +2127,19 @@ class StateDB:
             "budget_usd",
             "budget_tokens",
             "project",
+            "threshold_config",
+            "last_alert_at",
         }
         bad = set(fields) - allowed
         if bad:
             raise ValueError(f"Invalid schedule field(s): {bad}")
-        json_fields = {"github_filter", "action_extra_args", "on_success", "on_fail"}
+        json_fields = {
+            "github_filter",
+            "action_extra_args",
+            "on_success",
+            "on_fail",
+            "threshold_config",
+        }
         fields["updated_at"] = time.time()
         sets_parts = []
         bind_params = []
@@ -2293,6 +2306,61 @@ class StateDB:
             "cost_usd": float(row["cost_usd"] or 0),
             "tokens": int(row["input_tokens"] or 0) + int(row["output_tokens"] or 0),
         }
+
+    # Threshold-alert metrics (studio-wide, not scoped to a single schedule's
+    # own runs -- unlike sum_schedule_spend above, which sums a single
+    # schedule's spawned sessions). Keys must match
+    # lionagi.studio.scheduler.threshold.VALID_METRICS.
+    _THRESHOLD_METRIC_QUERIES: dict[str, str] = {
+        "failed_sessions": (
+            "SELECT COUNT(*) AS n FROM sessions "
+            "WHERE status IN ('failed', 'timed_out') "
+            "AND COALESCE(ended_at, started_at, created_at) >= :window_start"
+        ),
+        "total_cost_usd": (
+            "SELECT COALESCE(SUM(total_cost_usd), 0) AS n FROM sessions "
+            "WHERE COALESCE(ended_at, started_at, created_at) >= :window_start"
+        ),
+    }
+
+    async def metric_value(self, metric: str, window_start: float) -> float:
+        """Aggregate a threshold-alert metric over [window_start, now).
+
+        ``failed_sessions`` and ``total_cost_usd`` are single-aggregate SQL
+        queries; ``p95_latency_ms`` needs a sorted sample (SQLite has no
+        built-in percentile function), so it fetches raw invocation
+        durations and computes the 95th percentile in Python.
+        """
+        if metric == "p95_latency_ms":
+            async with self._read() as conn:
+                rows = (
+                    (
+                        await conn.execute(
+                            text(
+                                "SELECT (ended_at - started_at) AS latency_sec FROM invocations "
+                                "WHERE started_at >= :window_start AND ended_at IS NOT NULL "
+                                "AND ended_at >= started_at"
+                            ),
+                            {"window_start": window_start},
+                        )
+                    )
+                    .mappings()
+                    .all()
+                )
+            if not rows:
+                return 0.0
+            latencies = sorted(float(r["latency_sec"]) * 1000.0 for r in rows)
+            idx = min(len(latencies) - 1, max(0, -(-95 * len(latencies) // 100) - 1))
+            return latencies[idx]
+
+        query = self._THRESHOLD_METRIC_QUERIES.get(metric)
+        if query is None:
+            raise ValueError(f"Unknown threshold metric: {metric!r}")
+        async with self._read() as conn:
+            row = (
+                (await conn.execute(text(query), {"window_start": window_start})).mappings().first()
+            )
+        return float(row["n"]) if row and row["n"] is not None else 0.0
 
     async def schedule_run_streak(self, schedule_id: str) -> tuple[int, str | None]:
         """Consecutive terminal 'failed' streak and most recent status, newest-first, capped at 50 rows."""
@@ -3872,6 +3940,7 @@ class StateDB:
             "action_extra_args",
             "trigger_context",
             "action_args",
+            "threshold_config",
             "artifact_contract_json",
             "artifact_verification_json",
             "status_evidence_refs",

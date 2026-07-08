@@ -172,6 +172,20 @@ async def _svc_recompute_next_fire_guarded(effective: dict[str, Any], context: s
             )
 
 
+def _svc_validate_threshold_config(config: dict | None) -> None:
+    """Service-boundary check: validate a metric-threshold alert config.
+
+    Delegates to threshold.validate_threshold_config so the metric/op/shape
+    rules are defined in exactly one place. None (no threshold configured on
+    this schedule) is always accepted.
+    """
+    if config is None:
+        return
+    from lionagi.studio.scheduler.threshold import validate_threshold_config
+
+    validate_threshold_config(config)
+
+
 def _svc_validate_github_repo(repo: str | None) -> None:
     """Service-boundary check: reject github_repo values that would manipulate the API path.
 
@@ -395,6 +409,7 @@ async def create_schedule(data: dict[str, Any]) -> dict[str, Any]:
     _svc_validate_max_runs(data.get("max_runs"))
     _svc_validate_budget_usd(data.get("budget_usd"))
     _svc_validate_budget_tokens(data.get("budget_tokens"))
+    _svc_validate_threshold_config(data.get("threshold_config"))
     if data.get("trigger_type") == "cron":
         _svc_validate_cron_expr(data.get("cron_expr"), required=True)
     if data.get("trigger_type") == "interval":
@@ -464,6 +479,8 @@ async def update_schedule(schedule_id: str, fields: dict[str, Any]) -> bool:
             _svc_validate_budget_usd(fields["budget_usd"])
         if "budget_tokens" in fields:
             _svc_validate_budget_tokens(fields["budget_tokens"])
+        if "threshold_config" in fields:
+            _svc_validate_threshold_config(fields["threshold_config"])
 
         effective = {**schedule, **fields}
         effective_repo = effective.get("github_repo")
@@ -614,6 +631,7 @@ class CreateScheduleRequest(BaseModel):
     budget_usd: float | None = None
     budget_tokens: int | None = None
     project: str | None = None
+    threshold_config: dict | None = None
 
 
 class UpdateScheduleRequest(BaseModel):
@@ -641,6 +659,7 @@ class UpdateScheduleRequest(BaseModel):
     budget_usd: float | None = None
     budget_tokens: int | None = None
     project: str | None = None
+    threshold_config: dict | None = None
 
 
 # ---------------------------------------------------------------------------
