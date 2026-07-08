@@ -17,6 +17,7 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from lionagi.state.reasons import RunReasons, ScheduleReasons
 from lionagi.studio.scheduler import subprocess as _subprocess
+from lionagi.studio.scheduler import threshold as _threshold
 from lionagi.studio.services.scheduler_state import (
     SchedulerStateService,
     create_skipped_run,
@@ -730,7 +731,64 @@ class SchedulerEngine:
         )
         await self._svc.update_schedule(schedule["id"], enabled=0)
 
+    async def _evaluate_threshold_breach(self, schedule: dict, now: float) -> dict[str, Any] | None:
+        """Evaluate ``schedule["threshold_config"]`` against live metrics.
+
+        Returns a breach dict (``metric``, ``op``, ``value`` = observed,
+        ``threshold`` = configured, ``window_minutes``) that renders into
+        ``{{metric}}``/``{{value}}``/``{{threshold}}`` action-prompt
+        templates (see ``_subprocess.render_action_prompt`` and the
+        github_poll precedent it already handles), or ``None`` when the
+        metric is within bounds.
+        """
+        config = schedule.get("threshold_config")
+        if not config:
+            return None
+        metric = config["metric"]
+        op = config["op"]
+        threshold_value = float(config["value"])
+        window_minutes = int(config["window_minutes"])
+        window_start = now - window_minutes * 60
+        observed = await self._svc.metric_value(metric, window_start)
+        if not _threshold.compare(op, observed, threshold_value):
+            return None
+        return {
+            "metric": metric,
+            "op": op,
+            "value": observed,
+            "threshold": threshold_value,
+            "window_minutes": window_minutes,
+        }
+
+    async def _advance_next_fire_only(self, schedule: dict, now: float) -> None:
+        """Advance next_fire_at without firing the schedule's action.
+
+        Used by the threshold-alert paths in ``_maybe_fire`` where the
+        cadence tick fires (so the metric is re-checked next time) but no
+        breach (or an in-cooldown breach) means no action should spawn.
+        """
+        next_at = self._compute_next_fire(schedule, now)
+        if next_at:
+            await self._svc.update_schedule(schedule["id"], next_fire_at=next_at)
+
     async def _maybe_fire(self, schedule: dict, now: float) -> None:
+        threshold_extra: dict[str, Any] | None = None
+        if schedule.get("threshold_config"):
+            breach = await self._evaluate_threshold_breach(schedule, now)
+            if breach is None:
+                await self._advance_next_fire_only(schedule, now)
+                return
+            # Cooldown: suppress refiring while still within the metric's
+            # own window of the last alert, so a sustained breach doesn't
+            # fire on every tick. The cadence still advances underneath —
+            # the next tick re-checks the metric once the cooldown lapses.
+            cooldown_sec = breach["window_minutes"] * 60
+            last_alert_at = schedule.get("last_alert_at")
+            if last_alert_at is not None and now - last_alert_at < cooldown_sec:
+                await self._advance_next_fire_only(schedule, now)
+                return
+            threshold_extra = breach
+
         if schedule.get("overlap_policy") == "skip" and schedule["id"] in self._running:
             _log.debug("Skipping overlapping fire for %s", schedule["name"])
             skipped_run_id = uuid.uuid4().hex[:12]
@@ -777,6 +835,14 @@ class SchedulerEngine:
 
         run_id = uuid.uuid4().hex[:12]
         ctx = {"scheduled": True, "fired_at": now, "next_fire_at": schedule.get("next_fire_at")}
+        if threshold_extra:
+            ctx.update(threshold_extra)
+            # Stamp last_alert_at only now that every gate (overlap, budget,
+            # max_runs, global slot) has actually passed and the fire is
+            # really about to happen -- stamping it earlier (before those
+            # checks) would consume the cooldown on a deferred/skipped tick
+            # that never spawned an action, silently swallowing the alert.
+            await self._svc.update_schedule(schedule["id"], last_alert_at=now)
         self._tracked_fire(
             schedule,
             run_id,
