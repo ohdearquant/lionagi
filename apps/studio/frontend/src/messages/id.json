@@ -3,7 +3,6 @@
     "rail": {
       "ariaLabel": "Navigasi utama",
       "home": "Pusat Kendali",
-      "designer": "Desainer",
       "library": "Pustaka",
       "schedules": "Penjadwalan",
       "system": "Sistem",
@@ -200,10 +199,8 @@
     "clearStatusFilter": "Bersihkan filter status",
     "empty": {
       "all": "Belum ada riwayat.",
-      "allHint": "Luncurkan sesuatu dari Desainer untuk melihatnya di sini.",
       "filtered": "Tidak ada item yang cocok dengan filter Anda.",
-      "filteredHint": "Coba jenis lain atau bersihkan pencarian.",
-      "cta": "Buka Desainer →"
+      "filteredHint": "Coba jenis lain atau bersihkan pencarian."
     },
     "status": {
       "running": "berjalan",
@@ -583,7 +580,6 @@
     },
     "empty": {
       "message": "Tidak ada agen berjalan — armada agen menampilkan orkestrasi live saat terjadi.",
-      "cta": "Buka Desainer →",
       "hint": "⌘K → armada agen atau pemantauan",
       "recent": "Sesi terbaru",
       "ago": "{delta} lalu"
@@ -704,27 +700,6 @@
     }
   },
   "designer": {
-    "rack": {
-      "title": "Mesin",
-      "blueprints": "Template",
-      "blueprintsHint": "Bawaan, hanya-baca",
-      "saved": "Definisi tersimpan",
-      "savedHint": "Mesin Anda yang dapat digunakan ulang",
-      "stages": "tahap",
-      "loading": "Memuat…",
-      "emptySaved": "Belum ada yang disimpan. Konfigurasikan blueprint dan tekan Simpan.",
-      "collapse": "Ciutkan rack",
-      "expand": "Perluas rack",
-      "delete": "hapus {name}",
-      "deleteConfirm": "hapus?"
-    },
-    "header": {
-      "saved": "tersimpan",
-      "providerDefault": "default penyedia",
-      "template": "template",
-      "draft": "Draf belum disimpan",
-      "draftHint": "Template hanya-baca. Menyimpan akan membuat definisi baru."
-    },
     "flow": {
       "quiescence": "setelah semua stabil",
       "zoomIn": "Perbesar",
@@ -733,81 +708,6 @@
       "signals": "Sinyal",
       "filter": "Filter sinyal…",
       "showAll": "Tampilkan semua"
-    },
-    "panel": {
-      "close": "Tutup",
-      "role": "peran",
-      "modelStage": "rute model",
-      "mode": "mode",
-      "spawns": "memunculkan",
-      "partOf": "bagian dari",
-      "exempt": "berjalan melewati habisnya anggaran",
-      "execution": "Rencana runtime",
-      "executionNote": "Hanya-baca · ditetapkan oleh mesin",
-      "signals": "Sinyal",
-      "emits": "Memancarkan",
-      "observes": "Mengamati",
-      "viaGroup": "via {group}",
-      "config": "Override yang dapat diedit",
-      "configNote": "Perubahan di sini memengaruhi peluncuran berikutnya. Lainnya ditetapkan oleh mesin.",
-      "engineDefined": "Ditetapkan oleh mesin",
-      "thisOperator": "Hanya tahap ini",
-      "engineWide": "Seluruh mesin",
-      "roleDefault": "default mesin · {role}",
-      "bundle": "Bundel peran",
-      "bundleNote": "Skill, mode, dan output terstruktur melekat pada peran casts — pilih peran lain di atas untuk mengganti seluruh bundel.",
-      "structuredOutput": "Output terstruktur",
-      "context": "Konteks",
-      "receives": "Menerima",
-      "produces": "Menghasilkan",
-      "ctxFrom": "dari {name}",
-      "toStore": "→ penyimpanan emisi",
-      "entryNote": "Titik masuk — menerima prompt tugas dari dock peluncuran."
-    },
-    "toolbar": {
-      "addOperator": "Tambah operator",
-      "addSignal": "Tambah sinyal",
-      "signalName": "Nama sinyal",
-      "signalPlaceholder": "mis. FindingEmitted",
-      "color": "Warna",
-      "colorAria": "warna {color}",
-      "emittingOperator": "Operator pemancar",
-      "none": "Tidak ada",
-      "add": "Tambah",
-      "removeConfirm": "Hapus?",
-      "yes": "Ya",
-      "no": "Tidak",
-      "delete": "Hapus",
-      "deleteSelectedTitle": "Hapus operator terpilih",
-      "deleteDisabledTitle": "Pilih operator untuk menghapusnya",
-      "fitView": "Sesuaikan tampilan",
-      "zoomIn": "Perbesar",
-      "zoomOut": "Perkecil"
-    },
-    "dock": {
-      "namePlaceholder": "nama mesin",
-      "promptPlaceholder": "Apa yang harus dilakukan mesin ini? Deskripsikan tugas dan tekan Luncurkan…",
-      "save": "Simpan sebagai definisi",
-      "saveChanges": "Simpan perubahan",
-      "saving": "Menyimpan…",
-      "launch": "Luncurkan",
-      "launching": "Meluncurkan…",
-      "launched": "Invokasi diluncurkan",
-      "saved": "Definisi tersimpan",
-      "nameRequired": "Beri nama mesin sebelum menyimpan",
-      "promptRequired": "Deskripsikan tugas sebelum meluncurkan",
-      "testCmdRequired": "Mesin coding memerlukan perintah test — tetapkan pada tahap test",
-      "invalidBounds": "max_agents dan max_depth harus antara 1 dan 100",
-      "advanced": "Lanjutan"
-    },
-    "advanced": {
-      "title": "Lanjutan",
-      "description": "Deskripsi",
-      "descriptionPlaceholder": "Apa yang dilakukan mesin ini?",
-      "exportDir": "Direktori ekspor",
-      "engineDefaults": "Internal mesin (hanya-baca)",
-      "sourceRef": "ditranskripsikan dari",
-      "requestPreview": "Minta pratinjau"
     },
     "edge": {
       "kindReaction": "reaksi",
@@ -934,9 +834,7 @@
     "importError": "Tidak dapat membaca file",
     "rackTitle": "Alur kerja",
     "rackNew": "Baru",
-    "rackEmpty": "Belum ada alur kerja.",
-    "designerEmpty": "Pilih alur kerja dari rack, atau buat satu untuk mulai mendesain.",
-    "designerEmptyCta": "Buat alur kerja"
+    "rackEmpty": "Belum ada alur kerja."
   },
   "daemon": {
     "title": "Studio tidak dapat menjangkau daemon lokal di {base}",

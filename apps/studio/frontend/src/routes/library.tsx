@@ -100,7 +100,7 @@ function useLibraryData() {
         // the shipped templates the Workflows page was missing entirely
         // (DESIGN-BRIEF §3). These are agent+prompt templates, not graphs, so
         // they live under the "playbook" kind, separate from "workflow"
-        // (DB-backed graph designs, Designer UI).
+        // (DB-backed graph designs, edited inline via the Library drawer).
         if (builtinsRes.status === "fulfilled") {
           for (const p of builtinsRes.value.playbooks) {
             out.push({

@@ -3,7 +3,6 @@
     "rail": {
       "ariaLabel": "birincil gezinme",
       "home": "görev kontrol merkezi",
-      "designer": "tasarımcı",
       "library": "kitaplık",
       "schedules": "zamanlamalar",
       "system": "sistem",
@@ -200,10 +199,8 @@
     "clearStatusFilter": "durum filtresini temizle",
     "empty": {
       "all": "henüz geçmiş yok.",
-      "allHint": "burada görmek için tasarımcıdan bir şey başlat.",
       "filtered": "filtrenle eşleşen öğe yok.",
-      "filteredHint": "başka bir tür dene veya aramayı temizle.",
-      "cta": "tasarımcıyı aç →"
+      "filteredHint": "başka bir tür dene veya aramayı temizle."
     },
     "status": {
       "running": "çalışıyor",
@@ -583,7 +580,6 @@
     },
     "empty": {
       "message": "çalışan ajan yok — ajan filosu canlı orkestrasyonları gerçekleşirken gösterir.",
-      "cta": "tasarımcıyı aç →",
       "hint": "⌘K → fleet veya monitor",
       "recent": "son oturumlar",
       "ago": "{delta} önce"
@@ -704,27 +700,6 @@
     }
   },
   "designer": {
-    "rack": {
-      "title": "motorlar",
-      "blueprints": "şablonlar",
-      "blueprintsHint": "yerleşik, salt okunur",
-      "saved": "kaydedilen tanımlar",
-      "savedHint": "yeniden kullanılabilir motorların",
-      "stages": "aşamalar",
-      "loading": "yükleniyor…",
-      "emptySaved": "henüz hiçbir şey kaydedilmedi. Bir şablon yapılandır ve Kaydet’e bas.",
-      "collapse": "paneli daralt",
-      "expand": "paneli genişlet",
-      "delete": "{name} sil",
-      "deleteConfirm": "silinsin mi?"
-    },
-    "header": {
-      "saved": "kaydedildi",
-      "providerDefault": "sağlayıcı varsayılanı",
-      "template": "şablon",
-      "draft": "kaydedilmemiş taslak",
-      "draftHint": "şablonlar salt okunurdur. Kaydetmek yeni bir tanım oluşturur."
-    },
     "flow": {
       "quiescence": "tümü kararlı hale geldikten sonra",
       "zoomIn": "yakınlaştır",
@@ -733,81 +708,6 @@
       "signals": "sinyaller",
       "filter": "sinyalleri filtrele…",
       "showAll": "tümünü göster"
-    },
-    "panel": {
-      "close": "kapat",
-      "role": "rol",
-      "modelStage": "model rotası",
-      "mode": "mod",
-      "spawns": "spawn eder",
-      "partOf": "parçası",
-      "exempt": "bütçe tükenmesini aşarak çalışır",
-      "execution": "runtime planı",
-      "executionNote": "salt okunur · motor tarafından sabitlenir",
-      "signals": "sinyaller",
-      "emits": "yayınlar",
-      "observes": "gözlemler",
-      "viaGroup": "{group} üzerinden",
-      "config": "düzenlenebilir geçersiz kılmalar",
-      "configNote": "buradaki değişiklikler sonraki başlatmayı etkiler. Diğer her şey motor tarafından tanımlanır.",
-      "engineDefined": "motor tanımlı",
-      "thisOperator": "yalnızca bu aşama",
-      "engineWide": "tüm motor",
-      "roleDefault": "motor varsayılanı · {role}",
-      "bundle": "rol paketi",
-      "bundleNote": "beceriler, modlar ve yapılandırılmış çıktı casts rolü üzerinde taşınır — tüm paketi değiştirmek için yukarıdan farklı bir rol seç.",
-      "structuredOutput": "yapılandırılmış çıktı",
-      "context": "bağlam",
-      "receives": "alır",
-      "produces": "üretir",
-      "ctxFrom": "{name} kaynağından",
-      "toStore": "→ sinyal deposu",
-      "entryNote": "giriş noktası — görev prompt'unu başlatma panelinden alır."
-    },
-    "toolbar": {
-      "addOperator": "operatör ekle",
-      "addSignal": "sinyal ekle",
-      "signalName": "sinyal adı",
-      "signalPlaceholder": "örn. FindingEmitted",
-      "color": "renk",
-      "colorAria": "renk {color}",
-      "emittingOperator": "yayınlayan operatör",
-      "none": "yok",
-      "add": "ekle",
-      "removeConfirm": "kaldırılsın mı?",
-      "yes": "evet",
-      "no": "hayır",
-      "delete": "sil",
-      "deleteSelectedTitle": "seçili operatörü sil",
-      "deleteDisabledTitle": "silmek için bir operatör seç",
-      "fitView": "görünüme sığdır",
-      "zoomIn": "yakınlaştır",
-      "zoomOut": "uzaklaştır"
-    },
-    "dock": {
-      "namePlaceholder": "motor adı",
-      "promptPlaceholder": "bu motor ne yapmalı? Görevi açıkla ve Başlat’a bas…",
-      "save": "tanım olarak kaydet",
-      "saveChanges": "değişiklikleri kaydet",
-      "saving": "kaydediliyor…",
-      "launch": "başlat",
-      "launching": "başlatılıyor…",
-      "launched": "çağrı başlatıldı",
-      "saved": "tanım kaydedildi",
-      "nameRequired": "kaydetmeden önce motora ad ver",
-      "promptRequired": "başlatmadan önce görevi açıkla",
-      "testCmdRequired": "Kodlama motoru bir test komutu gerektirir — bunu test aşamasında ayarlayın.",
-      "invalidBounds": "max_agents ve max_depth 1 ile 100 arasında olmalı",
-      "advanced": "gelişmiş"
-    },
-    "advanced": {
-      "title": "gelişmiş",
-      "description": "açıklama",
-      "descriptionPlaceholder": "bu motor ne yapar?",
-      "exportDir": "Dışa aktarım dizini",
-      "engineDefaults": "motor içleri (salt okunur)",
-      "sourceRef": "şuradan transcribe edildi",
-      "requestPreview": "İstek önizlemesi"
     },
     "edge": {
       "kindReaction": "tepki",
@@ -934,9 +834,7 @@
     "importError": "dosya okunamadı",
     "rackTitle": "iş akışları",
     "rackNew": "yeni",
-    "rackEmpty": "henüz iş akışı yok.",
-    "designerEmpty": "panelden bir iş akışı seç veya tasarlamaya başlamak için yeni bir tane oluştur.",
-    "designerEmptyCta": "iş akışı oluştur"
+    "rackEmpty": "henüz iş akışı yok."
   },
   "daemon": {
     "title": "Studio yerel daemon’a {base} adresinde ulaşamadı",

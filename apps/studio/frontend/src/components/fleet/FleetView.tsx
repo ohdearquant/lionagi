@@ -224,18 +224,7 @@ function EmptyState({ recent, nowSec }: { recent: RecentRow[]; nowSec: number })
             ))}
           </div>
         </div>
-      ) : (
-        <Link
-          to="/designer"
-          className="rounded px-4 py-2 font-data text-[length:var(--t-sm)] font-semibold text-accent transition-colors duration-100"
-          style={{
-            background: "color-mix(in srgb, var(--accent) 12%, transparent)",
-            border: "1px solid color-mix(in srgb, var(--accent) 30%, transparent)",
-          }}
-        >
-          {t("empty.cta")}
-        </Link>
-      )}
+      ) : null}
 
       <span className="font-data text-[length:var(--t-xs)] text-content-muted">
         {t("empty.hint")}

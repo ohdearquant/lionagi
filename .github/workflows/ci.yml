@@ -36,7 +36,7 @@ jobs:
     - uses: actions/checkout@v7
 
     - name: Lint markdown (formatting)
-      uses: DavidAnson/markdownlint-cli2-action@v23
+      uses: DavidAnson/markdownlint-cli2-action@v24
       with:
         globs: "docs/**/*.md,README.md,AGENT.md,CLAUDE.md,CONTRIBUTING.md,CHANGELOG.md"
         config: ".markdownlint.json"
@@ -176,7 +176,7 @@ jobs:
       studio: ${{ steps.filter.outputs.studio }}
     steps:
     - uses: actions/checkout@v7
-    - uses: dorny/paths-filter@v3
+    - uses: dorny/paths-filter@v4
       id: filter
       with:
         filters: |
