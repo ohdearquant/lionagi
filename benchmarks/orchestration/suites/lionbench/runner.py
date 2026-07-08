@@ -38,6 +38,7 @@ for _p in (str(_HERE), str(_HERE.parents[1])):  # self dir + benchmarks/orchestr
         sys.path.insert(0, _p)
 
 from adapters import ADAPTER_REGISTRY  # noqa: E402
+from arms import ArmConfig, build_arm, injection_manifest, reset_record  # noqa: E402
 from harness.stats import wilson  # noqa: E402 — reuse, don't reinvent (AEP)
 from image import SNAPSHOT_NAME, lionbench_image  # noqa: E402
 from schema import Instance, list_subjects, usable_instances  # noqa: E402
@@ -94,8 +95,22 @@ async def strip_self_leak(sandbox, workdir: str) -> bool:
     return present
 
 
-async def run_one(instance: Instance, adapter_name: str, adapter, *, run_id: str) -> dict:
-    """Run one (instance, adapter) cell inside a fresh sandbox; return a scored record."""
+async def run_one(
+    instance: Instance, adapter_name: str, adapter, *, run_id: str, arm: ArmConfig | None = None
+) -> dict:
+    """Run one (instance, adapter) cell inside a fresh sandbox; return a scored record.
+
+    ``arm`` is the khive-injection bench arm (M0/M1/M2, see ``arms.py``). When
+    set, the result gains an ``injection`` block: ``providers_fired`` reads
+    whatever per-turn ``ProviderReport`` data the adapter surfaces via
+    ``last_context_reports`` (``[]`` until the sandbox entry wires a
+    ContextProviderRegistry onto its agent branch — an honest gap, same class
+    as ``last_usage``/``last_tool_calls`` being ``{}`` for the CLI-harness
+    adapters today). M2 additionally requires a caller-supplied namespace
+    reset outcome (there is no verified khive verb for the reset yet, so the
+    default here records it as NOT performed — ``reset_ok=False`` — which
+    correctly forces ``injection_effective=False`` rather than silently
+    scoring an unisolated M2 run as clean; see ``arms.reset_record``)."""
     t0 = time.monotonic()
     art_dir = RESULTS / run_id / instance.subject / instance.instance_id / adapter_name
     art_dir.mkdir(parents=True, exist_ok=True)
@@ -142,6 +157,20 @@ async def run_one(instance: Instance, adapter_name: str, adapter, *, run_id: str
             "usage": getattr(adapter, "last_usage", {}),
             "tool_calls": getattr(adapter, "last_tool_calls", {}),
         }
+        if arm is not None:
+            reset = None
+            if arm.name == "M2":
+                reset = reset_record(
+                    arm,
+                    ok=False,
+                    detail=(
+                        "namespace reset verb not yet wired into the runner (open "
+                        "dependency, INJECTION_DESIGN.md §9 R2) — this M2 run is not "
+                        "namespace-isolated from the previous instance"
+                    ),
+                )
+            reports = getattr(adapter, "last_context_reports", [])
+            result["injection"] = injection_manifest(arm, reports, reset=reset)
         (art_dir / "result.json").write_text(json.dumps(result, indent=2))
         return result
 
@@ -258,7 +287,19 @@ async def main() -> None:
     ap.add_argument("--limit", type=int, default=None)
     ap.add_argument("--concurrency", type=int, default=2)
     ap.add_argument("--run-id", default=None)
+    ap.add_argument(
+        "--arm",
+        choices=("M0", "M1", "M2"),
+        default=None,
+        help="khive-injection bench arm (INJECTION_DESIGN.md §3); omit to run with no "
+        "injection wiring at all (distinct from M0, which records injection_effective=None)",
+    )
+    ap.add_argument(
+        "--namespace", default=None, help="pinned khive namespace, required for --arm M1/M2"
+    )
     args = ap.parse_args()
+
+    arm = build_arm(args.arm, args.namespace) if args.arm else None
 
     manifest_dir = Path(args.manifest_dir)
     subjects = (
@@ -308,7 +349,7 @@ async def main() -> None:
         async with sem:
             print(f"  ▶ {instance.instance_id} / {name} …", flush=True)
             try:
-                r = await run_one(instance, name, adapter, run_id=run_id)
+                r = await run_one(instance, name, adapter, run_id=run_id, arm=arm)
             except Exception as e:  # noqa: BLE001 — one bad cell must not abort the batch
                 r = {
                     "instance_id": instance.instance_id,
