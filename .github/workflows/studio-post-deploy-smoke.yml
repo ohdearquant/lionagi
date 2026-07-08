@@ -44,22 +44,35 @@ jobs:
       - name: Smoke the hosted Studio
         env:
           STUDIO_URL: ${{ github.event.inputs.url || 'https://lion-studio.khive.ai' }}
+          # On a Production deployment_status the stable alias can briefly still
+          # serve the PREVIOUS deployment before Vercel promotes it to the new
+          # one -- asserting during that window could pass a broken new deploy
+          # against the old healthy alias (false green). The deployment-specific
+          # *.vercel.app URL would test the exact new build, but it sits behind
+          # Vercel Authentication (302 -> SSO) so CI can't fetch it. So on a
+          # deployment_status event, wait out the promotion window before
+          # asserting; schedule/workflow_dispatch test current state with no wait.
+          GRACE: ${{ github.event_name == 'deployment_status' && '60' || '0' }}
         run: |
           set -euo pipefail
           url="${STUDIO_URL%/}/"
+          # Production contract: the hosted build injects the operator's default
+          # local daemon base. Exact match -- a wrong/missing port is a failure.
+          expected='window.__STUDIO_API_BASE__="http://127.0.0.1:8765"'
           echo "Smoking $url"
-          # The production alias can lag a few seconds behind the
-          # deployment_status event, so retry before failing.
+          if [ "${GRACE:-0}" -gt 0 ]; then
+            echo "deployment_status: waiting ${GRACE}s for production alias promotion before asserting"
+            sleep "$GRACE"
+          fi
           attempt=0
           max=10
-          injection_re='window\.__STUDIO_API_BASE__="http://127\.0\.0\.1:[0-9]+"'
           while :; do
             attempt=$((attempt + 1))
             code=$(curl -sS -o /tmp/index.html -w '%{http_code}' "$url" || echo "000")
             if [ "$code" = "200" ] \
                && grep -q 'id="root"' /tmp/index.html \
-               && grep -Eq "$injection_re" /tmp/index.html; then
-              echo "OK: HTTP 200, SPA shell present, loopback API base injected."
+               && grep -Fq "$expected" /tmp/index.html; then
+              echo "OK: HTTP 200, SPA shell present, production API base injected."
               grep -o 'window\.__STUDIO_API_BASE__="[^"]*"' /tmp/index.html | head -1
               exit 0
             fi
@@ -72,10 +85,12 @@ jobs:
               else
                 echo "  SPA shell (id=\"root\"): MISSING"
               fi
-              if grep -Eq "$injection_re" /tmp/index.html; then
-                echo "  loopback API base injection: present"
+              if grep -Fq "$expected" /tmp/index.html; then
+                echo "  API base injection: present"
               else
-                echo "  loopback API base injection: MISSING -- SPA falls back to same-origin and /api/* returns HTML."
+                echo "  expected injection MISSING -- SPA falls back to same-origin and /api/* returns HTML."
+                echo "  expected: $expected"
+                echo -n "  actual:   "; grep -o 'window\.__STUDIO_API_BASE__="[^"]*"' /tmp/index.html | head -1 || echo "<none>"
               fi
               echo "  --- first 40 lines of served HTML ---"
               head -40 /tmp/index.html || true
