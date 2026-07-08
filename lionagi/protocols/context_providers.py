@@ -80,6 +80,10 @@ class ContextProviderRegistry:
     def __bool__(self) -> bool:
         return bool(self._entries)
 
+    @property
+    def names(self) -> list[str]:
+        return [entry.name for entry in self._entries]
+
     def __len__(self) -> int:
         return len(self._entries)
 

@@ -152,12 +152,24 @@ async def _apply_context_providers(
     the branch's per-turn injection slot, read by `f(c)` in `_prepare_run_kwargs`
     and cleared right after. Returns the pre-built Instruction (reused by
     `_prepare_run_kwargs` to avoid rebuilding it) or None when no providers
-    are registered — the zero-overhead path."""
+    are registered — the zero-overhead path.
+
+    Injections render into the system-guidance fold, so a branch with no
+    system message has no render target: providers are not invoked (no
+    wasted retrieval or tokens) and the turn's report marks every registered
+    provider as skipped, observable via `branch.last_context_report`."""
     if not branch._context_providers:
+        return None
+
+    from lionagi.protocols.context_providers import ProviderReport
+
+    if not branch.msgs.system:
+        branch._last_context_report = ProviderReport(skipped=list(branch._context_providers.names))
         return None
 
     ins = _build_instruction(branch, instruction, param)
     report = await branch._context_providers.gather(branch, ins)
+    branch._last_context_report = report
     branch._context_injection_slot = report.blocks
     return ins
 

@@ -223,3 +223,54 @@ async def test_chat_only_branch_no_tools_works_with_providers(make_mocked_branch
     assert result == "ok"
     sent_messages = branch.chat_model.invoke.call_args.kwargs["messages"]
     assert any("floor-knowledge" in m["content"] for m in sent_messages)
+
+
+# ---------------------------------------------------------------------------
+# Systemless branches: no render target — providers skipped, observably
+# ---------------------------------------------------------------------------
+
+
+class _CountingProvider:
+    name = "counter"
+
+    def __init__(self):
+        self.calls = 0
+
+    async def provide(self, branch, instruction):
+        self.calls += 1
+        return "should never render"
+
+
+@pytest.mark.asyncio
+async def test_systemless_branch_skips_providers_with_observable_report(
+    make_mocked_branch,
+):
+    branch = make_mocked_branch(response="ok")
+    assert branch.msgs.system is None
+    counting = _CountingProvider()
+    branch.providers.register(counting, name="counter")
+
+    result = await branch.communicate(instruction="hello", skip_validation=True)
+
+    assert result == "ok"
+    assert counting.calls == 0
+    report = branch.last_context_report
+    assert isinstance(report, ProviderReport)
+    assert report.skipped == ["counter"]
+    assert report.blocks == [] and report.fired == []
+    sent_messages = branch.chat_model.invoke.call_args.kwargs["messages"]
+    assert all("should never render" not in m["content"] for m in sent_messages)
+    assert branch._context_injection_slot is None
+
+
+@pytest.mark.asyncio
+async def test_last_context_report_populated_on_systemful_turn(make_mocked_branch):
+    branch = make_mocked_branch(system="You are helpful", response="ok")
+    branch.providers.register(_StubProvider("knowledge"), name="kp")
+
+    await branch.communicate(instruction="hello", skip_validation=True)
+
+    report = branch.last_context_report
+    assert isinstance(report, ProviderReport)
+    assert [f["provider_name"] for f in report.fired] == ["kp"]
+    assert report.fired[0]["tokens"] > 0
