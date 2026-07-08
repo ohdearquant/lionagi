@@ -8,6 +8,7 @@ import asyncio as _asyncio
 import contextlib
 import json
 import logging
+import os
 import time
 from dataclasses import dataclass, field
 
@@ -28,6 +29,7 @@ from ._common import (
     _format_result_text,
     _post_results_to_team,
 )
+from ._notify import fire_terminal_notify
 from ._orchestration import (
     EFFORT_MAP,
     OrchestrationEnv,
@@ -1302,6 +1304,7 @@ async def _run_flow(
     pack: str | None = None,
     resume_checkpoint: dict | None = None,
     allow_degraded_context: bool = False,
+    notify: str | None = None,
     **legacy_kwargs,
 ) -> tuple[str, str]:
     """Returns (output, terminal_status)."""
@@ -1311,6 +1314,9 @@ async def _run_flow(
         legacy_kwargs.pop("max_agents")
     if legacy_kwargs:
         raise TypeError(f"_run_flow() got unexpected keyword arguments: {list(legacy_kwargs)}")
+
+    _started_at = time.time()
+    _invocation_kind = "play" if playbook_name else "flow"
 
     # The checkpoint's own "config" replays THIS call's kwargs verbatim on
     # --resume (dry_run/show_graph excluded deliberately — those are
@@ -1388,7 +1394,7 @@ async def _run_flow(
 
     await start_live_persist(
         env,
-        invocation_kind="play" if playbook_name else "flow",
+        invocation_kind=_invocation_kind,
         playbook_name=playbook_name,
         agent_name=agent_name,
         artifacts_path=str(env.run.artifact_root),
@@ -1440,8 +1446,11 @@ async def _run_flow(
             if invocation_id:
                 import time as _time
 
+                from lionagi.cli.status import _classify
                 from lionagi.state.db import StateDB
 
+                _ended_at = _time.time()
+                _notify_status = _terminal_status
                 try:
                     (
                         inv_status,
@@ -1452,8 +1461,9 @@ async def _run_flow(
                     ) = await _resolve_invocation_terminal_flow(
                         invocation_id, fallback_status=_terminal_status
                     )
+                    _notify_status = inv_status
                     async with StateDB() as _inv_db:
-                        await _inv_db.update_invocation(invocation_id, ended_at=_time.time())
+                        await _inv_db.update_invocation(invocation_id, ended_at=_ended_at)
                         await _inv_db.update_status(
                             "invocation",
                             invocation_id,
@@ -1471,6 +1481,24 @@ async def _run_flow(
                     _logging.getLogger("lionagi.cli").exception(
                         "Failed to finalize invocation %s", invocation_id
                     )
+
+                # Fire the terminal-notify hook exactly once, after the
+                # invocation's terminal status is as final as it gets here —
+                # never lets a hook failure affect the run's own status.
+                _, _notify_exit_class, _ = _classify("invocation", _notify_status)
+                await fire_terminal_notify(
+                    invocation_id=invocation_id,
+                    kind=_invocation_kind,
+                    playbook=playbook_name,
+                    status=_notify_status,
+                    save_dir=save_dir,
+                    cwd=cwd or os.getcwd(),
+                    exit_class=_notify_exit_class,
+                    started_at=_started_at,
+                    ended_at=_ended_at,
+                    override_command=notify,
+                    project_dir=cwd,
+                )
             for _br in env.session.branches:
                 await _br.mdls.shutdown()
 
@@ -1728,17 +1756,22 @@ async def _resume_flow(
     allow_degraded_context: bool = False,
     dry_run: bool = False,
     show_graph: bool = False,
+    notify: str | None = None,
 ) -> tuple[str, str]:
     """Resolve a checkpointed run/session id and replay it through _run_flow.
 
     dry_run/show_graph come from the CURRENT invocation, not the checkpoint —
     they are presentation flags, not part of what already happened. Every
-    other _run_flow kwarg replays the persisted config verbatim.
+    other _run_flow kwarg replays the persisted config verbatim. notify is
+    also a current-invocation override — like dry_run/show_graph it steers
+    presentation of this replay, not the plan that already happened.
     """
     _run_dir, checkpoint = await resolve_checkpoint_target(target)
     config = dict(checkpoint.get("config") or {})
     config["dry_run"] = dry_run
     config["show_graph"] = show_graph
+    if notify is not None:
+        config["notify"] = notify
     return await _run_flow(
         prompt=checkpoint.get("prompt", ""),
         resume_checkpoint=checkpoint,
