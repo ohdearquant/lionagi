@@ -1213,6 +1213,82 @@ def test_schedule_create_zero_max_cost_usd_errors(monkeypatch, capsys):
     assert "finite positive number" in capsys.readouterr().err
 
 
+# ---------------------------------------------------------------------------
+# _cmd_create: --threshold-config metric threshold alert flag
+# ---------------------------------------------------------------------------
+
+
+def test_schedule_create_threshold_config_flag_parses():
+    """create accepts --threshold-config as a raw string (JSON parsing happens in _cmd_create)."""
+    from lionagi.studio.cli import add_schedule_subparser
+
+    parser = argparse.ArgumentParser()
+    sub = parser.add_subparsers(dest="command")
+    add_schedule_subparser(sub)
+    args = parser.parse_args(
+        [
+            "schedule",
+            "create",
+            "watch-failures",
+            "--interval",
+            "300",
+            "--prompt",
+            "alert on-call",
+            "--threshold-config",
+            '{"metric": "failed_sessions", "op": "gt", "value": 5, "window_minutes": 60}',
+        ]
+    )
+    assert (
+        args.threshold_config
+        == '{"metric": "failed_sessions", "op": "gt", "value": 5, "window_minutes": 60}'
+    )
+
+
+def test_schedule_create_threshold_config_wired_to_body(monkeypatch):
+    """--threshold-config parses to a dict and wires body['threshold_config']."""
+    outcome = _run_create_argv(
+        monkeypatch,
+        [
+            "--interval",
+            "300",
+            "--prompt",
+            "alert on-call",
+            "--threshold-config",
+            '{"metric": "total_cost_usd", "op": "gte", "value": 10.5, "window_minutes": 15}',
+        ],
+    )
+    assert outcome["result"] == 0
+    assert outcome["body"]["threshold_config"] == {
+        "metric": "total_cost_usd",
+        "op": "gte",
+        "value": 10.5,
+        "window_minutes": 15,
+    }
+
+
+def test_schedule_create_threshold_config_invalid_json_errors(monkeypatch, capsys):
+    """A non-JSON --threshold-config returns 1 and never posts to the API."""
+    outcome = _run_create_argv(monkeypatch, ["--threshold-config", "{not json"])
+    assert outcome["result"] == 1
+    assert outcome["called"] is False
+    assert "must be valid JSON" in capsys.readouterr().err
+
+
+def test_schedule_create_threshold_config_non_object_errors(monkeypatch, capsys):
+    """A JSON --threshold-config that isn't an object returns 1 and never posts."""
+    outcome = _run_create_argv(monkeypatch, ["--threshold-config", "[1, 2]"])
+    assert outcome["result"] == 1
+    assert outcome["called"] is False
+    assert "must be a JSON object" in capsys.readouterr().err
+
+
+def test_schedule_create_threshold_config_omitted_by_default(monkeypatch):
+    """No --threshold-config means the body never carries the key at all."""
+    outcome = _run_create_argv(monkeypatch, ["--interval", "300", "--prompt", "ping"])
+    assert outcome["result"] == 0
+    assert "threshold_config" not in outcome["body"]
+
+
 @pytest.mark.parametrize("bad_value", ["nan", "inf", "-inf"])
 def test_schedule_create_non_finite_max_cost_usd_errors(monkeypatch, capsys, bad_value):
     """A non-finite --max-cost-usd (nan/inf/-inf) is rejected before hitting the API.

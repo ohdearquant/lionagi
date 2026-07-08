@@ -784,6 +784,19 @@ def _cmd_create(args: argparse.Namespace) -> int:
             print("Error: --github-filter must be a JSON object.", file=sys.stderr)
             return 1
         body["github_filter"] = parsed_filter
+    if getattr(args, "threshold_config", None):
+        try:
+            parsed_threshold = json.loads(args.threshold_config)
+        except (ValueError, TypeError) as exc:
+            print(f"Error: --threshold-config must be valid JSON: {exc}", file=sys.stderr)
+            return 1
+        if not isinstance(parsed_threshold, dict):
+            print("Error: --threshold-config must be a JSON object.", file=sys.stderr)
+            return 1
+        # Shape/value validation (metric/op vocab, positive window_minutes,
+        # etc.) happens server-side in _svc_validate_threshold_config --
+        # this is just the same JSON-object shape check --github-filter does.
+        body["threshold_config"] = parsed_threshold
     if getattr(args, "poll_interval", None) is not None:
         if args.poll_interval < 1:
             print("Error: --poll-interval must be a positive integer.", file=sys.stderr)
@@ -1018,6 +1031,21 @@ def add_schedule_subparser(subparsers: argparse._SubParsersAction) -> argparse.A
         help=(
             "JSON object filtering which PRs fire the trigger, e.g. "
             '\'{"state": "open", "base": "main"}\'.'
+        ),
+    )
+    create_p.add_argument(
+        "--threshold-config",
+        dest="threshold_config",
+        metavar="JSON",
+        help=(
+            "Metric threshold alert config as a JSON object: "
+            '{"metric": "failed_sessions|total_cost_usd|p95_latency_ms", '
+            '"op": "gt|gte", "value": N, "window_minutes": N}. When set, '
+            "this schedule's own cron/interval cadence only evaluates the "
+            "metric on each tick and fires the action only when the "
+            "threshold is breached (cooldown = window_minutes). Full "
+            'validation happens server-side, e.g. \'{"metric": '
+            '"failed_sessions", "op": "gt", "value": 5, "window_minutes": 60}\'.'
         ),
     )
     create_p.add_argument(

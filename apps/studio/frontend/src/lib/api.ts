@@ -91,6 +91,32 @@ async function fetchJson<T>(path: string, init?: RequestInit): Promise<T> {
     }
     throw new Error(detail ?? `Request failed: ${response.status}`);
   }
+  // 204/empty-body responses have nothing to parse — return as-is (matches
+  // callers that type these as `unknown`/`{ ok: boolean }` but never actually
+  // read a JSON body for a No Content response).
+  if (response.status === 204) {
+    return undefined as T;
+  }
+  // Static deploys with no backend (e.g. Vercel serving only the SPA dist/)
+  // rewrite every unmatched path — including /api/* — to index.html with a
+  // 200. response.ok is then true and response.json() throws a cryptic,
+  // engine-specific parse error on the HTML document. Detect it here so
+  // every caller gets one clear message instead of chasing this per view.
+  const contentType = response.headers.get("content-type") ?? "";
+  const looksJson = contentType.includes("json");
+  if (!looksJson) {
+    const text = await response.text();
+    if (!text) {
+      // Empty body without a JSON content-type — nothing to parse.
+      return undefined as T;
+    }
+    if (/^\s*<(!doctype html|html)/i.test(text)) {
+      throw new Error(
+        `Studio API returned HTML instead of JSON for ${path} — the API base is likely unconfigured for this deployment (set VITE_STUDIO_API_BASE at build time or window.__STUDIO_API_BASE__ at runtime).`,
+      );
+    }
+    return JSON.parse(text) as T;
+  }
   return response.json() as Promise<T>;
 }
 

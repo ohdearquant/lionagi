@@ -280,6 +280,76 @@ describe("fetchJson Authorization header", () => {
   });
 });
 
+describe("fetchJson HTML-fallback / no-backend guard", () => {
+  beforeEach(() => {
+    vi.unstubAllGlobals();
+    vi.resetModules();
+    vi.stubGlobal("window", {
+      ...window,
+      __STUDIO_API_BASE__: undefined,
+      location: { ...window.location, port: "", hostname: "server.example", protocol: "http:" },
+    });
+  });
+
+  it("throws a clear error when the SPA rewrite returns index.html for an /api/* path", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(() =>
+        Promise.resolve(
+          new Response("<!doctype html><html><body>app</body></html>", {
+            status: 200,
+            headers: { "Content-Type": "text/html" },
+          }),
+        ),
+      ),
+    );
+
+    const { getStats } = await import("./api");
+    await expect(getStats()).rejects.toThrow(/returned HTML instead of JSON/);
+    await expect(getStats()).rejects.toThrow(/VITE_STUDIO_API_BASE/);
+  });
+
+  it("still parses a normal JSON response with an explicit content-type", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(() =>
+        Promise.resolve(
+          new Response(JSON.stringify({ playbooks: 3, agents: 1 }), {
+            status: 200,
+            headers: { "Content-Type": "application/json" },
+          }),
+        ),
+      ),
+    );
+
+    const { getStats } = await import("./api");
+    const result = await getStats();
+    expect(result).toEqual({ playbooks: 3, agents: 1 });
+  });
+
+  it("still parses a JSON response when no content-type header is present (existing behavior)", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(() => Promise.resolve(new Response(JSON.stringify({ playbooks: 5 }), { status: 200 }))),
+    );
+
+    const { getStats } = await import("./api");
+    const result = await getStats();
+    expect(result).toEqual({ playbooks: 5 });
+  });
+
+  it("returns undefined for a 204 No Content response instead of throwing", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(() => Promise.resolve(new Response(null, { status: 204 }))),
+    );
+
+    const { deleteEngineDef } = await import("./api");
+    const result = await deleteEngineDef("def-1");
+    expect(result).toBeUndefined();
+  });
+});
+
 describe("engine defs API", () => {
   type FetchCall = { url: string; init?: RequestInit };
 

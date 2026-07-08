@@ -513,6 +513,11 @@ schedules = Table(
     Column("budget_usd", Float),
     Column("budget_tokens", Integer),
     Column("project", Text),
+    # Metric threshold alerts: {metric, op, value, window_minutes} config
+    # blob + the timestamp of the last breach fire (doubles as the cooldown
+    # anchor -- see schema.sql for the fuller comment).
+    Column("threshold_config", JSON),
+    Column("last_alert_at", Float),
     Column("created_at", Float, nullable=False),
     Column("updated_at", Float, nullable=False),
 )

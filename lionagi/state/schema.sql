@@ -443,6 +443,14 @@ CREATE TABLE IF NOT EXISTS schedules (
   budget_usd          REAL,
   budget_tokens       INTEGER,
   project             TEXT,
+  -- Metric threshold alerts: when set, this schedule's own cron/interval
+  -- cadence only evaluates a metric (does not unconditionally fire); the
+  -- schedule's action fires only when the metric breaches the configured
+  -- threshold. Shape: {metric, op, value, window_minutes}. last_alert_at
+  -- tracks the most recent breach fire so the window doubles as a cooldown
+  -- (no refire until window_minutes has elapsed since the last alert).
+  threshold_config    JSON,
+  last_alert_at       REAL,
   created_at          REAL    NOT NULL,
   updated_at          REAL    NOT NULL
 );
