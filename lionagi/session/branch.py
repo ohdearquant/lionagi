@@ -45,6 +45,7 @@ from .prompts import LION_SYSTEM_MESSAGE
 if TYPE_CHECKING:
     from lionagi.operations.operate.operative import Operative
     from lionagi.operations.types import Middle
+    from lionagi.protocols.context_providers import ContextProviderRegistry
     from lionagi.session.control import LoopControl, LoopDirective
 
 
@@ -107,6 +108,8 @@ class Branch(Element, Relational):
     _capabilities: Any = PrivateAttr(None)
     _loop_control: "LoopControl | None" = PrivateAttr(None)
     _signal_tasks: list = PrivateAttr(default_factory=list)
+    _context_providers: "ContextProviderRegistry | None" = PrivateAttr(None)
+    _context_injection_slot: list[str] | None = PrivateAttr(None)
 
     def __init__(
         self,
@@ -265,6 +268,17 @@ class Branch(Element, Relational):
         if self._memory is None:
             self._memory = InMemoryStore()
         return self._memory
+
+    @property
+    def providers(self) -> "ContextProviderRegistry":
+        """This branch's pre-turn ContextProvider registry: lazily created
+        on first access. Optional and zero-cost when unused — a branch that
+        never touches this property never gathers or renders injections."""
+        if self._context_providers is None:
+            from lionagi.protocols.context_providers import ContextProviderRegistry
+
+            self._context_providers = ContextProviderRegistry()
+        return self._context_providers
 
     @property
     def chat_model(self) -> iModel:

@@ -40,6 +40,11 @@ if TYPE_CHECKING:
     from .operations.builder import OperationGraphBuilder as Builder
     from .operations.node import Operation
     from .protocols.action.manager import load_mcp_tools
+    from .protocols.context_providers import (
+        ContextProvider,
+        ContextProviderRegistry,
+        ProviderReport,
+    )
     from .protocols.memory import InMemoryStore, MemoryItem, MemoryQuery, MemoryStore
     from .protocols.messages import Message, create_message
     from .protocols.types import Edge, Element, Event, Graph, Node, Pile, Progression
@@ -73,6 +78,9 @@ _LAZY_MAP: dict[str, tuple[str, str | None]] = {
     "MemoryQuery": ("protocols.memory", "MemoryQuery"),
     "MemoryStore": ("protocols.memory", "MemoryStore"),
     "InMemoryStore": ("protocols.memory", "InMemoryStore"),
+    "ContextProvider": ("protocols.context_providers", "ContextProvider"),
+    "ContextProviderRegistry": ("protocols.context_providers", "ContextProviderRegistry"),
+    "ProviderReport": ("protocols.context_providers", "ProviderReport"),
     "create_message": ("protocols.messages.manager", "create_message"),
     "HookRegistry": ("service.hooks.hook_registry", "HookRegistry"),
     "HookedEvent": ("service.hooks.hooked_event", "HookedEvent"),
@@ -130,6 +138,8 @@ __all__ = (
     "Branch",
     "Broadcaster",
     "Builder",
+    "ContextProvider",
+    "ContextProviderRegistry",
     "CsvAdapter",
     "DataClass",
     "Edge",
@@ -158,6 +168,7 @@ __all__ = (
     "Params",
     "Pile",
     "Progression",
+    "ProviderReport",
     "Session",
     "Spec",
     "TomlAdapter",
