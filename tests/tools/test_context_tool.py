@@ -156,3 +156,64 @@ async def test_compact_all_mode_collapses_more_than_tool_io():
         _build_branch(), action="compact", start=1, end=7, summary="s", mode="all"
     )
     assert res_all["compacted"] > res_io["compacted"]
+
+
+# -- compact auto=True (model-generated summary) ---------------------------
+
+
+async def test_compact_auto_generates_summary_via_model_call(monkeypatch):
+    b = _build_branch()
+    called: dict = {}
+
+    async def fake_chat(self, *, instruction=None, **kw):
+        called["prompt"] = instruction
+        return "Root cause: off-by-one in f3.py. Fix applied. Verified green."
+
+    monkeypatch.setattr(Branch, "chat", fake_chat)
+    res = await _call(b, action="compact", start=1, auto=True)
+    assert res["success"] is True and res["compacted"] > 0
+    assert "prompt" in called
+
+    previews = await _call(b, action="get_messages", scope="active")
+    assert any("Root cause: off-by-one" in m for m in previews["messages"])
+
+
+async def test_compact_auto_failure_returns_error_never_raises(monkeypatch):
+    async def failing_chat(self, *, instruction=None, **kw):
+        raise RuntimeError("model unavailable")
+
+    b = _build_branch()
+    monkeypatch.setattr(Branch, "chat", failing_chat)
+    res = await _call(b, action="compact", start=1, auto=True)
+    assert res["success"] is False
+    assert "summary" in res["error"].lower()
+
+
+async def test_compact_auto_model_returns_blank_text_fails_gracefully(monkeypatch):
+    async def blank_chat(self, *, instruction=None, **kw):
+        return "   "
+
+    b = _build_branch()
+    monkeypatch.setattr(Branch, "chat", blank_chat)
+    res = await _call(b, action="compact", start=1, auto=True)
+    assert res["success"] is False
+
+
+async def test_compact_explicit_summary_wins_even_with_auto_true(monkeypatch):
+    called = {"used": False}
+
+    async def fake_chat(self, *, instruction=None, **kw):
+        called["used"] = True
+        return "should not be used"
+
+    b = _build_branch()
+    monkeypatch.setattr(Branch, "chat", fake_chat)
+    res = await _call(b, action="compact", start=1, summary="Explicit summary here.", auto=True)
+    assert res["success"] is True
+    assert called["used"] is False
+
+
+async def test_compact_auto_false_without_summary_still_requires_summary():
+    res = await _call(_build_branch(), action="compact", start=1, auto=False)
+    assert res["success"] is False
+    assert "summary" in res["error"].lower()

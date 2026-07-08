@@ -32,6 +32,7 @@ from .file.reader import _list_dir_sync as _file_list_dir_sync
 from .file.reader import _read_sync as _file_read_sync
 
 if TYPE_CHECKING:
+    from lionagi.agent.nudge import NudgeEngine, NudgeRule
     from lionagi.session.branch import Branch
 
 
@@ -294,6 +295,7 @@ DEFAULT_CODING_TOOLS: tuple[str, ...] = (
     "code_check",
     "code_nav",
     "ast_search",
+    "context",
 )
 
 
@@ -348,6 +350,8 @@ class CodingToolkit(LionTool):
         notify_max_tokens: int = 200_000,
         workspace_root: str | Path | None = None,
         tools: Sequence[str] | None = None,
+        nudge_engine: NudgeEngine | None = None,
+        nudge_rules: Sequence[NudgeRule] | None = None,
     ):
         self._security_pre_hooks: dict[str, list[Callable]] = {}
         self._pre_hooks: dict[str, list[Callable]] = {}
@@ -362,53 +366,63 @@ class CodingToolkit(LionTool):
         if unknown:
             raise ValueError(f"unknown coding tool(s): {unknown}. Valid: {list(ALL_CODING_TOOLS)}")
         self.enabled_tools = selected
+        self.nudge_engine = nudge_engine
+        self.nudge_rules = tuple(nudge_rules) if nudge_rules is not None else ()
+        self._bound_nudge_engine: NudgeEngine | None = None
 
     def bind(self, branch: Branch) -> list[Tool]:
         from lionagi.protocols.messages import ActionResponse
 
         file_state: dict[str, float] = {}
-        call_count = [0]
+        read_tracked: set[str] = set()
         msgs = branch.msgs
         notify = self.notify
         workspace_root = self.workspace_root
 
-        def _system_status() -> str | None:
-            if not notify:
-                return None
-            call_count[0] += 1
+        engine: NudgeEngine | None = None
+        if notify:
+            from lionagi.agent.nudge import NudgeEngine, default_nudge_rules
 
-            from lionagi.service.token_budget import get_token_budget
+            engine = self.nudge_engine
+            if engine is None:
+                rules = default_nudge_rules() + list(self.nudge_rules)
+                engine = NudgeEngine(branch, rules=rules)
+        self._bound_nudge_engine = engine
 
-            budget = get_token_budget(branch)
-            n_active = len(branch.progression)
-            n_total = len(msgs.progression)
-            n_files = len(file_state)
+        def _invalidate_stale_reads() -> None:
+            """Drop file_state entries whose backing reader-read result was evicted/compacted.
 
-            n_action_results = 0
+            Prevents a silent unsoundness: without this, evicting a verbose read
+            result still leaves the read-before-edit guard satisfied, letting the
+            model edit a file it no longer has in view.
+            """
+            if not read_tracked:
+                return
+            active = branch.progression
             pile = msgs.messages
-            for uid in branch.progression:
-                if uid in pile and isinstance(pile[uid], ActionResponse):
-                    n_action_results += 1
-
-            parts = [
-                f"context {budget.used // 1000}k/{budget.limit // 1000}k tokens ({budget.usage_pct:.0%})"
-            ]
-            parts.append(f"{n_active} messages")
-            if n_action_results > 0:
-                parts.append(f"{n_action_results} action results")
-            if n_files > 0:
-                parts.append(f"{n_files} files tracked")
-            if n_total > n_active:
-                parts.append(f"{n_total - n_active} evicted")
-
-            status = f"[System: {', '.join(parts)}]"
-
-            if budget.is_critical:
-                status += " ⚠️ Context nearly full — evict old action results now."
-            elif budget.is_warning:
-                status += " Consider evicting earlier action results to free space."
-
-            return status
+            active_paths: set[str] = set()
+            for uid in active:
+                if uid not in pile:
+                    continue
+                m = pile[uid]
+                if not isinstance(m, ActionResponse):
+                    continue
+                c = m.content
+                if getattr(c, "function", None) != "reader":
+                    continue
+                args = getattr(c, "arguments", None) or {}
+                if args.get("action") != "read":
+                    continue
+                p = args.get("path")
+                if not p:
+                    continue
+                try:
+                    active_paths.add(str(_resolve_workspace_path(p, workspace_root).resolve()))
+                except PermissionError:
+                    continue
+            for p in [p for p in read_tracked if p not in active_paths]:
+                read_tracked.discard(p)
+                file_state.pop(p, None)
 
         def _check_read_guard(path: str) -> str | None:
             try:
@@ -426,11 +440,15 @@ class CodingToolkit(LionTool):
                 return f"File changed since last read: {path}. Read it again."
             return None
 
-        def _track(result: dict):
+        def _track(result: dict, *, is_read: bool = False):
             resolved = result.pop("_resolved", None)
             mtime = result.pop("_mtime", None)
             if resolved and mtime is not None:
                 file_state[resolved] = mtime
+                if is_read:
+                    read_tracked.add(resolved)
+                else:
+                    read_tracked.discard(resolved)
 
         # Cache for documents opened via action='open' (docling conversion).
         # Keyed by path; values are (text, cached_at) tuples — same layout as
@@ -478,7 +496,7 @@ class CodingToolkit(LionTool):
                         "error": cached.error,
                     }
                 result = await run_sync(_read_file_sync, path, start, max_lines, workspace_root)
-                _track(result)
+                _track(result, is_read=True)
                 return result
             elif action == "list_dir":
                 return await run_sync(
@@ -639,6 +657,7 @@ class CodingToolkit(LionTool):
             summary: str = None,
             mode: str = None,
             scope: str = None,
+            auto: bool = False,
         ) -> dict:
             """Manage your conversation context — check usage, list messages, evict old ones.
 
@@ -654,7 +673,14 @@ class CodingToolkit(LionTool):
                 summary=summary,
                 mode=mode,
                 scope=scope,
+                auto=auto,
             )
+            if (
+                action in ("evict", "evict_action_results", "compact")
+                and isinstance(result, dict)
+                and result.get("success")
+            ):
+                _invalidate_stale_reads()
             if action == "status" and isinstance(result, dict) and result.get("success"):
                 result["files_tracked"] = len(file_state)
             return result
@@ -662,7 +688,15 @@ class CodingToolkit(LionTool):
         async def _notify_post(
             tool_name: str, action: str, args: dict, result: dict
         ) -> dict | None:
-            status = _system_status()
+            if engine is None:
+                return result
+            ok = (
+                result.get("success", result.get("return_code") == 0)
+                if isinstance(result, dict)
+                else True
+            )
+            engine.record_call(tool_name, action, ok)
+            status = engine.evaluate(files_tracked=len(file_state))
             if status and isinstance(result, dict):
                 result["system"] = status
             return result
