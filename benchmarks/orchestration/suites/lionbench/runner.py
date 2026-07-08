@@ -300,6 +300,8 @@ async def main() -> None:
     args = ap.parse_args()
 
     arm = build_arm(args.arm, args.namespace) if args.arm else None
+    if arm is not None:
+        arm.assert_runnable()
 
     manifest_dir = Path(args.manifest_dir)
     subjects = (

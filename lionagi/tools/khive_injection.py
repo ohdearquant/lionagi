@@ -61,11 +61,14 @@ class KhiveInjectionPolicy:
 
     ``namespace``, when set, is threaded onto every khive verb this policy's
     provider emits (recall, compose, auto_feedback, remember). This is the
-    bench-arm isolation mechanism (INJECTION_DESIGN.md §3): auto_feedback is
-    a WRITE to the live brain store, so an "M1 read-only" arm without a
-    pinned namespace still mutates posteriors and contaminates the M0/M1
-    comparison — pinning a namespace is required, not optional, for any
-    bench arm with ``enabled=True``.
+    bench-arm isolation mechanism: auto_feedback is a WRITE to the live brain
+    store, so an "M1 read-only" arm without a pinned namespace still mutates
+    posteriors and contaminates the M0/M1 comparison — pinning a namespace is
+    required, not optional, for any bench arm with ``enabled=True``. Note:
+    today only the khive write verb honors a namespace argument; the read
+    verbs reject unknown params, so an injection-enabled arm cannot actually
+    execute until the khive surface grows namespace-scoped reads. The
+    threading is in place so it works the day that lands.
     """
 
     profile_id: str
@@ -230,9 +233,9 @@ class KhiveInjectionProvider:
         if policy.snapshot_id is not None:
             raise ValueError(
                 "KhiveInjectionProvider cannot honor policy.snapshot_id yet — the khive "
-                "recall/compose surface has no snapshot parameter (feature-ask filed, "
-                "INJECTION_DESIGN.md §3). policy.namespace pinning is the supported "
-                "isolation mechanism today; set snapshot_id=None and use namespace instead."
+                "recall/compose surface has no snapshot parameter. policy.namespace "
+                "pinning is the supported isolation mechanism; set snapshot_id=None "
+                "and use namespace instead."
             )
         self.policy = policy
         self.name = f"khive_injection:{policy.profile_id}"

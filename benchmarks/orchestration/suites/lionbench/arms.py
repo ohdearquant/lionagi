@@ -46,7 +46,20 @@ class ArmConfig:
             raise ValueError(
                 f"arm {self.name!r}: enabled khive-injection arms require an explicit "
                 "namespace — an unpinned M1/M2 arm reads and writes the live khive "
-                "store and contaminates the M0/M1/M2 comparison (INJECTION_DESIGN.md §3)."
+                "store and contaminates the M0/M1/M2 comparison."
+            )
+
+    def assert_runnable(self) -> None:
+        """Hard gate before execution: injection-enabled arms cannot run until
+        the khive surface supports namespace-scoped READS (recall/compose/
+        auto_feedback currently reject a namespace param — only the write verb
+        honors it). Running anyway would either error every recall or fall
+        back to the live store, contaminating the arm. M0 always runs."""
+        if self.enabled:
+            raise RuntimeError(
+                f"arm {self.name!r} is blocked: khive namespace-scoped reads are not "
+                "available yet (feature-ask pending with the khive team). Only the "
+                "M0 control arm is runnable today."
             )
 
     def to_policy(self, *, profile_id: str) -> KhiveInjectionPolicy:
