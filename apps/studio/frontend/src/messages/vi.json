@@ -3,7 +3,6 @@
     "rail": {
       "ariaLabel": "điều hướng chính",
       "home": "trung tâm điều khiển",
-      "designer": "trình thiết kế",
       "library": "thư viện",
       "schedules": "lịch chạy",
       "system": "hệ thống",
@@ -200,10 +199,8 @@
     "clearStatusFilter": "xóa bộ lọc trạng thái",
     "empty": {
       "all": "chưa có lịch sử.",
-      "allHint": "khởi chạy thứ gì đó từ trình thiết kế để xem tại đây.",
       "filtered": "không có mục nào khớp với bộ lọc.",
-      "filteredHint": "thử loại khác hoặc xóa tìm kiếm.",
-      "cta": "mở trình thiết kế →"
+      "filteredHint": "thử loại khác hoặc xóa tìm kiếm."
     },
     "status": {
       "running": "đang chạy",
@@ -583,7 +580,6 @@
     },
     "empty": {
       "message": "không có tác nhân nào đang chạy — nhóm tác nhân hiển thị các điều phối live khi chúng diễn ra.",
-      "cta": "mở trình thiết kế →",
       "hint": "⌘K → fleet hoặc monitor",
       "recent": "phiên gần đây",
       "ago": "{delta} trước"
@@ -704,27 +700,6 @@
     }
   },
   "designer": {
-    "rack": {
-      "title": "engine",
-      "blueprints": "mẫu",
-      "blueprintsHint": "tích hợp sẵn, chỉ đọc",
-      "saved": "định nghĩa đã lưu",
-      "savedHint": "engine tái sử dụng của bạn",
-      "stages": "giai đoạn",
-      "loading": "đang tải…",
-      "emptySaved": "chưa lưu gì. Cấu hình một blueprint rồi bấm lưu.",
-      "collapse": "thu gọn rack",
-      "expand": "mở rộng rack",
-      "delete": "xóa {name}",
-      "deleteConfirm": "xóa?"
-    },
-    "header": {
-      "saved": "đã lưu",
-      "providerDefault": "mặc định của nhà cung cấp",
-      "template": "mẫu",
-      "draft": "bản nháp chưa lưu",
-      "draftHint": "mẫu là chỉ đọc. Lưu sẽ tạo một định nghĩa mới."
-    },
     "flow": {
       "quiescence": "sau khi tất cả ổn định",
       "zoomIn": "phóng to",
@@ -733,81 +708,6 @@
       "signals": "tín hiệu",
       "filter": "lọc tín hiệu…",
       "showAll": "hiển thị tất cả"
-    },
-    "panel": {
-      "close": "đóng",
-      "role": "vai trò",
-      "modelStage": "tuyến mô hình",
-      "mode": "chế độ",
-      "spawns": "spawn",
-      "partOf": "thuộc",
-      "exempt": "chạy qua giới hạn ngân sách",
-      "execution": "kế hoạch runtime",
-      "executionNote": "chỉ đọc · do engine cố định",
-      "signals": "tín hiệu",
-      "emits": "phát",
-      "observes": "quan sát",
-      "viaGroup": "qua {group}",
-      "config": "ghi đè có thể sửa",
-      "configNote": "thay đổi ở đây ảnh hưởng lần khởi chạy tiếp theo. Mọi thứ khác do engine định nghĩa.",
-      "engineDefined": "do engine định nghĩa",
-      "thisOperator": "chỉ giai đoạn này",
-      "engineWide": "toàn engine",
-      "roleDefault": "mặc định engine · {role}",
-      "bundle": "gói vai trò",
-      "bundleNote": "kỹ năng, chế độ và structured output đi theo casts role — chọn vai trò khác ở trên để đổi cả gói.",
-      "structuredOutput": "structured output",
-      "context": "ngữ cảnh",
-      "receives": "nhận",
-      "produces": "tạo",
-      "ctxFrom": "từ {name}",
-      "toStore": "→ kho emission",
-      "entryNote": "điểm vào — nhận prompt tác vụ từ launch dock."
-    },
-    "toolbar": {
-      "addOperator": "thêm operator",
-      "addSignal": "thêm tín hiệu",
-      "signalName": "tên tín hiệu",
-      "signalPlaceholder": "ví dụ FindingEmitted",
-      "color": "màu",
-      "colorAria": "màu {color}",
-      "emittingOperator": "operator phát",
-      "none": "không có",
-      "add": "thêm",
-      "removeConfirm": "xóa khỏi sơ đồ?",
-      "yes": "có",
-      "no": "không",
-      "delete": "xóa",
-      "deleteSelectedTitle": "xóa operator đã chọn",
-      "deleteDisabledTitle": "chọn một operator để xóa",
-      "fitView": "vừa khung nhìn",
-      "zoomIn": "phóng to",
-      "zoomOut": "thu nhỏ"
-    },
-    "dock": {
-      "namePlaceholder": "tên engine",
-      "promptPlaceholder": "engine này nên làm gì? Mô tả tác vụ rồi bấm khởi chạy…",
-      "save": "lưu thành định nghĩa",
-      "saveChanges": "lưu thay đổi",
-      "saving": "đang lưu…",
-      "launch": "khởi chạy",
-      "launching": "đang khởi chạy…",
-      "launched": "đã khởi chạy lần gọi",
-      "saved": "đã lưu định nghĩa",
-      "nameRequired": "đặt tên engine trước khi lưu",
-      "promptRequired": "mô tả tác vụ trước khi khởi chạy",
-      "testCmdRequired": "coding engine cần test command — đặt nó ở test stage",
-      "invalidBounds": "max_agents và max_depth phải nằm trong khoảng 1 đến 100",
-      "advanced": "nâng cao"
-    },
-    "advanced": {
-      "title": "nâng cao",
-      "description": "mô tả",
-      "descriptionPlaceholder": "engine này làm gì?",
-      "exportDir": "thư mục export",
-      "engineDefaults": "nội bộ engine (chỉ đọc)",
-      "sourceRef": "chép lại từ",
-      "requestPreview": "xem trước request"
     },
     "edge": {
       "kindReaction": "phản ứng",
@@ -934,9 +834,7 @@
     "importError": "không đọc được tệp",
     "rackTitle": "quy trình làm việc",
     "rackNew": "mới",
-    "rackEmpty": "chưa có quy trình làm việc.",
-    "designerEmpty": "chọn một quy trình làm việc từ rack, hoặc tạo một quy trình để bắt đầu thiết kế.",
-    "designerEmptyCta": "tạo quy trình làm việc"
+    "rackEmpty": "chưa có quy trình làm việc."
   },
   "daemon": {
     "title": "Studio không kết nối được daemon cục bộ tại {base}",

@@ -99,6 +99,15 @@ class ContextRequest(BaseModel):
             "record including evicted messages (each marked [active]/[evicted])."
         ),
     )
+    auto: bool = Field(
+        False,
+        description=(
+            "For 'compact': when True and `summary` is omitted, generate the summary "
+            "automatically with one extra model call over the collapsed span instead of "
+            "writing it yourself. Prefer writing your own summary — auto is a fallback "
+            "for when you can't, and it can fail if the model call errors."
+        ),
+    )
 
 
 class ContextTool(LionTool):
@@ -145,6 +154,48 @@ class ContextTool(LionTool):
             c = c[:120].replace("\n", " ") + ("..." if len(c) > 120 else "")
             return f"[{idx}]{tag} {role}: {c}"
 
+        async def _auto_summarize(uids: list, pile) -> str | None:
+            """Generate a compact summary over `uids` with one direct model call.
+
+            Never raises — returns None on any failure so the caller can fall back
+            to asking the model to write the summary itself.
+            """
+            texts: list[str] = []
+            total = 0
+            max_chars = 6000
+            for u in uids:
+                if u not in pile:
+                    continue
+                m = pile[u]
+                c = getattr(m, "content", "") or ""
+                c = c if isinstance(c, str) else str(c)
+                if not c:
+                    continue
+                remaining = max_chars - total
+                if remaining <= 0:
+                    break
+                snippet = c[:remaining]
+                texts.append(snippet)
+                total += len(snippet)
+            if not texts:
+                return None
+            joined = "\n---\n".join(texts)
+            prompt = (
+                "Summarize the following collapsed conversation span for context "
+                "compaction. Capture: the root cause of anything investigated, the "
+                "fix applied (file + lines) if any, what has been verified, and any "
+                "files that will need to be re-read later. Keep it to a few sentences."
+                "\n\n" + joined
+            )
+            try:
+                text = await branch.chat(instruction=prompt)
+            except Exception:
+                return None
+            if not isinstance(text, str):
+                return None
+            text = text.strip()
+            return text or None
+
         async def context_tool(
             action: str,
             start: int = None,
@@ -153,6 +204,7 @@ class ContextTool(LionTool):
             summary: str = None,
             mode: str = None,
             scope: str = None,
+            auto: bool = False,
         ) -> dict:
             """Engineer your own conversation context — check usage, browse, evict,
             restore, and compact. Evicted/compacted messages are hidden from the
@@ -272,8 +324,6 @@ class ContextTool(LionTool):
                 }
 
             if action == "compact":
-                if not summary or not summary.strip():
-                    return {"success": False, "error": "compact requires a non-empty `summary`."}
                 cp = _ensure_cp()
                 s = max(1, start or 1)
                 e = end if end is not None else len(cp)
@@ -296,6 +346,20 @@ class ContextTool(LionTool):
                         "error": "Nothing to compact in range (no tool messages; "
                         "use mode='all' to collapse reasoning too).",
                     }
+
+                if (not summary or not summary.strip()) and auto:
+                    summary = await _auto_summarize(collapse, pile)
+                    if not summary:
+                        return {
+                            "success": False,
+                            "error": (
+                                "Auto-summarization failed or produced nothing — write "
+                                "the summary yourself and retry compact with `summary=...`."
+                            ),
+                        }
+
+                if not summary or not summary.strip():
+                    return {"success": False, "error": "compact requires a non-empty `summary`."}
 
                 tokens_freed = sum(_tokens(pile[u]) for u in collapse if u in pile)
                 note = await msgs.a_add_message(

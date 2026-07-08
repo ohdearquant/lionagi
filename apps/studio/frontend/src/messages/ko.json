@@ -3,7 +3,6 @@
     "rail": {
       "ariaLabel": "기본 탐색",
       "home": "미션 컨트롤",
-      "designer": "디자이너",
       "library": "라이브러리",
       "schedules": "일정",
       "system": "시스템",
@@ -200,10 +199,8 @@
     "clearStatusFilter": "상태 필터 지우기",
     "empty": {
       "all": "아직 기록이 없습니다.",
-      "allHint": "디자이너에서 무언가를 실행하면 여기에 표시됩니다.",
       "filtered": "필터와 일치하는 항목이 없습니다.",
-      "filteredHint": "다른 종류를 시도하거나 검색을 지우세요.",
-      "cta": "디자이너 열기 →"
+      "filteredHint": "다른 종류를 시도하거나 검색을 지우세요."
     },
     "status": {
       "running": "실행 중",
@@ -583,7 +580,6 @@
     },
     "empty": {
       "message": "실행 중인 에이전트 없음 — 에이전트 플릿은 라이브 오케스트레이션을 발생 즉시 보여줍니다.",
-      "cta": "디자이너 열기 →",
       "hint": "⌘K → fleet 또는 monitor",
       "recent": "최근 세션",
       "ago": "{delta} 전"
@@ -704,27 +700,6 @@
     }
   },
   "designer": {
-    "rack": {
-      "title": "엔진",
-      "blueprints": "템플릿",
-      "blueprintsHint": "내장, 읽기 전용",
-      "saved": "저장된 정의",
-      "savedHint": "재사용 가능한 엔진",
-      "stages": "스테이지",
-      "loading": "로드 중…",
-      "emptySaved": "아직 저장된 항목이 없습니다. blueprint를 구성하고 저장을 누르세요.",
-      "collapse": "랙 접기",
-      "expand": "랙 펼치기",
-      "delete": "{name} 삭제",
-      "deleteConfirm": "삭제할까요?"
-    },
-    "header": {
-      "saved": "저장됨",
-      "providerDefault": "제공업체 기본값",
-      "template": "템플릿",
-      "draft": "저장되지 않은 초안",
-      "draftHint": "템플릿은 읽기 전용입니다. 저장하면 새 정의가 생성됩니다."
-    },
     "flow": {
       "quiescence": "모두 안정된 후",
       "zoomIn": "확대",
@@ -733,81 +708,6 @@
       "signals": "시그널",
       "filter": "시그널 필터…",
       "showAll": "모두 표시"
-    },
-    "panel": {
-      "close": "닫기",
-      "role": "역할",
-      "modelStage": "모델 라우트",
-      "mode": "모드",
-      "spawns": "스폰",
-      "partOf": "다음의 일부",
-      "exempt": "예산 소진 후에도 실행",
-      "execution": "런타임 계획",
-      "executionNote": "읽기 전용 · 엔진에서 고정됨",
-      "signals": "시그널",
-      "emits": "방출",
-      "observes": "관찰",
-      "viaGroup": "{group} 경유",
-      "config": "편집 가능한 오버라이드",
-      "configNote": "여기서 변경한 내용은 다음 실행에 영향을 줍니다. 나머지는 엔진에서 정의됩니다.",
-      "engineDefined": "엔진 정의됨",
-      "thisOperator": "이 스테이지만",
-      "engineWide": "전체 엔진",
-      "roleDefault": "엔진 기본값 · {role}",
-      "bundle": "역할 번들",
-      "bundleNote": "스킬, 모드, structured output은 casts role을 따릅니다 — 전체 번들을 바꾸려면 위에서 다른 역할을 선택하세요.",
-      "structuredOutput": "구조화된 출력",
-      "context": "컨텍스트",
-      "receives": "수신",
-      "produces": "생성",
-      "ctxFrom": "{name}에서",
-      "toStore": "→ emission store",
-      "entryNote": "진입점 — launch dock에서 작업 프롬프트를 받습니다."
-    },
-    "toolbar": {
-      "addOperator": "오퍼레이터 추가",
-      "addSignal": "시그널 추가",
-      "signalName": "시그널 이름",
-      "signalPlaceholder": "예: FindingEmitted",
-      "color": "색상",
-      "colorAria": "색상 {color}",
-      "emittingOperator": "방출 오퍼레이터",
-      "none": "없음",
-      "add": "추가",
-      "removeConfirm": "제거할까요?",
-      "yes": "예",
-      "no": "아니요",
-      "delete": "삭제",
-      "deleteSelectedTitle": "선택한 오퍼레이터 삭제",
-      "deleteDisabledTitle": "삭제할 오퍼레이터를 선택하세요",
-      "fitView": "보기 맞춤",
-      "zoomIn": "확대",
-      "zoomOut": "축소"
-    },
-    "dock": {
-      "namePlaceholder": "엔진 이름",
-      "promptPlaceholder": "이 엔진은 무엇을 해야 하나요? 작업을 설명하고 실행을 누르세요…",
-      "save": "정의로 저장",
-      "saveChanges": "변경 사항 저장",
-      "saving": "저장 중…",
-      "launch": "실행",
-      "launching": "실행 중…",
-      "launched": "호출 실행됨",
-      "saved": "정의 저장됨",
-      "nameRequired": "저장하기 전에 엔진 이름을 지정하세요",
-      "promptRequired": "실행하기 전에 작업을 설명하세요",
-      "testCmdRequired": "코딩 엔진에는 테스트 명령이 필요합니다 — 테스트 스테이지에서 설정하세요",
-      "invalidBounds": "max_agents와 max_depth는 1에서 100 사이여야 합니다",
-      "advanced": "고급"
-    },
-    "advanced": {
-      "title": "고급",
-      "description": "설명",
-      "descriptionPlaceholder": "이 엔진은 무엇을 하나요?",
-      "exportDir": "내보내기 디렉터리",
-      "engineDefaults": "엔진 내부(읽기 전용)",
-      "sourceRef": "다음에서 전사됨",
-      "requestPreview": "요청 미리보기"
     },
     "edge": {
       "kindReaction": "반응",
@@ -934,9 +834,7 @@
     "importError": "파일을 읽을 수 없음",
     "rackTitle": "워크플로",
     "rackNew": "새로 만들기",
-    "rackEmpty": "아직 워크플로가 없습니다.",
-    "designerEmpty": "랙에서 워크플로를 선택하거나 새로 만들어 설계를 시작하세요.",
-    "designerEmptyCta": "워크플로 만들기"
+    "rackEmpty": "아직 워크플로가 없습니다."
   },
   "daemon": {
     "title": "Studio가 {base}의 로컬 데몬에 연결할 수 없습니다",

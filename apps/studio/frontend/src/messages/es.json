@@ -3,7 +3,6 @@
     "rail": {
       "ariaLabel": "Navegación principal",
       "home": "Centro de control",
-      "designer": "Diseñador",
       "library": "Biblioteca",
       "schedules": "Programaciones",
       "system": "Sistema",
@@ -200,10 +199,8 @@
     "clearStatusFilter": "Borrar filtro de estado",
     "empty": {
       "all": "Aún no hay historial.",
-      "allHint": "Lanza algo desde el Diseñador para verlo aquí.",
       "filtered": "Ningún elemento coincide con el filtro.",
-      "filteredHint": "Prueba otro tipo o borra la búsqueda.",
-      "cta": "Abrir Diseñador →"
+      "filteredHint": "Prueba otro tipo o borra la búsqueda."
     },
     "status": {
       "running": "en ejecución",
@@ -583,7 +580,6 @@
     },
     "empty": {
       "message": "No hay agentes en ejecución — Flota muestra las orquestaciones en vivo a medida que ocurren.",
-      "cta": "Abrir Diseñador →",
       "hint": "⌘K → fleet o monitor",
       "recent": "Sesiones recientes",
       "ago": "hace {delta}"
@@ -704,27 +700,6 @@
     }
   },
   "designer": {
-    "rack": {
-      "title": "Motores",
-      "blueprints": "Plantillas",
-      "blueprintsHint": "Integrado, solo lectura",
-      "saved": "Definiciones guardadas",
-      "savedHint": "Tus motores reutilizables",
-      "stages": "etapas",
-      "loading": "Cargando…",
-      "emptySaved": "Aún no hay nada guardado. Configura una plantilla y pulsa Guardar.",
-      "collapse": "Contraer panel",
-      "expand": "Expandir panel",
-      "delete": "eliminar {name}",
-      "deleteConfirm": "¿eliminar?"
-    },
-    "header": {
-      "saved": "guardado",
-      "providerDefault": "valor predeterminado del proveedor",
-      "template": "plantilla",
-      "draft": "Borrador sin guardar",
-      "draftHint": "Las plantillas son de solo lectura. Guardar crea una nueva definición."
-    },
     "flow": {
       "quiescence": "cuando todo se estabilice",
       "zoomIn": "Acercar",
@@ -733,81 +708,6 @@
       "signals": "Señales",
       "filter": "Filtrar señales…",
       "showAll": "Mostrar todo"
-    },
-    "panel": {
-      "close": "Cerrar",
-      "role": "rol",
-      "modelStage": "ruta de modelo",
-      "mode": "modo",
-      "spawns": "genera",
-      "partOf": "parte de",
-      "exempt": "continúa tras agotar el presupuesto",
-      "execution": "Plan de ejecución",
-      "executionNote": "Solo lectura · fijado por el motor",
-      "signals": "Señales",
-      "emits": "Emite",
-      "observes": "Observa",
-      "viaGroup": "mediante {group}",
-      "config": "Sobrescrituras editables",
-      "configNote": "Los cambios aquí afectan al próximo lanzamiento. Todo lo demás lo define el motor.",
-      "engineDefined": "Definido por el motor",
-      "thisOperator": "Solo esta etapa",
-      "engineWide": "Todo el motor",
-      "roleDefault": "predeterminado del motor · {role}",
-      "bundle": "Paquete de rol",
-      "bundleNote": "Skills, modos y salida estructurada dependen del rol de casts — elige otro rol arriba para cambiar todo el paquete.",
-      "structuredOutput": "Salida estructurada",
-      "context": "Contexto",
-      "receives": "Recibe",
-      "produces": "Produce",
-      "ctxFrom": "desde {name}",
-      "toStore": "→ almacén de emisiones",
-      "entryNote": "Punto de entrada — recibe el prompt de tarea desde el dock de lanzamiento."
-    },
-    "toolbar": {
-      "addOperator": "Añadir operador",
-      "addSignal": "Añadir señal",
-      "signalName": "Nombre de señal",
-      "signalPlaceholder": "e.g. FindingEmitted",
-      "color": "Color",
-      "colorAria": "color {color}",
-      "emittingOperator": "Operador emisor",
-      "none": "Ninguno",
-      "add": "Añadir",
-      "removeConfirm": "¿Quitar?",
-      "yes": "Sí",
-      "no": "No",
-      "delete": "Eliminar",
-      "deleteSelectedTitle": "Eliminar operador seleccionado",
-      "deleteDisabledTitle": "Selecciona un operador para eliminarlo",
-      "fitView": "Ajustar vista",
-      "zoomIn": "Acercar",
-      "zoomOut": "Alejar"
-    },
-    "dock": {
-      "namePlaceholder": "nombre del motor",
-      "promptPlaceholder": "¿Qué debe hacer este motor? Describe la tarea y pulsa Lanzar…",
-      "save": "Guardar como definición",
-      "saveChanges": "Guardar cambios",
-      "saving": "Guardando…",
-      "launch": "Lanzar",
-      "launching": "Lanzando…",
-      "launched": "Invocación lanzada",
-      "saved": "Definición guardada",
-      "nameRequired": "Asigna un nombre al motor antes de guardar",
-      "promptRequired": "Describe la tarea antes de lanzar",
-      "testCmdRequired": "El motor de código necesita un comando de prueba — configúralo en la etapa de prueba",
-      "invalidBounds": "max_agents y max_depth deben estar entre 1 y 100",
-      "advanced": "Avanzado"
-    },
-    "advanced": {
-      "title": "Avanzado",
-      "description": "Descripción",
-      "descriptionPlaceholder": "¿Qué hace este motor?",
-      "exportDir": "Dir. de exportación",
-      "engineDefaults": "Internos del motor (solo lectura)",
-      "sourceRef": "transcrito desde",
-      "requestPreview": "Vista previa de solicitud"
     },
     "edge": {
       "kindReaction": "reacción",
@@ -934,9 +834,7 @@
     "importError": "No se pudo leer el archivo",
     "rackTitle": "Flujos de trabajo",
     "rackNew": "Nuevo",
-    "rackEmpty": "Aún no hay flujos de trabajo.",
-    "designerEmpty": "Elige un flujo de trabajo del rack o crea uno para empezar a diseñar.",
-    "designerEmptyCta": "Crear un flujo de trabajo"
+    "rackEmpty": "Aún no hay flujos de trabajo."
   },
   "daemon": {
     "title": "Studio no pudo contactar con el daemon local en {base}",

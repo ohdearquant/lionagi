@@ -3,7 +3,6 @@
     "rail": {
       "ariaLabel": "Primäre Navigation",
       "home": "Kontrollzentrum",
-      "designer": "Designer",
       "library": "Bibliothek",
       "schedules": "Zeitpläne",
       "system": "System",
@@ -200,10 +199,8 @@
     "clearStatusFilter": "Statusfilter löschen",
     "empty": {
       "all": "Noch kein Verlauf.",
-      "allHint": "Starte etwas im Designer, um es hier zu sehen.",
       "filtered": "Keine Elemente entsprechen deinem Filter.",
-      "filteredHint": "Versuche einen anderen Typ oder lösche die Suche.",
-      "cta": "Designer öffnen →"
+      "filteredHint": "Versuche einen anderen Typ oder lösche die Suche."
     },
     "status": {
       "running": "läuft",
@@ -583,7 +580,6 @@
     },
     "empty": {
       "message": "Keine Agenten laufen — die Flotte zeigt Live-Orchestrierungen, während sie passieren.",
-      "cta": "Designer öffnen →",
       "hint": "⌘K → Flotte oder Monitoring",
       "recent": "Letzte Sessions",
       "ago": "vor {delta}"
@@ -704,27 +700,6 @@
     }
   },
   "designer": {
-    "rack": {
-      "title": "Engines",
-      "blueprints": "Vorlagen",
-      "blueprintsHint": "Integriert, schreibgeschützt",
-      "saved": "Gespeicherte Definitionen",
-      "savedHint": "Deine wiederverwendbaren Engines",
-      "stages": "Stages",
-      "loading": "Wird geladen…",
-      "emptySaved": "Noch nichts gespeichert. Konfiguriere eine Vorlage und klicke auf Speichern.",
-      "collapse": "Rack einklappen",
-      "expand": "Rack erweitern",
-      "delete": "{name} löschen",
-      "deleteConfirm": "löschen?"
-    },
-    "header": {
-      "saved": "gespeichert",
-      "providerDefault": "Anbieterstandard",
-      "template": "Vorlage",
-      "draft": "Nicht gespeicherter Entwurf",
-      "draftHint": "Vorlagen sind schreibgeschützt. Speichern erstellt eine neue Definition."
-    },
     "flow": {
       "quiescence": "nachdem alle stabil sind",
       "zoomIn": "Vergrößern",
@@ -733,81 +708,6 @@
       "signals": "Signale",
       "filter": "Signale filtern…",
       "showAll": "Alle anzeigen"
-    },
-    "panel": {
-      "close": "Schließen",
-      "role": "Rolle",
-      "modelStage": "Modellroute",
-      "mode": "Modus",
-      "spawns": "spawnt",
-      "partOf": "Teil von",
-      "exempt": "läuft über Budgeterschöpfung hinaus",
-      "execution": "Laufzeitplan",
-      "executionNote": "Schreibgeschützt · durch die Engine festgelegt",
-      "signals": "Signale",
-      "emits": "Emittiert",
-      "observes": "Beobachtet",
-      "viaGroup": "über {group}",
-      "config": "Bearbeitbare Overrides",
-      "configNote": "Änderungen hier wirken sich auf den nächsten Start aus. Alles andere ist engine-definiert.",
-      "engineDefined": "Engine-definiert",
-      "thisOperator": "Nur diese Stufe",
-      "engineWide": "Ganze Engine",
-      "roleDefault": "Engine-Standard · {role}",
-      "bundle": "Rollenbundle",
-      "bundleNote": "Skills, Modi und strukturierte Ausgabe hängen an der casts-Rolle — wähle oben eine andere Rolle, um das gesamte Bundle zu tauschen.",
-      "structuredOutput": "Strukturierte Ausgabe",
-      "context": "Kontext",
-      "receives": "Empfängt",
-      "produces": "Erzeugt",
-      "ctxFrom": "von {name}",
-      "toStore": "→ Signalspeicher",
-      "entryNote": "Einstiegspunkt — erhält den Aufgabenprompt vom Start-Dock."
-    },
-    "toolbar": {
-      "addOperator": "Operator hinzufügen",
-      "addSignal": "Signal hinzufügen",
-      "signalName": "Signalname",
-      "signalPlaceholder": "z. B. FindingEmitted",
-      "color": "Farbe",
-      "colorAria": "Farbe {color}",
-      "emittingOperator": "Emittierender Operator",
-      "none": "Keine",
-      "add": "Hinzufügen",
-      "removeConfirm": "Entfernen?",
-      "yes": "Ja",
-      "no": "Nein",
-      "delete": "Löschen",
-      "deleteSelectedTitle": "Ausgewählten Operator löschen",
-      "deleteDisabledTitle": "Wähle einen Operator aus, um ihn zu löschen",
-      "fitView": "Ansicht anpassen",
-      "zoomIn": "Vergrößern",
-      "zoomOut": "Verkleinern"
-    },
-    "dock": {
-      "namePlaceholder": "Engine-Name",
-      "promptPlaceholder": "Was soll diese Engine tun? Beschreibe die Aufgabe und drücke Starten…",
-      "save": "Als Definition speichern",
-      "saveChanges": "Änderungen speichern",
-      "saving": "Wird gespeichert…",
-      "launch": "Starten",
-      "launching": "Wird gestartet…",
-      "launched": "Aufruf gestartet",
-      "saved": "Definition gespeichert",
-      "nameRequired": "Benenne die Engine vor dem Speichern",
-      "promptRequired": "Beschreibe die Aufgabe vor dem Start",
-      "testCmdRequired": "Die Coding-Engine benötigt einen Testbefehl — lege ihn in der Test-Stage fest",
-      "invalidBounds": "max_agents und max_depth müssen zwischen 1 und 100 liegen",
-      "advanced": "Erweitert"
-    },
-    "advanced": {
-      "title": "Erweitert",
-      "description": "Beschreibung",
-      "descriptionPlaceholder": "Was macht diese Engine?",
-      "exportDir": "Exportverzeichnis",
-      "engineDefaults": "Engine-Interna (schreibgeschützt)",
-      "sourceRef": "transkribiert aus",
-      "requestPreview": "Anfragevorschau"
     },
     "edge": {
       "kindReaction": "Reaktion",
@@ -934,9 +834,7 @@
     "importError": "Datei konnte nicht gelesen werden",
     "rackTitle": "Workflows",
     "rackNew": "Neu",
-    "rackEmpty": "Noch keine Workflows.",
-    "designerEmpty": "Wähle einen Workflow aus dem Rack oder erstelle einen, um mit dem Design zu beginnen.",
-    "designerEmptyCta": "Workflow erstellen"
+    "rackEmpty": "Noch keine Workflows."
   },
   "daemon": {
     "title": "Studio konnte den lokalen Daemon unter {base} nicht erreichen",

@@ -3,7 +3,6 @@
     "rail": {
       "ariaLabel": "التنقل الرئيسي",
       "home": "مركز التحكم",
-      "designer": "المصمّم",
       "library": "المكتبة",
       "schedules": "الجداول",
       "system": "النظام",
@@ -200,10 +199,8 @@
     "clearStatusFilter": "مسح عامل تصفية الحالة",
     "empty": {
       "all": "لا يوجد سجل بعد.",
-      "allHint": "شغّل شيئًا من المصمّم ليظهر هنا.",
       "filtered": "لا توجد عناصر تطابق عامل التصفية.",
-      "filteredHint": "جرّب نوعًا آخر أو امسح البحث.",
-      "cta": "فتح المصمّم ←"
+      "filteredHint": "جرّب نوعًا آخر أو امسح البحث."
     },
     "status": {
       "running": "قيد التشغيل",
@@ -583,7 +580,6 @@
     },
     "empty": {
       "message": "لا يوجد وكلاء قيد التشغيل — يعرض أسطول الوكلاء عمليات التنسيق المباشرة فور حدوثها.",
-      "cta": "فتح المصمّم ←",
       "hint": "⌘K ← fleet أو monitor",
       "recent": "الجلسات الأخيرة",
       "ago": "منذ {delta}"
@@ -704,27 +700,6 @@
     }
   },
   "designer": {
-    "rack": {
-      "title": "المحرّكات",
-      "blueprints": "المخططات",
-      "blueprintsHint": "مدمجة، للقراءة فقط",
-      "saved": "التعريفات المحفوظة",
-      "savedHint": "محركاتك القابلة لإعادة الاستخدام",
-      "stages": "مراحل",
-      "loading": "جارٍ التحميل…",
-      "emptySaved": "لم يُحفظ شيء بعد. اضبط قالبًا ثم اضغط حفظ.",
-      "collapse": "طي الحامل",
-      "expand": "توسيع الحامل",
-      "delete": "حذف {name}",
-      "deleteConfirm": "حذف؟"
-    },
-    "header": {
-      "saved": "محفوظ",
-      "providerDefault": "افتراضي الموفّر",
-      "template": "قالب",
-      "draft": "مسودة غير محفوظة",
-      "draftHint": "القوالب للقراءة فقط. يؤدي الحفظ إلى إنشاء تعريف جديد."
-    },
     "flow": {
       "quiescence": "بعد استقرار كافة العناصر",
       "zoomIn": "تكبير",
@@ -733,81 +708,6 @@
       "signals": "الإشارات",
       "filter": "تصفية الإشارات…",
       "showAll": "عرض الكل"
-    },
-    "panel": {
-      "close": "إغلاق",
-      "role": "الدور",
-      "modelStage": "مسار النموذج",
-      "mode": "الوضع",
-      "spawns": "ينشئ",
-      "partOf": "جزء من",
-      "exempt": "يستمر في التشغيل بعد استنفاد الميزانية",
-      "execution": "خطة وقت التشغيل",
-      "executionNote": "للقراءة فقط · يحددها المحرّك",
-      "signals": "الإشارات",
-      "emits": "يرسل",
-      "observes": "يراقب",
-      "viaGroup": "عبر {group}",
-      "config": "تجاوزات قابلة للتحرير",
-      "configNote": "تؤثر التغييرات هنا في التشغيل التالي. كل ما عدا ذلك يحدده المحرّك.",
-      "engineDefined": "يحدده المحرّك",
-      "thisOperator": "هذه المرحلة فقط",
-      "engineWide": "المحرّك بالكامل",
-      "roleDefault": "افتراضي المحرّك · {role}",
-      "bundle": "حزمة الدور",
-      "bundleNote": "تنتقل المهارات والأوضاع والمخرجات المهيكلة مع دور casts — اختر دورًا مختلفًا أعلاه لتبديل الحزمة كاملة.",
-      "structuredOutput": "مخرجات مهيكلة",
-      "context": "السياق",
-      "receives": "يستقبل",
-      "produces": "ينتج",
-      "ctxFrom": "من {name}",
-      "toStore": "← مخزن الإرسال",
-      "entryNote": "نقطة الدخول — تستقبل موجّه المهمة من رصيف التشغيل."
-    },
-    "toolbar": {
-      "addOperator": "إضافة مشغّل",
-      "addSignal": "إضافة إشارة",
-      "signalName": "اسم الإشارة",
-      "signalPlaceholder": "مثال: FindingEmitted",
-      "color": "اللون",
-      "colorAria": "اللون {color}",
-      "emittingOperator": "المشغّل المرسل",
-      "none": "لا شيء",
-      "add": "إضافة",
-      "removeConfirm": "إزالة؟",
-      "yes": "نعم",
-      "no": "لا",
-      "delete": "حذف",
-      "deleteSelectedTitle": "حذف المشغّل المحدد",
-      "deleteDisabledTitle": "حدّد مشغّلًا لحذفه",
-      "fitView": "ملاءمة العرض",
-      "zoomIn": "تكبير",
-      "zoomOut": "تصغير"
-    },
-    "dock": {
-      "namePlaceholder": "اسم المحرّك",
-      "promptPlaceholder": "ماذا يجب أن يفعل هذا المحرّك؟ صِف المهمة واضغط تشغيل…",
-      "save": "حفظ كتعريف",
-      "saveChanges": "حفظ التغييرات",
-      "saving": "جارٍ الحفظ…",
-      "launch": "تشغيل",
-      "launching": "جارٍ التشغيل…",
-      "launched": "تم إطلاق الاستدعاء",
-      "saved": "تم حفظ التعريف",
-      "nameRequired": "سمِّ المحرّك قبل الحفظ",
-      "promptRequired": "صِف المهمة قبل التشغيل",
-      "testCmdRequired": "يحتاج محرّك البرمجة إلى أمر اختبار — اضبطه في مرحلة الاختبار",
-      "invalidBounds": "يجب أن يكون max_agents و max_depth بين 1 و100",
-      "advanced": "متقدم"
-    },
-    "advanced": {
-      "title": "متقدم",
-      "description": "الوصف",
-      "descriptionPlaceholder": "ماذا يفعل هذا المحرّك؟",
-      "exportDir": "دليل التصدير",
-      "engineDefaults": "المكونات الداخلية للمحرّك (للقراءة فقط)",
-      "sourceRef": "منسوخ من",
-      "requestPreview": "معاينة الطلب"
     },
     "edge": {
       "kindReaction": "تفاعل",
@@ -934,9 +834,7 @@
     "importError": "تعذّر قراءة الملف",
     "rackTitle": "سير العمل",
     "rackNew": "جديد",
-    "rackEmpty": "لا توجد مهام سير عمل بعد.",
-    "designerEmpty": "اختر سير عمل من الحامل، أو أنشئ واحدًا لبدء التصميم.",
-    "designerEmptyCta": "إنشاء سير عمل"
+    "rackEmpty": "لا توجد مهام سير عمل بعد."
   },
   "daemon": {
     "title": "تعذّر على Studio الوصول إلى daemon المحلي عند {base}",
