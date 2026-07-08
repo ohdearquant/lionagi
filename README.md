@@ -167,10 +167,19 @@ Lion Studio is the built-in web UI for operating your agent workflows:
 projects, schedules, playbooks, execution DAGs, and run inspection in one
 place.
 
+![Lion Studio — Mission Control: live agents, completion pulse, and run history](assets/studio.png)
+
+**No download or build required.** Lion Studio is a client-side web app —
+open **[lion-studio.khive.ai](https://lion-studio.khive.ai)** directly in your
+browser and it connects to your local daemon at `http://127.0.0.1:8765`. Your
+data never leaves your machine; the hosted page is just the UI. Available in
+**16 languages**: English, 中文, Español, Français, हिन्दी, বাংলা, Deutsch,
+Bahasa Indonesia, Português (Brasil), 한국어, Türkçe, اردو, Tiếng Việt,
+العربية, Русский, and 日本語 — with full right-to-left support.
+
 ```bash
-li studio             # default: starts the local daemon and opens the hosted UI
-                      # at https://lion-studio.khive.ai, which talks to your
-                      # daemon at http://127.0.0.1:8765 — nothing is built locally
+li studio             # default: starts the local daemon and opens
+                      # https://lion-studio.khive.ai — nothing is built locally
 li studio --docker    # self-contained: auto-pulls ghcr.io/ohdearquant/lion-studio
                       # UI + API → http://localhost:8765
 li studio --no-frontend  # backend API only, no UI
@@ -180,8 +189,6 @@ li studio --dev       # from a source checkout: backend + in-repo frontend, hot 
 `--web`, `--docker`, `--no-frontend`, and `--dev` are mutually exclusive; `--web`
 is the default when no flag is given. Pass `--no-open` to skip auto-opening the
 hosted UI in your browser.
-
-![Lion Studio — run detail with execution DAG, branches, and multi-agent orchestration](assets/studio.png)
 
 ## Providers
 
