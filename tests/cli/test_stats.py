@@ -16,6 +16,7 @@ import pytest
 from lionagi.cli.stats import (
     GROUP_BY_COLUMNS,
     _format_stats_table,
+    _reject_non_positive_since,
     _rows_for_json,
     _run_stats_runs,
     _validate_group_by,
@@ -313,3 +314,82 @@ def test_run_stats_empty_db_table_mode(temp_db_path: Path, capsys):
     assert rc == 0
     captured = capsys.readouterr()
     assert "no runs" in captured.out
+
+
+# ── read-only contract: li stats never applies schema/migrations ────────────
+
+
+def test_run_stats_never_invokes_apply_schema(temp_db_path: Path, capsys, monkeypatch):
+    """`li stats runs` must open the DB read-only — if it ever falls back to
+    the writable open path, StateDB._apply_schema() would run. Monkeypatch it
+    to blow up and assert stats still succeeds untouched."""
+
+    async def _seed():
+        async with StateDB() as db:
+            await _seed_session(db, project="lionagi", invocation_kind="agent")
+
+    import asyncio
+
+    asyncio.run(_seed())
+
+    def _boom(self):
+        raise AssertionError("_apply_schema() must not be called by `li stats runs`")
+
+    monkeypatch.setattr(StateDB, "_apply_schema", _boom)
+
+    rc = run_stats(_stats_args(as_json=True))
+    assert rc == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert payload[0]["run_count"] == 1
+
+
+def test_run_stats_nonexistent_db_path_does_not_create_file(temp_db_path: Path, capsys):
+    """No state.db yet -> li stats reports an empty result, and must never
+    create a database file as a side effect of reading it."""
+    assert not temp_db_path.exists()
+    rc = run_stats(_stats_args())
+    assert rc == 0
+    assert not temp_db_path.exists()
+
+
+# ── --since must reject non-positive windows (0d, -1d, ...) ─────────────────
+
+
+def test_reject_non_positive_since_rejects_zero():
+    with pytest.raises(ValueError, match="must be positive"):
+        _reject_non_positive_since("0d")
+
+
+def test_reject_non_positive_since_rejects_negative():
+    with pytest.raises(ValueError, match="must be positive"):
+        _reject_non_positive_since("-1d")
+
+
+def test_reject_non_positive_since_accepts_positive():
+    _reject_non_positive_since("7d")  # must not raise
+    _reject_non_positive_since("1h")
+    _reject_non_positive_since("30m")
+
+
+def test_reject_non_positive_since_defers_malformed_to_since_timestamp():
+    # Not this function's job to reject a bad unit/non-numeric value —
+    # _since_timestamp raises its own clear error for those.
+    _reject_non_positive_since("not-a-window")
+
+
+def test_run_stats_since_zero_days_exits_nonzero(
+    temp_db_path: Path, caplog: pytest.LogCaptureFixture
+):
+    with caplog.at_level(logging.ERROR, logger="lionagi.cli.error"):
+        rc = run_stats(_stats_args(since="0d"))
+    assert rc != 0
+    assert "positive" in caplog.text
+
+
+def test_run_stats_since_negative_days_exits_nonzero(
+    temp_db_path: Path, caplog: pytest.LogCaptureFixture
+):
+    with caplog.at_level(logging.ERROR, logger="lionagi.cli.error"):
+        rc = run_stats(_stats_args(since="-1d"))
+    assert rc != 0
+    assert "positive" in caplog.text

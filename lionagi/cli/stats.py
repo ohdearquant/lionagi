@@ -42,6 +42,28 @@ def _validate_group_by(raw: str) -> list[str]:
     return keys
 
 
+def _reject_non_positive_since(window: str) -> None:
+    """Reject a `--since` window that isn't strictly positive.
+
+    Monitor's shared `_since_timestamp()` parses `0d` (cutoff = now) and
+    `-1d` (cutoff = a future timestamp) without complaint — reasonable for
+    its own "everything running, or since this window" semantics, but for an
+    aggregate report a non-positive window silently produces a false-empty
+    (0d) or nonsensical (negative -> future cutoff, matches nothing) result
+    instead of failing loudly. This only tightens `li stats runs`; monitor's
+    own behavior/callers are untouched.
+
+    A malformed value (bad unit, non-numeric) is left to `_since_timestamp`
+    itself, which already raises a clear error for those.
+    """
+    try:
+        value = int(window[:-1])
+    except (ValueError, IndexError):
+        return
+    if value <= 0:
+        raise ValueError(f"--since window must be positive; got {window!r}. Format: 30m, 1h, 7d.")
+
+
 def _iso(ts: float | None) -> str | None:
     if ts is None:
         return None
@@ -79,7 +101,11 @@ async def _run_stats_runs(*, since: float, group_by: list[str]) -> list[dict[str
 
     if not DEFAULT_DB_PATH.exists():
         return []
-    async with StateDB() as db:
+    # readonly=True: open() skips schema application, the BEGIN IMMEDIATE
+    # write-lock event, and every mutating PRAGMA — see StateDB.open() /
+    # make_readonly_engine(). A reporting command must never write to the
+    # DB it's reporting on, even implicitly via a schema-reconcile pass.
+    async with StateDB(readonly=True) as db:
         return await _query_run_stats(db, since=since, group_by=group_by)
 
 
@@ -184,6 +210,7 @@ def run_stats(args: argparse.Namespace) -> int:
         return 2
 
     try:
+        _reject_non_positive_since(args.since)
         since = _since_timestamp(args.since)
     except ValueError as exc:
         log_error(str(exc))
