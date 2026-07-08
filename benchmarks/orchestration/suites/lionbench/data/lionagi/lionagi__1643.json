@@ -14,7 +14,7 @@
   },
   "provenance": {
     "issue": 1610,
-    "nominated_by": "lambda:lionagi",
+    "nominated_by": "",
     "pr": 1643,
     "why": "scheduler argv arity ambiguity, no issue at all"
   },
@@ -24,10 +24,10 @@
   "task_text": "In the studio scheduler's `build_argv()`, the `kind == \"agent\"` branch omits the model positional when `action_model` is falsy (so an `--agent <profile>` default model can apply). When `action_model` is falsy AND `action_extra_args` is non-empty, the emitted argv collapses to exactly 2 positionals \u2014 the same arity as the historical `[model, prompt]` shape \u2014 so `li agent`'s model/prompt resolver silently reparses the real prompt text as MODEL and the first extra-args token as PROMPT, instead of the loud usage failure the file's documented safety invariant used to guarantee (\"agent/flow/fanout parsers do not accept extra positionals; non-empty action_extra_args causes those subcommands to exit at fire time\"). A schedule created with a falsy model and non-empty extra args passes creation validation and reaches this silent misparse.\n\nRequired behavior: this combination must fail loudly at argv-build time rather than silently misrouting the prompt; a non-empty `action_model` combined with extra args remains accepted (unambiguous 3-positional shape).",
   "tier": "T1",
   "validation": {
-    "gold_output": "bringing up nodes...\nbringing up nodes...\n\n........................................................................ [ 68%]\n.................................                                        [100%]\nwarning: `VIRTUAL_ENV=/Users/lion/projects/lionagi/.claude/worktrees/agent-afbee3fc43a07bb21/.venv` does not match the project environment path `.venv` and will be ignored; use `--active` to target the active environment instead\nUsing CPython 3.10.15\nCreating virtual environment at: .venv\n   Building lionagi @ file:///Users/lion/.lionagi/swebench-work/repos/_lionbench_wt_0d00f0765f\n      Built lionagi @ file:///Users/lion/.lionagi/swebench-work/repos/_lionbench_wt_0d00f0765f\nInstalled 315 packages in 1.07s\n",
+    "gold_output": "",
     "gold_passes": true,
     "leak_review": "pass",
     "null_fails": true,
-    "null_output": "bringing up nodes...\nbringing up nodes...\n\n...........FF........................................................... [ 68%]\n.................................                                        [100%]\n=================================== FAILURES ===================================\n__ TestBuildArgvActionModelInjection.test_model_empty_with_extra_args_raises ___\n[gw0] darwin -- Python 3.10.15 /Users/lion/.lionagi/swebench-work/repos/_lionbench_wt_ecb376c2ed/.venv/bin/python\ntests/cli/test_argv_injection.py:134: in test_model_empty_with_extra_args_raises\n    with pytest.raises(ValueError, match=\"action_extra_args\"):\nE   Failed: DID NOT RAISE <class 'ValueError'>\n___ TestBuildArgvActionModelInjection.test_model_none_with_extra_args_raises ___\n[gw0] darwin -- Python 3.10.15 /Users/lion/.lionagi/swebench-work/repos/_lionbench_wt_ecb376c2ed/.venv/bin/python\ntests/cli/test_argv_injection.py:147: in test_model_none_with_extra_args_raises\n    with pytest.raises(ValueError, match=\"action_extra_args\"):\nE   Failed: DID NOT RAISE <class 'ValueError'>\n=========================== short test summary info ============================\nFAILED tests/cli/test_argv_injection.py::TestBuildArgvActionModelInjection::test_model_empty_with_extra_args_raises\nFAILED tests/cli/test_argv_injection.py::TestBuildArgvActionModelInjection::test_model_none_with_extra_args_raises\nwarning: `VIRTUAL_ENV=/Users/lion/projects/lionagi/.claude/worktrees/agent-afbee3fc43a07bb21/.venv` does not match the project environment path `.venv` and will be ignored; use `--active` to target the active environment instead\nUsing CPython 3.10.15\nCreating virtual environment at: .venv\n   Building lionagi @ file:///Users/lion/.lionagi/swebench-work/repos/_lionbench_wt_ecb376c2ed\n      Built lionagi @ file:///Users/lion/.lionagi/swebench-work/repos/_lionbench_wt_ecb376c2ed\nInstalled 315 packages in 1.11s\n"
+    "null_output": ""
   }
 }

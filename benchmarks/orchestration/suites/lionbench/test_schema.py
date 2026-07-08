@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import sys
 from pathlib import Path
 
@@ -84,6 +85,24 @@ def test_usable_instances_filters_on_validation(tmp_path):
 
     usable = usable_instances(tmp_path, subject="kg-agentic")
     assert [i.instance_id for i in usable] == ["good__1"]
+
+
+def test_save_instance_redacts_validation_output_and_nominated_by_on_disk(tmp_path):
+    """Local-run validation stdout/stderr (absolute worktree paths, uv cache paths,
+    test-generated UUIDs) and the internal nominated_by actor name must never reach
+    a committed instance JSON — the write path redacts them, not a manual step."""
+    inst = _make_instance(subject="python-framework")
+    inst.validation.gold_output = "at /Users/lion/.lionagi/swebench-work/repos/_x ok"
+    inst.validation.null_output = "some local failure trace"
+    path = save_instance(inst, tmp_path)
+
+    on_disk = json.loads(path.read_text())
+    assert on_disk["validation"]["gold_output"] == ""
+    assert on_disk["validation"]["null_output"] == ""
+    assert on_disk["provenance"]["nominated_by"] == ""
+    # in-memory instance is untouched -- redaction only applies at the write boundary
+    assert inst.validation.gold_output != ""
+    assert inst.provenance.nominated_by == "lambda:lionagi"
 
 
 def test_save_rejection_lands_under_subject_rejected_dir(tmp_path):

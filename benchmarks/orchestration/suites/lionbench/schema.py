@@ -165,13 +165,30 @@ def _subject_dir(data_dir: Path, subject: str) -> Path:
     return Path(data_dir) / subject
 
 
+def _redact_for_publication(payload: dict) -> dict:
+    """Strip fields with zero publication value and real leak potential before an
+    instance JSON is ever written to disk (DESIGN_CONTRACT §5.3 leak review).
+
+    ``validation.gold_output``/``null_output`` are raw local-run subprocess output:
+    absolute worktree paths, uv cache paths, and test-generated UUIDs from whoever's
+    machine ran the validation. The pass/fail booleans already on ``validation`` are
+    the durable signal; the raw text is a debugging artifact, not committed data.
+    ``provenance.nominated_by`` is an internal actor identifier — ``provenance.pr``
+    is the durable, already-public pointer to where an instance came from."""
+    payload["validation"]["gold_output"] = ""
+    payload["validation"]["null_output"] = ""
+    payload["provenance"]["nominated_by"] = ""
+    return payload
+
+
 def save_instance(instance: Instance, data_dir: Path) -> Path:
     """Write one instance JSON under its subject dir + refresh that subject's
     manifest index. Returns the file path."""
     sdir = _subject_dir(data_dir, instance.subject)
     sdir.mkdir(parents=True, exist_ok=True)
     path = sdir / f"{instance.instance_id}.json"
-    path.write_text(json.dumps(instance.to_dict(), indent=2, sort_keys=True) + "\n")
+    payload = _redact_for_publication(instance.to_dict())
+    path.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n")
     _write_manifest(sdir)
     return path
 

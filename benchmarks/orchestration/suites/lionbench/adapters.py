@@ -217,6 +217,11 @@ class _CliHarnessAdapter:
         prompt = prompt_envelope(instance.task_text, workdir, self.system_prompt_extra)
         prompt_path = f"{workdir}/.lionbench_prompt.txt"
         await sandbox.write_text(prompt, prompt_path)
+        # File-mediated only: invocation_template must reference {prompt_path} as a
+        # literal path (e.g. via stdin redirection), never expand the prompt bytes
+        # themselves into the command string. task_text is untrusted (it comes from
+        # a PR/issue body); letting it reach argv means process-list exposure and an
+        # argv-length failure mode. See each adapter's invocation_template.
         cmd = self.invocation_template.format(prompt_path=prompt_path, workdir=workdir)
         if self.mcp_servers is not None:
             mcp_config_path = f"{workdir}/.lionbench_mcp.json"
@@ -231,12 +236,14 @@ class _CliHarnessAdapter:
 class ClaudeCodeAdapter(_CliHarnessAdapter):
     """Claude Code CLI, non-interactive, whole-harness run inside the sandbox.
 
-    The invocation is a config field with a documented default — verify the
-    actual non-interactive flag names against `claude --help` in the target
-    image before trusting this in a real run; don't assume training-data flags
-    are still current."""
+    The prompt is piped in via stdin redirection rather than expanded into argv —
+    the executed command names only the trusted prompt path, never the prompt
+    bytes themselves. The invocation is a config field with a documented default —
+    verify the actual non-interactive flag names against `claude --help` in the
+    target image before trusting this in a real run; don't assume training-data
+    flags are still current."""
 
-    invocation_template = 'claude -p "$(cat {prompt_path})" --dangerously-skip-permissions'
+    invocation_template = "claude -p --dangerously-skip-permissions < {prompt_path}"
     env_keys = ("ANTHROPIC_API_KEY", "CLAUDE_CODE_OAUTH_TOKEN")
     mcp_flag_template = "--mcp-config {mcp_config_path}"
 
@@ -244,13 +251,14 @@ class ClaudeCodeAdapter(_CliHarnessAdapter):
 class CodexAdapter(_CliHarnessAdapter):
     """OpenAI codex CLI, non-interactive, whole-harness run inside the sandbox.
 
-    Same caveat as ClaudeCodeAdapter: verify `codex exec --help` in the image
-    before a real run; `--full-auto` is the documented default for unattended
-    approval, overridable via ``invocation_template``. codex reads MCP servers
-    from its own config.toml rather than a per-invocation flag, so
-    ``mcp_servers`` has no trivial wiring here — see ``mcp_flag_template=None``."""
+    Same stdin-redirection shape as ClaudeCodeAdapter, same caveat: verify
+    `codex exec --help` in the image before a real run; `--full-auto` is the
+    documented default for unattended approval, overridable via
+    ``invocation_template``. codex reads MCP servers from its own config.toml
+    rather than a per-invocation flag, so ``mcp_servers`` has no trivial wiring
+    here — see ``mcp_flag_template=None``."""
 
-    invocation_template = 'codex exec --full-auto "$(cat {prompt_path})"'
+    invocation_template = "codex exec --full-auto < {prompt_path}"
     env_keys = ("OPENAI_API_KEY",)
     mcp_flag_template = None
 

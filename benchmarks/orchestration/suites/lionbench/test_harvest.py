@@ -163,3 +163,37 @@ def test_scrub_task_text_preserves_markdown_bullet_lists():
     assert "did the first thing" in scrubbed
     assert "did the second thing" in scrubbed
     assert "coverage for the first thing" in scrubbed
+
+
+_PR_BODY_WITH_UNFENCED_RAW_DIFF = """\
+## Summary
+
+Calling `parse(x)` raises when x is empty.
+
+diff --git a/pkg/a.py b/pkg/a.py
+index abc123..def456 100644
+--- a/pkg/a.py
++++ b/pkg/a.py
+@@ -10,6 +10,8 @@ def parse(x):
+     if not x:
+-        return old_value
++        return secret_fix_value
+
+## Test plan
+- [ ] add a regression test
+"""
+
+
+def test_scrub_task_text_strips_unfenced_raw_diff_blocks():
+    """A PR/issue body is not guaranteed to fence a pasted patch — a diff can
+    appear raw. The scrub must recognize a real `diff --git ` header and drop
+    its structural + content lines, including a hunk header with trailing
+    function context (`@@ ... @@ def parse(x):`), without needing a fence."""
+    scrubbed = scrub_task_text(_PR_BODY_WITH_UNFENCED_RAW_DIFF)
+    assert "diff --git" not in scrubbed
+    assert "secret_fix_value" not in scrubbed
+    assert "old_value" not in scrubbed
+    assert "@@" not in scrubbed
+    # the surrounding prose survives
+    assert "raises when x is empty" in scrubbed
+    assert "add a regression test" in scrubbed

@@ -131,15 +131,21 @@ def split_diff(diff_text: str) -> tuple[str, str]:
 
 
 _FENCE_RE = re.compile(r"```.*?```", re.DOTALL)
-# Structural diff-header lines only (diff --git / index / ---, +++ / @@ hunk marker).
-# Deliberately NOT a bare "line starts with + or -" pattern: real diff *content*
-# lines almost always live inside a fenced code block (already stripped by
-# _FENCE_RE above), and a bare +/- prefix match is a false-positive magnet —
-# it nukes ordinary markdown bullet lists ("- **file.py** — did X") in PR
-# bodies, which is exactly the prose we want to KEEP (confirmed live against
-# PR #1665's body, which lost both its bulleted fix-summary lines to this
-# before the fix).
-_DIFF_LINE_RE = re.compile(r"^(diff --git |index [0-9a-f]|--- |\+\+\+ |@@ .*@@)$", re.MULTILINE)
+# Stateful raw-diff stripper (see _strip_raw_diff_blocks below). A bare "line
+# starts with + or -" pattern is a false-positive magnet on its own — it nukes
+# ordinary markdown bullet lists ("- **file.py** — did X") in PR bodies, which
+# is exactly the prose we want to KEEP (confirmed live against PR #1665's
+# body). But dropping that alternative entirely leaves *unfenced* raw diffs
+# untouched: a PR/issue body is not guaranteed to fence a pasted patch, and a
+# flat regex with no notion of "am I inside a diff block" can't tell a diff's
+# `-`/`+` content lines from a bullet list. _strip_raw_diff_blocks resolves
+# this with a small state machine: only lines that already look like +/-
+# content *after* a real `diff --git` header are treated as diff content.
+_DIFF_START_RE = re.compile(r"^diff --git ")
+_DIFF_STRUCT_RE = re.compile(r"^(index [0-9a-f]|@@ .*@@)")
+# +/- prefixed (added/removed content, and the --- / +++ file markers, which
+# also start with -/+) or a single leading space (unified-diff context line).
+_DIFF_CONTENT_RE = re.compile(r"^[+\- ]")
 _ISSUE_NUM_RE = re.compile(r"#\d+")
 _AUDIT_LABEL_RE = re.compile(r"\b[A-Z][A-Z0-9]*-\d+\b|\bFinding\s+\d+\b", re.IGNORECASE)
 _FIX_LANGUAGE_RE = re.compile(
@@ -154,16 +160,38 @@ def _split_sentences(text: str) -> list[str]:
     return re.split(r"(?<=[.!?])\s+", text)
 
 
+def _strip_raw_diff_blocks(text: str) -> str:
+    """Drop unfenced raw diff blocks line-by-line, without touching prose outside them.
+
+    A `diff --git ` line arms diff-mode; while armed, structural lines (index/---/
+    +++/@@) and +/- content lines are dropped, along with blank lines in between
+    (diffs commonly have blank separators between hunks/files). The first line that
+    doesn't look like diff output disarms diff-mode again — so a markdown bullet
+    list, which never starts with a real `diff --git ` header, is never touched."""
+    out_lines = []
+    in_diff = False
+    for line in text.split("\n"):
+        if _DIFF_START_RE.match(line):
+            in_diff = True
+            continue
+        if in_diff:
+            if line.strip() == "" or _DIFF_STRUCT_RE.match(line) or _DIFF_CONTENT_RE.match(line):
+                continue
+            in_diff = False
+        out_lines.append(line)
+    return "\n".join(out_lines)
+
+
 def scrub_task_text(pr_body: str, issue_body: str | None = None) -> str:
     """Best-effort automated scrub of PR/issue text into a task description.
 
-    Strips fenced code blocks, raw diff-hunk lines, PR/issue number references,
-    internal audit labels, and sentences that name the fix approach. This is a
-    DRAFT — the caller must still hand-review before an instance is trusted
-    (DESIGN_CONTRACT §5.3); it never claims to be a complete scrub."""
+    Strips fenced code blocks, raw diff blocks (fenced or not), PR/issue number
+    references, internal audit labels, and sentences that name the fix approach.
+    This is a DRAFT — the caller must still hand-review before an instance is
+    trusted (DESIGN_CONTRACT §5.3); it never claims to be a complete scrub."""
     combined = "\n\n".join(t for t in (pr_body, issue_body) if t)
     combined = _FENCE_RE.sub("", combined)
-    combined = _DIFF_LINE_RE.sub("", combined)
+    combined = _strip_raw_diff_blocks(combined)
     combined = _ISSUE_NUM_RE.sub("", combined)
     combined = _AUDIT_LABEL_RE.sub("", combined)
     kept = [s for s in _split_sentences(combined) if not _FIX_LANGUAGE_RE.search(s)]
