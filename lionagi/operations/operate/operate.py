@@ -292,6 +292,9 @@ async def operate(
     if not action_response_models:
         return result
 
+    if branch._context_providers:
+        await branch._context_providers.gather_writeback(branch, action_response_models)
+
     if operative is not None and isinstance(result, BaseModel):
         operative.response_model = result
         operative.update_response_model(data={"action_responses": action_response_models})
