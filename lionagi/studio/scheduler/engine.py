@@ -918,7 +918,6 @@ class SchedulerEngine:
                 # threshold_claim (released in _fire()'s finally once
                 # handed off) is what actually closes the duplicate-fire
                 # race in the meantime.
-            handed_off = True
             self._tracked_fire(
                 schedule,
                 run_id,
@@ -927,6 +926,11 @@ class SchedulerEngine:
                 global_slot_claim=slot_claim,
                 threshold_cooldown_claim=threshold_claim,
             )
+            # Flipped only after _tracked_fire() returns, so even a
+            # synchronous task-launch failure releases the claims below.
+            # Release is idempotent, so no double-free against _fire()'s
+            # own finally once the task is running.
+            handed_off = True
         finally:
             if not handed_off:
                 if claim is not None:
