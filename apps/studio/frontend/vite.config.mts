@@ -1,7 +1,37 @@
 import { defineConfig } from 'vitest/config'
+import type { Plugin } from 'vite'
 import react from '@vitejs/plugin-react'
 import { TanStackRouterVite } from '@tanstack/router-plugin/vite'
 import path from 'path'
+
+// The hosted Studio (lion-studio.khive.ai and any Vercel preview) is a static,
+// local-first deploy: its origin has no API of its own, the page talks to the
+// operator's own `li studio` daemon on loopback. resolveApiBase() otherwise
+// falls through to same-origin — correct for a single-origin Docker/reverse-proxy
+// build, wrong here, where same-origin /api/* hits the SPA rewrite and returns
+// index.html. So on Vercel builds ONLY (VERCEL=1 is set by every Vercel build,
+// Git-integration or CLI), inject the loopback base as the highest-priority
+// runtime override. Gating on VERCEL keeps source/Docker single-origin builds
+// (which run the same `vite build`) on their correct same-origin default.
+// Loopback http from an https page is exempt from mixed-content blocking.
+function hostedApiBaseInjector(): Plugin {
+  const onVercel = !!process.env.VERCEL
+  const base = process.env.STUDIO_HOSTED_API_BASE ?? 'http://127.0.0.1:8765'
+  return {
+    name: 'studio-hosted-api-base',
+    apply: 'build',
+    transformIndexHtml() {
+      if (!onVercel) return
+      return [
+        {
+          tag: 'script',
+          children: `window.__STUDIO_API_BASE__=${JSON.stringify(base)};`,
+          injectTo: 'head-prepend',
+        },
+      ]
+    },
+  }
+}
 
 // The e2e harness points this at a seeded daemon on a dynamically-allocated
 // free port (see e2e/global-setup.ts); everyone else keeps the default 8765.
@@ -19,6 +49,7 @@ export default defineConfig({
       generatedRouteTree: './src/routeTree.gen.ts',
     }),
     react(),
+    hostedApiBaseInjector(),
   ],
   resolve: {
     alias: {

@@ -270,35 +270,6 @@ async def _find_entity(db: Any, entity_id: str) -> tuple[str, dict[str, Any]] | 
     return None
 
 
-# ── Run manifest helpers ──────────────────────────────────────────────────────
-
-
-def _load_run_manifests(*, since: float | None = None) -> list[dict[str, Any]]:
-    """Read run.json files from RUNS_ROOT, newest first."""
-    if not RUNS_ROOT.exists():
-        return []
-    results: list[dict[str, Any]] = []
-    for run_dir in sorted(RUNS_ROOT.iterdir(), key=lambda p: p.stat().st_mtime, reverse=True):
-        if not run_dir.is_dir():
-            continue
-        manifest_path = run_dir / "run.json"
-        if not manifest_path.exists():
-            continue
-        try:
-            import json as _json
-
-            manifest = _json.loads(manifest_path.read_text())
-        except (OSError, ValueError):
-            continue
-        mtime = run_dir.stat().st_mtime
-        if since is not None and mtime < since:
-            continue
-        manifest["_mtime"] = mtime
-        manifest["_run_dir"] = str(run_dir)
-        results.append(manifest)
-    return results
-
-
 def _stream_tail(run_dir: Path, branch_id: str, n_lines: int = 5) -> list[str]:
     """Return the last N lines from a stream buffer file."""
     buf_path = run_dir / "stream" / f"{branch_id}.buffer.jsonl"
