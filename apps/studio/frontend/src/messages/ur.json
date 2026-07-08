@@ -3,7 +3,6 @@
     "rail": {
       "ariaLabel": "بنیادی نیویگیشن",
       "home": "مشن کنٹرول",
-      "designer": "ڈیزائنر",
       "library": "لائبریری",
       "schedules": "شیڈولز",
       "system": "سسٹم",
@@ -200,10 +199,8 @@
     "clearStatusFilter": "اسٹیٹس فلٹر صاف کریں",
     "empty": {
       "all": "ابھی کوئی ہسٹری نہیں۔",
-      "allHint": "یہاں دیکھنے کے لیے Designer سے کچھ لانچ کریں۔",
       "filtered": "کوئی آئٹم آپ کے فلٹر سے میل نہیں کھاتا۔",
-      "filteredHint": "دوسری قسم آزمائیں یا تلاش صاف کریں۔",
-      "cta": "Designer کھولیں →"
+      "filteredHint": "دوسری قسم آزمائیں یا تلاش صاف کریں۔"
     },
     "status": {
       "running": "چل رہا ہے",
@@ -583,7 +580,6 @@
     },
     "empty": {
       "message": "کوئی ایجنٹ نہیں چل رہا — ایجنٹ فلیٹ لائیو آرکیسٹریشنز دکھاتا ہے۔",
-      "cta": "Designer کھولیں →",
       "hint": "⌘K → fleet یا monitor",
       "recent": "حالیہ سیشنز",
       "ago": "⁨{delta}⁩ پہلے"
@@ -704,27 +700,6 @@
     }
   },
   "designer": {
-    "rack": {
-      "title": "انجنز",
-      "blueprints": "ٹیمپلیٹس",
-      "blueprintsHint": "بلٹ اِن، read-only",
-      "saved": "محفوظ تعریفیں",
-      "savedHint": "آپ کے reusable انجنز",
-      "stages": "اسٹیجز",
-      "loading": "لوڈ ہو رہا ہے…",
-      "emptySaved": "ابھی کچھ محفوظ نہیں۔ blueprint کنفیگر کریں اور Save دبائیں۔",
-      "collapse": "ریک سمیٹیں",
-      "expand": "ریک پھیلائیں",
-      "delete": "⁨{name}⁩ حذف کریں",
-      "deleteConfirm": "حذف کریں؟"
-    },
-    "header": {
-      "saved": "محفوظ",
-      "providerDefault": "پرووائیڈر ڈیفالٹ",
-      "template": "ٹیمپلیٹ",
-      "draft": "غیر محفوظ ڈرافٹ",
-      "draftHint": "ٹیمپلیٹس read-only ہیں۔ محفوظ کرنے سے نئی تعریف بنتی ہے۔"
-    },
     "flow": {
       "quiescence": "سب settle ہونے کے بعد",
       "zoomIn": "زوم اِن",
@@ -733,81 +708,6 @@
       "signals": "سگنلز",
       "filter": "سگنلز فلٹر کریں…",
       "showAll": "سب دکھائیں"
-    },
-    "panel": {
-      "close": "بند کریں",
-      "role": "رول",
-      "modelStage": "ماڈل روٹ",
-      "mode": "موڈ",
-      "spawns": "spawn کرتا ہے",
-      "partOf": "کا حصہ",
-      "exempt": "بجٹ ختم ہونے کے بعد بھی چلتا ہے",
-      "execution": "رن ٹائم پلان",
-      "executionNote": "read-only · انجن سے مقرر",
-      "signals": "سگنلز",
-      "emits": "emit کرتا ہے",
-      "observes": "observe کرتا ہے",
-      "viaGroup": "⁨{group}⁩ کے ذریعے",
-      "config": "قابل ترمیم overrides",
-      "configNote": "یہاں تبدیلیاں اگلے لانچ پر اثر انداز ہوں گی۔ باقی سب انجن سے define ہے۔",
-      "engineDefined": "انجن سے define",
-      "thisOperator": "صرف یہ اسٹیج",
-      "engineWide": "پورا انجن",
-      "roleDefault": "انجن ڈیفالٹ · ⁨{role}⁩",
-      "bundle": "رول بنڈل",
-      "bundleNote": "Skills، modes، اور structured output، casts role پر آتے ہیں — پورا بنڈل بدلنے کے لیے اوپر کوئی دوسرا رول منتخب کریں۔",
-      "structuredOutput": "structured output",
-      "context": "کانٹیکسٹ",
-      "receives": "وصول کرتا ہے",
-      "produces": "بناتا ہے",
-      "ctxFrom": "⁨{name}⁩ سے",
-      "toStore": "→ emission store",
-      "entryNote": "Entry point — launch dock سے ٹاسک پرامپٹ وصول کرتا ہے۔"
-    },
-    "toolbar": {
-      "addOperator": "آپریٹر شامل کریں",
-      "addSignal": "سگنل شامل کریں",
-      "signalName": "سگنل نام",
-      "signalPlaceholder": "مثلاً FindingEmitted",
-      "color": "رنگ",
-      "colorAria": "رنگ ⁨{color}⁩",
-      "emittingOperator": "emit کرنے والا آپریٹر",
-      "none": "کوئی نہیں",
-      "add": "شامل کریں",
-      "removeConfirm": "ہٹائیں؟",
-      "yes": "ہاں",
-      "no": "نہیں",
-      "delete": "حذف کریں",
-      "deleteSelectedTitle": "منتخب آپریٹر حذف کریں",
-      "deleteDisabledTitle": "حذف کرنے کے لیے آپریٹر منتخب کریں",
-      "fitView": "ویو فٹ کریں",
-      "zoomIn": "زوم اِن",
-      "zoomOut": "زوم آؤٹ"
-    },
-    "dock": {
-      "namePlaceholder": "انجن نام",
-      "promptPlaceholder": "یہ انجن کیا کرے؟ ٹاسک بیان کریں اور Launch دبائیں…",
-      "save": "تعریف کے طور پر محفوظ کریں",
-      "saveChanges": "تبدیلیاں محفوظ کریں",
-      "saving": "محفوظ ہو رہا ہے…",
-      "launch": "لانچ",
-      "launching": "لانچ ہو رہا ہے…",
-      "launched": "انووکیشن لانچ ہوگئی",
-      "saved": "تعریف محفوظ ہوگئی",
-      "nameRequired": "محفوظ کرنے سے پہلے انجن کا نام دیں",
-      "promptRequired": "لانچ سے پہلے ٹاسک بیان کریں",
-      "testCmdRequired": "coding engine کو test command چاہیے — اسے test stage پر سیٹ کریں",
-      "invalidBounds": "max_agents اور max_depth لازماً 1 سے 100 کے درمیان ہوں",
-      "advanced": "ایڈوانسڈ"
-    },
-    "advanced": {
-      "title": "ایڈوانسڈ",
-      "description": "تفصیل",
-      "descriptionPlaceholder": "یہ انجن کیا کرتا ہے؟",
-      "exportDir": "ایکسپورٹ dir",
-      "engineDefaults": "انجن internals (read-only)",
-      "sourceRef": "transcribed from",
-      "requestPreview": "ریکویسٹ پریویو"
     },
     "edge": {
       "kindReaction": "reaction",
@@ -934,9 +834,7 @@
     "importError": "فائل نہیں پڑھی جا سکی",
     "rackTitle": "ورک فلو",
     "rackNew": "نیا",
-    "rackEmpty": "ابھی کوئی ورک فلو نہیں۔",
-    "designerEmpty": "ریک سے ورک فلو منتخب کریں، یا ڈیزائن شروع کرنے کے لیے نیا بنائیں۔",
-    "designerEmptyCta": "ورک فلو بنائیں"
+    "rackEmpty": "ابھی کوئی ورک فلو نہیں۔"
   },
   "daemon": {
     "title": "Studio مقامی ڈیمون سے ⁨{base}⁩ پر نہیں جڑ سکا",

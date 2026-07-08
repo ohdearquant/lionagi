@@ -3,7 +3,6 @@
     "rail": {
       "ariaLabel": "主导航",
       "home": "任务中心",
-      "designer": "设计器",
       "library": "资源库",
       "schedules": "计划任务",
       "system": "系统",
@@ -200,10 +199,8 @@
     "clearStatusFilter": "清除状态筛选",
     "empty": {
       "all": "暂无历史记录。",
-      "allHint": "在设计器中启动工作流后，记录会显示在这里。",
       "filtered": "没有匹配的内容。",
-      "filteredHint": "换个类型试试，或清除搜索条件。",
-      "cta": "打开设计器 →"
+      "filteredHint": "换个类型试试，或清除搜索条件。"
     },
     "status": {
       "running": "运行中",
@@ -583,7 +580,6 @@
     },
     "empty": {
       "message": "当前没有运行中的智能体 — 这里会实时显示进行中的编排任务。",
-      "cta": "打开设计器 →",
       "hint": "⌘K → fleet 或 monitor",
       "recent": "近期会话",
       "ago": "{delta}前"
@@ -704,27 +700,6 @@
     }
   },
   "designer": {
-    "rack": {
-      "title": "引擎",
-      "blueprints": "模板",
-      "blueprintsHint": "内置 · 只读",
-      "saved": "已保存的定义",
-      "savedHint": "可复用的引擎",
-      "stages": "个阶段",
-      "loading": "加载中…",
-      "emptySaved": "暂无保存的引擎。配置一个蓝图后点击保存。",
-      "collapse": "收起侧栏",
-      "expand": "展开侧栏",
-      "delete": "删除 {name}",
-      "deleteConfirm": "确认删除？"
-    },
-    "header": {
-      "saved": "已保存",
-      "providerDefault": "默认模型",
-      "template": "模板",
-      "draft": "未保存草稿",
-      "draftHint": "模板只读，保存会创建一个新定义。"
-    },
     "flow": {
       "quiescence": "全部完成后",
       "zoomIn": "放大",
@@ -733,81 +708,6 @@
       "signals": "信号",
       "filter": "筛选信号…",
       "showAll": "显示全部"
-    },
-    "panel": {
-      "close": "关闭",
-      "role": "角色",
-      "modelStage": "模型路由",
-      "mode": "模式",
-      "spawns": "派生方式",
-      "partOf": "所属单元",
-      "exempt": "预算耗尽后仍会运行",
-      "execution": "运行计划",
-      "executionNote": "只读 · 由引擎固定",
-      "signals": "信号",
-      "emits": "发出信号",
-      "observes": "订阅信号",
-      "viaGroup": "经由 {group}",
-      "config": "可编辑的覆盖项",
-      "configNote": "这里的改动会影响下次启动；其余均由引擎定义。",
-      "engineDefined": "引擎内部",
-      "thisOperator": "仅此阶段",
-      "engineWide": "整个引擎",
-      "roleDefault": "引擎默认 · {role}",
-      "bundle": "角色组合",
-      "bundleNote": "技能、模式与结构化输出都由 casts 角色决定——在上方换一个角色即可整体替换。",
-      "structuredOutput": "结构化输出",
-      "context": "上下文",
-      "receives": "接收",
-      "produces": "产出",
-      "ctxFrom": "来自 {name}",
-      "toStore": "→ 信号存储",
-      "entryNote": "入口——接收启动栏里输入的任务提示。"
-    },
-    "toolbar": {
-      "addOperator": "添加阶段",
-      "addSignal": "添加信号",
-      "signalName": "信号名称",
-      "signalPlaceholder": "例如 FindingEmitted",
-      "color": "颜色",
-      "colorAria": "颜色 {color}",
-      "emittingOperator": "发出信号的阶段",
-      "none": "无",
-      "add": "添加",
-      "removeConfirm": "确认移除？",
-      "yes": "移除",
-      "no": "取消",
-      "delete": "删除",
-      "deleteSelectedTitle": "删除所选阶段",
-      "deleteDisabledTitle": "先选中一个阶段才能删除",
-      "fitView": "适应视图",
-      "zoomIn": "放大",
-      "zoomOut": "缩小"
-    },
-    "dock": {
-      "namePlaceholder": "引擎名称",
-      "promptPlaceholder": "这个引擎要做什么？描述任务后点击启动…",
-      "save": "另存为定义",
-      "saveChanges": "保存修改",
-      "saving": "保存中…",
-      "launch": "启动",
-      "launching": "启动中…",
-      "launched": "已启动调用",
-      "saved": "定义已保存",
-      "nameRequired": "保存前请先命名引擎",
-      "promptRequired": "启动前请描述任务",
-      "testCmdRequired": "coding 引擎需要测试命令 — 在 test 阶段上设置",
-      "invalidBounds": "max_agents 和 max_depth 必须在 1 到 100 之间",
-      "advanced": "高级"
-    },
-    "advanced": {
-      "title": "高级设置",
-      "description": "描述",
-      "descriptionPlaceholder": "这个引擎是做什么的？",
-      "exportDir": "导出目录",
-      "engineDefaults": "引擎内部参数（只读）",
-      "sourceRef": "摘录自",
-      "requestPreview": "请求预览"
     },
     "edge": {
       "kindReaction": "反应",
@@ -934,9 +834,7 @@
     "importError": "无法读取文件",
     "rackTitle": "工作流",
     "rackNew": "新建",
-    "rackEmpty": "暂无工作流。",
-    "designerEmpty": "从左侧选择一个工作流，或新建一个开始设计。",
-    "designerEmptyCta": "新建工作流"
+    "rackEmpty": "暂无工作流。"
   },
   "daemon": {
     "title": "Studio 无法连接到本地守护进程（{base}）",

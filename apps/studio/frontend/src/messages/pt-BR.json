@@ -3,7 +3,6 @@
     "rail": {
       "ariaLabel": "Navegação principal",
       "home": "Central de Controle",
-      "designer": "Designer",
       "library": "Biblioteca",
       "schedules": "Agendamentos",
       "system": "Sistema",
@@ -200,10 +199,8 @@
     "clearStatusFilter": "Limpar filtro de status",
     "empty": {
       "all": "Ainda não há histórico.",
-      "allHint": "Inicie algo no Designer para vê-lo aqui.",
       "filtered": "Nenhum item corresponde ao filtro.",
-      "filteredHint": "Tente outro tipo ou limpe a busca.",
-      "cta": "Abrir Designer →"
+      "filteredHint": "Tente outro tipo ou limpe a busca."
     },
     "status": {
       "running": "em execução",
@@ -583,7 +580,6 @@
     },
     "empty": {
       "message": "Nenhum agente em execução — a frota mostra orquestrações ao vivo conforme elas acontecem.",
-      "cta": "Abrir Designer →",
       "hint": "⌘K → frota ou monitoramento",
       "recent": "Sessões recentes",
       "ago": "há {delta}"
@@ -704,27 +700,6 @@
     }
   },
   "designer": {
-    "rack": {
-      "title": "Engines",
-      "blueprints": "Modelos",
-      "blueprintsHint": "Integrado, somente leitura",
-      "saved": "Definições salvas",
-      "savedHint": "Suas engines reutilizáveis",
-      "stages": "estágios",
-      "loading": "Carregando…",
-      "emptySaved": "Nada salvo ainda. Configure um modelo e clique em Salvar.",
-      "collapse": "Recolher rack",
-      "expand": "Expandir rack",
-      "delete": "excluir {name}",
-      "deleteConfirm": "excluir?"
-    },
-    "header": {
-      "saved": "salvo",
-      "providerDefault": "padrão do provedor",
-      "template": "modelo",
-      "draft": "Rascunho não salvo",
-      "draftHint": "Modelos são somente leitura. Salvar cria uma nova definição."
-    },
     "flow": {
       "quiescence": "após todos estabilizarem",
       "zoomIn": "Aproximar zoom",
@@ -733,81 +708,6 @@
       "signals": "Sinais",
       "filter": "Filtrar sinais…",
       "showAll": "Mostrar todos"
-    },
-    "panel": {
-      "close": "Fechar",
-      "role": "função",
-      "modelStage": "rota de modelo",
-      "mode": "modo",
-      "spawns": "gera",
-      "partOf": "parte de",
-      "exempt": "executa além do esgotamento do orçamento",
-      "execution": "Plano de runtime",
-      "executionNote": "Somente leitura · definido pela engine",
-      "signals": "Sinais",
-      "emits": "Emite",
-      "observes": "Observa",
-      "viaGroup": "via {group}",
-      "config": "Sobrescritas editáveis",
-      "configNote": "Alterações aqui afetam o próximo início. Todo o resto é definido pela engine.",
-      "engineDefined": "Definido pela engine",
-      "thisOperator": "Somente este estágio",
-      "engineWide": "Engine inteira",
-      "roleDefault": "padrão da engine · {role}",
-      "bundle": "Pacote de função",
-      "bundleNote": "Skills, modos e saída estruturada acompanham a função de casts — escolha outra função acima para trocar o pacote inteiro.",
-      "structuredOutput": "Saída estruturada",
-      "context": "Contexto",
-      "receives": "Recebe",
-      "produces": "Produz",
-      "ctxFrom": "de {name}",
-      "toStore": "→ armazenamento de emissões",
-      "entryNote": "Ponto de entrada — recebe o prompt da tarefa do painel de inicialização."
-    },
-    "toolbar": {
-      "addOperator": "Adicionar operador",
-      "addSignal": "Adicionar sinal",
-      "signalName": "Nome do sinal",
-      "signalPlaceholder": "ex.: FindingEmitted",
-      "color": "Cor",
-      "colorAria": "cor {color}",
-      "emittingOperator": "Operador emissor",
-      "none": "Nenhum",
-      "add": "Adicionar",
-      "removeConfirm": "Remover?",
-      "yes": "Sim",
-      "no": "Não",
-      "delete": "Excluir",
-      "deleteSelectedTitle": "Excluir operador selecionado",
-      "deleteDisabledTitle": "Selecione um operador para excluí-lo",
-      "fitView": "Ajustar visualização",
-      "zoomIn": "Aproximar zoom",
-      "zoomOut": "Afastar zoom"
-    },
-    "dock": {
-      "namePlaceholder": "nome da engine",
-      "promptPlaceholder": "O que esta engine deve fazer? Descreva a tarefa e pressione Iniciar…",
-      "save": "Salvar como definição",
-      "saveChanges": "Salvar alterações",
-      "saving": "Salvando…",
-      "launch": "Iniciar",
-      "launching": "Iniciando…",
-      "launched": "Invocação iniciada",
-      "saved": "Definição salva",
-      "nameRequired": "Dê um nome à engine antes de salvar",
-      "promptRequired": "Descreva a tarefa antes de lançar",
-      "testCmdRequired": "A engine de código precisa de um comando de teste — defina-o no estágio de teste",
-      "invalidBounds": "max_agents e max_depth devem ficar entre 1 e 100",
-      "advanced": "Avançado"
-    },
-    "advanced": {
-      "title": "Avançado",
-      "description": "Descrição",
-      "descriptionPlaceholder": "O que esta engine faz?",
-      "exportDir": "Diretório de exportação",
-      "engineDefaults": "Internos da engine (somente leitura)",
-      "sourceRef": "transcrito de",
-      "requestPreview": "Prévia da solicitação"
     },
     "edge": {
       "kindReaction": "reação",
@@ -934,9 +834,7 @@
     "importError": "Não foi possível ler o arquivo",
     "rackTitle": "Fluxos de trabalho",
     "rackNew": "Novo",
-    "rackEmpty": "Ainda não há fluxos de trabalho.",
-    "designerEmpty": "Escolha um fluxo de trabalho no rack ou crie um para começar a desenhar.",
-    "designerEmptyCta": "Criar um fluxo de trabalho"
+    "rackEmpty": "Ainda não há fluxos de trabalho."
   },
   "daemon": {
     "title": "O Studio não conseguiu acessar o daemon local em {base}",

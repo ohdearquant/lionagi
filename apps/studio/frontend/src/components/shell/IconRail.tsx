@@ -31,29 +31,6 @@ function IconTarget() {
   );
 }
 
-function IconGraph() {
-  return (
-    <svg
-      width="20"
-      height="20"
-      viewBox="0 0 24 24"
-      fill="none"
-      stroke="currentColor"
-      strokeWidth="1.5"
-      strokeLinecap="round"
-      strokeLinejoin="round"
-      aria-hidden="true"
-    >
-      <circle cx="6" cy="5" r="2.5" />
-      <circle cx="18" cy="5" r="2.5" />
-      <circle cx="12" cy="19" r="2.5" />
-      <path d="M7.2 7.2 L10.8 16.8" />
-      <path d="M16.8 7.2 L13.2 16.8" />
-      <path d="M8.5 5 L15.5 5" />
-    </svg>
-  );
-}
-
 function IconGrid() {
   return (
     <svg
@@ -161,14 +138,13 @@ function IconCalendar() {
 
 const SPACES: Space[] = [
   { id: "home", href: "/", labelKey: "rail.home", icon: <IconTarget />, key: 1 },
-  { id: "designer", href: "/designer", labelKey: "rail.designer", icon: <IconGraph />, key: 2 },
-  { id: "library", href: "/library", labelKey: "rail.library", icon: <IconGrid />, key: 3 },
+  { id: "library", href: "/library", labelKey: "rail.library", icon: <IconGrid />, key: 2 },
   {
     id: "schedules",
     href: "/schedules",
     labelKey: "rail.schedules",
     icon: <IconCalendar />,
-    key: 4,
+    key: 3,
   },
 ];
 
@@ -378,7 +354,7 @@ export default function IconRail({
                 to={space.href}
                 aria-label={`${label} (⌘${space.key})`}
                 title={`${label} — ⌘${space.key}`}
-                onClick={(e) => {
+                onClick={(e: React.MouseEvent<HTMLAnchorElement>) => {
                   // Re-clicking the active space toggles its secondary pane
                   // (e.g. the blueprint rack) instead of re-navigating.
                   if (active) {

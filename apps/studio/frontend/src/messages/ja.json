@@ -3,7 +3,6 @@
     "rail": {
       "ariaLabel": "プライマリナビゲーション",
       "home": "ミッションコントロール",
-      "designer": "デザイナー",
       "library": "ライブラリ",
       "schedules": "スケジュール",
       "system": "システム",
@@ -200,10 +199,8 @@
     "clearStatusFilter": "ステータスフィルターをクリア",
     "empty": {
       "all": "履歴はまだありません。",
-      "allHint": "デザイナーから何かを起動するとここに表示されます。",
       "filtered": "フィルターに一致する項目はありません。",
-      "filteredHint": "別の種類を試すか、検索をクリアしてください。",
-      "cta": "デザイナーを開く →"
+      "filteredHint": "別の種類を試すか、検索をクリアしてください。"
     },
     "status": {
       "running": "実行中",
@@ -583,7 +580,6 @@
     },
     "empty": {
       "message": "実行中のエージェントはありません — エージェントフリートはライブのオーケストレーションを発生時に表示します。",
-      "cta": "デザイナーを開く →",
       "hint": "⌘K → fleet または monitor",
       "recent": "最近のセッション",
       "ago": "{delta}前"
@@ -704,27 +700,6 @@
     }
   },
   "designer": {
-    "rack": {
-      "title": "エンジン",
-      "blueprints": "テンプレート",
-      "blueprintsHint": "組み込み、読み取り専用",
-      "saved": "保存済み定義",
-      "savedHint": "再利用可能なエンジン",
-      "stages": "ステージ",
-      "loading": "読み込み中…",
-      "emptySaved": "まだ何も保存されていません。ブループリントを設定して保存してください。",
-      "collapse": "ラックを折りたたむ",
-      "expand": "ラックを展開",
-      "delete": "{name}を削除",
-      "deleteConfirm": "削除しますか？"
-    },
-    "header": {
-      "saved": "保存済み",
-      "providerDefault": "プロバイダー既定",
-      "template": "テンプレート",
-      "draft": "未保存の下書き",
-      "draftHint": "テンプレートは読み取り専用です。保存すると新しい定義が作成されます。"
-    },
     "flow": {
       "quiescence": "静止状態到達後",
       "zoomIn": "ズームイン",
@@ -733,81 +708,6 @@
       "signals": "シグナル",
       "filter": "シグナルを絞り込み…",
       "showAll": "すべて表示"
-    },
-    "panel": {
-      "close": "閉じる",
-      "role": "ロール",
-      "modelStage": "モデルルート",
-      "mode": "モード",
-      "spawns": "生成",
-      "partOf": "所属",
-      "exempt": "予算枯渇後も実行",
-      "execution": "ランタイム計画",
-      "executionNote": "読み取り専用 · エンジンで固定",
-      "signals": "シグナル",
-      "emits": "送出",
-      "observes": "監視",
-      "viaGroup": "{group}経由",
-      "config": "編集可能なオーバーライド",
-      "configNote": "ここでの変更は次回起動に反映されます。それ以外はエンジン定義です。",
-      "engineDefined": "エンジン定義",
-      "thisOperator": "このステージのみ",
-      "engineWide": "エンジン全体",
-      "roleDefault": "エンジン既定 · {role}",
-      "bundle": "ロールバンドル",
-      "bundleNote": "スキル、モード、構造化出力はcastsロールに紐づきます — 上で別のロールを選ぶとバンドル全体が入れ替わります。",
-      "structuredOutput": "構造化出力",
-      "context": "コンテキスト",
-      "receives": "受信",
-      "produces": "生成",
-      "ctxFrom": "{name}から",
-      "toStore": "→ エミッションストア",
-      "entryNote": "エントリーポイント — 起動ドックからタスクプロンプトを受け取ります。"
-    },
-    "toolbar": {
-      "addOperator": "オペレーターを追加",
-      "addSignal": "シグナルを追加",
-      "signalName": "シグナル名",
-      "signalPlaceholder": "例: FindingEmitted",
-      "color": "色",
-      "colorAria": "色 {color}",
-      "emittingOperator": "送出元オペレーター",
-      "none": "なし",
-      "add": "追加",
-      "removeConfirm": "削除しますか？",
-      "yes": "はい",
-      "no": "いいえ",
-      "delete": "削除",
-      "deleteSelectedTitle": "選択したオペレーターを削除",
-      "deleteDisabledTitle": "削除するオペレーターを選択してください",
-      "fitView": "表示に合わせる",
-      "zoomIn": "ズームイン",
-      "zoomOut": "ズームアウト"
-    },
-    "dock": {
-      "namePlaceholder": "エンジン名",
-      "promptPlaceholder": "このエンジンに何をさせますか？タスクを説明して起動を押してください…",
-      "save": "定義として保存",
-      "saveChanges": "変更を保存",
-      "saving": "保存中…",
-      "launch": "起動",
-      "launching": "起動中…",
-      "launched": "呼び出しを起動しました",
-      "saved": "定義を保存しました",
-      "nameRequired": "保存する前にエンジン名を入力してください",
-      "promptRequired": "起動する前にタスクを説明してください",
-      "testCmdRequired": "コーディングエンジンにはテストコマンドが必要です — テストステージで設定してください",
-      "invalidBounds": "max_agentsとmax_depthは1〜100の範囲で指定してください",
-      "advanced": "詳細"
-    },
-    "advanced": {
-      "title": "詳細",
-      "description": "説明",
-      "descriptionPlaceholder": "このエンジンは何をしますか？",
-      "exportDir": "エクスポート先ディレクトリ",
-      "engineDefaults": "エンジン内部 (読み取り専用)",
-      "sourceRef": "転記元",
-      "requestPreview": "リクエストプレビュー"
     },
     "edge": {
       "kindReaction": "リアクション",
@@ -934,9 +834,7 @@
     "importError": "ファイルを読み取れませんでした",
     "rackTitle": "ワークフロー",
     "rackNew": "新規",
-    "rackEmpty": "ワークフローはまだありません。",
-    "designerEmpty": "ラックからワークフローを選ぶか、作成して設計を開始してください。",
-    "designerEmptyCta": "ワークフローを作成"
+    "rackEmpty": "ワークフローはまだありません。"
   },
   "daemon": {
     "title": "Studioは{base}のローカルデーモンに接続できませんでした",

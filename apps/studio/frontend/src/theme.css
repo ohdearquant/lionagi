@@ -33,16 +33,6 @@
   --font-ui: -apple-system, BlinkMacSystemFont, Inter, sans-serif;
   --font-data: "JetBrains Mono", "SF Mono", ui-monospace, monospace;
 
-  /* Designer canvas — signal rail colors (per DESIGN-CANVAS §2).
-     Separate token family from status colors — one hue must never mean both. */
-  --rail-discovery: #22d3ee; /* cyan */
-  --rail-judgement: #f59e0b; /* amber (distinct from --accent lion amber) */
-  --rail-analysis: #a78bfa; /* violet */
-  --rail-planning: #60a5fa; /* blue */
-  --rail-production: #34d399; /* green */
-  --rail-retrospective: #94a3b8; /* slate */
-  --rail-universal: #f87171; /* red / pulsing */
-
   /* Motion anchors (per REDESIGN-EXEC.md "Knowledge-grounded upgrades") */
   --motion-press: 100ms;
   --motion-micro: 150ms;
