@@ -190,13 +190,8 @@ def _get_client() -> httpx.AsyncClient:
     return _client
 
 
-async def _get_gh_token() -> str | None:
-    """Get GitHub token from gh CLI or environment."""
-    import os
-
-    token = os.environ.get("GITHUB_TOKEN")
-    if token:
-        return token
+async def _gh_cli_token() -> str | None:
+    """Fetch a token from the gh CLI (`gh auth token`), or None if unavailable."""
     try:
         proc = await asyncio.create_subprocess_exec(
             "gh",
@@ -211,6 +206,24 @@ async def _get_gh_token() -> str | None:
     except Exception:
         _log.debug("gh CLI not available for token retrieval")
     return None
+
+
+async def _get_gh_token(prefer_cli: bool = False) -> str | None:
+    """Get a GitHub token from the environment or the gh CLI.
+
+    By default ``GITHUB_TOKEN`` wins. Set ``prefer_cli=True`` to skip the env
+    var and read a fresh token from ``gh auth token`` instead — used to recover
+    from a ``GITHUB_TOKEN`` that was valid at daemon launch but has since
+    expired (the poller would otherwise stay pinned to the dead credential and
+    go silently blind on every poll).
+    """
+    import os
+
+    if not prefer_cli:
+        token = os.environ.get("GITHUB_TOKEN")
+        if token:
+            return token
+    return await _gh_cli_token()
 
 
 async def github_poll(schedule: dict) -> GithubPollResult:
@@ -290,7 +303,37 @@ async def github_poll(schedule: dict) -> GithubPollResult:
         _log.exception("GitHub API request failed for %s", repo)
         return GithubPollResult(items=[], scan_complete=True)
 
+    # A 401 means the token we used is bad — most often a GITHUB_TOKEN that was
+    # valid when the daemon launched but has since expired. Fall through to a
+    # fresh gh-CLI token (skipping the env var) and retry once, so a stale env
+    # credential can't pin the poller to a dead token and leave it silently
+    # blind on every subsequent poll.
+    if resp.status_code == 401:
+        cli_token = await _get_gh_token(prefer_cli=True)
+        if cli_token and cli_token != token:
+            headers["Authorization"] = f"Bearer {cli_token}"
+            try:
+                resp = await client.get(
+                    f"https://api.github.com/repos/{repo}/pulls",
+                    headers=headers,
+                    params=params,
+                )
+            except httpx.HTTPError:
+                _log.exception("GitHub API request failed for %s", repo)
+                return GithubPollResult(items=[], scan_complete=True)
+
     if resp.status_code == 304:
+        return GithubPollResult(items=[], scan_complete=True)
+
+    if resp.status_code == 401:
+        _log.error(
+            "GitHub API returned 401 (unauthorized) for %s polling schedule %s (%s) "
+            "even after falling back to a gh-CLI token; the poller cannot see new "
+            "events until valid credentials are available",
+            repo,
+            schedule.get("id"),
+            schedule.get("name"),
+        )
         return GithubPollResult(items=[], scan_complete=True)
 
     if resp.status_code != 200:

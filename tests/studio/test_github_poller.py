@@ -584,3 +584,67 @@ def test_github_poll_merged_mode_pagination_error_defers_unsafe_boundary_items(m
     assert len(client.requests) == 2
     assert [i.event["pr_number"] for i in result.items] == [1410]
     assert result.items[0].dispatchable is True
+
+
+class _FakeStatusClient:
+    """Serves a fixed sequence of (status_code, prs) per request, so a 401 →
+    retry → 200 flow can be driven deterministically. Records the Authorization
+    header of each request so a test can assert which token was used."""
+
+    def __init__(self, responses):
+        self._responses = responses
+        self.requests: list[dict] = []
+
+    async def get(self, url, headers=None, params=None):
+        idx = len(self.requests)
+        auth = (headers or {}).get("Authorization")
+        self.requests.append({"url": url, "params": params, "auth": auth})
+        status, prs = self._responses[min(idx, len(self._responses) - 1)]
+        resp = _FakeResp(prs)
+        resp.status_code = status
+        return resp
+
+
+def _install_status(monkeypatch, responses, *, env_token="envtoken", cli_token="clitoken"):
+    """Wire a status-sequenced client plus a prefer_cli-aware token resolver:
+    the default resolve returns env_token, prefer_cli=True returns cli_token."""
+
+    async def _fake_token(prefer_cli: bool = False):
+        return cli_token if prefer_cli else env_token
+
+    client = _FakeStatusClient(responses)
+    monkeypatch.setattr(gh_mod, "_get_gh_token", _fake_token)
+    monkeypatch.setattr(gh_mod, "_get_client", lambda: client)
+    return client
+
+
+def test_github_poll_401_falls_through_to_cli_token_and_retries(monkeypatch):
+    """A 401 on the first request (expired GITHUB_TOKEN) retries once with a
+    fresh gh-CLI token and succeeds, rather than going silently blind."""
+    pr = _pr(42, "2026-07-07T10:00:00Z")
+    client = _install_status(monkeypatch, [(401, []), (200, [pr])])
+    items = _poll({"id": "s1", "github_repo": "owner/name"})
+    assert [i.event["pr_number"] for i in items] == [42]
+    # Two requests: the 401 with the env token, then the retry with the CLI token.
+    assert len(client.requests) == 2
+    assert client.requests[0]["auth"] == "Bearer envtoken"
+    assert client.requests[1]["auth"] == "Bearer clitoken"
+
+
+def test_github_poll_401_persists_after_cli_fallback_returns_empty(monkeypatch):
+    """When the CLI token also 401s, the poll returns empty (no crash) and does
+    not advance — the caller keeps the cursor and retries on a later poll."""
+    client = _install_status(monkeypatch, [(401, []), (401, [])])
+    result = _poll_result({"id": "s1", "github_repo": "owner/name"})
+    assert result.items == []
+    assert result.scan_complete is True
+    assert len(client.requests) == 2
+
+
+def test_github_poll_401_no_retry_when_cli_token_matches_env(monkeypatch):
+    """If the CLI token is identical to the env token, there is nothing new to
+    try — the poll returns empty without a pointless second request."""
+    client = _install_status(monkeypatch, [(401, [])], env_token="same", cli_token="same")
+    result = _poll_result({"id": "s1", "github_repo": "owner/name"})
+    assert result.items == []
+    assert len(client.requests) == 1
