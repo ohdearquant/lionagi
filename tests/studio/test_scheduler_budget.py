@@ -262,9 +262,11 @@ async def test_tick_github_polls_normally_when_under_budget():
         budget_tokens=5000,
     )
 
+    from lionagi.studio.scheduler.github import GithubPollResult
+
     with patch(
         "lionagi.studio.scheduler.github.github_poll",
-        new=AsyncMock(return_value=[]),
+        new=AsyncMock(return_value=GithubPollResult(items=[], scan_complete=True)),
     ) as mock_poll:
         await engine._tick_github(schedule, now=10_000.0)
 

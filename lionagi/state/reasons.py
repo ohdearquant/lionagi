@@ -64,6 +64,10 @@ class RunReasons:
     FAILED_EXIT_NONZERO = "run.failed.exit_nonzero"
     FAILED_EXCEPTION = "run.failed.exception"
     FAILED_MISSING_ARTIFACT = "run.failed.missing_artifact"  # ADR-0029
+    # The action_project's registered path no longer existed at fire time
+    # (e.g. a pruned worktree), the run fell back to inheriting the daemon's
+    # own cwd, and the spawned process then exited non-zero.
+    FAILED_MISSING_CWD = "run.failed.missing_cwd"
     FAILED_ESCALATED = "run.failed.escalated"  # undeclared-artifact backstop
     # Loop exited clean but no commits/artifacts were produced (completion-trust gate).
     COMPLETED_EMPTY_NO_EVIDENCE = "run.completed_empty.no_evidence"
