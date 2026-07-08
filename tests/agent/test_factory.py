@@ -50,9 +50,9 @@ async def test_create_agent_default_no_coding_tools():
 # ---------------------------------------------------------------------------
 
 
-# Lean default — context/sandbox/subagent are opt-in, not registered by default.
-_CODING_TOOLS = {"reader", "editor", "bash", "search"}
-_EXTRA_CODING_TOOLS = {"context", "sandbox", "subagent"}
+# Lean default plus context — sandbox/subagent are opt-in, not registered by default.
+_CODING_TOOLS = {"reader", "editor", "bash", "search", "context"}
+_EXTRA_CODING_TOOLS = {"sandbox", "subagent"}
 
 
 async def test_create_agent_coding_preset_registers_core_tools():

@@ -70,6 +70,7 @@ class AgentSpec(HooksMixin):
     yolo: bool = False
     mcp_servers: list[str] | None = None
     mcp_config_path: str | None = None
+    context_management: bool = True
 
     @classmethod
     def compose(
@@ -114,9 +115,14 @@ class AgentSpec(HooksMixin):
         system_prompt: str | None = None,
         cwd: str | None = None,
         secure: bool = True,
+        context_management: bool = True,
         **kwargs: Any,
     ) -> AgentSpec:
-        """Preset for a coding agent; ``secure=True`` wires guard_destructive + guard_paths."""
+        """Preset for a coding agent; ``secure=True`` wires guard_destructive + guard_paths.
+
+        ``context_management=False`` drops the context tool from the default coding
+        toolset and skips the context-curation one-liner in the system prompt.
+        """
         spec = cls.compose(
             "implementer",
             model=model,
@@ -126,6 +132,7 @@ class AgentSpec(HooksMixin):
             cwd=cwd,
             **kwargs,
         )
+        spec.context_management = context_management
         if secure:
             _wire_secure_guards(spec, cwd)
         return spec
@@ -153,6 +160,8 @@ class AgentSpec(HooksMixin):
         # restored explicitly or it would be silently dropped.
         if "lion_system" in data:
             spec.lion_system = bool(data["lion_system"])
+        if "context_management" in data:
+            spec.context_management = bool(data["context_management"])
         return spec
 
     def build_system_message(self) -> str:
@@ -186,6 +195,7 @@ class AgentSpec(HooksMixin):
             "system_prompt": self.extra_prompt,
             "yolo": self.yolo,
             "lion_system": self.lion_system,
+            "context_management": self.context_management,
         }
         if self.cwd:
             data["cwd"] = self.cwd

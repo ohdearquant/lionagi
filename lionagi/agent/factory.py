@@ -89,6 +89,12 @@ async def create_agent(
     branch = Branch(**branch_kwargs)
 
     system_message = spec.build_system_message()
+    if "coding" in spec.tools and getattr(spec, "context_management", True):
+        one_liner = (
+            "You can curate your own context with the context tool "
+            "(status/evict/compact/restore); guidance arrives when relevant."
+        )
+        system_message = f"{system_message}\n\n{one_liner}" if system_message else one_liner
     if system_message:
         if spec.lion_system:
             from lionagi.session.prompts import LION_SYSTEM_MESSAGE
@@ -216,10 +222,12 @@ def _register_tools(branch: Branch, spec: AgentSpec) -> None:
 def _register_coding_tools(branch: Branch, spec: AgentSpec) -> None:
     from pathlib import Path
 
-    from lionagi.tools.coding import CodingToolkit
+    from lionagi.tools.coding import DEFAULT_CODING_TOOLS, CodingToolkit
 
     workspace_root = Path(spec.cwd) if spec.cwd else Path.cwd()
-    toolkit = CodingToolkit(workspace_root=workspace_root)
+    context_management = getattr(spec, "context_management", True)
+    tools = None if context_management else tuple(t for t in DEFAULT_CODING_TOOLS if t != "context")
+    toolkit = CodingToolkit(workspace_root=workspace_root, tools=tools)
 
     for key, handlers in spec.hook_handlers.items():
         parts = key.split(":", 1)
