@@ -339,9 +339,15 @@ async def test_tick_github_max_runs_refusal_does_not_crash_when_cap_unlimited(mo
         await engine._tick_github(schedule, now=10_000.0)
 
     # Refused for lack of max_runs budget -- the cursor must not advance
-    # past the undispatched event, so it is re-listed on the next poll.
+    # past the undispatched event, so it is re-listed on the next poll. The
+    # poll itself was healthy (poll_status="ok" by default), so it still
+    # stamps the observer-self-health columns -- just never github_cursor.
     assert engine._global_inflight == 0
-    svc.update_schedule.assert_not_called()
+    svc.update_schedule.assert_called_once_with(
+        "sched-001", last_healthy_poll_at=10_000.0, poller_consecutive_401=0
+    )
+    for call in svc.update_schedule.call_args_list:
+        assert "github_cursor" not in call.kwargs
 
 
 @pytest.mark.asyncio

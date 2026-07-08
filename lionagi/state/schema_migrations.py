@@ -98,6 +98,10 @@ MIGRATION_COLUMNS: dict[str, list[tuple[str, str]]] = {
         # config blob + the cooldown timestamp of the last breach fire.
         ("threshold_config", "JSON"),
         ("last_alert_at", "REAL"),
+        # Observer self-health: last healthy (2xx/304) github_poll() read,
+        # and the consecutive-401 counter (resets only on a healthy read).
+        ("last_healthy_poll_at", "REAL"),
+        ("poller_consecutive_401", "INTEGER NOT NULL DEFAULT 0"),
     ],
     "schedule_runs": [
         # ADR-0028: schedule_runs originally had no updated_at.

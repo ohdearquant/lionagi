@@ -648,3 +648,98 @@ def test_github_poll_401_no_retry_when_cli_token_matches_env(monkeypatch):
     result = _poll_result({"id": "s1", "github_repo": "owner/name"})
     assert result.items == []
     assert len(client.requests) == 1
+
+
+# ---------------------------------------------------------------------------
+# GithubPollResult.poll_status — observer self-health signal
+# ---------------------------------------------------------------------------
+
+
+def test_github_poll_result_with_items_has_ok_status(monkeypatch):
+    """A normal successful poll that finds PRs is 'ok' -- the poller saw GitHub."""
+    _install(monkeypatch, [_pr(7, "2026-07-07T10:00:00Z")])
+    result = _poll_result({"id": "s1", "github_repo": "owner/name"})
+    assert result.poll_status == "ok"
+
+
+def test_github_poll_healthy_empty_response_has_ok_status(monkeypatch):
+    """A healthy poll that finds nothing new is still 'ok' -- items == [] alone
+    is ambiguous between 'quiet repo' and 'blind poller'; poll_status
+    disambiguates it. This is what lets github_poll_healthy_age_minutes reset
+    to 0 on a quiet repo instead of climbing forever."""
+    _install(monkeypatch, [])
+    result = _poll_result({"id": "s1", "github_repo": "owner/name"})
+    assert result.items == []
+    assert result.poll_status == "ok"
+
+
+def test_github_poll_401_persisting_after_cli_fallback_has_auth_error_status(monkeypatch):
+    """A 401 that survives the gh-CLI-token retry is 'auth_error', distinct
+    from a plain network/config failure -- this is the tonight's-incident
+    case (expired GITHUB_TOKEN, no durable gh CLI token to fall back to)."""
+    _install_status(monkeypatch, [(401, []), (401, [])])
+    result = _poll_result({"id": "s1", "github_repo": "owner/name"})
+    assert result.poll_status == "auth_error"
+
+
+def test_github_poll_401_recovered_by_cli_fallback_has_ok_status(monkeypatch):
+    """A 401 that IS recovered by the gh-CLI-token retry is 'ok', not
+    'auth_error' -- the poller actually saw GitHub on the retry."""
+    pr = _pr(42, "2026-07-07T10:00:00Z")
+    _install_status(monkeypatch, [(401, []), (200, [pr])])
+    result = _poll_result({"id": "s1", "github_repo": "owner/name"})
+    assert result.poll_status == "ok"
+
+
+class _FakeExceptionClient:
+    """Raises httpx.HTTPError on the very first request -- for exercising
+    github_poll's top-level network-failure path (not the pagination one
+    _FakeErrorClient covers)."""
+
+    async def get(self, url, headers=None, params=None):
+        raise httpx.HTTPError("boom")
+
+
+def test_github_poll_network_exception_has_error_status(monkeypatch):
+    """A network failure on the initial request is 'error' -- distinct from
+    'auth_error' so the alert payload doesn't misattribute a network outage
+    to a token problem."""
+
+    async def _fake_token(prefer_cli: bool = False):
+        return "faketoken"
+
+    monkeypatch.setattr(gh_mod, "_get_gh_token", _fake_token)
+    monkeypatch.setattr(gh_mod, "_get_client", lambda: _FakeExceptionClient())
+    result = _poll_result({"id": "s1", "github_repo": "owner/name"})
+    assert result.items == []
+    assert result.poll_status == "error"
+
+
+def test_github_poll_no_token_available_has_error_status(monkeypatch):
+    """No token available at all (env unset, gh CLI unavailable) is 'error',
+    not 'auth_error' -- there was never a credential for GitHub to reject."""
+
+    async def _fake_no_token(prefer_cli: bool = False):
+        return None
+
+    monkeypatch.setattr(gh_mod, "_get_gh_token", _fake_no_token)
+    result = _poll_result({"id": "s1", "github_repo": "owner/name"})
+    assert result.items == []
+    assert result.poll_status == "error"
+
+
+def test_github_poll_missing_repo_has_error_status():
+    """A schedule with no github_repo configured never reaches the network --
+    still 'error', not the 'ok' default, so a misconfigured schedule doesn't
+    silently look healthy."""
+    result = asyncio.run(gh_mod.github_poll({"id": "s1"}))
+    assert result.items == []
+    assert result.poll_status == "error"
+
+
+def test_github_poll_result_default_poll_status_is_ok():
+    """GithubPollResult constructed without poll_status (as older call sites
+    and test fixtures do) defaults to 'ok' -- back-compat for direct
+    construction that predates the observer-self-health signal."""
+    result = gh_mod.GithubPollResult(items=[], scan_complete=True)
+    assert result.poll_status == "ok"

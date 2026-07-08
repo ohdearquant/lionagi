@@ -14,7 +14,17 @@ from __future__ import annotations
 
 from typing import Any
 
-VALID_METRICS: frozenset[str] = frozenset({"failed_sessions", "total_cost_usd", "p95_latency_ms"})
+VALID_METRICS: frozenset[str] = frozenset(
+    {
+        "failed_sessions",
+        "total_cost_usd",
+        "p95_latency_ms",
+        # Observer self-health (ADR-0027 poller): point-in-time gauges, not
+        # windowed aggregates -- see StateDB.metric_value.
+        "github_poll_healthy_age_minutes",
+        "github_poll_consecutive_401",
+    }
+)
 VALID_OPS: frozenset[str] = frozenset({"gt", "gte"})
 ALLOWED_KEYS: frozenset[str] = frozenset({"metric", "op", "value", "window_minutes"})
 

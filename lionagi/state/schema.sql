@@ -451,6 +451,14 @@ CREATE TABLE IF NOT EXISTS schedules (
   -- (no refire until window_minutes has elapsed since the last alert).
   threshold_config    JSON,
   last_alert_at       REAL,
+  -- Observer self-health (github_poll poller): last_healthy_poll_at is
+  -- stamped on any 2xx/304 github_poll() read (including a healthy-empty
+  -- one); poller_consecutive_401 counts consecutive 401s and resets only
+  -- on a healthy read (a transient error/non-200 between 401s does not
+  -- reset the run). Read by the github_poll_healthy_age_minutes /
+  -- github_poll_consecutive_401 threshold metrics.
+  last_healthy_poll_at    REAL,
+  poller_consecutive_401  INTEGER NOT NULL DEFAULT 0,
   created_at          REAL    NOT NULL,
   updated_at          REAL    NOT NULL
 );

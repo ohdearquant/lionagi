@@ -518,6 +518,15 @@ schedules = Table(
     # anchor -- see schema.sql for the fuller comment).
     Column("threshold_config", JSON),
     Column("last_alert_at", Float),
+    # Observer self-health (github_poll poller): last_healthy_poll_at is
+    # stamped on any 2xx/304 github_poll() read (including a healthy-empty
+    # one); poller_consecutive_401 counts consecutive 401s and resets only
+    # on a healthy read (a transient error/non-200 between 401s does not
+    # reset the run). Read by StateDB.metric_value's
+    # github_poll_healthy_age_minutes / github_poll_consecutive_401
+    # threshold metrics -- see SchedulerEngine._tick_github for the stamp.
+    Column("last_healthy_poll_at", Float),
+    Column("poller_consecutive_401", Integer, nullable=False, server_default="0"),
     Column("created_at", Float, nullable=False),
     Column("updated_at", Float, nullable=False),
 )

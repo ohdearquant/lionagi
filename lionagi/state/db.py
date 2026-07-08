@@ -837,6 +837,8 @@ class StateDB:
                           project             TEXT,
                           threshold_config    JSON,
                           last_alert_at       REAL,
+                          last_healthy_poll_at    REAL,
+                          poller_consecutive_401  INTEGER NOT NULL DEFAULT 0,
                           created_at          REAL    NOT NULL,
                           updated_at          REAL    NOT NULL
                         )
@@ -2129,6 +2131,8 @@ class StateDB:
             "project",
             "threshold_config",
             "last_alert_at",
+            "last_healthy_poll_at",
+            "poller_consecutive_401",
         }
         bad = set(fields) - allowed
         if bad:
@@ -2321,16 +2325,58 @@ class StateDB:
             "SELECT COALESCE(SUM(total_cost_usd), 0) AS n FROM sessions "
             "WHERE COALESCE(ended_at, started_at, created_at) >= :window_start"
         ),
+        # Attribution metric, not an alarm on its own (github_poll_healthy_age_minutes
+        # is) -- counts consecutive 401s across enabled github_poll schedules so an
+        # alert payload can tell "token problem" apart from "network blip". Point-in-
+        # time like the age gauge below; :window_start is unused (query doesn't
+        # reference it) but the dict lookup + single-aggregate shape are still the
+        # cleanest fit here.
+        "github_poll_consecutive_401": (
+            "SELECT COALESCE(MAX(poller_consecutive_401), 0) AS n FROM schedules "
+            "WHERE trigger_type = 'github_poll' AND enabled = 1"
+        ),
     }
 
     async def metric_value(self, metric: str, window_start: float) -> float:
         """Aggregate a threshold-alert metric over [window_start, now).
 
-        ``failed_sessions`` and ``total_cost_usd`` are single-aggregate SQL
-        queries; ``p95_latency_ms`` needs a sorted sample (SQLite has no
-        built-in percentile function), so it fetches raw invocation
+        ``failed_sessions``, ``total_cost_usd``, and ``github_poll_consecutive_401``
+        are single-aggregate SQL queries; ``p95_latency_ms`` needs a sorted sample
+        (SQLite has no built-in percentile function), so it fetches raw invocation
         durations and computes the 95th percentile in Python.
+        ``github_poll_healthy_age_minutes`` is also handled specially: unlike every
+        other metric here, it is a point-in-time gauge (minutes since the last
+        healthy github_poll() read) rather than a [window_start, now) aggregate, so
+        ``window_start`` is accepted for signature parity but ignored -- "now" is
+        read fresh via ``time.time()`` inside this method instead of being threaded
+        through from the caller, since recovering it from ``window_start`` would
+        also require ``window_minutes`` (not available here).
         """
+        if metric == "github_poll_healthy_age_minutes":
+            async with self._read() as conn:
+                row = (
+                    (
+                        await conn.execute(
+                            text(
+                                "SELECT MAX(last_healthy_poll_at) AS n FROM schedules "
+                                "WHERE trigger_type = 'github_poll' AND enabled = 1"
+                            )
+                        )
+                    )
+                    .mappings()
+                    .first()
+                )
+            last_healthy = row["n"] if row else None
+            if last_healthy is None:
+                # No enabled github_poll schedule has ever recorded a healthy
+                # poll -- including the case where no github_poll schedule
+                # exists at all. There is nothing to be blind about, so
+                # report a fresh (zero) age rather than a stale one that
+                # would falsely alarm a threshold-alert schedule watching
+                # this metric on a DB with no observed repo yet.
+                return 0.0
+            return (time.time() - float(last_healthy)) / 60.0
+
         if metric == "p95_latency_ms":
             async with self._read() as conn:
                 rows = (

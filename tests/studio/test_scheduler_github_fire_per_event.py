@@ -498,3 +498,120 @@ async def test_merged_mode_truncated_scan_no_skip_no_duplicate_across_two_ticks(
     # PR 1405 is now dispatched exactly once; PR 1410 (already dispatched in
     # tick 1) is not re-fired.
     assert fired_prs == [1410, 1405]
+
+
+# ---------------------------------------------------------------------------
+# Observer self-health: _tick_github stamps last_healthy_poll_at /
+# poller_consecutive_401 from GithubPollResult.poll_status
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_tick_github_ok_poll_stamps_healthy_and_resets_401_counter():
+    """A healthy poll (even an empty one) sets last_healthy_poll_at = now and
+    zeroes the 401 counter -- this is the reset half of the self-health
+    signal, so a token fix (or a quiet repo) clears a prior alarm."""
+    svc = _make_svc()
+    engine = SchedulerEngine(svc=svc)
+    schedule = _minimal_schedule(poller_consecutive_401=3)
+
+    with patch(
+        "lionagi.studio.scheduler.github.github_poll",
+        new=AsyncMock(
+            return_value=GithubPollResult(items=[], scan_complete=True, poll_status="ok")
+        ),
+    ):
+        await engine._tick_github(schedule, now=10_000.0)
+
+    svc.update_schedule.assert_any_call(
+        "sched-001", last_healthy_poll_at=10_000.0, poller_consecutive_401=0
+    )
+
+
+@pytest.mark.asyncio
+async def test_tick_github_ok_poll_with_items_also_stamps_healthy():
+    """A healthy poll that finds items still stamps the health columns --
+    dispatching PRs doesn't skip the self-health write."""
+    svc = _make_svc()
+    engine = SchedulerEngine(svc=svc)
+    schedule = _minimal_schedule()
+    polled = [_item(1, "2026-07-07T10:00:00Z")]
+
+    p_build, p_spawn = _spawn_patches()
+    with (
+        patch(
+            "lionagi.studio.scheduler.github.github_poll",
+            new=AsyncMock(
+                return_value=GithubPollResult(items=polled, scan_complete=True, poll_status="ok")
+            ),
+        ),
+        p_build,
+        p_spawn,
+    ):
+        await engine._tick_github(schedule, now=10_000.0)
+
+    svc.update_schedule.assert_any_call(
+        "sched-001", last_healthy_poll_at=10_000.0, poller_consecutive_401=0
+    )
+
+
+@pytest.mark.asyncio
+async def test_tick_github_auth_error_increments_401_counter_leaves_healthy_at_untouched():
+    """A 401 (surviving the gh-CLI-token fallback) increments the
+    consecutive-401 counter from the schedule's prior value, and does NOT
+    touch last_healthy_poll_at -- the blind clock keeps climbing."""
+    svc = _make_svc()
+    engine = SchedulerEngine(svc=svc)
+    schedule = _minimal_schedule(poller_consecutive_401=2)
+
+    with patch(
+        "lionagi.studio.scheduler.github.github_poll",
+        new=AsyncMock(
+            return_value=GithubPollResult(items=[], scan_complete=True, poll_status="auth_error")
+        ),
+    ):
+        await engine._tick_github(schedule, now=10_000.0)
+
+    svc.update_schedule.assert_any_call("sched-001", poller_consecutive_401=3)
+    for call in svc.update_schedule.await_args_list:
+        assert "last_healthy_poll_at" not in call.kwargs
+
+
+@pytest.mark.asyncio
+async def test_tick_github_auth_error_first_401_counts_from_zero():
+    """A schedule with no prior poller_consecutive_401 (fresh schedule, key
+    absent from the dict) starts the counter at 1 on its first 401, not a
+    crash on a missing key."""
+    svc = _make_svc()
+    engine = SchedulerEngine(svc=svc)
+    schedule = _minimal_schedule()  # no poller_consecutive_401 key at all
+
+    with patch(
+        "lionagi.studio.scheduler.github.github_poll",
+        new=AsyncMock(
+            return_value=GithubPollResult(items=[], scan_complete=True, poll_status="auth_error")
+        ),
+    ):
+        await engine._tick_github(schedule, now=10_000.0)
+
+    svc.update_schedule.assert_any_call("sched-001", poller_consecutive_401=1)
+
+
+@pytest.mark.asyncio
+async def test_tick_github_network_error_leaves_health_columns_untouched():
+    """A network/config failure ('error') writes nothing -- neither counter
+    nor healthy timestamp move, so the age metric climbs purely from the
+    passage of time since the last real healthy poll."""
+    svc = _make_svc()
+    engine = SchedulerEngine(svc=svc)
+    schedule = _minimal_schedule()
+
+    with patch(
+        "lionagi.studio.scheduler.github.github_poll",
+        new=AsyncMock(
+            return_value=GithubPollResult(items=[], scan_complete=True, poll_status="error")
+        ),
+    ):
+        await engine._tick_github(schedule, now=10_000.0)
+
+    svc.update_schedule.assert_not_awaited()

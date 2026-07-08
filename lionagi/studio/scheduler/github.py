@@ -8,7 +8,7 @@ import asyncio
 import logging
 import re
 from dataclasses import dataclass
-from typing import Any, NamedTuple
+from typing import Any, Literal, NamedTuple
 
 import httpx
 
@@ -50,10 +50,24 @@ class GithubPollResult(NamedTuple):
     counts; ``scan_complete`` exists for observability -- e.g. logging that
     some events near the cursor boundary are being held for a later poll,
     when a deeper or safely-bounded scan may resolve them.
+
+    ``poll_status`` distinguishes a healthy-but-empty poll from a poll that
+    couldn't actually see GitHub -- ``items == []`` alone is ambiguous
+    between "nothing new" and "blind" (a 401 or a network failure also
+    returns no items). ``"ok"`` is any 2xx or 304 (not-modified, itself a
+    successful authenticated read); ``"auth_error"`` is a 401 that survived
+    the gh-CLI-token fallback retry; ``"error"`` covers everything else that
+    prevented a real poll (network exception, missing/invalid github_repo,
+    no token available, or a non-200/304/401 status). The caller
+    (``SchedulerEngine._tick_github``) uses this to stamp the schedule's
+    observer-self-health columns. Defaults to ``"ok"`` so existing call
+    sites that construct a ``GithubPollResult`` directly (tests, mocks)
+    don't need updating.
     """
 
     items: list[GithubPollItem]
     scan_complete: bool
+    poll_status: Literal["ok", "auth_error", "error"] = "ok"
 
 
 _client: httpx.AsyncClient | None = None
@@ -244,7 +258,7 @@ async def github_poll(schedule: dict) -> GithubPollResult:
     """
     repo = schedule.get("github_repo")
     if not repo:
-        return GithubPollResult(items=[], scan_complete=True)
+        return GithubPollResult(items=[], scan_complete=True, poll_status="error")
 
     # Defense-in-depth: validate format before interpolating into the API URL.
     # The service write boundary applies the same check via _svc_validate_github_repo
@@ -260,12 +274,12 @@ async def github_poll(schedule: dict) -> GithubPollResult:
             schedule.get("name"),
             repo,
         )
-        return GithubPollResult(items=[], scan_complete=True)
+        return GithubPollResult(items=[], scan_complete=True, poll_status="error")
 
     token = await _get_gh_token()
     if not token:
         _log.warning("No GitHub token available for polling %s", repo)
-        return GithubPollResult(items=[], scan_complete=True)
+        return GithubPollResult(items=[], scan_complete=True, poll_status="error")
 
     headers: dict[str, str] = {
         "Authorization": f"Bearer {token}",
@@ -301,7 +315,7 @@ async def github_poll(schedule: dict) -> GithubPollResult:
         )
     except httpx.HTTPError:
         _log.exception("GitHub API request failed for %s", repo)
-        return GithubPollResult(items=[], scan_complete=True)
+        return GithubPollResult(items=[], scan_complete=True, poll_status="error")
 
     # A 401 means the token we used is bad — most often a GITHUB_TOKEN that was
     # valid when the daemon launched but has since expired. Fall through to a
@@ -320,10 +334,10 @@ async def github_poll(schedule: dict) -> GithubPollResult:
                 )
             except httpx.HTTPError:
                 _log.exception("GitHub API request failed for %s", repo)
-                return GithubPollResult(items=[], scan_complete=True)
+                return GithubPollResult(items=[], scan_complete=True, poll_status="error")
 
     if resp.status_code == 304:
-        return GithubPollResult(items=[], scan_complete=True)
+        return GithubPollResult(items=[], scan_complete=True, poll_status="ok")
 
     if resp.status_code == 401:
         _log.error(
@@ -334,11 +348,11 @@ async def github_poll(schedule: dict) -> GithubPollResult:
             schedule.get("id"),
             schedule.get("name"),
         )
-        return GithubPollResult(items=[], scan_complete=True)
+        return GithubPollResult(items=[], scan_complete=True, poll_status="auth_error")
 
     if resp.status_code != 200:
         _log.warning("GitHub API returned %d for %s", resp.status_code, repo)
-        return GithubPollResult(items=[], scan_complete=True)
+        return GithubPollResult(items=[], scan_complete=True, poll_status="error")
 
     remaining = int(resp.headers.get("x-ratelimit-remaining", "60"))
     if remaining < 10:
@@ -475,4 +489,4 @@ async def github_poll(schedule: dict) -> GithubPollResult:
     # caller's incremental cursor advance stays monotone in both modes,
     # rather than relying on a bare reversal of API order.
     items.sort(key=lambda it: it.updated_at)
-    return GithubPollResult(items=items, scan_complete=scan_complete)
+    return GithubPollResult(items=items, scan_complete=scan_complete, poll_status="ok")
