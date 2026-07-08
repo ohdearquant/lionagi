@@ -400,15 +400,46 @@ async def test_namespace_threaded_through_writeback(patched_transport):
 
 @pytest.mark.asyncio
 async def test_no_namespace_kwarg_when_unpinned(patched_transport):
-    patched_transport.return_value = _mcp_result(_khive_recall_response())
-    policy = KhiveInjectionPolicy(profile_id="implementer-recall-v1")
+    async def _side_effect(tool_name, kwargs):
+        if kwargs["ops"].startswith("knowledge.compose("):
+            return _mcp_result(
+                json.dumps(
+                    {"results": [{"ok": True, "tool": "knowledge.compose", "result": "frame"}]}
+                )
+            )
+        return _mcp_result(_khive_recall_response())
+
+    patched_transport.side_effect = _side_effect
+    policy = KhiveInjectionPolicy(
+        profile_id="implementer-recall-v1",
+        compose=ComposePolicy(enabled=True, max_tokens=2000),
+    )
     provider = KhiveInjectionProvider(policy)
     branch = _FakeBranch(last_response=None)
 
     await provider.provide(branch, _FakeInstruction("hello"))
 
     ops_calls = [c.args[1]["ops"] for c in patched_transport.call_args_list]
+    assert any(op.startswith("knowledge.compose(") for op in ops_calls)
     assert not any("namespace=" in op for op in ops_calls)
+
+
+@pytest.mark.asyncio
+async def test_no_namespace_kwarg_in_unpinned_writeback(patched_transport):
+    patched_transport.return_value = _mcp_result(json.dumps({"results": [], "summary": {}}))
+    policy = KhiveInjectionPolicy(
+        profile_id="implementer-recall-v1",
+        writeback=WritebackPolicy(enabled=True),
+    )
+    provider = KhiveInjectionProvider(policy)
+    branch = _FakeBranch(name="implementer")
+    responses = [_resp("bash", {"error": "boom"}), _resp("bash", {"stdout": "fixed"})]
+
+    await provider.writeback(branch, responses)
+
+    ops = patched_transport.call_args_list[0].args[1]["ops"]
+    assert ops.startswith("memory.remember(")
+    assert "namespace=" not in ops
 
 
 # ---------------------------------------------------------------------------

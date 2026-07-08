@@ -183,12 +183,8 @@ def test_m2_arm_manifest_effective_true_when_reset_ok_and_no_failures():
 
 
 def test_enabled_arms_blocked_until_namespace_reads_exist():
-    import pytest as _pytest
-
-    from arms import m0_arm, m1_arm, m2_arm
-
     m0_arm().assert_runnable()
-    with _pytest.raises(RuntimeError, match="namespace-scoped reads"):
+    with pytest.raises(RuntimeError, match="namespace-scoped reads"):
         m1_arm(namespace="bench-m1").assert_runnable()
-    with _pytest.raises(RuntimeError, match="namespace-scoped reads"):
+    with pytest.raises(RuntimeError, match="namespace-scoped reads"):
         m2_arm(namespace="bench-m2").assert_runnable()

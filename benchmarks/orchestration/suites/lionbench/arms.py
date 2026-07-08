@@ -1,6 +1,5 @@
 """khive-injection bench arms (M0/M1/M2) — declarative config layer + the run
-manifest's injection bookkeeping (INJECTION_DESIGN.md §3, §7 build-plan item 3,
-§9 gate record R1/R2).
+manifest's injection bookkeeping.
 
 One ``ArmConfig`` = one arm = one toggle; adapters and the sandbox entry never
 branch on which arm is running, they just get a different
@@ -11,10 +10,10 @@ recall/compose surface accepts a snapshot id, see ``KhiveInjectionProvider``'s
 config-construction time, not silently allowed to contaminate the live store.
 M2 additionally turns writeback on and resets its namespace between
 instances; ``reset_record`` shapes that reset's manifest entry and folds a
-failed reset into ``injection_effective`` exactly like a dead substrate
-(INJECTION_DESIGN.md §6, §9 R2) — the actual reset call (kg delete /
-memory-prune verbs, never file operations) is performed by whoever drives the
-run; this module only validates the arm and shapes the record.
+failed reset into ``injection_effective`` exactly like a dead substrate — the
+actual reset call (kg delete / memory-prune verbs, never file operations) is
+performed by whoever drives the run; this module only validates the arm and
+shapes the record.
 """
 
 from __future__ import annotations
@@ -58,8 +57,7 @@ class ArmConfig:
         if self.enabled:
             raise RuntimeError(
                 f"arm {self.name!r} is blocked: khive namespace-scoped reads are not "
-                "available yet (feature-ask pending with the khive team). Only the "
-                "M0 control arm is runnable today."
+                "available yet. Only the M0 control arm is runnable today."
             )
 
     def to_policy(self, *, profile_id: str) -> KhiveInjectionPolicy:
@@ -108,8 +106,8 @@ def reset_record(arm: ArmConfig, *, ok: bool, detail: str = "") -> dict:
     """Manifest record for M2's between-instance namespace reset.
 
     The reset itself is performed elsewhere, via kg delete / memory-prune
-    verbs only (never file operations, INJECTION_DESIGN.md §9 R2) — this
-    function only shapes the manifest entry. A reset that silently failed
+    verbs only (never file operations) — this function only shapes the
+    manifest entry. A reset that silently failed
     contaminates the arm exactly like a dead substrate; ``injection_manifest``
     below forces ``injection_effective=False`` when ``ok`` is falsy."""
     if arm.name != "M2":
@@ -136,8 +134,8 @@ def injection_manifest(arm: ArmConfig, reports: list[Any], *, reset: dict | None
     equivalents) from ``branch.last_context_report`` across the run's turns.
     ``injection_effective`` is False the moment ANY turn recorded a failed
     provider — a khive daemon outage degrades M1/M2 to M0 silently at run
-    time but must show up loud here (INJECTION_DESIGN.md §6): a bench run
-    with a dead substrate is invalidated, not silently scored as a clean arm.
+    time but must show up loud here: a bench run with a dead substrate is
+    invalidated, not silently scored as a clean arm.
     """
     if not arm.enabled:
         return {"arm": arm.name, "injection_effective": None, "providers_fired": []}

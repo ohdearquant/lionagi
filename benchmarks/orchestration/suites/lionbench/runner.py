@@ -164,9 +164,8 @@ async def run_one(
                     arm,
                     ok=False,
                     detail=(
-                        "namespace reset verb not yet wired into the runner (open "
-                        "dependency, INJECTION_DESIGN.md §9 R2) — this M2 run is not "
-                        "namespace-isolated from the previous instance"
+                        "namespace reset verb not yet wired into the runner — this "
+                        "M2 run is not namespace-isolated from the previous instance"
                     ),
                 )
             reports = getattr(adapter, "last_context_reports", [])
@@ -291,8 +290,8 @@ async def main() -> None:
         "--arm",
         choices=("M0", "M1", "M2"),
         default=None,
-        help="khive-injection bench arm (INJECTION_DESIGN.md §3); omit to run with no "
-        "injection wiring at all (distinct from M0, which records injection_effective=None)",
+        help="khive-injection bench arm; omit to run with no injection wiring at all "
+        "(distinct from M0, which records injection_effective=None)",
     )
     ap.add_argument(
         "--namespace", default=None, help="pinned khive namespace, required for --arm M1/M2"
