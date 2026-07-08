@@ -384,6 +384,86 @@ async def test_maybe_fire_threshold_still_honors_overlap_policy():
 
 
 # ---------------------------------------------------------------------------
+# _maybe_fire() — synchronous in-process cooldown reservation. last_alert_at
+# alone (a DB read) can go stale between ticks; these tests pin the
+# in-memory _threshold_pending gate that closes the resulting duplicate-fire
+# race, independent of when (or whether) the durable stamp lands.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_maybe_fire_two_ticks_before_first_stamp_fires_only_once():
+    """Regression pin for the duplicate-alert race: without a synchronous
+    in-process reservation, two ticks separated by _TICK_INTERVAL could both
+    read the same stale (not-yet-durably-stamped) last_alert_at and both
+    pass the cooldown gate before either fire's background task reaches its
+    own stamp. _tracked_fire is mocked here, so the first fire never
+    reaches its own release point -- mirroring "tick 2 arrives before tick
+    1's fire has done anything durable yet" -- and the second _maybe_fire
+    call for the same schedule must still be suppressed by the in-process
+    reservation alone."""
+    from lionagi.studio.scheduler.engine import SchedulerEngine
+
+    svc = _make_svc()
+    svc.metric_value = AsyncMock(return_value=9.0)
+    engine = SchedulerEngine(svc=svc)
+    schedule = _minimal_schedule(
+        next_fire_at=1000.0,
+        threshold_config={
+            "metric": "failed_sessions",
+            "op": "gt",
+            "value": 5,
+            "window_minutes": 30,
+        },
+    )
+
+    with patch.object(engine, "_tracked_fire") as mock_tracked:
+        await engine._maybe_fire(schedule, now=1000.0)
+        await engine._maybe_fire(schedule, now=1000.0)
+
+    mock_tracked.assert_called_once()
+    assert schedule["id"] in engine._threshold_pending
+
+
+@pytest.mark.asyncio
+async def test_maybe_fire_reservation_released_after_pre_persistence_failure_allows_refire():
+    """create_invocation() raising is a pre-persistence failure -- no
+    schedule_run row is ever written. _fire()'s finally must still release
+    the in-process threshold reservation (mirroring how it already releases
+    max_runs_claim/global_slot_claim on the same exit path), so the next
+    tick is free to try again instead of being permanently muted."""
+    from lionagi.studio.scheduler.engine import SchedulerEngine
+
+    svc = _make_svc()
+    svc.metric_value = AsyncMock(return_value=9.0)
+    svc.create_invocation = AsyncMock(side_effect=RuntimeError("db unavailable"))
+    engine = SchedulerEngine(svc=svc)
+    schedule = _minimal_schedule(
+        next_fire_at=1000.0,
+        threshold_config={
+            "metric": "failed_sessions",
+            "op": "gt",
+            "value": 5,
+            "window_minutes": 30,
+        },
+    )
+
+    await engine._maybe_fire(schedule, now=1000.0)
+    assert schedule["id"] in engine._threshold_pending
+    fire_tasks = list(engine._fire_tasks)
+    assert len(fire_tasks) == 1
+    with pytest.raises(RuntimeError, match="db unavailable"):
+        await fire_tasks[0]
+
+    assert schedule["id"] not in engine._threshold_pending
+    svc.create_schedule_run.assert_not_awaited()
+
+    with patch.object(engine, "_tracked_fire") as mock_tracked:
+        await engine._maybe_fire(schedule, now=1000.0)
+    mock_tracked.assert_called_once()
+
+
+# ---------------------------------------------------------------------------
 # _fire() / _fire_inner() — threshold cooldown stamp lands AFTER the
 # schedule_run row is durably persisted, not before the fire starts.
 # ---------------------------------------------------------------------------
@@ -496,6 +576,83 @@ async def test_fire_invalid_action_still_stamps_last_alert_at_after_failed_run_p
     svc.create_schedule_run.assert_awaited_once()
     calls = _last_alert_calls(svc)
     assert len(calls) == 1
+
+
+@pytest.mark.asyncio
+async def test_fire_invalid_action_releases_threshold_cooldown_claim():
+    """The invalid-action branch (build_argv raising) persists a 'failed'
+    schedule_run row and returns normally rather than raising, so _fire()'s
+    finally releases the threshold_cooldown_claim the same way the happy
+    path does -- the claim must not survive past this branch either."""
+    from lionagi.studio.scheduler.engine import SchedulerEngine, _ThresholdCooldownClaim
+
+    svc = _make_svc()
+    engine = SchedulerEngine(svc=svc)
+    schedule = _minimal_schedule(
+        threshold_config={
+            "metric": "failed_sessions",
+            "op": "gt",
+            "value": 5,
+            "window_minutes": 30,
+        },
+    )
+    sid = schedule["id"]
+    engine._threshold_pending.add(sid)
+    claim = _ThresholdCooldownClaim(engine, sid)
+
+    with patch(
+        "lionagi.studio.scheduler.subprocess.build_argv",
+        side_effect=ValueError("bad action_kind"),
+    ):
+        await engine._fire(
+            schedule,
+            "run-alert-invalid",
+            trigger_context=_threshold_ctx(),
+            threshold_cooldown_claim=claim,
+        )
+
+    svc.create_schedule_run.assert_awaited_once()
+    assert sid not in engine._threshold_pending
+
+
+@pytest.mark.asyncio
+async def test_fire_success_releases_threshold_cooldown_claim():
+    """Happy path: the threshold_cooldown_claim is released once _fire()
+    completes, same as max_runs_claim/global_slot_claim."""
+    from lionagi.studio.scheduler.engine import SchedulerEngine, _ThresholdCooldownClaim
+
+    svc = _make_svc()
+    engine = SchedulerEngine(svc=svc)
+    schedule = _minimal_schedule(
+        threshold_config={
+            "metric": "failed_sessions",
+            "op": "gt",
+            "value": 5,
+            "window_minutes": 30,
+        },
+    )
+    sid = schedule["id"]
+    engine._threshold_pending.add(sid)
+    claim = _ThresholdCooldownClaim(engine, sid)
+
+    with (
+        patch(
+            "lionagi.studio.scheduler.subprocess.build_argv",
+            return_value=(["uv", "run", "li", "agent", "ping"], None),
+        ),
+        patch(
+            "lionagi.studio.scheduler.subprocess.spawn_and_wait",
+            new=AsyncMock(return_value=(0, "")),
+        ),
+    ):
+        await engine._fire(
+            schedule,
+            "run-alert-success",
+            trigger_context=_threshold_ctx(),
+            threshold_cooldown_claim=claim,
+        )
+
+    assert sid not in engine._threshold_pending
 
 
 @pytest.mark.asyncio

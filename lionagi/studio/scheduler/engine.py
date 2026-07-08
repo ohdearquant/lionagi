@@ -86,6 +86,41 @@ class _GlobalSlotClaim:
         self._engine._release_global_slot()
 
 
+class _ThresholdCooldownClaim:
+    """One-shot handle for an in-process threshold-alert cooldown reservation.
+
+    ``_maybe_fire()`` reserves a schedule's cooldown SYNCHRONOUSLY -- adding
+    its id to ``_threshold_pending`` with no ``await`` between the
+    ``last_alert_at`` gate check and the add -- before ``_tracked_fire()``
+    launches. Without this in-process gate, two ticks separated by
+    ``_TICK_INTERVAL`` could both read the same stale (not-yet-durably-
+    stamped) ``last_alert_at``, both pass the cooldown check, and both fire
+    before either fire's background task reaches the durable stamp --
+    duplicate alerts inside the cooldown window, the exact dedup this
+    feature promises to prevent.
+
+    Held for the full ``_fire_inner()`` duration and released in ``_fire()``
+    's wrapping ``try/finally`` -- same lifecycle as ``_MaxRunsClaim``/
+    ``_GlobalSlotClaim`` -- so it is guaranteed to be released on every exit
+    path, including a failure before the durable stamp is ever written. A
+    leaked reservation would permanently mute the alert, which is worse
+    than the duplicate it exists to prevent.
+    """
+
+    __slots__ = ("_engine", "_schedule_id", "_released")
+
+    def __init__(self, engine: SchedulerEngine, schedule_id: str) -> None:
+        self._engine = engine
+        self._schedule_id = schedule_id
+        self._released = False
+
+    def release(self) -> None:
+        if self._released:
+            return
+        self._released = True
+        self._engine._threshold_pending.discard(self._schedule_id)
+
+
 def _resolve_scheduler_tzinfo(tz_name: str) -> ZoneInfo:
     """Resolve the configured scheduler timezone name to a ZoneInfo.
 
@@ -162,6 +197,12 @@ class SchedulerEngine:
         self._global_slot_lock = asyncio.Lock()
         self._global_inflight = 0
         self._deferred_log_counts: dict[str, int] = {}  # schedule_id -> deferrals since last record
+        # threshold-alert cooldown reservations (single-process; see
+        # _ThresholdCooldownClaim). Membership means "a fire for this
+        # schedule's current breach is in flight or was just reserved" --
+        # closes the race a DB-only last_alert_at check can't (see
+        # _maybe_fire).
+        self._threshold_pending: set[str] = set()
 
     async def start(self) -> None:
         _log.info("Scheduler engine starting")
@@ -773,6 +814,7 @@ class SchedulerEngine:
 
     async def _maybe_fire(self, schedule: dict, now: float) -> None:
         threshold_extra: dict[str, Any] | None = None
+        threshold_claim: _ThresholdCooldownClaim | None = None
         if schedule.get("threshold_config"):
             breach = await self._evaluate_threshold_breach(schedule, now)
             if breach is None:
@@ -783,14 +825,26 @@ class SchedulerEngine:
             # fire on every tick. The cadence still advances underneath —
             # the next tick re-checks the metric once the cooldown lapses.
             cooldown_sec = breach["window_minutes"] * 60
+            sid = schedule["id"]
             last_alert_at = schedule.get("last_alert_at")
-            if last_alert_at is not None and now - last_alert_at < cooldown_sec:
+            in_cooldown = last_alert_at is not None and now - last_alert_at < cooldown_sec
+            # in_pending closes the race last_alert_at alone can't: a fire
+            # reserved by an earlier tick whose durable stamp hasn't landed
+            # yet still reads as "not in cooldown" from the DB alone. This
+            # check and the reservation immediately below it are both
+            # synchronous -- no await in between -- so a second tick can't
+            # slip in between the gate and the reservation becoming visible.
+            if in_cooldown or sid in self._threshold_pending:
                 await self._advance_next_fire_only(schedule, now)
                 return
+            self._threshold_pending.add(sid)
+            threshold_claim = _ThresholdCooldownClaim(self, sid)
             threshold_extra = breach
 
         if schedule.get("overlap_policy") == "skip" and schedule["id"] in self._running:
             _log.debug("Skipping overlapping fire for %s", schedule["name"])
+            if threshold_claim is not None:
+                threshold_claim.release()
             skipped_run_id = uuid.uuid4().hex[:12]
             await create_skipped_run(
                 self._svc,
@@ -808,11 +862,15 @@ class SchedulerEngine:
             return
 
         if await self._check_budget(schedule):
+            if threshold_claim is not None:
+                threshold_claim.release()
             await self._disable_for_budget_exhausted(schedule, now)
             return
 
         allowed, claim = await self._reserve_max_runs_budget(schedule)
         if not allowed:
+            if threshold_claim is not None:
+                threshold_claim.release()
             _log.info(
                 "Schedule %s (%s) has exhausted max_runs=%s; disabling instead of firing",
                 schedule.get("name"),
@@ -828,6 +886,11 @@ class SchedulerEngine:
                 # Give the max_runs reservation back -- we're deferring this
                 # fire, not consuming a run against its budget.
                 claim.release()
+            if threshold_claim is not None:
+                # Give the cooldown reservation back too -- we're deferring
+                # this fire, not abandoning or completing it, so the next
+                # tick must be free to try again.
+                threshold_claim.release()
             await self._maybe_record_deferred(schedule, now)
             # Leave next_fire_at untouched (still due) so the next tick
             # retries this schedule instead of skipping it.
@@ -844,13 +907,16 @@ class SchedulerEngine:
             # consume the cooldown with zero durable record an alert was
             # ever attempted, the exact silent-loss shape this feature
             # exists to prevent. See _fire_inner's own stamp, which only
-            # fires once a schedule_run row actually exists.
+            # fires once a schedule_run row actually exists. The in-process
+            # threshold_claim (released in _fire()'s finally) is what
+            # actually closes the duplicate-fire race in the meantime.
         self._tracked_fire(
             schedule,
             run_id,
             trigger_context=ctx,
             max_runs_claim=claim,
             global_slot_claim=slot_claim,
+            threshold_cooldown_claim=threshold_claim,
         )
 
     async def _guarded_terminal_status(
@@ -933,18 +999,20 @@ class SchedulerEngine:
         chain_depth: int = 0,
         max_runs_claim: _MaxRunsClaim | None = None,
         global_slot_claim: _GlobalSlotClaim | None = None,
+        threshold_cooldown_claim: _ThresholdCooldownClaim | None = None,
     ) -> None:
-        """Thin wrapper around _fire_inner() that guarantees max_runs_claim
-        and global_slot_claim are each released exactly once on every exit
-        path.
+        """Thin wrapper around _fire_inner() that guarantees max_runs_claim,
+        global_slot_claim, and threshold_cooldown_claim are each released
+        exactly once on every exit path.
 
         Only top-level callers (_maybe_fire, fire_now, _tick_github) that
         got an allowed reservation from _reserve_max_runs_budget() /
-        _reserve_global_slot() pass a non-None claim; chain children never
-        do. The release lives here — not inside _check_max_runs() — precisely
-        so it still fires even when _fire_inner() blows up before ever
-        reaching _check_max_runs() (e.g. create_invocation() raising), which
-        is the leak this wrapper exists to close.
+        _reserve_global_slot() / the synchronous threshold-cooldown gate
+        pass a non-None claim; chain children never do. The release lives
+        here — not inside _check_max_runs() — precisely so it still fires
+        even when _fire_inner() blows up before ever reaching
+        _check_max_runs() (e.g. create_invocation() raising), which is the
+        leak this wrapper exists to close.
         """
         try:
             await self._fire_inner(
@@ -959,6 +1027,8 @@ class SchedulerEngine:
                 max_runs_claim.release()
             if global_slot_claim is not None:
                 global_slot_claim.release()
+            if threshold_cooldown_claim is not None:
+                threshold_cooldown_claim.release()
 
     def _threshold_alert_update_fields(
         self, schedule: dict, chain_depth: int, now: float
