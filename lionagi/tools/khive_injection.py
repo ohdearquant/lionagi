@@ -149,8 +149,12 @@ def _render_compose(khive_response: Any) -> str | None:
 
 
 def _truncate(text: str, max_tokens: int | None) -> str:
-    if not text or not max_tokens or max_tokens <= 0:
+    """None = uncapped; a non-positive cap is a hard zero budget and suppresses
+    the text entirely."""
+    if not text or max_tokens is None:
         return text
+    if max_tokens <= 0:
+        return ""
 
     from lionagi.service.token_calculator import TokenCalculator
 

@@ -1,11 +1,12 @@
 # Copyright (c) 2023-2026, HaiyangLi <quantocean.li at gmail dot com>
 # SPDX-License-Identifier: Apache-2.0
 
-"""Tests for KhiveInjectionProvider (ADR-0100 PR2): query construction, cadence
+"""Tests for KhiveInjectionProvider (ADR-0100): query construction, cadence
 gating, the recall+auto_feedback round-trip, failure containment, writeback
 extraction, and module-load purity. The khive MCP transport is fully mocked —
 no live daemon required."""
 
+import contextlib
 import json
 import sys
 from unittest.mock import AsyncMock, patch
@@ -435,30 +436,65 @@ async def test_writeback_transport_failure_contained(patched_transport):
 # ---------------------------------------------------------------------------
 
 
-def test_module_import_does_not_pull_in_mcp_transport():
-    for mod in ("fastmcp", "mcp"):
-        sys.modules.pop(mod, None)
+class _TransportImportBlocker:
+    """Meta-path finder that raises on any attempt to import the mcp transport,
+    proving the import never happens rather than merely not being cached."""
 
+    BLOCKED = ("fastmcp", "mcp")
+
+    def find_spec(self, fullname, path=None, target=None):
+        root = fullname.split(".")[0]
+        if root in self.BLOCKED:
+            raise ImportError(f"import of {fullname!r} blocked by purity test")
+        return None
+
+
+@contextlib.contextmanager
+def _blocked_transport():
+    saved = {
+        m: sys.modules.pop(m) for m in list(sys.modules) if m.split(".")[0] in ("fastmcp", "mcp")
+    }
+    blocker = _TransportImportBlocker()
+    sys.meta_path.insert(0, blocker)
+    try:
+        yield
+    finally:
+        sys.meta_path.remove(blocker)
+        sys.modules.update(saved)
+
+
+def test_module_import_does_not_pull_in_mcp_transport():
     import importlib
 
-    import lionagi.tools.khive_injection as mod_
+    with _blocked_transport():
+        with pytest.raises(ImportError):
+            importlib.import_module("fastmcp")  # the blocker actually blocks
 
-    importlib.reload(mod_)
+        import lionagi.tools.khive_injection as mod_
+
+        importlib.reload(mod_)
 
     assert "fastmcp" not in sys.modules
     assert "mcp" not in sys.modules
 
 
 def test_core_lionagi_import_is_clean():
-    """Mirrors the reference core-only-importability pattern: importing lionagi
-    itself must never require fastmcp/mcp to be installed."""
-    for mod in ("fastmcp", "mcp"):
-        sys.modules.pop(mod, None)
-
+    """Importing lionagi itself must never require fastmcp/mcp to be installed."""
     import importlib
 
-    import lionagi
+    with _blocked_transport():
+        import lionagi
 
-    importlib.reload(lionagi)
+        importlib.reload(lionagi)
 
     assert "fastmcp" not in sys.modules
+
+
+def test_truncate_cap_semantics():
+    from lionagi.tools.khive_injection import _truncate
+
+    assert _truncate("hello world", None) == "hello world"
+    assert _truncate("hello world", 0) == ""
+    assert _truncate("hello world", -1) == ""
+    assert _truncate("", 5) == ""
+    assert _truncate("hi", 10_000) == "hi"
