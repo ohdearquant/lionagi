@@ -1039,7 +1039,8 @@ def add_schedule_subparser(subparsers: argparse._SubParsersAction) -> argparse.A
         metavar="JSON",
         help=(
             "Metric threshold alert config as a JSON object: "
-            '{"metric": "failed_sessions|total_cost_usd|p95_latency_ms", '
+            '{"metric": "failed_sessions|total_cost_usd|p95_latency_ms|'
+            'github_poll_healthy_age_minutes|github_poll_consecutive_401", '
             '"op": "gt|gte", "value": N, "window_minutes": N}. When set, '
             "this schedule's own cron/interval cadence only evaluates the "
             "metric on each tick and fires the action only when the "

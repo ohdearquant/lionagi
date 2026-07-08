@@ -271,7 +271,11 @@ async def test_tick_github_polls_normally_when_under_budget():
         await engine._tick_github(schedule, now=10_000.0)
 
     mock_poll.assert_awaited_once()
-    svc.update_schedule.assert_not_awaited()
+    # No items to dispatch -> no cursor advance, but the poll was healthy
+    # (poll_status="ok" by default) so it still stamps observer-self-health.
+    svc.update_schedule.assert_awaited_once_with(
+        "sched-001", last_healthy_poll_at=10_000.0, poller_consecutive_401=0
+    )
 
 
 # ---------------------------------------------------------------------------

@@ -869,6 +869,142 @@ async def test_metric_value_unknown_metric_raises():
 
 
 # ---------------------------------------------------------------------------
+# StateDB.metric_value — github_poll_healthy_age_minutes / _consecutive_401
+# (observer self-health)
+# ---------------------------------------------------------------------------
+
+
+async def _make_github_schedule(state, sched_id: str, **overrides):
+    schedule = {
+        "id": sched_id,
+        "name": sched_id,
+        "trigger_type": "github_poll",
+        "github_repo": "acme/widgets",
+        "action_kind": "agent",
+    }
+    schedule.update(overrides)
+    await state.create_schedule(schedule)
+
+
+@pytest.mark.asyncio
+async def test_metric_value_github_poll_healthy_age_minutes_small_age_after_recent_stamp():
+    import time
+
+    from lionagi.state.db import StateDB
+
+    state = StateDB(":memory:")
+    await state.open()
+
+    now = time.time()
+    await _make_github_schedule(state, "sched-gh-1")
+    await state.update_schedule("sched-gh-1", last_healthy_poll_at=now - 60)  # 1 minute ago
+
+    age = await state.metric_value("github_poll_healthy_age_minutes", window_start=0.0)
+    assert 0.5 <= age <= 2.0  # ~1 minute, generous bound for test wall-clock slop
+
+    await state.close()
+
+
+@pytest.mark.asyncio
+async def test_metric_value_github_poll_healthy_age_minutes_large_after_stale_stamp():
+    import time
+
+    from lionagi.state.db import StateDB
+
+    state = StateDB(":memory:")
+    await state.open()
+
+    now = time.time()
+    await _make_github_schedule(state, "sched-gh-1")
+    # Stamped healthy 2 hours ago -- e.g. an auth_error poll never moved it since.
+    await state.update_schedule("sched-gh-1", last_healthy_poll_at=now - 7200)
+
+    age = await state.metric_value("github_poll_healthy_age_minutes", window_start=0.0)
+    assert age >= 100.0  # ~120 minutes
+
+    await state.close()
+
+
+@pytest.mark.asyncio
+async def test_metric_value_github_poll_healthy_age_minutes_sentinel_when_no_github_schedule():
+    """No github_poll schedule exists at all -- must not report a large,
+    alarm-triggering age; there is nothing to be blind about."""
+    from lionagi.state.db import StateDB
+
+    state = StateDB(":memory:")
+    await state.open()
+
+    age = await state.metric_value("github_poll_healthy_age_minutes", window_start=0.0)
+    assert age == 0.0
+
+    await state.close()
+
+
+@pytest.mark.asyncio
+async def test_metric_value_github_poll_healthy_age_minutes_sentinel_when_never_polled():
+    """A github_poll schedule exists but has never recorded a healthy poll
+    (last_healthy_poll_at still NULL) -- same no-alarm sentinel as no
+    schedule at all, not a crash on the NULL."""
+    from lionagi.state.db import StateDB
+
+    state = StateDB(":memory:")
+    await state.open()
+
+    await _make_github_schedule(state, "sched-gh-1")
+
+    age = await state.metric_value("github_poll_healthy_age_minutes", window_start=0.0)
+    assert age == 0.0
+
+    await state.close()
+
+
+@pytest.mark.asyncio
+async def test_metric_value_github_poll_healthy_age_minutes_ignores_disabled_schedules():
+    """A disabled github_poll schedule's stamp doesn't count -- only enabled
+    schedules are actually being observed."""
+    from lionagi.state.db import StateDB
+
+    state = StateDB(":memory:")
+    await state.open()
+
+    import time
+
+    now = time.time()
+    await _make_github_schedule(state, "sched-gh-1", enabled=0)
+    await state.update_schedule("sched-gh-1", last_healthy_poll_at=now - 60)
+
+    age = await state.metric_value("github_poll_healthy_age_minutes", window_start=0.0)
+    assert age == 0.0  # disabled schedule's healthy stamp is invisible to the metric
+
+    await state.close()
+
+
+@pytest.mark.asyncio
+async def test_metric_value_github_poll_consecutive_401_counts_and_resets():
+    from lionagi.state.db import StateDB
+
+    state = StateDB(":memory:")
+    await state.open()
+
+    await _make_github_schedule(state, "sched-gh-1")
+
+    # No 401s yet -- defaults to 0.
+    count = await state.metric_value("github_poll_consecutive_401", window_start=0.0)
+    assert count == 0.0
+
+    await state.update_schedule("sched-gh-1", poller_consecutive_401=3)
+    count = await state.metric_value("github_poll_consecutive_401", window_start=0.0)
+    assert count == 3.0
+
+    # A subsequent healthy poll resets it (mirrors the engine's stamp logic).
+    await state.update_schedule("sched-gh-1", poller_consecutive_401=0)
+    count = await state.metric_value("github_poll_consecutive_401", window_start=0.0)
+    assert count == 0.0
+
+    await state.close()
+
+
+# ---------------------------------------------------------------------------
 # create_schedule / update_schedule round-trip threshold_config + last_alert_at
 # ---------------------------------------------------------------------------
 

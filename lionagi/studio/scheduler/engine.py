@@ -595,6 +595,25 @@ class SchedulerEngine:
                     schedule.get("name"),
                     sid,
                 )
+
+            # Observer self-health: stamp the schedule's health columns from
+            # this poll's outcome regardless of whether it returned items --
+            # a healthy-empty poll ("ok") must reset the blind clock exactly
+            # like a poll that found PRs, so a quiet repo never false-alarms
+            # on github_poll_healthy_age_minutes. "error" (network failure,
+            # missing/invalid repo, no token available) leaves both columns
+            # untouched -- the age metric climbs on its own since
+            # last_healthy_poll_at doesn't move.
+            if poll_result.poll_status == "ok":
+                await self._svc.update_schedule(
+                    sid, last_healthy_poll_at=now, poller_consecutive_401=0
+                )
+            elif poll_result.poll_status == "auth_error":
+                await self._svc.update_schedule(
+                    sid,
+                    poller_consecutive_401=(schedule.get("poller_consecutive_401") or 0) + 1,
+                )
+
             if not polled:
                 return
 
