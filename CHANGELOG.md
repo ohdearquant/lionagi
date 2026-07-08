@@ -6,19 +6,46 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+## [0.28.0] - 2026-07-08
+
 ### Added
 
-- `lionagi.operations.lndl_middle` — an LNDL seam `Middle` (ADR-0087 §1-2), importable from the package itself (`from lionagi.operations.lndl_middle import lndl_middle, build_lndl_middle, DEFAULT_ROUND_BUDGET`): `lndl_middle` (ready to use) and `build_lndl_middle(round_budget=3)` (custom round budget). Opt in per call with `branch.operate(instruction=..., middle=lndl_middle)`; advances one LNDL round per inner chat call, renders the target model's field names into round-1 guidance (native `response_format` is stripped from the per-round chat call, so the model is told what to fill via an LNDL `Specs:` line instead), bridges `<lact>` calls through the branch's normal `act()` path (existing permission policies and hooks apply unchanged), and classifies each round into a `RoundOutcome` (`Success`, `Continue`, `Retry`, `Exhausted`) to drive repair — a parse/assemble/validation failure re-prompts the model with the typed error instead of surfacing a raw traceback. Round-budget exhaustion raises `LNDLError` rather than returning a raw error string or `None`.
+- `lionagi.operations.lndl_middle` — an LNDL seam `Middle`, importable from the package itself (`from lionagi.operations.lndl_middle import lndl_middle, build_lndl_middle, DEFAULT_ROUND_BUDGET`): `lndl_middle` (ready to use) and `build_lndl_middle(round_budget=3)` (custom round budget). Opt in per call with `branch.operate(instruction=..., middle=lndl_middle)`; advances one LNDL round per inner chat call, renders the target model's field names into round-1 guidance (native `response_format` is stripped from the per-round chat call, so the model is told what to fill via an LNDL `Specs:` line instead), bridges `<lact>` calls through the branch's normal `act()` path (existing permission policies and hooks apply unchanged), and classifies each round into a `RoundOutcome` (`Success`, `Continue`, `Retry`, `Exhausted`) to drive repair — a parse/assemble/validation failure re-prompts the model with the typed error instead of surfacing a raw traceback. Round-budget exhaustion raises `LNDLError` rather than returning a raw error string or `None`.
 - `lionagi.lndl.build_action_call` — parses a lact node's call text into an `ActionCall` placeholder; factored out of `assembler._alias_value` so callers (like the new LNDL middle) can build placeholders for lacts with no `OUT{}` to gate against yet.
+- Studio scheduler — metric threshold alerts: a schedule carrying a `threshold_config` (`{"metric": "failed_sessions" | "total_cost_usd" | "p95_latency_ms", "op": "gt" | "gte", "value": N, "window_minutes": N}`) evaluates the metric on each tick of its own cron/interval cadence and only fires its action when the threshold is breached, with a cooldown of `window_minutes` so a sustained breach alerts once per window instead of every tick. Authorable via `li schedule create --threshold-config '<json>'`.
+- Studio scheduler — per-schedule token/spend budgets (`--max-cost-usd`, `--max-tokens`) and a daemon-wide global concurrent-fire cap, so scheduled work cannot exhaust budget or overwhelm the host.
+- Studio scheduler — GitHub triggers are now authorable directly from `li schedule create --trigger-type github --github-repo OWNER/NAME --github-filter '<json>'`, fire once per GitHub event (not once per poll), support a `pr_merged` mode that dispatches on merge, and filter on `draft` state; `head_sha` and `draft` are emitted on each event.
+- Studio workflows — `WorkflowDef`s compile and run on `Session.flow`, emit per-node lifecycle signals for live run observability, carry many-to-many run tags with tag filtering, support condition authoring on workflow edges in the designer, and split `playbook` into its own library kind alongside built-in playbook templates surfaced on the Workflows page.
+- Studio UI — a three-question Mission Control overview, schedules table and card views, and internationalization covering the top-16 world languages with RTL support.
+- `EngineResult` and a budget-degrade contract for engines, so a run that exhausts its budget degrades to a typed result instead of a bare failure.
+- Reactive flows surface dropped `SpawnRequest`s in the flow result for observability instead of discarding them silently.
+- `li agent --context-from` for cross-agent context handoff, and `li studio` frontend modes (`--web` hosted default, `--docker`, `--no-frontend`).
 
 ### Changed
 
 - `lionagi.lndl.assembler.assemble()` now raises `MissingLvarError` when `OUT{}` references an alias that's declared nowhere (previously the field was silently dropped from the assembled dict); an alias executed in an earlier round now resolves via `action_results` without redeclaration, so a later round's `OUT{}` can reference it directly.
 - `lionagi.lndl.assembler.assemble()` now raises `MissingFieldError` when the target model has required fields absent from `OUT{}`, rather than deferring the failure to a downstream `pydantic.ValidationError` with no LNDL-level context.
+- Studio run and verdict state derivation is unified on a single code path (the standalone verdict sniffer is gone), so run status and verdict are reported consistently across the run list, run detail, and the run DAG.
+
+### Deprecated
+
+- `li studio --no-docker` — the Docker frontend is now selected explicitly with `--docker`; the hosted `--web` frontend is the default.
 
 ### Removed
 
 - `lionagi.lndl.MissingOutBlockError` and `lionagi.lndl.AmbiguousMatchError` — retired, unused error classes. A response with no `OUT{}` block is classified as `Continue` (the model is still thinking), not an error; ambiguous-match scoring was never wired to a real assembly path.
+- A sweep of internal dead code with no public surface: a deprecated `protocols` structure re-export shim, the unused `AccessError` and hook `registered_handlers`, three unused CLI helpers, `providers/config.py`, the studio `status_mapping.py` and a runs read-path adapter, and a dead state `persist.py` module with its legacy reason-code resolver.
+
+### Fixed
+
+- Studio scheduler GitHub triggers no longer collapse a burst of merged PRs into a single fire or lose events behind pagination: polling returns structured per-event items, dispatches each exactly once, advances its cursor only past events it actually dispatched, and bounds merged-PR pagination so the cursor can never move past an unfetched merge (no permanent skips, no duplicate reviews). A deleted action working directory now fails the run with a clear reason instead of a generic spawn error. A GitHub `401` (typically a `GITHUB_TOKEN` that was valid at daemon launch but has since expired) now falls through to a fresh `gh`-CLI token and retries once, instead of pinning the poller to the dead credential and going silently blind on every subsequent poll; a 401 that survives the retry logs at ERROR.
+- Studio run and session observability corrections: run-health and status misreporting fixed across the app, phantom `failed`/terminal classification gated behind a liveness-and-staleness check, stale in-flight play rows and null-status rows reaped to a terminal state on runner death (honoring the recorded pid and a staleness grace), engine sub-agent branches and chat-node turns persisted, and run-DAG edges rendered from `depends_on`/`parent_id`.
+- Studio run and session detail read-paths are paginated with corrected message and action aggregates; long message lists are windowed and no longer flash on update.
+- Studio frontend clears a misleading error when a static SPA rewrite masks a missing API base, and ships a frontend backlog cluster of redirect, API-base, pulse, overflow-accessibility, and calendar fixes.
+- State and scheduler terminal-status-integrity floor: a cluster of terminal-transition correctness issues resolved so a terminal status is authoritative and cannot be silently overwritten.
+- `li agent` resolves a bare model name to its provider from settings and surfaces total sub-agent failure instead of reporting a false success; `li agent --resume` and auto-resume no longer race the terminal-status guard.
+- The NLIP provider's retries route through `retry_with_backoff` (the two retry loops are deduplicated), and reactive `Pattern.load` errors list the valid roles and modes instead of failing opaquely.
+- Path-traversal checks across the codebase are consolidated onto a single `has_traversal` helper.
 
 ## [0.27.2] - 2026-07-02
 
