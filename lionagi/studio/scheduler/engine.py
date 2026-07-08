@@ -837,12 +837,14 @@ class SchedulerEngine:
         ctx = {"scheduled": True, "fired_at": now, "next_fire_at": schedule.get("next_fire_at")}
         if threshold_extra:
             ctx.update(threshold_extra)
-            # Stamp last_alert_at only now that every gate (overlap, budget,
-            # max_runs, global slot) has actually passed and the fire is
-            # really about to happen -- stamping it earlier (before those
-            # checks) would consume the cooldown on a deferred/skipped tick
-            # that never spawned an action, silently swallowing the alert.
-            await self._svc.update_schedule(schedule["id"], last_alert_at=now)
+            # last_alert_at is NOT stamped here. Every gate above (overlap,
+            # budget, max_runs, global slot) has passed, but _fire_inner()
+            # can still fail before persisting any schedule_run row (e.g.
+            # create_invocation() raising) -- stamping this early would
+            # consume the cooldown with zero durable record an alert was
+            # ever attempted, the exact silent-loss shape this feature
+            # exists to prevent. See _fire_inner's own stamp, which only
+            # fires once a schedule_run row actually exists.
         self._tracked_fire(
             schedule,
             run_id,
@@ -958,6 +960,32 @@ class SchedulerEngine:
             if global_slot_claim is not None:
                 global_slot_claim.release()
 
+    def _threshold_alert_update_fields(
+        self, schedule: dict, chain_depth: int, now: float
+    ) -> dict[str, Any]:
+        """Extra ``update_schedule()`` fields for a threshold-alert fire.
+
+        Folded into the SAME schedule update call that already writes
+        ``last_fired_at``/``next_fire_at`` inside ``_fire_inner()`` --
+        deliberately placed AFTER ``create_schedule_run()`` has durably
+        persisted the run row (both the invalid-action-failure branch and
+        the normal running branch call this only once their own
+        ``create_schedule_run()`` has already succeeded). Stamping the
+        cooldown any earlier (e.g. in ``_maybe_fire()`` before ``_fire()``
+        even starts) risks consuming it on a ``create_invocation()`` (or
+        other pre-persistence) failure that leaves zero durable record an
+        alert was ever attempted -- the exact silent-loss shape this
+        feature exists to prevent.
+
+        Only top-level fires (``chain_depth == 0``) of a
+        threshold-configured schedule stamp the cooldown; on_success/
+        on_fail chain children are follow-on actions of the same alert
+        cycle, not a new one, and must not restamp it.
+        """
+        if chain_depth != 0 or not schedule.get("threshold_config"):
+            return {}
+        return {"last_alert_at": now}
+
     async def _fire_inner(
         self,
         schedule: dict,
@@ -1053,6 +1081,7 @@ class SchedulerEngine:
             update_fields: dict[str, Any] = {"last_fired_at": now}
             if next_at:
                 update_fields["next_fire_at"] = next_at
+            update_fields.update(self._threshold_alert_update_fields(schedule, chain_depth, now))
             await self._svc.update_schedule(sid, **update_fields)
             await self._check_max_runs(schedule, chain_depth)
             return
@@ -1094,6 +1123,7 @@ class SchedulerEngine:
             update_fields = {"last_fired_at": now}
             if next_at:
                 update_fields["next_fire_at"] = next_at
+            update_fields.update(self._threshold_alert_update_fields(schedule, chain_depth, now))
             await self._svc.update_schedule(sid, **update_fields)
 
             _log.info(

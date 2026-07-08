@@ -88,6 +88,27 @@ def test_validate_threshold_config_rejects_malformed(bad_config):
         validate_threshold_config(bad_config)
 
 
+def test_validate_threshold_config_rejects_unknown_key():
+    """A typo'd/extra key (e.g. a made-up 'cooldown_minutes') must be
+    rejected rather than silently ignored -- there is no such field; the
+    cooldown reuses window_minutes."""
+    from lionagi.studio.scheduler.threshold import validate_threshold_config
+
+    with pytest.raises(ValueError, match="unknown key") as exc_info:
+        validate_threshold_config(
+            {
+                "metric": "failed_sessions",
+                "op": "gt",
+                "value": 5,
+                "window_minutes": 60,
+                "cooldown_minutes": 120,
+            }
+        )
+    assert "cooldown_minutes" in str(exc_info.value)
+    assert "metric" in str(exc_info.value)  # names the allowed keys too
+    assert "window_minutes" in str(exc_info.value)
+
+
 def test_compare_gt_and_gte():
     from lionagi.studio.scheduler.threshold import compare
 
@@ -121,6 +142,21 @@ def test_svc_validate_threshold_config_rejects_bad_metric():
     with pytest.raises(ValueError, match="metric"):
         _svc_validate_threshold_config(
             {"metric": "nope", "op": "gt", "value": 1, "window_minutes": 5}
+        )
+
+
+def test_svc_validate_threshold_config_rejects_unknown_key():
+    from lionagi.studio.services.schedules import _svc_validate_threshold_config
+
+    with pytest.raises(ValueError, match="unknown key"):
+        _svc_validate_threshold_config(
+            {
+                "metric": "failed_sessions",
+                "op": "gt",
+                "value": 1,
+                "window_minutes": 5,
+                "cooldown_minutes": 10,
+            }
         )
 
 
@@ -250,13 +286,17 @@ async def test_maybe_fire_breach_fires_with_trigger_context():
     assert ctx["threshold"] == 5
     assert ctx["window_minutes"] == 30
 
-    # last_alert_at was stamped as part of the fire (cooldown start).
+    # last_alert_at is NOT stamped by _maybe_fire itself -- _tracked_fire is
+    # mocked here (the actual _fire_inner never runs), and the real stamp
+    # only lands once a schedule_run row is durably persisted inside
+    # _fire_inner (see the "_fire()/_fire_inner() threshold cooldown stamp"
+    # tests further below, which exercise the real fire path). Stamping
+    # this early would consume the cooldown even if the mocked-out fire
+    # never actually happened.
     last_alert_calls = [
         c for c in svc.update_schedule.await_args_list if "last_alert_at" in c.kwargs
     ]
-    assert len(last_alert_calls) == 1
-    assert last_alert_calls[0].args[0] == "sched-001"
-    assert last_alert_calls[0].kwargs["last_alert_at"] == 1000.0
+    assert not last_alert_calls
 
 
 @pytest.mark.asyncio
@@ -341,6 +381,179 @@ async def test_maybe_fire_threshold_still_honors_overlap_policy():
         c for c in svc.update_schedule.await_args_list if "last_alert_at" in c.kwargs
     ]
     assert not last_alert_calls
+
+
+# ---------------------------------------------------------------------------
+# _fire() / _fire_inner() — threshold cooldown stamp lands AFTER the
+# schedule_run row is durably persisted, not before the fire starts.
+# ---------------------------------------------------------------------------
+
+
+def _threshold_ctx(**overrides) -> dict:
+    ctx = {
+        "scheduled": True,
+        "metric": "failed_sessions",
+        "op": "gt",
+        "value": 9.0,
+        "threshold": 5,
+        "window_minutes": 30,
+    }
+    ctx.update(overrides)
+    return ctx
+
+
+def _last_alert_calls(svc: AsyncMock) -> list:
+    return [c for c in svc.update_schedule.await_args_list if "last_alert_at" in c.kwargs]
+
+
+@pytest.mark.asyncio
+async def test_fire_threshold_schedule_stamps_last_alert_at_after_run_persisted():
+    """Happy path: create_schedule_run succeeds, so the cooldown stamp lands
+    in the same update_schedule() call that writes last_fired_at."""
+    from lionagi.studio.scheduler.engine import SchedulerEngine
+
+    svc = _make_svc()
+    engine = SchedulerEngine(svc=svc)
+    schedule = _minimal_schedule(
+        threshold_config={
+            "metric": "failed_sessions",
+            "op": "gt",
+            "value": 5,
+            "window_minutes": 30,
+        },
+    )
+
+    with (
+        patch(
+            "lionagi.studio.scheduler.subprocess.build_argv",
+            return_value=(["uv", "run", "li", "agent", "ping"], None),
+        ),
+        patch(
+            "lionagi.studio.scheduler.subprocess.spawn_and_wait",
+            new=AsyncMock(return_value=(0, "")),
+        ),
+    ):
+        await engine._fire(schedule, "run-alert-1", trigger_context=_threshold_ctx())
+
+    svc.create_schedule_run.assert_awaited_once()
+    calls = _last_alert_calls(svc)
+    assert len(calls) == 1
+    assert calls[0].args[0] == "sched-001"
+
+
+@pytest.mark.asyncio
+async def test_fire_create_invocation_failure_does_not_stamp_last_alert_at():
+    """The blocking gap this regression pins: create_invocation() raises
+    BEFORE any schedule_run row exists, so the cooldown must NOT be
+    consumed -- the next tick re-evaluates and re-alerts instead of
+    silently losing the alert."""
+    from lionagi.studio.scheduler.engine import SchedulerEngine
+
+    svc = _make_svc()
+    svc.create_invocation = AsyncMock(side_effect=RuntimeError("db unavailable"))
+    engine = SchedulerEngine(svc=svc)
+    schedule = _minimal_schedule(
+        threshold_config={
+            "metric": "failed_sessions",
+            "op": "gt",
+            "value": 5,
+            "window_minutes": 30,
+        },
+    )
+
+    with pytest.raises(RuntimeError, match="db unavailable"):
+        await engine._fire(schedule, "run-fail-inv", trigger_context=_threshold_ctx())
+
+    svc.create_schedule_run.assert_not_awaited()
+    assert not _last_alert_calls(svc)
+
+
+@pytest.mark.asyncio
+async def test_fire_invalid_action_still_stamps_last_alert_at_after_failed_run_persisted():
+    """build_argv() raising (bad action config) still durably persists a
+    'failed' schedule_run row before the schedule update -- that IS a
+    recorded (if broken) alert attempt, so the cooldown correctly stamps
+    to avoid hammering a schedule with a persistently-broken action."""
+    from lionagi.studio.scheduler.engine import SchedulerEngine
+
+    svc = _make_svc()
+    engine = SchedulerEngine(svc=svc)
+    schedule = _minimal_schedule(
+        threshold_config={
+            "metric": "failed_sessions",
+            "op": "gt",
+            "value": 5,
+            "window_minutes": 30,
+        },
+    )
+
+    with patch(
+        "lionagi.studio.scheduler.subprocess.build_argv",
+        side_effect=ValueError("bad action_kind"),
+    ):
+        await engine._fire(schedule, "run-alert-2", trigger_context=_threshold_ctx())
+
+    svc.create_schedule_run.assert_awaited_once()
+    calls = _last_alert_calls(svc)
+    assert len(calls) == 1
+
+
+@pytest.mark.asyncio
+async def test_fire_chain_child_does_not_restamp_last_alert_at():
+    """on_success/on_fail chain children (chain_depth > 0) inherit
+    threshold_config via the shallow schedule merge but must not restamp
+    the cooldown -- they're a follow-on of the same alert cycle."""
+    from lionagi.studio.scheduler.engine import SchedulerEngine
+
+    svc = _make_svc()
+    engine = SchedulerEngine(svc=svc)
+    schedule = _minimal_schedule(
+        threshold_config={
+            "metric": "failed_sessions",
+            "op": "gt",
+            "value": 5,
+            "window_minutes": 30,
+        },
+    )
+
+    with (
+        patch(
+            "lionagi.studio.scheduler.subprocess.build_argv",
+            return_value=(["uv", "run", "li", "agent", "ping"], None),
+        ),
+        patch(
+            "lionagi.studio.scheduler.subprocess.spawn_and_wait",
+            new=AsyncMock(return_value=(0, "")),
+        ),
+    ):
+        await engine._fire(schedule, "run-chain-1", trigger_context=_threshold_ctx(), chain_depth=1)
+
+    assert not _last_alert_calls(svc)
+
+
+@pytest.mark.asyncio
+async def test_fire_non_threshold_schedule_never_stamps_last_alert_at():
+    """A schedule with no threshold_config never writes last_alert_at,
+    even on a normal successful fire."""
+    from lionagi.studio.scheduler.engine import SchedulerEngine
+
+    svc = _make_svc()
+    engine = SchedulerEngine(svc=svc)
+    schedule = _minimal_schedule()  # no threshold_config
+
+    with (
+        patch(
+            "lionagi.studio.scheduler.subprocess.build_argv",
+            return_value=(["uv", "run", "li", "agent", "ping"], None),
+        ),
+        patch(
+            "lionagi.studio.scheduler.subprocess.spawn_and_wait",
+            new=AsyncMock(return_value=(0, "")),
+        ),
+    ):
+        await engine._fire(schedule, "run-no-threshold", trigger_context={"scheduled": True})
+
+    assert not _last_alert_calls(svc)
 
 
 # ---------------------------------------------------------------------------

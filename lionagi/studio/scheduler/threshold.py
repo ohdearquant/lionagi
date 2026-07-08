@@ -16,15 +16,28 @@ from typing import Any
 
 VALID_METRICS: frozenset[str] = frozenset({"failed_sessions", "total_cost_usd", "p95_latency_ms"})
 VALID_OPS: frozenset[str] = frozenset({"gt", "gte"})
+ALLOWED_KEYS: frozenset[str] = frozenset({"metric", "op", "value", "window_minutes"})
 
 
 def validate_threshold_config(config: Any) -> None:
     """Raise ValueError if *config* is not a well-formed threshold spec.
 
-    Shape: ``{"metric": ..., "op": ..., "value": ..., "window_minutes": ...}``.
+    Shape: ``{"metric": ..., "op": ..., "value": ..., "window_minutes": ...}``
+    -- exactly those four keys, nothing else. Rejecting unknown keys (rather
+    than silently ignoring them) catches typos like ``cooldown_minutes``
+    that would otherwise persist and mislead an operator about what the
+    schedule is actually configured to do -- there is no cooldown field;
+    the cooldown reuses ``window_minutes`` (see engine.py's stamp logic).
     """
     if not isinstance(config, dict):
         raise ValueError("threshold_config must be an object")
+
+    unknown = set(config) - ALLOWED_KEYS
+    if unknown:
+        raise ValueError(
+            f"threshold_config has unknown key(s) {sorted(unknown)}. "
+            f"Allowed keys: {sorted(ALLOWED_KEYS)}"
+        )
 
     metric = config.get("metric")
     if metric not in VALID_METRICS:
