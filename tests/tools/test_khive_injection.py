@@ -42,10 +42,17 @@ def test_defaults_mirror_design_yaml():
     policy = KhiveInjectionPolicy(profile_id="implementer-recall-v1")
     assert policy.enabled is True
     assert policy.snapshot_id is None
+    assert policy.namespace is None
     assert policy.recall == RecallPolicy(limit=5, min_score=0.4, max_tokens=800)
     assert policy.compose == ComposePolicy(enabled=False, max_tokens=2000)
     assert policy.cadence == "first_turn"
     assert policy.writeback == WritebackPolicy(enabled=False, salience_cap=0.4, tags=())
+
+
+def test_snapshot_id_construction_raises():
+    policy = KhiveInjectionPolicy(profile_id="implementer-recall-v1", snapshot_id="snap-1")
+    with pytest.raises(ValueError, match="cannot honor policy.snapshot_id"):
+        KhiveInjectionProvider(policy)
 
 
 # ---------------------------------------------------------------------------
@@ -334,6 +341,105 @@ async def test_render_truncated_to_recall_max_tokens(patched_transport):
     assert text is not None
     assert TokenCalculator.tokenize(text) <= 50
     assert len(text) < len(huge_content)
+
+
+# ---------------------------------------------------------------------------
+# Namespace pinning (bench-arm contamination guard)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_namespace_threaded_through_recall_compose_and_auto_feedback(patched_transport):
+    async def _side_effect(tool_name, kwargs):
+        if kwargs["ops"].startswith("knowledge.compose("):
+            return _mcp_result(
+                json.dumps(
+                    {"results": [{"ok": True, "tool": "knowledge.compose", "result": "frame"}]}
+                )
+            )
+        return _mcp_result(_khive_recall_response(result_id="the-first-id"))
+
+    patched_transport.side_effect = _side_effect
+    policy = KhiveInjectionPolicy(
+        profile_id="implementer-recall-v1",
+        namespace="bench-m1",
+        compose=ComposePolicy(enabled=True, max_tokens=2000),
+    )
+    provider = KhiveInjectionProvider(policy)
+    branch = _FakeBranch(last_response=None)
+
+    await provider.provide(branch, _FakeInstruction("hello"))
+
+    ops_calls = [c.args[1]["ops"] for c in patched_transport.call_args_list]
+    recall_ops = next(op for op in ops_calls if op.startswith("memory.recall("))
+    feedback_ops = next(op for op in ops_calls if op.startswith("brain.auto_feedback("))
+    compose_ops = next(op for op in ops_calls if op.startswith("knowledge.compose("))
+    assert 'namespace="bench-m1"' in recall_ops
+    assert 'namespace="bench-m1"' in feedback_ops
+    assert 'namespace="bench-m1"' in compose_ops
+
+
+@pytest.mark.asyncio
+async def test_namespace_threaded_through_writeback(patched_transport):
+    patched_transport.return_value = _mcp_result(json.dumps({"results": [], "summary": {}}))
+    policy = KhiveInjectionPolicy(
+        profile_id="implementer-recall-v1",
+        namespace="bench-m2",
+        writeback=WritebackPolicy(enabled=True),
+    )
+    provider = KhiveInjectionProvider(policy)
+    branch = _FakeBranch(name="implementer")
+    responses = [_resp("bash", {"error": "boom"}), _resp("bash", {"stdout": "fixed"})]
+
+    await provider.writeback(branch, responses)
+
+    ops = patched_transport.call_args_list[0].args[1]["ops"]
+    assert ops.startswith("memory.remember(")
+    assert 'namespace="bench-m2"' in ops
+
+
+@pytest.mark.asyncio
+async def test_no_namespace_kwarg_when_unpinned(patched_transport):
+    async def _side_effect(tool_name, kwargs):
+        if kwargs["ops"].startswith("knowledge.compose("):
+            return _mcp_result(
+                json.dumps(
+                    {"results": [{"ok": True, "tool": "knowledge.compose", "result": "frame"}]}
+                )
+            )
+        return _mcp_result(_khive_recall_response())
+
+    patched_transport.side_effect = _side_effect
+    policy = KhiveInjectionPolicy(
+        profile_id="implementer-recall-v1",
+        compose=ComposePolicy(enabled=True, max_tokens=2000),
+    )
+    provider = KhiveInjectionProvider(policy)
+    branch = _FakeBranch(last_response=None)
+
+    await provider.provide(branch, _FakeInstruction("hello"))
+
+    ops_calls = [c.args[1]["ops"] for c in patched_transport.call_args_list]
+    assert any(op.startswith("knowledge.compose(") for op in ops_calls)
+    assert not any("namespace=" in op for op in ops_calls)
+
+
+@pytest.mark.asyncio
+async def test_no_namespace_kwarg_in_unpinned_writeback(patched_transport):
+    patched_transport.return_value = _mcp_result(json.dumps({"results": [], "summary": {}}))
+    policy = KhiveInjectionPolicy(
+        profile_id="implementer-recall-v1",
+        writeback=WritebackPolicy(enabled=True),
+    )
+    provider = KhiveInjectionProvider(policy)
+    branch = _FakeBranch(name="implementer")
+    responses = [_resp("bash", {"error": "boom"}), _resp("bash", {"stdout": "fixed"})]
+
+    await provider.writeback(branch, responses)
+
+    ops = patched_transport.call_args_list[0].args[1]["ops"]
+    assert ops.startswith("memory.remember(")
+    assert "namespace=" not in ops
 
 
 # ---------------------------------------------------------------------------
