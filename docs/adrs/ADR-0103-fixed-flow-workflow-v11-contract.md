@@ -1,13 +1,13 @@
 # ADR-0103: Fixed-flow workflow engine v1.1 contract (li flow run, per-node cwd, per-node model, artifact_dir)
 
-**Status**: Accepted (Leo sign-off 2026-07-09)
+**Status**: Accepted (2026-07-09)
 **Date**: 2026-07-09
 
-Depends on: ADR-0102 (workflow library registry — `definitions` is the registry of record; runs pin `library_ref` + `library_content_hash`). Composes with the existing Studio workflow-defs engine (`workflow_compile.py` / `workflow_run.py`, the option-B ruling of the earlier "Studio WorkflowDef compile bridge" advisory). Does NOT touch `li play` / the reactive planner lane.
+Depends on: ADR-0102 (workflow library registry — `definitions` is the registry of record; runs pin `library_ref` + `library_content_hash`). Composes with the existing Studio workflow-defs engine (`workflow_compile.py` / `workflow_run.py`). Does NOT touch `li play` / the reactive planner lane.
 
 ## Context
 
-Ocean directed a reusable, deterministic issue-pipeline (kdev `issues prepare`: codex analyze → sonnet implement → opus critic). The engine owner (lambda:lionagi, accepted by Leo 2026-07-09) ruled to build on the existing Studio workflow-defs engine rather than a new file runner. kdev (khive's CLI) will build its command surface against two engine surfaces that must be pinned durably BEFORE kdev builds: the per-node execution semantics (cwd, model) and the artifact-file output contract. This lane is fixed DAGs only — no planner, no reactive expansion.
+The driving consumer is a reusable, deterministic issue-preparation pipeline (kdev `issues prepare`: an analyze → implement → critic stage sequence, with the model per stage set by kdev's configuration). The decision is to build on the existing Studio workflow-defs engine rather than a new file runner. kdev (khive's CLI) will build its command surface against two engine surfaces that must be pinned durably BEFORE kdev builds: the per-node execution semantics (cwd, model) and the artifact-file output contract. This lane is fixed DAGs only — no planner, no reactive expansion.
 
 The engine as it exists today (source-verified 2026-07-09):
 
@@ -137,7 +137,7 @@ li flow run <name | name@version | file.json>
 | F4 | accept bare strings + normalize with a default provider prefix at compile | Silently picks a provider — the exact trap being eliminated. Reject-at-compile instead. |
 | F5 | cwd allowlist env (`LIONAGI_FLOW_CWD_ALLOWLIST`) in v1.1 | Config surface a single-operator tool does not need; `base_dir`-per-run already bounds it. Named as v2/commercial extension. |
 | F5 | document-as-trusted-surface, validation only, no engine-level containment | Insufficient once ADR-0102 makes defs shareable: a contributed def could carry a hostile cwd. Engine-level containment under an operator-supplied `base_dir` is required. |
-| Engine choice | option A (new standalone file runner) | Already rejected by Leo 2026-07-09 (build on the existing workflow-defs engine); recorded here for completeness. |
+| Engine choice | option A (new standalone file runner) | Rejected 2026-07-09 in favor of building on the existing workflow-defs engine; recorded here for completeness. |
 
 ## Verify by
 
@@ -156,14 +156,13 @@ No fork requires a blocking design spike before ruling. Two items are empirical 
 
 - **F1 lean "run-level base_dir + node-RELATIVE subpaths" → refined.** Kept `base_dir` containment but allow node cwd to be ABSOLUTE (contained via `claude_code`'s `relative_to` check), so kdev passes `git worktree add` paths directly. Added the security-load-bearing rule the lean omitted: `base_dir` is a run INPUT, never a spec field.
 - **F2 lean "materialize at run end" → partially overturned + reframed.** Timing is NOT the kdev contract (layout is), so it must not be over-specified. Materialization moved into the teardown/`finally` path (survives failed-but-returned runs); the thrown-exception/SIGKILL partial-loss gap is documented and named as a non-breaking v1.2 fix that needs an `on_progress` result-payload extension the current seam lacks (verified flow_signals.py:76). Also overturned "artifact_dir is THE location": canonical is the run dir, `artifact_dir` is an optional mirror wired through the existing `_teardown_common` seam.
-- **F3 lean "file = ephemeral, dual-mode" → refined against ADR-0102.** Ephemeral file mode kept, but demoted to a dev/CI convenience; NAME mode (registry-resolved, provenance-pinned per the just-accepted ADR-0102) is the primary path. Overturned the packet's implicit "off-daemon always" as the sole framing: in-process is right for kdev (no daemon), daemon-routing is an optional later optimization.
-- **F4 lean "three-level inheritance" → overturned to two levels.** No v1.1 consumer needs a def-level default; a `spec.default_model` field is deferred. Also corrected the stated failure mode: a bare chat model string does not become `provider=<modelname>` — it falls back to `LIONAGI_CHAT_PROVIDER` (imodel.py:70-73). The reject-at-compile ruling stands; the packet's rationale was imprecise. Confirmed migration safety: since `config.model` was never applied for chat, rejecting bare strings breaks no working behavior.
+- **F3 lean "file = ephemeral, dual-mode" → refined against ADR-0102.** Ephemeral file mode kept, but demoted to a dev/CI convenience; NAME mode (registry-resolved, provenance-pinned per the just-accepted ADR-0102) is the primary path. Overturned the initial draft's implicit "off-daemon always" as the sole framing: in-process is right for kdev (no daemon), daemon-routing is an optional later optimization.
+- **F4 lean "three-level inheritance" → overturned to two levels.** No v1.1 consumer needs a def-level default; a `spec.default_model` field is deferred. Also corrected the stated failure mode: a bare chat model string does not become `provider=<modelname>` — it falls back to `LIONAGI_CHAT_PROVIDER` (imodel.py:70-73). The reject-at-compile ruling stands; the initial rationale was imprecise. Confirmed migration safety: since `config.model` was never applied for chat, rejecting bare strings breaks no working behavior.
 - **F5 lean "claude_code-style containment, validation-only, no allowlist" → hardened, not softened.** The lean is right on mechanism but under-justified. The real threat is ADR-0102 shared/contributed defs, not operator-vs-operator; the load-bearing defense is `base_dir`-is-a-run-input (a def cannot pin its own root), plus engine-level containment that does NOT delegate to `claude_code` (whose check only fires under `bypassPermissions`, line 392).
-- **Engine-choice residual risk (packet refute mandate).** Session/flow overhead for a 3-node pipeline and StateDB coupling for a CLI-first consumer were attacked and SURVIVE: the overhead buys RunDetail/persistence/signals every Studio run already pays for, and the CLI's in-process request-scoped StateDB connection is already designed for daemon-concurrency (workflow_run docstring). The one residual is verified empirically by gate #5, not assumed.
+- **Engine-choice residual risk (adversarially challenged during drafting).** Session/flow overhead for a 3-node pipeline and StateDB coupling for a CLI-first consumer were attacked and SURVIVE: the overhead buys RunDetail/persistence/signals every Studio run already pays for, and the CLI's in-process request-scoped StateDB connection is already designed for daemon-concurrency (workflow_run docstring). The one residual is verified empirically by gate #5, not assumed.
 
 ## References
 
 - ADR-0102 (workflow library registry); ADR-0101 (task application queue, `library_ref`/`library_content_hash` columns).
-- Prior advisory "Studio WorkflowDef compile bridge" (option-B ruling; entity 61adfc76).
 - Issue #1922 (per-node model not applied).
 - Source: `lionagi/studio/services/workflow_compile.py`, `workflow_run.py`, `workflow_defs.py`; `lionagi/service/imodel.py`; `lionagi/providers/anthropic/claude_code.py`; `lionagi/state/db.py`; `lionagi/engines/flow_signals.py`; `lionagi/cli/_runs.py`.
