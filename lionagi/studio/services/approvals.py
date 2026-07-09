@@ -324,10 +324,15 @@ async def verify_evidence_chain() -> dict[str, Any]:
         recomputed_chain = _compute_chain_hash(recomputed_content, row["previous_hash"])
         if recomputed_chain != row["chain_hash"]:
             errors.append(f"sequence {row['sequence']}: chain hash mismatch")
-        if key and row["hmac_sig"] is not None:
-            expected_sig = _compute_hmac_sig(row["chain_hash"], row["created_at"], key)
-            if not hmac.compare_digest(expected_sig, row["hmac_sig"]):
-                errors.append(f"sequence {row['sequence']}: hmac signature mismatch")
+        if key:
+            # A signed chain must not accept unsigned rows: stripping hmac_sig
+            # from a tampered row would otherwise downgrade to chain-only checks.
+            if row["hmac_sig"] is None:
+                errors.append(f"sequence {row['sequence']}: hmac signature missing")
+            else:
+                expected_sig = _compute_hmac_sig(row["chain_hash"], row["created_at"], key)
+                if not hmac.compare_digest(expected_sig, row["hmac_sig"]):
+                    errors.append(f"sequence {row['sequence']}: hmac signature mismatch")
         expected_previous = row["chain_hash"]
 
     return {

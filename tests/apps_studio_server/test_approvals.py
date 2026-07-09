@@ -599,6 +599,51 @@ def test_hmac_tamper_detected_when_key_configured(tmp_path, monkeypatch):
     assert any("hmac signature mismatch" in e for e in verdict["errors"])
 
 
+def test_hmac_stripped_signature_fails_verification(tmp_path, monkeypatch):
+    """Nulling hmac_sig on a tampered row must not downgrade to chain-only checks."""
+    db_path = tmp_path / "state.db"
+    monkeypatch.setenv("LIONAGI_STUDIO_EVIDENCE_HMAC_KEY", "secret-key")
+    _patch_db(monkeypatch, db_path)
+    _run(_init_db(db_path))
+
+    from lionagi.studio.services import approvals as approvals_mod
+    from lionagi.studio.services._db import open_db
+
+    _run(approvals_mod.create_approval(action_kind="launch_playbook", params={"name": "demo"}))
+    rows = _evidence_rows(db_path)
+    row = rows[0]
+
+    forged_payload = {
+        "id": row["id"],
+        "event_type": row["event_type"],
+        "approval_id": row["approval_id"],
+        "action_kind": "evil_action",
+        "status_from": row["status_from"],
+        "status_to": row["status_to"],
+        "params_hash": row["params_hash"],
+        "justification_class": row["justification_class"],
+        "justification_reason": row["justification_reason"],
+        "created_at": row["created_at"],
+    }
+    forged_content = approvals_mod._compute_content_hash(forged_payload)
+    forged_chain = approvals_mod._compute_chain_hash(forged_content, row["previous_hash"])
+
+    async def _forge():
+        async with open_db(str(db_path)) as db:
+            await db.execute(
+                "UPDATE approval_evidence SET action_kind = 'evil_action', "
+                "content_hash = ?, chain_hash = ?, hmac_sig = NULL WHERE sequence = 1",
+                (forged_content, forged_chain),
+            )
+            await db.commit()
+
+    _run(_forge())
+
+    verdict = _run(approvals_mod.verify_evidence_chain())
+    assert verdict["valid"] is False
+    assert any("hmac signature missing" in e for e in verdict["errors"])
+
+
 def test_deny_with_justification_lands_in_evidence(tmp_path, monkeypatch):
     db_path = tmp_path / "state.db"
     _patch_db(monkeypatch, db_path)
