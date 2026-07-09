@@ -178,14 +178,10 @@ class Element(BaseModel, Observable):
             subcls: str = metadata.pop("lion_class")
             if subcls != Element.class_name(full=True):
                 try:
-                    # Try full qualified name first (LION_CLASS_REGISTRY is
-                    # populated with full-qualified names at import time).
-                    # Fall back to short name for classes registered before the
-                    # full-name convention was adopted.
-                    try:
-                        subcls_type: type[Element] = get_class(subcls)
-                    except (KeyError, ValueError):
-                        subcls_type = get_class(subcls.split(".")[-1])
+                    # get_class resolves both fully-qualified names (registry
+                    # hit or dotted-path import) and legacy short names (data
+                    # persisted before the full-name convention was adopted).
+                    subcls_type: type[Element] = get_class(subcls)
                     # Delegate when there is a custom from_dict OR when the
                     # concrete type differs from cls (so model_validate uses the
                     # right schema). Restore metadata before the recursive call
