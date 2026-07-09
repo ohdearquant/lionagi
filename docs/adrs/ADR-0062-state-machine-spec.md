@@ -1,6 +1,6 @@
 # ADR-0062: Scheduled Item State Machine
 
-Status: proposed
+Status: accepted — activated by ADR-0101 (task-application surface & durable queue), 2026-07-08
 Date: 2026-05-27
 Decision owners: @governance-maintainers
 Depends on: ADR-0025 (session status), ADR-0028 (status reasons), ADR-0056 (play control), ADR-0059 (StateStore)
