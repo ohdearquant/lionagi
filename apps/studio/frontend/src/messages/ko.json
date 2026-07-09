@@ -837,10 +837,21 @@
     "rackEmpty": "아직 워크플로가 없습니다."
   },
   "daemon": {
-    "title": "Studio가 {base}의 로컬 데몬에 연결할 수 없습니다",
-    "bootstrapInstall": "pip install \"lionagi[studio]\"",
-    "bootstrapRun": "li studio",
-    "authNote": "이 데몬에 bearer token을 요구하려면 LIONAGI_STUDIO_AUTH_TOKEN을 설정하세요.",
-    "retry": "다시 시도"
+    "unreachable": {
+      "title": "Studio needs a local lionagi daemon",
+      "body": "Studio couldn't reach a daemon at {base}. Default port is 8765; your data stays on your machine.",
+      "install": "pip install \"lionagi[studio]\"",
+      "run": "li studio",
+      "runAlt": "li studio --no-open",
+      "runAltNote": "Already have this page open?"
+    },
+    "wrongApp": {
+      "title": "Another program is using this port",
+      "body": "Something answered at {base}, but it isn't a lionagi daemon.",
+      "fix": "Stop that program, or point the daemon at a different port:",
+      "command": "li studio --port 8766"
+    },
+    "retry": "Retry",
+    "dismiss": "Dismiss"
   }
 }

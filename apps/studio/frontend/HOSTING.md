@@ -26,9 +26,11 @@ single-origin builds (which run the same `vite build`) keep their same-origin de
 points every visitor's page at their own loopback daemon. (Loopback `http` from an `https`
 page is exempt from mixed-content blocking, so this works from a hosted TLS origin. Set
 `STUDIO_HOSTED_API_BASE` in the Vercel project env to point at a different base.) There is
-no login and no server-side state for the hosted deploy to manage — if the daemon isn't
-running, the app shows a state explaining how to start it and keeps retrying rather than
-rendering broken panels.
+no login and no server-side state for the hosted deploy to manage — if `/health` at the
+resolved API base doesn't answer, or something other than the daemon answers there (another
+program already on port 8765), `NoDaemonGate` (`src/components/shell/NoDaemonGate.tsx`)
+shows a dismissible banner with the fix for each case rather than blanking the app; the
+rest of the shell keeps rendering underneath it, and it retries in the background.
 
 On the CLI side, bare `li studio` (equivalently `li studio --web`) is the mode built
 for this deploy: it starts only the local daemon and prints/opens this hosted URL,
