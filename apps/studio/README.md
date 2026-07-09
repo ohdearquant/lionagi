@@ -1,7 +1,10 @@
 # Lion Studio
 
-Local web interface for Lion. FastAPI backend serves a Vite SPA from the same
-origin — one URL, one process.
+Web interface for Lion. The default experience is zero-install: the hosted
+client-side SPA at <https://lion-studio.khive.ai> connects to your local
+daemon at `http://127.0.0.1:8765` — data never leaves your machine. The
+same-origin FastAPI-served build remains available for Docker, source, and
+dev modes.
 
 ## Project Layout
 
@@ -33,9 +36,15 @@ All variables are optional; defaults are shown.
 
 ## Running
 
-**Default (repo present, production mode)**:
+**Default (hosted UI + local daemon)**:
 ```bash
-li studio          # builds dist/ if stale, starts uvicorn on http://127.0.0.1:8765
+li studio          # starts the local daemon and opens https://lion-studio.khive.ai;
+                   # nothing is built locally (pass --no-open to skip the browser)
+```
+
+**Self-contained local build (Docker or same-origin serve)**:
+```bash
+li studio --docker # auto-pulls ghcr.io/ohdearquant/lion-studio; UI + API on :8765
 ```
 
 **Dev mode (hot-reload)**:
