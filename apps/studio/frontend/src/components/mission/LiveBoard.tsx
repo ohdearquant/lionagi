@@ -27,7 +27,12 @@ import { runDeepLink, invocationDeepLink } from "@/lib/runDeepLink";
  * non-terminal. TODO(unify): route through deriveDisplayStatus once
  * status/verdict/health derivation is unified into one shared function.
  */
-const DEAD_HEALTH = new Set(["stale", "orphaned", "zombie", "unresponsive"]);
+export const DEAD_HEALTH = new Set(["stale", "orphaned", "zombie", "unresponsive"]);
+
+/** Whether a run's effective_health means the process is gone (never based on duration). */
+export function isDeadHealth(health: string | null | undefined): boolean {
+  return health != null && DEAD_HEALTH.has(health);
+}
 
 /** Placeholder card count while the first fetch is in flight. */
 const SKELETON_CARDS = 4;
@@ -67,7 +72,7 @@ function RunCard({ run, nowSec }: { run: RunSummary; nowSec: number }) {
   // Health axis only — duration never factors into this flag.
   // TODO(unify): route through deriveDisplayStatus once status/verdict/
   // health derivation is unified into one shared function.
-  const dead = run.effective_health != null && DEAD_HEALTH.has(run.effective_health);
+  const dead = isDeadHealth(run.effective_health);
 
   return (
     <Link
