@@ -222,6 +222,89 @@ async def test_migration_preserves_populated_pre_migration_rows(tmp_path):
         await state.close()
 
 
+async def test_migration_preserves_triggers(tmp_path):
+    """DROP TABLE drops the table's triggers, so the rebuild must capture and
+    replay them — a legacy schedule_runs trigger survives the migration."""
+    db_path = tmp_path / "legacy_with_trigger.db"
+
+    async with aiosqlite.connect(str(db_path)) as raw:
+        await raw.execute(_CURRENT_SCHEDULES_DDL)
+        await raw.execute(
+            """
+            CREATE TABLE schedule_runs (
+              id                  TEXT    PRIMARY KEY,
+              schedule_id         TEXT    NOT NULL REFERENCES schedules(id) ON DELETE CASCADE,
+              invocation_id       TEXT,
+              trigger_context     JSON    NOT NULL,
+              action_kind         TEXT    NOT NULL,
+              action_args         JSON    NOT NULL,
+              status              TEXT    NOT NULL DEFAULT 'running'
+                                  CHECK(status IN ('running', 'completed', 'failed',
+                                                   'skipped', 'cancelled')),
+              exit_code           INTEGER,
+              chain_parent_id     TEXT    REFERENCES schedule_runs(id),
+              chain_depth         INTEGER NOT NULL DEFAULT 0,
+              fired_at            REAL    NOT NULL,
+              ended_at            REAL,
+              error_detail        TEXT,
+              created_at          REAL    NOT NULL,
+              updated_at          REAL,
+              status_reason_code     TEXT,
+              status_reason_summary  TEXT,
+              status_evidence_refs   JSON
+            )
+            """
+        )
+        await raw.execute("CREATE TABLE trigger_log (run_id TEXT)")
+        await raw.execute(
+            """
+            CREATE TRIGGER schedule_runs_audit AFTER INSERT ON schedule_runs
+            BEGIN
+              INSERT INTO trigger_log (run_id) VALUES (NEW.id);
+            END
+            """
+        )
+        await raw.commit()
+
+    state = StateDB(db_path)
+    await state.open()
+    try:
+        async with state._read() as conn:
+            trig = (
+                (
+                    await conn.execute(
+                        text(
+                            "SELECT sql FROM sqlite_master "
+                            "WHERE type='trigger' AND name='schedule_runs_audit'"
+                        )
+                    )
+                )
+                .mappings()
+                .first()
+            )
+        assert trig is not None, "trigger dropped by the schedule_runs rebuild"
+        assert "trigger_log" in trig["sql"]
+    finally:
+        await state.close()
+
+    # The replayed trigger still fires on insert.
+    async with aiosqlite.connect(str(db_path)) as raw:
+        await raw.execute(
+            "INSERT INTO schedules (id, name, trigger_type, action_kind, created_at, updated_at) "
+            "VALUES ('sched-t', 'sched-t', 'interval', 'agent', 1.0, 1.0)"
+        )
+        await raw.execute(
+            "INSERT INTO schedule_runs "
+            "(id, schedule_id, trigger_context, action_kind, action_args, status, "
+            " chain_depth, fired_at, created_at) "
+            "VALUES ('run-t', 'sched-t', '{}', 'agent', '{}', 'running', 0, 1.0, 1.0)"
+        )
+        await raw.commit()
+        cur = await raw.execute("SELECT run_id FROM trigger_log WHERE run_id = 'run-t'")
+        logged = await cur.fetchone()
+    assert logged is not None, "replayed trigger did not fire on insert"
+
+
 # ── 2. Backup before rebuild ─────────────────────────────────────────────────
 
 

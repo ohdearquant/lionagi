@@ -1026,6 +1026,22 @@ class StateDB:
             )
             index_sqls = [r["sql"] for r in index_rows]
 
+            # DROP TABLE also drops the table's triggers; capture them for
+            # replay alongside the indexes.
+            trigger_rows = (
+                (
+                    await conn.execute(
+                        text(
+                            "SELECT sql FROM sqlite_master "
+                            "WHERE type='trigger' AND tbl_name='schedule_runs' AND sql IS NOT NULL"
+                        )
+                    )
+                )
+                .mappings()
+                .all()
+            )
+            trigger_sqls = [r["sql"] for r in trigger_rows]
+
             cols_rows = (
                 (await conn.execute(text("PRAGMA table_info(schedule_runs)"))).mappings().all()
             )
@@ -1090,6 +1106,8 @@ class StateDB:
                 await driver.execute("ALTER TABLE schedule_runs_new RENAME TO schedule_runs")
                 for idx_sql in index_sqls:
                     await driver.execute(idx_sql)
+                for trig_sql in trigger_sqls:
+                    await driver.execute(trig_sql)
                 # New ADR-0061 queue indexes: not part of the pre-rebuild
                 # index set, so replaying index_sqls above never creates
                 # them. Create explicitly (idempotent) so a migrated DB ends
