@@ -63,7 +63,10 @@ async def test_submit_task_writes_queued_row_with_every_field(db: StateDB) -> No
     assert row["lease_expires_at"] is None
     assert json.loads(row["required_capabilities"]) == ["gpu-exclusive", "lean-toolchain"]
 
-    expected_key = f"{socket.gethostname()}:gpu-exclusive+lean-toolchain"
+    # D4: only the serialization-class token ("gpu-exclusive") folds into
+    # the concurrency_key; "lean-toolchain" is an eligibility-class token
+    # (capabilities.py's default) and never gates concurrency.
+    expected_key = f"{socket.gethostname()}:gpu-exclusive"
     assert row["concurrency_key"] == expected_key
 
 
@@ -87,6 +90,20 @@ async def test_submit_task_workflow_kind_accepted(db: StateDB) -> None:
 
 async def test_submit_task_no_capabilities_no_concurrency_key(db: StateDB) -> None:
     app = TaskApplication(action_kind="agent", args={}, execution_target="host")
+    run_id = await submit_task(db, app)
+    row = await db.fetch_one("SELECT concurrency_key FROM schedule_runs WHERE id = ?", (run_id,))
+    assert row["concurrency_key"] is None
+
+
+async def test_submit_task_eligibility_only_capabilities_no_concurrency_key(db: StateDB) -> None:
+    """D4: eligibility-class tokens (capabilities.py's default for unknown
+    tokens) never fold into concurrency_key -- only serialization tokens do."""
+    app = TaskApplication(
+        action_kind="agent",
+        args={},
+        execution_target="host",
+        required_capabilities=["lean-toolchain"],
+    )
     run_id = await submit_task(db, app)
     row = await db.fetch_one("SELECT concurrency_key FROM schedule_runs WHERE id = ?", (run_id,))
     assert row["concurrency_key"] is None

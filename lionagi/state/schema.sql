@@ -529,6 +529,24 @@ CREATE INDEX IF NOT EXISTS idx_schedule_runs_concurrency
   ON schedule_runs(concurrency_key, status)
   WHERE status IN ('queued', 'running', 'retry_wait');
 
+-- ── Workers (ADR-0101 D4) ─────────────────────────────────────────────────
+-- Capability-matching worker registry -- the only genuinely new table this
+-- ADR pair adds. A worker upserts its own row (worker_tick's heartbeat pass)
+-- with its advertised capability tokens and the execution targets it can
+-- serve; a heartbeat older than the worker.py TTL makes it ineligible for
+-- NEW claims only. In-flight leases still recover solely via
+-- schedule_runs.lease_expires_at (ADR-0061, unchanged by this table).
+CREATE TABLE IF NOT EXISTS workers (
+  worker_id                 TEXT    PRIMARY KEY,
+  advertised_capabilities   JSON    NOT NULL DEFAULT '[]',
+  execution_targets         JSON    NOT NULL DEFAULT '[]',
+  last_heartbeat_at         REAL    NOT NULL,
+  leased_run_id             TEXT    REFERENCES schedule_runs(id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_workers_heartbeat
+  ON workers(last_heartbeat_at);
+
 -- ── Admin event log (ADR-0024) ───────────────────────────────────────────
 -- Append-only audit log following NIST SP 800-92 pattern. Every admin
 -- mutation (transition, prune, checkpoint, vacuum, classify) inserts

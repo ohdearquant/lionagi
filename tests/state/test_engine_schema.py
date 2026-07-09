@@ -217,6 +217,7 @@ ALL_TABLES = {
     "run_tags",
     "approvals",
     "approval_evidence",
+    "workers",
 }
 
 

@@ -1,6 +1,7 @@
 # Copyright (c) 2023-2026, HaiyangLi <quantocean.li at gmail dot com>
 # SPDX-License-Identifier: Apache-2.0
-"""ADR-0101 D3: the local (host-only) worker/claim loop.
+"""ADR-0101 D3/D4: the local (host-only) worker/claim loop with capability
+matching.
 
 v1 ships ONE worker — the Studio daemon engine itself — claiming everything
 it can serve. A claim is one guarded CAS through
@@ -11,10 +12,14 @@ CAS path (ADR-0101's scope fence). Execution resolves through the existing
 subprocess launcher (``lionagi.studio.scheduler.subprocess``) — this module
 never spawns a process itself.
 
-Capability matching, remote execution targets, workers-table heartbeats, and
-workflow-registry resolution are later slices (D4 / ADR-0102): a row this
-worker cannot serve under the D3 claim predicate is left ``queued``, never
-faked.
+D4 adds the ``workers`` registry: ``worker_tick`` upserts this worker's
+heartbeat before every claim pass, and the claim predicate matches a queued
+row's ``required_capabilities``/``execution_target`` against the calling
+worker's advertised capabilities/execution targets (``capabilities.py``'s
+token->class map) instead of the D3-era "capability-free only" exclusion. A
+row this worker cannot serve is left ``queued``, never faked. Remote
+execution targets and workflow-registry resolution remain later slices
+(ADR-0102 and a remote worker binding).
 """
 
 from __future__ import annotations
@@ -26,22 +31,26 @@ import uuid
 from collections.abc import Awaitable, Callable
 from typing import Any
 
-from sqlalchemy import text
+from sqlalchemy import bindparam, text
+from sqlalchemy.types import JSON
 
 from lionagi.state.db import StateDB
 from lionagi.state.reasons import RunReasons
 from lionagi.state.transitions import Actor, StateReason, TransitionRequest, transition
+from lionagi.studio.scheduler import capabilities
 from lionagi.studio.scheduler import subprocess as _subprocess
 
 _log = logging.getLogger(__name__)
 
 __all__ = (
+    "DEFAULT_HEARTBEAT_TTL_SECONDS",
     "DEFAULT_LEASE_TTL_SECONDS",
     "MAX_LEASE_ATTEMPTS",
     "TASK_WORKER_ENABLED",
     "claim_and_execute",
     "default_execute",
     "reap_expired_leases",
+    "register_heartbeat",
     "worker_tick",
 )
 
@@ -51,26 +60,45 @@ TASK_WORKER_ENABLED = True
 
 DEFAULT_LEASE_TTL_SECONDS = 300.0
 
+# D4: a worker whose heartbeat is older than this is ineligible for NEW
+# claims (assignment eligibility only). In-flight leases still recover
+# solely via schedule_runs.lease_expires_at -- unrelated to this TTL.
+DEFAULT_HEARTBEAT_TTL_SECONDS = 90.0
+
+# D3 v1 default: the local worker serves 'host'-targeted rows only. Callers
+# that advertise a worker via register_heartbeat/worker_tick without an
+# explicit execution_targets list get this default, preserving D3 behavior.
+_DEFAULT_EXECUTION_TARGETS: tuple[str, ...] = ("host",)
+
 # D3 R1: a running lease that lapses this many times without completing goes
 # terminal instead of re-queuing forever. Deliberately conservative — policy
 # tuning (backoff curves, per-capability bounds) belongs to the
 # capability-matching slice, not this one.
 MAX_LEASE_ATTEMPTS = 3
 
-# CLAIM PREDICATE (D3, conservative v1): only host-targeted, capability-free,
-# non-workflow, ad-hoc (schedule_id IS NULL) rows are eligible. Scheduler-fired
-# rows (schedule_id NOT NULL) are never touched — that path is governed by
+# CLAIM CANDIDATES (D4): non-workflow, ad-hoc (schedule_id IS NULL) queued
+# rows, oldest first. Capability/execution-target matching against the
+# calling worker's advertised set happens in Python (claim_and_execute) --
+# SQL only narrows to rows any worker could conceivably serve. Scheduler-fired
+# rows (schedule_id NOT NULL) are never touched -- that path is governed by
 # SchedulerEngine._fire, not this worker.
 _CLAIM_SELECT_SQL = """
-    SELECT id, action_kind, action_args, lease_attempts
+    SELECT id, action_kind, action_args, lease_attempts, required_capabilities,
+           execution_target, concurrency_key
     FROM schedule_runs
     WHERE status = 'queued'
       AND schedule_id IS NULL
-      AND execution_target = 'host'
-      AND (required_capabilities IS NULL OR required_capabilities = '[]')
       AND action_kind != 'workflow'
     ORDER BY queued_at ASC
     LIMIT :limit
+"""
+
+# D4: same-concurrency_key rows currently 'running' block admission of a new
+# claim sharing that key -- advisory ordering only; the worker-side host lock
+# stays authoritative over the resource itself (ADR-0101 scope fence).
+_RUNNING_CONCURRENCY_KEYS_SQL = """
+    SELECT DISTINCT concurrency_key FROM schedule_runs
+    WHERE status = 'running' AND concurrency_key IS NOT NULL
 """
 
 _REAP_SELECT_SQL = """
@@ -81,7 +109,67 @@ _REAP_SELECT_SQL = """
       AND lease_expires_at < :now
 """
 
+_WORKER_HEARTBEAT_SQL = "SELECT last_heartbeat_at FROM workers WHERE worker_id = :worker_id"
+
+_HEARTBEAT_UPSERT_SQL = """
+    INSERT INTO workers (worker_id, advertised_capabilities, execution_targets, last_heartbeat_at)
+    VALUES (:worker_id, :advertised_capabilities, :execution_targets, :now)
+    ON CONFLICT(worker_id) DO UPDATE SET
+        advertised_capabilities = excluded.advertised_capabilities,
+        execution_targets       = excluded.execution_targets,
+        last_heartbeat_at       = excluded.last_heartbeat_at
+"""
+
 ExecuteFn = Callable[[dict[str, Any]], Awaitable[tuple[int, str]]]
+
+
+async def register_heartbeat(
+    db: StateDB,
+    *,
+    worker_id: str,
+    advertised_capabilities: list[str] | None = None,
+    execution_targets: list[str] | None = None,
+    now: float | None = None,
+) -> None:
+    """Upsert *worker_id*'s ``workers`` row and bump ``last_heartbeat_at``.
+
+    Called once per ``worker_tick`` before the claim pass, so a worker
+    ticking regularly never reads its own heartbeat as stale. A worker that
+    stops ticking falls behind ``DEFAULT_HEARTBEAT_TTL_SECONDS`` and becomes
+    ineligible for new claims until it heartbeats again.
+    """
+    now = now if now is not None else time.time()
+    async with db._tx() as conn:
+        await conn.execute(
+            text(_HEARTBEAT_UPSERT_SQL).bindparams(
+                bindparam("advertised_capabilities", type_=JSON),
+                bindparam("execution_targets", type_=JSON),
+            ),
+            {
+                "worker_id": worker_id,
+                "advertised_capabilities": list(advertised_capabilities or ()),
+                "execution_targets": list(execution_targets or _DEFAULT_EXECUTION_TARGETS),
+                "now": now,
+            },
+        )
+
+
+async def _worker_is_stale(
+    db: StateDB, *, worker_id: str, now: float, heartbeat_ttl: float
+) -> bool:
+    """True iff *worker_id* has a ``workers`` row whose heartbeat is older
+    than *heartbeat_ttl*. A worker with no row yet (never heartbeated) is
+    treated as not-stale -- there is no signal to distrust, and every
+    existing D3 caller that never wrote to ``workers`` keeps claiming."""
+    async with db._read() as conn:
+        row = (
+            (await conn.execute(text(_WORKER_HEARTBEAT_SQL), {"worker_id": worker_id}))
+            .mappings()
+            .first()
+        )
+    if row is None or row["last_heartbeat_at"] is None:
+        return False
+    return (now - row["last_heartbeat_at"]) > heartbeat_ttl
 
 
 async def default_execute(row: dict[str, Any]) -> tuple[int, str]:
@@ -177,8 +265,28 @@ async def claim_and_execute(
     now: float | None = None,
     lease_ttl: float = DEFAULT_LEASE_TTL_SECONDS,
     limit: int = 20,
+    advertised_capabilities: list[str] | None = None,
+    execution_targets: list[str] | None = None,
+    heartbeat_ttl: float = DEFAULT_HEARTBEAT_TTL_SECONDS,
 ) -> int:
     """Claim every eligible queued row this worker can serve, then execute each.
+
+    D4 match rule: a queued row R is claimable by this worker iff R's
+    eligibility∪serialization capability tokens are a subset of
+    *advertised_capabilities* AND R's execution_target is in
+    *execution_targets* (a NULL/empty execution_target is claimable by any
+    worker). Candidates are then ordered by affinity match (a row whose
+    affinity tokens this worker also advertises is preferred), ties broken
+    by ``queued_at`` (the SQL order is preserved by a stable sort). A row
+    sharing a ``concurrency_key`` with another row already ``running`` (or
+    already claimed earlier in this same pass) is skipped -- advisory
+    admission only; the worker-side host lock stays authoritative.
+
+    If *worker_id* has a ``workers`` row whose heartbeat is older than
+    *heartbeat_ttl*, this pass claims nothing (assignment eligibility gate;
+    in-flight leases are unaffected and still recover via
+    ``reap_expired_leases``). A worker with no heartbeat history yet (never
+    called ``register_heartbeat``/``worker_tick``) is not treated as stale.
 
     Returns the number of rows claimed (regardless of execution outcome).
     Each claim is one guarded CAS (``queued -> running``) that atomically
@@ -188,12 +296,52 @@ async def claim_and_execute(
     """
     execute = execute if execute is not None else default_execute
     now = now if now is not None else time.time()
+    advertised = list(advertised_capabilities or ())
+    targets = set(execution_targets or _DEFAULT_EXECUTION_TARGETS)
+
+    if await _worker_is_stale(db, worker_id=worker_id, now=now, heartbeat_ttl=heartbeat_ttl):
+        return 0
+
+    # Over-fetch beyond `limit`: capability/execution-target filtering and
+    # affinity reordering happen in Python below, so SQL must hand back more
+    # candidates than the final claim cap or an affinity-matched row queued
+    # after `limit` capability-free rows would never be seen this pass.
+    sql_fetch_limit = max(limit * 5, 50)
 
     async with db._read() as conn:
-        rows = (await conn.execute(text(_CLAIM_SELECT_SQL), {"limit": limit})).mappings().all()
+        rows = (
+            (await conn.execute(text(_CLAIM_SELECT_SQL), {"limit": sql_fetch_limit}))
+            .mappings()
+            .all()
+        )
+        running_keys = {
+            r["concurrency_key"]
+            for r in (await conn.execute(text(_RUNNING_CONCURRENCY_KEYS_SQL))).mappings().all()
+        }
+
+    candidates: list[tuple[Any, list[str]]] = []
+    for row in rows:
+        required = json.loads(row["required_capabilities"]) if row["required_capabilities"] else []
+        if not capabilities.worker_can_serve(required, advertised):
+            continue
+        target = row["execution_target"]
+        if target and target not in targets:
+            continue
+        candidates.append((row, required))
+
+    # Stable sort: preserves the SQL's queued_at ASC order among equal
+    # affinity scores, only reordering across different scores.
+    candidates.sort(key=lambda item: -capabilities.affinity_score(item[1], advertised))
+    # `limit` caps claim ATTEMPTS this pass (matching D3's original meaning),
+    # applied after filtering/reordering so it never truncates before
+    # affinity gets a chance to reorder.
+    candidates = candidates[:limit]
 
     claimed = 0
-    for row in rows:
+    for row, _required in candidates:
+        concurrency_key = row["concurrency_key"]
+        if concurrency_key is not None and concurrency_key in running_keys:
+            continue
         run_id = row["id"]
         result = await transition(
             db,
@@ -218,6 +366,10 @@ async def claim_and_execute(
         if not result.applied:
             continue
         claimed += 1
+        if concurrency_key is not None:
+            # Advisory: nothing else in this same pass may claim a row
+            # sharing this key, even after this row finishes executing.
+            running_keys.add(concurrency_key)
         # The claim's lease identity travels to the terminal write: if this
         # worker's lease lapses mid-execution and the reaper hands the row to
         # another claimant, the stale worker's completed/failed guard
@@ -285,15 +437,35 @@ async def worker_tick(
     execute: ExecuteFn | None = None,
     now: float | None = None,
     lease_ttl: float = DEFAULT_LEASE_TTL_SECONDS,
+    advertised_capabilities: list[str] | None = None,
+    execution_targets: list[str] | None = None,
+    heartbeat_ttl: float = DEFAULT_HEARTBEAT_TTL_SECONDS,
 ) -> dict[str, int]:
-    """One worker tick: reaper pass then claim pass.
+    """One worker tick: heartbeat, then reaper pass, then claim pass.
 
     Split from any sleep loop so tests (and the Studio daemon's own tick)
-    can drive a single pass directly without a timer.
+    can drive a single pass directly without a timer. The heartbeat upsert
+    runs first every tick, so a worker ticking regularly is never stale for
+    its own claim pass -- ``heartbeat_ttl`` only bites a worker that stops
+    ticking.
     """
     now = now if now is not None else time.time()
+    await register_heartbeat(
+        db,
+        worker_id=worker_id,
+        advertised_capabilities=advertised_capabilities,
+        execution_targets=execution_targets,
+        now=now,
+    )
     reaped = await reap_expired_leases(db, now=now)
     claimed = await claim_and_execute(
-        db, worker_id=worker_id, execute=execute, now=now, lease_ttl=lease_ttl
+        db,
+        worker_id=worker_id,
+        execute=execute,
+        now=now,
+        lease_ttl=lease_ttl,
+        advertised_capabilities=advertised_capabilities,
+        execution_targets=execution_targets,
+        heartbeat_ttl=heartbeat_ttl,
     )
     return {**reaped, "claimed": claimed}

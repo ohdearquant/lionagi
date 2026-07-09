@@ -14,9 +14,11 @@ prior CAS state to guard. Every status move after it routes through
 ``lionagi.state.transitions.transition()``; this module never writes
 ``schedule_runs.status`` directly again.
 
-No worker/lease loop, no capability matching, and no remote execution live
-here — ``execution_target``/``required_capabilities``/``library_ref`` are
-stored as provenance for a later slice (D3/D4, ADR-0102).
+No worker/lease loop and no remote execution live here — ``execution_target``
+and ``library_ref`` are stored as provenance for a later slice (D3, already
+shipped, and ADR-0102). ``required_capabilities`` is used at submit time only
+to derive the D4 host-scoped ``concurrency_key`` (``capabilities.py``); the
+claim-time eligibility/affinity matching itself lives in ``worker.py``.
 """
 
 from __future__ import annotations
@@ -34,6 +36,7 @@ from lionagi.state.db import StateDB
 from lionagi.state.reasons import RunReasons
 from lionagi.state.transitions import Actor, StateReason, TransitionRequest, transition
 
+from ..scheduler import capabilities
 from ..scheduler.subprocess import _ALIAS_ACTION_KINDS, _VALID_ACTION_KINDS
 
 __all__ = ("TaskApplication", "cancel_task", "submit_task")
@@ -95,16 +98,14 @@ def _validate(app: TaskApplication) -> str:
 
 
 def _derive_concurrency_key(required_capabilities: list[str]) -> str | None:
-    """D4's host-scoped rule: a task carrying capability tokens gets a
-    concurrency_key scoped to this host, so ADR-0061 admission can later
-    serialize same-host claims. Which tokens actually demand serialization
-    (D4's eligibility/serialization/affinity classes) is a worker-side
-    capability-class concern out of scope for this slice — here the key is
-    only derived and stored, never matched or admitted against.
+    """D4's host-scoped rule: only the serialization-class tokens among
+    *required_capabilities* (capabilities.py's declarative token->class map)
+    fold into a concurrency_key scoped to this host, so ADR-0061 admission
+    serializes same-host claims for that resource. Eligibility and affinity
+    tokens never gate concurrency: an eligibility-only or affinity-only task
+    gets no concurrency_key at all.
     """
-    if not required_capabilities:
-        return None
-    return f"{socket.gethostname()}:{'+'.join(sorted(required_capabilities))}"
+    return capabilities.host_scoped_concurrency_key(socket.gethostname(), required_capabilities)
 
 
 async def submit_task(db: StateDB, app: TaskApplication) -> str:
