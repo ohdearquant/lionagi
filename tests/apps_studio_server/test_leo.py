@@ -146,41 +146,30 @@ def test_leo_message_unknown_session(tmp_path, monkeypatch):
 
 def test_leo_requires_bearer_when_token_set(tmp_path, monkeypatch):
     monkeypatch.setenv("LIONAGI_STUDIO_AUTH_TOKEN", "test-leo-secret")
-    from importlib import reload
 
     import lionagi.studio.app as app_mod
 
-    reload(app_mod)
-    client = TestClient(
-        app_mod.app, raise_server_exceptions=False, base_url="http://127.0.0.1:8765"
-    )
-    try:
-        r = client.post("/api/leo/sessions")
-        assert r.status_code == 401
-    finally:
-        monkeypatch.delenv("LIONAGI_STUDIO_AUTH_TOKEN", raising=False)
-        reload(app_mod)
+    # create_app() bakes the monkeypatched token into a fresh app instance;
+    # unlike importlib.reload(app_mod), there is no shared singleton to
+    # restore afterwards.
+    app = app_mod.create_app()
+    client = TestClient(app, raise_server_exceptions=False, base_url="http://127.0.0.1:8765")
+    r = client.post("/api/leo/sessions")
+    assert r.status_code == 401
 
 
 def test_leo_correct_token_not_401(tmp_path, monkeypatch):
     monkeypatch.setenv("LIONAGI_STUDIO_AUTH_TOKEN", "test-leo-secret")
-    from importlib import reload
 
     import lionagi.studio.app as app_mod
 
-    reload(app_mod)
-    client = TestClient(
-        app_mod.app, raise_server_exceptions=False, base_url="http://127.0.0.1:8765"
+    app = app_mod.create_app()
+    client = TestClient(app, raise_server_exceptions=False, base_url="http://127.0.0.1:8765")
+    r = client.post(
+        "/api/leo/sessions",
+        headers={"Authorization": "Bearer test-leo-secret"},
     )
-    try:
-        r = client.post(
-            "/api/leo/sessions",
-            headers={"Authorization": "Bearer test-leo-secret"},
-        )
-        assert r.status_code == 200
-    finally:
-        monkeypatch.delenv("LIONAGI_STUDIO_AUTH_TOKEN", raising=False)
-        reload(app_mod)
+    assert r.status_code == 200
 
 
 # ---------------------------------------------------------------------------

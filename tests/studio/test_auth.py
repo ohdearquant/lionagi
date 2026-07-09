@@ -40,8 +40,6 @@ _DATA_GET_PREFIXES = [
 
 
 def _make_client(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> TestClient:
-    from importlib import reload
-
     import lionagi.studio.app as app_mod
     import lionagi.studio.services.invocations as inv_mod
     import lionagi.studio.services.sessions as sess_mod
@@ -56,8 +54,13 @@ def _make_client(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> TestClient:
         if hasattr(mod, "_DB"):
             monkeypatch.setattr(mod, "_DB", str(fake_db))
 
-    reload(app_mod)
-    return TestClient(app_mod.app, raise_server_exceptions=False, base_url="http://127.0.0.1:8765")
+    # A fresh app instance (via create_app()) instead of importlib.reload(app_mod):
+    # reload mutates the shared module singleton every other importer holds a
+    # reference to, which is both a data race under xdist and re-executes
+    # module-level side effects (CORS regex compilation, route
+    # re-registration) on a namespace other code still imports.
+    app = app_mod.create_app()
+    return TestClient(app, raise_server_exceptions=False, base_url="http://127.0.0.1:8765")
 
 
 @pytest.mark.integration
