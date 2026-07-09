@@ -973,6 +973,12 @@ class StateDB:
         p = self.path
         if p is None or str(p) == ":memory:" or not p.exists():
             return
+        # In WAL mode, recently committed transactions can live only in the
+        # `-wal` sidecar file until a checkpoint occurs. A raw file copy taken
+        # without checkpointing first can silently omit that data, defeating
+        # the rollback guarantee this backup exists to provide. TRUNCATE forces
+        # a full checkpoint and truncates the WAL file back to zero length.
+        await self.checkpoint("TRUNCATE")
         backup_path = p.with_name(f"{p.name}.pre-{label}.{int(time.time())}.bak")
         shutil.copy2(p, backup_path)
 
@@ -2459,6 +2465,69 @@ class StateDB:
             row = (await conn.execute(text(query), params)).mappings().first()
         return int(row["n"]) if row else 0
 
+    async def count_schedule_runs_batch(
+        self,
+        schedule_ids: list[str],
+        *,
+        chain_depth: int = 0,
+        statuses: tuple[str, ...] = ("completed", "failed", "cancelled"),
+    ) -> dict[str, int]:
+        """Batched form of count_schedule_runs — one query for many schedule_ids."""
+        if not schedule_ids:
+            return {}
+        id_placeholders = ", ".join(f":id{i}" for i in range(len(schedule_ids)))
+        status_placeholders = ", ".join(f":status{i}" for i in range(len(statuses)))
+        params: dict[str, Any] = {f"id{i}": sid for i, sid in enumerate(schedule_ids)}
+        params["chain_depth"] = chain_depth
+        params.update({f"status{i}": s for i, s in enumerate(statuses)})
+        query = (
+            f"SELECT schedule_id, COUNT(*) AS n FROM schedule_runs "  # noqa: S608
+            f"WHERE schedule_id IN ({id_placeholders}) AND chain_depth = :chain_depth "
+            f"AND status IN ({status_placeholders}) GROUP BY schedule_id"
+        )
+        async with self._read() as conn:
+            rows = (await conn.execute(text(query), params)).mappings().all()
+        counts = {r["schedule_id"]: int(r["n"]) for r in rows}
+        return {sid: counts.get(sid, 0) for sid in schedule_ids}
+
+    async def schedule_run_streaks(
+        self, schedule_ids: list[str]
+    ) -> dict[str, tuple[int, str | None]]:
+        """Batched form of schedule_run_streak — one query for many schedule_ids."""
+        if not schedule_ids:
+            return {}
+        id_placeholders = ", ".join(f":id{i}" for i in range(len(schedule_ids)))
+        params = {f"id{i}": sid for i, sid in enumerate(schedule_ids)}
+        query = (
+            "SELECT schedule_id, status FROM ("  # noqa: S608
+            "  SELECT schedule_id, status, fired_at,"
+            "         ROW_NUMBER() OVER ("
+            "           PARTITION BY schedule_id ORDER BY fired_at DESC, id DESC"
+            "         ) AS rn"
+            f"  FROM schedule_runs WHERE schedule_id IN ({id_placeholders}) AND chain_depth = 0"
+            ") ranked WHERE rn <= 50 ORDER BY schedule_id, rn"
+        )
+        async with self._read() as conn:
+            rows = (await conn.execute(text(query), params)).mappings().all()
+        grouped: dict[str, list[str]] = {}
+        for row in rows:
+            grouped.setdefault(row["schedule_id"], []).append(row["status"])
+        result: dict[str, tuple[int, str | None]] = {}
+        for sid in schedule_ids:
+            statuses = grouped.get(sid)
+            if not statuses:
+                result[sid] = (0, None)
+                continue
+            last_status = statuses[0]
+            streak = 0
+            for status in statuses:
+                if status in ("completed", "cancelled"):
+                    break
+                if status == "failed":
+                    streak += 1
+            result[sid] = (streak, last_status)
+        return result
+
     async def sum_schedule_spend(self, schedule_id: str) -> dict[str, Any]:
         """Sum cost/token usage across every session a schedule has spawned.
 
@@ -2584,7 +2653,7 @@ class StateDB:
         """Consecutive terminal 'failed' streak and most recent status, newest-first, capped at 50 rows."""
         query = """SELECT status FROM schedule_runs
                    WHERE schedule_id = :schedule_id AND chain_depth = 0
-                   ORDER BY fired_at DESC LIMIT 50"""  # noqa: S608
+                   ORDER BY fired_at DESC, id DESC LIMIT 50"""  # noqa: S608
         async with self._read() as conn:
             rows = (await conn.execute(text(query), {"schedule_id": schedule_id})).mappings().all()
         if not rows:

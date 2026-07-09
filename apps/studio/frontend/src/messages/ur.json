@@ -557,8 +557,8 @@
       "ariaLabel": "ایجنٹ ⁨{name}⁩ — سیشن تفصیل کھولیں",
       "branches": "{count} شاخ",
       "messages": "{count} پیغام",
-      "branchesTitle": "{count} شاخیں",
-      "messagesTitle": "{count} پیغامات"
+      "branchesTitle": "{count, plural, one {# برانچ} other {# برانچز}}",
+      "messagesTitle": "{count, plural, one {# پیغام} other {# پیغامات}}"
     },
     "empty": {
       "message": "کوئی ایجنٹ نہیں چل رہا — ایجنٹ فلیٹ لائیو آرکیسٹریشنز دکھاتا ہے۔",

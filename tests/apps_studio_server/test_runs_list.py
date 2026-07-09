@@ -112,6 +112,36 @@ def test_runs_list_filters_multi_status_and_playbook_contains(tmp_path, monkeypa
         assert pb is None or "alpha" in pb.lower()
 
 
+def test_runs_list_surfaces_status_reason(tmp_path, monkeypatch):
+    """GET /api/runs list rows must carry status_reason_code/summary (ADR-0028),
+    the same fields the detail route (_run_row via get_run) already exposes."""
+    from lionagi.state.reasons import RunReasons
+
+    db_path = tmp_path / "state.db"
+    sid = str(uuid.uuid4())
+    _run(_seed_sessions(db_path, [{"id": sid, "status": "running"}]))
+
+    async def _fail_it():
+        async with StateDB(db_path) as db:
+            await db.update_status(
+                "session",
+                sid,
+                new_status="failed",
+                reason_code=RunReasons.FAILED_EXIT_NONZERO,
+                reason_summary="worker exited with code 1",
+            )
+
+    _run(_fail_it())
+    client = _make_client(tmp_path, monkeypatch, db_path)
+
+    r = client.get("/api/runs")
+    assert r.status_code == 200
+    run = r.json()["runs"][0]
+    assert run["status"] == "failed"
+    assert run["status_reason_code"] == RunReasons.FAILED_EXIT_NONZERO
+    assert run["status_reason_summary"] == "worker exited with code 1"
+
+
 def test_runs_list_invalid_page_rejected(tmp_path, monkeypatch):
     db_path = tmp_path / "state.db"
     client = _make_client(tmp_path, monkeypatch, db_path)

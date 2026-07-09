@@ -416,6 +416,85 @@ async def test_backup_created_before_rebuild(tmp_path):
     assert len(backups) == 1, f"expected exactly one backup file, got {backups}"
 
 
+async def test_backup_includes_wal_only_committed_rows(tmp_path):
+    """The pre-rebuild backup must checkpoint WAL before copying: a row
+    committed in WAL mode but never checkpointed must still show up in the
+    backup file, not just in the live db once it eventually merges."""
+    db_path = tmp_path / "legacy_for_wal_backup.db"
+
+    async with aiosqlite.connect(str(db_path)) as raw:
+        await raw.execute("PRAGMA journal_mode=WAL")
+        await raw.execute(_CURRENT_SCHEDULES_DDL)
+        await raw.execute(
+            """
+            CREATE TABLE schedule_runs (
+              id                  TEXT    PRIMARY KEY,
+              schedule_id         TEXT    NOT NULL REFERENCES schedules(id) ON DELETE CASCADE,
+              invocation_id       TEXT,
+              trigger_context     JSON    NOT NULL,
+              action_kind         TEXT    NOT NULL,
+              action_args         JSON    NOT NULL,
+              status              TEXT    NOT NULL DEFAULT 'running'
+                                  CHECK(status IN ('running', 'completed', 'failed',
+                                                   'skipped', 'cancelled')),
+              exit_code           INTEGER,
+              chain_parent_id     TEXT    REFERENCES schedule_runs(id),
+              chain_depth         INTEGER NOT NULL DEFAULT 0,
+              fired_at            REAL    NOT NULL,
+              ended_at            REAL,
+              error_detail        TEXT,
+              created_at          REAL    NOT NULL
+            )
+            """
+        )
+        await raw.execute(
+            "INSERT INTO schedules (id, name, trigger_type, action_kind, created_at, updated_at) "
+            "VALUES ('sched-wal', 'sched-wal', 'interval', 'agent', 1.0, 1.0)"
+        )
+        await raw.commit()
+
+    # Hold an idle connection open across the writer's close so SQLite's
+    # checkpoint-on-last-connection-close doesn't fire and merge the WAL back
+    # into the main db file before StateDB.open() gets a chance to run.
+    holder = await aiosqlite.connect(str(db_path))
+    await holder.execute("PRAGMA journal_mode=WAL")
+
+    writer = await aiosqlite.connect(str(db_path))
+    await writer.execute("PRAGMA journal_mode=WAL")
+    await writer.execute(
+        "INSERT INTO schedule_runs "
+        "(id, schedule_id, trigger_context, action_kind, action_args, status, "
+        " chain_depth, fired_at, created_at) "
+        "VALUES ('run-wal-only', 'sched-wal', '{}', 'agent', '{}', 'running', 0, 1.0, 1.0)"
+    )
+    await writer.commit()
+    await writer.close()
+
+    wal_path = db_path.with_name(db_path.name + "-wal")
+    assert wal_path.exists() and wal_path.stat().st_size > 0, (
+        "test setup invalid: committed row must still be sitting in the WAL sidecar"
+    )
+
+    pre_open_files = set(tmp_path.iterdir())
+
+    state = StateDB(db_path)
+    await state.open()
+    await state.close()
+    await holder.close()
+
+    post_open_files = set(tmp_path.iterdir())
+    new_files = post_open_files - pre_open_files
+    backups = [p for p in new_files if "schedule_runs" in p.name and p.name.endswith(".bak")]
+    assert len(backups) == 1, f"expected exactly one backup file, got {backups}"
+
+    async with aiosqlite.connect(str(backups[0])) as check:
+        cur = await check.execute("SELECT id FROM schedule_runs WHERE id = 'run-wal-only'")
+        row = await cur.fetchone()
+    assert row is not None, (
+        "backup is missing a row that was only in the WAL sidecar at backup time"
+    )
+
+
 async def test_backup_not_created_when_no_rebuild_needed(tmp_path):
     """No backup file is left behind opening a db that already carries the
     current schema — the backup only fires on an actual rebuild."""
@@ -525,6 +604,82 @@ async def test_transition_store_rejects_unknown_reason_code(db: StateDB) -> None
                 idempotency_key=_uid(),
             ),
         )
+
+
+async def test_transition_allows_declared_guard_and_patch_columns(db: StateDB) -> None:
+    _sched_id, run_id = await _make_schedule_run(db, status="running")
+    await db.execute(
+        "UPDATE schedule_runs SET leased_by = :leased_by WHERE id = :id",
+        {"leased_by": "worker-a", "id": run_id},
+    )
+
+    result = await transition(
+        db,
+        TransitionRequest(
+            entity_type="schedule_run",
+            entity_id=run_id,
+            from_state="running",
+            to_state="failed",
+            reason=StateReason(code="run.failed.exit_nonzero"),
+            actor=Actor(type="system", id="test"),
+            idempotency_key=_uid(),
+        ),
+        guard={"leased_by": "worker-a"},
+        patch={"leased_by": "worker-a", "lease_expires_at": 123.0, "lease_attempts": 2},
+    )
+    assert result.applied is True
+
+    row = await db.fetch_one(
+        "SELECT leased_by, lease_expires_at, lease_attempts FROM schedule_runs WHERE id = ?",
+        (run_id,),
+    )
+    assert row["leased_by"] == "worker-a"
+    assert row["lease_expires_at"] == 123.0
+    assert row["lease_attempts"] == 2
+
+
+async def test_transition_rejects_unknown_guard_column(db: StateDB) -> None:
+    _sched_id, run_id = await _make_schedule_run(db, status="running")
+
+    with pytest.raises(ValueError, match="guard.*status_reason_code"):
+        await transition(
+            db,
+            TransitionRequest(
+                entity_type="schedule_run",
+                entity_id=run_id,
+                from_state="running",
+                to_state="failed",
+                reason=StateReason(code="run.failed.exit_nonzero"),
+                actor=Actor(type="system", id="test"),
+                idempotency_key=_uid(),
+            ),
+            guard={"status_reason_code": "whatever"},
+        )
+
+    row = await db.fetch_one("SELECT status FROM schedule_runs WHERE id = ?", (run_id,))
+    assert row["status"] == "running"  # rejected before any SQL ran
+
+
+async def test_transition_rejects_unknown_patch_column(db: StateDB) -> None:
+    _sched_id, run_id = await _make_schedule_run(db, status="running")
+
+    with pytest.raises(ValueError, match="patch.*action_args"):
+        await transition(
+            db,
+            TransitionRequest(
+                entity_type="schedule_run",
+                entity_id=run_id,
+                from_state="running",
+                to_state="completed",
+                reason=StateReason(code="run.completed.ok"),
+                actor=Actor(type="system", id="test"),
+                idempotency_key=_uid(),
+            ),
+            patch={"action_args": '{"evil": true}'},
+        )
+
+    row = await db.fetch_one("SELECT status FROM schedule_runs WHERE id = ?", (run_id,))
+    assert row["status"] == "running"  # rejected before any SQL ran
 
 
 # ── 4. Load-bearing: schedule-spawned runs stay byte-identical ──────────────
