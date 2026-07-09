@@ -5,7 +5,9 @@
 
 from __future__ import annotations
 
+import itertools
 import logging
+from collections.abc import Callable
 from typing import TYPE_CHECKING, Any
 
 from lionagi import FieldModel
@@ -57,8 +59,30 @@ def grant_spawn(branch: Branch, *, prompt: bool = True) -> None:
     branch.grant_capabilities(build_emission_operable((SpawnRequest,), name="spawn"), prompt=prompt)
 
 
-def role_node_builder(roles: dict[str, Branch]):
-    """Return a node_builder closure that routes SpawnRequests to role branches."""
+def role_node_builder(
+    roles: dict[str, Branch],
+    *,
+    decorate_instruction: Callable[[SpawnRequest, str], str] | None = None,
+):
+    """Return a node_builder closure that routes SpawnRequests to role branches.
+
+    *decorate_instruction*, when given, is called with the request and the
+    node's freshly allocated ``spawn_id`` and must return the full instruction
+    text the child operation runs with — CLI callers use it to inject the
+    same artifact-directory + REQUIRED-file text a planned leg gets (see
+    ``lionagi.cli.orchestrate.flow``); library/engine callers that pass
+    nothing keep the plain no-artifact instruction.
+    """
+    # Closure-scoped monotonic sequence: the ONLY correct source of a spawned
+    # node's stable id. It must be allocated here, at construction time,
+    # because this is the sole point that sees the SpawnRequest before the
+    # child Operation is ever queued — by the time _execute_dag looks at
+    # completed results, completion order (not spawn order) is all that is
+    # left, and that is unrelated to which child actually is "the first
+    # spawn". Minting the id at completion-time let an unrelated node "steal"
+    # spawn-1 depending on which sibling happened to finish first — that is
+    # the bug this closure exists to fix.
+    _next_spawn_seq = itertools.count(1)
 
     def build(req: SpawnRequest, emitter: Operation) -> Operation:
         # Defense-in-depth: validate the operation at the routing boundary even
@@ -75,10 +99,8 @@ def role_node_builder(roles: dict[str, Branch]):
                 sorted(SPAWN_ALLOWED_OPERATIONS),
             )
             op = "operate"
-        node = create_operation(
-            op,
-            parameters={"instruction": req.instruction},
-        )
+
+        target = None
         if req.assignee:
             target = roles.get(req.assignee)
             if target is None:
@@ -86,11 +108,34 @@ def role_node_builder(roles: dict[str, Branch]):
                     f"SpawnRequest assignee {req.assignee!r} is not a "
                     f"recognized role (known: {sorted(roles)})"
                 )
+
+        # Allocate only after assignee validation succeeds — an unknown
+        # assignee raises above and never consumes a sequence number, so the
+        # ids handed to real children stay dense modulo only genuine
+        # post-build rejections (cycle/cap) downstream, which are acceptable
+        # gaps per the executor's own bookkeeping.
+        spawn_id = f"spawn-{next(_next_spawn_seq)}"
+        instruction = req.instruction
+        if decorate_instruction is not None:
+            instruction = decorate_instruction(req, spawn_id)
+
+        node = create_operation(
+            op,
+            parameters={"instruction": instruction},
+        )
+        # Stamped so post-run callers (artifact contracts, DAG metadata) can
+        # attribute a reactively spawned node back to the role that ran it —
+        # the node otherwise carries no trace of its assignee once its
+        # branch_id is overwritten by the executor's per-spawn branch clone.
+        # spawn_id survives that clone too (metadata, not branch state) and
+        # is the stable correlation key every downstream surface must use.
+        # reference_id mirrors it for the executor's own display path
+        # (DependencyAwareExecutor._run_tracked reads metadata["reference_id"]
+        # for its progress/log line).
+        node.metadata["spawn_id"] = spawn_id
+        node.metadata["reference_id"] = spawn_id
+        if target is not None:
             node.branch_id = target.id
-            # Stamped so post-run callers (artifact contracts, DAG metadata) can
-            # attribute a reactively spawned node back to the role that ran it —
-            # the node otherwise carries no trace of its assignee once its
-            # branch_id is overwritten by the executor's per-spawn branch clone.
             node.metadata["assignee"] = req.assignee
         return node
 
