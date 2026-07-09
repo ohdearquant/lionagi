@@ -149,14 +149,15 @@ def _resolve_node_cwd(node_id: str, raw_cwd: Any, base_dir: str | None) -> str:
     if has_traversal(raw_path):
         raise WorkflowCompileError(
             f"node {node_id!r} config.cwd {raw_cwd!r} contains directory "
-            "traversal ('..') and is rejected before any path resolution",
+            "traversal ('..') and is rejected before any path resolution "
+            f"(base_dir={base_dir!r})",
             node_id=node_id,
         )
     if base_dir is None:
         raise WorkflowCompileError(
-            f"node {node_id!r} sets config.cwd but the run supplied no "
-            "base_dir; a node cwd requires a run-level base_dir to "
-            "establish a containment root",
+            f"node {node_id!r} sets config.cwd {raw_cwd!r} but the run "
+            "supplied no base_dir; a node cwd requires a run-level "
+            "base_dir to establish a containment root",
             node_id=node_id,
         )
     base_resolved = Path(base_dir).resolve()
@@ -173,7 +174,8 @@ def _resolve_node_cwd(node_id: str, raw_cwd: Any, base_dir: str | None) -> str:
     if not resolved.exists() or not resolved.is_dir():
         raise WorkflowCompileError(
             f"node {node_id!r} config.cwd {raw_cwd!r} resolves to "
-            f"{resolved}, which does not exist or is not a directory",
+            f"{resolved} under base_dir {base_resolved}, which does not "
+            "exist or is not a directory",
             node_id=node_id,
         )
     return str(resolved)
@@ -439,7 +441,7 @@ async def compile_workflow_def(
             except ValueError as exc:
                 raise WorkflowCompileError(str(exc), node_id=node_id) from exc
 
-            # Per-node working directory (D-F1). Containment is enforced
+            # Per-node working directory. Containment is enforced
             # here (raw-string traversal check + symlink-resolving
             # relative_to(base_dir) + must-exist-and-be-a-dir); v1.1 only
             # wires the resolved cwd through to a 'coding' engine node's

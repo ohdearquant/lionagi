@@ -412,7 +412,7 @@ async def test_workflow_run_bare_chat_model_rejected_at_compile_defense_in_depth
     assert "chat1" in str(exc_info.value)
 
 
-# ─── Per-node cwd (D-F1) end-to-end ─────────────────────────────────────────
+# ─── Per-node cwd end-to-end ──────────────────────────────────────────────────
 
 
 async def test_workflow_run_node_cwd_reaches_engine_invocation(patched_env, tmp_path):
@@ -445,6 +445,26 @@ async def test_workflow_run_node_cwd_reaches_engine_invocation(patched_env, tmp_
     assert result["status"] == "completed"
     assert len(_FakeEngine.calls) == 1
     assert _FakeEngine.calls[0]["kwargs"]["workspace"] == str(sub.resolve())
+
+
+def test_real_coding_engine_run_accepts_compile_invocation_kwargs():
+    """The compile layer invokes every engine as run(spec, session=...,
+    on_branch_created=..., **run_kwargs). The fake engine in these tests
+    accepts **kwargs, so it cannot catch a real signature mismatch — bind
+    the exact invocation shape against the real CodingEngine.run signature."""
+    import inspect
+
+    from lionagi.engines.coding import CodingEngine
+
+    sig = inspect.signature(CodingEngine.run)
+    sig.bind(
+        object(),  # self
+        "fix the bug",  # spec
+        session=None,
+        on_branch_created=None,
+        test_cmd="pytest",
+        workspace="/tmp/w",
+    )
 
 
 async def test_workflow_run_node_cwd_without_base_dir_rejected(patched_env, tmp_path):

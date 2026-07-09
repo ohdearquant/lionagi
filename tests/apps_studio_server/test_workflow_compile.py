@@ -287,7 +287,7 @@ async def test_compile_null_budget_override_falls_back_to_def():
     assert engine_op.parameters["engine_max_agents"] == 5  # def value, not None
 
 
-# ─── Per-node cwd (D-F1) ──────────────────────────────────────────────────
+# ─── Per-node cwd ──────────────────────────────────────────────────────
 
 
 async def _resolve_coding_kind(ref: str) -> dict[str, Any]:
@@ -310,6 +310,7 @@ async def test_engine_node_cwd_without_base_dir_rejected_with_node_id():
         await compile_workflow_def(spec, resolve_engine_def=_resolve_coding_kind)
     assert exc_info.value.node_id == "n3"
     assert "base_dir" in str(exc_info.value)
+    assert "'sub'" in str(exc_info.value)  # the raw cwd is named in the error
 
 
 async def test_engine_node_cwd_traversal_rejected_before_resolution():
@@ -321,6 +322,8 @@ async def test_engine_node_cwd_traversal_rejected_before_resolution():
         await compile_workflow_def(spec, resolve_engine_def=_resolve_ok)
     assert exc_info.value.node_id == "n3"
     assert "traversal" in str(exc_info.value)
+    assert "'../../etc'" in str(exc_info.value)
+    assert "base_dir" in str(exc_info.value)  # supplied base_dir (None here) is named
 
 
 async def test_engine_node_cwd_non_coding_kind_rejected(tmp_path):

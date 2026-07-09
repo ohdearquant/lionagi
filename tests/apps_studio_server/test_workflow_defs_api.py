@@ -102,7 +102,7 @@ async def test_bad_node_kind_raises(patched_svc):
 
 
 async def test_spec_level_base_dir_rejected_at_create(patched_svc):
-    """base_dir is a run-level input, never a spec field — see D-F5: a def
+    """base_dir is a run-level input, never a spec field: a def
     that could pin its own containment root would defeat cwd containment."""
     svc, _ = patched_svc
     spec = _spec(base_dir="/tmp/whatever")
