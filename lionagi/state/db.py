@@ -2496,7 +2496,7 @@ class StateDB:
             "SELECT schedule_id, status FROM ("  # noqa: S608
             "  SELECT schedule_id, status, fired_at,"
             "         ROW_NUMBER() OVER ("
-            "           PARTITION BY schedule_id ORDER BY fired_at DESC"
+            "           PARTITION BY schedule_id ORDER BY fired_at DESC, id DESC"
             "         ) AS rn"
             f"  FROM schedule_runs WHERE schedule_id IN ({id_placeholders}) AND chain_depth = 0"
             ") ranked WHERE rn <= 50 ORDER BY schedule_id, rn"
@@ -2647,7 +2647,7 @@ class StateDB:
         """Consecutive terminal 'failed' streak and most recent status, newest-first, capped at 50 rows."""
         query = """SELECT status FROM schedule_runs
                    WHERE schedule_id = :schedule_id AND chain_depth = 0
-                   ORDER BY fired_at DESC LIMIT 50"""  # noqa: S608
+                   ORDER BY fired_at DESC, id DESC LIMIT 50"""  # noqa: S608
         async with self._read() as conn:
             rows = (await conn.execute(text(query), {"schedule_id": schedule_id})).mappings().all()
         if not rows:

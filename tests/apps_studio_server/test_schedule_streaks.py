@@ -47,11 +47,12 @@ async def _seed_run(
     status: str,
     fired_at: float,
     chain_depth: int = 0,
+    run_id: str | None = None,
 ) -> None:
     async with StateDB() as db:
         await db.create_schedule_run(
             {
-                "id": str(uuid.uuid4()),
+                "id": run_id or str(uuid.uuid4()),
                 "schedule_id": schedule_id,
                 "trigger_context": {},
                 "action_kind": "agent",
@@ -202,3 +203,35 @@ async def test_list_schedules_issues_constant_queries_not_per_row(temp_db_path):
         assert row["remaining_runs"] == 8
         assert row["consecutive_failures"] == 2
         assert row["last_status"] == "failed"
+
+
+async def test_tied_fired_at_rows_order_deterministically_and_match_singular(temp_db_path):
+    """Ties on fired_at break on id DESC identically in the batched and singular paths."""
+    sid = await _make_schedule()
+    now = time.time()
+    # All three runs share fired_at; id DESC order is failed -> completed -> failed,
+    # so last_status must be "failed" and the streak must stop at the completed row.
+    await _seed_run(sid, status="failed", fired_at=now, run_id="tie-c-newest")
+    await _seed_run(sid, status="completed", fired_at=now, run_id="tie-b-middle")
+    await _seed_run(sid, status="failed", fired_at=now, run_id="tie-a-oldest")
+
+    async with StateDB() as db:
+        singular = await db.schedule_run_streak(sid)
+        batched = (await db.schedule_run_streaks([sid]))[sid]
+    assert singular == batched == (1, "failed")
+
+
+async def test_tied_fired_at_rows_at_the_cap_match_singular(temp_db_path):
+    """With >50 tied rows, both paths keep the same id-DESC top 50."""
+    sid = await _make_schedule()
+    now = time.time()
+    # 55 tied rows; ids sort lexicographically. The five highest ids are failed,
+    # the rest completed, so both paths must see streak 5 off the same top-50 set.
+    for i in range(55):
+        status = "failed" if i >= 50 else "completed"
+        await _seed_run(sid, status=status, fired_at=now, run_id=f"cap-{i:03d}")
+
+    async with StateDB() as db:
+        singular = await db.schedule_run_streak(sid)
+        batched = (await db.schedule_run_streaks([sid]))[sid]
+    assert singular == batched == (5, "failed")
