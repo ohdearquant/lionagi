@@ -30,6 +30,38 @@ except ImportError:
     pass
 
 
+import os
+
+_RSS_LOG_DIR = os.environ.get("PYTEST_RSS_LOG")
+
+if _RSS_LOG_DIR:
+    # Peak-RSS tracker for hunting worker OOM kills ("node down: Not properly
+    # terminated" with no traceback). ru_maxrss is the process-lifetime PEAK,
+    # so a nonzero delta marks the tests that pushed the high-water mark up —
+    # exactly the ones to inspect when a CI worker is killed by memory
+    # pressure. Off (zero overhead) unless PYTEST_RSS_LOG names a directory.
+    import resource as _resource
+
+    # ru_maxrss unit: kilobytes on Linux, bytes on macOS.
+    _RSS_DIV = 1024 if sys.platform == "darwin" else 1
+
+    os.makedirs(_RSS_LOG_DIR, exist_ok=True)
+
+    @pytest.hookimpl(hookwrapper=True)
+    def pytest_runtest_protocol(item, nextitem):
+        before = _resource.getrusage(_resource.RUSAGE_SELF).ru_maxrss
+        yield
+        after = _resource.getrusage(_resource.RUSAGE_SELF).ru_maxrss
+        delta_kb = (after - before) // _RSS_DIV
+        peak_kb = after // _RSS_DIV
+        worker = os.environ.get("PYTEST_XDIST_WORKER", "main")
+        line = json.dumps(
+            {"worker": worker, "test": item.nodeid, "peak_kb": peak_kb, "delta_kb": delta_kb}
+        )
+        with open(os.path.join(_RSS_LOG_DIR, f"rss-{worker}.jsonl"), "a") as f:
+            f.write(line + "\n")
+
+
 def pytest_addoption(parser):
     parser.addoption(
         "--skip-missing-deps",
