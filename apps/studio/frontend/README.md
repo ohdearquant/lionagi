@@ -56,6 +56,6 @@ Visit http://localhost:3000.
 
 ## See also
 
-- [ADR-0001](../../../docs/adrs/ADR-0001-lion-studio-internal-app.md) — Lion Studio is an internal monorepo app
-- [ADR-0002](../../../docs/adrs/ADR-0002-studio-tech-stack.md) — Lion Studio tech stack selection
-- [ADR-0003](../../../docs/adrs/ADR-0003-claude-code-marketplace.md) — Claude Code marketplace pattern
+- [ADR-0001](../../../docs/_archive/v0/ADR-0001-lion-studio-internal-app.md) — Lion Studio is an internal monorepo app
+- [ADR-0002](../../../docs/_archive/v0/ADR-0002-studio-tech-stack.md) — Lion Studio tech stack selection
+- [ADR-0003](../../../docs/_archive/v0/ADR-0003-claude-code-marketplace.md) — Claude Code marketplace pattern

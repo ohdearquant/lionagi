@@ -27,10 +27,12 @@ data model — these are technical type names, not user-facing labels.
 ## Consequences
 
 **Positive**
+
 - Consistent vocabulary across CLI, Studio, and documentation.
 - "Playbook" communicates orchestration intent better than "worker."
 
 **Negative**
+
 - Some TypeScript graph types retain "Worker" prefix — accepted tech debt for
   types that describe the graph editing canvas, not user-facing concepts.
 
