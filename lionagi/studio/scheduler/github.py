@@ -431,6 +431,11 @@ async def github_poll(schedule: dict) -> GithubPollResult:
                 scan_complete = False
                 break
             if resp.status_code != 200:
+                if resp.status_code == 401:
+                    # The token authenticated the first page but has since been
+                    # rejected mid-pagination; drop it so the next poll
+                    # re-resolves instead of reusing a proven-dead credential.
+                    _cached_token = None
                 _log.warning(
                     "GitHub API returned %d for %s during merged-PR pagination; "
                     "using %d PR(s) fetched so far -- events too close to the "

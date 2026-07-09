@@ -749,6 +749,52 @@ def test_github_poll_auth_error_clears_cached_token(monkeypatch):
     assert gh_mod._cached_token is None
 
 
+class _FakePagination401Client:
+    """Serves a full first page with a next link, then a 401 on the pagination
+    fetch -- the token authenticated page 1 but is rejected mid-scan."""
+
+    def __init__(self, page0):
+        self._page0 = page0
+        self.requests: list[dict] = []
+
+    async def get(self, url, headers=None, params=None):
+        self.requests.append({"url": url, "params": params})
+        if len(self.requests) == 1:
+            next_url = "https://api.github.com/repos/owner/name/pulls?page=2"
+            return _FakeResp(self._page0, link=f'<{next_url}>; rel="next"')
+        resp = _FakeResp([])
+        resp.status_code = 401
+        return resp
+
+
+def test_github_poll_pagination_401_clears_cached_token(monkeypatch):
+    """A 401 arriving mid-pagination (after a 200 first page cached the token)
+    still clears the cache -- GitHub has rejected the credential, so the next
+    poll must re-resolve instead of reusing a proven-dead token."""
+    cursor = "2026-06-01T00:00:00Z"
+    page1 = [
+        _pr(200 + n, f"2026-07-06T{10 - n // 10:02d}:00:00Z", state="closed", merged_at=None)
+        for n in range(20)
+    ]
+
+    async def _fake_token(prefer_cli: bool = False):
+        return "faketoken"
+
+    client = _FakePagination401Client(page1)
+    monkeypatch.setattr(gh_mod, "_get_gh_token", _fake_token)
+    monkeypatch.setattr(gh_mod, "_get_client", lambda: client)
+    result = _poll_result(
+        {
+            "id": "s1",
+            "github_repo": "owner/name",
+            "github_filter": {"event": "pr_merged"},
+            "github_cursor": cursor,
+        }
+    )
+    assert result.scan_complete is False
+    assert gh_mod._cached_token is None
+
+
 # ---------------------------------------------------------------------------
 # GithubPollResult.poll_status — observer self-health signal
 # ---------------------------------------------------------------------------
