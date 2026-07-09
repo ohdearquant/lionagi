@@ -5,6 +5,7 @@
 from __future__ import annotations
 
 import json
+from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 from uuid import uuid4
@@ -361,13 +362,134 @@ async def test_execute_dag_tags_spawned_nodes(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_execute_dag_reactive_wires_spawn_branch_setup_for_cli_workspace(tmp_path):
+    """Reactive execution must pass a spawn_branch_setup callback into
+    run_dag that retargets a CLI-backed spawned branch's writable workspace
+    (chat_model.endpoint.config.kwargs['repo']) to that spawn's own artifact
+    dir. Branch.clone() otherwise carries the emitting leg's repo forward
+    unchanged — a sibling directory outside the spawned artifact contract —
+    so without this seam a spawned CLI child can only write where its
+    emitter can, not where its own artifact contract expects. Non-CLI
+    branches (no writable-root concept) must be left untouched."""
+    env = _make_env(tmp_path)
+    assignments = [TaskAssignment(task="x", assignee="researcher")]
+    plan_result = _PlanResult(
+        assignments=assignments,
+        agent_ids=["researcher"],
+        dep_indices=[[]],
+        pool=[],
+        budget_preambles={},
+    )
+    dag_state = _DagState(
+        node_ids=["node-0"],
+        known_nodes={"node-0"},
+        deps_by_node={"node-0": []},
+        reactive=True,
+        spawn_roles=None,
+        role_base={},
+        worker_models=["codex/gpt-5.5"],
+    )
+
+    from lionagi.engines import PlanningEngine
+
+    fake_engine_run = MagicMock()
+    fake_engine_run.run_dag = MagicMock(
+        return_value=_asyncio_coro(
+            {"operation_results": {"node-0": "planned result"}, "spawned_operations": 0}
+        )
+    )
+
+    with patch.object(PlanningEngine, "new_run", return_value=fake_engine_run):
+        await _execute_dag(env, plan_result, dag_state, max_concurrent=1, max_ops=0)
+
+    call_kwargs = fake_engine_run.run_dag.call_args.kwargs
+    spawn_branch_setup = call_kwargs["spawn_branch_setup"]
+    assert spawn_branch_setup is not None
+
+    operation = SimpleNamespace(metadata={"spawn_id": "spawn-1"})
+    cli_branch = SimpleNamespace(
+        chat_model=SimpleNamespace(
+            is_cli=True,
+            endpoint=SimpleNamespace(config=SimpleNamespace(kwargs={})),
+        )
+    )
+    spawn_branch_setup(operation, cli_branch)
+
+    expected_dir = env.run.agent_artifact_dir("spawn-1")
+    assert cli_branch.chat_model.endpoint.config.kwargs["repo"] == expected_dir
+    assert expected_dir.exists()
+
+    non_cli_branch = SimpleNamespace(
+        chat_model=SimpleNamespace(
+            is_cli=False,
+            endpoint=SimpleNamespace(config=SimpleNamespace(kwargs={})),
+        )
+    )
+    spawn_branch_setup(operation, non_cli_branch)
+    assert "repo" not in non_cli_branch.chat_model.endpoint.config.kwargs
+
+
+@pytest.mark.asyncio
+async def test_execute_dag_escalated_spawned_node_evidence_uses_spawn_id(tmp_path):
+    """An escalated node that was reactively spawned (not in the plan) must
+    surface its role_node_builder-stamped spawn_id in the escalation
+    evidence, not the internal Operation UUID — so a reviewer reading the
+    teardown evidence sees the same 'spawn-N' label the artifact dirs and
+    contract entries already use."""
+    env = _make_env(tmp_path)
+    assignments = [TaskAssignment(task="x", assignee="researcher")]
+    plan_result = _PlanResult(
+        assignments=assignments,
+        agent_ids=["researcher"],
+        dep_indices=[[]],
+        pool=[],
+        budget_preambles={},
+    )
+    dag_state = _DagState(
+        node_ids=["node-0"],
+        known_nodes={"node-0"},
+        deps_by_node={"node-0": []},
+        reactive=True,
+        spawn_roles=None,
+        role_base={},
+        worker_models=["codex/gpt-5.5"],
+    )
+
+    escalated_node = SimpleNamespace(
+        metadata={"assignee": "critic", "spawn_id": "spawn-7"}, branch_id=None
+    )
+    env.builder.get_graph = lambda: SimpleNamespace(
+        nodes=[], internal_nodes={"node-escalated": escalated_node}
+    )
+
+    from lionagi.engines import PlanningEngine
+
+    fake_engine_run = MagicMock()
+    fake_engine_run.run_dag = MagicMock(
+        return_value=_asyncio_coro(
+            {
+                "operation_results": {"node-0": "planned result"},
+                "spawned_operations": 1,
+                "escalated_operations": ["node-escalated"],
+            }
+        )
+    )
+
+    with patch.object(PlanningEngine, "new_run", return_value=fake_engine_run):
+        await _execute_dag(env, plan_result, dag_state, max_concurrent=1, max_ops=0)
+
+    assert env._escalated_evidence == [
+        {"kind": "escalated_operation", "id": "spawn-7", "label": "spawn-7"}
+    ]
+
+
+@pytest.mark.asyncio
 async def test_execute_dag_spawned_node_registers_artifact_contract(tmp_path):
     """A spawned node running under a role with artifact_defaults must be
     attributed back to that role and get its own contract entry folded into
-    the live-persist context for post-run visibility — folded non-required,
-    since a spawned node is never told its artifact dir and so has no path to
-    satisfy a required entry (enforcing one would fail an otherwise-complete
-    run)."""
+    the live-persist context for post-run visibility, keeping the role's own
+    required flag (decorate_instruction tells the spawned node its artifact
+    dir + REQUIRED files before it runs, the same as a planned leg)."""
     env = _make_env(tmp_path)
     db = _FakeDB()
     env._live_persist = {
@@ -397,10 +519,13 @@ async def test_execute_dag_spawned_node_registers_artifact_contract(tmp_path):
         },
     )
 
-    # The spawned node's graph entry carries the assignee role_node_builder
-    # stamped on it (patterns.py) — that's how a post-run surface recovers
-    # which role a reactively-injected node ran under.
-    spawned_node = SimpleNamespace(metadata={"assignee": "implementer"}, branch_id=None)
+    # The spawned node's graph entry carries the spawn_id + assignee
+    # role_node_builder stamps on it at construction time (patterns.py) —
+    # that's how a post-run surface recovers which role a reactively-injected
+    # node ran under, and its stable correlation id.
+    spawned_node = SimpleNamespace(
+        metadata={"assignee": "implementer", "spawn_id": "spawn-1"}, branch_id=None
+    )
     env.builder.get_graph = lambda: SimpleNamespace(
         nodes=[], internal_nodes={"node-spawn-1": spawned_node}
     )
@@ -425,6 +550,7 @@ async def test_execute_dag_spawned_node_registers_artifact_contract(tmp_path):
 
     spawned = next(r for r in exec_result.agent_results if r.get("spawned"))
     assert spawned["assignee"] == "implementer"
+    assert spawned["id"] == "spawn-1"
 
     contract = env._live_persist["artifact_contract"]
     assert contract is not None
@@ -432,10 +558,10 @@ async def test_execute_dag_spawned_node_registers_artifact_contract(tmp_path):
     assert "spawn-1__report" in ids
     paths = {e["path"] for e in contract["expected"]}
     assert "spawn-1/report.md" in paths
-    # Folded non-required even though the role default declares required=True —
-    # a spawned node can't be held to an artifact it was never told to write.
+    # Stays required — the role default declares required=True and the
+    # spawned node was told its artifact dir before it ran (decorate_instruction).
     spawned_entry = next(e for e in contract["expected"] if e["id"] == "spawn-1__report")
-    assert spawned_entry["required"] is False
+    assert spawned_entry["required"] is True
 
 
 @pytest.mark.asyncio
@@ -467,7 +593,9 @@ async def test_execute_dag_spawned_node_without_role_defaults_no_contract(tmp_pa
         worker_models=["codex/gpt-5.5"],
         role_artifact_defaults={"implementer": None},
     )
-    spawned_node = SimpleNamespace(metadata={"assignee": "implementer"}, branch_id=None)
+    spawned_node = SimpleNamespace(
+        metadata={"assignee": "implementer", "spawn_id": "spawn-1"}, branch_id=None
+    )
     env.builder.get_graph = lambda: SimpleNamespace(
         nodes=[], internal_nodes={"node-spawn-1": spawned_node}
     )
@@ -491,6 +619,312 @@ async def test_execute_dag_spawned_node_without_role_defaults_no_contract(tmp_pa
         await _execute_dag(env, plan_result, dag_state, max_concurrent=1, max_ops=0)
 
     assert env._live_persist["artifact_contract"] is None
+
+
+@pytest.mark.asyncio
+async def test_execute_dag_spawned_ids_independent_of_completion_order(tmp_path):
+    """Two role-built spawned nodes must keep their builder-stamped spawn_id
+    regardless of which one appears FIRST in op_results — completion order
+    (dict insertion order here) must never override the stamped id. Reversing
+    the dict's insertion order relative to construction order is exactly the
+    scenario that let an unrelated node "steal" spawn-1 under the old
+    completion-order-derived minting."""
+    env = _make_env(tmp_path)
+    assignments = [TaskAssignment(task="x", assignee="researcher")]
+    plan_result = _PlanResult(
+        assignments=assignments,
+        agent_ids=["researcher"],
+        dep_indices=[[]],
+        pool=[],
+        budget_preambles={},
+    )
+    dag_state = _DagState(
+        node_ids=["node-0"],
+        known_nodes={"node-0"},
+        deps_by_node={"node-0": []},
+        reactive=True,
+        spawn_roles=None,
+        role_base={},
+        worker_models=["codex/gpt-5.5"],
+    )
+
+    # Node built SECOND (spawn-2) completes and is recorded FIRST; node built
+    # FIRST (spawn-1) completes and is recorded SECOND.
+    node_a = SimpleNamespace(
+        metadata={"assignee": "implementer", "spawn_id": "spawn-1"}, branch_id=None
+    )
+    node_b = SimpleNamespace(
+        metadata={"assignee": "researcher", "spawn_id": "spawn-2"}, branch_id=None
+    )
+    env.builder.get_graph = lambda: SimpleNamespace(
+        nodes=[], internal_nodes={"node-b": node_b, "node-a": node_a}
+    )
+
+    from lionagi.engines import PlanningEngine
+
+    fake_engine_run = MagicMock()
+    fake_engine_run.run_dag = MagicMock(
+        return_value=_asyncio_coro(
+            {
+                "operation_results": {
+                    "node-0": "planned result",
+                    # insertion order: node-b (spawn-2) BEFORE node-a (spawn-1)
+                    "node-b": "b result",
+                    "node-a": "a result",
+                },
+                "spawned_operations": 2,
+            }
+        )
+    )
+
+    with patch.object(PlanningEngine, "new_run", return_value=fake_engine_run):
+        exec_result = await _execute_dag(env, plan_result, dag_state, max_concurrent=1, max_ops=0)
+
+    spawned_by_id = {r["id"]: r for r in exec_result.agent_results if r.get("spawned")}
+    assert spawned_by_id["spawn-2"]["response"] == "b result"
+    assert spawned_by_id["spawn-2"]["assignee"] == "researcher"
+    assert spawned_by_id["spawn-1"]["response"] == "a result"
+    assert spawned_by_id["spawn-1"]["assignee"] == "implementer"
+
+
+@pytest.mark.asyncio
+async def test_execute_dag_unstamped_node_fallback_skips_stamped_ids(tmp_path):
+    """A node injected WITHOUT going through role_node_builder (no spawn_id
+    in its metadata — e.g. an escalation child or a raw inject()) must fall
+    back to a synthesized id, but that fallback must never collide with an
+    id a role-built sibling already carries."""
+    env = _make_env(tmp_path)
+    assignments = [TaskAssignment(task="x", assignee="researcher")]
+    plan_result = _PlanResult(
+        assignments=assignments,
+        agent_ids=["researcher"],
+        dep_indices=[[]],
+        pool=[],
+        budget_preambles={},
+    )
+    dag_state = _DagState(
+        node_ids=["node-0"],
+        known_nodes={"node-0"},
+        deps_by_node={"node-0": []},
+        reactive=True,
+        spawn_roles=None,
+        role_base={},
+        worker_models=["codex/gpt-5.5"],
+    )
+
+    # role-built sibling already owns "spawn-1"; the unstamped node has no
+    # spawn_id and no assignee (a raw injected node carries neither).
+    stamped_node = SimpleNamespace(
+        metadata={"assignee": "researcher", "spawn_id": "spawn-1"}, branch_id=None
+    )
+    unstamped_node = SimpleNamespace(metadata={}, branch_id=None)
+    env.builder.get_graph = lambda: SimpleNamespace(
+        nodes=[],
+        internal_nodes={"node-stamped": stamped_node, "node-unstamped": unstamped_node},
+    )
+
+    from lionagi.engines import PlanningEngine
+
+    fake_engine_run = MagicMock()
+    fake_engine_run.run_dag = MagicMock(
+        return_value=_asyncio_coro(
+            {
+                "operation_results": {
+                    "node-0": "planned result",
+                    "node-unstamped": "unstamped result",
+                    "node-stamped": "stamped result",
+                },
+                "spawned_operations": 2,
+            }
+        )
+    )
+
+    with patch.object(PlanningEngine, "new_run", return_value=fake_engine_run):
+        exec_result = await _execute_dag(env, plan_result, dag_state, max_concurrent=1, max_ops=0)
+
+    spawned_ids = {r["id"] for r in exec_result.agent_results if r.get("spawned")}
+    # spawn-1 is already taken by the stamped node — the fallback must skip
+    # it and mint spawn-2, never a second "spawn-1".
+    assert spawned_ids == {"spawn-1", "spawn-2"}
+
+
+@pytest.mark.asyncio
+async def test_execute_dag_role_attributed_node_missing_spawn_id_fails_loud(tmp_path):
+    """A node carrying a role assignee (the role_node_builder trail) but no
+    spawn_id indicates the stamping invariant broke upstream — this must
+    raise, not silently mint a fresh id that hides the defect."""
+    env = _make_env(tmp_path)
+    assignments = [TaskAssignment(task="x", assignee="researcher")]
+    plan_result = _PlanResult(
+        assignments=assignments,
+        agent_ids=["researcher"],
+        dep_indices=[[]],
+        pool=[],
+        budget_preambles={},
+    )
+    dag_state = _DagState(
+        node_ids=["node-0"],
+        known_nodes={"node-0"},
+        deps_by_node={"node-0": []},
+        reactive=True,
+        spawn_roles=None,
+        role_base={},
+        worker_models=["codex/gpt-5.5"],
+    )
+    broken_node = SimpleNamespace(metadata={"assignee": "researcher"}, branch_id=None)
+    env.builder.get_graph = lambda: SimpleNamespace(
+        nodes=[], internal_nodes={"node-broken": broken_node}
+    )
+
+    from lionagi.engines import PlanningEngine
+
+    fake_engine_run = MagicMock()
+    fake_engine_run.run_dag = MagicMock(
+        return_value=_asyncio_coro(
+            {
+                "operation_results": {
+                    "node-0": "planned result",
+                    "node-broken": "broken result",
+                },
+                "spawned_operations": 1,
+            }
+        )
+    )
+
+    with patch.object(PlanningEngine, "new_run", return_value=fake_engine_run):
+        with pytest.raises(RuntimeError, match="no spawn_id"):
+            await _execute_dag(env, plan_result, dag_state, max_concurrent=1, max_ops=0)
+
+
+# ── Reactive spawn artifact enforcement through REAL teardown ─────────────────
+# Replaces the old interim regression test that pinned spawned artifacts as
+# permanently non-required (a spawned node used to have no way to learn its
+# own artifact dir before running). decorate_instruction now tells it that
+# dir before execution, so a role's required:True declaration is a real,
+# enforceable gate for a reactively spawned node too — exercised here through
+# the actual teardown path (start_live_persist / stop_live_persist / StateDB),
+# not just the in-memory contract dict.
+
+
+@pytest.fixture
+def _flow_phase_state_db(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+    db_path = tmp_path / "state.db"
+    monkeypatch.setattr("lionagi.state.db.DEFAULT_DB_PATH", db_path)
+    return db_path
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("role", ["reviewer", "critic"])
+@pytest.mark.parametrize(
+    "outcome, file_content",
+    [
+        ("pass", "## Verdict\nAPPROVE\n"),
+        ("missing", None),
+        ("zero_byte", ""),
+    ],
+)
+async def test_reactive_spawn_required_artifact_persistence_matrix(
+    _flow_phase_state_db, tmp_path, role, outcome, file_content
+):
+    """A spawned node running under reviewer/critic (both declare a required
+    review.md) must flip the run to failed at teardown when that artifact is
+    missing OR present-but-empty, and stay completed only when a real
+    non-empty file is written — the actual enforcement the role declaration
+    exists for, now that the spawned node is told its artifact dir up front."""
+    from lionagi import Branch, Session
+    from lionagi.casts.pattern import Role
+    from lionagi.cli._runs import allocate_run
+    from lionagi.cli.orchestrate._orchestration import (
+        OrchestrationEnv,
+        start_live_persist,
+        stop_live_persist,
+    )
+    from lionagi.engines import PlanningEngine
+    from lionagi.state.db import StateDB
+
+    orc_branch = Branch(name="orchestrator")
+    session = Session(default_branch=orc_branch)
+    run = allocate_run(save_dir=str(tmp_path / "artifacts"))
+
+    env = OrchestrationEnv(
+        run=run,
+        session=session,
+        orc_branch=orc_branch,
+        builder=MagicMock(),
+        orc_profile=None,
+        default_model_spec="claude",
+        bare=False,
+        effort=None,
+        theme=None,
+        yolo=False,
+        bypass=False,
+        verbose=False,
+        fast=False,
+        cwd=None,
+    )
+    await start_live_persist(env, invocation_kind="flow", artifacts_path=str(run.artifact_root))
+
+    assignments = [TaskAssignment(task="review it", assignee="researcher")]
+    plan_result = _PlanResult(
+        assignments=assignments,
+        agent_ids=["researcher"],
+        dep_indices=[[]],
+        pool=[],
+        budget_preambles={},
+    )
+    role_defaults = Role.load(role).artifact_defaults
+    dag_state = _DagState(
+        node_ids=["node-0"],
+        known_nodes={"node-0"},
+        deps_by_node={"node-0": []},
+        reactive=True,
+        spawn_roles=None,
+        role_base={},
+        worker_models=["codex/gpt-5.5"],
+        role_artifact_defaults={role: role_defaults},
+    )
+
+    spawned_node = SimpleNamespace(
+        metadata={"assignee": role, "spawn_id": "spawn-1"}, branch_id=None
+    )
+    env.builder.get_graph = lambda: SimpleNamespace(
+        nodes=[], internal_nodes={"node-spawn-1": spawned_node}
+    )
+
+    fake_engine_run = MagicMock()
+    fake_engine_run.run_dag = MagicMock(
+        return_value=_asyncio_coro(
+            {
+                "operation_results": {
+                    "node-0": "planned result",
+                    "node-spawn-1": "spawned result",
+                },
+                "spawned_operations": 1,
+            }
+        )
+    )
+    with patch.object(PlanningEngine, "new_run", return_value=fake_engine_run):
+        await _execute_dag(env, plan_result, dag_state, max_concurrent=1, max_ops=0)
+
+    # Simulate the spawned worker itself writing (or not writing) the file it
+    # was told about via decorate_instruction, at the exact path the contract
+    # entry expects (namespaced under its own stamped spawn_id).
+    if file_content is not None:
+        artifact_path = run.agent_artifact_dir("spawn-1") / "review.md"
+        artifact_path.parent.mkdir(parents=True, exist_ok=True)
+        artifact_path.write_text(file_content)
+
+    session_id = env._live_persist["session_id"]
+    await stop_live_persist(env, status="completed")
+
+    async with StateDB() as db:
+        s = await db.get_session(session_id)
+    assert s is not None
+    if outcome == "pass":
+        assert s["status"] == "completed"
+    else:
+        assert s["status"] == "failed"
+        assert s["status_reason_code"] == "run.failed.missing_artifact"
 
 
 # ── Tests for _synthesize ─────────────────────────────────────────────────────

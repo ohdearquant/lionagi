@@ -489,6 +489,7 @@ class EngineRun:
         verbose: bool = False,
         executor_ref: dict[str, Any] | None = None,
         context: dict[str, Any] | None = None,
+        spawn_branch_setup: Any = None,
     ) -> dict[str, Any]:
         """Execute a prebuilt operation DAG on the run's session and return operation results."""
         from .flow_signals import flow_progress_signals  # noqa: PLC0415
@@ -505,6 +506,7 @@ class EngineRun:
                 verbose=verbose,
                 on_progress=on_progress,
                 executor_ref=executor_ref,
+                spawn_branch_setup=spawn_branch_setup,
             )
         return result
 

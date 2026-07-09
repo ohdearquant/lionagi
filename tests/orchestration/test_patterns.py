@@ -80,6 +80,75 @@ class TestRoleNodeBuilder:
         )
         assert node.operation == "ReAct"
 
+    def test_stamps_stable_spawn_id_and_reference_id(self):
+        """Builder-time identity: spawn_id (and reference_id, the executor's
+        display-path key) must be allocated at construction, not left for a
+        completion-order-derived id downstream."""
+        session, roles = _roles("researcher")
+        nb = role_node_builder(roles)
+        node = nb(SpawnRequest(instruction="dig", assignee="researcher"), None)
+        assert node.metadata.get("spawn_id") == "spawn-1"
+        assert node.metadata.get("reference_id") == "spawn-1"
+
+    def test_spawn_id_stamped_even_without_assignee(self):
+        """A spawn_id is allocated regardless of whether the request carries
+        an assignee — only the metadata["assignee"]/branch_id routing is
+        conditional on that."""
+        session, roles = _roles("researcher")
+        nb = role_node_builder(roles)
+        node = nb(SpawnRequest(instruction="x"), None)
+        assert node.metadata.get("spawn_id") == "spawn-1"
+
+    def test_spawn_id_monotonic_across_calls_from_one_closure(self):
+        """Multiple SpawnRequests routed through the SAME role_node_builder
+        closure get distinct, increasing ids — the closure-scoped sequence is
+        the only correct source of the id (completion order is not spawn
+        order)."""
+        session, roles = _roles("researcher")
+        nb = role_node_builder(roles)
+        n1 = nb(SpawnRequest(instruction="a", assignee="researcher"), None)
+        n2 = nb(SpawnRequest(instruction="b", assignee="researcher"), None)
+        n3 = nb(SpawnRequest(instruction="c", assignee="researcher"), None)
+        assert [n.metadata["spawn_id"] for n in (n1, n2, n3)] == [
+            "spawn-1",
+            "spawn-2",
+            "spawn-3",
+        ]
+
+    def test_unknown_assignee_does_not_consume_a_sequence_number(self):
+        """A rejected (unknown-assignee) request must not burn an id — the
+        next successfully built node still gets spawn-1, not spawn-2."""
+        session, roles = _roles("researcher")
+        nb = role_node_builder(roles)
+        with pytest.raises(ValueError, match="not a recognized role"):
+            nb(SpawnRequest(instruction="x", assignee="ghost"), None)
+        node = nb(SpawnRequest(instruction="ok", assignee="researcher"), None)
+        assert node.metadata["spawn_id"] == "spawn-1"
+
+    def test_decorate_instruction_receives_request_and_spawn_id(self):
+        """decorate_instruction is called with (req, spawn_id) and its return
+        value becomes the child operation's instruction — the seam the CLI
+        uses to inject the artifact-directory + REQUIRED text."""
+        session, roles = _roles("researcher")
+        seen: list[tuple[str, str]] = []
+
+        def decorate(req: SpawnRequest, spawn_id: str) -> str:
+            seen.append((req.instruction, spawn_id))
+            return f"{req.instruction}\n\nWrite to {spawn_id}/."
+
+        nb = role_node_builder(roles, decorate_instruction=decorate)
+        node = nb(SpawnRequest(instruction="dig deeper", assignee="researcher"), None)
+        assert seen == [("dig deeper", "spawn-1")]
+        assert node.parameters["instruction"] == "dig deeper\n\nWrite to spawn-1/."
+
+    def test_no_decorate_instruction_keeps_plain_instruction(self):
+        """Library/engine callers that pass nothing keep the bare instruction
+        — no artifact prose leaks into non-CLI callers."""
+        session, roles = _roles("researcher")
+        nb = role_node_builder(roles)
+        node = nb(SpawnRequest(instruction="dig deeper", assignee="researcher"), None)
+        assert node.parameters["instruction"] == "dig deeper"
+
 
 class TestBuildFanoutGraph:
     def test_parallel_workers_are_independent(self):
