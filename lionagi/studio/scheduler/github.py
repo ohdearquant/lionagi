@@ -72,6 +72,13 @@ class GithubPollResult(NamedTuple):
 
 _client: httpx.AsyncClient | None = None
 
+# Last token known to have actually authenticated against the GitHub API
+# (set after any non-401 response). Checked before _get_gh_token() so a
+# poll that already knows the working credential doesn't re-check
+# GITHUB_TOKEN or shell out to `gh auth token` on every tick -- only a
+# fresh 401 clears it and forces re-resolution.
+_cached_token: str | None = None
+
 # Merged-PR mode's dispatch key (merged_at) differs from the API's sort key
 # (updated_at): a page full of closed-but-never-merged PRs produces no item
 # at all (see the pr_merged branch in github_poll), so it can push an older,
@@ -276,7 +283,8 @@ async def github_poll(schedule: dict) -> GithubPollResult:
         )
         return GithubPollResult(items=[], scan_complete=True, poll_status="error")
 
-    token = await _get_gh_token()
+    global _cached_token
+    token = _cached_token or await _get_gh_token()
     if not token:
         _log.warning("No GitHub token available for polling %s", repo)
         return GithubPollResult(items=[], scan_complete=True, poll_status="error")
@@ -317,14 +325,16 @@ async def github_poll(schedule: dict) -> GithubPollResult:
         _log.exception("GitHub API request failed for %s", repo)
         return GithubPollResult(items=[], scan_complete=True, poll_status="error")
 
-    # A 401 means the token we used is bad — most often a GITHUB_TOKEN that was
-    # valid when the daemon launched but has since expired. Fall through to a
-    # fresh gh-CLI token (skipping the env var) and retry once, so a stale env
-    # credential can't pin the poller to a dead token and leave it silently
-    # blind on every subsequent poll.
+    # A 401 means the token we used is bad — most often a cached or
+    # GITHUB_TOKEN-env credential that was valid earlier but has since
+    # expired. Fall through to a freshly-fetched gh-CLI token (skipping the
+    # env var and any cache) and retry once, so a stale credential can't pin
+    # the poller to a dead token and leave it silently blind on every
+    # subsequent poll.
     if resp.status_code == 401:
         cli_token = await _get_gh_token(prefer_cli=True)
         if cli_token and cli_token != token:
+            token = cli_token
             headers["Authorization"] = f"Bearer {cli_token}"
             try:
                 resp = await client.get(
@@ -334,12 +344,11 @@ async def github_poll(schedule: dict) -> GithubPollResult:
                 )
             except httpx.HTTPError:
                 _log.exception("GitHub API request failed for %s", repo)
+                _cached_token = None
                 return GithubPollResult(items=[], scan_complete=True, poll_status="error")
 
-    if resp.status_code == 304:
-        return GithubPollResult(items=[], scan_complete=True, poll_status="ok")
-
     if resp.status_code == 401:
+        _cached_token = None
         _log.error(
             "GitHub API returned 401 (unauthorized) for %s polling schedule %s (%s) "
             "even after falling back to a gh-CLI token; the poller cannot see new "
@@ -349,6 +358,14 @@ async def github_poll(schedule: dict) -> GithubPollResult:
             schedule.get("name"),
         )
         return GithubPollResult(items=[], scan_complete=True, poll_status="auth_error")
+
+    # Any non-401 response proves `token` actually authenticated -- cache it
+    # so the next poll can skip both the env-var check and a `gh auth token`
+    # shell-out, until a future 401 invalidates it again.
+    _cached_token = token
+
+    if resp.status_code == 304:
+        return GithubPollResult(items=[], scan_complete=True, poll_status="ok")
 
     if resp.status_code != 200:
         _log.warning("GitHub API returned %d for %s", resp.status_code, repo)
@@ -414,6 +431,11 @@ async def github_poll(schedule: dict) -> GithubPollResult:
                 scan_complete = False
                 break
             if resp.status_code != 200:
+                if resp.status_code == 401:
+                    # The token authenticated the first page but has since been
+                    # rejected mid-pagination; drop it so the next poll
+                    # re-resolves instead of reusing a proven-dead credential.
+                    _cached_token = None
                 _log.warning(
                     "GitHub API returned %d for %s during merged-PR pagination; "
                     "using %d PR(s) fetched so far -- events too close to the "
