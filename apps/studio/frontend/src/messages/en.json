@@ -557,8 +557,8 @@
       "ariaLabel": "Agent {name} — open session detail",
       "branches": "{count} br",
       "messages": "{count} msg",
-      "branchesTitle": "{count} branches",
-      "messagesTitle": "{count} messages"
+      "branchesTitle": "{count, plural, one {# branch} other {# branches}}",
+      "messagesTitle": "{count, plural, one {# message} other {# messages}}"
     },
     "empty": {
       "message": "No agents running — Fleet shows live orchestrations as they happen.",
