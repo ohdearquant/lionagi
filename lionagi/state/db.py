@@ -2499,7 +2499,7 @@ class StateDB:
             "           PARTITION BY schedule_id ORDER BY fired_at DESC"
             "         ) AS rn"
             f"  FROM schedule_runs WHERE schedule_id IN ({id_placeholders}) AND chain_depth = 0"
-            ") WHERE rn <= 50 ORDER BY schedule_id, rn"
+            ") ranked WHERE rn <= 50 ORDER BY schedule_id, rn"
         )
         async with self._read() as conn:
             rows = (await conn.execute(text(query), params)).mappings().all()
