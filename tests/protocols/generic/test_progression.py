@@ -345,12 +345,16 @@ def test_progression_remove_with_element():
 def test_progression_memory_efficiency():
     import sys
 
-    p = Progression(order=[Element() for _ in range(1000000)])
+    # 10k elements prove the same property as 1M (Progression stores UUIDs,
+    # not the elements) without a ~750MB transient allocation that pushes CI
+    # workers into the OOM killer when co-scheduled with other heavy files.
+    n = 10_000
+    p = Progression(order=[Element() for _ in range(n)])
 
     memory_usage = sys.getsizeof(p) + sum(sys.getsizeof(item) for item in p.order)
 
-    # Check if memory usage is reasonable (less than 100MB for 1 million elements)
-    assert memory_usage < 100 * 1024 * 1024  # 100MB in bytes
+    # Same per-element budget as the original bound (100MB per 1M ≈ 105 B/elem).
+    assert memory_usage < n * 105
 
 
 def test_progression_serialization_advanced():
