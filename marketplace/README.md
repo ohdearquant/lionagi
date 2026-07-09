@@ -42,4 +42,4 @@ li play feature "add OAuth login"
 
 ## Decision Record
 
-See ADR-0003 (`docs/adrs/ADR-0003-claude-code-marketplace.md`).
+See ADR-0003 (`docs/_archive/v0/ADR-0003-claude-code-marketplace.md`).

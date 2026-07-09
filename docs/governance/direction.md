@@ -437,7 +437,7 @@ scope of work described below.
 | **Scope** | Revise ADR-0042, 0043, 0044, 0045, 0046, 0047, 0050, 0051 to remove duplicated types and bind DSL/runtime ownership. Produce cross-reference table: which ADR owns each type. |
 | **Dependencies** | This document |
 | **Measurement** | All revised ADRs cite evidence inventory; no duplicated `GateResult`; cross-reference table complete; ADR doc links to tests and implementation path |
-| **Files Modified** | `docs/adrs/ADR-0042-*.md`, `ADR-0043-*.md`, `ADR-0044-*.md`, `ADR-0045-*.md`, `ADR-0046-*.md`, `ADR-0047-*.md`, `ADR-0050-*.md`, `ADR-0051-*.md` |
+| **Files Modified** | `docs/_archive/v0/ADR-0042-*.md`, `ADR-0043-*.md`, `ADR-0044-*.md`, `ADR-0045-*.md`, `ADR-0046-*.md`, `ADR-0047-*.md`, `ADR-0050-*.md`, `ADR-0051-*.md` |
 
 ### P13 — Charter DSL Parser and Schema
 
@@ -581,7 +581,7 @@ scope of work described below.
 | **Scope** | User-facing governed orchestration guide, CLI reference (`li charter`, `li flow`), adapter claim matrix (table: adapter × event × governance level), migration path from ungoverned lionagi usage, standards cleanup pass, and `lionagi/governance/__init__.py` ergonomic public API with typed imports. Documentation examples must run or have snapshot-validated output. |
 | **Dependencies** | P21, P22, P23 |
 | **Measurement** | Documentation examples run or snapshot-validated; adapter claim matrix matches adversarial test fixture labels; migration guide covers the three most common ungoverned patterns; no banned token matches; public API imports resolve in <100ms |
-| **Files Modified** | `docs/governance/`, `README.md`, `docs/adrs/README.md`, `lionagi/governance/__init__.py`, `tests/docs/test_governance_examples.py` |
+| **Files Modified** | `docs/governance/`, `README.md`, `docs/_archive/v0/README.md`, `lionagi/governance/__init__.py`, `tests/docs/test_governance_examples.py` |
 
 ---
 

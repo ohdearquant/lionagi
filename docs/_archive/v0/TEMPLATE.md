@@ -16,9 +16,11 @@ _One clear paragraph: what we are doing._
 ## Consequences
 
 **Positive**
+
 - …
 
 **Negative**
+
 - …
 
 ## Alternatives Considered

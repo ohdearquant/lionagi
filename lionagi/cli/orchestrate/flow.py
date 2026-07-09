@@ -108,7 +108,7 @@ def _artifact_directive(run, node_id: str, leg_expected: list[dict]) -> str:
 # `li o ctl pause|resume|msg` enqueues a session_controls row from a separate
 # process; this poller — running alongside the heartbeat loop in _execute_dag,
 # same lifecycle — is the only consumer, and applies each row against the live
-# executor. See docs/adrs/ADR-0085-flow-control-plane.md section 1 for the
+# executor. See docs/_archive/v0/ADR-0085-flow-control-plane.md section 1 for the
 # verb-classed apply/stamp ordering this implements.
 
 _CONTROL_POLL_INTERVAL = 2.0

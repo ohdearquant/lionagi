@@ -438,7 +438,7 @@ li monitor --project myproject  # filter sessions by project
 Group the sessions a skill spawns (e.g. `/show`, `/codex-pr-review`) into one parent
 invocation record, so the runs list and Studio dashboard collapse "14 sessions" into a
 single row. Opt-in — sessions spawned without `--invocation` behave exactly as before.
-See [ADR-0020](adrs/ADR-0020-skill-invocations.md). Source: `cli/invoke.py`.
+See [ADR-0020](_archive/v0/ADR-0020-skill-invocations.md). Source: `cli/invoke.py`.
 
 ```bash
 INV=$(li invoke start --skill show --prompt "resolve lionagi issues")
@@ -450,7 +450,7 @@ li invoke end "$INV" --status completed
 | Subcommand | Flags | Notes |
 |------------|-------|-------|
 | `start` | `--skill` (required), `--plugin`, `--prompt`, `--metadata` | Opens an invocation; prints its id to stdout |
-| `end ID` | `--status` (default `completed`), `--metadata` | Closes it; status from the [ADR-0025](adrs/ADR-0025-session-status-vocabulary.md) vocabulary |
+| `end ID` | `--status` (default `completed`), `--metadata` | Closes it; status from the [ADR-0025](_archive/v0/ADR-0025-session-status-vocabulary.md) vocabulary |
 | `list` | `--skill`, `--status`, `--limit` (default 20) | Lists recent invocations |
 
 ---
@@ -532,7 +532,7 @@ All frontmatter fields are optional; matching CLI flags override them at invocat
 | `yolo` | Auto-approve tool calls |
 | `fast_mode` | Route via the OpenAI priority tier (codex only) |
 | `lion_system` | Prepend `LION_SYSTEM_MESSAGE` to the body (default: `true`) |
-| `artifact_defaults` | Expected-artifact defaults; see [ADR-0029](adrs/ADR-0029-artifact-contract.md) |
+| `artifact_defaults` | Expected-artifact defaults; see [ADR-0029](_archive/v0/ADR-0029-artifact-contract.md) |
 
 When `lion_system: true`, the global Lion system preamble is prepended to the body
 to form the system prompt. Set it to `false` for a verbatim body (e.g. when the
