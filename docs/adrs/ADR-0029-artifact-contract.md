@@ -112,9 +112,29 @@ mid-run does not retroactively change what was expected.
 > `_execute_dag` runs any leg — i.e. before any worker output could exist
 > — so the anti-drift guarantee ("no retroactive change of what was
 > expected") still holds; it is just anchored at "DAG built" rather than
-> "session created" for this call path. No other call site may write this
-> column after that point. See `_SESSION_COLUMNS` in `lionagi/state/db.py`
-> for the allowlist entry and rationale.
+> "session created" for this call path.
+>
+> **Reactive-spawn exception**: a node injected mid-run via `SpawnRequest`
+> (`reactive=True`) does not exist yet at `_build_dag` time, so it cannot be
+> folded in there. `_execute_dag` performs a second, append-only class of
+> write after such a node completes: it registers that node's role-declared
+> artifacts under its own subdirectory, keeping whatever `required` flag the
+> role itself declares. This is sound under the same anti-drift reading —
+> what is expected of a spawned node is fully determined *before* it runs,
+> not adjusted after the fact — because two things are frozen ahead of
+> execution and never revisited: the role's `artifact_defaults` (cached in
+> `role_artifact_defaults` at `_build_dag` time, the same source planned legs
+> draw from), and the node's own id (`spawn_id`, stamped by
+> `role_node_builder` at construction, before the node is ever queued). The
+> node is also told its own artifact directory and any `required` files via
+> its instruction (`decorate_instruction`, wired into `role_node_builder`)
+> before `Operation.invoke()` runs, so a `required: true` entry is a real,
+> satisfiable gate for it, identical in kind to a planned leg's — teardown's
+> `verify_artifact_contract` (`lionagi/state/artifact_verifier.py`) needs no
+> special case for either. No call site may write this column once a node's
+> own entries are folded, or after `_execute_dag` returns. See
+> `_SESSION_COLUMNS` in `lionagi/state/db.py` for the allowlist entry and
+> rationale.
 
 ### 2. Playbook contract shape
 

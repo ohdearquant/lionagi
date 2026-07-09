@@ -63,6 +63,45 @@ async def _persist_session_phase(env, phase: str) -> None:
             await ctx["db"].update_session(ctx["session_id"], current_phase=phase)
 
 
+# ── Artifact-contract text — shared by planned legs and spawned nodes ─────────
+# Extracted so a planned leg (_build_dag) and a reactively spawned node
+# (_execute_dag's decorate_instruction closure) mirror each other by
+# construction: one namespacing rule, one sentence of REQUIRED-file prose,
+# used from both call sites, rather than the two copies quietly drifting.
+
+
+def _leg_artifact_entries(node_id: str, role_defaults: dict | None) -> list[dict]:
+    """Namespace a role's declared artifact_defaults under *node_id*'s own subdirectory."""
+    if not role_defaults:
+        return []
+    entries: list[dict] = []
+    for entry in role_defaults.get("expected", []):
+        eid = entry.get("id", "")
+        epath = entry.get("path", "")
+        entries.append(
+            {
+                **entry,
+                "id": f"{node_id}__{eid}",
+                "path": f"{node_id}/{epath}",
+                "required": entry.get("required", True),
+                "source": "role_default",
+            }
+        )
+    return entries
+
+
+def _artifact_directive(run, node_id: str, leg_expected: list[dict]) -> str:
+    """Compose the artifact-directory (+ REQUIRED-file, when declared) instruction text."""
+    note = f"Your artifact directory: {run.agent_artifact_dir(node_id)}/ — write output files here."
+    if leg_expected:
+        required_paths = ", ".join(e["path"].split("/", 1)[1] for e in leg_expected)
+        note += (
+            f" REQUIRED: write {required_paths} in that directory — the run "
+            "is marked failed if it is missing at completion."
+        )
+    return note
+
+
 # ── Control poller (ADR-0085 part 1: session_controls transport) ─────────────
 # `li o ctl pause|resume|msg` enqueues a session_controls row from a separate
 # process; this poller — running alongside the heartbeat loop in _execute_dag,
@@ -440,32 +479,11 @@ async def _build_dag(
                 with contextlib.suppress(ValueError):
                     role_defaults = _Role.load(ta.assignee).artifact_defaults
             role_artifact_defaults[ta.assignee] = role_defaults
-        leg_expected: list[dict] = []
-        if role_defaults:
-            for entry in role_defaults.get("expected", []):
-                eid = entry.get("id", "")
-                epath = entry.get("path", "")
-                leg_expected.append(
-                    {
-                        **entry,
-                        "id": f"{agent_ids[i]}__{eid}",
-                        "path": f"{agent_ids[i]}/{epath}",
-                        "source": "role_default",
-                    }
-                )
-            role_artifact_entries.extend(leg_expected)
+        leg_expected = _leg_artifact_entries(agent_ids[i], role_defaults)
+        role_artifact_entries.extend(leg_expected)
 
         ctx: list = [{"original_task": prompt}]
-        artifact_note = (
-            f"Your artifact directory: {env.run.agent_artifact_dir(agent_ids[i])}/ — "
-            "write output files here."
-        )
-        if leg_expected:
-            required_paths = ", ".join(e["path"].split("/", 1)[1] for e in leg_expected)
-            artifact_note += (
-                f" REQUIRED: write {required_paths} in that directory — the run "
-                "is marked failed if it is missing at completion."
-            )
+        artifact_note = _artifact_directive(env.run, agent_ids[i], leg_expected)
         if dep_indices[i]:
             ups = "; ".join(
                 f"step {j + 1} ({agent_ids[j]}): {env.run.agent_artifact_dir(agent_ids[j])}/"
@@ -538,12 +556,17 @@ async def _build_dag(
     # should fail loudly here, not be silently dropped.
     #
     # ADR-0029 extension (see db.py _SESSION_COLUMNS comment): this is the
-    # one allowed post-creation write to artifact_contract_json, happening
-    # once here at DAG-build time, before _execute_dag runs any leg. It must
-    # reach the session row (not just env._live_persist) — a crash or
-    # orphan exit before teardown should still leave the DB row showing what
-    # was actually expected, matching what Studio/`li state show-session`
-    # read directly from artifact_contract_json.
+    # planned-leg write to artifact_contract_json, happening once here at
+    # DAG-build time, before _execute_dag runs any leg. It must reach the
+    # session row (not just env._live_persist) — a crash or orphan exit
+    # before teardown should still leave the DB row showing what was
+    # actually expected, matching what Studio/`li state show-session` read
+    # directly from artifact_contract_json. A SECOND, append-only write class
+    # exists for reactively spawned nodes (_execute_dag, after a spawned
+    # node completes) — see the "Reactive-spawn exception" paragraph in
+    # ADR-0029, which explains why folding a spawned node's entries in after
+    # it runs is still sound: what is expected of it was frozen (role
+    # defaults + spawn_id) before it was ever queued.
     if role_artifact_entries and ctx_lp is not None:
         from lionagi.state.artifact_verifier import validate_artifact_contract
 
@@ -924,6 +947,16 @@ async def _execute_dag(
     env.session.observe(NodeFailed, handler=_on_node_failed)
     eng_run = PlanningEngine().new_run(session=env.session)
 
+    def _decorate_spawn_instruction(req: SpawnRequest, spawn_id: str) -> str:
+        """Give a reactively spawned node the same artifact-dir + REQUIRED
+        text a planned leg gets (env.run.agent_artifact_dir + this leg's
+        role_defaults) — the mirror of the ctx["artifact_instructions"]
+        block _build_dag composes above, via the shared helpers."""
+        role_defaults = dag_state.role_artifact_defaults.get(req.assignee) if req.assignee else None
+        leg_expected = _leg_artifact_entries(spawn_id, role_defaults)
+        note = _artifact_directive(env.run, spawn_id, leg_expected)
+        return f"{req.instruction}\n\n{note}"
+
     t_exec = time.monotonic()
     _hb_task = _asyncio.ensure_future(_heartbeat_loop())
     _ctl_task = _asyncio.ensure_future(_control_poll_loop())
@@ -932,7 +965,11 @@ async def _execute_dag(
             env.builder.get_graph(),
             reactive=reactive,
             spawn_type=SpawnRequest if reactive else None,
-            node_builder=role_node_builder(role_base) if reactive else None,
+            node_builder=(
+                role_node_builder(role_base, decorate_instruction=_decorate_spawn_instruction)
+                if reactive
+                else None
+            ),
             max_spawn=max_spawn,
             max_concurrent=conc,
             verbose=env.verbose,
@@ -1013,21 +1050,60 @@ async def _execute_dag(
         )
 
     # Reactively spawned nodes are in the result map but not in our plan. Their
-    # graph node still carries the assignee role_node_builder stamped on it
-    # (role_node_builder in lionagi/orchestration/patterns.py) and the branch
-    # the executor ultimately ran it on, so both are recovered here — plan-
-    # time arrays (agent_ids/worker_models) are fixed-size and can't cover
-    # nodes injected mid-run via SpawnRequest.
+    # graph node still carries the spawn_id + assignee role_node_builder
+    # stamped on it at construction time (lionagi/orchestration/patterns.py)
+    # and the branch the executor ultimately ran it on, so all three are
+    # recovered here — plan-time arrays (agent_ids/worker_models) are
+    # fixed-size and can't cover nodes injected mid-run via SpawnRequest.
     graph_nodes = getattr(env.builder.get_graph(), "internal_nodes", {}) or {}
     spawned_contract_entries: list[dict] = []
-    spawn_idx = 0
+
+    # Pre-scan every builder-stamped spawn_id BEFORE assigning any fallback —
+    # a node injected without going through role_node_builder (escalation
+    # children, public Session.flow inject()) carries no spawn_id and needs a
+    # synthesized one, but that synthesis must never collide with (or, worse,
+    # race ahead of and steal) an id role_node_builder already allocated at
+    # construction time. Completion order alone is exactly the bug this whole
+    # change fixes, so it can no longer be trusted to hand out spawn-1.
+    stamped_spawn_ids: set[str] = set()
+    for nid in op_results:
+        if nid in known_nodes:
+            continue
+        graph_node = graph_nodes.get(nid)
+        stamped = graph_node.metadata.get("spawn_id") if graph_node is not None else None
+        if stamped:
+            stamped_spawn_ids.add(stamped)
+
+    _fallback_seq = 0
+
+    def _next_fallback_spawn_id() -> str:
+        nonlocal _fallback_seq
+        while True:
+            _fallback_seq += 1
+            candidate = f"spawn-{_fallback_seq}"
+            if candidate not in stamped_spawn_ids:
+                return candidate
+
     for nid, res in op_results.items():
         if nid in known_nodes:
             continue
-        spawn_idx += 1
-        sid = f"spawn-{spawn_idx}"
         graph_node = graph_nodes.get(nid)
         assignee = graph_node.metadata.get("assignee") if graph_node is not None else None
+        sid = graph_node.metadata.get("spawn_id") if graph_node is not None else None
+        if not sid:
+            if assignee:
+                # role_node_builder stamps spawn_id unconditionally, whether
+                # or not the request carried an assignee — a role-attributed
+                # node reaching here without one means that invariant broke
+                # upstream. Fail loudly instead of silently minting a fresh
+                # id that would hide the defect behind a plausible-looking
+                # contract entry.
+                raise RuntimeError(
+                    f"spawned node {nid!r} carries role assignee {assignee!r} "
+                    "but no spawn_id — role_node_builder must stamp spawn_id "
+                    "before the executor runs the node"
+                )
+            sid = _next_fallback_spawn_id()
         spawn_model = ""
         if graph_node is not None and graph_node.branch_id is not None:
             with contextlib.suppress(Exception):
@@ -1054,25 +1130,14 @@ async def _execute_dag(
 
         # Record the spawned node's role-declared artifacts in the session
         # contract for post-run visibility (synthesis, Studio), namespaced
-        # under the node's own subdir. These are folded as non-required: a
-        # reactively spawned node is built with only its instruction and is
-        # never told its artifact dir, so it has no path to satisfy a required
-        # entry — enforcing one would flip an otherwise-completed run to failed.
+        # under the node's own subdir. Required entries now stay required:
+        # decorate_instruction (wired into role_node_builder above) tells the
+        # spawned node its own artifact dir + REQUIRED files before it runs,
+        # the same way a planned leg is told — so an explicitly-required
+        # declaration is enforceable here, not just observability.
         if assignee:
             role_defaults = dag_state.role_artifact_defaults.get(assignee)
-            if role_defaults:
-                for entry in role_defaults.get("expected", []):
-                    eid = entry.get("id", "")
-                    epath = entry.get("path", "")
-                    spawned_contract_entries.append(
-                        {
-                            **entry,
-                            "id": f"{sid}__{eid}",
-                            "path": f"{sid}/{epath}",
-                            "required": False,
-                            "source": "role_default",
-                        }
-                    )
+            spawned_contract_entries.extend(_leg_artifact_entries(sid, role_defaults))
 
     ctx_lp = getattr(env, "_live_persist", None)
     if spawned_contract_entries and ctx_lp is not None:

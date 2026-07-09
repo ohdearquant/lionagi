@@ -123,13 +123,18 @@ _SESSION_COLUMNS = frozenset(
         # DAG flows break that assumption: which role runs which leg is only
         # known once planning finishes, which happens after create_session
         # (see _build_dag in cli/orchestrate/flow.py). This column is
-        # allowlisted here so that ONE extension write is possible — folding
-        # resolved per-leg role artifact_defaults into the flow-wide
-        # contract, done once at DAG-build time, strictly before any leg
-        # starts executing. No writer may touch it after that point; the
-        # anti-drift intent of ADR-0029 (no changes once work is underway)
-        # still holds, it is just anchored at "DAG built" instead of
-        # "session created" for this call path.
+        # allowlisted here for two writer classes, both append-only and both
+        # frozen before the work they describe ever runs: (1) _build_dag
+        # folds each planned leg's resolved role artifact_defaults in once,
+        # at DAG-build time, strictly before any leg starts executing; (2)
+        # _execute_dag folds a reactively spawned node's own entries in after
+        # that node completes, but what is expected of it (role defaults +
+        # its builder-stamped spawn_id) was frozen before it was ever
+        # queued, so this is still a "before work starts" declaration in
+        # substance — see the ADR-0029 "Reactive-spawn exception" paragraph.
+        # No other writer may touch this column; the anti-drift intent of
+        # ADR-0029 (no changes once what was expected has been acted on)
+        # still holds.
         "artifact_contract_json",
     }
 )
