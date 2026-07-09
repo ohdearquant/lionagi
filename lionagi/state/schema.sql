@@ -805,3 +805,36 @@ CREATE INDEX IF NOT EXISTS idx_approvals_status
   ON approvals(status) WHERE status IN ('pending', 'granted');
 CREATE INDEX IF NOT EXISTS idx_approvals_session
   ON approvals(session_id) WHERE session_id IS NOT NULL;
+
+-- ── Approval evidence (hash-chained audit trail) ────────────────────────────
+-- Append-only: every approval lifecycle event (proposed/granted/denied/
+-- consumed/expired) writes one row here, in the same transaction as the
+-- approvals status change. chain_hash = sha256(content_hash + previous_hash);
+-- genesis previous_hash is 64 zero chars. content_hash is a sha256 over
+-- canonical (sorted-keys) JSON of the row's payload fields. Never stores raw
+-- action params -- only the params_hash already computed for the approval.
+-- hmac_sig is populated only when LIONAGI_STUDIO_EVIDENCE_HMAC_KEY is set.
+
+CREATE TABLE IF NOT EXISTS approval_evidence (
+  id                    TEXT    PRIMARY KEY,
+  sequence              INTEGER NOT NULL,
+  event_type            TEXT    NOT NULL
+                        CHECK(event_type IN ('proposed', 'granted', 'denied', 'consumed', 'expired')),
+  approval_id           TEXT    NOT NULL REFERENCES approvals(id),
+  action_kind           TEXT    NOT NULL,
+  status_from           TEXT,
+  status_to             TEXT    NOT NULL,
+  params_hash           TEXT    NOT NULL,
+  justification_class   TEXT,
+  justification_reason  TEXT,
+  created_at            REAL    NOT NULL,
+  content_hash          TEXT    NOT NULL,
+  previous_hash         TEXT    NOT NULL,
+  chain_hash            TEXT    NOT NULL,
+  hmac_sig              TEXT
+);
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_approval_evidence_sequence
+  ON approval_evidence(sequence);
+CREATE INDEX IF NOT EXISTS idx_approval_evidence_approval
+  ON approval_evidence(approval_id);

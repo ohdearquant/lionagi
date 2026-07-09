@@ -1,7 +1,7 @@
 # Copyright (c) 2023-2026, HaiyangLi <quantocean.li at gmail dot com>
 # SPDX-License-Identifier: Apache-2.0
 
-"""SQLAlchemy MetaData for all 23 StateDB tables — single source of truth for schema DDL."""
+"""SQLAlchemy MetaData for all 26 StateDB tables — single source of truth for schema DDL."""
 
 from __future__ import annotations
 
@@ -1018,6 +1018,49 @@ Index(
     approvals.c.session_id,
     sqlite_where=text("session_id IS NOT NULL"),
     postgresql_where=text("session_id IS NOT NULL"),
+)
+
+# ── approval_evidence (hash-chained audit trail on the approval ledger) ────
+# Append-only: every approval lifecycle event writes one row in the same
+# transaction as the approvals status change. See schema.sql for the full
+# chain-hash design note.
+
+approval_evidence = Table(
+    "approval_evidence",
+    metadata,
+    Column("id", Text, primary_key=True),
+    Column("sequence", Integer, nullable=False),
+    Column(
+        "event_type",
+        Text,
+        CheckConstraint(
+            "event_type IN ('proposed','granted','denied','consumed','expired')",
+            name="ck_approval_evidence_event_type",
+        ),
+        nullable=False,
+    ),
+    Column("approval_id", Text, ForeignKey("approvals.id"), nullable=False),
+    Column("action_kind", Text, nullable=False),
+    Column("status_from", Text),
+    Column("status_to", Text, nullable=False),
+    Column("params_hash", Text, nullable=False),
+    Column("justification_class", Text),
+    Column("justification_reason", Text),
+    Column("created_at", Float, nullable=False),
+    Column("content_hash", Text, nullable=False),
+    Column("previous_hash", Text, nullable=False),
+    Column("chain_hash", Text, nullable=False),
+    Column("hmac_sig", Text),
+)
+
+Index(
+    "idx_approval_evidence_sequence",
+    approval_evidence.c.sequence,
+    unique=True,
+)
+Index(
+    "idx_approval_evidence_approval",
+    approval_evidence.c.approval_id,
 )
 
 Index("idx_run_tags_tag", run_tags.c.tag)
