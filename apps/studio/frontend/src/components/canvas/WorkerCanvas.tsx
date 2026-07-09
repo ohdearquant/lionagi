@@ -13,7 +13,7 @@ import type { Connection, Edge, Node, NodeMouseHandler, EdgeMouseHandler } from 
 import "reactflow/dist/style.css";
 
 import StepNodeComponent from "./StepNode";
-import type { StepNodeData } from "./StepNode";
+import type { StepNodeData, NodeExecStatus } from "./StepNode";
 import ConditionEdgeComponent from "./ConditionEdge";
 import type { ConditionEdgeData } from "./ConditionEdge";
 import SidePanel from "./SidePanel";
@@ -42,6 +42,12 @@ interface WorkerCanvasProps {
     result?: Record<string, unknown>;
     timestamp?: number;
   }>;
+  /** Authored step id → live lifecycle status, correlated from Node* signals
+   * (never from op_id — see lib/operationGraph.ts buildNodeStatusesByName).
+   * Takes priority over execSteps/currentStep for node coloring when a node
+   * has a matching entry; nodes with no entry fall back to the legacy
+   * execSteps/currentStep-derived status. */
+  nodeStatuses?: Record<string, NodeExecStatus>;
   currentStep?: string | null;
   onChange?: (nodes: WorkerStepNode[], edges: WorkerLinkEdge[]) => void;
 }
@@ -119,6 +125,7 @@ export default function WorkerCanvas({
   agentProfiles = [],
   modelOverrides = {},
   execSteps = [],
+  nodeStatuses,
   currentStep = null,
   onChange,
 }: WorkerCanvasProps) {
@@ -139,9 +146,11 @@ export default function WorkerCanvas({
     initialised.current = true;
   }, [initialFlowNodes, initialFlowEdges, setNodes, setEdges]);
 
-  // Apply execution status to nodes
+  // Apply execution status to nodes. nodeStatuses (live signal-derived, keyed
+  // by authored step id) takes priority per node; nodes it doesn't cover fall
+  // back to the legacy execSteps/currentStep derivation.
   useEffect(() => {
-    if (execSteps.length === 0 && !currentStep) return;
+    if (execSteps.length === 0 && !currentStep && !nodeStatuses) return;
 
     const completedMap = new Map(
       execSteps.filter((s) => s.status === "completed").map((s) => [s.step, s]),
@@ -150,7 +159,9 @@ export default function WorkerCanvas({
     setNodes((nds) =>
       nds.map((n) => {
         let status: StepNodeData["execStatus"] = "pending";
-        if (n.id === currentStep) status = "running";
+        const live = nodeStatuses?.[n.id];
+        if (live) status = live;
+        else if (n.id === currentStep) status = "running";
         else if (completedMap.has(n.id)) status = "completed";
 
         return {
@@ -163,10 +174,15 @@ export default function WorkerCanvas({
     setEdges((eds) =>
       eds.map((e) => ({
         ...e,
-        data: { ...e.data, sourceCompleted: completedMap.has(e.source) },
+        data: {
+          ...e.data,
+          sourceCompleted: nodeStatuses
+            ? nodeStatuses[e.source] === "completed"
+            : completedMap.has(e.source),
+        },
       })),
     );
-  }, [execSteps, currentStep, setNodes, setEdges]);
+  }, [execSteps, currentStep, nodeStatuses, setNodes, setEdges]);
 
   // Emit changes to parent
   useEffect(() => {
@@ -335,7 +351,7 @@ export default function WorkerCanvas({
           <svg>
             <defs>
               <marker id="arrow" markerWidth="8" markerHeight="6" refX="8" refY="3" orient="auto">
-                <polygon points="0 0, 8 3, 0 6" fill="var(--edge-strong)" />
+                <polygon points="0 0, 8 3, 0 6" fill="var(--dag-pending-border)" />
               </marker>
               <marker
                 id="arrow-active"

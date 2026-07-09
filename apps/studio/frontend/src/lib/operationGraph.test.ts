@@ -1,5 +1,10 @@
 import { describe, it, expect } from "vitest";
-import { buildOperationGraph, laneFor } from "./operationGraph";
+import {
+  buildNodeStatusesByName,
+  buildOperationGraph,
+  laneFor,
+  transitiveReduce,
+} from "./operationGraph";
 import type { SignalEvent } from "./api";
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
@@ -318,5 +323,122 @@ describe("buildOperationGraph — multiple operations", () => {
     expect(alpha.elapsed).toBeCloseTo(1.5);
     expect(beta.status).toBe("failed");
     expect(beta.name).toBe("beta");
+  });
+});
+
+// ── transitiveReduce ─────────────────────────────────────────────────────────
+
+describe("transitiveReduce", () => {
+  it("drops the direct edge of a diamond when a longer path covers it", () => {
+    const edges = [
+      { source: "a", target: "b" },
+      { source: "b", target: "c" },
+      { source: "a", target: "c" },
+    ];
+    expect(transitiveReduce(edges)).toEqual([
+      { source: "a", target: "b" },
+      { source: "b", target: "c" },
+    ]);
+  });
+
+  it("reduces a full predecessor chain (A depends on B and C; B depends on C)", () => {
+    // Mirrors the engine's depends_on shape: a node can list both its direct
+    // predecessor and that predecessor's own predecessor (the full ancestor set).
+    const edges = [
+      { source: "c", target: "b" },
+      { source: "c", target: "a" },
+      { source: "b", target: "a" },
+    ];
+    const reduced = transitiveReduce(edges);
+    expect(reduced).toHaveLength(2);
+    expect(reduced).not.toContainEqual({ source: "c", target: "a" });
+  });
+
+  it("keeps a linear chain intact (nothing redundant)", () => {
+    const edges = [
+      { source: "a", target: "b" },
+      { source: "b", target: "c" },
+    ];
+    expect(transitiveReduce(edges)).toEqual(edges);
+  });
+
+  it("keeps a fan-in with no transitive overlap intact", () => {
+    const edges = [
+      { source: "w1", target: "j" },
+      { source: "w2", target: "j" },
+    ];
+    expect(transitiveReduce(edges)).toEqual(edges);
+  });
+
+  it("does not hang on a cycle", () => {
+    const edges = [
+      { source: "a", target: "b" },
+      { source: "b", target: "a" },
+    ];
+    expect(() => transitiveReduce(edges)).not.toThrow();
+  });
+
+  it("preserves extra fields on the retained edges", () => {
+    const edges = [
+      { source: "a", target: "b", id: "e1" },
+      { source: "b", target: "c", id: "e2" },
+      { source: "a", target: "c", id: "e3" },
+    ];
+    const reduced = transitiveReduce(edges);
+    expect(reduced.map((e) => e.id)).toEqual(["e1", "e2"]);
+  });
+
+  it("is a no-op on an empty edge list", () => {
+    expect(transitiveReduce([])).toEqual([]);
+  });
+});
+
+describe("buildOperationGraph — transitive reduction of depends_on edges", () => {
+  it("collapses the redundant edge in a diamond", () => {
+    const events = [
+      ev("1", "NodeCompleted", "a", { name: "a", depends_on: [] }, 1),
+      ev("2", "NodeCompleted", "b", { name: "b", depends_on: ["a"] }, 2),
+      ev("3", "NodeCompleted", "c", { name: "c", depends_on: ["a", "b"] }, 3),
+    ];
+    const g = buildOperationGraph(events);
+    expect(g.edges).toHaveLength(2);
+    expect(g.edges).not.toContainEqual({ source: "a", target: "c" });
+    expect(g.edges).toContainEqual({ source: "a", target: "b" });
+    expect(g.edges).toContainEqual({ source: "b", target: "c" });
+  });
+});
+
+// ── buildNodeStatusesByName ──────────────────────────────────────────────────
+
+describe("buildNodeStatusesByName", () => {
+  it("correlates by payload.name, not op_id", () => {
+    const events = [
+      ev("1", "NodeStarted", "runtime-uuid-1", { name: "step_a" }, 1),
+      ev("2", "NodeCompleted", "runtime-uuid-1", { name: "step_a", elapsed: 2.5 }, 2),
+    ];
+    const statuses = buildNodeStatusesByName(events);
+    expect(statuses.has("runtime-uuid-1")).toBe(false);
+    expect(statuses.get("step_a")?.status).toBe("succeeded");
+    expect(statuses.get("step_a")?.elapsed).toBeCloseTo(2.5);
+  });
+
+  it("ignores events with no authored name", () => {
+    const events = [ev("1", "NodeStarted", "runtime-uuid-1", {}, 1)];
+    expect(buildNodeStatusesByName(events).size).toBe(0);
+  });
+
+  it("reports queued (not running) for a node with only a NodeQueued signal", () => {
+    const events = [ev("1", "NodeQueued", "op-1", { name: "step_b" }, 1)];
+    expect(buildNodeStatusesByName(events).get("step_b")?.status).toBe("queued");
+  });
+
+  it("keeps distinct authored names, from different op_ids, separate", () => {
+    const events = [
+      ev("1", "NodeStarted", "op-1", { name: "step_a" }, 1),
+      ev("2", "NodeFailed", "op-2", { name: "step_b" }, 2),
+    ];
+    const statuses = buildNodeStatusesByName(events);
+    expect(statuses.get("step_a")?.status).toBe("running");
+    expect(statuses.get("step_b")?.status).toBe("failed");
   });
 });

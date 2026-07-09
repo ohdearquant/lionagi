@@ -3,7 +3,7 @@
 import { memo, useEffect, useState } from "react";
 import { Handle, Position } from "reactflow";
 import type { NodeProps } from "reactflow";
-import { IconCheck, IconClose } from "@/components/ui/icons";
+import { IconCheck, IconClose, IconWarning } from "@/components/ui/icons";
 
 function usePrefersReducedMotion(): boolean {
   const [reduced, setReduced] = useState(false);
@@ -28,6 +28,13 @@ const ROLE_VAR: Record<string, string> = {
   tester: "var(--role-tester)",
 };
 
+// "pending" = no lifecycle signal observed at all (never queued); "queued" =
+// an explicit NodeQueued signal was seen but execution has not started. Both
+// render as the same neutral card — the distinction matters for correctness
+// (a queued node must never be painted as running), not for a separate look.
+export type NodeExecStatus =
+  "pending" | "queued" | "running" | "awaiting_approval" | "completed" | "failed" | "escalated";
+
 export interface StepNodeData {
   label: string;
   role: string;
@@ -37,7 +44,7 @@ export interface StepNodeData {
   timeout: number | null;
   inputs: string[];
   outputs: string[];
-  execStatus?: "pending" | "running" | "completed" | "failed";
+  execStatus?: NodeExecStatus;
   // optional badges
   durationSeconds?: number | null;
   errorCount?: number;
@@ -49,6 +56,7 @@ function StepNodeComponent({ data, selected }: NodeProps<StepNodeData>) {
   const roleColor = ROLE_VAR[data.role] || "var(--content-muted)";
   const status = data.execStatus ?? "pending";
   const reducedMotion = usePrefersReducedMotion();
+  const isTerminalError = status === "failed" || status === "escalated";
 
   // These colors derive from status data (dag-* tokens) — keep inline
   const borderColor =
@@ -56,29 +64,35 @@ function StepNodeComponent({ data, selected }: NodeProps<StepNodeData>) {
       ? "var(--dag-running-border)"
       : status === "completed"
         ? "var(--dag-completed-border)"
-        : status === "failed"
+        : isTerminalError
           ? "var(--dag-failed-border)"
-          : selected
-            ? "var(--status-selected)"
-            : "var(--edge-default)";
+          : status === "awaiting_approval"
+            ? "var(--dag-warn-border)"
+            : selected
+              ? "var(--status-selected)"
+              : "var(--dag-pending-border)";
 
   const bgColor =
     status === "running"
       ? "var(--dag-running-bg)"
       : status === "completed"
         ? "var(--dag-completed-bg)"
-        : status === "failed"
+        : isTerminalError
           ? "var(--dag-failed-bg)"
-          : "var(--surface-raised)";
+          : status === "awaiting_approval"
+            ? "var(--dag-warn-bg)"
+            : "var(--dag-pending-bg)";
 
   const labelColor =
     status === "running"
       ? "var(--dag-running-label)"
       : status === "completed"
         ? "var(--dag-completed-label)"
-        : status === "failed"
+        : isTerminalError
           ? "var(--dag-failed-label)"
-          : "var(--content-primary)";
+          : status === "awaiting_approval"
+            ? "var(--dag-warn-label)"
+            : "var(--content-primary)";
 
   return (
     <div
@@ -124,6 +138,16 @@ function StepNodeComponent({ data, selected }: NodeProps<StepNodeData>) {
         {status === "failed" && (
           <span className="flex shrink-0 items-center text-status-error">
             <IconClose size={10} strokeWidth={2.5} />
+          </span>
+        )}
+        {status === "escalated" && (
+          <span className="flex shrink-0 items-center text-status-error">
+            <IconWarning size={10} strokeWidth={2.5} />
+          </span>
+        )}
+        {status === "awaiting_approval" && (
+          <span className="flex shrink-0 items-center text-status-warning">
+            <IconWarning size={10} strokeWidth={2.5} />
           </span>
         )}
         {status === "running" && (
