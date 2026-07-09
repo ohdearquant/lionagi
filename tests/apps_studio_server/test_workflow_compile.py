@@ -287,6 +287,162 @@ async def test_compile_null_budget_override_falls_back_to_def():
     assert engine_op.parameters["engine_max_agents"] == 5  # def value, not None
 
 
+# ─── Per-node cwd (D-F1) ──────────────────────────────────────────────────
+
+
+async def _resolve_coding_kind(ref: str) -> dict[str, Any]:
+    return {"kind": "coding", "model": None, "options": {"test_cmd": "pytest"}}
+
+
+async def test_spec_level_base_dir_rejected_at_compile():
+    """base_dir is a run-level input, never a spec field — reject even a
+    def already saved with a top-level base_dir (defense in depth, mirroring
+    the write-path check)."""
+    spec = _make_spec(base_dir="/tmp/hostile")
+    with pytest.raises(WorkflowCompileError, match="base_dir"):
+        await compile_workflow_def(spec, resolve_engine_def=_resolve_ok)
+
+
+async def test_engine_node_cwd_without_base_dir_rejected_with_node_id():
+    spec = _make_spec()
+    spec["nodes"][2]["config"]["cwd"] = "sub"
+    with pytest.raises(WorkflowCompileError) as exc_info:
+        await compile_workflow_def(spec, resolve_engine_def=_resolve_coding_kind)
+    assert exc_info.value.node_id == "n3"
+    assert "base_dir" in str(exc_info.value)
+
+
+async def test_engine_node_cwd_traversal_rejected_before_resolution():
+    """A raw '..' segment is rejected before any path resolution — even
+    with no base_dir and on a non-coding engine kind."""
+    spec = _make_spec()
+    spec["nodes"][2]["config"]["cwd"] = "../../etc"
+    with pytest.raises(WorkflowCompileError) as exc_info:
+        await compile_workflow_def(spec, resolve_engine_def=_resolve_ok)
+    assert exc_info.value.node_id == "n3"
+    assert "traversal" in str(exc_info.value)
+
+
+async def test_engine_node_cwd_non_coding_kind_rejected(tmp_path):
+    sub = tmp_path / "sub"
+    sub.mkdir()
+    spec = _make_spec()
+    spec["nodes"][2]["config"]["cwd"] = "sub"
+    with pytest.raises(WorkflowCompileError) as exc_info:
+        await compile_workflow_def(spec, resolve_engine_def=_resolve_ok, base_dir=str(tmp_path))
+    assert exc_info.value.node_id == "n3"
+    assert "coding" in str(exc_info.value)
+
+
+async def test_engine_node_relative_cwd_resolves_contained(tmp_path):
+    sub = tmp_path / "sub"
+    sub.mkdir()
+    spec = _make_spec()
+    spec["nodes"][2]["config"]["cwd"] = "sub"
+    graph, _id_map = await compile_workflow_def(
+        spec, resolve_engine_def=_resolve_coding_kind, base_dir=str(tmp_path)
+    )
+
+    from lionagi.operations.node import Operation
+
+    engine_op = next(
+        n
+        for n in graph.internal_nodes.values()
+        if isinstance(n, Operation) and n.operation == "engine"
+    )
+    assert engine_op.parameters["engine_workspace"] == str(sub.resolve())
+
+
+async def test_engine_node_absolute_cwd_inside_base_dir_accepted(tmp_path):
+    sub = tmp_path / "sub"
+    sub.mkdir()
+    spec = _make_spec()
+    spec["nodes"][2]["config"]["cwd"] = str(sub)
+    graph, _id_map = await compile_workflow_def(
+        spec, resolve_engine_def=_resolve_coding_kind, base_dir=str(tmp_path)
+    )
+
+    from lionagi.operations.node import Operation
+
+    engine_op = next(
+        n
+        for n in graph.internal_nodes.values()
+        if isinstance(n, Operation) and n.operation == "engine"
+    )
+    assert engine_op.parameters["engine_workspace"] == str(sub.resolve())
+
+
+async def test_engine_node_absolute_cwd_outside_base_dir_rejected(tmp_path):
+    base = tmp_path / "base"
+    base.mkdir()
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    spec = _make_spec()
+    spec["nodes"][2]["config"]["cwd"] = str(outside)
+    with pytest.raises(WorkflowCompileError) as exc_info:
+        await compile_workflow_def(
+            spec, resolve_engine_def=_resolve_coding_kind, base_dir=str(base)
+        )
+    assert exc_info.value.node_id == "n3"
+    assert "escapes" in str(exc_info.value)
+
+
+async def test_engine_node_cwd_nonexistent_dir_rejected(tmp_path):
+    spec = _make_spec()
+    spec["nodes"][2]["config"]["cwd"] = "does-not-exist"
+    with pytest.raises(WorkflowCompileError) as exc_info:
+        await compile_workflow_def(
+            spec, resolve_engine_def=_resolve_coding_kind, base_dir=str(tmp_path)
+        )
+    assert exc_info.value.node_id == "n3"
+    assert "does not exist" in str(exc_info.value)
+
+
+async def test_engine_node_cwd_symlink_escape_rejected(tmp_path):
+    """A relative cwd that LOOKS contained under base_dir but resolves through
+    a symlink to a directory outside base_dir must be rejected. This is why
+    containment uses Path.resolve() (symlink-resolving) rather than
+    os.path.normpath — normpath would pass the traversal check and this test
+    while missing the symlink escape."""
+    base = tmp_path / "base"
+    base.mkdir()
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    link = base / "escape-link"
+    link.symlink_to(outside, target_is_directory=True)
+
+    spec = _make_spec()
+    spec["nodes"][2]["config"]["cwd"] = "escape-link"
+    with pytest.raises(WorkflowCompileError) as exc_info:
+        await compile_workflow_def(
+            spec, resolve_engine_def=_resolve_coding_kind, base_dir=str(base)
+        )
+    assert exc_info.value.node_id == "n3"
+    assert "escapes" in str(exc_info.value)
+
+
+async def test_engine_node_no_cwd_unaffected_with_base_dir(tmp_path):
+    """A def with no node cwd anywhere runs exactly as today, base_dir or not."""
+    graph, id_map = await compile_workflow_def(
+        _make_spec(), resolve_engine_def=_resolve_ok, base_dir=str(tmp_path)
+    )
+    assert set(id_map) == {"n2", "n3"}
+
+    from lionagi.operations.node import Operation
+
+    engine_op = next(
+        n
+        for n in graph.internal_nodes.values()
+        if isinstance(n, Operation) and n.operation == "engine"
+    )
+    assert engine_op.parameters["engine_workspace"] is None
+
+
+async def test_engine_node_no_cwd_unaffected_without_base_dir():
+    graph, id_map = await compile_workflow_def(_make_spec(), resolve_engine_def=_resolve_ok)
+    assert set(id_map) == {"n2", "n3"}
+
+
 async def test_compile_non_mapping_engine_options_raises_with_node_id():
     """A non-mapping config.options would raise TypeError on the ** merge,
     escaping the ValueError wrapper as a 500. Reject it as a compile error.

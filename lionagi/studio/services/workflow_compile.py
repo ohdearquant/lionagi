@@ -13,10 +13,12 @@ from __future__ import annotations
 import ast
 import json
 from collections.abc import Awaitable, Callable
+from pathlib import Path
 from typing import Any
 
 from pydantic import Field, PrivateAttr
 
+from lionagi.libs.path_safety import has_traversal
 from lionagi.operations.builder import OperationGraphBuilder
 from lionagi.protocols.graph.edge import Edge, EdgeCondition
 from lionagi.protocols.graph.graph import Graph
@@ -128,6 +130,53 @@ def _validate_node(node: ast.AST) -> None:
             _validate_node(element)
         return
     raise UnsafeExpressionError(f"expression construct {type(node).__name__} is not allowed")
+
+
+def _resolve_node_cwd(node_id: str, raw_cwd: Any, base_dir: str | None) -> str:
+    """Resolve and contain a node's config.cwd against the run's base_dir.
+
+    Order matters: the raw-string traversal check runs before any path
+    resolution (so a hostile '..' segment is rejected even when base_dir is
+    absent), symlinks are resolved before the containment check (so a
+    contained-looking path that resolves outside base_dir through a symlink
+    is caught), and the resolved directory must actually exist.
+    """
+    if not isinstance(raw_cwd, str) or not raw_cwd:
+        raise WorkflowCompileError(
+            f"node {node_id!r} config.cwd must be a non-empty string", node_id=node_id
+        )
+    raw_path = Path(raw_cwd)
+    if has_traversal(raw_path):
+        raise WorkflowCompileError(
+            f"node {node_id!r} config.cwd {raw_cwd!r} contains directory "
+            "traversal ('..') and is rejected before any path resolution",
+            node_id=node_id,
+        )
+    if base_dir is None:
+        raise WorkflowCompileError(
+            f"node {node_id!r} sets config.cwd but the run supplied no "
+            "base_dir; a node cwd requires a run-level base_dir to "
+            "establish a containment root",
+            node_id=node_id,
+        )
+    base_resolved = Path(base_dir).resolve()
+    joined = raw_path if raw_path.is_absolute() else base_resolved / raw_path
+    resolved = joined.resolve()
+    try:
+        resolved.relative_to(base_resolved)
+    except ValueError:
+        raise WorkflowCompileError(
+            f"node {node_id!r} config.cwd {raw_cwd!r} resolves to "
+            f"{resolved}, which escapes base_dir {base_resolved}",
+            node_id=node_id,
+        ) from None
+    if not resolved.exists() or not resolved.is_dir():
+        raise WorkflowCompileError(
+            f"node {node_id!r} config.cwd {raw_cwd!r} resolves to "
+            f"{resolved}, which does not exist or is not a directory",
+            node_id=node_id,
+        )
+    return str(resolved)
 
 
 def _parse_expr(expr: str) -> ast.Expression:
@@ -249,6 +298,7 @@ async def compile_workflow_def(
     spec: dict[str, Any],
     *,
     resolve_engine_def: Callable[[str], Awaitable[dict[str, Any] | None]],
+    base_dir: str | None = None,
 ) -> tuple[Graph, dict[str, str]]:
     """Compile a validated WorkflowDef spec into an executable Graph.
 
@@ -256,7 +306,20 @@ async def compile_workflow_def(
     internal Operation ids lionagi assigned them. Raises WorkflowCompileError
     (node_id/edge_id set) on any problem — never lets a bad expr, unknown
     engine_def_id, or a parse/fanout/gate node reach the executor.
+
+    ``base_dir`` is a run-level containment root for node ``config.cwd``
+    values — it is never read from the spec itself (a spec carrying a
+    top-level ``base_dir`` field is rejected below): a shared/contributed
+    def must not be able to pin its own containment root.
     """
+    if "base_dir" in spec:
+        raise WorkflowCompileError(
+            "spec_json must not carry a top-level 'base_dir' field — "
+            "base_dir is a run-level input supplied by the operator, never "
+            "a def-authored field (a def that could pin its own "
+            "containment root would defeat cwd containment)"
+        )
+
     nodes: list[dict[str, Any]] = spec.get("nodes", [])
     edges: list[dict[str, Any]] = spec.get("edges", [])
 
@@ -375,6 +438,28 @@ async def compile_workflow_def(
                 _validate_budget("max_agents", engine_max_agents)
             except ValueError as exc:
                 raise WorkflowCompileError(str(exc), node_id=node_id) from exc
+
+            # Per-node working directory (D-F1). Containment is enforced
+            # here (raw-string traversal check + symlink-resolving
+            # relative_to(base_dir) + must-exist-and-be-a-dir); v1.1 only
+            # wires the resolved cwd through to a 'coding' engine node's
+            # run(workspace=...) — the only engine run() signature that
+            # accepts a working directory today (research/review/planning
+            # take no such kwarg and would crash at run time, not compile,
+            # if one were smuggled in).
+            engine_workspace: str | None = None
+            node_cwd = config.get("cwd")
+            if node_cwd is not None:
+                resolved_cwd = _resolve_node_cwd(node_id, node_cwd, base_dir)
+                if defn.get("kind") != "coding":
+                    raise WorkflowCompileError(
+                        f"node {node_id!r} sets config.cwd but its engine "
+                        f"kind is {defn.get('kind')!r}; cwd is only "
+                        "supported on 'coding' engine nodes in v1.1",
+                        node_id=node_id,
+                    )
+                engine_workspace = resolved_cwd
+
             op_id = builder.add_operation(
                 "engine",
                 node_id=node_id,
@@ -383,6 +468,7 @@ async def compile_workflow_def(
                 engine_max_depth=engine_max_depth,
                 engine_max_agents=engine_max_agents,
                 engine_options=engine_options,
+                engine_workspace=engine_workspace,
             )
         else:  # pragma: no cover — unreachable, prefiltered above
             raise WorkflowCompileError(f"unknown node kind {kind!r}", node_id=node_id)
@@ -541,6 +627,7 @@ def make_engine_operation(
         engine_max_depth: int | None = None,
         engine_max_agents: int | None = None,
         engine_options: dict[str, Any] | None = None,
+        engine_workspace: str | None = None,
         **_ignored: Any,
     ) -> Any:
         from lionagi.cli.engine import _KIND_META, _import_engine_class
@@ -565,6 +652,8 @@ def make_engine_operation(
             run_kwargs["test_cmd"] = options.get("test_cmd")
         if engine_kind in ("coding", "hypothesis") and options.get("export_dir"):
             run_kwargs["export_dir"] = options["export_dir"]
+        if engine_kind == "coding" and engine_workspace:
+            run_kwargs["workspace"] = engine_workspace
 
         spec_input = _derive_engine_input(context)
 
