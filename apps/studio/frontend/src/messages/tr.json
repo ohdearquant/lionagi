@@ -40,25 +40,6 @@
       "newTab": "yeni sekmede açılır"
     }
   },
-  "leo": {
-    "name": "Leo",
-    "caption": "stüdyo operatörü",
-    "ariaLabel": "Leo — stüdyo operatörü",
-    "expand": "Leo’yu genişlet",
-    "minimize": "Leo’yu küçült",
-    "zeroStateTitle": "Leo stüdyoyu seninle birlikte yönetir — çalıştırmalar, zamanlamalar veya sağlık durumunu sor",
-    "example1": "Şu anda ne çalışıyor?",
-    "example2": "Son 5 çalıştırmayı göster",
-    "example3": "Zamanlamalarımı listele",
-    "inputPlaceholder": "Leo’ya sor…",
-    "send": "gönder",
-    "confirm": "onayla",
-    "dismiss": "kapat",
-    "proposedAction": "önerilen eylem",
-    "uiActionFailed": "uygulanamadı",
-    "error": "hata",
-    "thinking": "düşünüyor..."
-  },
   "playfield": {
     "title": "Playfield",
     "subtitle": "projeler genelindeki çalışan ve kuyruğa alınmış Play ve oturumlar",

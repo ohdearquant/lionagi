@@ -40,25 +40,6 @@
       "newTab": "mở trong thẻ mới"
     }
   },
-  "leo": {
-    "name": "Leo",
-    "caption": "bộ vận hành studio",
-    "ariaLabel": "Leo — bộ vận hành studio",
-    "expand": "mở rộng Leo",
-    "minimize": "thu nhỏ Leo",
-    "zeroStateTitle": "Leo vận hành studio cùng bạn — hỏi về lần chạy, lịch chạy hoặc sức khỏe hệ thống",
-    "example1": "Hiện đang chạy gì?",
-    "example2": "Hiển thị 5 lần chạy gần nhất",
-    "example3": "Liệt kê lịch chạy của tôi",
-    "inputPlaceholder": "hỏi Leo…",
-    "send": "gửi",
-    "confirm": "xác nhận",
-    "dismiss": "bỏ qua",
-    "proposedAction": "hành động đề xuất",
-    "uiActionFailed": "không áp dụng được",
-    "error": "lỗi",
-    "thinking": "đang nghĩ..."
-  },
   "playfield": {
     "title": "Playfield",
     "subtitle": "tất cả play và phiên đang chạy hoặc đang trong hàng đợi của các dự án",

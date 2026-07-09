@@ -40,25 +40,6 @@
       "newTab": "se abre en una pestaña nueva"
     }
   },
-  "leo": {
-    "name": "Leo",
-    "caption": "operador del estudio",
-    "ariaLabel": "Leo — operador del estudio",
-    "expand": "Expandir Leo",
-    "minimize": "Minimizar Leo",
-    "zeroStateTitle": "Leo opera el estudio contigo — pregunta por ejecuciones, programaciones o estado",
-    "example1": "¿Qué se está ejecutando ahora?",
-    "example2": "Muéstrame las últimas 5 ejecuciones",
-    "example3": "Enumera mis programaciones",
-    "inputPlaceholder": "Preguntar a Leo…",
-    "send": "Enviar",
-    "confirm": "Confirmar",
-    "dismiss": "Descartar",
-    "proposedAction": "Acción propuesta",
-    "uiActionFailed": "no se pudo aplicar",
-    "error": "Error",
-    "thinking": "pensando..."
-  },
   "playfield": {
     "title": "Área de Plays",
     "subtitle": "Todos los Plays y sesiones en ejecución o en cola en todos los proyectos",

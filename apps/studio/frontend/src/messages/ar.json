@@ -40,25 +40,6 @@
       "newTab": "يفتح في علامة تبويب جديدة"
     }
   },
-  "leo": {
-    "name": "Leo",
-    "caption": "مشغّل الاستوديو",
-    "ariaLabel": "Leo — مشغّل الاستوديو",
-    "expand": "توسيع Leo",
-    "minimize": "تصغير Leo",
-    "zeroStateTitle": "يدير Leo الاستوديو معك — اسأل عن التشغيلات أو الجداول أو الصحة",
-    "example1": "ما الذي يعمل الآن؟",
-    "example2": "اعرض آخر 5 تشغيلات",
-    "example3": "اسرد جداولي",
-    "inputPlaceholder": "اسأل Leo…",
-    "send": "إرسال",
-    "confirm": "تأكيد",
-    "dismiss": "تجاهل",
-    "proposedAction": "إجراء مقترح",
-    "uiActionFailed": "تعذّر التطبيق",
-    "error": "خطأ",
-    "thinking": "يفكّر..."
-  },
   "playfield": {
     "title": "ساحة التشغيل",
     "subtitle": "كل Play والجلسات قيد التشغيل أو في الصف عبر المشاريع",

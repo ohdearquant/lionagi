@@ -40,25 +40,6 @@
       "newTab": "새 탭에서 열림"
     }
   },
-  "leo": {
-    "name": "Leo",
-    "caption": "스튜디오 오퍼레이터",
-    "ariaLabel": "Leo — 스튜디오 오퍼레이터",
-    "expand": "Leo 펼치기",
-    "minimize": "Leo 최소화",
-    "zeroStateTitle": "Leo가 스튜디오를 함께 운영합니다 — 실행, 일정 또는 상태를 물어보세요",
-    "example1": "지금 무엇이 실행 중인가요?",
-    "example2": "최근 실행 5개 보여주세요",
-    "example3": "내 일정 목록 표시",
-    "inputPlaceholder": "Leo에게 묻기…",
-    "send": "보내기",
-    "confirm": "확인",
-    "dismiss": "닫기",
-    "proposedAction": "제안된 작업",
-    "uiActionFailed": "적용할 수 없음",
-    "error": "오류",
-    "thinking": "생각 중..."
-  },
   "playfield": {
     "title": "플레이필드",
     "subtitle": "프로젝트 전체의 실행 중이거나 대기 중인 플레이와 세션",

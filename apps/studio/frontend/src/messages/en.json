@@ -40,25 +40,6 @@
       "homeAria": "Home tabs"
     }
   },
-  "leo": {
-    "name": "Leo",
-    "caption": "studio operator",
-    "ariaLabel": "Leo — studio operator",
-    "expand": "Expand Leo",
-    "minimize": "Minimize Leo",
-    "zeroStateTitle": "Leo operates the studio with you — ask about runs, schedules, or health",
-    "example1": "What's running right now?",
-    "example2": "Show me the last 5 runs",
-    "example3": "List my schedules",
-    "inputPlaceholder": "Ask Leo…",
-    "send": "Send",
-    "confirm": "Confirm",
-    "dismiss": "Dismiss",
-    "proposedAction": "Proposed action",
-    "uiActionFailed": "couldn't apply",
-    "error": "Error",
-    "thinking": "thinking..."
-  },
   "playfield": {
     "title": "Playfield",
     "subtitle": "All running and queued plays and sessions across projects",

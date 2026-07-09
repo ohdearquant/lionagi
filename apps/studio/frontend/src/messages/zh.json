@@ -40,25 +40,6 @@
       "homeAria": "首页标签页"
     }
   },
-  "leo": {
-    "name": "Leo",
-    "caption": "常驻操作员",
-    "ariaLabel": "Leo — 常驻操作员",
-    "expand": "展开 Leo",
-    "minimize": "收起 Leo",
-    "zeroStateTitle": "Leo 与你一起操控工作室——查看运行状态、调度和系统健康",
-    "example1": "现在有什么在运行？",
-    "example2": "最近 5 次运行",
-    "example3": "列出所有调度",
-    "inputPlaceholder": "问问 Leo…",
-    "send": "发送",
-    "confirm": "确认执行",
-    "dismiss": "忽略",
-    "proposedAction": "待确认操作",
-    "uiActionFailed": "未能执行",
-    "error": "出错了",
-    "thinking": "思考中..."
-  },
   "playfield": {
     "title": "运行场",
     "subtitle": "所有项目中正在运行及排队的执行与会话",

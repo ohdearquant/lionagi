@@ -158,24 +158,6 @@ const SYSTEM_SPACE: Space = {
   key: 5,
 };
 
-function IconChat() {
-  return (
-    <svg
-      width="20"
-      height="20"
-      viewBox="0 0 24 24"
-      fill="none"
-      stroke="currentColor"
-      strokeWidth="1.5"
-      strokeLinecap="round"
-      strokeLinejoin="round"
-      aria-hidden="true"
-    >
-      <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z" />
-    </svg>
-  );
-}
-
 interface LangListboxProps {
   id: string;
   locale: string;
@@ -279,8 +261,6 @@ interface Props {
   dark: boolean;
   onToggleTheme: () => void;
   onLocaleChange: (locale: string) => void;
-  leoOpen?: boolean;
-  onToggleLeo?: () => void;
 }
 
 function isActive(href: string, pathname: string): boolean {
@@ -288,15 +268,8 @@ function isActive(href: string, pathname: string): boolean {
   return pathname === href || pathname.startsWith(`${href}/`);
 }
 
-export default function IconRail({
-  dark,
-  onToggleTheme,
-  onLocaleChange,
-  leoOpen,
-  onToggleLeo,
-}: Props) {
+export default function IconRail({ dark, onToggleTheme, onLocaleChange }: Props) {
   const t = useTranslations("shell");
-  const tc = useTranslations("leo");
   const locale = useLocale();
   const pathname = useLocation().pathname;
   const navigate = useNavigate();
@@ -386,7 +359,7 @@ export default function IconRail({
         })}
       </ul>
 
-      {/* Bottom cluster — system + Leo + theme + locale */}
+      {/* Bottom cluster — system + theme + locale */}
       <div className="flex flex-col items-center gap-1 pb-2">
         {(() => {
           const active = isActive(SYSTEM_SPACE.href, pathname);
@@ -416,32 +389,6 @@ export default function IconRail({
             </Link>
           );
         })()}
-        {onToggleLeo && (
-          <button
-            type="button"
-            onClick={onToggleLeo}
-            aria-label={`${tc("name")} (⌘J)`}
-            aria-pressed={leoOpen ?? false}
-            className={`group relative flex h-10 w-10 items-center justify-center rounded transition-colors duration-100 ${
-              leoOpen ? "bg-surface-overlay text-content-primary" : "text-content-muted"
-            }`}
-            title={`${tc("name")} — ⌘J`}
-          >
-            {leoOpen && (
-              <span
-                aria-hidden="true"
-                className="absolute bottom-2 left-0 top-2 w-0.5 rounded-r bg-accent"
-              />
-            )}
-            <span
-              className={`transition-opacity duration-100 ${
-                leoOpen ? "opacity-100" : "opacity-[0.55] group-hover:opacity-100"
-              }`}
-            >
-              <IconChat />
-            </span>
-          </button>
-        )}
 
         <button
           type="button"
