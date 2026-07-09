@@ -4,6 +4,18 @@ import { test, expect } from "@playwright/test";
 // on below is only ever produced by the seeded daemon's fixtures.
 const SMOKE_SCHEDULE_NAME = "e2e-smoke-nightly-report";
 
+// index.html loads the analytics script from an external host. A deferred
+// script participates in the window load event, so a slow or unreachable
+// external fetch stalls page.goto past the test timeout on CI runners.
+// Fulfill (not abort: a failed resource load is itself a console error,
+// which the boot test asserts against) so the suite never touches the
+// network beyond the app under test.
+test.beforeEach(async ({ page }) => {
+  await page.route("https://analytics.khive.ai/**", (route) =>
+    route.fulfill({ status: 200, contentType: "application/javascript", body: "" }),
+  );
+});
+
 test("app boots, root renders, and the page logs no console errors", async ({ page }) => {
   const errors: string[] = [];
   page.on("console", (msg) => {
