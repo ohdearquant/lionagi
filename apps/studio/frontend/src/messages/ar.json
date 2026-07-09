@@ -555,9 +555,10 @@
     },
     "agentRow": {
       "ariaLabel": "الوكيل {name} — فتح تفاصيل الجلسة",
-      "kind": "تشغيل",
-      "branches": "{count, plural, zero {لا فروع} one {فرع واحد} two {فرعان} few {# فروع} many {# فرعًا} other {# فرع}}",
-      "messages": "{count, plural, zero {لا رسائل} one {رسالة واحدة} two {رسالتان} few {# رسائل} many {# رسالة} other {# رسالة}}"
+      "branches": "{count} فرع",
+      "messages": "{count} رسالة",
+      "branchesTitle": "{count} فرع",
+      "messagesTitle": "{count} رسالة"
     },
     "empty": {
       "message": "لا يوجد وكلاء قيد التشغيل — يعرض أسطول الوكلاء عمليات التنسيق المباشرة فور حدوثها.",

@@ -555,9 +555,10 @@
     },
     "agentRow": {
       "ariaLabel": "ایجنٹ ⁨{name}⁩ — سیشن تفصیل کھولیں",
-      "kind": "رن",
-      "branches": "{count, plural, one {# برانچ} other {# برانچز}}",
-      "messages": "{count, plural, one {# پیغام} other {# پیغامات}}"
+      "branches": "{count} شاخ",
+      "messages": "{count} پیغام",
+      "branchesTitle": "{count} شاخیں",
+      "messagesTitle": "{count} پیغامات"
     },
     "empty": {
       "message": "کوئی ایجنٹ نہیں چل رہا — ایجنٹ فلیٹ لائیو آرکیسٹریشنز دکھاتا ہے۔",

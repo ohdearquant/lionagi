@@ -555,9 +555,10 @@
     },
     "agentRow": {
       "ariaLabel": "ajan {name} — oturum ayrıntısını aç",
-      "kind": "çalıştırma",
-      "branches": "{count, plural, one {# dal} other {# dal}}",
-      "messages": "{count, plural, one {# mesaj} other {# mesaj}}"
+      "branches": "{count} dal",
+      "messages": "{count} msj",
+      "branchesTitle": "{count} dal",
+      "messagesTitle": "{count} mesaj"
     },
     "empty": {
       "message": "çalışan ajan yok — ajan filosu canlı orkestrasyonları gerçekleşirken gösterir.",

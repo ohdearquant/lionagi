@@ -555,9 +555,10 @@
     },
     "agentRow": {
       "ariaLabel": "Agente {name} — abrir detalle de sesión",
-      "kind": "ejecución",
-      "branches": "{count}r",
-      "messages": "{count}m"
+      "branches": "{count} ram",
+      "messages": "{count} msj",
+      "branchesTitle": "{count} ramas",
+      "messagesTitle": "{count} mensajes"
     },
     "empty": {
       "message": "No hay agentes en ejecución — Flota muestra las orquestaciones en vivo a medida que ocurren.",

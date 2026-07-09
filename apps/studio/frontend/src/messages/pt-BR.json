@@ -555,9 +555,10 @@
     },
     "agentRow": {
       "ariaLabel": "Agente {name} — abrir detalhes da sessão",
-      "kind": "execução",
-      "branches": "{count}b",
-      "messages": "{count}m"
+      "branches": "{count} ram",
+      "messages": "{count} msg",
+      "branchesTitle": "{count} ramificações",
+      "messagesTitle": "{count} mensagens"
     },
     "empty": {
       "message": "Nenhum agente em execução — a frota mostra orquestrações ao vivo conforme elas acontecem.",

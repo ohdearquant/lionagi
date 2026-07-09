@@ -555,9 +555,10 @@
     },
     "agentRow": {
       "ariaLabel": "智能体 {name} — 打开会话详情",
-      "kind": "运行",
       "branches": "{count}分支",
-      "messages": "{count}条"
+      "messages": "{count}消息",
+      "branchesTitle": "{count} 个分支",
+      "messagesTitle": "{count} 条消息"
     },
     "empty": {
       "message": "当前没有运行中的智能体 — 这里会实时显示进行中的编排任务。",

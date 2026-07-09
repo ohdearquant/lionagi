@@ -555,9 +555,10 @@
     },
     "agentRow": {
       "ariaLabel": "एजेंट {name} — सेशन विवरण खोलें",
-      "kind": "रन",
-      "branches": "{count, plural, one {# ब्रांच} other {# ब्रांच}}",
-      "messages": "{count, plural, one {# मैसेज} other {# मैसेज}}"
+      "branches": "{count} शाखा",
+      "messages": "{count} संदेश",
+      "branchesTitle": "{count} शाखाएँ",
+      "messagesTitle": "{count} संदेश"
     },
     "empty": {
       "message": "कोई एजेंट नहीं चल रहा — फ़्लीट लाइव ऑर्केस्ट्रेशन होते ही दिखाता है।",

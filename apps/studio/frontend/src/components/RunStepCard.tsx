@@ -1091,6 +1091,16 @@ function ToolCallBlock({
   const status = message.status || "ok";
   const exitCode = message.exit_code;
   const isError = status === "error";
+  // Collapsed-row fallback: an empty summary with non-empty output shows the
+  // output's first non-blank line instead of a bare "(no args)" — that line
+  // is usually more informative than a static placeholder.
+  const outputPreview = output
+    ? (output
+        .split("\n")
+        .find((line) => line.trim().length > 0)
+        ?.trim() ?? "")
+    : "";
+  const collapsedText = summary || outputPreview;
 
   const statusBadge = isError ? (
     <span className="rounded border border-status-error/30 bg-status-error-bg px-1.5 py-0.5 text-[length:var(--t-xs)] font-medium text-status-error">
@@ -1118,9 +1128,9 @@ function ToolCallBlock({
         </span>
         <span
           className="flex-1 truncate font-mono text-body text-content-secondary"
-          title={summary}
+          title={collapsedText || undefined}
         >
-          {summary || t("noArgs")}
+          {collapsedText || t("noArgs")}
         </span>
         {statusBadge}
         {output && (

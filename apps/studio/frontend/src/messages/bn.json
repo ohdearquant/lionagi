@@ -555,9 +555,10 @@
     },
     "agentRow": {
       "ariaLabel": "এজেন্ট {name} — সেশনের বিস্তারিত খুলুন",
-      "kind": "রান",
-      "branches": "{count}b",
-      "messages": "{count}m"
+      "branches": "{count} শাখা",
+      "messages": "{count} বার্তা",
+      "branchesTitle": "{count}টি শাখা",
+      "messagesTitle": "{count}টি বার্তা"
     },
     "empty": {
       "message": "কোনো এজেন্ট রানিং নেই — এজেন্ট ফ্লিট লাইভ অর্কেস্ট্রেশন ঘটার সঙ্গে সঙ্গে দেখায়।",
