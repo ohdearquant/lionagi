@@ -25,415 +25,439 @@
          <lastmod>2026-07-09</lastmod>
     </url>
     <url>
-         <loc>https://ohdearquant.github.io/lionagi/adrs/</loc>
+         <loc>https://ohdearquant.github.io/lionagi/_archive/v0/</loc>
          <lastmod>2026-07-09</lastmod>
     </url>
     <url>
-         <loc>https://ohdearquant.github.io/lionagi/adrs/ADR-0001-lion-studio-internal-app/</loc>
+         <loc>https://ohdearquant.github.io/lionagi/_archive/v0/ADR-0001-lion-studio-internal-app/</loc>
          <lastmod>2026-07-09</lastmod>
     </url>
     <url>
-         <loc>https://ohdearquant.github.io/lionagi/adrs/ADR-0002-studio-tech-stack/</loc>
+         <loc>https://ohdearquant.github.io/lionagi/_archive/v0/ADR-0002-studio-tech-stack/</loc>
          <lastmod>2026-07-09</lastmod>
     </url>
     <url>
-         <loc>https://ohdearquant.github.io/lionagi/adrs/ADR-0003-claude-code-marketplace/</loc>
+         <loc>https://ohdearquant.github.io/lionagi/_archive/v0/ADR-0003-claude-code-marketplace/</loc>
          <lastmod>2026-07-09</lastmod>
     </url>
     <url>
-         <loc>https://ohdearquant.github.io/lionagi/adrs/ADR-0004-filesystem-data-layer/</loc>
+         <loc>https://ohdearquant.github.io/lionagi/_archive/v0/ADR-0004-filesystem-data-layer/</loc>
          <lastmod>2026-07-09</lastmod>
     </url>
     <url>
-         <loc>https://ohdearquant.github.io/lionagi/adrs/ADR-0005-workers-playbooks-rename/</loc>
+         <loc>https://ohdearquant.github.io/lionagi/_archive/v0/ADR-0005-workers-playbooks-rename/</loc>
          <lastmod>2026-07-09</lastmod>
     </url>
     <url>
-         <loc>https://ohdearquant.github.io/lionagi/adrs/ADR-0006-sse-live-streaming/</loc>
+         <loc>https://ohdearquant.github.io/lionagi/_archive/v0/ADR-0006-sse-live-streaming/</loc>
          <lastmod>2026-07-09</lastmod>
     </url>
     <url>
-         <loc>https://ohdearquant.github.io/lionagi/adrs/ADR-0007-plugin-auto-discovery/</loc>
+         <loc>https://ohdearquant.github.io/lionagi/_archive/v0/ADR-0007-plugin-auto-discovery/</loc>
          <lastmod>2026-07-09</lastmod>
     </url>
     <url>
-         <loc>https://ohdearquant.github.io/lionagi/adrs/ADR-0008-studio-v1-scope/</loc>
+         <loc>https://ohdearquant.github.io/lionagi/_archive/v0/ADR-0008-studio-v1-scope/</loc>
          <lastmod>2026-07-09</lastmod>
     </url>
     <url>
-         <loc>https://ohdearquant.github.io/lionagi/adrs/ADR-0009-sqlite-state-layer/</loc>
+         <loc>https://ohdearquant.github.io/lionagi/_archive/v0/ADR-0009-sqlite-state-layer/</loc>
          <lastmod>2026-07-09</lastmod>
     </url>
     <url>
-         <loc>https://ohdearquant.github.io/lionagi/adrs/ADR-0010-plugin-aware-studio/</loc>
+         <loc>https://ohdearquant.github.io/lionagi/_archive/v0/ADR-0010-plugin-aware-studio/</loc>
          <lastmod>2026-07-09</lastmod>
     </url>
     <url>
-         <loc>https://ohdearquant.github.io/lionagi/adrs/ADR-0011-shows-data-model/</loc>
+         <loc>https://ohdearquant.github.io/lionagi/_archive/v0/ADR-0011-shows-data-model/</loc>
          <lastmod>2026-07-09</lastmod>
     </url>
     <url>
-         <loc>https://ohdearquant.github.io/lionagi/adrs/ADR-0012-studio-execution-lineage/</loc>
+         <loc>https://ohdearquant.github.io/lionagi/_archive/v0/ADR-0012-studio-execution-lineage/</loc>
          <lastmod>2026-07-09</lastmod>
     </url>
     <url>
-         <loc>https://ohdearquant.github.io/lionagi/adrs/ADR-0013-zero-dependency-ui/</loc>
+         <loc>https://ohdearquant.github.io/lionagi/_archive/v0/ADR-0013-zero-dependency-ui/</loc>
          <lastmod>2026-07-09</lastmod>
     </url>
     <url>
-         <loc>https://ohdearquant.github.io/lionagi/adrs/ADR-0014-cli-primary-studio-secondary/</loc>
+         <loc>https://ohdearquant.github.io/lionagi/_archive/v0/ADR-0014-cli-primary-studio-secondary/</loc>
          <lastmod>2026-07-09</lastmod>
     </url>
     <url>
-         <loc>https://ohdearquant.github.io/lionagi/adrs/ADR-0015-runs-list-design/</loc>
+         <loc>https://ohdearquant.github.io/lionagi/_archive/v0/ADR-0015-runs-list-design/</loc>
          <lastmod>2026-07-09</lastmod>
     </url>
     <url>
-         <loc>https://ohdearquant.github.io/lionagi/adrs/ADR-0016-definitions-write-path/</loc>
+         <loc>https://ohdearquant.github.io/lionagi/_archive/v0/ADR-0016-definitions-write-path/</loc>
          <lastmod>2026-07-09</lastmod>
     </url>
     <url>
-         <loc>https://ohdearquant.github.io/lionagi/adrs/ADR-0017-session-lifecycle-status/</loc>
+         <loc>https://ohdearquant.github.io/lionagi/_archive/v0/ADR-0017-session-lifecycle-status/</loc>
          <lastmod>2026-07-09</lastmod>
     </url>
     <url>
-         <loc>https://ohdearquant.github.io/lionagi/adrs/ADR-0018-studio-distribution/</loc>
+         <loc>https://ohdearquant.github.io/lionagi/_archive/v0/ADR-0018-studio-distribution/</loc>
          <lastmod>2026-07-09</lastmod>
     </url>
     <url>
-         <loc>https://ohdearquant.github.io/lionagi/adrs/ADR-0019-teams-db-and-run-lifecycle/</loc>
+         <loc>https://ohdearquant.github.io/lionagi/_archive/v0/ADR-0019-teams-db-and-run-lifecycle/</loc>
          <lastmod>2026-07-09</lastmod>
     </url>
     <url>
-         <loc>https://ohdearquant.github.io/lionagi/adrs/ADR-0020-skill-invocations/</loc>
+         <loc>https://ohdearquant.github.io/lionagi/_archive/v0/ADR-0020-skill-invocations/</loc>
          <lastmod>2026-07-09</lastmod>
     </url>
     <url>
-         <loc>https://ohdearquant.github.io/lionagi/adrs/ADR-0021-skill-artifacts-and-reactive-chaining/</loc>
+         <loc>https://ohdearquant.github.io/lionagi/_archive/v0/ADR-0021-skill-artifacts-and-reactive-chaining/</loc>
          <lastmod>2026-07-09</lastmod>
     </url>
     <url>
-         <loc>https://ohdearquant.github.io/lionagi/adrs/ADR-0022-run-step-provenance/</loc>
+         <loc>https://ohdearquant.github.io/lionagi/_archive/v0/ADR-0022-run-step-provenance/</loc>
          <lastmod>2026-07-09</lastmod>
     </url>
     <url>
-         <loc>https://ohdearquant.github.io/lionagi/adrs/ADR-0023-unified-hook-system/</loc>
+         <loc>https://ohdearquant.github.io/lionagi/_archive/v0/ADR-0023-unified-hook-system/</loc>
          <lastmod>2026-07-09</lastmod>
     </url>
     <url>
-         <loc>https://ohdearquant.github.io/lionagi/adrs/ADR-0024-session-health-and-admin-surface/</loc>
+         <loc>https://ohdearquant.github.io/lionagi/_archive/v0/ADR-0024-session-health-and-admin-surface/</loc>
          <lastmod>2026-07-09</lastmod>
     </url>
     <url>
-         <loc>https://ohdearquant.github.io/lionagi/adrs/ADR-0025-session-status-vocabulary/</loc>
+         <loc>https://ohdearquant.github.io/lionagi/_archive/v0/ADR-0025-session-status-vocabulary/</loc>
          <lastmod>2026-07-09</lastmod>
     </url>
     <url>
-         <loc>https://ohdearquant.github.io/lionagi/adrs/ADR-0026-project-detection/</loc>
+         <loc>https://ohdearquant.github.io/lionagi/_archive/v0/ADR-0026-project-detection/</loc>
          <lastmod>2026-07-09</lastmod>
     </url>
     <url>
-         <loc>https://ohdearquant.github.io/lionagi/adrs/ADR-0027-scheduled-runs/</loc>
+         <loc>https://ohdearquant.github.io/lionagi/_archive/v0/ADR-0027-scheduled-runs/</loc>
          <lastmod>2026-07-09</lastmod>
     </url>
     <url>
-         <loc>https://ohdearquant.github.io/lionagi/adrs/ADR-0028-status-reason-model/</loc>
+         <loc>https://ohdearquant.github.io/lionagi/_archive/v0/ADR-0028-status-reason-model/</loc>
          <lastmod>2026-07-09</lastmod>
     </url>
     <url>
-         <loc>https://ohdearquant.github.io/lionagi/adrs/ADR-0029-artifact-contract/</loc>
+         <loc>https://ohdearquant.github.io/lionagi/_archive/v0/ADR-0029-artifact-contract/</loc>
          <lastmod>2026-07-09</lastmod>
     </url>
     <url>
-         <loc>https://ohdearquant.github.io/lionagi/adrs/ADR-0030-attention-queue/</loc>
+         <loc>https://ohdearquant.github.io/lionagi/_archive/v0/ADR-0030-attention-queue/</loc>
          <lastmod>2026-07-09</lastmod>
     </url>
     <url>
-         <loc>https://ohdearquant.github.io/lionagi/adrs/ADR-0031-entity-header-pattern/</loc>
+         <loc>https://ohdearquant.github.io/lionagi/_archive/v0/ADR-0031-entity-header-pattern/</loc>
          <lastmod>2026-07-09</lastmod>
     </url>
     <url>
-         <loc>https://ohdearquant.github.io/lionagi/adrs/ADR-0032-navigation-reorganization/</loc>
+         <loc>https://ohdearquant.github.io/lionagi/_archive/v0/ADR-0032-navigation-reorganization/</loc>
          <lastmod>2026-07-09</lastmod>
     </url>
     <url>
-         <loc>https://ohdearquant.github.io/lionagi/adrs/ADR-0033-unified-entity-state-model/</loc>
+         <loc>https://ohdearquant.github.io/lionagi/_archive/v0/ADR-0033-unified-entity-state-model/</loc>
          <lastmod>2026-07-09</lastmod>
     </url>
     <url>
-         <loc>https://ohdearquant.github.io/lionagi/adrs/ADR-0034-frontend-data-and-state-architecture/</loc>
+         <loc>https://ohdearquant.github.io/lionagi/_archive/v0/ADR-0034-frontend-data-and-state-architecture/</loc>
          <lastmod>2026-07-09</lastmod>
     </url>
     <url>
-         <loc>https://ohdearquant.github.io/lionagi/adrs/ADR-0035-design-system-and-component-library/</loc>
+         <loc>https://ohdearquant.github.io/lionagi/_archive/v0/ADR-0035-design-system-and-component-library/</loc>
          <lastmod>2026-07-09</lastmod>
     </url>
     <url>
-         <loc>https://ohdearquant.github.io/lionagi/adrs/ADR-0039-knowledge-substrate-minimal-interface/</loc>
+         <loc>https://ohdearquant.github.io/lionagi/_archive/v0/ADR-0039-knowledge-substrate-minimal-interface/</loc>
          <lastmod>2026-07-09</lastmod>
     </url>
     <url>
-         <loc>https://ohdearquant.github.io/lionagi/adrs/ADR-0041-immutable-evidence-nodes/</loc>
+         <loc>https://ohdearquant.github.io/lionagi/_archive/v0/ADR-0041-immutable-evidence-nodes/</loc>
          <lastmod>2026-07-09</lastmod>
     </url>
     <url>
-         <loc>https://ohdearquant.github.io/lionagi/adrs/ADR-0042-task-certificate/</loc>
+         <loc>https://ohdearquant.github.io/lionagi/_archive/v0/ADR-0042-task-certificate/</loc>
          <lastmod>2026-07-09</lastmod>
     </url>
     <url>
-         <loc>https://ohdearquant.github.io/lionagi/adrs/ADR-0043-governed-tool-declaration/</loc>
+         <loc>https://ohdearquant.github.io/lionagi/_archive/v0/ADR-0043-governed-tool-declaration/</loc>
          <lastmod>2026-07-09</lastmod>
     </url>
     <url>
-         <loc>https://ohdearquant.github.io/lionagi/adrs/ADR-0044-tool-gates/</loc>
+         <loc>https://ohdearquant.github.io/lionagi/_archive/v0/ADR-0044-tool-gates/</loc>
          <lastmod>2026-07-09</lastmod>
     </url>
     <url>
-         <loc>https://ohdearquant.github.io/lionagi/adrs/ADR-0045-break-glass-protocol/</loc>
+         <loc>https://ohdearquant.github.io/lionagi/_archive/v0/ADR-0045-break-glass-protocol/</loc>
          <lastmod>2026-07-09</lastmod>
     </url>
     <url>
-         <loc>https://ohdearquant.github.io/lionagi/adrs/ADR-0046-jit-tool-grant/</loc>
+         <loc>https://ohdearquant.github.io/lionagi/_archive/v0/ADR-0046-jit-tool-grant/</loc>
          <lastmod>2026-07-09</lastmod>
     </url>
     <url>
-         <loc>https://ohdearquant.github.io/lionagi/adrs/ADR-0047-agent-charter/</loc>
+         <loc>https://ohdearquant.github.io/lionagi/_archive/v0/ADR-0047-agent-charter/</loc>
          <lastmod>2026-07-09</lastmod>
     </url>
     <url>
-         <loc>https://ohdearquant.github.io/lionagi/adrs/ADR-0048-agent-segregation-of-duties/</loc>
+         <loc>https://ohdearquant.github.io/lionagi/_archive/v0/ADR-0048-agent-segregation-of-duties/</loc>
          <lastmod>2026-07-09</lastmod>
     </url>
     <url>
-         <loc>https://ohdearquant.github.io/lionagi/adrs/ADR-0049-log-tier-governance/</loc>
+         <loc>https://ohdearquant.github.io/lionagi/_archive/v0/ADR-0049-log-tier-governance/</loc>
          <lastmod>2026-07-09</lastmod>
     </url>
     <url>
-         <loc>https://ohdearquant.github.io/lionagi/adrs/ADR-0050-operation-context/</loc>
+         <loc>https://ohdearquant.github.io/lionagi/_archive/v0/ADR-0050-operation-context/</loc>
          <lastmod>2026-07-09</lastmod>
     </url>
     <url>
-         <loc>https://ohdearquant.github.io/lionagi/adrs/ADR-0051-tool-registry-allowlists/</loc>
+         <loc>https://ohdearquant.github.io/lionagi/_archive/v0/ADR-0051-tool-registry-allowlists/</loc>
          <lastmod>2026-07-09</lastmod>
     </url>
     <url>
-         <loc>https://ohdearquant.github.io/lionagi/adrs/ADR-0052-policy-resolution/</loc>
+         <loc>https://ohdearquant.github.io/lionagi/_archive/v0/ADR-0052-policy-resolution/</loc>
          <lastmod>2026-07-09</lastmod>
     </url>
     <url>
-         <loc>https://ohdearquant.github.io/lionagi/adrs/ADR-0053-artifact-persistence/</loc>
+         <loc>https://ohdearquant.github.io/lionagi/_archive/v0/ADR-0053-artifact-persistence/</loc>
          <lastmod>2026-07-09</lastmod>
     </url>
     <url>
-         <loc>https://ohdearquant.github.io/lionagi/adrs/ADR-0054-local-state-cleanup/</loc>
+         <loc>https://ohdearquant.github.io/lionagi/_archive/v0/ADR-0054-local-state-cleanup/</loc>
          <lastmod>2026-07-09</lastmod>
     </url>
     <url>
-         <loc>https://ohdearquant.github.io/lionagi/adrs/ADR-0055-studio-artifact-viewer/</loc>
+         <loc>https://ohdearquant.github.io/lionagi/_archive/v0/ADR-0055-studio-artifact-viewer/</loc>
          <lastmod>2026-07-09</lastmod>
     </url>
     <url>
-         <loc>https://ohdearquant.github.io/lionagi/adrs/ADR-0056-play-control-api/</loc>
+         <loc>https://ohdearquant.github.io/lionagi/_archive/v0/ADR-0056-play-control-api/</loc>
          <lastmod>2026-07-09</lastmod>
     </url>
     <url>
-         <loc>https://ohdearquant.github.io/lionagi/adrs/ADR-0057-remote-sandbox-execution/</loc>
+         <loc>https://ohdearquant.github.io/lionagi/_archive/v0/ADR-0057-remote-sandbox-execution/</loc>
          <lastmod>2026-07-09</lastmod>
     </url>
     <url>
-         <loc>https://ohdearquant.github.io/lionagi/adrs/ADR-0058-play-cost-tracking/</loc>
+         <loc>https://ohdearquant.github.io/lionagi/_archive/v0/ADR-0058-play-cost-tracking/</loc>
          <lastmod>2026-07-09</lastmod>
     </url>
     <url>
-         <loc>https://ohdearquant.github.io/lionagi/adrs/ADR-0059-postgres-state-backend/</loc>
+         <loc>https://ohdearquant.github.io/lionagi/_archive/v0/ADR-0059-postgres-state-backend/</loc>
          <lastmod>2026-07-09</lastmod>
     </url>
     <url>
-         <loc>https://ohdearquant.github.io/lionagi/adrs/ADR-0060-unified-config-resolution/</loc>
+         <loc>https://ohdearquant.github.io/lionagi/_archive/v0/ADR-0060-unified-config-resolution/</loc>
          <lastmod>2026-07-09</lastmod>
     </url>
     <url>
-         <loc>https://ohdearquant.github.io/lionagi/adrs/ADR-0061-universal-scheduler/</loc>
+         <loc>https://ohdearquant.github.io/lionagi/_archive/v0/ADR-0061-universal-scheduler/</loc>
          <lastmod>2026-07-09</lastmod>
     </url>
     <url>
-         <loc>https://ohdearquant.github.io/lionagi/adrs/ADR-0062-state-machine-spec/</loc>
+         <loc>https://ohdearquant.github.io/lionagi/_archive/v0/ADR-0062-state-machine-spec/</loc>
          <lastmod>2026-07-09</lastmod>
     </url>
     <url>
-         <loc>https://ohdearquant.github.io/lionagi/adrs/ADR-0063-task-board-work-center/</loc>
+         <loc>https://ohdearquant.github.io/lionagi/_archive/v0/ADR-0063-task-board-work-center/</loc>
          <lastmod>2026-07-09</lastmod>
     </url>
     <url>
-         <loc>https://ohdearquant.github.io/lionagi/adrs/ADR-0064-work-system-integration/</loc>
+         <loc>https://ohdearquant.github.io/lionagi/_archive/v0/ADR-0064-work-system-integration/</loc>
          <lastmod>2026-07-09</lastmod>
     </url>
     <url>
-         <loc>https://ohdearquant.github.io/lionagi/adrs/ADR-0065-task-board-schema/</loc>
+         <loc>https://ohdearquant.github.io/lionagi/_archive/v0/ADR-0065-task-board-schema/</loc>
          <lastmod>2026-07-09</lastmod>
     </url>
     <url>
-         <loc>https://ohdearquant.github.io/lionagi/adrs/ADR-0066-unified-execution-viewer/</loc>
+         <loc>https://ohdearquant.github.io/lionagi/_archive/v0/ADR-0066-unified-execution-viewer/</loc>
          <lastmod>2026-07-09</lastmod>
     </url>
     <url>
-         <loc>https://ohdearquant.github.io/lionagi/adrs/ADR-0067-studio-command-chat/</loc>
+         <loc>https://ohdearquant.github.io/lionagi/_archive/v0/ADR-0067-studio-command-chat/</loc>
          <lastmod>2026-07-09</lastmod>
     </url>
     <url>
-         <loc>https://ohdearquant.github.io/lionagi/adrs/ADR-0068-governed-adapter-protocol/</loc>
+         <loc>https://ohdearquant.github.io/lionagi/_archive/v0/ADR-0068-governed-adapter-protocol/</loc>
          <lastmod>2026-07-09</lastmod>
     </url>
     <url>
-         <loc>https://ohdearquant.github.io/lionagi/adrs/ADR-0069-tenant-scope-boundary/</loc>
+         <loc>https://ohdearquant.github.io/lionagi/_archive/v0/ADR-0069-tenant-scope-boundary/</loc>
          <lastmod>2026-07-09</lastmod>
     </url>
     <url>
-         <loc>https://ohdearquant.github.io/lionagi/adrs/ADR-0070-governance-tracing/</loc>
+         <loc>https://ohdearquant.github.io/lionagi/_archive/v0/ADR-0070-governance-tracing/</loc>
          <lastmod>2026-07-09</lastmod>
     </url>
     <url>
-         <loc>https://ohdearquant.github.io/lionagi/adrs/ADR-0071-cognitive-mode-model/</loc>
+         <loc>https://ohdearquant.github.io/lionagi/_archive/v0/ADR-0071-cognitive-mode-model/</loc>
          <lastmod>2026-07-09</lastmod>
     </url>
     <url>
-         <loc>https://ohdearquant.github.io/lionagi/adrs/ADR-0072-reactive-capability-bus/</loc>
+         <loc>https://ohdearquant.github.io/lionagi/_archive/v0/ADR-0072-reactive-capability-bus/</loc>
          <lastmod>2026-07-09</lastmod>
     </url>
     <url>
-         <loc>https://ohdearquant.github.io/lionagi/adrs/ADR-0074-role-composition-and-pack-config/</loc>
+         <loc>https://ohdearquant.github.io/lionagi/_archive/v0/ADR-0074-role-composition-and-pack-config/</loc>
          <lastmod>2026-07-09</lastmod>
     </url>
     <url>
-         <loc>https://ohdearquant.github.io/lionagi/adrs/ADR-0075-domain-specific-engines/</loc>
+         <loc>https://ohdearquant.github.io/lionagi/_archive/v0/ADR-0075-domain-specific-engines/</loc>
          <lastmod>2026-07-09</lastmod>
     </url>
     <url>
-         <loc>https://ohdearquant.github.io/lionagi/adrs/ADR-0076-observer-as-hook-transport/</loc>
+         <loc>https://ohdearquant.github.io/lionagi/_archive/v0/ADR-0076-observer-as-hook-transport/</loc>
          <lastmod>2026-07-09</lastmod>
     </url>
     <url>
-         <loc>https://ohdearquant.github.io/lionagi/adrs/ADR-0077-engine-autonomy-protections/</loc>
+         <loc>https://ohdearquant.github.io/lionagi/_archive/v0/ADR-0077-engine-autonomy-protections/</loc>
          <lastmod>2026-07-09</lastmod>
     </url>
     <url>
-         <loc>https://ohdearquant.github.io/lionagi/adrs/ADR-0078-casts-conceptual-model-and-module-coherence/</loc>
+         <loc>https://ohdearquant.github.io/lionagi/_archive/v0/ADR-0078-casts-conceptual-model-and-module-coherence/</loc>
          <lastmod>2026-07-09</lastmod>
     </url>
     <url>
-         <loc>https://ohdearquant.github.io/lionagi/adrs/ADR-0079-substrate-executor-provider-interface/</loc>
+         <loc>https://ohdearquant.github.io/lionagi/_archive/v0/ADR-0079-substrate-executor-provider-interface/</loc>
          <lastmod>2026-07-09</lastmod>
     </url>
     <url>
-         <loc>https://ohdearquant.github.io/lionagi/adrs/ADR-0080-remote-sandbox-substrate-execution/</loc>
+         <loc>https://ohdearquant.github.io/lionagi/_archive/v0/ADR-0080-remote-sandbox-substrate-execution/</loc>
          <lastmod>2026-07-09</lastmod>
     </url>
     <url>
-         <loc>https://ohdearquant.github.io/lionagi/adrs/ADR-0081-configurable-flow-planning/</loc>
+         <loc>https://ohdearquant.github.io/lionagi/_archive/v0/ADR-0081-configurable-flow-planning/</loc>
          <lastmod>2026-07-09</lastmod>
     </url>
     <url>
-         <loc>https://ohdearquant.github.io/lionagi/adrs/ADR-0082-role-substrate-routing-policy/</loc>
+         <loc>https://ohdearquant.github.io/lionagi/_archive/v0/ADR-0082-role-substrate-routing-policy/</loc>
          <lastmod>2026-07-09</lastmod>
     </url>
     <url>
-         <loc>https://ohdearquant.github.io/lionagi/adrs/ADR-0083-lifecycle-signal-contract/</loc>
+         <loc>https://ohdearquant.github.io/lionagi/_archive/v0/ADR-0083-lifecycle-signal-contract/</loc>
          <lastmod>2026-07-09</lastmod>
     </url>
     <url>
-         <loc>https://ohdearquant.github.io/lionagi/adrs/ADR-0084-vscode-extension-native-studio-client/</loc>
+         <loc>https://ohdearquant.github.io/lionagi/_archive/v0/ADR-0084-vscode-extension-native-studio-client/</loc>
          <lastmod>2026-07-09</lastmod>
     </url>
     <url>
-         <loc>https://ohdearquant.github.io/lionagi/adrs/ADR-0085-flow-control-plane/</loc>
+         <loc>https://ohdearquant.github.io/lionagi/_archive/v0/ADR-0085-flow-control-plane/</loc>
          <lastmod>2026-07-09</lastmod>
     </url>
     <url>
-         <loc>https://ohdearquant.github.io/lionagi/adrs/ADR-0086-statedb-sqlalchemy-core-backend-unification/</loc>
+         <loc>https://ohdearquant.github.io/lionagi/_archive/v0/ADR-0086-statedb-sqlalchemy-core-backend-unification/</loc>
          <lastmod>2026-07-09</lastmod>
     </url>
     <url>
-         <loc>https://ohdearquant.github.io/lionagi/adrs/ADR-0087-lndl-operate-seam/</loc>
+         <loc>https://ohdearquant.github.io/lionagi/_archive/v0/ADR-0087-lndl-operate-seam/</loc>
          <lastmod>2026-07-09</lastmod>
     </url>
     <url>
-         <loc>https://ohdearquant.github.io/lionagi/adrs/ADR-0088-flow-steering-mechanisms/</loc>
+         <loc>https://ohdearquant.github.io/lionagi/_archive/v0/ADR-0088-flow-steering-mechanisms/</loc>
          <lastmod>2026-07-09</lastmod>
     </url>
     <url>
-         <loc>https://ohdearquant.github.io/lionagi/adrs/ADR-0089-sandbox-backend-seam-and-measurement-loop/</loc>
+         <loc>https://ohdearquant.github.io/lionagi/_archive/v0/ADR-0089-sandbox-backend-seam-and-measurement-loop/</loc>
          <lastmod>2026-07-09</lastmod>
     </url>
     <url>
-         <loc>https://ohdearquant.github.io/lionagi/adrs/ADR-0090-minimal-memory-contract-and-backend-seam/</loc>
+         <loc>https://ohdearquant.github.io/lionagi/_archive/v0/ADR-0090-minimal-memory-contract-and-backend-seam/</loc>
          <lastmod>2026-07-09</lastmod>
     </url>
     <url>
-         <loc>https://ohdearquant.github.io/lionagi/adrs/ADR-0091-khive-pluggable-memorystore-backend/</loc>
+         <loc>https://ohdearquant.github.io/lionagi/_archive/v0/ADR-0091-khive-pluggable-memorystore-backend/</loc>
          <lastmod>2026-07-09</lastmod>
     </url>
     <url>
-         <loc>https://ohdearquant.github.io/lionagi/adrs/ADR-0092-durable-dispatch-outbox-and-named-resource-gates/</loc>
+         <loc>https://ohdearquant.github.io/lionagi/_archive/v0/ADR-0092-durable-dispatch-outbox-and-named-resource-gates/</loc>
          <lastmod>2026-07-09</lastmod>
     </url>
     <url>
-         <loc>https://ohdearquant.github.io/lionagi/adrs/ADR-0093-studio-three-surface-ia/</loc>
+         <loc>https://ohdearquant.github.io/lionagi/_archive/v0/ADR-0093-studio-three-surface-ia/</loc>
          <lastmod>2026-07-09</lastmod>
     </url>
     <url>
-         <loc>https://ohdearquant.github.io/lionagi/adrs/ADR-0094-run-completion-contract/</loc>
+         <loc>https://ohdearquant.github.io/lionagi/_archive/v0/ADR-0094-run-completion-contract/</loc>
          <lastmod>2026-07-09</lastmod>
     </url>
     <url>
-         <loc>https://ohdearquant.github.io/lionagi/adrs/ADR-0095-reactive-spawn-observability-and-dx/</loc>
+         <loc>https://ohdearquant.github.io/lionagi/_archive/v0/ADR-0095-reactive-spawn-observability-and-dx/</loc>
          <lastmod>2026-07-09</lastmod>
     </url>
     <url>
-         <loc>https://ohdearquant.github.io/lionagi/adrs/ADR-0096-engine-result-and-degradation-contract/</loc>
+         <loc>https://ohdearquant.github.io/lionagi/_archive/v0/ADR-0096-engine-result-and-degradation-contract/</loc>
          <lastmod>2026-07-09</lastmod>
     </url>
     <url>
-         <loc>https://ohdearquant.github.io/lionagi/adrs/ADR-0097-ci-gate-taxonomy/</loc>
+         <loc>https://ohdearquant.github.io/lionagi/_archive/v0/ADR-0097-ci-gate-taxonomy/</loc>
          <lastmod>2026-07-09</lastmod>
     </url>
     <url>
-         <loc>https://ohdearquant.github.io/lionagi/adrs/ADR-0098-resident-engine-work-queue/</loc>
+         <loc>https://ohdearquant.github.io/lionagi/_archive/v0/ADR-0098-resident-engine-work-queue/</loc>
          <lastmod>2026-07-09</lastmod>
     </url>
     <url>
-         <loc>https://ohdearquant.github.io/lionagi/adrs/ADR-0099-escalation-node-builder-tier-bump/</loc>
+         <loc>https://ohdearquant.github.io/lionagi/_archive/v0/ADR-0099-escalation-node-builder-tier-bump/</loc>
          <lastmod>2026-07-09</lastmod>
     </url>
     <url>
-         <loc>https://ohdearquant.github.io/lionagi/adrs/ADR-0100-context-injection-providers/</loc>
+         <loc>https://ohdearquant.github.io/lionagi/_archive/v0/ADR-0100-context-injection-providers/</loc>
          <lastmod>2026-07-09</lastmod>
     </url>
     <url>
-         <loc>https://ohdearquant.github.io/lionagi/adrs/ADR-0101-task-application-queue/</loc>
+         <loc>https://ohdearquant.github.io/lionagi/_archive/v0/ADR-0101-task-application-queue/</loc>
          <lastmod>2026-07-09</lastmod>
     </url>
     <url>
-         <loc>https://ohdearquant.github.io/lionagi/adrs/ADR-0102-workflow-library-registry/</loc>
+         <loc>https://ohdearquant.github.io/lionagi/_archive/v0/ADR-0102-workflow-library-registry/</loc>
          <lastmod>2026-07-09</lastmod>
     </url>
     <url>
-         <loc>https://ohdearquant.github.io/lionagi/adrs/ADR-0103-fixed-flow-workflow-v11-contract/</loc>
+         <loc>https://ohdearquant.github.io/lionagi/_archive/v0/ADR-0103-fixed-flow-workflow-v11-contract/</loc>
          <lastmod>2026-07-09</lastmod>
     </url>
     <url>
-         <loc>https://ohdearquant.github.io/lionagi/adrs/DECISION_LOG/</loc>
+         <loc>https://ohdearquant.github.io/lionagi/_archive/v0/DECISION_LOG/</loc>
          <lastmod>2026-07-09</lastmod>
     </url>
     <url>
-         <loc>https://ohdearquant.github.io/lionagi/adrs/TEMPLATE/</loc>
+         <loc>https://ohdearquant.github.io/lionagi/_archive/v0/TEMPLATE/</loc>
          <lastmod>2026-07-09</lastmod>
     </url>
     <url>
-         <loc>https://ohdearquant.github.io/lionagi/adrs/glossary/</loc>
+         <loc>https://ohdearquant.github.io/lionagi/_archive/v0/glossary/</loc>
          <lastmod>2026-07-09</lastmod>
     </url>
     <url>
-         <loc>https://ohdearquant.github.io/lionagi/adrs/reader%27s-guide/</loc>
+         <loc>https://ohdearquant.github.io/lionagi/_archive/v0/reader%27s-guide/</loc>
+         <lastmod>2026-07-09</lastmod>
+    </url>
+    <url>
+         <loc>https://ohdearquant.github.io/lionagi/adr/</loc>
+         <lastmod>2026-07-09</lastmod>
+    </url>
+    <url>
+         <loc>https://ohdearquant.github.io/lionagi/adr/ADR-0001-element-identity-and-polymorphic-serialization-envelope/</loc>
+         <lastmod>2026-07-09</lastmod>
+    </url>
+    <url>
+         <loc>https://ohdearquant.github.io/lionagi/adr/ADR-0002-uuid-keyed-ordered-collection-model/</loc>
+         <lastmod>2026-07-09</lastmod>
+    </url>
+    <url>
+         <loc>https://ohdearquant.github.io/lionagi/adr/ADR-0003-in-process-event-execution-lifecycle/</loc>
+         <lastmod>2026-07-09</lastmod>
+    </url>
+    <url>
+         <loc>https://ohdearquant.github.io/lionagi/adr/ADR-0004-directed-graph-structural-invariants/</loc>
+         <lastmod>2026-07-09</lastmod>
+    </url>
+    <url>
+         <loc>https://ohdearquant.github.io/lionagi/adr/TEMPLATE/</loc>
          <lastmod>2026-07-09</lastmod>
     </url>
     <url>
