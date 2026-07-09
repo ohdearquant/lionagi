@@ -351,6 +351,11 @@ def test_progression_memory_efficiency():
     n = 10_000
     p = Progression(order=[Element() for _ in range(n)])
 
+    # The load-bearing property: order holds bare UUIDs, not the Elements.
+    # (A shallow sizeof bound alone cannot distinguish them — sizeof of a
+    # pydantic Element is smaller per item than the byte budget.)
+    assert all(isinstance(item, UUID) for item in p.order)
+
     memory_usage = sys.getsizeof(p) + sum(sys.getsizeof(item) for item in p.order)
 
     # Same per-element budget as the original bound (100MB per 1M ≈ 105 B/elem).

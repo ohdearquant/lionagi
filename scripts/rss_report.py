@@ -23,7 +23,20 @@ def main() -> int:
 
     all_deltas: list[dict] = []
     for f in files:
-        rows = [json.loads(line) for line in f.read_text().splitlines() if line.strip()]
+        # A worker killed mid-write (the exact failure mode this tool exists
+        # for) leaves a truncated final line — skip malformed lines, keep the
+        # complete rows.
+        rows = []
+        skipped = 0
+        for line in f.read_text().splitlines():
+            if not line.strip():
+                continue
+            try:
+                rows.append(json.loads(line))
+            except json.JSONDecodeError:
+                skipped += 1
+        if skipped:
+            print(f"({f.name}: skipped {skipped} malformed line(s) — truncated write)")
         if not rows:
             continue
         worker = rows[-1]["worker"]
