@@ -75,6 +75,15 @@ _DEFAULT_PRICES: dict[str, tuple[float, float, float]] = {
     "codex/gpt-5.3-codex-spark": (0.75, 4.50, 0.075),
     "gpt-5.3-codex-spark": (0.75, 4.50, 0.075),
     "codex": (0.75, 4.50, 0.075),
+    # OpenAI GPT-5.6 tiers — published launch pricing, 2026-07-09. Cache reads
+    # keep the 90% discount; cache writes bill at 1.25x input (the derived
+    # default, so no fourth element needed).
+    "codex/gpt-5.6-sol": (5.00, 30.00, 0.50),
+    "gpt-5.6-sol": (5.00, 30.00, 0.50),
+    "codex/gpt-5.6-terra": (2.50, 15.00, 0.25),
+    "gpt-5.6-terra": (2.50, 15.00, 0.25),
+    "codex/gpt-5.6-luna": (1.00, 6.00, 0.10),
+    "gpt-5.6-luna": (1.00, 6.00, 0.10),
     # Anthropic via claude_code CLI. Output_tokens INCLUDES thinking (accurate).
     # cached = cache-read rate (~0.1x input). VERIFY against current Anthropic
     # pricing before external quotes.
