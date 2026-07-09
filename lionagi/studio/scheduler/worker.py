@@ -87,10 +87,26 @@ MAX_LEASE_ATTEMPTS = 3
 # Paged via a (queued_at, id) keyset cursor rather than a single fixed
 # LIMIT: a persistent prefix of ineligible older rows must never hide a
 # later eligible row forever, so claim_and_execute keeps requesting pages
-# past whatever :after_queued_at/:after_id it has already scanned until it
-# has collected enough eligible candidates or the queue is exhausted.
-# :after_queued_at IS NULL only on the first page.
-_CLAIM_PAGE_SQL = """
+# past whatever (queued_at, id) it has already scanned until it has
+# collected enough eligible candidates or the queue is exhausted.
+#
+# The first page carries no cursor parameters at all (separate statement):
+# a nullable ":cursor IS NULL OR ..." bind cannot be typed by asyncpg on
+# Postgres ("could not determine data type of parameter $1"), so the
+# cursor-less first page is its own query rather than a NULL-signalled
+# branch of one query.
+_CLAIM_FIRST_PAGE_SQL = """
+    SELECT id, action_kind, action_args, lease_attempts, required_capabilities,
+           execution_target, concurrency_key, queued_at
+    FROM schedule_runs
+    WHERE status = 'queued'
+      AND schedule_id IS NULL
+      AND action_kind != 'workflow'
+    ORDER BY queued_at ASC, id ASC
+    LIMIT :page_size
+"""
+
+_CLAIM_NEXT_PAGE_SQL = """
     SELECT id, action_kind, action_args, lease_attempts, required_capabilities,
            execution_target, concurrency_key, queued_at
     FROM schedule_runs
@@ -98,8 +114,7 @@ _CLAIM_PAGE_SQL = """
       AND schedule_id IS NULL
       AND action_kind != 'workflow'
       AND (
-        :after_queued_at IS NULL
-        OR queued_at > :after_queued_at
+        queued_at > :after_queued_at
         OR (queued_at = :after_queued_at AND id > :after_id)
       )
     ORDER BY queued_at ASC, id ASC
@@ -382,20 +397,17 @@ async def claim_and_execute(
         after_id: str = ""
         scanned = 0
         while len(candidates) < limit and scanned < _MAX_CLAIM_SCAN_ROWS:
-            page = (
-                (
-                    await conn.execute(
-                        text(_CLAIM_PAGE_SQL),
-                        {
-                            "after_queued_at": after_queued_at,
-                            "after_id": after_id,
-                            "page_size": _CLAIM_PAGE_SIZE,
-                        },
-                    )
-                )
-                .mappings()
-                .all()
-            )
+            if after_queued_at is None:
+                stmt = text(_CLAIM_FIRST_PAGE_SQL)
+                params: dict[str, Any] = {"page_size": _CLAIM_PAGE_SIZE}
+            else:
+                stmt = text(_CLAIM_NEXT_PAGE_SQL)
+                params = {
+                    "after_queued_at": after_queued_at,
+                    "after_id": after_id,
+                    "page_size": _CLAIM_PAGE_SIZE,
+                }
+            page = (await conn.execute(stmt, params)).mappings().all()
             if not page:
                 break
             scanned += len(page)

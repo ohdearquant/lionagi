@@ -390,3 +390,62 @@ def test_to_named_named_dict_passthrough():
     sql, params = StateDB._to_named("SELECT :a", {"a": 1})
     assert sql == "SELECT :a"
     assert params == {"a": 1}
+
+
+async def test_postgres_capability_claim(pg_url):
+    """A capability-bearing queued task is claimable on live Postgres.
+
+    Exercises the two dialect-sensitive seams in the worker claim path at
+    once: JSON columns come back as native Python values (not strings) on
+    Postgres, and the keyset pager's cursor-less first page must not send a
+    nullable bind parameter asyncpg cannot type.
+    """
+    from lionagi.studio.scheduler.worker import claim_and_execute, register_heartbeat
+    from lionagi.studio.services.task_applications import TaskApplication, submit_task
+
+    db = StateDB(url=pg_url)
+    await db.open()
+    try:
+        run_id = await submit_task(
+            db,
+            TaskApplication(
+                action_kind="agent",
+                args={"prompt": "x"},
+                execution_target="host",
+                required_capabilities=["lean-toolchain"],
+            ),
+        )
+        await register_heartbeat(
+            db,
+            worker_id="w-pg",
+            advertised_capabilities=["lean-toolchain"],
+            execution_targets=["host"],
+        )
+
+        async def execute(row):
+            return 0, ""
+
+        claimed = await claim_and_execute(
+            db,
+            worker_id="w-pg",
+            execute=execute,
+            advertised_capabilities=["lean-toolchain"],
+            execution_targets=["host"],
+        )
+        assert claimed == 1
+        async with db._read() as conn:
+            from sqlalchemy import text as sa_text
+
+            status = (
+                (
+                    await conn.execute(
+                        sa_text("SELECT status FROM schedule_runs WHERE id = :id"),
+                        {"id": run_id},
+                    )
+                )
+                .mappings()
+                .first()["status"]
+            )
+        assert status == "completed"
+    finally:
+        await db.close()
