@@ -186,76 +186,6 @@ async def lifespan(app_instance):
     await scheduler.stop()
 
 
-app = FastAPI(title="Lion Studio Server", lifespan=lifespan)
-
-
-@app.exception_handler(LionError)
-async def _lion_error_handler(request: Request, exc: LionError) -> JSONResponse:
-    """Translate domain errors raised by service logic into HTTP responses."""
-    return JSONResponse(
-        status_code=exc.status_code,
-        content={"detail": exc.message},
-    )
-
-
-@app.middleware("http")
-async def require_studio_bearer_token(request: Request, call_next):
-    # CORS preflight requests arrive without an Authorization header by design.
-    # Let them pass through so CORSMiddleware can respond with the correct
-    # Allow-* headers; blocking them here would prevent browsers from ever
-    # reaching authenticated endpoints from a separate frontend origin.
-    if request.method == "OPTIONS":
-        return await call_next(request)
-    token = os.getenv("LIONAGI_STUDIO_AUTH_TOKEN")
-    path = request.url.path
-    if token and request.headers.get("authorization") != f"Bearer {token}":
-        # All /api/* paths (any method) and the FastAPI schema/docs endpoints
-        # are protected when a token is configured.  Non-API GET/HEAD — the
-        # SPA shell, hashed assets, and liveness probes — stay public: browsers
-        # navigate without an Authorization header, so gating the shell would
-        # make the UI unloadable in authed mode.  Every byte behind those paths
-        # is the static frontend bundle; all data lives under /api.
-        is_api = path == "/api" or path.startswith("/api/")
-        is_guarded_non_api = path in _GUARDED_NON_API_PATHS
-        is_public_static = (
-            request.method in ("GET", "HEAD") and not is_api and not is_guarded_non_api
-        )
-        if path not in _PUBLIC_PATHS and not is_public_static:
-            return JSONResponse({"detail": "Unauthorized"}, status_code=401)
-    return await call_next(request)
-
-
-@app.middleware("http")
-async def require_json_content_type(request: Request, call_next):
-    """Reject state-changing /api requests that don't declare a JSON body.
-
-    FastAPI parses request bodies as JSON regardless of the declared
-    Content-Type, so a cross-site "simple request" (text/plain, no CORS
-    preflight) carrying a JSON-shaped body would otherwise reach route
-    handlers unchecked -- the classic form-based JSON CSRF vector. The SPA
-    always sends `application/json` on requests that carry a body (see
-    apps/studio/frontend/src/lib/api.ts `fetchJson`) and sends no body at all
-    for the handful of routes that need none, so this only rejects traffic
-    the frontend itself never produces.
-    """
-    if request.method in ("GET", "HEAD", "OPTIONS"):
-        return await call_next(request)
-    path = request.url.path
-    if not (path == "/api" or path.startswith("/api/")):
-        return await call_next(request)
-    content_length = request.headers.get("content-length")
-    has_body = content_length not in (None, "0") or "transfer-encoding" in request.headers
-    if has_body:
-        content_type = request.headers.get("content-type", "")
-        media_type = content_type.split(";", 1)[0].strip().lower()
-        if media_type != "application/json":
-            return JSONResponse(
-                {"detail": "Content-Type must be application/json"},
-                status_code=415,
-            )
-    return await call_next(request)
-
-
 # Strict Host-header authority grammar: `host` or `host:port` (1-5 digit
 # port), or a bracketed IPv6 literal `[addr]` with an optional `:port` after
 # the closing bracket -- nothing else. Deliberately stricter than
@@ -310,31 +240,38 @@ async def validate_host_header(request: Request, call_next):
     return await call_next(request)
 
 
-# Mount routes registered via the @studio_route decorator. Area modules listed
-# in _STUDIO_ROUTE_MODULES are imported here so their @studio_route decorators
-# fire and populate _ROUTES before the loop below adds each route to the app.
-load_studio_route_modules()
-for _route in iter_studio_routes():
-    app.add_api_route(
-        f"/api{_route.path}",
-        _route.handler,
-        methods=[_route.method],
-        **({"response_model": _route.response_model} if _route.response_model is not None else {}),
-        dependencies=list(_route.dependencies),
-        status_code=_route.status_code,
-        tags=list(_route.tags),
-        name=_route.name,
-        summary=_route.summary,
-        description=_route.description,
-        **({"response_class": _route.response_class} if _route.response_class is not None else {}),
-        responses=dict(_route.responses) if _route.responses is not None else None,
-        include_in_schema=_route.include_in_schema,
-    )
+def _mount_studio_routes(application: FastAPI) -> None:
+    """Add every route registered via the @studio_route decorator to `application`.
 
-
-@app.get("/health")
-async def health() -> dict[str, Any]:
-    return {"status": "ok"}
+    Area modules listed in _STUDIO_ROUTE_MODULES are imported here so their
+    @studio_route decorators fire and populate _ROUTES; import_module caches
+    modules, so calling this once per app instance is cheap and idempotent.
+    """
+    load_studio_route_modules()
+    for _route in iter_studio_routes():
+        application.add_api_route(
+            f"/api{_route.path}",
+            _route.handler,
+            methods=[_route.method],
+            **(
+                {"response_model": _route.response_model}
+                if _route.response_model is not None
+                else {}
+            ),
+            dependencies=list(_route.dependencies),
+            status_code=_route.status_code,
+            tags=list(_route.tags),
+            name=_route.name,
+            summary=_route.summary,
+            description=_route.description,
+            **(
+                {"response_class": _route.response_class}
+                if _route.response_class is not None
+                else {}
+            ),
+            responses=dict(_route.responses) if _route.responses is not None else None,
+            include_in_schema=_route.include_in_schema,
+        )
 
 
 def _resolve_frontend_dist() -> Path | None:
@@ -383,31 +320,121 @@ def _mount_spa(application: FastAPI, dist: Path) -> None:
         )
 
 
-# Mount the SPA if a dist/ exists.  Assets mount must happen BEFORE
-# CORSMiddleware is added so _collect_cors_methods sees the Mount entry.
-# The 404 exception handler is registered on the app object and takes effect
-# after all route resolution — CORSMiddleware position doesn't affect it.
-_dist = _resolve_frontend_dist()
-if _dist is not None:
-    _mount_spa(app, _dist)
+def create_app() -> FastAPI:
+    """Build and return a fresh Studio FastAPI app instance.
 
-# Middleware registration order (Starlette wraps LIFO: the most-recently-added
-# middleware is the first to see an incoming request). CORSMiddleware is added
-# after every router, the direct @app.get endpoint, and the optional SPA mount
-# so its method allowlist is derived from the complete route table (see
-# _collect_cors_methods). Host validation is added AFTER CORSMiddleware and so
-# runs OUTERMOST: every request -- including CORS preflight OPTIONS -- has its
-# Host header checked before CORS can answer, closing the window where an
-# invalid-Host request could still receive a successful preflight response.
-# Execution order for an incoming request is therefore: Host validation ->
-# CORS (answers valid-Host preflight) -> Content-Type/CSRF check -> bearer-token
-# gate -> route. The bearer-token and Content-Type middlewares let every
-# OPTIONS through; a real preflight never reaches them because CORSMiddleware
-# answers it first.
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=CORS_ORIGINS,
-    allow_methods=_collect_cors_methods(app),
-    allow_headers=["*"],
-)
-app.add_middleware(BaseHTTPMiddleware, dispatch=validate_host_header)
+    Everything the module used to do at import time (construct FastAPI,
+    register exception handlers/middleware/routes, mount the SPA) lives here
+    instead, so a caller that needs a clean app -- most notably tests that
+    monkeypatch service module globals before the app captures them -- can
+    get one without `importlib.reload`-ing this module and mutating the
+    shared singleton every other importer holds a reference to.
+    """
+    application = FastAPI(title="Lion Studio Server", lifespan=lifespan)
+
+    @application.exception_handler(LionError)
+    async def _lion_error_handler(request: Request, exc: LionError) -> JSONResponse:
+        """Translate domain errors raised by service logic into HTTP responses."""
+        return JSONResponse(
+            status_code=exc.status_code,
+            content={"detail": exc.message},
+        )
+
+    @application.middleware("http")
+    async def require_studio_bearer_token(request: Request, call_next):
+        # CORS preflight requests arrive without an Authorization header by
+        # design. Let them pass through so CORSMiddleware can respond with
+        # the correct Allow-* headers; blocking them here would prevent
+        # browsers from ever reaching authenticated endpoints from a
+        # separate frontend origin.
+        if request.method == "OPTIONS":
+            return await call_next(request)
+        token = os.getenv("LIONAGI_STUDIO_AUTH_TOKEN")
+        path = request.url.path
+        if token and request.headers.get("authorization") != f"Bearer {token}":
+            # All /api/* paths (any method) and the FastAPI schema/docs
+            # endpoints are protected when a token is configured. Non-API
+            # GET/HEAD — the SPA shell, hashed assets, and liveness probes —
+            # stay public: browsers navigate without an Authorization
+            # header, so gating the shell would make the UI unloadable in
+            # authed mode. Every byte behind those paths is the static
+            # frontend bundle; all data lives under /api.
+            is_api = path == "/api" or path.startswith("/api/")
+            is_guarded_non_api = path in _GUARDED_NON_API_PATHS
+            is_public_static = (
+                request.method in ("GET", "HEAD") and not is_api and not is_guarded_non_api
+            )
+            if path not in _PUBLIC_PATHS and not is_public_static:
+                return JSONResponse({"detail": "Unauthorized"}, status_code=401)
+        return await call_next(request)
+
+    @application.middleware("http")
+    async def require_json_content_type(request: Request, call_next):
+        """Reject state-changing /api requests that don't declare a JSON body.
+
+        FastAPI parses request bodies as JSON regardless of the declared
+        Content-Type, so a cross-site "simple request" (text/plain, no CORS
+        preflight) carrying a JSON-shaped body would otherwise reach route
+        handlers unchecked -- the classic form-based JSON CSRF vector. The SPA
+        always sends `application/json` on requests that carry a body (see
+        apps/studio/frontend/src/lib/api.ts `fetchJson`) and sends no body at all
+        for the handful of routes that need none, so this only rejects traffic
+        the frontend itself never produces.
+        """
+        if request.method in ("GET", "HEAD", "OPTIONS"):
+            return await call_next(request)
+        path = request.url.path
+        if not (path == "/api" or path.startswith("/api/")):
+            return await call_next(request)
+        content_length = request.headers.get("content-length")
+        has_body = content_length not in (None, "0") or "transfer-encoding" in request.headers
+        if has_body:
+            content_type = request.headers.get("content-type", "")
+            media_type = content_type.split(";", 1)[0].strip().lower()
+            if media_type != "application/json":
+                return JSONResponse(
+                    {"detail": "Content-Type must be application/json"},
+                    status_code=415,
+                )
+        return await call_next(request)
+
+    _mount_studio_routes(application)
+
+    @application.get("/health")
+    async def health() -> dict[str, Any]:
+        return {"status": "ok"}
+
+    # Mount the SPA if a dist/ exists. Assets mount must happen BEFORE
+    # CORSMiddleware is added so _collect_cors_methods sees the Mount entry.
+    # The 404 exception handler is registered on the app object and takes
+    # effect after all route resolution — CORSMiddleware position doesn't
+    # affect it.
+    dist = _resolve_frontend_dist()
+    if dist is not None:
+        _mount_spa(application, dist)
+
+    # Middleware registration order (Starlette wraps LIFO: the most-recently-added
+    # middleware is the first to see an incoming request). CORSMiddleware is added
+    # after every router, the direct /health endpoint, and the optional SPA mount
+    # so its method allowlist is derived from the complete route table (see
+    # _collect_cors_methods). Host validation is added AFTER CORSMiddleware and so
+    # runs OUTERMOST: every request -- including CORS preflight OPTIONS -- has its
+    # Host header checked before CORS can answer, closing the window where an
+    # invalid-Host request could still receive a successful preflight response.
+    # Execution order for an incoming request is therefore: Host validation ->
+    # CORS (answers valid-Host preflight) -> Content-Type/CSRF check -> bearer-token
+    # gate -> route. The bearer-token and Content-Type middlewares let every
+    # OPTIONS through; a real preflight never reaches them because CORSMiddleware
+    # answers it first.
+    application.add_middleware(
+        CORSMiddleware,
+        allow_origins=CORS_ORIGINS,
+        allow_methods=_collect_cors_methods(application),
+        allow_headers=["*"],
+    )
+    application.add_middleware(BaseHTTPMiddleware, dispatch=validate_host_header)
+
+    return application
+
+
+app = create_app()

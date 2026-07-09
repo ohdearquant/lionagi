@@ -22,6 +22,7 @@ import pytest
 
 fastapi = pytest.importorskip("fastapi", reason="studio extra not installed")
 
+import anyio  # noqa: E402
 from fastapi.testclient import TestClient  # noqa: E402
 
 _STUDIO_APP_LOGGER = "lionagi.studio.app"
@@ -101,8 +102,6 @@ def _lifespan_client(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> Generat
 
     Bare TestClient(app, base_url="http://127.0.0.1:8765") construction does NOT trigger the lifespan.
     """
-    from importlib import reload
-
     import lionagi.studio.app as app_mod
     import lionagi.studio.services.stats as stats_mod
 
@@ -110,18 +109,27 @@ def _lifespan_client(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> Generat
     monkeypatch.setattr(stats_mod, "DEFAULT_DB_PATH", fake_db)
     monkeypatch.setattr(stats_mod, "_DB", str(fake_db))
 
-    reload(app_mod)
+    # A fresh app instance (via create_app()) instead of importlib.reload(app_mod):
+    # reload mutates the shared module singleton every other importer holds a
+    # reference to, which is both a data race under xdist and re-executes
+    # module-level side effects (CORS regex compilation, route
+    # re-registration) on a namespace other code still imports.
+    app = app_mod.create_app()
     _neutralize_heavy_lifespan(monkeypatch)
-    with TestClient(
-        app_mod.app, raise_server_exceptions=False, base_url="http://127.0.0.1:8765"
-    ) as client:
+    with TestClient(app, raise_server_exceptions=False, base_url="http://127.0.0.1:8765") as client:
         yield client
 
 
-def _make_bare_client(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> TestClient:
-    """Non-lifespan client for CORS header tests."""
-    from importlib import reload
+@contextmanager
+def _bare_client(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> Generator[TestClient]:
+    """Non-lifespan client for CORS header tests.
 
+    Attaches the TestClient's blocking portal directly (one thread serving
+    every request in the `with` block) instead of entering the client, which
+    would drive the full lifespan -- scheduler start, DB reconciliation, WAL
+    checkpoint -- unwanted here since these tests only assert on CORS
+    response headers.
+    """
     import lionagi.studio.app as app_mod
     import lionagi.studio.services.stats as stats_mod
 
@@ -129,8 +137,14 @@ def _make_bare_client(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> TestCl
     monkeypatch.setattr(stats_mod, "DEFAULT_DB_PATH", fake_db)
     monkeypatch.setattr(stats_mod, "_DB", str(fake_db))
 
-    reload(app_mod)
-    return TestClient(app_mod.app, raise_server_exceptions=False, base_url="http://127.0.0.1:8765")
+    app = app_mod.create_app()
+    client = TestClient(app, raise_server_exceptions=False, base_url="http://127.0.0.1:8765")
+    with anyio.from_thread.start_blocking_portal(**client.async_backend) as portal:
+        client.portal = portal
+        try:
+            yield client
+        finally:
+            client.portal = None
 
 
 # ---------------------------------------------------------------------------
@@ -241,22 +255,24 @@ class TestEscalatedWarningOnWildcardBind:
 
 @pytest.mark.integration
 class TestCORSBoundedMethods:
-    def _client(self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> TestClient:
+    @contextmanager
+    def _client(self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> Generator[TestClient]:
         monkeypatch.delenv("LIONAGI_STUDIO_AUTH_TOKEN", raising=False)
-        return _make_bare_client(monkeypatch, tmp_path)
+        with _bare_client(monkeypatch, tmp_path) as client:
+            yield client
 
     def test_options_preflight_returns_200_or_204(
         self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
     ) -> None:
         """CORS OPTIONS preflight to /health must succeed (200 or 204)."""
-        client = self._client(monkeypatch, tmp_path)
-        resp = client.options(
-            "/health",
-            headers={
-                "Origin": "http://localhost:3000",
-                "Access-Control-Request-Method": "GET",
-            },
-        )
+        with self._client(monkeypatch, tmp_path) as client:
+            resp = client.options(
+                "/health",
+                headers={
+                    "Origin": "http://localhost:3000",
+                    "Access-Control-Request-Method": "GET",
+                },
+            )
         assert resp.status_code in (200, 204), (
             f"OPTIONS preflight must succeed; got {resp.status_code}"
         )
@@ -265,14 +281,14 @@ class TestCORSBoundedMethods:
         self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
     ) -> None:
         """Access-Control-Allow-Methods must not be '*'."""
-        client = self._client(monkeypatch, tmp_path)
-        resp = client.options(
-            "/health",
-            headers={
-                "Origin": "http://localhost:3000",
-                "Access-Control-Request-Method": "GET",
-            },
-        )
+        with self._client(monkeypatch, tmp_path) as client:
+            resp = client.options(
+                "/health",
+                headers={
+                    "Origin": "http://localhost:3000",
+                    "Access-Control-Request-Method": "GET",
+                },
+            )
         allow_methods = resp.headers.get("access-control-allow-methods", "")
         assert allow_methods != "*", (
             f"CORS allow_methods must be an explicit list, not a wildcard; got: {allow_methods!r}"
@@ -282,14 +298,14 @@ class TestCORSBoundedMethods:
         self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
     ) -> None:
         """GET, POST, PUT, PATCH, DELETE, OPTIONS must all be in the allowed set."""
-        client = self._client(monkeypatch, tmp_path)
-        resp = client.options(
-            "/health",
-            headers={
-                "Origin": "http://localhost:3000",
-                "Access-Control-Request-Method": "POST",
-            },
-        )
+        with self._client(monkeypatch, tmp_path) as client:
+            resp = client.options(
+                "/health",
+                headers={
+                    "Origin": "http://localhost:3000",
+                    "Access-Control-Request-Method": "POST",
+                },
+            )
         raw = resp.headers.get("access-control-allow-methods", "")
         allowed = {m.strip().upper() for m in raw.split(",")}
         for verb in ("GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"):
@@ -305,14 +321,14 @@ class TestCORSBoundedMethods:
         FastAPI auto-generates HEAD for GET routes/docs endpoints; a hardcoded
         allowlist that omits HEAD causes preflight 400 for those routes.
         """
-        client = self._client(monkeypatch, tmp_path)
-        resp = client.options(
-            "/openapi.json",
-            headers={
-                "Origin": "http://localhost:3000",
-                "Access-Control-Request-Method": "HEAD",
-            },
-        )
+        with self._client(monkeypatch, tmp_path) as client:
+            resp = client.options(
+                "/openapi.json",
+                headers={
+                    "Origin": "http://localhost:3000",
+                    "Access-Control-Request-Method": "HEAD",
+                },
+            )
         assert resp.status_code in (200, 204), (
             f"HEAD preflight must succeed; got {resp.status_code}"
         )

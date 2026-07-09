@@ -5,7 +5,6 @@ from __future__ import annotations
 
 import asyncio
 import signal
-from importlib import reload
 from pathlib import Path
 from unittest.mock import patch
 
@@ -20,7 +19,12 @@ from fastapi.testclient import TestClient  # noqa: E402
 
 
 def _make_client(monkeypatch, fake_db: Path | None = None) -> TestClient:
-    """Reload app to pick up monkeypatched env vars."""
+    """Build a fresh app to pick up monkeypatched env vars.
+
+    create_app() (not importlib.reload) means a fresh app instance every
+    call, so the monkeypatched values are baked in without mutating the
+    shared lionagi.studio.app.app singleton other code still imports.
+    """
     import lionagi.studio.app as app_mod
     import lionagi.studio.services.stats as stats_mod
 
@@ -28,8 +32,8 @@ def _make_client(monkeypatch, fake_db: Path | None = None) -> TestClient:
         monkeypatch.setattr(stats_mod, "DEFAULT_DB_PATH", fake_db)
         monkeypatch.setattr(stats_mod, "_DB", str(fake_db))
 
-    reload(app_mod)
-    return TestClient(app_mod.app, raise_server_exceptions=False, base_url="http://127.0.0.1:8765")
+    app = app_mod.create_app()
+    return TestClient(app, raise_server_exceptions=False, base_url="http://127.0.0.1:8765")
 
 
 # ---------------------------------------------------------------------------
