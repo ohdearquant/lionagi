@@ -59,14 +59,20 @@ class TaskApplication:
     required_capabilities: list[str] = field(default_factory=list)
     library_ref: str | None = None
     library_content_hash: str | None = None
-    # Optional, per ADR-0062 dedup — carried on the contract but not wired to
-    # any dedup logic yet; ADR-0062's transition() is itself proposed and
-    # unbuilt (see transitions.py's module docstring).
+    # Part of the submit contract per ADR-0062 dedup, but submit-level
+    # deduplication is not built yet — submit_task rejects a non-None value
+    # rather than silently double-enqueueing a retried application.
     idempotency_key: str | None = None
 
 
 def _validate(app: TaskApplication) -> str:
     """Validate *app*; return the normalized (alias-resolved) action_kind."""
+    if app.idempotency_key is not None:
+        raise ValueError(
+            "idempotency_key is not supported yet: submit-level deduplication "
+            "is unimplemented, and accepting the key would silently enqueue a "
+            "duplicate task on retry instead of returning the existing one"
+        )
     normalized_kind = _ALIAS_ACTION_KINDS.get(app.action_kind, app.action_kind)
     if normalized_kind not in _TASK_APPLICATION_ACTION_KINDS:
         valid = sorted(_TASK_APPLICATION_ACTION_KINDS | set(_ALIAS_ACTION_KINDS))

@@ -44,7 +44,6 @@ async def test_submit_task_writes_queued_row_with_every_field(db: StateDB) -> No
         required_capabilities=["gpu-exclusive", "lean-toolchain"],
         library_ref="ns/name@1.0.0",
         library_content_hash="deadbeef",
-        idempotency_key="idem-1",
     )
 
     run_id = await submit_task(db, app)
@@ -165,6 +164,22 @@ async def test_submit_task_rejects_unknown_execution_target(db: StateDB) -> None
     app = TaskApplication(action_kind="agent", args={}, execution_target="mars")
     with pytest.raises(ValueError, match="execution_target"):
         await submit_task(db, app)
+
+
+async def test_submit_task_rejects_idempotency_key_until_dedup_exists(db: StateDB) -> None:
+    """Accepting a key without dedup would silently double-enqueue on retry,
+    so a non-None idempotency_key must fail fast — and enqueue nothing."""
+    app = TaskApplication(
+        action_kind="agent",
+        args={},
+        execution_target="host",
+        idempotency_key="idem-1",
+    )
+    with pytest.raises(ValueError, match="idempotency_key"):
+        await submit_task(db, app)
+
+    row = await db.fetch_one("SELECT COUNT(*) AS n FROM schedule_runs")
+    assert row["n"] == 0
 
 
 # ── 4. Negative vocab test — queued -> running is actively rejected ─────
