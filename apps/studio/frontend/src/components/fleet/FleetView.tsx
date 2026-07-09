@@ -15,8 +15,8 @@ import { Route } from "@/routes/fleet";
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 
-function formatElapsed(sec: number | null): string {
-  if (sec == null) return "—";
+export function formatElapsed(sec: number | null): string {
+  if (sec == null || !Number.isFinite(sec) || sec < 0) return "—";
   if (sec < 60) return `${sec}s`;
   const m = Math.floor(sec / 60);
   if (m < 60) {
@@ -36,7 +36,7 @@ function formatElapsed(sec: number | null): string {
 // Compact count for a legibility-sensitive slot: under 1000 renders the exact
 // integer, at or above 1000 renders one decimal place with a "k" suffix
 // (truncated, not rounded, so the digit shown never overstates the count).
-function formatCompactCount(n: number): string {
+export function formatCompactCount(n: number): string {
   if (n < 1000) return `${n}`;
   return `${Math.floor(n / 100) / 10}k`;
 }

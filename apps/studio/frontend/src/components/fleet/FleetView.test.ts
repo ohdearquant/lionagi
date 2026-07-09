@@ -271,3 +271,49 @@ describe("selectedRunId validation", () => {
     expect(resolved).toBe("r1");
   });
 });
+
+// ─── Formatter helpers ────────────────────────────────────────────────────────
+
+import { formatElapsed, formatCompactCount } from "./FleetView";
+
+describe("formatElapsed", () => {
+  it("renders — for null, NaN, Infinity, and negative input", () => {
+    expect(formatElapsed(null)).toBe("—");
+    expect(formatElapsed(Number.NaN)).toBe("—");
+    expect(formatElapsed(Number.POSITIVE_INFINITY)).toBe("—");
+    expect(formatElapsed(-5)).toBe("—");
+  });
+
+  it("renders sub-minute and sub-hour values unchanged", () => {
+    expect(formatElapsed(0)).toBe("0s");
+    expect(formatElapsed(59)).toBe("59s");
+    expect(formatElapsed(60)).toBe("1m");
+    expect(formatElapsed(61)).toBe("1m 1s");
+    expect(formatElapsed(3599)).toBe("59m 59s");
+  });
+
+  it("renders sub-day hour values", () => {
+    expect(formatElapsed(3600)).toBe("1h");
+    expect(formatElapsed(3660)).toBe("1h 1m");
+    expect(formatElapsed(24 * 3600 - 60)).toBe("23h 59m");
+  });
+
+  it("tiers into days at exactly 24h", () => {
+    expect(formatElapsed(24 * 3600)).toBe("1d");
+    expect(formatElapsed(24 * 3600 + 3600)).toBe("1d 1h");
+    expect(formatElapsed(62 * 3600 + 34 * 60)).toBe("2d 14h");
+  });
+});
+
+describe("formatCompactCount", () => {
+  it("keeps counts under 1000 exact", () => {
+    expect(formatCompactCount(0)).toBe("0");
+    expect(formatCompactCount(999)).toBe("999");
+  });
+
+  it("abbreviates from the 1000 boundary, truncating not rounding", () => {
+    expect(formatCompactCount(1000)).toBe("1k");
+    expect(formatCompactCount(5967)).toBe("5.9k");
+    expect(formatCompactCount(999999)).toBe("999.9k");
+  });
+});
