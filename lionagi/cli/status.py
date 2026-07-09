@@ -6,7 +6,7 @@ Pure reads over sessions/invocations/plays/session_signals. Resolves an id
 (or the latest matching run) regardless of terminal state, so a finished run
 is inspectable without already knowing whether it is still active — a plain
 `li monitor` table view only lists running/active rows. See
-docs/adrs/ADR-0085-flow-control-plane.md section 6.
+docs/_archive/v0/ADR-0085-flow-control-plane.md section 6.
 
 `--json` emits a single flat object with this stable key set (documented
 here since other lambdas/tools parse it):

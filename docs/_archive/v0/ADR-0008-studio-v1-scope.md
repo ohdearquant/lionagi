@@ -74,12 +74,14 @@ authoring from scratch remains the domain of `$EDITOR` + `li agent`.
 ## Consequences
 
 **Positive**
+
 - Studio stays focused: observe + inspect + edit + debug.
 - No feature creep toward replicating CLI capabilities in the browser.
 - Simpler UI: no complex forms for run configuration.
 - The CLI evolves independently — new execution modes don't require Studio changes.
 
 **Negative**
+
 - Collaborators who don't use the CLI cannot create or run things from Studio alone.
 - The Run button is a partial exception that may confuse expectations.
 - Some inspector features (e.g., "re-run this failed play") require switching to
