@@ -15,8 +15,19 @@ from __future__ import annotations
 import asyncio
 
 import httpx
+import pytest
 
 from lionagi.studio.scheduler import github as gh_mod
+
+
+@pytest.fixture(autouse=True)
+def _reset_token_cache():
+    """github_poll caches the last working token at module scope -- reset it
+    around every test so one test's cached token can't leak into the next
+    and change which token a fresh poll tries first."""
+    gh_mod._cached_token = None
+    yield
+    gh_mod._cached_token = None
 
 
 def _pr(number, updated, *, draft=False, sha=None, state="open", merged_at=None):
@@ -648,6 +659,94 @@ def test_github_poll_401_no_retry_when_cli_token_matches_env(monkeypatch):
     result = _poll_result({"id": "s1", "github_repo": "owner/name"})
     assert result.items == []
     assert len(client.requests) == 1
+
+
+def test_github_poll_401_surviving_retry_logs_at_error_with_schedule_id_and_name(
+    monkeypatch, caplog
+):
+    """A 401 that survives the gh-CLI-token retry is logged at ERROR level and
+    names the schedule id/name, so it's visible in the daemon log rather than
+    a bare/debug line an operator would miss."""
+    _install_status(monkeypatch, [(401, []), (401, [])])
+    with caplog.at_level("ERROR", logger=gh_mod._log.name):
+        result = _poll_result(
+            {"id": "sched-123", "github_repo": "owner/name", "name": "nightly-review"}
+        )
+    assert result.poll_status == "auth_error"
+    error_records = [r for r in caplog.records if r.levelname == "ERROR"]
+    assert len(error_records) == 1
+    msg = error_records[0].getMessage()
+    assert "sched-123" in msg
+    assert "nightly-review" in msg
+    assert "401" in msg
+
+
+# ---------------------------------------------------------------------------
+# Token caching — avoid a `gh auth token` shell-out on every poll
+# ---------------------------------------------------------------------------
+
+
+def test_github_poll_caches_working_token_across_polls(monkeypatch):
+    """Once a 401 is recovered via the gh-CLI-token retry, the *next* poll
+    reuses the cached working token directly -- it must not re-check
+    GITHUB_TOKEN or shell out to `gh auth token` again."""
+    pr1 = _pr(1, "2026-07-07T10:00:00Z")
+    pr2 = _pr(2, "2026-07-07T11:00:00Z")
+    # First poll: env token 401s, CLI fallback succeeds. Second poll: only
+    # one more response is needed since the cached token is reused directly.
+    client = _install_status(monkeypatch, [(401, []), (200, [pr1]), (200, [pr2])])
+
+    token_calls: list[bool] = []
+    # _install_status already monkeypatched _get_gh_token to a fixed fake;
+    # wrap it so we can count calls without changing its return values.
+    fake = gh_mod._get_gh_token
+
+    async def _wrapped(prefer_cli: bool = False):
+        token_calls.append(prefer_cli)
+        return await fake(prefer_cli)
+
+    monkeypatch.setattr(gh_mod, "_get_gh_token", _wrapped)
+
+    first = _poll({"id": "s1", "github_repo": "owner/name"})
+    assert [i.event["pr_number"] for i in first] == [1]
+    # First poll: initial resolve (prefer_cli=False) + the 401 retry resolve
+    # (prefer_cli=True).
+    assert token_calls == [False, True]
+
+    token_calls.clear()
+    second = _poll({"id": "s1", "github_repo": "owner/name"})
+    assert [i.event["pr_number"] for i in second] == [2]
+    # Second poll: the cached token from the first poll is used directly --
+    # _get_gh_token is never called at all.
+    assert token_calls == []
+    assert len(client.requests) == 3
+
+
+def test_github_poll_cached_token_401_retriggers_refresh(monkeypatch):
+    """A cached working token that later 401s (it expired too) falls through
+    to a fresh CLI-token retry exactly like an uncached 401 would -- the
+    cache never permanently pins the poller to a now-dead credential."""
+    pr = _pr(1, "2026-07-07T10:00:00Z")
+    gh_mod._cached_token = "stale-cached-token"
+    client = _install_status(
+        monkeypatch, [(401, []), (200, [pr])], env_token="unused", cli_token="fresh-cli-token"
+    )
+    items = _poll({"id": "s1", "github_repo": "owner/name"})
+    assert [i.event["pr_number"] for i in items] == [1]
+    assert client.requests[0]["auth"] == "Bearer stale-cached-token"
+    assert client.requests[1]["auth"] == "Bearer fresh-cli-token"
+    assert gh_mod._cached_token == "fresh-cli-token"
+
+
+def test_github_poll_auth_error_clears_cached_token(monkeypatch):
+    """When even the CLI-token retry 401s, the cache is cleared -- a dead
+    token doesn't linger to be reused (and silently retried without a fresh
+    resolution attempt) on the next poll."""
+    gh_mod._cached_token = "stale-cached-token"
+    _install_status(monkeypatch, [(401, []), (401, [])])
+    result = _poll_result({"id": "s1", "github_repo": "owner/name"})
+    assert result.poll_status == "auth_error"
+    assert gh_mod._cached_token is None
 
 
 # ---------------------------------------------------------------------------
