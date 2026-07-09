@@ -30,7 +30,8 @@ durable queue:
   lease-based workers, concurrency policy) and ADR-0062 (statuses `queued ·
   waiting_dependency · running · retry_wait · completed · failed · timed_out ·
   cancelled · skipped`, entity-agnostic `transition()` with idempotency dedup) — both
-  still Proposed and unbuilt. A working slice of the engine shipped with ADR-0092:
+  Proposed and unbuilt before this ADR: its acceptance activates them (see the
+  Activation section), while their implementation remains pending. A working slice of the engine shipped with ADR-0092:
   `lionagi/state/transitions.py` (guarded CAS + `status_transitions` audit) currently
   scoped to `_ENTITY_TABLES = {"dispatch": "dispatch_outbox"}`, with
   `lionagi/dispatch/outbox.py` proving claim/lease/backoff/dead-letter in production.
@@ -49,7 +50,11 @@ remote execution later without the submitter changing.
 `TaskApplication` (Pydantic, the contract every binding shares):
 
 ```text
-action_kind        # agent | playbook | workflow | flow_yaml (existing vocab)
+action_kind        # existing vocab: agent | flow | fanout | play | flow_yaml
+                   # (launcher also accepts engine, and playbook as a legacy
+                   # alias for play); this ADR pair ADDS workflow for
+                   # registry-resolved definitions (ADR-0102) — a CHECK widen,
+                   # not a rename of any existing kind
 library_ref        # "namespace/name@version" | null   (seam into ADR-0102)
 required_capabilities: list[str]                       (D4)
 execution_target   # host | local_worktree | daytona | remote_agent | process
