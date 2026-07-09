@@ -639,6 +639,7 @@ class ReactiveExecutor(DependencyAwareExecutor):
         spawn_type: type | None = None,
         node_builder: Any = None,
         max_spawn: int = 50,
+        spawn_branch_setup: Callable[[Operation, Any], None] | None = None,
         **kwargs: Any,
     ):
         super().__init__(*args, **kwargs)
@@ -649,6 +650,14 @@ class ReactiveExecutor(DependencyAwareExecutor):
         self.spawn_type = spawn_type
         self.node_builder = node_builder
         self.max_spawn = max_spawn
+        # CLI-workspace seam: a caller (cli/orchestrate/flow.py) can pass a
+        # sync callback invoked with (spawned_operation, cloned_branch) right
+        # after a reactively-spawned node's branch is cloned, so it can
+        # retarget a CLI-backed chat_model's writable workspace (endpoint
+        # kwargs["repo"]) to that spawn's own artifact dir instead of the
+        # planned leg's — the clone otherwise inherits the emitter's repo,
+        # which sits outside the spawned node's own artifact directory.
+        self.spawn_branch_setup = spawn_branch_setup
         self._spawn_count = 0
         self._dropped_spawns: list[dict[str, Any]] = []
         self._running = False
@@ -1014,6 +1023,8 @@ class ReactiveExecutor(DependencyAwareExecutor):
         # as _preallocate_all_branches to pick up mid-run spawned branches.
         # Not wired: workflow_run (the only caller threading on_branch_created
         # today) never runs with reactive=True.
+        if self.spawn_branch_setup is not None:
+            self.spawn_branch_setup(child, clone)
         self.operation_branches[child.id] = clone
         child.branch_id = clone.id
 
@@ -1042,6 +1053,7 @@ async def flow(
     max_spawn: int = 50,
     executor_ref: dict[str, Any] | None = None,
     on_branch_created: Callable[[Any], None] | None = None,
+    spawn_branch_setup: Callable[[Operation, Any], None] | None = None,
 ) -> dict[str, Any]:
     """Execute a graph with dependency management and optional reactive self-expansion.
 
@@ -1051,6 +1063,9 @@ async def flow(
     (emitter ids), and ``dropped_spawns`` (rejected spawn/inject attempts as
     ``{reason, assignee, emitter_id, ...}``; reasons: builder_error,
     null_child, cycle, max_spawn_exceeded, duplicate).
+
+    ``spawn_branch_setup``, when given, runs after each reactively-spawned
+    node's branch is cloned (reactive mode only) — see ``ReactiveExecutor``.
     """
 
     if not parallel:
@@ -1069,6 +1084,7 @@ async def flow(
             node_builder=node_builder,
             max_spawn=max_spawn,
             executor_ref=executor_ref,
+            spawn_branch_setup=spawn_branch_setup,
         )
     else:
         executor = DependencyAwareExecutor(

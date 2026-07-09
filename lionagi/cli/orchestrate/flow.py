@@ -11,6 +11,8 @@ import logging
 import os
 import time
 from dataclasses import dataclass, field
+from pathlib import Path
+from typing import Any
 
 from lionagi._errors import LionError
 from lionagi._errors import TimeoutError as LionTimeoutError
@@ -957,6 +959,30 @@ async def _execute_dag(
         note = _artifact_directive(env.run, spawn_id, leg_expected)
         return f"{req.instruction}\n\n{note}"
 
+    def _spawn_branch_setup(operation: Any, branch: Any) -> None:
+        """A reactively-spawned node's cloned branch inherits the emitting
+        leg's CLI workspace (chat_model.endpoint.config.kwargs["repo"]) via
+        Branch.clone — but the artifact contract this leg is told about in
+        _decorate_spawn_instruction points at its own spawn_id subdir, a
+        sibling of the emitter's. Without retargeting, the spawned CLI child
+        can only write inside the emitter's directory, not its own, unless
+        running fully unsandboxed. Only CLI-backed chat models carry a
+        writable-root concept; anything else is a no-op."""
+        spawn_id = operation.metadata.get("spawn_id") if operation is not None else None
+        if not spawn_id:
+            return
+        chat_model = getattr(branch, "chat_model", None)
+        if chat_model is None or not getattr(chat_model, "is_cli", False):
+            return
+        artifact_dir = env.run.agent_artifact_dir(spawn_id)
+        artifact_dir.mkdir(parents=True, exist_ok=True)
+        kwargs = chat_model.endpoint.config.kwargs
+        kwargs["repo"] = artifact_dir
+        project_root = str(Path(env.cwd).resolve()) if env.cwd else str(Path.cwd().resolve())
+        add_dir = kwargs.setdefault("add_dir", [])
+        if project_root not in add_dir:
+            add_dir.append(project_root)
+
     t_exec = time.monotonic()
     _hb_task = _asyncio.ensure_future(_heartbeat_loop())
     _ctl_task = _asyncio.ensure_future(_control_poll_loop())
@@ -975,6 +1001,7 @@ async def _execute_dag(
             verbose=env.verbose,
             executor_ref=_executor_ref,
             context=checkpoint_flow_context,
+            spawn_branch_setup=_spawn_branch_setup if reactive else None,
         )
     finally:
         _hb_task.cancel()
@@ -1010,6 +1037,7 @@ async def _execute_dag(
     # agent_ids (those are fixed-size arrays built once from the initial
     # assignments), so they must be checked separately against known_nodes
     # rather than only via the plan-time index walk below.
+    graph_nodes = getattr(env.builder.get_graph(), "internal_nodes", {}) or {}
     escalated_op_ids = {str(x) for x in dag_result.get("escalated_operations", [])}
     escalated_evidence = [
         {"kind": "escalated_operation", "id": agent_ids[i], "label": assignments[i].assignee}
@@ -1017,8 +1045,15 @@ async def _execute_dag(
         if node_ids[i] in escalated_op_ids
     ]
     for spawned_nid in sorted(escalated_op_ids - known_nodes):
+        # Spawned nodes carry role_node_builder's stamped spawn_id (e.g.
+        # "spawn-3") in their graph node metadata — surface that instead of
+        # the internal Operation UUID so evidence reads the same as the
+        # artifact dirs/contract entries the run actually produced.
+        graph_node = graph_nodes.get(spawned_nid)
+        spawn_id = graph_node.metadata.get("spawn_id") if graph_node is not None else None
+        evidence_id = spawn_id or spawned_nid
         escalated_evidence.append(
-            {"kind": "escalated_operation", "id": spawned_nid, "label": spawned_nid}
+            {"kind": "escalated_operation", "id": evidence_id, "label": evidence_id}
         )
     escalated_agent_ids = [entry["id"] for entry in escalated_evidence]
     if escalated_evidence:
@@ -1055,7 +1090,7 @@ async def _execute_dag(
     # and the branch the executor ultimately ran it on, so all three are
     # recovered here — plan-time arrays (agent_ids/worker_models) are
     # fixed-size and can't cover nodes injected mid-run via SpawnRequest.
-    graph_nodes = getattr(env.builder.get_graph(), "internal_nodes", {}) or {}
+    # (graph_nodes computed above, ahead of the escalation-evidence block.)
     spawned_contract_entries: list[dict] = []
 
     # Pre-scan every builder-stamped spawn_id BEFORE assigning any fallback —

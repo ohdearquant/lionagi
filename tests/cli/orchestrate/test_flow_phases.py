@@ -362,6 +362,128 @@ async def test_execute_dag_tags_spawned_nodes(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_execute_dag_reactive_wires_spawn_branch_setup_for_cli_workspace(tmp_path):
+    """Reactive execution must pass a spawn_branch_setup callback into
+    run_dag that retargets a CLI-backed spawned branch's writable workspace
+    (chat_model.endpoint.config.kwargs['repo']) to that spawn's own artifact
+    dir. Branch.clone() otherwise carries the emitting leg's repo forward
+    unchanged — a sibling directory outside the spawned artifact contract —
+    so without this seam a spawned CLI child can only write where its
+    emitter can, not where its own artifact contract expects. Non-CLI
+    branches (no writable-root concept) must be left untouched."""
+    env = _make_env(tmp_path)
+    assignments = [TaskAssignment(task="x", assignee="researcher")]
+    plan_result = _PlanResult(
+        assignments=assignments,
+        agent_ids=["researcher"],
+        dep_indices=[[]],
+        pool=[],
+        budget_preambles={},
+    )
+    dag_state = _DagState(
+        node_ids=["node-0"],
+        known_nodes={"node-0"},
+        deps_by_node={"node-0": []},
+        reactive=True,
+        spawn_roles=None,
+        role_base={},
+        worker_models=["codex/gpt-5.5"],
+    )
+
+    from lionagi.engines import PlanningEngine
+
+    fake_engine_run = MagicMock()
+    fake_engine_run.run_dag = MagicMock(
+        return_value=_asyncio_coro(
+            {"operation_results": {"node-0": "planned result"}, "spawned_operations": 0}
+        )
+    )
+
+    with patch.object(PlanningEngine, "new_run", return_value=fake_engine_run):
+        await _execute_dag(env, plan_result, dag_state, max_concurrent=1, max_ops=0)
+
+    call_kwargs = fake_engine_run.run_dag.call_args.kwargs
+    spawn_branch_setup = call_kwargs["spawn_branch_setup"]
+    assert spawn_branch_setup is not None
+
+    operation = SimpleNamespace(metadata={"spawn_id": "spawn-1"})
+    cli_branch = SimpleNamespace(
+        chat_model=SimpleNamespace(
+            is_cli=True,
+            endpoint=SimpleNamespace(config=SimpleNamespace(kwargs={})),
+        )
+    )
+    spawn_branch_setup(operation, cli_branch)
+
+    expected_dir = env.run.agent_artifact_dir("spawn-1")
+    assert cli_branch.chat_model.endpoint.config.kwargs["repo"] == expected_dir
+    assert expected_dir.exists()
+
+    non_cli_branch = SimpleNamespace(
+        chat_model=SimpleNamespace(
+            is_cli=False,
+            endpoint=SimpleNamespace(config=SimpleNamespace(kwargs={})),
+        )
+    )
+    spawn_branch_setup(operation, non_cli_branch)
+    assert "repo" not in non_cli_branch.chat_model.endpoint.config.kwargs
+
+
+@pytest.mark.asyncio
+async def test_execute_dag_escalated_spawned_node_evidence_uses_spawn_id(tmp_path):
+    """An escalated node that was reactively spawned (not in the plan) must
+    surface its role_node_builder-stamped spawn_id in the escalation
+    evidence, not the internal Operation UUID — so a reviewer reading the
+    teardown evidence sees the same 'spawn-N' label the artifact dirs and
+    contract entries already use."""
+    env = _make_env(tmp_path)
+    assignments = [TaskAssignment(task="x", assignee="researcher")]
+    plan_result = _PlanResult(
+        assignments=assignments,
+        agent_ids=["researcher"],
+        dep_indices=[[]],
+        pool=[],
+        budget_preambles={},
+    )
+    dag_state = _DagState(
+        node_ids=["node-0"],
+        known_nodes={"node-0"},
+        deps_by_node={"node-0": []},
+        reactive=True,
+        spawn_roles=None,
+        role_base={},
+        worker_models=["codex/gpt-5.5"],
+    )
+
+    escalated_node = SimpleNamespace(
+        metadata={"assignee": "critic", "spawn_id": "spawn-7"}, branch_id=None
+    )
+    env.builder.get_graph = lambda: SimpleNamespace(
+        nodes=[], internal_nodes={"node-escalated": escalated_node}
+    )
+
+    from lionagi.engines import PlanningEngine
+
+    fake_engine_run = MagicMock()
+    fake_engine_run.run_dag = MagicMock(
+        return_value=_asyncio_coro(
+            {
+                "operation_results": {"node-0": "planned result"},
+                "spawned_operations": 1,
+                "escalated_operations": ["node-escalated"],
+            }
+        )
+    )
+
+    with patch.object(PlanningEngine, "new_run", return_value=fake_engine_run):
+        await _execute_dag(env, plan_result, dag_state, max_concurrent=1, max_ops=0)
+
+    assert env._escalated_evidence == [
+        {"kind": "escalated_operation", "id": "spawn-7", "label": "spawn-7"}
+    ]
+
+
+@pytest.mark.asyncio
 async def test_execute_dag_spawned_node_registers_artifact_contract(tmp_path):
     """A spawned node running under a role with artifact_defaults must be
     attributed back to that role and get its own contract entry folded into

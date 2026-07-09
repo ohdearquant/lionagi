@@ -146,6 +146,54 @@ async def test_dependent_spawn_runs_after_emitter():
     assert result["spawned_operations"] == 1
 
 
+@pytest.mark.asyncio
+async def test_spawn_branch_setup_fires_with_operation_and_cloned_branch():
+    """spawn_branch_setup(operation, cloned_branch) must run for every
+    reactively-spawned node right after its branch clone is created — the
+    seam cli/orchestrate/flow.py uses to retarget a CLI-backed chat_model's
+    writable workspace to the spawn's own artifact dir instead of silently
+    inheriting the emitter's. The stamped spawn_id (set by node_builder,
+    mirroring role_node_builder in production) must already be on the
+    operation's metadata by the time the callback fires."""
+    from lionagi.session.branch import Branch
+
+    async def spawner(**kw):
+        return SpawnRequest(instruction="follow-up", independent=True)
+
+    async def follow_up(**kw):
+        return "did the follow-up work"
+
+    session = _session_with_ops(spawner=spawner, follow_up=follow_up)
+
+    def node_builder(req: SpawnRequest, emitter: Operation) -> Operation:
+        op = create_operation("follow_up", parameters={})
+        op.metadata["spawn_id"] = "spawn-1"
+        return op
+
+    seen: list[tuple[str | None, Branch]] = []
+
+    def spawn_branch_setup(operation: Operation, branch: Branch) -> None:
+        seen.append((operation.metadata.get("spawn_id"), branch))
+
+    builder = OperationGraphBuilder()
+    builder.add_operation("spawner")
+    graph = builder.get_graph()
+
+    result = await flow(
+        session,
+        graph,
+        reactive=True,
+        node_builder=node_builder,
+        spawn_branch_setup=spawn_branch_setup,
+    )
+
+    assert result["spawned_operations"] == 1
+    assert len(seen) == 1
+    spawn_id, branch = seen[0]
+    assert spawn_id == "spawn-1"
+    assert isinstance(branch, Branch)
+
+
 def test_inject_rejected_when_not_running():
     """inject() is a no-op (returns False) outside an active flow."""
     from lionagi.operations.flow import ReactiveExecutor
