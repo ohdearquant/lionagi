@@ -83,7 +83,7 @@ def _graph_from_metadata(raw: str | None) -> dict[str, Any] | None:
     return {"nodes": nodes, "edges": edges} if nodes else None
 
 
-def _format_message(row: aiosqlite.Row) -> dict[str, Any]:
+def _format_message(row: aiosqlite.Row | dict[str, Any]) -> dict[str, Any]:
     return {
         "id": row["id"],
         "role": row["role"],
@@ -368,23 +368,37 @@ async def _fetch_action_messages(
     """
     if not msg_ids:
         return []
-    rows_by_id: dict[str, dict[str, Any]] = {}
     class_placeholders = ",".join("?" for _ in _ACTION_LION_CLASSES)
+    cur = await db.execute(
+        f"SELECT type_id, lion_class FROM message_types WHERE lion_class IN ({class_placeholders})",  # noqa: S608
+        _ACTION_LION_CLASSES,
+    )
+    lion_class_by_type_id = {row["type_id"]: row["lion_class"] for row in await cur.fetchall()}
+    if not lion_class_by_type_id:
+        return []
+
+    rows_by_id: dict[str, dict[str, Any]] = {}
+    type_ids = list(lion_class_by_type_id)
+    type_placeholders = ",".join("?" for _ in type_ids)
     for chunk_start in range(0, len(msg_ids), 500):
         chunk = msg_ids[chunk_start : chunk_start + 500]
         placeholders = ",".join("?" for _ in chunk)
+        # `+m.lion_class` disqualifies the lion_class index so the planner probes
+        # the id primary key for the IN list; without it, SQLite drives this query
+        # from idx_messages_lion_class and rescans every action-class row in the
+        # whole table per chunk, which is minutes of I/O on a multi-GB store.
         cur = await db.execute(
             f"""
-            SELECT m.id, m.created_at, m.content, m.sender, m.role,
-                   mt.lion_class AS lion_class_str
+            SELECT m.id, m.created_at, m.content, m.sender, m.role, m.lion_class
             FROM messages m
-            JOIN message_types mt ON m.lion_class = mt.type_id
-            WHERE m.id IN ({placeholders}) AND mt.lion_class IN ({class_placeholders})
+            WHERE m.id IN ({placeholders}) AND +m.lion_class IN ({type_placeholders})
             """,  # noqa: S608
-            [*chunk, *_ACTION_LION_CLASSES],
+            [*chunk, *type_ids],
         )
         for row in await cur.fetchall():
-            rows_by_id[row["id"]] = _format_message(row)
+            data = dict(row)
+            data["lion_class_str"] = lion_class_by_type_id.get(data.pop("lion_class"))
+            rows_by_id[data["id"]] = _format_message(data)
     return [rows_by_id[mid] for mid in msg_ids if mid in rows_by_id]
 
 
