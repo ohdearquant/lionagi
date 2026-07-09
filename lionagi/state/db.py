@@ -973,6 +973,12 @@ class StateDB:
         p = self.path
         if p is None or str(p) == ":memory:" or not p.exists():
             return
+        # In WAL mode, recently committed transactions can live only in the
+        # `-wal` sidecar file until a checkpoint occurs. A raw file copy taken
+        # without checkpointing first can silently omit that data, defeating
+        # the rollback guarantee this backup exists to provide. TRUNCATE forces
+        # a full checkpoint and truncates the WAL file back to zero length.
+        await self.checkpoint("TRUNCATE")
         backup_path = p.with_name(f"{p.name}.pre-{label}.{int(time.time())}.bak")
         shutil.copy2(p, backup_path)
 
