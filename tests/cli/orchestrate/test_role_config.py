@@ -37,6 +37,27 @@ class TestModeRoster:
         for m in cfg.modes_allow:
             assert resolve_modes("critic", [m]) == [m]
 
+    def test_custom_pack_unknown_mode_not_advertised(self):
+        # A custom pack may allowlist a name the mode catalog doesn't know;
+        # resolve_modes drops it, so the roster must never advertise it.
+        from lionagi.casts.pack import Pack, RoleConfig
+
+        pack = Pack(
+            name="custom",
+            configs={
+                "critic": RoleConfig(modes_allow=("not_a_mode", "premortem")),
+                "analyst": RoleConfig(modes_allow=("also_fake",)),
+            },
+        )
+        text = mode_roster(pack)
+        assert "not_a_mode" not in text
+        assert "also_fake" not in text
+        assert "critic accepts only premortem" in text
+        assert "analyst accepts no per-task modes (leave empty)" in text
+        # Coherence: every advertised entry survives enforcement on the SAME pack.
+        assert resolve_modes("critic", ["premortem"], pack) == ["premortem"]
+        assert resolve_modes("critic", ["not_a_mode"], pack) == []
+
 
 class TestResolveModes:
     def test_pack_defaults(self):
