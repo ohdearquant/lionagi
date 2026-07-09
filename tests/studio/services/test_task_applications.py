@@ -4,9 +4,10 @@
 """ADR-0101 D1 slice 2: the task-application submit surface.
 
 Covers submit_task's round-trip write, the CAS-governed queued -> cancelled
-cancel path, rejection of a malformed TaskApplication, and the negative vocab
-test proving transitions.transition() actively rejects queued -> running for
-schedule_run in this slice (not merely unexercised).
+cancel path, and rejection of a malformed TaskApplication. The transition
+vocabulary's negative-boundary tests (queued -> running is now allowed by
+D3; terminal re-entry is rejected) live in test_task_worker.py alongside the
+worker that exercises the queued -> running edge.
 """
 
 from __future__ import annotations
@@ -17,7 +18,7 @@ import socket
 import pytest
 
 from lionagi.state.db import StateDB
-from lionagi.state.transitions import Actor, StateReason, TransitionRequest, transition
+from lionagi.state.transitions import Actor
 from lionagi.studio.services.task_applications import TaskApplication, cancel_task, submit_task
 
 
@@ -180,33 +181,3 @@ async def test_submit_task_rejects_idempotency_key_until_dedup_exists(db: StateD
 
     row = await db.fetch_one("SELECT COUNT(*) AS n FROM schedule_runs")
     assert row["n"] == 0
-
-
-# ── 4. Negative vocab test — queued -> running is actively rejected ─────
-
-
-async def test_transition_store_rejects_queued_to_running_for_schedule_run(
-    db: StateDB,
-) -> None:
-    """The declared vocabulary is actively narrow, not merely unexercised:
-    attempting queued -> running through transitions.transition() must fail
-    even though the CAS guard itself would otherwise happily apply it."""
-    app = TaskApplication(action_kind="agent", args={}, execution_target="host")
-    run_id = await submit_task(db, app)
-
-    with pytest.raises(ValueError, match="not in the declared transition vocabulary"):
-        await transition(
-            db,
-            TransitionRequest(
-                entity_type="schedule_run",
-                entity_id=run_id,
-                from_state="queued",
-                to_state="running",
-                reason=StateReason(code="run.started.ok"),
-                actor=_actor(),
-                idempotency_key="idem-reject",
-            ),
-        )
-
-    row = await db.fetch_one("SELECT status FROM schedule_runs WHERE id = ?", (run_id,))
-    assert row["status"] == "queued"  # untouched — the rejected write never landed

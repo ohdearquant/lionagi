@@ -507,6 +507,8 @@ CREATE TABLE IF NOT EXISTS schedule_runs (
   leased_by           TEXT,
   lease_expires_at    REAL,
   concurrency_key     TEXT,
+  -- ADR-0101 D3: bounds the lease-expiry recovery loop (worker.py's reaper).
+  lease_attempts      INTEGER NOT NULL DEFAULT 0,
   -- ADR-0101 D2: task-application provenance (seam into ADR-0102).
   required_capabilities  JSON,
   execution_target       TEXT,

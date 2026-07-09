@@ -224,6 +224,8 @@ class SchedulerEngine:
         # closes the race a DB-only last_alert_at check can't (see
         # _maybe_fire).
         self._threshold_pending: set[str] = set()
+        # ADR-0101 D3: this daemon process is the one host worker (v1).
+        self._task_worker_id = f"host:{uuid.uuid4().hex[:8]}"
 
     async def start(self) -> None:
         _log.info("Scheduler engine starting")
@@ -522,6 +524,11 @@ class SchedulerEngine:
         except Exception:
             _log.exception("Dispatch outbox delivery scan error")
 
+        try:
+            await self._run_task_worker_tick(now)
+        except Exception:
+            _log.exception("Task worker tick error")
+
         schedules = await self._svc.list_schedules(enabled=True)
 
         for s in schedules:
@@ -552,6 +559,19 @@ class SchedulerEngine:
 
         async with StateDB() as db:
             await deliver_due_dispatches(db, now=now)
+
+    async def _run_task_worker_tick(self, now: float) -> None:
+        """ADR-0101 D3: reap lapsed leases and claim/execute eligible host
+        task applications. Not interval-gated for the same reason as
+        ``_deliver_due_dispatches`` — the 30s tick is the latency floor.
+        """
+        from lionagi.state.db import StateDB
+        from lionagi.studio.scheduler import worker as _worker
+
+        if not _worker.TASK_WORKER_ENABLED:
+            return
+        async with StateDB() as db:
+            await _worker.worker_tick(db, worker_id=self._task_worker_id, now=now)
 
     async def _tick_github(self, schedule: dict, now: float) -> None:
         poll_interval = schedule.get("poll_interval_sec") or schedule.get("interval_sec") or 300

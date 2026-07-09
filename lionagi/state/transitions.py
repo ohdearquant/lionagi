@@ -72,14 +72,23 @@ _ENTITY_TABLES: dict[str, str] = {
     "schedule_run": "schedule_runs",
 }
 
-# ADR-0101 slice 2: the task-application submit surface only needs a task to
-# be cancellable while still queued (unleased). This is NOT a full transition
-# graph — it only narrows the single edge set leaving "queued" for entities
-# listed here; any other current status (e.g. "running") is governed by CAS
-# alone, same as before this slice. Lease/running edges are deliberately not
-# modeled yet (D3/D4 worker loop is out of scope for this slice).
-_QUEUED_STATE_ALLOWED_TARGETS: dict[str, frozenset[str]] = {
-    "schedule_run": frozenset({"cancelled"}),
+# ADR-0101 slice 2/3: the declared transition vocabulary, per (entity_type,
+# from_state). This is NOT a full transition graph — only edges an ADR-0101
+# slice actually authorizes are listed; any current status that is not a key
+# for a given entity_type is governed by CAS alone, same as before this
+# vocabulary existed. "completed"/"failed" map to an empty target set,
+# closing terminal re-entry (D3 R2): no CAS write can move a schedule_run
+# back out of a terminal status even though the guard alone would happily
+# apply it.
+_TRANSITION_VOCAB: dict[str, dict[str, frozenset[str]]] = {
+    "schedule_run": {
+        "queued": frozenset({"cancelled", "running"}),
+        # D3: running -> queued is ONLY the lease-expiry recovery edge (the
+        # worker reaper), never a worker- or operator-initiated move.
+        "running": frozenset({"completed", "failed", "queued"}),
+        "completed": frozenset(),
+        "failed": frozenset(),
+    },
 }
 
 
@@ -131,17 +140,15 @@ async def transition(
             )
         previous_status = row["status"]
 
-        allowed_from_queued = _QUEUED_STATE_ALLOWED_TARGETS.get(request.entity_type)
-        if (
-            allowed_from_queued is not None
-            and previous_status == "queued"
-            and request.to_state not in allowed_from_queued
-        ):
-            raise ValueError(
-                f"transition(): {request.entity_type} queued -> {request.to_state!r} "
-                "is not in the declared transition vocabulary for this slice "
-                f"(allowed: {sorted(allowed_from_queued)})"
-            )
+        vocab = _TRANSITION_VOCAB.get(request.entity_type)
+        if vocab is not None:
+            allowed_targets = vocab.get(previous_status)
+            if allowed_targets is not None and request.to_state not in allowed_targets:
+                raise ValueError(
+                    f"transition(): {request.entity_type} {previous_status} -> "
+                    f"{request.to_state!r} is not in the declared transition "
+                    f"vocabulary for this slice (allowed: {sorted(allowed_targets)})"
+                )
 
         if request.from_state is not None and previous_status != request.from_state:
             return TransitionResult(
