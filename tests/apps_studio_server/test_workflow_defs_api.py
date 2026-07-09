@@ -101,6 +101,23 @@ async def test_bad_node_kind_raises(patched_svc):
         await svc.create_workflow_def({"name": "badkind", "spec_json": spec})
 
 
+async def test_spec_level_base_dir_rejected_at_create(patched_svc):
+    """base_dir is a run-level input, never a spec field: a def
+    that could pin its own containment root would defeat cwd containment."""
+    svc, _ = patched_svc
+    spec = _spec(base_dir="/tmp/whatever")
+    with pytest.raises(ValueError, match="base_dir"):
+        await svc.create_workflow_def({"name": "hostile-base-dir", "spec_json": spec})
+
+
+async def test_spec_level_base_dir_rejected_at_update(patched_svc):
+    svc, _ = patched_svc
+    created = await svc.create_workflow_def({"name": "later-hostile", "spec_json": _spec()})
+    spec = _spec(base_dir="/tmp/whatever")
+    with pytest.raises(ValueError, match="base_dir"):
+        await svc.update_workflow_def(created["id"], {"spec_json": spec})
+
+
 async def test_duplicate_node_id_raises(patched_svc):
     svc, _ = patched_svc
     spec = _spec()
