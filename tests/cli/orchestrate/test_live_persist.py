@@ -1689,6 +1689,7 @@ async def test_execute_dag_escalation_backstop_catches_reactively_spawned_node(
     `escalated_operations` but absent from `node_ids`/`known_nodes` — and
     confirm it still surfaces past the backstop.
     """
+    from types import SimpleNamespace
     from unittest.mock import MagicMock, patch
 
     from lionagi.casts.emission import TaskAssignment
@@ -1717,6 +1718,14 @@ async def test_execute_dag_escalation_backstop_catches_reactively_spawned_node(
         role_base={},
         worker_models=["codex/gpt-5.5"],
     )
+
+    # This node was injected directly (e.g. an EscalationRequest child, or a
+    # raw Session.flow inject()) rather than through role_node_builder, so it
+    # carries no stamped spawn_id in the graph — the evidence must fall back
+    # to its raw node id, same as the artifact-recovery loop's own unstamped
+    # fallback. env.builder defaults to a bare MagicMock() (_minimal_env),
+    # whose auto-attributes would otherwise look like a "found" node.
+    env.builder.get_graph = lambda: SimpleNamespace(nodes=[], internal_nodes={})
 
     from lionagi.engines import PlanningEngine
 
