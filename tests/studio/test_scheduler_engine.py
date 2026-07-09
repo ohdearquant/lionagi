@@ -1143,7 +1143,9 @@ async def test_startup_missed_fire_run_once_recovers_and_advances(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_startup_missed_fire_run_once_not_double_fired_by_immediate_tick(monkeypatch):
+async def test_startup_missed_fire_run_once_not_double_fired_by_immediate_tick(
+    monkeypatch, tmp_path
+):
     """Reproduces the exact _tick_loop() startup ordering: _check_missed_fires()
     runs, then _tick() runs immediately after with no sleep in between (the
     tick loop only sleeps *between* iterations of the while-loop, not before
@@ -1153,11 +1155,18 @@ async def test_startup_missed_fire_run_once_not_double_fired_by_immediate_tick(m
     following _tick() does not see the same stale past-due next_fire_at and
     queue a second, duplicate fire for it."""
     pytest.importorskip("croniter", reason="studio extra not installed")
+    import lionagi.state.db as state_db_mod
     import lionagi.studio.config as studio_config
     import lionagi.studio.scheduler.engine as engine_mod
     from lionagi.studio.scheduler.engine import SchedulerEngine
 
     monkeypatch.setattr(studio_config, "SCHEDULER_TZ", "America/New_York")
+    # _tick() also runs the dispatch-outbox scan and the D3 task-worker tick
+    # (_deliver_due_dispatches / _run_task_worker_tick), both of which open a
+    # StateDB() at the default path — redirect it so this test never touches
+    # the real ~/.lionagi/state.db.
+    fake_db = tmp_path / "state.db"
+    monkeypatch.setattr(state_db_mod, "DEFAULT_DB_PATH", fake_db)
 
     fixed_now = datetime(2026, 7, 2, 10, 0, 0, tzinfo=NY).timestamp()
     monkeypatch.setattr(engine_mod.time, "time", lambda: fixed_now)
@@ -1223,10 +1232,16 @@ async def test_startup_missed_fire_run_once_not_double_fired_by_immediate_tick(m
         f"fires: {[c[1].get('trigger_context') for c in tracked_calls]}"
     )
     assert tracked_calls[0][1]["trigger_context"]["missed_recovery"] is True
+    assert fake_db.exists(), (
+        "_tick() must have opened/schema-applied the redirected StateDB "
+        "(dispatch-outbox scan + D3 task-worker tick), proving isolation "
+        "from the real ~/.lionagi/state.db rather than the tick silently "
+        "no-op'ing on the fake path"
+    )
 
 
 @pytest.mark.asyncio
-async def test_startup_missed_fire_run_once_reserve_failure_skips_recovery(monkeypatch):
+async def test_startup_missed_fire_run_once_reserve_failure_skips_recovery(monkeypatch, tmp_path):
     """Failure path of the synchronous reserve: if update_schedule raises
     while reserving next_fire_at, storage still holds the past-due value
     and the immediately-following _tick() will fire the schedule normally.
@@ -1235,11 +1250,15 @@ async def test_startup_missed_fire_run_once_reserve_failure_skips_recovery(monke
     result: exactly one fire total, and it is the normal scheduled one,
     not a missed_recovery fire."""
     pytest.importorskip("croniter", reason="studio extra not installed")
+    import lionagi.state.db as state_db_mod
     import lionagi.studio.config as studio_config
     import lionagi.studio.scheduler.engine as engine_mod
     from lionagi.studio.scheduler.engine import SchedulerEngine
 
     monkeypatch.setattr(studio_config, "SCHEDULER_TZ", "America/New_York")
+    # Same real-DB hazard as the sibling test above: _tick() opens StateDB()
+    # at the default path via _deliver_due_dispatches / _run_task_worker_tick.
+    monkeypatch.setattr(state_db_mod, "DEFAULT_DB_PATH", tmp_path / "state.db")
 
     fixed_now = datetime(2026, 7, 2, 10, 0, 0, tzinfo=NY).timestamp()
     monkeypatch.setattr(engine_mod.time, "time", lambda: fixed_now)

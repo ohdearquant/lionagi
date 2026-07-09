@@ -557,8 +557,8 @@
       "ariaLabel": "Agent {name} — ouvrir le détail de session",
       "branches": "{count} br",
       "messages": "{count} msg",
-      "branchesTitle": "{count} branches",
-      "messagesTitle": "{count} messages"
+      "branchesTitle": "{count, plural, one {# branche} other {# branches}}",
+      "messagesTitle": "{count, plural, one {# message} other {# messages}}"
     },
     "empty": {
       "message": "Aucun agent en cours — la Flotte affiche les orchestrations en direct au fur et à mesure.",
