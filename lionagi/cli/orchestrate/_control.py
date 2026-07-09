@@ -16,7 +16,7 @@ deep-merges the message into the executor's flow workspace, visible to ops
 that have not yet started. Op-mode (`--as-op`, injecting the message as a
 first-class reactive DAG node) lands with a later slice.
 
-See docs/adrs/ADR-0085-flow-control-plane.md sections 1-3.
+See docs/_archive/v0/ADR-0085-flow-control-plane.md sections 1-3.
 """
 
 from __future__ import annotations

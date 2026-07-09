@@ -233,6 +233,7 @@ Frontend renders `effective_health` for the pill color. Tooltip shows raw
 ## Consequences
 
 **Positive**
+
 - Teams become queryable, linkable to sessions, and prunable.
 - Dead runs are visually distinguishable from active runs without operator
   intervention.
@@ -242,6 +243,7 @@ Frontend renders `effective_health` for the pill color. Tooltip shows raw
 - Admin retains explicit control over status transitions.
 
 **Negative**
+
 - Dual-write period (Phase 1) means two sources of truth for teams. Risk
   of drift if a write path is missed. Mitigated by keeping JSON as
   fallback read source during transition.
