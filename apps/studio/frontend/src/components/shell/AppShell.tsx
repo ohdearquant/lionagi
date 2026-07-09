@@ -1,13 +1,10 @@
 import { useCallback, useEffect, useState, type ReactNode } from "react";
 import { useTranslations } from "use-intl";
 import { ToastProvider } from "@/components/ui/Toast";
-import LeoPanel from "@/components/leo/LeoPanel";
 import IconRail from "./IconRail";
 import CommandPalette from "./CommandPalette";
 import StatusFooter from "./StatusFooter";
 import TopBar from "./TopBar";
-
-const LEO_OPEN_KEY = "studio:leo-open";
 
 interface Props {
   children: ReactNode;
@@ -33,22 +30,6 @@ export default function AppShell({ children, onLocaleChange }: Props) {
   const t = useTranslations("shell");
   const [dark, setDark] = useState(() => getTheme() === "dark");
   const [paletteOpen, setPaletteOpen] = useState(false);
-  const [leoOpen, setLeoOpen] = useState(
-    () => typeof window !== "undefined" && localStorage.getItem(LEO_OPEN_KEY) === "1",
-  );
-
-  const setLeo = useCallback((open: boolean) => {
-    setLeoOpen(open);
-    localStorage.setItem(LEO_OPEN_KEY, open ? "1" : "0");
-  }, []);
-
-  const toggleLeo = useCallback(() => {
-    setLeoOpen((v) => {
-      const next = !v;
-      localStorage.setItem(LEO_OPEN_KEY, next ? "1" : "0");
-      return next;
-    });
-  }, []);
 
   const toggleTheme = useCallback(() => {
     const next = !dark;
@@ -63,14 +44,10 @@ export default function AppShell({ children, onLocaleChange }: Props) {
         e.preventDefault();
         setPaletteOpen((v) => !v);
       }
-      if ((e.metaKey || e.ctrlKey) && e.key === "j") {
-        e.preventDefault();
-        toggleLeo();
-      }
     }
     window.addEventListener("keydown", handleKey);
     return () => window.removeEventListener("keydown", handleKey);
-  }, [toggleLeo]);
+  }, []);
 
   const isTauri = typeof window !== "undefined" && "__TAURI__" in window;
 
@@ -87,13 +64,7 @@ export default function AppShell({ children, onLocaleChange }: Props) {
         )}
 
         {/* Icon rail */}
-        <IconRail
-          dark={dark}
-          onToggleTheme={toggleTheme}
-          onLocaleChange={onLocaleChange}
-          leoOpen={leoOpen}
-          onToggleLeo={toggleLeo}
-        />
+        <IconRail dark={dark} onToggleTheme={toggleTheme} onLocaleChange={onLocaleChange} />
 
         {/* Main area */}
         <div className="flex flex-1 flex-col overflow-hidden">
@@ -113,10 +84,6 @@ export default function AppShell({ children, onLocaleChange }: Props) {
           {/* Status footer */}
           <StatusFooter />
         </div>
-
-        {/* Leo — persistent side panel: zero-width when minimized (the rail
-            chat icon + ⌘J reopen it), never unmounts so the session survives */}
-        <LeoPanel expanded={leoOpen} onMinimize={() => setLeo(false)} />
 
         {/* Command palette */}
         <CommandPalette

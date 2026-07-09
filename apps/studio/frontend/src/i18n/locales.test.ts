@@ -5,10 +5,7 @@
  * - LOCALES/RTL_LOCALES metadata shape (16 codes, ar/ur marked rtl).
  * - applyDocumentLocale flips <html lang>/<html dir> for rtl vs ltr locales.
  * - Every messages/*.json file has the exact same leaf-key set as en.json
- *   (717 leaves: 710 prior total plus the 7 net new daemon.* leaves added
- *   for the wrong-app-on-port connectivity state — daemon.unreachable.*
- *   (6 leaves) + daemon.wrongApp.* (4 leaves) + daemon.dismiss, replacing
- *   the 5 flat daemon.* leaves from the original unreachable-only gate).
+ *   (700 leaves).
  * - Every locale's messages parse under a real ICU translator with no
  *   FORMATTING_ERROR, including the true {count, plural, ...} strings and
  *   the pre-existing bare-{plural} anti-pattern in prunePhantoms.
@@ -197,8 +194,8 @@ describe("applyDocumentLocale — <html lang>/<html dir> wiring", () => {
 });
 
 describe("messages — leaf-key parity across all 16 locales", () => {
-  it("en.json has 717 leaves (710 prior total plus 7 net new daemon.* leaves)", () => {
-    expect(EN_LEAVES.size).toBe(717);
+  it("en.json has 700 leaves", () => {
+    expect(EN_LEAVES.size).toBe(700);
   });
 
   it.each(LOCALES.map((l) => l.code))(

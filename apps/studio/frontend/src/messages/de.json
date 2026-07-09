@@ -40,25 +40,6 @@
       "newTab": "öffnet in einem neuen Tab"
     }
   },
-  "leo": {
-    "name": "Leo",
-    "caption": "Studio-Operator",
-    "ariaLabel": "Leo — Studio-Operator",
-    "expand": "Leo erweitern",
-    "minimize": "Leo minimieren",
-    "zeroStateTitle": "Leo betreibt das Studio mit dir — frage nach Ausführungen, Zeitplänen oder Zustand",
-    "example1": "Was läuft gerade?",
-    "example2": "Zeige mir die letzten 5 Ausführungen",
-    "example3": "Meine Zeitpläne auflisten",
-    "inputPlaceholder": "Leo fragen…",
-    "send": "Senden",
-    "confirm": "Bestätigen",
-    "dismiss": "Verwerfen",
-    "proposedAction": "Vorgeschlagene Aktion",
-    "uiActionFailed": "konnte nicht angewendet werden",
-    "error": "Fehler",
-    "thinking": "denkt..."
-  },
   "playfield": {
     "title": "Playfield",
     "subtitle": "Alle laufenden und eingereihten Plays und Sessions über Projekte hinweg",

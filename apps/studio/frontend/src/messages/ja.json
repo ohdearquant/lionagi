@@ -40,25 +40,6 @@
       "newTab": "新しいタブで開きます"
     }
   },
-  "leo": {
-    "name": "Leo",
-    "caption": "スタジオオペレーター",
-    "ariaLabel": "Leo — スタジオオペレーター",
-    "expand": "Leoを展開",
-    "minimize": "Leoを最小化",
-    "zeroStateTitle": "Leoがスタジオの操作をサポートします — 実行状況、スケジュール、ステータスについて質問してください",
-    "example1": "今何が実行中？",
-    "example2": "直近5件の実行を表示",
-    "example3": "スケジュールを一覧表示",
-    "inputPlaceholder": "Leoに質問…",
-    "send": "送信",
-    "confirm": "確認",
-    "dismiss": "閉じる",
-    "proposedAction": "提案されたアクション",
-    "uiActionFailed": "適用できませんでした",
-    "error": "エラー",
-    "thinking": "思考中..."
-  },
   "playfield": {
     "title": "プレイフィールド",
     "subtitle": "プロジェクト横断の実行中およびキュー中のプレイとセッション",
