@@ -7,9 +7,56 @@ from __future__ import annotations
 
 from lionagi.cli.orchestrate._orchestration import (
     casts_role_system,
+    mode_roster,
     resolve_modes,
     role_config,
 )
+
+
+class TestModeRoster:
+    def test_lists_all_mode_names(self):
+        from lionagi.casts.pattern import list_modes
+
+        text = mode_roster()
+        for m in list_modes():
+            assert m in text
+
+    def test_surfaces_role_allowlists(self):
+        # analyst restricts modes in the default pack; the planner prompt must
+        # advertise that restriction so it never assigns a mode resolve_modes
+        # would drop.
+        cfg = role_config("analyst")
+        assert cfg is not None and cfg.modes_allow
+        text = mode_roster()
+        assert f"analyst accepts only {', '.join(sorted(cfg.modes_allow))}" in text
+
+    def test_allowlists_match_enforcement(self):
+        # Every advertised allowlist must accept its own modes at execution.
+        cfg = role_config("critic")
+        assert cfg is not None and cfg.modes_allow
+        for m in cfg.modes_allow:
+            assert resolve_modes("critic", [m]) == [m]
+
+    def test_custom_pack_unknown_mode_not_advertised(self):
+        # A custom pack may allowlist a name the mode catalog doesn't know;
+        # resolve_modes drops it, so the roster must never advertise it.
+        from lionagi.casts.pack import Pack, RoleConfig
+
+        pack = Pack(
+            name="custom",
+            configs={
+                "critic": RoleConfig(modes_allow=("not_a_mode", "premortem")),
+                "analyst": RoleConfig(modes_allow=("also_fake",)),
+            },
+        )
+        text = mode_roster(pack)
+        assert "not_a_mode" not in text
+        assert "also_fake" not in text
+        assert "critic accepts only premortem" in text
+        assert "analyst accepts no per-task modes (leave empty)" in text
+        # Coherence: every advertised entry survives enforcement on the SAME pack.
+        assert resolve_modes("critic", ["premortem"], pack) == ["premortem"]
+        assert resolve_modes("critic", ["not_a_mode"], pack) == []
 
 
 class TestResolveModes:
