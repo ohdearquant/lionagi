@@ -399,11 +399,13 @@ async def list_schedules(
         return []
     async with StateDB() as db:
         rows = await db.list_schedules(enabled=enabled, trigger_type=trigger_type, project=project)
+        ids = [row["id"] for row in rows]
+        used_by_id = await db.count_schedule_runs_batch(ids, chain_depth=0)
+        streaks_by_id = await db.schedule_run_streaks(ids)
         for row in rows:
             if row.get("max_runs"):
-                used = await db.count_schedule_runs(row["id"], chain_depth=0)
-                row["remaining_runs"] = max(row["max_runs"] - used, 0)
-            streak, last_status = await db.schedule_run_streak(row["id"])
+                row["remaining_runs"] = max(row["max_runs"] - used_by_id[row["id"]], 0)
+            streak, last_status = streaks_by_id[row["id"]]
             row["consecutive_failures"] = streak
             row["last_status"] = last_status
     return rows

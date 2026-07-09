@@ -1,10 +1,7 @@
 # Copyright (c) 2023-2025, HaiyangLi <quantocean.li at gmail dot com>
 # SPDX-License-Identifier: Apache-2.0
-"""Tests for lionagi/_class_registry.py: FILE_REGISTRY, LION_CLASS_REGISTRY, get_class, round-trips."""
-
-import os
-import tempfile
-from pathlib import Path
+"""Tests for lionagi/_class_registry.py: LION_CLASS_REGISTRY, get_class,
+and lion_class round-trips (both fully-qualified and legacy short names)."""
 
 import pytest
 
@@ -91,7 +88,7 @@ class _LenBefore(Node):
 #    defined in this module once the module's tests finish.  Without it, all
 #    test-only keys leak to later test modules on the same xdist worker.
 #
-# 2. Test time — individual tests mutate the registries (deleting keys,
+# 2. Test time — individual tests mutate the registry (deleting keys,
 #    registering type()-created collisions).  A per-test snapshot/restore
 #    guarantees those mutations never outlive the test, even on failure.
 # ---------------------------------------------------------------------------
@@ -115,110 +112,24 @@ def _purge_module_test_classes():
 
 @pytest.fixture(autouse=True)
 def _registry_snapshot():
-    """Snapshot both registries before each test; restore on teardown.
+    """Snapshot the registry before each test; restore on teardown.
 
     Uses an explicit try/finally so that restoration is guaranteed even if
     the test body raises.  This prevents registry pollution across tests on
     the same xdist worker.
     """
-    from lionagi._class_registry import LION_CLASS_FILE_REGISTRY, LION_CLASS_REGISTRY
+    from lionagi._class_registry import LION_CLASS_REGISTRY
 
     registry_snapshot = LION_CLASS_REGISTRY.copy()
-    file_registry_snapshot = LION_CLASS_FILE_REGISTRY.copy()
     try:
         yield
     finally:
         LION_CLASS_REGISTRY.clear()
         LION_CLASS_REGISTRY.update(registry_snapshot)
-        LION_CLASS_FILE_REGISTRY.clear()
-        LION_CLASS_FILE_REGISTRY.update(file_registry_snapshot)
 
 
 # ---------------------------------------------------------------------------
-# 1. FILE_REGISTRY population at import
-# ---------------------------------------------------------------------------
-
-
-class TestFileRegistryPopulation:
-    """LION_CLASS_FILE_REGISTRY is populated by a filesystem scan at import."""
-
-    def test_file_registry_is_dict(self):
-        from lionagi._class_registry import LION_CLASS_FILE_REGISTRY
-
-        assert isinstance(LION_CLASS_FILE_REGISTRY, dict)
-
-    def test_file_registry_nonempty(self):
-        from lionagi._class_registry import LION_CLASS_FILE_REGISTRY
-
-        assert len(LION_CLASS_FILE_REGISTRY) > 0
-
-    @pytest.mark.parametrize(
-        "class_name",
-        [
-            "Element",
-            "Node",
-            "Graph",
-            "Edge",
-            "Pile",
-            "Progression",
-            "Message",
-            "Instruction",
-            "System",
-            "ActionRequest",
-            "ActionResponse",
-            "AssistantResponse",
-            "Event",
-            "Flow",
-            "Log",
-        ],
-    )
-    def test_known_core_classes_present(self, class_name):
-        from lionagi._class_registry import LION_CLASS_FILE_REGISTRY
-
-        assert class_name in LION_CLASS_FILE_REGISTRY, (
-            f"{class_name} missing from LION_CLASS_FILE_REGISTRY"
-        )
-
-    def test_file_registry_values_are_existing_paths(self):
-        from lionagi._class_registry import LION_CLASS_FILE_REGISTRY
-
-        for name, path in LION_CLASS_FILE_REGISTRY.items():
-            assert Path(path).exists(), f"Path for {name!r} does not exist: {path}"
-
-    def test_file_registry_values_are_py_files(self):
-        from lionagi._class_registry import LION_CLASS_FILE_REGISTRY
-
-        for name, path in LION_CLASS_FILE_REGISTRY.items():
-            assert path.endswith(".py"), f"Path for {name!r} is not a .py file: {path}"
-
-    def test_file_registry_paths_inside_scanned_patterns(self):
-        """All scanned paths must be inside one of the declared pattern folders."""
-        from lionagi._class_registry import (
-            LION_CLASS_FILE_REGISTRY,
-            pattern_list,
-        )
-
-        for name, path in LION_CLASS_FILE_REGISTRY.items():
-            assert any(p in path for p in pattern_list), (
-                f"Path for {name!r} ({path}) is outside all declared patterns"
-            )
-
-    def test_file_registry_size_is_stable(self):
-        """FILE_REGISTRY size must stay constant across multiple accesses
-        (the guard `if not LION_CLASS_FILE_REGISTRY` prevents re-scanning)."""
-        from lionagi._class_registry import LION_CLASS_FILE_REGISTRY
-
-        count_first = len(LION_CLASS_FILE_REGISTRY)
-        # Access the registry again via a second import statement.
-        # Python's module cache means this is the same object; size is unchanged.
-        from lionagi._class_registry import LION_CLASS_FILE_REGISTRY as reg2
-
-        assert len(reg2) == count_first
-        assert reg2 is LION_CLASS_FILE_REGISTRY  # same dict object
-
-
-# ---------------------------------------------------------------------------
-# 2. LION_CLASS_REGISTRY population via Node.__pydantic_init_subclass__
+# 1. LION_CLASS_REGISTRY population via Node.__pydantic_init_subclass__
 # ---------------------------------------------------------------------------
 
 
@@ -257,15 +168,12 @@ class TestNodeSubclassRegistration:
         not for Node itself.  Node's own key must NOT be auto-inserted."""
         from lionagi._class_registry import LION_CLASS_REGISTRY
 
-        # Node is not registered via __pydantic_init_subclass__
-        # (that hook fires only for classes that subclass Node, not Node itself)
         node_full = Node.class_name(full=True)
-        # Node may appear in file registry (FILE_REGISTRY), not LION_CLASS_REGISTRY
         assert node_full not in LION_CLASS_REGISTRY
 
 
 # ---------------------------------------------------------------------------
-# 3. get_class: hit (direct registry lookup)
+# 2. get_class: hit (direct registry lookup)
 # ---------------------------------------------------------------------------
 
 
@@ -296,7 +204,7 @@ class TestGetClassHit:
 
 
 # ---------------------------------------------------------------------------
-# 4. get_class: miss behavior (unknown name)
+# 3. get_class: miss behavior (unknown name)
 # ---------------------------------------------------------------------------
 
 
@@ -323,147 +231,115 @@ class TestGetClassMiss:
         with pytest.raises(ValueError):
             get_class("")
 
+    def test_unknown_dotted_path_raises_value_error(self):
+        from lionagi._class_registry import get_class
+
+        with pytest.raises(ValueError, match="Unable to find class"):
+            get_class("lionagi.protocols.generic.element.NoSuchClass_xyz")
+
 
 # ---------------------------------------------------------------------------
-# 4b. get_class file-registry fallback path
+# 4. get_class: legacy short-name resolution via built-in modules
 #
-# Previously latent bug: get_class()'s fallback called get_class_objects()
-# which used importlib.util.spec_from_file_location with a dummy module name.
-# Modules in the scanned directories use relative imports (e.g. "from .element
-# import Element"); exec'd under a standalone spec with no parent package, those
-# relative imports failed with "ImportError: attempted relative import beyond
-# top-level package", making the fallback unreachable for any real lionagi class.
-#
-# get_class_objects() now derives the canonical dotted module name from the file
-# path relative to the package root and uses importlib.import_module, restoring
-# full package context.  These tests pin the fixed behavior and the path guards.
+# Persisted `lion_class` metadata predating the full-qualified-name
+# convention stores a bare class name (e.g. "Instruction") instead of a
+# dotted path. get_class() must still resolve these without any filesystem
+# scan, by importing the fixed set of built-in modules and looking the name
+# up as a module attribute (or, for Node subclasses, via LION_CLASS_REGISTRY
+# after that import triggers registration).
 # ---------------------------------------------------------------------------
 
 
-class TestGetClassFileRegistryFallback:
-    """Pin the fixed file-registry fallback in get_class().
+class TestGetClassShortNameFallback:
+    """get_class resolves legacy short (unqualified) class names."""
 
-    get_class_objects() derives the canonical dotted module name from the file
-    path relative to the package root and uses importlib.import_module so that
-    relative imports resolve correctly.
-    """
+    @pytest.mark.parametrize(
+        "class_name",
+        [
+            "Element",
+            "Node",
+            "Graph",
+            "Edge",
+            "Pile",
+            "Progression",
+            "Message",
+            "Instruction",
+            "System",
+            "ActionRequest",
+            "ActionResponse",
+            "AssistantResponse",
+            "Event",
+            "Flow",
+            "Log",
+        ],
+    )
+    def test_short_name_resolves_to_correct_class(self, class_name):
+        from lionagi._class_registry import LION_CLASS_REGISTRY, get_class
 
-    def test_file_registry_fallback_works_for_relative_import_module(self):
-        """Calling get_class() on a class present only in LION_CLASS_FILE_REGISTRY
-        (not in LION_CLASS_REGISTRY) must succeed via the file-registry fallback.
-
-        Formerly pinned as xfail because the old ``spec_from_file_location``
-        approach broke relative imports.  Now a strict passing test.
-        """
-        from lionagi._class_registry import (
-            LION_CLASS_FILE_REGISTRY,
-            LION_CLASS_REGISTRY,
-            get_class,
-        )
-        from lionagi.protocols.graph.node import Node
-
-        # 'Node' is guaranteed to be in FILE_REGISTRY (scanned at import time).
-        target = "Node"
-        assert target in LION_CLASS_FILE_REGISTRY, (
-            "Prerequisite: Node must be in LION_CLASS_FILE_REGISTRY"
-        )
-
-        # Remove all registry entries whose key contains 'Node' so that
-        # get_class is forced through the file-registry fallback path.
-        # The autouse _registry_snapshot fixture restores these afterwards.
-        keys_to_remove = [k for k in LION_CLASS_REGISTRY if k.endswith(f".{target}") or k == target]
+        # Strip any registry entries matching this short name so resolution
+        # is forced through the built-in-module fallback, not a lucky
+        # pre-existing full-qualified registry hit.
+        keys_to_remove = [
+            k for k in LION_CLASS_REGISTRY if k == class_name or k.endswith(f".{class_name}")
+        ]
         for k in keys_to_remove:
             del LION_CLASS_REGISTRY[k]
-        LION_CLASS_REGISTRY.pop(target, None)
 
-        # The fallback must now succeed — relative imports resolve correctly.
-        result = get_class(target)
+        result = get_class(class_name)
         assert isinstance(result, type)
-        assert issubclass(result, Node)
+        assert result.__name__ == class_name
 
-    def test_file_registry_fallback_returns_correct_class(self):
-        """The class returned via the file-registry fallback is the real class,
-        not a re-imported duplicate with a different identity."""
-        from lionagi._class_registry import (
-            LION_CLASS_FILE_REGISTRY,
-            LION_CLASS_REGISTRY,
-            get_class,
-        )
+    def test_short_name_returns_same_object_as_direct_import(self):
+        from lionagi._class_registry import get_class
+        from lionagi.protocols.messages.instruction import Instruction
+
+        result = get_class("Instruction")
+        assert result is Instruction
+
+    def test_short_name_for_non_node_element_subclass(self):
+        """Event/Flow/Log/Pile/Progression/Edge/Graph are Element subclasses
+        that are NOT Node subclasses, so they never self-register into
+        LION_CLASS_REGISTRY. Short-name resolution must still work via the
+        built-in-module attribute lookup."""
+        from lionagi._class_registry import get_class
+        from lionagi.protocols.generic.log import Log
+
+        result = get_class("Log")
+        assert result is Log
+
+
+# ---------------------------------------------------------------------------
+# 5. get_class: dotted-path import fallback (fully-qualified names)
+# ---------------------------------------------------------------------------
+
+
+class TestGetClassDottedPathFallback:
+    """get_class imports an arbitrary dotted "module.Class" path when the
+    fully-qualified name is not (yet) present in LION_CLASS_REGISTRY."""
+
+    def test_dotted_path_resolves_via_import(self):
+        from lionagi._class_registry import LION_CLASS_REGISTRY, get_class
         from lionagi.protocols.generic.element import Element
 
-        target = "Element"
-        assert target in LION_CLASS_FILE_REGISTRY
-
-        keys_to_remove = [k for k in LION_CLASS_REGISTRY if k.endswith(f".{target}") or k == target]
-        for k in keys_to_remove:
-            del LION_CLASS_REGISTRY[k]
+        target = "lionagi.protocols.generic.element.Element"
         LION_CLASS_REGISTRY.pop(target, None)
 
         result = get_class(target)
-        # importlib.import_module is idempotent (uses sys.modules cache), so
-        # the returned class object is identical to the already-imported one.
         assert result is Element
 
-    def test_file_registry_fallback_path_outside_package_raises_clear_error(self):
-        """get_class_objects() must raise ValueError with a clear message when
-        the file path is not under the package root."""
-        from lionagi._class_registry import get_class_objects
+    def test_dotted_path_for_node_subclass(self):
+        from lionagi._class_registry import LION_CLASS_REGISTRY, get_class
+        from lionagi.protocols.messages.system import System
 
-        with pytest.raises(ValueError, match="not located under the package root"):
-            get_class_objects("/tmp/some_random_file_outside_package.py")
+        target = System.class_name(full=True)
+        LION_CLASS_REGISTRY.pop(target, None)
 
-    def test_file_registry_fallback_repo_root_outside_package_raises(self):
-        """A file outside the lionagi package must be rejected to prevent arbitrary module imports."""
-        from lionagi._class_registry import get_class_objects
-
-        # This very test file lives under the repo root but NOT under lionagi/.
-        outside_pkg_file = os.path.abspath(__file__)
-
-        with pytest.raises(ValueError, match="not located under the package root"):
-            get_class_objects(outside_pkg_file)
-
-    def test_file_registry_fallback_repo_root_via_get_class_raises(self):
-        """End-to-end: a registry entry pointing at a repo-root-but-outside-
-        package file must surface as ValueError through get_class(), not import
-        a top-level module."""
-        from lionagi._class_registry import (
-            LION_CLASS_FILE_REGISTRY,
-            LION_CLASS_REGISTRY,
-            get_class,
-        )
-
-        fake_class_name = "_RegistryPathEscape_xyz"
-        LION_CLASS_FILE_REGISTRY[fake_class_name] = os.path.abspath(__file__)
-        LION_CLASS_REGISTRY.pop(fake_class_name, None)
-
-        with pytest.raises(ValueError, match="Unable to find class"):
-            get_class(fake_class_name)
-
-    def test_file_registry_fallback_class_not_in_module_raises_value_error(self):
-        """get_class() must raise ValueError when the file-registry entry exists
-        but the named class is not actually exported by that module.
-
-        This simulates a stale registry entry pointing to the wrong file.
-        """
-        from lionagi._class_registry import (
-            LION_CLASS_FILE_REGISTRY,
-            LION_CLASS_REGISTRY,
-            get_class,
-        )
-
-        # Inject a fake entry: 'Element' file path but ask for a class that
-        # definitely isn't in element.py.
-        fake_class_name = "_NonExistentClassInElementPy_xyz"
-        LION_CLASS_FILE_REGISTRY[fake_class_name] = LION_CLASS_FILE_REGISTRY["Element"]
-        # Ensure it's not in the in-memory registry either.
-        LION_CLASS_REGISTRY.pop(fake_class_name, None)
-
-        with pytest.raises(ValueError, match="Unable to find class"):
-            get_class(fake_class_name)
+        result = get_class(target)
+        assert result is System
 
 
 # ---------------------------------------------------------------------------
-# 5. Duplicate-name handling: last writer wins (overwrite semantics — pinned)
+# 6. Duplicate-name handling: last writer wins (overwrite semantics — pinned)
 #
 # Tests exercise the real registration hook (Node.__pydantic_init_subclass__)
 # by creating two classes with the same __name__ using type() in function
@@ -554,7 +430,7 @@ class TestDuplicateNameHandling:
 
 
 # ---------------------------------------------------------------------------
-# 6. Polymorphic round-trip (python mode)
+# 7. Polymorphic round-trip (python mode)
 # ---------------------------------------------------------------------------
 
 
@@ -625,7 +501,7 @@ class TestPolymorphicRoundTrip:
 
 
 # ---------------------------------------------------------------------------
-# 7. db-mode round-trip (node_metadata key)
+# 8. db-mode round-trip (node_metadata key)
 # ---------------------------------------------------------------------------
 
 
@@ -662,112 +538,187 @@ class TestDbModeRoundTrip:
 
 
 # ---------------------------------------------------------------------------
-# 8. get_file_classes utility function
+# 9. Legacy short-name lion_class round-trip for built-in message classes
+#
+# HARD CONSTRAINT: old persisted `lion_class` strings must keep round-
+# tripping whether they store the fully-qualified dotted path
+# (e.g. "lionagi.protocols.messages.instruction.Instruction") or the bare
+# legacy short name (e.g. "Instruction"), for every built-in Element/Node
+# subclass that ships with lionagi.
 # ---------------------------------------------------------------------------
 
 
-class TestGetFileClasses:
-    """get_file_classes parses a Python file and returns class names -> path."""
+def _short_name_round_trip(inst):
+    """Serialize inst, rewrite its metadata.lion_class to the bare class
+    name, and confirm Element.from_dict still restores the correct type."""
+    from lionagi.protocols.generic.element import Element
 
-    @pytest.fixture
-    def element_py_path(self):
-        return str(
-            Path(__file__).parent.parent / "lionagi" / "protocols" / "generic" / "element.py"
+    d = inst.to_dict()
+    d["metadata"]["lion_class"] = type(inst).__name__
+    restored = Element.from_dict(d)
+    assert type(restored) is type(inst)
+    assert restored.id == inst.id
+    return restored
+
+
+class TestLegacyShortNameMessageRoundTrip:
+    """Both full-qualified and legacy short-name lion_class values round-trip
+    for every representative built-in message/Node class."""
+
+    def test_system_full_qualified(self):
+        from lionagi.protocols.generic.element import Element
+        from lionagi.protocols.messages.system import System
+
+        inst = System(content={"system_message": "be helpful"})
+        d = inst.to_dict()
+        assert d["metadata"]["lion_class"] == System.class_name(full=True)
+        restored = Element.from_dict(d)
+        assert type(restored) is System
+
+    def test_system_short_name(self):
+        from lionagi.protocols.messages.system import System
+
+        inst = System(content={"system_message": "be helpful"})
+        restored = _short_name_round_trip(inst)
+        assert restored.content.system_message == "be helpful"
+
+    def test_instruction_full_qualified(self):
+        from lionagi.protocols.generic.element import Element
+        from lionagi.protocols.messages.instruction import Instruction
+
+        inst = Instruction(
+            content={"instruction": "do the thing"}, sender="user", recipient="assistant"
+        )
+        d = inst.to_dict()
+        assert d["metadata"]["lion_class"] == Instruction.class_name(full=True)
+        restored = Element.from_dict(d)
+        assert type(restored) is Instruction
+
+    def test_instruction_short_name(self):
+        from lionagi.protocols.messages.instruction import Instruction
+
+        inst = Instruction(
+            content={"instruction": "do the thing"}, sender="user", recipient="assistant"
+        )
+        restored = _short_name_round_trip(inst)
+        assert restored.sender == inst.sender
+
+    def test_assistant_response_full_qualified(self):
+        from lionagi.protocols.generic.element import Element
+        from lionagi.protocols.messages.assistant_response import AssistantResponse
+
+        inst = AssistantResponse(content={"assistant_response": "hello"})
+        d = inst.to_dict()
+        assert d["metadata"]["lion_class"] == AssistantResponse.class_name(full=True)
+        restored = Element.from_dict(d)
+        assert type(restored) is AssistantResponse
+
+    def test_assistant_response_short_name(self):
+        from lionagi.protocols.messages.assistant_response import AssistantResponse
+
+        inst = AssistantResponse(content={"assistant_response": "hello"})
+        restored = _short_name_round_trip(inst)
+        assert restored.response == inst.response
+
+    def test_action_request_full_qualified(self):
+        from lionagi.protocols.generic.element import Element
+        from lionagi.protocols.messages.action_request import (
+            ActionRequest,
+            ActionRequestContent,
         )
 
-    def test_returns_dict(self, element_py_path):
-        from lionagi._class_registry import get_file_classes
+        content = ActionRequestContent(function="do_it", arguments={"x": 1})
+        inst = ActionRequest(content=content, sender="user", recipient="assistant")
+        d = inst.to_dict()
+        assert d["metadata"]["lion_class"] == ActionRequest.class_name(full=True)
+        restored = Element.from_dict(d)
+        assert type(restored) is ActionRequest
 
-        result = get_file_classes(element_py_path)
-        assert isinstance(result, dict)
+    def test_action_request_short_name(self):
+        from lionagi.protocols.messages.action_request import (
+            ActionRequest,
+            ActionRequestContent,
+        )
 
-    def test_finds_element_class(self, element_py_path):
-        from lionagi._class_registry import get_file_classes
+        content = ActionRequestContent(function="do_it", arguments={"x": 1})
+        inst = ActionRequest(content=content, sender="user", recipient="assistant")
+        restored = _short_name_round_trip(inst)
+        assert restored.function == "do_it"
 
-        result = get_file_classes(element_py_path)
-        assert "Element" in result
+    def test_action_response_full_qualified(self):
+        from lionagi.protocols.generic.element import Element
+        from lionagi.protocols.messages.action_response import (
+            ActionResponse,
+            ActionResponseContent,
+        )
 
-    def test_values_equal_input_path(self, element_py_path):
-        from lionagi._class_registry import get_file_classes
+        content = ActionResponseContent(function="do_it", arguments={"x": 1}, output={"ok": True})
+        inst = ActionResponse(content=content, sender="assistant", recipient="user")
+        d = inst.to_dict()
+        assert d["metadata"]["lion_class"] == ActionResponse.class_name(full=True)
+        restored = Element.from_dict(d)
+        assert type(restored) is ActionResponse
 
-        result = get_file_classes(element_py_path)
-        for name, path in result.items():
-            assert path == element_py_path
+    def test_action_response_short_name(self):
+        from lionagi.protocols.messages.action_response import (
+            ActionResponse,
+            ActionResponseContent,
+        )
 
-    def test_empty_file_returns_empty_dict(self, tmp_path):
-        from lionagi._class_registry import get_file_classes
+        content = ActionResponseContent(function="do_it", arguments={"x": 1}, output={"ok": True})
+        inst = ActionResponse(content=content, sender="assistant", recipient="user")
+        restored = _short_name_round_trip(inst)
+        assert restored.output == {"ok": True}
 
-        py_file = tmp_path / "no_classes.py"
-        py_file.write_text("# no classes here\nx = 1\n")
+    def test_node_full_qualified(self):
+        from lionagi.protocols.generic.element import Element
+        from lionagi.protocols.graph.node import Node
 
-        result = get_file_classes(str(py_file))
-        assert result == {}
+        inst = Node(content="plain node")
+        d = inst.to_dict()
+        assert d["metadata"]["lion_class"] == Node.class_name(full=True)
+        restored = Element.from_dict(d)
+        assert type(restored) is Node
 
-    def test_file_with_multiple_classes(self, tmp_path):
-        from lionagi._class_registry import get_file_classes
+    def test_node_short_name(self):
+        from lionagi.protocols.graph.node import Node
 
-        py_file = tmp_path / "two_classes.py"
-        py_file.write_text("class Foo:\n    pass\nclass Bar:\n    pass\n")
-
-        result = get_file_classes(str(py_file))
-        assert "Foo" in result
-        assert "Bar" in result
-        assert len(result) == 2
+        inst = Node(content="plain node")
+        restored = _short_name_round_trip(inst)
+        assert restored.content == "plain node"
 
 
 # ---------------------------------------------------------------------------
-# 9. get_class_file_registry utility function
+# 10. Message Pile round-trip with mixed full/short lion_class entries
+#
+# Branch/session state persists its message history as a Pile of messages;
+# Pile.from_dict / _validate_collections deserializes each item via
+# Element.from_dict. This exercises the whole stack (Pile -> Element.from_dict
+# -> get_class) the way a real Branch snapshot load would.
 # ---------------------------------------------------------------------------
 
 
-class TestGetClassFileRegistry:
-    """get_class_file_registry walks a folder and builds the file registry."""
+class TestMessagePileRoundTrip:
+    def test_pile_round_trip_with_mixed_lion_class_forms(self):
+        from lionagi.protocols.generic.pile import Pile
+        from lionagi.protocols.messages.instruction import Instruction
+        from lionagi.protocols.messages.system import System
 
-    def test_nonexistent_folder_returns_empty(self):
-        from lionagi._class_registry import get_class_file_registry
+        system_msg = System(content={"system_message": "be helpful"})
+        instruction_msg = Instruction(
+            content={"instruction": "hello"}, sender="user", recipient="assistant"
+        )
 
-        result = get_class_file_registry("/nonexistent/path/xyz_abc_123", ["pattern"])
-        assert result == {}
+        pile = Pile(collections=[system_msg, instruction_msg])
+        serialized = pile.to_dict()
 
-    def test_empty_pattern_list_returns_empty(self):
-        from lionagi._class_registry import get_class_file_registry
+        # Rewrite one entry to the legacy short-name form to prove the pile
+        # tolerates a mix of fully-qualified and short lion_class values.
+        for item in serialized["collections"]:
+            if item["metadata"]["lion_class"] == System.class_name(full=True):
+                item["metadata"]["lion_class"] = "System"
 
-        with tempfile.TemporaryDirectory() as tmpdir:
-            (Path(tmpdir) / "sample.py").write_text("class SampleClass:\n    pass\n")
-            result = get_class_file_registry(tmpdir, [])
-        assert result == {}
-
-    def test_matching_pattern_picks_up_class(self):
-        from lionagi._class_registry import get_class_file_registry
-
-        with tempfile.TemporaryDirectory() as tmpdir:
-            subdir = Path(tmpdir) / "mypackage" / "protocols"
-            subdir.mkdir(parents=True)
-            (subdir / "model.py").write_text("class MyModel:\n    pass\n")
-            result = get_class_file_registry(tmpdir, [str(Path("mypackage") / "protocols")])
-
-        assert "MyModel" in result
-
-    def test_nonmatching_pattern_skips_file(self):
-        from lionagi._class_registry import get_class_file_registry
-
-        with tempfile.TemporaryDirectory() as tmpdir:
-            subdir = Path(tmpdir) / "other"
-            subdir.mkdir()
-            (subdir / "stuff.py").write_text("class SkippedClass:\n    pass\n")
-            result = get_class_file_registry(tmpdir, ["protocols"])
-
-        assert "SkippedClass" not in result
-
-    def test_only_py_files_included(self):
-        from lionagi._class_registry import get_class_file_registry
-
-        with tempfile.TemporaryDirectory() as tmpdir:
-            subdir = Path(tmpdir) / "protocols"
-            subdir.mkdir()
-            (subdir / "model.py").write_text("class PyClass:\n    pass\n")
-            (subdir / "model.txt").write_text("class TxtClass:\n    pass\n")
-            result = get_class_file_registry(tmpdir, ["protocols"])
-
-        assert "PyClass" in result
-        assert "TxtClass" not in result
+        restored = Pile.from_dict(serialized)
+        types_by_id = {v.id: type(v) for v in restored.collections.values()}
+        assert types_by_id[system_msg.id] is System
+        assert types_by_id[instruction_msg.id] is Instruction
