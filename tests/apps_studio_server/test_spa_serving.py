@@ -5,8 +5,6 @@
 
 from __future__ import annotations
 
-import os
-from importlib import reload
 from pathlib import Path
 
 import pytest
@@ -41,7 +39,13 @@ def spa_client(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ):
-    """TestClient with SPA serving enabled; teardown restores the API-only singleton for xdist workers."""
+    """TestClient with SPA serving enabled, backed by a fresh app instance.
+
+    create_app() (not importlib.reload) means this app is never the shared
+    lionagi.studio.app.app singleton, so there is nothing to restore for
+    other tests in the same xdist worker -- the SPA mount dies with this app
+    object at test teardown.
+    """
     fake_db = tmp_path / "state.db"
 
     import lionagi.studio.services.sessions as sessions_mod
@@ -55,15 +59,8 @@ def spa_client(
 
     import lionagi.studio.app as app_mod
 
-    reload(app_mod)
-    yield TestClient(app_mod.app, raise_server_exceptions=False, base_url="http://127.0.0.1:8765")
-
-    # Restore the API-only module singleton so it does not leak into later
-    # tests in the same xdist worker.  Fixture finalizers run LIFO: this code
-    # executes BEFORE monkeypatch undoes setenv, so the env var must be
-    # removed explicitly here or the reload re-mounts the SPA.
-    os.environ.pop("LIONAGI_STUDIO_FRONTEND_DIST", None)
-    reload(app_mod)
+    app = app_mod.create_app()
+    yield TestClient(app, raise_server_exceptions=False, base_url="http://127.0.0.1:8765")
 
 
 @pytest.fixture()
@@ -71,7 +68,7 @@ def no_dist_client(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ):
-    """TestClient in API-only mode (no dist dir); teardown reloads the app module for xdist workers."""
+    """TestClient in API-only mode (no dist dir), backed by a fresh app instance."""
     fake_db = tmp_path / "state.db"
 
     import lionagi.studio.services.sessions as sessions_mod
@@ -82,17 +79,13 @@ def no_dist_client(
     monkeypatch.setattr(sessions_mod, "DEFAULT_DB_PATH", fake_db)
     monkeypatch.setattr(sessions_mod, "_DB", str(fake_db))
     # Ensure no dist is resolved (env var must be absent so _resolve_frontend_dist
-    # returns None and the 404 exception handler is not registered on reload).
+    # returns None and the 404 exception handler is not registered).
     monkeypatch.delenv("LIONAGI_STUDIO_FRONTEND_DIST", raising=False)
 
     import lionagi.studio.app as app_mod
 
-    reload(app_mod)
-    yield TestClient(app_mod.app, raise_server_exceptions=False, base_url="http://127.0.0.1:8765")
-
-    # The env var is still absent here (finalizers run LIFO, before monkeypatch
-    # restores anything), so this reload restores the API-only singleton.
-    reload(app_mod)
+    app = app_mod.create_app()
+    yield TestClient(app, raise_server_exceptions=False, base_url="http://127.0.0.1:8765")
 
 
 # ---------------------------------------------------------------------------
@@ -230,7 +223,7 @@ class TestCORSAfterSPAMount:
         """HEAD must be in the CORS allowlist after SPA mount (_collect_cors_methods called after mount)."""
         import lionagi.studio.app as app_mod
 
-        allowlist = {m.upper() for m in app_mod._collect_cors_methods(app_mod.app)}
+        allowlist = {m.upper() for m in app_mod._collect_cors_methods(spa_client.app)}
         assert "HEAD" in allowlist, (
             f"HEAD must be in CORS allowlist after SPA mount; got {sorted(allowlist)}"
         )
