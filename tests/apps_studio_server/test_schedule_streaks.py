@@ -209,11 +209,12 @@ async def test_tied_fired_at_rows_order_deterministically_and_match_singular(tem
     """Ties on fired_at break on id DESC identically in the batched and singular paths."""
     sid = await _make_schedule()
     now = time.time()
-    # All three runs share fired_at; id DESC order is failed -> completed -> failed,
-    # so last_status must be "failed" and the streak must stop at the completed row.
-    await _seed_run(sid, status="failed", fired_at=now, run_id="tie-c-newest")
-    await _seed_run(sid, status="completed", fired_at=now, run_id="tie-b-middle")
-    await _seed_run(sid, status="failed", fired_at=now, run_id="tie-a-oldest")
+    # Both runs share fired_at. The planner's natural tie order (reverse
+    # insertion under the descending sort) puts "completed" first, while the
+    # id DESC tie-breaker puts "failed" first — so dropping the tie-breaker
+    # flips the result to (0, "completed").
+    await _seed_run(sid, status="failed", fired_at=now, run_id="tie-z-high")
+    await _seed_run(sid, status="completed", fired_at=now, run_id="tie-a-low")
 
     async with StateDB() as db:
         singular = await db.schedule_run_streak(sid)
@@ -225,9 +226,11 @@ async def test_tied_fired_at_rows_at_the_cap_match_singular(temp_db_path):
     """With >50 tied rows, both paths keep the same id-DESC top 50."""
     sid = await _make_schedule()
     now = time.time()
-    # 55 tied rows; ids sort lexicographically. The five highest ids are failed,
-    # the rest completed, so both paths must see streak 5 off the same top-50 set.
-    for i in range(55):
+    # 55 tied rows inserted in DESCENDING id order with the five HIGHEST ids
+    # failed: the planner's natural tie order (reverse insertion) keeps only
+    # completed rows in its top 50, while the id DESC tie-breaker keeps the
+    # five failed rows at the front of the same top-50 set in both paths.
+    for i in range(54, -1, -1):
         status = "failed" if i >= 50 else "completed"
         await _seed_run(sid, status=status, fired_at=now, run_id=f"cap-{i:03d}")
 
