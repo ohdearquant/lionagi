@@ -1,5 +1,10 @@
 import { describe, it, expect } from "vitest";
-import { runMessageMemoKey, runMessagesEqualForMemo, stepPropsEqual } from "./RunStepCard";
+import {
+  runMessageMemoKey,
+  runMessagesEqualForMemo,
+  stepPropsEqual,
+  collapsedTextFor,
+} from "./RunStepCard";
 import type { RunMessage, RunStep } from "@/lib/types";
 
 function toolMessage(overrides: Partial<RunMessage> = {}): RunMessage {
@@ -90,6 +95,32 @@ describe("runMessagesEqualForMemo", () => {
 
   it("treats undefined as an empty array", () => {
     expect(runMessagesEqualForMemo(undefined, [])).toBe(true);
+  });
+});
+
+describe("collapsedTextFor (ToolCallBlock output-preview fallback)", () => {
+  it("prefers summary when present, even if output is also present", () => {
+    expect(collapsedTextFor("ls -la", "a.txt\nb.txt")).toBe("ls -la");
+  });
+
+  it("falls back to the first non-blank output line when summary is empty", () => {
+    expect(collapsedTextFor("", "line one\nline two")).toBe("line one");
+  });
+
+  it("skips leading blank/whitespace-only lines to find the first real content", () => {
+    expect(collapsedTextFor("", "\n   \n\nreal content\nmore")).toBe("real content");
+  });
+
+  it("returns empty string when output is entirely whitespace", () => {
+    expect(collapsedTextFor("", "\n   \n\t\n")).toBe("");
+  });
+
+  it("returns empty string when output is undefined/empty and summary is empty", () => {
+    expect(collapsedTextFor("", "")).toBe("");
+  });
+
+  it("trims surrounding whitespace from the selected output line", () => {
+    expect(collapsedTextFor("", "   padded line   \nnext")).toBe("padded line");
   });
 });
 
