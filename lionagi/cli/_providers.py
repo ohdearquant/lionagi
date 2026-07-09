@@ -318,6 +318,7 @@ class AgentProfile:
     model: str | None = None
     effort: str | None = None
     yolo: bool = False
+    bypass: bool = False
     fast_mode: bool = False
     lion_system: bool = True
     artifact_defaults: dict | None = None
@@ -436,6 +437,7 @@ def _parse_profile(name: str, text: str) -> AgentProfile:
         model=frontmatter.get("model"),
         effort=frontmatter.get("effort"),
         yolo=bool(frontmatter.get("yolo", False)),
+        bypass=bool(frontmatter.get("bypass", False)),
         fast_mode=bool(frontmatter.get("fast_mode", False)),
         lion_system=lion_system,
         artifact_defaults=frontmatter.get("artifact_defaults"),
@@ -451,6 +453,7 @@ def _parse_profile(name: str, text: str) -> AgentProfile:
                 "model",
                 "effort",
                 "yolo",
+                "bypass",
                 "fast_mode",
                 "lion_system",
                 "artifact_defaults",

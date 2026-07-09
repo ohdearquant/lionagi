@@ -275,6 +275,7 @@ async def test_resume_mixed_case_profile_effort_reapplies_correct_agy_tier(monke
             system_prompt=None,
             artifact_defaults=None,
             timeout=None,
+            bypass=False,
             resume_on_timeout=False,
         ),
     )
