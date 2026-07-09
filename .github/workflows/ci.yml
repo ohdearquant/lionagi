@@ -90,10 +90,27 @@ jobs:
     - name: Run tests with coverage
       if: matrix.python-version == '3.10'
       run: scripts/ci.sh test-python-cov
+      env:
+        PYTEST_RSS_LOG: ${{ github.workspace }}/.pytest-rss
 
     - name: Run tests
       if: matrix.python-version != '3.10'
       run: scripts/ci.sh test-python
+      env:
+        PYTEST_RSS_LOG: ${{ github.workspace }}/.pytest-rss
+
+    # Names the memory hog when a worker is OOM-killed ("node down: Not
+    # properly terminated" with no traceback): per-worker peak RSS plus the
+    # tests that raised the high-water mark most. Runs even when tests fail —
+    # that is the case it exists for.
+    - name: Worker peak-RSS report
+      if: always()
+      run: |
+        if ls .pytest-rss/rss-*.jsonl >/dev/null 2>&1; then
+          python3 scripts/rss_report.py .pytest-rss
+        else
+          echo "no RSS log produced"
+        fi
 
     - name: Upload coverage reports to Codecov
       if: matrix.python-version == '3.10'
