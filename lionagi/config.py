@@ -75,6 +75,13 @@ class AppSettings(BaseSettings, frozen=True):
 
     LIONAGI_STATE_DB_URL: str | None = None
 
+    # First-output liveness window (seconds) for CLI-streaming run() turns —
+    # a worker whose subprocess produces no first stream chunk within this
+    # window is retried once (fresh subprocess), then fails loud with
+    # WorkerLivenessError instead of hanging as a zombie "running" leg.
+    # 0 disables the watchdog (deterministic / test runs).
+    LIONAGI_WORKER_LIVENESS_TIMEOUT: float = 120.0
+
     LOG_PERSIST_DIR: str = "./data/logs"
     LOG_SUBFOLDER: str | None = None
     LOG_CAPACITY: int = 50

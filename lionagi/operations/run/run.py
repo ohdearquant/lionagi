@@ -20,7 +20,7 @@ from lionagi.protocols.messages import (
     AssistantResponseContent,
     Instruction,
 )
-from lionagi.providers._provider_errors import classify_provider_error
+from lionagi.providers._provider_errors import WorkerLivenessError, classify_provider_error
 
 from ..chat._prepare import _apply_context_providers, _prepare_run_kwargs
 from ..types import ChatParam, ParseParam, RunParam
@@ -79,6 +79,139 @@ async def _stream_with_deadline(model, api_call, deadline: float | None):
                 "propagating; suppressing the secondary cleanup failure",
                 close_exc,
             )
+
+
+async def _stream_with_liveness(
+    model,
+    kw: dict,
+    stream_deadline: float | None,
+    liveness_timeout: float | None,
+    api_call_holder: list,
+    max_attempts: int = 2,
+) -> AsyncGenerator:
+    """Spawn the worker subprocess and enforce a first-output liveness window.
+
+    A worker whose subprocess dies at/near spawn (or otherwise produces
+    nothing) leaves an operation awaiting a stream chunk that never arrives —
+    the leg stays "running" forever and every dependent operation in the flow
+    deadlocks behind it. This guards the *first* chunk only: once any chunk
+    has arrived, the subprocess is alive and the rest of the stream is
+    governed solely by ``stream_deadline`` (via ``_stream_with_deadline``),
+    unchanged.
+
+    On a first-output miss, the subprocess is retried once with an identical
+    invocation (``kw`` unchanged). A second miss raises ``WorkerLivenessError``
+    so the operation transitions to FAILED and releases its dependents,
+    instead of hanging as a zombie "running" leg.
+
+    ``liveness_timeout`` of ``None``/``<=0`` disables the watchdog entirely
+    (deterministic/test runs) and falls through to the legacy single-attempt
+    passthrough. When the caller's own ``stream_deadline`` is tighter than
+    ``liveness_timeout``, the deadline wins and its ``TimeoutError`` is
+    propagated unchanged (not treated as a liveness miss, not retried) —
+    the caller asked for that total-stream budget deliberately.
+
+    ``api_call_holder`` is a caller-owned list; the winning attempt's
+    ``api_call`` is recorded at index 0 for post-stream metadata (the caller
+    cannot see the api_call created inside this generator otherwise).
+    """
+    if not liveness_timeout or liveness_timeout <= 0:
+        api_call = await model.create_event(**kw)
+        api_call_holder.append(api_call)
+        await model.executor.append(api_call)
+        async for chunk in _stream_with_deadline(model, api_call, stream_deadline):
+            yield chunk
+        return
+
+    for attempt in range(max_attempts):
+        api_call = await model.create_event(**kw)
+        await model.executor.append(api_call)
+        if api_call_holder:
+            api_call_holder[0] = api_call
+        else:
+            api_call_holder.append(api_call)
+
+        agen = _stream_with_deadline(model, api_call, stream_deadline)
+        stream_iter = agen.__aiter__()
+
+        remaining_to_deadline = (
+            stream_deadline - anyio.current_time() if stream_deadline is not None else None
+        )
+        # The liveness window only "owns" the timeout when it is the tighter
+        # bound; otherwise the caller's own stream_deadline was going to fire
+        # first regardless, so a timeout here is that deadline, not a
+        # worker-liveness failure.
+        is_liveness_boundary = (
+            remaining_to_deadline is None or liveness_timeout < remaining_to_deadline
+        )
+        wait_for = (
+            liveness_timeout
+            if remaining_to_deadline is None
+            else max(0.0, min(liveness_timeout, remaining_to_deadline))
+        )
+
+        try:
+            with anyio.fail_after(wait_for):
+                first_chunk = await stream_iter.__anext__()
+        except StopAsyncIteration:
+            # Stream ended with zero chunks — a legitimate (if unusual) empty
+            # completion, not a hang; let the caller see an empty stream.
+            return
+        except TimeoutError as exc:
+            try:
+                await agen.aclose()
+            except Exception as close_exc:
+                logger.debug(
+                    "run: liveness watchdog agen.aclose() raised during cleanup: %r",
+                    close_exc,
+                )
+            if not is_liveness_boundary:
+                raise
+            if attempt == max_attempts - 1:
+                raise WorkerLivenessError(
+                    f"worker produced no first stream output within "
+                    f"{liveness_timeout:.0f}s across {max_attempts} attempt(s)",
+                    reason="worker.no_first_output",
+                ) from exc
+            logger.warning(
+                "run: no first stream output within %.0fs (attempt %d/%d); "
+                "retrying worker subprocess",
+                liveness_timeout,
+                attempt + 1,
+                max_attempts,
+            )
+            continue
+        else:
+            try:
+                yield first_chunk
+                async for chunk in agen:
+                    yield chunk
+            finally:
+                # Mirror _stream_with_deadline's own unwind-preserving close:
+                # a caller that abandons the generator mid-stream (break +
+                # aclose()) throws GeneratorExit in here while suspended at
+                # either yield above, which does not implicitly close
+                # `agen` — close it explicitly so the cascade down to the
+                # subprocess reader's cleanup still runs synchronously.
+                _unwinding = sys.exc_info()[1] is not None
+                try:
+                    await agen.aclose()
+                except Exception as close_exc:
+                    logger.debug(
+                        "run: liveness watchdog passthrough agen.aclose() raised "
+                        "during cleanup: %r",
+                        close_exc,
+                    )
+                except BaseException as close_exc:
+                    if not _unwinding:
+                        raise
+                    logger.debug(
+                        "run: liveness watchdog passthrough agen.aclose() raised %r "
+                        "while another exception was already propagating; "
+                        "suppressing the secondary cleanup failure",
+                        close_exc,
+                    )
+            return
 
 
 async def run(
@@ -208,11 +341,21 @@ async def run(
         if isinstance(_timeout, int | float) and _timeout > 0:
             _stream_deadline = anyio.current_time() + float(_timeout)
 
-        kw["stream"] = True
-        api_call = await model.create_event(**kw)
-        await model.executor.append(api_call)
+        # Pop liveness_timeout before create_event — CLI providers don't consume it either.
+        # None falls back to the configured default; 0/negative disables the watchdog.
+        _liveness_timeout = kw.pop("liveness_timeout", None)
+        if _liveness_timeout is None:
+            from lionagi.config import settings as _app_settings  # noqa: PLC0415
 
-        stream_gen = _stream_with_deadline(model, api_call, _stream_deadline)
+            _liveness_timeout = _app_settings.LIONAGI_WORKER_LIVENESS_TIMEOUT
+        if not isinstance(_liveness_timeout, int | float) or _liveness_timeout <= 0:
+            _liveness_timeout = None
+
+        kw["stream"] = True
+        _api_call_holder: list = []
+        stream_gen = _stream_with_liveness(
+            model, kw, _stream_deadline, _liveness_timeout, _api_call_holder
+        )
         try:
             try:
                 async for chunk in stream_gen:
@@ -300,8 +443,9 @@ async def run(
                             raise classify_provider_error(content)
 
                 if res := await _flush_response():
-                    if hasattr(api_call, "to_dict"):
-                        call_meta = Note.from_dict(api_call.to_dict())
+                    _final_api_call = _api_call_holder[0] if _api_call_holder else None
+                    if _final_api_call is not None and hasattr(_final_api_call, "to_dict"):
+                        call_meta = Note.from_dict(_final_api_call.to_dict())
                         call_meta.pop(["execution", "response"], None)
                         res.metadata["api_call_meta"] = call_meta.to_dict()
                     _check_control(branch)
