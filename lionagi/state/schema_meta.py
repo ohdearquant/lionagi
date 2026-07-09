@@ -547,6 +547,10 @@ Index(
 )
 
 # ── schedule_runs ─────────────────────────────────────────────────────────────
+# ADR-0101 D2: generalized into the durable task-application entity. schedule_id
+# is nullable (an ad-hoc task application has schedule_id IS NULL); the status
+# CHECK carries the full ADR-0062 lifecycle; queued_at/leased_by/
+# lease_expires_at/concurrency_key are ADR-0061's queue columns.
 
 schedule_runs = Table(
     "schedule_runs",
@@ -556,7 +560,6 @@ schedule_runs = Table(
         "schedule_id",
         Text,
         ForeignKey("schedules.id", ondelete="CASCADE"),
-        nullable=False,
     ),
     Column("invocation_id", Text, ForeignKey("invocations.id")),
     Column("trigger_context", JSON, nullable=False),
@@ -566,7 +569,8 @@ schedule_runs = Table(
         "status",
         Text,
         CheckConstraint(
-            "status IN ('running','completed','failed','skipped','cancelled')",
+            "status IN ('queued','waiting_dependency','running','retry_wait',"
+            "'completed','failed','timed_out','skipped','cancelled')",
             name="ck_schedule_runs_status",
         ),
         nullable=False,
@@ -584,6 +588,16 @@ schedule_runs = Table(
     Column("status_reason_code", Text),
     Column("status_reason_summary", Text),
     Column("status_evidence_refs", JSON),
+    # ADR-0101 D2 / ADR-0061: durable queue columns.
+    Column("queued_at", Float),
+    Column("leased_by", Text),
+    Column("lease_expires_at", Float),
+    Column("concurrency_key", Text),
+    # ADR-0101 D2: task-application provenance (seam into ADR-0102).
+    Column("required_capabilities", JSON),
+    Column("execution_target", Text),
+    Column("library_ref", Text),
+    Column("library_content_hash", Text),
 )
 
 Index("idx_sched_runs_schedule", schedule_runs.c.schedule_id, schedule_runs.c.fired_at)
@@ -598,6 +612,20 @@ Index(
     schedule_runs.c.invocation_id,
     sqlite_where=text("invocation_id IS NOT NULL"),
     postgresql_where=text("invocation_id IS NOT NULL"),
+)
+Index(
+    "idx_schedule_runs_queue",
+    schedule_runs.c.status,
+    schedule_runs.c.queued_at,
+    sqlite_where=text("status IN ('queued', 'retry_wait')"),
+    postgresql_where=text("status IN ('queued', 'retry_wait')"),
+)
+Index(
+    "idx_schedule_runs_concurrency",
+    schedule_runs.c.concurrency_key,
+    schedule_runs.c.status,
+    sqlite_where=text("status IN ('queued', 'running', 'retry_wait')"),
+    postgresql_where=text("status IN ('queued', 'running', 'retry_wait')"),
 )
 
 # ── admin_events ──────────────────────────────────────────────────────────────

@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import json
+import shutil
 import time
 import uuid
 from contextlib import asynccontextmanager
@@ -602,6 +603,10 @@ class StateDB:
             # existing DBs created before the completion-trust gate carry a
             # 6-value CHECK on invocations.status that omits 'completed_empty'.
             await self._drop_legacy_invocations_status_check()
+            # ADR-0101 D2: existing DBs carry a 5-value CHECK on
+            # schedule_runs.status and a NOT NULL schedule_id, from before
+            # schedule_runs was generalized into the task-application entity.
+            await self._drop_legacy_schedule_runs_check()
         async with self._engine.begin() as conn:
             await conn.run_sync(metadata.create_all)
             # Seed immutable reference rows; ON CONFLICT DO NOTHING is safe to
@@ -945,6 +950,160 @@ class StateDB:
                 await driver.execute("ALTER TABLE invocations_new RENAME TO invocations")
                 for idx_sql in index_sqls:
                     await driver.execute(idx_sql)
+                await driver.commit()
+            finally:
+                await driver.execute("PRAGMA foreign_keys = ON")
+                await driver.commit()
+
+    async def _backup_before_rebuild(self, label: str) -> None:
+        """Copy the on-disk state.db aside before an in-place table rebuild (ADR-0101 D2).
+
+        No-op for in-memory databases and non-sqlite dialects, where there is no
+        single database file to copy. Rollback path: stop the daemon, restore
+        the backup file over the live state.db, and reinstall the schema
+        version that shipped before this migration by checking out the prior
+        lionagi release before reopening.
+        """
+        if self.dialect != "sqlite":
+            return
+        p = self.path
+        if p is None or str(p) == ":memory:" or not p.exists():
+            return
+        backup_path = p.with_name(f"{p.name}.pre-{label}.{int(time.time())}.bak")
+        shutil.copy2(p, backup_path)
+
+    # Substring present only in the post-ADR-0101 schedule_runs CREATE SQL
+    # (the widened status CHECK); its absence indicates a legacy DB whose
+    # schedule_runs still carries the 5-value CHECK and a NOT NULL schedule_id.
+    _LEGACY_SCHEDULE_RUNS_QUEUE_MARKER = "'waiting_dependency'"
+
+    async def _drop_legacy_schedule_runs_check(self) -> None:
+        """Rebuild ``schedule_runs`` if it still carries the pre-ADR-0101 status CHECK.
+
+        SQLite cannot widen a CHECK constraint nor drop a NOT NULL via ALTER
+        TABLE, so this uses the same rename → CREATE new → INSERT SELECT →
+        DROP old pattern as ``_drop_legacy_action_kind_check`` /
+        ``_drop_legacy_invocations_status_check``. Takes a pre-rebuild backup
+        of the database file first (``_backup_before_rebuild``); see its
+        docstring for the rollback path.
+        """
+        if self.dialect != "sqlite":
+            return
+        async with self._engine.connect() as conn:
+            row = (
+                (
+                    await conn.execute(
+                        text(
+                            "SELECT sql FROM sqlite_master "
+                            "WHERE type='table' AND name='schedule_runs'"
+                        )
+                    )
+                )
+                .mappings()
+                .first()
+            )
+        if row is None or row["sql"] is None:
+            return
+        create_sql: str = row["sql"]
+        if self._LEGACY_SCHEDULE_RUNS_QUEUE_MARKER in create_sql:
+            # Table was already created / rebuilt with the widened CHECK.
+            return
+
+        await self._backup_before_rebuild("schedule_runs")
+
+        async with self._engine.connect() as conn:
+            index_rows = (
+                (
+                    await conn.execute(
+                        text(
+                            "SELECT sql FROM sqlite_master "
+                            "WHERE type='index' AND tbl_name='schedule_runs' AND sql IS NOT NULL"
+                        )
+                    )
+                )
+                .mappings()
+                .all()
+            )
+            index_sqls = [r["sql"] for r in index_rows]
+
+            cols_rows = (
+                (await conn.execute(text("PRAGMA table_info(schedule_runs)"))).mappings().all()
+            )
+            cols = [r["name"] for r in cols_rows]
+        col_list = ", ".join(cols)
+
+        # ``schedule_runs`` is both an FK source (schedules, invocations) and
+        # an FK target (its own chain_parent_id, and dispatch_outbox's
+        # schedule_run_id) — the same complication documented at
+        # ``_drop_legacy_invocations_status_check``, so this rebuild uses the
+        # same hand-kept-literal + raw-driver-autocommit-pragma technique
+        # rather than ``to_metadata()`` (which cannot resolve those
+        # cross-table foreign keys from an isolated, single-table MetaData).
+        # The literal mirrors the CREATE TABLE in schema.sql; parity between
+        # the two is test-enforced.
+        async with self._engine.connect() as conn:
+            driver = (await conn.get_raw_connection()).driver_connection
+            await driver.execute("PRAGMA foreign_keys = OFF")
+            try:
+                await driver.execute(
+                    """
+                    CREATE TABLE schedule_runs_new (
+                      id                  TEXT    PRIMARY KEY,
+                      schedule_id         TEXT    REFERENCES schedules(id) ON DELETE CASCADE,
+                      invocation_id       TEXT    REFERENCES invocations(id),
+                      trigger_context     JSON    NOT NULL,
+                      action_kind         TEXT    NOT NULL,
+                      action_args         JSON    NOT NULL,
+                      status              TEXT    NOT NULL DEFAULT 'running'
+                                          CHECK(status IN ('queued', 'waiting_dependency',
+                                                'running', 'retry_wait', 'completed',
+                                                'failed', 'timed_out', 'skipped',
+                                                'cancelled')),
+                      exit_code           INTEGER,
+                      chain_parent_id     TEXT    REFERENCES schedule_runs(id),
+                      chain_depth         INTEGER NOT NULL DEFAULT 0,
+                      fired_at            REAL    NOT NULL,
+                      ended_at            REAL,
+                      error_detail        TEXT,
+                      created_at          REAL    NOT NULL,
+                      updated_at          REAL,
+                      status_reason_code     TEXT,
+                      status_reason_summary  TEXT,
+                      status_evidence_refs   JSON,
+                      queued_at           REAL,
+                      leased_by           TEXT,
+                      lease_expires_at    REAL,
+                      concurrency_key     TEXT,
+                      required_capabilities  JSON,
+                      execution_target       TEXT,
+                      library_ref             TEXT,
+                      library_content_hash    TEXT
+                    )
+                    """
+                )
+                insert_sql = (
+                    f"INSERT INTO schedule_runs_new ({col_list}) "  # noqa: S608
+                    f"SELECT {col_list} FROM schedule_runs"
+                )
+                await driver.execute(insert_sql)
+                await driver.execute("DROP TABLE schedule_runs")
+                await driver.execute("ALTER TABLE schedule_runs_new RENAME TO schedule_runs")
+                for idx_sql in index_sqls:
+                    await driver.execute(idx_sql)
+                # New ADR-0061 queue indexes: not part of the pre-rebuild
+                # index set, so replaying index_sqls above never creates
+                # them. Create explicitly (idempotent) so a migrated DB ends
+                # up with the same indexes as a freshly-created one.
+                await driver.execute(
+                    "CREATE INDEX IF NOT EXISTS idx_schedule_runs_queue "
+                    "ON schedule_runs(status, queued_at) "
+                    "WHERE status IN ('queued', 'retry_wait')"
+                )
+                await driver.execute(
+                    "CREATE INDEX IF NOT EXISTS idx_schedule_runs_concurrency "
+                    "ON schedule_runs(concurrency_key, status) "
+                    "WHERE status IN ('queued', 'running', 'retry_wait')"
+                )
                 await driver.commit()
             finally:
                 await driver.execute("PRAGMA foreign_keys = ON")

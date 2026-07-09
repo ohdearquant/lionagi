@@ -110,6 +110,16 @@ MIGRATION_COLUMNS: dict[str, list[tuple[str, str]]] = {
         ("status_reason_code", "TEXT"),
         ("status_reason_summary", "TEXT"),
         ("status_evidence_refs", "JSON"),
+        # ADR-0101 D2 / ADR-0061: durable queue columns.
+        ("queued_at", "REAL"),
+        ("leased_by", "TEXT"),
+        ("lease_expires_at", "REAL"),
+        ("concurrency_key", "TEXT"),
+        # ADR-0101 D2: task-application provenance columns.
+        ("required_capabilities", "JSON"),
+        ("execution_target", "TEXT"),
+        ("library_ref", "TEXT"),
+        ("library_content_hash", "TEXT"),
     ],
     # Phase C Move 2: engine run persistence.
     # New table created via schema.sql; these columns allow ALTER TABLE on
