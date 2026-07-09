@@ -27,16 +27,27 @@ Set `assignee` to a role from the roster. Leave `depends_on` empty: all \
 assignments run concurrently and fan back into an optional synthesis."""
 
 DECOMPOSE_DAG_INSTRUCTION = """\
-Decompose the task into a DAG of TaskAssignments. For each assignment:
+Decompose the task into a DAG of TaskAssignments that is as WIDE as the work \
+allows. Assignments run concurrently unless a dependency forces an order, and \
+wall-clock time is set by the LONGEST CHAIN, not the assignment count — so a \
+near-linear plan is a failed decomposition. For each assignment:
 - `task`: the concrete unit of work.
 - `assignee`: a role from the roster (decompose by dependency boundary, not by \
 topic — two subtasks that share state are one assignment).
-- `depends_on`: the 1-based step numbers of earlier assignments whose output \
-this one needs. Leave empty for independent work; independent assignments run \
-in parallel. Number assignments by their position in your list (the first is \
-step 1).
-Keep the assignment count tight — reuse a role across steps rather than \
-spawning many one-shot roles. Order matters only through depends_on."""
+- `depends_on`: the 1-based step numbers of earlier assignments whose OUTPUT \
+this one actually consumes. Leave empty for independent work. Never add a \
+dependency for sequencing taste, shared theme, or "logical order" — only for a \
+real data dependency. Number assignments by their position in your list (the \
+first is step 1).
+Structure the plan in broad layers: fan out ALL independent reads, \
+investigations, and per-file or per-module work in parallel first; join only \
+where results must combine; then fan out again. Two assignments touching \
+different files or answering different questions are independent — run them \
+concurrently. Keep the assignment count tight (reuse a role across steps \
+rather than spawning many one-shot roles), but never serialize independent \
+work to reduce the count. Before answering, check every depends_on and remove \
+the ones that are not true data dependencies; if most assignments form a \
+single chain, re-plan wider."""
 
 DECOMPOSE_DISCIPLINE = """\
 Produce your output ONLY via the structured `assignments` field. Do NOT use any \
