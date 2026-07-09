@@ -1094,6 +1094,7 @@ class StateDB:
                       leased_by           TEXT,
                       lease_expires_at    REAL,
                       concurrency_key     TEXT,
+                      lease_attempts      INTEGER NOT NULL DEFAULT 0,
                       required_capabilities  JSON,
                       execution_target       TEXT,
                       library_ref             TEXT,

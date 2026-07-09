@@ -120,6 +120,8 @@ MIGRATION_COLUMNS: dict[str, list[tuple[str, str]]] = {
         ("execution_target", "TEXT"),
         ("library_ref", "TEXT"),
         ("library_content_hash", "TEXT"),
+        # ADR-0101 D3: bounds the lease-expiry recovery loop (worker.py's reaper).
+        ("lease_attempts", "INTEGER NOT NULL DEFAULT 0"),
     ],
     # Phase C Move 2: engine run persistence.
     # New table created via schema.sql; these columns allow ALTER TABLE on

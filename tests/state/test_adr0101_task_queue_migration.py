@@ -305,6 +305,71 @@ async def test_migration_preserves_triggers(tmp_path):
     assert logged is not None, "replayed trigger did not fire on insert"
 
 
+async def test_migration_adds_lease_attempts_column_to_legacy_db(tmp_path):
+    """A schedule_runs table already at ADR-0101 D2 shape (all D2 columns
+    present) but pre-dating D3's lease_attempts column gains it additively —
+    no rebuild, just StateDB._reconcile_columns's ALTER TABLE ADD COLUMN."""
+    db_path = tmp_path / "legacy_no_lease_attempts.db"
+
+    async with aiosqlite.connect(str(db_path)) as raw:
+        await raw.execute(_CURRENT_SCHEDULES_DDL)
+        await raw.execute(
+            """
+            CREATE TABLE schedule_runs (
+              id                  TEXT    PRIMARY KEY,
+              schedule_id         TEXT    REFERENCES schedules(id) ON DELETE CASCADE,
+              invocation_id       TEXT,
+              trigger_context     JSON    NOT NULL,
+              action_kind         TEXT    NOT NULL,
+              action_args         JSON    NOT NULL,
+              status              TEXT    NOT NULL DEFAULT 'running'
+                                  CHECK(status IN ('queued', 'waiting_dependency', 'running',
+                                                   'retry_wait', 'completed', 'failed',
+                                                   'timed_out', 'skipped', 'cancelled')),
+              exit_code           INTEGER,
+              chain_parent_id     TEXT    REFERENCES schedule_runs(id),
+              chain_depth         INTEGER NOT NULL DEFAULT 0,
+              fired_at            REAL    NOT NULL,
+              ended_at            REAL,
+              error_detail        TEXT,
+              created_at          REAL    NOT NULL,
+              updated_at          REAL,
+              status_reason_code     TEXT,
+              status_reason_summary  TEXT,
+              status_evidence_refs   JSON,
+              queued_at           REAL,
+              leased_by           TEXT,
+              lease_expires_at    REAL,
+              concurrency_key     TEXT,
+              required_capabilities  JSON,
+              execution_target       TEXT,
+              library_ref             TEXT,
+              library_content_hash    TEXT
+            )
+            """
+        )
+        await raw.execute(
+            "INSERT INTO schedules (id, name, trigger_type, action_kind, created_at, updated_at) "
+            "VALUES ('sched-la', 'sched-la', 'interval', 'agent', 1.0, 1.0)"
+        )
+        await raw.execute(
+            "INSERT INTO schedule_runs "
+            "(id, schedule_id, trigger_context, action_kind, action_args, status, "
+            " chain_depth, fired_at, created_at) "
+            "VALUES ('run-la', 'sched-la', '{}', 'agent', '{}', 'running', 0, 1.0, 1.0)"
+        )
+        await raw.commit()
+
+    state = StateDB(db_path)
+    await state.open()
+    try:
+        row = await state.fetch_one("SELECT * FROM schedule_runs WHERE id = 'run-la'")
+        assert row is not None
+        assert row["lease_attempts"] == 0
+    finally:
+        await state.close()
+
+
 # ── 2. Backup before rebuild ─────────────────────────────────────────────────
 
 
@@ -533,6 +598,10 @@ _EXCLUDED_COLUMNS = {
     "execution_target",
     "library_ref",
     "library_content_hash",
+    # ADR-0101 D3 additive column — asserted separately (must default to 0
+    # for a schedule-spawned run); excluded here for the same reason as the
+    # D2 columns above.
+    "lease_attempts",
 }
 
 
@@ -587,6 +656,8 @@ async def test_schedule_spawned_run_stays_byte_identical(db: StateDB) -> None:
         "library_content_hash",
     ):
         assert row_after_create[col] is None
+    # ADR-0101 D3 additive column — defaults to 0, not NULL.
+    assert row_after_create["lease_attempts"] == 0
 
     await db.update_schedule_run(
         run_id,

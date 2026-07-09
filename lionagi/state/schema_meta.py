@@ -593,6 +593,8 @@ schedule_runs = Table(
     Column("leased_by", Text),
     Column("lease_expires_at", Float),
     Column("concurrency_key", Text),
+    # ADR-0101 D3: bounds the lease-expiry recovery loop (worker.py's reaper).
+    Column("lease_attempts", Integer, nullable=False, server_default="0"),
     # ADR-0101 D2: task-application provenance (seam into ADR-0102).
     Column("required_capabilities", JSON),
     Column("execution_target", Text),
