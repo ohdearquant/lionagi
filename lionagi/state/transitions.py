@@ -63,8 +63,13 @@ class TransitionResult(BaseModel):
 
 # Entities the minimal fallback knows how to CAS-transition. ADR-0062's full
 # backend generalizes this; slice 1 needs only dispatch_outbox.
+# "schedule_run" is ADR-0101 D2's generalized task-application entity
+# (schedule_runs table, schedule_id now nullable) — registered here so ALL
+# status movement on it can route through this guarded CAS store rather than
+# a second, parallel implementation.
 _ENTITY_TABLES: dict[str, str] = {
     "dispatch": "dispatch_outbox",
+    "schedule_run": "schedule_runs",
 }
 
 

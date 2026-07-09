@@ -471,16 +471,22 @@ CREATE INDEX IF NOT EXISTS idx_schedules_project
   ON schedules(project) WHERE project IS NOT NULL;
 
 -- ── Schedule Runs (ADR-0027) ─────────────────────────────────────────────────
+-- ADR-0101 D2: generalized into the durable task-application entity. schedule_id
+-- is nullable so an ad-hoc task application (schedule_id IS NULL) can share this
+-- table with schedule-fired runs; the status CHECK is widened to the ADR-0062
+-- lifecycle; queued_at/leased_by/lease_expires_at/concurrency_key are ADR-0061's
+-- queue columns.
 CREATE TABLE IF NOT EXISTS schedule_runs (
   id                  TEXT    PRIMARY KEY,
-  schedule_id         TEXT    NOT NULL REFERENCES schedules(id) ON DELETE CASCADE,
+  schedule_id         TEXT    REFERENCES schedules(id) ON DELETE CASCADE,
   invocation_id       TEXT    REFERENCES invocations(id),
   trigger_context     JSON    NOT NULL,
   action_kind         TEXT    NOT NULL,
   action_args         JSON    NOT NULL,
   status              TEXT    NOT NULL DEFAULT 'running'
-                      CHECK(status IN ('running', 'completed', 'failed',
-                                       'skipped', 'cancelled')),
+                      CHECK(status IN ('queued', 'waiting_dependency', 'running',
+                                       'retry_wait', 'completed', 'failed',
+                                       'timed_out', 'skipped', 'cancelled')),
   exit_code           INTEGER,
   chain_parent_id     TEXT    REFERENCES schedule_runs(id),
   chain_depth         INTEGER NOT NULL DEFAULT 0,
@@ -495,7 +501,17 @@ CREATE TABLE IF NOT EXISTS schedule_runs (
   -- ADR-0028: see sessions table for the denormalization rationale.
   status_reason_code     TEXT,
   status_reason_summary  TEXT,
-  status_evidence_refs   JSON
+  status_evidence_refs   JSON,
+  -- ADR-0101 D2 / ADR-0061: durable queue columns.
+  queued_at           REAL,
+  leased_by           TEXT,
+  lease_expires_at    REAL,
+  concurrency_key     TEXT,
+  -- ADR-0101 D2: task-application provenance (seam into ADR-0102).
+  required_capabilities  JSON,
+  execution_target       TEXT,
+  library_ref             TEXT,
+  library_content_hash    TEXT
 );
 
 CREATE INDEX IF NOT EXISTS idx_sched_runs_schedule
@@ -504,6 +520,12 @@ CREATE INDEX IF NOT EXISTS idx_sched_runs_status
   ON schedule_runs(status) WHERE status = 'running';
 CREATE INDEX IF NOT EXISTS idx_sched_runs_invocation
   ON schedule_runs(invocation_id) WHERE invocation_id IS NOT NULL;
+CREATE INDEX IF NOT EXISTS idx_schedule_runs_queue
+  ON schedule_runs(status, queued_at)
+  WHERE status IN ('queued', 'retry_wait');
+CREATE INDEX IF NOT EXISTS idx_schedule_runs_concurrency
+  ON schedule_runs(concurrency_key, status)
+  WHERE status IN ('queued', 'running', 'retry_wait');
 
 -- ── Admin event log (ADR-0024) ───────────────────────────────────────────
 -- Append-only audit log following NIST SP 800-92 pattern. Every admin
