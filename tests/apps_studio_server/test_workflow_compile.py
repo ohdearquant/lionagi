@@ -313,6 +313,20 @@ async def test_engine_node_cwd_without_base_dir_rejected_with_node_id():
     assert "'sub'" in str(exc_info.value)  # the raw cwd is named in the error
 
 
+async def test_engine_node_cwd_invalid_type_rejected_with_full_context():
+    """A non-string/empty cwd error names node id, the offending value, and
+    the supplied base_dir, like every other containment error."""
+    spec = _make_spec()
+    spec["nodes"][2]["config"]["cwd"] = 42
+    with pytest.raises(WorkflowCompileError) as exc_info:
+        await compile_workflow_def(spec, resolve_engine_def=_resolve_coding_kind)
+    assert exc_info.value.node_id == "n3"
+    msg = str(exc_info.value)
+    assert "non-empty string" in msg
+    assert "42" in msg
+    assert "base_dir" in msg
+
+
 async def test_engine_node_cwd_traversal_rejected_before_resolution():
     """A raw '..' segment is rejected before any path resolution — even
     with no base_dir and on a non-coding engine kind."""

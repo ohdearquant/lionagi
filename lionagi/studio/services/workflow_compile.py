@@ -143,7 +143,9 @@ def _resolve_node_cwd(node_id: str, raw_cwd: Any, base_dir: str | None) -> str:
     """
     if not isinstance(raw_cwd, str) or not raw_cwd:
         raise WorkflowCompileError(
-            f"node {node_id!r} config.cwd must be a non-empty string", node_id=node_id
+            f"node {node_id!r} config.cwd must be a non-empty string, "
+            f"got {raw_cwd!r} (base_dir={base_dir!r})",
+            node_id=node_id,
         )
     raw_path = Path(raw_cwd)
     if has_traversal(raw_path):
