@@ -37,7 +37,17 @@ Token-convention difference handled in ``_norm_tokens``:
   - Anthropic: ``input_tokens`` is uncached only; ``cache_read_input_tokens`` /
     ``cache_creation_input_tokens`` are separate.
 
-Prices are USD per 1,000,000 tokens: ``(input, output, cached_input)``.
+Cache WRITES are a fourth billing dimension. Anthropic bills prompt-cache
+creation at 1.25x the input rate (5-minute TTL; 1h TTL is 2x — supply an
+explicit override for 1h-heavy workloads). OpenAI models from the 5.6
+generation onward bill cache writes at 1.25x uncached input as well (earlier
+generations bill cache writes at the plain input rate, i.e. multiplier 1.0 —
+but they also never report a cache-write token count, so the dimension stays
+zero and costs are unchanged for them). Default cache-write price is
+``1.25 x input`` unless the price entry supplies an explicit fourth value.
+
+Prices are USD per 1,000,000 tokens: ``(input, output, cached_input)`` with an
+optional fourth ``cache_write`` element (defaults to ``input * 1.25``).
 """
 
 from __future__ import annotations
@@ -77,13 +87,23 @@ _DEFAULT_PRICES: dict[str, tuple[float, float, float]] = {
 PROXY_PRICED = {"openai/gpt-5.3-codex-spark", "gpt-5.3-codex-spark", "codex"}
 
 
-def _prices() -> dict[str, tuple[float, float, float]]:
-    table = dict(_DEFAULT_PRICES)
+# Cache writes bill at a premium over uncached input (Anthropic 5m-TTL cache
+# creation and OpenAI 5.6+ both publish 1.25x). Applied whenever a price entry
+# has no explicit fourth (cache_write) element.
+CACHE_WRITE_MULT = 1.25
+
+
+def _prices() -> dict[str, tuple[float, float, float, float]]:
+    table: dict[str, tuple[float, float, float, float]] = {
+        k: (*v, v[0] * CACHE_WRITE_MULT) for k, v in _DEFAULT_PRICES.items()
+    }
     override = os.environ.get("LIONAGI_BENCH_PRICES")
     if override:
         for k, v in json.loads(override).items():
-            cached = float(v[2]) if len(v) > 2 else float(v[0]) * 0.1
-            table[k] = (float(v[0]), float(v[1]), cached)
+            pin = float(v[0])
+            cached = float(v[2]) if len(v) > 2 else pin * 0.1
+            write = float(v[3]) if len(v) > 3 else pin * CACHE_WRITE_MULT
+            table[k] = (pin, float(v[1]), cached, write)
     return table
 
 
@@ -97,27 +117,31 @@ class Usage:
     contributed (its reasoning is unbilled-here, so cost is a floor)."""
 
     input_tokens: int = 0  # uncached prompt tokens (billed at input rate)
-    cached_tokens: int = 0  # cached prompt tokens (billed at cached rate)
+    cached_tokens: int = 0  # cache-READ prompt tokens (billed at cached rate)
+    cache_write_tokens: int = 0  # cache-WRITE prompt tokens (billed at premium)
     output_tokens: int = 0  # completion (incl. reasoning for Anthropic, NOT codex)
     num_turns: int = 0  # internal CLI turns (tool calls etc.), if reported
     n_calls: int = 0  # lionagi-level model invocations seen
     source: str = "none"  # reported | estimated | mixed | none
     reasoning_disclosed: bool = True  # False if any codex call (reasoning hidden)
-    # model -> [uncached_in, cached_in, out] for exact (and mixed-model) pricing
+    # model -> [uncached_in, cached_in, out, cache_write] for exact (and
+    # mixed-model) pricing
     per_model: dict[str, list[int]] = field(default_factory=dict)
 
     @property
     def total_tokens(self) -> int:
-        return self.input_tokens + self.cached_tokens + self.output_tokens
+        return self.input_tokens + self.cached_tokens + self.cache_write_tokens + self.output_tokens
 
-    def _add(self, model: str, inp: int, cached: int, out: int) -> None:
+    def _add(self, model: str, inp: int, cached: int, out: int, cache_write: int = 0) -> None:
         self.input_tokens += inp
         self.cached_tokens += cached
+        self.cache_write_tokens += cache_write
         self.output_tokens += out
-        slot = self.per_model.setdefault(model, [0, 0, 0])
+        slot = self.per_model.setdefault(model, [0, 0, 0, 0])
         slot[0] += inp
         slot[1] += cached
         slot[2] += out
+        slot[3] += cache_write
 
     def cost_usd(self, default_model: str) -> float:
         """USD via the price table, billed per-model where tracked. For codex,
@@ -125,22 +149,42 @@ class Usage:
         lower bound when ``reasoning_disclosed`` is False."""
         table = _prices()
         models = self.per_model or {
-            default_model: [self.input_tokens, self.cached_tokens, self.output_tokens]
+            default_model: [
+                self.input_tokens,
+                self.cached_tokens,
+                self.output_tokens,
+                self.cache_write_tokens,
+            ]
         }
         total = 0.0
-        for model, (inp, cached, out) in models.items():
-            pin, pout, pcached = table.get(model, table.get(default_model, (0.0, 0.0, 0.0)))
-            total += inp / 1e6 * pin + cached / 1e6 * pcached + out / 1e6 * pout
+        for model, slot in models.items():
+            inp, cached, out = slot[0], slot[1], slot[2]
+            write = slot[3] if len(slot) > 3 else 0
+            pin, pout, pcached, pwrite = table.get(
+                model, table.get(default_model, (0.0, 0.0, 0.0, 0.0))
+            )
+            total += (
+                inp / 1e6 * pin + cached / 1e6 * pcached + out / 1e6 * pout + write / 1e6 * pwrite
+            )
         return round(total, 6)
 
 
-def cost_of(input_tokens: int, cached_tokens: int, output_tokens: int, model: str) -> float:
+def cost_of(
+    input_tokens: int,
+    cached_tokens: int,
+    output_tokens: int,
+    model: str,
+    cache_write_tokens: int = 0,
+) -> float:
     """USD for a single run's aggregate tokens at the model's published price.
     For codex this is a lower bound (reasoning excluded — see module docstring)."""
     table = _prices()
-    pin, pout, pcached = table.get(model, (0.0, 0.0, 0.0))
+    pin, pout, pcached, pwrite = table.get(model, (0.0, 0.0, 0.0, 0.0))
     return round(
-        input_tokens / 1e6 * pin + cached_tokens / 1e6 * pcached + output_tokens / 1e6 * pout,
+        input_tokens / 1e6 * pin
+        + cached_tokens / 1e6 * pcached
+        + output_tokens / 1e6 * pout
+        + cache_write_tokens / 1e6 * pwrite,
         6,
     )
 
@@ -163,24 +207,28 @@ def _dig_usage(mr: dict) -> dict | None:
     return None
 
 
-def _norm_tokens(u: dict) -> tuple[int, int, int, bool]:
-    """Normalize a provider usage dict to (uncached_in, cached_in, out, codex?).
+def _norm_tokens(u: dict) -> tuple[int, int, int, int, bool]:
+    """Normalize a provider usage dict to
+    (uncached_in, cached_in, out, cache_write, codex?).
 
     Handles the OpenAI vs Anthropic input-token convention difference."""
     out = int(u.get("output_tokens", u.get("completion_tokens", 0)) or 0)
     if "cached_input_tokens" in u:  # OpenAI/codex: input_tokens is TOTAL incl cached
         total_in = int(u.get("input_tokens", u.get("prompt_tokens", 0)) or 0)
         cached = int(u.get("cached_input_tokens", 0) or 0)
-        uncached = max(0, total_in - cached)
-        return uncached, cached, out, True
-    # Anthropic: input_tokens is uncached; cache_* are separate
+        # 5.6+ meters may break out cache writes; they are a subset of the
+        # input total, like the cached-read subset.
+        write = int(u.get("cache_creation_input_tokens", u.get("cache_write_tokens", 0)) or 0)
+        uncached = max(0, total_in - cached - write)
+        return uncached, cached, out, write, True
+    # Anthropic: input_tokens is uncached; cache_* are separate. Cache creation
+    # bills at a PREMIUM over input, never at the cache-read discount.
     uncached = int(u.get("input_tokens", u.get("prompt_tokens", 0)) or 0)
-    cached = int(u.get("cache_read_input_tokens", 0) or 0) + int(
-        u.get("cache_creation_input_tokens", 0) or 0
-    )
-    if not uncached and not out and u.get("total_tokens"):
+    cached = int(u.get("cache_read_input_tokens", 0) or 0)
+    write = int(u.get("cache_creation_input_tokens", 0) or 0)
+    if not uncached and not out and not cached and not write and u.get("total_tokens"):
         out = int(u["total_tokens"])  # only a total — attribute to output (conservative)
-    return uncached, cached, out, False
+    return uncached, cached, out, write, False
 
 
 def collect_usage(branches, prompts_and_outputs, default_model: str) -> Usage:
@@ -205,9 +253,9 @@ def collect_usage(branches, prompts_and_outputs, default_model: str) -> Usage:
             u = _dig_usage(mr) if mr else None
             if not u:
                 continue
-            uncached, cached, out, is_codex = _norm_tokens(u)
-            if uncached or cached or out:
-                usage._add(model_name, uncached, cached, out)
+            uncached, cached, out, write, is_codex = _norm_tokens(u)
+            if uncached or cached or out or write:
+                usage._add(model_name, uncached, cached, out, write)
                 usage.n_calls += 1
                 usage.num_turns += int(mr.get("num_turns", 0) or 0)
                 if is_codex:
