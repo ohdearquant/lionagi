@@ -261,6 +261,8 @@ async def _run_agent(
             effort = normalize_effort(profile.effort)
         if profile.yolo and not yolo:
             yolo = True
+        if profile.bypass and not bypass:
+            bypass = True
         if profile.fast_mode and not fast:
             fast = True
         if profile.timeout and timeout is None:
@@ -315,8 +317,9 @@ async def _run_agent(
         )
 
     if branch is None:
-        # codex sandbox blocks tool calls without bypass — warn early.
-        if provider == "codex" and not yolo and not bypass:
+        # codex sandbox blocks tool calls without bypass — surface only in
+        # verbose runs now that profiles can carry bypass/yolo themselves.
+        if verbose and provider == "codex" and not yolo and not bypass:
             from lionagi.cli._logging import warn
 
             warn(

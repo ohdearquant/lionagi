@@ -165,7 +165,7 @@ async def test_run_agent_threads_bypass_to_build_chat_model(monkeypatch, tmp_pat
 
 @pytest.mark.asyncio
 async def test_run_agent_codex_no_bypass_emits_warning(monkeypatch, tmp_path, capsys):
-    """Naked codex without --bypass or --yolo emits a visible warning."""
+    """Naked codex without --bypass or --yolo warns only in verbose runs."""
     captured: list = []
     _make_agent_mocks_with_bypass(monkeypatch, tmp_path, captured)
 
@@ -188,6 +188,11 @@ async def test_run_agent_codex_no_bypass_emits_warning(monkeypatch, tmp_path, ca
     from lionagi.cli.agent import _run_agent
 
     await _run_agent("codex/gpt-5.3-codex-spark", "do stuff", bypass=False, yolo=False)
+    assert not warnings_emitted, f"Expected silence without verbose, got: {warnings_emitted}"
+
+    await _run_agent(
+        "codex/gpt-5.3-codex-spark", "do stuff", bypass=False, yolo=False, verbose=True
+    )
 
     assert any("--bypass" in w or "bypass" in w.lower() for w in warnings_emitted), (
         f"Expected a bypass warning, got: {warnings_emitted}"
