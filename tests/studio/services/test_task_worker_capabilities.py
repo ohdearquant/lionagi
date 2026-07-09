@@ -7,8 +7,11 @@ Covers the workers-registry heartbeat upsert, the subset-match claim rule
 (eligibility∪serialization tokens), execution_target matching (including the
 NULL/empty = claimable-by-any case), heartbeat-TTL claim eligibility (and its
 non-interference with lease-expiry recovery), serialization-class
-concurrency admission, and affinity-class candidate ordering. D3's original
-claim-race/lease/vocabulary tests live untouched in test_task_worker.py.
+concurrency admission, affinity-class candidate ordering, cross-dialect JSON
+normalization (SQLite string vs. Postgres native value), and the keyset-paged
+claim scan (a persistent prefix of ineligible older rows must never hide a
+later eligible row). D3's original claim-race/lease/vocabulary tests live
+untouched in test_task_worker.py.
 """
 
 from __future__ import annotations
@@ -23,6 +26,8 @@ from lionagi.state.db import StateDB
 from lionagi.state.transitions import Actor, StateReason, TransitionRequest, transition
 from lionagi.studio.scheduler.worker import (
     DEFAULT_HEARTBEAT_TTL_SECONDS,
+    _matching_candidates,
+    _normalize_json_list,
     claim_and_execute,
     reap_expired_leases,
     register_heartbeat,
@@ -395,3 +400,135 @@ async def test_no_eligible_worker_task_remains_queued_across_ticks(db: StateDB) 
     row = await _status_of(db, run_id)
     assert row["status"] == "queued"
     assert row["leased_by"] is None
+
+
+# ── 8. Cross-dialect JSON normalization ──────────────────────────────────
+
+
+def test_normalize_json_list_null_and_empty():
+    assert _normalize_json_list(None) == []
+    assert _normalize_json_list("") == []
+    assert _normalize_json_list("[]") == []
+    assert _normalize_json_list([]) == []
+
+
+def test_normalize_json_list_sqlite_shape_is_a_string():
+    assert _normalize_json_list('["lean-toolchain", "gpu-exclusive"]') == [
+        "lean-toolchain",
+        "gpu-exclusive",
+    ]
+
+
+def test_normalize_json_list_postgres_shape_is_a_native_list():
+    # asyncpg + SQLAlchemy's JSON type deserialize Postgres JSON columns to
+    # native Python values before the row ever reaches this module -- no
+    # json.loads() is needed, and calling it on a list raises TypeError.
+    assert _normalize_json_list(["lean-toolchain", "gpu-exclusive"]) == [
+        "lean-toolchain",
+        "gpu-exclusive",
+    ]
+
+
+def test_matching_candidates_accepts_native_list_row_shape():
+    """Feeds a Postgres-shaped row (required_capabilities already a native
+    list, not a JSON string) through the exact matching path
+    claim_and_execute uses, proving it never calls json.loads() on it."""
+    pg_shaped_row = {
+        "id": "run-1",
+        "required_capabilities": ["lean-toolchain"],  # native list, not a string
+        "execution_target": "host",
+        "concurrency_key": None,
+        "queued_at": 1.0,
+    }
+    matched = _matching_candidates([pg_shaped_row], advertised=["lean-toolchain"], targets={"host"})
+    assert len(matched) == 1
+    assert matched[0][0] is pg_shaped_row
+    assert matched[0][1] == ["lean-toolchain"]
+
+
+def test_matching_candidates_accepts_sqlite_shaped_row_too():
+    sqlite_shaped_row = {
+        "id": "run-2",
+        "required_capabilities": '["lean-toolchain"]',  # JSON string
+        "execution_target": "host",
+        "concurrency_key": None,
+        "queued_at": 1.0,
+    }
+    matched = _matching_candidates(
+        [sqlite_shaped_row], advertised=["lean-toolchain"], targets={"host"}
+    )
+    assert len(matched) == 1
+    assert matched[0][1] == ["lean-toolchain"]
+
+
+def test_matching_candidates_native_null_required_capabilities():
+    # Postgres represents an absent JSON value as Python None, not "null".
+    row = {
+        "id": "run-3",
+        "required_capabilities": None,
+        "execution_target": "host",
+        "concurrency_key": None,
+        "queued_at": 1.0,
+    }
+    matched = _matching_candidates([row], advertised=[], targets={"host"})
+    assert len(matched) == 1
+    assert matched[0][1] == []
+
+
+async def test_sqlite_backed_claim_still_works_after_normalization_change(db: StateDB) -> None:
+    """Confirms claim_and_execute's real SQLite-backed query path (where
+    required_capabilities genuinely comes back as a JSON string) still
+    claims correctly after routing through _normalize_json_list -- the
+    normalization guard must not regress the already-covered SQLite shape."""
+    run_id = await _submit_task(db, required_capabilities=["lean-toolchain"])
+    row = await db.fetch_one(
+        "SELECT required_capabilities FROM schedule_runs WHERE id = ?", (run_id,)
+    )
+    assert isinstance(row["required_capabilities"], str)
+    claimed = await claim_and_execute(
+        db, worker_id="w1", execute=_noop_execute, advertised_capabilities=["lean-toolchain"]
+    )
+    assert claimed == 1
+    assert (await _status_of(db, run_id))["status"] == "completed"
+
+
+# ── 9. Keyset-paged claim scan (no starvation behind a long ineligible
+#      prefix) ────────────────────────────────────────────────────────────
+
+
+async def test_eligible_row_behind_a_long_ineligible_prefix_is_still_claimed(
+    db: StateDB,
+) -> None:
+    """A fixed-size prefetch window would hide this row forever: submit more
+    non-matching rows than any single fixed window would have covered, then
+    one matching row after them, and confirm the paged scan still finds it."""
+    for _ in range(120):
+        await _submit_task(db, required_capabilities=["other-toolchain"])
+    run_id_match = await _submit_task(db, required_capabilities=["lean-toolchain"])
+
+    claimed = await claim_and_execute(
+        db, worker_id="w1", execute=_noop_execute, advertised_capabilities=["lean-toolchain"]
+    )
+    assert claimed == 1
+    row = await _status_of(db, run_id_match)
+    assert row["status"] == "completed"
+    assert row["leased_by"] == "w1"
+
+
+async def test_eligible_row_behind_long_prefix_claimed_with_small_limit(db: StateDB) -> None:
+    """Same shape with a small `limit`, exceeding the page size
+    (`_CLAIM_PAGE_SIZE`) rather than the claim limit itself."""
+    for _ in range(60):
+        await _submit_task(db, required_capabilities=["other-toolchain"])
+    run_id_match = await _submit_task(db, required_capabilities=["lean-toolchain"])
+
+    claimed = await claim_and_execute(
+        db,
+        worker_id="w1",
+        execute=_noop_execute,
+        advertised_capabilities=["lean-toolchain"],
+        limit=10,
+    )
+    assert claimed == 1
+    row = await _status_of(db, run_id_match)
+    assert row["status"] == "completed"

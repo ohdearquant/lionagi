@@ -77,21 +77,44 @@ _DEFAULT_EXECUTION_TARGETS: tuple[str, ...] = ("host",)
 MAX_LEASE_ATTEMPTS = 3
 
 # CLAIM CANDIDATES (D4): non-workflow, ad-hoc (schedule_id IS NULL) queued
-# rows, oldest first. Capability/execution-target matching against the
-# calling worker's advertised set happens in Python (claim_and_execute) --
-# SQL only narrows to rows any worker could conceivably serve. Scheduler-fired
-# rows (schedule_id NOT NULL) are never touched -- that path is governed by
-# SchedulerEngine._fire, not this worker.
-_CLAIM_SELECT_SQL = """
+# rows, oldest first with a stable (queued_at, id) tie-break for determinism.
+# Capability/execution-target matching against the calling worker's advertised
+# set happens in Python (claim_and_execute) -- SQL only narrows to rows any
+# worker could conceivably serve. Scheduler-fired rows (schedule_id NOT NULL)
+# are never touched -- that path is governed by SchedulerEngine._fire, not
+# this worker.
+#
+# Paged via a (queued_at, id) keyset cursor rather than a single fixed
+# LIMIT: a persistent prefix of ineligible older rows must never hide a
+# later eligible row forever, so claim_and_execute keeps requesting pages
+# past whatever :after_queued_at/:after_id it has already scanned until it
+# has collected enough eligible candidates or the queue is exhausted.
+# :after_queued_at IS NULL only on the first page.
+_CLAIM_PAGE_SQL = """
     SELECT id, action_kind, action_args, lease_attempts, required_capabilities,
-           execution_target, concurrency_key
+           execution_target, concurrency_key, queued_at
     FROM schedule_runs
     WHERE status = 'queued'
       AND schedule_id IS NULL
       AND action_kind != 'workflow'
-    ORDER BY queued_at ASC
-    LIMIT :limit
+      AND (
+        :after_queued_at IS NULL
+        OR queued_at > :after_queued_at
+        OR (queued_at = :after_queued_at AND id > :after_id)
+      )
+    ORDER BY queued_at ASC, id ASC
+    LIMIT :page_size
 """
+
+# Rows scanned per page while paging for eligible candidates.
+_CLAIM_PAGE_SIZE = 50
+
+# Fairness/latency bound, NOT a correctness cap: how many queued rows one
+# claim_and_execute pass will scan (across pages) before giving up for this
+# tick. A queue this deep in ineligible rows still gets scanned to
+# completion over a bounded number of ticks -- nothing here is permanently
+# hidden, unlike a fixed single-window prefetch.
+_MAX_CLAIM_SCAN_ROWS = 5000
 
 # D4: same-concurrency_key rows currently 'running' block admission of a new
 # claim sharing that key -- advisory ordering only; the worker-side host lock
@@ -121,6 +144,43 @@ _HEARTBEAT_UPSERT_SQL = """
 """
 
 ExecuteFn = Callable[[dict[str, Any]], Awaitable[tuple[int, str]]]
+
+
+def _normalize_json_list(value: Any) -> list[Any]:
+    """StateDB JSON columns come back as strings on SQLite but as native
+    Python values on Postgres (the cross-dialect contract documented on
+    ``StateDB``'s query surface). Every JSON-column read in the claim path
+    goes through this so it works identically on both backends: NULL/empty
+    -> ``[]``, a string -> ``json.loads`` it, a native list -> pass through.
+    """
+    if not value:
+        return []
+    if isinstance(value, str):
+        return json.loads(value)
+    return list(value)
+
+
+def _matching_candidates(
+    page: Any, *, advertised: list[str], targets: set[str]
+) -> list[tuple[Any, list[str]]]:
+    """Filter one page of queued rows to those this worker can serve.
+
+    Pulled out of ``claim_and_execute`` so the D4 match rule (subset-match
+    on ``required_capabilities`` + ``execution_target`` membership) is
+    directly testable against a row shaped either the SQLite way (a JSON
+    string) or the Postgres way (a native list/None) without a live
+    connection of either dialect.
+    """
+    candidates: list[tuple[Any, list[str]]] = []
+    for row in page:
+        required = _normalize_json_list(row["required_capabilities"])
+        if not capabilities.worker_can_serve(required, advertised):
+            continue
+        target = row["execution_target"]
+        if target and target not in targets:
+            continue
+        candidates.append((row, required))
+    return candidates
 
 
 async def register_heartbeat(
@@ -282,6 +342,15 @@ async def claim_and_execute(
     already claimed earlier in this same pass) is skipped -- advisory
     admission only; the worker-side host lock stays authoritative.
 
+    Candidates are collected by paging the queued rows oldest-first through
+    a ``(queued_at, id)`` keyset cursor until *limit* eligible candidates
+    are found or the queue is exhausted (bounded defensively by
+    ``_MAX_CLAIM_SCAN_ROWS`` -- a fairness/latency cap on how much one pass
+    scans, not a correctness cap: nothing scanned past it is hidden, a later
+    pass resumes the same oldest-first order). This means a long prefix of
+    rows this worker cannot serve never permanently hides an eligible row
+    behind it, unlike a single fixed-size prefetch window.
+
     If *worker_id* has a ``workers`` row whose heartbeat is older than
     *heartbeat_ttl*, this pass claims nothing (assignment eligibility gate;
     in-flight leases are unaffected and still recover via
@@ -302,32 +371,40 @@ async def claim_and_execute(
     if await _worker_is_stale(db, worker_id=worker_id, now=now, heartbeat_ttl=heartbeat_ttl):
         return 0
 
-    # Over-fetch beyond `limit`: capability/execution-target filtering and
-    # affinity reordering happen in Python below, so SQL must hand back more
-    # candidates than the final claim cap or an affinity-matched row queued
-    # after `limit` capability-free rows would never be seen this pass.
-    sql_fetch_limit = max(limit * 5, 50)
-
+    candidates: list[tuple[Any, list[str]]] = []
     async with db._read() as conn:
-        rows = (
-            (await conn.execute(text(_CLAIM_SELECT_SQL), {"limit": sql_fetch_limit}))
-            .mappings()
-            .all()
-        )
         running_keys = {
             r["concurrency_key"]
             for r in (await conn.execute(text(_RUNNING_CONCURRENCY_KEYS_SQL))).mappings().all()
         }
 
-    candidates: list[tuple[Any, list[str]]] = []
-    for row in rows:
-        required = json.loads(row["required_capabilities"]) if row["required_capabilities"] else []
-        if not capabilities.worker_can_serve(required, advertised):
-            continue
-        target = row["execution_target"]
-        if target and target not in targets:
-            continue
-        candidates.append((row, required))
+        after_queued_at: float | None = None
+        after_id: str = ""
+        scanned = 0
+        while len(candidates) < limit and scanned < _MAX_CLAIM_SCAN_ROWS:
+            page = (
+                (
+                    await conn.execute(
+                        text(_CLAIM_PAGE_SQL),
+                        {
+                            "after_queued_at": after_queued_at,
+                            "after_id": after_id,
+                            "page_size": _CLAIM_PAGE_SIZE,
+                        },
+                    )
+                )
+                .mappings()
+                .all()
+            )
+            if not page:
+                break
+            scanned += len(page)
+            candidates.extend(_matching_candidates(page, advertised=advertised, targets=targets))
+            last = page[-1]
+            after_queued_at = last["queued_at"]
+            after_id = last["id"]
+            if len(page) < _CLAIM_PAGE_SIZE:
+                break  # queue exhausted
 
     # Stable sort: preserves the SQL's queued_at ASC order among equal
     # affinity scores, only reordering across different scores.
