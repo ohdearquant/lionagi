@@ -440,3 +440,356 @@ def test_grant_route_404_for_unknown_id(tmp_path, monkeypatch):
     client = _make_client(tmp_path / "state.db", monkeypatch)
     resp = client.post("/api/approvals/does-not-exist/grant", headers=_auth("test-token"))
     assert resp.status_code == 404
+
+
+# ---------------------------------------------------------------------------
+# Evidence chain: hash-chained audit trail on the ledger
+# ---------------------------------------------------------------------------
+
+
+def _evidence_rows(db_path: Path) -> list[dict]:
+    async def _fetch():
+        from lionagi.studio.services._db import open_db
+
+        async with open_db(str(db_path)) as db:
+            cur = await db.execute("SELECT * FROM approval_evidence ORDER BY sequence ASC")
+            rows = await cur.fetchall()
+            return [dict(r) for r in rows]
+
+    return _run(_fetch())
+
+
+def test_full_lifecycle_produces_intact_chain(tmp_path, monkeypatch):
+    db_path = tmp_path / "state.db"
+    _patch_db(monkeypatch, db_path)
+    _run(_init_db(db_path))
+
+    from lionagi.studio.services import approvals as approvals_mod
+
+    params = {"name": "demo"}
+    row = _run(approvals_mod.create_approval(action_kind="launch_playbook", params=params))
+    _run(approvals_mod.grant_approval(row["id"]))
+    _run(approvals_mod.require_approval(row["id"], action_kind="launch_playbook", params=params))
+
+    rows = _evidence_rows(db_path)
+    assert [r["event_type"] for r in rows] == ["proposed", "granted", "consumed"]
+    assert [r["sequence"] for r in rows] == [1, 2, 3]
+
+    verdict = _run(approvals_mod.verify_evidence_chain())
+    assert verdict["valid"] is True
+    assert verdict["total_entries"] == 3
+    assert verdict["errors"] == []
+
+
+def test_genesis_previous_hash_is_64_zero_chars(tmp_path, monkeypatch):
+    db_path = tmp_path / "state.db"
+    _patch_db(monkeypatch, db_path)
+    _run(_init_db(db_path))
+
+    from lionagi.studio.services import approvals as approvals_mod
+
+    _run(approvals_mod.create_approval(action_kind="launch_playbook", params={"name": "demo"}))
+
+    rows = _evidence_rows(db_path)
+    assert rows[0]["previous_hash"] == "0" * 64
+    assert rows[0]["sequence"] == 1
+    # chain_hash = sha256(content_hash + previous_hash)
+    expected_content = approvals_mod._compute_content_hash(
+        {
+            "id": rows[0]["id"],
+            "event_type": rows[0]["event_type"],
+            "approval_id": rows[0]["approval_id"],
+            "action_kind": rows[0]["action_kind"],
+            "status_from": rows[0]["status_from"],
+            "status_to": rows[0]["status_to"],
+            "params_hash": rows[0]["params_hash"],
+            "justification_class": rows[0]["justification_class"],
+            "justification_reason": rows[0]["justification_reason"],
+            "created_at": rows[0]["created_at"],
+        }
+    )
+    assert rows[0]["content_hash"] == expected_content
+    assert rows[0]["chain_hash"] == approvals_mod._compute_chain_hash(expected_content, "0" * 64)
+
+
+def test_tamper_detected_by_verify(tmp_path, monkeypatch):
+    db_path = tmp_path / "state.db"
+    _patch_db(monkeypatch, db_path)
+    _run(_init_db(db_path))
+
+    from lionagi.studio.services import approvals as approvals_mod
+    from lionagi.studio.services._db import open_db
+
+    params = {"name": "demo"}
+    row = _run(approvals_mod.create_approval(action_kind="launch_playbook", params=params))
+    _run(approvals_mod.grant_approval(row["id"]))
+
+    async def _tamper():
+        async with open_db(str(db_path)) as db:
+            await db.execute(
+                "UPDATE approval_evidence SET action_kind = 'evil_action' WHERE sequence = 1"
+            )
+            await db.commit()
+
+    _run(_tamper())
+
+    verdict = _run(approvals_mod.verify_evidence_chain())
+    assert verdict["valid"] is False
+    assert verdict["total_entries"] == 2
+    assert any("hash mismatch" in e for e in verdict["errors"])
+
+
+def test_hmac_signing_off_by_default(tmp_path, monkeypatch):
+    db_path = tmp_path / "state.db"
+    monkeypatch.delenv("LIONAGI_STUDIO_EVIDENCE_HMAC_KEY", raising=False)
+    _patch_db(monkeypatch, db_path)
+    _run(_init_db(db_path))
+
+    from lionagi.studio.services import approvals as approvals_mod
+
+    _run(approvals_mod.create_approval(action_kind="launch_playbook", params={"name": "demo"}))
+    rows = _evidence_rows(db_path)
+    assert rows[0]["hmac_sig"] is None
+
+    verdict = _run(approvals_mod.verify_evidence_chain())
+    assert verdict["valid"] is True
+
+
+def test_hmac_signing_when_key_configured(tmp_path, monkeypatch):
+    db_path = tmp_path / "state.db"
+    monkeypatch.setenv("LIONAGI_STUDIO_EVIDENCE_HMAC_KEY", "secret-key")
+    _patch_db(monkeypatch, db_path)
+    _run(_init_db(db_path))
+
+    from lionagi.studio.services import approvals as approvals_mod
+
+    _run(approvals_mod.create_approval(action_kind="launch_playbook", params={"name": "demo"}))
+    rows = _evidence_rows(db_path)
+    assert rows[0]["hmac_sig"] is not None
+    assert rows[0]["hmac_sig"] == approvals_mod._compute_hmac_sig(
+        rows[0]["chain_hash"], rows[0]["created_at"], "secret-key"
+    )
+
+    verdict = _run(approvals_mod.verify_evidence_chain())
+    assert verdict["valid"] is True
+
+
+def test_hmac_tamper_detected_when_key_configured(tmp_path, monkeypatch):
+    db_path = tmp_path / "state.db"
+    monkeypatch.setenv("LIONAGI_STUDIO_EVIDENCE_HMAC_KEY", "secret-key")
+    _patch_db(monkeypatch, db_path)
+    _run(_init_db(db_path))
+
+    from lionagi.studio.services import approvals as approvals_mod
+    from lionagi.studio.services._db import open_db
+
+    _run(approvals_mod.create_approval(action_kind="launch_playbook", params={"name": "demo"}))
+
+    async def _tamper_sig():
+        async with open_db(str(db_path)) as db:
+            await db.execute(
+                "UPDATE approval_evidence SET hmac_sig = 'forged-signature-value' WHERE sequence = 1"
+            )
+            await db.commit()
+
+    _run(_tamper_sig())
+
+    verdict = _run(approvals_mod.verify_evidence_chain())
+    assert verdict["valid"] is False
+    assert any("hmac signature mismatch" in e for e in verdict["errors"])
+
+
+def test_deny_with_justification_lands_in_evidence(tmp_path, monkeypatch):
+    db_path = tmp_path / "state.db"
+    _patch_db(monkeypatch, db_path)
+    _run(_init_db(db_path))
+
+    from lionagi.studio.services import approvals as approvals_mod
+
+    row = _run(
+        approvals_mod.create_approval(action_kind="launch_playbook", params={"name": "demo"})
+    )
+    _run(
+        approvals_mod.deny_approval(
+            row["id"], justification_class="policy", justification_reason="not allowed here"
+        )
+    )
+
+    rows = _evidence_rows(db_path)
+    denied = [r for r in rows if r["event_type"] == "denied"][0]
+    assert denied["justification_class"] == "policy"
+    assert denied["justification_reason"] == "not allowed here"
+
+
+def test_deny_route_with_justification_body(tmp_path, monkeypatch):
+    monkeypatch.setenv("LIONAGI_STUDIO_AUTH_TOKEN", "test-token")
+    client = _make_client(tmp_path / "state.db", monkeypatch)
+    approval_id = client.post(
+        "/api/approvals/",
+        json={"action_kind": "launch_playbook", "params": {"name": "demo"}},
+        headers=_auth("test-token"),
+    ).json()["id"]
+
+    resp = client.post(
+        f"/api/approvals/{approval_id}/deny",
+        json={"reason_class": "security", "reason": "unsafe action"},
+        headers=_auth("test-token"),
+    )
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["status"] == "denied"
+
+
+def test_deny_route_rejects_blank_reason(tmp_path, monkeypatch):
+    monkeypatch.setenv("LIONAGI_STUDIO_AUTH_TOKEN", "test-token")
+    client = _make_client(tmp_path / "state.db", monkeypatch)
+    approval_id = client.post(
+        "/api/approvals/",
+        json={"action_kind": "launch_playbook", "params": {"name": "demo"}},
+        headers=_auth("test-token"),
+    ).json()["id"]
+
+    resp = client.post(
+        f"/api/approvals/{approval_id}/deny",
+        json={"reason_class": "security", "reason": "   "},
+        headers=_auth("test-token"),
+    )
+    assert resp.status_code == 422, resp.text
+
+    # Rejected validation must not consume the pending approval.
+    check = client.get(f"/api/approvals/{approval_id}", headers=_auth("test-token"))
+    assert check.json()["status"] == "pending"
+
+
+def test_deny_route_rejects_invalid_reason_class(tmp_path, monkeypatch):
+    monkeypatch.setenv("LIONAGI_STUDIO_AUTH_TOKEN", "test-token")
+    client = _make_client(tmp_path / "state.db", monkeypatch)
+    approval_id = client.post(
+        "/api/approvals/",
+        json={"action_kind": "launch_playbook", "params": {"name": "demo"}},
+        headers=_auth("test-token"),
+    ).json()["id"]
+
+    resp = client.post(
+        f"/api/approvals/{approval_id}/deny",
+        json={"reason_class": "not-a-real-class", "reason": "whatever"},
+        headers=_auth("test-token"),
+    )
+    assert resp.status_code == 422, resp.text
+
+
+def test_grant_needs_no_justification(tmp_path, monkeypatch):
+    monkeypatch.setenv("LIONAGI_STUDIO_AUTH_TOKEN", "test-token")
+    client = _make_client(tmp_path / "state.db", monkeypatch)
+    approval_id = client.post(
+        "/api/approvals/",
+        json={"action_kind": "launch_playbook", "params": {"name": "demo"}},
+        headers=_auth("test-token"),
+    ).json()["id"]
+
+    resp = client.post(f"/api/approvals/{approval_id}/grant", headers=_auth("test-token"))
+    assert resp.status_code == 200, resp.text
+
+
+def test_raw_params_never_appear_in_evidence_rows(tmp_path, monkeypatch):
+    """R2: evidence rows carry hashes/kinds/statuses/timestamps/justification
+    only -- never the raw action params (which may be sensitive)."""
+    db_path = tmp_path / "state.db"
+    _patch_db(monkeypatch, db_path)
+    _run(_init_db(db_path))
+
+    from lionagi.studio.services import approvals as approvals_mod
+
+    secret_params = {"api_key": "sk-super-secret-value", "target": "prod-db"}
+    row = _run(approvals_mod.create_approval(action_kind="run_maintenance", params=secret_params))
+    _run(approvals_mod.grant_approval(row["id"]))
+    _run(
+        approvals_mod.require_approval(
+            row["id"], action_kind="run_maintenance", params=secret_params
+        )
+    )
+    _run(
+        approvals_mod.deny_approval(
+            _run(
+                approvals_mod.create_approval(action_kind="run_maintenance", params=secret_params)
+            )["id"],
+            justification_class="security",
+            justification_reason="not allowed for this session",
+        )
+    )
+
+    rows = _evidence_rows(db_path)
+    serialized = str(rows)
+    assert "sk-super-secret-value" not in serialized
+    assert "prod-db" not in serialized
+    # The params_hash is present instead of the raw params.
+    assert all(r["params_hash"] == approvals_mod.compute_params_hash(secret_params) for r in rows)
+
+
+def _fake_request(headers: dict[str, str]):
+    from starlette.requests import Request as StarletteRequest
+
+    scope = {
+        "type": "http",
+        "headers": [(k.lower().encode(), v.encode()) for k, v in headers.items()],
+    }
+    return StarletteRequest(scope)
+
+
+def test_require_human_principal_uses_compare_digest(monkeypatch):
+    """The timing-safe bearer comparison (hmac.compare_digest) still accepts
+    the correct token and rejects a wrong one, exercised directly against
+    `_require_human_principal` (bypassing the app-level auth middleware so
+    this isolates the function's own comparison logic)."""
+    from fastapi import HTTPException
+
+    from lionagi.studio.services import approvals as approvals_mod
+
+    monkeypatch.setenv("LIONAGI_STUDIO_AUTH_TOKEN", "test-token")
+
+    # Correct bearer: no exception.
+    approvals_mod._require_human_principal(_fake_request({"authorization": "Bearer test-token"}))
+
+    # Wrong bearer: 403.
+    with pytest.raises(HTTPException) as exc_info:
+        approvals_mod._require_human_principal(
+            _fake_request({"authorization": "Bearer wrong-token"})
+        )
+    assert exc_info.value.status_code == 403
+
+    # No header at all: 403 (fails closed).
+    with pytest.raises(HTTPException) as exc_info:
+        approvals_mod._require_human_principal(_fake_request({}))
+    assert exc_info.value.status_code == 403
+
+
+def test_grant_route_rejected_without_correct_bearer_at_http_level(tmp_path, monkeypatch):
+    """End to end: the app-level auth middleware rejects a wrong/missing
+    bearer before the route even runs, whenever a token is configured."""
+    monkeypatch.setenv("LIONAGI_STUDIO_AUTH_TOKEN", "test-token")
+    client = _make_client(tmp_path / "state.db", monkeypatch)
+    approval_id = client.post(
+        "/api/approvals/",
+        json={"action_kind": "launch_playbook", "params": {"name": "demo"}},
+        headers=_auth("test-token"),
+    ).json()["id"]
+
+    resp = client.post(f"/api/approvals/{approval_id}/grant", headers=_auth("wrong-token"))
+    assert resp.status_code in (401, 403), resp.text
+
+    resp_no_header = client.post(f"/api/approvals/{approval_id}/grant")
+    assert resp_no_header.status_code in (401, 403), resp_no_header.text
+
+
+def test_verify_route_returns_valid_true_for_intact_chain(tmp_path, monkeypatch):
+    client = _make_client(tmp_path / "state.db", monkeypatch)
+    client.post(
+        "/api/approvals/",
+        json={"action_kind": "launch_playbook", "params": {"name": "demo"}},
+    )
+
+    resp = client.get("/api/approvals/evidence/verify")
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["valid"] is True
+    assert body["total_entries"] == 1
+    assert body["errors"] == []
