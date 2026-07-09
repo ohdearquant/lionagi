@@ -7,9 +7,35 @@ from __future__ import annotations
 
 from lionagi.cli.orchestrate._orchestration import (
     casts_role_system,
+    mode_roster,
     resolve_modes,
     role_config,
 )
+
+
+class TestModeRoster:
+    def test_lists_all_mode_names(self):
+        from lionagi.casts.pattern import list_modes
+
+        text = mode_roster()
+        for m in list_modes():
+            assert m in text
+
+    def test_surfaces_role_allowlists(self):
+        # analyst restricts modes in the default pack; the planner prompt must
+        # advertise that restriction so it never assigns a mode resolve_modes
+        # would drop.
+        cfg = role_config("analyst")
+        assert cfg is not None and cfg.modes_allow
+        text = mode_roster()
+        assert f"analyst accepts only {', '.join(sorted(cfg.modes_allow))}" in text
+
+    def test_allowlists_match_enforcement(self):
+        # Every advertised allowlist must accept its own modes at execution.
+        cfg = role_config("critic")
+        assert cfg is not None and cfg.modes_allow
+        for m in cfg.modes_allow:
+            assert resolve_modes("critic", [m]) == [m]
 
 
 class TestResolveModes:

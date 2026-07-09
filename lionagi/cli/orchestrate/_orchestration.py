@@ -101,15 +101,28 @@ def role_roster(default_model: str) -> str:
     return "Available roles (set each TaskAssignment.assignee to one):\n" + "\n".join(lines)
 
 
-def mode_roster() -> str:
-    """Valid cognitive-mode names for the planner prompt."""
+def mode_roster(pack: Pack | None = None) -> str:
+    """Valid cognitive-mode names for the planner prompt, including each
+    role's ``modes_allow`` restriction so the planner only assigns modes the
+    executor will accept (``resolve_modes`` drops disallowed ones)."""
     from lionagi.casts.pattern import list_modes
 
-    return (
+    text = (
         "Optional per-task cognitive modes (TaskAssignment.modes). Use ONLY these "
         "names, and only when a subtask needs a specific reasoning style — else "
         "leave empty and the role's defaults apply: " + ", ".join(list_modes()) + "."
     )
+    restricted = []
+    for r in available_roles():
+        cfg = role_config(r, pack)
+        if cfg is not None and cfg.modes_allow:
+            restricted.append(f"{r} accepts only {', '.join(sorted(cfg.modes_allow))}")
+    if restricted:
+        text += (
+            " Per-role restrictions (modes outside a role's list are dropped at "
+            "execution): " + "; ".join(restricted) + "."
+        )
+    return text
 
 
 _DEFAULT_PACK_LOADED = False

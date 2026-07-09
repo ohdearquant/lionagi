@@ -1566,7 +1566,7 @@ async def _run_flow_inner(
                 "spawned follow-ups — plan tightly. "
             )
         guidance = (
-            f"{role_roster(env.default_model_spec)}\n\n{mode_roster()}\n\n"
+            f"{role_roster(env.default_model_spec)}\n\n{mode_roster(env.pack)}\n\n"
             f"{budget_note}{team_guidance(team_attach or team_name)}"
         )
 
