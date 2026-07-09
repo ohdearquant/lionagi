@@ -758,3 +758,28 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_dispatch_outbox_dedup
 CREATE INDEX IF NOT EXISTS idx_dispatch_outbox_due
   ON dispatch_outbox(status, next_attempt_at)
   WHERE status IN ('pending', 'delivering');
+
+-- ── Approvals (studio operator permission ledger) ──────────────────────────
+-- Server-side confirm-flow: a mutating action is proposed, a human grants or
+-- denies it, and the real endpoint consumes the granted approval exactly
+-- once. params_hash is a sha256 over canonical (sorted-keys) JSON of the
+-- action's parameters, checked at consume time so a granted approval can
+-- only execute the exact action it was granted for.
+
+CREATE TABLE IF NOT EXISTS approvals (
+  id            TEXT    PRIMARY KEY,
+  action_kind   TEXT    NOT NULL,
+  params_hash   TEXT    NOT NULL,
+  session_id    TEXT    REFERENCES sessions(id),
+  status        TEXT    NOT NULL DEFAULT 'pending'
+                CHECK(status IN ('pending', 'granted', 'consumed', 'expired', 'denied')),
+  proposed_at   REAL    NOT NULL,
+  granted_at    REAL,
+  consumed_at   REAL,
+  expires_at    REAL    NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_approvals_status
+  ON approvals(status) WHERE status IN ('pending', 'granted');
+CREATE INDEX IF NOT EXISTS idx_approvals_session
+  ON approvals(session_id) WHERE session_id IS NOT NULL;
