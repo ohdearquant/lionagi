@@ -40,25 +40,6 @@
       "newTab": "نئے ٹیب میں کھلتا ہے"
     }
   },
-  "leo": {
-    "name": "Leo",
-    "caption": "اسٹوڈیو آپریٹر",
-    "ariaLabel": "Leo — اسٹوڈیو آپریٹر",
-    "expand": "Leo کو پھیلائیں",
-    "minimize": "Leo کو چھوٹا کریں",
-    "zeroStateTitle": "Leo آپ کے ساتھ اسٹوڈیو چلاتا ہے — رنز، شیڈولز یا صحت کے بارے میں پوچھیں",
-    "example1": "ابھی کیا چل رہا ہے؟",
-    "example2": "آخری 5 رنز دکھائیں",
-    "example3": "میرے شیڈولز دکھائیں",
-    "inputPlaceholder": "Leo سے پوچھیں…",
-    "send": "بھیجیں",
-    "confirm": "تصدیق کریں",
-    "dismiss": "خارج کریں",
-    "proposedAction": "مجوزہ کارروائی",
-    "uiActionFailed": "لاگو نہیں ہو سکا",
-    "error": "خرابی",
-    "thinking": "سوچ رہا ہے..."
-  },
   "playfield": {
     "title": "Playfield",
     "subtitle": "تمام پروجیکٹس کے چل رہے اور کیو شدہ Plays اور سیشنز",

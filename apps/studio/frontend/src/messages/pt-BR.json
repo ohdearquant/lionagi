@@ -40,25 +40,6 @@
       "newTab": "abre em nova aba"
     }
   },
-  "leo": {
-    "name": "Leo",
-    "caption": "operador do Studio",
-    "ariaLabel": "Leo — operador do Studio",
-    "expand": "Expandir Leo",
-    "minimize": "Minimizar Leo",
-    "zeroStateTitle": "Leo opera o Studio com você — pergunte sobre execuções, agendamentos ou integridade",
-    "example1": "O que está em execução agora?",
-    "example2": "Mostre as últimas 5 execuções",
-    "example3": "Liste meus agendamentos",
-    "inputPlaceholder": "Pergunte ao Leo…",
-    "send": "Enviar",
-    "confirm": "Confirmar",
-    "dismiss": "Dispensar",
-    "proposedAction": "Ação proposta",
-    "uiActionFailed": "não foi possível aplicar",
-    "error": "Erro",
-    "thinking": "pensando..."
-  },
   "playfield": {
     "title": "Playfield",
     "subtitle": "Todos os plays e sessões em execução ou na fila em todos os projetos",

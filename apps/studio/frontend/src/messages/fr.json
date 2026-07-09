@@ -40,25 +40,6 @@
       "newTab": "s'ouvre dans un nouvel onglet"
     }
   },
-  "leo": {
-    "name": "Leo",
-    "caption": "opérateur du studio",
-    "ariaLabel": "Leo — opérateur du studio",
-    "expand": "Développer Leo",
-    "minimize": "Réduire Leo",
-    "zeroStateTitle": "Leo exploite le studio avec vous — demandez-lui les exécutions, les planifications ou la santé",
-    "example1": "Qu’est-ce qui s’exécute maintenant ?",
-    "example2": "Afficher les 5 dernières exécutions",
-    "example3": "Lister mes planifications",
-    "inputPlaceholder": "Demander à Leo…",
-    "send": "Envoyer",
-    "confirm": "Confirmer",
-    "dismiss": "Ignorer",
-    "proposedAction": "Action proposée",
-    "uiActionFailed": "application impossible",
-    "error": "Erreur",
-    "thinking": "réflexion..."
-  },
   "playfield": {
     "title": "Zone de Play",
     "subtitle": "Tous les plays et sessions en cours ou en file d'attente sur les projets",

@@ -40,25 +40,6 @@
       "newTab": "membuka di tab baru"
     }
   },
-  "leo": {
-    "name": "Leo",
-    "caption": "operator Studio",
-    "ariaLabel": "Leo — operator Studio",
-    "expand": "Perluas Leo",
-    "minimize": "Minimalkan Leo",
-    "zeroStateTitle": "Leo mengoperasikan Studio bersama Anda — tanyakan eksekusi, penjadwalan, atau kesehatan",
-    "example1": "Apa yang sedang berjalan sekarang?",
-    "example2": "Tampilkan 5 eksekusi terakhir",
-    "example3": "Daftar penjadwalan saya",
-    "inputPlaceholder": "Tanya Leo…",
-    "send": "Kirim",
-    "confirm": "Konfirmasi",
-    "dismiss": "Tutup",
-    "proposedAction": "Tindakan yang diusulkan",
-    "uiActionFailed": "tidak dapat diterapkan",
-    "error": "Kesalahan",
-    "thinking": "berpikir..."
-  },
   "playfield": {
     "title": "Playfield",
     "subtitle": "Semua play dan sesi yang berjalan atau diantrekan di semua proyek",
