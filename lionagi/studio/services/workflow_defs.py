@@ -41,6 +41,12 @@ def _validate_spec(spec: dict[str, Any] | None) -> None:
         raise ValueError("spec_json must be an object")
     if spec.get("version") != 1:
         raise ValueError(f"spec_json.version must be 1, got {spec.get('version')!r}")
+    if "base_dir" in spec:
+        raise ValueError(
+            "spec_json must not carry a top-level 'base_dir' field — base_dir "
+            "is a run-level input supplied by the operator at run time, never "
+            "a def-authored field"
+        )
 
     nodes = spec.get("nodes", [])
     edges = spec.get("edges", [])
@@ -284,6 +290,7 @@ async def delete_workflow_def_route(def_id: str) -> dict[str, Any]:
 
 class RunWorkflowDefRequest(BaseModel):
     inputs: dict[str, Any] | None = None
+    base_dir: str | None = None
 
 
 @studio_route(
@@ -303,7 +310,7 @@ async def run_workflow_def_route(def_id: str, body: RunWorkflowDefRequest) -> di
     from .workflow_run import WorkflowNotFoundError, run_workflow_def
 
     try:
-        return await run_workflow_def(def_id, body.inputs)
+        return await run_workflow_def(def_id, body.inputs, base_dir=body.base_dir)
     except WorkflowNotFoundError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     except WorkflowCompileError as exc:

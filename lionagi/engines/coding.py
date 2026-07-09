@@ -517,6 +517,7 @@ class CodingEngine(Engine):
         export_dir: str | Path | None = None,
         session: Any = None,
         on_event: Any = None,
+        on_branch_created: Any = None,
     ) -> CodeResultRecorded:
         """Normalize *spec* exactly once before creating run state; raises ValueError/TypeError for malformed specs before session initialization."""
         task_text, experiment_ref = _normalize_spec(spec)  # raises on bad input
@@ -528,6 +529,7 @@ class CodingEngine(Engine):
             _normalized=(task_text, experiment_ref),
             session=session,
             on_event=on_event,
+            on_branch_created=on_branch_created,
         )
 
     async def _run(
