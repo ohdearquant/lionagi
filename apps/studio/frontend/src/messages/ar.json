@@ -557,8 +557,8 @@
       "ariaLabel": "الوكيل {name} — فتح تفاصيل الجلسة",
       "branches": "{count} فرع",
       "messages": "{count} رسالة",
-      "branchesTitle": "{count} فرع",
-      "messagesTitle": "{count} رسالة"
+      "branchesTitle": "{count, plural, zero {لا فروع} one {فرع واحد} two {فرعان} few {# فروع} many {# فرعًا} other {# فرع}}",
+      "messagesTitle": "{count, plural, zero {لا رسائل} one {رسالة واحدة} two {رسالتان} few {# رسائل} many {# رسالة} other {# رسالة}}"
     },
     "empty": {
       "message": "لا يوجد وكلاء قيد التشغيل — يعرض أسطول الوكلاء عمليات التنسيق المباشرة فور حدوثها.",
