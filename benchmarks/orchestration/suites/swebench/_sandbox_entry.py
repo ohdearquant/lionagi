@@ -160,7 +160,7 @@ def _collect_usage(branch) -> dict:
 
     Mirrors harness/cost.py's normalization but inline (host has the full
     price table; here we only need raw token counts)."""
-    inp = cached = out = calls = 0
+    inp = cached = write = out = calls = 0
     try:
         messages = list(branch.msgs.messages)
     except Exception:
@@ -176,16 +176,25 @@ def _collect_usage(branch) -> dict:
         if "cached_input_tokens" in u:  # OpenAI/codex: input incl cached
             total_in = int(u.get("input_tokens", u.get("prompt_tokens", 0)) or 0)
             c = int(u.get("cached_input_tokens", 0) or 0)
-            i = max(0, total_in - c)
-        else:  # Anthropic / generic
+            w = int(u.get("cache_creation_input_tokens", u.get("cache_write_tokens", 0)) or 0)
+            i = max(0, total_in - c - w)
+        else:  # Anthropic / generic: cache writes bill at a premium, not the read rate
             i = int(u.get("input_tokens", u.get("prompt_tokens", 0)) or 0)
             c = int(u.get("cache_read_input_tokens", 0) or 0)
-        if i or c or o:
+            w = int(u.get("cache_creation_input_tokens", 0) or 0)
+        if i or c or w or o:
             inp += i
             cached += c
+            write += w
             out += o
             calls += 1
-    return {"input_tokens": inp, "cached_tokens": cached, "output_tokens": out, "n_calls": calls}
+    return {
+        "input_tokens": inp,
+        "cached_tokens": cached,
+        "cache_write_tokens": write,
+        "output_tokens": out,
+        "n_calls": calls,
+    }
 
 
 async def _control_poller(branch, control_path: Path, stop: asyncio.Event) -> None:

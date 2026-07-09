@@ -56,7 +56,8 @@ class RunResult:
     # CLI internal turns), or "mixed".
     input_tokens: int = 0  # uncached prompt tokens
     output_tokens: int = 0  # completion (incl. reasoning for Anthropic, NOT codex)
-    cached_tokens: int = 0  # cached prompt tokens (billed at cached rate)
+    cached_tokens: int = 0  # cache-read prompt tokens (billed at cached rate)
+    cache_write_tokens: int = 0  # cache-write prompt tokens (billed at premium)
     num_turns: int = 0
     n_calls: int = 0
     usage_source: str = "none"  # reported | estimated | mixed | none
@@ -86,6 +87,7 @@ class ScoredResult:
     input_tokens: int = 0
     output_tokens: int = 0
     cached_tokens: int = 0
+    cache_write_tokens: int = 0
     est_cost_usd: float = 0.0
     usage_source: str = "none"
     reasoning_disclosed: bool = True

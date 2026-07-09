@@ -84,11 +84,18 @@ async def _judge_one(output: str, label: Label, model) -> JudgeVerdict:
 async def score(result: RunResult, labels: tuple[Label, ...]) -> ScoredResult:
     """Score one RunResult. Aggregates across the run's outputs (the chain's
     final synthesis dominates, but any output flagging counts)."""
-    cost = cost_of(result.input_tokens, result.cached_tokens, result.output_tokens, result.model)
+    cost = cost_of(
+        result.input_tokens,
+        result.cached_tokens,
+        result.output_tokens,
+        result.model,
+        cache_write_tokens=result.cache_write_tokens,
+    )
     compute = dict(
         input_tokens=result.input_tokens,
         output_tokens=result.output_tokens,
         cached_tokens=result.cached_tokens,
+        cache_write_tokens=result.cache_write_tokens,
         est_cost_usd=cost,
         usage_source=result.usage_source,
         reasoning_disclosed=result.reasoning_disclosed,

@@ -198,6 +198,7 @@ async def _run_once_inprocess(task: Task, config: OrchestrationConfig, trial: in
             input_tokens=usage.input_tokens,
             output_tokens=usage.output_tokens,
             cached_tokens=usage.cached_tokens,
+            cache_write_tokens=usage.cache_write_tokens,
             num_turns=usage.num_turns,
             n_calls=usage.n_calls,
             usage_source=usage.source,
