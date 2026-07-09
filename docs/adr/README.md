@@ -44,4 +44,25 @@ collisions. Unused numbers inside a block are intentional gaps, not missing docu
   invariants
 - 0005 — unused (intentional gap)
 
+### messages-context (0006-0010)
+
+- [ADR-0006](ADR-0006-conversational-message-envelope-and-ordered-history.md) — Conversational
+  message envelope and ordered history
+- [ADR-0007](ADR-0007-canonical-turn-request-compilation-boundary.md) — Canonical turn-request
+  compilation boundary
+- [ADR-0008](ADR-0008-pre-turn-context-provider-execution-and-attribution.md) — Pre-turn
+  context-provider execution and attribution
+- 0009-0010 — unused (intentional gaps)
+
+### operations (0021-0026)
+
+- [ADR-0021](ADR-0021-branch-operation-facade-and-turn-adapters.md) — Branch operation facade
+  and turn adapters
+- [ADR-0022](ADR-0022-composed-branch-operation-pipeline.md) — Composed branch operation
+  pipeline
+- [ADR-0023](ADR-0023-dependency-aware-operation-graph-execution-kernel.md) — Dependency-aware
+  operation graph execution kernel
+- [ADR-0024](ADR-0024-lndl-operate-integration-adapter.md) — LNDL operate integration adapter
+- 0025-0026 — unused (intentional gaps)
+
 Remaining areas land here as their records are accepted.
