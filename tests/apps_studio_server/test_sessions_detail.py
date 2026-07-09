@@ -459,6 +459,31 @@ async def test_list_sessions_single_session_correct_fields(patched_sessions_db):
     assert row["invocation_kind"] == "flow"
 
 
+async def test_list_sessions_surfaces_status_reason(patched_sessions_db):
+    """ADR-0028: list_sessions must carry the reason fields the detail path does."""
+    svc, db_path = patched_sessions_db
+    await seed_session(db_path, session_id="sess-failed", status="running")
+    from lionagi.state.db import StateDB
+    from lionagi.state.reasons import RunReasons
+
+    async with StateDB(db_path) as db:
+        await db.update_status(
+            "session",
+            "sess-failed",
+            new_status="failed",
+            reason_code=RunReasons.FAILED_EXIT_NONZERO,
+            reason_summary="worker exited with code 1",
+        )
+
+    rows = await svc.list_sessions()
+
+    assert len(rows) == 1
+    row = rows[0]
+    assert row["status"] == "failed"
+    assert row["status_reason_code"] == RunReasons.FAILED_EXIT_NONZERO
+    assert row["status_reason_summary"] == "worker exited with code 1"
+
+
 async def test_list_sessions_orders_by_updated_at_desc(patched_sessions_db):
     svc, db_path = patched_sessions_db
     await seed_session(db_path, session_id="sess-a")

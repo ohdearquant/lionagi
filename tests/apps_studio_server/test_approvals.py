@@ -838,3 +838,83 @@ def test_verify_route_returns_valid_true_for_intact_chain(tmp_path, monkeypatch)
     assert body["valid"] is True
     assert body["total_entries"] == 1
     assert body["errors"] == []
+
+
+def test_lazy_expire_writes_expired_evidence_row_with_intact_chain(tmp_path, monkeypatch):
+    """Reading a TTL-expired approval triggers _lazy_expire, which must append
+    an 'expired' evidence row (same approval_id, chained from 'proposed') and
+    keep the overall chain verifiable."""
+    db_path = tmp_path / "state.db"
+    _patch_db(monkeypatch, db_path)
+    _run(_init_db(db_path))
+
+    from lionagi.studio.services import approvals as approvals_mod
+    from lionagi.studio.services._db import open_db
+
+    row = _run(
+        approvals_mod.create_approval(action_kind="launch_playbook", params={"name": "demo"})
+    )
+
+    async def _force_expired():
+        async with open_db(str(db_path)) as db:
+            await db.execute(
+                "UPDATE approvals SET expires_at = ? WHERE id = ?",
+                (time.time() - 1, row["id"]),
+            )
+            await db.commit()
+
+    _run(_force_expired())
+
+    refreshed = _run(approvals_mod.get_approval(row["id"]))
+    assert refreshed["status"] == "expired"
+
+    rows = _evidence_rows(db_path)
+    expired_rows = [r for r in rows if r["event_type"] == "expired"]
+    assert len(expired_rows) == 1
+    assert expired_rows[0]["approval_id"] == row["id"]
+    assert expired_rows[0]["status_from"] == "pending"
+    assert expired_rows[0]["status_to"] == "expired"
+
+    verdict = _run(approvals_mod.verify_evidence_chain())
+    assert verdict["valid"] is True
+    assert verdict["total_entries"] == 2  # proposed + expired
+    assert verdict["errors"] == []
+
+
+def test_double_expire_read_race_writes_only_one_evidence_row(tmp_path, monkeypatch):
+    """Two reads of an expired approval (simulating a race between concurrent
+    readers) must only append one 'expired' evidence row -- the CAS in
+    `_lazy_expire` (`WHERE status = ?`) makes the second read a no-op."""
+    db_path = tmp_path / "state.db"
+    _patch_db(monkeypatch, db_path)
+    _run(_init_db(db_path))
+
+    from lionagi.studio.services import approvals as approvals_mod
+    from lionagi.studio.services._db import open_db
+
+    row = _run(
+        approvals_mod.create_approval(action_kind="launch_playbook", params={"name": "demo"})
+    )
+
+    async def _force_expired():
+        async with open_db(str(db_path)) as db:
+            await db.execute(
+                "UPDATE approvals SET expires_at = ? WHERE id = ?",
+                (time.time() - 1, row["id"]),
+            )
+            await db.commit()
+
+    _run(_force_expired())
+
+    first = _run(approvals_mod.get_approval(row["id"]))
+    second = _run(approvals_mod.get_approval(row["id"]))
+    assert first["status"] == "expired"
+    assert second["status"] == "expired"
+
+    rows = _evidence_rows(db_path)
+    expired_rows = [r for r in rows if r["event_type"] == "expired"]
+    assert len(expired_rows) == 1
+
+    verdict = _run(approvals_mod.verify_evidence_chain())
+    assert verdict["valid"] is True
+    assert verdict["errors"] == []

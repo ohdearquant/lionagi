@@ -148,3 +148,57 @@ async def test_get_schedule_detail_carries_same_fields(temp_db_path):
     detail = await get_schedule(sid)
     assert detail["consecutive_failures"] == 2
     assert detail["last_status"] == "failed"
+
+
+async def test_list_schedules_issues_constant_queries_not_per_row(temp_db_path):
+    """list_schedules must batch streak/remaining_runs lookups (no N+1)."""
+    from sqlalchemy import event
+    from sqlalchemy.engine import Engine
+
+    now = time.time()
+    sids = []
+    for i in range(3):
+        created = await create_schedule(
+            {
+                "name": f"batch-test-{uuid.uuid4().hex[:8]}",
+                "trigger_type": "cron",
+                "cron_expr": "0 18 * * *",
+                "action_kind": "agent",
+                "action_prompt": "ping",
+                "max_runs": 10,
+            }
+        )
+        sid = created["id"]
+        sids.append(sid)
+        await _seed_run(sid, status="failed", fired_at=now - 20 - i)
+        await _seed_run(sid, status="failed", fired_at=now - 10 - i)
+
+    statements: list[str] = []
+
+    def _record(conn, cursor, statement, *a, **kw):
+        statements.append(statement)
+
+    # listen at the Engine class level -- list_schedules() opens its own
+    # StateDB()/engine internally, so a per-instance listener would miss it.
+    event.listen(Engine, "before_cursor_execute", _record)
+    try:
+        rows = await list_schedules()
+    finally:
+        event.remove(Engine, "before_cursor_execute", _record)
+
+    select_statements = [
+        s
+        for s in statements
+        if s.strip().upper().startswith("SELECT")
+        and "sqlite_master" not in s
+        and "pragma" not in s.lower()
+    ]
+    # one SELECT for the schedules themselves, one batched count, one batched
+    # streak query -- constant regardless of how many schedules exist.
+    assert len(select_statements) == 3, select_statements
+
+    for sid in sids:
+        row = next(r for r in rows if r["id"] == sid)
+        assert row["remaining_runs"] == 8
+        assert row["consecutive_failures"] == 2
+        assert row["last_status"] == "failed"
