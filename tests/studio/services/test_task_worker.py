@@ -349,3 +349,78 @@ async def test_submit_claim_execute_completed_round_trip(db: StateDB) -> None:
         ("queued", "running"),
         ("running", "completed"),
     ]
+
+
+async def test_cancelled_to_running_rejected(db: StateDB) -> None:
+    """The vocabulary is closed: cancelled is terminal, and a bare CAS from
+    cancelled back to running must raise, not apply."""
+    from lionagi.studio.services.task_applications import cancel_task
+
+    run_id = await _submit_host_task(db)
+    assert await cancel_task(db, run_id, actor=Actor(type="operator", id="test")) is True
+
+    with pytest.raises(ValueError, match="not in the declared transition vocabulary"):
+        await transition(
+            db,
+            TransitionRequest(
+                entity_type="schedule_run",
+                entity_id=run_id,
+                from_state="cancelled",
+                to_state="running",
+                reason=StateReason(code="run.started.ok"),
+                actor=Actor(type="system", id="w1"),
+                idempotency_key=f"reentry:{run_id}",
+            ),
+        )
+
+    row = await db.fetch_one("SELECT status FROM schedule_runs WHERE id = ?", (run_id,))
+    assert row["status"] == "cancelled"
+
+
+async def test_stale_worker_cannot_finalize_a_reclaimed_lease(db: StateDB) -> None:
+    """A worker that outlives its lease must not complete (or fail) the row
+    after the reaper hands it to another claimant: the terminal write carries
+    the claim's lease identity as a guard, so the stale write conflicts."""
+    run_id = await _submit_host_task(db)
+    t0 = time.time()
+    w1_ttl = 5.0
+
+    async def hijacking_execute(row: dict) -> tuple[int, str]:
+        # While w1 is "executing", its lease lapses: the reaper requeues the
+        # row and a second worker claims a fresh lease.
+        counts = await reap_expired_leases(db, now=t0 + w1_ttl + 60)
+        assert counts == {"requeued": 1, "failed": 0}
+        result = await transition(
+            db,
+            TransitionRequest(
+                entity_type="schedule_run",
+                entity_id=run_id,
+                from_state="queued",
+                to_state="running",
+                reason=StateReason(code="run.started.ok"),
+                actor=Actor(type="system", id="w2"),
+                idempotency_key=f"claim:{run_id}:w2",
+            ),
+            patch={
+                "leased_by": "w2",
+                "lease_expires_at": t0 + 3600,
+                "lease_attempts": 2,
+            },
+        )
+        assert result.applied is True
+        return 0, ""
+
+    claimed = await claim_and_execute(
+        db, worker_id="w1", execute=hijacking_execute, now=t0, lease_ttl=w1_ttl
+    )
+    assert claimed == 1
+
+    # w1's stale running -> completed was dropped by the lease-identity
+    # guard: the row still belongs to w2's live claim.
+    row = await db.fetch_one(
+        "SELECT status, leased_by, lease_expires_at FROM schedule_runs WHERE id = ?",
+        (run_id,),
+    )
+    assert row["status"] == "running"
+    assert row["leased_by"] == "w2"
+    assert row["lease_expires_at"] == t0 + 3600

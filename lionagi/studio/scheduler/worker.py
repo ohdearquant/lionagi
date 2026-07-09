@@ -218,12 +218,20 @@ async def claim_and_execute(
         if not result.applied:
             continue
         claimed += 1
-        await _execute_claimed(db, run_id, row, execute)
+        # The claim's lease identity travels to the terminal write: if this
+        # worker's lease lapses mid-execution and the reaper hands the row to
+        # another claimant, the stale worker's completed/failed guard
+        # mismatches and its write is dropped instead of clobbering the live
+        # lease.
+        lease_guard = {"leased_by": worker_id, "lease_expires_at": now + lease_ttl}
+        await _execute_claimed(db, run_id, row, execute, lease_guard)
 
     return claimed
 
 
-async def _execute_claimed(db: StateDB, run_id: str, row: Any, execute: ExecuteFn) -> None:
+async def _execute_claimed(
+    db: StateDB, run_id: str, row: Any, execute: ExecuteFn, lease_guard: dict[str, Any]
+) -> None:
     task_row = dict(row)
     action_args = task_row.get("action_args")
     if isinstance(action_args, str):
@@ -249,6 +257,7 @@ async def _execute_claimed(db: StateDB, run_id: str, row: Any, execute: ExecuteF
                 actor=Actor(type="system", id="task_worker"),
                 idempotency_key=f"complete:{run_id}:{completion_time}",
             ),
+            guard=lease_guard,
         )
     else:
         await transition(
@@ -265,6 +274,7 @@ async def _execute_claimed(db: StateDB, run_id: str, row: Any, execute: ExecuteF
                 actor=Actor(type="system", id="task_worker"),
                 idempotency_key=f"fail:{run_id}:{completion_time}",
             ),
+            guard=lease_guard,
         )
 
 

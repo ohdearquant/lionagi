@@ -73,13 +73,13 @@ _ENTITY_TABLES: dict[str, str] = {
 }
 
 # ADR-0101 slice 2/3: the declared transition vocabulary, per (entity_type,
-# from_state). This is NOT a full transition graph — only edges an ADR-0101
-# slice actually authorizes are listed; any current status that is not a key
-# for a given entity_type is governed by CAS alone, same as before this
-# vocabulary existed. "completed"/"failed" map to an empty target set,
-# closing terminal re-entry (D3 R2): no CAS write can move a schedule_run
-# back out of a terminal status even though the guard alone would happily
-# apply it.
+# from_state). This is NOT a full transition graph, but it IS closed for the
+# entity types listed: a current status with no entry has no declared
+# outgoing edges, exactly like an explicit empty set — CAS alone never
+# authorizes an undeclared move. "completed"/"failed"/"cancelled" map to an
+# empty target set, closing terminal re-entry: no CAS write can move a
+# schedule_run back out of a terminal status even though the guard alone
+# would happily apply it.
 _TRANSITION_VOCAB: dict[str, dict[str, frozenset[str]]] = {
     "schedule_run": {
         "queued": frozenset({"cancelled", "running"}),
@@ -88,6 +88,7 @@ _TRANSITION_VOCAB: dict[str, dict[str, frozenset[str]]] = {
         "running": frozenset({"completed", "failed", "queued"}),
         "completed": frozenset(),
         "failed": frozenset(),
+        "cancelled": frozenset(),
     },
 }
 
@@ -140,16 +141,9 @@ async def transition(
             )
         previous_status = row["status"]
 
-        vocab = _TRANSITION_VOCAB.get(request.entity_type)
-        if vocab is not None:
-            allowed_targets = vocab.get(previous_status)
-            if allowed_targets is not None and request.to_state not in allowed_targets:
-                raise ValueError(
-                    f"transition(): {request.entity_type} {previous_status} -> "
-                    f"{request.to_state!r} is not in the declared transition "
-                    f"vocabulary for this slice (allowed: {sorted(allowed_targets)})"
-                )
-
+        # CAS mismatch reports BEFORE the vocabulary check so an ordinary
+        # lost race (e.g. a second cancel finding the row already cancelled)
+        # stays a conflict result instead of becoming a vocabulary error.
         if request.from_state is not None and previous_status != request.from_state:
             return TransitionResult(
                 applied=False,
@@ -158,6 +152,16 @@ async def transition(
                 current_state=previous_status,
                 transition_id=transition_id,
             )
+
+        vocab = _TRANSITION_VOCAB.get(request.entity_type)
+        if vocab is not None:
+            allowed_targets = vocab.get(previous_status, frozenset())
+            if request.to_state not in allowed_targets:
+                raise ValueError(
+                    f"transition(): {request.entity_type} {previous_status} -> "
+                    f"{request.to_state!r} is not in the declared transition "
+                    f"vocabulary for this slice (allowed: {sorted(allowed_targets)})"
+                )
 
         for col, expected in guard.items():
             if row[col] != expected:
