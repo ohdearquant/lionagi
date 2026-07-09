@@ -1,7 +1,7 @@
 # Copyright (c) 2023-2026, HaiyangLi <quantocean.li at gmail dot com>
 # SPDX-License-Identifier: Apache-2.0
 
-"""SQLAlchemy MetaData for all 26 StateDB tables — single source of truth for schema DDL."""
+"""SQLAlchemy MetaData for all 27 StateDB tables — single source of truth for schema DDL."""
 
 from __future__ import annotations
 
@@ -629,6 +629,22 @@ Index(
     sqlite_where=text("status IN ('queued', 'running', 'retry_wait')"),
     postgresql_where=text("status IN ('queued', 'running', 'retry_wait')"),
 )
+
+# ── workers ─────────────────────────────────────────────────────────────────
+# ADR-0101 D4: capability-matching worker registry -- the only genuinely new
+# table this ADR pair adds.
+
+workers = Table(
+    "workers",
+    metadata,
+    Column("worker_id", Text, primary_key=True),
+    Column("advertised_capabilities", JSON, nullable=False, server_default="[]"),
+    Column("execution_targets", JSON, nullable=False, server_default="[]"),
+    Column("last_heartbeat_at", Float, nullable=False),
+    Column("leased_run_id", Text, ForeignKey("schedule_runs.id")),
+)
+
+Index("idx_workers_heartbeat", workers.c.last_heartbeat_at)
 
 # ── admin_events ──────────────────────────────────────────────────────────────
 
