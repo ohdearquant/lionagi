@@ -174,10 +174,15 @@ def _redact_for_publication(payload: dict) -> dict:
     machine ran the validation. The pass/fail booleans already on ``validation`` are
     the durable signal; the raw text is a debugging artifact, not committed data.
     ``provenance.nominated_by`` is an internal actor identifier — ``provenance.pr``
-    is the durable, already-public pointer to where an instance came from."""
+    is the durable, already-public pointer to where an instance came from.
+    ``provenance.why`` is the internal nomination rationale — it can name the
+    fix or otherwise hint at the resolution, and every instance JSON is
+    published to a public repo, so it is blanked the same as the other
+    internal-only fields."""
     payload["validation"]["gold_output"] = ""
     payload["validation"]["null_output"] = ""
     payload["provenance"]["nominated_by"] = ""
+    payload["provenance"]["why"] = ""
     return payload
 
 

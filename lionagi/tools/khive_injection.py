@@ -57,11 +57,24 @@ class WritebackPolicy:
 
 @dataclass(frozen=True)
 class KhiveInjectionPolicy:
-    """Policy block controlling pre-turn khive injection (ADR-0100)."""
+    """Policy block controlling pre-turn khive injection (ADR-0100).
+
+    ``namespace``, when set, is threaded onto every khive verb this policy's
+    provider emits (recall, compose, auto_feedback, remember). This is the
+    bench-arm isolation mechanism: auto_feedback is a WRITE to the live brain
+    store, so an "M1 read-only" arm without a pinned namespace still mutates
+    posteriors and contaminates the M0/M1 comparison — pinning a namespace is
+    required, not optional, for any bench arm with ``enabled=True``. Note:
+    today only the khive write verb honors a namespace argument; the read
+    verbs reject unknown params, so an injection-enabled arm cannot actually
+    execute until the khive surface grows namespace-scoped reads. The
+    threading is in place so it works the day that lands.
+    """
 
     profile_id: str
     enabled: bool = True
     snapshot_id: str | None = None
+    namespace: str | None = None
     recall: RecallPolicy = field(default_factory=RecallPolicy)
     compose: ComposePolicy = field(default_factory=ComposePolicy)
     cadence: str = "first_turn"
@@ -143,9 +156,12 @@ def _render_compose(khive_response: Any) -> str | None:
     op_result = _first_op_result(khive_response)
     if not op_result:
         return None
-    if isinstance(op_result, str):
-        return f"# khive compose\n{op_result}"
     return f"# khive compose\n{op_result}"
+
+
+def _ns_kwarg(namespace: str | None) -> str:
+    """The ``, namespace="..."`` ops fragment when a namespace is pinned, else ""."""
+    return f", namespace={json.dumps(namespace)}" if namespace else ""
 
 
 def _truncate(text: str, max_tokens: int | None) -> str:
@@ -214,6 +230,13 @@ class KhiveInjectionProvider:
     """
 
     def __init__(self, policy: KhiveInjectionPolicy, mcp_config: dict | None = None):
+        if policy.snapshot_id is not None:
+            raise ValueError(
+                "KhiveInjectionProvider cannot honor policy.snapshot_id yet — the khive "
+                "recall/compose surface has no snapshot parameter. policy.namespace "
+                "pinning is the supported isolation mechanism; set snapshot_id=None "
+                "and use namespace instead."
+            )
         self.policy = policy
         self.name = f"khive_injection:{policy.profile_id}"
         self._mcp_config = dict(mcp_config or _DEFAULT_MCP_CONFIG)
@@ -255,6 +278,7 @@ class KhiveInjectionProvider:
 
         role = getattr(branch, "name", None) or "agent"
         tags = list(wb.tags) or [f"agent:{role}"]
+        ns = _ns_kwarg(self.policy.namespace)
         for pair in pairs:
             content = (
                 f"tool '{pair['function']}' failed ({pair['error']!r}); resolved by "
@@ -262,7 +286,7 @@ class KhiveInjectionProvider:
             )
             ops = (
                 f"memory.remember(content={json.dumps(content)}, "
-                f"salience={wb.salience_cap}, tags={json.dumps(tags)})"
+                f"salience={wb.salience_cap}, tags={json.dumps(tags)}{ns})"
             )
             try:
                 await _call_khive(ops, self._mcp_config)
@@ -289,8 +313,10 @@ class KhiveInjectionProvider:
 
     async def _recall(self, query: str) -> str | None:
         rp = self.policy.recall
+        ns = _ns_kwarg(self.policy.namespace)
         ops = (
-            f"memory.recall(query={json.dumps(query)}, limit={rp.limit}, min_score={rp.min_score})"
+            f"memory.recall(query={json.dumps(query)}, limit={rp.limit}, "
+            f"min_score={rp.min_score}{ns})"
         )
         result = await _call_khive(ops, self._mcp_config)
 
@@ -299,7 +325,7 @@ class KhiveInjectionProvider:
             fb_ops = (
                 f"brain.auto_feedback(query={json.dumps(query)}, "
                 f"results={json.dumps([{'id': first_id}])}, "
-                f"served_by_profile_id={json.dumps(self.policy.profile_id)})"
+                f"served_by_profile_id={json.dumps(self.policy.profile_id)}{ns})"
             )
             try:
                 await _call_khive(fb_ops, self._mcp_config)
@@ -312,6 +338,7 @@ class KhiveInjectionProvider:
         if not self.policy.compose.enabled:
             return None
         cp = self.policy.compose
-        ops = f"knowledge.compose(query={json.dumps(query)}, max_tokens={cp.max_tokens})"
+        ns = _ns_kwarg(self.policy.namespace)
+        ops = f"knowledge.compose(query={json.dumps(query)}, max_tokens={cp.max_tokens}{ns})"
         result = await _call_khive(ops, self._mcp_config)
         return _render_compose(result)
