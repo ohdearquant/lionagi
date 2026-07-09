@@ -72,6 +72,16 @@ _ENTITY_TABLES: dict[str, str] = {
     "schedule_run": "schedule_runs",
 }
 
+# ADR-0101 slice 2: the task-application submit surface only needs a task to
+# be cancellable while still queued (unleased). This is NOT a full transition
+# graph — it only narrows the single edge set leaving "queued" for entities
+# listed here; any other current status (e.g. "running") is governed by CAS
+# alone, same as before this slice. Lease/running edges are deliberately not
+# modeled yet (D3/D4 worker loop is out of scope for this slice).
+_QUEUED_STATE_ALLOWED_TARGETS: dict[str, frozenset[str]] = {
+    "schedule_run": frozenset({"cancelled"}),
+}
+
 
 async def transition(
     db: Any,
@@ -120,6 +130,18 @@ async def transition(
                 f"{request.entity_type} {request.entity_id!r} not found (table={table})"
             )
         previous_status = row["status"]
+
+        allowed_from_queued = _QUEUED_STATE_ALLOWED_TARGETS.get(request.entity_type)
+        if (
+            allowed_from_queued is not None
+            and previous_status == "queued"
+            and request.to_state not in allowed_from_queued
+        ):
+            raise ValueError(
+                f"transition(): {request.entity_type} queued -> {request.to_state!r} "
+                "is not in the declared transition vocabulary for this slice "
+                f"(allowed: {sorted(allowed_from_queued)})"
+            )
 
         if request.from_state is not None and previous_status != request.from_state:
             return TransitionResult(

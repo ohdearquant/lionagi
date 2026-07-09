@@ -281,7 +281,11 @@ EXTRA_STATUS_WRITE_FIELDS_BY_ENTITY_TYPE: dict[str, frozenset[str]] = {
 VALID_STATUSES_BY_ENTITY_TYPE: dict[str, frozenset[str]] = {
     "session": VALID_SESSION_STATUSES,
     "invocation": VALID_SESSION_STATUSES,  # shared vocabulary
-    "schedule_run": SCHEDULE_RUN_TERMINAL_STATUSES | frozenset({"pending", "running"}),
+    # ADR-0101 D1/D2 slice 2: "queued" is the durable status a task
+    # application (or a schedule fire) now starts in before a worker leases
+    # it. Lease/running vocab beyond the existing "running" stays as-is —
+    # this slice does not add a worker/lease loop.
+    "schedule_run": SCHEDULE_RUN_TERMINAL_STATUSES | frozenset({"pending", "running", "queued"}),
     # Shows live in {active, completed, aborted} and carry an "imported" marker
     # for records reconstructed from an on-disk manifest — update_show() already
     # validates against this same set before routing here.
