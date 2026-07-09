@@ -1,20 +1,38 @@
 # Copyright (c) 2023-2025, HaiyangLi <quantocean.li at gmail dot com>
 # SPDX-License-Identifier: Apache-2.0
 
-import ast
 import importlib
-import os
 from typing import TypeVar
+
+from lionagi.ln._utils import import_module
 
 T = TypeVar("T")
 LION_CLASS_REGISTRY: dict[str, type[T]] = {}
-LION_CLASS_FILE_REGISTRY: dict[str, str] = {}
 
-pattern_list = [
-    "lionagi/protocols/generic",
-    "lionagi/protocols/graph",
-    "lionagi/protocols/messages",
-]
+# Built-in modules that define Element/Node subclasses. Persisted `lion_class`
+# metadata written before the full-qualified-name convention was adopted
+# stores a bare class name (e.g. "Instruction") instead of a dotted path.
+# Importing these modules on a short-name lookup miss (a) triggers
+# Node.__pydantic_init_subclass__ registration into LION_CLASS_REGISTRY for
+# Node subclasses, and (b) makes every built-in class directly attribute-
+# lookupable on its module, without scanning the filesystem.
+_BUILTIN_MODULES = (
+    "lionagi.protocols.generic.element",
+    "lionagi.protocols.generic.event",
+    "lionagi.protocols.generic.flow",
+    "lionagi.protocols.generic.log",
+    "lionagi.protocols.generic.pile",
+    "lionagi.protocols.generic.progression",
+    "lionagi.protocols.graph.edge",
+    "lionagi.protocols.graph.graph",
+    "lionagi.protocols.graph.node",
+    "lionagi.protocols.messages.action_request",
+    "lionagi.protocols.messages.action_response",
+    "lionagi.protocols.messages.assistant_response",
+    "lionagi.protocols.messages.instruction",
+    "lionagi.protocols.messages.message",
+    "lionagi.protocols.messages.system",
+)
 
 __all__ = (
     "get_class",
@@ -22,96 +40,40 @@ __all__ = (
 )
 
 
-def get_file_classes(file_path):
-    with open(file_path) as file:
-        file_content = file.read()
-
-    tree = ast.parse(file_content)
-
-    class_file_dict = {}
-    for node in tree.body:
-        if isinstance(node, ast.ClassDef):
-            class_file_dict[node.name] = file_path
-
-    return class_file_dict
-
-
-def get_class_file_registry(folder_path, pattern_list):
-    class_file_registry = {}
-    for root, _, files in os.walk(folder_path):
-        for file in files:
-            if file.endswith(".py"):
-                if any(pattern in root for pattern in pattern_list):
-                    class_file_dict = get_file_classes(os.path.join(root, file))
-                    class_file_registry.update(class_file_dict)
-    return class_file_registry
-
-
-if not LION_CLASS_FILE_REGISTRY:
-    script_path = os.path.abspath(__file__)
-    script_dir = os.path.dirname(script_path)
-
-    LION_CLASS_FILE_REGISTRY = get_class_file_registry(script_dir, pattern_list)
-
-# The `lionagi/` package directory itself.  A valid *file_path* must live
-# under this directory — not merely under the project root — so that a stale
-# or polluted LION_CLASS_FILE_REGISTRY entry cannot import arbitrary top-level
-# modules from the checkout (e.g. test files outside the package).
-_PACKAGE_DIR: str = os.path.dirname(os.path.abspath(__file__))
-
-# The parent directory of the lionagi package (i.e. the project root that
-# contains the `lionagi/` directory).  Used to derive the dotted module name,
-# which must include the `lionagi.` prefix.  Stored at module level so it can
-# be used by get_class_objects without re-computing on every call.
-_PACKAGE_PARENT: str = os.path.dirname(_PACKAGE_DIR)
-
-
-def get_class_objects(file_path):
-    """Return {class_name: class} for all classes in *file_path* via canonical import."""
-    abs_path = os.path.abspath(file_path)
-
-    # Guard: the file must live inside the `lionagi/` package directory itself,
-    # not merely under the project root.  Otherwise any importable top-level
-    # module in the checkout (e.g. a test file) would be treated as a valid
-    # dotted module, broadening the fallback import surface.  os.path.commonpath
-    # raises ValueError for paths on different drives (Windows); treat that the
-    # same as "outside the package".
-    try:
-        within_package = os.path.commonpath([_PACKAGE_DIR, abs_path]) == _PACKAGE_DIR
-    except ValueError:
-        within_package = False
-
-    if not within_package:
-        raise ValueError(
-            f"Cannot derive a dotted module name for {file_path!r}: "
-            f"it is not located under the package root {_PACKAGE_DIR!r}."
-        )
-
-    rel = os.path.relpath(abs_path, _PACKAGE_PARENT)
-
-    # Convert filesystem path to dotted module name.
-    # Example: "lionagi/protocols/graph/node.py" -> "lionagi.protocols.graph.node"
-    dotted_name = rel.replace(os.sep, ".").removesuffix(".py")
-
-    module = importlib.import_module(dotted_name)
-
-    class_objects = {}
-    for attr_name in dir(module):
-        obj = getattr(module, attr_name)
-        if isinstance(obj, type):
-            class_objects[attr_name] = obj
-
-    return class_objects
-
-
 def get_class(class_name: str) -> type:
-    """Retrieve a class by name from the registry or by dynamic import; raises ValueError if not found."""
+    """Retrieve a class by name.
+
+    Resolution order: LION_CLASS_REGISTRY lookup (fully-qualified name) ->
+    dotted-path import (any importable "module.Class" string) -> legacy
+    short-name lookup among the built-in modules (for data persisted before
+    the full-qualified-name convention). Raises ValueError if not found.
+    """
     if class_name in LION_CLASS_REGISTRY:
         return LION_CLASS_REGISTRY[class_name]
 
-    try:
-        found_class_filepath = LION_CLASS_FILE_REGISTRY[class_name]
-        found_class_dict = get_class_objects(found_class_filepath)
-        return found_class_dict[class_name]
-    except Exception as e:
-        raise ValueError(f"Unable to find class {class_name}: {e}") from e
+    name = class_name
+    if "." in class_name:
+        mod, _, name = class_name.rpartition(".")
+        try:
+            cls = import_module(mod, import_name=name)
+            if isinstance(cls, type):
+                return cls
+        except (ImportError, AttributeError):
+            pass
+
+    for mod_name in _BUILTIN_MODULES:
+        try:
+            module = importlib.import_module(mod_name)
+        except ImportError:
+            continue
+        cls = getattr(module, name, None)
+        if isinstance(cls, type):
+            return cls
+
+    # Importing the built-in modules above may have registered additional
+    # Node subclasses under their full-qualified names; check by suffix.
+    for key, cls in LION_CLASS_REGISTRY.items():
+        if key == name or key.endswith(f".{name}"):
+            return cls
+
+    raise ValueError(f"Unable to find class {class_name}")
