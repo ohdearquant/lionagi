@@ -366,6 +366,44 @@ async def test_run_route_returns_structured_422_on_compile_error(patched_env):
     assert exc_info.value.detail["edge_id"] == "e2"
 
 
+async def test_workflow_run_bare_chat_model_rejected_at_compile_defense_in_depth(patched_env):
+    """A row saved with a bare config.model BEFORE the write-path validation
+    existed (or written directly, bypassing it) must still be caught at
+    compile time — the write-path check alone is not sufficient defense."""
+    wf_svc, engine_defs_svc = patched_env
+    from lionagi.studio.services.workflow_compile import WorkflowCompileError
+    from lionagi.studio.services.workflow_run import run_workflow_def
+
+    engine_def = await engine_defs_svc.create_engine_def({"name": "eng-c", "kind": "research"})
+    spec = _spec()
+    spec["nodes"][2]["config"]["engine_def_id"] = engine_def["id"]
+    spec["nodes"][1]["config"]["model"] = "gpt-4.1-mini"  # bare — no provider prefix
+
+    import time
+    import uuid
+
+    from lionagi.state.db import StateDB
+
+    def_id = uuid.uuid4().hex[:12]
+    now = time.time()
+    async with StateDB() as db:
+        await db.create_workflow_def(
+            {
+                "id": def_id,
+                "name": "legacy-bare-model",
+                "description": None,
+                "spec_json": spec,
+                "created_at": now,
+                "updated_at": now,
+            }
+        )
+
+    with pytest.raises(WorkflowCompileError) as exc_info:
+        await run_workflow_def(def_id)
+    assert exc_info.value.node_id == "chat1"
+    assert "chat1" in str(exc_info.value)
+
+
 async def test_run_route_returns_404_for_missing_def(patched_env):
     from fastapi import HTTPException
 
