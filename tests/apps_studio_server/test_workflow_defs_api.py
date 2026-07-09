@@ -251,10 +251,27 @@ async def test_chat_node_non_string_model_raises(patched_svc):
         await svc.create_workflow_def({"name": "badmodel", "spec_json": spec})
 
 
-async def test_chat_node_valid_config_passes(patched_svc):
+async def test_chat_node_bare_model_rejected_at_write(patched_svc):
+    """A bare (non provider-prefixed) config.model must fail to save — it
+    silently binds to the default provider at runtime otherwise."""
     svc, _ = patched_svc
     spec = _spec_with_chat({"prompt": "hi", "model": "gpt-4"})
+    with pytest.raises(ValueError, match="n3") as exc_info:
+        await svc.create_workflow_def({"name": "baremodel", "spec_json": spec})
+    assert "provider/model" in str(exc_info.value) or "provider-prefixed" in str(exc_info.value)
+
+
+async def test_chat_node_valid_config_passes(patched_svc):
+    svc, _ = patched_svc
+    spec = _spec_with_chat({"prompt": "hi", "model": "openai/gpt-4"})
     result = await svc.create_workflow_def({"name": "goodchat", "spec_json": spec})
+    assert "id" in result
+
+
+async def test_chat_node_no_model_passes(patched_svc):
+    svc, _ = patched_svc
+    spec = _spec_with_chat({"prompt": "hi"})
+    result = await svc.create_workflow_def({"name": "nomodelchat", "spec_json": spec})
     assert "id" in result
 
 

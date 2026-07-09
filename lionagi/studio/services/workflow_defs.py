@@ -107,8 +107,15 @@ def _validate_chat_config(node_id: str, config: Any) -> None:
     if not isinstance(config["prompt"], str):
         raise ValueError(f"node {node_id!r} config.prompt must be a string")
     model = config.get("model")
-    if model is not None and not isinstance(model, str):
-        raise ValueError(f"node {node_id!r} config.model must be a string")
+    if model is not None:
+        if not isinstance(model, str):
+            raise ValueError(f"node {node_id!r} config.model must be a string")
+        if "/" not in model:
+            raise ValueError(
+                f"node {node_id!r} config.model must be provider-prefixed "
+                f"(provider/name, e.g. openai/gpt-4.1-mini); got {model!r}. "
+                "Use provider/model, e.g. openai/gpt-4.1-mini."
+            )
 
 
 def _find_gate_node_ids(spec: dict[str, Any] | None) -> list[str]:

@@ -368,6 +368,54 @@ async def test_compile_missing_chat_prompt_raises():
     assert exc_info.value.node_id == "n2"
 
 
+async def test_compile_chat_node_applies_config_model():
+    """A chat node's config.model must reach the compiled operation as an
+    iModel bound to that provider/model — not be silently dropped."""
+    spec = _make_spec()
+    spec["nodes"][1]["config"]["model"] = "openai/gpt-4.1-mini"
+    graph, _id_map = await compile_workflow_def(spec, resolve_engine_def=_resolve_ok)
+
+    from lionagi.operations.node import Operation
+    from lionagi.service.imodel import iModel
+
+    chat_op = next(
+        n
+        for n in graph.internal_nodes.values()
+        if isinstance(n, Operation) and n.operation == "chat_and_record"
+    )
+    imodel = chat_op.parameters["imodel"]
+    assert isinstance(imodel, iModel)
+    assert imodel.endpoint.config.provider == "openai"
+    assert imodel.endpoint.config.kwargs.get("model") == "gpt-4.1-mini"
+
+
+async def test_compile_chat_node_bare_model_rejected_with_node_id():
+    """A bare (non provider-prefixed) config.model must fail loudly at
+    compile — it otherwise silently binds to the default provider."""
+    spec = _make_spec()
+    spec["nodes"][1]["config"]["model"] = "gpt-4.1-mini"
+    with pytest.raises(WorkflowCompileError) as exc_info:
+        await compile_workflow_def(spec, resolve_engine_def=_resolve_ok)
+    assert exc_info.value.node_id == "n2"
+    assert "n2" in str(exc_info.value)
+    assert "provider/model" in str(exc_info.value) or "provider-prefixed" in str(exc_info.value)
+
+
+async def test_compile_chat_node_no_model_keeps_default_behavior():
+    """A chat node that omits config.model compiles with no imodel override,
+    so it runs on the branch's default chat model exactly as before."""
+    graph, _id_map = await compile_workflow_def(_make_spec(), resolve_engine_def=_resolve_ok)
+
+    from lionagi.operations.node import Operation
+
+    chat_op = next(
+        n
+        for n in graph.internal_nodes.values()
+        if isinstance(n, Operation) and n.operation == "chat_and_record"
+    )
+    assert "imodel" not in chat_op.parameters
+
+
 async def test_compile_bad_condition_raises_with_edge_id():
     spec = _make_spec()
     spec["edges"][1]["condition"] = "__import__('os')"

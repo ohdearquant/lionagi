@@ -298,6 +298,23 @@ async def compile_workflow_def(
             prompt = config.get("prompt")
             if not prompt or not isinstance(prompt, str):
                 raise WorkflowCompileError("chat node requires config.prompt", node_id=node_id)
+            chat_kwargs: dict[str, Any] = {}
+            model = config.get("model")
+            if model is not None:
+                if not isinstance(model, str) or "/" not in model:
+                    raise WorkflowCompileError(
+                        f"node {node_id!r} config.model must be provider-prefixed "
+                        f"(provider/name, e.g. openai/gpt-4.1-mini); got {model!r}. "
+                        "Use provider/model, e.g. openai/gpt-4.1-mini.",
+                        node_id=node_id,
+                    )
+                # Built here at compile time rather than passed through as a bare
+                # string: chat_and_record forwards its kwargs straight into
+                # Branch.chat(), whose model-override parameter is `imodel` (an
+                # iModel instance), not a string.
+                from lionagi.service.imodel import iModel
+
+                chat_kwargs["imodel"] = iModel(model=model)
             # "chat_and_record", not the native "chat" operation: Branch.chat()
             # does not add messages to the branch (by design — see its
             # docstring), so a plain "chat" node would run through the
@@ -306,7 +323,9 @@ async def compile_workflow_def(
             # the turn through the same hooked a_add_message path communicate()
             # uses, and returns the assistant response text for downstream
             # routing/context.
-            op_id = builder.add_operation("chat_and_record", node_id=node_id, instruction=prompt)
+            op_id = builder.add_operation(
+                "chat_and_record", node_id=node_id, instruction=prompt, **chat_kwargs
+            )
         elif kind == "engine":
             engine_def_id = config.get("engine_def_id")
             if not engine_def_id or not isinstance(engine_def_id, str):
