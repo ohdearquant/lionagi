@@ -91,6 +91,16 @@ function summarizeOutput(out: string, more: (n: number) => string): string {
   return `${first.slice(0, 80)}${first.length > 80 ? "…" : ""} · ${more(lines.length - 1)}`;
 }
 
+export function collapsedTextFor(summary: string, output: string): string {
+  if (summary) return summary;
+  if (!output) return "";
+  const firstLine = output
+    .split("\n")
+    .find((line) => line.trim().length > 0)
+    ?.trim();
+  return firstLine ?? "";
+}
+
 function formatBytes(n: number): string {
   if (n < 1024) return `${n}B`;
   if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)}KB`;
@@ -1094,13 +1104,7 @@ function ToolCallBlock({
   // Collapsed-row fallback: an empty summary with non-empty output shows the
   // output's first non-blank line instead of a bare "(no args)" — that line
   // is usually more informative than a static placeholder.
-  const outputPreview = output
-    ? (output
-        .split("\n")
-        .find((line) => line.trim().length > 0)
-        ?.trim() ?? "")
-    : "";
-  const collapsedText = summary || outputPreview;
+  const collapsedText = collapsedTextFor(summary, output);
 
   const statusBadge = isError ? (
     <span className="rounded border border-status-error/30 bg-status-error-bg px-1.5 py-0.5 text-[length:var(--t-xs)] font-medium text-status-error">

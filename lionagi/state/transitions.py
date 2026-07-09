@@ -72,6 +72,16 @@ _ENTITY_TABLES: dict[str, str] = {
     "schedule_run": "schedule_runs",
 }
 
+# guard/patch column names are interpolated directly into SQL text (values are
+# still bound params). Every production call site today passes literal dicts,
+# but this module is a generic surface ADR-0062's full transition backend will
+# absorb, so a per-entity allowlist closes the latent injection surface for
+# future callers instead of trusting the caller's dict keys outright.
+_GUARD_PATCH_COLUMNS: dict[str, frozenset[str]] = {
+    "dispatch": frozenset({"attempt", "next_attempt_at", "last_error"}),
+    "schedule_run": frozenset({"leased_by", "lease_expires_at", "lease_attempts"}),
+}
+
 # ADR-0101 slice 2/3: the declared transition vocabulary, per (entity_type,
 # from_state). This is NOT a full transition graph, but it IS closed for the
 # entity types listed: a current status with no entry has no declared
@@ -126,6 +136,16 @@ async def transition(
 
     guard = guard or {}
     patch = patch or {}
+
+    allowed_columns = _GUARD_PATCH_COLUMNS.get(request.entity_type, frozenset())
+    for label, cols in (("guard", guard), ("patch", patch)):
+        unknown = sorted(set(cols) - allowed_columns)
+        if unknown:
+            raise ValueError(
+                f"transition(): {label} column(s) {unknown} are not in the declared "
+                f"guard/patch allowlist for entity_type {request.entity_type!r} "
+                f"(allowed: {sorted(allowed_columns)})"
+            )
     now = time.time()
     transition_id = uuid.uuid4().hex
 
