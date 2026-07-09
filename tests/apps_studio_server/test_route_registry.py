@@ -248,6 +248,7 @@ _MIGRATED_AREAS = {
     "workflow-defs",
     "sessions",
     "leo",
+    "approvals",
     "admin",
     "schedules",
     "stats",

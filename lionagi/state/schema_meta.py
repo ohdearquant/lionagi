@@ -952,4 +952,44 @@ run_tags = Table(
     Column("created_at", Float, nullable=False),
 )
 
+# ── approvals (studio operator permission ledger) ──────────────────────────
+# Server-side confirm-flow: a mutating action is proposed, a human grants or
+# denies it, and the real endpoint consumes the granted approval exactly once.
+
+approvals = Table(
+    "approvals",
+    metadata,
+    Column("id", Text, primary_key=True),
+    Column("action_kind", Text, nullable=False),
+    Column("params_hash", Text, nullable=False),
+    Column("session_id", Text, ForeignKey("sessions.id")),
+    Column(
+        "status",
+        Text,
+        CheckConstraint(
+            "status IN ('pending','granted','consumed','expired','denied')",
+            name="ck_approvals_status",
+        ),
+        nullable=False,
+        server_default="pending",
+    ),
+    Column("proposed_at", Float, nullable=False),
+    Column("granted_at", Float),
+    Column("consumed_at", Float),
+    Column("expires_at", Float, nullable=False),
+)
+
+Index(
+    "idx_approvals_status",
+    approvals.c.status,
+    sqlite_where=text("status IN ('pending', 'granted')"),
+    postgresql_where=text("status IN ('pending', 'granted')"),
+)
+Index(
+    "idx_approvals_session",
+    approvals.c.session_id,
+    sqlite_where=text("session_id IS NOT NULL"),
+    postgresql_where=text("session_id IS NOT NULL"),
+)
+
 Index("idx_run_tags_tag", run_tags.c.tag)
