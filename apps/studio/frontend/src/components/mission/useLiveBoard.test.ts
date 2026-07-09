@@ -10,8 +10,20 @@
  */
 
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
+import { act } from "react";
+import { createRoot, type Root } from "react-dom/client";
+import * as React from "react";
 import { boardReducer, initialBoardState } from "./boardReducer";
 import type { BoardState } from "./boardReducer";
+import { useLiveBoard } from "./useLiveBoard";
+
+vi.mock("@/lib/api", () => ({
+  listRuns: vi.fn(),
+  listInvocations: vi.fn(),
+  listSchedules: vi.fn(),
+}));
+
+import { listRuns, listInvocations, listSchedules } from "@/lib/api";
 
 // ─── Watchdog hysteresis: pure reducer logic ──────────────────────────────────
 // The hysteresis contract is: MARK_STALE only takes effect when dataState=live.
@@ -201,5 +213,134 @@ describe("watchdog timing — 5s silence gate", () => {
 
     // Still stale — anti-flap gate held
     expect(state.dataState).toBe("stale");
+  });
+});
+
+// ─── useLiveBoard — mounted behavior (real fetch path, mocked api module) ────
+// Mirrors the usePulse.test.tsx mounting pattern: react-dom/client + act,
+// no Testing Library dependency.
+
+describe("useLiveBoard — schedules degrade-to-null on fetch failure", () => {
+  let container: HTMLDivElement;
+  let root: Root;
+  let unmounted: boolean;
+  let latest: BoardState | null;
+
+  function Harness() {
+    latest = useLiveBoard();
+    return null;
+  }
+
+  beforeEach(() => {
+    vi.mocked(listRuns).mockReset();
+    vi.mocked(listInvocations).mockReset();
+    vi.mocked(listSchedules).mockReset();
+    container = document.createElement("div");
+    document.body.appendChild(container);
+    latest = null;
+    unmounted = false;
+  });
+
+  afterEach(() => {
+    if (!unmounted) {
+      act(() => {
+        root.unmount();
+      });
+    }
+    container.remove();
+  });
+
+  it("still reaches DATA_OK with schedules: null when listSchedules rejects but runs/invocations resolve", async () => {
+    vi.mocked(listRuns).mockResolvedValue({
+      runs: [],
+      page: 1,
+      per_page: 200,
+      total: 0,
+      total_pages: 1,
+      has_next: false,
+      has_prev: false,
+    });
+    vi.mocked(listInvocations).mockResolvedValue({
+      invocations: [],
+      limit: 100,
+      offset: 0,
+      has_next: false,
+    });
+    vi.mocked(listSchedules).mockRejectedValue(new Error("schedules endpoint down"));
+
+    await act(async () => {
+      root = createRoot(container);
+      root.render(React.createElement(Harness));
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    expect(latest?.dataState).toBe("live");
+    expect(latest?.schedules).toEqual([]);
+    expect(latest?.schedulesKnown).toBe(false);
+  });
+
+  it("retains the prior schedule list once a later poll's schedules fetch fails", async () => {
+    vi.useFakeTimers();
+    const sched = {
+      id: "s1",
+      name: "nightly",
+      description: null,
+      enabled: 1,
+      trigger_type: "cron" as const,
+      cron_expr: "0 0 * * *",
+      interval_sec: null,
+      github_repo: null,
+      poll_interval_sec: null,
+      action_kind: "agent" as const,
+      action_model: null,
+      action_prompt: null,
+      action_agent: null,
+      action_playbook: null,
+      action_project: null,
+      on_success: null,
+      on_fail: null,
+      last_fired_at: null,
+      next_fire_at: null,
+      missed_fire_policy: "skip",
+      overlap_policy: "skip",
+      project: null,
+      created_at: 0,
+      updated_at: 0,
+    };
+    const runsResp = {
+      runs: [],
+      page: 1,
+      per_page: 200,
+      total: 0,
+      total_pages: 1,
+      has_next: false,
+      has_prev: false,
+    };
+    const invsResp = { invocations: [], limit: 100, offset: 0, has_next: false };
+
+    vi.mocked(listRuns).mockResolvedValue(runsResp);
+    vi.mocked(listInvocations).mockResolvedValue(invsResp);
+    vi.mocked(listSchedules).mockResolvedValueOnce({ schedules: [sched] });
+
+    await act(async () => {
+      root = createRoot(container);
+      root.render(React.createElement(Harness));
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    expect(latest?.schedules).toEqual([sched]);
+    expect(latest?.schedulesKnown).toBe(true);
+
+    // Next poll (3s interval): schedules fetch fails — the reducer must keep
+    // the last-known list rather than clearing it.
+    vi.mocked(listSchedules).mockRejectedValueOnce(new Error("boom"));
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(3_000);
+    });
+    expect(latest?.schedules).toEqual([sched]);
+    expect(latest?.schedulesKnown).toBe(true);
+
+    vi.useRealTimers();
   });
 });
