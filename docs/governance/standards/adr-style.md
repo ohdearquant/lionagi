@@ -10,7 +10,8 @@ Cross-references: [dsl-style.md](dsl-style.md), [trace-naming.md](trace-naming.m
 
 ## 1. File And Title
 
-- File: `docs/_archive/v0/ADR-NNNN-kebab-case-title.md`.
+- File: `docs/adr/ADR-NNNN-kebab-case-title.md` (the canonical corpus; see `docs/adr/TEMPLATE.md`).
+- Archived v0 records live at `docs/_archive/v0/` and keep their original numbering; new ADRs never land there.
 - First line: `# ADR-NNNN: Human Title`.
 - Numbers are never reused.
 - Keep the title stable after acceptance unless a replacement ADR supersedes it.
@@ -80,7 +81,7 @@ materially different form.
 - Dependency list: `Depends on: ADR-0044, ADR-0051`.
 - Inline references: `See ADR-0050 OperationContext propagation`.
 - Avoid bare phrases like "the charter ADR" — the governance set has several charter-adjacent ADRs.
-- File paths: use repo-relative paths: `docs/_archive/v0/ADR-0047-agent-charter.md`.
+- File paths: use repo-relative paths: `docs/adr/ADR-0001-element-identity-and-polymorphic-serialization-envelope.md` (archived v0 records: `docs/_archive/v0/ADR-0047-agent-charter.md`).
 - When overlaps exist, name the type owner explicitly. Example:
   `GateResult is owned by ADR-0044; ADR-0050 embeds references to it.`
 
@@ -88,7 +89,7 @@ materially different form.
 
 ```markdown
 This module emits `GateResult` (ADR-0044) and stores a reference in `OperationContext`
-(ADR-0050). See docs/_archive/v0/ADR-0044-tool-gates.md for the canonical type.
+(ADR-0050). See docs/_archive/v0/ADR-0044-tool-gates.md for the v0 record of the type.
 ```
 
 **Bad** — ambiguous reference:
