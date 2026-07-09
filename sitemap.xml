@@ -457,6 +457,34 @@
          <lastmod>2026-07-09</lastmod>
     </url>
     <url>
+         <loc>https://ohdearquant.github.io/lionagi/adr/ADR-0006-conversational-message-envelope-and-ordered-history/</loc>
+         <lastmod>2026-07-09</lastmod>
+    </url>
+    <url>
+         <loc>https://ohdearquant.github.io/lionagi/adr/ADR-0007-canonical-turn-request-compilation-boundary/</loc>
+         <lastmod>2026-07-09</lastmod>
+    </url>
+    <url>
+         <loc>https://ohdearquant.github.io/lionagi/adr/ADR-0008-pre-turn-context-provider-execution-and-attribution/</loc>
+         <lastmod>2026-07-09</lastmod>
+    </url>
+    <url>
+         <loc>https://ohdearquant.github.io/lionagi/adr/ADR-0021-branch-operation-facade-and-turn-adapters/</loc>
+         <lastmod>2026-07-09</lastmod>
+    </url>
+    <url>
+         <loc>https://ohdearquant.github.io/lionagi/adr/ADR-0022-composed-branch-operation-pipeline/</loc>
+         <lastmod>2026-07-09</lastmod>
+    </url>
+    <url>
+         <loc>https://ohdearquant.github.io/lionagi/adr/ADR-0023-dependency-aware-operation-graph-execution-kernel/</loc>
+         <lastmod>2026-07-09</lastmod>
+    </url>
+    <url>
+         <loc>https://ohdearquant.github.io/lionagi/adr/ADR-0024-lndl-operate-integration-adapter/</loc>
+         <lastmod>2026-07-09</lastmod>
+    </url>
+    <url>
          <loc>https://ohdearquant.github.io/lionagi/adr/TEMPLATE/</loc>
          <lastmod>2026-07-09</lastmod>
     </url>
