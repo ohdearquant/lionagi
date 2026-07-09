@@ -24,8 +24,21 @@ function formatElapsed(sec: number | null): string {
     return s > 0 ? `${m}m ${s}s` : `${m}m`;
   }
   const h = Math.floor(m / 60);
-  const mm = m - h * 60;
-  return mm > 0 ? `${h}h ${mm}m` : `${h}h`;
+  if (h < 24) {
+    const mm = m - h * 60;
+    return mm > 0 ? `${h}h ${mm}m` : `${h}h`;
+  }
+  const d = Math.floor(h / 24);
+  const hh = h - d * 24;
+  return hh > 0 ? `${d}d ${hh}h` : `${d}d`;
+}
+
+// Compact count for a legibility-sensitive slot: under 1000 renders the exact
+// integer, at or above 1000 renders one decimal place with a "k" suffix
+// (truncated, not rounded, so the digit shown never overstates the count).
+function formatCompactCount(n: number): string {
+  if (n < 1000) return `${n}`;
+  return `${Math.floor(n / 100) / 10}k`;
 }
 
 // ─── Agent row ────────────────────────────────────────────────────────────────
@@ -54,14 +67,21 @@ function AgentRowItem({
       <span className="min-w-0 flex-1 truncate font-data text-[length:var(--t-sm)] text-content-primary">
         {agent.name}
       </span>
-      <span className="min-w-[28px] shrink-0 font-data text-[length:var(--t-xs)] uppercase tracking-wider text-content-muted">
-        {t("agentRow.kind")}
+      <span
+        className="min-w-[28px] shrink-0 font-data tabular-nums text-[length:var(--t-xs)] text-content-muted"
+        title={t("agentRow.branchesTitle", { count: agent.branch_count })}
+      >
+        {agent.branch_count > 0
+          ? t("agentRow.branches", { count: formatCompactCount(agent.branch_count) })
+          : "—"}
       </span>
-      <span className="min-w-[28px] shrink-0 font-data tabular-nums text-[length:var(--t-xs)] text-content-muted">
-        {agent.branch_count > 0 ? t("agentRow.branches", { count: agent.branch_count }) : "—"}
-      </span>
-      <span className="min-w-[28px] shrink-0 font-data tabular-nums text-[length:var(--t-xs)] text-content-muted">
-        {agent.message_count > 0 ? t("agentRow.messages", { count: agent.message_count }) : "—"}
+      <span
+        className="min-w-[28px] shrink-0 font-data tabular-nums text-[length:var(--t-xs)] text-content-muted"
+        title={t("agentRow.messagesTitle", { count: agent.message_count })}
+      >
+        {agent.message_count > 0
+          ? t("agentRow.messages", { count: formatCompactCount(agent.message_count) })
+          : "—"}
       </span>
       <span className="min-w-[48px] shrink-0 font-data tabular-nums text-[length:var(--t-xs)] text-status-running">
         {formatElapsed(agent.elapsedSec)}

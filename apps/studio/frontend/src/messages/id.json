@@ -555,9 +555,10 @@
     },
     "agentRow": {
       "ariaLabel": "Agen {name} — buka detail sesi",
-      "kind": "eksekusi",
-      "branches": "{count}b",
-      "messages": "{count}m"
+      "branches": "{count} cab",
+      "messages": "{count} psn",
+      "branchesTitle": "{count} cabang",
+      "messagesTitle": "{count} pesan"
     },
     "empty": {
       "message": "Tidak ada agen berjalan — armada agen menampilkan orkestrasi live saat terjadi.",

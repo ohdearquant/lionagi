@@ -555,9 +555,10 @@
     },
     "agentRow": {
       "ariaLabel": "Agent {name} — Sessiondetails öffnen",
-      "kind": "Ausführung",
-      "branches": "{count}b",
-      "messages": "{count}m"
+      "branches": "{count} Zwg",
+      "messages": "{count} Nchr",
+      "branchesTitle": "{count} Zweige",
+      "messagesTitle": "{count} Nachrichten"
     },
     "empty": {
       "message": "Keine Agenten laufen — die Flotte zeigt Live-Orchestrierungen, während sie passieren.",

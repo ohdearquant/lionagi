@@ -555,9 +555,10 @@
     },
     "agentRow": {
       "ariaLabel": "エージェント{name} — セッション詳細を開く",
-      "kind": "実行",
-      "branches": "{count, plural, other {# ブランチ}}",
-      "messages": "{count, plural, other {# メッセージ}}"
+      "branches": "{count}分岐",
+      "messages": "{count}件",
+      "branchesTitle": "{count} 件のブランチ",
+      "messagesTitle": "{count} 件のメッセージ"
     },
     "empty": {
       "message": "実行中のエージェントはありません — エージェントフリートはライブのオーケストレーションを発生時に表示します。",

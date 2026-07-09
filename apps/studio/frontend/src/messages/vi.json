@@ -555,9 +555,10 @@
     },
     "agentRow": {
       "ariaLabel": "tác nhân {name} — mở chi tiết phiên",
-      "kind": "lần chạy",
-      "branches": "{count, plural, other {# nhánh}}",
-      "messages": "{count, plural, other {# tin nhắn}}"
+      "branches": "{count} nh",
+      "messages": "{count} tn",
+      "branchesTitle": "{count} nhánh",
+      "messagesTitle": "{count} tin nhắn"
     },
     "empty": {
       "message": "không có tác nhân nào đang chạy — nhóm tác nhân hiển thị các điều phối live khi chúng diễn ra.",

@@ -555,9 +555,10 @@
     },
     "agentRow": {
       "ariaLabel": "에이전트 {name} — 세션 세부 정보 열기",
-      "kind": "실행",
-      "branches": "{count, plural, other {브랜치 #개}}",
-      "messages": "{count, plural, other {메시지 #개}}"
+      "branches": "브랜치 {count}",
+      "messages": "메시지 {count}",
+      "branchesTitle": "브랜치 {count}개",
+      "messagesTitle": "메시지 {count}개"
     },
     "empty": {
       "message": "실행 중인 에이전트 없음 — 에이전트 플릿은 라이브 오케스트레이션을 발생 즉시 보여줍니다.",

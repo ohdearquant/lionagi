@@ -555,9 +555,10 @@
     },
     "agentRow": {
       "ariaLabel": "Agent {name} — ouvrir le détail de session",
-      "kind": "exécution",
-      "branches": "{count, plural, one {# branche} other {# branches}}",
-      "messages": "{count, plural, one {# message} other {# messages}}"
+      "branches": "{count} br",
+      "messages": "{count} msg",
+      "branchesTitle": "{count} branches",
+      "messagesTitle": "{count} messages"
     },
     "empty": {
       "message": "Aucun agent en cours — la Flotte affiche les orchestrations en direct au fur et à mesure.",

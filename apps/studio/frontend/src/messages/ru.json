@@ -555,9 +555,10 @@
     },
     "agentRow": {
       "ariaLabel": "Агент {name} — открыть сведения о сессии",
-      "kind": "запуск",
-      "branches": "{count} в.",
-      "messages": "{count} сообщ."
+      "branches": "{count} ветв",
+      "messages": "{count} сообщ",
+      "branchesTitle": "{count} ветвей",
+      "messagesTitle": "{count} сообщений"
     },
     "empty": {
       "message": "Запущенных агентов нет — пул агентов показывает живые оркестрации по мере их появления.",
