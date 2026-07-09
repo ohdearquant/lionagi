@@ -129,6 +129,14 @@ def patched_env(tmp_path: Path, monkeypatch):
             "cls_path": ("tests.apps_studio_server.test_workflow_run", "_FakeEngine"),
         },
     )
+    monkeypatch.setitem(
+        cli_engine._KIND_META,
+        "coding",
+        {
+            **cli_engine._KIND_META["coding"],
+            "cls_path": ("tests.apps_studio_server.test_workflow_run", "_FakeEngine"),
+        },
+    )
     return wf_svc, engine_defs_svc
 
 
@@ -402,6 +410,196 @@ async def test_workflow_run_bare_chat_model_rejected_at_compile_defense_in_depth
         await run_workflow_def(def_id)
     assert exc_info.value.node_id == "chat1"
     assert "chat1" in str(exc_info.value)
+
+
+# ─── Per-node cwd end-to-end ──────────────────────────────────────────────────
+
+
+async def test_workflow_run_node_cwd_reaches_engine_invocation(patched_env, tmp_path):
+    """A contained, relative node cwd must resolve to an absolute path under
+    base_dir and reach the engine's run(workspace=...) call — the actual
+    provider seam (make_engine_operation._engine_op forwards it as
+    run_kwargs['workspace'] for coding engine nodes)."""
+    wf_svc, engine_defs_svc = patched_env
+    _FakeEngine.calls = []
+
+    sub = tmp_path / "worktree"
+    sub.mkdir()
+
+    engine_def = await engine_defs_svc.create_engine_def(
+        {"name": "coding-eng", "kind": "coding", "options": {"test_cmd": "pytest"}}
+    )
+    spec = _spec()
+    spec["nodes"][2]["config"]["engine_def_id"] = engine_def["id"]
+    spec["nodes"][2]["config"]["cwd"] = "worktree"
+    created = await wf_svc.create_workflow_def({"name": "cwd-flow", "spec_json": spec})
+
+    from lionagi.session.session import Session
+    from lionagi.studio.services.workflow_run import run_workflow_def
+
+    session = Session(default_branch=_mock_chat_branch())
+    result = await run_workflow_def(
+        created["id"], {"topic": "GQA"}, base_dir=str(tmp_path), _session=session
+    )
+
+    assert result["status"] == "completed"
+    assert len(_FakeEngine.calls) == 1
+    assert _FakeEngine.calls[0]["kwargs"]["workspace"] == str(sub.resolve())
+
+
+def test_real_coding_engine_run_accepts_compile_invocation_kwargs():
+    """The compile layer invokes every engine as run(spec, session=...,
+    on_branch_created=..., **run_kwargs). The fake engine in these tests
+    accepts **kwargs, so it cannot catch a real signature mismatch — bind
+    the exact invocation shape against the real CodingEngine.run signature."""
+    import inspect
+
+    from lionagi.engines.coding import CodingEngine
+
+    sig = inspect.signature(CodingEngine.run)
+    sig.bind(
+        object(),  # self
+        "fix the bug",  # spec
+        session=None,
+        on_branch_created=None,
+        test_cmd="pytest",
+        workspace="/tmp/w",
+    )
+
+
+async def test_workflow_run_node_cwd_without_base_dir_rejected(patched_env, tmp_path):
+    wf_svc, engine_defs_svc = patched_env
+
+    engine_def = await engine_defs_svc.create_engine_def(
+        {"name": "coding-eng-2", "kind": "coding", "options": {"test_cmd": "pytest"}}
+    )
+    spec = _spec()
+    spec["nodes"][2]["config"]["engine_def_id"] = engine_def["id"]
+    spec["nodes"][2]["config"]["cwd"] = "worktree"
+    created = await wf_svc.create_workflow_def({"name": "cwd-no-basedir-flow", "spec_json": spec})
+
+    from lionagi.studio.services.workflow_compile import WorkflowCompileError
+    from lionagi.studio.services.workflow_run import run_workflow_def
+
+    with pytest.raises(WorkflowCompileError) as exc_info:
+        await run_workflow_def(created["id"])
+    assert exc_info.value.node_id == "eng1"
+    assert "base_dir" in str(exc_info.value)
+
+
+async def test_workflow_run_node_absolute_cwd_outside_base_dir_rejected(patched_env, tmp_path):
+    wf_svc, engine_defs_svc = patched_env
+
+    base = tmp_path / "base"
+    base.mkdir()
+    outside = tmp_path / "outside"
+    outside.mkdir()
+
+    engine_def = await engine_defs_svc.create_engine_def(
+        {"name": "coding-eng-3", "kind": "coding", "options": {"test_cmd": "pytest"}}
+    )
+    spec = _spec()
+    spec["nodes"][2]["config"]["engine_def_id"] = engine_def["id"]
+    spec["nodes"][2]["config"]["cwd"] = str(outside)
+    created = await wf_svc.create_workflow_def({"name": "cwd-outside-flow", "spec_json": spec})
+
+    from lionagi.studio.services.workflow_compile import WorkflowCompileError
+    from lionagi.studio.services.workflow_run import run_workflow_def
+
+    with pytest.raises(WorkflowCompileError) as exc_info:
+        await run_workflow_def(created["id"], base_dir=str(base))
+    assert exc_info.value.node_id == "eng1"
+    assert "escapes" in str(exc_info.value)
+
+
+async def test_workflow_run_node_absolute_cwd_inside_base_dir_accepted(patched_env, tmp_path):
+    wf_svc, engine_defs_svc = patched_env
+    _FakeEngine.calls = []
+
+    sub = tmp_path / "worktree"
+    sub.mkdir()
+
+    engine_def = await engine_defs_svc.create_engine_def(
+        {"name": "coding-eng-4", "kind": "coding", "options": {"test_cmd": "pytest"}}
+    )
+    spec = _spec()
+    spec["nodes"][2]["config"]["engine_def_id"] = engine_def["id"]
+    spec["nodes"][2]["config"]["cwd"] = str(sub)
+    created = await wf_svc.create_workflow_def({"name": "cwd-abs-inside-flow", "spec_json": spec})
+
+    from lionagi.session.session import Session
+    from lionagi.studio.services.workflow_run import run_workflow_def
+
+    session = Session(default_branch=_mock_chat_branch())
+    result = await run_workflow_def(created["id"], base_dir=str(tmp_path), _session=session)
+
+    assert result["status"] == "completed"
+    assert _FakeEngine.calls[0]["kwargs"]["workspace"] == str(sub.resolve())
+
+
+async def test_workflow_run_spec_level_base_dir_rejected(patched_env):
+    """Defense in depth: a def row that somehow carries a top-level base_dir
+    field (bypassing the write-path check, or written directly) must still be
+    caught at compile/run time — see test_workflow_run_bare_chat_model_rejected_at_compile_defense_in_depth
+    for the identical precedent with config.model."""
+    wf_svc, engine_defs_svc = patched_env
+
+    engine_def = await engine_defs_svc.create_engine_def(
+        {"name": "eng-basedir", "kind": "research"}
+    )
+    spec = _spec()
+    spec["nodes"][2]["config"]["engine_def_id"] = engine_def["id"]
+    spec["base_dir"] = "/tmp/hostile"
+
+    import time
+    import uuid
+
+    from lionagi.state.db import StateDB
+
+    def_id = uuid.uuid4().hex[:12]
+    now = time.time()
+    async with StateDB() as db:
+        await db.create_workflow_def(
+            {
+                "id": def_id,
+                "name": "legacy-spec-base-dir",
+                "description": None,
+                "spec_json": spec,
+                "created_at": now,
+                "updated_at": now,
+            }
+        )
+
+    from lionagi.studio.services.workflow_compile import WorkflowCompileError
+    from lionagi.studio.services.workflow_run import run_workflow_def
+
+    with pytest.raises(WorkflowCompileError, match="base_dir"):
+        await run_workflow_def(def_id)
+
+
+async def test_workflow_run_no_cwd_unaffected_with_and_without_base_dir(patched_env, tmp_path):
+    """A def with no node cwd anywhere runs exactly as today, whether or not
+    the run supplies a base_dir."""
+    wf_svc, engine_defs_svc = patched_env
+    _FakeEngine.calls = []
+
+    engine_def = await engine_defs_svc.create_engine_def({"name": "no-cwd-eng", "kind": "research"})
+    spec = _spec()
+    spec["nodes"][2]["config"]["engine_def_id"] = engine_def["id"]
+    created = await wf_svc.create_workflow_def({"name": "no-cwd-flow", "spec_json": spec})
+
+    from lionagi.session.session import Session
+    from lionagi.studio.services.workflow_run import run_workflow_def
+
+    session_a = Session(default_branch=_mock_chat_branch())
+    result_a = await run_workflow_def(created["id"], {"topic": "GQA"}, _session=session_a)
+    assert result_a["status"] == "completed"
+
+    session_b = Session(default_branch=_mock_chat_branch())
+    result_b = await run_workflow_def(
+        created["id"], {"topic": "GQA"}, base_dir=str(tmp_path), _session=session_b
+    )
+    assert result_b["status"] == "completed"
 
 
 async def test_run_route_returns_404_for_missing_def(patched_env):

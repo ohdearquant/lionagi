@@ -117,6 +117,7 @@ async def run_workflow_def(
     def_id: str,
     inputs: dict[str, Any] | None = None,
     *,
+    base_dir: str | None = None,
     _session: Any | None = None,
 ) -> dict[str, Any]:
     """Load, compile, and execute a WorkflowDef; return ``{run_id, status}``.
@@ -126,6 +127,10 @@ async def run_workflow_def(
     shows up exactly like any other flow run. Raises WorkflowNotFoundError
     (404) or WorkflowCompileError (422, carries node_id/edge_id) on failure
     to compile; never a bare 500 for those two cases.
+
+    ``base_dir`` is a run-level containment root for node ``config.cwd``
+    values (never a spec field — see compile_workflow_def). A node with no
+    cwd runs unaffected whether or not base_dir is supplied.
 
     ``_session`` is a private testability seam (inject a Session with a
     mocked default branch to avoid real provider calls in tests); real
@@ -151,7 +156,9 @@ async def run_workflow_def(
             found = await engine_defs.get_engine_def_by_name(ref)
         return found
 
-    graph, _id_map = await compile_workflow_def(spec, resolve_engine_def=_resolve_engine_def)
+    graph, _id_map = await compile_workflow_def(
+        spec, resolve_engine_def=_resolve_engine_def, base_dir=base_dir
+    )
 
     from .workflow_compile import build_early_graph
 
