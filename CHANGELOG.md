@@ -6,6 +6,10 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+### Changed
+
+- `AgentSpec.coding(secure=True)`'s built-in guards (`guard_destructive`, `guard_paths`) now register in the same `security_pre` bucket as an explicit `PermissionPolicy`, so they get the same security -> user -> security recheck: a user pre-hook that rewrites a command or path argument into a destructive/out-of-workspace one after the guard already passed is now denied, where it previously slipped through unrechecked. Every security control evaluation (`PermissionPolicy`, the built-in guards, and the session gate) is now expressed as one immutable `GateResult` (`lionagi.agent.gate`); an evaluator that raises unexpectedly now produces a recorded, fail-closed deny instead of an uncaught exception.
+
 ## [0.28.0] - 2026-07-08
 
 ### Added

@@ -28,6 +28,10 @@ class HooksMixin:
         self.hook_handlers.setdefault(f"pre:{tool_name}", []).append(handler)
         return self
 
+    def security_pre(self, tool_name: str, handler: Callable) -> HooksMixin:
+        self.hook_handlers.setdefault(f"security_pre:{tool_name}", []).append(handler)
+        return self
+
     def post(self, tool_name: str, handler: Callable) -> HooksMixin:
         self.hook_handlers.setdefault(f"post:{tool_name}", []).append(handler)
         return self
@@ -40,15 +44,19 @@ class HooksMixin:
 def _wire_secure_guards(obj: HooksMixin, cwd: str | None) -> None:
     """Register the standard destructive-command + path-containment guards.
 
-    ``obj`` must support .pre() (HooksMixin).
+    ``obj`` must support .security_pre() (HooksMixin). Registering into the
+    security_pre bucket (not the ordinary user pre bucket) means these guards
+    participate in the security -> user -> security recheck and evaluate
+    final, post-mutation arguments the same way an explicit PermissionPolicy
+    does (ADR-0086 delta row 1).
     """
     from lionagi.agent.hooks import guard_destructive, guard_paths
 
-    obj.pre("bash", guard_destructive)
+    obj.security_pre("bash", guard_destructive)
     workspace_root = str(Path(cwd) if cwd else Path.cwd())
     path_guard = guard_paths(allowed_paths=[workspace_root])
-    obj.pre("reader", path_guard)
-    obj.pre("editor", path_guard)
+    obj.security_pre("reader", path_guard)
+    obj.security_pre("editor", path_guard)
 
 
 @dataclass
