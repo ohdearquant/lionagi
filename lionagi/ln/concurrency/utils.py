@@ -78,12 +78,9 @@ def consume_sigterm_received() -> bool:
 class SigtermInterrupt(BaseException):
     """Raised by run_async() when the process received SIGTERM mid-run.
 
-    Not a KeyboardInterrupt subclass: that type is the SIGINT/Ctrl-C
-    convention and callers treat it as user-initiated. SIGTERM is an
-    external termination request (a supervisor, a process-group kill)
-    and needs a distinct signal so callers can log/exit differently.
-    Subclasses BaseException, like KeyboardInterrupt, so a bare
-    ``except Exception:`` elsewhere doesn't silently swallow it.
+    Deliberately not a KeyboardInterrupt subclass (that's the SIGINT/user
+    convention); subclasses BaseException instead so a bare
+    ``except Exception:`` can't silently swallow it.
     """
 
 
