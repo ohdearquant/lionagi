@@ -10,11 +10,10 @@ prints one frozen, tab-delimited line per run on stdout:
         artifact_dir=<run_dir>\texit_code=<n>
 
 Stdout carries contract lines only; every diagnostic goes to stderr via
-``_logging``. `wait_for_terminal()` is the reusable, importable core — it
-takes no CLI concerns (no argv, no signal handling, no printing) so other
-surfaces can await completion without shelling out; `run_wait()` is the thin
-CLI shim that resolves argv, drives the poll loop with clean SIGINT/SIGTERM
-handling (mirroring `li monitor run`'s `_dispatch_wait`), and prints.
+``_logging``. `wait_for_terminal()` is the reusable, importable core (no
+argv, signal handling, or printing) so other surfaces can await completion
+without shelling out; `run_wait()` is the thin CLI shim that resolves
+argv, drives the poll loop with clean SIGINT/SIGTERM handling, and prints.
 """
 
 from __future__ import annotations
@@ -53,11 +52,8 @@ _SUCCESS_STATUS_BY_ENTITY_TYPE: dict[str, frozenset[str]] = {
 
 async def _resolve_wait_target(db: Any, raw_id: str) -> tuple[str, dict[str, Any]] | None:
     """Any-kind resolver: session, invocation, play (`_resolve_any_target`,
-    which also falls back to a branch_id), then schedule_run.
-
-    Terminal-state definitions are never hard-coded here — see
-    TERMINAL_STATUSES_BY_ENTITY_TYPE (lionagi/state/db.py), which lives with
-    the record schema per ADR-0094.
+    which also falls back to a branch_id), then schedule_run. Terminal-state
+    definitions live in TERMINAL_STATUSES_BY_ENTITY_TYPE (lionagi/state/db.py, ADR-0094).
     """
     hit = await _resolve_any_target(db, raw_id)
     if hit is not None:
@@ -82,11 +78,9 @@ async def _refetch(db: Any, kind: str, entity_id: str) -> dict[str, Any] | None:
 
 
 async def _artifact_dir_for(db: Any, kind: str, row: dict[str, Any]) -> str | None:
-    """The run directory (the manifest container holding `run.json`) backing
-    *row* — always ``RUNS_ROOT / <a session id>``, never a per-kind artifact
-    layout. Resolved via the backing/primary session id, whether or not that
-    directory happens to exist on disk yet; only returns ``None`` when there
-    is no backing session id to anchor on."""
+    """The run directory backing *row* — always ``RUNS_ROOT / <session id>``,
+    resolved via the backing/primary session id (may not exist on disk yet).
+    Returns ``None`` only when there is no backing session id to anchor on."""
     if kind == "session":
         return str(RUNS_ROOT / row["id"])
     if kind == "invocation":
@@ -149,14 +143,12 @@ async def wait_for_terminal(
     outcome dict per id, in the order given (ADR-0094 completion contract).
 
     Importable and awaitable directly — no CLI concerns (argv, signals,
-    printing) live here; `run_wait()` below is the CLI shim over this core,
-    so a future push-backed mode (ADR-0092) can share the same outcome shape.
+    printing) live here; `run_wait()` below is the CLI shim over this core.
 
     *on_result* is called once per resolved run, the moment it goes terminal
-    (or is found unresolvable), so a caller driving its own stdout can print
-    incrementally instead of waiting for the whole set to drain.
-    *should_stop* is polled between ticks so a CLI wrapper can wire SIGINT/
-    SIGTERM into a clean early return instead of blocking forever.
+    (or is found unresolvable), so a caller can print incrementally instead
+    of waiting for the whole set to drain. *should_stop* is polled between
+    ticks so a CLI wrapper can wire SIGINT/SIGTERM into a clean early return.
     """
     from lionagi.state.db import StateDB
 

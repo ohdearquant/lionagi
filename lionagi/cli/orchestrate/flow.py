@@ -120,21 +120,14 @@ _CONTROL_UNSTAMPED = "unstamped"
 
 
 async def _apply_session_control(db, executor, row: dict) -> str | None:
-    """Apply one session_controls row against *executor*; returns the finalize
-    result string, or None if the row was left untouched (message already
-    mid-apply from a prior poller crash).
+    """Apply one session_controls row against *executor*. Returns the finalize
+    result, or None if left untouched (mid-apply from a prior poller crash).
 
-    pause/resume are idempotent: apply, then stamp 'applied' — a poller crash
-    between the two is harmless, since re-applying on the next poll is a no-op.
-    message is not idempotent: stamp 'applying' first, then attempt the
-    (checked, not assumed) injection, then finalize — a crash between stamp
-    and apply leaves a visible 'applying' row (surfaced by `li o ctl status`)
-    rather than risking a double injection on the next poll (at-most-once).
-
-    Never raises: apply failures are recorded as a rejected result so a bad
-    control row can never crash the run it rides alongside. Finalize failures
-    after a successful apply never mislabel the row as rejected — the 'applied'
-    stamp is retried, then the row is left for the next tick.
+    pause/resume are idempotent (safe to re-apply after a crash). message is
+    at-most-once: stamped 'applying' before injection so a crash mid-apply is
+    visible via `li o ctl status` rather than risking a double injection.
+    Never raises — apply/finalize failures are recorded as rejected so a bad
+    control row can't crash the run it rides alongside.
     """
     control_id = row["id"]
     verb = row["verb"]
@@ -197,11 +190,8 @@ async def _apply_session_control(db, executor, row: dict) -> str | None:
 
 async def _finalize_applied(db, control_id: str) -> str:
     """Stamp 'applied' after a successful apply; never mislabel it rejected.
-
-    A finalize failure here means the effect landed but the stamp did not:
-    retry once, then hand the row back to the poller via the unstamped
-    sentinel — pause/resume re-apply idempotently next tick, and a message
-    row stays 'applying' so it is skipped rather than double-injected.
+    On finalize failure, retry once then return the unstamped sentinel so the
+    poller hands the row back for the next tick.
     """
     for _ in range(2):
         try:
@@ -607,25 +597,15 @@ def _apply_checkpoint_precompletion(
     checkpoint_spawned: list[dict] | None = None,
 ) -> None:
     """Mark nodes the checkpoint recorded as terminal so the executor's
-    pre-completed seam (DependencyAwareExecutor._execute_operation's
-    terminal-status skip) short-circuits them outright instead of re-running.
+    pre-completed seam short-circuits them instead of re-running.
 
-    completed ops restore their response and are treated as done; failed ops
-    are restored as terminal FAILED rather than silently re-run — a failed op
-    may already have produced side effects or partial artifacts before the
-    process died, so resume must never guess at retry semantics on its own.
-
-    A pending op that declared inherit_context expects its predecessor's
-    actual conversation history, which resume does not restore (v1: results
-    flow through parameters exactly as live, message history does not) — that
-    combination is refused loudly unless the caller passes
-    allow_degraded_context, naming every affected op so it is an informed
-    choice rather than a silent correctness trap.
-
-    checkpoint_spawned refuses resume outright when non-empty: reactively
-    spawned nodes are not replayed by this version (their DAG position and
-    branch aren't reconstructible from the persisted plan alone), so silently
-    proceeding would drop completed spawned work without telling anyone.
+    completed ops restore their response; failed ops are restored as terminal
+    FAILED rather than silently re-run (they may have had side effects before
+    the process died). A pending op with inherit_context is refused unless the
+    caller passes allow_degraded_context — resume restores results-context
+    only, not conversation history (v1). checkpoint_spawned refuses resume
+    outright when non-empty: reactively spawned nodes aren't replayable from
+    the persisted plan, and silently proceeding would drop completed work.
     """
     from lionagi.protocols.types import EventStatus
 
@@ -684,16 +664,11 @@ async def _execute_dag(
 ) -> _ExecResult:
     """Drive the planning engine over the DAG and collect per-agent results.
 
-    checkpoint_config is the opt-in gate for the whole checkpoint writer:
-    only when it is not None is a CheckpointWriter constructed and wired
-    into the completion/failure observers below. Tests that stub
-    env.run/env.builder with MagicMock (no checkpoint_config passed) are
-    unaffected — the writer, and every os.replace() it would do, never exists.
-
-    checkpoint_flow_context seeds the executor's shared context workspace on
-    resume with whatever was accumulated (via operation.response["context"])
-    before the crash — without it, pending ops on a resumed run would see an
-    empty workspace instead of what they would have seen live.
+    checkpoint_config is the opt-in gate for the checkpoint writer: only when
+    not None is a CheckpointWriter constructed and wired into the
+    completion/failure observers. checkpoint_flow_context seeds the
+    executor's shared context workspace on resume with what was accumulated
+    before the crash, so pending ops see the same workspace they would live.
     """
     assignments = plan_result.assignments
     agent_ids = plan_result.agent_ids
@@ -814,15 +789,10 @@ async def _execute_dag(
     def _checkpoint_record(sig, status: str) -> None:
         """Fire-and-forget the checkpoint write for one op's outcome.
 
-        sig.name is the agent_id (explicit_name at add_operation time) for a
-        PLANNED node only — a reactively spawned node's branch can carry a
-        name identical to a planned agent_id's (clones inherit the source
-        branch's name), so sig.name is never trustworthy as a checkpoint key
-        on its own. sig.op_id (the stringified node UUID) against
-        known_node_strs is the only reliable way to tell a planned node from
-        a spawned one; spawned nodes are recorded separately by node id via
-        record_spawned so they can never collide with / overwrite a planned
-        op's `ops` entry.
+        sig.name is untrustworthy as a key on its own (a spawned node's clone
+        can share a planned agent_id's name), so sig.op_id is checked against
+        known_node_strs to route planned nodes to record() and spawned nodes
+        to record_spawned(), preventing them from colliding.
         """
         if _checkpoint_writer is None:
             return
@@ -951,23 +921,18 @@ async def _execute_dag(
 
     def _decorate_spawn_instruction(req: SpawnRequest, spawn_id: str) -> str:
         """Give a reactively spawned node the same artifact-dir + REQUIRED
-        text a planned leg gets (env.run.agent_artifact_dir + this leg's
-        role_defaults) — the mirror of the ctx["artifact_instructions"]
-        block _build_dag composes above, via the shared helpers."""
+        text a planned leg gets, mirroring the block _build_dag composes."""
         role_defaults = dag_state.role_artifact_defaults.get(req.assignee) if req.assignee else None
         leg_expected = _leg_artifact_entries(spawn_id, role_defaults)
         note = _artifact_directive(env.run, spawn_id, leg_expected)
         return f"{req.instruction}\n\n{note}"
 
     def _spawn_branch_setup(operation: Any, branch: Any) -> None:
-        """A reactively-spawned node's cloned branch inherits the emitting
-        leg's CLI workspace (chat_model.endpoint.config.kwargs["repo"]) via
-        Branch.clone — but the artifact contract this leg is told about in
-        _decorate_spawn_instruction points at its own spawn_id subdir, a
-        sibling of the emitter's. Without retargeting, the spawned CLI child
-        can only write inside the emitter's directory, not its own, unless
-        running fully unsandboxed. Only CLI-backed chat models carry a
-        writable-root concept; anything else is a no-op."""
+        """Retarget a spawned node's cloned CLI workspace to its own
+        spawn_id subdir — Branch.clone inherits the emitter's repo kwarg, but
+        the artifact contract points at a sibling dir, so without this the
+        spawned CLI child can only write into the emitter's directory.
+        No-op for non-CLI chat models (no writable-root concept)."""
         spawn_id = operation.metadata.get("spawn_id") if operation is not None else None
         if not spawn_id:
             return
@@ -1864,11 +1829,10 @@ async def _resume_flow(
 ) -> tuple[str, str]:
     """Resolve a checkpointed run/session id and replay it through _run_flow.
 
-    dry_run/show_graph come from the CURRENT invocation, not the checkpoint —
-    they are presentation flags, not part of what already happened. Every
-    other _run_flow kwarg replays the persisted config verbatim. notify is
-    also a current-invocation override — like dry_run/show_graph it steers
-    presentation of this replay, not the plan that already happened.
+    dry_run/show_graph/notify come from the CURRENT invocation, not the
+    checkpoint — presentation overrides for the replay, not part of what
+    already happened. Every other _run_flow kwarg replays the persisted
+    config verbatim.
     """
     _run_dir, checkpoint = await resolve_checkpoint_target(target)
     config = dict(checkpoint.get("config") or {})

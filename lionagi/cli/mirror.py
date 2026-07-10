@@ -93,13 +93,11 @@ class _FileState:
 class _Lineage:
     """Cross-session conversation-lineage detector, kept across poll passes.
 
-    A continued conversation (after compaction, ``--resume``, or a new window that
-    resumes an earlier thread) opens a fresh transcript whose first message points
-    — via ``parentUuid`` — at the last message of the session it continues. We
-    index each file's current leaf uuid and, when a file's root parent resolves to
-    a *different* session's leaf, record a provenance link. It almost never fires
-    on today's transcripts (continuations are rare), so it is insurance + the
-    substrate for showing conversation provenance, not a hot path.
+    A continued conversation opens a fresh transcript whose first message
+    points — via ``parentUuid`` — at the last message of the session it
+    continues. Indexes each file's current leaf uuid and, when a file's
+    root parent resolves to a different session's leaf, records a
+    provenance link.
     """
 
     leaf_owner: dict[str, str] = field(default_factory=dict)  # event uuid -> session_uid
