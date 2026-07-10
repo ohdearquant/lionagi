@@ -49,12 +49,10 @@ def visualize_graph(
         node_id = str(node.id)[:8]
         G.add_node(node_id)
 
-        # Determine level based on dependencies
         in_edges = [e for e in graph.internal_edges.values() if str(e.tail)[:8] == node_id]
         if not in_edges:
-            level = 0  # Root nodes
+            level = 0
         else:
-            # Get max level of predecessors + 1
             pred_levels = []
             for edge in in_edges:
                 pred_id = str(edge.head)[:8]
@@ -72,19 +70,19 @@ def visualize_graph(
         node_labels[node_id] = label
 
         if node.id in builder._executed:
-            node_colors.append("#90EE90")  # Light green
+            node_colors.append("#90EE90")
             node_sizes.append(4000)
         elif node.metadata.get("expansion_source"):
-            node_colors.append("#87CEEB")  # Sky blue
+            node_colors.append("#87CEEB")
             node_sizes.append(3500)
         elif node.metadata.get("aggregation"):
-            node_colors.append("#FFD700")  # Gold
+            node_colors.append("#FFD700")
             node_sizes.append(4500)
         elif node.metadata.get("is_condition_check"):
-            node_colors.append("#DDA0DD")  # Plum
+            node_colors.append("#DDA0DD")
             node_sizes.append(3500)
         else:
-            node_colors.append("#E0E0E0")  # Light gray
+            node_colors.append("#E0E0E0")
             node_sizes.append(3000)
 
     edge_colors = []
@@ -101,15 +99,15 @@ def visualize_graph(
         edge_labels[(head_id, tail_id)] = edge_label
 
         if "expansion" in edge_label:
-            edge_colors.append("#4169E1")  # Royal blue
+            edge_colors.append("#4169E1")
             edge_styles.append("dashed")
             edge_widths.append(2)
         elif "aggregate" in edge_label:
-            edge_colors.append("#FF6347")  # Tomato
+            edge_colors.append("#FF6347")
             edge_styles.append("dotted")
             edge_widths.append(2.5)
         else:
-            edge_colors.append("#808080")  # Gray
+            edge_colors.append("#808080")
             edge_styles.append("solid")
             edge_widths.append(1.5)
 
@@ -162,7 +160,7 @@ def visualize_graph(
     for i, (u, v) in enumerate(G.edges()):
         u_pos = pos[u]
         v_pos = pos[v]
-        if abs(u_pos[0] - v_pos[0]) > 5:  # Far apart horizontally
+        if abs(u_pos[0] - v_pos[0]) > 5:
             connectionstyle = "arc3,rad=0.2"
         else:
             connectionstyle = "arc3,rad=0.1"

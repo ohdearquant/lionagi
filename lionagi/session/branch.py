@@ -321,11 +321,8 @@ class Branch(Element, Relational):
         return await self._observer.emit(event)
 
     async def _safe_emit(self, event: Any) -> None:
-        """Emit a lifecycle event, swallowing observer exceptions.
-
-        Policy: lifecycle observer failures must never alter run outcomes.
-        Exceptions are logged but not re-raised.
-        """
+        """Emit a lifecycle event; observer exceptions are logged, never re-raised
+        (lifecycle failures must not alter run outcomes)."""
         import logging as _logging
 
         try:
@@ -694,10 +691,9 @@ class Branch(Element, Relational):
         )
 
     async def chat_and_record(self, instruction: Instruction | JsonValue = None, **kwargs) -> str:
-        """Like ``chat()``, but also adds the turn to the branch through the
-        hooked async add-path (mirrors ``communicate()``'s recording), so
-        anything observing ``on_message_added`` — e.g. persistence — sees it.
-        """
+        """Like ``chat()``, but adds the turn via the hooked async add-path
+        (mirrors ``communicate()``), so ``on_message_added`` observers (e.g.
+        persistence) see it."""
         kwargs.pop("return_ins_res_message", None)
         ins, res = await self.chat(instruction, return_ins_res_message=True, **kwargs)
         await self.msgs.a_add_message(instruction=ins)
@@ -883,12 +879,8 @@ class Branch(Element, Relational):
             k: v for k, v in kwargs.items() if k not in {"verbose_analysis", "verbose_action"}
         }
 
-        # Emit lifecycle signals directly rather than through _observed_run so
-        # that exactly ONE RunStart is emitted per ReAct call.  Using
-        # _observed_run would be correct today, but if operate() inside
-        # ReActStream were ever wrapped with its own _observed_run, the outer
-        # wrapper here would produce N+1 RunStart events.  Inlining the
-        # emission removes that coupling.
+        # Emitted directly (not via _observed_run) to guarantee exactly ONE
+        # RunStart per ReAct call, decoupled from operate()'s own emission.
         import time as _time  # noqa: PLC0415
 
         has_observer = self._observer is not None
@@ -896,9 +888,8 @@ class Branch(Element, Relational):
             from .signal import RunStart
 
             await self._safe_emit(RunStart())
-        # Suppress nested lifecycle emission from run() calls inside ReActStream
-        # using a task-scoped ContextVar so that concurrent runs on the SAME
-        # branch are never affected — each asyncio task carries its own copy.
+        # Task-scoped ContextVar suppresses nested run() emission inside
+        # ReActStream without affecting concurrent runs on the same branch.
         from ._lifecycle_ctx import suppress_lifecycle_var
 
         _t0_react = _time.monotonic()

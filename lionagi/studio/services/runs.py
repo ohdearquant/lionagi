@@ -760,12 +760,8 @@ async def get_run_route(
     return run
 
 
-# ADR-0008: removed /api/runs/{id}/events SSE route — it read
-# stream/*.buffer.jsonl files forbidden by ADR-0004.  Live monitoring uses
-# /api/sessions/{id}/stream instead.
-#
-# ADR-0008 Write Policy: removed POST /{run_id}/rerun and
-# DELETE /{run_id} stub routes.  Run data is explicitly read-only per
-# ADR-0008.  Re-running requires switching to the terminal (`li play ...`).
-# If re-run support is ever reconsidered, it requires an ADR-0008 amendment
-# before the route is added back.
+# ADR-0008: /api/runs/{id}/events SSE (read stream/*.buffer.jsonl, forbidden
+# by ADR-0004) and the rerun/delete stub routes were removed — run data is
+# read-only per ADR-0008. Live monitoring: /api/sessions/{id}/stream;
+# re-running: the terminal (`li play ...`). Restoring either requires an
+# ADR-0008 amendment.

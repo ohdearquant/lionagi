@@ -57,7 +57,6 @@ class OllamaChatEndpoint(Endpoint):
         if model:
             await run_sync(self._check_model, model)
 
-        # Skip payload creation — already done above.
         return await super().call(
             payload,
             cache_control=cache_control,

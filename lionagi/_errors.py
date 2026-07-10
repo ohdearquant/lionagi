@@ -119,7 +119,7 @@ class ResourceError(LionError):
 
 
 class RateLimitError(LionError):
-    __slots__ = ("retry_after",)  # one extra attr
+    __slots__ = ("retry_after",)
     default_message = "Rate limit exceeded"
     default_status_code = 429
 
