@@ -321,11 +321,8 @@ class Branch(Element, Relational):
         return await self._observer.emit(event)
 
     async def _safe_emit(self, event: Any) -> None:
-        """Emit a lifecycle event, swallowing observer exceptions.
-
-        Policy: lifecycle observer failures must never alter run outcomes.
-        Exceptions are logged but not re-raised.
-        """
+        """Emit a lifecycle event; observer exceptions are logged, never re-raised
+        (lifecycle failures must not alter run outcomes)."""
         import logging as _logging
 
         try:
@@ -694,10 +691,9 @@ class Branch(Element, Relational):
         )
 
     async def chat_and_record(self, instruction: Instruction | JsonValue = None, **kwargs) -> str:
-        """Like ``chat()``, but also adds the turn to the branch through the
-        hooked async add-path (mirrors ``communicate()``'s recording), so
-        anything observing ``on_message_added`` — e.g. persistence — sees it.
-        """
+        """Like ``chat()``, but adds the turn via the hooked async add-path
+        (mirrors ``communicate()``), so ``on_message_added`` observers (e.g.
+        persistence) see it."""
         kwargs.pop("return_ins_res_message", None)
         ins, res = await self.chat(instruction, return_ins_res_message=True, **kwargs)
         await self.msgs.a_add_message(instruction=ins)
