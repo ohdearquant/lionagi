@@ -26,9 +26,8 @@ __all__ = (
     "split_cancellation",
 )
 
-# Module-level cache populated by ``cache_cancelled_exc_class()`` from inside
-# a running event loop.  Falls back to ``(asyncio.CancelledError,)`` when
-# called outside a loop (e.g. during teardown after the loop has stopped).
+# Populated by cache_cancelled_exc_class() inside a running loop; falls back to
+# (asyncio.CancelledError,) when called outside one (e.g. post-loop teardown).
 _CANCELLED_EXC_CLASS: tuple[type[BaseException], ...] | None = None
 
 
@@ -39,12 +38,10 @@ def cache_cancelled_exc_class() -> None:
         return
     try:
         cls = anyio.get_cancelled_exc_class()
-        # Build a tuple that covers both asyncio and the backend-specific type
-        # (they may be the same, but de-dup to avoid CPython isinstance quirks).
+        # De-dup: asyncio.CancelledError and the backend-specific type may be identical.
         _CANCELLED_EXC_CLASS = tuple({asyncio.CancelledError, cls})
     except Exception:
-        # If anyio itself raises here (shouldn't happen inside a loop, but be
-        # defensive), record the asyncio baseline so the cache is populated.
+        # Shouldn't happen inside a loop; fall back to the asyncio baseline defensively.
         _CANCELLED_EXC_CLASS = (asyncio.CancelledError,)
 
 
@@ -52,7 +49,6 @@ def cancelled_exc_classes() -> tuple[type[BaseException], ...]:
     """Cached cancellation exception types; falls back to asyncio.CancelledError if never primed."""
     if _CANCELLED_EXC_CLASS is not None:
         return _CANCELLED_EXC_CLASS
-    # Graceful degradation: no cache yet → use asyncio baseline.
     return (asyncio.CancelledError,)
 
 

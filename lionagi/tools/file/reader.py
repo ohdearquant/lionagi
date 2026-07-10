@@ -195,9 +195,8 @@ def _open_sync(
     workspace_root: Path,
     allowed_url_hosts: frozenset[str],
 ) -> ReaderResponse:
-    # NOTE: docling import is intentionally deferred until AFTER all URL/SSRF
-    # validation so that the security checks remain testable without the
-    # optional docling dependency installed.
+    # docling import deferred until after URL/SSRF validation so the
+    # security checks stay testable without the optional dependency.
     parsed = urlparse(path)
     if parsed.scheme in ("http", "https", "ftp"):
         if parsed.scheme != "https" or (parsed.hostname or "") not in allowed_url_hosts:

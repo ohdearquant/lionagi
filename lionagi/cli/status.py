@@ -2,14 +2,13 @@
 # SPDX-License-Identifier: Apache-2.0
 """`li agent status` / `li play status` / `li o ctl status` — read-only lifecycle surfaces.
 
-Pure reads over sessions/invocations/plays/session_signals. Resolves an id
-(or the latest matching run) regardless of terminal state, so a finished run
-is inspectable without already knowing whether it is still active — a plain
-`li monitor` table view only lists running/active rows. See
+Pure reads over sessions/invocations/plays/session_signals. Resolves an id (or
+the latest matching run) regardless of terminal state, unlike `li monitor`
+which only lists running/active rows. See
 docs/_archive/v0/ADR-0085-flow-control-plane.md section 6.
 
-`--json` emits a single flat object with this stable key set (documented
-here since other lambdas/tools parse it):
+`--json` emits a flat object with this stable key set (parsed by other
+lambdas/tools):
 
   id, entity_type, command, status, terminal, exit_class, exit_code,
   current_phase, progress_completed, progress_total, model, provider,
@@ -19,15 +18,13 @@ here since other lambdas/tools parse it):
   pending_controls
 
 Exit codes: 0 terminal-success, 1 terminal-failure, 3 still running/active,
-2 lookup failed (unknown id, or state.db unreachable) — argparse itself
-owns exit code 2 for usage errors, so this reuses that convention for any
-other "could not produce a status" outcome.
+2 lookup failed (unknown id, or state.db unreachable; also argparse's own
+usage-error code).
 
-`pending_controls` lists unapplied session_controls rows (id, verb,
-created_at) for the resolved backing session, oldest first — queued via
-`li o ctl pause|resume|msg` and consumed by the control poller running
-alongside a live flow's heartbeat loop (ADR-0085 part 1). Always `[]` when
-there is no backing session or nothing queued.
+`pending_controls`: unapplied session_controls rows (id, verb, created_at)
+for the resolved session, oldest first — queued via `li o ctl
+pause|resume|msg`, consumed by the control poller alongside a live flow's
+heartbeat (ADR-0085 part 1). `[]` when no backing session or nothing queued.
 """
 
 from __future__ import annotations

@@ -99,7 +99,6 @@ async def parse(
             )
             return result if not return_res_message else (result, None)
     else:
-        # Try direct validation first
         with contextlib.suppress(Exception):
             result = _validate_dict_or_model(
                 text, parse_param.response_format, parse_param.fuzzy_match_params

@@ -139,11 +139,10 @@ class MessageAdded(Signal):
 
 
 class DispatchSignal(Signal):
-    """Outbound dispatch payload contract (ADR-0092). schema_version rides Signal.
+    """Outbound dispatch payload contract (ADR-0092); schema_version rides Signal.
 
-    The notify template substitutes ``to_dict(mode="json")`` of this signal as
-    the payload: one stable envelope shared by every dispatch kind, so the
-    transport template never churns per-kind.
+    One stable envelope (``to_dict(mode="json")``) shared by every dispatch kind,
+    so the transport template never churns per-kind.
     """
 
     dispatch_id: str = ""
@@ -155,11 +154,9 @@ class DispatchSignal(Signal):
 
 
 # -- Extended node lifecycle (ADR-0083) ---------------------------------------
-# Three signals completing the canonical per-node lifecycle:
-#   queued → running → awaiting_approval → succeeded | failed | escalated
-#
-# NodeStarted / NodeCompleted / NodeFailed (above) cover running/succeeded/
-# failed already; these three cover the remaining states.
+# queued → running → awaiting_approval → succeeded | failed | escalated
+# NodeStarted/NodeCompleted/NodeFailed (above) cover running/succeeded/failed;
+# these three cover the remaining states.
 
 
 class NodeQueued(Signal):
@@ -250,10 +247,8 @@ def lane_for(signals: Iterable[Signal | Any]) -> NodeLifecycleState:
 
 def _collect_branch_usage(branch: Any) -> dict[str, Any]:
     """Sum provider-reported usage across all AssistantResponse messages on branch.
-
-    Returns dict with keys: input_tokens, output_tokens, total_cost_usd, num_turns.
-    All zero when no provider data is available (subscription runs, tests).
-    """
+    Keys: input_tokens, output_tokens, total_cost_usd, num_turns; all zero when
+    no provider data is available (subscription runs, tests)."""
     input_tokens = 0
     output_tokens = 0
     total_cost_usd = 0.0
@@ -287,13 +282,10 @@ def _collect_branch_usage(branch: Any) -> dict[str, Any]:
 
 
 def _collect_multi_branch_usage(branches: Iterable[Any]) -> dict[str, Any]:
-    """Sum provider-reported usage across multiple branches (multi-leg DAG runs).
+    """Sum _collect_branch_usage across multiple branches (multi-leg DAG runs).
 
-    Applies _collect_branch_usage to each branch and adds the per-branch totals
-    together. Same key shape as _collect_branch_usage: input_tokens,
-    output_tokens, total_cost_usd, num_turns. duration_ms is deliberately not
-    included here — wall-clock across parallel legs isn't simply summable, so
-    the CLI teardown path leaves it unset for orchestration sessions too.
+    Same keys as _collect_branch_usage. duration_ms is deliberately excluded —
+    wall-clock across parallel legs isn't simply summable.
     """
     input_tokens = 0
     output_tokens = 0

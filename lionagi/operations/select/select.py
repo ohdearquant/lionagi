@@ -31,7 +31,6 @@ async def select(
     if verbose:
         logger.debug("Starting selection with up to %d choices.", max_num_selections)
 
-    # Handle branch creation for backwards compatibility
     if branch is None and branch_kwargs:
         from lionagi.session.branch import Branch
 

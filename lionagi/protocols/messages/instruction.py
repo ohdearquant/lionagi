@@ -86,14 +86,8 @@ class InstructionContent(MessageContent):
         return DataClass.to_dict(self, exclude=frozenset(base_exclude))
 
     def with_updates(self, **kwargs: Any) -> InstructionContent:
-        # to_dict excludes response_format/structure for type/BaseModel refs
-        # (they can't survive a JSON round-trip), so the generic with_updates —
-        # which goes through to_dict → constructor — silently drops the response
-        # schema (and its rendered "ResponseFormat" / action_requests section).
-        # Carry them over for in-memory copies (e.g. _prepare folding the system
-        # message into the instruction's guidance), UNLESS the caller overrides
-        # them explicitly (a None passed for response_format intentionally
-        # clears it — that path strips prior turns' schemas in chat prep).
+        # to_dict can't round-trip type/BaseModel response_format/structure, so carry
+        # them forward here unless the caller explicitly overrides (None clears them).
         if "response_format" not in kwargs and self.response_format is not None:
             kwargs["response_format"] = self.response_format
             if "structure" not in kwargs and self.structure is not None:
@@ -203,7 +197,6 @@ class InstructionContent(MessageContent):
             validate_image_url(idx)
             url = idx
         elif idx.startswith("data:"):
-            # Accept only well-formed inline image data URIs.
             if not _DATA_IMAGE_RE.match(idx):
                 raise ValueError(
                     f"Rejected data: URI — only data:image/*;base64,… is allowed. Got: {idx[:80]!r}"
