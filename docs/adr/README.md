@@ -161,4 +161,57 @@ collisions. Unused numbers inside a block are intentional gaps, not missing docu
   and directory discovery
 - 0066-0067 — unused (intentional gaps)
 
+### scheduling-control-plane (0068-0075)
+
+- [ADR-0068](ADR-0068-three-public-orchestration-lanes.md) — Three public orchestration lanes
+- [ADR-0069](ADR-0069-reactive-flow-steering-and-recovery.md) — Reactive flow steering and
+  recovery
+- [ADR-0070](ADR-0070-studio-scheduling-and-dispatch-delivery.md) — Studio scheduling and
+  dispatch delivery
+- [ADR-0071](ADR-0071-durable-ad-hoc-task-queue.md) — Durable ad-hoc task queue
+- [ADR-0072](ADR-0072-unified-task-admission-and-lifecycle.md) — Unified task admission and
+  lifecycle
+- [ADR-0073](ADR-0073-fixed-workflow-definition-execution.md) — Fixed workflow-definition
+  execution
+- 0074-0075 — unused (intentional gaps)
+
+### studio (0076-0085)
+
+- [ADR-0076](ADR-0076-studio-daemon-route-registry-and-local-control-plane.md) — Studio
+  daemon route registry and local control plane
+- [ADR-0077](ADR-0077-studio-state-and-filesystem-boundary.md) — Studio state and filesystem
+  boundary
+- [ADR-0078](ADR-0078-studio-application-service-boundary.md) — Studio application-service
+  boundary
+- [ADR-0079](ADR-0079-studio-web-client-architecture-and-deployment.md) — Studio web client
+  architecture and deployment
+- [ADR-0080](ADR-0080-studio-six-space-cockpit-information-architecture.md) — Studio
+  six-space cockpit information architecture
+- [ADR-0081](ADR-0081-studio-execution-and-artifact-workspace-target.md) — Studio execution
+  and artifact workspace target
+- [ADR-0082](ADR-0082-vscode-studio-observability-client.md) — VS Code Studio observability
+  client
+- [ADR-0083](ADR-0083-studio-operator-command-protocol.md) — Studio operator-command protocol
+- 0084-0085 — unused (intentional gaps)
+
+### governance (0086-0089)
+
+- [ADR-0086](ADR-0086-local-tool-controls-and-session-authorization.md) — Local tool controls
+  and session authorization observation
+- [ADR-0087](ADR-0087-evidence-backed-governed-execution.md) — Evidence-backed governed
+  execution
+- 0088-0089 — unused (intentional gaps)
+
+### substrates (0090-0095)
+
+- [ADR-0090](ADR-0090-local-sandbox-and-measured-cell-backend-seams.md) — Local sandbox and
+  measured-cell backend seams
+- [ADR-0091](ADR-0091-per-worker-worktree-execution-isolation.md) — Per-worker worktree
+  execution isolation
+- [ADR-0092](ADR-0092-minimal-branch-and-session-memory-store.md) — Minimal Branch and
+  session memory store
+- [ADR-0093](ADR-0093-external-memory-adapter-fidelity-contract.md) — External memory adapter
+  fidelity contract
+- 0094-0095 — unused (intentional gaps)
+
 Remaining areas land here as their records are accepted.
