@@ -40,7 +40,6 @@ async def chat(
         raise ExecutionError(f"API call failed: {api_call.execution.error}")
 
     if return_ins_res_message:
-        # Wrap result in `AssistantResponse` and return
         return ins, AssistantResponse.from_response(
             api_call.response,
             sender=branch.id,

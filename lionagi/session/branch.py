@@ -883,12 +883,8 @@ class Branch(Element, Relational):
             k: v for k, v in kwargs.items() if k not in {"verbose_analysis", "verbose_action"}
         }
 
-        # Emit lifecycle signals directly rather than through _observed_run so
-        # that exactly ONE RunStart is emitted per ReAct call.  Using
-        # _observed_run would be correct today, but if operate() inside
-        # ReActStream were ever wrapped with its own _observed_run, the outer
-        # wrapper here would produce N+1 RunStart events.  Inlining the
-        # emission removes that coupling.
+        # Emitted directly (not via _observed_run) to guarantee exactly ONE
+        # RunStart per ReAct call, decoupled from operate()'s own emission.
         import time as _time  # noqa: PLC0415
 
         has_observer = self._observer is not None
@@ -896,9 +892,8 @@ class Branch(Element, Relational):
             from .signal import RunStart
 
             await self._safe_emit(RunStart())
-        # Suppress nested lifecycle emission from run() calls inside ReActStream
-        # using a task-scoped ContextVar so that concurrent runs on the SAME
-        # branch are never affected — each asyncio task carries its own copy.
+        # Task-scoped ContextVar suppresses nested run() emission inside
+        # ReActStream without affecting concurrent runs on the same branch.
         from ._lifecycle_ctx import suppress_lifecycle_var
 
         _t0_react = _time.monotonic()
