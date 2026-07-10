@@ -229,6 +229,16 @@ class Endpoint:
 
         return await self._call(payload, headers, **kwargs)
 
+    def _can_retry(self) -> bool:
+        """Whether more than one request attempt can occur for this endpoint.
+
+        True when an explicit RetryConfig wraps the call, or when the native
+        path's total-attempt cap allows a second attempt. Single-shot
+        endpoints (max_retries<=1, no RetryConfig) never replay a body, so
+        callers may hand over non-replayable inputs like one-shot streams.
+        """
+        return bool(self.retry_config) or self.config.max_retries > 1
+
     async def _call_aiohttp(
         self,
         payload: dict[str, Any],

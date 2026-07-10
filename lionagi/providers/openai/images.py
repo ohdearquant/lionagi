@@ -98,14 +98,15 @@ __all__ = (
 )
 
 
-def _replayable_file_factory(file_data, field_name: str):
+def _replayable_file_factory(file_data, field_name: str, *, require_replayable: bool = True):
     """Return a zero-arg callable producing a fresh file object for one attempt.
 
     Bytes/bytearray are snapshotted once and re-wrapped in a new BytesIO per
     attempt. A seekable stream is seeked back to its starting position before
-    each attempt. A non-seekable stream cannot be replayed safely, so it fails
-    here, before any network I/O, instead of silently resending an exhausted
-    stream on retry.
+    each attempt. A non-seekable stream cannot be replayed safely: when a
+    retry can occur (*require_replayable*), it fails here, before any network
+    I/O, instead of silently resending an exhausted stream; on a single-shot
+    endpoint it is handed to aiohttp once, as before.
     """
     if file_data is None:
         return lambda: None
@@ -115,11 +116,13 @@ def _replayable_file_factory(file_data, field_name: str):
 
     seekable = getattr(file_data, "seekable", None)
     if not callable(seekable) or not seekable():
-        raise TypeError(
-            f"{field_name} must be bytes, bytearray, or a seekable stream to "
-            "support retries; pass bytes, or configure the endpoint with "
-            "max_retries=1 for a non-seekable stream."
-        )
+        if require_replayable:
+            raise TypeError(
+                f"{field_name} must be bytes, bytearray, or a seekable stream to "
+                "support retries; pass bytes, or configure the endpoint with "
+                "max_retries=1 for a non-seekable stream."
+            )
+        return lambda: file_data
     start_pos = file_data.tell()
 
     def _factory():
@@ -161,8 +164,9 @@ class OpenaiImageEditEndpoint(Endpoint):
         mask_data = kwargs.pop("mask", None)
         mask_filename: str = kwargs.pop("mask_filename", "mask.png")
 
-        image_factory = _replayable_file_factory(image_data, "image")
-        mask_factory = _replayable_file_factory(mask_data, "mask")
+        can_retry = self._can_retry()
+        image_factory = _replayable_file_factory(image_data, "image", require_replayable=can_retry)
+        mask_factory = _replayable_file_factory(mask_data, "mask", require_replayable=can_retry)
 
         multipart_headers = {k: v for k, v in headers.items() if k.lower() != "content-type"}
 

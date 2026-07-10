@@ -301,6 +301,48 @@ class TestOpenaiTranscription:
 
         assert request_count == 0
 
+    async def test_single_shot_endpoint_accepts_non_seekable_stream(self, run_server):
+        """With max_retries=1 and no RetryConfig no replay can occur, so a
+        non-seekable stream is handed to aiohttp once, as before."""
+        received: dict = {}
+
+        async def handler(request: web.Request):
+            received.update(await _read_multipart(request))
+            return web.json_response({"text": "single shot ok"})
+
+        server = await run_server(handler)
+        config = _config(
+            "openai_stt", "audio/transcriptions", await _base_url(server), max_retries=1
+        )
+        endpoint = OpenaiAudioTranscriptionEndpoint(config=config)
+
+        import io
+
+        class _NonSeekableBody(io.RawIOBase):
+            def __init__(self, data: bytes):
+                self._data = data
+
+            def readable(self):
+                return True
+
+            def seekable(self):
+                return False
+
+            def readinto(self, b):
+                chunk, self._data = self._data[: len(b)], self._data[len(b) :]
+                b[: len(chunk)] = chunk
+                return len(chunk)
+
+        result = await endpoint._call(
+            payload={"model": "whisper-1"},
+            headers={"Authorization": "Bearer test", "Content-Type": "application/json"},
+            file=_NonSeekableBody(b"one-shot-audio"),
+            filename="clip.wav",
+        )
+
+        assert result == {"text": "single shot ok"}
+        assert received["file"] == b"one-shot-audio"
+
 
 class TestOpenaiTTS:
     @pytest.mark.asyncio
