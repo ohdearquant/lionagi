@@ -189,12 +189,9 @@ def get_builtin_playbook(name: str) -> dict[str, Any] | None:
 
 
 def install_builtin_playbook(name: str) -> dict[str, Any]:
-    """Idempotently materialize a built-in template into the user's own
-    playbooks directory (``~/.lionagi/playbooks``), so it becomes a normal,
-    user-editable playbook and ``li play <name>`` can find it.
-
-    A no-op (``installed: False``) when the destination already exists —
-    this never clobbers a playbook the user has since customized.
+    """Idempotently copy a built-in template into ``~/.lionagi/playbooks`` so
+    it becomes a normal, user-editable playbook ``li play <name>`` can find.
+    No-op (``installed: False``) when the destination already exists.
     """
     stem = name.removesuffix(".playbook.yaml").removesuffix(".yaml")
     safe_path_join(_BUILTIN_PLAYBOOKS_ROOT, f"{stem}.playbook.yaml")

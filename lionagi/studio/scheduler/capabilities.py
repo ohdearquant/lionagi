@@ -2,26 +2,21 @@
 # SPDX-License-Identifier: Apache-2.0
 """ADR-0101 D4: capability-class matching.
 
-A small declarative token -> class map, not a policy engine. Every
-capability token used in ``required_capabilities``/``advertised_capabilities``
+Declarative token -> class map, not a policy engine. Every capability token
 falls into exactly one class:
 
-- ``eligibility`` (default for any token not listed below): a plain
-  subset-match routing filter -- the worker must advertise the token for a
-  task carrying it to be claimable at all.
-- ``serialization`` (e.g. an exclusive-GPU token): folds into the task's
-  host-scoped ``concurrency_key`` at submit time, so ADR-0061 concurrency
-  admission queues at most one such task per host. The queue orders
-  admission ADVISORILY only -- a worker-side host lock (an OS flock the
-  worker takes before touching the resource) stays authoritative; this
-  module never arbitrates the machine lock itself.
-- ``affinity`` (e.g. a warmed-cache token): a soft ordering preference among
-  otherwise-eligible candidates. It never filters -- a worker that does not
-  advertise the affinity token still claims a matching task when it is the
-  only eligible worker running.
+- ``eligibility`` (default): plain subset-match filter -- worker must
+  advertise the token to claim a task carrying it.
+- ``serialization`` (e.g. exclusive-GPU): folds into the task's host-scoped
+  ``concurrency_key`` at submit time (ADR-0061 admission queues at most one
+  such task per host). Admission ordering is ADVISORY only -- a worker-side
+  OS flock stays authoritative; this module never arbitrates the machine lock.
+- ``affinity`` (e.g. warmed-cache): soft ordering preference, never a filter
+  -- a worker lacking the token still claims the task if it's the only
+  eligible one running.
 
-Both the submit path (``task_applications._derive_concurrency_key``) and the
-claim path (``worker.claim_and_execute``) import this module rather than
+Submit path (``task_applications._derive_concurrency_key``) and claim path
+(``worker.claim_and_execute``) both import this module rather than
 duplicating the token->class policy.
 """
 
