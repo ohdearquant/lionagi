@@ -739,17 +739,35 @@ async def purge_dispatches(
         counts_by_status = {r["status"]: r["n"] for r in rows}
         total = sum(counts_by_status.values())
     else:
-        # Count and delete in ONE write transaction so the admin_events record
-        # cannot disagree with what was actually deleted when a scheduler tick
-        # or another operator mutates rows concurrently.
+        # Select the exact match set inside the write transaction, derive the
+        # audit counts from it, and delete by those ids only. A criteria-based
+        # second DELETE could remove a different set than the count saw (the
+        # transaction is not a database-wide lock on PostgreSQL), and the
+        # admin_events record must describe the rows actually deleted.
         async with db._tx() as conn:
-            rows = (await conn.execute(count_sql, params)).mappings().all()
-            counts_by_status = {r["status"]: r["n"] for r in rows}
-            total = sum(counts_by_status.values())
-            if total:
+            matched = (
+                (
+                    await conn.execute(
+                        text(
+                            f"SELECT id, status FROM dispatch_outbox WHERE {where_sql}"  # noqa: S608
+                        ),
+                        params,
+                    )
+                )
+                .mappings()
+                .all()
+            )
+            counts_by_status = {}
+            for r in matched:
+                counts_by_status[r["status"]] = counts_by_status.get(r["status"], 0) + 1
+            total = len(matched)
+            matched_ids = [r["id"] for r in matched]
+            for i in range(0, len(matched_ids), 500):
+                chunk = matched_ids[i : i + 500]
+                placeholders = ", ".join(f":id{j}" for j in range(len(chunk)))
                 await conn.execute(
-                    text(f"DELETE FROM dispatch_outbox WHERE {where_sql}"),  # noqa: S608
-                    params,
+                    text(f"DELETE FROM dispatch_outbox WHERE id IN ({placeholders})"),  # noqa: S608
+                    {f"id{j}": v for j, v in enumerate(chunk)},
                 )
 
     await db.insert_admin_event(
