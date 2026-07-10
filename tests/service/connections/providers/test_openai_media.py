@@ -301,6 +301,53 @@ class TestOpenaiTranscription:
 
         assert request_count == 0
 
+    async def test_4xx_with_retry_config_raises_client_response_error(self, run_server):
+        """With an explicit RetryConfig the internal non-retryable sentinel must
+        still unwrap so callers see the aiohttp exception type they catch."""
+        import aiohttp
+
+        async def handler(request: web.Request):
+            return web.json_response({"error": "bad request"}, status=400)
+
+        server = await run_server(handler)
+        config = _config("openai_stt", "audio/transcriptions", await _base_url(server))
+        endpoint = OpenaiAudioTranscriptionEndpoint(
+            config=config, retry_config=RetryConfig(max_retries=2, base_delay=0.001)
+        )
+
+        with pytest.raises(aiohttp.ClientResponseError):
+            await endpoint._call(
+                payload={"model": "whisper-1"},
+                headers={"Authorization": "Bearer test", "Content-Type": "application/json"},
+                file=b"audio",
+                filename="clip.wav",
+            )
+
+    async def test_payload_field_kwargs_are_not_sent_as_request_kwargs(self, run_server):
+        """Endpoint.call passes the same kwargs to create_payload and _call; API
+        fields like language must land in the multipart body only, never be
+        forwarded to aiohttp.ClientSession.request."""
+        received: dict = {}
+
+        async def handler(request: web.Request):
+            received.update(await _read_multipart(request))
+            return web.json_response({"text": "ok"})
+
+        server = await run_server(handler)
+        config = _config("openai_stt", "audio/transcriptions", await _base_url(server))
+        endpoint = OpenaiAudioTranscriptionEndpoint(config=config)
+
+        result = await endpoint._call(
+            payload={"model": "whisper-1", "language": "en"},
+            headers={"Authorization": "Bearer test", "Content-Type": "application/json"},
+            file=b"audio-bytes",
+            filename="clip.wav",
+            language="en",
+        )
+
+        assert result == {"text": "ok"}
+        assert received["language"] == "en"
+
     async def test_single_shot_endpoint_accepts_non_seekable_stream(self, run_server):
         """With max_retries=1 and no RetryConfig no replay can occur, so a
         non-seekable stream is handed to aiohttp once, as before."""

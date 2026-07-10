@@ -144,5 +144,4 @@ class OpenaiAudioTranscriptionEndpoint(Endpoint):
             request_body_factory=_build_form,
             response_mode="json",
             error_context="Transcription request",
-            **kwargs,
         )

@@ -310,9 +310,13 @@ class Endpoint:
                         response.release()
 
         # When retry_config is set, the outer call() already wraps _call in retry_with_backoff.
-        # _call delegates here, so just run the raw request — no extra retry layer.
+        # _call delegates here, so just run the raw request — no extra retry layer. The
+        # sentinel still unwraps so callers see the same ClientResponseError type on 4xx.
         if self.retry_config:
-            return await _make_request()
+            try:
+                return await _make_request()
+            except _NonRetryableClientError as exc:
+                raise exc.original from exc.__cause__
 
         # No RetryConfig: use the native retry path with aiohttp transport errors.
         # _NonRetryableClientError is in exclude_exceptions so 4xx non-429 gives up immediately.
