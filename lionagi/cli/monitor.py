@@ -182,11 +182,9 @@ async def _query_active_shows(
 ) -> list[dict[str, Any]]:
     """Active only by default; with since, all statuses in the window.
 
-    Unlike sessions and plays, `repo` on a show is a filesystem path (or a
-    path with a trailing remote annotation) copied verbatim from the play's
-    `_show.md`, not a project slug — so it cannot be matched against
-    `--project` in SQL. Project-scoping for shows happens in Python, in
-    _gather_table_rows, via the same detect_project() cascade sessions use.
+    `repo` on a show is a filesystem path, not a project slug, so it can't
+    be matched against `--project` in SQL — that scoping happens in Python
+    (_gather_table_rows) via detect_project().
     """
     query = "SELECT * FROM shows WHERE 1=1"  # noqa: S608
     params: list[Any] = []
@@ -208,10 +206,8 @@ async def _query_running_plays(
 ) -> list[dict[str, Any]]:
     """In-flight statuses only by default; with since, all statuses in the window.
 
-    The plays table has no project column, so project-scoping matches
-    against the project of the play's linked session (session_id) — the
-    same source of truth _query_running_sessions filters on. A play with
-    no linked session has no project to match and is excluded.
+    Plays have no project column; project-scoping joins through the
+    linked session (session_id). A play with no linked session is excluded.
     """
     query = (
         "SELECT plays.*, "  # noqa: S608
@@ -253,14 +249,12 @@ async def _find_entity(db: Any, entity_id: str) -> tuple[str, dict[str, Any]] | 
         ("play", "plays"),
     ]
     for entity_type, table in searches:
-        # Exact match
         row = await db.fetch_one(
             f"SELECT * FROM {table} WHERE id = ?",  # noqa: S608
             (entity_id,),
         )
         if row:
             return entity_type, row
-        # Prefix match (user might type short prefix)
         row = await db.fetch_one(
             f"SELECT * FROM {table} WHERE id LIKE ?",  # noqa: S608
             (entity_id + "%",),
@@ -305,10 +299,7 @@ def _trunc(s: str, n: int) -> str:
 
 
 def _stdout_is_tty() -> bool:
-    """Evaluated at call time (not cached at import time) so a render
-    still reflects the actual stdout of the process at that moment —
-    e.g. stdout redirected after import, or a module imported once and
-    reused across both TTY and piped invocations."""
+    """Evaluated at call time, not cached, so it reflects stdout redirection after import."""
     return sys.stdout.isatty()
 
 
@@ -323,16 +314,10 @@ _NON_TTY_MAX_COL_WIDTH = 200
 
 
 def _format_table(rows: list[dict[str, Any]]) -> str:
-    """Render a table of entity rows.
+    """Render a table of entity rows (keys: id, type, project, status, phase, elapsed, agents).
 
-    Expected keys per row: id, type, project, status, phase, elapsed, agents.
-
-    On a TTY, identifying columns (id, project, phase) are truncated to
-    fixed widths for a compact dashboard. Piped/redirected output (not a
-    TTY — e.g. `li monitor | grep`) never truncates: columns widen to fit
-    the longest value (up to _NON_TTY_MAX_COL_WIDTH) so a grep against a
-    project name or id can never false-negative on a value cut short by a
-    fixed column width.
+    On a TTY, identifying columns truncate to fixed widths. Piped output
+    never truncates, so grep against a project name or id can't false-negative.
     """
     if not rows:
         return _dim("(no running entities)")
@@ -502,13 +487,7 @@ async def _fetch_branches(db: Any, session_id: str) -> list[dict[str, Any]]:
 
 
 def _render_branch_lines(rows: list[dict[str, Any]], *, indent: str = "  ") -> list[str]:
-    """One line per branch (agent leg) — orchestration engines like `li o
-    flow` (which `li play` compiles to) name each branch after its role
-    (e.g. "reviewer", "claude-code") and update its status/timestamps as
-    the leg runs (see flow.py's _update_branch_status). Surfacing that
-    here makes sub-step transitions poll-visible via `li monitor <id>`
-    without any new tracking mechanism.
-    """
+    """One line per branch (agent leg), named after its role (e.g. "reviewer")."""
     if not rows:
         return []
     lines = [_dim(f"{indent}-- branches --")]
@@ -563,14 +542,12 @@ async def _detail_session(db: Any, sess: dict[str, Any]) -> str:
                 else:
                     lines.append(f"    {ev}")
 
-    # Branches (agent legs) — count plus per-leg status/elapsed
     branch_rows = await _fetch_branches(db, sess["id"])
     lines.append(f"  branches:  {len(branch_rows)}")
     if branch_rows:
         lines.append("")
         lines.extend(_render_branch_lines(branch_rows))
 
-    # Stream tail from run dir
     run_dir = RUNS_ROOT / sess["id"]
     if run_dir.exists():
         branches_dir = run_dir / "branches"
@@ -604,7 +581,6 @@ async def _detail_invocation(db: Any, inv: dict[str, Any]) -> str:
             f"  started:       {time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(started))}"
         )
 
-    # List child sessions
     child_rows = await db.fetch_all(
         "SELECT id, status, model, started_at FROM sessions WHERE invocation_id = ? ORDER BY created_at",
         (inv["id"],),
@@ -630,7 +606,6 @@ async def _detail_show(db: Any, show: dict[str, Any]) -> str:
     lines.append(f"  branch:  {show.get('base_branch') or '-'}")
     lines.append(f"  goal:    {(show.get('goal') or '-')[:80]}")
 
-    # Plays breakdown
     plays = await _query_plays_for_show(db, show["id"])
     if plays:
         lines.append("")
@@ -666,7 +641,6 @@ async def _detail_play(db: Any, play: dict[str, Any]) -> str:
     if started:
         lines.append(f"  started:  {time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(started))}")
 
-    # Gate result
     gp = play.get("gate_passed")
     if gp is not None:
         gate_str = _green("PASS") if gp else _red("FAIL")
@@ -675,7 +649,6 @@ async def _detail_play(db: Any, play: dict[str, Any]) -> str:
         if feedback:
             lines.append(f"  feedback: {_trunc(str(feedback), 80)}")
 
-    # Linked session details
     session_id = play.get("session_id")
     if session_id:
         srow = await db.fetch_one(
@@ -691,13 +664,11 @@ async def _detail_play(db: Any, play: dict[str, Any]) -> str:
             lines.append(f"    provider: {srow['provider'] or '-'}")
             lines.append(f"    effort:   {srow['effort'] or '-'}")
 
-            # Branches (agent legs) — poll-visible sub-step progress
             branch_rows = await _fetch_branches(db, session_id)
             if branch_rows:
                 lines.append("")
                 lines.extend(_render_branch_lines(branch_rows, indent="    "))
 
-            # Stream tail
             run_dir = RUNS_ROOT / session_id
             if run_dir.exists():
                 branches_dir = run_dir / "branches"
@@ -727,20 +698,15 @@ _TRAILING_ANNOTATION_RE = re.compile(r"\s*\([^)]*\)\s*$")
 
 @cache
 def _cached_detect_project(repo: str) -> tuple[str | None, str | None]:
-    """Cache detect_project() results by bare repo path — the derivation is
-    stable for the lifetime of a monitor process, and this is called per
-    active show per render tick under --watch."""
+    """Cache detect_project() results by bare repo path (stable per monitor process)."""
     return detect_project(Path(repo))
 
 
 def _show_project_matches(show: dict[str, Any], project: str) -> bool:
-    """A show's `repo` column is a filesystem path (sometimes with a
-    trailing remote annotation), not a project slug, so it cannot be
-    compared to `--project` directly — derive its slug via the same
-    detect_project() cascade sessions use and compare that. A show with a
-    missing, empty, or unresolvable repo path derives (None, None) and is
-    excluded under --project — the same orphan semantics as a play with no
-    linked session.
+    """A show's `repo` is a filesystem path, not a project slug — derive its
+    slug via detect_project() and compare. A missing/unresolvable repo path
+    excludes the show under --project (same orphan semantics as a play with
+    no linked session).
     """
     repo = show.get("repo")
     if not repo:
@@ -872,9 +838,8 @@ def _watch_loop(
 ) -> int:
     """Repeatedly clear screen and reprint; exit cleanly on SIGINT/SIGTERM.
 
-    The since cutoff is re-derived from the window string every tick so the
-    window slides with the clock; a cutoff frozen at launch would accumulate
-    terminal rows for the life of the watch.
+    The since cutoff is re-derived every tick so the window slides with the
+    clock instead of accumulating rows for the life of the watch.
     """
     from lionagi.ln.concurrency import run_async
 
@@ -945,9 +910,7 @@ _MAX_CHAIN_DEPTH = 10
 
 
 def _split_watched_ids(raw: list[str]) -> list[str]:
-    """Flatten comma-separated and/or space-separated id tokens into one
-    ordered, deduped list — `li monitor run a,b` and `li monitor run a b`
-    (and any mix) must resolve identically."""
+    """Flatten comma/space-separated id tokens into one ordered, deduped list."""
     seen: dict[str, None] = {}
     for token in raw:
         for piece in token.split(","):
@@ -958,10 +921,8 @@ def _split_watched_ids(raw: list[str]) -> list[str]:
 
 
 async def _resolve_schedule_run(db: Any, raw_id: str) -> dict[str, Any] | None:
-    """Exact match then prefix match, mirroring _find_entity's convention.
-    schedule_run ids are 12-char hex (uuid4().hex[:12]), not 36-char UUIDs,
-    so the length-36 prefix heuristic used elsewhere in this codebase
-    (resolve_entity in _util.py) does not apply here.
+    """Exact match then prefix match. schedule_run ids are 12-char hex, not
+    36-char UUIDs, so _util.py's length-36 prefix heuristic doesn't apply.
     """
     row = await db.get_schedule_run(raw_id)
     if row:
@@ -990,25 +951,12 @@ def _format_session_wait_line(row: dict[str, Any]) -> str:
 
 
 async def _effective_session_status(db: Any, row: dict[str, Any]) -> dict[str, Any]:
-    """A profile-typed session (`li agent -a <profile>`) that teardown linked to a
-    claude/codex-mirror engine session (node_metadata.linked_engine_session_id, see
-    lionagi/cli/_runs.py) can be pinned at status="running" indefinitely once teardown
-    observed the engine alive but couldn't yet confirm a terminal state — nothing
-    later revisits that row to flip it. The linked engine row is the ground truth for
-    completion, so follow it here on every poll rather than trusting the profile row's
-    own (possibly stale) status column.
-
-    When the linked row has reached a terminal status, PERSIST that status onto the
-    profile row through StateDB.update_status() (CAS-guarded on the status this call
-    just read) before returning — otherwise the synthesized in-memory value here is
-    the only place the reconciliation ever lands, and the DB row itself stays stuck
-    at "running" forever even after this function reports the true terminal status.
-
-    A profile row that is ALREADY terminal is authoritative and is never rewritten:
-    ADR-0094's terminal guard exists precisely to stop a persisted terminal status
-    (e.g. "failed") from being silently flipped to a different terminal status the
-    linked engine happens to report later (e.g. "completed"). Reconciliation only
-    ever advances a non-terminal profile row to the engine's terminal status.
+    """Reconcile a profile session's status against its linked engine session
+    (node_metadata.linked_engine_session_id), which can otherwise stay pinned
+    at "running" forever after teardown. When the linked row is terminal,
+    persists that status onto the profile row via CAS-guarded update_status()
+    so the DB reflects it, not just the return value. An already-terminal
+    profile row is authoritative and never rewritten (ADR-0094 terminal guard).
     """
     from lionagi.state.db import SESSION_TERMINAL_STATUSES, TransitionRejectedError
     from lionagi.state.reasons import RunReasons
@@ -1093,15 +1041,10 @@ async def _poll_pending_sessions_once(
 async def _resolve_watched_runs(
     db: Any, ids: list[str]
 ) -> tuple[dict[str, dict[str, Any]], dict[str, dict[str, Any]], list[str]]:
-    """Resolve every requested id once, up front. schedule_run ids are
-    already-fired-run identifiers a caller obtained elsewhere (e.g. `li
-    schedule trigger`), not something that might come into existence later,
-    so — unlike the --follow discovery scan below — resolution itself is
-    not retried on every poll tick.
-
-    An id that isn't a schedule_run is also tried against the sessions table
-    (agent/li agent run ids) so `li monitor run <session_id>` can drill into
-    an agent run's terminal status + artifacts, not just scheduler runs.
+    """Resolve every requested id once, up front (not retried per poll tick,
+    unlike the --follow discovery scan below). Ids that aren't schedule_runs
+    are also tried against sessions, so `li monitor run <session_id>` can
+    drill into an agent run, not just scheduler runs.
     """
     pending: dict[str, dict[str, Any]] = {}
     session_pending: dict[str, dict[str, Any]] = {}
@@ -1142,22 +1085,13 @@ async def _poll_pending_once(
     done: list[dict[str, Any]],
 ) -> None:
     """Check every still-pending run once; print, record into `done`, and
-    drop from `pending` any that are now terminal. Printing happens
-    immediately per row, not batched, so a harness tailing stdout sees each
-    result the moment it lands rather than waiting for the whole watched
-    set to finish.
+    drop from `pending` any that are now terminal. Prints immediately per
+    row (not batched) so a harness tailing stdout sees each result as it lands.
 
-    `done` is mutated in place rather than returned: a coroutine only ever
-    suspends at an `await`, and there is no `await` between the print/
-    append/delete below, so that trio is atomic with respect to task
-    cancellation — a row can never leave `pending` without also landing in
-    `done`, even if the caller (run_async, see _dispatch_wait) discards
-    this coroutine's actual return value because a SIGINT raced its
-    completion.
-
-    This is the primitive's testable inner tick: exercising "terminal
-    across different poll iterations" only needs two direct calls to this
-    function with a DB row mutated in between — no real sleeping required.
+    `done` is mutated in place: the print/append/delete trio has no `await`
+    between them, so it's atomic wrt task cancellation — a row can't leave
+    `pending` without also landing in `done`, even if a SIGINT discards this
+    coroutine's return value.
     """
     from ._logging import log_error
 
@@ -1194,9 +1128,7 @@ async def _schedule_declares_chain_action(
     cache: dict[str, dict[str, Any] | None],
 ) -> bool:
     """True if `schedule_id` declares an on_success/on_fail action matching
-    the outcome that just landed — i.e. the engine *will* attempt to fire a
-    chain child, so a grace wait for it is warranted. A schedule with no
-    matching action needs no grace wait at all."""
+    the outcome that just landed, i.e. a grace wait for the chain child is warranted."""
     if schedule_id not in cache:
         cache[schedule_id] = await db.get_schedule(schedule_id)
     sched = cache[schedule_id] or {}
@@ -1204,11 +1136,8 @@ async def _schedule_declares_chain_action(
 
 
 def _new_chain_state(pending: dict[str, dict[str, Any]], *, chain: bool) -> dict[str, Any]:
-    """Build the bookkeeping dict `_advance_chains` mutates tick over tick —
-    each originally-watched id in `pending` starts out owning itself as its
-    own root. Factored out so tests can drive `_advance_chains` directly the
-    same way they drive `_poll_pending_once`, without duplicating its
-    internal shape."""
+    """Build the bookkeeping dict `_advance_chains` mutates tick over tick;
+    each originally-watched id in `pending` starts out owning itself as its own root."""
     return {
         "root_of": {rid: {rid} for rid in pending},
         "chain_tail_exit": {},
@@ -1242,31 +1171,18 @@ async def _advance_chains(
 ) -> int:
     """Fold the newly-terminal tail of `done` (index `processed` onward)
     into chain bookkeeping: extend `pending` with any already-fired
-    children, resolve roots whose schedule has no matching chain action
-    immediately, and start/advance a grace countdown for roots that do
-    declare one but whose child hasn't fired yet. Returns the new
-    `processed` index.
+    children, resolve roots with no matching chain action immediately, and
+    start/advance a grace countdown for roots awaiting one. Returns the new
+    `processed` index. Mutates `pending` in place, tick-by-tick, like
+    `_poll_pending_once` mutates `done`.
 
-    Mutates `pending` in place exactly like `_poll_pending_once` mutates
-    `done` — so a caller (the real dispatch loop, or a test) can drive this
-    function tick-by-tick with direct DB mutations in between, no real
-    sleeping required, the same way `_poll_pending_once` is tested above.
-
-    `chain_state` keys: root_of (run_id -> set of originally-watched roots
-    that run currently accounts for — a run can own more than one root when
-    an overlapping watch set passes both a run and one of its own chain
-    descendants as separate roots, see below), chain_tail_exit (root id ->
-    most recent terminal exit_code seen for that chain), awaiting_grace
-    (run_id -> {roots, ticks_left}), resolved_roots (root ids whose chain
-    has concluded), schedule_cache (memoized `db.get_schedule` lookups),
-    chain (bool — chain-following on/off; when off, every terminal row
-    resolves its root immediately, matching --no-chain's "watch only the
-    literal ids given"), done_ids (run ids already folded into the above
-    once — lets discovery tell an already-processed child apart from one
-    still waiting in `pending`), exit_of (run id -> its own folded
-    exit_code), handoff (parent run id -> the chain child its grace window
-    handed off to — followed forward when an ancestor discovers an
-    already-processed link, see below).
+    `chain_state` keys: root_of (run_id -> watched roots it accounts for),
+    chain_tail_exit (root id -> most recent terminal exit_code),
+    awaiting_grace (run_id -> {roots, ticks_left}), resolved_roots (roots
+    whose chain concluded), schedule_cache (memoized schedule lookups),
+    chain (bool, chain-following on/off), done_ids (already-folded run
+    ids), exit_of (run id -> its folded exit_code), handoff (parent run id
+    -> the chain child its grace window handed off to).
     """
     root_of = chain_state["root_of"]
     chain_tail_exit = chain_state["chain_tail_exit"]
@@ -1404,31 +1320,15 @@ def _dispatch_wait(
 
     Chain-following (default on; `chain=False` for --no-chain): a watched
     run going terminal extends the watch frontier with any scheduler
-    on_success/on_fail chain children (see module comment above
-    _TERMINAL_SCHEDULE_RUN_STATUSES and _advance_chains). The aggregate exit
-    code is final-link-wins per chain, not every link along the way — with
-    chain-following off, that collapses back to the original one-run-one-
-    link behavior.
+    on_success/on_fail chain children (see _advance_chains). The aggregate
+    exit code is final-link-wins per chain, not every link along the way.
 
-    Shaped like _watch_loop above (own signal handlers on the main thread,
-    run_async per discrete tick, chunked time.sleep for cadence) rather
-    than one run_async call wrapping a long-lived asyncio.sleep loop:
-    run_async installs its own SIGINT handler for the duration of any call
-    it wraps and never touches SIGTERM at all, so a single all-encompassing
-    call cannot give this command the dual-signal clean exit it needs —
-    per-tick calls, exactly like the dashboard's --watch, can. Unlike
-    _watch_loop's default multi-second refresh, --interval is often
-    sub-second here, so a much larger share of wall-clock time is spent
-    inside individual run_async() calls rather than between them — a SIGINT
-    landing mid-call surfaces as KeyboardInterrupt at the call site (see
-    _run_tick below) far more often than it does for the dashboard, so that
-    case is folded into the same clean-exit path instead of left to crash.
+    Ticks via per-call run_async (not one long-lived asyncio.sleep loop) so
+    both SIGINT and SIGTERM get a clean exit — see _watch_loop for why.
 
-    max_wait: None (the default, whether left unset by a Python caller or by
-    an unset --max-wait on the CLI) applies the bounded `_DEFAULT_MAX_WAIT_SECONDS`
-    fallback — a stuck session or run must not hang this call forever. Pass 0
-    (or a negative value) to opt into the old unbounded wait explicitly; any
-    positive value overrides the default bound.
+    max_wait: None (the default) applies the bounded
+    `_DEFAULT_MAX_WAIT_SECONDS` fallback so a stuck run can't hang this call
+    forever. Pass 0 (or negative) for the old unbounded wait explicitly.
     """
     from lionagi.ln.concurrency import run_async
     from lionagi.state.db import DEFAULT_DB_PATH, StateDB

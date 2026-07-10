@@ -188,7 +188,6 @@ class AnthropicMessagesEndpoint(Endpoint):
         extra_headers: dict | None = None,
         **kwargs,
     ):
-        # Extract system message before validation if present
         request_dict = request if isinstance(request, dict) else request.model_dump()
         system = None
 
@@ -196,13 +195,11 @@ class AnthropicMessagesEndpoint(Endpoint):
             first_message = request_dict["messages"][0]
             if first_message.get("role") == "system":
                 system = first_message["content"]
-                # Remove system message before validation
                 request_dict["messages"] = request_dict["messages"][1:]
                 request = request_dict
 
         payload, headers = super().create_payload(request, extra_headers=extra_headers, **kwargs)
 
-        # Remove api_key from payload if present
         payload.pop("api_key", None)
 
         if "cache_control" in payload:
@@ -222,7 +219,6 @@ class AnthropicMessagesEndpoint(Endpoint):
                     [last_message] if not isinstance(last_message, list) else last_message
                 )
 
-        # If we extracted a system message earlier, add it to payload
         if system:
             system = [{"type": "text", "text": system}]
             payload["system"] = system

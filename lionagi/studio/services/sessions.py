@@ -811,10 +811,9 @@ async def get_session_route(
     response_class=None,
 )
 async def stream_session_route(session_id: str):
-    # ADR-0006: pre-flight 404 guard before opening the stream.
-    # Without this, a non-existent session silently returns no messages and
-    # then waits 60s before emitting done — client hangs with no indication.
-    # The shows router already does this at shows.py:34-35; we mirror that pattern.
+    # ADR-0006: pre-flight 404 guard. Without it a non-existent session
+    # silently returns no messages and waits 60s before "done" — the client
+    # hangs with no indication. Mirrors the shows router's pattern.
     if not await session_exists(session_id):
         raise NotFoundError(f"Session '{session_id}' not found")
 
@@ -861,8 +860,7 @@ async def stream_session_route(session_id: str):
     response_class=None,
 )
 async def stream_signals(session_id: str) -> Any:
-    # Pre-flight 404 guard before opening the stream — mirrors the pattern
-    # at sessions.py:35-36 (ADR-0006).
+    # Pre-flight 404 guard before opening the stream (ADR-0006).
     if not await session_exists(session_id):
         raise NotFoundError(f"Session '{session_id}' not found")
 

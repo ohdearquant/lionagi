@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import argparse
+from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -361,6 +362,66 @@ def test_schedule_create_auto_detect_exception_silently_skipped(monkeypatch):
 
     assert outcome["result"] == 0
     assert "action_project" not in outcome["body"]
+
+
+# ---------------------------------------------------------------------------
+# _cmd_create: --cwd (ADR-0070 delta 1 -- persisted execution root)
+# ---------------------------------------------------------------------------
+
+
+def test_schedule_create_explicit_cwd_used_as_is(monkeypatch, tmp_path):
+    """--cwd given: resolved and sent as action_cwd, action_project auto-
+    detection is skipped entirely because it takes priority."""
+    monkeypatch.setattr(
+        "lionagi.cli._project.detect_project",
+        lambda cwd=None: ("should-not-be-used", "git_remote"),
+    )
+
+    outcome = _run_create(monkeypatch, ["--cwd", str(tmp_path)])
+
+    assert outcome["result"] == 0
+    assert outcome["body"]["action_cwd"] == str(tmp_path)
+    assert outcome["body"]["action_project"] == "should-not-be-used"
+
+
+def test_schedule_create_cwd_nonexistent_directory_errors(monkeypatch, capsys):
+    """--cwd pointing at a directory that doesn't exist is rejected before
+    any API call is made."""
+    outcome = _run_create(monkeypatch, ["--cwd", "/no/such/directory/at/all"])
+
+    assert outcome["result"] == 1
+    assert "action_cwd" not in outcome["body"]
+    captured = capsys.readouterr()
+    assert "--cwd" in captured.err
+
+
+def test_schedule_create_without_cwd_or_project_falls_back_to_cli_cwd(monkeypatch):
+    """Neither --cwd nor a resolvable action_project: the CLI's own
+    invocation directory is sent as action_cwd so the schedule still gets a
+    stable execution root."""
+    monkeypatch.setattr("lionagi.cli._project.detect_project", lambda cwd=None: (None, None))
+
+    outcome = _run_create(monkeypatch, [])
+
+    assert outcome["result"] == 0
+    assert "action_project" not in outcome["body"]
+    assert outcome["body"]["action_cwd"] == str(Path.cwd())
+
+
+def test_schedule_create_with_resolved_project_omits_cwd_fallback(monkeypatch):
+    """A resolvable action_project (explicit or auto-detected) means the CLI
+    cwd fallback never fires -- action_project's registered path wins at
+    creation time (see services/schedules.create_schedule)."""
+    monkeypatch.setattr(
+        "lionagi.cli._project.detect_project",
+        lambda cwd=None: ("lionagi/lionagi", "git_remote"),
+    )
+
+    outcome = _run_create(monkeypatch, [])
+
+    assert outcome["result"] == 0
+    assert outcome["body"]["action_project"] == "lionagi/lionagi"
+    assert "action_cwd" not in outcome["body"]
 
 
 # ---------------------------------------------------------------------------

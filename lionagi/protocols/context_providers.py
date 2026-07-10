@@ -3,7 +3,7 @@
 
 """Pre-turn context injection: an ordered ContextProvider registry that
 renders ephemeral knowledge into the first-message guidance fold — never
-the durable message record. See ADR-0100."""
+the durable message record. See ADR-0008."""
 
 from __future__ import annotations
 

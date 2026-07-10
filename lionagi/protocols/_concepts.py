@@ -101,6 +101,3 @@ class Ordering(ABC, Generic[E]):
     @abstractmethod
     def exclude(self, item, /):
         pass
-
-
-# File: lionagi/protocols/_concepts.py

@@ -60,15 +60,13 @@ class KhiveInjectionPolicy:
     """Policy block controlling pre-turn khive injection (ADR-0100).
 
     ``namespace``, when set, is threaded onto every khive verb this policy's
-    provider emits (recall, compose, auto_feedback, remember). This is the
-    bench-arm isolation mechanism: auto_feedback is a WRITE to the live brain
-    store, so an "M1 read-only" arm without a pinned namespace still mutates
-    posteriors and contaminates the M0/M1 comparison — pinning a namespace is
-    required, not optional, for any bench arm with ``enabled=True``. Note:
-    today only the khive write verb honors a namespace argument; the read
-    verbs reject unknown params, so an injection-enabled arm cannot actually
-    execute until the khive surface grows namespace-scoped reads. The
-    threading is in place so it works the day that lands.
+    provider emits (recall, compose, auto_feedback, remember) — the bench-arm
+    isolation mechanism. auto_feedback WRITES to the live brain store, so an
+    unpinned "M1 read-only" arm still mutates posteriors and contaminates the
+    M0/M1 comparison: pinning a namespace is required, not optional, for any
+    enabled bench arm. Currently only the write verb honors namespace (read
+    verbs reject unknown params), so this is forward-wired for when reads
+    grow namespace scoping too.
     """
 
     profile_id: str

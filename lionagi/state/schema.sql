@@ -423,6 +423,11 @@ CREATE TABLE IF NOT EXISTS schedules (
   action_playbook     TEXT,
   action_flow_yaml    TEXT,
   action_project      TEXT,
+  -- lifts ADR-0070 delta 1: the schedule's own persisted execution root,
+  -- captured once at creation time so a scheduled fire never depends on
+  -- wherever the Studio daemon happened to be started from. NULL only on
+  -- pre-migration rows (see MIGRATION_COLUMNS backfill).
+  action_cwd          TEXT,
   action_extra_args   JSON    DEFAULT '[]',
   on_success          JSON,
   on_fail             JSON,

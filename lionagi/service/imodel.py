@@ -297,7 +297,7 @@ class iModel:  # noqa: N801
                         timeout=10.0,
                     )
                 except asyncio.TimeoutError:
-                    pass  # Fall through — same as old ctr>100 break
+                    pass
 
             completed_call = self.executor.pile.pop(api_call.id)
             if (
@@ -385,8 +385,7 @@ class iModel:  # noqa: N801
             provider=endpoint.config.provider,
             endpoint=endpoint.config.endpoint,
         ):
-            # Preserve the API key from the freshly matched endpoint
-            # (reads from env), then apply the serialized config on top
+            # Preserve the freshly resolved (env-sourced) API key before overwriting config
             fresh_api_key = e1.config._api_key
             e1.config = endpoint.config
             if e1.config._api_key is None and fresh_api_key:

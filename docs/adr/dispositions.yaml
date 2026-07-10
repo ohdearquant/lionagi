@@ -1,0 +1,811 @@
+# Disposition ledger for the archived v0 ADR corpus (docs/_archive/v0/).
+# One row per archived record. disposition is one of:
+#   carried-forward-as — the record's substance continues as the named new ADR(s)
+#   merged-into        — the record is one input among several to the named new ADR(s)
+#   retired            — the record's substance was never implemented and is not carried
+# target names ADRs in THIS directory (the new corpus). v0_status strings are condensed
+# from the archived records' status lines; the archived file retains each record's full
+# original status wording, and it is authoritative where the two differ. Any ADR id
+# embedded inside a v0_status string refers to the OLD v0 namespace, never to the new
+# corpus.
+
+- v0: "0001"
+  title: "lion-studio as Internal Monorepo App"
+  v0_status: "Accepted"
+  disposition: merged-into
+  target: ["ADR-0076", "ADR-0079"]
+  reason: "the package and monorepo boundary survives, split between the daemon and the Vite\
+  \ client records"
+
+- v0: "0002"
+  title: "Lion Studio Tech Stack"
+  v0_status: "Accepted"
+  disposition: merged-into
+  target: ["ADR-0076", "ADR-0079"]
+  reason: "FastAPI and port 8765 survive while the stale Next.js claim is replaced by the shipped\
+  \ Vite client"
+
+- v0: "0003"
+  title: "Claude Code Marketplace"
+  v0_status: "Amended (v2 catalog \u2014 see below)"
+  disposition: merged-into
+  target: ["ADR-0065"]
+  reason: "The marketplace structure remains, but the current catalog is one orchestrate bundle\
+  \ rather than the v0 four-plugin inventory."
+
+- v0: "0004"
+  title: "Data Layer \u2014 Filesystem + SQLite Hybrid"
+  v0_status: "Accepted"
+  disposition: carried-forward-as
+  target: ["ADR-0055"]
+  reason: "The filesystem/operational-database boundary survives, narrowed to current backend-neutral\
+  \ and artifact semantics."
+
+- v0: "0005"
+  title: "Playbooks Naming Convention"
+  v0_status: "Accepted"
+  disposition: carried-forward-as
+  target: ["ADR-0079"]
+  reason: "the checked-in client and API use playbook vocabulary while legacy Worker-prefixed\
+  \ graph types remain internal"
+
+- v0: "0006"
+  title: "Live Update Transport \u2014 SSE + Interval Refresh"
+  v0_status: "Accepted"
+  disposition: merged-into
+  target: ["ADR-0076"]
+  reason: "endpoint-specific SSE is shipped, but the broader unified live-update contract is\
+  \ not"
+
+- v0: "0007"
+  title: "Plugin Manifest Layout and Auto-Discovery Convention"
+  v0_status: "Accepted"
+  disposition: carried-forward-as
+  target: ["ADR-0065"]
+  reason: "Metadata-only plugin manifests and directory-based skill and agent discovery remain\
+  \ the repository convention."
+
+- v0: "0008"
+  title: "Lion Studio Scope \u2014 CLI-Primary, Definition-Editable, Localhost"
+  v0_status: "Accepted"
+  disposition: merged-into
+  target: ["ADR-0076"]
+  reason: "local-first operation survives, but Studio is now a write-capable authenticated control\
+  \ plane rather than a CLI-secondary viewer"
+
+- v0: "0009"
+  title: "SQLite State Layer for Core Data Model"
+  v0_status: "Accepted"
+  disposition: merged-into
+  target: ["ADR-0056"]
+  reason: "The relational state intent remains, while SQLite exclusivity is superseded by the\
+  \ shared SQLAlchemy backend."
+
+- v0: "0010"
+  title: "Plugin-Aware Studio UI"
+  v0_status: "Accepted"
+  disposition: carried-forward-as
+  target: ["ADR-0079"]
+  reason: "plugin and skill discovery endpoints and the Library browsing surface are present"
+
+- v0: "0011"
+  title: "Shows Data Model \u2014 Hybrid SQLite + Filesystem"
+  v0_status: "Accepted"
+  disposition: carried-forward-as
+  target: ["ADR-0077"]
+  reason: "shows still combine StateDB structural state with operationally significant filesystem\
+  \ content"
+
+- v0: "0012"
+  title: "Studio Execution Lineage & UX Redesign"
+  v0_status: "Accepted"
+  disposition: merged-into
+  target: ["ADR-0077", "ADR-0081"]
+  reason: "shipped lineage data is retained in the state record and unshipped viewer unification\
+  \ becomes an explicit target"
+
+- v0: "0013"
+  title: "Zero Component-Library UI"
+  v0_status: "Superseded by [ADR-0035](ADR-0035-design-system-and-component-library.md) for product\
+  \ surfaces"
+  disposition: retired
+  target: []
+  reason: "the supersession chain is internally inconsistent and the current source-owned component\
+  \ practice is recorded directly in ADR-0079"
+
+- v0: "0014"
+  title: "CLI-Primary, Studio-Secondary"
+  v0_status: "Accepted"
+  disposition: carried-forward-as
+  target: ["ADR-0062"]
+  reason: "The CLI remains the operator surface, narrowed to allow explicit delegation to daemon-owned\
+  \ services such as scheduling."
+
+- v0: "0015"
+  title: "Runs List Design \u2014 Identity, Filters, Pagination"
+  v0_status: "Accepted"
+  disposition: merged-into
+  target: ["ADR-0080", "ADR-0081"]
+  reason: "the standalone Runs IA is retired while its operational listing needs move into History\
+  \ and Fleet"
+
+- v0: "0016"
+  title: "Definition Write Path and Versioning"
+  v0_status: "Accepted"
+  disposition: carried-forward-as
+  target: ["ADR-0077"]
+  reason: "DB-first versioning followed by a file write is implemented for agent and playbook\
+  \ definitions, with reconciliation recorded as a delta"
+
+- v0: "0017"
+  title: "Session Lifecycle and Status Derivation"
+  v0_status: "Partially superseded by [ADR-0033](ADR-0033-unified-entity-state-model.md) \u2014\
+  \ see Supersession Notice"
+  disposition: merged-into
+  target: ["ADR-0057"]
+  reason: "Implemented session lifecycle values are consolidated into the actual per-entity\
+  \ lifecycle contract."
+
+- v0: "0018"
+  title: "Studio Distribution and Local Access"
+  v0_status: "Accepted (decision); **Implementation deferred** \u2014 this PR does not ship the\
+  \ packaged Studio wheel, the `li studio` no-arg launcher, or the `StaticFiles` mount\
+  \ described below. The frontend remains a separate Next.js dev app on port 3000\
+  \ and `apps/studio/server/app.py` only exposes API routers + `/health`. The pieces\
+  \ specified here (move/package server under `lionagi/studio/`, bundle built static\
+  \ assets in the wheel, mount static after `/api/*`, make `li studio` start the server)\
+  \ are tracked as follow-up work and are NOT a hard contract for this PR."
+  disposition: merged-into
+  target: ["ADR-0076", "ADR-0079"]
+  reason: "current API-only, Vite-development, and daemon-hosted-dist modes replace the deferred\
+  \ Next.js packaging plan"
+
+- v0: "0019"
+  title: "Teams DB Migration and Run Lifecycle Management"
+  v0_status: "Proposed"
+  disposition: merged-into
+  target: ["ADR-0077"]
+  reason: "only the implemented shared-state and lifecycle boundary is retained; the proposed\
+  \ teams migration is not declared shipped"
+
+- v0: "0020"
+  title: "Skill Invocations \u2014 Tracking the Orchestration Layer"
+  v0_status: "Proposed"
+  disposition: merged-into
+  target: ["ADR-0077", "ADR-0081"]
+  reason: "invocation rows are implemented as lineage plumbing but the noun is removed from\
+  \ the cockpit's user-facing IA"
+
+- v0: "0021"
+  title: "Skill Artifacts, Structured Output, and Reactive Chaining"
+  v0_status: "Proposed"
+  disposition: merged-into
+  target: ["ADR-0077", "ADR-0081"]
+  reason: "implemented artifact metadata is retained while the unshipped reactive-chaining design\
+  \ is retired"
+
+- v0: "0022"
+  title: "Run Step Provenance \u2014 Model, Agent, and Provider Disclosure"
+  v0_status: "Proposed"
+  disposition: merged-into
+  target: ["ADR-0077", "ADR-0081"]
+  reason: "partial provenance fields and display requirements are retained without claiming\
+  \ complete per-step disclosure"
+
+- v0: "0023"
+  title: "Unified Hook System and Agent-Level Configuration"
+  v0_status: "Proposed"
+  disposition: merged-into
+  target: ["ADR-0047"]
+  reason: "The shipped session HookBus is retained while the unimplemented universal-consolidation\
+  \ claim is replaced by scoped ownership."
+
+- v0: "0024"
+  title: "Session Health Classification and Admin Surface"
+  v0_status: "Proposed \u2014 extended by [ADR-0033](ADR-0033-unified-entity-state-model.md)"
+  disposition: merged-into
+  target: ["ADR-0057"]
+  reason: "The shipped pure session-health classifier is retained without claiming the wider\
+  \ proposed admin surface."
+
+- v0: "0025"
+  title: "Session Status Vocabulary"
+  v0_status: "Superseded by [ADR-0033](ADR-0033-unified-entity-state-model.md)"
+  disposition: merged-into
+  target: ["ADR-0057"]
+  reason: "The implemented vocabulary, including the later completed_empty value, is recorded\
+  \ with current transition behavior."
+
+- v0: "0026"
+  title: "Project Detection for Session Organization"
+  v0_status: "Accepted"
+  disposition: carried-forward-as
+  target: ["ADR-0063"]
+  reason: "The attribution cascade is implemented, with its current ancestor-walk and path-prefix\
+  \ gaps recorded honestly."
+
+- v0: "0027"
+  title: "Scheduled Runs and Event-Triggered Invocations"
+  v0_status: "**Status**: Proposed"
+  disposition: carried-forward-as
+  target: ["ADR-0070"]
+  reason: "The implemented Studio trigger, subprocess, invocation-linkage, and bounded follow-up\
+  \ behavior is recorded with corrected paths and scope."
+
+- v0: "0028"
+  title: "Status Reason Model"
+  v0_status: "Phase 2 Shipped \u2014 extended by [ADR-0033](ADR-0033-unified-entity-state-model.md)"
+  disposition: merged-into
+  target: ["ADR-0057"]
+  reason: "The shipped six-entity current-reason and transition-history model is consolidated\
+  \ with its actual coverage limits."
+
+- v0: "0029"
+  title: "Artifact Contract"
+  v0_status: "Proposed \u2014 extended by [ADR-0033](ADR-0033-unified-entity-state-model.md) and\
+  \ referenced by [ADR-0039](ADR-0039-knowledge-substrate-minimal-interface.md)"
+  disposition: merged-into
+  target: ["ADR-0064"]
+  reason: "The implemented artifact snapshot and teardown verification are part of the canonical\
+  \ CLI execution outcome record."
+
+- v0: "0030"
+  title: "Attention Queue"
+  v0_status: "**Status**: Proposed \u2014 depends on [ADR-0033](ADR-0033-unified-entity-state-model.md),\
+  \ extended to include knowledge events per [ADR-0039](ADR-0039-knowledge-substrate-minimal-interface.md)"
+  disposition: retired
+  target: []
+  reason: "No attention queue or dismissal projection exists, and operator projections are deferred\
+  \ until stable source transitions exist."
+
+- v0: "0031"
+  title: "Entity Header Pattern"
+  v0_status: "Proposed"
+  disposition: merged-into
+  target: ["ADR-0080", "ADR-0081"]
+  reason: "orientation and action semantics move into the cockpit master-detail contract rather\
+  \ than a universal unshipped header payload"
+
+- v0: "0032"
+  title: "Navigation Reorganization"
+  v0_status: "Proposed"
+  disposition: merged-into
+  target: ["ADR-0080"]
+  reason: "the pre-cockpit four-group navigation is superseded by the binding six-space cockpit"
+
+- v0: "0033"
+  title: "Unified Entity State Model"
+  v0_status: "Proposed"
+  disposition: merged-into
+  target: ["ADR-0058"]
+  reason: "The unimplemented universal NormalizedState proposal is replaced by a narrower aspirational\
+  \ lifecycle service."
+
+- v0: "0034"
+  title: "Frontend Data & State Architecture"
+  v0_status: "Proposed"
+  disposition: retired
+  target: []
+  reason: "TanStack Query, Zustand, and the central event stream are absent; freshness remains\
+  \ a new decision after current needs are measured"
+
+- v0: "0035"
+  title: "Design System and Component Library"
+  v0_status: "Proposed"
+  disposition: retired
+  target: []
+  reason: "the proposed shadcn, Radix, and components/lion architecture is absent; current source-owned\
+  \ components are recorded in ADR-0079"
+
+- v0: "0039"
+  title: "Knowledge Substrate Minimal Interface"
+  v0_status: "Proposed"
+  disposition: merged-into
+  target: ["ADR-0087"]
+  reason: "The evidence-first insight is retained, while the unbuilt KnowledgeStore manager\
+  \ is not a governance prerequisite."
+
+- v0: "0041"
+  title: "Immutable Evidence Nodes"
+  v0_status: "proposed"
+  disposition: merged-into
+  target: ["ADR-0087"]
+  reason: "Append-only content-addressed evidence and superseding corrections become the foundation\
+  \ of the consolidated target."
+
+- v0: "0042"
+  title: "Task Certificate \u2014 Signed Proof of Process Adherence"
+  v0_status: "proposed"
+  disposition: merged-into
+  target: ["ADR-0087"]
+  reason: "Certificates are retained as process-only records sequenced after evidence verification\
+  \ and policy history."
+
+- v0: "0043"
+  title: "Governed Tool Declaration"
+  v0_status: "proposed"
+  disposition: merged-into
+  target: ["ADR-0087"]
+  reason: "The mandatory governed invocation idea is retained as one optional controller at\
+  \ the real Tool/FunctionCalling boundary."
+
+- v0: "0044"
+  title: "Tool Gates \u2014 Three-Tier Binary Enforcement"
+  v0_status: "proposed"
+  disposition: merged-into
+  target: ["ADR-0087"]
+  reason: "Hard, soft, and advisory levels share one immutable binary GateResult and fail-closed\
+  \ evaluator behavior."
+
+- v0: "0045"
+  title: "Break-Glass Protocol \u2014 DEGRADED-Defensibility Override"
+  v0_status: "proposed"
+  disposition: merged-into
+  target: ["ADR-0087"]
+  reason: "Break-glass is retained as a later attributable exception gate that permanently degrades\
+  \ the process certificate."
+
+- v0: "0046"
+  title: "JIT Tool Grant \u2014 No Standing Capability for High-Risk Tools"
+  v0_status: "proposed"
+  disposition: merged-into
+  target: ["ADR-0087"]
+  reason: "Time-bounded single-use permits are retained as a later gate family after identity\
+  \ and evidence prerequisites."
+
+- v0: "0047"
+  title: "Agent Charter \u2014 Enforceable Governance Document"
+  v0_status: "proposed"
+  disposition: merged-into
+  target: ["ADR-0087"]
+  reason: "Code-bound immutable policy snapshots replace the standalone unimplemented charter\
+  \ object as the activation contract."
+
+- v0: "0048"
+  title: "Agent Segregation of Duties (SoD)"
+  v0_status: "proposed"
+  disposition: merged-into
+  target: ["ADR-0087"]
+  reason: "Duty separation is retained as a later policy-selected gate after actor references\
+  \ and evidence storage exist."
+
+- v0: "0049"
+  title: "Log Tier Governance"
+  v0_status: "proposed"
+  disposition: merged-into
+  target: ["ADR-0087"]
+  reason: "Authoritative evidence moves to its own append-only store instead of extending the\
+  \ mutable DataLogger contract."
+
+- v0: "0050"
+  title: "Operation Context \u2014 Active Assertion in Evidence"
+  v0_status: "proposed"
+  disposition: merged-into
+  target: ["ADR-0087"]
+  reason: "Per-operation immutable provenance and explicit propagation are retained without\
+  \ mutable session-global accumulation."
+
+- v0: "0051"
+  title: "Tool Registry Allowlists"
+  v0_status: "proposed"
+  disposition: merged-into
+  target: ["ADR-0087"]
+  reason: "Executable gate bindings and resource policy remain in versioned snapshots; a separate\
+  \ registry is deferred until needed."
+
+- v0: "0052"
+  title: "Policy Resolution and Staged Release"
+  v0_status: "proposed"
+  disposition: merged-into
+  target: ["ADR-0087"]
+  reason: "Immutable releases, historical lookup, deterministic selection, and deny-on-ambiguity\
+  \ are retained without tenant semantics."
+
+- v0: "0053"
+  title: "Artifact Persistence in State Database"
+  v0_status: "proposed"
+  disposition: retired
+  target: []
+  reason: "Immutable file-capture columns and insert_file_artifact were not implemented; current\
+  \ artifacts are mutable structured upserts."
+
+- v0: "0054"
+  title: "Local State File Cleanup and DB Migration Completion"
+  v0_status: "proposed"
+  disposition: retired
+  target: []
+  reason: "The proposed snapshot, cleanup-ledger, archive-gate, and DB-first migration model\
+  \ is not present in the current state package."
+
+- v0: "0055"
+  title: "Studio Artifact Viewer and File Reference Resolution"
+  v0_status: "proposed"
+  disposition: merged-into
+  target: ["ADR-0077", "ADR-0081"]
+  reason: "existing artifact metadata is recorded retrospectively and the authenticated DB-first\
+  \ viewer remains an explicit target"
+
+- v0: "0056"
+  title: "Play Control API - Runner Control Plane"
+  v0_status: "Status: proposed"
+  disposition: retired
+  target: []
+  reason: "The runner-neutral handle and control plane did not ship; current control is executor-local\
+  \ and recorded separately."
+
+- v0: "0057"
+  title: "Remote Sandbox Execution Behind PlayRunner"
+  v0_status: "proposed"
+  disposition: retired
+  target: []
+  reason: "The PlayRunner, remote control plane, credential vending, and provider-runner design\
+  \ did not land; the narrower current worktree seam and new worker-isolation target\
+  \ are recorded independently."
+
+- v0: "0058"
+  title: "Play Cost Tracking"
+  v0_status: "Status: proposed"
+  disposition: merged-into
+  target: ["ADR-0070"]
+  reason: "Only scheduler future-fire cost and token gates are present; the broader usage ledger\
+  \ and fallback policy are not carried forward."
+
+- v0: "0059"
+  title: "Postgres State Backend"
+  v0_status: "proposed"
+  disposition: merged-into
+  target: ["ADR-0056"]
+  reason: "Its backend intent shipped through the single SQLAlchemy Core implementation accepted\
+  \ in v0-0086."
+
+- v0: "0060"
+  title: "Unified Config Resolution"
+  v0_status: "Status: proposed"
+  disposition: retired
+  target: []
+  reason: "The proposed shared configuration resolver is not implemented and is not scheduling-control-plane\
+  \ authority."
+
+- v0: "0061"
+  title: "Universal Scheduler - `li schedule` for Any Flow"
+  v0_status: "Status: accepted \u2014 activated by ADR-0101 (task-application surface & durable\
+  \ queue), 2026-07-08"
+  disposition: merged-into
+  target: ["ADR-0071", "ADR-0072"]
+  reason: "Implemented lease and queue slices are recorded retrospectively; universal queued\
+  \ admission remains an explicit target."
+
+- v0: "0062"
+  title: "Scheduled Item State Machine"
+  v0_status: "Status: accepted \u2014 activated by ADR-0101 (task-application surface & durable\
+  \ queue), 2026-07-08"
+  disposition: merged-into
+  target: ["ADR-0071", "ADR-0072"]
+  reason: "The restricted schedule-run CAS graph is current, while the full lifecycle and transition-event\
+  \ owner remains aspirational."
+
+- v0: "0063"
+  title: "Task Board - Operator Work Center for Lion Studio"
+  v0_status: "Status: proposed"
+  disposition: retired
+  target: []
+  reason: "No work-item source, projection, route, or operator board exists."
+
+- v0: "0064"
+  title: "Work System Integration"
+  v0_status: "**Status**: accepted"
+  disposition: retired
+  target: []
+  reason: "The described work engine and worker types did not ship; live WorkForm and RuleSet\
+  \ utilities do not constitute a control plane."
+
+- v0: "0065"
+  title: "Task Board Schema"
+  v0_status: "**Status**: proposed"
+  disposition: retired
+  target: []
+  reason: "No work_tasks persistence projection exists, and the durable queue is not a task\
+  \ board."
+
+- v0: "0066"
+  title: "Unified Execution Viewer"
+  v0_status: "proposed"
+  disposition: merged-into
+  target: ["ADR-0081"]
+  reason: "partial graph and detail components exist, but the unshipped unified viewer is retained\
+  \ only as a scoped aspirational workspace"
+
+- v0: "0067"
+  title: "Studio Command Chat - Universal AI-Powered Control Panel"
+  v0_status: "proposed"
+  disposition: merged-into
+  target: ["ADR-0083"]
+  reason: "the safety and typed-effect requirements survive while the unshipped WebSocket and\
+  \ broad tool catalog are replaced by a transport-independent target"
+
+- v0: "0068"
+  title: "Zero-Rewrite Governed Adapter Protocol"
+  v0_status: "accepted"
+  disposition: merged-into
+  target: ["ADR-0086"]
+  reason: "The retrospective records the shipped conversion-only adapter boundary and corrects\
+  \ the absent governed-wrapper claim."
+
+- v0: "0069"
+  title: "Tenant Scope Boundary"
+  v0_status: "accepted"
+  disposition: merged-into
+  target: ["ADR-0086"]
+  reason: "The retrospective records that current OSS has no policy-scope, identity, or isolation\
+  \ runtime contract."
+
+- v0: "0070"
+  title: "Governance Tracing and Observability"
+  v0_status: "accepted"
+  disposition: merged-into
+  target: ["ADR-0086"]
+  reason: "The shipped session signal stream and best-effort persistence replace the absent\
+  \ governance tracer implementation claim."
+
+- v0: "0071"
+  title: "Cognitive Mode Model"
+  v0_status: "accepted"
+  disposition: carried-forward-as
+  target: ["ADR-0042"]
+  reason: "The implemented Pattern, Mode, Role, and Profile contracts are recorded in the typed\
+  \ casts catalog ADR."
+
+- v0: "0072"
+  title: "Reactive Capability Bus"
+  v0_status: "accepted"
+  disposition: merged-into
+  target: ["ADR-0047"]
+  reason: "Its SessionObserver transport role is incorporated into the hook taxonomy; capability\
+  \ emissions remain outside hook execution."
+
+- v0: "0074"
+  title: "Role Composition & Pack-Based Per-Role Configuration"
+  v0_status: "Proposed"
+  disposition: merged-into
+  target: ["ADR-0043", "ADR-0044"]
+  reason: "Its partially implemented resolution design and ambiguous policy model are split\
+  \ into explicit configuration and enforcement decisions."
+
+- v0: "0075"
+  title: "Domain-Specific Agent Engines"
+  v0_status: "Proposed \u2014 infrastructure landed, engines pending"
+  disposition: merged-into
+  target: ["ADR-0034"]
+  reason: "The implemented engine layer is recorded with its later autonomy safeguards in one\
+  \ retrospective ADR."
+
+- v0: "0076"
+  title: "Observer as the Canonical Hook Transport"
+  v0_status: "Accepted"
+  disposition: merged-into
+  target: ["ADR-0047"]
+  reason: "Its observer-backed session transport is retained, while its deferred service migration\
+  \ is replaced by explicit scope boundaries."
+
+- v0: "0077"
+  title: "Engine Autonomy Protections and the Hypothesis Engine"
+  v0_status: "Accepted \u2014 implemented"
+  disposition: merged-into
+  target: ["ADR-0034"]
+  reason: "Its shipped budgets, repair, judge, routing, guards, and chain engine are part of\
+  \ the canonical engine record."
+
+- v0: "0078"
+  title: "The Casts Conceptual Model and Module Coherence"
+  v0_status: "Accepted \u2014 implemented"
+  disposition: merged-into
+  target: ["ADR-0041", "ADR-0042"]
+  reason: "Its implemented agent-construction and casts-model decisions are separated into focused\
+  \ retrospective records."
+
+- v0: "0079"
+  title: "Substrate Executor Provider Interface"
+  v0_status: "Superseded in part by [ADR-0089](ADR-0089-sandbox-backend-seam-and-measurement-loop.md)\
+  \ (its `ExecutionTarget`/`ExecutionLimits` types are adopted there; the `ExecutorProvider`\
+  \ protocol half is parked, not carried forward)"
+  disposition: merged-into
+  target: ["ADR-0090"]
+  reason: "Its landed ExecutionTarget and ExecutionLimits vocabulary belongs to the retrospective\
+  \ measured-cell seam; the unimplemented executor-provider protocol is not carried\
+  \ forward."
+
+- v0: "0080"
+  title: "Remote Sandbox Substrate Execution"
+  v0_status: "Superseded by [ADR-0089](ADR-0089-sandbox-backend-seam-and-measurement-loop.md) (backend\
+  \ contract absorbed; the flow/play `DependencyAwareExecutor` integration is deferred\
+  \ to a future ADR, not carried by ADR-0089)"
+  disposition: merged-into
+  target: ["ADR-0090", "ADR-0091"]
+  reason: "Its landed backend vocabulary is recorded retrospectively, while its deferred flow/fanout\
+  \ need is narrowed to the worktree-per-worker target."
+
+- v0: "0081"
+  title: "Configurable Flow Planning"
+  v0_status: "Proposed"
+  disposition: retired
+  target: []
+  reason: "Its superseded substrate foundations and proposed planning configuration were never\
+  \ implemented."
+
+- v0: "0082"
+  title: "Role to Substrate Routing Policy"
+  v0_status: "Proposed"
+  disposition: retired
+  target: []
+  reason: "Pack-based model precedence shipped, but the ADR's substrate target and superseded\
+  \ foundations did not."
+
+- v0: "0083"
+  title: "Canonical Per-Node Lifecycle Signal Contract"
+  v0_status: "Accepted"
+  disposition: merged-into
+  target: ["ADR-0033"]
+  reason: "The implemented node vocabulary and its uneven observation bridge are recorded with\
+  \ the graph execution boundary."
+
+- v0: "0084"
+  title: "VS Code Extension as a Native Client over the Studio API"
+  v0_status: "Accepted"
+  disposition: carried-forward-as
+  target: ["ADR-0082"]
+  reason: "the native read-only client, local daemon lifecycle, REST reads, and SSE observation\
+  \ are implemented"
+
+- v0: "0085"
+  title: "Flow Control Plane \u2014 Pause/Resume, Message Injection, Checkpoint Resume, Status,\
+  \ Usage, Fallback"
+  v0_status: "**Status**: Proposed"
+  disposition: merged-into
+  target: ["ADR-0069"]
+  reason: "Implemented reactive controls and checkpoint recovery are retained without the unimplemented\
+  \ universal usage and fallback claims."
+
+- v0: "0086"
+  title: "StateDB SQLAlchemy-Core backend unification"
+  v0_status: "Accepted"
+  disposition: carried-forward-as
+  target: ["ADR-0056"]
+  reason: "The accepted SQLAlchemy Core, SQLite-default, PostgreSQL-capable backend is implemented\
+  \ and remains current."
+
+- v0: "0087"
+  title: "LNDL operate() Seam, Scratchpad-as-Tool, and the Measurement Gate"
+  v0_status: "Accepted (gated scope, 2026-07-03)"
+  disposition: carried-forward-as
+  target: ["ADR-0024"]
+  reason: "the implemented operate seam is carried forward as a narrower retrospective record;\
+  \ unimplemented language-package and measurement commitments are not asserted"
+
+- v0: "0088"
+  title: "Flow-Steering Control-Plane Mechanisms"
+  v0_status: "**Status**: Accepted with conditions (2026-07-03)"
+  disposition: carried-forward-as
+  target: ["ADR-0069"]
+  reason: "The labeled context-mode steering path is implemented; operation-node injection remains\
+  \ outside the current contract."
+
+- v0: "0089"
+  title: "Sandbox Backend Seam and Recursive Measurement Loop"
+  v0_status: "Accepted"
+  disposition: carried-forward-as
+  target: ["ADR-0090"]
+  reason: "The implemented backend protocol, two adapters, capability selection, and benchmark\
+  \ client form the required retrospective spine; unimplemented loop and roster claims\
+  \ are excluded."
+
+- v0: "0090"
+  title: "Minimal Memory Contract and Pluggable Backend Seam"
+  v0_status: "Accepted"
+  disposition: carried-forward-as
+  target: ["ADR-0092"]
+  reason: "The protocol, reference backend, public exports, and Branch/Session ownership surface\
+  \ are implemented and restated as current architecture."
+
+- v0: "0091"
+  title: "khive as a Pluggable lionagi MemoryStore Backend"
+  v0_status: "Accepted"
+  disposition: carried-forward-as
+  target: ["ADR-0093"]
+  reason: "Its external-adapter intent is retained as an aspirational fidelity and conformance\
+  \ contract without claiming that the named adapter exists in this repository."
+
+- v0: "0092"
+  title: "Durable Dispatch Outbox and Named Resource Gates"
+  v0_status: "Accepted (design review completed 2026-07-04; decisions folded below)"
+  disposition: merged-into
+  target: ["ADR-0059"]
+  reason: "The implemented persistence-area outbox slice is consolidated here; resource-gate\
+  \ behavior belongs to execution architecture."
+
+- v0: "0093"
+  title: "Studio Three-Surface Information Architecture"
+  v0_status: "Proposed (Amendment 1 applied \u2014 see below)"
+  disposition: carried-forward-as
+  target: ["ADR-0080"]
+  reason: "Amendment 1's shipped six-space cockpit is canonical; the original three-route contract\
+  \ is retired within the replacement"
+
+- v0: "0094"
+  title: "Run Completion Contract and Machine-Consumable Orchestration"
+  v0_status: "Proposed"
+  disposition: carried-forward-as
+  target: ["ADR-0035"]
+  reason: "The wait grammar and state-integrity floor are implemented and are restated retrospectively."
+
+- v0: "0095"
+  title: "Reactive Spawn Observability and Orchestration DX"
+  v0_status: "Proposed"
+  disposition: merged-into
+  target: ["ADR-0033"]
+  reason: "The shipped rejected-injection ledger is part of the canonical reactive execution\
+  \ contract."
+
+- v0: "0096"
+  title: "Engine Result and Degradation Contract"
+  v0_status: "Accepted with amendment (gated review 2026-07-06; the success-path amendment is\
+  \ folded into the archived record)"
+  disposition: merged-into
+  target: ["ADR-0034"]
+  reason: "The shipped structured engine result with degradation marking and budget-exceeded\
+  \ signaling is part of the canonical engine record."
+
+- v0: "0097"
+  title: "CI Gate Taxonomy And Fail-Closed Aggregation"
+  v0_status: "**Status**: Proposed"
+  disposition: retired
+  target: []
+  reason: "CI gate taxonomy has no scheduling-control-plane implementation or ownership."
+
+- v0: "0098"
+  title: "Resident Engine Work Queue (Warm Host Loop)"
+  v0_status: "Proposed"
+  disposition: carried-forward-as
+  target: ["ADR-0037"]
+  reason: "The unimplemented host-plane intent is retained as a concise aspirational queue and\
+  \ isolation decision."
+
+- v0: "0099"
+  title: "Escalation node_builder Tier Bump"
+  v0_status: "Proposed"
+  disposition: carried-forward-as
+  target: ["ADR-0038"]
+  reason: "The unimplemented tier bump is retained with a separate builder and a typed host\
+  \ handoff boundary."
+
+- v0: "0100"
+  title: "Pre-Turn Context Injection Providers"
+  v0_status: "Proposed"
+  disposition: merged-into
+  target: ["ADR-0008"]
+  reason: "The pre-turn provider registry is recorded in the messages-context provider ADR;\
+  \ the shipped registry belongs to Branch and operations rather than AgentSpec construction."
+
+- v0: "0101"
+  title: "Task-Application Surface & Durable Queue"
+  v0_status: "**Status**: Accepted"
+  disposition: merged-into
+  target: ["ADR-0071", "ADR-0072"]
+  reason: "The in-process ad-hoc queue and worker are current; public bindings, idempotency,\
+  \ and scheduled-fire convergence remain target state."
+
+- v0: "0102"
+  title: "Workflow Library Registry"
+  v0_status: "**Status**: Accepted"
+  disposition: merged-into
+  target: ["ADR-0073"]
+  reason: "The versioned workflow registry has not shipped and is retained only as a fixed-lane\
+  \ migration delta."
+
+- v0: "0103"
+  title: "Fixed-flow workflow engine v1.1 contract (li flow run, per-node cwd, per-node model,\
+  \ artifact_dir)"
+  v0_status: "**Status**: Accepted (2026-07-09)"
+  disposition: merged-into
+  target: ["ADR-0068", "ADR-0073"]
+  reason: "Implemented fixed compilation, model, and cwd behavior is recorded as current; the\
+  \ missing CLI, registry provenance, artifacts, and controls remain explicit deltas."

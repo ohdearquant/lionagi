@@ -9,14 +9,12 @@ from lionagi.models import HashableModel
 
 
 class ReActAnalysis(HashableModel):
-    """Chain-of-thought output for one ReAct round: analysis, extension flag, and action strategy."""
+    """Chain-of-thought output for one ReAct round: analysis, extension flag, and action strategy.
 
-    # Standard ReAct strings. The round budget is given as HEADROOM for planning, not
-    # as a countdown: "you have N steps left, be efficient" reads as scarcity and makes
-    # a model wrap up early and declare done before the task is finished. We instead (a)
-    # frame the remaining rounds as room it need not fill or race, (b) redirect
-    # "efficiency" to throughput-per-round (batch independent tool calls) rather than
-    # fewer rounds, and (c) make the only failure stopping while the task is incomplete.
+    Round budget is framed as headroom to use, not a countdown — scarcity framing
+    makes models wrap up early. See prompts below.
+    """
+
     FIRST_EXT_PROMPT: ClassVar[str] = (
         "This is a multi-step task. You have room for up to {extensions} reason-act "
         "rounds — that is headroom to do the job well, not a target to fill or a clock "
@@ -65,8 +63,8 @@ class ReActAnalysis(HashableModel):
         ),
     )
 
-    # Note: action_requests and action_responses are added dynamically by Step.request_operative()
-    # when actions=True, so they don't need to be defined here. The operate() function will add them.
+    # action_requests/action_responses are added dynamically by Step.request_operative()
+    # when actions=True — not defined here.
 
 
 class Analysis(HashableModel):
