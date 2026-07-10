@@ -211,6 +211,36 @@ def test_dispatch_purge_bulk_dry_run_deletes_nothing(monkeypatch, tmp_path, caps
     assert asyncio.run(check()) is not None
 
 
+def test_dispatch_purge_single_row_honors_dry_run(monkeypatch, tmp_path, capsys):
+    """`purge <id> --dry-run` previews the row and must not delete it."""
+    db_path = _redirect_state_db(monkeypatch, tmp_path)
+    import asyncio
+
+    from lionagi.state.db import StateDB
+
+    async def seed():
+        async with StateDB(db_path) as db:
+            from lionagi.dispatch import enqueue_dispatch
+
+            return await enqueue_dispatch(db, kind="k", deliver_to="seat-1")
+
+    dispatch_id = asyncio.run(seed())
+
+    rc = main(["dispatch", "purge", dispatch_id, "--dry-run"])
+    captured = capsys.readouterr()
+    assert rc == 0
+    assert f"would purge {dispatch_id}" in captured.out
+    assert "status=pending" in captured.out
+
+    async def check():
+        from lionagi.dispatch import get_dispatch
+
+        async with StateDB(db_path) as db:
+            return await get_dispatch(db, dispatch_id)
+
+    assert asyncio.run(check()) is not None
+
+
 def test_dispatch_purge_bare_before_leaves_pending_row_alone(monkeypatch, tmp_path, capsys):
     """A bare --before (no --status) defaults to terminal statuses only."""
     db_path = _redirect_state_db(monkeypatch, tmp_path)

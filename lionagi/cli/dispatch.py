@@ -100,11 +100,18 @@ async def _cmd_retry(dispatch_id: str) -> int:
     return 1
 
 
-async def _cmd_purge(dispatch_id: str) -> int:
-    from lionagi.dispatch import purge_dispatch
+async def _cmd_purge(dispatch_id: str, *, dry_run: bool = False) -> int:
+    from lionagi.dispatch import get_dispatch, purge_dispatch
     from lionagi.state.db import StateDB
 
     async with StateDB() as db:
+        if dry_run:
+            row = await get_dispatch(db, dispatch_id)
+            if row is None:
+                print(f"dispatch not found: {dispatch_id}")
+                return 1
+            print(f"would purge {dispatch_id} (status={row['status']})")
+            return 0
         deleted = await purge_dispatch(db, dispatch_id, actor="li_dispatch_purge")
 
     if deleted:
@@ -197,7 +204,7 @@ def add_dispatch_subparser(subparsers: argparse._SubParsersAction) -> None:
     purge.add_argument(
         "--dry-run",
         action="store_true",
-        help="Bulk purge: report what would be deleted without deleting.",
+        help="Report what would be deleted without deleting (single-row and bulk).",
     )
 
 
@@ -214,7 +221,7 @@ def run_dispatch(args: argparse.Namespace) -> int:
         return run_async(_cmd_retry(args.id))
     if args.dispatch_command == "purge":
         if args.id is not None:
-            return run_async(_cmd_purge(args.id))
+            return run_async(_cmd_purge(args.id, dry_run=args.dry_run))
         if args.status is None and args.before is None:
             print("purge: specify an id, or --status/--before for a bulk purge")
             return 2
