@@ -38,16 +38,21 @@ class TestAgentSpecPresets:
         assert spec.tools == ("coding",)
 
     def test_coding_secure_default_hooks(self):
-        """Secure mode (default) wires guard_destructive and guard_paths."""
+        """Secure mode (default) wires guard_destructive and guard_paths.
+
+        These register in the security_pre bucket (not the ordinary user pre
+        bucket) so they get the security -> user -> security recheck, the
+        same as an explicit PermissionPolicy (ADR-0086 delta row 1).
+        """
         from lionagi.agent.spec import AgentSpec
 
         spec = AgentSpec.coding()
-        # pre:bash should have guard_destructive
-        assert "pre:bash" in spec.hook_handlers
-        assert len(spec.hook_handlers["pre:bash"]) >= 1
-        # pre:reader and pre:editor should have guard_paths
-        assert "pre:reader" in spec.hook_handlers
-        assert "pre:editor" in spec.hook_handlers
+        # security_pre:bash should have guard_destructive
+        assert "security_pre:bash" in spec.hook_handlers
+        assert len(spec.hook_handlers["security_pre:bash"]) >= 1
+        # security_pre:reader and security_pre:editor should have guard_paths
+        assert "security_pre:reader" in spec.hook_handlers
+        assert "security_pre:editor" in spec.hook_handlers
 
     def test_coding_insecure_no_hooks(self):
         """AgentSpec.coding(secure=False) does not add guard hooks."""

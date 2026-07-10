@@ -142,18 +142,49 @@ def _chain_pre_hooks(
     security_hooks: list[Callable],
     user_hooks: list[Callable] | None = None,
 ) -> Callable | None:
+    """Compose security controls and user pre-hooks into one preprocessor.
+
+    Every security hook (an explicit PermissionPolicy's pre-hook, or a
+    built-in guard such as guard_destructive/guard_paths) is adapted into a
+    GateResult evaluator and run through the shared gate pass runner: each
+    control evaluates exactly once per pass, and an evaluator that raises
+    unexpectedly is treated as a fail-closed deny rather than propagating an
+    unrelated exception (ADR-0086 delta row 1).
+
+    When user pre-hooks are present, the security pass runs twice — once
+    before the user hooks and once after, against the final, possibly
+    mutated arguments — so a user hook cannot rewrite arguments past a
+    control that already approved them. With no user pre-hooks it runs once.
+    """
+    from .gate import GateDeniedError, adapt_legacy_hook, run_gate_pass
+
     user_hooks = user_hooks or []
-    hooks = [*security_hooks, *user_hooks]
-    if user_hooks:
-        hooks.extend(security_hooks)
-    if not hooks:
+    if not security_hooks and not user_hooks:
         return None
 
+    evaluators = [
+        adapt_legacy_hook(getattr(hook, "__name__", "security_control"), hook)
+        for hook in security_hooks
+    ]
+
     async def chained(args: dict, **_kw) -> dict:
-        for handler in hooks:
+        action = args.get("action", "")
+        args, deny = await run_gate_pass(evaluators, tool_name, action, args)
+        if deny is not None:
+            raise GateDeniedError(deny)
+
+        for handler in user_hooks:
             result = await handler(tool_name, args.get("action", ""), args)
             if isinstance(result, dict):
                 args = result
+
+        if user_hooks and evaluators:
+            args, deny = await run_gate_pass(
+                evaluators, tool_name, args.get("action", action), args
+            )
+            if deny is not None:
+                raise GateDeniedError(deny)
+
         return args
 
     return chained

@@ -35,10 +35,9 @@ class FlowResumeError(LionError):
 class CheckpointWriter:
     """Serializes checkpoint writes so concurrent op completions never tear the file on disk.
 
-    The in-memory `ops` map is the source of truth for the run; every write
-    serializes the FULL current state to a unique temp name and renames it
-    into place, so a reader only ever sees a complete file, and a lock held
-    across serialize-write-rename keeps renames in acquisition order.
+    Every write serializes the FULL current state to a unique temp name and
+    renames it into place, so a reader only ever sees a complete file; a lock
+    held across serialize-write-rename keeps renames in acquisition order.
     """
 
     path: Path
@@ -75,8 +74,8 @@ class CheckpointWriter:
         """Record one planned op's outcome and persist the whole checkpoint atomically.
 
         flow_context, when given, replaces the writer's snapshot of the
-        executor's shared context workspace as of this completion — the
-        latest one wins, since it is a running accumulation, not per-op data.
+        shared context workspace — latest wins, since it accumulates rather
+        than being per-op data.
         """
         async with self._lock:
             self.ops[agent_id] = {"agent_id": agent_id, "status": status, "response": response}
@@ -95,9 +94,8 @@ class CheckpointWriter:
         """Record one reactively spawned node's outcome, keyed by its own node id.
 
         Spawned nodes must never share the `ops` keyspace: a spawned child's
-        branch can carry a name identical to a planned agent_id's (clones
-        inherit the source branch's name), and using that name as the `ops`
-        key would silently overwrite the planned op's checkpoint entry.
+        branch can carry a name identical to a planned agent_id's, so using
+        that name as the key would silently overwrite the planned entry.
         """
         async with self._lock:
             entry = {"node_id": node_id, "status": status, "response": response}
@@ -147,11 +145,10 @@ def _find_run_dir_by_id(run_id: str) -> RunDir | None:
 async def resolve_checkpoint_target(target: str) -> tuple[RunDir, dict[str, Any]]:
     """Resolve a run_id, or a session/invocation/play id, to (RunDir, checkpoint dict).
 
-    A run_id matches a directory under RUNS_ROOT directly — no DB lookup needed,
-    since the original session_id travels inside the checkpoint payload itself.
-    Anything else is resolved as a session/invocation/play id (same resolution
-    `li o ctl status` uses) to its backing session, whose node_metadata carries
-    the run_id every flow run stamps at startup.
+    A run_id matches a directory under RUNS_ROOT directly, no DB lookup
+    needed. Anything else is resolved as a session/invocation/play id (same
+    resolution `li o ctl status` uses) to its backing session, whose
+    node_metadata carries the run_id every flow run stamps at startup.
     """
     run_dir = _find_run_dir_by_id(target)
     if run_dir is not None and run_dir.checkpoint_path.exists():

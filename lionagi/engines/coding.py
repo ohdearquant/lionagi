@@ -183,9 +183,8 @@ class WorkerActivity(EngineEvent):
 class AutoRepairApplied(EngineEvent):
     """Emitted when the harness auto-applies a repair command before a test gate.
 
-    Distinct from a worker fix round: the worker produced the change; the harness
-    normalized it mechanically (e.g. ``cargo fmt --all``).  The dataset records
-    both so analysis can separate worker-produced vs harness-normalized diffs.
+    Distinct from a worker fix round: the harness normalized the diff
+    mechanically (e.g. ``cargo fmt --all``), the worker didn't produce it.
     """
 
     cmd: str = Field(description="The auto-repair command that was run.")
@@ -680,11 +679,7 @@ class CodingEngine(Engine):
     async def _apply_auto_repairs(
         self, run: CodingRun, *, round_no: int
     ) -> list[AutoRepairApplied]:
-        """Run each auto_repair_cmd in sequence; emit AutoRepairApplied per command.
-
-        Returns the list of events emitted.  Errors are notified but never raise
-        — a failed auto-repair command is surfaced as a notification, not a crash.
-        """
+        """Run each auto_repair_cmd in sequence, emitting AutoRepairApplied per command; a failed command is notified, never raised."""
         if not self.auto_repair_cmds:
             return []
         applied: list[AutoRepairApplied] = []
@@ -765,11 +760,7 @@ class CodingEngine(Engine):
     async def _fast_test(
         self, run: CodingRun, change: ChangeProposed, *, round_no: int
     ) -> TestsRan | None:
-        """Run fast_test_cmd as an incremental gate for intermediate fix rounds.
-
-        Returns None when fast_test_cmd is not configured.  Auto-repair is NOT
-        run here — it fires in _test() which is always the authoritative leg.
-        """
+        """Run fast_test_cmd as an incremental gate; None if unconfigured. Auto-repair does NOT run here — only in _test(), the authoritative leg."""
         if self.fast_test_cmd is None:
             return None
         return await self._run_subprocess_gate(
@@ -781,10 +772,9 @@ class CodingEngine(Engine):
     ) -> tuple[ChangeProposed, TestsRan]:
         """Re-prompt the implementer on failure and re-test, bounded by max_fix_rounds.
 
-        Mechanical rounds (failure attributable solely to fmt/lint output, satisfied
-        after auto-repair) skip the judge gate.  Substantive rounds pass through the
-        judge as before.  When fast_test_cmd is configured, intermediate rounds gate
-        on it first; the full test_cmd is always the final ground-truth leg.
+        Mechanical rounds (fixed by auto-repair alone) skip the judge gate;
+        substantive rounds go through it. fast_test_cmd, if configured, gates
+        intermediate rounds; test_cmd is always the final ground-truth leg.
         """
         agent = getattr(run, "_implementer", None)
         round_no = 0
@@ -921,11 +911,7 @@ class CodingEngine(Engine):
     # -- worker helpers -------------------------------------------------------
 
     def _wrap_turn_timeout(self, agent: Any, run: CodingRun) -> Any:
-        """Return a proxy whose operate() is bounded by turn_timeout_s.
-
-        On TimeoutError the proxy emits a turn_timeout notification and returns
-        None so operate_with_repair sees arrived()=False and enters the fix path.
-        """
+        """Return a proxy whose operate() is bounded by turn_timeout_s; on timeout it notifies and returns None, driving operate_with_repair into the fix path."""
         if self.turn_timeout_s is None:
             return agent
         timeout_s = self.turn_timeout_s
@@ -948,11 +934,7 @@ class CodingEngine(Engine):
         return _Proxy()
 
     def _start_heartbeat(self, run: CodingRun, *, stage: str) -> asyncio.Task | None:
-        """Start a background task that emits WorkerHeartbeat at the configured interval.
-
-        Also emits WorkerActivity whenever a file in the workspace changes mtime.
-        Returns None when heartbeat_interval_s is None (disabled).
-        """
+        """Start a background task emitting WorkerHeartbeat on interval and WorkerActivity on file mtime changes; None if heartbeat_interval_s is unset."""
         if self.heartbeat_interval_s is None:
             return None
         t0 = run._t0
@@ -1124,11 +1106,7 @@ _RE_MECHANICAL = re.compile(
 
 
 def _looks_mechanical(tests: TestsRan) -> bool:
-    """Return True when the test failure output looks like a pure fmt/lint failure.
-
-    Heuristic only — used to skip the judge gate for mechanical rounds; the
-    authoritative result is always the full test_cmd exit code.
-    """
+    """True when the test failure output looks like a pure fmt/lint failure (heuristic, used to skip the judge gate; test_cmd exit code stays authoritative)."""
     if tests.passed:
         return False
     tail = tests.output_tail
