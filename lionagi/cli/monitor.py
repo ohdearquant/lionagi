@@ -253,14 +253,12 @@ async def _find_entity(db: Any, entity_id: str) -> tuple[str, dict[str, Any]] | 
         ("play", "plays"),
     ]
     for entity_type, table in searches:
-        # Exact match
         row = await db.fetch_one(
             f"SELECT * FROM {table} WHERE id = ?",  # noqa: S608
             (entity_id,),
         )
         if row:
             return entity_type, row
-        # Prefix match (user might type short prefix)
         row = await db.fetch_one(
             f"SELECT * FROM {table} WHERE id LIKE ?",  # noqa: S608
             (entity_id + "%",),
@@ -563,14 +561,12 @@ async def _detail_session(db: Any, sess: dict[str, Any]) -> str:
                 else:
                     lines.append(f"    {ev}")
 
-    # Branches (agent legs) — count plus per-leg status/elapsed
     branch_rows = await _fetch_branches(db, sess["id"])
     lines.append(f"  branches:  {len(branch_rows)}")
     if branch_rows:
         lines.append("")
         lines.extend(_render_branch_lines(branch_rows))
 
-    # Stream tail from run dir
     run_dir = RUNS_ROOT / sess["id"]
     if run_dir.exists():
         branches_dir = run_dir / "branches"
@@ -604,7 +600,6 @@ async def _detail_invocation(db: Any, inv: dict[str, Any]) -> str:
             f"  started:       {time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(started))}"
         )
 
-    # List child sessions
     child_rows = await db.fetch_all(
         "SELECT id, status, model, started_at FROM sessions WHERE invocation_id = ? ORDER BY created_at",
         (inv["id"],),
@@ -630,7 +625,6 @@ async def _detail_show(db: Any, show: dict[str, Any]) -> str:
     lines.append(f"  branch:  {show.get('base_branch') or '-'}")
     lines.append(f"  goal:    {(show.get('goal') or '-')[:80]}")
 
-    # Plays breakdown
     plays = await _query_plays_for_show(db, show["id"])
     if plays:
         lines.append("")
@@ -666,7 +660,6 @@ async def _detail_play(db: Any, play: dict[str, Any]) -> str:
     if started:
         lines.append(f"  started:  {time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(started))}")
 
-    # Gate result
     gp = play.get("gate_passed")
     if gp is not None:
         gate_str = _green("PASS") if gp else _red("FAIL")
@@ -675,7 +668,6 @@ async def _detail_play(db: Any, play: dict[str, Any]) -> str:
         if feedback:
             lines.append(f"  feedback: {_trunc(str(feedback), 80)}")
 
-    # Linked session details
     session_id = play.get("session_id")
     if session_id:
         srow = await db.fetch_one(
@@ -691,13 +683,11 @@ async def _detail_play(db: Any, play: dict[str, Any]) -> str:
             lines.append(f"    provider: {srow['provider'] or '-'}")
             lines.append(f"    effort:   {srow['effort'] or '-'}")
 
-            # Branches (agent legs) — poll-visible sub-step progress
             branch_rows = await _fetch_branches(db, session_id)
             if branch_rows:
                 lines.append("")
                 lines.extend(_render_branch_lines(branch_rows, indent="    "))
 
-            # Stream tail
             run_dir = RUNS_ROOT / session_id
             if run_dir.exists():
                 branches_dir = run_dir / "branches"

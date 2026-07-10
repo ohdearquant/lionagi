@@ -35,14 +35,11 @@ def fuzzy_match_keys(
     strict: bool = False,
 ) -> dict[str, Any]:
     """Remap dict keys to expected keys via exact + fuzzy matching; handle_unmatched controls missing/extra key policy."""
-    # Input validation
     if not isinstance(d_, dict):
         raise TypeError("First argument must be a dictionary")
     if keys is None:
         raise TypeError("Keys argument cannot be None")
-    # A bare str is a Sequence[str] but iterating it yields single characters,
-    # not key names.  Reject it early with a clear message rather than silently
-    # producing wrong results.
+    # A bare str is a Sequence[str] but iterates as characters, not key names — reject early.
     if isinstance(keys, str):
         raise TypeError(
             "keys must be a Mapping (dict) or a non-string Sequence of key names "
@@ -51,18 +48,15 @@ def fuzzy_match_keys(
     if not 0.0 <= similarity_threshold <= 1.0:
         raise ValueError("similarity_threshold must be between 0.0 and 1.0")
 
-    # Extract expected keys: Mapping types expose their keys via .keys();
-    # all other Sequence types (list, tuple, frozenset, …) are iterable directly.
+    # Mapping types expose expected keys via .keys(); other Sequence types are iterable directly.
     fields_set = set(keys.keys()) if isinstance(keys, Mapping) else set(keys)
     if not fields_set:
-        return d_.copy()  # Return copy of original if no expected keys
+        return d_.copy()
 
-    # Initialize output dictionary and tracking sets
     corrected_out = {}
     matched_expected = set()
     matched_input = set()
 
-    # Get similarity function
     if isinstance(similarity_algo, str):
         if similarity_algo not in SIMILARITY_ALGO_MAP:
             raise ValueError(f"Unknown similarity algorithm: {similarity_algo}")
@@ -103,7 +97,6 @@ def fuzzy_match_keys(
             elif handle_unmatched == "ignore":
                 corrected_out[key] = d_[key]
 
-    # Handle unmatched keys based on handle_unmatched parameter
     unmatched_input = set(d_.keys()) - matched_input
     unmatched_expected = fields_set - matched_expected
 
@@ -115,7 +108,6 @@ def fuzzy_match_keys(
             corrected_out[key] = d_[key]
 
     elif handle_unmatched in ("fill", "force"):
-        # Fill missing expected keys
         for key in unmatched_expected:
             if fill_mapping and key in fill_mapping:
                 corrected_out[key] = fill_mapping[key]
@@ -127,7 +119,6 @@ def fuzzy_match_keys(
             for key in unmatched_input:
                 corrected_out[key] = d_[key]
 
-    # Check strict mode
     if strict and unmatched_expected:
         raise ValueError(f"Missing required keys: {unmatched_expected}")
 

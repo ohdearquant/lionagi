@@ -69,9 +69,8 @@ class PlanningEngine(Engine):
 
         assignments = await self._plan(run, prompt, max_ops)
 
-        # One role-template branch per distinct assignee; build_dag_graph runs
-        # each assignment on a clone. Every assignee role may grow the live DAG
-        # when reactive.
+        # One role-template branch per distinct assignee; build_dag_graph runs each
+        # assignment on a clone. Every assignee role may grow the live DAG when reactive.
         assignees = {ta.assignee for ta in assignments}
         spawners = tuple(assignees) if self.reactive else ()
         roles = await spawn_roles(run.session, {a: a for a in assignees}, spawners=spawners)

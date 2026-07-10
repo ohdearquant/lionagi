@@ -64,7 +64,6 @@ def fuzzy_validate_mapping(
     if d is None:
         raise TypeError("Input cannot be None")
 
-    # Try converting to dictionary
     try:
         if isinstance(d, str):
             try:
@@ -87,7 +86,6 @@ def fuzzy_validate_mapping(
         else:
             raise ValueError(f"Failed to convert input to dictionary: {e}") from e
 
-    # Validate the dictionary
     return fuzzy_match_keys(
         dict_input,
         keys,

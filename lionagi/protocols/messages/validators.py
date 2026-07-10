@@ -38,9 +38,8 @@ def validate_image_url(url: str) -> None:
     if not parsed.netloc:
         raise ValueError(f"Image URL missing domain: {url}")
 
-    # SSRF guard: reject hosts that resolve to private, loopback, or link-local
-    # ranges (e.g. the cloud metadata endpoint 169.254.169.254). Fail-closed:
-    # unresolvable hosts are also rejected. is_ssrf_safe expects a bare host.
+    # SSRF guard: reject hosts resolving to private/loopback/link-local ranges
+    # (e.g. cloud metadata 169.254.169.254). Fail-closed: unresolvable hosts too.
     if not is_ssrf_safe(parsed.hostname or ""):
         raise ValueError(
             f"Image URL host {parsed.hostname!r} is not allowed: it resolves to a "

@@ -501,8 +501,7 @@ class HypothesisEngine(Engine):
         if events_collected == 0:
             return ""
         report = await self._synthesize(run)
-        # Prepend the budget-exhausted status marker so the report is
-        # self-describing even without the events.jsonl context.
+        # Prepend so the report is self-describing without the events.jsonl context.
         status_header = (
             "**status: budget_exhausted** — "
             f"run terminated by deadline/budget before completion "
@@ -599,8 +598,8 @@ class HypothesisEngine(Engine):
             run.notify("stage_error", stage=stage, error=str(exc))
 
     async def _extract(self, run: HypothesisRun, f: FindingPosted) -> None:
-        # Seeds are caller-provided; back-edge findings (gen > 0) came from an
-        # agent and pass the judge before spending more budget.
+        # Seeds (gen 0) are caller-provided; agent-sourced findings (gen > 0)
+        # pass the judge before spending more budget.
         if f.gen > 0 and not await self.judge(run, f.eid, _label(f)):
             return
         emits = (QuestionRaised,)
@@ -735,8 +734,7 @@ class HypothesisEngine(Engine):
                 model=self.model_for("apply"),
                 emits=(ApplicationMapped,),
             )
-            # No repair: "bears on nothing -> emit nothing" is a legitimate
-            # outcome for this stage.
+            # No repair: "bears on nothing -> emit nothing" is legitimate here.
             await agent.operate(instruction=_apply_instruction(c, run.decisions))
 
     async def _synthesize(self, run: HypothesisRun) -> str:

@@ -17,9 +17,8 @@ from lionagi.protocols.action.tool import Tool
 
 from ..base import LionTool
 
-# Runtime availability of the ruff binary is checked lazily via shutil.which.
-# No hard Python import is required — if the binary is absent the tool degrades
-# to status='unavailable' with an actionable install message.
+# ruff availability is checked lazily via shutil.which (no hard import);
+# an absent binary degrades to status='unavailable' with an install hint.
 
 
 class CodeDiagnostic(BaseModel):
@@ -245,10 +244,8 @@ class CodeCheckTool(LionTool):
     async def handle_request(self, request: CodeCheckRequest) -> CodeCheckResponse:
         if isinstance(request, dict):
             request = CodeCheckRequest(**request)
-        # Enforce workspace containment before any subprocess call.  An empty
-        # paths list would let ruff fall back to scanning the process working
-        # directory, which may lie outside the workspace — default it to the
-        # workspace root instead.
+        # An empty paths list would let ruff scan the process cwd (possibly
+        # outside the workspace) — default to the workspace root instead.
         paths = request.paths or [str(self.workspace_root)]
         resolved_paths, err = _resolve_check_paths(paths, self.workspace_root)
         if err is not None:
