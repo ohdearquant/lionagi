@@ -129,4 +129,36 @@ collisions. Unused numbers inside a block are intentional gaps, not missing docu
   scopes and canonical ownership
 - 0048-0049 — unused (intentional gaps)
 
+### utilities (0050-0054)
+
+- [ADR-0050](ADR-0050-foundational-utility-and-typed-adaptation-strata.md) — Foundational
+  utility and typed adaptation strata
+- [ADR-0051](ADR-0051-lndl-language-and-operations-boundary.md) — LNDL language and
+  operations boundary
+- [ADR-0052](ADR-0052-supported-validation-and-testing-surfaces.md) — Supported validation
+  and testing surfaces
+- 0053-0054 — unused (intentional gaps)
+
+### persistence-state (0055-0061)
+
+- [ADR-0055](ADR-0055-operational-state-persistence-boundary.md) — Operational state
+  persistence boundary
+- [ADR-0056](ADR-0056-statedb-sqlalchemy-core-backend.md) — StateDB SQLAlchemy Core backend
+- [ADR-0057](ADR-0057-operational-lifecycle-and-transition-audit.md) — Operational lifecycle
+  and transition audit
+- [ADR-0058](ADR-0058-unified-lifecycle-transition-service.md) — Unified lifecycle transition
+  service
+- [ADR-0059](ADR-0059-durable-dispatch-outbox.md) — Durable dispatch outbox
+- 0060-0061 — unused (intentional gaps)
+
+### cli-surface (0062-0067)
+
+- [ADR-0062](ADR-0062-cli-command-surface-ownership.md) — CLI command-surface ownership
+- [ADR-0063](ADR-0063-project-attribution-cascade.md) — Project attribution cascade
+- [ADR-0064](ADR-0064-cli-execution-outcome-and-completion-record.md) — CLI execution outcome
+  and completion record
+- [ADR-0065](ADR-0065-marketplace-catalog-and-directory-discovery.md) — Marketplace catalog
+  and directory discovery
+- 0066-0067 — unused (intentional gaps)
+
 Remaining areas land here as their records are accepted.
