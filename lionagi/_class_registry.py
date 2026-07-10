@@ -41,12 +41,9 @@ __all__ = (
 
 
 def get_class(class_name: str) -> type:
-    """Retrieve a class by name.
-
-    Resolution order: LION_CLASS_REGISTRY lookup (fully-qualified name) ->
-    dotted-path import (any importable "module.Class" string) -> legacy
-    short-name lookup among the built-in modules (for data persisted before
-    the full-qualified-name convention). Raises ValueError if not found.
+    """Retrieve a class by name: LION_CLASS_REGISTRY lookup (fully-qualified
+    name), then dotted-path import, then legacy short-name lookup among the
+    built-in modules. Raises ValueError if not found.
     """
     if class_name in LION_CLASS_REGISTRY:
         return LION_CLASS_REGISTRY[class_name]
