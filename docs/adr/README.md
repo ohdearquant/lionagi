@@ -54,6 +54,26 @@ collisions. Unused numbers inside a block are intentional gaps, not missing docu
   context-provider execution and attribution
 - 0009-0010 — unused (intentional gaps)
 
+### actions-tools (0011-0015)
+
+- [ADR-0011](ADR-0011-function-tool-descriptor-and-branch-registry.md) — Function tool
+  descriptor and Branch registry
+- [ADR-0012](ADR-0012-branch-action-execution-and-event-lifecycle.md) — Branch action
+  execution and event lifecycle
+- [ADR-0013](ADR-0013-built-in-tool-provider-and-branch-binding.md) — Built-in tool provider
+  and Branch binding
+- 0014-0015 — unused (intentional gaps)
+
+### session-branch (0016-0020)
+
+- [ADR-0016](ADR-0016-branch-conversation-aggregate-and-attachment-boundary.md) — Branch
+  conversation aggregate and attachment boundary
+- [ADR-0017](ADR-0017-session-membership-and-coordination-boundary.md) — Session membership
+  and coordination boundary
+- [ADR-0018](ADR-0018-turn-scoped-branch-execution-state.md) — Turn-scoped Branch execution
+  state
+- 0019-0020 — unused (intentional gaps)
+
 ### operations (0021-0026)
 
 - [ADR-0021](ADR-0021-branch-operation-facade-and-turn-adapters.md) — Branch operation facade
@@ -64,5 +84,17 @@ collisions. Unused numbers inside a block are intentional gaps, not missing docu
   operation graph execution kernel
 - [ADR-0024](ADR-0024-lndl-operate-integration-adapter.md) — LNDL operate integration adapter
 - 0025-0026 — unused (intentional gaps)
+
+### service-providers (0027-0032)
+
+- [ADR-0027](ADR-0027-model-service-facade-and-endpoint-resolution.md) — Model-service facade
+  and endpoint resolution
+- [ADR-0028](ADR-0028-validated-provider-adapter-catalog.md) — Validated provider-adapter
+  catalog
+- [ADR-0029](ADR-0029-unified-request-admission-deadline-and-resilience-policy.md) — Unified
+  request admission, deadline, and resilience policy
+- [ADR-0030](ADR-0030-agentic-provider-adapter-boundary.md) — Agentic provider-adapter
+  boundary
+- 0031-0032 — unused (intentional gaps)
 
 Remaining areas land here as their records are accepted.
