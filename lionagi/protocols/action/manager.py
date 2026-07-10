@@ -51,11 +51,9 @@ class ActionManager(Manager):
             elif callable(tool):
                 name = tool.__name__
             elif isinstance(tool, dict):
-                # For MCP config, extract the tool name (first key)
                 name = list(tool.keys())[0] if tool else None
             raise ValueError(f"Tool {name} is already registered.")
 
-        # Convert to Tool object based on type
         if callable(tool):
             tool = Tool(func_callable=tool)
         elif isinstance(tool, dict):
@@ -182,16 +180,12 @@ class ActionManager(Manager):
                 self.register_tool(tool, update=update)
                 registered_tools.append(tool_name)
         else:
-            # Auto-discover tools from the server
             from lionagi.service.connections.mcp_wrapper import MCPConnectionPool
 
-            # Get client and discover tools
             client = await MCPConnectionPool.get_client(server_config, security=security)
             tools = await client.list_tools()
 
-            # Register each discovered tool with qualified name
             for tool in tools:
-                # Store original tool name in config for MCP calls
                 config_with_metadata = dict(server_config)
                 config_with_metadata["_original_tool_name"] = tool.name
 
@@ -334,5 +328,3 @@ async def load_mcp_tools(
 
 
 __all__ = ["ActionManager", "load_mcp_tools"]
-
-# File: lionagi/protocols/action/manager.py

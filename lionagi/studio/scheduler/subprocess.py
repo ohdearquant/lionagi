@@ -160,17 +160,13 @@ def _render_template(template: str, context: dict) -> str:
 
     def _replace(m: re.Match) -> str:
         key = m.group(1)
-        # Look in github events first
-        events = context.get("github_events", [])
+        events = context.get("github_events", [])  # check github events first
         if events and isinstance(events, list) and isinstance(events[0], dict):
             val = events[0].get(key)
             if val is not None:
                 return str(val)
-        # A present-but-non-string value (e.g. the numeric metric/value/
-        # threshold fields threshold-alert fires put directly on
-        # trigger_context) must be stringified same as the github_events
-        # branch above -- re.sub's replacement callback requires a str
-        # return, and returning the raw value crashes on anything but str.
+        # Stringify non-string values too (e.g. numeric threshold-alert
+        # fields) -- re.sub's replacement callback requires a str return.
         if key in context:
             return str(context[key])
         return m.group(0)
@@ -218,12 +214,9 @@ def resolve_li_executable() -> tuple[list[str] | None, str | None]:
     if which_path and os.path.isabs(which_path):
         return [which_path], None
     if which_path:
-        # A relative PATH entry (e.g. "." or "relbin") makes shutil.which
-        # return a relative hit. Accepting it as-is would make the child's
-        # argv[0] resolve against whatever cwd the spawn ends up using
-        # (not the daemon environment that found it) — reintroducing
-        # cwd-dependent spawn behavior and a PATH-hijack surface. Reject
-        # and fall through to the next strategy instead.
+        # A relative PATH entry (e.g. "." or "relbin") would resolve the
+        # child's argv[0] against the spawn-time cwd, reintroducing
+        # cwd-dependent spawn / PATH-hijack risk. Reject and fall through.
         tried.append(
             f"shutil.which('li') found a non-absolute path ({which_path}); "
             "rejected to avoid cwd-dependent spawn/PATH-hijack"
@@ -231,10 +224,8 @@ def resolve_li_executable() -> tuple[list[str] | None, str | None]:
     else:
         tried.append("shutil.which('li') found nothing on PATH")
 
-    # Both remaining strategies invoke sys.executable directly as the
-    # interpreter in the returned argv, so both require it to be absolute —
-    # a relative sys.executable would leak a relative prefix through either
-    # one, the same cwd-dependent/PATH-hijack problem as tier 1 above.
+    # Both remaining strategies invoke sys.executable directly, so both
+    # require it to be absolute (same cwd-dependent/PATH-hijack risk as tier 1).
     python_path = Path(sys.executable) if sys.executable else None
     python_is_absolute = python_path is not None and python_path.is_absolute()
 
@@ -284,8 +275,7 @@ def build_argv(
     must be deleted after the subprocess exits (only set for ``flow_yaml``).
     """
     kind = schedule["action_kind"]
-    # Normalize legacy alias and validate against the closed set.
-    kind = _ALIAS_ACTION_KINDS.get(kind, kind)
+    kind = _ALIAS_ACTION_KINDS.get(kind, kind)  # normalize legacy alias
     if kind not in _VALID_ACTION_KINDS:
         raise ValueError(
             f"Unknown action_kind {kind!r}. Valid kinds: {sorted(_VALID_ACTION_KINDS)}"
@@ -297,13 +287,10 @@ def build_argv(
     project = schedule.get("action_project")
     extra = schedule.get("action_extra_args") or []
 
-    # Reject flag-injection vectors before touching argv (mirrors service-layer
-    # boundary in services/schedules.py for defense-in-depth).
-    #
-    # action_prompt is validated AFTER rendering: a stored '{{payload}}' passes
-    # pre-render checks but could render to the forbidden '--' sentinel when the
-    # trigger context supplies {"payload": "--"}.  Other fields are NOT templated,
-    # so validating them before rendering is correct and sufficient.
+    # Reject flag-injection vectors before touching argv (defense-in-depth,
+    # mirrors services/schedules.py). action_prompt is validated AFTER
+    # rendering below since a templated '{{payload}}' can render to the
+    # forbidden '--' sentinel; other fields aren't templated.
     _validate_action_model(model)
     if agent:
         _validate_identifier(agent, "action_agent")
@@ -327,35 +314,24 @@ def build_argv(
     argv = list(executable_prefix) if executable_prefix is not None else list(_DEFAULT_LI_PREFIX)
     tmp_path: str | None = None
 
-    # CWE-88 hardening: named flags first, then '--' end-of-options sentinel,
-    # then positionals (model, prompt).  The sentinel makes action_prompt
-    # injection-proof: '--bypass' is parsed as the prompt value, not a flag.
-    #
-    # flow_yaml omits the prompt positional entirely — the CLI reads prompt from
-    # the -f spec file and overwrites args.prompt, so a positional would only
-    # open a second injection surface.  Shape: li o flow -f <tmp> -- <model>
+    # CWE-88 hardening: named flags first, then the '--' end-of-options
+    # sentinel, then positionals (model, prompt) — makes action_prompt
+    # injection-proof (e.g. '--bypass' parses as prompt text, not a flag).
+    # flow_yaml omits the prompt positional (CLI reads it from -f instead)
+    # to avoid a second injection surface.
 
     if kind == "agent":
-        # Named flags first (--agent must come before --)
         flags: list[str] = []
         if agent:
             flags += ["--agent", agent]
         if project:
             flags += ["--project", project]
-        # Omit the model positional entirely when action_model is unset: `li
-        # agent` treats a single positional as the prompt and falls through to
-        # the --agent profile's own default model. Passing an empty string as
-        # the model positional would instead be parsed as an explicit (blank)
-        # model spec, overriding the profile default and crashing Branch init.
-        #
-        # But omitting the model positional only holds the "extra positionals
-        # are rejected loudly" invariant when there are no extra args to
-        # append: with model omitted, a single action_extra_args token brings
-        # the positional count back up to 2 (the same arity as [model,
-        # prompt]), so the CLI's resolver would silently reparse the real
-        # prompt as MODEL and the extra-args token as PROMPT instead of
-        # failing. Reject that combination here rather than let it corrupt
-        # argument positions at fire time.
+        # Omit the model positional when unset -- `li agent` then falls
+        # through to the profile's default model instead of an explicit
+        # blank spec that would crash Branch init. But with model omitted, a
+        # single extra-args token brings positional arity back to 2 (matching
+        # [model, prompt]), which would silently misroute the real prompt as
+        # MODEL -- reject that combination instead of corrupting positions.
         if not model and isinstance(extra, list) and extra:
             raise ValueError(
                 "action_extra_args is not supported together with an empty "
@@ -389,30 +365,23 @@ def build_argv(
             argv.append(playbook)
 
     elif kind == "flow_yaml":
-        # Extra positionals have nowhere safe to land here: this launch emits
-        # no positionals at all (the spec file carries prompt and model), so
-        # `li o flow` would soak extra tokens into its optional model/prompt
-        # slots and silently override the model merged into the spec below.
-        # Fail at build time so no invocation row is created for a launch
-        # that cannot honor them.
+        # No positionals at all here (spec file carries prompt/model), so
+        # extra tokens would soak into flow's optional model/prompt slots
+        # and silently override the merged model below; fail at build time.
         if isinstance(extra, list) and extra:
             raise ValueError(
                 "flow_yaml launches do not accept action_extra_args; "
                 "set model/prompt inside the flow spec instead"
             )
-        # Write the inline YAML spec to a temp file so `li o flow -f <path>`
-        # can read it.  The caller is responsible for deleting tmp_path after
-        # the subprocess exits.
+        # Write the inline YAML spec to a temp file for `li o flow -f <path>`.
+        # Caller deletes tmp_path after the subprocess exits.
         yaml_text = schedule.get("action_flow_yaml") or ""
         if model:
-            # An explicit action_model is merged into the spec itself, never
-            # passed as a positional: when the file supplies its own model or
-            # agent, `li o flow -f` reclassifies a lone model positional as
-            # prompt text, so a positional cannot reliably override the file.
-            # Merging into the spec wins deterministically and leaves no
-            # positional surface at all. Unparseable or non-mapping specs are
-            # written unchanged — `li o flow` rejects them with its own parse
-            # error, which names the file.
+            # Merge action_model into the spec rather than pass it as a
+            # positional: when the file has its own model/agent, `li o flow
+            # -f` reclassifies a lone model positional as prompt text, so a
+            # positional can't reliably override it. Unparseable/non-mapping
+            # specs are written unchanged -- `li o flow` reports its own error.
             import yaml
 
             try:
@@ -429,19 +398,15 @@ def build_argv(
         except Exception:
             os.unlink(tmp_path)
             raise
-        # Named flags first (-f must come before --), then the -- sentinel.
-        # No positionals at all: the YAML file supplies the prompt, and any
-        # explicit model was merged into the spec above.
+        # No positionals: the YAML file supplies the prompt; model was merged above.
         flags = ["-f", tmp_path]
         if project:
             flags += ["--project", project]
         argv += ["o", "flow", *flags, "--"]
 
     elif kind == "engine":
-        # engine def launch: argv shape is
-        #   uv run li engine run [named flags] -- <engine_kind> <spec>
-        # action_agent carries the engine kind (e.g. "research"); action_prompt
-        # carries the engine spec.  Named flags go first (CWE-88 hardening).
+        # argv shape: uv run li engine run [named flags] -- <engine_kind> <spec>
+        # action_agent = engine kind (e.g. "research"); action_prompt = spec.
         if not agent:
             raise ValueError("engine launches require action_agent (the engine kind)")
         if not prompt:
@@ -506,22 +471,18 @@ async def spawn_and_wait(
         stderr=asyncio.subprocess.PIPE,
         env=env,
         cwd=cwd,
-        # `uv run li` forks the real worker (and that worker may fork
-        # further). Put the whole tree in its own session/process group so a
-        # cancel can signal the GROUP, not just the direct child — otherwise
-        # grandchildren survive scheduler shutdown as orphans.
+        # `uv run li` may fork further; own session/process group lets a
+        # cancel signal the whole GROUP, not just the direct child --
+        # otherwise grandchildren survive scheduler shutdown as orphans.
         start_new_session=True,
     )
-    # Pgid == proc.pid (start_new_session=True). The pid-guard and platform
-    # check live in aterminate_process_group.
+    # Pgid == proc.pid; pid-guard and platform check live in aterminate_process_group.
 
     try:
         _, stderr = await proc.communicate()
     except asyncio.CancelledError:
-        # Cancellation (e.g. scheduler shutdown) must not leave the spawned
-        # `uv run li` tree detached. SIGTERM the whole group, give it a moment
-        # to exit, then SIGKILL the group, before re-raising so the caller can
-        # record the cancel.
+        # SIGTERM then SIGKILL the whole group before re-raising, so a
+        # cancelled poll doesn't leave the spawned tree detached.
         _log.warning("spawn_and_wait cancelled; terminating child for %s", invocation_id)
         await aterminate_process_group(proc, grace=5.0)
         raise

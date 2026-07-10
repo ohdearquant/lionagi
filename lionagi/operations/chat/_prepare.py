@@ -148,16 +148,11 @@ async def _apply_context_providers(
     instruction: JsonValue | Instruction,
     param: ChatParam,
 ) -> Instruction | None:
-    """Gather registered ContextProviders and stash their rendered blocks in
-    the branch's per-turn injection slot, read by `f(c)` in `_prepare_run_kwargs`
-    and cleared right after. Returns the pre-built Instruction (reused by
-    `_prepare_run_kwargs` to avoid rebuilding it) or None when no providers
-    are registered — the zero-overhead path.
-
-    Injections render into the system-guidance fold, so a branch with no
-    system message has no render target: providers are not invoked (no
-    wasted retrieval or tokens) and the turn's report marks every registered
-    provider as skipped, observable via `branch.last_context_report`."""
+    """Gather registered ContextProviders into the branch's per-turn injection
+    slot; returns the pre-built Instruction, or None when no providers are
+    registered (zero-overhead path). A branch with no system message has no
+    render target — providers are skipped, not invoked; see `branch.last_context_report`.
+    """
     if not branch._context_providers:
         return None
 

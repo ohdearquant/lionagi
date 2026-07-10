@@ -287,7 +287,6 @@ def to_dict(
                 prioritize_model_dump=prioritize_model_dump,
             )
 
-        # Final top-level conversion
         return _convert_top_level_to_dict(
             obj,
             fuzzy_parse=fuzzy_parse,

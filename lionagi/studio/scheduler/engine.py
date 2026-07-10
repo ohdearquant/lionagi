@@ -141,22 +141,25 @@ async def _resolve_action_cwd(schedule: dict) -> tuple[str | None, str | None]:
     """Resolve the working directory for a scheduled subprocess spawn.
 
     Layered resolution (first hit wins):
-      1. ``action_project`` — the registered project's stored path, if it
+      1. ``action_cwd`` — the schedule's own persisted execution root
+         (ADR-0070 delta 1), snapshotted once at creation time, if it still
          exists on disk.
-      2. ``LIONAGI_SCHEDULER_CWD`` — an operator-set fallback directory.
-      3. ``None`` — inherit the daemon's own launch cwd (pre-existing
-         behavior); a warning is logged since `uv run li` will fail to spawn
-         if that directory has no project (e.g. the daemon was started at
-         ``/``).
+      2. ``action_project`` — the registered project's stored path, if it
+         exists on disk.
+      3. ``LIONAGI_SCHEDULER_CWD`` — an operator-set fallback directory.
+      4. ``None`` — inherit the daemon's own launch cwd. Only pre-migration
+         rows (``action_cwd`` never set) reach this tier; a loud deprecation
+         warning is logged since `uv run li` will fail to spawn if that
+         directory has no project (e.g. the daemon was started at ``/``).
 
-    Returns ``(cwd, missing_project_path)``. ``missing_project_path`` is set
-    only when ``action_project`` was registered with a specific path, that
-    path no longer exists on disk (e.g. a pruned worktree), and nothing else
-    resolved either -- i.e. exactly the case where the eventual
-    inherit-daemon-cwd fallback risks a deep, opaque ``FileNotFoundError``
-    from the spawned process. The caller uses it to attribute a subsequent
-    non-zero exit to a stale cwd via a specific status_reason instead of the
-    generic "process exited non-zero".
+    Returns ``(cwd, missing_path)``. ``missing_path`` is set only when a
+    stored path (``action_cwd`` or ``action_project``'s registered path) no
+    longer exists on disk (e.g. a pruned worktree) and nothing else resolved
+    either -- i.e. exactly the case where the eventual inherit-daemon-cwd
+    fallback risks a deep, opaque ``FileNotFoundError`` from the spawned
+    process. The caller uses it to attribute a subsequent non-zero exit to a
+    stale cwd via a specific status_reason instead of the generic "process
+    exited non-zero".
 
     Imports ``lionagi.studio.services.projects`` lazily so this module (and
     ``lionagi.studio.scheduler.subprocess``) stay importable without the
@@ -164,7 +167,21 @@ async def _resolve_action_cwd(schedule: dict) -> tuple[str | None, str | None]:
     this branch when ``action_project`` is set, i.e. inside a running studio
     daemon where fastapi is already a hard dependency.
     """
-    stale_project_path: str | None = None
+    stale_path: str | None = None
+
+    action_cwd = schedule.get("action_cwd")
+    if action_cwd:
+        if Path(action_cwd).is_dir():
+            return action_cwd, None
+        stale_path = action_cwd
+        _log.warning(
+            "Schedule %s: persisted execution root %r no longer exists on "
+            "disk (e.g. a pruned worktree); falling back instead of "
+            "spawning into a missing directory.",
+            schedule.get("id"),
+            action_cwd,
+        )
+
     action_project = schedule.get("action_project")
     if action_project:
         from lionagi.studio.services.projects import get_project
@@ -175,7 +192,7 @@ async def _resolve_action_cwd(schedule: dict) -> tuple[str | None, str | None]:
             if path:
                 if Path(path).is_dir():
                     return path, None
-                stale_project_path = path
+                stale_path = stale_path or path
                 _log.warning(
                     "Schedule %s: action_project %r is registered at %r, but "
                     "that path no longer exists on disk (e.g. a pruned "
@@ -190,14 +207,26 @@ async def _resolve_action_cwd(schedule: dict) -> tuple[str | None, str | None]:
     if env_cwd and Path(env_cwd).is_dir():
         return env_cwd, None
 
-    _log.warning(
-        "No resolvable cwd for schedule %s (action_project=%r); the scheduled "
-        "action will inherit the daemon's own working directory and may fail "
-        "to spawn (`uv run li` finds no project) if that directory has none.",
-        schedule.get("id"),
-        action_project,
-    )
-    return None, stale_project_path
+    if action_cwd is None:
+        _log.warning(
+            "Schedule %s has no persisted execution root (action_cwd) -- a "
+            "pre-migration row -- and no action_project or "
+            "LIONAGI_SCHEDULER_CWD resolved either; the scheduled action "
+            "will inherit the daemon's own working directory and may fail "
+            "to spawn (`uv run li` finds no project) if that directory has "
+            "none. DEPRECATED: this schedule should be backfilled (restart "
+            "the daemon) or updated with an explicit execution root.",
+            schedule.get("id"),
+        )
+    else:
+        _log.warning(
+            "No resolvable cwd for schedule %s (action_project=%r); the scheduled "
+            "action will inherit the daemon's own working directory and may fail "
+            "to spawn (`uv run li` finds no project) if that directory has none.",
+            schedule.get("id"),
+            action_project,
+        )
+    return None, stale_path
 
 
 class SchedulerEngine:
@@ -230,8 +259,50 @@ class SchedulerEngine:
     async def start(self) -> None:
         _log.info("Scheduler engine starting")
         self._stopping = False
+        await self._backfill_action_cwd()
         await self._recompute_armed_cron_schedules()
         self._task = asyncio.create_task(self._tick_loop())
+
+    async def _backfill_action_cwd(self) -> None:
+        """One-shot startup backfill: give pre-migration schedules a persisted execution root.
+
+        ADR-0070 delta 1. ``action_cwd`` is additive and nullable (see
+        ``MIGRATION_COLUMNS``), so rows created before this feature shipped
+        have it unset. For any such row whose ``action_project`` resolves to
+        a directory that still exists on disk, snapshot that path into
+        ``action_cwd`` -- the same derivation `create_schedule()` performs
+        for newly created schedules. A row with no resolvable
+        ``action_project`` is left with ``action_cwd`` unset; it keeps using
+        the pre-existing ``LIONAGI_SCHEDULER_CWD`` / daemon-cwd-inherit
+        fallback in ``_resolve_action_cwd()`` until it is explicitly updated.
+
+        Idempotent: only rows where ``action_cwd`` is still ``None`` are
+        touched, so re-running this on every daemon startup is a no-op once
+        every backfillable row has been filled in.
+        """
+        try:
+            schedules = await self._svc.list_schedules()
+        except Exception:
+            _log.exception("Failed to load schedules for startup action_cwd backfill")
+            return
+        for s in schedules:
+            if s.get("action_cwd") or not s.get("action_project"):
+                continue
+            try:
+                from lionagi.studio.services.projects import get_project
+
+                project = await get_project(s["action_project"])
+                path = project.get("path") if project else None
+                if path and Path(path).is_dir():
+                    await self._svc.update_schedule(s["id"], action_cwd=path)
+                    _log.info(
+                        "Backfilled execution root for schedule %s from action_project %r: %s",
+                        s.get("id"),
+                        s["action_project"],
+                        path,
+                    )
+            except Exception:
+                _log.exception("Failed to backfill action_cwd for schedule %s", s.get("id"))
 
     async def _recompute_armed_cron_schedules(self) -> None:
         """Re-resolve every enabled cron schedule's next_fire_at under the
@@ -1357,10 +1428,11 @@ class SchedulerEngine:
                 reason_code = RunReasons.COMPLETED_OK
                 reason_summary = "Scheduled process completed successfully."
             elif missing_cwd_path:
-                # The configured project directory was gone at fire time (e.g.
-                # a pruned worktree); the process fell back to the daemon's
-                # own cwd instead and then failed -- attribute that plainly
-                # rather than leaving only a generic non-zero exit code.
+                # The configured execution root (action_cwd) or project
+                # directory was gone at fire time (e.g. a pruned worktree);
+                # the process fell back to the daemon's own cwd instead and
+                # then failed -- attribute that plainly rather than leaving
+                # only a generic non-zero exit code.
                 reason_code = RunReasons.FAILED_MISSING_CWD
                 reason_summary = (
                     f"Scheduled process exited non-zero ({exit_code}) after its "

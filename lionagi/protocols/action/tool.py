@@ -23,7 +23,7 @@ class Tool(Element):
     """Wraps a callable with optional pre/postprocessing; auto-generates tool_schema from the function signature."""
 
     func_callable: Callable[..., Any] = Field(
-        ...,  # ... indicates required field
+        ...,
         description="The callable function to be wrapped by the tool",
         exclude=True,
     )
@@ -152,5 +152,3 @@ FuncToolRef: TypeAlias = FuncTool | str
 
 ToolRef: TypeAlias = FuncToolRef | list[FuncToolRef] | bool
 """One or more tool references, or a bool (True=all, False=none)."""
-
-# File: lionagi/protocols/action/tool.py

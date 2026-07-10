@@ -87,11 +87,9 @@ CONTEXT_WINDOWS: dict[str, int] = {
 
 # --------------------------------------------------------------------------- model mapping
 
-# `agy --model` takes a human-readable name plus an effort qualifier (verified
-# against `agy models`). lionagi callers pass legacy Gemini CLI model strings
-# (`gemini-3-flash-preview`, `gemini-3-pro-preview`) or bare family names; map
-# those onto the exact strings agy understands. Unknown values pass through so
-# agy surfaces a clear error rather than us silently forcing a default.
+# `agy --model` wants an exact display name + effort suffix; map legacy Gemini
+# CLI strings / bare family names onto it. Unknown values pass through so agy
+# surfaces a clear error rather than us silently forcing a default.
 _AGY_MODELS: frozenset[str] = frozenset(
     {
         "Gemini 3.5 Flash (Medium)",
@@ -420,11 +418,10 @@ async def stream_gemini_cli(
                 yield sys_sc
 
             if session.is_error:
-                # The error chunk must never impersonate the response: a
-                # degraded termination (e.g. timeout after a complete final
-                # message) would otherwise surface the delivered content AS
-                # the error. Lead with the status; keep a bounded detail so
-                # quota/auth patterns still classify.
+                # Error chunk must lead with status, not delivered content —
+                # a degraded termination after a complete response otherwise
+                # impersonates the response. Bounded detail keeps quota/auth
+                # patterns classifiable.
                 detail = f": {response[:500]}" if response else ""
                 msg = f"agy returned status={status or 'UNKNOWN'}{detail}"
                 sc = StreamChunk(type="error", content=msg, is_error=True, metadata=obj)

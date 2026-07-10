@@ -518,24 +518,19 @@ async def transition_sessions(
                     )
 
             # CAS: swap running→target only if the snapshot still holds, then
-            # record the transition atomically. transaction() opens BEGIN
-            # IMMEDIATE; a clean exit commits, any exception rolls back.
+            # record the transition atomically (transaction() = BEGIN
+            # IMMEDIATE; commit on clean exit, rollback on exception).
             #
-            # This is an intentional, specialized snapshot-CAS write, not a
-            # bypass of the shared update_status() chokepoint: it can only
-            # ever move a session running→target (a legal forward transition;
-            # running is never terminal), so it can never overwrite a terminal
-            # status and never crosses the integrity floor. `WHERE
-            # status='running'` in the UPDATE below is the LOAD-BEARING guard
-            # for that — do not widen or drop that predicate. The additional
-            # last_message_at/updated_at snapshot equality guards are also
-            # load-bearing: they stop this reconcile from clobbering a session
-            # that became active again between health-classification and this
-            # write (the oscillation fix). Routing this through update_status()
-            # would regress that protection, since update_status()'s
-            # expected_statuses guard only compares on status, not on these
-            # snapshot columns. The transition is recorded into
-            # status_transitions below, same as update_status() would do.
+            # Intentional specialized CAS, not a bypass of the shared
+            # update_status() chokepoint: `WHERE status='running'` can only
+            # ever move running->target (a legal forward transition, never
+            # overwriting a terminal status) -- do not widen or drop that
+            # predicate. The last_message_at/updated_at equality guards are
+            # equally load-bearing: they stop this reconcile from clobbering
+            # a session that went active again between classification and
+            # write (the oscillation fix) -- update_status()'s
+            # expected_statuses guard doesn't compare on these columns, so
+            # routing through it would regress that protection.
             async with db.transaction() as conn:
                 result = await conn.execute(
                     text(
@@ -788,11 +783,9 @@ async def run_maintenance_route(body: MaintenanceBody) -> dict[str, Any]:
         return {"action": "prune", **result}
 
     except (sqlite3.OperationalError, _SAOperationalError) as exc:
-        # Only genuine lock/busy contention is retry-able. Open/path failures
-        # ("unable to open database file") are configuration problems and must
-        # not tell the operator to retry shortly — let them surface as 500.
-        # SQLAlchemy wraps the driver error; inspect .orig too in case the
-        # wrapper message omits the underlying "database is locked" text.
+        # Only genuine lock/busy contention is retryable; open/path failures
+        # are config problems that should surface as 500. Inspect .orig too
+        # since SQLAlchemy's wrapper message can omit the driver's own text.
         msg = str(exc).lower()
         orig = getattr(exc, "orig", None)
         if orig is not None:

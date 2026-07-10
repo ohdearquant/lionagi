@@ -7,8 +7,7 @@ from __future__ import annotations
 
 from typing import Protocol, runtime_checkable
 
-# Keep legacy nominal ABC for places that need issubclass checks (e.g., Pile)
-# Do NOT remove – Pile and others rely on issubclass(..., Observable) nominal checks.
+# Do NOT remove: Pile and others rely on issubclass(..., Observable) nominal checks.
 from ._concepts import Observable as LegacyObservable
 
 __all__ = (

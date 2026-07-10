@@ -77,24 +77,14 @@ _DEFAULT_EXECUTION_TARGETS: tuple[str, ...] = ("host",)
 MAX_LEASE_ATTEMPTS = 3
 
 # CLAIM CANDIDATES (D4): non-workflow, ad-hoc (schedule_id IS NULL) queued
-# rows, oldest first with a stable (queued_at, id) tie-break for determinism.
-# Capability/execution-target matching against the calling worker's advertised
-# set happens in Python (claim_and_execute) -- SQL only narrows to rows any
-# worker could conceivably serve. Scheduler-fired rows (schedule_id NOT NULL)
-# are never touched -- that path is governed by SchedulerEngine._fire, not
-# this worker.
+# rows, oldest first, (queued_at, id) tie-break for determinism. SQL only
+# narrows to rows any worker could conceivably serve; capability/target
+# matching happens in Python (see claim_and_execute docstring for the full
+# keyset-paging rationale). Scheduler-fired rows (schedule_id NOT NULL) are
+# never touched here -- governed by SchedulerEngine._fire instead.
 #
-# Paged via a (queued_at, id) keyset cursor rather than a single fixed
-# LIMIT: a persistent prefix of ineligible older rows must never hide a
-# later eligible row forever, so claim_and_execute keeps requesting pages
-# past whatever (queued_at, id) it has already scanned until it has
-# collected enough eligible candidates or the queue is exhausted.
-#
-# The first page carries no cursor parameters at all (separate statement):
-# a nullable ":cursor IS NULL OR ..." bind cannot be typed by asyncpg on
-# Postgres ("could not determine data type of parameter $1"), so the
-# cursor-less first page is its own query rather than a NULL-signalled
-# branch of one query.
+# First page has no cursor params (separate statement): a nullable
+# ":cursor IS NULL OR ..." bind can't be typed by asyncpg on Postgres.
 _CLAIM_FIRST_PAGE_SQL = """
     SELECT id, action_kind, action_args, lease_attempts, required_capabilities,
            execution_target, concurrency_key, queued_at
@@ -124,11 +114,9 @@ _CLAIM_NEXT_PAGE_SQL = """
 # Rows scanned per page while paging for eligible candidates.
 _CLAIM_PAGE_SIZE = 50
 
-# Fairness/latency bound, NOT a correctness cap: how many queued rows one
-# claim_and_execute pass will scan (across pages) before giving up for this
-# tick. A queue this deep in ineligible rows still gets scanned to
-# completion over a bounded number of ticks -- nothing here is permanently
-# hidden, unlike a fixed single-window prefetch.
+# Fairness/latency bound, not a correctness cap: rows scanned across pages
+# per claim_and_execute pass before giving up for this tick. A deep queue
+# of ineligible rows is still scanned to completion over bounded ticks.
 _MAX_CLAIM_SCAN_ROWS = 5000
 
 # D4: same-concurrency_key rows currently 'running' block admission of a new
@@ -421,9 +409,8 @@ async def claim_and_execute(
     # Stable sort: preserves the SQL's queued_at ASC order among equal
     # affinity scores, only reordering across different scores.
     candidates.sort(key=lambda item: -capabilities.affinity_score(item[1], advertised))
-    # `limit` caps claim ATTEMPTS this pass (matching D3's original meaning),
-    # applied after filtering/reordering so it never truncates before
-    # affinity gets a chance to reorder.
+    # `limit` caps claim attempts, applied after affinity reordering so it
+    # never truncates before affinity gets a chance to reorder.
     candidates = candidates[:limit]
 
     claimed = 0
@@ -459,11 +446,9 @@ async def claim_and_execute(
             # Advisory: nothing else in this same pass may claim a row
             # sharing this key, even after this row finishes executing.
             running_keys.add(concurrency_key)
-        # The claim's lease identity travels to the terminal write: if this
-        # worker's lease lapses mid-execution and the reaper hands the row to
-        # another claimant, the stale worker's completed/failed guard
-        # mismatches and its write is dropped instead of clobbering the live
-        # lease.
+        # Lease identity travels to the terminal write: if it lapses mid-run
+        # and the reaper reassigns the row, this write's guard mismatches
+        # and is dropped instead of clobbering the live lease.
         lease_guard = {"leased_by": worker_id, "lease_expires_at": now + lease_ttl}
         await _execute_claimed(db, run_id, row, execute, lease_guard)
 

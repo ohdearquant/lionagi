@@ -393,12 +393,9 @@ class CodingToolkit(LionTool):
         self._bound_nudge_engine = engine
 
         def _invalidate_stale_reads() -> None:
-            """Drop file_state entries whose backing reader-read result was evicted/compacted.
-
-            Prevents a silent unsoundness: without this, evicting a verbose read
-            result still leaves the read-before-edit guard satisfied, letting the
-            model edit a file it no longer has in view.
-            """
+            """Drop file_state entries whose backing reader-read result was
+            evicted/compacted — otherwise the read-before-edit guard stays
+            satisfied for a read the model can no longer see."""
             if not read_tracked:
                 return
             active = branch.progression
@@ -453,10 +450,8 @@ class CodingToolkit(LionTool):
                 else:
                     read_tracked.discard(resolved)
 
-        # Cache for documents opened via action='open' (docling conversion).
-        # Keyed by path; values are (text, cached_at) tuples — same layout as
-        # the standalone ReaderTool cache so _read_cached/_evict_expired work
-        # without modification.
+        # Docling conversion cache, keyed by path — same (text, cached_at)
+        # layout as ReaderTool's cache so _read_cached/_evict_expired reuse it.
         _open_cache: dict[str, tuple[str, float]] = {}
 
         async def reader(
@@ -857,16 +852,10 @@ class CodingToolkit(LionTool):
             tool: str = "ruff",
             max_diagnostics: int = 50,
         ) -> dict:
-            """Run static analysis on Python files and return structured diagnostics.
-
-            Call this after editing a file to get immediate IDE-grade feedback.
-            Each diagnostic is returned as file:line:col with code and message so
-            the agent can locate and fix the issue without re-reading the file.
-
-            Composability (edit -> check workflow):
-              1. editor(action='edit', file_path=..., old_string=..., new_string=...)
-              2. code_check(paths=[<same file_path>])
-              3. Diagnostics list gives actionable file:line:col entries to fix next.
+            """Run static analysis on Python files and return structured
+            diagnostics. Call after editing a file for immediate feedback;
+            each diagnostic is file:line:col with code and message so the
+            agent can locate and fix the issue without re-reading the file.
 
             Supported tools:
             - 'ruff': fast Python linter (default). Requires ruff in PATH.

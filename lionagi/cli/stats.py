@@ -45,16 +45,11 @@ def _validate_group_by(raw: str) -> list[str]:
 def _reject_non_positive_since(window: str) -> None:
     """Reject a `--since` window that isn't strictly positive.
 
-    Monitor's shared `_since_timestamp()` parses `0d` (cutoff = now) and
-    `-1d` (cutoff = a future timestamp) without complaint — reasonable for
-    its own "everything running, or since this window" semantics, but for an
-    aggregate report a non-positive window silently produces a false-empty
-    (0d) or nonsensical (negative -> future cutoff, matches nothing) result
-    instead of failing loudly. This only tightens `li stats runs`; monitor's
-    own behavior/callers are untouched.
-
-    A malformed value (bad unit, non-numeric) is left to `_since_timestamp`
-    itself, which already raises a clear error for those.
+    Monitor's shared `_since_timestamp()` accepts `0d`/`-1d` without
+    complaint (fine for its own semantics), but for an aggregate report
+    that silently produces a false-empty or nonsensical result instead of
+    failing loudly — this only tightens `li stats runs`. Malformed values
+    (bad unit, non-numeric) are left to `_since_timestamp` to reject.
     """
     try:
         value = int(window[:-1])

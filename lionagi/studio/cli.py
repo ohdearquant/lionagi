@@ -834,6 +834,19 @@ def _cmd_create(args: argparse.Namespace) -> int:
             print(f"Error: flow-yaml file not found: {p}", file=sys.stderr)
             return 1
         body["action_flow_yaml"] = p.read_text()
+    # ADR-0070 delta 1: give the schedule a stable, persisted execution root
+    # instead of depending on wherever the Studio daemon happens to be
+    # running from when it eventually fires. An explicit --cwd always wins.
+    if getattr(args, "cwd", None):
+        resolved_cwd = Path(args.cwd).expanduser().resolve()
+        if not resolved_cwd.is_dir():
+            print(
+                f"Error: --cwd path does not exist or is not a directory: {resolved_cwd}",
+                file=sys.stderr,
+            )
+            return 1
+        body["action_cwd"] = str(resolved_cwd)
+
     if args.project:
         body["action_project"] = args.project
     else:
@@ -849,6 +862,14 @@ def _cmd_create(args: argparse.Namespace) -> int:
             if detected:
                 _validate_identifier(detected, "action_project")
                 body["action_project"] = detected
+
+    if "action_cwd" not in body and "action_project" not in body:
+        # Neither an explicit --cwd nor a resolvable action_project: fall
+        # back to the CLI's own invocation directory (the "creating client's
+        # own cwd") so this schedule still carries a stable execution root
+        # rather than falling through to the daemon's fire-time cwd.
+        body["action_cwd"] = str(Path.cwd())
+
     if args.description:
         body["description"] = args.description
     if args.on_success:
@@ -1074,6 +1095,17 @@ def add_schedule_subparser(subparsers: argparse._SubParsersAction) -> argparse.A
         help="Path to a YAML flow spec file (for action-kind=flow_yaml).",
     )
     create_p.add_argument("--project", help="Project name.")
+    create_p.add_argument(
+        "--cwd",
+        metavar="PATH",
+        help=(
+            "Explicit execution root for this schedule's spawned process "
+            "(must be an existing directory). Persisted at creation time so "
+            "the schedule's spawn cwd never depends on where the Studio "
+            "daemon is running from (default: --project's registered path, "
+            "or this CLI's own working directory)."
+        ),
+    )
     create_p.add_argument("--description", help="Human-readable description.")
     create_p.add_argument(
         "--max-runs",
