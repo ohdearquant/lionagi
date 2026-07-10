@@ -217,8 +217,8 @@ class Event(Element):
 
     q: ClassVar[_EventQuery] = _EventQuery()
 
-    # TODO(#1043 Phase 2): migrate to anyio.Event (needs .clear() audit first)
     # Lazily-created asyncio.Event signalled on terminal status transitions.
+    # TODO: migrate to anyio.Event (needs .clear() audit first).
     _completion_event: asyncio.Event | None = PrivateAttr(default=None)
 
     # Terminal statuses that signal completion.
@@ -359,6 +359,3 @@ class Event(Element):
             "created_at": self.created_at,
         }
         return fresh
-
-
-# File: lionagi/protocols/generic/event.py

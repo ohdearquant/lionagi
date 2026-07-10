@@ -45,7 +45,7 @@ async def gather(*aws: Awaitable[T], return_exceptions: bool = False) -> list[T 
         except BaseException as exc:
             results[idx] = exc
             if not return_exceptions:
-                raise  # Propagate to the TaskGroup
+                raise
 
     try:
         async with create_task_group() as tg:
@@ -173,9 +173,8 @@ class CompletionStream:
                     assert self._send is not None
                     await self._send.send((i, res))  # type: ignore[arg-type]
                 except anyio.ClosedResourceError:
-                    # The consumer closed the receive end early (e.g., break after
-                    # first result). Discard this result silently — this is expected
-                    # in early-exit streaming scenarios.
+                    # Consumer closed the receive end early (e.g. break after first
+                    # result) — discard silently, this is expected early-exit behavior.
                     pass
             finally:
                 if limiter:

@@ -76,20 +76,17 @@ class Element(BaseModel, Observable):
         if isinstance(val, dt.datetime):
             return val.timestamp()
         if isinstance(val, str):
-            # Parse datetime string from database
             try:
-                # Handle datetime strings like "2025-08-30 10:54:59.310329"
-                # Convert space to T for ISO format, but handle timezone properly
+                # e.g. "2025-08-30 10:54:59.310329" -> ISO by swapping space for T
                 iso_string = val.replace(" ", "T")
                 parsed_dt = dt.datetime.fromisoformat(iso_string)
 
-                # If parsed as naive datetime (no timezone), treat as UTC to avoid local timezone issues
+                # Naive datetime (no timezone) is treated as UTC.
                 if parsed_dt.tzinfo is None:
                     parsed_dt = parsed_dt.replace(tzinfo=dt.timezone.utc)
 
                 return parsed_dt.timestamp()
             except ValueError:
-                # Try parsing as float string as fallback
                 try:
                     return float(val)
                 except ValueError:
@@ -163,11 +160,9 @@ class Element(BaseModel, Observable):
     @classmethod
     def from_dict(cls, data: dict) -> Element:
         """Deserialize dict into Element or the subclass named by lion_class in metadata."""
-        # Shallow copy to avoid mutating the caller's dict. The nested metadata
-        # dict is also copied because we pop from it (lion_class extraction).
+        # Shallow copy so we don't mutate the caller's dict; metadata is popped from below.
         data = dict(data)
 
-        # Preprocess database format if needed
         metadata = {}
 
         if "node_metadata" in data:
@@ -178,14 +173,12 @@ class Element(BaseModel, Observable):
             subcls: str = metadata.pop("lion_class")
             if subcls != Element.class_name(full=True):
                 try:
-                    # get_class resolves both fully-qualified names (registry
-                    # hit or dotted-path import) and legacy short names (data
-                    # persisted before the full-name convention was adopted).
+                    # get_class resolves both fully-qualified names and legacy
+                    # short names (data persisted before full-name adoption).
                     subcls_type: type[Element] = get_class(subcls)
-                    # Delegate when there is a custom from_dict OR when the
-                    # concrete type differs from cls (so model_validate uses the
-                    # right schema). Restore metadata before the recursive call
-                    # so the delegate sees a self-consistent dict.
+                    # Delegate to the subclass's from_dict when it has a custom
+                    # one, or when the concrete type differs so model_validate
+                    # uses the right schema.
                     if hasattr(subcls_type, "from_dict") and (
                         subcls_type.from_dict.__func__ != cls.from_dict.__func__
                         or subcls_type is not cls
@@ -282,6 +275,3 @@ class ID(Generic[E]):
             return True
         except ValueError:
             return False
-
-
-# File: lionagi/protocols/generic/element.py

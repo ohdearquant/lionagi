@@ -27,8 +27,7 @@ __all__ = [
     "json_lines_iter",
 ]
 
-# Types orjson already serializes natively at C/Rust speed.
-# (We only route them through default() when passthrough is requested.)
+# Types orjson serializes natively; routed through default() only when passthrough is requested.
 _NATIVE = (dt.datetime, dt.date, dt.time, UUID)
 _SERIALIZATION_METHODS = ("model_dump", "to_dict", "dict")
 

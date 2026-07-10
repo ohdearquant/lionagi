@@ -19,7 +19,7 @@ from .base import Meta
 # Global cache for annotated types with bounded size
 _MAX_CACHE_SIZE = int(os.environ.get("LIONAGI_FIELD_CACHE_SIZE", "10000"))
 _annotated_cache: OrderedDict[tuple[type, tuple[Meta, ...]], type] = OrderedDict()
-_cache_lock = threading.RLock()  # Thread-safe access to cache
+_cache_lock = threading.RLock()
 
 
 __all__ = ("Spec", "CommonMeta")
