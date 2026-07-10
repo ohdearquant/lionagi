@@ -55,7 +55,6 @@ def prepare_communicate_kw(
         )
         num_parse_retries = 5
 
-    # Build contexts
     chat_param = ChatParam(
         guidance=guidance,
         context=context,
@@ -117,7 +116,6 @@ async def communicate(
     if skip_validation:
         return res.response
 
-    # Handle response_format with parse
     if parse_param and chat_param.response_format:
         from lionagi.protocols.messages.assistant_response import AssistantResponse
 
@@ -134,12 +132,10 @@ async def communicate(
                 res.metadata["model_response"] = res2.model_response
             return out
         except ValueError as e:
-            # Re-raise with more context
             raise ValueError(
                 f"Failed to parse model response into {chat_param.response_format}: {e}"
             ) from e
 
-    # Handle request_fields with fuzzy validation
     if request_fields is not None:
         _d = fuzzy_validate_mapping(
             res.response,

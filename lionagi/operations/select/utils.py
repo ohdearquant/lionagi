@@ -76,7 +76,6 @@ def get_choice_representation(choice: Any) -> str:
     if isinstance(choice, Enum):
         return get_choice_representation(choice.value)
 
-    # Handle other types (int, dict, etc.) by converting to string
     return str(choice)
 
 
