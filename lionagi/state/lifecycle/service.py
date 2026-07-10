@@ -173,6 +173,19 @@ class SQLAlchemyLifecycleService:
                 f"invalid reason_code: {command.reason.code!r}; must be one of "
                 "the codes registered in lionagi.state.reasons.VALID_REASON_CODES"
             )
+        # A globally registered code from another entity's domain (e.g. a
+        # dispatch.* code on a schedule_run row) would still corrupt audit
+        # semantics; the policy declares which prefixes belong to this entity.
+        policy = self._registry.get(command.entity_type)
+        prefix = command.reason.code.split(".", 1)[0]
+        if prefix not in policy.reason_prefixes:
+            raise LifecycleValidationError(
+                f"reason_code {command.reason.code!r} does not belong to entity_type "
+                f"{command.entity_type!r}; expected a prefix in "
+                f"{sorted(policy.reason_prefixes)}"
+            )
+        if not command.actor.id:
+            raise LifecycleValidationError("TransitionCommand.actor.id must be non-empty")
         return await self._transition(
             command, extra_guard=None, enforce_edges=True, undeclared_edge_mode="reject"
         )

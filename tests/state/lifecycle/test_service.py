@@ -152,6 +152,40 @@ async def test_public_transition_rejects_unregistered_reason_code(db: StateDB) -
 
 
 @pytest.mark.asyncio
+async def test_public_transition_rejects_wrong_domain_reason_code(db: StateDB) -> None:
+    """A globally valid code from another entity's reason domain is refused."""
+    run_id = await _make_schedule_run(db, status="queued")
+    service = SQLAlchemyLifecycleService(db)
+
+    with pytest.raises(LifecycleValidationError, match="does not belong to entity_type"):
+        await service.transition(
+            _command(
+                entity_type="schedule_run",
+                entity_id=run_id,
+                to_status="running",
+                reason=ReasonRecord(code="dispatch.acked.consumer"),
+            )
+        )
+
+
+@pytest.mark.asyncio
+async def test_public_transition_rejects_empty_actor_id(db: StateDB) -> None:
+    run_id = await _make_schedule_run(db, status="queued")
+    service = SQLAlchemyLifecycleService(db)
+
+    with pytest.raises(LifecycleValidationError, match="actor.id must be non-empty"):
+        await service.transition(
+            _command(
+                entity_type="schedule_run",
+                entity_id=run_id,
+                to_status="running",
+                reason=ReasonRecord(code="run.started.ok"),
+                actor=ActorRecord(type="system", id=""),
+            )
+        )
+
+
+@pytest.mark.asyncio
 async def test_public_transition_rejects_undeclared_nonterminal_edge(db: StateDB) -> None:
     """The public entry point enforces the declared-edge graph: a session in
     "running" may only move to a terminal status, so an in-vocabulary but
