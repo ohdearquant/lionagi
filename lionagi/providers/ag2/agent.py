@@ -141,10 +141,7 @@ async def run_beta_agent(
     if agent is not None:
         if config is not None:
             logger.info("run_beta_agent: pre-built agent provided; agent_config is ignored.")
-        # Use the caller-supplied agent as-is.
-        # AG2 stream imports still needed for the subscription machinery below.
     else:
-        # Config-driven path: build a fresh Agent from AgentConfig.
         if config is None:
             raise ValueError(
                 "run_beta_agent requires either a pre-built 'agent' or a non-None 'config'."
@@ -274,7 +271,6 @@ async def run_beta_agent(
         stream.unsubscribe(sub_results)
         if not task.done():
             task.cancel()
-            # Suppress CancelledError and any agent.ask error during teardown.
             try:
                 await task
             except (asyncio.CancelledError, Exception):  # noqa: S110, BLE001 — intentional teardown reap
@@ -330,8 +326,7 @@ class AG2BetaEndpoint(AgenticEndpoint):
         if not prompt:
             raise ValueError("AG2BetaEndpoint requires a non-empty prompt or at least one message.")
 
-        # Resolve the pre-built agent (if any) and the agent_config.
-        # Pre-built agent takes precedence; agent_config is the fallback.
+        # Pre-built agent takes precedence over agent_config.
         prebuilt_agent = request_obj.agent or kwargs.get("agent")
 
         if prebuilt_agent is None:
@@ -339,8 +334,7 @@ class AG2BetaEndpoint(AgenticEndpoint):
             if agent_config is None:
                 agent_config = AgentConfig(**kwargs.get("agent_config", self._agent_config))
         else:
-            # Pre-built agent path: agent_config may be None; that's fine.
-            agent_config = request_obj.agent_config  # kept for metadata only
+            agent_config = request_obj.agent_config  # pre-built path: may be None, metadata only
 
         llm_config = kwargs.get("llm_config", self._llm_config)
         tool_registry = kwargs.get("tool_registry", self._tool_registry)
@@ -350,8 +344,7 @@ class AG2BetaEndpoint(AgenticEndpoint):
 
         model_config = _resolve_model_config(llm_config) if llm_config is not None else None
 
-        # Build system chunk metadata. When a pre-built agent is used the
-        # config fields are not authoritative; surface what we know.
+        # Pre-built agent: config fields aren't authoritative; surface what we know.
         if prebuilt_agent is not None:
             agent_name = getattr(prebuilt_agent, "name", "pre-built")
             system_meta: dict = {
@@ -372,7 +365,6 @@ class AG2BetaEndpoint(AgenticEndpoint):
 
         yield StreamChunk(type="system", metadata=system_meta)
 
-        # Agent name used in per-event metadata below.
         _agent_name = system_meta["agent"]
 
         try:
