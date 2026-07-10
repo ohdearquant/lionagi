@@ -8,6 +8,7 @@ tested elsewhere)."""
 
 from __future__ import annotations
 
+import time
 import uuid
 from unittest.mock import patch
 
@@ -46,6 +47,32 @@ async def _make_session(db: StateDB, *, status: str = "running") -> str:
     sid = _uid()
     await db.create_session({"id": sid, "progression_id": prog_id, "status": status})
     return sid
+
+
+async def _make_schedule_run(db: StateDB, *, status: str = "queued") -> str:
+    sched_id = _uid()
+    await db.create_schedule(
+        {
+            "id": sched_id,
+            "name": f"sched-{sched_id}",
+            "trigger_type": "interval",
+            "interval_sec": 60,
+            "action_kind": "agent",
+        }
+    )
+    run_id = _uid()
+    await db.create_schedule_run(
+        {
+            "id": run_id,
+            "schedule_id": sched_id,
+            "trigger_context": {},
+            "action_kind": "agent",
+            "action_args": [],
+            "status": status,
+            "fired_at": time.time(),
+        }
+    )
+    return run_id
 
 
 def _command(**overrides) -> TransitionCommand:
@@ -106,6 +133,50 @@ async def test_transition_rejected_shape_terminal_without_override(db: StateDB) 
     assert outcome.previous_status == "completed"
     assert outcome.current_status == "completed"
     assert outcome.transition_id is None
+
+
+@pytest.mark.asyncio
+async def test_public_transition_rejects_undeclared_nonterminal_edge(db: StateDB) -> None:
+    """The public entry point enforces the declared-edge graph: a session in
+    "running" may only move to a terminal status, so an in-vocabulary but
+    undeclared move is a rejected outcome (with audit), not a silent write."""
+    run_id = await _make_schedule_run(db, status="queued")
+    service = SQLAlchemyLifecycleService(db)
+
+    outcome = await service.transition(
+        _command(
+            entity_type="schedule_run",
+            entity_id=run_id,
+            to_status="completed",
+            reason=ReasonRecord(code="run.completed.exit_zero"),
+        )
+    )
+
+    assert outcome.result == "rejected"
+    assert outcome.current_status == "queued"
+    events = await db.list_admin_events(action="status_transition_rejected", target_id=run_id)
+    assert len(events) == 1
+
+
+@pytest.mark.asyncio
+async def test_public_transition_override_bypasses_undeclared_edge(db: StateDB) -> None:
+    run_id = await _make_schedule_run(db, status="queued")
+    service = SQLAlchemyLifecycleService(db)
+
+    outcome = await service.transition(
+        _command(
+            entity_type="schedule_run",
+            entity_id=run_id,
+            to_status="completed",
+            reason=ReasonRecord(code="run.completed.exit_zero"),
+            override=OverrideRecord(actor="operator", justification="manual reconciliation"),
+        )
+    )
+
+    assert outcome.result == "applied"
+    assert outcome.current_status == "completed"
+    events = await db.list_admin_events(action="status_transition_override", target_id=run_id)
+    assert len(events) == 1
 
 
 @pytest.mark.asyncio

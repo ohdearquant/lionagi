@@ -6,8 +6,9 @@ See docs/adr/ADR-0058-unified-lifecycle-transition-service.md D3/D4 for the
 normative 13-step algorithm and creation-history contract implemented here.
 
 ``transition()`` is the public D1 Protocol method, which enforces the
-policy's declared-edge graph (``enforce_edges=True``, ``StateDB``'s
-narrower legacy-transition adapter's behavior). ``_transition()`` accepts
+policy's declared-edge graph: an undeclared move is a "rejected" outcome
+with a rejection audit row, and a valid override is the audited escape
+hatch. ``_transition()`` accepts
 additional keyword-only parameters not part of the public
 ``TransitionCommand`` shape, used only by ``lionagi.state.lifecycle.adapters``
 to keep the two legacy compatibility wrappers behaviorally identical to their
@@ -158,7 +159,14 @@ class SQLAlchemyLifecycleService:
     # ── D1 public entry point ───────────────────────────────────────────
 
     async def transition(self, command: TransitionCommand) -> TransitionOutcome:
-        return await self._transition(command, extra_guard=None)
+        # The public entry point enforces the policy's declared-edge graph.
+        # An undeclared move is a "rejected" outcome (with rejection audit),
+        # not a raise, so callers get the same D4 outcome shape for both
+        # terminal-exit and undeclared-edge refusals; a valid override is the
+        # audited escape hatch for either.
+        return await self._transition(
+            command, extra_guard=None, enforce_edges=True, undeclared_edge_mode="reject"
+        )
 
     # ── D4: the one guarded transition algorithm ────────────────────────
 
@@ -168,6 +176,7 @@ class SQLAlchemyLifecycleService:
         *,
         extra_guard: Mapping[str, Any] | None = None,
         enforce_edges: bool = False,
+        undeclared_edge_mode: str = "raise",
         raise_on_unguarded_conflict: bool = False,
         write_reason_columns: bool = True,
     ) -> TransitionOutcome:
@@ -285,21 +294,28 @@ class SQLAlchemyLifecycleService:
                 # "append": falls through to the guarded write below.
             elif enforce_edges:
                 # Undeclared edge (terminal or not), with the declared-edge
-                # graph enforced — the legacy
-                # `lionagi.state.transitions.transition()` surface, which
-                # never had an override/rejection-audit concept: an
-                # undeclared move there was and remains a plain
-                # vocabulary-violation ValueError, not a D4 rejected
-                # outcome, regardless of whether previous_status happens to
-                # be terminal. This must be checked before the
-                # terminal_statuses branch below (which is only reachable
-                # when enforce_edges=False).
-                raise LifecycleValidationError(
-                    f"transition(): {command.entity_type} {previous_status!r} -> "
-                    f"{command.to_status!r} is not in the declared transition "
-                    f"vocabulary (allowed targets: "
-                    f"{sorted(e.to_status for e in declared_edges)})"
-                )
+                # graph enforced. A valid override is the audited escape
+                # hatch. Otherwise `undeclared_edge_mode` selects the
+                # refusal shape: the legacy
+                # `lionagi.state.transitions.transition()` surface never had
+                # an override/rejection-audit concept — an undeclared move
+                # there was and remains a plain vocabulary-violation
+                # ValueError ("raise") — while the public `transition()`
+                # entry point reports the same D4 "rejected" outcome (with
+                # rejection audit) it uses for terminal exits ("reject").
+                # This must be checked before the terminal_statuses branch
+                # below (which is only reachable when enforce_edges=False).
+                if command.override is not None:
+                    override_admin_event = True
+                elif undeclared_edge_mode == "reject":
+                    rejected = True
+                else:
+                    raise LifecycleValidationError(
+                        f"transition(): {command.entity_type} {previous_status!r} -> "
+                        f"{command.to_status!r} is not in the declared transition "
+                        f"vocabulary (allowed targets: "
+                        f"{sorted(e.to_status for e in declared_edges)})"
+                    )
             elif previous_status in policy.terminal_statuses:
                 # Step 7/8/9: undeclared edge exiting a terminal status —
                 # rejected unless a valid override is supplied.
