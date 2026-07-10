@@ -138,9 +138,10 @@ async def prune_old_data(
 ) -> dict[str, int]:
     """Remove terminal sessions/runs/dispatches older than their keep windows, in one transaction.
 
-    FK safety: branches CASCADE on sessions; artifacts/plays/team_messages have
-    soft FKs (no CASCADE) so session_id is nullified before DELETE; schedule_runs
-    chain_parent_id self-reference is nullified before parent delete.
+    FK safety: branches CASCADE on sessions; artifacts/plays/team_messages and
+    dispatch_outbox have soft FKs (no CASCADE) so session_id is nullified before
+    DELETE; schedule_runs chain_parent_id self-reference and
+    dispatch_outbox.schedule_run_id are nullified before parent delete.
 
     dispatch_outbox rows (ADR-0059 delta 3) use two separate windows: terminal
     success (delivered/acked) and dead-lettered/expired. pending/delivering
@@ -250,6 +251,15 @@ async def prune_old_data(
                     "UPDATE team_messages SET session_id = NULL WHERE session_id",
                     session_ids,
                 )
+                # dispatch_outbox.session_id is a plain FK (no CASCADE/SET NULL);
+                # a dispatch row can outlive its session under the separate
+                # dispatch retention windows, so nullify before the parent DELETE
+                # or the whole prune aborts on the FK constraint.
+                await _exec_chunked(
+                    conn,
+                    "UPDATE dispatch_outbox SET session_id = NULL WHERE session_id",
+                    session_ids,
+                )
                 await _exec_chunked(
                     conn,
                     "DELETE FROM status_transitions WHERE entity_type = 'session' AND entity_id",
@@ -302,6 +312,12 @@ async def prune_old_data(
                 f"(SELECT id FROM schedule_runs WHERE status IN ({run_ph}) AND fired_at <= ?)"
             )
             await conn.execute(*_q(upd_sql, (*_TERMINAL_RUN_STATUSES, cutoff)))
+            # Same plain-FK hazard as dispatch_outbox.session_id above.
+            disp_upd_sql = (
+                "UPDATE dispatch_outbox SET schedule_run_id = NULL WHERE schedule_run_id IN "  # noqa: S608
+                f"(SELECT id FROM schedule_runs WHERE status IN ({run_ph}) AND fired_at <= ?)"
+            )
+            await conn.execute(*_q(disp_upd_sql, (*_TERMINAL_RUN_STATUSES, cutoff)))
             del_sql = f"DELETE FROM schedule_runs WHERE status IN ({run_ph}) AND fired_at <= ?"  # noqa: S608
             runs_pruned = (
                 await conn.execute(*_q(del_sql, (*_TERMINAL_RUN_STATUSES, cutoff)))

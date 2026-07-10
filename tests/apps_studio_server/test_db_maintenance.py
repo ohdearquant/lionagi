@@ -291,6 +291,48 @@ async def _make_dispatch(db: StateDB, *, status: str, updated_at: float) -> str:
     return dispatch_id
 
 
+def test_prune_nullifies_dispatch_fks_before_parent_delete(tmp_path, monkeypatch):
+    """A young dispatch referencing an old session/schedule_run must not abort
+    the prune: its soft FKs are nullified before the parent rows are deleted."""
+    from lionagi.dispatch import enqueue_dispatch
+    from lionagi.studio.services import db_maintenance as maint
+
+    db_path = tmp_path / "state.db"
+    _patch_db(monkeypatch, db_path)
+
+    old_ts = time.time() - 40 * 86400
+
+    async def seed():
+        async with StateDB(db_path) as db:
+            session_id = await _make_session(db, status="completed", started_at=old_ts)
+            run_id = await _make_schedule_run(db, status="completed", fired_at=old_ts)
+            dispatch_id = await enqueue_dispatch(
+                db,
+                kind="terminal_notify",
+                deliver_to="seat-1",
+                session_id=session_id,
+                schedule_run_id=run_id,
+            )
+        return session_id, run_id, dispatch_id
+
+    session_id, run_id, dispatch_id = run_async(seed())
+    result = run_async(maint.prune_old_data(keep_days=30, actor="test"))
+    assert result["sessions_pruned"] == 1
+    assert result["runs_pruned"] == 1
+
+    async def check():
+        async with StateDB(db_path) as db:
+            return await db.fetch_one(
+                "SELECT session_id, schedule_run_id FROM dispatch_outbox WHERE id = ?",
+                (dispatch_id,),
+            )
+
+    row = run_async(check())
+    assert row is not None  # the young dispatch survives its own retention window
+    assert row["session_id"] is None
+    assert row["schedule_run_id"] is None
+
+
 def test_prune_purges_terminal_dispatches_by_window(tmp_path, monkeypatch):
     """ADR-0059 delta 3: delivered/acked use the success window, dead_letter/expired the longer one."""
     from lionagi.studio.services import db_maintenance as maint
