@@ -36,6 +36,7 @@ from typing import TYPE_CHECKING, Any, Protocol
 
 from sqlalchemy import JSON, bindparam, text
 
+from ..reasons import VALID_REASON_CODES
 from . import LifecycleNotFoundError, LifecycleValidationError
 from .models import InitialStateCommand, TransitionCommand, TransitionOutcome
 from .policy import DEFAULT_REGISTRY, PolicyRegistry
@@ -164,6 +165,14 @@ class SQLAlchemyLifecycleService:
         # not a raise, so callers get the same D4 outcome shape for both
         # terminal-exit and undeclared-edge refusals; a valid override is the
         # audited escape hatch for either.
+        # The legacy wrappers validate the reason code before calling in; the
+        # public API must do the same or it becomes the one path that writes
+        # uncontrolled reason_code values into status_transitions.
+        if command.reason.code not in VALID_REASON_CODES:
+            raise LifecycleValidationError(
+                f"invalid reason_code: {command.reason.code!r}; must be one of "
+                "the codes registered in lionagi.state.reasons.VALID_REASON_CODES"
+            )
         return await self._transition(
             command, extra_guard=None, enforce_edges=True, undeclared_edge_mode="reject"
         )

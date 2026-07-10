@@ -284,6 +284,10 @@ def build_default_registry() -> PolicyRegistry:
                 EdgePolicy(to_status="delivering"),
                 EdgePolicy(to_status="pending"),
                 EdgePolicy(to_status="delivered"),
+                # A consumer may present its ack_token while the delivery loop
+                # still holds the row mid-tick (fast ack); ack must not have to
+                # wait for the row to loop back to pending.
+                EdgePolicy(to_status="acked"),
                 EdgePolicy(to_status="dead_letter"),
                 EdgePolicy(to_status="expired"),
             ),

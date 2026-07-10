@@ -136,6 +136,22 @@ async def test_transition_rejected_shape_terminal_without_override(db: StateDB) 
 
 
 @pytest.mark.asyncio
+async def test_public_transition_rejects_unregistered_reason_code(db: StateDB) -> None:
+    run_id = await _make_schedule_run(db, status="queued")
+    service = SQLAlchemyLifecycleService(db)
+
+    with pytest.raises(LifecycleValidationError, match="invalid reason_code"):
+        await service.transition(
+            _command(
+                entity_type="schedule_run",
+                entity_id=run_id,
+                to_status="running",
+                reason=ReasonRecord(code="made.up.code"),
+            )
+        )
+
+
+@pytest.mark.asyncio
 async def test_public_transition_rejects_undeclared_nonterminal_edge(db: StateDB) -> None:
     """The public entry point enforces the declared-edge graph: a session in
     "running" may only move to a terminal status, so an in-vocabulary but
@@ -148,7 +164,7 @@ async def test_public_transition_rejects_undeclared_nonterminal_edge(db: StateDB
             entity_type="schedule_run",
             entity_id=run_id,
             to_status="completed",
-            reason=ReasonRecord(code="run.completed.exit_zero"),
+            reason=ReasonRecord(code="run.completed.ok"),
         )
     )
 
@@ -168,7 +184,7 @@ async def test_public_transition_override_bypasses_undeclared_edge(db: StateDB) 
             entity_type="schedule_run",
             entity_id=run_id,
             to_status="completed",
-            reason=ReasonRecord(code="run.completed.exit_zero"),
+            reason=ReasonRecord(code="run.completed.ok"),
             override=OverrideRecord(actor="operator", justification="manual reconciliation"),
         )
     )
