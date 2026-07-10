@@ -728,29 +728,29 @@ async def purge_dispatches(
         params["before"] = before
     where_sql = " AND ".join(where_clauses)
 
-    async with db._read() as conn:
-        rows = (
-            (
+    count_sql = text(
+        f"SELECT status, COUNT(*) AS n FROM dispatch_outbox "  # noqa: S608
+        f"WHERE {where_sql} GROUP BY status"
+    )
+
+    if dry_run:
+        async with db._read() as conn:
+            rows = (await conn.execute(count_sql, params)).mappings().all()
+        counts_by_status = {r["status"]: r["n"] for r in rows}
+        total = sum(counts_by_status.values())
+    else:
+        # Count and delete in ONE write transaction so the admin_events record
+        # cannot disagree with what was actually deleted when a scheduler tick
+        # or another operator mutates rows concurrently.
+        async with db._tx() as conn:
+            rows = (await conn.execute(count_sql, params)).mappings().all()
+            counts_by_status = {r["status"]: r["n"] for r in rows}
+            total = sum(counts_by_status.values())
+            if total:
                 await conn.execute(
-                    text(
-                        f"SELECT status, COUNT(*) AS n FROM dispatch_outbox "  # noqa: S608
-                        f"WHERE {where_sql} GROUP BY status"
-                    ),
+                    text(f"DELETE FROM dispatch_outbox WHERE {where_sql}"),  # noqa: S608
                     params,
                 )
-            )
-            .mappings()
-            .all()
-        )
-    counts_by_status = {r["status"]: r["n"] for r in rows}
-    total = sum(counts_by_status.values())
-
-    if not dry_run and total:
-        async with db._tx() as conn:
-            await conn.execute(
-                text(f"DELETE FROM dispatch_outbox WHERE {where_sql}"),  # noqa: S608
-                params,
-            )
 
     await db.insert_admin_event(
         action="dispatch_purge",
