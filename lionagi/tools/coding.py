@@ -453,10 +453,8 @@ class CodingToolkit(LionTool):
                 else:
                     read_tracked.discard(resolved)
 
-        # Cache for documents opened via action='open' (docling conversion).
-        # Keyed by path; values are (text, cached_at) tuples — same layout as
-        # the standalone ReaderTool cache so _read_cached/_evict_expired work
-        # without modification.
+        # Docling conversion cache, keyed by path — same (text, cached_at)
+        # layout as ReaderTool's cache so _read_cached/_evict_expired reuse it.
         _open_cache: dict[str, tuple[str, float]] = {}
 
         async def reader(
