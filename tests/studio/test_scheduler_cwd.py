@@ -2,8 +2,8 @@
 # SPDX-License-Identifier: Apache-2.0
 """Regression tests: scheduled subprocess spawns must not inherit the daemon's
 own launch cwd. Covers spawn_and_wait's cwd passthrough and the
-_resolve_action_cwd layered resolution (action_project -> LIONAGI_SCHEDULER_CWD
--> None+warning)."""
+_resolve_action_cwd layered resolution (action_cwd -> action_project ->
+LIONAGI_SCHEDULER_CWD -> None+warning, ADR-0070 delta 1)."""
 
 from __future__ import annotations
 
@@ -234,6 +234,127 @@ async def test_resolve_action_cwd_stale_project_path_overridden_by_env_fallback(
 
 
 # ---------------------------------------------------------------------------
+# _resolve_action_cwd: action_cwd (persisted execution root) outranks
+# action_project (ADR-0070 delta 1)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_resolve_action_cwd_prefers_persisted_root_over_action_project(tmp_path, monkeypatch):
+    """A stored action_cwd wins even when action_project resolves to a
+    different, equally-real directory -- the persisted root is a snapshot,
+    not re-derived from the live project registry on every fire."""
+    from lionagi.studio.scheduler.engine import _resolve_action_cwd
+
+    root_dir = tmp_path / "persisted-root"
+    root_dir.mkdir()
+    project_dir = tmp_path / "registered-project"
+    project_dir.mkdir()
+
+    fake_get_project = AsyncMock(
+        return_value={"name": "myproj", "path": str(project_dir), "source": "studio"}
+    )
+    monkeypatch.setattr(
+        "lionagi.studio.services.projects.get_project", fake_get_project, raising=False
+    )
+
+    schedule = {"id": "sched-root-1", "action_cwd": str(root_dir), "action_project": "myproj"}
+    result = await _resolve_action_cwd(schedule)
+
+    assert result == (str(root_dir), None)
+    fake_get_project.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_resolve_action_cwd_survives_daemon_restart_elsewhere(tmp_path, monkeypatch):
+    """The whole point of ADR-0070 delta 1: a persisted action_cwd resolves
+    correctly no matter where the daemon process itself was started from."""
+    from lionagi.studio.scheduler.engine import _resolve_action_cwd
+
+    root_dir = tmp_path / "stable-root"
+    root_dir.mkdir()
+    daemon_started_here = tmp_path / "daemon-started-elsewhere"
+    daemon_started_here.mkdir()
+    monkeypatch.chdir(daemon_started_here)
+
+    schedule = {"id": "sched-root-2", "action_cwd": str(root_dir), "action_project": None}
+    result = await _resolve_action_cwd(schedule)
+
+    assert result == (str(root_dir), None)
+
+
+@pytest.mark.asyncio
+async def test_resolve_action_cwd_falls_back_from_stale_persisted_root_to_action_project(
+    tmp_path, monkeypatch
+):
+    """A persisted action_cwd that no longer exists on disk (e.g. a pruned
+    worktree) falls through to action_project rather than being trusted."""
+    from lionagi.studio.scheduler.engine import _resolve_action_cwd
+
+    project_dir = tmp_path / "registered-project"
+    project_dir.mkdir()
+    fake_get_project = AsyncMock(
+        return_value={"name": "myproj", "path": str(project_dir), "source": "studio"}
+    )
+    monkeypatch.setattr(
+        "lionagi.studio.services.projects.get_project", fake_get_project, raising=False
+    )
+
+    schedule = {
+        "id": "sched-root-3",
+        "action_cwd": "/pruned/execution/root",
+        "action_project": "myproj",
+    }
+    result = await _resolve_action_cwd(schedule)
+
+    assert result == (str(project_dir), None)
+
+
+@pytest.mark.asyncio
+async def test_resolve_action_cwd_stale_persisted_root_attributed_when_nothing_else_resolves(
+    monkeypatch,
+):
+    """A stale action_cwd with nothing else to fall back on reports itself as
+    the missing path for failure attribution."""
+    from lionagi.studio.scheduler.engine import _resolve_action_cwd
+
+    fake_get_project = AsyncMock(return_value=None)
+    monkeypatch.setattr(
+        "lionagi.studio.services.projects.get_project", fake_get_project, raising=False
+    )
+    monkeypatch.delenv("LIONAGI_SCHEDULER_CWD", raising=False)
+
+    schedule = {
+        "id": "sched-root-4",
+        "action_cwd": "/pruned/execution/root",
+        "action_project": None,
+    }
+    result = await _resolve_action_cwd(schedule)
+
+    assert result == (None, "/pruned/execution/root")
+
+
+@pytest.mark.asyncio
+async def test_resolve_action_cwd_pre_migration_row_warns_deprecated(monkeypatch, caplog):
+    """A pre-migration row (action_cwd never set) still falls through to the
+    legacy daemon-cwd-inherit behavior, but the warning names it explicitly
+    as a pre-migration/deprecated case rather than the generic message."""
+    from lionagi.studio.scheduler.engine import _resolve_action_cwd
+
+    monkeypatch.delenv("LIONAGI_SCHEDULER_CWD", raising=False)
+
+    schedule = {"id": "sched-root-5", "action_cwd": None, "action_project": None}
+    with caplog.at_level(logging.WARNING, logger="lionagi.studio.scheduler.engine"):
+        result = await _resolve_action_cwd(schedule)
+
+    assert result == (None, None)
+    assert any(
+        "sched-root-5" in rec.getMessage() and "pre-migration" in rec.getMessage()
+        for rec in caplog.records
+    )
+
+
+# ---------------------------------------------------------------------------
 # _fire() threads the resolved cwd into spawn_and_wait
 # ---------------------------------------------------------------------------
 
@@ -390,3 +511,164 @@ async def test_fire_plain_nonzero_exit_keeps_generic_reason(monkeypatch):
     assert terminal_calls
     (call,) = terminal_calls
     assert call.kwargs["reason_code"] == RunReasons.FAILED_EXIT_NONZERO
+
+
+# ---------------------------------------------------------------------------
+# SchedulerEngine._backfill_action_cwd — one-shot startup migration
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_backfill_fills_action_cwd_from_resolvable_action_project(tmp_path, monkeypatch):
+    """A pre-migration row with action_cwd unset and a resolvable
+    action_project gets action_cwd snapshotted from the project's path."""
+    from lionagi.studio.scheduler.engine import SchedulerEngine
+
+    project_dir = tmp_path / "proj"
+    project_dir.mkdir()
+    fake_get_project = AsyncMock(return_value={"name": "p1", "path": str(project_dir)})
+    monkeypatch.setattr(
+        "lionagi.studio.services.projects.get_project", fake_get_project, raising=False
+    )
+
+    svc = _make_svc()
+    svc.list_schedules = AsyncMock(
+        return_value=[_minimal_schedule(id="sched-bf-1", action_cwd=None, action_project="p1")]
+    )
+    engine = SchedulerEngine(svc=svc)
+
+    await engine._backfill_action_cwd()
+
+    svc.update_schedule.assert_awaited_once_with("sched-bf-1", action_cwd=str(project_dir))
+
+
+@pytest.mark.asyncio
+async def test_backfill_skips_rows_that_already_have_action_cwd(monkeypatch):
+    """Idempotency: a row that already has action_cwd is left untouched, and
+    the project registry is never consulted for it."""
+    from lionagi.studio.scheduler.engine import SchedulerEngine
+
+    fake_get_project = AsyncMock()
+    monkeypatch.setattr(
+        "lionagi.studio.services.projects.get_project", fake_get_project, raising=False
+    )
+
+    svc = _make_svc()
+    svc.list_schedules = AsyncMock(
+        return_value=[
+            _minimal_schedule(id="sched-bf-2", action_cwd="/already/set", action_project="p1")
+        ]
+    )
+    engine = SchedulerEngine(svc=svc)
+
+    await engine._backfill_action_cwd()
+
+    svc.update_schedule.assert_not_called()
+    fake_get_project.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_backfill_skips_rows_with_no_action_project(monkeypatch):
+    """A pre-migration row with no action_project at all has nothing to
+    backfill from and is left with action_cwd unset."""
+    from lionagi.studio.scheduler.engine import SchedulerEngine
+
+    fake_get_project = AsyncMock()
+    monkeypatch.setattr(
+        "lionagi.studio.services.projects.get_project", fake_get_project, raising=False
+    )
+
+    svc = _make_svc()
+    svc.list_schedules = AsyncMock(
+        return_value=[_minimal_schedule(id="sched-bf-3", action_cwd=None, action_project=None)]
+    )
+    engine = SchedulerEngine(svc=svc)
+
+    await engine._backfill_action_cwd()
+
+    svc.update_schedule.assert_not_called()
+    fake_get_project.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_backfill_leaves_action_cwd_unset_when_project_path_missing(monkeypatch):
+    """action_project is set but doesn't resolve to a usable directory:
+    action_cwd stays unset rather than being backfilled with a bad value."""
+    from lionagi.studio.scheduler.engine import SchedulerEngine
+
+    fake_get_project = AsyncMock(return_value=None)
+    monkeypatch.setattr(
+        "lionagi.studio.services.projects.get_project", fake_get_project, raising=False
+    )
+
+    svc = _make_svc()
+    svc.list_schedules = AsyncMock(
+        return_value=[
+            _minimal_schedule(id="sched-bf-4", action_cwd=None, action_project="unregistered")
+        ]
+    )
+    engine = SchedulerEngine(svc=svc)
+
+    await engine._backfill_action_cwd()
+
+    svc.update_schedule.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_backfill_is_idempotent_across_repeated_startups(tmp_path, monkeypatch):
+    """Running the backfill twice in a row (simulating two daemon starts)
+    only writes once -- the second pass sees action_cwd already populated."""
+    from lionagi.studio.scheduler.engine import SchedulerEngine
+
+    project_dir = tmp_path / "proj"
+    project_dir.mkdir()
+    fake_get_project = AsyncMock(return_value={"name": "p1", "path": str(project_dir)})
+    monkeypatch.setattr(
+        "lionagi.studio.services.projects.get_project", fake_get_project, raising=False
+    )
+
+    svc = _make_svc()
+    schedule_row = _minimal_schedule(id="sched-bf-5", action_cwd=None, action_project="p1")
+    svc.list_schedules = AsyncMock(return_value=[schedule_row])
+    engine = SchedulerEngine(svc=svc)
+
+    await engine._backfill_action_cwd()
+    svc.update_schedule.assert_awaited_once_with("sched-bf-5", action_cwd=str(project_dir))
+
+    # Simulate the row now carrying its backfilled action_cwd on the second pass.
+    schedule_row["action_cwd"] = str(project_dir)
+    svc.update_schedule.reset_mock()
+    await engine._backfill_action_cwd()
+    svc.update_schedule.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_backfill_one_bad_row_does_not_block_others(tmp_path, monkeypatch):
+    """A get_project failure for one schedule must not prevent backfilling
+    the rest of the list."""
+    from lionagi.studio.scheduler.engine import SchedulerEngine
+
+    project_dir = tmp_path / "proj-ok"
+    project_dir.mkdir()
+
+    async def _fake_get_project(name):
+        if name == "boom":
+            raise RuntimeError("registry lookup blew up")
+        return {"name": name, "path": str(project_dir)}
+
+    monkeypatch.setattr(
+        "lionagi.studio.services.projects.get_project", _fake_get_project, raising=False
+    )
+
+    svc = _make_svc()
+    svc.list_schedules = AsyncMock(
+        return_value=[
+            _minimal_schedule(id="sched-bf-bad", action_cwd=None, action_project="boom"),
+            _minimal_schedule(id="sched-bf-good", action_cwd=None, action_project="ok"),
+        ]
+    )
+    engine = SchedulerEngine(svc=svc)
+
+    await engine._backfill_action_cwd()
+
+    svc.update_schedule.assert_awaited_once_with("sched-bf-good", action_cwd=str(project_dir))

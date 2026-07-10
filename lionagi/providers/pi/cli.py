@@ -60,13 +60,11 @@ PiThinkingLevel = Literal[
 
 __all__ = ("PiChunk", "PiCodeRequest", "PiSession", "stream_pi_cli", "PiCLIEndpoint")
 
-# Model name prefix → pi --provider value.
-# Longest prefixes first to avoid false matches.
-# Model prefix → pi --provider. Only unambiguous prefixes where the
-# model name uniquely identifies the provider. strip=True removes the
-# prefix from the model (needed for openrouter/ routing).
-# Ambiguous names (llama, gemma, mistral — available on multiple
-# providers) are omitted; set provider explicitly or let pi resolve.
+# Model prefix → pi --provider. Only unambiguous prefixes (model name
+# uniquely identifies the provider); ambiguous names (llama, gemma,
+# mistral — available on multiple providers) are omitted, so set provider
+# explicitly or let pi resolve. strip=True removes the prefix from the
+# model (needed for openrouter/ routing).
 _PI_MODEL_PROVIDER_MAP: list[tuple[str, str, bool]] = [
     ("openrouter/", "openrouter", True),
     ("deepseek-", "deepseek", False),
@@ -241,10 +239,8 @@ class PiCodeRequest(BaseModel):
         """Build argument list for ``pi`` invocation: ``-p --mode json [flags] [prompt] [@files...]``."""
         args: list[str] = ["-p", "--mode", "json"]
 
-        # declarative flags
         args.extend(self._build_declarative_args())
 
-        # file references before prompt
         for f in self.file_args:
             args.append(f"@{f}" if not f.startswith("@") else f)
 

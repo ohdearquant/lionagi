@@ -8,6 +8,7 @@ import logging
 import math
 import time
 import uuid
+from pathlib import Path
 from typing import Any
 
 from fastapi import HTTPException, Query
@@ -56,6 +57,23 @@ def _svc_validate_identifier(value: str | None, field_name: str) -> None:
     from lionagi.studio.scheduler.subprocess import _validate_identifier
 
     _validate_identifier(value, field_name)
+
+
+def _svc_validate_action_cwd(cwd: str | None) -> None:
+    """Service-boundary check: an explicit action_cwd must be an existing absolute directory.
+
+    ADR-0070 delta 1: this is the schedule's persisted execution root. A
+    relative path has no stable meaning once resolved by the daemon at fire
+    time (relative to what?), and a directory that does not exist yet would
+    only defer the same "no resolvable cwd" failure to the first fire.
+    """
+    if not cwd:
+        return
+    p = Path(cwd)
+    if not p.is_absolute():
+        raise ValueError(f"action_cwd must be an absolute path, got {cwd!r}")
+    if not p.is_dir():
+        raise ValueError(f"action_cwd does not exist or is not a directory: {cwd!r}")
 
 
 def _svc_validate_extra_args(extra: list | None) -> None:
@@ -449,6 +467,7 @@ async def create_schedule(data: dict[str, Any]) -> dict[str, Any]:
     _svc_validate_identifier(data.get("action_agent"), "action_agent")
     _svc_validate_identifier(data.get("action_project"), "action_project")
     _svc_validate_identifier(data.get("action_playbook"), "action_playbook")
+    _svc_validate_action_cwd(data.get("action_cwd"))
     _svc_validate_extra_args(data.get("action_extra_args"))
     _svc_validate_github_repo(data.get("github_repo"))
     _svc_validate_github_filter(data.get("github_filter"))
@@ -476,6 +495,25 @@ async def create_schedule(data: dict[str, Any]) -> dict[str, Any]:
         if spec_err:
             raise ValueError(f"Invalid flow_yaml spec: {spec_err}")
 
+    # ADR-0070 delta 1: snapshot a stable execution root at creation time.
+    # An explicit action_cwd (already validated above) always wins. Failing
+    # that, a registered action_project's stored path is captured here, once
+    # -- not re-resolved at every fire -- so a later change to the project
+    # registry, or the daemon restarting from a different directory, cannot
+    # move this schedule's spawn cwd out from under it. Neither resolves
+    # (e.g. no action_project, or its path isn't registered/doesn't exist
+    # yet) -> action_cwd stays None and the engine falls back to
+    # LIONAGI_SCHEDULER_CWD / the daemon's own cwd at fire time, same as a
+    # pre-migration row.
+    action_cwd = data.get("action_cwd")
+    if not action_cwd and data.get("action_project"):
+        from lionagi.studio.services.projects import get_project
+
+        project = await get_project(data["action_project"])
+        project_path = project.get("path") if project else None
+        if project_path and Path(project_path).is_dir():
+            action_cwd = project_path
+
     schedule_id = uuid.uuid4().hex[:12]
     now = time.time()
     schedule = {
@@ -483,6 +521,7 @@ async def create_schedule(data: dict[str, Any]) -> dict[str, Any]:
         "created_at": now,
         "updated_at": now,
         **data,
+        "action_cwd": action_cwd,
     }
     async with StateDB() as db:
         await db.create_schedule(schedule)
@@ -515,6 +554,8 @@ async def update_schedule(schedule_id: str, fields: dict[str, Any]) -> bool:
             _svc_validate_identifier(fields["action_project"], "action_project")
         if "action_playbook" in fields:
             _svc_validate_identifier(fields["action_playbook"], "action_playbook")
+        if "action_cwd" in fields:
+            _svc_validate_action_cwd(fields["action_cwd"])
         if "action_extra_args" in fields:
             _svc_validate_extra_args(fields["action_extra_args"])
         if "github_repo" in fields:
@@ -670,6 +711,7 @@ class CreateScheduleRequest(BaseModel):
     action_playbook: str | None = None
     action_flow_yaml: str | None = None
     action_project: str | None = None
+    action_cwd: str | None = None
     action_extra_args: list[str] | None = None
     on_success: dict | None = None
     on_fail: dict | None = None
@@ -698,6 +740,7 @@ class UpdateScheduleRequest(BaseModel):
     action_playbook: str | None = None
     action_flow_yaml: str | None = None
     action_project: str | None = None
+    action_cwd: str | None = None
     action_extra_args: list[str] | None = None
     on_success: dict | None = None
     on_fail: dict | None = None

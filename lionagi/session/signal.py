@@ -155,11 +155,9 @@ class DispatchSignal(Signal):
 
 
 # -- Extended node lifecycle (ADR-0083) ---------------------------------------
-# Three signals completing the canonical per-node lifecycle:
-#   queued → running → awaiting_approval → succeeded | failed | escalated
-#
-# NodeStarted / NodeCompleted / NodeFailed (above) cover running/succeeded/
-# failed already; these three cover the remaining states.
+# queued → running → awaiting_approval → succeeded | failed | escalated
+# NodeStarted/NodeCompleted/NodeFailed (above) cover running/succeeded/failed;
+# these three cover the remaining states.
 
 
 class NodeQueued(Signal):
