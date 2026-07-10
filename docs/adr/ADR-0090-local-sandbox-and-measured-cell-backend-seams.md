@@ -1,4 +1,4 @@
-# ADR-0090: Local Sandbox and Measured-Cell Backend Seams
+# ADR-0090: Local sandbox and measured-cell backend seams
 
 - **Status**: Proposed
 - **Kind**: Retrospective

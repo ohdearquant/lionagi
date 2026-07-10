@@ -1,4 +1,4 @@
-# ADR-0086: Local Tool Controls and Session Authorization Observation
+# ADR-0086: Local tool controls and session authorization observation
 
 - **Status**: Proposed
 - **Kind**: Retrospective

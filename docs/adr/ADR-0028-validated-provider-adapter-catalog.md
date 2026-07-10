@@ -114,7 +114,7 @@ def match_endpoint(
 
 `config_overrides` accepts only declared `EndpointConfig.model_fields`. `request_defaults` accepts
 only fields in the selected request model when one exists; for a deliberately schema-less compatible
-endpoint it accepts arbitrary JSON-serializable values. `iModel` remains a compatibility façade:
+endpoint it accepts arbitrary JSON-serializable values. `iModel` remains a compatibility facade:
 it classifies its legacy `**kwargs` against endpoint-config fields and the selected request model,
 warns during the deprecation window when an unclassified value would previously have entered
 `EndpointConfig.kwargs`, and then requires the caller to use `request_defaults` explicitly.
@@ -245,8 +245,8 @@ lionagi/providers/
 
 lionagi/service/connections/
 ├── catalog.py                   validation + immutable CatalogSnapshot
-├── registry.py                  EndpointRegistry façade over snapshot
-└── match_endpoint.py            public compatibility façade
+├── registry.py                  EndpointRegistry facade over snapshot
+└── match_endpoint.py            public compatibility facade
 ```
 
 **Exact semantics**
@@ -415,7 +415,7 @@ def parse_model_spec(spec: str) -> ModelSpec: ...
 
 **Why this way.** Lookup, inspection, and model parsing must not answer provider identity from
 different tables. Provider-local policy keeps vendor additions local; the registry remains the
-validator and projection point. Keeping the `parse_model_spec()` façade prevents a package move from
+validator and projection point. Keeping the `parse_model_spec()` facade prevents a package move from
 becoming an unrelated public API break.
 
 ## Consequences
@@ -435,7 +435,7 @@ becoming an unrelated public API break.
 - Provider additions stop requiring a generic bootstrap edit and, after policy migration, stop
   requiring changes to `service/providers.py`.
 - Reversing D1/D2 is medium cost because provider declarations must be rewritten, but the resolver
-  façade remains stable. Reversing D4 after warnings ship is high cost because callers will rely on
+  facade remains stable. Reversing D4 after warnings ship is high cost because callers will rely on
   typed failure. Adding a future inventory source is low cost if it emits the same two spec types.
 - Maintainers must treat snapshot validation as a closed-world operation: local registration success
   is insufficient until global provider and endpoint key spaces validate.
@@ -490,7 +490,7 @@ and pass the same validator.
 
 This avoids moving `BACKENDS`, effort, bypass, and fast-mode mappings and keeps one familiar module.
 It lost because it preserves a second provider identity authority. Parity tests and the retained
-`parse_model_spec()` façade make ownership movement safer than continued split truth.
+`parse_model_spec()` facade make ownership movement safer than continued split truth.
 
 ### Add a separate executor-provider registry
 

@@ -1,4 +1,4 @@
-# ADR-0003: In-Process Event Execution Lifecycle
+# ADR-0003: In-process Event execution lifecycle
 
 - **Status**: Proposed
 - **Kind**: Retrospective

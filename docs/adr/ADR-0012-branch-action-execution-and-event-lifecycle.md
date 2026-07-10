@@ -1,4 +1,4 @@
-# ADR-0012: Branch Action Execution and Event Lifecycle
+# ADR-0012: Branch action execution and event lifecycle
 
 - **Status**: Proposed
 - **Kind**: Retrospective

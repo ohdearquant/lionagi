@@ -1,4 +1,4 @@
-# ADR-0036: Casts Role Palettes as Playstyle
+# ADR-0036: Casts role palettes as playstyle
 
 - **Status**: Proposed
 - **Kind**: Aspirational

@@ -1,4 +1,4 @@
-# ADR-0035: Persisted Run-Completion Contract
+# ADR-0035: Persisted run-completion contract
 
 - **Status**: Proposed
 - **Kind**: Retrospective

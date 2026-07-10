@@ -107,7 +107,7 @@ This ADR deliberately does **not** decide:
 - Provider catalog keys, aliases, bootstrap, or availability diagnostics. ADR-0028 owns selection.
 - A universal agent protocol or remote-agent wire format. NLIP remains one adapter, not the generic
   shape every in-process or subprocess provider must implement.
-- Durable provider sessions. This ADR moves confirmed identifiers between requests in one façade;
+- Durable provider sessions. This ADR moves confirmed identifiers between requests in one facade;
   persistence and cross-process recovery require a separate state contract.
 - Whether thinking content is shown to end users. The boundary transports normalized thinking
   chunks; presentation belongs to the consuming operation.

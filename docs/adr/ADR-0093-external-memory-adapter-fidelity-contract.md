@@ -1,4 +1,4 @@
-# ADR-0093: External Memory Adapter Fidelity Contract
+# ADR-0093: External memory adapter fidelity contract
 
 - **Status**: Proposed
 - **Kind**: Aspirational

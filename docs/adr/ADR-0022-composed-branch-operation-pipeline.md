@@ -13,7 +13,7 @@ ask for generated structured fields, expose actions to a model, validate the ret
 accepted action requests, and attach action results. Four problems force the current coordinator
 shape.
 
-**P1 — A broad public call must become a small typed internal request.** The façade accepts an
+**P1 — A broad public call must become a small typed internal request.** The facade accepts an
 `Instruct` or loose instruction/guidance/context values, model overrides, response types, field
 specifications, action controls, persistence controls, and an optional `Middle`. Passing that bag
 through every stage would make precedence and defaults implicit. `prepare_operate_kw()` resolves it
@@ -158,7 +158,7 @@ Exact normalization semantics:
 - At the public `Branch.operate()` boundary, `action_strategy` itself defaults to the truthy value
   `"concurrent"` and is always forwarded. Consequently an `Instruct(actions=True,
   action_strategy="sequential")` does **not** select sequential execution when the caller omits the
-  loose keyword: the façade default wins. The intended-looking instruction fallback is reachable
+  loose keyword: the facade default wins. The intended-looking instruction fallback is reachable
   only through a direct internal preparer call that supplies a falsey strategy. The public API
   cannot currently distinguish “keyword omitted” from “explicitly concurrent.”
 - Public `tool_schemas` are copied into the initial chat/run parameter, but D2 replaces the effective
@@ -412,7 +412,7 @@ Augmentation preserves the model's original reasoning and fields alongside obser
   distinguishable and are attached after execution.
 - Explicit action enablement is required. Merely returning text that resembles a call, or returning
   `action_requests` when no `ActionParam` exists, causes no tool side effect.
-- An instruction-embedded sequential strategy is currently shadowed by the façade's truthy
+- An instruction-embedded sequential strategy is currently shadowed by the facade's truthy
   `"concurrent"` default unless the loose keyword is also supplied. Callers must set
   `action_strategy="sequential"` explicitly at the branch boundary.
 - Validation policy can prevent side effects: a caller-model mismatch returns or raises before
@@ -438,7 +438,7 @@ Augmentation preserves the model's original reasoning and fields alongside obser
 | 1 | Deprecate and remove the ignored public `operative` argument, or define and implement a precedence rule that honors it while preserving generated request and response fields. | S | (filled at issue-open time) |
 | 2 | Expose `Structure` through the chosen public branch APIs and parameter builders, or mark it internal and remove it from public parameter types; add one end-to-end public-path test. | S | (filled at issue-open time) |
 | 3 | Split the raw-result shortcut into explicit validation and post-processing controls, or rename and document `skip_validation` so callers know that it also disables outer action execution. | S | (filled at issue-open time) |
-| 4 | Make action-strategy precedence distinguish an omitted façade keyword from explicit `"concurrent"`, then add a public-path test proving that `Instruct.action_strategy` either governs execution or is deliberately removed. | S | (filled at issue-open time) |
+| 4 | Make action-strategy precedence distinguish an omitted facade keyword from explicit `"concurrent"`, then add a public-path test proving that `Instruct.action_strategy` either governs execution or is deliberately removed. | S | (filled at issue-open time) |
 
 ## Alternatives considered
 

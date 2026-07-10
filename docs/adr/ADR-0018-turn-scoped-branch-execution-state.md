@@ -1,4 +1,4 @@
-# ADR-0018: Turn-Scoped Branch Execution State
+# ADR-0018: Turn-scoped Branch execution state
 
 - **Status**: Proposed
 - **Kind**: Aspirational

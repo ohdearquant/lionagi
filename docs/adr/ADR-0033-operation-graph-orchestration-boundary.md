@@ -1,4 +1,4 @@
-# ADR-0033: Operation-Graph Orchestration Boundary
+# ADR-0033: Operation-graph orchestration boundary
 
 - **Status**: Proposed
 - **Kind**: Retrospective
@@ -94,7 +94,7 @@ flowchart TD
 
 ## Decision
 
-### D1 — One Session façade and execution kernel
+### D1 — One Session facade and execution kernel
 
 Every initial operation graph enters through `Session.flow()`. The Session resolves
 the default branch and delegates without redefining scheduling semantics.
@@ -172,7 +172,7 @@ class FlowEvent:
   it is not part of scheduling.
 
 **Why this way**: Session already owns branches, the observer, and registered
-operations. Keeping execution immediately below that façade gives every surface
+operations. Keeping execution immediately below that facade gives every surface
 the same branch and signal context while leaving initial plan construction outside
 the kernel.
 
@@ -488,7 +488,7 @@ likewise install observation and persistence around `Session.flow()`.
 **Shipped boundary**:
 
 ```text
-lionagi/session/session.py             public flow façade
+lionagi/session/session.py             public flow facade
 lionagi/operations/flow.py             scheduling and live admission
 lionagi/orchestration/patterns.py       library role/task planning and graph construction
 lionagi/engines/flow_signals.py         optional callback-to-signal adapter
@@ -543,7 +543,7 @@ entry point.
 |---|-------|------|-------|
 | 1 | Make sequential linking explicit in `OperationGraphBuilder`, migrate CLI fan-out and dependency-free DAG roots to independent-node construction, and add topology tests proving that no undeclared worker-to-worker edges exist. | M | (filled at issue-open time) |
 | 2 | Implement one `TaskAssignment.depends_on` normalizer for pattern and CLI builders, document whether forward ordinal references are accepted, and validate the normalized graph for cycles before execution. | S | (filled at issue-open time) |
-| 3 | Move callback-to-node-signal conversion from `engines` to a neutral flow/session module, expose a named observed-flow façade, and migrate EngineRun, Studio, CLI fan-out, CLI synthesis, and main CLI flow without changing signal ordering or result shape. | M | (filled at issue-open time) |
+| 3 | Move callback-to-node-signal conversion from `engines` to a neutral flow/session module, expose a named observed-flow facade, and migrate EngineRun, Studio, CLI fan-out, CLI synthesis, and main CLI flow without changing signal ordering or result shape. | M | (filled at issue-open time) |
 | 4 | Parameterize the shared role-task builders with branch, instruction, identity, and artifact decorators, then remove CLI-owned duplicate edge wiring while preserving checkpoint and artifact identities. | M | (filled at issue-open time) |
 
 ## Alternatives considered

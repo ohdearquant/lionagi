@@ -1,4 +1,4 @@
-# ADR-0006: Conversational Message Envelope and Ordered History
+# ADR-0006: Conversational message envelope and ordered history
 
 - **Status**: Proposed
 - **Kind**: Retrospective

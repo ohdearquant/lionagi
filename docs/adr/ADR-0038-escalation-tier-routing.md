@@ -1,4 +1,4 @@
-# ADR-0038: Escalation Tier Routing
+# ADR-0038: Escalation tier routing
 
 - **Status**: Proposed
 - **Kind**: Aspirational
@@ -328,7 +328,7 @@ The root operation has escalation rung zero. Each accepted tier child increments
 that trusted metadata by one. A lineage may accept at most two escalation
 children.
 
-**The target executor and façade parameters**
+**The target executor and facade parameters**
 (`lionagi/operations/flow.py`; `lionagi/session/session.py`):
 
 ```python
@@ -671,7 +671,7 @@ lionagi/
 │   └── __init__.py                   public escalation exports
 ├── operations/flow.py                rung checks, builder call, attempt ledger
 ├── session/
-│   ├── session.py                    façade pass-through
+│   ├── session.py                    facade pass-through
 │   └── signal.py                     additive NodeEscalated fields
 ├── engines/engine.py                 run_dag pass-through
 └── cli/orchestrate/flow.py           route setup, templates, persistence projection

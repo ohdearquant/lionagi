@@ -1,4 +1,4 @@
-# ADR-0037: Resident Engine Host and Task Queue
+# ADR-0037: Resident engine host and task queue
 
 - **Status**: Proposed
 - **Kind**: Aspirational
@@ -300,7 +300,7 @@ default because task cost varies materially by engine and provider.
   flow. A Task whose lease cannot cover its deadline fails with `invalid_task`.
 - Session creation or runner setup failure is `invalid_task` when caused by Task
   data and `flow_failed` otherwise.
-- `run_task` must await the selected Engine or ADR-0033 observed-flow façade. The
+- `run_task` must await the selected Engine or ADR-0033 observed-flow facade. The
   host does not inspect or schedule individual graph nodes.
 - `should_stop_claiming()` true stops new claims but does not cancel active Tasks.
   `drain()` awaits all active jobs and returns only after their cooperative ack

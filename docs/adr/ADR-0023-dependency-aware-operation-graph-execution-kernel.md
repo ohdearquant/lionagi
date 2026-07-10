@@ -230,7 +230,7 @@ class DependencyAwareExecutor:
     async def execute(self) -> dict[str, Any]: ...
 ```
 
-The session façade defaults to `max_concurrent=5`; the module-level `flow()` accepts `None`, which
+The session facade defaults to `max_concurrent=5`; the module-level `flow()` accepts `None`, which
 the executor interprets as `UNLIMITED_CONCURRENCY`. The name means “use a high configured bound,” not
 literal infinity: its inherited environment default is 10,000. `parallel=False` at the `flow()`
 boundary forces `max_concurrent=1`. The code records no benchmark or dependency-capacity rationale

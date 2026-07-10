@@ -1,4 +1,4 @@
-# ADR-0027: Model-service façade and endpoint resolution
+# ADR-0027: Model-service facade and endpoint resolution
 
 - **Status**: Proposed
 - **Kind**: Retrospective
@@ -66,7 +66,7 @@ EndpointRegistry ---> EndpointMeta ---> Endpoint | AgenticEndpoint
 
 | Concern | Decision |
 |---------|----------|
-| Caller-facing lifecycle and model registry | D1: `iModel` owns one resolved endpoint, executor, hook registry, and provider session; `iModelManager` owns named façades. |
+| Caller-facing lifecycle and model registry | D1: `iModel` owns one resolved endpoint, executor, hook registry, and provider session; `iModelManager` owns named facades. |
 | Provider/endpoint discovery | D2: `EndpointRegistry` is the sole resolver, populated by provider decorators and a fixed lazy bootstrap list. |
 | Generic execution boundary | D3: `Endpoint` and `AgenticEndpoint` execute through `APICalling` and normalize streams as `StreamChunk`; HTTP-only mechanics stay on `Endpoint`. |
 | Vendor ownership | D4: provider packages own request schemas, defaults, mappings, event grammars, and agentic mechanics. |
@@ -81,11 +81,11 @@ This retrospective ADR deliberately does **not** decide:
   target.
 - General hook composition or event-bus behavior; the hooks ADR owns call-boundary hook policy.
 - Final package ownership for token estimation or MCP client security. Their consumers and failure
-  contracts differ, so they remain migration deltas rather than part of this façade decision.
+  contracts differ, so they remain migration deltas rather than part of this facade decision.
 
 ## Decision
 
-### D1 — `iModel` is the model-service lifecycle façade
+### D1 — `iModel` is the model-service lifecycle facade
 
 `iModel` is the object callers construct, invoke, stream, copy, serialize, and close. Callers do not
 instantiate provider classes as the normal model API. The shipped constructor is
@@ -167,8 +167,8 @@ class iModelManager(Manager):
   and `base_url` overwrite the resolved configuration after construction.
 - **Identity.** `id` is normalized through `ID.get_id`; otherwise a new UUID is generated.
   `created_at` must be a float timestamp when supplied; otherwise current UTC time is stored.
-- **Executor ownership.** Each façade creates exactly one `RateLimitedAPIExecutor`; copies receive a
-  fresh façade id and executor. The endpoint config is deep-copied, while the existing retry and
+- **Executor ownership.** Each facade creates exactly one `RateLimitedAPIExecutor`; copies receive a
+  fresh facade id and executor. The endpoint config is deep-copied, while the existing retry and
   circuit-breaker objects are passed to the copied endpoint. Provider runtime handlers are copied
   through `Endpoint.copy_runtime_state_to()`.
 - **Event construction.** `create_event()` optionally runs a pre-create hook, builds an
@@ -214,10 +214,10 @@ Current numeric defaults are recorded rather than rationalized after the fact:
 | `invoke()` wait `10` seconds | Safety wait before the event is popped and returned. | Inherited; source records the behavior but no numeric rationale. |
 | Manager close `10` seconds per model | Prevents one close from blocking all other closes. | Isolation is documented; the exact number is inherited. |
 
-**Why this way.** A single façade keeps provider selection, event creation, hook attachment,
+**Why this way.** A single facade keeps provider selection, event creation, hook attachment,
 executor lifetime, serialization, and session state from being reimplemented by Branch and every
 operation. `iModelManager` adds only named ownership and shutdown rather than another dispatch
-abstraction. The cost is a broad façade: admission defects and provider-session details can leak
+abstraction. The cost is a broad facade: admission defects and provider-session details can leak
 into an object that callers otherwise treat as a model client.
 
 ### D2 — `EndpointRegistry` is the sole endpoint resolver
@@ -544,8 +544,8 @@ The package boundary is:
 
 ```text
 lionagi/service/
-├── imodel.py                         façade and session ownership
-├── manager.py                        named façade lifecycle
+├── imodel.py                         facade and session ownership
+├── manager.py                        named facade lifecycle
 ├── rate_limited_processor.py         current admission/executor
 ├── resilience.py                     generic retry and circuit policy
 └── connections/
@@ -609,7 +609,7 @@ the shared agentic output and cleanup contract.
 
 ## Consequences
 
-- API, subprocess, in-process, and remote-agent providers share one public `iModel` façade and one
+- API, subprocess, in-process, and remote-agent providers share one public `iModel` facade and one
   `APICalling`/`StreamChunk` event model. Existing public `iModel`, `Endpoint`, `AgenticEndpoint`,
   `APICalling`, and `StreamChunk` names remain stable.
 - Provider selection and construction are inspectable at one resolver. A new provider must still
@@ -619,7 +619,7 @@ the shared agentic output and cleanup contract.
   use the HTTP helpers because those helpers fail explicitly.
 - Reversing D1 would require changing Branch, operation, serialization, and lifecycle call sites;
   it is high cost. Replacing D2's registration mechanism is medium cost if `match_endpoint()` remains
-  the façade. Splitting D3's event model is high cost because operations consume `APICalling` and
+  the facade. Splitting D3's event model is high cost because operations consume `APICalling` and
   `StreamChunk`. Moving a vendor grammar under service is mechanically easy but raises ongoing
   coupling.
 - Maintainers must know that `queue_capacity` is not a physical queue limit, `stream()` bypasses
@@ -637,7 +637,7 @@ the shared agentic output and cleanup contract.
 | 2 | Route `invoke()` and `stream()` through one bounded admission lifecycle that applies request, token, and concurrency limits before provider work; propagate one deadline through queueing, retries, and transport; and prove that cancellation leaves no queued or active orphan. | L | (filled at issue-open time) |
 | 3 | Apply retry and circuit policy to HTTP stream establishment before the first emitted chunk, prohibit automatic replay after output begins, and add tests for pre-first-byte failure, mid-stream failure, normal EOF, and caller cancellation. | M | (filled at issue-open time) |
 | 4 | Publish an agentic-adapter conformance contract for request construction, normalized chunks, error classification, resume identifiers, and transport cleanup; run it against every subprocess, in-process, and remote adapter while retaining vendor parsers beside their vendors. | M | (filled at issue-open time) |
-| 5 | Move named-vendor identity, effort, bypass, and safety tables out of generic service ownership while preserving `parse_model_spec()` as a compatibility façade and testing every existing provider alias. | M | (filled at issue-open time) |
+| 5 | Move named-vendor identity, effort, bypass, and safety tables out of generic service ownership while preserving `parse_model_spec()` as a compatibility facade and testing every existing provider alias. | M | (filled at issue-open time) |
 | 6 | Freeze neutral interfaces for token estimation and MCP client security, then move them below protocol callers with compatibility re-exports and unchanged action-layer tool-registration behavior. | M | (filled at issue-open time) |
 
 ## Alternatives considered
@@ -679,7 +679,7 @@ Callers could pass `module:Class` and bypass aliases and bootstrap. That would s
 extensions without a central list. It lost for the primary API because model specs and public aliases
 would become Python package paths, provider availability could not be inspected uniformly, and every
 caller would become responsible for validating the imported type. A validated catalog can accept
-declarative external inventory later without changing the resolver façade.
+declarative external inventory later without changing the resolver facade.
 
 ### Make resolution strict immediately
 
