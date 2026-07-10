@@ -3,9 +3,11 @@
 #   carried-forward-as — the record's substance continues as the named new ADR(s)
 #   merged-into        — the record is one input among several to the named new ADR(s)
 #   retired            — the record's substance was never implemented and is not carried
-# target names ADRs in THIS directory (the new corpus). v0_status strings are quoted
-# verbatim from the archived records; any ADR id embedded inside a v0_status string
-# refers to the OLD v0 namespace, never to the new corpus.
+# target names ADRs in THIS directory (the new corpus). v0_status strings are condensed
+# from the archived records' status lines; the archived file retains each record's full
+# original status wording, and it is authoritative where the two differ. Any ADR id
+# embedded inside a v0_status string refers to the OLD v0 namespace, never to the new
+# corpus.
 
 - v0: "0001"
   title: "lion-studio as Internal Monorepo App"
@@ -745,7 +747,8 @@
 
 - v0: "0096"
   title: "Engine Result and Degradation Contract"
-  v0_status: "Accepted"
+  v0_status: "Accepted with amendment (gated review 2026-07-06; the success-path amendment is\
+  \ folded into the archived record)"
   disposition: merged-into
   target: ["ADR-0034"]
   reason: "The shipped structured engine result with degradation marking and budget-exceeded\
