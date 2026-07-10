@@ -481,6 +481,9 @@ schedules = Table(
     Column("action_playbook", Text),
     Column("action_flow_yaml", Text),
     Column("action_project", Text),
+    # ADR-0070 delta 1: persisted per-schedule execution root, captured once
+    # at creation (see schema.sql for the fuller comment).
+    Column("action_cwd", Text),
     Column("action_extra_args", JSON, server_default="[]"),
     Column("on_success", JSON),
     Column("on_fail", JSON),
