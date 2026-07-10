@@ -209,3 +209,53 @@ def test_dispatch_purge_bulk_dry_run_deletes_nothing(monkeypatch, tmp_path, caps
             return await get_dispatch(db, dispatch_id)
 
     assert asyncio.run(check()) is not None
+
+
+def test_dispatch_purge_bare_before_leaves_pending_row_alone(monkeypatch, tmp_path, capsys):
+    """A bare --before (no --status) defaults to terminal statuses only."""
+    db_path = _redirect_state_db(monkeypatch, tmp_path)
+    import asyncio
+    import time
+
+    from lionagi.state.db import StateDB
+
+    async def seed():
+        async with StateDB(db_path) as db:
+            from sqlalchemy import text
+
+            from lionagi.dispatch import enqueue_dispatch
+
+            old_ts = time.time() - 100_000
+            pending_id = await enqueue_dispatch(db, kind="k", deliver_to="seat-1")
+            delivered_id = await enqueue_dispatch(db, kind="k", deliver_to="seat-2")
+            async with db._tx() as conn:
+                await conn.execute(
+                    text("UPDATE dispatch_outbox SET updated_at = :ts WHERE id = :id"),
+                    {"ts": old_ts, "id": pending_id},
+                )
+                await conn.execute(
+                    text(
+                        "UPDATE dispatch_outbox SET status = 'delivered', updated_at = :ts"
+                        " WHERE id = :id"
+                    ),
+                    {"ts": old_ts, "id": delivered_id},
+                )
+            return pending_id, delivered_id
+
+    pending_id, delivered_id = asyncio.run(seed())
+
+    rc = main(["dispatch", "purge", "--before", str(time.time() - 50_000)])
+    captured = capsys.readouterr()
+    assert rc == 0
+    assert "purged 1 dispatch" in captured.out
+    assert "delivered=1" in captured.out
+
+    async def check():
+        from lionagi.dispatch import get_dispatch
+
+        async with StateDB(db_path) as db:
+            return await get_dispatch(db, pending_id), await get_dispatch(db, delivered_id)
+
+    remaining_pending, remaining_delivered = asyncio.run(check())
+    assert remaining_pending is not None
+    assert remaining_delivered is None

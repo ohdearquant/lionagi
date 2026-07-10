@@ -691,6 +691,114 @@ async def test_purge_dispatches_before_cutoff(tmp_path: Path):
         assert await get_dispatch(db, recent_id) is not None
 
 
+async def test_purge_dispatches_explicit_status_pending_is_allowed(tmp_path: Path):
+    """Explicit --status is honored exactly as given, including in-flight statuses.
+
+    Naming pending/delivering explicitly is deliberate operator intent (e.g.
+    force-clearing a stuck row), unlike a status-less --before-only call.
+    """
+    db_path = tmp_path / "state.db"
+    async with StateDB(db_path) as db:
+        pending_id = await enqueue_dispatch(db, kind="k", deliver_to="seat-1")
+        delivered_id = await enqueue_dispatch(db, kind="k", deliver_to="seat-2")
+        async with db._tx() as conn:
+            await conn.execute(
+                text("UPDATE dispatch_outbox SET status = 'delivered' WHERE id = :id"),
+                {"id": delivered_id},
+            )
+
+        result = await purge_dispatches(db, status="pending")
+        events = await db.list_admin_events(action="dispatch_purge")
+
+        assert result["total"] == 1
+        assert result["pending"] == 1
+        assert await get_dispatch(db, pending_id) is None
+        assert await get_dispatch(db, delivered_id) is not None
+        assert len(events) == 1
+        details = _details(events[0])
+        assert details["status"] == "pending"
+        assert details["total"] == 1
+
+
+async def test_purge_dispatches_status_less_before_only_defaults_to_terminal(tmp_path: Path):
+    """A status-less call (only --before) must never implicitly sweep pending/delivering rows."""
+    db_path = tmp_path / "state.db"
+    async with StateDB(db_path) as db:
+        old_pending_id = await enqueue_dispatch(db, kind="k", deliver_to="seat-1")
+        old_delivering_id = await enqueue_dispatch(db, kind="k", deliver_to="seat-2")
+        old_delivered_id = await enqueue_dispatch(db, kind="k", deliver_to="seat-3")
+        old_ts = time.time() - 100_000
+        async with db._tx() as conn:
+            await conn.execute(
+                text("UPDATE dispatch_outbox SET updated_at = :ts WHERE id = :id"),
+                {"ts": old_ts, "id": old_pending_id},
+            )
+            await conn.execute(
+                text(
+                    "UPDATE dispatch_outbox SET status = 'delivering', updated_at = :ts WHERE id = :id"
+                ),
+                {"ts": old_ts, "id": old_delivering_id},
+            )
+            await conn.execute(
+                text(
+                    "UPDATE dispatch_outbox SET status = 'delivered', updated_at = :ts WHERE id = :id"
+                ),
+                {"ts": old_ts, "id": old_delivered_id},
+            )
+
+        result = await purge_dispatches(db, before=time.time() - 50_000)
+
+        assert result["total"] == 1
+        assert result["delivered"] == 1
+        assert "pending" not in result
+        assert "delivering" not in result
+        assert await get_dispatch(db, old_pending_id) is not None
+        assert await get_dispatch(db, old_delivering_id) is not None
+        assert await get_dispatch(db, old_delivered_id) is None
+
+
+# ── race hardening (deliver_due_dispatches vs. an operator purge) ───────────
+
+
+async def test_deliver_due_dispatches_survives_row_purged_mid_batch(tmp_path: Path, monkeypatch):
+    """A purge racing the scheduler tick must not abort delivery for the rest of the batch."""
+    db_path = tmp_path / "state.db"
+    async with StateDB(db_path) as db:
+        ids = [await enqueue_dispatch(db, kind="k", deliver_to=f"seat-{i}") for i in range(3)]
+        purged_id = ids[0]
+        survivor_ids = ids[1:]
+
+        import lionagi.dispatch.outbox as outbox_mod
+
+        real_transition = outbox_mod.transition
+        deleted_once = {"done": False}
+
+        async def _transition_and_purge_first(db_arg, request, **kwargs):
+            if (
+                not deleted_once["done"]
+                and request.entity_id == purged_id
+                and request.to_state == "delivering"
+            ):
+                deleted_once["done"] = True
+                await purge_dispatch(db_arg, purged_id)
+            return await real_transition(db_arg, request, **kwargs)
+
+        monkeypatch.setattr(outbox_mod, "transition", _transition_and_purge_first)
+
+        counts = await deliver_due_dispatches(db, notify_template=_SUCCESS_TEMPLATE)
+
+        assert deleted_once["done"] is True
+        assert counts["attempted"] == 3
+        # The purged row contributes no delivered/retried/dead_letter/expired
+        # count (it vanished mid-claim), but the other two still deliver.
+        assert counts["delivered"] == 2
+        assert await get_dispatch(db, purged_id) is None
+        for sid in survivor_ids:
+            row = await get_dispatch(db, sid)
+            assert row is not None
+            assert row["status"] == "delivered"
+
+
 # ── argv-safety (RIDER A) ─────────────────────────────────────────────────────
 
 

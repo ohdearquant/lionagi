@@ -166,16 +166,33 @@ def add_dispatch_subparser(subparsers: argparse._SubParsersAction) -> None:
             "With ID: delete that one row (any status), auditable via admin_events "
             "action=dispatch_purge. Without ID: bulk-delete by --status/--before "
             "(at least one required, so a bare `purge` cannot mass-delete); "
-            "--dry-run reports counts without deleting."
+            "--dry-run reports counts without deleting. An explicit --status is "
+            "honored exactly as given, including pending/delivering (naming an "
+            "in-flight status is deliberate operator intent). A bare --before with "
+            "no --status is scoped to terminal statuses only "
+            "(delivered/acked/dead_letter/expired) and never touches "
+            "pending/delivering rows."
         ),
     )
     purge.add_argument("id", nargs="?", default=None, help="Dispatch id (single-row purge).")
-    purge.add_argument("--status", default=None, help="Bulk purge: match this status exactly.")
+    purge.add_argument(
+        "--status",
+        default=None,
+        help=(
+            "Bulk purge: match this status exactly, including pending/delivering "
+            "(explicit status is deliberate operator intent)."
+        ),
+    )
     purge.add_argument(
         "--before",
         type=float,
         default=None,
-        help="Bulk purge: match rows with updated_at <= this epoch-seconds value.",
+        help=(
+            "Bulk purge: match rows with updated_at <= this epoch-seconds value. "
+            "Without --status, this is scoped to terminal statuses only "
+            "(delivered/acked/dead_letter/expired) and never sweeps "
+            "pending/delivering rows."
+        ),
     )
     purge.add_argument(
         "--dry-run",
