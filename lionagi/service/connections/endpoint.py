@@ -190,9 +190,19 @@ class Endpoint:
         if self.retry_config:
 
             async def call_func(p, h, **kw):
-                return await retry_with_backoff(
-                    self._call, p, h, **kw, **self.retry_config.as_kwargs()
+                # The 4xx sentinel must stay excluded until this outer retry
+                # layer has decided not to retry — unwrapping earlier would let
+                # a retry_exceptions=(aiohttp.ClientError,) config replay
+                # 400/401/403 responses the transport contract keeps single-shot.
+                retry_kwargs = self.retry_config.as_kwargs()
+                retry_kwargs["exclude_exceptions"] = (
+                    *retry_kwargs.get("exclude_exceptions", ()),
+                    _NonRetryableClientError,
                 )
+                try:
+                    return await retry_with_backoff(self._call, p, h, **kw, **retry_kwargs)
+                except _NonRetryableClientError as exc:
+                    raise exc.original from exc.__cause__
 
         if self.circuit_breaker:
             if self.retry_config:
@@ -237,7 +247,9 @@ class Endpoint:
         endpoints (max_retries<=1, no RetryConfig) never replay a body, so
         callers may hand over non-replayable inputs like one-shot streams.
         """
-        return bool(self.retry_config) or self.config.max_retries > 1
+        if self.retry_config:
+            return self.retry_config.max_retries > 0
+        return self.config.max_retries > 1
 
     async def _call_aiohttp(
         self,
@@ -309,14 +321,11 @@ class Endpoint:
                     if response is not None and not response.closed:
                         response.release()
 
-        # When retry_config is set, the outer call() already wraps _call in retry_with_backoff.
-        # _call delegates here, so just run the raw request — no extra retry layer. The
-        # sentinel still unwraps so callers see the same ClientResponseError type on 4xx.
+        # When retry_config is set, the outer call() wraps _call in retry_with_backoff
+        # and owns both the sentinel exclusion and the unwrap; run the raw request and
+        # let the sentinel propagate to that layer.
         if self.retry_config:
-            try:
-                return await _make_request()
-            except _NonRetryableClientError as exc:
-                raise exc.original from exc.__cause__
+            return await _make_request()
 
         # No RetryConfig: use the native retry path with aiohttp transport errors.
         # _NonRetryableClientError is in exclude_exceptions so 4xx non-429 gives up immediately.

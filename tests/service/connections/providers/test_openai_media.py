@@ -11,6 +11,7 @@ end to end rather than through a mocked session.
 
 from __future__ import annotations
 
+import io
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -302,26 +303,35 @@ class TestOpenaiTranscription:
         assert request_count == 0
 
     async def test_4xx_with_retry_config_raises_client_response_error(self, run_server):
-        """With an explicit RetryConfig the internal non-retryable sentinel must
-        still unwrap so callers see the aiohttp exception type they catch."""
+        """Through the public call() surface a RetryConfig that retries every
+        aiohttp.ClientError must still treat non-429 4xx as single-shot, and the
+        caller must see the aiohttp exception type, not the internal sentinel."""
         import aiohttp
 
+        request_count = 0
+
         async def handler(request: web.Request):
+            nonlocal request_count
+            request_count += 1
             return web.json_response({"error": "bad request"}, status=400)
 
         server = await run_server(handler)
         config = _config("openai_stt", "audio/transcriptions", await _base_url(server))
         endpoint = OpenaiAudioTranscriptionEndpoint(
-            config=config, retry_config=RetryConfig(max_retries=2, base_delay=0.001)
+            config=config,
+            retry_config=RetryConfig(
+                max_retries=2, base_delay=0.001, retry_exceptions=(aiohttp.ClientError,)
+            ),
         )
 
-        with pytest.raises(aiohttp.ClientResponseError):
-            await endpoint._call(
-                payload={"model": "whisper-1"},
-                headers={"Authorization": "Bearer test", "Content-Type": "application/json"},
+        with pytest.raises(aiohttp.ClientResponseError), _NO_SLEEP:
+            await endpoint.call(
+                {"model": "whisper-1"},
                 file=b"audio",
                 filename="clip.wav",
             )
+
+        assert request_count == 1
 
     async def test_payload_field_kwargs_are_not_sent_as_request_kwargs(self, run_server):
         """Endpoint.call passes the same kwargs to create_payload and _call; API
@@ -347,6 +357,43 @@ class TestOpenaiTranscription:
 
         assert result == {"text": "ok"}
         assert received["language"] == "en"
+
+    async def test_zero_retry_config_accepts_non_seekable_stream(self, run_server):
+        """RetryConfig(max_retries=0) is explicitly single-shot: no replay can
+        occur, so a non-seekable stream must be accepted."""
+        received: dict = {}
+
+        async def handler(request: web.Request):
+            received.update(await _read_multipart(request))
+            return web.json_response({"text": "ok"})
+
+        server = await run_server(handler)
+        config = _config("openai_stt", "audio/transcriptions", await _base_url(server))
+        endpoint = OpenaiAudioTranscriptionEndpoint(
+            config=config, retry_config=RetryConfig(max_retries=0)
+        )
+
+        class _OneShot(io.RawIOBase):
+            def __init__(self, data: bytes):
+                self._data = data
+
+            def readable(self):
+                return True
+
+            def seekable(self):
+                return False
+
+            def readinto(self, b):
+                chunk, self._data = self._data[: len(b)], self._data[len(b) :]
+                b[: len(chunk)] = chunk
+                return len(chunk)
+
+        result = await endpoint.call(
+            {"model": "whisper-1"}, file=_OneShot(b"zero-retry-audio"), filename="clip.wav"
+        )
+
+        assert result == {"text": "ok"}
+        assert received["file"] == b"zero-retry-audio"
 
     async def test_single_shot_endpoint_accepts_non_seekable_stream(self, run_server):
         """With max_retries=1 and no RetryConfig no replay can occur, so a
