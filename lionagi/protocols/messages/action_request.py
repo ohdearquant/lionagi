@@ -48,7 +48,6 @@ class ActionRequestContent(MessageContent):
         """Construct ActionRequestContent from a dict; handles legacy nested action_request key."""
         function, arguments = _unwrap_action_data(data, "action_request")
 
-        # Handle callable
         if isinstance(function, Callable):
             function = function.__name__
         if hasattr(function, "function"):
@@ -56,7 +55,6 @@ class ActionRequestContent(MessageContent):
         if not isinstance(function, str):
             raise ValueError("Function must be a string or callable")
 
-        # Normalize arguments
         arguments = copy(arguments)
         if not isinstance(arguments, dict):
             try:

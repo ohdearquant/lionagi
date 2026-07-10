@@ -46,9 +46,7 @@ def lazy_import(
     module_path, import_name = module_map[name]
     import importlib
 
-    # Resolve the parent package for relative imports.
-    # If *package* is "lionagi.operations.fields" (a module, not a package),
-    # we need "lionagi" as the anchor for relative resolution.
+    # Anchor relative imports on the parent package (package may be a module, not a package).
     pkg = globs.get("__package__") or package.rpartition(".")[0]
     mod = importlib.import_module(f".{module_path}", pkg)
     obj = getattr(mod, import_name or name)
