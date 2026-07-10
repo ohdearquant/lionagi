@@ -294,31 +294,36 @@ def test_valid_vocabulary_admits_every_authoritative_status(
 
 @pytest.mark.asyncio
 async def test_storage_level_cas_rejects_row_changed_under_update_status(db: StateDB) -> None:
-    """_apply_status_write()'s UPDATE re-asserts previous_status at the SQL
-    level (not only via the Python expected_statuses check above it): if the
-    row changes between update_status()'s SELECT and its UPDATE, the write
-    affects zero rows and raises loudly instead of silently overwriting.
+    """LifecycleService._write()'s UPDATE re-asserts previous_status at the
+    SQL level (not only via the Python expected_statuses check above it): if
+    the row changes between the read and the guarded UPDATE, the write
+    affects zero rows — a "conflict" outcome that update_status()'s D5
+    compatibility wrapper (lionagi.state.lifecycle.adapters.run_update_status)
+    raises loudly on when the caller supplied no expected_statuses/
+    expected_updated_at guard of its own, instead of silently overwriting.
 
     Real thread concurrency is flaky, so the race is simulated
     deterministically: a second writer lands, on the SAME connection/
-    transaction, in between the read that update_status() already performed
-    and the guarded UPDATE — mirroring exactly the gap the SQL guard closes.
+    transaction, in between the read that the service already performed
+    and its guarded UPDATE — mirroring exactly the gap the SQL guard closes.
     """
+    from lionagi.state.lifecycle.service import SQLAlchemyLifecycleService
+
     sid = await _make_session(db, status="running")
 
-    orig_apply = StateDB._apply_status_write
+    orig_write = SQLAlchemyLifecycleService._write
 
-    async def _apply_after_concurrent_write(self, conn, table, canonical_type, entity_id, **kwargs):
-        # Simulate a second writer landing between update_status()'s SELECT
+    async def _write_after_concurrent_write(self, conn, table, command, **kwargs):
+        # Simulate a second writer landing between the service's SELECT
         # (already done — previous_status="running" is captured in kwargs)
         # and this UPDATE.
         await conn.execute(
             text(f"UPDATE {table} SET status = 'completed' WHERE id = :id"),  # noqa: S608
-            {"id": entity_id},
+            {"id": command.entity_id},
         )
-        return await orig_apply(self, conn, table, canonical_type, entity_id, **kwargs)
+        return await orig_write(self, conn, table, command, **kwargs)
 
-    with patch.object(StateDB, "_apply_status_write", _apply_after_concurrent_write):
+    with patch.object(SQLAlchemyLifecycleService, "_write", _write_after_concurrent_write):
         with pytest.raises(RuntimeError, match="status CAS lost"):
             await db.update_status(
                 "session",

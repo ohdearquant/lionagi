@@ -6,19 +6,24 @@ ADR-0062's ``transition()`` API (entity-agnostic, idempotency-key-deduplicated)
 is proposed and unbuilt. This module ships a minimal fallback carrying the same
 request/result shape and reason-code discipline so 0062 can absorb it later as
 a refactor, not a migration. Scoped to ``entity_type='dispatch'``
-(``dispatch_outbox``) only — it is not a general TransitionStore.
+(``dispatch_outbox``) and ``entity_type='schedule_run'`` (``schedule_runs``)
+only — it is not a general TransitionStore.
+
+ADR-0058: the guarded read/CAS/vocabulary/write algorithm itself now lives in
+``lionagi.state.lifecycle`` (shared with ``StateDB.update_status()``); this
+module keeps its own narrower entity-type boundary, its ``guard``/``patch``
+column allowlist, and the legacy ``TransitionResult`` return shape.
 """
 
 from __future__ import annotations
 
-import time
 import uuid
 from typing import Any, Literal
 
 from pydantic import BaseModel, Field
-from sqlalchemy import bindparam, text
-from sqlalchemy.types import JSON
 
+from .lifecycle import LifecycleNotFoundError
+from .lifecycle.adapters import run_legacy_transition
 from .reasons import validate_reason_code
 
 __all__ = (
@@ -73,33 +78,14 @@ _ENTITY_TABLES: dict[str, str] = {
 }
 
 # guard/patch column names are interpolated directly into SQL text (values are
-# still bound params). Every production call site today passes literal dicts,
-# but this module is a generic surface ADR-0062's full transition backend will
-# absorb, so a per-entity allowlist closes the latent injection surface for
-# future callers instead of trusting the caller's dict keys outright.
+# still bound params) inside the lifecycle service. Every production call site
+# today passes literal dicts, but this module is a generic surface ADR-0062's
+# full transition backend will absorb, so a per-entity allowlist closes the
+# latent injection surface for future callers instead of trusting the
+# caller's dict keys outright.
 _GUARD_PATCH_COLUMNS: dict[str, frozenset[str]] = {
     "dispatch": frozenset({"attempt", "next_attempt_at", "last_error"}),
     "schedule_run": frozenset({"leased_by", "lease_expires_at", "lease_attempts"}),
-}
-
-# ADR-0101 slice 2/3: the declared transition vocabulary, per (entity_type,
-# from_state). This is NOT a full transition graph, but it IS closed for the
-# entity types listed: a current status with no entry has no declared
-# outgoing edges, exactly like an explicit empty set — CAS alone never
-# authorizes an undeclared move. "completed"/"failed"/"cancelled" map to an
-# empty target set, closing terminal re-entry: no CAS write can move a
-# schedule_run back out of a terminal status even though the guard alone
-# would happily apply it.
-_TRANSITION_VOCAB: dict[str, dict[str, frozenset[str]]] = {
-    "schedule_run": {
-        "queued": frozenset({"cancelled", "running"}),
-        # D3: running -> queued is ONLY the lease-expiry recovery edge (the
-        # worker reaper), never a worker- or operator-initiated move.
-        "running": frozenset({"completed", "failed", "queued"}),
-        "completed": frozenset(),
-        "failed": frozenset(),
-        "cancelled": frozenset(),
-    },
 }
 
 
@@ -113,8 +99,11 @@ async def transition(
     """Guarded compare-and-swap transition: ``UPDATE ... WHERE id=:id AND status=:from``.
 
     Writes the row status and an atomic ``status_transitions`` append inside
-    one ``db._tx()``. A mismatched current state reports a conflict rather
-    than raising or silently overwriting (CAS guard).
+    one transaction, via the shared ``lionagi.state.lifecycle`` service
+    (ADR-0058 D4). A mismatched current state reports a conflict rather than
+    raising or silently overwriting (CAS guard). An undeclared status move
+    (per the shared policy registry's edge graph) raises ``ValueError`` —
+    this surface has no override mechanism, unlike ``StateDB.update_status()``.
 
     ``guard`` adds extra ``column = :expected`` equality constraints to the
     WHERE clause beyond ``status`` — required whenever a transition can be a
@@ -146,120 +135,47 @@ async def transition(
                 f"guard/patch allowlist for entity_type {request.entity_type!r} "
                 f"(allowed: {sorted(allowed_columns)})"
             )
-    now = time.time()
-    transition_id = uuid.uuid4().hex
 
-    guard_cols = list(guard.keys())
-    select_cols = ", ".join(["status", *guard_cols]) if guard_cols else "status"
-
-    async with db._tx() as conn:
-        sel = f"SELECT {select_cols} FROM {table} WHERE id = :id"  # noqa: S608
-        row = (await conn.execute(text(sel), {"id": request.entity_id})).mappings().first()
-        if row is None:
-            raise LookupError(
-                f"{request.entity_type} {request.entity_id!r} not found (table={table})"
-            )
-        previous_status = row["status"]
-
-        # CAS mismatch reports BEFORE the vocabulary check so an ordinary
-        # lost race (e.g. a second cancel finding the row already cancelled)
-        # stays a conflict result instead of becoming a vocabulary error.
-        if request.from_state is not None and previous_status != request.from_state:
-            return TransitionResult(
-                applied=False,
-                conflict=True,
-                previous_state=previous_status,
-                current_state=previous_status,
-                transition_id=transition_id,
-            )
-
-        vocab = _TRANSITION_VOCAB.get(request.entity_type)
-        if vocab is not None:
-            allowed_targets = vocab.get(previous_status, frozenset())
-            if request.to_state not in allowed_targets:
-                raise ValueError(
-                    f"transition(): {request.entity_type} {previous_status} -> "
-                    f"{request.to_state!r} is not in the declared transition "
-                    f"vocabulary for this slice (allowed: {sorted(allowed_targets)})"
-                )
-
-        for col, expected in guard.items():
-            if row[col] != expected:
-                return TransitionResult(
-                    applied=False,
-                    conflict=True,
-                    previous_state=previous_status,
-                    current_state=previous_status,
-                    transition_id=transition_id,
-                )
-
-        set_clauses = ["status = :to_state", "updated_at = :now"]
-        where_clauses = ["id = :id", "status = :from_state"]
-        params: dict[str, Any] = {
-            "to_state": request.to_state,
-            "now": now,
-            "id": request.entity_id,
-            "from_state": previous_status,
-        }
-        for i, (col, expected) in enumerate(guard.items()):
-            key = f"guard_{i}"
-            where_clauses.append(f"{col} = :{key}")
-            params[key] = expected
-        for col, value in patch.items():
-            key = f"patch_{col}"
-            set_clauses.append(f"{col} = :{key}")
-            params[key] = value
-
-        update_sql = (
-            f"UPDATE {table} SET {', '.join(set_clauses)} "  # noqa: S608
-            f"WHERE {' AND '.join(where_clauses)}"
+    try:
+        outcome = await run_legacy_transition(
+            db._lifecycle_service(),
+            entity_type=request.entity_type,
+            entity_id=request.entity_id,
+            from_state=request.from_state,
+            to_state=request.to_state,
+            reason_code=request.reason.code,
+            reason_summary=request.reason.summary,
+            evidence_refs=request.reason.evidence_refs,
+            metadata=request.reason.metadata,
+            actor_type=request.actor.type,
+            actor_id=request.actor.id,
+            guard=guard,
+            patch=patch,
         )
-        result = await conn.execute(text(update_sql), params)
-        if result.rowcount == 0:
-            # Lost the race between the SELECT and the guarded UPDATE (or a
-            # concurrent claim already moved the guard column).
-            return TransitionResult(
-                applied=False,
-                conflict=True,
-                previous_state=previous_status,
-                current_state=previous_status,
-                transition_id=transition_id,
-            )
+    except LifecycleNotFoundError as exc:
+        raise LookupError(
+            f"{request.entity_type} {request.entity_id!r} not found (table={table})"
+        ) from exc
 
-        await conn.execute(
-            text(
-                "INSERT INTO status_transitions "
-                "(id, entity_type, entity_id, previous_status, status, "
-                " reason_code, reason_summary, evidence_refs, "
-                " source, actor, created_at, metadata) "
-                "VALUES (:id, :entity_type, :entity_id, :previous_status, :status, "
-                " :reason_code, :reason_summary, :evidence_refs, "
-                " :source, :actor, :created_at, :metadata)"
-            ).bindparams(
-                bindparam("evidence_refs", type_=JSON),
-                bindparam("metadata", type_=JSON),
-            ),
-            {
-                "id": transition_id,
-                "entity_type": request.entity_type,
-                "entity_id": request.entity_id,
-                "previous_status": previous_status,
-                "status": request.to_state,
-                "reason_code": request.reason.code,
-                "reason_summary": request.reason.summary,
-                "evidence_refs": request.reason.evidence_refs,
-                "source": request.actor.type,
-                "actor": request.actor.id,
-                "created_at": now,
-                "metadata": request.reason.metadata,
-            },
+    if outcome.result == "conflict":
+        return TransitionResult(
+            applied=False,
+            conflict=True,
+            previous_state=outcome.previous_status,
+            current_state=outcome.current_status,
+            transition_id=uuid.uuid4().hex,
         )
 
+    # "rejected" is unreachable through this surface: run_legacy_transition()
+    # passes raise_on_undeclared_edge=True, so an undeclared edge (terminal
+    # or not) raises ValueError above rather than resolving to "rejected",
+    # and TransitionRequest carries no override field to trigger the
+    # override path either.
     return TransitionResult(
         applied=True,
         conflict=False,
-        previous_state=previous_status,
-        current_state=request.to_state,
-        transition_id=transition_id,
+        previous_state=outcome.previous_status,
+        current_state=outcome.current_status,
+        transition_id=outcome.transition_id,
         event_id=None,
     )
