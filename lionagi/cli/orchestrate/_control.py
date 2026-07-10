@@ -2,21 +2,15 @@
 # SPDX-License-Identifier: Apache-2.0
 """`li o ctl pause|resume|msg` — enqueue session_controls rows for a running flow.
 
-These commands are pure writers: they resolve the target session (accepting
-a session id, an invocation id, or a play id — same id shapes `li o ctl
-status` accepts, see lionagi/cli/status.py) and insert one row into
-session_controls. They do not wait for the control to apply — a control
-poller task running alongside the target flow's own heartbeat loop
-(cli/orchestrate/flow.py `_execute_dag`) is the only consumer, and applies
-each row against the live executor on its own poll cycle. Use `li o ctl
-status <id>` to see whether a queued control has applied yet.
+Pure writers: resolve the target session (id/invocation id/play id, same
+shapes `li o ctl status` accepts) and insert one row into session_controls.
+They do not wait for the control to apply — the poller in
+cli/orchestrate/flow.py `_execute_dag` is the only consumer; use
+`li o ctl status <id>` to check whether it landed.
 
-Only context-mode `msg` ships in this slice (ADR-0085 §3): the poller
-deep-merges the message into the executor's flow workspace, visible to ops
-that have not yet started. Op-mode (`--as-op`, injecting the message as a
-first-class reactive DAG node) lands with a later slice.
-
-See docs/_archive/v0/ADR-0085-flow-control-plane.md sections 1-3.
+Only context-mode `msg` ships in this slice: the poller deep-merges the
+message into the flow workspace, visible to ops not yet started. Op-mode
+(`--as-op`) lands with a later slice. See ADR-0085 sections 1-3.
 """
 
 from __future__ import annotations

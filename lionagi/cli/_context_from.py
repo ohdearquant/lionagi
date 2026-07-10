@@ -306,25 +306,17 @@ _BLOCK_SEPARATOR = "\n\n"
 def build_context_block(candidates: Sequence[ContextCandidate], budget_tokens: int) -> str:
     """Assemble the XML-delimited context block(s), argv order, total-not-per-ref budget.
 
-    The budget bounds the COMBINED injected block, including the XML wrapper
-    (open/close tags) and the inter-block separator — not just the distilled
-    payload text. Wrapper + loud-marker overhead is reserved FIRST, in argv
-    order, before the remaining budget is handed to the distillation ladder
-    for payload text.
+    `budget_tokens` bounds the COMBINED injected block (XML wrapper +
+    separators included, not just distilled payload text); wrapper/marker
+    overhead is reserved first, in argv order, before payload text.
 
-    A single ref always yields at least one loud-marker-only block (never an
-    empty result) even at a budget too tight to fit it, including
-    `budget_tokens == 0` (an explicit "marker only, no payload" request, not
-    "no budget passed"): there is nothing left to drop it in favor of, and a
-    silently-missing context block is worse than a slightly over-budget loud
-    marker for the one ref the caller asked for.
-
-    With multiple refs, the total budget is a hard ceiling: wrapper +
-    separator + minimum loud-marker overhead is reserved for each ref, in
-    argv order, and any ref (and all after it, since the reserved budget only
-    shrinks) that cannot fit even that minimum is dropped entirely rather
-    than pushing the combined block over budget. If even the first ref
-    cannot fit, injection is skipped entirely (no block at all).
+    A single ref always yields at least one loud-marker-only block, even at
+    `budget_tokens == 0` — a slightly over-budget marker beats silently
+    dropping the one ref the caller asked for. With multiple refs, the total
+    budget is a hard ceiling: any ref that can't fit even its minimum
+    marker overhead is dropped (and everything after it, since the reserved
+    budget only shrinks). If even the first ref can't fit, injection is
+    skipped entirely.
     """
     from lionagi.cli._logging import warn
 

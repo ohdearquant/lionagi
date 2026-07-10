@@ -268,26 +268,18 @@ class CodeCheckTool(LionTool):
 
             async def code_check(**kwargs):
                 """
-                Run static analysis on Python files and return structured diagnostics.
-
-                Call this after editing a file to get immediate IDE-grade feedback.
-                Each diagnostic is returned as file:line:col with code and message so
-                the agent can locate and fix the issue without re-reading the file.
-
-                Composability (edit -> check workflow):
-                  1. editor(action='edit', file_path=..., old_string=..., new_string=...)
-                  2. code_check(paths=[<same file_path>])
-                  3. Diagnostics list gives actionable file:line:col entries to fix next.
+                Run static analysis on Python files and return structured
+                diagnostics. Call after editing a file for immediate feedback;
+                each diagnostic is file:line:col with code and message so the
+                agent can locate and fix the issue without re-reading the file.
 
                 Supported tools:
                 - 'ruff': fast Python linter (default). Requires ruff in PATH.
                   Returns status='unavailable' if the binary is absent — not an error.
 
-                Result status values:
-                - 'ok': no issues found
-                - 'diagnostics': one or more issues found (see diagnostics list)
-                - 'unavailable': tool binary not installed
-                - 'error': tool failed unexpectedly
+                Result status: 'ok' (no issues) | 'diagnostics' (issues found,
+                see diagnostics list) | 'unavailable' (tool not installed)
+                | 'error' (tool failed unexpectedly)
                 """
                 return (await self.handle_request(CodeCheckRequest(**kwargs))).model_dump()
 

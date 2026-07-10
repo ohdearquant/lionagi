@@ -90,13 +90,21 @@ async def test_coding_preset_secure_false_has_no_default_guard():
 
 
 async def test_coding_preset_guard_destructive_in_hook_handlers():
-    """The default guard hook must appear in hook_handlers before create_agent."""
+    """The default guard hook must appear in the security_pre bucket before create_agent.
+
+    It registers in security_pre (not the ordinary user pre bucket) so it
+    participates in the security -> user -> security recheck, the same as an
+    explicit PermissionPolicy (ADR-0086 delta row 1).
+    """
     from lionagi.agent.hooks import guard_destructive
 
     spec = AgentSpec.coding()
-    handlers = spec.hook_handlers.get("pre:bash", [])
+    handlers = spec.hook_handlers.get("security_pre:bash", [])
     assert guard_destructive in handlers, (
-        "guard_destructive must be in pre:bash hook_handlers for the coding preset"
+        "guard_destructive must be in security_pre:bash hook_handlers for the coding preset"
+    )
+    assert not spec.hook_handlers.get("pre:bash"), (
+        "guard_destructive must not also be registered in the ordinary pre:bash bucket"
     )
 
 
@@ -174,28 +182,36 @@ async def test_coding_preset_parent_dir_traversal_blocked(tmp_path):
 
 
 async def test_coding_preset_reader_guard_in_hook_handlers(tmp_path):
-    """guard_paths hook must appear in pre:reader hook_handlers for coding preset."""
+    """guard_paths hook must appear in security_pre:reader hook_handlers for coding preset."""
     spec = AgentSpec.coding(cwd=str(tmp_path))
-    handlers = spec.hook_handlers.get("pre:reader", [])
-    assert len(handlers) >= 1, "guard_paths must be wired into pre:reader for the coding preset"
+    handlers = spec.hook_handlers.get("security_pre:reader", [])
+    assert len(handlers) >= 1, (
+        "guard_paths must be wired into security_pre:reader for the coding preset"
+    )
+    assert not spec.hook_handlers.get("pre:reader")
 
 
 async def test_coding_preset_editor_guard_in_hook_handlers(tmp_path):
-    """guard_paths hook must appear in pre:editor hook_handlers for coding preset."""
+    """guard_paths hook must appear in security_pre:editor hook_handlers for coding preset."""
     spec = AgentSpec.coding(cwd=str(tmp_path))
-    handlers = spec.hook_handlers.get("pre:editor", [])
-    assert len(handlers) >= 1, "guard_paths must be wired into pre:editor for the coding preset"
+    handlers = spec.hook_handlers.get("security_pre:editor", [])
+    assert len(handlers) >= 1, (
+        "guard_paths must be wired into security_pre:editor for the coding preset"
+    )
+    assert not spec.hook_handlers.get("pre:editor")
 
 
 async def test_coding_preset_secure_false_no_path_guard():
     """secure=False must not wire any path guard on reader or editor."""
     spec = AgentSpec.coding(secure=False)
-    assert not spec.hook_handlers.get("pre:reader"), (
-        "secure=False must not wire any pre:reader hook"
+    assert not spec.hook_handlers.get("security_pre:reader"), (
+        "secure=False must not wire any security_pre:reader hook"
     )
-    assert not spec.hook_handlers.get("pre:editor"), (
-        "secure=False must not wire any pre:editor hook"
+    assert not spec.hook_handlers.get("security_pre:editor"), (
+        "secure=False must not wire any security_pre:editor hook"
     )
+    assert not spec.hook_handlers.get("pre:reader")
+    assert not spec.hook_handlers.get("pre:editor")
 
 
 # ---------------------------------------------------------------------------
@@ -245,3 +261,120 @@ async def test_coding_preset_editor_blocks_relative_traversal(tmp_path):
             "editor",
             {"action": "write", "file_path": "../../etc/cron.d/evil", "content": "bad"},
         )
+
+
+# ---------------------------------------------------------------------------
+# GateResult unification (ADR-0086 delta row 1) — the built-in coding guards
+# now get the same security -> user -> security recheck a PermissionPolicy
+# has always gotten, closing the mutation-gap asymmetry.
+# ---------------------------------------------------------------------------
+
+
+async def test_coding_preset_guard_rechecks_command_mutated_by_user_hook(tmp_path):
+    """A user pre-hook that rewrites a benign command into a destructive one
+    after guard_destructive has already run must still be caught — the guard
+    is rechecked against the final, post-mutation arguments."""
+    spec = AgentSpec.coding(cwd=str(tmp_path))
+
+    async def rewrite_to_destructive(tool_name, action, args):
+        return {**args, "command": "rm -rf /"}
+
+    spec.pre("bash", rewrite_to_destructive)
+    branch = await _make_branch(spec)
+
+    bash_tool = branch.acts.registry["bash"]
+    with pytest.raises(PermissionError, match="Blocked destructive command"):
+        await bash_tool.preprocessor({"action": "run", "command": "git status"})
+
+
+async def test_coding_preset_guard_rechecks_path_mutated_by_user_hook(tmp_path):
+    """A user pre-hook that rewrites a workspace-relative path into an
+    outside-workspace path after guard_paths has already run must still be
+    caught by the recheck."""
+    spec = AgentSpec.coding(cwd=str(tmp_path))
+
+    async def rewrite_to_outside(tool_name, action, args):
+        return {**args, "path": "/etc/passwd"}
+
+    spec.pre("reader", rewrite_to_outside)
+    branch = await _make_branch(spec)
+
+    reader_tool = branch.acts.registry["reader"]
+    with pytest.raises(PermissionError, match="Path not in allowed list"):
+        await reader_tool.preprocessor({"action": "read", "path": "src/foo.py"})
+
+
+async def test_coding_preset_guard_evaluates_exactly_once_without_user_hooks(tmp_path):
+    """With no user pre-hooks, a security control runs exactly once."""
+    spec = AgentSpec.coding(cwd=str(tmp_path))
+    calls = []
+
+    async def counting_guard(tool_name, action, args):
+        calls.append(args)
+        return None
+
+    spec.security_pre("bash", counting_guard)
+    branch = await _make_branch(spec)
+
+    bash_tool = branch.acts.registry["bash"]
+    await bash_tool.preprocessor({"action": "run", "command": "echo hi"})
+    assert len(calls) == 1
+
+
+async def test_coding_preset_guard_evaluates_exactly_twice_with_user_hook(tmp_path):
+    """With a user pre-hook present, each security control runs exactly once
+    per pass — pre-user and the post-mutation recheck — never more."""
+    spec = AgentSpec.coding(cwd=str(tmp_path))
+    calls = []
+
+    async def counting_guard(tool_name, action, args):
+        calls.append(args)
+        return None
+
+    async def noop_user_hook(tool_name, action, args):
+        return None
+
+    spec.security_pre("bash", counting_guard)
+    spec.pre("bash", noop_user_hook)
+    branch = await _make_branch(spec)
+
+    bash_tool = branch.acts.registry["bash"]
+    await bash_tool.preprocessor({"action": "run", "command": "echo hi"})
+    assert len(calls) == 2
+
+
+async def test_coding_preset_evaluator_exception_fails_closed(tmp_path):
+    """A security control that raises an unexpected (non-PermissionError)
+    exception must deny the call rather than crash uncaught or silently pass."""
+    spec = AgentSpec.coding(cwd=str(tmp_path))
+
+    async def broken_guard(tool_name, action, args):
+        raise ValueError("evaluator bug")
+
+    spec.security_pre("bash", broken_guard)
+    branch = await _make_branch(spec)
+
+    bash_tool = branch.acts.registry["bash"]
+    with pytest.raises(PermissionError, match="evaluator error"):
+        await bash_tool.preprocessor({"action": "run", "command": "echo hi"})
+
+
+async def test_permission_policy_evaluator_exception_fails_closed(tmp_path):
+    """An explicit PermissionPolicy whose escalation handler raises must also
+    fail closed via a recorded deny, not an uncaught exception."""
+    from lionagi.agent.permissions import PermissionPolicy
+
+    async def broken_escalation_handler(decision, args):
+        raise RuntimeError("escalation handler bug")
+
+    spec = AgentSpec.compose("implementer", tools=["bash"])
+    spec.permissions = PermissionPolicy(
+        mode="rules",
+        escalate={"bash": ["*"]},
+        on_escalate=broken_escalation_handler,
+    )
+    branch = await _make_branch(spec)
+
+    bash_tool = branch.acts.registry["bash_tool"]
+    with pytest.raises(PermissionError, match="evaluator error"):
+        await bash_tool.preprocessor({"action": "run", "command": "echo hi"})
