@@ -279,12 +279,9 @@ class StudioExprCondition(EdgeCondition):
     _tree: Any = PrivateAttr(default=None)
 
     def __init__(self, **data: Any) -> None:
-        # Parse BEFORE pydantic's own validation machinery runs: a plain
-        # model_validator would still raise UnsafeExpressionError, but pydantic
-        # wraps every validator exception into pydantic_core.ValidationError,
-        # which callers matching `except UnsafeExpressionError` (this class's
-        # documented contract, and compile_workflow_def's edge-id mapping)
-        # would silently fail to catch.
+        # Parse BEFORE pydantic's validation machinery runs: a model_validator
+        # would have its UnsafeExpressionError wrapped into pydantic_core.
+        # ValidationError, breaking callers that match on UnsafeExpressionError.
         tree = _parse_expr(data.get("expr", ""))
         super().__init__(**data)
         self._tree = tree
@@ -345,18 +342,16 @@ async def compile_workflow_def(
         kind = n["kind"]
         node_id = n["id"]
         if kind == "input":
-            # Compile-time marker only — not an Operation. Its data reaches every
-            # op uniformly via session.flow(context=...), so no graph edge is needed.
+            # Compile-time marker only, not an Operation -- data reaches every
+            # op via session.flow(context=...), so no graph edge is needed.
             continue
 
         config = n.get("config")
         if config is None:
             config = {}
         elif not isinstance(config, dict):
-            # A saved spec can carry a non-mapping config (e.g. config: "bad")
-            # that _validate_spec does not shape-check for every kind. Reject it
-            # here so the run route returns a structured 422 rather than letting
-            # config.get(...) raise AttributeError as an unstructured 500.
+            # _validate_spec doesn't shape-check config for every kind; reject
+            # here for a structured 422 instead of an AttributeError 500.
             raise WorkflowCompileError(
                 f"node config must be a mapping, got {type(config).__name__}",
                 node_id=node_id,
@@ -375,21 +370,17 @@ async def compile_workflow_def(
                         "Use provider/model, e.g. openai/gpt-4.1-mini.",
                         node_id=node_id,
                     )
-                # Built here at compile time rather than passed through as a bare
-                # string: chat_and_record forwards its kwargs straight into
-                # Branch.chat(), whose model-override parameter is `imodel` (an
-                # iModel instance), not a string.
+                # Built here, not passed as a bare string: chat_and_record
+                # forwards kwargs into Branch.chat(), whose model-override
+                # parameter is `imodel` (an iModel instance), not a string.
                 from lionagi.service.imodel import iModel
 
                 chat_kwargs["imodel"] = iModel(model=model)
-            # "chat_and_record", not the native "chat" operation: Branch.chat()
-            # does not add messages to the branch (by design — see its
-            # docstring), so a plain "chat" node would run through the
-            # persistence hook wired up in workflow_run.py without ever
-            # producing a message for it to persist. chat_and_record() records
-            # the turn through the same hooked a_add_message path communicate()
-            # uses, and returns the assistant response text for downstream
-            # routing/context.
+            # "chat_and_record", not the native "chat" op: Branch.chat() does
+            # not add messages to the branch by design, so a plain "chat" node
+            # would leave nothing for workflow_run.py's persistence hook to
+            # record. chat_and_record() records via the same hooked
+            # a_add_message path communicate() uses.
             op_id = builder.add_operation(
                 "chat_and_record", node_id=node_id, instruction=prompt, **chat_kwargs
             )
@@ -404,13 +395,11 @@ async def compile_workflow_def(
                 raise WorkflowCompileError(
                     f"unknown engine_def_id {engine_def_id!r}", node_id=node_id
                 )
-            # A node's config overrides (options, max_depth, max_agents) are
-            # author-supplied and never went through the checks engine_defs
-            # enforces at def creation (allowed option keys, string-only, no
-            # leading-dash CLI-flag injection, no shell metacharacters, kind
-            # requirements, budgets in [1, 100]). Re-validate the effective
-            # values so a saved workflow can't smuggle a shell-control test_cmd
-            # into a coding engine or set an unbounded agent/depth budget.
+            # Node-level config overrides never went through engine_defs'
+            # creation-time checks (allowed keys, no CLI-flag/shell-metachar
+            # injection, budgets in [1, 100]); re-validate the effective
+            # values so a saved workflow can't smuggle a hostile test_cmd or
+            # an unbounded agent/depth budget.
             from .engine_defs import (
                 _validate_budget,
                 _validate_kind_options,
@@ -419,8 +408,8 @@ async def compile_workflow_def(
 
             node_options = config.get("options")
             if node_options is not None and not isinstance(node_options, dict):
-                # A non-mapping options value would raise TypeError on the **
-                # unpack below, escaping the ValueError wrapper as a 500.
+                # Non-mapping would raise TypeError on the ** unpack below,
+                # escaping the ValueError wrapper as a 500.
                 raise WorkflowCompileError(
                     "engine node config.options must be a mapping, got "
                     f"{type(node_options).__name__}",
@@ -428,8 +417,8 @@ async def compile_workflow_def(
                 )
             engine_options = {**(defn.get("options") or {}), **(node_options or {})}
 
-            # A node override of None must fall back to the def's value rather
-            # than discard the (stricter) stored budget.
+            # None override falls back to the def's value rather than
+            # discarding the (stricter) stored budget.
             node_depth = config.get("max_depth")
             engine_max_depth = defn.get("max_depth") if node_depth is None else node_depth
             node_agents = config.get("max_agents")
@@ -443,14 +432,10 @@ async def compile_workflow_def(
             except ValueError as exc:
                 raise WorkflowCompileError(str(exc), node_id=node_id) from exc
 
-            # Per-node working directory. Containment is enforced
-            # here (raw-string traversal check + symlink-resolving
-            # relative_to(base_dir) + must-exist-and-be-a-dir); v1.1 only
-            # wires the resolved cwd through to a 'coding' engine node's
-            # run(workspace=...) — the only engine run() signature that
-            # accepts a working directory today (research/review/planning
-            # take no such kwarg and would crash at run time, not compile,
-            # if one were smuggled in).
+            # Per-node working directory, contained via _resolve_node_cwd.
+            # v1.1 only wires it to a 'coding' node's run(workspace=...) --
+            # other engine kinds have no such kwarg and would crash at run
+            # time (not compile) if one were smuggled in.
             engine_workspace: str | None = None
             node_cwd = config.get("cwd")
             if node_cwd is not None:
@@ -477,8 +462,7 @@ async def compile_workflow_def(
         else:  # pragma: no cover — unreachable, prefiltered above
             raise WorkflowCompileError(f"unknown node kind {kind!r}", node_id=node_id)
 
-        # Edges are wired by hand below from WorkflowEdge, not the builder's
-        # own depends_on/sequential auto-chaining — sever it after every node.
+        # Edges are wired by hand below; sever the builder's own auto-chaining.
         builder._current_heads = []
         id_map[node_id] = op_id
 
@@ -494,12 +478,9 @@ async def compile_workflow_def(
             )
         src_op = id_map.get(src_wf)
         if src_op is None:
-            # Source is an 'input' node — no Operation-level edge is created.
-            # A condition on such an edge cannot gate anything (the edge is
-            # dropped), so the target would run unconditionally — silently
-            # ignoring the guard. Reject it rather than compile a misleading
-            # unconditional run; gating on input must go through an
-            # intermediate executable node that carries the condition.
+            # Source is an 'input' node -- no Operation-level edge is created,
+            # so a condition here would be silently dropped and the target
+            # would run unconditionally. Reject; gate via an intermediate node.
             if e.get("condition"):
                 raise WorkflowCompileError(
                     "a condition on an edge from an 'input' node is not "
