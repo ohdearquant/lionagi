@@ -85,6 +85,3 @@ class FunctionCalling(Event):
         dict_["function"] = self.function
         dict_["arguments"] = self.arguments
         return dict_
-
-
-# File: lionagi/protocols/action/function_calling.py

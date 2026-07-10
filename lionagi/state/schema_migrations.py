@@ -102,6 +102,9 @@ MIGRATION_COLUMNS: dict[str, list[tuple[str, str]]] = {
         # and the consecutive-401 counter (resets only on a healthy read).
         ("last_healthy_poll_at", "REAL"),
         ("poller_consecutive_401", "INTEGER NOT NULL DEFAULT 0"),
+        # ADR-0070 delta 1: persisted per-schedule execution root, captured
+        # once at creation. NULL on rows created before this migration.
+        ("action_cwd", "TEXT"),
     ],
     "schedule_runs": [
         # ADR-0028: schedule_runs originally had no updated_at.

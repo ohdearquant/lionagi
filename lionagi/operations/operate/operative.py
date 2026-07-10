@@ -109,7 +109,6 @@ class Operative:
             if strict:
                 raise e
 
-            # Try fuzzy validation if auto-retry enabled
             if self.auto_retry_parse and not strict:
                 try:
                     self.response_model = adapter_cls.validate_response(

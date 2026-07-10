@@ -40,8 +40,7 @@ class DeepseekChatCompletionsRequest(OpenAIChatCompletionsRequest):
 
     @model_validator(mode="after")
     def _normalize_deepseek_reasoning(self):
-        # DeepSeek accepts: low, medium, high, max.
-        # Map lionagi/OpenAI effort names to DeepSeek equivalents.
+        # DeepSeek accepts only low/medium/high/max; map lionagi/OpenAI effort names onto that set.
         if self.reasoning_effort in {"low", "medium"}:
             self.reasoning_effort = "high"
         elif self.reasoning_effort == "xhigh":

@@ -347,7 +347,6 @@ class ClaudeCodeRequest(BaseModel):
 
             prompt = "\n".join(prompts)
 
-        # 3. assemble the request data
         data_: dict[str, Any] = dict(
             prompt=prompt,
             resume=resume,
@@ -495,8 +494,7 @@ async def _ndjson_from_cli(request: ClaudeCodeRequest):
     workspace = request.cwd()
     workspace.mkdir(parents=True, exist_ok=True)
     cmd = [CLAUDE_CLI, *request.as_cmd_args()]
-    # Pass the repair callback so a malformed-but-repairable final JSON object
-    # is recovered rather than silently dropped (matches pre-refactor behaviour).
+    # tail_repair recovers a malformed-but-repairable final JSON object instead of dropping it.
     async with contextlib.aclosing(
         ndjson_from_cli(cmd, cwd=workspace, tail_repair=_claude_tail_repair)
     ) as stream:

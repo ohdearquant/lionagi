@@ -13,12 +13,9 @@ from typing import Any
 def _safe_pgid(proc: Any) -> int | None:
     """Return the process-group id to signal, or None when unsafe."""
     pid = getattr(proc, "pid", None)
-    # Guard: pid must be a real int greater than 1.
-    # pid==0 targets the caller's own group; pid==1 is init/the session leader
-    # on CI runners, which would SIGKILL the test harness itself.  A MagicMock
-    # whose .pid coerces to 1 via __index__ is therefore a silent no-op here.
-    # os.killpg is POSIX-only; on Windows leave None so callers fall back to
-    # proc.terminate()/kill() rather than raising AttributeError.
+    # pid must be int > 1: pid==0 is our own group, pid==1 is init/session leader
+    # on CI (would SIGKILL the harness itself; also catches MagicMock.pid==1).
+    # killpg is POSIX-only; None here makes callers fall back to proc.terminate()/kill().
     if not (hasattr(os, "killpg") and isinstance(pid, int) and pid > 1):
         return None
     return pid
@@ -42,18 +39,15 @@ def terminate_process_group(
     """
     pgid = _safe_pgid(proc)
     if grace is None:
-        # SIGKILL-only path: signal the group (when available) AND the direct
-        # child. The child is normally a member of the killed group so proc.kill()
-        # is a suppressed no-op, but signalling only the group orphans the child
-        # when killpg is unavailable (Windows) or the group is already reaped.
+        # Signal group AND direct child: proc.kill() is normally a no-op (child is
+        # in the killed group) but prevents orphaning it when killpg is unavailable.
         if pgid is not None:
             with contextlib.suppress(ProcessLookupError, PermissionError, OSError):
                 os.killpg(pgid, signal.SIGKILL)
         with contextlib.suppress(ProcessLookupError, OSError):
             proc.kill()
         return
-    # sig_first only — signal the group (when available) AND the direct child;
-    # the caller drives the wait + SIGKILL escalation.
+    # sig_first only; caller drives the wait + SIGKILL escalation.
     if pgid is not None:
         with contextlib.suppress(ProcessLookupError, PermissionError):
             os.killpg(pgid, sig_first)
@@ -76,14 +70,13 @@ async def aterminate_process_group(
     """
     pgid = _safe_pgid(proc)
     if grace is None:
-        # SIGKILL-only path (no SIGTERM, no wait): group AND direct child.
+        # No prior SIGTERM/wait: signal group AND direct child directly.
         if pgid is not None:
             with contextlib.suppress(ProcessLookupError, PermissionError, OSError):
                 os.killpg(pgid, signal.SIGKILL)
         with contextlib.suppress(ProcessLookupError, OSError):
             proc.kill()
         return
-    # SIGTERM-then-wait-then-SIGKILL path: signal group AND direct child.
     if pgid is not None:
         with contextlib.suppress(ProcessLookupError, PermissionError):
             os.killpg(pgid, sig_first)

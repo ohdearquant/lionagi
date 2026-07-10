@@ -4,18 +4,16 @@
 invocation reaches its terminal status.
 
 Resolved from `.lionagi/settings.yaml` (`notify.on_terminal`, project
-overrides global) or an explicit `--notify` override. lionagi ships no
-messaging integration here — the hook is just a shell command template with
-three substitution variables (`{payload}`, `{status}`, `{invocation_id}`).
+overrides global) or an explicit `--notify` override — just a shell command
+template with three substitution variables (`{payload}`, `{status}`,
+`{invocation_id}`).
 
-The substituted values never touch the shell command line as text: each
-placeholder is replaced with a reference to an environment variable set on
-the subprocess (e.g. `{payload}` → `"$LIONAGI_NOTIFY_PAYLOAD"`), so a quote
-or shell metacharacter inside a payload field (a playbook name, a path) can
-never break out of the template. The hook runs with a short timeout, and
-every failure mode — a malformed template, a missing/unreadable settings
-file, a nonzero exit, a timeout — is logged and swallowed: none of them may
-affect the run's own terminal status or exit code.
+Substituted values never touch the shell command line as text: each
+placeholder becomes a reference to an environment variable set on the
+subprocess, so a quote or shell metacharacter in a payload field can never
+break out of the template. Every failure mode (malformed template, missing
+settings, nonzero exit, timeout) is logged and swallowed — none may affect
+the run's own terminal status or exit code.
 """
 
 from __future__ import annotations
@@ -78,10 +76,9 @@ async def fire_terminal_notify(
     """Fire the configured terminal-notify hook exactly once, best-effort.
 
     `override_command` (the CLI `--notify` flag) wins over the settings
-    value. No template configured on either side is a silent no-op.
-    `invocation_id` is nullable — an invocation-less run (no `--invocation`)
-    still fires the hook the caller asked for; the payload just carries
-    `"invocation_id": null`.
+    value; no template configured on either side is a silent no-op.
+    `invocation_id` is nullable — an invocation-less run still fires the
+    hook, with `"invocation_id": null` in the payload.
     """
     command = override_command
     if not command:

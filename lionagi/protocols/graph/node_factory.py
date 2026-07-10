@@ -101,7 +101,6 @@ def create_node(
         immutable_content=immutable_content,
     )
 
-    # Build field annotations and defaults
     annotations: dict[str, type] = {}
     namespace: dict[str, Any] = {
         "node_config": config,
@@ -142,6 +141,5 @@ def create_node(
     if doc:
         namespace["__doc__"] = doc
 
-    # Create the subclass
     cls = type(name, (Node,), namespace)
     return cls

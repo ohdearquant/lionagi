@@ -4,9 +4,7 @@ from typing import Any
 
 import orjson
 
-# Security limit: Maximum input string size for JSON parsing.
-# Large inputs can cause memory exhaustion during parsing and regex operations.
-# Default: 10MB - generous for most use cases while preventing DoS.
+# Security limit: caps input size to avoid memory exhaustion during parsing/regex ops.
 MAX_JSON_INPUT_SIZE = 10 * 1024 * 1024  # 10 MB
 
 
@@ -219,17 +217,14 @@ def fix_json_string(str_to_parse: str, /) -> str:
             open_brackets.append(brackets[char])
         elif char in brackets.values():
             if not open_brackets:
-                # Extra closing bracket
-                # Better to raise error than guess
+                # Better to raise than guess at the intended structure.
                 raise ValueError("Extra closing bracket found.")
             if open_brackets[-1] != char:
-                # Mismatched bracket
                 raise ValueError("Mismatched brackets.")
             open_brackets.pop()
 
         pos += 1
 
-    # Add missing closing brackets if any
     if open_brackets:
         str_to_parse += "".join(reversed(open_brackets))
 

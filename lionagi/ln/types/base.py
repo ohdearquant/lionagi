@@ -30,7 +30,7 @@ class Enum(_Enum):
 class KeysDict(TypedDict, total=False):
     """TypedDict for keys dictionary."""
 
-    key: Any  # Represents any key-type pair
+    key: Any
 
 
 @dataclass(slots=True, frozen=True)
@@ -59,14 +59,12 @@ class Params:
     _allowed_keys: ClassVar[set[str]] = field(default=set(), init=False, repr=False)
 
     def __init__(self, **kwargs: Any):
-        # Set all attributes from kwargs, allowing for sentinel values
         for k, v in kwargs.items():
             if k in self.allowed():
                 object.__setattr__(self, k, v)
             else:
                 raise ValueError(f"Invalid parameter: {k}")
 
-        # Validate after setting all attributes
         self._validate()
 
     @classmethod
@@ -104,10 +102,9 @@ class Params:
             _validate_strict(k)
 
     def default_kw(self) -> Any:
-        # create a partial function with the current parameters
         dict_ = self.to_dict()
 
-        # handle kwargs if present, handle both 'kwargs' and 'kw'
+        # Merge both 'kwargs' and 'kw' conventions into a single flat dict.
         kw_ = {}
         kw_.update(dict_.pop("kwargs", {}))
         kw_.update(dict_.pop("kw", {}))
@@ -216,10 +213,8 @@ class DataClass:
         return hash(self) == hash(other)
 
 
-# Concrete key-container types accepted by fuzzy_match_keys.
-# Bare ``str`` is intentionally excluded: iterating a str yields individual
-# characters, not key names.  Generic Sequences other than list/tuple are also
-# excluded because the runtime guard rejects them.
+# Concrete key-container types accepted by fuzzy_match_keys. Bare ``str`` is
+# intentionally excluded: iterating a str yields characters, not key names.
 KeysLike = list[str] | tuple[str, ...] | set[str] | frozenset[str] | KeysDict
 
 
