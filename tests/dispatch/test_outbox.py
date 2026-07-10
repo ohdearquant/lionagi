@@ -8,6 +8,7 @@ with no daemon running.
 from __future__ import annotations
 
 import asyncio
+import json
 import sys
 import time
 from pathlib import Path
@@ -15,6 +16,8 @@ from pathlib import Path
 import pytest
 
 pytest.importorskip("aiosqlite", reason="aiosqlite not installed")
+
+from sqlalchemy import text
 
 from lionagi.dispatch import (
     ack_dispatch,
@@ -24,12 +27,19 @@ from lionagi.dispatch import (
     get_dispatch,
     list_dispatches,
     purge_dispatch,
+    purge_dispatches,
     retry_dispatch,
 )
 from lionagi.state.db import StateDB
 
 _SUCCESS_TEMPLATE = [sys.executable, "-c", "import sys; sys.exit(0)"]
 _FAIL_TEMPLATE = [sys.executable, "-c", "import sys; sys.exit(1)"]
+
+
+def _details(event: dict) -> dict:
+    """admin_events.details round-trips as a JSON string on sqlite."""
+    raw = event["details"]
+    return json.loads(raw) if isinstance(raw, str) else raw
 
 
 def _capture_argv_script(out_path: Path) -> list[str]:
@@ -578,6 +588,107 @@ async def test_purge_missing_id_returns_false(tmp_path: Path):
     async with StateDB(db_path) as db:
         deleted = await purge_dispatch(db, "does-not-exist")
     assert deleted is False
+
+
+async def test_purge_dispatch_writes_admin_event(tmp_path: Path):
+    """ADR-0059 delta 3: single-row purge must be auditable, unlike the shipped adapter."""
+    db_path = tmp_path / "state.db"
+    async with StateDB(db_path) as db:
+        dispatch_id = await enqueue_dispatch(db, kind="terminal_notify", deliver_to="seat-1")
+        await purge_dispatch(db, dispatch_id, actor="test_actor")
+        events = await db.list_admin_events(action="dispatch_purge")
+
+    assert len(events) == 1
+    assert events[0]["actor"] == "test_actor"
+    details = _details(events[0])
+    assert details["dispatch_id"] == dispatch_id
+    assert details["status"] == "pending"
+    assert details["total"] == 1
+
+
+async def test_purge_dispatch_missing_id_writes_no_admin_event(tmp_path: Path):
+    db_path = tmp_path / "state.db"
+    async with StateDB(db_path) as db:
+        deleted = await purge_dispatch(db, "does-not-exist")
+        events = await db.list_admin_events(action="dispatch_purge")
+
+    assert deleted is False
+    assert events == []
+
+
+# ── bulk purge (purge_dispatches, ADR-0059 delta 3) ─────────────────────────
+
+
+async def test_purge_dispatches_requires_criteria(tmp_path: Path):
+    db_path = tmp_path / "state.db"
+    async with StateDB(db_path) as db:
+        with pytest.raises(ValueError, match="requires status and/or before"):
+            await purge_dispatches(db)
+
+
+async def test_purge_dispatches_by_status_deletes_matching_rows_only(tmp_path: Path):
+    db_path = tmp_path / "state.db"
+    async with StateDB(db_path) as db:
+        pending_id = await enqueue_dispatch(db, kind="k", deliver_to="seat-1")
+        delivered_id = await enqueue_dispatch(db, kind="k", deliver_to="seat-2")
+        async with db._tx() as conn:
+            await conn.execute(
+                text("UPDATE dispatch_outbox SET status = 'delivered' WHERE id = :id"),
+                {"id": delivered_id},
+            )
+
+        result = await purge_dispatches(db, status="delivered")
+
+        assert result["total"] == 1
+        assert result["delivered"] == 1
+        assert await get_dispatch(db, delivered_id) is None
+        assert await get_dispatch(db, pending_id) is not None
+
+
+async def test_purge_dispatches_dry_run_deletes_nothing_but_audits(tmp_path: Path):
+    db_path = tmp_path / "state.db"
+    async with StateDB(db_path) as db:
+        dispatch_id = await enqueue_dispatch(db, kind="k", deliver_to="seat-1")
+        async with db._tx() as conn:
+            await conn.execute(
+                text("UPDATE dispatch_outbox SET status = 'delivered' WHERE id = :id"),
+                {"id": dispatch_id},
+            )
+
+        result = await purge_dispatches(db, status="delivered", dry_run=True)
+        events = await db.list_admin_events(action="dispatch_purge")
+
+        assert result["total"] == 1
+        assert result["dry_run"] is True
+        assert await get_dispatch(db, dispatch_id) is not None
+        assert len(events) == 1
+        assert _details(events[0])["dry_run"] is True
+
+
+async def test_purge_dispatches_before_cutoff(tmp_path: Path):
+    db_path = tmp_path / "state.db"
+    async with StateDB(db_path) as db:
+        old_id = await enqueue_dispatch(db, kind="k", deliver_to="seat-1")
+        recent_id = await enqueue_dispatch(db, kind="k", deliver_to="seat-2")
+        async with db._tx() as conn:
+            await conn.execute(
+                text(
+                    "UPDATE dispatch_outbox SET status = 'delivered', updated_at = :ts WHERE id = :id"
+                ),
+                {"ts": time.time() - 100_000, "id": old_id},
+            )
+            await conn.execute(
+                text(
+                    "UPDATE dispatch_outbox SET status = 'delivered', updated_at = :ts WHERE id = :id"
+                ),
+                {"ts": time.time(), "id": recent_id},
+            )
+
+        result = await purge_dispatches(db, status="delivered", before=time.time() - 50_000)
+
+        assert result["total"] == 1
+        assert await get_dispatch(db, old_id) is None
+        assert await get_dispatch(db, recent_id) is not None
 
 
 # ── argv-safety (RIDER A) ─────────────────────────────────────────────────────

@@ -42,6 +42,7 @@ __all__ = (
     "get_dispatch",
     "list_dispatches",
     "purge_dispatch",
+    "purge_dispatches",
     "resolve_notify_template",
     "retry_dispatch",
 )
@@ -583,11 +584,118 @@ async def retry_dispatch(db: Any, dispatch_id: str) -> bool:
     return result.applied
 
 
-async def purge_dispatch(db: Any, dispatch_id: str) -> bool:
-    """Single-row guarded delete inside BEGIN IMMEDIATE (RIDER B: direct-DB write discipline)."""
+async def purge_dispatch(db: Any, dispatch_id: str, *, actor: str = "li_dispatch_purge") -> bool:
+    """Single-row guarded delete inside BEGIN IMMEDIATE (RIDER B: direct-DB write discipline).
+
+    Accepts any status: naming an exact id is already a deliberate,
+    non-bulk operator action, unlike ``purge_dispatches`` below which
+    requires explicit criteria to guard against a bare mass-delete. Writes
+    one ``admin_events`` row (action="dispatch_purge") on a successful
+    delete so single-row purges are auditable like the bulk path
+    (ADR-0059 delta 3 — the shipped adapter wrote none).
+    """
+    async with db._read() as conn:
+        row = (
+            (
+                await conn.execute(
+                    text("SELECT status FROM dispatch_outbox WHERE id = :id"),
+                    {"id": dispatch_id},
+                )
+            )
+            .mappings()
+            .first()
+        )
+    if row is None:
+        return False
+
     async with db._tx() as conn:
         result = await conn.execute(
             text("DELETE FROM dispatch_outbox WHERE id = :id"),
             {"id": dispatch_id},
         )
-    return (result.rowcount or 0) > 0
+    deleted = (result.rowcount or 0) > 0
+    if deleted:
+        await db.insert_admin_event(
+            action="dispatch_purge",
+            target_id=dispatch_id,
+            details={"dispatch_id": dispatch_id, "status": row["status"], "total": 1},
+            actor=actor,
+        )
+    return deleted
+
+
+async def purge_dispatches(
+    db: Any,
+    *,
+    status: str | None = None,
+    before: float | None = None,
+    dry_run: bool = False,
+    actor: str = "li_dispatch_purge",
+) -> dict[str, Any]:
+    """Bulk-delete ``dispatch_outbox`` rows matching explicit criteria.
+
+    At least one of ``status`` or ``before`` is required — a bare call with
+    neither raises ``ValueError`` so a mistaken invocation cannot delete the
+    entire table. ``before`` filters on ``updated_at``. This is an operator
+    action distinct from the automatic retention sweep in
+    ``lionagi.studio.services.db_maintenance.prune_old_data``: it accepts any
+    status (including ``pending``/``delivering``) because the caller supplied
+    explicit criteria, not a blanket automatic policy.
+
+    Writes one ``admin_events`` row (action="dispatch_purge") per call,
+    always, including ``dry_run`` calls (so a dry run leaves an inspectable
+    record of what would have been deleted). ``status_transitions`` rows for
+    purged ids are preserved, matching ``purge_dispatch`` and the automatic
+    sweep — see their docstrings for why.
+
+    Returns ``{"total": N, "dry_run": bool, <status>: count, ...}``.
+    """
+    if status is None and before is None:
+        raise ValueError("purge_dispatches requires status and/or before criteria")
+
+    where_clauses: list[str] = []
+    params: dict[str, Any] = {}
+    if status is not None:
+        where_clauses.append("status = :status")
+        params["status"] = status
+    if before is not None:
+        where_clauses.append("updated_at <= :before")
+        params["before"] = before
+    where_sql = " AND ".join(where_clauses)
+
+    async with db._read() as conn:
+        rows = (
+            (
+                await conn.execute(
+                    text(
+                        f"SELECT status, COUNT(*) AS n FROM dispatch_outbox "  # noqa: S608
+                        f"WHERE {where_sql} GROUP BY status"
+                    ),
+                    params,
+                )
+            )
+            .mappings()
+            .all()
+        )
+    counts_by_status = {r["status"]: r["n"] for r in rows}
+    total = sum(counts_by_status.values())
+
+    if not dry_run and total:
+        async with db._tx() as conn:
+            await conn.execute(
+                text(f"DELETE FROM dispatch_outbox WHERE {where_sql}"),  # noqa: S608
+                params,
+            )
+
+    await db.insert_admin_event(
+        action="dispatch_purge",
+        details={
+            "status": status,
+            "before": before,
+            "dry_run": dry_run,
+            "total": total,
+            "counts_by_status": counts_by_status,
+        },
+        actor=actor,
+    )
+    return {"total": total, "dry_run": dry_run, **counts_by_status}

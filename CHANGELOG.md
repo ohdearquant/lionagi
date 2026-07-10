@@ -6,6 +6,10 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+### Added
+
+- Dispatch outbox retention and auditable purge (ADR-0059 delta 3): `dispatch_outbox` rows now expire automatically, riding the existing `prune_old_data` maintenance sweep — terminal-success rows (`delivered`/`acked`) after `LIONAGI_STUDIO_DISPATCH_RETENTION_SUCCESS_DAYS` (default 7 days), dead-lettered/expired rows after `LIONAGI_STUDIO_DISPATCH_RETENTION_DEAD_LETTER_DAYS` (default 30 days); `pending`/`delivering` rows are never eligible. `li dispatch purge` now writes an `admin_events` audit row on every delete (single-row and bulk) and gains bulk criteria: `li dispatch purge --status STATUS [--before EPOCH] [--dry-run]`, requiring explicit criteria (or an id) so a bare invocation cannot mass-delete. `status_transitions` history for purged dispatch rows is preserved, not cascade-deleted.
+
 ## [0.28.0] - 2026-07-08
 
 ### Added

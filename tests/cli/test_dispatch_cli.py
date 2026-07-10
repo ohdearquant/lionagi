@@ -123,3 +123,89 @@ def test_dispatch_purge_removes_row(monkeypatch, tmp_path, capsys):
     captured = capsys.readouterr()
     assert rc == 1
     assert "not found" in captured.out
+
+
+def test_dispatch_purge_bare_invocation_requires_criteria(monkeypatch, tmp_path, capsys):
+    """A bare `li dispatch purge` (no id, no criteria) must not mass-delete."""
+    _redirect_state_db(monkeypatch, tmp_path)
+
+    rc = main(["dispatch", "purge"])
+    captured = capsys.readouterr()
+    assert rc == 2
+    assert "id" in captured.out or "status" in captured.out
+
+
+def test_dispatch_purge_bulk_by_status(monkeypatch, tmp_path, capsys):
+    db_path = _redirect_state_db(monkeypatch, tmp_path)
+    import asyncio
+
+    from lionagi.state.db import StateDB
+
+    async def seed():
+        async with StateDB(db_path) as db:
+            from sqlalchemy import text
+
+            from lionagi.dispatch import enqueue_dispatch
+
+            delivered_id = await enqueue_dispatch(db, kind="k", deliver_to="seat-1")
+            pending_id = await enqueue_dispatch(db, kind="k", deliver_to="seat-2")
+            async with db._tx() as conn:
+                await conn.execute(
+                    text("UPDATE dispatch_outbox SET status = 'delivered' WHERE id = :id"),
+                    {"id": delivered_id},
+                )
+            return delivered_id, pending_id
+
+    delivered_id, pending_id = asyncio.run(seed())
+
+    rc = main(["dispatch", "purge", "--status", "delivered"])
+    captured = capsys.readouterr()
+    assert rc == 0
+    assert "purged 1 dispatch" in captured.out
+    assert "delivered=1" in captured.out
+
+    async def check():
+        from lionagi.dispatch import get_dispatch
+
+        async with StateDB(db_path) as db:
+            return await get_dispatch(db, delivered_id), await get_dispatch(db, pending_id)
+
+    remaining_delivered, remaining_pending = asyncio.run(check())
+    assert remaining_delivered is None
+    assert remaining_pending is not None
+
+
+def test_dispatch_purge_bulk_dry_run_deletes_nothing(monkeypatch, tmp_path, capsys):
+    db_path = _redirect_state_db(monkeypatch, tmp_path)
+    import asyncio
+
+    from lionagi.state.db import StateDB
+
+    async def seed():
+        async with StateDB(db_path) as db:
+            from sqlalchemy import text
+
+            from lionagi.dispatch import enqueue_dispatch
+
+            dispatch_id = await enqueue_dispatch(db, kind="k", deliver_to="seat-1")
+            async with db._tx() as conn:
+                await conn.execute(
+                    text("UPDATE dispatch_outbox SET status = 'delivered' WHERE id = :id"),
+                    {"id": dispatch_id},
+                )
+            return dispatch_id
+
+    dispatch_id = asyncio.run(seed())
+
+    rc = main(["dispatch", "purge", "--status", "delivered", "--dry-run"])
+    captured = capsys.readouterr()
+    assert rc == 0
+    assert "would purge 1 dispatch" in captured.out
+
+    async def check():
+        from lionagi.dispatch import get_dispatch
+
+        async with StateDB(db_path) as db:
+            return await get_dispatch(db, dispatch_id)
+
+    assert asyncio.run(check()) is not None

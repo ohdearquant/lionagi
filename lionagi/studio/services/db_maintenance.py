@@ -132,21 +132,41 @@ def get_db_size_alert(size_bytes: int) -> tuple[bool, int]:
 async def prune_old_data(
     *,
     keep_days: int | None = None,
+    dispatch_success_keep_days: int | None = None,
+    dispatch_dead_letter_keep_days: int | None = None,
     actor: str = "studio_db_maintenance",
 ) -> dict[str, int]:
-    """Remove terminal sessions/runs older than ``keep_days`` in one transaction.
+    """Remove terminal sessions/runs/dispatches older than their keep windows, in one transaction.
 
     FK safety: branches CASCADE on sessions; artifacts/plays/team_messages have
     soft FKs (no CASCADE) so session_id is nullified before DELETE; schedule_runs
     chain_parent_id self-reference is nullified before parent delete.
+
+    dispatch_outbox rows (ADR-0059 delta 3) use two separate windows: terminal
+    success (delivered/acked) and dead-lettered/expired. pending/delivering
+    rows are excluded from both DELETEs — a live scheduler tick may still
+    claim or retry them. Unlike the session branch above, status_transitions
+    rows for purged dispatch ids are left in place: there is no foreign key
+    from status_transitions to dispatch_outbox (ADR-0057 D2), and the
+    dispatch transition trail is the compact, low-volume audit record this
+    delta exists to keep — not the high-volume per-session history the
+    session branch intentionally cascades away.
     """
-    from lionagi.studio.config import PRUNE_KEEP_DAYS
+    from lionagi.studio.config import (
+        DISPATCH_RETENTION_DEAD_LETTER_DAYS,
+        DISPATCH_RETENTION_SUCCESS_DAYS,
+        PRUNE_KEEP_DAYS,
+    )
 
     if keep_days is None:
         keep_days = PRUNE_KEEP_DAYS
+    if dispatch_success_keep_days is None:
+        dispatch_success_keep_days = DISPATCH_RETENTION_SUCCESS_DAYS
+    if dispatch_dead_letter_keep_days is None:
+        dispatch_dead_letter_keep_days = DISPATCH_RETENTION_DEAD_LETTER_DAYS
 
     if not DEFAULT_DB_PATH.exists():
-        return {"sessions_pruned": 0, "runs_pruned": 0}
+        return {"sessions_pruned": 0, "runs_pruned": 0, "dispatch_purged": 0}
 
     cutoff = time.time() - keep_days * 86400.0
     sess_ph = ", ".join("?" * len(_TERMINAL_SESSION_STATUSES))
@@ -287,6 +307,31 @@ async def prune_old_data(
                 await conn.execute(*_q(del_sql, (*_TERMINAL_RUN_STATUSES, cutoff)))
             ).rowcount
 
+            # dispatch_outbox retention (ADR-0059 delta 3) — see docstring for
+            # the two-window rationale and the status_transitions-preservation
+            # decision. pending/delivering are never in either status list.
+            dispatch_success_cutoff = time.time() - dispatch_success_keep_days * 86400.0
+            dispatch_dead_letter_cutoff = time.time() - dispatch_dead_letter_keep_days * 86400.0
+            success_purged = (
+                await conn.execute(
+                    *_q(
+                        "DELETE FROM dispatch_outbox WHERE status IN ('delivered', 'acked')"
+                        " AND updated_at <= ?",
+                        (dispatch_success_cutoff,),
+                    )
+                )
+            ).rowcount
+            dead_letter_purged = (
+                await conn.execute(
+                    *_q(
+                        "DELETE FROM dispatch_outbox WHERE status IN ('dead_letter', 'expired')"
+                        " AND updated_at <= ?",
+                        (dispatch_dead_letter_cutoff,),
+                    )
+                )
+            ).rowcount
+            dispatch_purged = success_purged + dead_letter_purged
+
         # Audit event runs after the prune transaction commits; insert_admin_event
         # opens its own write transaction and nesting it would self-deadlock on the
         # sqlite write lock.
@@ -297,18 +342,26 @@ async def prune_old_data(
                 "cutoff": cutoff,
                 "sessions_pruned": sessions_pruned,
                 "runs_pruned": runs_pruned,
+                "dispatch_success_keep_days": dispatch_success_keep_days,
+                "dispatch_dead_letter_keep_days": dispatch_dead_letter_keep_days,
+                "dispatch_purged": dispatch_purged,
             },
             actor=actor,
         )
 
     _log.info(
-        "Prune old data (keep_days=%d, cutoff=%.0f): sessions=%d runs=%d",
+        "Prune old data (keep_days=%d, cutoff=%.0f): sessions=%d runs=%d dispatch=%d",
         keep_days,
         cutoff,
         sessions_pruned,
         runs_pruned,
+        dispatch_purged,
     )
-    return {"sessions_pruned": sessions_pruned, "runs_pruned": runs_pruned}
+    return {
+        "sessions_pruned": sessions_pruned,
+        "runs_pruned": runs_pruned,
+        "dispatch_purged": dispatch_purged,
+    }
 
 
 async def vacuum_state_db(
