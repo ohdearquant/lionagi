@@ -10,6 +10,37 @@ from ._config import GroqConfigs
 __all__ = ("GroqAudioTranscriptionEndpoint",)
 
 
+def _replayable_file_factory(file_data, field_name: str):
+    """Return a zero-arg callable producing a fresh file object for one attempt.
+
+    Bytes/bytearray are snapshotted once and re-wrapped in a new BytesIO per
+    attempt. A seekable stream is seeked back to its starting position before
+    each attempt. A non-seekable stream cannot be replayed safely, so it fails
+    here, before any network I/O, instead of silently resending an exhausted
+    stream on retry.
+    """
+    if file_data is None:
+        return lambda: None
+    if isinstance(file_data, (bytes, bytearray)):
+        snapshot = bytes(file_data)
+        return lambda: io.BytesIO(snapshot)
+
+    seekable = getattr(file_data, "seekable", None)
+    if not callable(seekable) or not seekable():
+        raise TypeError(
+            f"{field_name} must be bytes, bytearray, or a seekable stream to "
+            "support retries; pass bytes, or configure the endpoint with "
+            "max_retries=1 for a non-seekable stream."
+        )
+    start_pos = file_data.tell()
+
+    def _factory():
+        file_data.seek(start_pos)
+        return file_data
+
+    return _factory
+
+
 @GroqConfigs.AUDIO_TRANSCRIPTION.register
 class GroqAudioTranscriptionEndpoint(Endpoint):
     """Groq Whisper transcription endpoint; sends audio as multipart/form-data."""
@@ -23,41 +54,35 @@ class GroqAudioTranscriptionEndpoint(Endpoint):
         super().__init__(config, **kwargs)
 
     async def _call(self, payload: dict, headers: dict, **kwargs):
-        self._assert_ssrf_safe_url()
-
         import aiohttp
 
-        file_data: bytes | None = kwargs.pop("file", None)
+        file_data = kwargs.pop("file", None)
         filename: str = kwargs.pop("filename", "audio.mp3")
-
-        form = aiohttp.FormData()
-        for key, value in payload.items():
-            if value is not None:
-                form.add_field(key, str(value))
-
-        if file_data is not None:
-            form.add_field(
-                "file",
-                (io.BytesIO(file_data) if isinstance(file_data, (bytes, bytearray)) else file_data),
-                filename=filename,
-                content_type="application/octet-stream",
-            )
+        file_factory = _replayable_file_factory(file_data, "file")
 
         multipart_headers = {k: v for k, v in headers.items() if k.lower() != "content-type"}
 
-        async with self._create_http_session() as session:
-            async with session.post(
-                url=self.config.full_url,
-                headers=multipart_headers,
-                data=form,
-            ) as response:
-                if response.status != 200:
-                    error_body = await response.text()
-                    raise aiohttp.ClientResponseError(
-                        request_info=response.request_info,
-                        history=response.history,
-                        status=response.status,
-                        message=f"Groq transcription failed ({response.status}): {error_body}",
-                        headers=response.headers,
-                    )
-                return await response.json()
+        def _build_form():
+            form = aiohttp.FormData()
+            for key, value in payload.items():
+                if value is not None:
+                    form.add_field(key, str(value))
+
+            file_obj = file_factory()
+            if file_obj is not None:
+                form.add_field(
+                    "file",
+                    file_obj,
+                    filename=filename,
+                    content_type="application/octet-stream",
+                )
+            return {"data": form}
+
+        return await self._call_aiohttp(
+            payload=payload,
+            headers=multipart_headers,
+            request_body_factory=_build_form,
+            response_mode="json",
+            error_context="Groq transcription",
+            **kwargs,
+        )

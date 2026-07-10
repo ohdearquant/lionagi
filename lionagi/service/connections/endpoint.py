@@ -6,7 +6,8 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
-from typing import ClassVar
+from collections.abc import Callable
+from typing import Any, ClassVar, Literal
 
 from pydantic import BaseModel
 
@@ -228,12 +229,33 @@ class Endpoint:
 
         return await self._call(payload, headers, **kwargs)
 
-    async def _call_aiohttp(self, payload: dict, headers: dict, **kwargs):
+    async def _call_aiohttp(
+        self,
+        payload: dict[str, Any],
+        headers: dict[str, str],
+        *,
+        request_body_factory: Callable[[], dict[str, Any]] | None = None,
+        response_mode: Literal["json", "bytes"] = "json",
+        error_context: str = "Request",
+        **request_kwargs: Any,
+    ) -> Any:
         self._assert_ssrf_safe_url()
 
         import aiohttp
 
+        build_body = request_body_factory or (lambda: {"json": payload})
+
         async def _make_request():
+            # The body is rebuilt inside the per-attempt function, not before retry
+            # orchestration, because FormData/BytesIO/file streams can be consumed by
+            # the first POST and must not be silently replayed by a later attempt.
+            body_kwargs = build_body()
+            collision = set(body_kwargs) & set(request_kwargs)
+            if collision:
+                raise ValueError(
+                    f"request_body_factory and request_kwargs both supply {sorted(collision)}"
+                )
+
             async with self._create_http_session() as session:
                 response = None
                 try:
@@ -241,8 +263,8 @@ class Endpoint:
                         method=self.config.method,
                         url=self.config.full_url,
                         headers=headers,
-                        json=payload,
-                        **kwargs,
+                        **body_kwargs,
+                        **request_kwargs,
                     )
 
                     if response.status == 429 or response.status >= 500:
@@ -251,10 +273,11 @@ class Endpoint:
                         try:
                             error_body = await response.json()
                             error_message = (
-                                f"Request failed with status {response.status}: {error_body}"
+                                f"{error_context} failed with status "
+                                f"{response.status}: {error_body}"
                             )
                         except Exception:
-                            error_message = f"Request failed with status {response.status}"
+                            error_message = f"{error_context} failed with status {response.status}"
 
                         original = aiohttp.ClientResponseError(
                             request_info=response.request_info,
@@ -267,6 +290,8 @@ class Endpoint:
                         # gives up immediately, preserving the original error on __cause__.
                         raise _NonRetryableClientError(original) from original
 
+                    if response_mode == "bytes":
+                        return await response.read()
                     return await response.json()
                 finally:
                     # Ensure response is properly released if coroutine is cancelled between retries.
