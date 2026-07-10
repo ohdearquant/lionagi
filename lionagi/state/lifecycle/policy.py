@@ -324,6 +324,7 @@ def build_default_registry() -> PolicyRegistry:
             same_status="append",
             patch_fields=frozenset({"attempt", "next_attempt_at", "last_error"}),
             reason_prefixes=frozenset({"dispatch"}),
+            reason_columns=False,
         )
     )
 

@@ -87,3 +87,7 @@ class LifecyclePolicy:
     same_status: SameStatusRule
     patch_fields: frozenset[str]
     reason_prefixes: frozenset[str]
+    # Whether the entity's own table carries status_reason_* denormalized
+    # columns; tables without them (dispatch_outbox) must skip that SET
+    # clause or every transition fails at the database.
+    reason_columns: bool = True

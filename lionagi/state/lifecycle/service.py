@@ -187,7 +187,11 @@ class SQLAlchemyLifecycleService:
         if not command.actor.id:
             raise LifecycleValidationError("TransitionCommand.actor.id must be non-empty")
         return await self._transition(
-            command, extra_guard=None, enforce_edges=True, undeclared_edge_mode="reject"
+            command,
+            extra_guard=None,
+            enforce_edges=True,
+            undeclared_edge_mode="reject",
+            write_reason_columns=policy.reason_columns,
         )
 
     # ── D4: the one guarded transition algorithm ────────────────────────

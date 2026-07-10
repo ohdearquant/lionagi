@@ -152,6 +152,29 @@ async def test_public_transition_rejects_unregistered_reason_code(db: StateDB) -
 
 
 @pytest.mark.asyncio
+async def test_public_transition_applies_for_dispatch_without_reason_columns(db: StateDB) -> None:
+    """dispatch_outbox has no status_reason_* columns; the public path must
+    skip that SET clause instead of failing at the database."""
+    from lionagi.dispatch import enqueue_dispatch, get_dispatch
+
+    dispatch_id = await enqueue_dispatch(db, kind="terminal_notify", deliver_to="seat-1")
+    service = SQLAlchemyLifecycleService(db)
+
+    outcome = await service.transition(
+        _command(
+            entity_type="dispatch",
+            entity_id=dispatch_id,
+            to_status="delivering",
+            reason=ReasonRecord(code="dispatch.delivering.attempt"),
+        )
+    )
+
+    assert outcome.result == "applied"
+    row = await get_dispatch(db, dispatch_id)
+    assert row["status"] == "delivering"
+
+
+@pytest.mark.asyncio
 async def test_public_transition_rejects_wrong_domain_reason_code(db: StateDB) -> None:
     """A globally valid code from another entity's reason domain is refused."""
     run_id = await _make_schedule_run(db, status="queued")
