@@ -727,12 +727,9 @@ def add_orchestrate_subparser(
 
 
 def _resolve_model_and_prompt(query: list[str]) -> tuple[str | None, str | None] | None:
-    """Assign a 0-2 token positional bucket to (model, prompt).
-
-    Mirrors the `li agent` [MODEL] PROMPT convention: a single token is the
-    prompt (model comes from -a/--agent, a spec file, or a playbook); two
-    tokens are (model, prompt) in order. Returns None after logging a clear
-    error when more than two positionals are given (e.g. an unquoted prompt).
+    """Assign a 0-2 token positional bucket to (model, prompt), mirroring the
+    `li agent` [MODEL] PROMPT convention: one token is the prompt, two are
+    (model, prompt). Returns None (after logging) for >2 positionals.
     """
     if len(query) > 2:
         log_error(
@@ -750,8 +747,8 @@ def _resolve_model_and_prompt(query: list[str]) -> tuple[str | None, str | None]
 def _run_orch_command(coro, *, verbose: bool, extra_handlers: tuple = ()) -> tuple[object, int]:
     """Run an orchestration coroutine, map shared exceptions to exit codes.
 
-    Returns (result, exit_code).  extra_handlers is a tuple of (ExcType, exit_code)
-    pairs checked before the shared map, allowing callers to handle pattern-specific
+    Returns (result, exit_code). extra_handlers is a tuple of (ExcType,
+    exit_code) pairs checked before the shared map, for pattern-specific
     exceptions without repeating the common mapping.
     """
     try:

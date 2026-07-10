@@ -170,13 +170,9 @@ class SearchTool(LionTool):
 
     def __init__(self, workspace_root: str | None = None) -> None:
         self._tool = None
-        # Resolve the containment root ONCE, at construction, against the cwd
-        # in effect now. Storing the raw (possibly relative) value would let a
-        # later os.chdir() move the boundary — e.g. a relative "ws" would be
-        # re-resolved against whatever cwd is current when a search runs, so a
-        # search could escape the originally intended root. Resolving here
-        # freezes the boundary to an absolute path; re-resolving it downstream
-        # is then idempotent.
+        # Resolve to an absolute path ONCE here — a stored relative root would
+        # re-resolve against a later os.chdir()'d cwd and could escape the
+        # intended boundary.
         self._workspace_root = (
             str(Path(workspace_root).resolve()) if workspace_root is not None else None
         )

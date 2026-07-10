@@ -142,14 +142,13 @@ class ReviewEngine(Engine):
         run.root = artifact
         run.observe(IssueFound, lambda i, _c: self._on_issue(run, i))
 
-        # Fan out: one reviewer per dimension, in parallel.
-        # Using ln_gather (structured concurrency) so a dimension failure cancels
-        # siblings and no coroutine outlives this scope.
+        # Fan out one reviewer per dimension; ln_gather's structured concurrency
+        # cancels siblings on a dimension failure so no coroutine outlives this scope.
         try:
             await ln_gather(*(self._review_dimension(run, artifact, d) for d in dims))
         except BaseException:
-            # Cancel any verifier tasks that were spawned before the failure so
-            # no background work keeps mutating shared run state after _run exits.
+            # Cancel any verifier tasks spawned before the failure so no
+            # background work mutates shared run state after _run exits.
             await run.cancel_active()
             raise
         # Drain any adversarial verifiers spawned by high-severity issues.
@@ -176,8 +175,7 @@ class ReviewEngine(Engine):
                 emits=emits,
             )
             # Repair re-prompts a reviewer that emitted prose instead of fenced
-            # issues — it requests an emission, never fabricates one, so a
-            # genuinely clean dimension simply emits nothing again.
+            # issues; it never fabricates one, so a clean dimension emits nothing again.
             await run.operate_with_repair(
                 agent,
                 _dimension_instruction(artifact, dimension),

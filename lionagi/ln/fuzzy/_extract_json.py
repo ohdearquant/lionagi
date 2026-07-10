@@ -8,7 +8,6 @@ from ._fuzzy_json import MAX_JSON_INPUT_SIZE, fuzzy_json
 
 logger = logging.getLogger(__name__)
 
-# Precompile the regex for extracting JSON code blocks
 _JSON_BLOCK_PATTERN = re.compile(r"```json\s*(.*?)\s*```", re.DOTALL)
 
 
@@ -28,7 +27,6 @@ def extract_json(
                     f"Input size ({len(item)} bytes) exceeds maximum ({max_size} bytes)"
                 )
 
-    # If input_data is a list, join into a single string
     if isinstance(input_data, list):
         input_str = "\n".join(input_data)
     else:
@@ -50,7 +48,6 @@ def extract_json(
     if not matches:
         return []
 
-    # If only one match, return single dict; if multiple, return list of dicts
     if return_one_if_single and len(matches) == 1:
         data_str = matches[0]
         try:
@@ -69,6 +66,5 @@ def extract_json(
             else:
                 results.append(orjson.loads(m))
         except Exception:  # noqa: S112  # intentional parser fallback: skip unparseable JSON blocks, not an error
-            # Skip invalid JSON blocks
             continue
     return results

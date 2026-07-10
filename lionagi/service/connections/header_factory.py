@@ -38,7 +38,6 @@ class HeaderFactory:
             dict_ = HeaderFactory.get_content_type_header(content_type)
 
         if auth_type == "none":
-            # No authentication needed
             pass
         elif not api_key:
             raise ValueError("API key is required for authentication")

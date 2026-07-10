@@ -102,7 +102,6 @@ def prepare_messages_for_chat(
     scratchpad: dict[str, str] | None = None,
 ) -> list[MessageContent] | list[dict[str, Any]]:
     """Prepare a message Pile for the chat API: embed system, fold action outputs into context, merge consecutive assistant turns, append new_instruction."""
-    # Resolve message sequence — apply progression ordering if provided.
     to_use: Pile[Message] = messages if progression is None else messages[progression]
 
     if len(to_use) == 0:

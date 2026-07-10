@@ -46,9 +46,8 @@ __all__ = ("DEFAULT_ROUND_BUDGET", "build_lndl_middle", "lndl_middle")
 
 DEFAULT_ROUND_BUDGET = 3
 
-# Shared by every round's action bridge — concurrent, error-suppressed (a
-# failed tool call surfaces as a tool result the model can react to next
-# round, not an exception that aborts the whole LNDL run).
+# Shared by every round's action bridge: concurrent, error-suppressed so a
+# failed tool call becomes a result the model reacts to, not an aborting exception.
 _ACTION_PARAM = ActionParam(
     action_call_params=get_default_action_call(),
     tools=None,
@@ -93,13 +92,9 @@ def _render_type(annotation: Any) -> str:
 
 
 def _render_target_spec(target: Any) -> str | None:
-    """Render the target model's fields as an LNDL ``Specs:`` line -- the
-    exact format LNDL_SYSTEM_PROMPT's own examples use to teach the model
-    the schema it must fill (rule 5: "Use the EXACT spec names declared in
-    the schema you are given"). Without this, a real model is never told
-    the target field names once the per-round chat call strips native
-    ``response_format``. Returns None for a plain-dict/no-target caller —
-    there's no structured spec to announce."""
+    """Render the target model's fields as an LNDL ``Specs:`` line, the format
+    LNDL_SYSTEM_PROMPT's examples use — required since the per-round chat
+    call strips native ``response_format``. None for a plain-dict/no-target caller."""
     model_fields = getattr(target, "model_fields", None)
     if not model_fields:
         return None
@@ -158,11 +153,8 @@ def _round_instruction(
     round_budget: int,
     prior_error: str | None,
 ) -> JsonValue | Instruction:
-    """Round 1 sends the caller's own instruction verbatim (the LNDL contract
-    rides in ``guidance`` instead, see ``build_lndl_middle``). Later rounds
-    send a short continuation notice — LNDL_SYSTEM_PROMPT's own MULTI-ROUND
-    MODE section teaches the model to read 'Round N of M.' as a continuation
-    signal, with tool results already visible in chat history."""
+    """Round 1 sends the instruction verbatim (LNDL contract rides in
+    ``guidance``); later rounds send a short 'Round N of M.' continuation notice."""
     if round_num == 1:
         return original_instruction
     notice = f"Round {round_num} of {round_budget}."
@@ -178,12 +170,9 @@ def _classify_round(
 ) -> tuple[RoundOutcome, list[ActionCall], dict[str, Any] | None]:
     """Parse and assemble one round's raw text into a RoundOutcome.
 
-    Returns ``(outcome, pending_action_calls, assembled_dict)``. ``pending``
-    is populated for a Continue round (every declared lact, executed
-    unconditionally per LNDL_SYSTEM_PROMPT's "tools execute every round") and
-    for a Success candidate (only the lacts actually reachable from OUT{},
-    via ``collect_actions``). ``assembled`` is populated only for a Success
-    candidate.
+    Returns ``(outcome, pending_action_calls, assembled_dict)``; ``pending`` is
+    every lact for Continue, only OUT{}-reachable lacts for Success; ``assembled``
+    is set only on Success.
     """
     blocks = extract_lndl_blocks(text)
     if not blocks:
@@ -224,10 +213,8 @@ def build_lndl_middle(round_budget: int = DEFAULT_ROUND_BUDGET):
         if clear_messages:
             branch.msgs.clear_messages()
 
-        # operate() always hands us the only model type it ever constructs —
-        # either the caller's bare response_format (via a direct communicate()
-        # call) or the operative-wrapped subclass (via operate()). Either way
-        # it's what assemble()+model_validate() below must target.
+        # The only model type operate()/communicate() ever hands us; what
+        # assemble()+model_validate() below must target.
         target = chat_param.response_format
         base_guidance = chat_param.guidance or ""
         guidance_parts = [get_lndl_system_prompt()]
@@ -237,10 +224,8 @@ def build_lndl_middle(round_budget: int = DEFAULT_ROUND_BUDGET):
         if base_guidance:
             guidance_parts.append(base_guidance)
         lndl_guidance = "\n\n".join(guidance_parts)
-        # Strip native tool-calling and JSON-schema auto-rendering from the
-        # per-round chat call: LNDL uses a free-text <lact>/OUT{} protocol,
-        # not native function-calling, and it's assemble()+model_validate()
-        # below — not the per-round chat call — that targets response_format.
+        # LNDL uses a free-text <lact>/OUT{} protocol, not native
+        # function-calling, so strip tool schemas and response_format here.
         stripped_chat_param = chat_param.with_updates(tool_schemas=[], response_format=None)
 
         action_results: dict[str, Any] = {}
@@ -282,11 +267,8 @@ def build_lndl_middle(round_budget: int = DEFAULT_ROUND_BUDGET):
                 last_error = str(e)
                 continue
 
-        # Exhausted(last_error): round budget hit without a valid OUT{}. Raise
-        # rather than return the raw error (or None, for an all-Continue run)
-        # -- a caller expecting a validated model must never receive a bare
-        # str/None through operate(), and Failed/Exhausted are the only two
-        # RoundOutcome variants that end the run without a value to return.
+        # Round budget exhausted without a valid OUT{}: raise rather than
+        # return a bare str/None, which a validated-model caller must never see.
         detail = f": {last_error}" if last_error else " (no OUT{} block was produced)"
         raise LNDLError(
             f"LNDL round budget ({round_budget}) exhausted without a valid OUT{{}}{detail}"

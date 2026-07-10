@@ -199,12 +199,9 @@ class SandboxBackend(Protocol):
 # local_worktree backend — wraps sandbox.py's SandboxSession lifecycle.
 # ---------------------------------------------------------------------------
 
-#: ``run_cell``'s subprocess never blanket-inherits the host environment (a
-#: credential-leak vector: any secret in this process's env would otherwise be
-#: visible to the cell's command). Only these host variables are forwarded —
-#: enough to resolve the interpreter/tool chain and locate a home directory —
-#: plus whatever ``cell.env`` explicitly allow-lists (empty for prompt-cells,
-#: enforced below).
+#: ``run_cell``'s subprocess never blanket-inherits the host environment
+#: (credential-leak vector). Only these variables are forwarded, plus
+#: whatever ``cell.env`` explicitly allow-lists.
 _SAFE_ENV_KEYS = ("PATH", "HOME", "PYTHONPATH", "VIRTUAL_ENV")
 
 
