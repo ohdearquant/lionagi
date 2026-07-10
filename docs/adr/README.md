@@ -154,7 +154,9 @@ collisions. Unused numbers inside a block are intentional gaps, not missing docu
 - [ADR-0058](ADR-0058-unified-lifecycle-transition-service.md) — Unified lifecycle transition
   service
 - [ADR-0059](ADR-0059-durable-dispatch-outbox.md) — Durable dispatch outbox
-- 0060-0061 — unused (intentional gaps)
+- [ADR-0060](ADR-0060-run-supervision-terminal-callback-and-orphan-detection.md) — Run
+  supervision: generic terminal callback and two-stage orphan detection
+- 0061 — unused (intentional gap)
 
 ### cli-surface (0062-0067)
 
