@@ -26,7 +26,8 @@ from lionagi.state.db import (
     StateDB,
     TransitionRejectedError,
 )
-from lionagi.state.reasons import SessionReasons
+from lionagi.state.lifecycle.policy import DEFAULT_REGISTRY
+from lionagi.state.reasons import RunReasons, SessionReasons
 
 # ── Fixtures ────────────────────────────────────────────────────────────────
 
@@ -266,6 +267,29 @@ async def test_update_status_rejects_unknown_status_for_schedule_run(db: StateDB
 
     row = await db.get_schedule_run(run_id)
     assert row["status"] == "running"  # unchanged — the write never landed
+
+
+@pytest.mark.asyncio
+async def test_update_status_admits_every_policy_status_for_schedule_run(db: StateDB) -> None:
+    """The facade vocabulary is sourced from the lifecycle policy registry, so
+    every status the policy (and the schema CHECK) declares — including
+    timed_out, waiting_dependency, and retry_wait — passes the pre-delegation
+    check instead of being rejected before it can reach the unified policy."""
+    policy_statuses = DEFAULT_REGISTRY.get("schedule_run").statuses
+    assert VALID_STATUSES_BY_ENTITY_TYPE["schedule_run"] == policy_statuses
+    assert {"timed_out", "waiting_dependency", "retry_wait"} <= policy_statuses
+
+    run_id = await _make_schedule_run(db, status="running")
+    applied = await db.update_status(
+        "schedule_run",
+        run_id,
+        new_status="timed_out",
+        reason_code=RunReasons.TIMED_OUT_DEADLINE,
+        source="system",
+    )
+    assert applied is True
+    row = await db.get_schedule_run(run_id)
+    assert row["status"] == "timed_out"
 
 
 @pytest.mark.parametrize(

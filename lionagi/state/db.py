@@ -27,6 +27,7 @@ from lionagi.state.engine import (
 )
 from lionagi.state.lifecycle import LifecycleNotFoundError as _LifecycleNotFoundError
 from lionagi.state.lifecycle import adapters as _lifecycle_adapters
+from lionagi.state.lifecycle import policy as _lifecycle_policy
 from lionagi.state.lifecycle.service import SQLAlchemyLifecycleService as _LifecycleService
 from lionagi.state.reasons import (
     PlayReasons as _PlayReasons,
@@ -285,21 +286,12 @@ EXTRA_STATUS_WRITE_FIELDS_BY_ENTITY_TYPE: dict[str, frozenset[str]] = {
 # update_status() rejects any new_status outside its entity_type's set here —
 # the terminal-overwrite floor above stops a terminal record from moving;
 # this stops ANY record (terminal or not) from being written to a status
-# that was never declared for its entity type.
+# that was never declared for its entity type. Sourced from the lifecycle
+# policy registry (ADR-0058) so the facade's vocabulary can never drift from
+# the statuses the unified policy (and the schema CHECK constraints) declare.
 VALID_STATUSES_BY_ENTITY_TYPE: dict[str, frozenset[str]] = {
-    "session": VALID_SESSION_STATUSES,
-    "invocation": VALID_SESSION_STATUSES,  # shared vocabulary
-    # ADR-0101 D1/D2 slice 2: "queued" is the durable status a task
-    # application (or a schedule fire) now starts in before a worker leases
-    # it. Lease/running vocab beyond the existing "running" stays as-is —
-    # this slice does not add a worker/lease loop.
-    "schedule_run": SCHEDULE_RUN_TERMINAL_STATUSES | frozenset({"pending", "running", "queued"}),
-    # Shows live in {active, completed, aborted} and carry an "imported" marker
-    # for records reconstructed from an on-disk manifest — update_show() already
-    # validates against this same set before routing here.
-    "show": SHOW_TERMINAL_STATUSES | frozenset({"active", "imported"}),
-    "play": PLAY_ACTIVE_STATUSES | PLAY_TERMINAL_STATUSES,
-    "team": TEAM_TERMINAL_STATUSES | frozenset({"active"}),
+    entity_type: _lifecycle_policy.DEFAULT_REGISTRY.get(entity_type).statuses
+    for entity_type in ("session", "invocation", "schedule_run", "show", "play", "team")
 }
 
 
