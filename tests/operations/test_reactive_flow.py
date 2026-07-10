@@ -5,6 +5,10 @@
 
 from __future__ import annotations
 
+import asyncio
+import logging
+from typing import Any
+
 import pytest
 
 from lionagi.casts.emission import SpawnRequest
@@ -411,3 +415,89 @@ async def test_execute_stream_subscribes_via_public_observer_not_private():
         "follow_up did not run — execute_stream() did not subscribe via the public observer property"
     )
     assert any(e.spawned for e in events)
+
+
+# ---------------------------------------------------------------------------
+# NodeSpawned signal: exactly one emission per accepted spawn, correct payload
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_node_spawned_emitted_once_with_matching_payload():
+    from lionagi.session.signal import NodeSpawned
+
+    async def spawner(**kw):
+        return SpawnRequest(instruction="follow-up", independent=True)
+
+    async def follow_up(**kw):
+        return "done"
+
+    session = _session_with_ops(spawner=spawner, follow_up=follow_up)
+    spawned_signals: list[NodeSpawned] = []
+    session.observe(NodeSpawned, handler=lambda s, _ctx: spawned_signals.append(s))
+
+    def node_builder(req: SpawnRequest, emitter: Operation) -> Operation:
+        return create_operation("follow_up", parameters={})
+
+    builder = OperationGraphBuilder()
+    builder.add_operation("spawner")
+    graph = builder.get_graph()
+
+    result = await flow(session, graph, reactive=True, node_builder=node_builder)
+    await asyncio.sleep(0)
+
+    assert result["spawned_operations"] == 1
+    assert len(spawned_signals) == 1
+    sig = spawned_signals[0]
+    assert sig.independent is True
+    assert sig.op_id  # traceable to the injected child operation
+
+
+# ---------------------------------------------------------------------------
+# Fire-and-forget signal delivery: observer failure never changes the flow
+# result, and the executor's detached-task set drains after the run.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_spawn_observer_failure_does_not_change_flow_result(caplog, monkeypatch):
+    """A raising session.emit() (NodeSpawned observer) is consumed and logged;
+    the spawn/injection outcome is unaffected."""
+
+    async def failing_emit(self, event):
+        raise RuntimeError("observer boom")
+
+    async def spawner(**kw):
+        return SpawnRequest(instruction="follow-up", independent=True)
+
+    async def follow_up(**kw):
+        return "done"
+
+    session = _session_with_ops(spawner=spawner, follow_up=follow_up)
+    monkeypatch.setattr(Session, "emit", failing_emit)
+
+    def node_builder(req: SpawnRequest, emitter: Operation) -> Operation:
+        return create_operation("follow_up", parameters={})
+
+    builder = OperationGraphBuilder()
+    builder.add_operation("spawner")
+    graph = builder.get_graph()
+
+    executor_ref: dict[str, Any] = {}
+    with caplog.at_level(logging.WARNING, logger="lionagi.operations.flow"):
+        result = await flow(
+            session,
+            graph,
+            reactive=True,
+            node_builder=node_builder,
+            executor_ref=executor_ref,
+        )
+        for _ in range(50):
+            if not executor_ref["executor"]._signal_tasks:
+                break
+            await asyncio.sleep(0.01)
+
+    assert result["spawned_operations"] == 1
+    assert len(result["completed_operations"]) == 2
+    assert executor_ref["executor"]._signal_tasks == set()
+    assert any("emission failed" in r.message for r in caplog.records)
