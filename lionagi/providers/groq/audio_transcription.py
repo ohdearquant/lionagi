@@ -35,13 +35,14 @@ def _replayable_file_factory(file_data, field_name: str, *, require_replayable: 
                 "max_retries=1 for a non-seekable stream."
             )
         return lambda: file_data
+    # Snapshot the stream once and restore its position. Handing the live
+    # stream to each attempt is not enough: an explicit RetryConfig retries by
+    # re-invoking _call, which would rebuild this factory with the consumed
+    # stream already at EOF and silently upload an empty file.
     start_pos = file_data.tell()
-
-    def _factory():
-        file_data.seek(start_pos)
-        return file_data
-
-    return _factory
+    snapshot = file_data.read()
+    file_data.seek(start_pos)
+    return lambda: io.BytesIO(snapshot)
 
 
 @GroqConfigs.AUDIO_TRANSCRIPTION.register
@@ -83,10 +84,14 @@ class GroqAudioTranscriptionEndpoint(Endpoint):
                 )
             return {"data": form}
 
+        # API fields stay in the multipart body; only transport kwargs
+        # (proxy, ssl, timeout, ...) are forwarded to the HTTP layer.
+        transport_kwargs = {k: v for k, v in kwargs.items() if k not in payload}
         return await self._call_aiohttp(
             payload=payload,
             headers=multipart_headers,
             request_body_factory=_build_form,
             response_mode="json",
             error_context="Groq transcription",
+            **transport_kwargs,
         )

@@ -358,6 +358,64 @@ class TestOpenaiTranscription:
         assert result == {"text": "ok"}
         assert received["language"] == "en"
 
+    async def test_seekable_stream_replays_full_content_across_explicit_retries(self, run_server):
+        """An explicit RetryConfig retries by re-invoking _call; the seekable
+        stream is snapshotted so the second attempt does not upload an empty
+        file from an EOF position."""
+        import aiohttp
+
+        bodies: list[bytes] = []
+
+        async def handler(request: web.Request):
+            fields = await _read_multipart(request)
+            bodies.append(fields.get("file", b""))
+            if len(bodies) == 1:
+                return web.json_response({"error": "boom"}, status=500)
+            return web.json_response({"text": "ok"})
+
+        server = await run_server(handler)
+        config = _config("openai_stt", "audio/transcriptions", await _base_url(server))
+        endpoint = OpenaiAudioTranscriptionEndpoint(
+            config=config,
+            retry_config=RetryConfig(
+                max_retries=2, base_delay=0.001, retry_exceptions=(aiohttp.ClientError,)
+            ),
+        )
+
+        stream = io.BytesIO(b"full-audio-content")
+        with _NO_SLEEP:
+            result = await endpoint.call({"model": "whisper-1"}, file=stream, filename="clip.wav")
+
+        assert result == {"text": "ok"}
+        assert bodies == [b"full-audio-content", b"full-audio-content"]
+
+    async def test_transport_kwargs_are_forwarded(self, run_server):
+        """aiohttp transport options (params here) must reach the HTTP layer
+        while API fields stay confined to the multipart body."""
+        seen: dict = {}
+
+        async def handler(request: web.Request):
+            seen["query"] = dict(request.query)
+            seen.update(await _read_multipart(request))
+            return web.json_response({"text": "ok"})
+
+        server = await run_server(handler)
+        config = _config("openai_stt", "audio/transcriptions", await _base_url(server))
+        endpoint = OpenaiAudioTranscriptionEndpoint(config=config)
+
+        result = await endpoint._call(
+            payload={"model": "whisper-1", "language": "en"},
+            headers={"Authorization": "Bearer test", "Content-Type": "application/json"},
+            file=b"audio",
+            filename="clip.wav",
+            language="en",
+            params={"beta": "1"},
+        )
+
+        assert result == {"text": "ok"}
+        assert seen["query"] == {"beta": "1"}
+        assert seen["language"] == "en"
+
     async def test_zero_retry_config_accepts_non_seekable_stream(self, run_server):
         """RetryConfig(max_retries=0) is explicitly single-shot: no replay can
         occur, so a non-seekable stream must be accepted."""

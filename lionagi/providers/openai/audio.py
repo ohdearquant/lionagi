@@ -48,13 +48,14 @@ def _replayable_file_factory(file_data, field_name: str, *, require_replayable: 
                 "max_retries=1 for a non-seekable stream."
             )
         return lambda: file_data
+    # Snapshot the stream once and restore its position. Handing the live
+    # stream to each attempt is not enough: an explicit RetryConfig retries by
+    # re-invoking _call, which would rebuild this factory with the consumed
+    # stream already at EOF and silently upload an empty file.
     start_pos = file_data.tell()
-
-    def _factory():
-        file_data.seek(start_pos)
-        return file_data
-
-    return _factory
+    snapshot = file_data.read()
+    file_data.seek(start_pos)
+    return lambda: io.BytesIO(snapshot)
 
 
 @OpenAIConfigs.AUDIO_SPEECH.register
@@ -138,10 +139,16 @@ class OpenaiAudioTranscriptionEndpoint(Endpoint):
                 )
             return {"data": form}
 
+        # Residual kwargs split two ways: keys create_payload kept in the body
+        # are API fields (never transport options); everything else is a
+        # transport kwarg (proxy, ssl, timeout, ...) that the base endpoints
+        # honor and this one must too.
+        transport_kwargs = {k: v for k, v in kwargs.items() if k not in payload}
         return await self._call_aiohttp(
             payload=payload,
             headers=multipart_headers,
             request_body_factory=_build_form,
             response_mode="json",
             error_context="Transcription request",
+            **transport_kwargs,
         )
