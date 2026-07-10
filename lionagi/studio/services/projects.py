@@ -224,7 +224,6 @@ async def assign_sessions_to_project(
         await db.commit()
         count = cur.rowcount
 
-        # Ensure the project row exists
         now = time.time()
         await db.execute(
             """INSERT INTO projects (name, source, created_at, updated_at, last_seen_at)

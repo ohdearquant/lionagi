@@ -72,59 +72,26 @@ class GithubPollResult(NamedTuple):
 
 _client: httpx.AsyncClient | None = None
 
-# Last token known to have actually authenticated against the GitHub API
-# (set after any non-401 response). Checked before _get_gh_token() so a
-# poll that already knows the working credential doesn't re-check
-# GITHUB_TOKEN or shell out to `gh auth token` on every tick -- only a
-# fresh 401 clears it and forces re-resolution.
+# Last token known to have authenticated (set after any non-401 response).
+# Checked before _get_gh_token() so a healthy poll skips GITHUB_TOKEN /
+# `gh auth token`; a fresh 401 clears it to force re-resolution.
 _cached_token: str | None = None
 
-# Merged-PR mode's dispatch key (merged_at) differs from the API's sort key
-# (updated_at): a page full of closed-but-never-merged PRs produces no item
-# at all (see the pr_merged branch in github_poll), so it can push an older,
-# still-undispatched merged PR out of the first page and, without
-# pagination, past the poller's reach permanently -- the cursor would never
-# learn the merge happened. _MERGED_MODE_MAX_PAGES bounds how far
-# github_poll() will page forward hunting for it: worst case
-# _MERGED_MODE_MAX_PAGES * per_page (100) closed PRs inspected in one poll.
-# A merge event buried deeper than that in a single burst is simply not
-# found *this* poll -- the cursor never advances past anything unseen, so
-# it is found on a later poll once the shallower unmerged noise ages out of
-# GitHub's "recently updated" ordering. Bounded latency, not bounded
-# correctness.
-#
-# That "cursor never advances past anything unseen" guarantee only holds
-# when the scan reaches a SAFE boundary (a short page, no next link, or the
-# stored cursor was reached): pages are sorted by updated_at desc, so
-# stopping there proves every unfetched PR has an older updated_at, and
-# merged_at <= updated_at, than everything already scanned. Stopping for an
-# UNSAFE reason instead -- the page cap above, or a pagination fetch/status
-# error -- proves nothing about what lies beyond the last fetched page.
-# github_poll() tracks this as GithubPollResult.scan_complete and drops any
-# item too close to that unproven boundary (see the truncation-safety
-# filter below) rather than risk advancing the cursor past an event an
-# unfetched page might still hold.
+# Bounds how many pages github_poll() will fetch hunting for an older,
+# still-undispatched merged PR (merged_at can trail the API's updated_at
+# sort key -- see GithubPollResult.scan_complete). Worst case
+# _MERGED_MODE_MAX_PAGES * per_page (100) PRs inspected per poll; anything
+# buried deeper is picked up on a later poll once the noise ages out.
+# Bounded latency, not bounded correctness.
 _MERGED_MODE_MAX_PAGES = 5
 
 _LINK_NEXT_RE = re.compile(r'<([^>]+)>\s*;\s*rel="next"')
 
-# CWE-918 defense-in-depth: github_repo must be exactly "owner/name" -- one
-# slash, no path traversal sequences, no URL-special chars.
-#
-# Owner and repo segments have DIFFERENT rules (empirically verified against
-# the GitHub API -- e.g. https://api.github.com/repos/github/.github returns
-# 200, so a repo CAN start with '.'):
-#
-#   Owner: alphanumeric start, alphanumeric or '-' interior, alphanumeric end
-#          (GitHub's user/org naming rule), max 39 chars.
-#          Single-char owners (e.g. "a") are valid -- inner group is optional.
-#
-#   Repo:  letters/digits/'-'/'_'/'.' allowed, may start with '.' (e.g.
-#          .github), but must NOT be the traversal singletons '.' or '..'.
-#          Max 100 chars.
-#
-# These are the single sources of truth; services/schedules.py imports and
-# delegates to _validate_github_repo rather than duplicating them.
+# CWE-918 defense-in-depth: github_repo must be exactly "owner/name" (one
+# slash, no traversal/URL-special chars). Owner and repo segments have
+# different rules (verified against the GitHub API -- a repo may start with
+# '.', e.g. github/.github). Single source of truth: services/schedules.py
+# delegates to _validate_github_repo rather than duplicating these.
 _GITHUB_OWNER_MAX = 39
 _GITHUB_REPO_MAX = 100
 
@@ -267,10 +234,9 @@ async def github_poll(schedule: dict) -> GithubPollResult:
     if not repo:
         return GithubPollResult(items=[], scan_complete=True, poll_status="error")
 
-    # Defense-in-depth: validate format before interpolating into the API URL.
-    # The service write boundary applies the same check via _svc_validate_github_repo
-    # in services/schedules.py, but we re-check here so that any schedule dict
-    # that reaches this function (regardless of origin) cannot retarget the path.
+    # Defense-in-depth: re-validate here (services/schedules.py checks this too)
+    # so any schedule dict reaching this function, regardless of origin,
+    # cannot retarget the URL.
     try:
         _validate_github_repo(repo)
     except ValueError:
@@ -295,7 +261,6 @@ async def github_poll(schedule: dict) -> GithubPollResult:
         "X-GitHub-Api-Version": "2022-11-28",
     }
 
-    # Use stored ETag for conditional requests
     node_meta = schedule.get("node_metadata") or {}
     etag = node_meta.get("github_etag") if isinstance(node_meta, dict) else None
     if etag:
@@ -325,12 +290,8 @@ async def github_poll(schedule: dict) -> GithubPollResult:
         _log.exception("GitHub API request failed for %s", repo)
         return GithubPollResult(items=[], scan_complete=True, poll_status="error")
 
-    # A 401 means the token we used is bad — most often a cached or
-    # GITHUB_TOKEN-env credential that was valid earlier but has since
-    # expired. Fall through to a freshly-fetched gh-CLI token (skipping the
-    # env var and any cache) and retry once, so a stale credential can't pin
-    # the poller to a dead token and leave it silently blind on every
-    # subsequent poll.
+    # 401 means the cached/env token has expired. Retry once with a freshly
+    # fetched gh-CLI token so a stale credential doesn't pin the poller blind.
     if resp.status_code == 401:
         cli_token = await _get_gh_token(prefer_cli=True)
         if cli_token and cli_token != token:
@@ -359,9 +320,7 @@ async def github_poll(schedule: dict) -> GithubPollResult:
         )
         return GithubPollResult(items=[], scan_complete=True, poll_status="auth_error")
 
-    # Any non-401 response proves `token` actually authenticated -- cache it
-    # so the next poll can skip both the env-var check and a `gh auth token`
-    # shell-out, until a future 401 invalidates it again.
+    # Any non-401 response proves `token` authenticated; cache until the next 401.
     _cached_token = token
 
     if resp.status_code == 304:
@@ -380,26 +339,14 @@ async def github_poll(schedule: dict) -> GithubPollResult:
     page = resp.json()
     prs = list(page)
 
-    # True once the scan has reached a boundary that PROVES no unfetched
-    # page could hold an event this poll needs to worry about (see the
-    # scan_complete docstring on GithubPollResult). Flipped to False below
-    # only when the loop stops for a reason that does NOT prove that.
+    # True once the scan reached a boundary that proves no unfetched page
+    # could hold an event this poll needs (see GithubPollResult.scan_complete).
     scan_complete = True
 
     if merged_mode:
-        # Page forward while the most recently fetched page was full (a
-        # short page means there's nothing more) AND its oldest PR (last in
-        # updated_at-desc order) is still newer than the cursor -- once an
-        # item's updated_at has fallen to or below the cursor, every PR
-        # further back is too (the API is sorted by updated_at desc), and
-        # merged_at <= updated_at always holds for a merged PR, so nothing
-        # beyond that point could be an undispatched merge either.
-        #
-        # The safe-boundary check runs at the TOP of every pass, including
-        # the pass evaluating the last page the cap allows fetching -- the
-        # cap alone never marks the scan unsafe; a page is only unsafe when
-        # it is full, has a next link, AND the cursor hasn't been reached,
-        # i.e. there is real, unproven data beyond it.
+        # Page forward while the last page was full and its oldest PR (API
+        # sorts updated_at desc) is still newer than the cursor -- past that
+        # point every remaining PR is already-seen ground.
         pages_fetched = 1
         while True:
             is_short_page = len(page) < per_page
@@ -407,15 +354,11 @@ async def github_poll(schedule: dict) -> GithubPollResult:
             cursor_reached = bool(cursor) and oldest_updated <= cursor
             next_url = _next_page_url(resp)
             if is_short_page or cursor_reached or not next_url:
-                # This page itself proves the boundary: nothing beyond it
-                # matters (short/no-next), or everything beyond it is
-                # already-seen ground (cursor reached). Safe regardless of
-                # how many pages the cap allowed fetching.
+                # Boundary proven safe regardless of how many pages were fetched.
                 break
             if pages_fetched >= _MERGED_MODE_MAX_PAGES:
-                # This page is full, links to a next page, and the cursor
-                # hasn't been reached -- real, unproven data likely exists
-                # beyond it, but the cap forbids fetching further.
+                # Full page, more to fetch, cursor not reached: unproven data
+                # may remain beyond the cap.
                 scan_complete = False
                 break
             try:
@@ -432,9 +375,7 @@ async def github_poll(schedule: dict) -> GithubPollResult:
                 break
             if resp.status_code != 200:
                 if resp.status_code == 401:
-                    # The token authenticated the first page but has since been
-                    # rejected mid-pagination; drop it so the next poll
-                    # re-resolves instead of reusing a proven-dead credential.
+                    # Rejected mid-pagination; drop the token so the next poll re-resolves.
                     _cached_token = None
                 _log.warning(
                     "GitHub API returned %d for %s during merged-PR pagination; "
@@ -450,15 +391,10 @@ async def github_poll(schedule: dict) -> GithubPollResult:
             prs.extend(page)
             pages_fetched += 1
 
-    # In merged mode, once the scan is truncated (unsafe boundary), any
-    # fetched PR whose cursor field (merged_at) sits at or past the oldest
-    # updated_at we actually fetched cannot be safely dispatched: we can't
-    # prove an unfetched page doesn't hold an older, still-undispatched
-    # merge, and the cursor can't advance past this PR without risking that
-    # merge being skipped forever. Deferring it (dropping it from this
-    # poll's items entirely, not just marking it non-dispatchable) also
-    # avoids a duplicate fire -- since the cursor stays behind it, it is
-    # re-fetched and reconsidered on a later poll instead.
+    # Once the scan is truncated, any PR whose cursor field sits at or past
+    # the oldest fetched updated_at can't be proven safe to dispatch -- drop
+    # it entirely (not just mark non-dispatchable) so it's re-fetched and
+    # reconsidered on a later poll instead of risking a skipped merge.
     unsafe_floor: str | None = None
     if merged_mode and not scan_complete and prs:
         unsafe_floor = min(pr.get("updated_at", "") for pr in prs)
@@ -470,11 +406,8 @@ async def github_poll(schedule: dict) -> GithubPollResult:
         if merged_mode:
             merged_at = pr.get("merged_at")
             if not merged_at:
-                # Closed but never merged -- not a "PR merged" event under
-                # this filter. It never fires and has no merge time to
-                # compare against the cursor, so it's simply not an item;
-                # it naturally drops off the API's top-N-by-updated window
-                # once nothing about it changes further.
+                # Closed but never merged -- not a "PR merged" event; drops
+                # off the API's top-N-by-updated window on its own.
                 continue
             cursor_at = merged_at
         else:
@@ -504,11 +437,8 @@ async def github_poll(schedule: dict) -> GithubPollResult:
             event["pr_merged_at"] = merged_at
         items.append(GithubPollItem(event=event, updated_at=cursor_at, dispatchable=dispatchable))
 
-    # The API returns PRs sorted by updated_at desc, which is the cursor
-    # field itself in the default mode but only a close correlate of it in
-    # merged mode (merging a PR bumps updated_at, but the two aren't
-    # contractually identical) -- sort explicitly by the cursor field so the
-    # caller's incremental cursor advance stays monotone in both modes,
-    # rather than relying on a bare reversal of API order.
+    # API order (updated_at desc) isn't contractually identical to the
+    # cursor field in merged mode; sort explicitly so cursor advance stays
+    # monotone in both modes.
     items.sort(key=lambda it: it.updated_at)
     return GithubPollResult(items=items, scan_complete=scan_complete, poll_status="ok")

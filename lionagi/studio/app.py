@@ -95,10 +95,9 @@ def _start_claude_mirror() -> tuple[asyncio.Event, asyncio.Task] | tuple[None, N
     )
 
     def _log_unexpected_exit(t: asyncio.Task) -> None:
-        # The task handle is retained (returned, awaited only at shutdown), so a
-        # task that raises never triggers asyncio's "exception was never
-        # retrieved" warning — its failure is otherwise completely silent and the
-        # studio runs on with no live mirroring. Surface it loudly here instead.
+        # The retained task handle suppresses asyncio's "exception was never
+        # retrieved" warning, so a raised failure is otherwise silent; surface
+        # it loudly here instead.
         if t.cancelled():
             return
         exc = t.exception()
@@ -169,13 +168,11 @@ async def lifespan(app_instance):
 
     _emit_startup_warnings()
     await scheduler.start()
-    # Reconciliation corrects phantom / stale-status session and invocation rows
-    # that stateful /api routes (sessions, runs, stats) read directly, so it must
-    # complete before we serve — keep it pre-yield.
+    # Corrects phantom/stale-status rows that stateful /api routes read
+    # directly, so it must complete before we serve.
     await run_startup_reconciliation()
     mirror_stop, mirror_task = _start_claude_mirror()
-    # The WAL checkpoint is pure maintenance and the main first-run cost; defer it
-    # to a background task so readiness is not gated on it.
+    # WAL checkpoint is pure maintenance; defer so readiness isn't gated on it.
     warmup_task = asyncio.create_task(_startup_warmup(), name="studio-startup-warmup")
     yield
     from .services.launches import shutdown_launches
@@ -303,9 +300,7 @@ def _mount_spa(application: FastAPI, dist: Path) -> None:
 
     @application.exception_handler(404)
     async def _spa_fallback(request: Request, exc: Exception) -> FileResponse | JSONResponse:
-        # /api/* paths that reach here (no route matched) stay 404 JSON —
-        # browsers never navigate to /api/* directly, only JavaScript does,
-        # so returning HTML there would surface a confusing error.
+        # /api/* paths that reach here stay 404 JSON, not the SPA HTML shell.
         path = request.url.path
         if path.startswith("/api/") or path == "/api":
             return JSONResponse({"detail": "Not Found"}, status_code=404)
@@ -342,23 +337,17 @@ def create_app() -> FastAPI:
 
     @application.middleware("http")
     async def require_studio_bearer_token(request: Request, call_next):
-        # CORS preflight requests arrive without an Authorization header by
-        # design. Let them pass through so CORSMiddleware can respond with
-        # the correct Allow-* headers; blocking them here would prevent
-        # browsers from ever reaching authenticated endpoints from a
-        # separate frontend origin.
+        # CORS preflight arrives without an Authorization header by design;
+        # let it through so CORSMiddleware can answer with Allow-* headers.
         if request.method == "OPTIONS":
             return await call_next(request)
         token = os.getenv("LIONAGI_STUDIO_AUTH_TOKEN")
         path = request.url.path
         if token and request.headers.get("authorization") != f"Bearer {token}":
-            # All /api/* paths (any method) and the FastAPI schema/docs
-            # endpoints are protected when a token is configured. Non-API
-            # GET/HEAD — the SPA shell, hashed assets, and liveness probes —
-            # stay public: browsers navigate without an Authorization
-            # header, so gating the shell would make the UI unloadable in
-            # authed mode. Every byte behind those paths is the static
-            # frontend bundle; all data lives under /api.
+            # All /api/* paths and the FastAPI schema/docs endpoints are
+            # gated. Non-API GET/HEAD (SPA shell, hashed assets, liveness)
+            # stay public -- browsers navigate without an Authorization
+            # header, so gating the shell would make the UI unloadable.
             is_api = path == "/api" or path.startswith("/api/")
             is_guarded_non_api = path in _GUARDED_NON_API_PATHS
             is_public_static = (
@@ -404,28 +393,21 @@ def create_app() -> FastAPI:
     async def health() -> dict[str, Any]:
         return {"status": "ok"}
 
-    # Mount the SPA if a dist/ exists. Assets mount must happen BEFORE
-    # CORSMiddleware is added so _collect_cors_methods sees the Mount entry.
-    # The 404 exception handler is registered on the app object and takes
-    # effect after all route resolution — CORSMiddleware position doesn't
-    # affect it.
+    # Mount the SPA before CORSMiddleware so _collect_cors_methods sees the
+    # Mount entry (the 404 handler itself is order-independent).
     dist = _resolve_frontend_dist()
     if dist is not None:
         _mount_spa(application, dist)
 
-    # Middleware registration order (Starlette wraps LIFO: the most-recently-added
-    # middleware is the first to see an incoming request). CORSMiddleware is added
-    # after every router, the direct /health endpoint, and the optional SPA mount
-    # so its method allowlist is derived from the complete route table (see
-    # _collect_cors_methods). Host validation is added AFTER CORSMiddleware and so
-    # runs OUTERMOST: every request -- including CORS preflight OPTIONS -- has its
-    # Host header checked before CORS can answer, closing the window where an
-    # invalid-Host request could still receive a successful preflight response.
-    # Execution order for an incoming request is therefore: Host validation ->
-    # CORS (answers valid-Host preflight) -> Content-Type/CSRF check -> bearer-token
-    # gate -> route. The bearer-token and Content-Type middlewares let every
-    # OPTIONS through; a real preflight never reaches them because CORSMiddleware
-    # answers it first.
+    # Starlette wraps middleware LIFO (most-recently-added sees the request
+    # first). CORSMiddleware is added after every router/mount so its method
+    # allowlist reflects the full route table. Host validation is added
+    # after CORS, making it OUTERMOST: every request -- including preflight
+    # OPTIONS -- has its Host checked before CORS can answer, closing the
+    # window where an invalid-Host request could get a valid preflight
+    # response. Request order: Host validation -> CORS -> Content-Type/CSRF
+    # check -> bearer-token gate -> route. A real preflight never reaches the
+    # bearer-token/Content-Type middlewares because CORS answers it first.
     application.add_middleware(
         CORSMiddleware,
         allow_origins=CORS_ORIGINS,
