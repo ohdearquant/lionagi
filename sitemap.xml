@@ -525,6 +525,50 @@
          <lastmod>2026-07-10</lastmod>
     </url>
     <url>
+         <loc>https://ohdearquant.github.io/lionagi/adr/ADR-0033-operation-graph-orchestration-boundary/</loc>
+         <lastmod>2026-07-10</lastmod>
+    </url>
+    <url>
+         <loc>https://ohdearquant.github.io/lionagi/adr/ADR-0034-domain-engine-coordination-and-autonomy-safeguards/</loc>
+         <lastmod>2026-07-10</lastmod>
+    </url>
+    <url>
+         <loc>https://ohdearquant.github.io/lionagi/adr/ADR-0035-persisted-run-completion-contract/</loc>
+         <lastmod>2026-07-10</lastmod>
+    </url>
+    <url>
+         <loc>https://ohdearquant.github.io/lionagi/adr/ADR-0036-casts-role-palettes-as-playstyle/</loc>
+         <lastmod>2026-07-10</lastmod>
+    </url>
+    <url>
+         <loc>https://ohdearquant.github.io/lionagi/adr/ADR-0037-resident-engine-host-and-task-queue/</loc>
+         <lastmod>2026-07-10</lastmod>
+    </url>
+    <url>
+         <loc>https://ohdearquant.github.io/lionagi/adr/ADR-0038-escalation-tier-routing/</loc>
+         <lastmod>2026-07-10</lastmod>
+    </url>
+    <url>
+         <loc>https://ohdearquant.github.io/lionagi/adr/ADR-0041-agent-specification-and-branch-construction/</loc>
+         <lastmod>2026-07-10</lastmod>
+    </url>
+    <url>
+         <loc>https://ohdearquant.github.io/lionagi/adr/ADR-0042-casts-pattern-catalog-and-typed-role-authoring/</loc>
+         <lastmod>2026-07-10</lastmod>
+    </url>
+    <url>
+         <loc>https://ohdearquant.github.io/lionagi/adr/ADR-0043-per-role-configuration-resolution/</loc>
+         <lastmod>2026-07-10</lastmod>
+    </url>
+    <url>
+         <loc>https://ohdearquant.github.io/lionagi/adr/ADR-0044-agent-prompt-directives-and-executable-permissions/</loc>
+         <lastmod>2026-07-10</lastmod>
+    </url>
+    <url>
+         <loc>https://ohdearquant.github.io/lionagi/adr/ADR-0047-hook-mechanism-scopes-and-canonical-ownership/</loc>
+         <lastmod>2026-07-10</lastmod>
+    </url>
+    <url>
          <loc>https://ohdearquant.github.io/lionagi/adr/TEMPLATE/</loc>
          <lastmod>2026-07-10</lastmod>
     </url>
