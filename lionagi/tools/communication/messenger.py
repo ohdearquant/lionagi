@@ -91,16 +91,9 @@ class LionMessenger(LionTool):
                 branch.msgs.messages.include(msg)
 
         def messenger(action: str, to: str | list[str] = None, content: str = None) -> str:
-            """Send messages to teammates, signal done/finished, or wake a teammate.
-
-            Args:
-                action: One of 'send', 'done', 'finished', 'wakeup'.
-                to: Recipient name or list of names. Required for send/wakeup.
-                content: Message body (send/wakeup) or reason (done/finished).
-
-            Returns:
-                Confirmation string.
-            """
+            """Send messages to teammates, signal done/finished, or wake a
+            teammate. action in {'send', 'done', 'finished', 'wakeup'}; to
+            (name or list of names) and content are required for send/wakeup."""
             if action == "send":
                 if not to or not content:
                     return "Error: 'send' requires both 'to' and 'content'."

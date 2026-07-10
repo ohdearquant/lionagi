@@ -375,13 +375,9 @@ class EngineRun:
     async def cancel_active(self) -> None:
         """Cancel and await all in-flight spawned tasks.
 
-        Waits up to ``engine.cancel_timeout_s`` for tasks to finish after
-        cancellation is requested.  Tasks that do not settle within that window
-        (e.g. they catch CancelledError and loop) are abandoned: a loud warning
-        is logged naming the count, and cancel_active() returns so the caller's
-        lifetime guarantee is preserved.  Cooperative tasks that finish before
-        the deadline are awaited normally — the timeout path only fires when at
-        least one task remains after the window expires.
+        Waits up to ``engine.cancel_timeout_s``; tasks that don't settle in
+        that window (e.g. catch CancelledError and loop) are abandoned with a
+        logged warning so the caller's lifetime guarantee is preserved.
         """
         if not self._active:
             return
@@ -406,7 +402,7 @@ class EngineRun:
         self._active.clear()
 
     async def _deadline_watchdog(self) -> None:
-        """Sleep until the deadline, then cancel _run_task (and spawned tasks via Engine.run's finally block)."""
+        """Sleep until the deadline, then cancel _run_task."""
         if self._deadline is None:
             return
         delay = self._deadline - monotonic()
@@ -419,11 +415,10 @@ class EngineRun:
             self._run_task.cancel()
 
     async def wait_quiescence(self) -> None:
-        """Block until all spawned tasks settle; re-raise any non-cancellation, non-budget failures.
+        """Block until all spawned tasks settle; re-raise non-cancellation, non-budget failures.
 
-        A spawned task hitting EngineBudgetError is a benign "expansion
-        stopped" signal (discretionary work declined, not a crash) — the same
-        grace already given to asyncio.CancelledError here.
+        EngineBudgetError is a benign "expansion stopped" signal (discretionary
+        work declined, not a crash) and is swallowed like CancelledError.
         """
         task_errors: list[BaseException] = []
         while self._active:
@@ -658,10 +653,9 @@ class Engine:
     async def _degrade_export(self, run: EngineRun, args: tuple, kwargs: dict) -> Any:
         """Cancel in-flight spawned tasks, then run _partial_export shielded + timeout-bounded.
 
-        Shared by the deadline (CancelledError) and root-budget (EngineBudgetError)
-        degrade paths in run(). Returns _UNSET if the export itself failed or
-        timed out (logged, not raised) — CancelledError from an external cancel
-        during the shielded phase still propagates.
+        Shared by the deadline and root-budget degrade paths in run(). Returns
+        _UNSET if the export failed or timed out (logged, not raised); an
+        external cancel during the shielded phase still propagates.
         """
         # Cancel background tasks so synthesis sees a stable snapshot and no
         # work burns tokens past budget exhaustion (no-op if _active is empty).
