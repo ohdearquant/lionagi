@@ -97,4 +97,36 @@ collisions. Unused numbers inside a block are intentional gaps, not missing docu
   boundary
 - 0031-0032 — unused (intentional gaps)
 
+### orchestration (0033-0040)
+
+- [ADR-0033](ADR-0033-operation-graph-orchestration-boundary.md) — Operation-graph
+  orchestration boundary
+- [ADR-0034](ADR-0034-domain-engine-coordination-and-autonomy-safeguards.md) — Domain-engine
+  coordination and autonomy safeguards
+- [ADR-0035](ADR-0035-persisted-run-completion-contract.md) — Persisted run-completion
+  contract
+- [ADR-0036](ADR-0036-casts-role-palettes-as-playstyle.md) — Casts role palettes as playstyle
+- [ADR-0037](ADR-0037-resident-engine-host-and-task-queue.md) — Resident engine host and task
+  queue
+- [ADR-0038](ADR-0038-escalation-tier-routing.md) — Escalation tier routing
+- 0039-0040 — unused (intentional gaps)
+
+### agent-roles (0041-0046)
+
+- [ADR-0041](ADR-0041-agent-specification-and-branch-construction.md) — Agent specification
+  and Branch construction boundary
+- [ADR-0042](ADR-0042-casts-pattern-catalog-and-typed-role-authoring.md) — Casts pattern
+  catalog and typed role authoring
+- [ADR-0043](ADR-0043-per-role-configuration-resolution.md) — Per-role configuration
+  resolution
+- [ADR-0044](ADR-0044-agent-prompt-directives-and-executable-permissions.md) — Agent prompt
+  directives and executable permissions
+- 0045-0046 — unused (intentional gaps)
+
+### hooks (0047-0049)
+
+- [ADR-0047](ADR-0047-hook-mechanism-scopes-and-canonical-ownership.md) — Hook mechanism
+  scopes and canonical ownership
+- 0048-0049 — unused (intentional gaps)
+
 Remaining areas land here as their records are accepted.
