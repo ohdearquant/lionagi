@@ -91,7 +91,6 @@ async def call_nlip_remote(
     max_retries: int = 3,
 ) -> dict[str, Any]:
     """Call a remote NLIP endpoint; applies SSRF guard then falls back to direct httpx if nlip_sdk is absent."""
-    # SSRF guard: reject calls to private/reserved IP ranges.
     _assert_nlip_url_safe(url)
     try:
         return await _call_nlip_sdk(url, messages, timeout, max_retries)

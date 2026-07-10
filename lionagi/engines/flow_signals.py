@@ -1,14 +1,10 @@
 # Copyright (c) 2023-2026, HaiyangLi <quantocean.li at gmail dot com>
 # SPDX-License-Identifier: Apache-2.0
-"""Persist per-node lifecycle signals for a ``Session.flow`` run.
+"""Turn ``DependencyAwareExecutor`` node transitions and ``NodeSpawned`` bus
+events into ``NodeQueued``/``NodeStarted``/``NodeCompleted``/``NodeFailed``
+session-bus signals, so a ``Session.flow`` run's DAG can be rendered live.
 
-``DependencyAwareExecutor`` reports queued/started/completed/failed node
-transitions through an ``on_progress`` callback and announces reactive spawns as
-``NodeSpawned`` bus events. This module turns those into ``NodeQueued`` /
-``NodeStarted`` / ``NodeCompleted`` / ``NodeFailed`` signals on the session bus so
-a run's DAG can be rendered moving through its lifecycle.
-
-Shared by the engine's own DAG run and by Studio's ``workflow_run`` — both drive
+Shared by the engine's own DAG run and Studio's ``workflow_run`` — both drive
 ``session.flow`` directly and need the same node-progress signals.
 """
 
@@ -32,13 +28,11 @@ __all__ = ("flow_progress_signals",)
 
 
 def _build_node_edge_meta(graph: Any) -> dict[str, dict]:
-    """Map each Operation node's id to its {parent_id, depends_on, name} from the graph.
+    """Map each Operation node id to {parent_id, depends_on, name} from the graph.
 
-    ``name`` is the node's authored id (``metadata['reference_id']``) when set —
-    e.g. the Studio designer box id ``chat1`` — or None. It is preferred over the
-    executor-supplied callback name so every lifecycle signal (not just queued)
-    maps back to the authored DAG; the executor names started/completed/failed
-    after the branch, which need not match the authored id.
+    ``name`` is the authored id (``metadata['reference_id']``, e.g. Studio's
+    ``chat1``) when set, preferred over the executor's callback name (which
+    the executor renames after the branch for started/completed/failed).
     """
     from lionagi.operations.node import Operation
 
@@ -61,13 +55,11 @@ async def flow_progress_signals(
 ) -> AsyncIterator[Callable[[str, str, str, float], None]]:
     """Yield an ``on_progress`` callback that persists node-lifecycle signals.
 
-    Usage::
+    Usage: ``async with flow_progress_signals(session, graph) as on_progress:
+    await session.flow(graph, on_progress=on_progress, ...)``.
 
-        async with flow_progress_signals(session, graph) as on_progress:
-            await session.flow(graph, on_progress=on_progress, ...)
-
-    Tracks reactive spawns (``NodeSpawned``) so late-added nodes carry their
-    parent/depends_on edges, and on exit awaits every emitted signal so the
+    Tracks reactive ``NodeSpawned`` events so late-added nodes carry their
+    parent/depends_on edges, and awaits every emitted signal on exit so
     observers finish persisting before the caller reads what they wrote.
     """
     emits: list[asyncio.Future] = []
@@ -78,8 +70,7 @@ async def flow_progress_signals(
         parent_id = meta.get("parent_id")
         depends_on = meta.get("depends_on", [])
         # Prefer the authored node id so every lifecycle signal maps back to the
-        # designer DAG; fall back to the executor's callback name for nodes with
-        # no reference_id (e.g. an engine's own ops, or reactive spawns).
+        # designer DAG; fall back to the executor's name (engine's own ops, reactive spawns).
         sig_name = meta.get("name") or name
         if status == "queued":
             sig: Any = NodeQueued(
@@ -107,10 +98,9 @@ async def flow_progress_signals(
             )
         else:
             return
-        # on_progress is sync (called from inside the executor); fan the signal
-        # onto the async bus. Collected so the caller can await the observers
-        # before reading state they populate. suppress guards the
-        # no-running-loop case (nothing would observe anyway).
+        # on_progress is sync (called from inside the executor); fan the signal onto
+        # the async bus, collected so the caller can await observers before reading
+        # what they wrote. suppress guards the no-running-loop case.
         with contextlib.suppress(RuntimeError):
             emits.append(asyncio.ensure_future(session.emit(sig)))
 

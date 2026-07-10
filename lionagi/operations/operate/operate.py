@@ -87,7 +87,6 @@ def prepare_operate_kw(
     chat_model = chat_model or branch.chat_model
     parse_model = parse_model or chat_model
 
-    # Convert dict-based instructions
     if isinstance(instruct, dict):
         instruct = Instruct(**instruct)
 

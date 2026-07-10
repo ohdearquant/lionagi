@@ -325,12 +325,10 @@ class CodexCodeRequest(BaseModel):
         else:
             args.extend(["--disable", "tool_search"])
 
-        # System prompt → -c developer_instructions=<val>
-        # (Codex CLI has no --system-prompt flag; uses developer_instructions)
+        # Codex CLI has no --system-prompt flag; uses -c developer_instructions.
         if self.system_prompt:
             args.extend(["-c", f"developer_instructions={self.system_prompt}"])
 
-        # Reasoning effort → -c reasoning_effort=<val>
         if self.reasoning_effort:
             args.extend(["-c", f"reasoning_effort={self.reasoning_effort}"])
         if self.plan_mode_reasoning_effort:
@@ -341,15 +339,12 @@ class CodexCodeRequest(BaseModel):
                 ]
             )
 
-        # Fast mode → -c service_tier=fast
         if self.fast_mode:
             args.extend(["-c", "service_tier=fast"])
 
-        # Images (repeat -i per image)
         for image in self.images:
             args.extend(["-i", image])
 
-        # Config overrides (-c key=value)
         for key, value in self.config_overrides.items():
             serialized = json.dumps(value) if not isinstance(value, str) else value
             args.extend(["-c", f"{key}={serialized}"])
@@ -463,12 +458,10 @@ async def stream_codex_cli(
                     obj.get("session_id", obj.get("id")),
                 )
                 session.model = obj.get("model")
-                # Codex's own event carries "thread_id" (thread.started) rather
-                # than "session_id" — normalize it into the metadata key every
-                # CLI provider's system chunk is expected to carry (mirrors
-                # claude_code.py), so run.py's engine-session-id capture
-                # (endpoint.session_id, used to link a profile-typed session
-                # to its engine-typed mirror at teardown) works for Codex too.
+                # Codex uses "thread_id" not "session_id"; normalize into the
+                # metadata key every CLI provider's system chunk carries
+                # (mirrors claude_code.py) so run.py's engine-session-id
+                # capture works for Codex too.
                 sc = StreamChunk(type="system", metadata={**obj, "session_id": session.session_id})
                 session.chunks.append(sc)
                 yield sc
@@ -636,19 +629,13 @@ async def stream_codex_cli(
             elif typ in ("turn.failed", "error"):
                 session.is_error = True
                 err = obj.get("error", {})
-                # The CLI puts the human-readable message in different spots
-                # depending on event type: "error" events carry a TOP-LEVEL
-                # "message" with no "error" key (e.g. usage-limit errors), while
-                # "turn.failed" nests it under error.message.  Check both —
-                # otherwise a top-level-message error renders as the useless
-                # str() of an empty dict and the actionable text is discarded.
-                # Normalise null/missing error payloads: JSON "error": null
-                # arrives as None here (obj.get returns the default only when the
-                # key is absent, not when it is explicitly null).
-                # IMPORTANT: capture the raw value BEFORE normalising.  The
-                # benign-EOS predicate below must see the original value; a null
-                # payload normalised to {} would otherwise match the empty-dict
-                # sentinel and silently swallow a real (malformed) provider error.
+                # Message location varies by event type: "error" events carry
+                # a top-level "message" with no "error" key; "turn.failed"
+                # nests it under error.message. Check both.
+                # Capture the raw value before null-normalising: the
+                # benign-EOS check below must distinguish an explicit
+                # "error": null (malformed envelope, real error) from the
+                # bare {} sentinel (benign EOF) — see below.
                 _raw_err = err
                 if err is None:
                     err = {}
@@ -665,26 +652,14 @@ async def stream_codex_cli(
                     if isinstance(err, dict)
                     else obj.get("message", str(err))
                 )
-                # Detect a benign end-of-stream sentinel: some codex CLI versions
-                # emit ``{"type": "error", "error": {}}`` when a resumed session
-                # ends normally rather than with a real failure.  Tag these
-                # explicitly so run() can treat them as clean EOS rather than
-                # propagating them as RunFailed.
-                #
-                # Narrowing criteria (must ALL hold):
-                #   1. Event type is "error" — "turn.failed" events are NEVER benign
-                #      regardless of their error payload, because they signal an
-                #      explicit model-side failure (e.g. rate_limit, context_overflow).
-                #   2. The error payload is EXACTLY the empty dict in the RAW event.
-                #      A structured payload with falsy values ({"message": ""},
-                #      {"message": None}) is a real failure whose detail happens to be
-                #      empty — only the bare {} sentinel is produced by a resumed-session
-                #      EOF.  Crucially, ``"error": null`` (raw value = None) is NOT the
-                #      sentinel: it indicates a malformed/unexpected provider envelope
-                #      and must surface as a real error.  We test _raw_err (the value
-                #      before null-normalisation) to preserve this distinction.
-                #   3. The top-level event carries no failure indicators beyond the
-                #      known EOF envelope (no "code", "message", or "status" keys).
+                # Some codex CLI versions emit {"type": "error", "error": {}}
+                # when a resumed session ends normally (benign EOS, not a real
+                # failure) — tag it so run() treats it as clean EOS rather
+                # than RunFailed. All must hold: type == "error" ("turn.failed"
+                # is never benign); the RAW payload is exactly {} (a
+                # structured-but-empty payload or explicit null is a real,
+                # if sparse, failure — test _raw_err, pre null-normalisation);
+                # no other failure keys (code/message/status) present.
                 _is_benign_eos = (
                     typ == "error"
                     and "error" in obj  # a bare {"type": "error"} is malformed, not EOF

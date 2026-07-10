@@ -67,7 +67,6 @@ class EndpointConfig(BaseModel):
             if isinstance(self.api_key, SecretStr):
                 self._api_key = self.api_key.get_secret_value()
             elif isinstance(self.api_key, str):
-                # Skip settings lookup for special cases
                 if self.provider == "ollama" and self.api_key == "ollama_key":
                     self._api_key = "ollama_key"
                 elif self.api_key.startswith("dummy-key"):
@@ -96,7 +95,6 @@ class EndpointConfig(BaseModel):
 
     @field_validator("request_options", mode="before")
     def _validate_request_options(cls, v):
-        # Create a simple empty model if None is provided
         if v is None:
             return None
 
@@ -123,16 +121,13 @@ class EndpointConfig(BaseModel):
 
     def update(self, **kwargs):
         """Update the config with new values."""
-        # Handle the special case of kwargs dict
         if "kwargs" in kwargs:
-            # Merge the kwargs dicts
             self.kwargs.update(kwargs.pop("kwargs"))
 
         for key, value in kwargs.items():
             if hasattr(self, key):
                 setattr(self, key, value)
             else:
-                # Add to kwargs dict if not a direct attribute
                 self.kwargs[key] = value
 
     def validate_payload(self, data: dict[str, Any]) -> dict[str, Any]:

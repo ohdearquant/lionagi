@@ -110,7 +110,6 @@ class DataLogger:
             self.logs = Pile(collections=logs, item_type=Log, strict_type=True)
         self._config = _config
 
-        # Auto-dump on exit
         if self._config.auto_save_on_exit:
             atexit.register(self.save_at_exit)
 
@@ -154,12 +153,11 @@ class DataLogger:
             if do_clear:
                 self.logs.clear()
         except Exception as e:
-            # Check if it's a JSON serialization error with complex objects
+            # JSON serialization errors on complex objects are swallowed, not raised
             if "JSON serializable" in str(e):
                 logger.debug(f"Could not serialize logs to JSON: {e}")
-                # Don't raise for JSON serialization issues during dumps
                 if clear is not False:
-                    self.logs.clear()  # Still clear if requested
+                    self.logs.clear()
             else:
                 logger.error(f"Failed to dump logs: {e}")
                 raise
@@ -227,8 +225,7 @@ class DataLogger:
             try:
                 self.dump(clear=self._config.clear_after_dump)
             except Exception as e:
-                # Only log debug level for JSON serialization errors during exit
-                # These are non-critical and often occur with complex objects
+                # JSON serialization errors during exit are non-critical, log at debug
                 if "JSON serializable" in str(e):
                     logger.debug(f"Could not serialize logs to JSON: {e}")
                 else:
