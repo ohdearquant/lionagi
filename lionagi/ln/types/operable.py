@@ -30,18 +30,15 @@ class Operable:
         # Import here to avoid circular import
         from .spec import Spec
 
-        # Convert to tuple if list
         if isinstance(specs, list):
             specs = tuple(specs)
 
-        # Validate all items are Spec objects
         for i, item in enumerate(specs):
             if not isinstance(item, Spec):
                 raise TypeError(
                     f"All specs must be Spec objects, got {type(item).__name__} at index {i}"
                 )
 
-        # Check for duplicate names
         names = [s.name for s in specs if s.name is not None]
         if len(names) != len(set(names)):
             from collections import Counter

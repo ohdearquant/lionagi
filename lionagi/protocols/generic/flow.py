@@ -95,7 +95,6 @@ class Flow(Element, Generic[E, P]):
         items = cls._coerce_pile(data.pop("items", None)) or Pile()
         progressions = cls._coerce_pile(data.pop("progressions", None)) or Pile()
 
-        # Validate referential integrity
         item_ids = set(items.keys())
         for prog in progressions:
             missing = set(prog) - item_ids

@@ -8,17 +8,14 @@ from __future__ import annotations
 import sys
 from collections.abc import Sequence
 
-# ExceptionGroup compatibility for Python 3.10
 if sys.version_info >= (3, 11):
-    # Python 3.11+ has built-in BaseExceptionGroup and ExceptionGroup
     from builtins import BaseExceptionGroup, ExceptionGroup
 
 else:
-    # Python 3.10: Use exceptiongroup backport
     try:
         from exceptiongroup import BaseExceptionGroup, ExceptionGroup
     except ImportError:
-        # Fallback implementation for environments without exceptiongroup
+
         class BaseExceptionGroup(BaseException):  # type: ignore
             """Minimal BaseExceptionGroup implementation for Python 3.10 without exceptiongroup."""
 

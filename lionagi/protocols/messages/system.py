@@ -39,7 +39,6 @@ class SystemContent(MessageContent):
         )
         system_datetime = data.get("system_datetime")
 
-        # Handle datetime generation
         if system_datetime is True:
             system_datetime = now_utc().isoformat(timespec="minutes")
         elif system_datetime is False or system_datetime is None:

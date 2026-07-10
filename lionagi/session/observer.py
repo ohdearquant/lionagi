@@ -228,18 +228,23 @@ class SessionObserver(Observer):
         return self
 
     async def authorize(self, action: Any) -> bool:
-        """Pre-invoke gate. Returns True when no gate set. Denials recorded as GateDenied."""
+        """Pre-invoke gate. Returns True when no gate set. Denials recorded as GateDenied.
+
+        Routed through the shared GateResult adapter (lionagi.agent.gate) so the
+        session gate's fail-closed-on-exception behavior is expressed as the
+        same typed verdict shape as PermissionPolicy and the built-in coding
+        guards (ADR-0086 delta row 1).
+        """
         if self._gate is None:
             return True
-        try:
-            allowed = bool(await maybe_await(self._gate(action)))
-        except Exception:
-            allowed = False
-        if not allowed:
+        from lionagi.agent.gate import adapt_session_gate
+
+        result = await adapt_session_gate(self._gate)(action)
+        if not result.allowed:
             from .signal import GateDenied
 
             self.flow.add_item(GateDenied(data=action))
-        return allowed
+        return result.allowed
 
     async def emit(self, event: Any) -> list[Any]:
         """Gate -> store -> route -> dispatch. Returns handler results."""
