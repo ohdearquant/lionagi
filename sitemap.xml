@@ -469,6 +469,30 @@
          <lastmod>2026-07-10</lastmod>
     </url>
     <url>
+         <loc>https://ohdearquant.github.io/lionagi/adr/ADR-0011-function-tool-descriptor-and-branch-registry/</loc>
+         <lastmod>2026-07-10</lastmod>
+    </url>
+    <url>
+         <loc>https://ohdearquant.github.io/lionagi/adr/ADR-0012-branch-action-execution-and-event-lifecycle/</loc>
+         <lastmod>2026-07-10</lastmod>
+    </url>
+    <url>
+         <loc>https://ohdearquant.github.io/lionagi/adr/ADR-0013-built-in-tool-provider-and-branch-binding/</loc>
+         <lastmod>2026-07-10</lastmod>
+    </url>
+    <url>
+         <loc>https://ohdearquant.github.io/lionagi/adr/ADR-0016-branch-conversation-aggregate-and-attachment-boundary/</loc>
+         <lastmod>2026-07-10</lastmod>
+    </url>
+    <url>
+         <loc>https://ohdearquant.github.io/lionagi/adr/ADR-0017-session-membership-and-coordination-boundary/</loc>
+         <lastmod>2026-07-10</lastmod>
+    </url>
+    <url>
+         <loc>https://ohdearquant.github.io/lionagi/adr/ADR-0018-turn-scoped-branch-execution-state/</loc>
+         <lastmod>2026-07-10</lastmod>
+    </url>
+    <url>
          <loc>https://ohdearquant.github.io/lionagi/adr/ADR-0021-branch-operation-facade-and-turn-adapters/</loc>
          <lastmod>2026-07-10</lastmod>
     </url>
@@ -482,6 +506,22 @@
     </url>
     <url>
          <loc>https://ohdearquant.github.io/lionagi/adr/ADR-0024-lndl-operate-integration-adapter/</loc>
+         <lastmod>2026-07-10</lastmod>
+    </url>
+    <url>
+         <loc>https://ohdearquant.github.io/lionagi/adr/ADR-0027-model-service-facade-and-endpoint-resolution/</loc>
+         <lastmod>2026-07-10</lastmod>
+    </url>
+    <url>
+         <loc>https://ohdearquant.github.io/lionagi/adr/ADR-0028-validated-provider-adapter-catalog/</loc>
+         <lastmod>2026-07-10</lastmod>
+    </url>
+    <url>
+         <loc>https://ohdearquant.github.io/lionagi/adr/ADR-0029-unified-request-admission-deadline-and-resilience-policy/</loc>
+         <lastmod>2026-07-10</lastmod>
+    </url>
+    <url>
+         <loc>https://ohdearquant.github.io/lionagi/adr/ADR-0030-agentic-provider-adapter-boundary/</loc>
          <lastmod>2026-07-10</lastmod>
     </url>
     <url>
