@@ -78,8 +78,7 @@ async def flow_progress_signals(
         parent_id = meta.get("parent_id")
         depends_on = meta.get("depends_on", [])
         # Prefer the authored node id so every lifecycle signal maps back to the
-        # designer DAG; fall back to the executor's callback name for nodes with
-        # no reference_id (e.g. an engine's own ops, or reactive spawns).
+        # designer DAG; fall back to the executor's name (engine's own ops, reactive spawns).
         sig_name = meta.get("name") or name
         if status == "queued":
             sig: Any = NodeQueued(
@@ -107,10 +106,9 @@ async def flow_progress_signals(
             )
         else:
             return
-        # on_progress is sync (called from inside the executor); fan the signal
-        # onto the async bus. Collected so the caller can await the observers
-        # before reading state they populate. suppress guards the
-        # no-running-loop case (nothing would observe anyway).
+        # on_progress is sync (called from inside the executor); fan the signal onto
+        # the async bus, collected so the caller can await observers before reading
+        # what they wrote. suppress guards the no-running-loop case.
         with contextlib.suppress(RuntimeError):
             emits.append(asyncio.ensure_future(session.emit(sig)))
 

@@ -203,8 +203,8 @@ class ResearchEngine(Engine):
     async def _explore(self, run: EngineRun, topic: str, depth: int) -> None:
         if depth > self.max_depth or run.seen(topic):
             return
-        # Depth expansion spends a whole team — gate it on the quality judge
-        # (off-topic / duplicative / trivial sub-questions stop here).
+        # Depth expansion spends a whole team — gate on the judge (off-topic /
+        # duplicative / trivial sub-questions stop here).
         jid = f"d{depth}-" + re.sub(r"[^a-zA-Z0-9]+", "-", topic).strip("-")[:32]
         if not await self.judge(run, jid, f"deeper exploration (depth {depth}): {topic}"):
             return
@@ -253,8 +253,8 @@ class ResearchEngine(Engine):
 
         if arrived():
             return
-        # Node-level backstop: every per-stage repair turn failed — try once
-        # more with the last member before giving up on this node entirely.
+        # Backstop: every per-stage repair failed — try once more with the last
+        # member before giving up on this node entirely.
         await run.operate_with_repair(
             team[-1],
             instruction,
