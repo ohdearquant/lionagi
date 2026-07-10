@@ -68,7 +68,7 @@ class Step:
         for _pname, _pval in _deprecated_ignored.items():
             if _pval is not None:
                 warnings.warn(
-                    f"{_pname} is deprecated and will be removed in v0.21.0",
+                    f"{_pname} is deprecated and will be removed in v0.29.0",
                     DeprecationWarning,
                     stacklevel=2,
                 )

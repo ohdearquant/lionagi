@@ -6,6 +6,14 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+### Deprecated
+
+- `Step.request_operative`'s ignored-parameter warning (`parse_kwargs`, `exclude_fields`, `field_descriptions`, `config_dict`, `doc`, `new_model_name`, `parameter_fields`, `request_params`) now names v0.29.0 as the removal target, replacing a stale v0.21.0 promise.
+- The free `lionagi.protocols.messages.create_message` function (also exported as `lionagi.create_message`) now emits a `DeprecationWarning` at call time; use `MessageManager.create_message` instead. Behavior and signature are unchanged.
+- `lionagi.ln.to_uuid` now emits a `DeprecationWarning` at call time. It is not equivalent to `lionagi.protocols.ids.to_uuid` or `lionagi.protocols.ids.canonical_id`; use `lionagi.protocols.ids.to_uuid` for raw UUID/string values and `lionagi.protocols.ids.canonical_id` for generic Observable-like objects.
+- `lionagi.cli._runs.teardown_orchestration_persist` is now an async wrapper that emits a `DeprecationWarning` and delegates unchanged to `teardown_persist`; use `teardown_persist` instead.
+- `lionagi.cli.orchestrate._common.TEAM_WORKER_SYSTEM` is deprecated; use `TEAM_COORD_SECTION` appended to a worker's own system prompt instead.
+
 ## [0.28.0] - 2026-07-08
 
 ### Added
