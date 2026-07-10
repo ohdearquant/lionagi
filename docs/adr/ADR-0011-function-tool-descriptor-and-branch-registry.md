@@ -1,4 +1,4 @@
-# ADR-0011: Function Tool Descriptor and Branch Registry
+# ADR-0011: Function tool descriptor and Branch registry
 
 - **Status**: Proposed
 - **Kind**: Retrospective

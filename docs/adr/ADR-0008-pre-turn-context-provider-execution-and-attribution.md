@@ -1,4 +1,4 @@
-# ADR-0008: Pre-Turn Context-Provider Execution and Attribution
+# ADR-0008: Pre-turn context-provider execution and attribution
 
 - **Status**: Proposed
 - **Kind**: Retrospective
@@ -79,6 +79,10 @@ This ADR deliberately does **not** decide:
 - durable report retention, redaction, or privacy policy; these remain explicit deltas; or
 - whether systemless branches should invoke providers. The current skip is descriptive, not an
   aspirational resolution.
+
+See also ADR-0016 D3, which records the same provider registry from the Branch-aggregate side
+(lifetime, cloning, and persistence semantics alongside the other branch-scoped extensions).
+This ADR owns pre-turn execution ordering, budgeting, and attribution.
 
 ## Decision
 

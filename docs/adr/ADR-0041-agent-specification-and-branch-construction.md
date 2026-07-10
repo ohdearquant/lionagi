@@ -513,7 +513,7 @@ because each Role-backed caller would have to reproduce prompt ordering, provide
 settings trust, tool attachment, MCP discovery, and emission grants. The existing CLI already shows
 why direct construction is appropriate only when no Role contract exists.
 
-### Make `AgentSpec` the live agent façade
+### Make `AgentSpec` the live agent facade
 
 The spec could hold a Branch internally and forward chat and tool methods. That would provide one
 user-facing object, but it would combine reusable configuration with one mutable conversation

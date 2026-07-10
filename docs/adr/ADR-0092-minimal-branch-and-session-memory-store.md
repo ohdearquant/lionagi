@@ -1,4 +1,4 @@
-# ADR-0092: Minimal Branch and Session Memory Store
+# ADR-0092: Minimal Branch and session memory store
 
 - **Status**: Proposed
 - **Kind**: Retrospective

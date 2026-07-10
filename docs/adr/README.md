@@ -2,8 +2,8 @@
 
 This directory is the canonical ADR corpus for lionagi. It replaces the earlier corpus now
 preserved at `docs/_archive/v0/` (moved there intact, original filenames kept). Every archived
-record receives an explicit disposition — carried forward into a new ADR, merged into one, or
-retired — recorded in `dispositions.yaml` in this directory once the corpus is complete.
+record has an explicit disposition — carried forward into a new ADR, merged into one, or
+retired — recorded in `dispositions.yaml` in this directory (one row per archived record).
 
 Each ADR follows `TEMPLATE.md` and is exactly one of two kinds:
 
@@ -13,6 +13,17 @@ Each ADR follows `TEMPLATE.md` and is exactly one of two kinds:
 
 A gap between a retrospective truth and an aspirational target is an issue, never a blurred
 document.
+
+## Architecture-quality figures (κ and τ)
+
+Several ADRs report two figures in their Consequences sections. κ is a coupling density:
+directed dependencies divided by n × (n − 1) over the components that ADR's own design diagram
+names, where a component is a named box and an edge is a direct dependency drawn in that
+diagram. τ is an estimated fraction of components testable in isolation through their declared
+seams. Both are the author's structural reading of the recorded design: arithmetically
+consistent within each ADR, not independently re-derived from source, and not comparable
+across ADRs whose component maps differ in granularity. Read them as review aids for the
+specific component map shown, not as corpus-wide measurements.
 
 ## Numbering
 
@@ -35,9 +46,9 @@ collisions. Unused numbers inside a block are intentional gaps, not missing docu
 ### core-data-model (0001-0005)
 
 - [ADR-0001](ADR-0001-element-identity-and-polymorphic-serialization-envelope.md) — Element
-  identity and the polymorphic serialization envelope
+  identity and polymorphic serialization envelope
 - [ADR-0002](ADR-0002-uuid-keyed-ordered-collection-model.md) — UUID-keyed ordered collection
-  model (Pile and Progression)
+  model
 - [ADR-0003](ADR-0003-in-process-event-execution-lifecycle.md) — In-process Event execution
   lifecycle
 - [ADR-0004](ADR-0004-directed-graph-structural-invariants.md) — Directed graph structural
@@ -50,61 +61,56 @@ collisions. Unused numbers inside a block are intentional gaps, not missing docu
   message envelope and ordered history
 - [ADR-0007](ADR-0007-canonical-turn-request-compilation-boundary.md) — Canonical turn-request
   compilation boundary
-- [ADR-0008](ADR-0008-pre-turn-context-provider-execution-and-attribution.md) — Pre-turn
-  context-provider execution and attribution
+- [ADR-0008](ADR-0008-pre-turn-context-provider-execution-and-attribution.md) — Pre-turn context-
+  provider execution and attribution
 - 0009-0010 — unused (intentional gaps)
 
 ### actions-tools (0011-0015)
 
-- [ADR-0011](ADR-0011-function-tool-descriptor-and-branch-registry.md) — Function tool
-  descriptor and Branch registry
-- [ADR-0012](ADR-0012-branch-action-execution-and-event-lifecycle.md) — Branch action
-  execution and event lifecycle
-- [ADR-0013](ADR-0013-built-in-tool-provider-and-branch-binding.md) — Built-in tool provider
-  and Branch binding
+- [ADR-0011](ADR-0011-function-tool-descriptor-and-branch-registry.md) — Function tool descriptor
+  and Branch registry
+- [ADR-0012](ADR-0012-branch-action-execution-and-event-lifecycle.md) — Branch action execution
+  and event lifecycle
+- [ADR-0013](ADR-0013-built-in-tool-provider-and-branch-binding.md) — Built-in tool provider and
+  Branch binding
 - 0014-0015 — unused (intentional gaps)
 
 ### session-branch (0016-0020)
 
 - [ADR-0016](ADR-0016-branch-conversation-aggregate-and-attachment-boundary.md) — Branch
   conversation aggregate and attachment boundary
-- [ADR-0017](ADR-0017-session-membership-and-coordination-boundary.md) — Session membership
-  and coordination boundary
-- [ADR-0018](ADR-0018-turn-scoped-branch-execution-state.md) — Turn-scoped Branch execution
-  state
+- [ADR-0017](ADR-0017-session-membership-and-coordination-boundary.md) — Session membership and
+  coordination boundary
+- [ADR-0018](ADR-0018-turn-scoped-branch-execution-state.md) — Turn-scoped Branch execution state
 - 0019-0020 — unused (intentional gaps)
 
 ### operations (0021-0026)
 
-- [ADR-0021](ADR-0021-branch-operation-facade-and-turn-adapters.md) — Branch operation facade
-  and turn adapters
-- [ADR-0022](ADR-0022-composed-branch-operation-pipeline.md) — Composed branch operation
-  pipeline
+- [ADR-0021](ADR-0021-branch-operation-facade-and-turn-adapters.md) — Branch operation facade and
+  turn-adapter contract
+- [ADR-0022](ADR-0022-composed-branch-operation-pipeline.md) — Composed branch operation pipeline
 - [ADR-0023](ADR-0023-dependency-aware-operation-graph-execution-kernel.md) — Dependency-aware
-  operation graph execution kernel
+  operation-graph execution kernel
 - [ADR-0024](ADR-0024-lndl-operate-integration-adapter.md) — LNDL operate integration adapter
 - 0025-0026 — unused (intentional gaps)
 
 ### service-providers (0027-0032)
 
-- [ADR-0027](ADR-0027-model-service-facade-and-endpoint-resolution.md) — Model-service facade
-  and endpoint resolution
-- [ADR-0028](ADR-0028-validated-provider-adapter-catalog.md) — Validated provider-adapter
-  catalog
+- [ADR-0027](ADR-0027-model-service-facade-and-endpoint-resolution.md) — Model-service facade and
+  endpoint resolution
+- [ADR-0028](ADR-0028-validated-provider-adapter-catalog.md) — Validated provider-adapter catalog
 - [ADR-0029](ADR-0029-unified-request-admission-deadline-and-resilience-policy.md) — Unified
   request admission, deadline, and resilience policy
-- [ADR-0030](ADR-0030-agentic-provider-adapter-boundary.md) — Agentic provider-adapter
-  boundary
+- [ADR-0030](ADR-0030-agentic-provider-adapter-boundary.md) — Agentic provider-adapter boundary
 - 0031-0032 — unused (intentional gaps)
 
 ### orchestration (0033-0040)
 
-- [ADR-0033](ADR-0033-operation-graph-orchestration-boundary.md) — Operation-graph
-  orchestration boundary
+- [ADR-0033](ADR-0033-operation-graph-orchestration-boundary.md) — Operation-graph orchestration
+  boundary
 - [ADR-0034](ADR-0034-domain-engine-coordination-and-autonomy-safeguards.md) — Domain-engine
   coordination and autonomy safeguards
-- [ADR-0035](ADR-0035-persisted-run-completion-contract.md) — Persisted run-completion
-  contract
+- [ADR-0035](ADR-0035-persisted-run-completion-contract.md) — Persisted run-completion contract
 - [ADR-0036](ADR-0036-casts-role-palettes-as-playstyle.md) — Casts role palettes as playstyle
 - [ADR-0037](ADR-0037-resident-engine-host-and-task-queue.md) — Resident engine host and task
   queue
@@ -113,39 +119,38 @@ collisions. Unused numbers inside a block are intentional gaps, not missing docu
 
 ### agent-roles (0041-0046)
 
-- [ADR-0041](ADR-0041-agent-specification-and-branch-construction.md) — Agent specification
-  and Branch construction boundary
-- [ADR-0042](ADR-0042-casts-pattern-catalog-and-typed-role-authoring.md) — Casts pattern
-  catalog and typed role authoring
-- [ADR-0043](ADR-0043-per-role-configuration-resolution.md) — Per-role configuration
-  resolution
+- [ADR-0041](ADR-0041-agent-specification-and-branch-construction.md) — Agent specification and
+  Branch construction boundary
+- [ADR-0042](ADR-0042-casts-pattern-catalog-and-typed-role-authoring.md) — Casts pattern catalog
+  and typed role authoring
+- [ADR-0043](ADR-0043-per-role-configuration-resolution.md) — Per-role configuration resolution
 - [ADR-0044](ADR-0044-agent-prompt-directives-and-executable-permissions.md) — Agent prompt
   directives and executable permissions
 - 0045-0046 — unused (intentional gaps)
 
 ### hooks (0047-0049)
 
-- [ADR-0047](ADR-0047-hook-mechanism-scopes-and-canonical-ownership.md) — Hook mechanism
-  scopes and canonical ownership
+- [ADR-0047](ADR-0047-hook-mechanism-scopes-and-canonical-ownership.md) — Hook mechanism scopes
+  and canonical ownership
 - 0048-0049 — unused (intentional gaps)
 
 ### utilities (0050-0054)
 
-- [ADR-0050](ADR-0050-foundational-utility-and-typed-adaptation-strata.md) — Foundational
-  utility and typed adaptation strata
-- [ADR-0051](ADR-0051-lndl-language-and-operations-boundary.md) — LNDL language and
-  operations boundary
-- [ADR-0052](ADR-0052-supported-validation-and-testing-surfaces.md) — Supported validation
-  and testing surfaces
+- [ADR-0050](ADR-0050-foundational-utility-and-typed-adaptation-strata.md) — Foundational utility
+  and typed adaptation strata
+- [ADR-0051](ADR-0051-lndl-language-and-operations-boundary.md) — LNDL language and operations
+  boundary
+- [ADR-0052](ADR-0052-supported-validation-and-testing-surfaces.md) — Supported validation and
+  testing surfaces
 - 0053-0054 — unused (intentional gaps)
 
 ### persistence-state (0055-0061)
 
-- [ADR-0055](ADR-0055-operational-state-persistence-boundary.md) — Operational state
-  persistence boundary
+- [ADR-0055](ADR-0055-operational-state-persistence-boundary.md) — Operational state persistence
+  boundary
 - [ADR-0056](ADR-0056-statedb-sqlalchemy-core-backend.md) — StateDB SQLAlchemy Core backend
-- [ADR-0057](ADR-0057-operational-lifecycle-and-transition-audit.md) — Operational lifecycle
-  and transition audit
+- [ADR-0057](ADR-0057-operational-lifecycle-and-transition-audit.md) — Operational lifecycle and
+  transition audit
 - [ADR-0058](ADR-0058-unified-lifecycle-transition-service.md) — Unified lifecycle transition
   service
 - [ADR-0059](ADR-0059-durable-dispatch-outbox.md) — Durable dispatch outbox
@@ -155,10 +160,10 @@ collisions. Unused numbers inside a block are intentional gaps, not missing docu
 
 - [ADR-0062](ADR-0062-cli-command-surface-ownership.md) — CLI command-surface ownership
 - [ADR-0063](ADR-0063-project-attribution-cascade.md) — Project attribution cascade
-- [ADR-0064](ADR-0064-cli-execution-outcome-and-completion-record.md) — CLI execution outcome
-  and completion record
-- [ADR-0065](ADR-0065-marketplace-catalog-and-directory-discovery.md) — Marketplace catalog
-  and directory discovery
+- [ADR-0064](ADR-0064-cli-execution-outcome-and-completion-record.md) — CLI execution outcome and
+  completion record
+- [ADR-0065](ADR-0065-marketplace-catalog-and-directory-discovery.md) — Marketplace catalog and
+  directory discovery
 - 0066-0067 — unused (intentional gaps)
 
 ### scheduling-control-plane (0068-0075)
@@ -166,8 +171,8 @@ collisions. Unused numbers inside a block are intentional gaps, not missing docu
 - [ADR-0068](ADR-0068-three-public-orchestration-lanes.md) — Three public orchestration lanes
 - [ADR-0069](ADR-0069-reactive-flow-steering-and-recovery.md) — Reactive flow steering and
   recovery
-- [ADR-0070](ADR-0070-studio-scheduling-and-dispatch-delivery.md) — Studio scheduling and
-  dispatch delivery
+- [ADR-0070](ADR-0070-studio-scheduling-and-dispatch-delivery.md) — Studio scheduling and dispatch
+  delivery
 - [ADR-0071](ADR-0071-durable-ad-hoc-task-queue.md) — Durable ad-hoc task queue
 - [ADR-0072](ADR-0072-unified-task-admission-and-lifecycle.md) — Unified task admission and
   lifecycle
@@ -177,39 +182,37 @@ collisions. Unused numbers inside a block are intentional gaps, not missing docu
 
 ### studio (0076-0085)
 
-- [ADR-0076](ADR-0076-studio-daemon-route-registry-and-local-control-plane.md) — Studio
-  daemon route registry and local control plane
+- [ADR-0076](ADR-0076-studio-daemon-route-registry-and-local-control-plane.md) — Studio daemon
+  route registry and local control plane
 - [ADR-0077](ADR-0077-studio-state-and-filesystem-boundary.md) — Studio state and filesystem
   boundary
 - [ADR-0078](ADR-0078-studio-application-service-boundary.md) — Studio application-service
   boundary
 - [ADR-0079](ADR-0079-studio-web-client-architecture-and-deployment.md) — Studio web client
   architecture and deployment
-- [ADR-0080](ADR-0080-studio-six-space-cockpit-information-architecture.md) — Studio
-  six-space cockpit information architecture
-- [ADR-0081](ADR-0081-studio-execution-and-artifact-workspace-target.md) — Studio execution
-  and artifact workspace target
-- [ADR-0082](ADR-0082-vscode-studio-observability-client.md) — VS Code Studio observability
-  client
+- [ADR-0080](ADR-0080-studio-six-space-cockpit-information-architecture.md) — Studio six-space
+  cockpit information architecture
+- [ADR-0081](ADR-0081-studio-execution-and-artifact-workspace-target.md) — Studio execution and
+  artifact workspace target
+- [ADR-0082](ADR-0082-vscode-studio-observability-client.md) — VS Code Studio observability client
 - [ADR-0083](ADR-0083-studio-operator-command-protocol.md) — Studio operator-command protocol
 - 0084-0085 — unused (intentional gaps)
 
 ### governance (0086-0089)
 
-- [ADR-0086](ADR-0086-local-tool-controls-and-session-authorization.md) — Local tool controls
-  and session authorization observation
-- [ADR-0087](ADR-0087-evidence-backed-governed-execution.md) — Evidence-backed governed
-  execution
+- [ADR-0086](ADR-0086-local-tool-controls-and-session-authorization.md) — Local tool controls and
+  session authorization observation
+- [ADR-0087](ADR-0087-evidence-backed-governed-execution.md) — Evidence-backed governed execution
 - 0088-0089 — unused (intentional gaps)
 
 ### substrates (0090-0095)
 
 - [ADR-0090](ADR-0090-local-sandbox-and-measured-cell-backend-seams.md) — Local sandbox and
   measured-cell backend seams
-- [ADR-0091](ADR-0091-per-worker-worktree-execution-isolation.md) — Per-worker worktree
-  execution isolation
-- [ADR-0092](ADR-0092-minimal-branch-and-session-memory-store.md) — Minimal Branch and
-  session memory store
+- [ADR-0091](ADR-0091-per-worker-worktree-execution-isolation.md) — Per-worker worktree execution
+  isolation
+- [ADR-0092](ADR-0092-minimal-branch-and-session-memory-store.md) — Minimal Branch and session
+  memory store
 - [ADR-0093](ADR-0093-external-memory-adapter-fidelity-contract.md) — External memory adapter
   fidelity contract
 - 0094-0095 — unused (intentional gaps)

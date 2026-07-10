@@ -1,4 +1,4 @@
-# ADR-0087: Evidence-Backed Governed Execution
+# ADR-0087: Evidence-backed governed execution
 
 - **Status**: Proposed
 - **Kind**: Aspirational
@@ -78,7 +78,7 @@ This ADR does **not** decide:
 - Governance of arbitrary Python calls made outside LionAGI.
 - Correctness or quality of tool outcomes.
 - The public convenience API for opening and closing task boundaries. D6 defines the internal
-  contract and retains that façade as a deferred choice.
+  contract and retains that facade as a deferred choice.
 
 ## Decision
 
@@ -638,7 +638,7 @@ Exact mint semantics:
   signature. Authentication of a certificate requires a separately designed signing-key and
   trust-root contract.
 
-**DEFERRED — public task-boundary façade.** The internal `ClosedTaskBoundary` and issuer contract
+**DEFERRED — public task-boundary facade.** The internal `ClosedTaskBoundary` and issuer contract
 are decided, but the convenience API that opens and closes a boundary is not. It must be selected
 before certificate implementation is exposed as usable. A session end, flow end, and individual
 operation are not interchangeable proofs. The retained candidates are:
@@ -650,7 +650,7 @@ operation are not interchangeable proofs. The retained candidates are:
 - A required boundary argument on `Session.flow()` — natural for DAG work, but excludes direct
   branch and manager use.
 
-The façade must produce a stable boundary ID at open, append `TASK_CLOSED` only once, reject
+The facade must produce a stable boundary ID at open, append `TASK_CLOSED` only once, reject
 double close, and make abandoned boundaries unmintable. No candidate is selected by this ADR.
 
 ### D7 — Observation is a non-authoritative projection
@@ -810,7 +810,7 @@ sequenceDiagram
    resolution, and concurrent operation-context isolation tests. Missing and ambiguous policy
    cases deny before callable execution.
 4. Ship D6 certificate verification and minting behind an explicitly selected task-boundary
-   façade. Include negative tests for open boundaries, missing terminals, changed content,
+   facade. Include negative tests for open boundaries, missing terminals, changed content,
    missing policy history, head mismatch, and permanent degraded grade.
 5. Ship D7 observation projection. Add D8 permits, duty separation, break-glass, integration
    wrappers, and trace export only as consumers of the stable core contracts.
@@ -853,7 +853,7 @@ Reversal cost:
 | D3 | High: append and conflict semantics are backend compatibility contracts. |
 | D4 | Medium: adapters isolate current controls, but gate level and reason code are stored evidence. |
 | D5 | High: policy pins and resolution determine historical meaning. |
-| D6 | Medium before the public boundary façade is selected; high after certificates are externally retained. |
+| D6 | Medium before the public boundary facade is selected; high after certificates are externally retained. |
 | D7 | Low: projection is explicitly non-authoritative and replaceable. |
 | D8 | Low while deferred; each family requires its own acceptance gate before activation. |
 
@@ -932,7 +932,7 @@ defined. Calling an unsigned hash-chain summary a signature would overstate the 
 Per-operation minting is precise but too narrow for a multi-operation task. Session-end minting
 can combine unrelated work. Flow-end minting excludes direct branch and manager use. None is
 selected implicitly; D6 retains an explicit boundary requirement and defers only its convenience
-façade.
+facade.
 
 ### Recreate current controls as new policy code
 
@@ -953,6 +953,6 @@ The six target components are `InvocationController`, `GateAdapter`, `EvidenceSt
 six directed dependencies, so `κ = 0.20`; protocol injection and pure functions provide the
 `τ = 1.0` isolated-test target.
 
-The first implementation must settle the public task-boundary façade before exposing certificate
+The first implementation must settle the public task-boundary facade before exposing certificate
 minting as usable. All other core contracts in D1-D7 are committed by this proposal as the target
 shape; D8 remains deferred and may not be advertised as active.

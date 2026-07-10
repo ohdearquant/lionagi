@@ -1,4 +1,4 @@
-# ADR-0017: Session Membership and Coordination Boundary
+# ADR-0017: Session membership and coordination boundary
 
 - **Status**: Proposed
 - **Kind**: Retrospective

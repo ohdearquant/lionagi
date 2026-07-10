@@ -1,4 +1,4 @@
-# ADR-0007: Canonical Turn-Request Compilation Boundary
+# ADR-0007: Canonical turn-request compilation boundary
 
 - **Status**: Proposed
 - **Kind**: Aspirational

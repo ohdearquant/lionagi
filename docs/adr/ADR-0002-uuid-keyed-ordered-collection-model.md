@@ -1,4 +1,4 @@
-# ADR-0002: UUID-Keyed Ordered Collection Model
+# ADR-0002: UUID-keyed ordered collection model
 
 - **Status**: Proposed
 - **Kind**: Retrospective

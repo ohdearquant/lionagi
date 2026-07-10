@@ -1,4 +1,4 @@
-# ADR-0021: Branch operation façade and turn-adapter contract
+# ADR-0021: Branch operation facade and turn-adapter contract
 
 - **Status**: Proposed
 - **Kind**: Retrospective
@@ -15,12 +15,12 @@ live under `lionagi/operations/`. The split grew around five concrete problems.
 transport, structured parsing, action execution, composed operation, interpretation, and reasoning
 loops all need the same branch managers. Publishing those functions only as unrelated
 module calls would make callers assemble and pass that state themselves; implementing them directly
-on `Branch` would make an already stateful façade own every algorithm.
+on `Branch` would make an already stateful facade own every algorithm.
 
 **P2 — Operation implementations and `Branch` would form a runtime import cycle.** Implementations
-need a branch instance, while the façade needs to expose the implementations. The shipped direction
+need a branch instance, while the facade needs to expose the implementations. The shipped direction
 is a type-only dependency from operation modules to `Branch` and a lazy, method-local import from
-the façade to the implementation (`lionagi/session/branch.py`; `lionagi/operations/types.py`).
+the facade to the implementation (`lionagi/session/branch.py`; `lionagi/operations/types.py`).
 
 **P3 — Named extensions must resolve the same way from direct calls and graph nodes.** A session can
 register a coroutine by name, and an `Operation` graph node stores only an operation name and
@@ -45,7 +45,7 @@ message (`lionagi/operations/types.py`; `lionagi/operations/run/run.py`;
 
 | Concern | Decision |
 |---------|----------|
-| Public operation boundary | D1: `Branch` remains the façade and lazily delegates to operation modules. |
+| Public operation boundary | D1: `Branch` remains the facade and lazily delegates to operation modules. |
 | Named extension lookup | D2: one session-owned async registry serves direct and graph dispatch, after built-ins. |
 | Model-facing transport behavior | D3: `chat`, `chat_and_record`, `communicate`, `run`, and `run_and_collect` retain distinct persistence and failure semantics. |
 | Lifecycle and cleanup ownership | D4: the wrapper or stream that owns an exchange owns its lifecycle and cleanup signals. |
@@ -59,20 +59,20 @@ This ADR deliberately does **not** decide:
   graph execution kernel.
 - LNDL syntax or its specific multi-round policy; ADR-0024 records the operations adapter only.
 - Provider endpoint implementation, request serialization, rate limiting, or credentials; those are
-  service-provider concerns below the operation façade.
+  service-provider concerns below the operation facade.
 - Durable branch/session persistence; the operations layer emits and records state but does not
   choose a persistence substrate.
 
 ## Decision
 
-### D1 — `Branch` is the public façade and operation modules are the implementation layer
+### D1 — `Branch` is the public facade and operation modules are the implementation layer
 
 The shipped dependency shape is:
 
 ```text
 lionagi/
 ├── session/
-│   ├── branch.py                 # public façade; lazy imports inside verb methods
+│   ├── branch.py                 # public facade; lazy imports inside verb methods
 │   └── session.py                # branch collection and shared operation manager
 └── operations/
     ├── types.py                  # parameter dataclasses and Middle protocol
@@ -84,7 +84,7 @@ lionagi/
     ├── operate/operate.py        # composed coordinator (ADR-0022)
     ├── act/act.py
     ├── parse/parse.py
-    ├── select/select.py             # module exists; no Branch.select façade is shipped
+    ├── select/select.py             # module exists; no Branch.select facade is shipped
     ├── interpret/interpret.py
     └── ReAct/ReAct.py
 ```
@@ -163,7 +163,7 @@ class Branch:
 
 Exact semantics:
 
-- A façade method receives an already constructed `Branch`; operation implementations do not create
+- A facade method receives an already constructed `Branch`; operation implementations do not create
   or attach a branch or session.
 - `chat_model` and `parse_model` default through the branch's `iModelManager`; callers may override
   them on the methods that expose those parameters.
@@ -172,8 +172,8 @@ Exact semantics:
 - The public annotation on `Branch.chat()` says it returns the instruction/response tuple, but its
   default runtime path returns response text. The implementation-level `chat()` correctly declares
   the union. `return_ins_res_message` is therefore the authoritative runtime discriminator; the
-  façade annotation is currently under-specified.
-- `BranchOperations` and the actual façade drift in both directions. The literal lists `select`,
+  facade annotation is currently under-specified.
+- `BranchOperations` and the actual facade drift in both directions. The literal lists `select`,
   although no `Branch.select()` method is shipped; it omits the public `run()` and
   `chat_and_record()` methods. `select` resolves only if a session registers that name, while the
   omitted public methods resolve through normal attribute lookup. The graph node consequently uses
@@ -185,7 +185,7 @@ Exact semantics:
   to 100. The bounds prevent an extension loop from growing without limit, but the operations code
   records no empirical rationale for exactly 3 or 100 (`lionagi/operations/ReAct/ReAct.py`).
 - An exception from the delegated implementation propagates unless that implementation documents a
-  more specific conversion. The façade does not turn arbitrary failures into values.
+  more specific conversion. The facade does not turn arbitrary failures into values.
 
 **Why this way.** `Branch` already owns the managers required by every verb, so it is the coherent
 caller boundary. Method-local delegation preserves that discoverability without reversing the
@@ -262,7 +262,7 @@ Exact semantics:
 
 **Why this way.** Session ownership matches the intended lifetime: named extensions coordinate a
 set of branches, and graph nodes need them after branch cloning or allocation. Built-in precedence
-keeps the stable façade from being silently redefined by registration. Reusing the same lookup from
+keeps the stable facade from being silently redefined by registration. Reusing the same lookup from
 direct and graph dispatch makes an operation name one contract rather than two.
 
 ### D3 — API one-shot, explicit recording, recorded API, CLI stream, and collection remain distinct
@@ -501,9 +501,9 @@ execution.
 - Contributors must understand that lifecycle ownership is intentionally split. Adding a wrapper at
   the wrong layer can duplicate start/terminal signals or end a run before a generator is consumed.
 - Reversing D1 or D2 is high-cost because public callers and graph dispatch both depend on the
-  façade/lookup contract. Replacing a `Middle` is low-cost when it honors D5. Unifying D3 would be
+  facade/lookup contract. Replacing a `Middle` is low-cost when it honors D5. Unifying D3 would be
   high-risk because it changes persistence and cancellation behavior.
-- The façade and `flow.py` depend on the operation model, but the measured eight-component
+- The facade and `flow.py` depend on the operation model, but the measured eight-component
   operations architecture remains `κ = 12 / (8 × 7) = 0.214`, below the 0.3 target. The decision
   boundaries remain testable through injected models, registered coroutine operations, and custom
   `Middle` callables (`τ ≈ 0.9` for the area; static tests do not establish provider reliability).
@@ -513,14 +513,14 @@ execution.
 | # | Delta | Size | Issue |
 |---|-------|------|-------|
 | 1 | Replace the `Middle` one-turn wording with a logical-exchange contract that states message-recording, streaming, bounded-loop, native-tool, and validation responsibilities; add conformance tests for `communicate`, `run_and_collect`, and LNDL. | M | (filled at issue-open time) |
-| 2 | Make the branch-operation vocabulary explicitly extensible or align it with the façade by adding or removing `select` and including `run` and `chat_and_record`; publish the intended registry and adapter exports from one canonical namespace. | S | (filled at issue-open time) |
+| 2 | Make the branch-operation vocabulary explicitly extensible or align it with the facade by adding or removing `select` and including `run` and `chat_and_record`; publish the intended registry and adapter exports from one canonical namespace. | S | (filled at issue-open time) |
 | 3 | Document the session ownership of the named-operation registry in its type and public API, preserving built-in precedence and asynchronous registration checks. | S | (filled at issue-open time) |
 | 4 | Represent lifecycle ownership for API turns, CLI streams, and nested operations in an explicit internal contract and add tests that prevent duplicate start or terminal signals. | M | (filled at issue-open time) |
 | 5 | Correct the public `Branch.chat()` return annotation so it expresses response text by default and the instruction/response tuple when `return_ins_res_message=True`; add typing coverage for both call forms. | S | (filled at issue-open time) |
 
 ## Alternatives considered
 
-### Publish operation functions instead of a `Branch` façade
+### Publish operation functions instead of a `Branch` facade
 
 This would make dependency direction obvious and keep `Branch` smaller. It lost because every call
 would still require the caller to select and pass the branch's managers, models, observer, hooks,
@@ -545,7 +545,7 @@ manager gives one lifetime and one lookup truth.
 
 This would make the extension mechanism maximally flexible. It lost because a registration could
 silently redefine a stable public verb for all branches in a session. `update=True` intentionally
-means replace a registry entry, not replace `Branch.operate` or another façade method.
+means replace a registry entry, not replace `Branch.operate` or another facade method.
 
 ### Collapse API and CLI calls into one transport primitive
 
@@ -554,7 +554,7 @@ single awaited event while a CLI invocation is an async-generator resource whose
 iteration and consumer abandonment. A single primitive would either hide the stream or force every
 API call through streaming lifecycle machinery.
 
-### Make the façade record every model call automatically
+### Make the facade record every model call automatically
 
 This would make history behavior superficially uniform. It lost because `chat()` is intentionally a
 non-recording primitive used when a caller needs a request without conversation mutation.

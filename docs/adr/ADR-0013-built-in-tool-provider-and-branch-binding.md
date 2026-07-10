@@ -1,4 +1,4 @@
-# ADR-0013: Built-in Tool Provider and Branch Binding
+# ADR-0013: Built-in tool provider and Branch binding
 
 - **Status**: Proposed
 - **Kind**: Retrospective

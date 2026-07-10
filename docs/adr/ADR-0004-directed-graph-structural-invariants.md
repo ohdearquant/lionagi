@@ -1,4 +1,4 @@
-# ADR-0004: Directed Graph Structural Invariants
+# ADR-0004: Directed graph structural invariants
 
 - **Status**: Proposed
 - **Kind**: Retrospective

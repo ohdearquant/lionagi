@@ -1,4 +1,4 @@
-# ADR-0091: Per-Worker Worktree Execution Isolation
+# ADR-0091: Per-worker worktree execution isolation
 
 - **Status**: Proposed
 - **Kind**: Aspirational

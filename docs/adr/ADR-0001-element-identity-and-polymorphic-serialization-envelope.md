@@ -1,4 +1,4 @@
-# ADR-0001: Element Identity and Polymorphic Serialization Envelope
+# ADR-0001: Element identity and polymorphic serialization envelope
 
 - **Status**: Proposed
 - **Kind**: Retrospective

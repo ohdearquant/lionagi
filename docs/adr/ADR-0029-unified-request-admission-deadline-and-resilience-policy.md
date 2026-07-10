@@ -8,7 +8,7 @@
 
 ## Context
 
-ADR-0027 records one public model façade but two materially different execution lifecycles. This
+ADR-0027 records one public model facade but two materially different execution lifecycles. This
 ADR defines one target lifecycle for both result shapes.
 
 **P1 — `invoke()` can detach pending work.** Non-streaming `iModel.invoke()` appends an
@@ -47,7 +47,7 @@ provider streams have no replay cursor
 
 **P6 — Terminal state and cleanup have multiple owners.** `Event` already has `PENDING`,
 `PROCESSING`, `COMPLETED`, `FAILED`, `SKIPPED`, `CANCELLED`, and `ABORTED` states plus a completion
-signal. The processor, façade, event, endpoint, and operation nevertheless each own part of queueing,
+signal. The processor, facade, event, endpoint, and operation nevertheless each own part of queueing,
 cancellation, error capture, or generator close. No invariant currently prevents an event from being
 removed while non-terminal (`lionagi/protocols/generic/event.py`; `Event`, `EventStatus`).
 

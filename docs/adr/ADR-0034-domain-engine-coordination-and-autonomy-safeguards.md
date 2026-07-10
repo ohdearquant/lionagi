@@ -1,4 +1,4 @@
-# ADR-0034: Domain-Engine Coordination and Autonomy Safeguards
+# ADR-0034: Domain-engine coordination and autonomy safeguards
 
 - **Status**: Proposed
 - **Kind**: Retrospective
@@ -467,7 +467,7 @@ async def EngineRun.run_dag(
 - `max_spawn=50` and `max_concurrent=5` mirror the ADR-0033 defaults. No separate
   engine rationale is recorded.
 - The method's generic placement on every `EngineRun` is current package debt. The
-  neutral observed-flow façade in ADR-0033's delta is the intended generic owner.
+  neutral observed-flow facade in ADR-0033's delta is the intended generic owner.
 
 ## Consequences
 
@@ -494,7 +494,7 @@ async def EngineRun.run_dag(
 | # | Delta | Size | Issue |
 |---|-------|------|-------|
 | 1 | Define and implement an event-retention or compaction policy for long-running `EngineRun` instances, with a test proving that required audit and terminal-summary events survive compaction. | M | (filled at issue-open time) |
-| 2 | Change `EngineRun.run_dag()` into a compatibility delegator over the neutral observed-flow façade and document the façade, rather than the engine method, as the generic graph-observation surface. | S | (filled at issue-open time) |
+| 2 | Change `EngineRun.run_dag()` into a compatibility delegator over the neutral observed-flow facade and document the facade, rather than the engine method, as the generic graph-observation surface. | S | (filled at issue-open time) |
 | 3 | Add one conformance suite that exercises agent budget, deadline cancellation, emission repair, judge failure, and terminal degradation across every concrete engine shape. | M | (filled at issue-open time) |
 
 ## Alternatives considered

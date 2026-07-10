@@ -1,4 +1,4 @@
-# ADR-0016: Branch Conversation Aggregate and Attachment Boundary
+# ADR-0016: Branch conversation aggregate and attachment boundary
 
 - **Status**: Proposed
 - **Kind**: Retrospective
@@ -220,8 +220,10 @@ def memory(self) -> MemoryStore:
 
 #### Context-provider contract
 
-`providers` lazily creates one `ContextProviderRegistry`. The registry and report shapes are
-(`lionagi/protocols/context_providers.py`):
+`providers` lazily creates one `ContextProviderRegistry`. Pre-turn execution ordering,
+budgeting, and attribution semantics for this registry are recorded in ADR-0008; this section
+owns its lifetime and persistence semantics within the Branch aggregate. The registry and
+report shapes are (`lionagi/protocols/context_providers.py`):
 
 ```python
 class ContextProvider(Protocol):
