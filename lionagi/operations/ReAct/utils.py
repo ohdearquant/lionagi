@@ -11,11 +11,8 @@ from lionagi.models import HashableModel
 class ReActAnalysis(HashableModel):
     """Chain-of-thought output for one ReAct round: analysis, extension flag, and action strategy.
 
-    The round budget below is framed as HEADROOM for planning, not a countdown —
-    "N steps left, be efficient" reads as scarcity and makes a model wrap up early.
-    Instead: remaining rounds are room to use not race, "efficiency" means
-    throughput-per-round (batching tool calls) not fewer rounds, and the only
-    failure is stopping while the task is incomplete.
+    Round budget is framed as headroom to use, not a countdown — scarcity framing
+    makes models wrap up early. See prompts below.
     """
 
     FIRST_EXT_PROMPT: ClassVar[str] = (

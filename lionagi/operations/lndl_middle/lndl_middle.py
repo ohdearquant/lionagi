@@ -92,13 +92,9 @@ def _render_type(annotation: Any) -> str:
 
 
 def _render_target_spec(target: Any) -> str | None:
-    """Render the target model's fields as an LNDL ``Specs:`` line -- the
-    exact format LNDL_SYSTEM_PROMPT's own examples use to teach the model
-    the schema it must fill (rule 5: "Use the EXACT spec names declared in
-    the schema you are given"). Without this, a real model is never told
-    the target field names once the per-round chat call strips native
-    ``response_format``. Returns None for a plain-dict/no-target caller —
-    there's no structured spec to announce."""
+    """Render the target model's fields as an LNDL ``Specs:`` line, the format
+    LNDL_SYSTEM_PROMPT's examples use — required since the per-round chat
+    call strips native ``response_format``. None for a plain-dict/no-target caller."""
     model_fields = getattr(target, "model_fields", None)
     if not model_fields:
         return None
@@ -157,11 +153,8 @@ def _round_instruction(
     round_budget: int,
     prior_error: str | None,
 ) -> JsonValue | Instruction:
-    """Round 1 sends the caller's own instruction verbatim (the LNDL contract
-    rides in ``guidance`` instead, see ``build_lndl_middle``). Later rounds
-    send a short continuation notice — LNDL_SYSTEM_PROMPT's own MULTI-ROUND
-    MODE section teaches the model to read 'Round N of M.' as a continuation
-    signal, with tool results already visible in chat history."""
+    """Round 1 sends the instruction verbatim (LNDL contract rides in
+    ``guidance``); later rounds send a short 'Round N of M.' continuation notice."""
     if round_num == 1:
         return original_instruction
     notice = f"Round {round_num} of {round_budget}."
@@ -177,12 +170,9 @@ def _classify_round(
 ) -> tuple[RoundOutcome, list[ActionCall], dict[str, Any] | None]:
     """Parse and assemble one round's raw text into a RoundOutcome.
 
-    Returns ``(outcome, pending_action_calls, assembled_dict)``. ``pending``
-    is populated for a Continue round (every declared lact, executed
-    unconditionally per LNDL_SYSTEM_PROMPT's "tools execute every round") and
-    for a Success candidate (only the lacts actually reachable from OUT{},
-    via ``collect_actions``). ``assembled`` is populated only for a Success
-    candidate.
+    Returns ``(outcome, pending_action_calls, assembled_dict)``; ``pending`` is
+    every lact for Continue, only OUT{}-reachable lacts for Success; ``assembled``
+    is set only on Success.
     """
     blocks = extract_lndl_blocks(text)
     if not blocks:
