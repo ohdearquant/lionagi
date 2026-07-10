@@ -420,6 +420,10 @@ def uses_developer_messages(model: object) -> bool:
     if not isinstance(model, str):
         return False
     model_name = model.rsplit("/", 1)[-1].lower()
+    if model_name.startswith("ft:"):
+        # Fine-tuned ids are "ft:<base-model>:<org>:<suffix>:<id>"; the family
+        # gate applies to the base model, not the "ft" wrapper.
+        model_name = model_name.split(":", 2)[1]
     return model_name.startswith(("o1", "o3", "o4", "gpt-5"))
 
 

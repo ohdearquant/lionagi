@@ -130,6 +130,8 @@ class TestOpenAIIntegration:
             "gpt-5-mini",
             "gpt-5-2025-08-07",
             "gpt-5-chat-latest",
+            "ft:gpt-5-mini:acme::abc123",
+            "ft:o3-mini:acme:custom:xyz789",
         ],
     )
     def test_openai_developer_role_conversion_gated_models(self, openai_imodel, model):
@@ -148,7 +150,16 @@ class TestOpenAIIntegration:
 
     @pytest.mark.parametrize(
         "model",
-        ["gpt-4.1", "gpt-4.1-mini", "gpt-4o", "gpt-4o-mini", "gpt-4-turbo", "gpt-3.5-turbo"],
+        [
+            "gpt-4.1",
+            "gpt-4.1-mini",
+            "gpt-4o",
+            "gpt-4o-mini",
+            "gpt-4-turbo",
+            "gpt-3.5-turbo",
+            "ft:gpt-4o-mini:acme::abc123",
+            "ft:",
+        ],
     )
     def test_openai_system_role_preserved_non_gated_models(self, openai_imodel, model):
         payload, _ = openai_imodel.endpoint.create_payload(
