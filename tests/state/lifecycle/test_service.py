@@ -175,6 +175,57 @@ async def test_public_transition_applies_for_dispatch_without_reason_columns(db:
 
 
 @pytest.mark.asyncio
+async def test_public_transition_rejects_unknown_actor_type(db: StateDB) -> None:
+    run_id = await _make_schedule_run(db, status="queued")
+    service = SQLAlchemyLifecycleService(db)
+
+    with pytest.raises(LifecycleValidationError, match="invalid actor type"):
+        await service.transition(
+            _command(
+                entity_type="schedule_run",
+                entity_id=run_id,
+                to_status="running",
+                reason=ReasonRecord(code="run.started.ok"),
+                actor=ActorRecord(type="typo", id="u1"),
+            )
+        )
+
+
+@pytest.mark.asyncio
+async def test_public_transition_archives_team(db: StateDB) -> None:
+    """The team policy declares a usable reason domain; active -> archived
+    applies through the public API."""
+    import time as _time
+    import uuid as _uuid
+
+    from sqlalchemy import text
+
+    team_id = _uuid.uuid4().hex
+    now = _time.time()
+    async with db._tx() as conn:
+        await conn.execute(
+            text(
+                "INSERT INTO teams (id, name, created_at, updated_at, status) "
+                "VALUES (:id, :name, :now, :now, 'active')"
+            ),
+            {"id": team_id, "name": "t", "now": now},
+        )
+    service = SQLAlchemyLifecycleService(db)
+
+    outcome = await service.transition(
+        _command(
+            entity_type="team",
+            entity_id=team_id,
+            to_status="archived",
+            reason=ReasonRecord(code="team.archived.operator"),
+            actor=ActorRecord(type="operator", id="op1"),
+        )
+    )
+
+    assert outcome.result == "applied"
+
+
+@pytest.mark.asyncio
 async def test_public_transition_rejects_wrong_domain_reason_code(db: StateDB) -> None:
     """A globally valid code from another entity's reason domain is refused."""
     run_id = await _make_schedule_run(db, status="queued")

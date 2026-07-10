@@ -210,7 +210,7 @@ def build_default_registry() -> PolicyRegistry:
             edges=_edges(("active", _to("archived"))),
             same_status="append",
             patch_fields=frozenset(),
-            reason_prefixes=frozenset(),
+            reason_prefixes=frozenset({"team"}),
         )
     )
 

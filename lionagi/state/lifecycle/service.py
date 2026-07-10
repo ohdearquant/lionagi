@@ -32,13 +32,13 @@ from __future__ import annotations
 import time
 import uuid
 from collections.abc import Mapping
-from typing import TYPE_CHECKING, Any, Protocol
+from typing import TYPE_CHECKING, Any, Protocol, get_args
 
 from sqlalchemy import JSON, bindparam, text
 
 from ..reasons import VALID_REASON_CODES
 from . import LifecycleNotFoundError, LifecycleValidationError
-from .models import InitialStateCommand, TransitionCommand, TransitionOutcome
+from .models import ActorType, InitialStateCommand, TransitionCommand, TransitionOutcome
 from .policy import DEFAULT_REGISTRY, PolicyRegistry
 
 if TYPE_CHECKING:
@@ -186,6 +186,14 @@ class SQLAlchemyLifecycleService:
             )
         if not command.actor.id:
             raise LifecycleValidationError("TransitionCommand.actor.id must be non-empty")
+        # ActorRecord is a plain dataclass; the ActorType Literal is not
+        # enforced at runtime, and status_transitions.source is a controlled
+        # vocabulary the legacy surfaces validated.
+        if command.actor.type not in get_args(ActorType):
+            raise LifecycleValidationError(
+                f"invalid actor type: {command.actor.type!r}; must be one of "
+                f"{sorted(get_args(ActorType))}"
+            )
         return await self._transition(
             command,
             extra_guard=None,
