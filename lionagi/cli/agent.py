@@ -64,11 +64,12 @@ def _make_coding_preset(
     cwd: str | None = None,
     effort: str | None = "high",
     system_prompt: str | None = None,
+    role: str = "implementer",
 ):
     """Construct an AgentSpec.coding() instance; isolated for test monkeypatching."""
     from lionagi.agent.spec import AgentSpec
 
-    return AgentSpec.coding(cwd=cwd, effort=effort, system_prompt=system_prompt)
+    return AgentSpec.coding(cwd=cwd, effort=effort, system_prompt=system_prompt, role=role)
 
 
 # ---------------------------------------------------------------------------
@@ -270,6 +271,33 @@ async def _run_agent(
         if profile.resume_on_timeout and not resume_on_timeout:
             resume_on_timeout = True
 
+    # Validate a declared profile `role:` key up front, before the
+    # resume/new-branch split — a malformed profile must fail loudly on every
+    # invocation shape, not only when a new branch is composed. The value
+    # itself is only USED when composing a new branch (a resumed branch keeps
+    # its persisted system message). A declared key must be a non-empty
+    # string: `role: ""`, `role: false`, or `role: 0` parse to falsy Python
+    # values, and a truthiness fallback would silently grant the implementer
+    # role (and its coding authority) instead of surfacing the malformed
+    # config. The "implementer" default applies ONLY when the key is
+    # genuinely absent (bare `--preset coding` with no declared role).
+    profile_role_extra = (getattr(profile, "extra", None) or {}) if profile else {}
+    has_role_key = "role" in profile_role_extra
+    profile_role = profile_role_extra.get("role") if has_role_key else None
+    if has_role_key and (not isinstance(profile_role, str) or not profile_role.strip()):
+        raise ConfigurationError(
+            f"agent profile {getattr(profile, 'name', '<unknown>')!r} declares a "
+            f"`role` key but its value {profile_role!r} is not a non-empty "
+            "string; set it to a valid role name, or remove the key to keep "
+            "the plain profile path (no role/policy composition)."
+        )
+
+    # Set True only when a NEW branch takes the create_agent path (either
+    # --preset coding or an opted-in profile `role:` key) — the profile
+    # system-prompt block below must not double-add via add_message in that
+    # case (the profile extension was already composed into the spec).
+    took_create_agent_path = False
+
     branch: Branch | None = None
     if continue_last:
         _, branch_id = load_last_branch()
@@ -330,7 +358,21 @@ async def _run_agent(
         chat_model = build_chat_model(provider, model, yolo, verbose, theme, effort, fast, bypass)
         effort = resolve_persisted_effort(provider, chat_model, effort)
 
-        if preset == "coding":
+        # Opt-in profile frontmatter key `role`: an explicit `role:` in the
+        # profile's frontmatter (parsed into AgentProfile.extra by
+        # _parse_profile) switches a plain `-a <profile>` leg onto the same
+        # create_agent path `--preset coding` uses, parameterized with the
+        # profile's own role instead of the hardcoded "implementer" default —
+        # so a reviewer profile gets the reviewer policy block, not the
+        # implementer's. `role` is read ONLY from this explicit key — it is
+        # NEVER defaulted from the profile name, since many deployed profiles
+        # name no matching built-in Role and would hit Role.load's fail-closed
+        # ValueError the moment they were defaulted into this path. A profile
+        # without the key keeps today's plain Branch(...) path byte-for-byte.
+        # (The key was already validated as a non-empty string right after
+        # profile load, before the resume/new-branch split.)
+        if preset == "coding" or has_role_key:
+            took_create_agent_path = True
             # 3a: use create_agent so CodingToolkit tools and path-guards are
             # fully wired (guard_destructive on bash, guard_paths on
             # reader/editor).  The factory installs the full system message via
@@ -357,7 +399,17 @@ async def _run_agent(
                 cwd=cwd,
                 effort=effort or "high",
                 system_prompt=profile_extra or None,
+                role=profile_role if has_role_key else "implementer",
             )
+            # AgentSpec.coding()/compose() default lion_system=True regardless
+            # of the profile's own frontmatter — propagate an explicit
+            # `lion_system: false` opt-out onto the spec, or a role profile
+            # can never suppress the LION system preamble once it takes this
+            # path (unlike the non-preset path, where _parse_profile already
+            # folds lion_system into profile.system_prompt before this code
+            # ever runs).
+            if profile is not None and not profile.lion_system:
+                spec.lion_system = False
             branch = await create_agent(
                 spec,
                 chat_model=chat_model,
@@ -408,11 +460,21 @@ async def _run_agent(
         if fast:
             cfg.update(PROVIDER_FAST_KWARGS.get(provider, {}))
 
-    # Profile system prompt for the non-preset path only.
-    # On the preset path the profile extension was already composed into the
-    # spec before create_agent ran (add_message would call set_system and
+    # Profile system prompt for a brand-new, non-preset branch only.
+    # On the preset/role path the profile extension was already composed into
+    # the spec before create_agent ran (add_message would call set_system and
     # replace the preset system message — see protocols/messages/manager.py:385).
-    if profile and profile.system_prompt and preset is None:
+    # A resumed or continued branch (-r / --continue-last / the automatic
+    # timeout-resume leg) already carries its persisted system message —
+    # which, for a role/preset branch, is the composed role+policy block, not
+    # the bare profile body — so add_message must not run for it either, or
+    # it clobbers that persisted message via set_system.
+    if (
+        profile
+        and profile.system_prompt
+        and not took_create_agent_path
+        and not (resume or continue_last)
+    ):
         branch.msgs.add_message(system=profile.system_prompt)
 
     if timeout is not None:

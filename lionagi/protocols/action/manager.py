@@ -245,10 +245,14 @@ class ActionManager(Manager):
         if mcp_security is None:
             mcp_security = MCPSecurityConfig(allow_commands=True, allow_urls=True)
 
-        MCPConnectionPool.load_config(config_path)
+        loaded_names = MCPConnectionPool.load_config(config_path)
 
         if server_names is None:
-            server_names = list(MCPConnectionPool._configs.keys())
+            # Default to the servers declared in THIS config file. The pool
+            # accumulates configs process-globally across loads, so
+            # enumerating the pool here would silently re-register every
+            # server from previously loaded, unrelated configs.
+            server_names = loaded_names
         all_tools = {}
         for server_name in server_names:
             try:

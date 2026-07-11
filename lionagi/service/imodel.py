@@ -334,8 +334,19 @@ class iModel:  # noqa: N801
     async def close(self) -> None:
         await self.executor.stop()
 
-    def copy(self, share_session: bool = False) -> iModel:
-        """Create a new iModel with same config but fresh ID and executor."""
+    def copy(self, share_session: bool = False, share_executor: bool = False) -> iModel:
+        """Create a new iModel with the same config but a fresh ID.
+
+        ``share_session=True`` carries the CLI provider's session_id onto the
+        copy (cross-turn continuation is preserved). ``share_executor=True``
+        reuses this SAME ``RateLimitedAPIExecutor`` instance instead of
+        building a fresh one, so a caller-supplied executor's rate limits and
+        queue capacity stay shared between the original and the copy. Default
+        (False) gives the copy its own independent executor — what
+        ``Branch.clone()`` wants for CLI providers, where each cloned branch
+        should get its own session and queue rather than contending on the
+        parent's.
+        """
         endpoint_cls = type(self.endpoint)
         new_endpoint = endpoint_cls(
             config=self.endpoint.config.model_copy(deep=True),
@@ -349,7 +360,7 @@ class iModel:  # noqa: N801
             and isinstance(self.endpoint, AgenticEndpoint)
         ):
             new_endpoint.session_id = self.endpoint.session_id
-        return iModel(
+        new = iModel(
             endpoint=new_endpoint,
             provider_metadata=self.provider_metadata.copy(),
             streaming_process_func=self.streaming_process_func,
@@ -357,6 +368,9 @@ class iModel:  # noqa: N801
             exit_hook=self.exit_hook,
             **self.executor.config,
         )
+        if share_executor:
+            new.executor = self.executor
+        return new
 
     def to_dict(
         self,

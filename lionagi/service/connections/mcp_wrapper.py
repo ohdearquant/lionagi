@@ -185,8 +185,14 @@ class MCPConnectionPool:
         await self.cleanup()
 
     @classmethod
-    def load_config(cls, path: str = ".mcp.json") -> None:
-        """Load MCP server configurations from a .mcp.json file."""
+    def load_config(cls, path: str = ".mcp.json") -> list[str]:
+        """Load MCP server configurations from a .mcp.json file.
+
+        Returns the server names declared in THIS file. The pool accumulates
+        configs across loads (``_configs`` is process-global), so callers
+        that mean "the servers from the file I just loaded" must use this
+        return value rather than enumerating ``_configs``.
+        """
         config_path = Path(path)
         if not config_path.exists():
             raise FileNotFoundError(f"MCP config file not found: {path}")
@@ -207,6 +213,7 @@ class MCPConnectionPool:
             raise ValueError("mcpServers must be a dictionary")
 
         cls._configs.update(servers)
+        return list(servers.keys())
 
     @classmethod
     async def get_client(

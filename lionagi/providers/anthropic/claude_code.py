@@ -190,8 +190,13 @@ class ClaudeCodeRequest(BaseModel):
         default=False,
         json_schema_extra=_cli("--strict-mcp-config", 51, "bool"),
     )
-    # Legacy: if set and mcp_config is absent, serialised to --mcp-config JSON
-    mcp_servers: dict[str, Any] = Field(default_factory=dict, exclude=True)
+    # Legacy: if set and mcp_config is absent, serialised to --mcp-config JSON.
+    # Default is None (not {}) so a request that never touched this field is
+    # distinguishable from a caller that explicitly forwarded an empty server
+    # selection — the latter must still emit `--mcp-config {"mcpServers":{}}`
+    # to force zero MCP servers rather than silently falling back to the CLI's
+    # own MCP discovery (see as_cmd_args below).
+    mcp_servers: dict[str, Any] | None = Field(default=None, exclude=True)
 
     # ── agents (order 60–69) ──────────────────────────────────────
     agent: str | None = Field(
@@ -459,8 +464,12 @@ class ClaudeCodeRequest(BaseModel):
             else:
                 args.append("--debug")
 
-        # Legacy mcp_servers dict → serialise as --mcp-config JSON inline
-        if self.mcp_servers and not self.mcp_config:
+        # Legacy mcp_servers dict → serialise as --mcp-config JSON inline.
+        # `is not None` (not truthiness) so an explicitly forwarded empty
+        # selection (mcp_servers={}) still emits the flag — forcing zero MCP
+        # servers — rather than silently omitting it and letting the CLI fall
+        # back to its own MCP discovery.
+        if self.mcp_servers is not None and not self.mcp_config:
             args.extend(
                 [
                     "--mcp-config",
