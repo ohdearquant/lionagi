@@ -328,8 +328,17 @@ def guard_paths(
 
 Factory that returns a pre-hook restricting file access by path. Applied to `reader` and `editor`.
 
-- `allowed_paths`: if set, any path outside these roots raises `PermissionError`.
+- `allowed_paths`: if set, any path outside these roots raises `PermissionError`. A relative
+  path resolves against the first allowed root; an absolute path is accepted if it resolves
+  under any configured root.
 - `denied_paths`: patterns (absolute paths, filenames, or substrings) that are always blocked.
+
+Workspace containment delegates to `lionagi.libs.path_safety.resolve_workspace_path`: a direct
+symlink (even one whose target is inside the workspace) is refused before it is followed, and a
+fixed set of protected basenames (`.env`, `.netrc`, SSH private keys, `.htpasswd`) is denied even
+when no `denied_paths` are supplied. With no `allowed_paths` configured, path access is
+deny-only — the process working directory is never treated as an implicit allowlist — but the
+same symlink refusal and protected-basename floor still apply before `denied_paths` is checked.
 
 ```python
 spec.pre("reader", guard_paths(allowed_paths=["/Users/me/project/"]))

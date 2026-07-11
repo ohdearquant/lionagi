@@ -116,9 +116,10 @@ async def test_guard_paths_glob_deny_allows_non_matching(tmp_path):
 
 
 async def test_guard_paths_glob_deny_blocks_dotenv(tmp_path):
-    """'.env' pattern blocks /project/.env via fnmatch component matching."""
+    """A literal '.env' basename is denied by the DENIED_NAMES hard floor, even
+    though a redundant caller '.env' deny pattern is also configured."""
     hook = guard_paths(denied_paths=[".env"])
-    with pytest.raises(PermissionError, match="deny rule"):
+    with pytest.raises(PermissionError, match="protected path"):
         await hook("reader", "read", {"path": str(tmp_path / ".env")})
 
 
@@ -146,4 +147,109 @@ async def test_guard_paths_tilde_deny_allows_unrelated(tmp_path):
     """'secret~' deny must not block a path that does not contain 'secret~'."""
     hook = guard_paths(denied_paths=["secret~"])
     result = await hook("reader", "read", {"path": str(tmp_path / "config.py")})
+    assert result is None
+
+
+# ---------------------------------------------------------------------------
+# Canonical workspace containment: symlink escapes and DENIED_NAMES floor
+# ---------------------------------------------------------------------------
+
+
+async def test_guard_paths_blocks_direct_symlink_escaping_workspace(tmp_path):
+    """A direct file symlink inside the workspace pointing outside it is denied."""
+    allowed = tmp_path / "project"
+    allowed.mkdir()
+    outside = tmp_path / "outside.txt"
+    outside.write_text("secret")
+    link = allowed / "link.txt"
+    link.symlink_to(outside)
+
+    hook = guard_paths(allowed_paths=[str(allowed)])
+    with pytest.raises(PermissionError, match="symlink"):
+        await hook("reader", "read", {"path": str(link)})
+
+
+async def test_guard_paths_blocks_intermediate_symlink_escaping_workspace(tmp_path):
+    """An intermediate directory symlink inside the workspace pointing outside it is denied."""
+    allowed = tmp_path / "project"
+    allowed.mkdir()
+    outside_dir = tmp_path / "outside"
+    outside_dir.mkdir()
+    (outside_dir / "leaked.txt").write_text("secret")
+    link_dir = allowed / "linkdir"
+    link_dir.symlink_to(outside_dir)
+
+    hook = guard_paths(allowed_paths=[str(allowed)])
+    with pytest.raises(PermissionError, match="allowed list"):
+        await hook("reader", "read", {"path": str(link_dir / "leaked.txt")})
+
+
+async def test_guard_paths_denies_direct_symlink_to_in_workspace_target(tmp_path):
+    """A direct symlink is denied by the pre-resolve symlink rule even when its
+    target is inside the workspace."""
+    allowed = tmp_path / "project"
+    allowed.mkdir()
+    real = allowed / "real.txt"
+    real.write_text("ok")
+    link = allowed / "link.txt"
+    link.symlink_to(real)
+
+    hook = guard_paths(allowed_paths=[str(allowed)])
+    with pytest.raises(PermissionError, match="symlink"):
+        await hook("reader", "read", {"path": str(link)})
+
+
+async def test_guard_paths_denies_broken_symlink(tmp_path):
+    """A broken direct symlink is denied before it is ever followed."""
+    allowed = tmp_path / "project"
+    allowed.mkdir()
+    link = allowed / "broken.txt"
+    link.symlink_to(allowed / "does-not-exist.txt")
+
+    hook = guard_paths(allowed_paths=[str(allowed)])
+    with pytest.raises(PermissionError, match="symlink"):
+        await hook("reader", "read", {"path": str(link)})
+
+
+@pytest.mark.parametrize("basename", [".env", ".netrc", "id_rsa"])
+async def test_guard_paths_denies_protected_basenames_without_denied_paths(tmp_path, basename):
+    """Protected basenames are denied even when the caller supplies no denied_paths,
+    both with and without allowed roots configured."""
+    protected = tmp_path / basename
+
+    deny_only_hook = guard_paths()
+    with pytest.raises(PermissionError, match="protected path"):
+        await deny_only_hook("reader", "read", {"path": str(protected)})
+
+    allowed = tmp_path / "project"
+    allowed.mkdir()
+    protected_in_root = allowed / basename
+    allow_root_hook = guard_paths(allowed_paths=[str(allowed)])
+    with pytest.raises(PermissionError, match="protected path"):
+        await allow_root_hook("reader", "read", {"path": str(protected_in_root)})
+
+
+async def test_guard_paths_allows_relative_path_under_first_root(tmp_path):
+    """A normal relative path resolves against and is allowed under the first root."""
+    allowed = tmp_path / "project"
+    allowed.mkdir()
+    hook = guard_paths(allowed_paths=[str(allowed)])
+
+    result = await hook("reader", "read", {"path": "src/main.py"})
+    assert result is None
+
+
+async def test_guard_paths_absolute_second_root_allowed_relative_resolves_first(tmp_path):
+    """An absolute path under a second allowed root is allowed, while a relative
+    path continues to resolve under the first allowed root."""
+    first = tmp_path / "first"
+    second = tmp_path / "second"
+    first.mkdir()
+    second.mkdir()
+    hook = guard_paths(allowed_paths=[str(first), str(second)])
+
+    result = await hook("reader", "read", {"path": str(second / "under_second.py")})
+    assert result is None
+
+    result = await hook("reader", "read", {"path": "under_first.py"})
     assert result is None
