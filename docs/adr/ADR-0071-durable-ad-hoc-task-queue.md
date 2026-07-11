@@ -1,6 +1,6 @@
 # ADR-0071: Durable ad-hoc task queue
 
-- **Status**: Proposed
+- **Status**: Accepted
 - **Kind**: Retrospective
 - **Area**: scheduling-control-plane
 - **Date**: 2026-07-09
@@ -245,19 +245,20 @@ async def transition(
 ) -> TransitionResult: ...
 ```
 
-The shipped schedule-run graph is:
+The shipped schedule-run graph is registered in the lifecycle policy registry
+(`lionagi/state/lifecycle/policy.py:302-350`):
 
 ```text
-queued ──► running ──► completed
-  │           ├──────► failed
-  │           └──────► queued      (lease-expiry reaper only by convention)
-  └──────► cancelled
+queued ──► waiting_dependency | running | skipped | cancelled
+waiting_dependency ──► queued | cancelled
+running ──► completed | failed | timed_out | retry_wait | queued | cancelled
+retry_wait ──► queued | cancelled
 
-completed, failed, cancelled ──► no outgoing edges
+completed, failed, timed_out, skipped, cancelled ──► no outgoing edges
 ```
 
-Although the table admits `waiting_dependency`, `retry_wait`, `timed_out`, and `skipped`, the
-transition vocabulary has no task-path edges for them. An undeclared edge raises `ValueError`.
+The registered terminal set carries all five terminal statuses, including `timed_out` and
+`skipped`. An undeclared edge raises `ValueError`.
 
 Exact compare-and-swap semantics:
 
@@ -546,7 +547,9 @@ known queue claim overlap without pretending to replace the OS resource lock.
 
 ## Notes
 
-The current transition module's top docstring still describes an earlier dispatch-only fallback,
-but `_ENTITY_TABLES`, the vocabulary, and production callers include `schedule_run`. The executable
+An earlier revision of this record transcribed the pre-registry validator behavior; the unified lifecycle policy registry (`lionagi/state/lifecycle/policy.py`) reconciled the schedule-run and dispatch vocabularies, terminal sets, and edge graphs, and the corrected text above reflects that registry.
+
+The transition module's top docstring names both `dispatch` and `schedule_run`, and
+`_ENTITY_TABLES`, the vocabulary, and production callers include `schedule_run`. The executable
 contract is the code shape recorded above, including its deliberately restricted graph and inactive
 idempotency-key field.

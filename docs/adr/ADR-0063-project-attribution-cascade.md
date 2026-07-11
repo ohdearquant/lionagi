@@ -1,6 +1,6 @@
 # ADR-0063: Project attribution cascade
 
-- **Status**: Proposed
+- **Status**: Accepted
 - **Kind**: Retrospective
 - **Area**: cli-surface
 - **Date**: 2026-07-09

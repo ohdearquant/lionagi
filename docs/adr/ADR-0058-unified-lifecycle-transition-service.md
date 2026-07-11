@@ -623,6 +623,10 @@ migration, making parity defects harder to isolate.
 
 ## Notes
 
-This is a target-state ADR. The dataclasses, package, registry, and service named here do not exist
-in the current source. Implementation is complete only when the phase gates pass; merely adding the
-types without routing all policy and writes through them does not satisfy the decision.
+This is a target-state ADR, partially implemented. The first two phases shipped in the proposed
+module layout (`lionagi/state/lifecycle/{models,policy,service,adapters}.py`): the contract types,
+the policy registry covering all seven entity types, the guarded algorithm, and the
+facade-preserving wrappers — both `StateDB.update_status()` and the guarded transition adapter now
+route through the service. Still open: creation-path initialization (`initialize_in_transaction`
+has no call sites outside the package) and the remaining migration phases. Implementation is
+complete only when the phase gates pass; the record stays Proposed until then.
