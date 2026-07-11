@@ -7,7 +7,7 @@ from pydantic import BaseModel
 
 from lionagi.service.connections.endpoint import Endpoint
 
-from ._chat_schemas import OpenAIChatCompletionsRequest
+from ._chat_schemas import OpenAIChatCompletionsRequest, uses_developer_messages
 from ._config import OpenAIConfigs
 
 __all__ = ("OpenAIChatCompletionsRequest", "OpenaiChatEndpoint")
@@ -31,9 +31,13 @@ class OpenaiChatEndpoint(Endpoint):
     ):
         """Override to handle model-specific parameter filtering."""
         payload, headers = super().create_payload(request, extra_headers, **kwargs)
-        # Convert system role to developer role for reasoning models
-        if "messages" in payload and payload["messages"]:
-            if payload["messages"][0].get("role") == "system":
-                payload["messages"][0]["role"] = "developer"
+        messages = payload.get("messages")
+        if messages and uses_developer_messages(payload.get("model")):
+            payload["messages"] = [
+                {**message, "role": "developer"}
+                if message.get("role") == "system"
+                else dict(message)
+                for message in messages
+            ]
 
         return (payload, headers)

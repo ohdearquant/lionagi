@@ -24,7 +24,7 @@ layers depend on without restriction.
 | `_proc.py` | `terminate_process_group`, `aterminate_process_group` | safe subprocess teardown |
 | `_ssrf.py` | `is_ssrf_safe` | SSRF guard for outbound HTTP |
 | `_to_list.py` | `to_list`, `ToListParams` | normalise any value to a flat list |
-| `_utils.py` | `acreate_path`, `create_path`, `now_utc`, `to_uuid`, `coerce_created_at`, `synchronized`, `async_synchronized`, `copy`, `import_module`, `is_import_installed`, `load_type_from_string`, `register_type_prefix`, `extract_types`, `is_union_type`, `is_same_dtype`, `union_members`, `get_bins` | mixed bag of cross-cutting micro-utilities |
+| `_utils.py` | `acreate_path`, `create_path`, `now_utc`, `to_uuid` (deprecated), `coerce_created_at`, `synchronized`, `async_synchronized`, `copy`, `import_module`, `is_import_installed`, `load_type_from_string`, `register_type_prefix`, `extract_types`, `is_union_type`, `is_same_dtype`, `union_members`, `get_bins` | mixed bag of cross-cutting micro-utilities |
 | `concurrency/` | `retry`, `race`, `gather`, `bounded_map`, `create_task_group`, `fail_after`, `move_on_after`, `Lock`, `Semaphore`, `Queue`, ... | anyio wrappers and structured concurrency |
 | `fuzzy/` | `fuzzy_json`, `fuzzy_match_keys`, `fuzzy_validate_mapping`, `fuzzy_validate_pydantic`, `to_dict`, `extract_json`, `string_similarity` | LLM-output repair and fuzzy coercion |
 | `types/` | `Undefined`, `Unset`, sentinels, `Params`, `DataClass`, `ModelConfig`, `Spec`, `CommonMeta`, `Operable`, `Filter` family | base types, sentinel singletons, filter DSL |
@@ -74,6 +74,18 @@ modules.
 The public `lionagi/utils.py` shim re-exports a curated subset of `ln` symbols
 and is the stable surface used by code that does not need to know which `ln`
 submodule a symbol lives in.
+
+### 2.1 `ln.to_uuid` is deprecated
+
+`lionagi.ln.to_uuid` now emits a call-time `DeprecationWarning`. It is not a
+drop-in duplicate of `lionagi.protocols.ids.to_uuid`: the `protocols.ids`
+version recognizes `Element` instances and a private `_id` attribute, while
+the `ln` version only recognizes a public `.id` attribute on an arbitrary
+object. Callers converting a raw UUID or string value should use
+`lionagi.protocols.ids.to_uuid` directly; callers converting a generic
+Observable-like object (something exposing `.id`) should use
+`lionagi.protocols.ids.canonical_id` instead. Do not alias the two functions
+together — their acceptance criteria differ.
 
 ---
 

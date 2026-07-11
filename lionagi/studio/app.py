@@ -126,17 +126,9 @@ async def _stop_claude_mirror(stop: asyncio.Event | None, task: asyncio.Task | N
 
 
 async def _startup_warmup() -> None:
-    """Deferred startup maintenance that must not gate readiness: the WAL
-    checkpoint. Kept off the critical path so /health serves as soon as
-    reconciliation completes (not waiting on the checkpoint), and so the
-    checkpoint does not block readiness while contending with the mirror's
-    first connection open on a cold first-run DB. The whole body
-    (including the import) is guarded so an unexpected failure is logged, not
-    silently dropped when the task is finalized at shutdown.
-
-    Stale-session reconciliation is deliberately NOT deferred — it runs pre-yield
-    in lifespan() because stateful /api routes read the session rows it corrects.
-    """
+    """Deferred WAL checkpoint, kept off the critical path so /health serves as
+    soon as reconciliation completes rather than waiting on it. Guarded so an
+    unexpected failure is logged, not silently dropped, at shutdown."""
     try:
         from .services.db_maintenance import checkpoint_state_db
 
@@ -146,9 +138,8 @@ async def _startup_warmup() -> None:
 
 
 async def _finalize_warmup(task: asyncio.Task | None) -> None:
-    """Settle the background warmup task before shutdown proceeds: cancel it if
-    still running, then await so it is retrieved (never a pending/un-retrieved
-    task warning). An unexpected failure is logged rather than silently dropped."""
+    """Cancel the warmup task if still running, then await it so it's retrieved
+    (avoids an un-retrieved-task warning); a failure is logged, not dropped."""
     if task is None:
         return
     if not task.done():
@@ -211,19 +202,12 @@ def _parse_host_authority(raw_host: str) -> str | None:
 
 
 async def validate_host_header(request: Request, call_next):
-    """Reject requests whose Host header doesn't match an expected value.
-
-    Without this check, a malicious web page could point a browser at
-    http://127.0.0.1:<port> with an attacker-controlled Host header (DNS
-    rebinding) and, once past CORS/auth, reach the daemon as if it were a
-    same-origin request. The browser sets Host to the actual connection
-    target it resolved, so validating it here catches rebound requests that
-    same-origin checks alone don't cover. This dispatch is registered LAST
-    (outermost, outside even CORSMiddleware) so every request -- including
-    CORS preflight OPTIONS -- gets its Host checked before anything answers;
-    a legitimate preflight from the hosted SPA carries the loopback Host it
-    actually connected to and passes unaffected.
-    """
+    """Reject requests whose Host header doesn't match an expected value —
+    defends against DNS rebinding, where a malicious page points a browser at
+    http://127.0.0.1:<port> with an attacker-controlled Host and, once past
+    CORS/auth, reaches the daemon as if same-origin. Registered outermost
+    (outside CORSMiddleware) so every request, including preflight, is checked
+    before anything answers."""
     hostname = _parse_host_authority(request.headers.get("host", ""))
     bind_host = os.getenv("LIONAGI_STUDIO_HOST", HOST)
     allowed_hosts = {"localhost", "127.0.0.1", "::1"}
@@ -316,15 +300,9 @@ def _mount_spa(application: FastAPI, dist: Path) -> None:
 
 
 def create_app() -> FastAPI:
-    """Build and return a fresh Studio FastAPI app instance.
-
-    Everything the module used to do at import time (construct FastAPI,
-    register exception handlers/middleware/routes, mount the SPA) lives here
-    instead, so a caller that needs a clean app -- most notably tests that
-    monkeypatch service module globals before the app captures them -- can
-    get one without `importlib.reload`-ing this module and mutating the
-    shared singleton every other importer holds a reference to.
-    """
+    """Build and return a fresh Studio FastAPI app instance, so callers that
+    need a clean app (notably tests that monkeypatch service globals first) can
+    get one without `importlib.reload`-ing this module's shared singleton."""
     application = FastAPI(title="Lion Studio Server", lifespan=lifespan)
 
     @application.exception_handler(LionError)

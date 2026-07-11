@@ -3,23 +3,20 @@
 """ADR-0101 D3/D4: the local (host-only) worker/claim loop with capability
 matching.
 
-v1 ships ONE worker — the Studio daemon engine itself — claiming everything
-it can serve. A claim is one guarded CAS through
-``lionagi.state.transitions.transition()`` (``queued -> running``) that sets
-``leased_by``/``lease_expires_at``/``lease_attempts`` in the same guarded
-UPDATE the status move performs; there is no second write and no parallel
-CAS path (ADR-0101's scope fence). Execution resolves through the existing
-subprocess launcher (``lionagi.studio.scheduler.subprocess``) — this module
-never spawns a process itself.
+v1 ships ONE worker — the Studio daemon engine itself. A claim is one guarded
+CAS through ``lionagi.state.transitions.transition()`` (``queued -> running``)
+that also sets ``leased_by``/``lease_expires_at``/``lease_attempts`` in the
+same UPDATE — no second write, no parallel CAS path (ADR-0101 scope fence).
+Execution resolves through ``lionagi.studio.scheduler.subprocess``; this
+module never spawns a process itself.
 
 D4 adds the ``workers`` registry: ``worker_tick`` upserts this worker's
 heartbeat before every claim pass, and the claim predicate matches a queued
 row's ``required_capabilities``/``execution_target`` against the calling
-worker's advertised capabilities/execution targets (``capabilities.py``'s
-token->class map) instead of the D3-era "capability-free only" exclusion. A
-row this worker cannot serve is left ``queued``, never faked. Remote
-execution targets and workflow-registry resolution remain later slices
-(ADR-0102 and a remote worker binding).
+worker's advertised capabilities/execution targets. A row this worker cannot
+serve is left ``queued``, never faked. Remote execution targets and
+workflow-registry resolution remain later slices (ADR-0102, remote worker
+binding).
 """
 
 from __future__ import annotations
@@ -150,12 +147,8 @@ ExecuteFn = Callable[[dict[str, Any]], Awaitable[tuple[int, str]]]
 
 
 def _normalize_json_list(value: Any) -> list[Any]:
-    """StateDB JSON columns come back as strings on SQLite but as native
-    Python values on Postgres (the cross-dialect contract documented on
-    ``StateDB``'s query surface). Every JSON-column read in the claim path
-    goes through this so it works identically on both backends: NULL/empty
-    -> ``[]``, a string -> ``json.loads`` it, a native list -> pass through.
-    """
+    """Normalize a JSON column that is a string on SQLite but a native list
+    on Postgres: NULL/empty -> ``[]``, string -> ``json.loads``, list -> passthrough."""
     if not value:
         return []
     if isinstance(value, str):
@@ -166,14 +159,8 @@ def _normalize_json_list(value: Any) -> list[Any]:
 def _matching_candidates(
     page: Any, *, advertised: list[str], targets: set[str]
 ) -> list[tuple[Any, list[str]]]:
-    """Filter one page of queued rows to those this worker can serve.
-
-    Pulled out of ``claim_and_execute`` so the D4 match rule (subset-match
-    on ``required_capabilities`` + ``execution_target`` membership) is
-    directly testable against a row shaped either the SQLite way (a JSON
-    string) or the Postgres way (a native list/None) without a live
-    connection of either dialect.
-    """
+    """Filter one page of queued rows to those this worker can serve (subset-match
+    on ``required_capabilities`` + ``execution_target`` membership)."""
     candidates: list[tuple[Any, list[str]]] = []
     for row in page:
         required = _normalize_json_list(row["required_capabilities"])
@@ -194,13 +181,9 @@ async def register_heartbeat(
     execution_targets: list[str] | None = None,
     now: float | None = None,
 ) -> None:
-    """Upsert *worker_id*'s ``workers`` row and bump ``last_heartbeat_at``.
-
-    Called once per ``worker_tick`` before the claim pass, so a worker
-    ticking regularly never reads its own heartbeat as stale. A worker that
-    stops ticking falls behind ``DEFAULT_HEARTBEAT_TTL_SECONDS`` and becomes
-    ineligible for new claims until it heartbeats again.
-    """
+    """Upsert *worker_id*'s ``workers`` row and bump ``last_heartbeat_at``. A worker
+    that stops calling this falls behind ``DEFAULT_HEARTBEAT_TTL_SECONDS`` and
+    becomes ineligible for new claims until it heartbeats again."""
     now = now if now is not None else time.time()
     async with db._tx() as conn:
         await conn.execute(
@@ -220,10 +203,8 @@ async def register_heartbeat(
 async def _worker_is_stale(
     db: StateDB, *, worker_id: str, now: float, heartbeat_ttl: float
 ) -> bool:
-    """True iff *worker_id* has a ``workers`` row whose heartbeat is older
-    than *heartbeat_ttl*. A worker with no row yet (never heartbeated) is
-    treated as not-stale -- there is no signal to distrust, and every
-    existing D3 caller that never wrote to ``workers`` keeps claiming."""
+    """True iff *worker_id*'s heartbeat is older than *heartbeat_ttl*. A worker
+    with no row yet (never heartbeated) is treated as not-stale."""
     async with db._read() as conn:
         row = (
             (await conn.execute(text(_WORKER_HEARTBEAT_SQL), {"worker_id": worker_id}))
@@ -236,13 +217,9 @@ async def _worker_is_stale(
 
 
 async def default_execute(row: dict[str, Any]) -> tuple[int, str]:
-    """Resolve *row*'s action_kind through the existing subprocess launcher.
-
-    Reuses the scheduler's own action_kind vocabulary and argv builder
-    rather than a second launcher: the task application's ``action_args``
-    payload carries the same ``action_*``-named keys a schedule dict would
-    (``action_model``/``action_prompt``/``action_agent``/...).
-    """
+    """Resolve *row*'s action_kind through the existing subprocess launcher. The
+    task's ``action_args`` payload carries the same ``action_*``-named keys a
+    schedule dict would (``action_model``/``action_prompt``/``action_agent``/...)."""
     action_args = row.get("action_args") or {}
     schedule_like = {"action_kind": row["action_kind"], **action_args}
     li_prefix, li_resolve_error = _subprocess.resolve_li_executable()
@@ -257,15 +234,11 @@ async def default_execute(row: dict[str, Any]) -> tuple[int, str]:
 
 
 async def reap_expired_leases(db: StateDB, *, now: float | None = None) -> dict[str, int]:
-    """Recover or fail rows whose lease has lapsed.
-
-    A row under ``MAX_LEASE_ATTEMPTS`` goes back to ``queued`` (recovery,
-    clearing the lease columns); at or beyond the bound it goes to
-    ``failed`` (terminal) — unbounded requeue is impossible by construction.
-    A live (unexpired) lease is never touched: the guard on
-    ``lease_expires_at`` closes the race between this pass's read and its
-    own guarded write.
-    """
+    """Recover or fail rows whose lease has lapsed. A row under
+    ``MAX_LEASE_ATTEMPTS`` goes back to ``queued`` (lease columns cleared); at
+    or beyond the bound it goes to ``failed`` (terminal). A live (unexpired)
+    lease is never touched — the guard on ``lease_expires_at`` closes the race
+    between this pass's read and its own guarded write."""
     now = now if now is not None else time.time()
     counts = {"requeued": 0, "failed": 0}
 
@@ -334,37 +307,29 @@ async def claim_and_execute(
 ) -> int:
     """Claim every eligible queued row this worker can serve, then execute each.
 
-    D4 match rule: a queued row R is claimable by this worker iff R's
-    eligibility∪serialization capability tokens are a subset of
-    *advertised_capabilities* AND R's execution_target is in
-    *execution_targets* (a NULL/empty execution_target is claimable by any
-    worker). Candidates are then ordered by affinity match (a row whose
-    affinity tokens this worker also advertises is preferred), ties broken
-    by ``queued_at`` (the SQL order is preserved by a stable sort). A row
+    D4 match rule: row R is claimable iff its capability tokens are a subset
+    of *advertised_capabilities* AND its execution_target is in
+    *execution_targets* (NULL/empty target = claimable by anyone). Candidates
+    are then ordered by affinity match, ties broken by ``queued_at``. A row
     sharing a ``concurrency_key`` with another row already ``running`` (or
-    already claimed earlier in this same pass) is skipped -- advisory
-    admission only; the worker-side host lock stays authoritative.
+    claimed earlier in this pass) is skipped -- advisory admission only; the
+    worker-side host lock stays authoritative.
 
-    Candidates are collected by paging the queued rows oldest-first through
-    a ``(queued_at, id)`` keyset cursor until *limit* eligible candidates
-    are found or the queue is exhausted (bounded defensively by
-    ``_MAX_CLAIM_SCAN_ROWS`` -- a fairness/latency cap on how much one pass
-    scans, not a correctness cap: nothing scanned past it is hidden, a later
-    pass resumes the same oldest-first order). This means a long prefix of
-    rows this worker cannot serve never permanently hides an eligible row
-    behind it, unlike a single fixed-size prefetch window.
+    Candidates are paged oldest-first through a ``(queued_at, id)`` keyset
+    cursor until *limit* eligible candidates are found or the queue is
+    exhausted, bounded by ``_MAX_CLAIM_SCAN_ROWS`` (a fairness/latency cap,
+    not a correctness cap -- a later pass resumes the same order). A long
+    prefix of unservable rows never permanently hides an eligible row behind
+    it, unlike a fixed-size prefetch window.
 
-    If *worker_id* has a ``workers`` row whose heartbeat is older than
-    *heartbeat_ttl*, this pass claims nothing (assignment eligibility gate;
-    in-flight leases are unaffected and still recover via
-    ``reap_expired_leases``). A worker with no heartbeat history yet (never
-    called ``register_heartbeat``/``worker_tick``) is not treated as stale.
+    If *worker_id*'s heartbeat is older than *heartbeat_ttl*, this pass
+    claims nothing (in-flight leases still recover via
+    ``reap_expired_leases``). A worker with no heartbeat history yet is not
+    treated as stale.
 
     Returns the number of rows claimed (regardless of execution outcome).
-    Each claim is one guarded CAS (``queued -> running``) that atomically
-    sets ``leased_by``/``lease_expires_at``/``lease_attempts``; a lost race
-    or a row another caller already moved (e.g. cancelled) is skipped, not
-    retried within this pass.
+    Each claim is one guarded CAS (``queued -> running``); a lost race or a
+    row another caller already moved is skipped, not retried within this pass.
     """
     execute = execute if execute is not None else default_execute
     now = now if now is not None else time.time()
@@ -515,14 +480,9 @@ async def worker_tick(
     execution_targets: list[str] | None = None,
     heartbeat_ttl: float = DEFAULT_HEARTBEAT_TTL_SECONDS,
 ) -> dict[str, int]:
-    """One worker tick: heartbeat, then reaper pass, then claim pass.
-
-    Split from any sleep loop so tests (and the Studio daemon's own tick)
-    can drive a single pass directly without a timer. The heartbeat upsert
-    runs first every tick, so a worker ticking regularly is never stale for
-    its own claim pass -- ``heartbeat_ttl`` only bites a worker that stops
-    ticking.
-    """
+    """One worker tick: heartbeat, then reaper pass, then claim pass. Split from
+    any sleep loop so tests (and the Studio daemon's own tick) can drive a
+    single pass directly without a timer."""
     now = now if now is not None else time.time()
     await register_heartbeat(
         db,

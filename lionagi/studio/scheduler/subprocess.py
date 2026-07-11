@@ -44,11 +44,7 @@ _IDENT_RE = _MODEL_RE
 
 
 def _validate_action_model(model: str) -> None:
-    """Raise ValueError if *model* could inject CLI flags (CWE-88).
-
-    A value starting with '-' is interpreted as a flag by the spawned li process.
-    Fail loudly so callers discover bad data at write time, not fire time.
-    """
+    """Raise ValueError if *model* could inject a CLI flag into the spawned li process (CWE-88)."""
     if not model:
         return
     if model.startswith("-"):
@@ -64,11 +60,7 @@ def _validate_action_model(model: str) -> None:
 
 
 def _validate_identifier(value: str, field_name: str) -> None:
-    """Raise ValueError if *value* starts with '-' (covers action_agent/project/playbook).
-
-    A leading '-' causes argparse to misinterpret the value as a flag (CWE-88).
-    Fail loudly at write time, same policy as _validate_action_model.
-    """
+    """Raise ValueError if *value* starts with '-' — argparse would misinterpret it as a flag (CWE-88)."""
     if not value:
         return
     if value.startswith("-"):
@@ -86,10 +78,7 @@ def _validate_identifier(value: str, field_name: str) -> None:
 def _validate_extra_args(extra: list) -> None:
     """Raise ValueError if any element starts with '-' (CWE-88 flag injection).
 
-    Extra tokens are appended verbatim to argv; a leading '-' would toggle a flag
-    in the spawned li process. Fail loudly with the offending element named.
-
-    Note: agent/flow/fanout parsers do not accept extra positionals; non-empty
+    Note: agent/flow/fanout parsers don't accept extra positionals; non-empty
     action_extra_args causes those subcommands to exit rc 2 at fire time.
     """
     for item in extra:
@@ -140,12 +129,11 @@ def _validate_engine_options(opts: object) -> None:
 
 
 def _validate_prompt(prompt: str) -> None:
-    """Raise ValueError if *prompt* is the literal end-of-options sentinel '--'.
+    """Raise ValueError if *prompt* is exactly the end-of-options sentinel '--'.
 
-    build_argv places '--' before positionals, so a prompt value of '--' would be
-    consumed by argparse as the separator token rather than reaching the runner.
-    All other content (including leading '-') is safe. Only the exact singleton
-    '--' is forbidden; '-- text' or '--' embedded in a longer string are fine.
+    build_argv places '--' before positionals, so a prompt value of exactly
+    '--' would be consumed by argparse as the separator, never reaching the
+    runner. All other content (including leading '-') is safe.
     """
     if prompt == "--":
         raise ValueError(
@@ -191,11 +179,9 @@ def resolve_li_executable() -> tuple[list[str] | None, str | None]:
     """Resolve an absolute argv prefix for launching the ``li`` CLI.
 
     ``uv run li`` depends on ``uv`` discovering a project/venv from the
-    *current working directory*; a daemon started from a directory with no
-    discoverable ``pyproject.toml`` (e.g. the filesystem root) fails to spawn
-    with an opaque ENOENT for ``li``, unrelated to the schedule's own working
-    directory. Resolving an absolute executable path here sidesteps that
-    cwd-dependent lookup entirely.
+    daemon's cwd, which fails with an opaque ENOENT when the daemon starts
+    somewhere with no discoverable ``pyproject.toml``. An absolute path here
+    sidesteps that cwd-dependent lookup entirely.
 
     Tries, in order:
       1. ``shutil.which("li")`` — the `li` script on PATH.

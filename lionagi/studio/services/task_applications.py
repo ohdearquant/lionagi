@@ -98,12 +98,9 @@ def _validate(app: TaskApplication) -> str:
 
 
 def _derive_concurrency_key(required_capabilities: list[str]) -> str | None:
-    """D4's host-scoped rule: only the serialization-class tokens among
-    *required_capabilities* (capabilities.py's declarative token->class map)
-    fold into a concurrency_key scoped to this host, so ADR-0061 admission
-    serializes same-host claims for that resource. Eligibility and affinity
-    tokens never gate concurrency: an eligibility-only or affinity-only task
-    gets no concurrency_key at all.
+    """D4's host-scoped rule: only serialization-class tokens (per
+    capabilities.py's token->class map) fold into a host-scoped
+    concurrency_key. Eligibility/affinity-only tasks get no concurrency_key.
     """
     return capabilities.host_scoped_concurrency_key(socket.gethostname(), required_capabilities)
 
