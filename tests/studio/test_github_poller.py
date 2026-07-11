@@ -1,8 +1,9 @@
 # Copyright (c) 2023-2026, HaiyangLi <quantocean.li at gmail dot com>
 # SPDX-License-Identifier: Apache-2.0
 
-"""Unit tests for the github_poll poller: emitted fields (head_sha, draft), the
-draft github_filter, ordering, and the cursor high-water-mark behavior.
+"""Unit tests for the github_poll poller: emitted fields (head_sha, draft,
+head_repo/head_repo_is_fork/is_same_repo), the draft and same_repo_only
+github_filters, ordering, and the cursor high-water-mark behavior.
 
 github_poll() no longer persists github_cursor itself (that moved to the
 caller, SchedulerEngine._tick_github, so per-event dispatch can gate how far
@@ -30,15 +31,41 @@ def _reset_token_cache():
     gh_mod._cached_token = None
 
 
-def _pr(number, updated, *, draft=False, sha=None, state="open", merged_at=None):
+def _pr(
+    number,
+    updated,
+    *,
+    draft=False,
+    sha=None,
+    state="open",
+    merged_at=None,
+    head_repo=None,
+    head_repo_is_fork=False,
+    head_repo_id=None,
+    base_repo_id=None,
+):
+    """``head_repo=None`` (the default) models the deleted-fork-source case --
+    the API's ``head.repo`` is null. Pass a ``"owner/name"`` string to model a
+    same-repo or fork PR (paired with ``head_repo_is_fork``). ``head_repo_id``
+    and ``base_repo_id`` model the numeric repository ids the API carries on
+    ``head.repo``/``base.repo``: when both are present the poller compares
+    them directly and only falls back to full_name comparison otherwise."""
+    head = {"sha": sha or f"sha{number}"}
+    if head_repo is not None:
+        head["repo"] = {"full_name": head_repo, "fork": head_repo_is_fork}
+        if head_repo_id is not None:
+            head["repo"]["id"] = head_repo_id
+    else:
+        head["repo"] = None
     return {
+        "base": {"repo": {"id": base_repo_id}} if base_repo_id is not None else {},
         "number": number,
         "title": f"PR {number}",
         "html_url": f"https://github.com/owner/name/pull/{number}",
         "user": {"login": "octocat"},
         "updated_at": updated,
         "draft": draft,
-        "head": {"sha": sha or f"sha{number}"},
+        "head": head,
         "state": state,
         "merged_at": merged_at,
     }
@@ -149,7 +176,10 @@ def _poll_result(schedule):
 
 def test_github_poll_emits_head_sha_and_draft(monkeypatch):
     """A polled PR surfaces head_sha and draft alongside the existing fields."""
-    _install(monkeypatch, [_pr(7, "2026-07-07T10:00:00Z", draft=False, sha="deadbeef")])
+    _install(
+        monkeypatch,
+        [_pr(7, "2026-07-07T10:00:00Z", draft=False, sha="deadbeef", head_repo="owner/name")],
+    )
     items = _poll({"id": "s1", "github_repo": "owner/name"})
     assert len(items) == 1
     item = items[0]
@@ -160,6 +190,13 @@ def test_github_poll_emits_head_sha_and_draft(monkeypatch):
     assert ev["head_sha"] == "deadbeef"
     assert ev["draft"] is False
     assert ev["pr_author"] == "octocat"
+    # Head-repo-identity fields are present and typed on every item.
+    assert ev["head_repo"] == "owner/name"
+    assert isinstance(ev["head_repo"], str)
+    assert ev["head_repo_is_fork"] is False
+    assert isinstance(ev["head_repo_is_fork"], bool)
+    assert ev["is_same_repo"] is True
+    assert isinstance(ev["is_same_repo"], bool)
 
 
 def test_github_poll_draft_filter_true_keeps_only_drafts_dispatchable(monkeypatch):
@@ -263,6 +300,204 @@ def test_github_poll_non_bool_draft_filter_ignored(monkeypatch):
         ],
     )
     items = _poll({"id": "s1", "github_repo": "owner/name", "github_filter": {"draft": "false"}})
+    assert all(i.dispatchable for i in items)
+    assert sorted(i.event["pr_number"] for i in items) == [1, 2]
+
+
+def test_github_poll_same_repo_filter_true_excludes_fork_pr(monkeypatch):
+    """github_filter={'same_repo_only': true} marks a fork PR non-dispatchable
+    while a same-repo PR stays dispatchable; both are still returned (cursor
+    bookkeeping), matching the draft filter's shape."""
+    _install(
+        monkeypatch,
+        [
+            _pr(1, "2026-07-07T10:00:00Z", head_repo="owner/name"),
+            _pr(2, "2026-07-07T09:00:00Z", head_repo="attacker/name", head_repo_is_fork=True),
+        ],
+    )
+    items = _poll(
+        {"id": "s1", "github_repo": "owner/name", "github_filter": {"same_repo_only": True}}
+    )
+    by_number = {i.event["pr_number"]: i for i in items}
+    assert by_number[1].dispatchable is True
+    assert by_number[1].event["is_same_repo"] is True
+    assert by_number[2].dispatchable is False
+    assert by_number[2].event["is_same_repo"] is False
+    assert by_number[2].event["head_repo"] == "attacker/name"
+    assert by_number[2].event["head_repo_is_fork"] is True
+
+
+def test_github_poll_same_repo_filter_fails_closed_on_null_head_repo(monkeypatch):
+    """A PR whose head.repo is null (e.g. a deleted fork source) resolves
+    is_same_repo=False and, under same_repo_only, is excluded -- fail closed,
+    never fail open, since this feeds a trust decision: fork diffs are
+    attacker-controlled input."""
+    _install(
+        monkeypatch,
+        [_pr(1, "2026-07-07T10:00:00Z", head_repo=None)],
+    )
+    items = _poll(
+        {"id": "s1", "github_repo": "owner/name", "github_filter": {"same_repo_only": True}}
+    )
+    assert len(items) == 1
+    assert items[0].event["head_repo"] is None
+    assert items[0].event["is_same_repo"] is False
+    assert items[0].dispatchable is False
+
+
+def test_github_poll_same_repo_filter_advances_cursor_past_excluded_prs(monkeypatch):
+    """A same_repo_only-excluded fork PR that is the newest is still returned
+    (dispatchable False) so the caller can advance its cursor past it and
+    avoid re-listing it forever."""
+    _install(
+        monkeypatch,
+        [
+            # Newest is a fork PR; the filter wants same-repo only.
+            _pr(2, "2026-07-07T12:00:00Z", head_repo="attacker/name", head_repo_is_fork=True),
+            _pr(1, "2026-07-07T10:00:00Z", head_repo="owner/name"),
+        ],
+    )
+    items = _poll(
+        {
+            "id": "s1",
+            "github_repo": "owner/name",
+            "github_filter": {"same_repo_only": True},
+            "github_cursor": "2026-07-07T09:00:00Z",
+        }
+    )
+    assert [i.event["pr_number"] for i in items] == [1, 2]
+    assert [i.dispatchable for i in items] == [True, False]
+    assert items[-1].updated_at == "2026-07-07T12:00:00Z"
+
+
+def test_github_poll_no_same_repo_filter_fork_prs_still_dispatchable(monkeypatch):
+    """Without a same_repo_only key, fork PRs remain dispatchable -- back-compat
+    with schedules that don't set the new filter."""
+    _install(
+        monkeypatch,
+        [
+            _pr(1, "2026-07-07T10:00:00Z", head_repo="owner/name"),
+            _pr(2, "2026-07-07T09:00:00Z", head_repo="attacker/name", head_repo_is_fork=True),
+        ],
+    )
+    items = _poll({"id": "s1", "github_repo": "owner/name"})
+    assert all(i.dispatchable for i in items)
+    assert sorted(i.event["pr_number"] for i in items) == [1, 2]
+
+
+def test_github_poll_same_repo_filter_matches_mixed_case_head_repo(monkeypatch):
+    """GitHub repository paths are case-insensitive: a head.repo.full_name
+    that differs only in case from the polled github_repo (e.g. because the
+    owner/repo was renamed or the API returns a different canonical casing)
+    must still resolve is_same_repo=True rather than false-negative on a
+    literal string comparison."""
+    _install(
+        monkeypatch,
+        [_pr(1, "2026-07-07T10:00:00Z", head_repo="OWNER/NAME")],
+    )
+    items = _poll(
+        {"id": "s1", "github_repo": "owner/name", "github_filter": {"same_repo_only": True}}
+    )
+    assert len(items) == 1
+    assert items[0].event["is_same_repo"] is True
+    assert items[0].dispatchable is True
+
+
+def test_github_poll_same_repo_filter_equal_repo_ids_dispatch(monkeypatch):
+    """When both head.repo.id and base.repo.id are present and equal, the PR
+    is same-repo by stable identity -- even if the full_name casing differs
+    from the configured github_repo, the id comparison decides."""
+    _install(
+        monkeypatch,
+        [
+            _pr(
+                1,
+                "2026-07-07T10:00:00Z",
+                head_repo="OWNER/NAME",
+                head_repo_id=42,
+                base_repo_id=42,
+            )
+        ],
+    )
+    items = _poll(
+        {"id": "s1", "github_repo": "owner/name", "github_filter": {"same_repo_only": True}}
+    )
+    assert len(items) == 1
+    assert items[0].event["is_same_repo"] is True
+    assert items[0].dispatchable is True
+
+
+def test_github_poll_same_repo_filter_unequal_repo_ids_fail_closed(monkeypatch):
+    """Unequal head/base repo ids identify a fork regardless of what the
+    full_name claims: a fork whose full_name string matches the configured
+    repo must still fail closed on the id comparison."""
+    _install(
+        monkeypatch,
+        [
+            _pr(
+                1,
+                "2026-07-07T10:00:00Z",
+                head_repo="owner/name",
+                head_repo_id=999,
+                base_repo_id=42,
+            )
+        ],
+    )
+    items = _poll(
+        {"id": "s1", "github_repo": "owner/name", "github_filter": {"same_repo_only": True}}
+    )
+    assert len(items) == 1
+    assert items[0].event["is_same_repo"] is False
+    assert items[0].dispatchable is False
+
+
+def test_github_poll_same_repo_filter_false_all_dispatchable(monkeypatch):
+    """github_filter={'same_repo_only': false} is the explicit opt-out shape:
+    a same-repo PR, a fork PR, and a PR with a null head.repo (deleted fork
+    source) must all remain dispatchable, and each item's identity fields
+    (head_repo, head_repo_is_fork, is_same_repo) must still be populated
+    correctly even though the filter isn't narrowing dispatch."""
+    _install(
+        monkeypatch,
+        [
+            _pr(3, "2026-07-07T12:00:00Z", head_repo=None),
+            _pr(2, "2026-07-07T11:00:00Z", head_repo="attacker/name", head_repo_is_fork=True),
+            _pr(1, "2026-07-07T10:00:00Z", head_repo="owner/name"),
+        ],
+    )
+    items = _poll(
+        {"id": "s1", "github_repo": "owner/name", "github_filter": {"same_repo_only": False}}
+    )
+    by_number = {i.event["pr_number"]: i for i in items}
+    assert all(i.dispatchable for i in items)
+
+    assert by_number[1].event["head_repo"] == "owner/name"
+    assert by_number[1].event["head_repo_is_fork"] is False
+    assert by_number[1].event["is_same_repo"] is True
+
+    assert by_number[2].event["head_repo"] == "attacker/name"
+    assert by_number[2].event["head_repo_is_fork"] is True
+    assert by_number[2].event["is_same_repo"] is False
+
+    assert by_number[3].event["head_repo"] is None
+    assert by_number[3].event["head_repo_is_fork"] is False
+    assert by_number[3].event["is_same_repo"] is False
+
+
+def test_github_poll_non_bool_same_repo_filter_ignored(monkeypatch):
+    """A malformed non-bool same_repo_only filter (e.g. the string 'true') is
+    ignored -- fail open to no filtering, mirroring the draft filter's
+    documented rationale (a truthy string is not a real JSON boolean)."""
+    _install(
+        monkeypatch,
+        [
+            _pr(1, "2026-07-07T10:00:00Z", head_repo="owner/name"),
+            _pr(2, "2026-07-07T09:00:00Z", head_repo="attacker/name", head_repo_is_fork=True),
+        ],
+    )
+    items = _poll(
+        {"id": "s1", "github_repo": "owner/name", "github_filter": {"same_repo_only": "true"}}
+    )
     assert all(i.dispatchable for i in items)
     assert sorted(i.event["pr_number"] for i in items) == [1, 2]
 
