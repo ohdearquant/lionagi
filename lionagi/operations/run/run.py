@@ -119,8 +119,33 @@ async def _stream_with_liveness(
         api_call = await model.create_event(**kw)
         api_call_holder.append(api_call)
         await model.executor.append(api_call)
-        async for chunk in _stream_with_deadline(model, api_call, stream_deadline):
-            yield chunk
+        agen = _stream_with_deadline(model, api_call, stream_deadline)
+        try:
+            async for chunk in agen:
+                yield chunk
+        finally:
+            # Mirror the watchdog branch's explicit close (see below): GeneratorExit
+            # thrown into this frame while suspended at `yield chunk` does not
+            # implicitly close `agen` — close it explicitly so cleanup cascades
+            # down to the subprocess reader synchronously instead of relying on
+            # async-generator GC finalization.
+            _unwinding = sys.exc_info()[1] is not None
+            try:
+                await agen.aclose()
+            except Exception as close_exc:
+                logger.debug(
+                    "run: liveness watchdog passthrough agen.aclose() raised during cleanup: %r",
+                    close_exc,
+                )
+            except BaseException as close_exc:
+                if not _unwinding:
+                    raise
+                logger.debug(
+                    "run: liveness watchdog passthrough agen.aclose() raised %r "
+                    "while another exception was already propagating; "
+                    "suppressing the secondary cleanup failure",
+                    close_exc,
+                )
         return
 
     for attempt in range(max_attempts):
@@ -342,12 +367,18 @@ async def run(
             _stream_deadline = anyio.current_time() + float(_timeout)
 
         # Pop liveness_timeout before create_event — CLI providers don't consume it either.
-        # None falls back to the configured default; 0/negative disables the watchdog.
+        # Explicit values (including 0/negative-to-disable) are always honored. Absent
+        # falls back to the configured default, but only for endpoints that declare
+        # streams_first_output_early — a buffered transport (e.g. gemini_code, whose
+        # first chunk arrives only once the whole result is in) would have a healthy
+        # long call misdiagnosed as a dead worker under the default watchdog.
+        _liveness_timeout_explicit = "liveness_timeout" in kw
         _liveness_timeout = kw.pop("liveness_timeout", None)
-        if _liveness_timeout is None:
-            from lionagi.config import settings as _app_settings  # noqa: PLC0415
+        if _liveness_timeout is None and not _liveness_timeout_explicit:
+            if getattr(endpoint, "streams_first_output_early", False):
+                from lionagi.config import settings as _app_settings  # noqa: PLC0415
 
-            _liveness_timeout = _app_settings.LIONAGI_WORKER_LIVENESS_TIMEOUT
+                _liveness_timeout = _app_settings.LIONAGI_WORKER_LIVENESS_TIMEOUT
         if not isinstance(_liveness_timeout, int | float) or _liveness_timeout <= 0:
             _liveness_timeout = None
 

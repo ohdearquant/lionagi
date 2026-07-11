@@ -484,6 +484,10 @@ class GeminiCLIEndpoint(AgenticHandlersMixin, AgenticEndpoint):
     _handler_kwarg = "gemini_handlers"
     _request_model = GeminiCodeRequest
     _filter_model_fields = False
+    # streams_first_output_early stays False (AgenticEndpoint default): agy's
+    # json print mode yields only after the whole result object arrives —
+    # see stream_gemini_cli() above — so a healthy long-running call would
+    # look identical to a dead worker to a first-chunk watchdog.
 
     def __init__(self, config: EndpointConfig = None, **kwargs):
         handlers = kwargs.pop("gemini_handlers", None)
