@@ -13,6 +13,7 @@ from .outbox import (
     get_dispatch,
     list_dispatches,
     purge_dispatch,
+    purge_dispatches,
     resolve_notify_template,
     retry_dispatch,
 )
@@ -26,6 +27,7 @@ __all__ = (
     "get_dispatch",
     "list_dispatches",
     "purge_dispatch",
+    "purge_dispatches",
     "resolve_notify_template",
     "retry_dispatch",
 )
