@@ -35,6 +35,7 @@ from lionagi.utils import to_dict
 if TYPE_CHECKING:
     from lionagi.protocols.graph.graph import Graph
     from lionagi.session.session import Branch, Session
+    from lionagi.session.signal import Signal
 
 
 logger = logging.getLogger(__name__)
@@ -144,6 +145,10 @@ class DependencyAwareExecutor:
         self.skipped_operations = set()
         self._op_start_times = {}
         self._pause_event: ConcurrencyEvent | None = None
+        # Fire-and-forget flow signal tasks (NodePaused / NodeEscalated /
+        # NodeSpawned), retained until each finishes so a weakly referenced
+        # task can't disappear before it runs. See _emit_best_effort().
+        self._signal_tasks: set[asyncio.Task[Any]] = set()
         # ADR-0085 part 1: an out-of-band handle the caller can pass so a
         # control poller running alongside this flow (cli/orchestrate/flow.py)
         # can reach pause()/resume()/context/graph on the live executor. Set
@@ -261,20 +266,56 @@ class DependencyAwareExecutor:
             self._pause_event.set()
             self._pause_event = None
 
+    def _emit_best_effort(self, factory: Callable[[], "Signal"]) -> None:
+        """Build and schedule a fire-and-forget flow signal on the session bus.
+
+        `factory` is called (never the already-built signal) so that imports,
+        payload extraction, and signal construction all live inside the same
+        failure-isolation boundary. Every failure mode — construction, no
+        running loop, scheduling, or the awaited `session.emit()` call — is
+        logged as a structured warning here and never changes the caller's
+        (pause / escalation / spawn) outcome. Delivery is intentionally
+        best-effort: these are observations, not an outbox.
+        """
+        try:
+            sig = factory()
+        except Exception as e:  # noqa: BLE001
+            logger.warning("flow signal construction failed: %s", e)
+            return
+
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            return  # no running loop — tests / sync contexts, not a failure
+
+        async def _emit() -> None:
+            try:
+                await self.session.emit(sig)
+            except Exception as e:  # noqa: BLE001
+                logger.warning("flow signal emission failed for %s: %s", type(sig).__name__, e)
+
+        coro = _emit()
+        try:
+            task = loop.create_task(coro)
+        except Exception as e:  # noqa: BLE001
+            coro.close()
+            logger.warning("flow signal scheduling failed for %s: %s", type(sig).__name__, e)
+            return
+
+        self._signal_tasks.add(task)
+        task.add_done_callback(self._signal_tasks.discard)
+
     def _emit_paused(self, operation: Operation) -> None:
         """Fire-and-forget NodePaused onto the session bus."""
-        try:
+
+        def _factory() -> "Signal":
             from lionagi.session.signal import NodePaused  # noqa: PLC0415
 
             op_id = str(operation.id)
             name = operation.metadata.get("reference_id", op_id[:8])
-            sig = NodePaused(op_id=op_id, name=name)
-            loop = asyncio.get_running_loop()
-            loop.create_task(self.session.emit(sig))
-        except RuntimeError:
-            pass  # no running loop — tests / sync contexts
-        except Exception:  # noqa: BLE001, S110
-            pass  # best-effort; never break the pause path
+            return NodePaused(op_id=op_id, name=name)
+
+        self._emit_best_effort(_factory)
 
     async def _execute_operation(self, operation: Operation, limiter: CapacityLimiter):
         if operation.execution.status in Event._TERMINAL_STATUSES:
@@ -846,22 +887,19 @@ class ReactiveExecutor(DependencyAwareExecutor):
         self, op_id: str, name: str, reason: str, route: str, req: Any
     ) -> None:
         """Fire-and-forget NodeEscalated onto the session bus."""
-        try:
+
+        def _factory() -> "Signal":
             from lionagi.session.signal import NodeEscalated  # noqa: PLC0415
 
-            sig = NodeEscalated(
+            return NodeEscalated(
                 op_id=op_id,
                 name=name,
                 reason=reason,
                 route=route,
                 escalation_request=req,
             )
-            loop = asyncio.get_running_loop()
-            loop.create_task(self.session.emit(sig))
-        except RuntimeError:
-            pass  # no running loop — tests / sync contexts
-        except Exception:  # noqa: BLE001, S110
-            pass  # best-effort; never break the escalation path
+
+        self._emit_best_effort(_factory)
 
     def _record_dropped_spawn(
         self, reason: str, *, assignee: Any, emitter_id: Any, **extra: Any
@@ -980,7 +1018,8 @@ class ReactiveExecutor(DependencyAwareExecutor):
 
     def _emit_node_spawned(self, child: Operation, emitter_id: Any, independent: bool) -> None:
         """Fire-and-forget NodeSpawned onto the session bus."""
-        try:
+
+        def _factory() -> "Signal":
             from lionagi.session.signal import NodeSpawned  # noqa: PLC0415
 
             instr = None
@@ -990,19 +1029,15 @@ class ReactiveExecutor(DependencyAwareExecutor):
             elif hasattr(params, "instruction"):
                 instr = getattr(params, "instruction", None)
 
-            sig = NodeSpawned(
+            return NodeSpawned(
                 op_id=str(child.id),
                 parent_id=str(emitter_id) if emitter_id is not None else None,
                 independent=independent,
                 assignee=child.metadata.get("assignee"),
                 instruction=str(instr)[:512] if instr is not None else None,
             )
-            loop = asyncio.get_running_loop()
-            loop.create_task(self.session.emit(sig))
-        except RuntimeError:
-            pass  # no running loop — tests / sync contexts
-        except Exception:  # noqa: BLE001, S110
-            pass  # best-effort; never break the acceptance path
+
+        self._emit_best_effort(_factory)
 
     def _assign_injected_branch(self, child: Operation, emitter_id: Any, independent: bool) -> None:
         base = None

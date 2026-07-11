@@ -150,7 +150,6 @@ def build_branch() -> Any:
 
 
 def _all_tools() -> list:
-    """Return all Leo tool callables."""
     return [
         tool_list_runs,
         tool_list_invocations,

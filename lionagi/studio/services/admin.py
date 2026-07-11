@@ -122,14 +122,11 @@ def process_liveness(
     artifacts_path: Path | None,
     ps_snapshot: str | None = None,
 ) -> bool | None:
-    """Tri-state process liveness for a running session.
-
-    True = observed alive; False = confirmed dead (a recorded pid that is no
-    longer running, with start-time verification when one was recorded);
-    None = unknown (no recorded pid and no process match — normal for
-    externally-driven sessions that expose no matchable pid). Limitation:
-    a bare recycled pid (no recorded start time) reads alive — rare, and it
-    fails toward treating the session as live rather than falsely dead.
+    """Tri-state process liveness for a running session: True = observed alive;
+    False = confirmed dead (recorded pid no longer running, start-time verified
+    when recorded); None = unknown (no recorded pid, no process match — normal
+    for externally-driven sessions). Limitation: a bare recycled pid with no
+    recorded start time reads alive, failing toward live rather than falsely dead.
     """
     pid: int | None = None
     create_time: float | None = None
@@ -662,12 +659,8 @@ async def prune_sessions(session_ids: list[str]) -> int:
 
 
 async def prune_phantom_sessions(*, stale_hours: float = 1.0) -> int:
-    """Transition phantom sessions to 'failed' via the sanctioned status path.
-
-    Session rows are preserved so reason history and artifacts remain
-    inspectable. Delegates to :func:`reap_phantom_sessions` from the
-    lifecycle service.
-    """
+    """Transition phantom sessions to 'failed' via the sanctioned status path;
+    rows are preserved so reason history and artifacts stay inspectable."""
     from lionagi.studio.services.lifecycle import reap_phantom_sessions
 
     return await reap_phantom_sessions(stale_hours=stale_hours, actor="admin_prune")
@@ -758,11 +751,8 @@ async def prune_old_data_route(body: PruneOldDataBody) -> dict[str, int]:
     name="run_maintenance",
 )
 async def run_maintenance_route(body: MaintenanceBody) -> dict[str, Any]:
-    """Run a DB maintenance action (vacuum | checkpoint | prune).
-
-    Returns 409 when SQLite cannot acquire the write lock (busy/locked); this is
-    intentional policy so the operator sees a retryable error instead of a generic 500.
-    """
+    """Run a DB maintenance action (vacuum | checkpoint | prune). Returns 409,
+    not 500, when SQLite can't acquire the write lock — a retryable signal."""
     from ..services.db_maintenance import (
         checkpoint_state_db,
         prune_old_data,

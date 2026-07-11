@@ -33,11 +33,9 @@ _REAPABLE_PLAY_STATUSES = frozenset({"running", "running_complete", "prepared", 
 
 
 def _deadline_for_kind(action_kind: str | None, global_default: int) -> int:
-    """Resolve the effective deadline for an invocation's action_kind.
-
-    Checks ``LIONAGI_STUDIO_INVOCATION_DEADLINE_<KIND>_SECONDS`` first;
-    falls back to *global_default* when the env var is absent or the kind
-    is None.
+    """Resolve the effective deadline: checks
+    ``LIONAGI_STUDIO_INVOCATION_DEADLINE_<KIND>_SECONDS`` first, falling back
+    to *global_default* when absent or *action_kind* is None.
     """
     if action_kind:
         env_key = f"LIONAGI_STUDIO_INVOCATION_DEADLINE_{action_kind.upper()}_SECONDS"
