@@ -23,6 +23,10 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
 - `lionagi.cli.orchestrate._common.TEAM_WORKER_SYSTEM` is deprecated; use `TEAM_COORD_SECTION` appended to a worker's own system prompt instead.
 - `lionagi.operations.select.select.select` now emits a `DeprecationWarning` at call time; use `Branch.operate()` with an explicit caller-owned response model instead. Behavior and signature are unchanged; `select_v1` remains undeprecated for internal use.
 
+### Fixed
+
+- `guard_paths()` now delegates workspace containment to the canonical `lionagi.libs.path_safety.resolve_workspace_path` helper instead of its own parent-walk check: a direct symlink under an allowed root is refused before it is followed (even when its target is inside the workspace), an intermediate directory symlink that resolves outside the workspace is denied on containment, and a fixed set of protected basenames (`.env`, `.netrc`, SSH private keys, `.htpasswd`) is denied even when the caller supplies no `denied_paths`. This closes a gap where only caller-supplied deny rules were enforced and symlink escapes were not checked at all. Multi-root and custom `denied_paths` composition, the `guard_paths()` signature, and deny-only behavior when no `allowed_paths` are configured are unchanged.
+
 ## [0.28.0] - 2026-07-08
 
 ### Added

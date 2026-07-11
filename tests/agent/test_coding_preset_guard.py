@@ -359,6 +359,48 @@ async def test_coding_preset_evaluator_exception_fails_closed(tmp_path):
         await bash_tool.preprocessor({"action": "run", "command": "echo hi"})
 
 
+# ---------------------------------------------------------------------------
+# Symlink-escape tests driven through the bound AgentSpec.coding() preprocessor
+# (proves the canonical containment helper is wired end-to-end via the
+# security_pre / GateResult path, not just the guard_paths() factory closure
+# in isolation).
+# ---------------------------------------------------------------------------
+
+
+async def test_coding_preset_reader_blocks_symlink_escaping_workspace(tmp_path):
+    """A symlink inside the workspace pointing outside it must be blocked by
+    the bound reader preprocessor."""
+    outside = tmp_path.parent / "outside-secret.txt"
+    outside.write_text("secret")
+    link = tmp_path / "link.txt"
+    link.symlink_to(outside)
+
+    spec = AgentSpec.coding(cwd=str(tmp_path))
+    branch = await _make_branch(spec)
+
+    with pytest.raises(PermissionError, match="symlink"):
+        await _invoke_pre_hooks(branch, "reader", {"action": "read", "path": str(link)})
+
+
+async def test_coding_preset_editor_blocks_symlink_escaping_workspace(tmp_path):
+    """A symlink inside the workspace pointing outside it must be blocked by
+    the bound editor preprocessor."""
+    outside = tmp_path.parent / "outside-target.txt"
+    outside.write_text("secret")
+    link = tmp_path / "link.txt"
+    link.symlink_to(outside)
+
+    spec = AgentSpec.coding(cwd=str(tmp_path))
+    branch = await _make_branch(spec)
+
+    with pytest.raises(PermissionError, match="symlink"):
+        await _invoke_pre_hooks(
+            branch,
+            "editor",
+            {"action": "write", "file_path": str(link), "content": "bad"},
+        )
+
+
 async def test_permission_policy_evaluator_exception_fails_closed(tmp_path):
     """An explicit PermissionPolicy whose escalation handler raises must also
     fail closed via a recorded deny, not an uncaught exception."""
