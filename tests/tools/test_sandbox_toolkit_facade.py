@@ -1,0 +1,269 @@
+# Copyright (c) 2023-2025, HaiyangLi <quantocean.li at gmail dot com>
+# SPDX-License-Identifier: Apache-2.0
+
+"""Tests for CodingToolkit's sandbox tool facade: protected-branch merge
+gating and truthful discard cleanup reporting."""
+
+from __future__ import annotations
+
+import subprocess
+from pathlib import Path
+
+import pytest
+
+import lionagi.tools.sandbox as sandbox_module
+from lionagi.session.branch import Branch
+from lionagi.tools.coding import CodingToolkit
+
+# ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
+
+
+def _init_git_repo(path: Path) -> None:
+    cmds = [
+        ["git", "init"],
+        ["git", "config", "user.email", "test@test.com"],
+        ["git", "config", "user.name", "Test"],
+    ]
+    for cmd in cmds:
+        subprocess.run(cmd, cwd=str(path), capture_output=True, check=True)
+    (path / "README.md").write_text("initial\n")
+    subprocess.run(["git", "add", "."], cwd=str(path), capture_output=True, check=True)
+    subprocess.run(["git", "commit", "-m", "init"], cwd=str(path), capture_output=True, check=True)
+
+
+@pytest.fixture
+def git_repo(tmp_path):
+    _init_git_repo(tmp_path)
+    return tmp_path
+
+
+def _make_sandbox_tool(git_repo, **toolkit_kwargs):
+    branch = Branch()
+    tk = CodingToolkit(
+        notify=False, workspace_root=str(git_repo), tools=["sandbox"], **toolkit_kwargs
+    )
+    tools = tk.bind(branch)
+    for t in tools:
+        if t.func_callable.__name__ == "sandbox":
+            return tk, t.func_callable
+    raise KeyError("sandbox tool not found")
+
+
+# ---------------------------------------------------------------------------
+# Constructor-level sandbox_allow_protected — operator trust decision
+# ---------------------------------------------------------------------------
+
+
+def test_sandbox_allow_protected_defaults_false(git_repo):
+    tk, _ = _make_sandbox_tool(git_repo)
+    assert tk.sandbox_allow_protected is False
+
+
+def test_sandbox_request_schema_has_no_allow_protected_field():
+    """An in-band agent must not be able to self-approve a protected merge —
+    allow_protected is deliberately absent from the LLM-facing schema."""
+    from lionagi.tools.coding import SandboxRequest
+
+    assert "allow_protected" not in SandboxRequest.model_fields
+
+
+async def test_facade_merge_refuses_protected_branch_by_default(git_repo):
+    """git init defaults to a protected branch name (master); the facade's
+    merge action must refuse it when the toolkit wasn't given the operator
+    flag, even though the agent-facing SandboxRequest has no such field."""
+    _, sandbox = _make_sandbox_tool(git_repo)
+
+    created = await sandbox(action="create")
+    assert created["success"] is True
+
+    result = await sandbox(action="merge")
+
+    assert result["success"] is False
+    assert "protected" in result["error"]
+    assert not (git_repo / "merged.txt").exists()
+
+
+async def test_facade_merge_succeeds_with_operator_level_flag(git_repo):
+    """Only a constructor-level (operator-composed) flag can unlock merging
+    into a protected branch — never a per-call agent argument."""
+    _, sandbox = _make_sandbox_tool(git_repo, sandbox_allow_protected=True)
+
+    created = await sandbox(action="create")
+    assert created["success"] is True
+    worktree = Path(created["worktree"])
+    (worktree / "merged.txt").write_text("from sandbox\n")
+
+    result = await sandbox(action="merge")
+
+    assert result["success"] is True
+    assert (git_repo / "merged.txt").read_text() == "from sandbox\n"
+
+
+async def test_facade_merge_with_failed_cleanup_reports_failure_and_keeps_session(git_repo):
+    """A merge that lands but cannot clean up (e.g. locked worktree) must not
+    be reported as a fully successful, closed sandbox: merged=True stays
+    visible, success is False, and the session is retained so cleanup can be
+    retried instead of stranding the worktree with no handle."""
+    _, sandbox = _make_sandbox_tool(git_repo, sandbox_allow_protected=True)
+
+    created = await sandbox(action="create")
+    assert created["success"] is True
+    worktree = Path(created["worktree"])
+    (worktree / "merged.txt").write_text("from sandbox\n")
+
+    subprocess.run(
+        ["git", "worktree", "lock", str(worktree)],
+        cwd=str(git_repo),
+        capture_output=True,
+        check=True,
+    )
+
+    result = await sandbox(action="merge")
+
+    # The merge itself landed on the base branch…
+    assert result["merged"] is True
+    assert (git_repo / "merged.txt").read_text() == "from sandbox\n"
+    # …but the sandbox is not closed: cleanup failed and the session survives.
+    assert result["success"] is False
+    assert result["worktree_removed"] is False
+
+    diff_result = await sandbox(action="diff")
+    assert "No active sandbox" not in str(diff_result.get("error", ""))
+
+
+async def test_facade_cleanup_retry_completes_after_partial_merge_cleanup(git_repo):
+    """The merge lands; the worktree removal succeeds but branch deletion is
+    blocked by another checkout of the same branch. Once that checkout is
+    gone, a discard retry must finish cleanup and release the session —
+    counting the already-removed worktree as done — instead of failing
+    forever and leaving the tool permanently occupied."""
+    _, sandbox = _make_sandbox_tool(git_repo, sandbox_allow_protected=True)
+
+    created = await sandbox(action="create")
+    assert created["success"] is True
+    worktree = Path(created["worktree"])
+    (worktree / "merged.txt").write_text("from sandbox\n")
+
+    other = git_repo.parent / "other-checkout"
+    subprocess.run(
+        ["git", "worktree", "add", "--force", str(other), created["branch"]],
+        cwd=str(git_repo),
+        capture_output=True,
+        check=True,
+    )
+
+    result = await sandbox(action="merge")
+    assert result["merged"] is True
+    assert result["success"] is False
+    assert result["worktree_removed"] is True
+    assert result["branch_deleted"] is False
+
+    # The retained session has no worktree — diff must fail loudly, not
+    # report an empty diff as success.
+    diff_result = await sandbox(action="diff")
+    assert diff_result["success"] is False
+    assert "no longer exists" in diff_result["error"]
+
+    commit_result = await sandbox(action="commit", message="stale")
+    assert commit_result["success"] is False
+    assert "no longer exists" in commit_result["error"]
+
+    subprocess.run(
+        ["git", "worktree", "remove", "--force", str(other)],
+        cwd=str(git_repo),
+        capture_output=True,
+        check=True,
+    )
+
+    retry = await sandbox(action="discard")
+    assert retry["success"] is True
+    assert retry["worktree_removed"] is True
+    assert retry["branch_deleted"] is True
+
+    # Session released: the tool is usable again.
+    after = await sandbox(action="diff")
+    assert after["success"] is False
+    assert "No active sandbox" in after["error"]
+
+
+# ---------------------------------------------------------------------------
+# Truthful discard cleanup reporting
+# ---------------------------------------------------------------------------
+
+
+async def test_facade_discard_reports_failure_and_keeps_session(git_repo, monkeypatch):
+    """A partial cleanup failure (e.g. locked worktree) must not be reported
+    as success:True, and the session must be retained so a caller can retry
+    (or at least still inspect the sandbox) instead of losing the handle."""
+    _, sandbox = _make_sandbox_tool(git_repo)
+
+    created = await sandbox(action="create")
+    assert created["success"] is True
+
+    async def fake_discard(session):
+        return {
+            "worktree_removed": False,
+            "branch_deleted": True,
+            "errors": ["worktree is locked"],
+        }
+
+    monkeypatch.setattr(sandbox_module, "sandbox_discard", fake_discard)
+
+    result = await sandbox(action="discard")
+
+    assert result["success"] is False
+    assert result["worktree_removed"] is False
+
+    # Session retained: a subsequent action must still see an active sandbox
+    # rather than "No active sandbox. Create one first."
+    diff_result = await sandbox(action="diff")
+    assert diff_result["success"] is True
+    assert "error" not in diff_result or diff_result.get("success") is True
+
+
+async def test_facade_discard_branch_delete_only_failure_reported(git_repo, monkeypatch):
+    """The mirror case: worktree removed cleanly but branch deletion fails
+    (branch checked out elsewhere) — also success:False, session retained."""
+    _, sandbox = _make_sandbox_tool(git_repo)
+
+    created = await sandbox(action="create")
+    assert created["success"] is True
+
+    async def fake_discard(session):
+        return {
+            "worktree_removed": True,
+            "branch_deleted": False,
+            "errors": ["branch checked out elsewhere"],
+        }
+
+    monkeypatch.setattr(sandbox_module, "sandbox_discard", fake_discard)
+
+    result = await sandbox(action="discard")
+
+    assert result["success"] is False
+    assert result["branch_deleted"] is False
+
+    diff_result = await sandbox(action="diff")
+    assert diff_result["success"] is True
+
+
+async def test_facade_discard_reports_success_only_when_both_steps_succeed(git_repo):
+    """Real (non-mocked) discard through the facade on a healthy sandbox
+    still reports success:True and clears the session — the fix only
+    changes behavior on partial failure."""
+    _, sandbox = _make_sandbox_tool(git_repo)
+
+    created = await sandbox(action="create")
+    assert created["success"] is True
+
+    result = await sandbox(action="discard")
+    assert result["success"] is True
+    assert result["worktree_removed"] is True
+    assert result["branch_deleted"] is True
+
+    # session cleared: a further action reports "no active sandbox"
+    after = await sandbox(action="diff")
+    assert after["success"] is False
+    assert "No active sandbox" in after["error"]
