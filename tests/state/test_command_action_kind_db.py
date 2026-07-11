@@ -9,6 +9,7 @@ import asyncio
 import os
 import tempfile
 import uuid
+from unittest.mock import patch
 
 import aiosqlite
 import pytest
@@ -260,6 +261,121 @@ def test_legacy_pre_flow_yaml_rebuild_preserves_dependent_schedule_runs():
                 fk_row = await db.fetch_one("PRAGMA foreign_keys")
                 assert fk_row is not None
                 assert list(fk_row.values())[0] == 1
+        finally:
+            os.unlink(db_path)
+
+    asyncio.run(_run())
+
+
+def test_legacy_pre_flow_yaml_rebuild_rolls_back_on_fault_and_permits_clean_retry():
+    """Fault-injection regression for the schedules-rebuild atomicity fix.
+
+    The raw-driver rebuild used to run CREATE/copy/DROP/RENAME/index as
+    independent autocommit statements with no explicit transaction: an
+    exception between DROP and RENAME left only `schedules_new` on disk, and
+    the next ordinary StateDB open's `metadata.create_all` then created a
+    fresh EMPTY `schedules`, stranding the original rows in `schedules_new`.
+    This injects a failure at exactly that point (right before the RENAME)
+    and asserts the explicit `BEGIN IMMEDIATE` transaction rolls the whole
+    rebuild back: the original `schedules` table and its row survive intact,
+    `schedules_new` does not exist, and `PRAGMA foreign_keys` reads back 1
+    despite the failure. A subsequent clean retry (fresh StateDB open, no
+    fault) must then complete the migration successfully.
+    """
+
+    async def _run():
+        with tempfile.NamedTemporaryFile(suffix=".db", delete=False) as f:
+            db_path = f.name
+        try:
+            sid = uuid.uuid4().hex[:12]
+            async with aiosqlite.connect(db_path) as raw:
+                await raw.execute("""
+                    CREATE TABLE schedules (
+                        id           TEXT PRIMARY KEY,
+                        name         TEXT NOT NULL UNIQUE,
+                        trigger_type TEXT NOT NULL,
+                        action_kind  TEXT NOT NULL
+                            CHECK(action_kind IN ('agent', 'flow', 'fanout', 'play')),
+                        created_at   REAL NOT NULL,
+                        updated_at   REAL NOT NULL
+                    )
+                """)
+                await raw.execute(
+                    "INSERT INTO schedules "
+                    "(id, name, trigger_type, action_kind, created_at, updated_at) "
+                    "VALUES (?, ?, 'cron', 'agent', 0, 0)",
+                    (sid, "fault-injection-target"),
+                )
+                await raw.commit()
+
+            real_execute = aiosqlite.Connection.execute
+            fault_state = {"triggered": False}
+
+            async def _faulty_execute(self, sql, parameters=None):
+                if (
+                    not fault_state["triggered"]
+                    and isinstance(sql, str)
+                    and "RENAME TO schedules" in sql
+                ):
+                    fault_state["triggered"] = True
+                    raise RuntimeError("fault-injected failure before RENAME")
+                return await real_execute(self, sql, parameters)
+
+            db = StateDB(db_path)
+            try:
+                with patch.object(aiosqlite.Connection, "execute", _faulty_execute):
+                    with pytest.raises(RuntimeError, match="fault-injected"):
+                        await db.open()
+
+                # The original legacy table (and its row) must survive the
+                # aborted rebuild untouched -- rolled back, not stranded.
+                table_row = await db.fetch_one(
+                    "SELECT sql FROM sqlite_master WHERE type='table' AND name='schedules'"
+                )
+                assert table_row is not None
+                assert "'flow_yaml'" not in table_row["sql"], (
+                    "original legacy schedules table must survive the rollback intact"
+                )
+                sched_row = await db.fetch_one(
+                    "SELECT * FROM schedules WHERE id = :id", {"id": sid}
+                )
+                assert sched_row is not None
+                assert sched_row["name"] == "fault-injection-target"
+
+                # schedules_new must be gone -- rolled back, not left stranded
+                # for the next metadata.create_all to paper over with an
+                # empty fresh `schedules`.
+                stray_row = await db.fetch_one(
+                    "SELECT name FROM sqlite_master WHERE type='table' AND name='schedules_new'"
+                )
+                assert stray_row is None
+
+                # Foreign-key enforcement was restored despite the failure.
+                fk_row = await db.fetch_one("PRAGMA foreign_keys")
+                assert fk_row is not None
+                assert list(fk_row.values())[0] == 1
+            finally:
+                await db.close()
+
+            # A clean retry (fresh StateDB open, no fault injected) completes
+            # the migration and preserves the original row.
+            async with StateDB(db_path) as db2:
+                sched_row2 = await db2.fetch_one(
+                    "SELECT * FROM schedules WHERE id = :id", {"id": sid}
+                )
+                assert sched_row2 is not None
+                assert sched_row2["name"] == "fault-injection-target"
+                await db2.create_schedule(
+                    {
+                        "id": uuid.uuid4().hex[:12],
+                        "name": "post-retry-command-admit-check",
+                        "trigger_type": "cron",
+                        "cron_expr": "0 * * * *",
+                        "action_kind": "command",
+                        "action_command": "kdev",
+                        "action_command_args": [],
+                    }
+                )
         finally:
             os.unlink(db_path)
 

@@ -861,10 +861,23 @@ class StateDB:
         # this fix). Go through the raw driver connection instead (same
         # technique as ``_drop_legacy_invocations_status_check``) so the
         # pragma flip is real autocommit, not swallowed by an open txn.
+        #
+        # The pragma flip itself must stay OUTSIDE any transaction (SQLite
+        # only honors it between transactions), but the CREATE/copy/DROP/
+        # RENAME/index sequence that follows needs its own explicit
+        # transaction: running those as independent autocommit statements
+        # left a failure between DROP and RENAME (cancellation, I/O error,
+        # a bad index statement) with only `schedules_new` on disk --
+        # `metadata.create_all` would then create a fresh *empty*
+        # `schedules` on the next open, stranding every original row.
+        # `BEGIN IMMEDIATE` reclaims the atomicity the old `engine.begin()`
+        # path had, without reintroducing the pragma-inside-transaction bug.
         async with self._engine.connect() as conn:
             driver = (await conn.get_raw_connection()).driver_connection
             await driver.execute("PRAGMA foreign_keys = OFF")
+            await driver.commit()
             try:
+                await driver.execute("BEGIN IMMEDIATE")
                 await driver.execute(create_stmt)
                 insert_sql = (
                     f"INSERT INTO schedules_new ({col_list}) SELECT {col_list} FROM schedules"  # noqa: S608
@@ -875,6 +888,9 @@ class StateDB:
                 for idx_sql in index_sqls:
                     await driver.execute(idx_sql)
                 await driver.commit()
+            except BaseException:
+                await driver.rollback()
+                raise
             finally:
                 await driver.execute("PRAGMA foreign_keys = ON")
                 await driver.commit()
@@ -953,10 +969,23 @@ class StateDB:
         # this fix). Go through the raw driver connection instead (same
         # technique as ``_drop_legacy_invocations_status_check``) so the
         # pragma flip is real autocommit, not swallowed by an open txn.
+        #
+        # The pragma flip itself must stay OUTSIDE any transaction (SQLite
+        # only honors it between transactions), but the CREATE/copy/DROP/
+        # RENAME/index sequence that follows needs its own explicit
+        # transaction: running those as independent autocommit statements
+        # left a failure between DROP and RENAME (cancellation, I/O error,
+        # a bad index statement) with only `schedules_new` on disk --
+        # `metadata.create_all` would then create a fresh *empty*
+        # `schedules` on the next open, stranding every original row.
+        # `BEGIN IMMEDIATE` reclaims the atomicity the old `engine.begin()`
+        # path had, without reintroducing the pragma-inside-transaction bug.
         async with self._engine.connect() as conn:
             driver = (await conn.get_raw_connection()).driver_connection
             await driver.execute("PRAGMA foreign_keys = OFF")
+            await driver.commit()
             try:
+                await driver.execute("BEGIN IMMEDIATE")
                 await driver.execute(create_stmt)
                 insert_sql = (
                     f"INSERT INTO schedules_new ({col_list}) SELECT {col_list} FROM schedules"  # noqa: S608
@@ -967,6 +996,9 @@ class StateDB:
                 for idx_sql in index_sqls:
                     await driver.execute(idx_sql)
                 await driver.commit()
+            except BaseException:
+                await driver.rollback()
+                raise
             finally:
                 await driver.execute("PRAGMA foreign_keys = ON")
                 await driver.commit()
