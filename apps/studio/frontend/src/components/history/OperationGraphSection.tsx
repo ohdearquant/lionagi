@@ -5,7 +5,8 @@ import type { OperationGraphState, OperationNode, OperationStatus } from "@/lib/
 const STATUS_BORDER: Record<OperationStatus, string> = {
   queued: "border-l-content-muted",
   running: "border-l-status-running",
-  awaiting_approval: "border-l-status-warn",
+  awaiting_approval: "border-l-status-warning",
+  paused: "border-l-status-warning",
   succeeded: "border-l-status-success",
   failed: "border-l-status-error",
   escalated: "border-l-status-error",
@@ -14,7 +15,8 @@ const STATUS_BORDER: Record<OperationStatus, string> = {
 const STATUS_DOT: Record<OperationStatus, string> = {
   queued: "bg-content-muted",
   running: "bg-status-running",
-  awaiting_approval: "bg-status-warn",
+  awaiting_approval: "bg-status-warning",
+  paused: "bg-status-warning",
   succeeded: "bg-status-success",
   failed: "bg-status-error",
   escalated: "bg-status-error",

@@ -35,8 +35,16 @@ function ConditionEdgeComponent({
     targetPosition,
   });
 
-  // Edge stroke colors are data-driven (selected state + completion state) — kept inline
-  const strokeColor = selected ? "#a855f7" : completed ? "#22c55e" : "#444";
+  // Edge stroke colors are data-driven (selected state + completion state) —
+  // kept inline. Default uses the solid dag-pending-border token (opaque
+  // gray) rather than the translucent --edge-strong hairline: at these
+  // widths the hairline reads as invisible against surface-base in both
+  // themes.
+  const strokeColor = selected
+    ? "var(--status-selected)"
+    : completed
+      ? "var(--dag-edge-done)"
+      : "var(--dag-pending-border)";
 
   return (
     <>
@@ -45,7 +53,7 @@ function ConditionEdgeComponent({
         d={edgePath}
         fill="none"
         stroke={strokeColor}
-        strokeWidth={selected ? 2.5 : completed ? 2 : 1.5}
+        strokeWidth={selected ? 2.5 : completed ? 2 : 1.75}
         strokeDasharray={isCode ? "6 4" : undefined}
         style={{ transition: "stroke 0.25s, stroke-width 0.15s" }}
         markerEnd={`url(#${completed ? "arrow-active" : "arrow"})`}
