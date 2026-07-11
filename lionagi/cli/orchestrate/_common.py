@@ -141,6 +141,29 @@ After this round, teammates or the orchestrator can follow up:
 TEAM_WORKER_SYSTEM = BARE_WORKER_SYSTEM + "\n\n" + TEAM_COORD_SECTION
 
 
+def _build_worker_operate_node(
+    builder,
+    *,
+    branch,
+    instruction,
+    context: list,
+    messenger_bound: bool,
+    depends_on: list[str] | None = None,
+) -> str:
+    """Add the static `operate` node for a worker branch (shared by fanout.py
+    and flow.py). Passes `actions=True` only when this worker actually got
+    the in-process messenger tool bound (team messaging active AND a
+    non-CLI worker), so Branch.operate() serializes branch.acts for it."""
+    return builder.add_operation(
+        "operate",
+        branch=branch,
+        depends_on=depends_on,
+        instruction=instruction,
+        context=context,
+        **({"actions": True} if messenger_bound else {}),
+    )
+
+
 def _create_fanout_team(
     team_name: str,
     worker_names: list[str],

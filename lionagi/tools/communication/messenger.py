@@ -24,6 +24,7 @@ __all__ = ("LionMessenger",)
 
 class MessengerAction(str, Enum):
     send = "send"
+    receive = "receive"
     done = "done"
     finished = "finished"
     wakeup = "wakeup"
@@ -35,6 +36,7 @@ class MessengerRequest(BaseModel):
         description=(
             "Action to perform. One of:\n"
             "- 'send': Send a message to one or more recipients.\n"
+            "- 'receive': Read and consume pending messages from teammates.\n"
             "- 'done': Signal you've finished your part (can be woken later).\n"
             "- 'finished': Permanently done, cannot be woken.\n"
             "- 'wakeup': Wake a teammate who is in done state."
@@ -91,9 +93,28 @@ class LionMessenger(LionTool):
                 branch.msgs.messages.include(msg)
 
         def messenger(action: str, to: str | list[str] = None, content: str = None) -> str:
-            """Send messages to teammates, signal done/finished, or wake a
-            teammate. action in {'send', 'done', 'finished', 'wakeup'}; to
-            (name or list of names) and content are required for send/wakeup."""
+            """Send messages to teammates, receive pending ones, signal
+            done/finished, or wake a teammate. action in {'send', 'receive',
+            'done', 'finished', 'wakeup'}; to (name or list of names) and
+            content are required for send/wakeup, neither is required for
+            receive."""
+            if action == "receive":
+                pending = exchange.receive(sender_id)
+                if not pending:
+                    return "No new messages."
+                name_by_id = {v: k for k, v in roster.items()}
+                senders = {m.sender for m in pending}
+                drained: list[Message] = []
+                for s in senders:
+                    while (m := exchange.pop_message(owner_id=sender_id, sender=s)) is not None:
+                        drained.append(m)
+                drained.sort(key=lambda m: m.created_datetime)
+                lines = []
+                for m in drained:
+                    from_name = name_by_id.get(m.sender, str(m.sender)[:8])
+                    lines.append(f"[{from_name}] {m.content}")
+                return "\n".join(lines)
+
             if action == "send":
                 if not to or not content:
                     return "Error: 'send' requires both 'to' and 'content'."

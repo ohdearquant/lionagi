@@ -685,7 +685,7 @@ async def test_resume_skips_planner_and_still_calls_finalize_with_zero_pending_o
     with (
         patch(
             "lionagi.cli.orchestrate.flow.build_worker_branch",
-            return_value=(_FakeBranch("worker"), "codex/gpt-5.5", None),
+            return_value=(_FakeBranch("worker"), "codex/gpt-5.5", None, False),
         ),
         patch.object(PlanningEngine, "new_run", return_value=fake_engine_run),
         patch("lionagi.cli.orchestrate.flow.plan") as plan_mock,
@@ -755,7 +755,7 @@ async def test_resume_seeds_executor_with_checkpointed_flow_context(tmp_path: Pa
     with (
         patch(
             "lionagi.cli.orchestrate.flow.build_worker_branch",
-            return_value=(_FakeBranch("worker"), "codex/gpt-5.5", None),
+            return_value=(_FakeBranch("worker"), "codex/gpt-5.5", None, False),
         ),
         patch.object(PlanningEngine, "new_run", return_value=fake_engine_run),
         patch("lionagi.cli.orchestrate.flow.plan"),
@@ -825,7 +825,7 @@ async def test_resumed_checkpoint_carries_restored_flow_context_across_zero_comp
     with (
         patch(
             "lionagi.cli.orchestrate.flow.build_worker_branch",
-            return_value=(_FakeBranch("worker"), "codex/gpt-5.5", None),
+            return_value=(_FakeBranch("worker"), "codex/gpt-5.5", None, False),
         ),
         patch.object(PlanningEngine, "new_run", return_value=fake_engine_run),
         patch("lionagi.cli.orchestrate.flow.plan"),
@@ -879,7 +879,7 @@ async def test_resume_refuses_checkpoint_with_spawned_entries(tmp_path: Path):
     with (
         patch(
             "lionagi.cli.orchestrate.flow.build_worker_branch",
-            return_value=(_FakeBranch("worker"), "codex/gpt-5.5", None),
+            return_value=(_FakeBranch("worker"), "codex/gpt-5.5", None, False),
         ),
         patch("lionagi.cli.orchestrate.flow.plan") as plan_mock,
         pytest.raises(FlowResumeError, match="spawned-node-xyz"),
@@ -928,7 +928,7 @@ async def test_resume_missing_artifact_still_flips_status_to_failed(
 
     with patch(
         "lionagi.cli.orchestrate.flow.build_worker_branch",
-        return_value=(Branch(name="worker"), "claude", None),
+        return_value=(Branch(name="worker"), "claude", None, False),
     ):
         dag_state = await _build_dag(env, "write the brief", plan_result, reactive_spec="off")
 

@@ -17,31 +17,27 @@ from lionagi.tools.communication.messenger import (
 )
 
 
-def _make_branch(exchange: Exchange):
+# `msg not in branch.msgs.messages` → checks membership on included list
+class _MsgsView:
+    def __init__(self, store):
+        self._store = store
+
+    def __iter__(self):
+        return iter(self._store)
+
+    def __contains__(self, item):
+        return item in self._store
+
+    def include(self, msg):
+        self._store.append(msg)
+
+
+def _make_branch(exchange: Exchange, branch_id=None):
     included = []
-    messages = SimpleNamespace(
-        include=lambda msg: included.append(msg),
-        messages=included,  # for `msg in branch.msgs.messages`
-    )
-
-    # `msg not in branch.msgs.messages` → checks membership on included list
-    class _MsgsView:
-        def __init__(self, store):
-            self._store = store
-
-        def __iter__(self):
-            return iter(self._store)
-
-        def __contains__(self, item):
-            return item in self._store
-
-        def include(self, msg):
-            self._store.append(msg)
-
     view = _MsgsView(included)
     msgs = SimpleNamespace(messages=view)
 
-    branch_id = uuid4()
+    branch_id = branch_id or uuid4()
     exchange.register(branch_id)
     return SimpleNamespace(id=branch_id, msgs=msgs, _included=included)
 
@@ -49,6 +45,7 @@ def _make_branch(exchange: Exchange):
 class TestMessengerActionEnum:
     def test_enum_values(self):
         assert MessengerAction.send == "send"
+        assert MessengerAction.receive == "receive"
         assert MessengerAction.done == "done"
         assert MessengerAction.finished == "finished"
         assert MessengerAction.wakeup == "wakeup"
@@ -251,6 +248,82 @@ class TestMessengerBindWakeup:
         tool = m.bind(branch, roster={"alice": alice_id})
         result = tool.func_callable(action="wakeup", to=["alice", "bob"], content="rise")
         assert "Woke up alice" in result
+
+
+class TestMessengerBindReceive:
+    def test_receive_empty_inbox(self):
+        ex = Exchange()
+        m = LionMessenger(exchange=ex)
+        branch = _make_branch(ex)
+        tool = m.bind(branch, roster={})
+        result = tool.func_callable(action="receive")
+        assert result == "No new messages."
+
+    def test_receive_single_sender(self):
+        ex = Exchange()
+        m = LionMessenger(exchange=ex)
+        bob = _make_branch(ex)
+        alice = _make_branch(ex)
+
+        alice_tool = m.bind(alice, roster={"bob": bob.id}, sender_name="alice")
+        alice_tool.func_callable(action="send", to="bob", content="hi bob")
+
+        import asyncio
+
+        asyncio.run(ex.collect(alice.id))
+
+        bob_tool = m.bind(bob, roster={"alice": alice.id}, sender_name="bob")
+        result = bob_tool.func_callable(action="receive")
+        assert result == "[alice] hi bob"
+
+        # second call drains an empty inbox
+        result2 = bob_tool.func_callable(action="receive")
+        assert result2 == "No new messages."
+
+    def test_receive_multi_sender_drains_all(self):
+        ex = Exchange()
+        m = LionMessenger(exchange=ex)
+        bob = _make_branch(ex)
+        alice = _make_branch(ex)
+        carol = _make_branch(ex)
+
+        alice_tool = m.bind(alice, roster={"bob": bob.id}, sender_name="alice")
+        carol_tool = m.bind(carol, roster={"bob": bob.id}, sender_name="carol")
+        alice_tool.func_callable(action="send", to="bob", content="from alice")
+        carol_tool.func_callable(action="send", to="bob", content="from carol")
+
+        import asyncio
+
+        asyncio.run(ex.collect(alice.id))
+        asyncio.run(ex.collect(carol.id))
+
+        bob_tool = m.bind(bob, roster={"alice": alice.id, "carol": carol.id}, sender_name="bob")
+        result = bob_tool.func_callable(action="receive")
+        lines = result.splitlines()
+        assert "[alice] from alice" in lines
+        assert "[carol] from carol" in lines
+        assert len(lines) == 2
+
+        # fully drained
+        assert bob_tool.func_callable(action="receive") == "No new messages."
+
+    def test_receive_unknown_sender_falls_back_to_uuid_prefix(self):
+        ex = Exchange()
+        m = LionMessenger(exchange=ex)
+        bob = _make_branch(ex)
+        ghost = _make_branch(ex)
+
+        ghost_tool = m.bind(ghost, roster={"bob": bob.id}, sender_name="ghost")
+        ghost_tool.func_callable(action="send", to="bob", content="mystery")
+
+        import asyncio
+
+        asyncio.run(ex.collect(ghost.id))
+
+        # bob's roster doesn't include ghost's name -> fallback to uuid prefix
+        bob_tool = m.bind(bob, roster={}, sender_name="bob")
+        result = bob_tool.func_callable(action="receive")
+        assert result == f"[{str(ghost.id)[:8]}] mystery"
 
 
 class TestMessengerBindUnknownAction:

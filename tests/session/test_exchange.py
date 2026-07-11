@@ -363,6 +363,65 @@ class TestExchangeEdgeCases:
         assert result is None
 
     @pytest.mark.anyio
+    async def test_stop_before_first_tick_task_group_exits_promptly(self):
+        """Mirrors fanout.py's task-group shape: exchange.run() is scheduled via
+        start_soon, then the DAG body raises immediately (before run() gets its
+        first turn). stop() in `finally` must make run() return right away
+        instead of clearing the stop signal and looping forever."""
+        from lionagi.ln.concurrency import create_task_group, fail_after
+
+        exchange = Exchange()
+
+        async def _failing_dag():
+            raise RuntimeError("boom")
+
+        # anyio's task group wraps a body-raised exception in an
+        # ExceptionGroup even with a single failure — same as the real
+        # fanout.py call site. fail_after(2) is the regression guard: before
+        # the fix, exchange.run() cleared the stop signal on its first turn
+        # and looped forever, so the task group's __aexit__ never returned
+        # and this would hit the deadline instead of raising promptly.
+        with pytest.raises(BaseException) as exc_info:
+            with fail_after(2):
+                async with create_task_group() as tg:
+                    tg.start_soon(exchange.run, 0.01)
+                    try:
+                        await _failing_dag()
+                    finally:
+                        exchange.stop()
+
+        raised = exc_info.value
+        sub_exceptions = getattr(raised, "exceptions", (raised,))
+        assert any(isinstance(e, RuntimeError) and str(e) == "boom" for e in sub_exceptions)
+        assert exchange._stop is True
+
+    @pytest.mark.anyio
+    async def test_stop_before_first_tick_ensure_future_await_completes(self):
+        """Mirrors flow.py's ensure_future + explicit-await shape: exchange.run()
+        is scheduled as a task, the DAG raises before it ticks, stop() fires in
+        `finally`, and awaiting the runner task must complete promptly (not hang
+        forever) so the original exception still propagates to the caller."""
+        import asyncio
+
+        from lionagi.ln.concurrency import fail_after
+
+        exchange = Exchange()
+        exch_task = asyncio.ensure_future(exchange.run(0.01))
+
+        async def _failing_dag():
+            raise RuntimeError("boom")
+
+        try:
+            with pytest.raises(RuntimeError, match="boom"):
+                await _failing_dag()
+        finally:
+            exchange.stop()
+            with fail_after(2):
+                await exch_task
+
+        assert exch_task.done()
+
+    @pytest.mark.anyio
     async def test_collect_empty_outbox(self):
         exchange = Exchange()
         owner_id = uuid4()

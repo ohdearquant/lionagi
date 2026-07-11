@@ -19,6 +19,8 @@ from lionagi._errors import TimeoutError as LionTimeoutError
 from lionagi.casts.emission import SpawnRequest, TaskAssignment
 from lionagi.ln.concurrency import CancelScope, move_on_after
 from lionagi.orchestration import plan, role_node_builder
+from lionagi.session.exchange import Exchange
+from lionagi.tools.communication.messenger import LionMessenger
 
 from .._logging import progress
 from .._logging import warn as _warn
@@ -26,6 +28,7 @@ from .._providers import parse_model_spec
 from .._util import classify_exception
 from ._checkpoint import CheckpointWriter, FlowResumeError, resolve_checkpoint_target
 from ._common import (
+    _build_worker_operate_node,
     _create_fanout_team,
     _format_result_json,
     _format_result_text,
@@ -444,7 +447,7 @@ async def _build_dag(
     role_artifact_defaults: dict[str, dict | None] = {}
 
     for i, ta in enumerate(assignments):
-        w_branch, w_model, w_profile = await build_worker_branch(
+        w_branch, w_model, w_profile, messenger_bound = await build_worker_branch(
             env,
             agent_id=agent_ids[i],
             role=ta.assignee,
@@ -501,12 +504,13 @@ async def _build_dag(
 
         instruction = budget_preambles.get(i, "") + ta.task
         dep_nodes = [node_ids[j] for j in dep_indices[i]]
-        node = env.builder.add_operation(
-            "operate",
+        node = _build_worker_operate_node(
+            env.builder,
             branch=w_branch,
             depends_on=dep_nodes or None,
             instruction=instruction,
             context=ctx,
+            messenger_bound=messenger_bound,
         )
         node_ids.append(node)
 
@@ -951,6 +955,8 @@ async def _execute_dag(
     t_exec = time.monotonic()
     _hb_task = _asyncio.ensure_future(_heartbeat_loop())
     _ctl_task = _asyncio.ensure_future(_control_poll_loop())
+    _exchange = getattr(env, "exchange", None)
+    _exch_task = _asyncio.ensure_future(_exchange.run(0.5)) if _exchange is not None else None
     try:
         dag_result = await eng_run.run_dag(
             env.builder.get_graph(),
@@ -975,6 +981,12 @@ async def _execute_dag(
             await _hb_task
         with contextlib.suppress(_asyncio.CancelledError):
             await _ctl_task
+        if _exch_task is not None:
+            _exchange.stop()
+            with contextlib.suppress(_asyncio.CancelledError):
+                await _exch_task
+            # Route any final outbox sends left over after the last collect tick.
+            await _exchange.collect_all()
     t_exec_elapsed = time.monotonic() - t_exec
 
     # Drain every scheduled checkpoint write before returning — the whole
@@ -1736,6 +1748,11 @@ async def _run_flow_inner(
     elif team_name:
         env.team_data = _create_fanout_team(team_name, agent_ids)
         progress(f"Team '{team_name}' created ({env.team_data['id']})")
+
+    if env.team_data:
+        env.exchange = Exchange()
+        env.messenger = LionMessenger(env.exchange)
+        env.roster = {}
 
     budget_preambles: dict[int, str] = {}
     if env.total_budget and assignments:

@@ -176,7 +176,7 @@ async def test_build_dag_populates_node_ids(tmp_path):
 
     with patch(
         "lionagi.cli.orchestrate.flow.build_worker_branch",
-        return_value=(_FakeBranch("researcher"), "codex/gpt-5.5", None),
+        return_value=(_FakeBranch("researcher"), "codex/gpt-5.5", None, False),
     ):
         dag_state = await _build_dag(env, "do stuff", plan_result, reactive_spec="off")
 
@@ -204,7 +204,7 @@ async def test_build_dag_deps_by_node_format(tmp_path):
 
     with patch(
         "lionagi.cli.orchestrate.flow.build_worker_branch",
-        return_value=(_FakeBranch(), "codex/gpt-5.5", None),
+        return_value=(_FakeBranch(), "codex/gpt-5.5", None, False),
     ):
         dag_state = await _build_dag(env, "task", plan_result, reactive_spec="off")
 
@@ -228,7 +228,7 @@ async def test_build_dag_reactive_all_grants_spawn(tmp_path):
 
     with patch(
         "lionagi.cli.orchestrate.flow.build_worker_branch",
-        return_value=(_FakeBranch(), "codex/gpt-5.5", None),
+        return_value=(_FakeBranch(), "codex/gpt-5.5", None, False),
     ):
         dag_state = await _build_dag(env, "task", plan_result, reactive_spec="all")
 
@@ -256,7 +256,7 @@ async def test_build_dag_pool_override_passes_to_worker(tmp_path):
 
     async def fake_build(env, *, agent_id, role, model_override=None, **kw):
         calls.append({"role": role, "model_override": model_override})
-        return _FakeBranch(role), model_override or "default", None
+        return _FakeBranch(role), model_override or "default", None, False
 
     with patch("lionagi.cli.orchestrate.flow.build_worker_branch", side_effect=fake_build):
         await _build_dag(env, "task", plan_result, reactive_spec="off")
