@@ -10,6 +10,8 @@ import re
 import warnings
 from pathlib import Path
 
+from lionagi.libs.path_safety import is_protected_name, resolve_workspace_path
+
 __all__ = (
     "auto_format_python",
     "guard_destructive",
@@ -47,11 +49,59 @@ async def guard_destructive(tool_name: str, action: str, args: dict) -> dict | N
     return None
 
 
+def _is_hard_floor_error(exc: PermissionError) -> bool:
+    """True for the symlink/protected-name floor, false for plain containment misses."""
+    msg = str(exc)
+    return "symlink" in msg or "protected path" in msg
+
+
+def _resolve_against_any_root(raw_path: str, candidate: Path, allowed_roots: list[Path]) -> Path:
+    """Accept iff resolve_workspace_path succeeds for >=1 root.
+
+    `candidate` is already absolute here — either the caller-supplied absolute
+    path, or a relative path pre-joined to the first allowed root — so every
+    root is tried purely as a containment check. This restores the
+    pre-existing multi-root contract: a relative path formed against the
+    first root is accepted as long as the resolved location falls under *any*
+    configured root, not only the first.
+
+    A symlink or protected basename fails the same way against every root (the
+    check runs before containment), so it can never be masked by trying another
+    root — surface that reason instead of a generic denial when it occurs.
+    """
+    hard_floor_error: PermissionError | None = None
+    for root in allowed_roots:
+        try:
+            return resolve_workspace_path(candidate, root)
+        except PermissionError as exc:
+            if hard_floor_error is None and _is_hard_floor_error(exc):
+                hard_floor_error = exc
+    if hard_floor_error is not None:
+        raise hard_floor_error
+    raise PermissionError(f"Path not in allowed list: {raw_path}")
+
+
+def _deny_only_floor(raw_path: str, expanded: Path) -> Path:
+    """No allowed roots: keep deny-only mode, but still refuse symlinks/protected names."""
+    if expanded.is_symlink():
+        raise PermissionError(f"Refusing to access symlink: {raw_path!r}")
+    resolved = expanded.resolve(strict=False)
+    if is_protected_name(resolved.name):
+        raise PermissionError(f"Refusing to access protected path: {resolved.name!r}")
+    return resolved
+
+
 def guard_paths(
     allowed_paths: list[str] | None = None,
     denied_paths: list[str] | None = None,
 ):
-    """Factory: return a pre-hook that enforces allowed/denied path constraints."""
+    """Factory: return a pre-hook that enforces allowed/denied path constraints.
+
+    Validation happens at check time only: a filesystem mutation racing this
+    check and the tool's later I/O on the same path (e.g. swapping a
+    validated regular file for a symlink after the check passes) is out of
+    scope for this pathname-based guard.
+    """
 
     allowed_roots = [Path(p).expanduser().resolve(strict=False) for p in (allowed_paths or [])]
 
@@ -61,16 +111,17 @@ def guard_paths(
             return None
 
         expanded = Path(raw_path).expanduser()
-        if not expanded.is_absolute() and allowed_roots:
-            # Resolve relative paths against the workspace root, not the process
-            # cwd — otherwise an in-workspace path would never match allowed_roots.
-            resolved = (allowed_roots[0] / expanded).resolve(strict=False)
-        else:
-            resolved = expanded.resolve(strict=False)
 
         if allowed_roots:
-            if not any(resolved == root or root in resolved.parents for root in allowed_roots):
-                raise PermissionError(f"Path not in allowed list: {raw_path}")
+            # Documented workspace-relative rule: relative paths resolve
+            # against the first allowed root, not the process cwd. The
+            # resulting absolute candidate is then, like any absolute path,
+            # accepted if it is contained by *any* configured allowed root.
+            candidate = expanded if expanded.is_absolute() else allowed_roots[0] / expanded
+            resolved = _resolve_against_any_root(raw_path, candidate, allowed_roots)
+        else:
+            resolved = _deny_only_floor(raw_path, expanded)
+
         if denied_paths:
             for denied in denied_paths:
                 denied_path = Path(denied).expanduser()
