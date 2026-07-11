@@ -216,6 +216,12 @@ current head from PR metadata, looked up in `index.json`; a head absent from the
 is un-reviewed and therefore not clean. Approval thereby becomes a batched action per
 wake rather than a per-PR reaction.
 
+**Draft PRs.** Drafts are reviewed like any other PR — the review poller does not set
+the draft filter, so review rounds run while work is still marked in progress. The
+approval digest naturally excludes them: a draft cannot be auto-merge armed, so it never
+satisfies the digest's armed-AND-review-required-AND-clean predicate. No draft-specific
+logic exists anywhere in the pipeline.
+
 **(c) Poller health.** Append a section when any review schedule is stale
 (`now - last_healthy_poll_at` over threshold), blind (consecutive auth failures), or
 budget-exhausted with open un-reviewed heads. A blind poller that silently stops
