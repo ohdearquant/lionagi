@@ -579,7 +579,10 @@ async def test_get_session_messages_after_filters_by_timestamp(patched_sessions_
     assert result[0]["branch_id"] == "br-ts"
 
 
-async def test_get_session_messages_after_preserves_progression_order(patched_sessions_db):
+async def test_get_session_messages_after_orders_by_created_at(patched_sessions_db):
+    """get_session_messages_after is a cursor-driven SSE tail read — it orders by
+    created_at (not raw progression order) so after_ts can advance monotonically
+    even when a branch's progression collection is not itself chronological."""
     svc, db_path = patched_sessions_db
     await seed_session(db_path, session_id="sess-order")
     # progression lists m-second before m-first (reverse of creation timestamp)
@@ -613,8 +616,8 @@ async def test_get_session_messages_after_preserves_progression_order(patched_se
     result = await svc.get_session_messages_after("sess-order", 0.0)
 
     assert len(result) == 2
-    assert result[0]["id"] == "m-second"
-    assert result[1]["id"] == "m-first"
+    assert result[0]["id"] == "m-first"
+    assert result[1]["id"] == "m-second"
 
 
 async def test_get_session_messages_after_aggregates_across_branches(patched_sessions_db):
@@ -668,6 +671,103 @@ async def test_get_session_messages_after_empty_progression_is_skipped(patched_s
 
     result = await svc.get_session_messages_after("sess-emptyprog", 0.0)
     assert result == []
+
+
+async def test_get_session_messages_after_handles_branch_over_sqlite_variable_limit(
+    patched_sessions_db,
+):
+    """Regression: a branch whose progression collection holds more message ids than
+    SQLite's bound-variable limit used to blow up get_session_messages_after with
+    sqlite3.OperationalError("too many SQL variables") on every 0.5s SSE poll, killing
+    the stream for any long-lived session (the classic SQLite default is 999; this
+    build's default, per PRAGMA compile_options MAX_VARIABLE_NUMBER, is 32766 — 33000
+    exceeds both so the test reproduces the failure regardless of build). The
+    json_each-joined query has no per-message bind variable, so it must return every
+    id without error. Only the progression collection needs to be this large — the
+    corresponding message rows are irrelevant to the bind-limit failure itself, so
+    this seeds ids without materializing 33000 message rows (keeps the test fast)."""
+    svc, db_path = patched_sessions_db
+    await seed_session(db_path, session_id="sess-huge")
+    count = 33000
+    msg_ids = [f"huge-{i}" for i in range(count)]
+    await seed_branch(db_path, branch_id="br-huge", session_id="sess-huge", msg_ids=msg_ids)
+    # A handful of real message rows (including one outside the msg_ids progression,
+    # and one before after_ts) prove the join+filter still behave correctly at scale.
+    async with StateDB(db_path) as db:
+        await db.insert_message(
+            {
+                "id": "huge-0",
+                "created_at": 50.0,
+                "content": {"text": "too old"},
+                "sender": "worker",
+                "recipient": "user",
+                "role": "assistant",
+                "node_metadata": {},
+            }
+        )
+        await db.insert_message(
+            {
+                "id": "huge-1",
+                "created_at": 150.0,
+                "content": {"text": "in range"},
+                "sender": "worker",
+                "recipient": "user",
+                "role": "assistant",
+                "node_metadata": {},
+            }
+        )
+
+    result = await svc.get_session_messages_after("sess-huge", 100.0)
+
+    assert result == [
+        {
+            "id": "huge-1",
+            "role": "assistant",
+            "content": {"text": "in range"},
+            "sender": "worker",
+            "timestamp": 150.0,
+            "lion_class": "__unknown__",
+            "branch_id": "br-huge",
+        }
+    ]
+
+
+async def test_get_session_messages_after_message_shape_matches_expected_fields(
+    patched_sessions_db,
+):
+    """Message shape parity: id/created_at/content/sender/role/lion_class/branch_id
+    must be present and match the pre-fix _format_message() output exactly."""
+    svc, db_path = patched_sessions_db
+    await seed_session(db_path, session_id="sess-shape")
+    await seed_branch(db_path, branch_id="br-shape", session_id="sess-shape", msg_ids=["shape-1"])
+    async with StateDB(db_path) as db:
+        await db.insert_message(
+            {
+                "id": "shape-1",
+                "created_at": 111.0,
+                "content": {"text": "hello shape"},
+                "sender": "worker",
+                "recipient": "user",
+                "role": "assistant",
+                "node_metadata": {
+                    "lion_class": "lionagi.protocols.messages.assistant_response.AssistantResponse"
+                },
+            }
+        )
+
+    result = await svc.get_session_messages_after("sess-shape", 0.0)
+
+    assert result == [
+        {
+            "id": "shape-1",
+            "role": "assistant",
+            "content": {"text": "hello shape"},
+            "sender": "worker",
+            "timestamp": 111.0,
+            "lion_class": "lionagi.protocols.messages.assistant_response.AssistantResponse",
+            "branch_id": "br-shape",
+        }
+    ]
 
 
 # ---------------------------------------------------------------------------
