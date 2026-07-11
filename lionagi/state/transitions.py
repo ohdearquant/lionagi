@@ -2,9 +2,9 @@
 # SPDX-License-Identifier: Apache-2.0
 """Guarded compare-and-swap state transitions (ADR-0092 slice 1, spec-gate ruling 1).
 
-ADR-0062's ``transition()`` API (entity-agnostic, idempotency-key-deduplicated)
+ADR-0058's ``transition()`` API (entity-agnostic, idempotency-key-deduplicated)
 is proposed and unbuilt. This module ships a minimal fallback carrying the same
-request/result shape and reason-code discipline so 0062 can absorb it later as
+request/result shape and reason-code discipline so 0058 can absorb it later as
 a refactor, not a migration. Scoped to ``entity_type='dispatch'``
 (``dispatch_outbox``) and ``entity_type='schedule_run'`` (``schedule_runs``)
 only — it is not a general TransitionStore.
