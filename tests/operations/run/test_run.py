@@ -14,7 +14,13 @@ from unittest.mock import AsyncMock
 import pytest
 from pydantic import BaseModel
 
-from lionagi.operations.run.run import RunParam, _stream_with_deadline, run, run_and_collect
+from lionagi.operations.run.run import (
+    RunParam,
+    _stream_with_deadline,
+    _write_branch_snapshot,
+    run,
+    run_and_collect,
+)
 from lionagi.operations.types import ChatParam
 from lionagi.protocols.messages import (
     ActionRequest,
@@ -428,6 +434,84 @@ async def test_run_stream_persist_snapshot_survives_mid_stream_cancellation(tmp_
         cls == "lionagi.protocols.messages.assistant_response.AssistantResponse"
         for cls in msg_classes
     )
+
+
+async def test_write_branch_snapshot_torn_write_keeps_prior_snapshot(tmp_path, monkeypatch):
+    """A kill landing mid-write must never corrupt an existing snapshot.
+
+    The write is staged through a sibling .tmp file, so a failure while the
+    bytes are going out tears only the staging file — the target keeps the
+    previous complete, parseable snapshot. Under a direct open('w') write the
+    target itself would be truncated/torn, so this test pins the staging
+    behavior: it fails if the helper ever writes the target in place again.
+    """
+    import anyio as _anyio
+
+    branch = Branch()
+    await _write_branch_snapshot(branch, tmp_path)
+
+    target = tmp_path / f"{branch.id}.json"
+    v1 = target.read_text()
+    assert json.loads(v1)["id"] == str(branch.id)
+
+    real_open_file = _anyio.open_file
+
+    def torn_open_file(path, mode="r", *args, **kwargs):
+        class _TornCtx:
+            async def __aenter__(self):
+                self._f = await real_open_file(path, mode, *args, **kwargs)
+                await self._f.__aenter__()
+
+                class _TornFile:
+                    def __init__(self, inner):
+                        self._inner = inner
+
+                    async def write(self, data):
+                        await self._inner.write(data[: len(data) // 2])
+                        raise OSError("simulated kill mid-write")
+
+                return _TornFile(self._f)
+
+            async def __aexit__(self, *exc):
+                return await self._f.__aexit__(*exc)
+
+        async def _make():
+            return _TornCtx()
+
+        return _make()
+
+    monkeypatch.setattr(_anyio, "open_file", torn_open_file)
+
+    with pytest.raises(OSError, match="simulated kill mid-write"):
+        await _write_branch_snapshot(branch, tmp_path)
+
+    # The target is byte-identical to the prior complete snapshot — not torn.
+    assert target.read_text() == v1
+    assert json.loads(target.read_text())["id"] == str(branch.id)
+
+
+async def test_write_branch_snapshot_failed_replace_keeps_prior_snapshot(tmp_path, monkeypatch):
+    """If the final rename fails, the target must be untouched — pinning that
+    the helper publishes via os.replace rather than writing the target
+    directly (a direct write would have already clobbered it by this point,
+    and os.replace would never be reached at all).
+    """
+    import os as _os
+
+    branch = Branch()
+    await _write_branch_snapshot(branch, tmp_path)
+    target = tmp_path / f"{branch.id}.json"
+    v1 = target.read_text()
+
+    def failing_replace(src, dst):
+        raise OSError("simulated kill before publish")
+
+    monkeypatch.setattr(_os, "replace", failing_replace)
+
+    with pytest.raises(OSError, match="simulated kill before publish"):
+        await _write_branch_snapshot(branch, tmp_path)
+
+    assert target.read_text() == v1
 
 
 # ---------------------------------------------------------------------------
