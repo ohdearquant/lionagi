@@ -384,7 +384,7 @@ reentrancy, async scheduling, and snapshot guarantees.
 
 | # | Delta | Size | Issue |
 |---|---|---|---|
-| 1 | Fix Pile UUID-string reference normalization in `to_list_type`; acceptance requires valid UUID strings to work as one-item references on the paths that fail today — `__getitem__`, `__setitem__`, `exclude`, and `order=` at construction — with regression coverage (`get` and `pop` already route through `validate_order` and work). | S | (filled at issue-open time) |
+| 1 | Fix Pile UUID-string reference normalization in `to_list_type`; acceptance requires valid UUID strings to work as one-item references on the paths that fail today — `__getitem__`, `__setitem__`, `exclude`, and `order=` at construction — with regression coverage (`get` and `pop` already route through `validate_order` and work). | S | #2012 |
 | 2 | Define one public Pile-item contract and align the exported Observable protocol with it; acceptance requires structural or nominal admission to be stated once and enforced by item-type validation and extension tests. | M | (filled at issue-open time) |
 | 3 | Decide and enforce Progression multiplicity semantics for standalone Progressions, Pile default order, and Flow named views; acceptance requires append, extend, insert, serialization, and membership behavior to match the documented rule. | M | (filled at issue-open time) |
 | 4 | Publish and enforce Pile synchronization and snapshot semantics; acceptance requires every public mutator and read API to be audited against a stated sync, async, and mixed-context contract, with stable snapshot APIs where live traversal is unsafe. | M | (filled at issue-open time) |

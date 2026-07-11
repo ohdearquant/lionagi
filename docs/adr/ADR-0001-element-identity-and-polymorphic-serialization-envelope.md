@@ -313,7 +313,7 @@ outside the inheritance tree.
 |---|---|---|---|
 | 1 | Add an explicit polymorphic-model registration and trusted-deserialization policy; acceptance requires qualified third-party model names to round-trip without `Node` inheritance, built-in short names to remain readable, and dotted-path imports to follow the documented trust policy. | M | (filled at issue-open time) |
 | 2 | Separate `Node`'s stable content contract from optional vector capability; acceptance requires an inventory and migration plan for persisted embeddings before any base-field deprecation, plus an opt-in capability for new vector operations. | M | (filled at issue-open time) |
-| 3 | Make `Edge` reconstruction preserve the inherited Element envelope; acceptance requires `Edge.from_dict(edge.to_dict())` to retain its UUID, creation timestamp, metadata values, and properties without nesting inherited fields under `properties`, with regression coverage for direct and polymorphic reconstruction. | S | (filled at issue-open time) |
+| 3 | Make `Edge` reconstruction preserve the inherited Element envelope; acceptance requires `Edge.from_dict(edge.to_dict())` to retain its UUID, creation timestamp, metadata values, and properties without nesting inherited fields under `properties`, with regression coverage for direct and polymorphic reconstruction. | S | #1920 |
 
 ## Alternatives considered
 

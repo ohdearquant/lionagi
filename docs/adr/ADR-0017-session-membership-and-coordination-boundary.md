@@ -567,7 +567,7 @@ the pump are not serialized, recovered, or acknowledged durably.
 | 1 | Extract StateDB signal persistence from `SessionObserver` into a persistence-owned subscription adapter; acceptance requires the observer module to contain no StateDB construction or payload-size policy while CLI and Studio retain best-effort writes, payload bounds, and unbind behavior. | S | (filled at issue-open time) |
 | 2 | Move versioned signal and loop-control vocabulary to a neutral low-level module with compatibility re-exports from `lionagi.session`; acceptance requires unchanged schema versions, serialized payloads, `lane_for()` results, dispatch envelopes, and public import behavior throughout the relocation. | M | (filled at issue-open time) |
 | 3 | Choose and implement one Exchange product posture: provision Messenger, collection, durability, and recovery as an end-to-end supported path, or make Exchange opt-in and deprecate the default Session mailbox; acceptance requires documentation and integration tests that demonstrate the selected lifecycle. | M | (filled at issue-open time) |
-| 4 | Define and implement HookBus initialization for existing members; acceptance requires either retroactive attachment to every current branch or an explicit non-attachment contract, plus tests covering branches included both before and after first access to `Session.hooks`. | S | (filled at issue-open time) |
+| 4 | Define and implement HookBus initialization for existing members; acceptance requires either retroactive attachment to every current branch or an explicit non-attachment contract, plus tests covering branches included both before and after first access to `Session.hooks`. | S | #1964 |
 
 ## Alternatives considered
 
