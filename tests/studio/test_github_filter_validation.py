@@ -81,6 +81,21 @@ def test_validate_github_filter_rejects_non_dict():
         _svc_validate_github_filter("pr_merged")
 
 
+def test_validate_github_filter_same_repo_only_true_ok():
+    _svc_validate_github_filter({"same_repo_only": True})
+
+
+def test_validate_github_filter_same_repo_only_false_ok():
+    _svc_validate_github_filter({"same_repo_only": False})
+
+
+def test_validate_github_filter_rejects_non_bool_same_repo_only():
+    with pytest.raises(ValueError, match="same_repo_only"):
+        _svc_validate_github_filter({"same_repo_only": "true"})
+    with pytest.raises(ValueError, match="same_repo_only"):
+        _svc_validate_github_filter({"same_repo_only": 1})
+
+
 # ---------------------------------------------------------------------------
 # create_schedule / update_schedule — validation fires before any DB write
 # ---------------------------------------------------------------------------
@@ -120,6 +135,46 @@ def test_create_schedule_accepts_pr_merged_filter():
             mock_db.create_schedule.assert_awaited_once()
 
     asyncio.run(_run())
+
+
+def test_create_schedule_accepts_same_repo_only_true():
+    data = _create_data(github_filter={"same_repo_only": True})
+
+    async def _run():
+        with patch("lionagi.studio.services.schedules.StateDB") as MockDB:
+            mock_db = AsyncMock()
+            mock_db.create_schedule = AsyncMock()
+            MockDB.return_value.__aenter__ = AsyncMock(return_value=mock_db)
+            MockDB.return_value.__aexit__ = AsyncMock(return_value=False)
+            await create_schedule(data)
+            mock_db.create_schedule.assert_awaited_once()
+
+    asyncio.run(_run())
+
+
+def test_create_schedule_accepts_same_repo_only_false():
+    data = _create_data(github_filter={"same_repo_only": False})
+
+    async def _run():
+        with patch("lionagi.studio.services.schedules.StateDB") as MockDB:
+            mock_db = AsyncMock()
+            mock_db.create_schedule = AsyncMock()
+            MockDB.return_value.__aenter__ = AsyncMock(return_value=mock_db)
+            MockDB.return_value.__aexit__ = AsyncMock(return_value=False)
+            await create_schedule(data)
+            mock_db.create_schedule.assert_awaited_once()
+
+    asyncio.run(_run())
+
+
+def test_create_schedule_rejects_non_bool_same_repo_only():
+    data = _create_data(github_filter={"same_repo_only": "true"})
+
+    async def _run():
+        await create_schedule(data)
+
+    with pytest.raises(ValueError, match="same_repo_only"):
+        asyncio.run(_run())
 
 
 def test_update_schedule_rejects_unknown_github_filter_key():
@@ -166,5 +221,77 @@ def test_update_schedule_accepts_pr_merged_filter():
             result = await update_schedule("sid-gh-2", {"github_filter": {"event": "pr_merged"}})
             assert result is True
             mock_db.update_schedule.assert_awaited_once()
+
+    asyncio.run(_run())
+
+
+def test_update_schedule_accepts_same_repo_only_true():
+    existing = {
+        "id": "sid-gh-3",
+        "name": "gh-filter-patch-same-repo-true",
+        "trigger_type": "github_poll",
+        "github_repo": "owner/name",
+        "action_kind": "agent",
+    }
+
+    async def _run():
+        with patch("lionagi.studio.services.schedules.StateDB") as MockDB:
+            mock_db = AsyncMock()
+            mock_db.get_schedule = AsyncMock(return_value=existing)
+            mock_db.update_schedule = AsyncMock()
+            MockDB.return_value.__aenter__ = AsyncMock(return_value=mock_db)
+            MockDB.return_value.__aexit__ = AsyncMock(return_value=False)
+
+            result = await update_schedule("sid-gh-3", {"github_filter": {"same_repo_only": True}})
+            assert result is True
+            mock_db.update_schedule.assert_awaited_once()
+
+    asyncio.run(_run())
+
+
+def test_update_schedule_accepts_same_repo_only_false():
+    existing = {
+        "id": "sid-gh-4",
+        "name": "gh-filter-patch-same-repo-false",
+        "trigger_type": "github_poll",
+        "github_repo": "owner/name",
+        "action_kind": "agent",
+    }
+
+    async def _run():
+        with patch("lionagi.studio.services.schedules.StateDB") as MockDB:
+            mock_db = AsyncMock()
+            mock_db.get_schedule = AsyncMock(return_value=existing)
+            mock_db.update_schedule = AsyncMock()
+            MockDB.return_value.__aenter__ = AsyncMock(return_value=mock_db)
+            MockDB.return_value.__aexit__ = AsyncMock(return_value=False)
+
+            result = await update_schedule("sid-gh-4", {"github_filter": {"same_repo_only": False}})
+            assert result is True
+            mock_db.update_schedule.assert_awaited_once()
+
+    asyncio.run(_run())
+
+
+def test_update_schedule_rejects_non_bool_same_repo_only():
+    existing = {
+        "id": "sid-gh-5",
+        "name": "gh-filter-patch-same-repo-bad",
+        "trigger_type": "github_poll",
+        "github_repo": "owner/name",
+        "action_kind": "agent",
+    }
+
+    async def _run():
+        with patch("lionagi.studio.services.schedules.StateDB") as MockDB:
+            mock_db = AsyncMock()
+            mock_db.get_schedule = AsyncMock(return_value=existing)
+            mock_db.update_schedule = AsyncMock()
+            MockDB.return_value.__aenter__ = AsyncMock(return_value=mock_db)
+            MockDB.return_value.__aexit__ = AsyncMock(return_value=False)
+
+            with pytest.raises(ValueError, match="same_repo_only"):
+                await update_schedule("sid-gh-5", {"github_filter": {"same_repo_only": 1}})
+            mock_db.update_schedule.assert_not_called()
 
     asyncio.run(_run())

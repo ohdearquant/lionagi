@@ -256,16 +256,20 @@ def _svc_validate_github_repo(repo: str | None) -> None:
 
 
 # github_filter's known keys. "event" narrows *which* PR lifecycle moment
-# fires the trigger; the other three narrow *which PRs* are considered at
-# all. Only "pr_merged" has real dispatch semantics in github_poll() today
-# (state=closed poll, fires on newly-merged PRs only) -- "pr_opened",
-# "pr_updated", and "pr_closed" are accepted because the Studio frontend's
-# create-schedule form already ships all four as event choices (and defaults
-# new schedules to "pr_updated"; see apps/studio/frontend/src/components/
-# schedules/CreateScheduleModal.tsx), but are currently inert server-side:
-# github_poll() only branches on "pr_merged" and otherwise polls open PRs
-# unfiltered by event, the same as omitting the key entirely.
-_GITHUB_FILTER_ALLOWED_KEYS: frozenset[str] = frozenset({"state", "base", "draft", "event"})
+# fires the trigger; the rest narrow *which PRs* are considered at all. Only
+# "pr_merged" has real dispatch semantics in github_poll() today (state=closed
+# poll, fires on newly-merged PRs only) -- "pr_opened", "pr_updated", and
+# "pr_closed" are accepted because the Studio frontend's create-schedule form
+# already ships all four as event choices (and defaults new schedules to
+# "pr_updated"; see apps/studio/frontend/src/components/schedules/
+# CreateScheduleModal.tsx), but are currently inert server-side: github_poll()
+# only branches on "pr_merged" and otherwise polls open PRs unfiltered by
+# event, the same as omitting the key entirely. "same_repo_only" restricts
+# dispatch to PRs whose head repository matches the polled repository --
+# excluding fork PRs, whose diffs are attacker-controlled input.
+_GITHUB_FILTER_ALLOWED_KEYS: frozenset[str] = frozenset(
+    {"state", "base", "draft", "event", "same_repo_only"}
+)
 _GITHUB_FILTER_ALLOWED_EVENTS: frozenset[str] = frozenset(
     {"pr_merged", "pr_opened", "pr_updated", "pr_closed"}
 )
@@ -296,6 +300,13 @@ def _svc_validate_github_filter(github_filter: Any) -> None:
             f"github_filter.event {event!r} is not a supported value; allowed values "
             f"are {sorted(_GITHUB_FILTER_ALLOWED_EVENTS)} (or omit the key)"
         )
+    if "same_repo_only" in github_filter:
+        same_repo_only = github_filter["same_repo_only"]
+        if not isinstance(same_repo_only, bool):
+            raise ValueError(
+                "github_filter.same_repo_only must be a boolean, got "
+                f"{type(same_repo_only).__name__!r}"
+            )
 
 
 def _svc_validate_prompt(prompt: str | None) -> None:

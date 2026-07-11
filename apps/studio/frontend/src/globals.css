@@ -68,6 +68,10 @@
     --dag-failed-border: #e5604c;
     --dag-failed-label: #fca5a5;
     --dag-failed-dot: #e5604c;
+    --dag-warn-bg: #2b1d05;
+    --dag-warn-border: #e8a33d;
+    --dag-warn-label: #fbbf24;
+    --dag-warn-dot: #e8a33d;
     --dag-edge-pending: var(--edge-hairline);
     --dag-edge-done: #4fb477;
     --dag-hover-border: #62626e;
@@ -113,6 +117,10 @@
     --dag-failed-border: #dc2626;
     --dag-failed-label: #b91c1c;
     --dag-failed-dot: #dc2626;
+    --dag-warn-bg: #fffbeb;
+    --dag-warn-border: #b45309;
+    --dag-warn-label: #92400e;
+    --dag-warn-dot: #d97706;
     --dag-edge-pending: #d4d4d4;
     --dag-edge-done: #16a34a;
     --dag-hover-border: #737373;

@@ -12,6 +12,21 @@ DENIED_NAMES: frozenset[str] = frozenset(
     {".env", ".netrc", "id_rsa", "id_ed25519", "id_ecdsa", ".htpasswd"}
 )
 
+_DENIED_NAMES_CASEFOLD: frozenset[str] = frozenset(name.casefold() for name in DENIED_NAMES)
+
+
+def is_protected_name(name: str) -> bool:
+    """True if name matches a protected basename, case-insensitively.
+
+    Filesystems (notably default macOS/Windows volumes) are case-insensitive,
+    so a case-sensitive membership test against DENIED_NAMES can be bypassed
+    with a spelling like ".ENV" that still resolves to the same file as
+    ".env". This is the one primitive both resolve_workspace_path and the
+    deny-only hook floor use for the protected-basename check.
+    """
+    return name.casefold() in _DENIED_NAMES_CASEFOLD
+
+
 DANGEROUS_CHARS: frozenset[str] = frozenset("/\\\x00")
 
 GLOB_CHARS: frozenset[str] = frozenset("*?[]{}~")
@@ -28,7 +43,11 @@ def resolve_workspace_path(path: str | Path, workspace_root: Path) -> Path:
     """Resolve a tool-supplied path against workspace root with full safety checks.
 
     Checks: expanduser, symlink detection pre-resolve, containment, denied names.
-    Raises PermissionError on any violation.
+    Raises PermissionError on any violation. Validation happens at check time only:
+    a concurrent filesystem mutation between this check and a later I/O call on the
+    same path (e.g. swapping a regular file for a symlink) is out of scope — callers
+    that need a stronger guarantee against a racing filesystem must perform the
+    final I/O through a root-anchored, no-follow file descriptor instead.
     """
     raw = Path(path).expanduser()
     candidate = raw if raw.is_absolute() else workspace_root / raw
@@ -39,7 +58,7 @@ def resolve_workspace_path(path: str | Path, workspace_root: Path) -> Path:
         resolved.relative_to(workspace_root)
     except ValueError as e:
         raise PermissionError(f"Path escapes workspace root: {path!r}") from e
-    if resolved.name in DENIED_NAMES:
+    if is_protected_name(resolved.name):
         raise PermissionError(f"Refusing to access protected path: {resolved.name!r}")
     return resolved
 
