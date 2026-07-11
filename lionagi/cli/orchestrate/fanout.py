@@ -17,6 +17,7 @@ from .._logging import log_error, progress
 from .._providers import parse_model_spec
 from .._util import classify_exception
 from ._common import (
+    _build_worker_operate_node,
     _create_fanout_team,
     _format_result_json,
     _format_result_text,
@@ -208,12 +209,12 @@ async def _run_fanout_inner(
             explicit_name=wname,
             modes=ta.modes or None,
         )
-        node = env.builder.add_operation(
-            "operate",
+        node = _build_worker_operate_node(
+            env.builder,
             branch=w_branch,
             instruction=ta.task,
             context=[{"overall_task": prompt}],
-            **({"actions": True} if messenger_bound else {}),
+            messenger_bound=messenger_bound,
         )
         fanned_nodes.append(node)
         fanned_labels.append(w_model)

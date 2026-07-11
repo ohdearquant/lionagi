@@ -11,6 +11,7 @@ from uuid import uuid4
 import pytest
 
 from lionagi import iModel
+from lionagi.cli.orchestrate._common import _build_worker_operate_node
 from lionagi.cli.orchestrate._orchestration import OrchestrationEnv, build_worker_branch
 from lionagi.operations.builder import OperationGraphBuilder
 from lionagi.session.exchange import Exchange
@@ -164,24 +165,11 @@ async def test_send_collect_receive_roundtrip_renders_sender_name(tmp_path):
     assert roster == {"alice": branch_a.id, "bob": branch_b.id}
 
 
-def _add_worker_operate_node(
-    builder: OperationGraphBuilder, *, branch, instruction, messenger_bound
-):
-    """Mirrors the exact node-creation conditional used by fanout.py/flow.py:
-    pass `actions=True` only when this worker actually got the messenger tool."""
-    return builder.add_operation(
-        "operate",
-        branch=branch,
-        instruction=instruction,
-        context=[{"overall_task": "t"}],
-        **({"actions": True} if messenger_bound else {}),
-    )
-
-
 @pytest.mark.asyncio
 async def test_operate_node_carries_actions_kwarg_when_team_messaging_active(tmp_path):
-    """API worker + active team messaging: the static operate node's request
-    includes actions=True, so Branch.operate() serializes branch.acts."""
+    """API worker + active team messaging: the REAL static-node builder shared
+    by fanout.py and flow.py (`_build_worker_operate_node`) produces a request
+    with actions=True, so Branch.operate() serializes branch.acts."""
     exchange = Exchange()
     messenger = LionMessenger(exchange)
     roster: dict = {}
@@ -196,8 +184,12 @@ async def test_operate_node_carries_actions_kwarg_when_team_messaging_active(tmp
             env, agent_id="alice", role="researcher", explicit_name="alice"
         )
 
-    node_id = _add_worker_operate_node(
-        builder, branch=wb, instruction="do the task", messenger_bound=messenger_bound
+    node_id = _build_worker_operate_node(
+        builder,
+        branch=wb,
+        instruction="do the task",
+        context=[{"overall_task": "t"}],
+        messenger_bound=messenger_bound,
     )
     node = builder._operations[node_id]
 
@@ -207,8 +199,8 @@ async def test_operate_node_carries_actions_kwarg_when_team_messaging_active(tmp
 
 @pytest.mark.asyncio
 async def test_operate_node_omits_actions_kwarg_when_team_mode_off(tmp_path):
-    """No exchange/messenger configured (team mode off): the operate node's
-    request has no actions kwarg — unchanged default (actions=False) behavior."""
+    """No exchange/messenger configured (team mode off): the REAL static-node
+    builder's request has no actions kwarg — unchanged default behavior."""
     env = _make_env(tmp_path)  # exchange/messenger/roster default None
     builder = OperationGraphBuilder()
 
@@ -220,8 +212,12 @@ async def test_operate_node_omits_actions_kwarg_when_team_mode_off(tmp_path):
             env, agent_id="solo", role="researcher", explicit_name="solo"
         )
 
-    node_id = _add_worker_operate_node(
-        builder, branch=wb, instruction="do the task", messenger_bound=messenger_bound
+    node_id = _build_worker_operate_node(
+        builder,
+        branch=wb,
+        instruction="do the task",
+        context=[{"overall_task": "t"}],
+        messenger_bound=messenger_bound,
     )
     node = builder._operations[node_id]
 
@@ -232,7 +228,8 @@ async def test_operate_node_omits_actions_kwarg_when_team_mode_off(tmp_path):
 @pytest.mark.asyncio
 async def test_operate_node_omits_actions_kwarg_for_cli_worker(tmp_path):
     """Team messaging active but this worker is a CLI provider: no messenger
-    binding, so the operate node's request must not carry actions=True either."""
+    binding, so the REAL static-node builder's request must not carry
+    actions=True either."""
     exchange = Exchange()
     messenger = LionMessenger(exchange)
     roster: dict = {}
@@ -247,10 +244,111 @@ async def test_operate_node_omits_actions_kwarg_for_cli_worker(tmp_path):
             env, agent_id="cli-worker", role="researcher", explicit_name="cli-worker"
         )
 
-    node_id = _add_worker_operate_node(
-        builder, branch=wb, instruction="do the task", messenger_bound=messenger_bound
+    node_id = _build_worker_operate_node(
+        builder,
+        branch=wb,
+        instruction="do the task",
+        context=[{"overall_task": "t"}],
+        messenger_bound=messenger_bound,
     )
     node = builder._operations[node_id]
 
     assert messenger_bound is False
     assert "actions" not in node.request
+
+
+@pytest.mark.asyncio
+async def test_fanout_and_flow_call_sites_use_the_same_shared_node_builder():
+    """Regression guard for the exact bug class this module protects against:
+    if either fanout.py or flow.py stopped routing its static operate-node
+    construction through the shared `_build_worker_operate_node` helper (e.g.
+    reverting to an inline, independently-editable conditional), this fails."""
+    import lionagi.cli.orchestrate.fanout as fanout_mod
+    import lionagi.cli.orchestrate.flow as flow_mod
+    from lionagi.cli.orchestrate._common import _build_worker_operate_node
+
+    assert fanout_mod._build_worker_operate_node is _build_worker_operate_node
+    assert flow_mod._build_worker_operate_node is _build_worker_operate_node
+
+
+@pytest.mark.asyncio
+async def test_bound_worker_operate_serializes_messenger_tool_schema(tmp_path):
+    """End-to-end: build a real bound worker branch, construct its operate
+    node through the real shared builder, then drive the EXACT request dict
+    produced by production through Branch.operate() with a capturing middle.
+    Confirms actions=True flows through Operation._invoke() -> operate() ->
+    action_param construction -> get_tool_schema(), and that the messenger
+    tool's schema is what gets serialized to the model."""
+    exchange = Exchange()
+    messenger = LionMessenger(exchange)
+    roster: dict = {}
+    env = _make_env(tmp_path, exchange=exchange, messenger=messenger, roster=roster)
+    builder = OperationGraphBuilder()
+
+    with patch(
+        "lionagi.cli.orchestrate._orchestration.build_imodel_from_spec",
+        side_effect=_api_imodel,
+    ):
+        wb, _model, _profile, messenger_bound = await build_worker_branch(
+            env, agent_id="alice", role="researcher", explicit_name="alice"
+        )
+    assert messenger_bound is True
+
+    node_id = _build_worker_operate_node(
+        builder,
+        branch=wb,
+        instruction="do the task",
+        context=[{"overall_task": "t"}],
+        messenger_bound=messenger_bound,
+    )
+    node = builder._operations[node_id]
+    node._branch = wb
+
+    captured: dict = {}
+
+    async def capturing_middle(b, ins, cctx, pctx, clear, **kw):
+        captured["tool_schemas"] = cctx.tool_schemas
+        return "ok"
+
+    await wb.operate(**node.request, middle=capturing_middle, skip_validation=True)
+
+    schemas = captured.get("tool_schemas") or []
+    assert any(s.get("function", {}).get("name") == "messenger" for s in schemas)
+
+
+@pytest.mark.asyncio
+async def test_unbound_worker_operate_does_not_serialize_any_tool_schema(tmp_path):
+    """Team mode off: the real shared builder's request carries no actions
+    kwarg, so Branch.operate() never touches branch.acts at all — no tool
+    schemas get serialized regardless of what is registered on the branch."""
+    env = _make_env(tmp_path)  # exchange/messenger/roster default None
+    builder = OperationGraphBuilder()
+
+    with patch(
+        "lionagi.cli.orchestrate._orchestration.build_imodel_from_spec",
+        side_effect=_api_imodel,
+    ):
+        wb, _model, _profile, messenger_bound = await build_worker_branch(
+            env, agent_id="solo", role="researcher", explicit_name="solo"
+        )
+    assert messenger_bound is False
+
+    node_id = _build_worker_operate_node(
+        builder,
+        branch=wb,
+        instruction="do the task",
+        context=[{"overall_task": "t"}],
+        messenger_bound=messenger_bound,
+    )
+    node = builder._operations[node_id]
+    node._branch = wb
+
+    captured: dict = {}
+
+    async def capturing_middle(b, ins, cctx, pctx, clear, **kw):
+        captured["tool_schemas"] = cctx.tool_schemas
+        return "ok"
+
+    await wb.operate(**node.request, middle=capturing_middle, skip_validation=True)
+
+    assert not captured.get("tool_schemas")

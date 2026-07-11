@@ -28,6 +28,7 @@ from .._providers import parse_model_spec
 from .._util import classify_exception
 from ._checkpoint import CheckpointWriter, FlowResumeError, resolve_checkpoint_target
 from ._common import (
+    _build_worker_operate_node,
     _create_fanout_team,
     _format_result_json,
     _format_result_text,
@@ -503,13 +504,13 @@ async def _build_dag(
 
         instruction = budget_preambles.get(i, "") + ta.task
         dep_nodes = [node_ids[j] for j in dep_indices[i]]
-        node = env.builder.add_operation(
-            "operate",
+        node = _build_worker_operate_node(
+            env.builder,
             branch=w_branch,
             depends_on=dep_nodes or None,
             instruction=instruction,
             context=ctx,
-            **({"actions": True} if messenger_bound else {}),
+            messenger_bound=messenger_bound,
         )
         node_ids.append(node)
 
