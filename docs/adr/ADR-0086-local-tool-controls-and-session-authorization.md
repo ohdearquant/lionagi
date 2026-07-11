@@ -1,6 +1,6 @@
 # ADR-0086: Local tool controls and session authorization observation
 
-- **Status**: Proposed
+- **Status**: Accepted
 - **Kind**: Retrospective
 - **Area**: governance
 - **Date**: 2026-07-09
@@ -265,22 +265,23 @@ Exact semantics:
   `security_pre:*`; unsupported runtime values in the field are ignored by `_apply_permissions`.
 - `AgentSpec.coding(secure=True)` registers `guard_destructive` for bash and one `guard_paths`
   instance for reader and editor (`_wire_secure_guards` in `lionagi/agent/spec.py`; the guards
-  are defined in `lionagi/agent/hooks.py`). These register through `.pre()` into the ordinary
-  `pre:<tool>` bucket — the user-hook position — not into `security_pre:<tool>`. The path
+  are defined in `lionagi/agent/hooks.py`). These register through `.security_pre()` into the
+  `security_pre:<tool>` bucket, so the built-in guards participate in the security → user →
+  security composition the same way an explicit `PermissionPolicy` does. The path
   guard's only allowed root is `cwd`, or `Path.cwd()` when `cwd` is absent. `secure=False`
   skips these three registrations.
 - Only hooks in the `security_pre:<tool>`/`security_pre:*` bucket participate in the
-  security → user → security composition, and the only factory writer of that bucket is
-  `_apply_permissions` installing an explicit `PermissionPolicy`. Those security hooks run
+  security → user → security composition; the factory writers of that bucket are
+  `_apply_permissions` (an explicit `PermissionPolicy`) and `_wire_secure_guards` (the
+  built-in coding guards). Those security hooks run
   before user pre-hooks, and when at least one user pre-hook exists the same security chain
   runs again against the final transformed argument mapping; with no user pre-hook it runs
   once.
-- Consequently, under the default `coding()` path (no `PermissionPolicy` configured), the
-  built-in guards run exactly once in the pre chain and are NOT re-run after a later mutating
-  user hook — a user hook that rewrites `command` or a path argument after the guard has
-  passed is not rechecked. The mutation-gap recheck exists only for an explicitly configured
-  `PermissionPolicy` (`tests/agent/test_coding_preset_guard.py` pins `guard_destructive` to
-  the `pre:bash` bucket).
+- Consequently, a user hook that rewrites `command` or a path argument after a security hook
+  has passed is rechecked against the final transformed mapping — for the built-in coding
+  guards as well as an explicitly configured `PermissionPolicy`
+  (`tests/agent/test_coding_preset_guard.py` pins `guard_destructive` to the
+  `security_pre:bash` bucket and asserts the post-mutation recheck).
 - A hook return that is a `dict` replaces the argument mapping for later hooks and the callable.
   Any other non-exception result leaves the current mapping unchanged.
 - `guard_destructive(tool_name, action, args)` inspects only `args["command"]` when present. It
@@ -758,8 +759,8 @@ Positive consequences:
 
 - D1 gives library callers allow-all, deny-all, rules, safe, and read-only choices without a
   policy service.
-- D2 protects factory-wired coding tools before invocation; a configured `PermissionPolicy`
-  is additionally rechecked after user transforms, while the built-in guards are not.
+- D2 protects factory-wired coding tools before invocation; both a configured
+  `PermissionPolicy` and the built-in guards are rechecked after user transforms.
 - D3 preserves one processor mechanism for both synchronous and asynchronous callables.
 - D4 lets an attached session deny a proposed action before `ActionManager` and returns a form
   iterative operations can observe.

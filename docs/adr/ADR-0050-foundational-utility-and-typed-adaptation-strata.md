@@ -1,6 +1,6 @@
 # ADR-0050: Foundational utility and typed adaptation strata
 
-- **Status**: Proposed
+- **Status**: Accepted
 - **Kind**: Retrospective
 - **Area**: utilities
 - **Date**: 2026-07-09
