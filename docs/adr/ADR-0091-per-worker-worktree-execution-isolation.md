@@ -1,10 +1,10 @@
 # ADR-0091: Per-worker worktree execution isolation
 
-- **Status**: Proposed
+- **Status**: Accepted (2026-07-11, with Amendment 1)
 - **Kind**: Aspirational
 - **Area**: substrates
 - **Date**: 2026-07-09
-- **Relations**: extends ADR-0090; supersedes v0-0080 (in part)
+- **Relations**: extends ADR-0090; supersedes v0-0080 (in part); amended at acceptance by Amendment 1 (below)
 
 ## Context
 
@@ -542,6 +542,45 @@ explicit.
 This maximizes debugging evidence. It lost because disk consumption grows with failures and stale
 worktrees block deterministic identifiers. Artifacts are the durable default; live worktree
 retention is explicit and must expire.
+
+## Amendment 1 — binding conditions attached at acceptance (2026-07-11)
+
+The following three hardenings are part of the accepted contract, not optional
+guidance. An implementation slice that omits them does not conform to this ADR.
+
+### A1.1 Cross-run promotion lock
+
+Promotion into a target branch acquires a repo-scoped advisory file lock
+(`flock`) for the duration of the promotion critical section only — freeze,
+target-head verification, merge, record — with a bounded wait that fails loud
+on timeout rather than hanging. The per-run coordinator already serializes
+promotions within one run; the lock closes the cross-run race between two
+concurrent runs promoting into the same repository.
+
+### A1.2 Lease read-model with write/delete symmetry
+
+The filesystem lease record under `<run.state_root>/workspaces/` remains
+authoritative. A derived StateDB row per lease exists solely as a read-model
+for reaper and observability consumers, and follows write/delete symmetry:
+created when the lease record is written, removed (or terminally marked) in
+the same operation that retires the record, so the read-model can never
+assert a lease the filesystem does not hold.
+
+### A1.3 Protected-branch promotion fence
+
+`merge_validated` promotion may target only the run's own working branch. The
+default branch (`main`) and any release branch are never valid values for the
+promotion target, regardless of configuration; the promoter refuses them
+fail-closed. Promotion of a run branch into a protected branch is a separate,
+directed act outside this ADR's mechanism, performed and gated by an operator.
+
+Amendment 1 originates from the companion decision note accepted the same day
+(sandbox-into-orchestration, W2), whose additional decisions — in-band subagent
+isolation as parent-owned opt-in, and deferral of a standalone sandbox CLI —
+bind alongside this amendment. That note also fixes the implementation order:
+the sandbox primitive is made target-safe (base-SHA record at create,
+non-staging diff, verified-target merge, truthful cleanup status) as a blocking
+prerequisite slice before any lease mechanism builds on it.
 
 ## Notes
 
