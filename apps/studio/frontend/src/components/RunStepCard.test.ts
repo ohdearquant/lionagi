@@ -4,6 +4,7 @@ import {
   runMessagesEqualForMemo,
   stepPropsEqual,
   collapsedTextFor,
+  extractFilePaths,
 } from "./RunStepCard";
 import type { RunMessage, RunStep } from "@/lib/types";
 
@@ -159,5 +160,41 @@ describe("stepPropsEqual", () => {
     const prev = props(step({}, [toolMessage({ sender: "agent-a" })]));
     const next = props(step({}, [toolMessage({ sender: "agent-b" })]));
     expect(stepPropsEqual(prev, next)).toBe(true);
+  });
+});
+
+describe("extractFilePaths — the known file surface behind file links", () => {
+  it("collects file_path/path args from tool_call and action messages", () => {
+    const messages: RunMessage[] = [
+      toolMessage({ function: "Write", arguments: { file_path: "/runs/r1/a/notes.md" } }),
+      toolMessage({
+        role: "action",
+        function: "Edit",
+        arguments: { path: "/runs/r1/a/review.md" },
+      }),
+    ];
+    expect(extractFilePaths(messages).sort()).toEqual(
+      ["/runs/r1/a/notes.md", "/runs/r1/a/review.md"].sort(),
+    );
+  });
+
+  it("dedupes repeated paths across multiple tool calls", () => {
+    const messages: RunMessage[] = [
+      toolMessage({ function: "Read", arguments: { file_path: "/runs/r1/a/notes.md" } }),
+      toolMessage({ function: "Edit", arguments: { file_path: "/runs/r1/a/notes.md" } }),
+    ];
+    expect(extractFilePaths(messages)).toEqual(["/runs/r1/a/notes.md"]);
+  });
+
+  it("ignores non-tool messages (assistant/user/system)", () => {
+    const messages: RunMessage[] = [
+      { role: "assistant", content: "Wrote notes.md" },
+      { role: "user", content: "please write notes.md" },
+    ];
+    expect(extractFilePaths(messages)).toEqual([]);
+  });
+
+  it("returns an empty list when there is no file activity", () => {
+    expect(extractFilePaths([])).toEqual([]);
   });
 });

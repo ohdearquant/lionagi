@@ -7,9 +7,15 @@ from typing import Any
 
 from fastapi import HTTPException, Query
 
+from lionagi.libs.path_safety import resolve_workspace_path
+
 from ..registry import studio_route
 from . import sessions as _sessions_svc
 from ._path_safety import public_path
+
+# Read-only file viewer cap (ADR file-links feature): large artifacts are
+# truncated rather than rejected outright, so a giant log still previews.
+_MAX_FILE_READ_BYTES = 2_000_000
 
 _STATUS_ALIASES: dict[str, set[str]] = {
     "done": {"done", "completed", "success", "finished"},
@@ -753,6 +759,53 @@ async def get_run_route(
     if run is None:
         raise HTTPException(status_code=404, detail=f"Run '{run_id}' not found")
     return run
+
+
+async def get_run_file(run_id: str, path: str) -> dict[str, Any]:
+    """Read-only content fetch for a file inside a run's artifact root.
+
+    Backs the message-renderer's clickable file links: a link is only ever
+    rendered when the frontend already believes the path is part of the
+    run's known file surface (message_stats.files / tool-call args), but a
+    file can still vanish between render and click — this always re-validates
+    against the live artifact root rather than trusting the caller.
+    """
+    session = await _sessions_svc.get_session(run_id, message_limit=1)
+    if session is None:
+        raise HTTPException(status_code=404, detail=f"Run '{run_id}' not found")
+    artifacts_path = session.get("artifacts_path")
+    if not artifacts_path:
+        raise HTTPException(status_code=404, detail=f"Run '{run_id}' has no artifact root")
+    artifact_root = Path(artifacts_path)
+    if not artifact_root.exists():
+        raise HTTPException(status_code=404, detail="Run artifact root no longer exists")
+
+    try:
+        resolved = resolve_workspace_path(path, artifact_root.resolve())
+    except PermissionError as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
+
+    if not resolved.exists() or not resolved.is_file():
+        raise HTTPException(status_code=404, detail=f"File '{path}' not found")
+
+    size = resolved.stat().st_size
+    raw = resolved.read_bytes()[:_MAX_FILE_READ_BYTES]
+    try:
+        content = raw.decode("utf-8")
+    except UnicodeDecodeError:
+        raise HTTPException(status_code=415, detail="File is not text/UTF-8") from None
+
+    return {
+        "path": str(resolved),
+        "content": content,
+        "size": size,
+        "truncated": size > _MAX_FILE_READ_BYTES,
+    }
+
+
+@studio_route("/runs/{run_id}/file", method="GET", area="runs", name="get_run_file")
+async def get_run_file_route(run_id: str, path: str = Query(...)) -> dict[str, Any]:
+    return await get_run_file(run_id, path)
 
 
 # ADR-0008: /api/runs/{id}/events SSE (read stream/*.buffer.jsonl, forbidden
