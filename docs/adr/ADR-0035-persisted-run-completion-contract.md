@@ -1,6 +1,6 @@
 # ADR-0035: Persisted run-completion contract
 
-- **Status**: Proposed
+- **Status**: Accepted
 - **Kind**: Retrospective
 - **Area**: orchestration
 - **Date**: 2026-07-09
@@ -99,7 +99,7 @@ SESSION_TERMINAL_STATUSES = frozenset({
 
 INVOCATION_TERMINAL_STATUSES = SESSION_TERMINAL_STATUSES
 SCHEDULE_RUN_TERMINAL_STATUSES = frozenset({
-    "completed", "failed", "skipped", "cancelled"
+    "completed", "failed", "timed_out", "skipped", "cancelled"
 })
 PLAY_TERMINAL_STATUSES = frozenset({
     "merged", "escalated", "gate_failed", "blocked", "aborted_after_finish"
@@ -122,7 +122,7 @@ The wait surface supports four of those kinds:
 | `session` | `completed`, `completed_empty`, `failed`, `timed_out`, `aborted`, `cancelled` | `completed` |
 | `invocation` | same as Session | `completed` |
 | `play` | `merged`, `escalated`, `gate_failed`, `blocked`, `aborted_after_finish` | `merged` |
-| `schedule_run` | `completed`, `failed`, `skipped`, `cancelled` | `completed` |
+| `schedule_run` | `completed`, `failed`, `timed_out`, `skipped`, `cancelled` | `completed` |
 
 **Exact semantics**:
 

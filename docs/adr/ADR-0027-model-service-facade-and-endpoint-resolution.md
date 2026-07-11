@@ -1,6 +1,6 @@
 # ADR-0027: Model-service facade and endpoint resolution
 
-- **Status**: Proposed
+- **Status**: Accepted
 - **Kind**: Retrospective
 - **Area**: service-providers
 - **Date**: 2026-07-09
