@@ -1,6 +1,6 @@
 # ADR-0070: Studio scheduling and dispatch delivery
 
-- **Status**: Proposed
+- **Status**: Accepted
 - **Kind**: Retrospective
 - **Area**: scheduling-control-plane
 - **Date**: 2026-07-09
@@ -157,14 +157,17 @@ CREATE TABLE schedules (
   github_cursor       TEXT,
   poll_interval_sec   INTEGER,
   action_kind         TEXT NOT NULL
-                      CHECK(action_kind IN ('agent', 'flow', 'fanout', 'play', 'flow_yaml')),
+                      CHECK(action_kind IN ('agent', 'flow', 'fanout', 'play', 'flow_yaml', 'command')),
   action_model        TEXT,
   action_prompt       TEXT,
   action_agent        TEXT,
   action_playbook     TEXT,
   action_flow_yaml    TEXT,
   action_project      TEXT,
+  action_cwd          TEXT,
   action_extra_args   JSON DEFAULT '[]',
+  action_command      TEXT,
+  action_command_args JSON DEFAULT '[]',
   on_success          JSON,
   on_fail             JSON,
   last_fired_at       REAL,
@@ -344,7 +347,7 @@ async def spawn_and_wait(
 ) -> tuple[int, str]: ...
 ```
 
-Launcher vocabulary is the schedule table's five kinds plus `engine` for the shared launcher;
+Launcher vocabulary is the schedule table's six kinds plus `engine` for the shared launcher;
 `playbook` maps to `play` only inside `build_argv()`. `build_argv()` validates model/identifier
 tokens, forbids flag-like extra arguments, renders prompt templates, inserts `--` before free-form
 positionals, and uses `create_subprocess_exec` rather than a shell. `flow_yaml` is written to a
@@ -352,9 +355,12 @@ temporary file and removed after execution.
 
 Cwd resolves in order:
 
-1. registered `action_project` path when it exists;
-2. valid `LIONAGI_SCHEDULER_CWD`;
-3. `None`, inheriting daemon cwd with a warning.
+1. persisted `action_cwd` — the schedule's own execution root, snapshotted once at creation
+   time — when it still exists on disk;
+2. registered `action_project` path when it exists;
+3. valid `LIONAGI_SCHEDULER_CWD`;
+4. `None`, inheriting daemon cwd with a deprecation warning (reachable only by pre-migration
+   rows that never had `action_cwd` set).
 
 The `li` executable resolves independently of the eventual child cwd. Failure to resolve an
 absolute executable path is a launch error rather than silently using a cwd-dependent prefix.
@@ -543,7 +549,7 @@ consumer would appear to own work already committed by the producer.
 
 | # | Delta | Size | Issue |
 |---|---|---|---|
-| 1 | Require a stable execution root for every new schedule and migrate existing schedules off inherited daemon cwd; acceptance: schedule behavior is unchanged when Studio starts from a different directory. | S | (filled at issue-open time) |
+| 1 | Require a stable execution root for every new schedule and migrate existing schedules off inherited daemon cwd; acceptance: schedule behavior is unchanged when Studio starts from a different directory. | S | Resolved on main (`lionagi/studio/scheduler/engine.py::_resolve_action_cwd`) |
 | 2 | Align `li schedule create` with the persisted action vocabulary; acceptance: every supported stored action is creatable by its canonical public name or explicitly rejected as internal. | S | (filled at issue-open time) |
 | 3 | Split trigger/admission, subprocess execution, and follow-up policy behind characterization tests; acceptance: each concern can be tested without starting the complete scheduler loop. | M | (filled at issue-open time) |
 | 4 | Route scheduled fires through the queued admission contract in ADR-0072; acceptance: a due trigger writes `queued` and execution starts only after a worker wins a lease. | M | (filled at issue-open time) |

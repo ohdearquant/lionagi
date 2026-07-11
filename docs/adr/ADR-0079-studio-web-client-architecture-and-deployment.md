@@ -1,6 +1,6 @@
 # ADR-0079: Studio web client architecture and deployment
 
-- **Status**: Proposed
+- **Status**: Accepted
 - **Kind**: Retrospective
 - **Area**: studio
 - **Date**: 2026-07-09

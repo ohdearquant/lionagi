@@ -1,6 +1,6 @@
 # ADR-0077: Studio state and filesystem boundary
 
-- **Status**: Proposed
+- **Status**: Accepted
 - **Kind**: Retrospective
 - **Area**: studio
 - **Date**: 2026-07-09
