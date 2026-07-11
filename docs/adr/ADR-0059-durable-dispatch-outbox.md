@@ -421,7 +421,7 @@ Code anchors: `lionagi/dispatch/outbox.py`; `lionagi/state/transitions.py`.
 - The dispatch adapter enforces the registered closed edge graph
   (`lionagi/state/lifecycle/policy.py:360-399`): `acked` is reachable only from `pending` and
   `delivering`, `dead_letter` and `expired` re-enter `pending` only through an operator-gated
-  edge, and terminal statuses have no outgoing edges. An ack attempt against any other current
+  edge, and `delivered`/`acked` have no outgoing edges. An ack attempt against any other current
   status raises before the CAS runs.
 - Tokens are stored in clear text in the state database and shown by the full-row inspection path.
   This ADR treats them as capability values for local operational use, not as hashed credentials.
