@@ -1,6 +1,6 @@
 # ADR-0092: Minimal Branch and session memory store
 
-- **Status**: Proposed
+- **Status**: Accepted
 - **Kind**: Retrospective
 - **Area**: substrates
 - **Date**: 2026-07-09

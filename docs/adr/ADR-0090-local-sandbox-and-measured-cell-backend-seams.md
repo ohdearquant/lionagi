@@ -1,6 +1,6 @@
 # ADR-0090: Local sandbox and measured-cell backend seams
 
-- **Status**: Proposed
+- **Status**: Accepted
 - **Kind**: Retrospective
 - **Area**: substrates
 - **Date**: 2026-07-09

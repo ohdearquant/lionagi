@@ -1,6 +1,6 @@
 # ADR-0051: LNDL language and operations boundary
 
-- **Status**: Proposed
+- **Status**: Accepted
 - **Kind**: Retrospective
 - **Area**: utilities
 - **Date**: 2026-07-09

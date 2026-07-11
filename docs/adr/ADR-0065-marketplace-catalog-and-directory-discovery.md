@@ -1,6 +1,6 @@
 # ADR-0065: Marketplace catalog and directory discovery
 
-- **Status**: Proposed
+- **Status**: Accepted
 - **Kind**: Retrospective
 - **Area**: cli-surface
 - **Date**: 2026-07-09

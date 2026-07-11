@@ -1,6 +1,6 @@
 # ADR-0076: Studio daemon route registry and local control plane
 
-- **Status**: Proposed
+- **Status**: Accepted
 - **Kind**: Retrospective
 - **Area**: studio
 - **Date**: 2026-07-09
