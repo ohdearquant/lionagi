@@ -1,22 +1,20 @@
 # Copyright (c) 2023-2026, HaiyangLi <quantocean.li at gmail dot com>
 # SPDX-License-Identifier: Apache-2.0
-"""SQLAlchemy transaction implementation of the D4 guarded transition algorithm.
+"""SQLAlchemy transaction implementation of the guarded lifecycle transition
+algorithm: one atomic read-check-write-history sequence shared by every
+managed entity type's status transitions.
 
-See docs/adr/ADR-0058-unified-lifecycle-transition-service.md D3/D4 for the
-normative 13-step algorithm and creation-history contract implemented here.
-
-``transition()`` is the public D1 Protocol method, which enforces the
-policy's declared-edge graph: an undeclared move is a "rejected" outcome
-with a rejection audit row, and a valid override is the audited escape
-hatch. ``_transition()`` accepts
-additional keyword-only parameters not part of the public
-``TransitionCommand`` shape, used only by ``lionagi.state.lifecycle.adapters``
-to keep the two legacy compatibility wrappers behaviorally identical to their
-pre-ADR-0058 selves:
+``transition()`` is the public entry point, enforcing the policy's
+declared-edge graph: an undeclared move is a "rejected" outcome with a
+rejection audit row, and a valid override is the audited escape hatch.
+``_transition()`` accepts additional keyword-only parameters not part of the
+public ``TransitionCommand`` shape, used only by
+``lionagi.state.lifecycle.adapters`` to keep the two legacy compatibility
+wrappers behaviorally identical to their pre-existing selves:
 
 - ``extra_guard``: an arbitrary per-column WHERE-clause guard (e.g.
   dispatch's ``delivering -> delivering`` crash-recovery claim guarding on
-  ``attempt``), which D1's typed command has no generic field for.
+  ``attempt``), which the public typed command has no generic field for.
 - ``enforce_edges``: ``StateDB.update_status()`` never enforced a
   declared-edge graph — only terminal-exit-requires-override and vocabulary
   membership — so it calls with ``enforce_edges=False`` (the default).
@@ -63,13 +61,13 @@ def _json_list(evidence_refs: tuple) -> list:
 
 
 class SQLAlchemyLifecycleService:
-    """The D1 LifecycleService implementation, bound to one StateDB backend."""
+    """The LifecycleService implementation, bound to one StateDB backend."""
 
     def __init__(self, db: _TxProvider, registry: PolicyRegistry = DEFAULT_REGISTRY) -> None:
         self._db = db
         self._registry = registry
 
-    # ── D3: creation writes initial history in the caller's transaction ────
+    # ── creation writes initial history in the caller's transaction ────────
 
     async def initialize_in_transaction(
         self,
@@ -157,12 +155,12 @@ class SQLAlchemyLifecycleService:
         )
         return transition_id
 
-    # ── D1 public entry point ───────────────────────────────────────────
+    # ── public entry point ──────────────────────────────────────────────
 
     async def transition(self, command: TransitionCommand) -> TransitionOutcome:
         # The public entry point enforces the policy's declared-edge graph.
         # An undeclared move is a "rejected" outcome (with rejection audit),
-        # not a raise, so callers get the same D4 outcome shape for both
+        # not a raise, so callers get the same outcome shape for both
         # terminal-exit and undeclared-edge refusals; a valid override is the
         # audited escape hatch for either.
         # The legacy wrappers validate the reason code before calling in; the
@@ -202,7 +200,7 @@ class SQLAlchemyLifecycleService:
             write_reason_columns=policy.reason_columns,
         )
 
-    # ── D4: the one guarded transition algorithm ────────────────────────
+    # ── the one guarded transition algorithm ────────────────────────────
 
     async def _transition(
         self,
@@ -312,6 +310,30 @@ class SQLAlchemyLifecycleService:
                         f"entity_type {command.entity_type!r} requires patch field(s) "
                         f"{sorted(missing_patch)}"
                     )
+                if self_edge.required_guard_fields:
+                    # A crash-recovery same-status claim (e.g. dispatch's
+                    # delivering -> delivering) must never let two callers
+                    # holding the same snapshot both win. The edge's own
+                    # required_guard_fields is satisfied either by an
+                    # extra_guard covering those exact columns (the legacy
+                    # `guard=` kwarg the pre-existing transition surface
+                    # used) or by a generic expected_version guard
+                    # (updated_at, which this same write always bumps) —
+                    # either is an equally strong optimistic-concurrency
+                    # guard against the same race.
+                    # Without one, the edge is refused before BEGIN does any
+                    # work; this is a caller-contract violation, not a
+                    # legitimate lost race, so it raises rather than
+                    # returning a "conflict"/"rejected" outcome.
+                    guarded_by_extra = self_edge.required_guard_fields <= set(extra_guard)
+                    guarded_by_version = command.expected_version is not None
+                    if not (guarded_by_extra or guarded_by_version):
+                        raise LifecycleValidationError(
+                            f"transition(): edge {previous_status!r} -> {command.to_status!r} for "
+                            f"entity_type {command.entity_type!r} requires a race guard covering "
+                            f"{sorted(self_edge.required_guard_fields)} (via expected_version or "
+                            "an equivalent guard); none was supplied"
+                        )
             elif same_status:
                 # Step 7 (same-status, no declared self-edge): policy's
                 # same_status rule governs — "append" is the only rule any
@@ -335,7 +357,7 @@ class SQLAlchemyLifecycleService:
                 # an override/rejection-audit concept — an undeclared move
                 # there was and remains a plain vocabulary-violation
                 # ValueError ("raise") — while the public `transition()`
-                # entry point reports the same D4 "rejected" outcome (with
+                # entry point reports the same "rejected" outcome (with
                 # rejection audit) it uses for terminal exits ("reject").
                 # This must be checked before the terminal_statuses branch
                 # below (which is only reachable when enforce_edges=False).
@@ -461,7 +483,7 @@ class SQLAlchemyLifecycleService:
                     # anomaly, not a legitimate lost race. Raising here
                     # (inside the still-open transaction) rolls back
                     # whatever else happened in this transaction, matching
-                    # the pre-ADR-0058 `_apply_status_write` behavior of
+                    # the pre-existing `_apply_status_write` behavior of
                     # raising before the `async with` block could commit.
                     raise RuntimeError(
                         f"status CAS lost for {command.entity_type} "
@@ -493,10 +515,10 @@ class SQLAlchemyLifecycleService:
         extra_guard: Mapping[str, Any],
         write_reason_columns: bool = True,
     ) -> str | None:
-        """Steps 10-12: the guarded UPDATE and its status_transitions append,
-        factored out so both the ordinary and override paths share it (and so
-        tests can inject a concurrent write immediately before this runs, the
-        same seam the pre-ADR-0058 `StateDB._apply_status_write` provided).
+        """The guarded UPDATE and its status_transitions append, factored out
+        so both the ordinary and override paths share it (and so tests can
+        inject a concurrent write immediately before this runs, the same
+        seam the pre-existing `StateDB._apply_status_write` provided).
 
         *write_reason_columns* mirrors legacy per-surface behavior: the
         `StateDB.update_status()` surface always denormalized the reason onto

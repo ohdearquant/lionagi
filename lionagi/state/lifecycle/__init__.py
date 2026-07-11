@@ -1,6 +1,8 @@
 # Copyright (c) 2023-2026, HaiyangLi <quantocean.li at gmail dot com>
 # SPDX-License-Identifier: Apache-2.0
-"""Unified lifecycle transition service (ADR-0058).
+"""Unified lifecycle transition service: one guarded status-transition
+algorithm shared by every managed entity type, replacing per-surface
+transition logic.
 
 Public surface: immutable command/result records (`models`), the policy
 registry (`policy`), the SQLAlchemy transaction implementation (`service`),
@@ -72,7 +74,7 @@ class LifecycleStorageError(LifecycleError):
 
 
 class LifecycleService(Protocol):
-    """D1's typed service boundary — see ADR-0058."""
+    """The typed service boundary: create initial state, then transition it."""
 
     async def initialize_in_transaction(
         self,

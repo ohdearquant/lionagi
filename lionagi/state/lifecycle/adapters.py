@@ -1,11 +1,11 @@
 # Copyright (c) 2023-2026, HaiyangLi <quantocean.li at gmail dot com>
 # SPDX-License-Identifier: Apache-2.0
-"""D5: StateDB and legacy-transition compatibility mapping.
+"""StateDB and legacy-transition compatibility mapping.
 
 Both existing transition surfaces (`lionagi.state.db.StateDB.update_status()`
 and `lionagi.state.transitions.transition()`) delegate their guarded write
 through `SQLAlchemyLifecycleService`; this module owns the command
-construction and the D5 outcome-to-legacy-return mapping so neither wrapper
+construction and the outcome-to-legacy-return mapping so neither wrapper
 carries independent policy.
 
 `TransitionRejectedError` is defined here (not in `state/db.py`) so this
@@ -31,7 +31,7 @@ __all__ = (
 
 class TransitionRejectedError(RuntimeError):
     """Raised by update_status() when a write would move an entity out of a
-    terminal status without an explicit, justified override (ADR-0094)."""
+    terminal status without an explicit, justified override."""
 
     def __init__(
         self,
@@ -47,7 +47,7 @@ class TransitionRejectedError(RuntimeError):
         super().__init__(
             f"transition rejected: {entity_type} {entity_id!r} is terminal "
             f"at {previous_status!r}; refusing to write {attempted_status!r} "
-            "without override=True (ADR-0094)"
+            "without override=True"
         )
 
 
@@ -71,7 +71,7 @@ async def run_update_status(
     override_justification: str | None,
 ) -> bool:
     """Route StateDB.update_status()'s kwargs through the lifecycle service
-    and map the D1 TransitionOutcome onto its legacy bool/raise contract."""
+    and map the TransitionOutcome onto its legacy bool/raise contract."""
     command = TransitionCommand(
         entity_type=entity_type,
         entity_id=entity_id,

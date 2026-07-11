@@ -174,6 +174,91 @@ async def test_public_transition_applies_for_dispatch_without_reason_columns(db:
     assert row["status"] == "delivering"
 
 
+# ── delivering -> delivering: the crash-recovery claim must be guarded ─────
+
+
+@pytest.mark.asyncio
+async def test_public_transition_rejects_unguarded_delivering_self_edge(db: StateDB) -> None:
+    """The public service entry point has no `extra_guard` kwarg (that is a
+    non-public parameter reserved for the legacy adapters), so an unguarded
+    call must be refused outright rather than silently letting the
+    same-status crash-recovery claim through without any race guard."""
+    from lionagi.dispatch import enqueue_dispatch
+
+    dispatch_id = await enqueue_dispatch(db, kind="terminal_notify", deliver_to="seat-1")
+    service = SQLAlchemyLifecycleService(db)
+    await service.transition(
+        _command(
+            entity_type="dispatch",
+            entity_id=dispatch_id,
+            to_status="delivering",
+            reason=ReasonRecord(code="dispatch.delivering.attempt"),
+        )
+    )
+
+    with pytest.raises(LifecycleValidationError, match="requires a race guard"):
+        await service.transition(
+            _command(
+                entity_type="dispatch",
+                entity_id=dispatch_id,
+                to_status="delivering",
+                reason=ReasonRecord(code="dispatch.delivering.attempt"),
+            )
+        )
+
+
+@pytest.mark.asyncio
+async def test_two_claimants_racing_delivering_self_edge_exactly_one_wins(db: StateDB) -> None:
+    """Direct-service reproduction of the crash-recovery double-claim: two
+    callers holding the same pre-claim snapshot (same expected_version) both
+    attempt the delivering -> delivering recovery claim. Exactly one must
+    apply (non-null transition id); the other must lose as a conflict, and
+    the history table must carry only the one winning row."""
+    from lionagi.dispatch import enqueue_dispatch, get_dispatch
+
+    dispatch_id = await enqueue_dispatch(db, kind="terminal_notify", deliver_to="seat-1")
+    service = SQLAlchemyLifecycleService(db)
+    await service.transition(
+        _command(
+            entity_type="dispatch",
+            entity_id=dispatch_id,
+            to_status="delivering",
+            reason=ReasonRecord(code="dispatch.delivering.attempt"),
+        )
+    )
+
+    snapshot = await get_dispatch(db, dispatch_id)
+    shared_version = snapshot["updated_at"]
+
+    def _recovery_claim() -> TransitionCommand:
+        return _command(
+            entity_type="dispatch",
+            entity_id=dispatch_id,
+            to_status="delivering",
+            reason=ReasonRecord(code="dispatch.delivering.attempt"),
+            expected_version=shared_version,
+        )
+
+    outcome_a = await service.transition(_recovery_claim())
+    outcome_b = await service.transition(_recovery_claim())
+
+    outcomes = [outcome_a, outcome_b]
+    applied = [o for o in outcomes if o.result == "applied"]
+    conflicted = [o for o in outcomes if o.result == "conflict"]
+    assert len(applied) == 1, f"expected exactly one winner, got {outcomes!r}"
+    assert len(conflicted) == 1
+    assert applied[0].transition_id is not None
+    assert conflicted[0].transition_id is None
+
+    rows = await db.fetch_all(
+        "SELECT * FROM status_transitions WHERE entity_id = ? AND status = 'delivering'",
+        (dispatch_id,),
+    )
+    # One row for the original pending -> delivering claim, one for the
+    # single winning delivering -> delivering recovery claim.
+    assert len(rows) == 2
+
+
 @pytest.mark.asyncio
 async def test_public_transition_rejects_unknown_actor_type(db: StateDB) -> None:
     run_id = await _make_schedule_run(db, status="queued")

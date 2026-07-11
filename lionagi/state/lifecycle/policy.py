@@ -1,26 +1,42 @@
 # Copyright (c) 2023-2026, HaiyangLi <quantocean.li at gmail dot com>
 # SPDX-License-Identifier: Apache-2.0
-"""Policy registry: one complete LifecyclePolicy per managed entity type.
-
-See docs/adr/ADR-0058-unified-lifecycle-transition-service.md D2 for the
-normative per-entity table, edges, and patch-field allowlists implemented
-here. Registration self-validates (fails fast at import time on a malformed
-policy) rather than deferring integrity checks to first use.
+"""Policy registry: one complete LifecyclePolicy per managed entity type,
+declaring its status vocabulary, declared-edge graph, and patch-field
+allowlist. Registration self-validates (fails fast at import time on a
+malformed policy) rather than deferring integrity checks to first use.
 """
 
 from __future__ import annotations
+
+import dataclasses
+from types import MappingProxyType
 
 from .models import EdgePolicy, LifecyclePolicy
 
 
 class PolicyRegistry:
-    """Maps entity_type -> frozen LifecyclePolicy, validated at registration."""
+    """Maps entity_type -> frozen LifecyclePolicy, validated at registration.
+
+    Registered policies are stored with their edge maps wrapped in an
+    immutable view (``MappingProxyType``) so a caller holding a policy
+    returned by ``get()`` cannot mutate global transition behavior for the
+    process. ``seal()`` additionally closes the registry to further
+    registration; ``DEFAULT_REGISTRY`` seals itself once its built-in
+    policies are registered, while a locally constructed ``PolicyRegistry()``
+    stays open until its own caller seals it.
+    """
 
     def __init__(self) -> None:
         self._by_entity_type: dict[str, LifecyclePolicy] = {}
         self._by_table: dict[str, str] = {}  # table -> entity_type
+        self._sealed = False
 
     def register(self, policy: LifecyclePolicy) -> None:
+        if self._sealed:
+            raise RuntimeError(
+                "lifecycle policy registration: registry is sealed; cannot register "
+                f"entity_type {policy.entity_type!r}"
+            )
         if policy.entity_type in self._by_entity_type:
             raise ValueError(
                 f"lifecycle policy registration: entity_type {policy.entity_type!r} "
@@ -62,8 +78,17 @@ class PolicyRegistry:
                         f"edge {from_status!r} -> {edge.to_status!r} requires patch field(s) "
                         f"{sorted(unknown_patch)} outside the policy's patch_fields allowlist"
                     )
-        self._by_entity_type[policy.entity_type] = policy
+        # Defensively wrap the edge map in an immutable view before storing —
+        # the caller's own dict (and any built-in `_edges(...)` dict) stays
+        # mutable in the caller's hands, but the copy this registry hands
+        # back from `get()` cannot be reassigned through item assignment.
+        frozen_policy = dataclasses.replace(policy, edges=MappingProxyType(dict(policy.edges)))
+        self._by_entity_type[policy.entity_type] = frozen_policy
         self._by_table[policy.table] = policy.entity_type
+
+    def seal(self) -> None:
+        """Close this registry to further registration."""
+        self._sealed = True
 
     def get(self, entity_type: str) -> LifecyclePolicy:
         try:
@@ -93,9 +118,8 @@ def build_default_registry() -> PolicyRegistry:
     registry = PolicyRegistry()
 
     # ── session / invocation ────────────────────────────────────────────
-    # Same seven-value execution vocabulary and same execution graph
-    # (ADR-0058 D2 table: "invocation | running | same execution graph as
-    # session"). No exit from a terminal status without override.
+    # Same seven-value execution vocabulary and same execution graph.
+    # No exit from a terminal status without override.
     session_statuses = frozenset(
         {"running", "completed", "completed_empty", "failed", "timed_out", "aborted", "cancelled"}
     )
@@ -134,9 +158,9 @@ def build_default_registry() -> PolicyRegistry:
     )
 
     # ── show ─────────────────────────────────────────────────────────────
-    # Deliberately permissive compatibility graph (ADR-0058 D2 "Exact
-    # semantics"): either nonterminal status may move to any *other*
-    # declared show status. completed/aborted require override to exit.
+    # Deliberately permissive compatibility graph: either nonterminal
+    # status may move to any *other* declared show status. completed/
+    # aborted require override to exit.
     show_statuses = frozenset({"active", "completed", "aborted", "imported"})
     show_terminal = frozenset({"completed", "aborted"})
     show_nonterminal = show_statuses - show_terminal
@@ -215,9 +239,8 @@ def build_default_registry() -> PolicyRegistry:
     )
 
     # ── schedule_run ─────────────────────────────────────────────────────
-    # ADR-0058 D2's target graph reconciles the shipped schema vocabulary
-    # (ADR-0057 D1 flagged the discrepancy between the schema CHECK and the
-    # pre-existing partial validators). timed_out joins the terminal set
+    # This target graph reconciles the shipped schema vocabulary with the
+    # pre-existing partial validators. timed_out joins the terminal set
     # here, closing a gap where the legacy `update_status()` terminal set
     # omitted it.
     schedule_run_statuses = frozenset(
@@ -268,10 +291,11 @@ def build_default_registry() -> PolicyRegistry:
     # ── dispatch ─────────────────────────────────────────────────────────
     # dead_letter/expired are terminal but operator-recoverable via an
     # ordinary declared edge (not a generic override) back to pending.
-    # delivering -> delivering is the same-status crash-recovery claim; the
-    # legacy adapter's `attempt` guard for it is preserved at the
-    # lifecycle.adapters layer (see adapters.py), not in this policy shape,
-    # because D1's TransitionCommand has no generic per-column guard field.
+    # delivering -> delivering is the same-status crash-recovery claim: two
+    # workers racing on the same row must never both win it, so the edge
+    # declares required_guard_fields — the service refuses the edge unless
+    # the caller supplies an equivalent expected_version or extra_guard
+    # covering those columns (see SQLAlchemyLifecycleService._transition).
     dispatch_statuses = frozenset(
         {"pending", "delivering", "delivered", "acked", "dead_letter", "expired"}
     )
@@ -281,7 +305,7 @@ def build_default_registry() -> PolicyRegistry:
         (
             "delivering",
             (
-                EdgePolicy(to_status="delivering"),
+                EdgePolicy(to_status="delivering", required_guard_fields=frozenset({"attempt"})),
                 EdgePolicy(to_status="pending"),
                 EdgePolicy(to_status="delivered"),
                 # A consumer may present its ack_token while the delivery loop
@@ -328,6 +352,7 @@ def build_default_registry() -> PolicyRegistry:
         )
     )
 
+    registry.seal()
     return registry
 
 

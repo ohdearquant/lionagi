@@ -1,10 +1,6 @@
 # Copyright (c) 2023-2026, HaiyangLi <quantocean.li at gmail dot com>
 # SPDX-License-Identifier: Apache-2.0
-"""Immutable command/result/policy dataclasses for the unified lifecycle service.
-
-See docs/adr/ADR-0058-unified-lifecycle-transition-service.md D1/D2 for the
-normative contract these types implement.
-"""
+"""Immutable command/result/policy dataclasses for the unified lifecycle service."""
 
 from __future__ import annotations
 
@@ -74,6 +70,13 @@ class EdgePolicy:
     to_status: str
     actor_types: frozenset[ActorType] | None = None
     required_patch_fields: frozenset[str] = frozenset()
+    # Columns this edge requires a race guard on (e.g. dispatch's
+    # delivering -> delivering crash-recovery claim, guarded on `attempt`).
+    # The service accepts either an equivalent expected_version guard or an
+    # extra_guard covering these exact columns — never neither — so a
+    # same-status claim edge can never be taken by two racing claimants
+    # holding the same snapshot. Empty means no such guard is required.
+    required_guard_fields: frozenset[str] = frozenset()
 
 
 @dataclass(frozen=True)

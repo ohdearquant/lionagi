@@ -238,9 +238,6 @@ VALID_SESSION_STATUSES = frozenset(
         "cancelled",
     }
 )
-SESSION_TERMINAL_STATUSES = frozenset(
-    {"completed", "completed_empty", "failed", "timed_out", "aborted", "cancelled"}
-)
 # Admin cannot mark completed/completed_empty/timed_out — those are system-determined.
 ADMIN_TRANSITION_TARGETS = frozenset({"failed", "aborted", "cancelled"})
 
@@ -250,29 +247,28 @@ _SESSION_STATUSES = VALID_SESSION_STATUSES
 # Terminal-state definitions live here, with the record schema, rather than
 # in any one CLI surface — update_status() enforces them uniformly for
 # every entity_type at the single write path; `li wait` reads the same
-# tables to build its per-kind terminal predicate.
-INVOCATION_TERMINAL_STATUSES = SESSION_TERMINAL_STATUSES  # ADR-0025 vocabulary is shared
-SCHEDULE_RUN_TERMINAL_STATUSES = frozenset({"completed", "failed", "skipped", "cancelled"})
-SHOW_TERMINAL_STATUSES = frozenset({"completed", "aborted"})
+# tables to build its per-kind terminal predicate. Sourced from the
+# lifecycle policy registry, the same pattern VALID_STATUSES_BY_ENTITY_TYPE
+# below uses, so this facade's terminal map can never drift from the
+# registry's own terminal_statuses.
+TERMINAL_STATUSES_BY_ENTITY_TYPE: dict[str, frozenset[str]] = {
+    entity_type: _lifecycle_policy.DEFAULT_REGISTRY.get(entity_type).terminal_statuses
+    for entity_type in ("session", "invocation", "schedule_run", "show", "play", "team")
+}
+SESSION_TERMINAL_STATUSES = TERMINAL_STATUSES_BY_ENTITY_TYPE["session"]
+INVOCATION_TERMINAL_STATUSES = TERMINAL_STATUSES_BY_ENTITY_TYPE[
+    "invocation"
+]  # ADR-0025 vocabulary is shared
+SCHEDULE_RUN_TERMINAL_STATUSES = TERMINAL_STATUSES_BY_ENTITY_TYPE["schedule_run"]
+SHOW_TERMINAL_STATUSES = TERMINAL_STATUSES_BY_ENTITY_TYPE["show"]
 # Still-in-flight play statuses — the schema layer owns this vocabulary
 # (kill.py imports it rather than defining its own copy); everything else
 # in PLAY_TERMINAL_STATUSES below is terminal.
 PLAY_ACTIVE_STATUSES = frozenset(
     {"pending", "prepared", "running", "running_complete", "gated", "redoing"}
 )
-PLAY_TERMINAL_STATUSES = frozenset(
-    {"merged", "escalated", "gate_failed", "blocked", "aborted_after_finish"}
-)
-TEAM_TERMINAL_STATUSES = frozenset({"archived"})
-
-TERMINAL_STATUSES_BY_ENTITY_TYPE: dict[str, frozenset[str]] = {
-    "session": SESSION_TERMINAL_STATUSES,
-    "invocation": INVOCATION_TERMINAL_STATUSES,
-    "schedule_run": SCHEDULE_RUN_TERMINAL_STATUSES,
-    "show": SHOW_TERMINAL_STATUSES,
-    "play": PLAY_TERMINAL_STATUSES,
-    "team": TEAM_TERMINAL_STATUSES,
-}
+PLAY_TERMINAL_STATUSES = TERMINAL_STATUSES_BY_ENTITY_TYPE["play"]
+TEAM_TERMINAL_STATUSES = TERMINAL_STATUSES_BY_ENTITY_TYPE["team"]
 
 # Same-row columns update_status() may set alongside a status write, in the
 # same transaction as the status/status_transitions write — keeps a caller

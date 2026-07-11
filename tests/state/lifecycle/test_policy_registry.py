@@ -110,7 +110,12 @@ def test_get_returns_a_registered_policy() -> None:
     registry = PolicyRegistry()
     policy = _policy()
     registry.register(policy)
-    assert registry.get("widget") is policy
+    # Not `is policy` — register() wraps the edge map in an immutable view,
+    # which for a frozen dataclass means storing a new instance, not the
+    # caller's original object. Field-for-field equality still holds.
+    stored = registry.get("widget")
+    assert stored == policy
+    assert stored.entity_type == "widget"
 
 
 def test_contains() -> None:
@@ -118,3 +123,36 @@ def test_contains() -> None:
     registry.register(_policy())
     assert "widget" in registry
     assert "bogus" not in registry
+
+
+# ── Registry/policy immutability ────────────────────────────────────────────
+
+
+def test_registered_policy_edge_map_mutation_raises() -> None:
+    """A caller holding a policy from get() must not be able to mutate the
+    edge map in place and change global transition behavior for the process."""
+    registry = PolicyRegistry()
+    registry.register(_policy(edges={"open": (EdgePolicy(to_status="closed"),)}))
+    policy = registry.get("widget")
+    with pytest.raises(TypeError):
+        policy.edges["open"] = ()
+
+
+def test_default_registry_edge_map_mutation_raises() -> None:
+    policy = DEFAULT_REGISTRY.get("dispatch")
+    with pytest.raises(TypeError):
+        policy.edges["delivering"] = ()
+
+
+def test_default_registry_is_sealed_late_registration_raises() -> None:
+    with pytest.raises(RuntimeError, match="registry is sealed"):
+        DEFAULT_REGISTRY.register(_policy(entity_type="late_widget", table="late_widgets"))
+
+
+def test_locally_constructed_registry_accepts_registration_before_sealing() -> None:
+    registry = PolicyRegistry()
+    registry.register(_policy())  # does not raise — unsealed by default
+    assert "widget" in registry
+    registry.seal()
+    with pytest.raises(RuntimeError, match="registry is sealed"):
+        registry.register(_policy(entity_type="other_widget", table="other_widgets"))
