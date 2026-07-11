@@ -72,6 +72,17 @@ def test_sandbox_session_is_active_false():
     assert s.is_active is False
 
 
+def test_sandbox_session_base_sha_defaults_empty():
+    """base_sha is additive — old call sites that don't pass it still work."""
+    s = SandboxSession(
+        worktree_path="/tmp/wt",
+        branch_name="b",
+        base_branch="main",
+        repo_root="/tmp/r",
+    )
+    assert s.base_sha == ""
+
+
 # ---------------------------------------------------------------------------
 # create_sandbox
 # ---------------------------------------------------------------------------
@@ -106,6 +117,34 @@ async def test_create_sandbox_explicit_fields(git_repo):
 async def test_create_sandbox_non_git_dir_raises(tmp_path):
     with pytest.raises(RuntimeError):
         await create_sandbox(str(tmp_path))
+
+
+async def test_create_sandbox_records_base_sha(git_repo):
+    """base_sha is captured at creation time and matches the base branch tip."""
+    session = await create_sandbox(str(git_repo))
+    expected_sha = subprocess.run(
+        ["git", "rev-parse", session.base_branch],
+        cwd=str(git_repo),
+        capture_output=True,
+        text=True,
+        check=True,
+    ).stdout.strip()
+    assert session.base_sha == expected_sha
+    assert len(session.base_sha) == 40
+    await sandbox_discard(session)
+
+
+async def test_create_sandbox_base_sha_matches_worktree_head(git_repo):
+    session = await create_sandbox(str(git_repo))
+    worktree_head = subprocess.run(
+        ["git", "rev-parse", "HEAD"],
+        cwd=session.worktree_path,
+        capture_output=True,
+        text=True,
+        check=True,
+    ).stdout.strip()
+    assert session.base_sha == worktree_head
+    await sandbox_discard(session)
 
 
 # ---------------------------------------------------------------------------
@@ -153,6 +192,43 @@ async def test_sandbox_diff_patch_truncation(git_repo):
     await sandbox_discard(session)
 
 
+async def test_sandbox_diff_does_not_mutate_index_new_file(git_repo):
+    """diff must be read-only — status before/after must be identical."""
+    session = await create_sandbox(str(git_repo))
+    wt = session.worktree_path
+    (Path(wt) / "untouched.txt").write_text("content\n")
+
+    before = subprocess.run(
+        ["git", "status", "--porcelain"], cwd=wt, capture_output=True, text=True, check=True
+    ).stdout
+    await sandbox_diff(session)
+    after = subprocess.run(
+        ["git", "status", "--porcelain"], cwd=wt, capture_output=True, text=True, check=True
+    ).stdout
+
+    assert before == after
+    # untracked, never staged by the diff read
+    assert "?? untouched.txt" in after
+    await sandbox_discard(session)
+
+
+async def test_sandbox_diff_does_not_mutate_index_modified_tracked_file(git_repo):
+    session = await create_sandbox(str(git_repo))
+    wt = session.worktree_path
+    (Path(wt) / "README.md").write_text("changed\n")
+
+    before = subprocess.run(
+        ["git", "status", "--porcelain"], cwd=wt, capture_output=True, text=True, check=True
+    ).stdout
+    await sandbox_diff(session)
+    after = subprocess.run(
+        ["git", "status", "--porcelain"], cwd=wt, capture_output=True, text=True, check=True
+    ).stdout
+
+    assert before == after
+    await sandbox_discard(session)
+
+
 # ---------------------------------------------------------------------------
 # sandbox_commit
 # ---------------------------------------------------------------------------
@@ -184,7 +260,7 @@ async def test_sandbox_commit_nothing_to_commit(git_repo):
 async def test_sandbox_merge_applies_changes(git_repo):
     session = await create_sandbox(str(git_repo))
     (Path(session.worktree_path) / "merged.txt").write_text("from sandbox\n")
-    result = await sandbox_merge(session)
+    result = await sandbox_merge(session, allow_protected=True)
     assert result["success"] is True and result["merged"] is True
     assert (git_repo / "merged.txt").read_text() == "from sandbox\n"
 
@@ -192,15 +268,87 @@ async def test_sandbox_merge_applies_changes(git_repo):
 async def test_sandbox_merge_cleans_up_worktree(git_repo):
     session = await create_sandbox(str(git_repo))
     worktree_path = session.worktree_path
-    await sandbox_merge(session)
+    await sandbox_merge(session, allow_protected=True)
     assert not os.path.exists(worktree_path)
 
 
 async def test_sandbox_merge_sets_is_active_false(git_repo):
     session = await create_sandbox(str(git_repo))
     assert session.is_active is True
-    await sandbox_merge(session)
+    await sandbox_merge(session, allow_protected=True)
     assert session.is_active is False
+
+
+async def test_sandbox_merge_refuses_protected_base_without_override(git_repo):
+    """git init defaults to a protected branch name (master); merge must refuse it."""
+    session = await create_sandbox(str(git_repo))
+    assert session.base_branch in ("main", "master")
+    (Path(session.worktree_path) / "merged.txt").write_text("from sandbox\n")
+
+    result = await sandbox_merge(session)
+
+    assert result["success"] is False
+    assert "protected" in result["error"]
+    assert not (git_repo / "merged.txt").exists()
+    assert session.is_active is True
+    assert os.path.isdir(session.worktree_path)
+    await sandbox_discard(session)
+
+
+async def test_sandbox_merge_allows_protected_base_with_override(git_repo):
+    session = await create_sandbox(str(git_repo))
+    (Path(session.worktree_path) / "merged.txt").write_text("from sandbox\n")
+
+    result = await sandbox_merge(session, allow_protected=True)
+
+    assert result["success"] is True
+    assert (git_repo / "merged.txt").read_text() == "from sandbox\n"
+
+
+async def test_sandbox_merge_refuses_when_repo_root_on_different_branch(git_repo):
+    """A non-protected feature base still refuses if repo_root moved off it."""
+    subprocess.run(
+        ["git", "checkout", "-b", "feature-base"],
+        cwd=str(git_repo),
+        capture_output=True,
+        check=True,
+    )
+    session = await create_sandbox(str(git_repo), base_branch="feature-base")
+    assert session.base_branch == "feature-base"
+    (Path(session.worktree_path) / "merged.txt").write_text("from sandbox\n")
+
+    # repo_root moves off the recorded base branch before merge is attempted.
+    subprocess.run(
+        ["git", "checkout", "master"],
+        cwd=str(git_repo),
+        capture_output=True,
+        check=True,
+    )
+
+    result = await sandbox_merge(session)
+
+    assert result["success"] is False
+    assert "feature-base" in result["error"]
+    assert not (git_repo / "merged.txt").exists()
+    assert session.is_active is True
+    await sandbox_discard(session)
+
+
+async def test_sandbox_merge_succeeds_on_unprotected_matching_base(git_repo):
+    """Merging into a normal (non-protected) checked-out base needs no override."""
+    subprocess.run(
+        ["git", "checkout", "-b", "feature-base"],
+        cwd=str(git_repo),
+        capture_output=True,
+        check=True,
+    )
+    session = await create_sandbox(str(git_repo), base_branch="feature-base")
+    (Path(session.worktree_path) / "merged.txt").write_text("from sandbox\n")
+
+    result = await sandbox_merge(session)
+
+    assert result["success"] is True and result["merged"] is True
+    assert (git_repo / "merged.txt").read_text() == "from sandbox\n"
 
 
 # ---------------------------------------------------------------------------
@@ -238,6 +386,48 @@ async def test_sandbox_discard_changes_not_in_base(git_repo):
     assert not (git_repo / "ephemeral.txt").exists()
 
 
+async def test_sandbox_discard_leaves_is_active_true_on_failure(git_repo):
+    """If worktree removal fails, is_active must stay True — no false-clean signal.
+
+    A locked worktree refuses plain ``--force`` removal (git requires the
+    force flag twice for a locked worktree), which is used here to force a
+    real git-level failure without hand-rolling a fake git binary.
+    """
+    session = await create_sandbox(str(git_repo))
+    subprocess.run(
+        ["git", "worktree", "lock", session.worktree_path],
+        cwd=str(git_repo),
+        capture_output=True,
+        check=True,
+    )
+
+    result = await sandbox_discard(session)
+
+    assert result["worktree_removed"] is False
+    assert session.is_active is True
+    assert os.path.isdir(session.worktree_path)
+
+    # Manual cleanup: unlock then remove for real.
+    subprocess.run(
+        ["git", "worktree", "unlock", session.worktree_path],
+        cwd=str(git_repo),
+        capture_output=True,
+        check=True,
+    )
+    subprocess.run(
+        ["git", "worktree", "remove", "--force", session.worktree_path],
+        cwd=str(git_repo),
+        capture_output=True,
+        check=True,
+    )
+    subprocess.run(
+        ["git", "branch", "-D", session.branch_name],
+        cwd=str(git_repo),
+        capture_output=True,
+        check=True,
+    )
+
+
 # ---------------------------------------------------------------------------
 # Full lifecycle
 # ---------------------------------------------------------------------------
@@ -267,7 +457,7 @@ async def test_sandbox_full_lifecycle(git_repo):
     assert len(sha) == 40
 
     # merge back into base
-    merge_result = await sandbox_merge(session)
+    merge_result = await sandbox_merge(session, allow_protected=True)
     assert merge_result["success"] is True
     assert merge_result["merged"] is True
 
