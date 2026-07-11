@@ -101,6 +101,38 @@ async def test_facade_merge_succeeds_with_operator_level_flag(git_repo):
     assert (git_repo / "merged.txt").read_text() == "from sandbox\n"
 
 
+async def test_facade_merge_with_failed_cleanup_reports_failure_and_keeps_session(git_repo):
+    """A merge that lands but cannot clean up (e.g. locked worktree) must not
+    be reported as a fully successful, closed sandbox: merged=True stays
+    visible, success is False, and the session is retained so cleanup can be
+    retried instead of stranding the worktree with no handle."""
+    _, sandbox = _make_sandbox_tool(git_repo, sandbox_allow_protected=True)
+
+    created = await sandbox(action="create")
+    assert created["success"] is True
+    worktree = Path(created["worktree"])
+    (worktree / "merged.txt").write_text("from sandbox\n")
+
+    subprocess.run(
+        ["git", "worktree", "lock", str(worktree)],
+        cwd=str(git_repo),
+        capture_output=True,
+        check=True,
+    )
+
+    result = await sandbox(action="merge")
+
+    # The merge itself landed on the base branch…
+    assert result["merged"] is True
+    assert (git_repo / "merged.txt").read_text() == "from sandbox\n"
+    # …but the sandbox is not closed: cleanup failed and the session survives.
+    assert result["success"] is False
+    assert result["worktree_removed"] is False
+
+    diff_result = await sandbox(action="diff")
+    assert "No active sandbox" not in str(diff_result.get("error", ""))
+
+
 # ---------------------------------------------------------------------------
 # Truthful discard cleanup reporting
 # ---------------------------------------------------------------------------

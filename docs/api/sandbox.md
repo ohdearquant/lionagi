@@ -14,13 +14,16 @@ Source: `lionagi/tools/sandbox.py`
 
 `SandboxSession` wraps a git worktree for isolated, reversible code changes. An agent edits
 files inside the worktree branch; those changes never touch the base branch until an explicit
-`sandbox_merge()`. Discarding the sandbox removes the worktree and branch with no trace.
+`sandbox_merge()`. Discarding the sandbox removes the worktree and branch with no trace
+(on success — see the partial-cleanup notes below for what a failed step reports).
 
 Why worktrees instead of temp dirs:
 
 - The agent sees the real repo (shared git objects, same file history) — not a copy.
 - Changes are a proper git branch: reviewable with `git diff`, mergeable with `git merge --no-ff`.
-- `sandbox_discard()` removes both the worktree and branch atomically.
+- `sandbox_discard()` removes both the worktree and branch. The two steps are
+  independent and may fail individually (e.g. a locked worktree); the result
+  reports each step's outcome, and the session stays active on partial failure.
 
 ---
 

@@ -779,9 +779,17 @@ class CodingToolkit(LionTool):
                 return await sandbox_commit(session, message)
             elif action == "merge":
                 result = await sandbox_merge(session, allow_protected=self.sandbox_allow_protected)
-                if result.get("success"):
+                if not result.get("success"):
+                    return result
+                if result.get("worktree_removed") and result.get("branch_deleted"):
                     _sandbox_session[0] = None
-                return result
+                    return result
+                # The merge itself landed (merged=True stays visible) but the
+                # worktree/branch cleanup is incomplete — keep the session so
+                # cleanup can be retried via discard, and report non-success
+                # so the caller cannot mistake a stranded worktree for a
+                # fully closed sandbox.
+                return {**result, "success": False}
             elif action == "discard":
                 result = await sandbox_discard(session)
                 if result.get("worktree_removed") and result.get("branch_deleted"):
