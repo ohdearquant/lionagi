@@ -551,6 +551,7 @@ async def spawn_and_wait(
     *,
     tmp_path: str | None = None,
     cwd: str | None = None,
+    action_kind: str | None = None,
 ) -> tuple[int, str]:
     """Spawn subprocess and wait for completion. Returns (exit_code, stderr_tail).
 
@@ -562,7 +563,22 @@ async def spawn_and_wait(
     a concrete path (e.g. from ``action_project``) before spawning so `uv run
     li` doesn't fail with "No such file or directory" when the daemon was
     started somewhere with no project (see SchedulerEngine._resolve_action_cwd).
+
+    *action_kind* re-runs the command allow-list check right here, immediately
+    before the process is spawned, when it is ``"command"``. ``build_argv``
+    already re-checks the allow-list at argv-construction time, but callers
+    (the scheduler engine, the worker, on-demand launches) perform awaited DB
+    work between building argv and calling this function -- an await is a
+    scheduling point, so revoking the allow-list env var during that window
+    does not stop a spawn checked only at build_argv time. Passing
+    *action_kind* here closes that gap: the check runs with no intervening
+    await before ``create_subprocess_exec``.
     """
+    if action_kind == "command":
+        command = argv[0] if argv else ""
+        _validate_action_command(command)
+        _validate_command_allowlisted(command)
+
     env = {**os.environ, "LIONAGI_INVOCATION_ID": invocation_id}
 
     _log.info("Spawning: %s", " ".join(argv))

@@ -220,6 +220,31 @@ class TestCommandAllowlist:
         with pytest.raises(ValueError, match="not in LIONAGI_SCHEDULER_COMMAND_ALLOWLIST"):
             build_argv(_schedule(), {})
 
+    def test_spawn_and_wait_rechecks_allowlist_at_actual_exec_boundary(self, monkeypatch):
+        """Regression: build_argv's re-check happens well before the process
+        is actually spawned -- callers (scheduler engine, worker, on-demand
+        launches) run awaited DB work between building argv and calling
+        spawn_and_wait, and an await is a scheduling point. Revoking the
+        allow-list during that window must still stop the spawn: build argv
+        while allow-listed, revoke, then call spawn_and_wait directly and
+        assert asyncio.create_subprocess_exec is never invoked and a
+        ValueError propagates."""
+        from lionagi.studio.scheduler.subprocess import build_argv, spawn_and_wait
+
+        monkeypatch.setenv(ALLOWLIST_ENV, "kdev")
+        argv, tmp_path = build_argv(_schedule(), {})
+        assert argv[0] == "kdev"
+
+        monkeypatch.delenv(ALLOWLIST_ENV, raising=False)
+
+        exec_mock = AsyncMock(side_effect=AssertionError("subprocess must not spawn"))
+        with patch("asyncio.create_subprocess_exec", exec_mock):
+            with pytest.raises(ValueError, match="not in LIONAGI_SCHEDULER_COMMAND_ALLOWLIST"):
+                asyncio.run(
+                    spawn_and_wait(argv, "inv-recheck", tmp_path=tmp_path, action_kind="command")
+                )
+        exec_mock.assert_not_called()
+
     def test_missing_action_command_raises(self, monkeypatch):
         monkeypatch.setenv(ALLOWLIST_ENV, "kdev")
         from lionagi.studio.scheduler.subprocess import build_argv
@@ -420,7 +445,7 @@ class TestCliActionKindChoices:
 
 
 # ---------------------------------------------------------------------------
-# worker.default_execute — the ADR-0101 task-application execution path
+# worker.default_execute — the worker/task-application execution path
 # ---------------------------------------------------------------------------
 
 

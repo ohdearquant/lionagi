@@ -849,20 +849,35 @@ class StateDB:
         rebuild_table = _schedules_table.to_metadata(MetaData(), name="schedules_new")
         create_stmt = str(CreateTable(rebuild_table).compile(dialect=self._engine.dialect))
 
-        async with self._engine.begin() as conn:
-            await conn.execute(text("PRAGMA foreign_keys = OFF"))
+        # ``schedules`` is an FK target (schedule_runs.schedule_id ON DELETE
+        # CASCADE): dropping it while `PRAGMA foreign_keys` is enforced
+        # cascades away every schedule_runs row that referenced it, even
+        # with the rows already safely copied into the new table first.
+        # `engine.begin()` opens its transaction before our first statement
+        # runs, and SQLite treats `PRAGMA foreign_keys` as a no-op inside a
+        # pending transaction -- so toggling it through a normal SQLAlchemy
+        # connection never actually takes effect (verified: it silently
+        # cascade-deleted schedule_runs rows in this exact rebuild before
+        # this fix). Go through the raw driver connection instead (same
+        # technique as ``_drop_legacy_invocations_status_check``) so the
+        # pragma flip is real autocommit, not swallowed by an open txn.
+        async with self._engine.connect() as conn:
+            driver = (await conn.get_raw_connection()).driver_connection
+            await driver.execute("PRAGMA foreign_keys = OFF")
             try:
-                await conn.execute(text(create_stmt))
+                await driver.execute(create_stmt)
                 insert_sql = (
                     f"INSERT INTO schedules_new ({col_list}) SELECT {col_list} FROM schedules"  # noqa: S608
                 )
-                await conn.execute(text(insert_sql))
-                await conn.execute(text("DROP TABLE schedules"))
-                await conn.execute(text("ALTER TABLE schedules_new RENAME TO schedules"))
+                await driver.execute(insert_sql)
+                await driver.execute("DROP TABLE schedules")
+                await driver.execute("ALTER TABLE schedules_new RENAME TO schedules")
                 for idx_sql in index_sqls:
-                    await conn.execute(text(idx_sql))
+                    await driver.execute(idx_sql)
+                await driver.commit()
             finally:
-                await conn.execute(text("PRAGMA foreign_keys = ON"))
+                await driver.execute("PRAGMA foreign_keys = ON")
+                await driver.commit()
 
     # Substring present only in the widened schedules CREATE SQL;
     # its absence indicates a legacy DB whose action_kind CHECK still omits

@@ -153,7 +153,7 @@ async def launch(data: dict[str, Any]) -> dict[str, Any]:
             )
 
         task = asyncio.create_task(
-            _spawn_detached(argv, inv_id, tmp_path=tmp_path),
+            _spawn_detached(argv, inv_id, tmp_path=tmp_path, action_kind=data["action_kind"]),
             name=f"launch-{inv_id}",
         )
     except BaseException:
@@ -192,14 +192,18 @@ async def shutdown_launches() -> None:
     await asyncio.gather(*tasks, return_exceptions=True)
 
 
-async def _spawn_detached(argv: list[str], inv_id: str, *, tmp_path: str | None) -> None:
+async def _spawn_detached(
+    argv: list[str], inv_id: str, *, tmp_path: str | None, action_kind: str | None = None
+) -> None:
     """Spawn the process and update the invocation row when it exits."""
     from lionagi.state.reasons import RunReasons
 
     from ..scheduler.subprocess import spawn_and_wait
 
     try:
-        exit_code, _stderr = await spawn_and_wait(argv, inv_id, tmp_path=tmp_path)
+        exit_code, _stderr = await spawn_and_wait(
+            argv, inv_id, tmp_path=tmp_path, action_kind=action_kind
+        )
         if exit_code == 0:
             status, reason = "completed", RunReasons.COMPLETED_OK
         else:

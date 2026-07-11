@@ -234,7 +234,9 @@ async def default_execute(row: dict[str, Any]) -> tuple[int, str]:
     except Exception as exc:  # noqa: BLE001
         return 1, f"{type(exc).__name__}: {exc}"
     invocation_id = uuid.uuid4().hex[:12]
-    return await _subprocess.spawn_and_wait(argv, invocation_id, tmp_path=tmp_path)
+    return await _subprocess.spawn_and_wait(
+        argv, invocation_id, tmp_path=tmp_path, action_kind=schedule_like.get("action_kind")
+    )
 
 
 async def reap_expired_leases(db: StateDB, *, now: float | None = None) -> dict[str, int]:

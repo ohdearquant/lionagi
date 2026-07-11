@@ -1426,7 +1426,11 @@ class SchedulerEngine:
 
             action_cwd, missing_cwd_path = await _resolve_action_cwd(schedule)
             exit_code, stderr_tail = await _subprocess.spawn_and_wait(
-                argv, inv_id, tmp_path=_tmp_path, cwd=action_cwd
+                argv,
+                inv_id,
+                tmp_path=_tmp_path,
+                cwd=action_cwd,
+                action_kind=schedule.get("action_kind"),
             )
             end_time = time.time()
             status = "completed" if exit_code == 0 else "failed"
