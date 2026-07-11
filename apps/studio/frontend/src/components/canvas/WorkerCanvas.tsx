@@ -57,6 +57,21 @@ interface WorkerCanvasProps {
 const nodeTypes = { step: StepNodeComponent };
 const edgeTypes = { condition: ConditionEdgeComponent };
 
+// nodeStatuses only covers nodes it has live signal correlation for — a
+// legacy run (no matching signals, or none at all) still passes a truthy
+// object (RunDetail always builds one when a planned graph exists, `{}` in
+// the legacy case). An edge's source node absent from that map must fall
+// back to the legacy execSteps-derived completedMap rather than being
+// treated as "not completed" just because *some* nodeStatuses object exists.
+export function computeEdgeSourceCompleted(
+  source: string,
+  nodeStatuses: Record<string, NodeExecStatus> | undefined,
+  completedMap: Map<string, unknown>,
+): boolean {
+  const live = nodeStatuses?.[source];
+  return live !== undefined ? live === "completed" : completedMap.has(source);
+}
+
 function toFlowNodes(nodes: WorkerStepNode[]): Node<StepNodeData>[] {
   return nodes.map((n) => ({
     id: n.id,
@@ -176,9 +191,7 @@ export default function WorkerCanvas({
         ...e,
         data: {
           ...e.data,
-          sourceCompleted: nodeStatuses
-            ? nodeStatuses[e.source] === "completed"
-            : completedMap.has(e.source),
+          sourceCompleted: computeEdgeSourceCompleted(e.source, nodeStatuses, completedMap),
         },
       })),
     );

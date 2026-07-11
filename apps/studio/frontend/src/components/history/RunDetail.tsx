@@ -16,12 +16,7 @@ import RunStepCard from "@/components/RunStepCard";
 import { IconChevronDown, IconChevronRight } from "@/components/ui/icons";
 import { getSession, streamSession, streamSignals, SESSION_MESSAGE_PAGE } from "@/lib/api";
 import type { SessionDetail, SessionBranch, SessionMessage, SignalEvent } from "@/lib/api";
-import {
-  buildNodeStatusesByName,
-  buildOperationGraph,
-  laneFor,
-  transitiveReduce,
-} from "@/lib/operationGraph";
+import { buildNodeStatusesByName, buildOperationGraph, laneFor } from "@/lib/operationGraph";
 import type { OperationStatus } from "@/lib/operationGraph";
 import { deriveDisplayStatus } from "@/lib/runStatus";
 import type { RunMessage, RunStep, WorkerGraph } from "@/lib/types";
@@ -514,6 +509,7 @@ const LANE_TONE: Record<LaneState, string> = {
   queued: "bg-surface-overlay text-content-muted",
   running: "bg-status-running-bg text-status-running",
   awaiting_approval: "bg-status-warning-bg text-status-warning",
+  paused: "bg-status-warning-bg text-status-warning",
   succeeded: "bg-status-success-bg text-status-success",
   failed: "bg-status-error-bg text-status-error",
   escalated: "bg-status-error-bg text-status-error",
@@ -951,13 +947,12 @@ export default function RunDetail({ id }: RunDetailProps) {
     [steps],
   );
 
-  // Planned graph edges (depends_on-derived) can carry the full predecessor
-  // set, not just direct dependencies — reduce to the transitive skeleton so
-  // the DAG doesn't draw both A→C and A→B→C.
-  const reducedRunGraph = useMemo(() => {
-    if (!runGraph) return null;
-    return { ...runGraph, edges: transitiveReduce(runGraph.edges) };
-  }, [runGraph]);
+  // runGraph is the persisted/authored graph (Studio's early_graph) — its
+  // edges are exactly what the designer wired, and may carry conditions that
+  // only apply to a specific (possibly transitive-looking) edge. Do NOT
+  // transitively reduce it: unlike the runtime-derived opGraph below (whose
+  // edges come from depends_on ancestor lists and legitimately need
+  // deduplication), every authored edge here is meaningful and must render.
 
   // Live per-node status correlated by authored step id (Node* payload.name),
   // never by op_id — see lib/operationGraph.ts. Only meaningful when a
@@ -1073,13 +1068,13 @@ export default function RunDetail({ id }: RunDetailProps) {
         contract={session.artifact_contract_json}
         verification={session.artifact_verification_json}
       />
-      {reducedRunGraph ? (
+      {runGraph ? (
         <div id="run-dag" className="scroll-mt-4">
-          <SectionHeader label={t("sectionExecutionGraph")} count={reducedRunGraph.nodes.length} />
+          <SectionHeader label={t("sectionExecutionGraph")} count={runGraph.nodes.length} />
           <div className="h-[280px] rounded border border-edge bg-surface-raised shadow-card overflow-hidden">
             <Suspense fallback={null}>
               <WorkerCanvas
-                graph={reducedRunGraph}
+                graph={runGraph}
                 editable={false}
                 execSteps={execSteps}
                 nodeStatuses={nodeStatuses}

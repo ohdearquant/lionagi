@@ -50,6 +50,14 @@ describe("laneFor — status projection", () => {
     expect(laneFor(["NodeAwaitingApproval"])).toBe("awaiting_approval");
   });
 
+  it("NodeStarted → NodePaused → paused, not stuck at running", () => {
+    expect(laneFor(["NodeStarted", "NodePaused"])).toBe("paused");
+  });
+
+  it("a paused node resumes to running on a subsequent NodeStarted", () => {
+    expect(laneFor(["NodeStarted", "NodePaused", "NodeStarted"])).toBe("running");
+  });
+
   it("queued→started→completed is sticky terminal succeeded", () => {
     expect(laneFor(["NodeQueued", "NodeStarted", "NodeCompleted"])).toBe("succeeded");
   });
@@ -140,6 +148,12 @@ describe("buildOperationGraph — status fold", () => {
     const events = [ev("1", "NodeFailed", "op-a", {}, 1), ev("2", "NodeCompleted", "op-a", {}, 2)];
     const g = buildOperationGraph(events);
     expect(g.nodes[0]!.status).toBe("failed");
+  });
+
+  it("NodeStarted → NodePaused (signal-derived path) reports paused, not running", () => {
+    const events = [ev("1", "NodeStarted", "op-a", {}, 1), ev("2", "NodePaused", "op-a", {}, 2)];
+    const g = buildOperationGraph(events);
+    expect(g.nodes[0]!.status).toBe("paused");
   });
 });
 
@@ -440,5 +454,14 @@ describe("buildNodeStatusesByName", () => {
     const statuses = buildNodeStatusesByName(events);
     expect(statuses.get("step_a")?.status).toBe("running");
     expect(statuses.get("step_b")?.status).toBe("failed");
+  });
+
+  it("NodeStarted → NodePaused (planned/authored-correlation path) reports paused, not running", () => {
+    const events = [
+      ev("1", "NodeStarted", "runtime-uuid-1", { name: "step_a" }, 1),
+      ev("2", "NodePaused", "runtime-uuid-1", { name: "step_a" }, 2),
+    ];
+    const statuses = buildNodeStatusesByName(events);
+    expect(statuses.get("step_a")?.status).toBe("paused");
   });
 });

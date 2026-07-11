@@ -3,7 +3,7 @@ import type { SignalEvent } from "./api";
 // ── Types ─────────────────────────────────────────────────────────────────────
 
 export type OperationStatus =
-  "queued" | "running" | "awaiting_approval" | "succeeded" | "failed" | "escalated";
+  "queued" | "running" | "awaiting_approval" | "paused" | "succeeded" | "failed" | "escalated";
 
 export interface OperationNode {
   opId: string;
@@ -29,6 +29,7 @@ const KIND_TO_STATE: Record<string, OperationStatus | undefined> = {
   NodeQueued: "queued",
   NodeStarted: "running",
   NodeAwaitingApproval: "awaiting_approval",
+  NodePaused: "paused",
   NodeCompleted: "succeeded",
   NodeFailed: "failed",
   NodeEscalated: "escalated",

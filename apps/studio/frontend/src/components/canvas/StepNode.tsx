@@ -3,7 +3,7 @@
 import { memo, useEffect, useState } from "react";
 import { Handle, Position } from "reactflow";
 import type { NodeProps } from "reactflow";
-import { IconCheck, IconClose, IconWarning } from "@/components/ui/icons";
+import { IconCheck, IconClose, IconPause, IconWarning } from "@/components/ui/icons";
 
 function usePrefersReducedMotion(): boolean {
   const [reduced, setReduced] = useState(false);
@@ -33,7 +33,14 @@ const ROLE_VAR: Record<string, string> = {
 // render as the same neutral card — the distinction matters for correctness
 // (a queued node must never be painted as running), not for a separate look.
 export type NodeExecStatus =
-  "pending" | "queued" | "running" | "awaiting_approval" | "completed" | "failed" | "escalated";
+  | "pending"
+  | "queued"
+  | "running"
+  | "awaiting_approval"
+  | "paused"
+  | "completed"
+  | "failed"
+  | "escalated";
 
 export interface StepNodeData {
   label: string;
@@ -59,6 +66,8 @@ function StepNodeComponent({ data, selected }: NodeProps<StepNodeData>) {
   const isTerminalError = status === "failed" || status === "escalated";
 
   // These colors derive from status data (dag-* tokens) — keep inline
+  const isWarn = status === "awaiting_approval" || status === "paused";
+
   const borderColor =
     status === "running"
       ? "var(--dag-running-border)"
@@ -66,7 +75,7 @@ function StepNodeComponent({ data, selected }: NodeProps<StepNodeData>) {
         ? "var(--dag-completed-border)"
         : isTerminalError
           ? "var(--dag-failed-border)"
-          : status === "awaiting_approval"
+          : isWarn
             ? "var(--dag-warn-border)"
             : selected
               ? "var(--status-selected)"
@@ -79,7 +88,7 @@ function StepNodeComponent({ data, selected }: NodeProps<StepNodeData>) {
         ? "var(--dag-completed-bg)"
         : isTerminalError
           ? "var(--dag-failed-bg)"
-          : status === "awaiting_approval"
+          : isWarn
             ? "var(--dag-warn-bg)"
             : "var(--dag-pending-bg)";
 
@@ -90,7 +99,7 @@ function StepNodeComponent({ data, selected }: NodeProps<StepNodeData>) {
         ? "var(--dag-completed-label)"
         : isTerminalError
           ? "var(--dag-failed-label)"
-          : status === "awaiting_approval"
+          : isWarn
             ? "var(--dag-warn-label)"
             : "var(--content-primary)";
 
@@ -148,6 +157,11 @@ function StepNodeComponent({ data, selected }: NodeProps<StepNodeData>) {
         {status === "awaiting_approval" && (
           <span className="flex shrink-0 items-center text-status-warning">
             <IconWarning size={10} strokeWidth={2.5} />
+          </span>
+        )}
+        {status === "paused" && (
+          <span className="flex shrink-0 items-center text-status-warning">
+            <IconPause size={10} strokeWidth={2.5} />
           </span>
         )}
         {status === "running" && (
