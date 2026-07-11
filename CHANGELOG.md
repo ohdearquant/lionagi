@@ -21,6 +21,7 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
 - `lionagi.ln.to_uuid` now emits a `DeprecationWarning` at call time. It is not equivalent to `lionagi.protocols.ids.to_uuid` or `lionagi.protocols.ids.canonical_id`; use `lionagi.protocols.ids.to_uuid` for raw UUID/string values and `lionagi.protocols.ids.canonical_id` for generic Observable-like objects.
 - `lionagi.cli._runs.teardown_orchestration_persist` is now an async wrapper that emits a `DeprecationWarning` and delegates unchanged to `teardown_persist`; use `teardown_persist` instead.
 - `lionagi.cli.orchestrate._common.TEAM_WORKER_SYSTEM` is deprecated; use `TEAM_COORD_SECTION` appended to a worker's own system prompt instead.
+- `lionagi.operations.select.select.select` now emits a `DeprecationWarning` at call time; use `Branch.operate()` with an explicit caller-owned response model instead. Behavior and signature are unchanged; `select_v1` remains undeprecated for internal use.
 
 ## [0.28.0] - 2026-07-08
 
