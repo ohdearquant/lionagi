@@ -41,7 +41,8 @@ Returned by `create_sandbox()`. Do not construct directly.
 | `branch_name` | `str` | Name of the sandbox git branch |
 | `base_branch` | `str` | Branch the sandbox was forked from |
 | `repo_root` | `str` | Absolute path to the repository root |
-| `is_active` | `bool` | `True` until `sandbox_merge()` or `sandbox_discard()` completes |
+| `is_active` | `bool` | `True` until `sandbox_merge()` or `sandbox_discard()` completes both of their cleanup steps |
+| `base_sha` | `str` | Commit SHA `base_branch` pointed at when the sandbox was created |
 
 ---
 
@@ -58,21 +59,23 @@ async def create_sandbox(
 ```
 
 Create a git worktree at `<repo_root>/.worktrees/<name>/` on a new branch forked from
-`base_branch`.
+`base_branch`. Records `base_sha` (the commit `base_branch` pointed at) at creation time.
 
 | Param | Type | Default | Notes |
 |-------|------|---------|-------|
 | `repo_root` | `str` | — | Absolute path to the git repository root |
-| `base_branch` | `str \| None` | `None` | Branch to fork from; defaults to current HEAD branch |
+| `base_branch` | `str \| None` | `None` | Branch to fork from; defaults to the branch currently checked out at `repo_root` |
 | `name` | `str \| None` | `None` | Branch/directory name; auto-generated (`sandbox-<8hex>`) if `None` |
 
-Returns a `SandboxSession`. Raises `RuntimeError` if `git worktree add` fails.
+Returns a `SandboxSession`. Raises `RuntimeError` if `repo_root` is in a detached HEAD state
+(there is no branch name to fork from or merge back into) or if `git worktree add` fails.
 
 ```python
 session = await create_sandbox("/Users/me/project")
 # session.worktree_path → "/Users/me/project/.worktrees/sandbox-a1b2c3d4"
 # session.branch_name   → "sandbox-a1b2c3d4"
 # session.base_branch   → "main"
+# session.base_sha      → "a1b2c3d4e5f6..." (40-char SHA of main's tip at creation)
 ```
 
 ---
@@ -83,14 +86,19 @@ session = await create_sandbox("/Users/me/project")
 async def sandbox_diff(session: SandboxSession) -> dict
 ```
 
-Stage all changes in the worktree (`git add -A`) and return a diff summary.
+Read a diff summary of everything changed in the worktree — **without staging or otherwise
+mutating the index**. Tracked changes come from `git diff HEAD`; untracked files (including
+files inside untracked directories) are enumerated with `git ls-files --others
+--exclude-standard -z` and each diffed individually against `/dev/null` via `git diff
+--no-index`. The worktree's index is left exactly as the caller left it — calling `sandbox_diff`
+never stages anything, so it's safe to call repeatedly while iterating.
 
 Returns a dict:
 
 | Key | Type | Notes |
 |-----|------|-------|
-| `files_changed` | `list[str]` | Relative paths of changed files |
-| `stat` | `str` | `git diff --cached --stat` output |
+| `files_changed` | `list[str]` | Relative paths of changed files (tracked + untracked, including nested untracked files) |
+| `stat` | `str` | Combined `git diff HEAD --stat` plus per-file untracked stats |
 | `patch` | `str` | Unified diff patch (truncated to 10 000 chars if larger) |
 | `patch_truncated` | `bool` | `True` if the patch was truncated |
 | `full_patch_chars` | `int` | Total patch length in characters before truncation |
@@ -138,11 +146,23 @@ result = await sandbox_commit(session, "refactor: split auth into separate modul
 ### `sandbox_merge()`
 
 ```python
-async def sandbox_merge(session: SandboxSession) -> dict
+async def sandbox_merge(session: SandboxSession, *, allow_protected: bool = False) -> dict
 ```
 
 Stage and commit any remaining changes, then merge the sandbox branch into `base_branch` via
 `git merge --no-ff`. Cleans up the worktree and branch on success.
+
+Before merging, `sandbox_merge` refuses (returns `{"success": False, "error": ...}`, never
+raises) in three cases:
+
+1. **`repo_root` is in a detached HEAD state.** There is no branch ref for the merge to land
+   on, so a `HEAD == HEAD` comparison would otherwise merge into a detached commit with nothing
+   pointing at the result afterward.
+2. **`repo_root` isn't checked out on the sandbox's recorded `base_branch`.** No auto-checkout —
+   the caller must be on the exact branch the sandbox was forked from.
+3. **`base_branch` is a protected name** (`main`, `master`, or anything starting with
+   `release`) **and `allow_protected` wasn't passed.** Pass `allow_protected=True` to merge into
+   it explicitly.
 
 Returns a dict:
 
@@ -153,16 +173,22 @@ Returns a dict:
 | `worktree_removed` | `bool` | Whether the worktree directory was removed |
 | `branch_deleted` | `bool` | Whether the sandbox branch was deleted |
 | `errors` | `list[str]` | Any non-fatal errors from cleanup steps |
-| `error` | `str` | Merge conflict detail (only when `success=False`) |
+| `error` | `str` | Refusal or merge-conflict detail (only when `success=False`) |
 
 ```python
 result = await sandbox_merge(session)
 if not result["success"]:
-    print("Merge conflict:", result["error"])
+    print("Merge refused or failed:", result["error"])
+
+# Merging into a protected branch (main/master/release*) needs an explicit opt-in:
+result = await sandbox_merge(session, allow_protected=True)
 ```
 
-After a successful merge, `session.is_active` should be treated as `False` — the worktree
-no longer exists.
+`session.is_active` is only flipped to `False` once **both** the worktree removal and the
+branch deletion actually succeed. On a partial cleanup failure (e.g. a locked worktree),
+`is_active` stays `True` and `worktree_removed`/`branch_deleted` report the real per-step
+outcome — treat a merge result with `success=True` but `worktree_removed=False` or
+`branch_deleted=False` as "merged, cleanup incomplete," not fully done.
 
 ---
 
@@ -187,6 +213,22 @@ Returns a dict:
 await sandbox_discard(session)
 # worktree and branch are gone; base branch is untouched
 ```
+
+Worktree removal and branch deletion are independent steps and either can fail on its own (a
+locked worktree blocks removal; a branch checked out elsewhere blocks deletion). `is_active`
+only becomes `False` once **both** succeed — check `worktree_removed`/`branch_deleted`
+individually rather than assuming the call always fully cleans up. On the `CodingToolkit`
+sandbox tool facade (below), a partial failure here is surfaced as `success: False` and the
+tool keeps its internal session handle so a caller can inspect or retry instead of losing
+track of the sandbox.
+
+The `CodingToolkit` sandbox tool's `merge` action always calls `sandbox_merge` with the
+toolkit's own `sandbox_allow_protected` setting — the LLM-facing request schema has no
+`allow_protected` field, so an agent can never opt itself into merging into a protected
+branch. `sandbox_allow_protected` is a `CodingToolkit(...)` constructor argument (default
+`False`): an operator-level trust decision made by whoever composes the agent in code, e.g.
+`CodingToolkit(workspace_root=repo, tools=["sandbox"], sandbox_allow_protected=True)` for a
+job that's always meant to merge into `main`.
 
 ---
 
@@ -215,9 +257,10 @@ diff = await sandbox_diff(session)
 print(diff["stat"])
 print(f"Changed files: {diff['files_changed']}")
 
-# 4a. Accept — commit and merge back
+# 4a. Accept — commit and merge back (base_branch here is "main", a protected
+#     name, so the merge needs an explicit opt-in)
 await sandbox_commit(session, "refactor: split auth module")
-result = await sandbox_merge(session)
+result = await sandbox_merge(session, allow_protected=True)
 
 # 4b. Reject — discard all changes, no trace
 # await sandbox_discard(session)

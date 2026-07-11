@@ -70,6 +70,22 @@ def _diff_untracked_file(wt: str, rel_path: str) -> tuple[str, str]:
     return patch, stat
 
 
+def _list_untracked_files(wt: str) -> list[str]:
+    """List untracked (non-ignored) files, recursing into untracked directories.
+
+    Uses ``git ls-files --others --exclude-standard -z``: NUL-delimited raw
+    paths, unlike ``git status --porcelain`` which quotes/escapes paths with
+    spaces or special characters (breaking naive ``line[3:]`` slicing) and
+    reports an untracked directory as a single ``?? dir/`` entry instead of
+    the files inside it.
+    """
+    result = _subprocess_sync(
+        ["git", "ls-files", "--others", "--exclude-standard", "-z"], False, 30.0, wt
+    )
+    raw = result["stdout"]
+    return [p for p in raw.split("\0") if p]
+
+
 def _get_diff_sync(session: SandboxSession) -> dict:
     """Get diff of all changes in the worktree vs base branch.
 
@@ -83,8 +99,7 @@ def _get_diff_sync(session: SandboxSession) -> dict:
     tracked_changed, _, _ = _run_git(["diff", "HEAD", "--name-only"], cwd=wt)
     files = [f for f in tracked_changed.split("\n") if f] if tracked_changed else []
 
-    status_out, _, _ = _run_git(["status", "--porcelain"], cwd=wt)
-    untracked = [line[3:] for line in status_out.split("\n") if line.startswith("?? ")]
+    untracked = _list_untracked_files(wt)
 
     untracked_patches = []
     untracked_stats = []
@@ -157,16 +172,25 @@ def _cleanup_worktree_sync(session: SandboxSession) -> dict:
 def _merge_sync(session: SandboxSession, allow_protected: bool = False) -> dict:
     """Merge worktree branch back into base branch.
 
-    Refuses to run when ``repo_root`` is not actually checked out on the
-    session's recorded base branch (no auto-checkout), and refuses to merge
-    into a protected branch name (``main``, ``master``, ``release*``) unless
-    the caller explicitly opts in via ``allow_protected``.
+    Refuses to run when ``repo_root`` is in a detached HEAD state, when it is
+    not actually checked out on the session's recorded base branch (no
+    auto-checkout), and refuses to merge into a protected branch name
+    (``main``, ``master``, ``release*``) unless the caller explicitly opts
+    in via ``allow_protected``.
     """
     current_branch, err, rc = _run_git(["rev-parse", "--abbrev-ref", "HEAD"], cwd=session.repo_root)
     if rc != 0:
         return {
             "success": False,
             "error": f"Could not determine the branch checked out at repo_root: {err}",
+        }
+    if current_branch == "HEAD":
+        # `--abbrev-ref HEAD` returns the literal string "HEAD" when detached
+        # rather than a branch name — merging here would move a detached
+        # HEAD forward with no branch ref pointing at the result.
+        return {
+            "success": False,
+            "error": "repo_root is in a detached HEAD state; refusing to merge into an unverified target.",
         }
     if current_branch != session.base_branch:
         return {
@@ -214,6 +238,13 @@ async def create_sandbox(
     """Create an isolated sandbox (git worktree) for safe code changes."""
     if base_branch is None:
         stdout, _, _ = _run_git(["rev-parse", "--abbrev-ref", "HEAD"], cwd=repo_root)
+        if stdout == "HEAD":
+            # `--abbrev-ref HEAD` returns the literal string "HEAD" when
+            # repo_root is in a detached HEAD state — there is no branch to
+            # record as the sandbox's merge target.
+            raise RuntimeError(
+                "repo_root is in a detached HEAD state; pass an explicit base_branch."
+            )
         base_branch = stdout or "main"
 
     branch_name = name or f"sandbox-{uuid.uuid4().hex[:8]}"
@@ -233,9 +264,10 @@ async def sandbox_commit(session: SandboxSession, message: str) -> dict:
 async def sandbox_merge(session: SandboxSession, *, allow_protected: bool = False) -> dict:
     """Merge sandbox changes back and clean up.
 
-    Refuses when ``repo_root`` isn't checked out on the sandbox's recorded
-    base branch, and refuses to merge into a protected branch name (``main``,
-    ``master``, ``release*``) unless ``allow_protected=True``.
+    Refuses when ``repo_root`` is in a detached HEAD state or isn't checked
+    out on the sandbox's recorded base branch, and refuses to merge into a
+    protected branch name (``main``, ``master``, ``release*``) unless
+    ``allow_protected=True``.
     """
     return await run_sync(_merge_sync, session, allow_protected)
 

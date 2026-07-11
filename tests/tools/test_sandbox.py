@@ -9,6 +9,7 @@ from pathlib import Path
 
 import pytest
 
+import lionagi.tools.sandbox as sandbox_module
 from lionagi.tools.sandbox import (
     SandboxSession,
     create_sandbox,
@@ -189,6 +190,52 @@ async def test_sandbox_diff_patch_truncation(git_repo):
     assert diff["patch_truncated"] is True
     assert diff["full_patch_chars"] > 10000
     assert len(diff["patch"]) <= 10000
+    await sandbox_discard(session)
+
+
+async def test_sandbox_diff_untracked_filename_with_space(git_repo):
+    """`git status --porcelain` line[3:] slicing is fine for a plain space in
+    the middle of a filename too, but this pins the ls-files-based enumeration
+    so a future regression back to porcelain parsing is caught here first."""
+    session = await create_sandbox(str(git_repo))
+    (Path(session.worktree_path) / "space name.txt").write_text("has a space\n")
+    diff = await sandbox_diff(session)
+    assert "space name.txt" in diff["files_changed"]
+    assert "has a space" in diff["patch"]
+    await sandbox_discard(session)
+
+
+async def test_sandbox_diff_untracked_filename_with_quote(git_repo):
+    """A filename containing a double quote is quoted/escaped by porcelain
+    output (core.quotepath) — naive `?? ` line slicing mangles it and the
+    file silently disappears from files_changed/patch."""
+    session = await create_sandbox(str(git_repo))
+    (Path(session.worktree_path) / 'quote"name.txt').write_text("has a quote\n")
+    diff = await sandbox_diff(session)
+    assert 'quote"name.txt' in diff["files_changed"]
+    assert "has a quote" in diff["patch"]
+    await sandbox_discard(session)
+
+
+async def test_sandbox_diff_untracked_nested_directory(git_repo):
+    """`?? dir/` reports the directory as one entry — files inside it must
+    still show up individually in files_changed and in the patch."""
+    session = await create_sandbox(str(git_repo))
+    nested = Path(session.worktree_path) / "nested"
+    nested.mkdir()
+    (nested / "child.txt").write_text("nested content\n")
+    diff = await sandbox_diff(session)
+    assert "nested/child.txt" in diff["files_changed"]
+    assert "nested content" in diff["patch"]
+    await sandbox_discard(session)
+
+
+async def test_sandbox_diff_untracked_binary_file(git_repo):
+    session = await create_sandbox(str(git_repo))
+    (Path(session.worktree_path) / "blob.bin").write_bytes(bytes(range(256)))
+    diff = await sandbox_diff(session)
+    assert "blob.bin" in diff["files_changed"]
+    assert "Binary files" in diff["patch"] or "blob.bin" in diff["patch"]
     await sandbox_discard(session)
 
 
@@ -466,3 +513,94 @@ async def test_sandbox_full_lifecycle(git_repo):
 
     # verify worktree cleaned up
     assert not os.path.exists(session.worktree_path)
+
+
+# ---------------------------------------------------------------------------
+# Detached HEAD
+# ---------------------------------------------------------------------------
+
+
+async def test_create_sandbox_detached_head_raises(git_repo):
+    """A defaulted base_branch must never resolve to the literal "HEAD" —
+    that name doesn't refer to any branch and can't be a merge target."""
+    subprocess.run(
+        ["git", "checkout", "--detach", "master"],
+        cwd=str(git_repo),
+        capture_output=True,
+        check=True,
+    )
+    with pytest.raises(RuntimeError, match="detached"):
+        await create_sandbox(str(git_repo))
+
+
+async def test_sandbox_merge_refuses_detached_head_target(git_repo):
+    """Even if a session ends up recording base_branch="HEAD" (e.g. passed
+    explicitly), merge must refuse when repo_root is actually detached at
+    merge time rather than comparing HEAD == HEAD and merging blind."""
+    subprocess.run(
+        ["git", "checkout", "--detach", "master"],
+        cwd=str(git_repo),
+        capture_output=True,
+        check=True,
+    )
+    session = await create_sandbox(str(git_repo), base_branch="HEAD")
+    assert session.base_branch == "HEAD"
+    (Path(session.worktree_path) / "merged.txt").write_text("from sandbox\n")
+
+    result = await sandbox_merge(session, allow_protected=True)
+
+    assert result["success"] is False
+    assert "detached" in result["error"].lower()
+    assert not (git_repo / "merged.txt").exists()
+    assert session.is_active is True
+    await sandbox_discard(session)
+
+
+# ---------------------------------------------------------------------------
+# Cleanup: branch-deletion-only failure
+# ---------------------------------------------------------------------------
+
+
+async def test_sandbox_discard_branch_delete_failure_keeps_session(git_repo):
+    """Worktree removal can succeed while branch deletion still fails (the
+    branch gets checked out elsewhere the instant it frees up) — is_active
+    must stay True and branch_deleted must be reported False, mirroring the
+    existing worktree-removal-failure case."""
+    session = await create_sandbox(str(git_repo))
+    branch = session.branch_name
+    other_wt = git_repo / "other-wt"
+
+    real_run_git = sandbox_module._run_git
+
+    def fake_run_git(args, cwd=None):
+        if args[:2] == ["branch", "-D"] and args[-1] == branch:
+            # Simulate a concurrent checkout grabbing the branch the moment
+            # the worktree that held it is removed, before deletion runs.
+            subprocess.run(
+                ["git", "worktree", "add", str(other_wt), branch],
+                cwd=str(git_repo),
+                capture_output=True,
+                check=True,
+            )
+        return real_run_git(args, cwd)
+
+    original = sandbox_module._run_git
+    sandbox_module._run_git = fake_run_git
+    try:
+        result = await sandbox_discard(session)
+    finally:
+        sandbox_module._run_git = original
+
+    assert result["worktree_removed"] is True
+    assert result["branch_deleted"] is False
+    assert session.is_active is True
+
+    subprocess.run(
+        ["git", "worktree", "remove", str(other_wt), "--force"],
+        cwd=str(git_repo),
+        capture_output=True,
+        check=True,
+    )
+    subprocess.run(
+        ["git", "branch", "-D", branch], cwd=str(git_repo), capture_output=True, check=True
+    )
