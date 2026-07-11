@@ -1,6 +1,6 @@
 # ADR-0004: Directed graph structural invariants
 
-- **Status**: Proposed
+- **Status**: Accepted
 - **Kind**: Retrospective
 - **Area**: core-data-model
 - **Date**: 2026-07-09

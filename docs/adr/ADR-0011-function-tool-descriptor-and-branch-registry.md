@@ -1,6 +1,6 @@
 # ADR-0011: Function tool descriptor and Branch registry
 
-- **Status**: Proposed
+- **Status**: Accepted
 - **Kind**: Retrospective
 - **Area**: actions-tools
 - **Date**: 2026-07-09

@@ -1,6 +1,6 @@
 # ADR-0008: Pre-turn context-provider execution and attribution
 
-- **Status**: Proposed
+- **Status**: Accepted
 - **Kind**: Retrospective
 - **Area**: messages-context
 - **Date**: 2026-07-09

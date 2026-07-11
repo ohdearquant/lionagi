@@ -1,6 +1,6 @@
 # ADR-0001: Element identity and polymorphic serialization envelope
 
-- **Status**: Proposed
+- **Status**: Accepted
 - **Kind**: Retrospective
 - **Area**: core-data-model
 - **Date**: 2026-07-09

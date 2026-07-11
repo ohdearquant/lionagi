@@ -1,6 +1,6 @@
 # ADR-0012: Branch action execution and event lifecycle
 
-- **Status**: Proposed
+- **Status**: Accepted
 - **Kind**: Retrospective
 - **Area**: actions-tools
 - **Date**: 2026-07-09

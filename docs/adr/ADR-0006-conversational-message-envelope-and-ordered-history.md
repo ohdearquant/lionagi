@@ -1,6 +1,6 @@
 # ADR-0006: Conversational message envelope and ordered history
 
-- **Status**: Proposed
+- **Status**: Accepted
 - **Kind**: Retrospective
 - **Area**: messages-context
 - **Date**: 2026-07-09
