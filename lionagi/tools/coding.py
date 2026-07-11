@@ -772,7 +772,10 @@ class CodingToolkit(LionTool):
                 }
 
             if action == "diff":
-                return {"success": True, **(await sandbox_diff(session))}
+                try:
+                    return {"success": True, **(await sandbox_diff(session))}
+                except RuntimeError as e:
+                    return {"success": False, "error": str(e)}
             elif action == "commit":
                 if not message:
                     return {"success": False, "error": "'message' required for commit."}

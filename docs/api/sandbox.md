@@ -225,6 +225,12 @@ sandbox tool facade (below), a partial failure here is surfaced as `success: Fal
 tool keeps its internal session handle so a caller can inspect or retry instead of losing
 track of the sandbox.
 
+Retries are state-aware: a resource that is already absent (e.g. the worktree was removed by
+an earlier partial attempt) counts as cleaned up, so a later `sandbox_discard()` completes the
+remaining step and releases the session instead of failing forever on the step that already
+succeeded. `sandbox_diff()` raises and `sandbox_commit()` returns an error when the session's
+worktree no longer exists, rather than reporting an empty diff as success.
+
 The `CodingToolkit` sandbox tool's `merge` action always calls `sandbox_merge` with the
 toolkit's own `sandbox_allow_protected` setting — the LLM-facing request schema has no
 `allow_protected` field, so an agent can never opt itself into merging into a protected

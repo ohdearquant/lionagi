@@ -133,6 +133,61 @@ async def test_facade_merge_with_failed_cleanup_reports_failure_and_keeps_sessio
     assert "No active sandbox" not in str(diff_result.get("error", ""))
 
 
+async def test_facade_cleanup_retry_completes_after_partial_merge_cleanup(git_repo):
+    """The merge lands; the worktree removal succeeds but branch deletion is
+    blocked by another checkout of the same branch. Once that checkout is
+    gone, a discard retry must finish cleanup and release the session —
+    counting the already-removed worktree as done — instead of failing
+    forever and leaving the tool permanently occupied."""
+    _, sandbox = _make_sandbox_tool(git_repo, sandbox_allow_protected=True)
+
+    created = await sandbox(action="create")
+    assert created["success"] is True
+    worktree = Path(created["worktree"])
+    (worktree / "merged.txt").write_text("from sandbox\n")
+
+    other = git_repo.parent / "other-checkout"
+    subprocess.run(
+        ["git", "worktree", "add", "--force", str(other), created["branch"]],
+        cwd=str(git_repo),
+        capture_output=True,
+        check=True,
+    )
+
+    result = await sandbox(action="merge")
+    assert result["merged"] is True
+    assert result["success"] is False
+    assert result["worktree_removed"] is True
+    assert result["branch_deleted"] is False
+
+    # The retained session has no worktree — diff must fail loudly, not
+    # report an empty diff as success.
+    diff_result = await sandbox(action="diff")
+    assert diff_result["success"] is False
+    assert "no longer exists" in diff_result["error"]
+
+    commit_result = await sandbox(action="commit", message="stale")
+    assert commit_result["success"] is False
+    assert "no longer exists" in commit_result["error"]
+
+    subprocess.run(
+        ["git", "worktree", "remove", "--force", str(other)],
+        cwd=str(git_repo),
+        capture_output=True,
+        check=True,
+    )
+
+    retry = await sandbox(action="discard")
+    assert retry["success"] is True
+    assert retry["worktree_removed"] is True
+    assert retry["branch_deleted"] is True
+
+    # Session released: the tool is usable again.
+    after = await sandbox(action="diff")
+    assert after["success"] is False
+    assert "No active sandbox" in after["error"]
+
+
 # ---------------------------------------------------------------------------
 # Truthful discard cleanup reporting
 # ---------------------------------------------------------------------------

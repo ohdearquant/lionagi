@@ -475,6 +475,67 @@ async def test_sandbox_discard_leaves_is_active_true_on_failure(git_repo):
     )
 
 
+async def test_sandbox_discard_retry_completes_after_partial_cleanup(git_repo):
+    """Worktree removed but branch deletion blocked by another checkout: a
+    later retry must count the already-removed worktree as done and finish
+    cleanup, instead of failing forever on the step that already succeeded."""
+    session = await create_sandbox(str(git_repo))
+    other = git_repo.parent / "other-checkout"
+    subprocess.run(
+        ["git", "worktree", "add", "--force", str(other), session.branch_name],
+        cwd=str(git_repo),
+        capture_output=True,
+        check=True,
+    )
+
+    first = await sandbox_discard(session)
+    assert first["worktree_removed"] is True
+    assert first["branch_deleted"] is False
+    assert session.is_active is True
+
+    subprocess.run(
+        ["git", "worktree", "remove", "--force", str(other)],
+        cwd=str(git_repo),
+        capture_output=True,
+        check=True,
+    )
+
+    retry = await sandbox_discard(session)
+    assert retry["worktree_removed"] is True
+    assert retry["branch_deleted"] is True
+    assert session.is_active is False
+
+
+async def test_sandbox_diff_missing_worktree_raises_instead_of_empty(git_repo):
+    """A diff against a worktree that no longer exists must fail loudly —
+    the underlying git calls would otherwise fail silently and the result
+    would look like a clean, empty diff."""
+    session = await create_sandbox(str(git_repo))
+    subprocess.run(
+        ["git", "worktree", "remove", "--force", session.worktree_path],
+        cwd=str(git_repo),
+        capture_output=True,
+        check=True,
+    )
+
+    with pytest.raises(RuntimeError, match="no longer exists"):
+        await sandbox_diff(session)
+
+
+async def test_sandbox_commit_missing_worktree_returns_error(git_repo):
+    session = await create_sandbox(str(git_repo))
+    subprocess.run(
+        ["git", "worktree", "remove", "--force", session.worktree_path],
+        cwd=str(git_repo),
+        capture_output=True,
+        check=True,
+    )
+
+    result = await sandbox_commit(session, "msg")
+    assert result["success"] is False
+    assert "no longer exists" in result["error"]
+
+
 # ---------------------------------------------------------------------------
 # Full lifecycle
 # ---------------------------------------------------------------------------

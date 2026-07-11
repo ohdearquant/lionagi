@@ -93,6 +93,13 @@ def _get_diff_sync(session: SandboxSession) -> dict:
     exactly as the caller left it.
     """
     wt = session.worktree_path
+    if not Path(wt).is_dir():
+        # Without this guard the git calls below fail silently and the
+        # result looks like a clean, empty diff.
+        raise RuntimeError(
+            f"Sandbox worktree {wt} no longer exists; cleanup was partially "
+            "completed. Retry discard to finish cleanup."
+        )
 
     tracked_patch, _, _ = _run_git(["diff", "HEAD"], cwd=wt)
     tracked_stat, _, _ = _run_git(["diff", "HEAD", "--stat"], cwd=wt)
@@ -131,6 +138,14 @@ def _get_diff_sync(session: SandboxSession) -> dict:
 def _commit_sync(session: SandboxSession, message: str) -> dict:
     """Commit staged changes in the worktree."""
     wt = session.worktree_path
+    if not Path(wt).is_dir():
+        return {
+            "success": False,
+            "error": (
+                f"Sandbox worktree {wt} no longer exists; cleanup was "
+                "partially completed. Retry discard to finish cleanup."
+            ),
+        }
     _run_git(["add", "-A"], cwd=wt)
 
     stdout, stderr, rc = _run_git(["commit", "-m", message], cwd=wt)
@@ -143,12 +158,38 @@ def _commit_sync(session: SandboxSession, message: str) -> dict:
     return {"success": True, "commit": sha, "message": message}
 
 
+def _worktree_registered(repo_root: str, worktree_path: str) -> bool:
+    """Whether the path is still registered as a worktree of this repo."""
+    out, _, rc = _run_git(["worktree", "list", "--porcelain"], cwd=repo_root)
+    if rc != 0:
+        # Cannot verify — assume it is still present so a caller never
+        # treats an unverified worktree as cleaned up.
+        return True
+    target = str(Path(worktree_path).resolve())
+    for line in out.splitlines():
+        if line.startswith("worktree ") and str(Path(line[9:]).resolve()) == target:
+            return True
+    return False
+
+
+def _branch_exists(repo_root: str, branch_name: str) -> bool:
+    _, _, rc = _run_git(
+        ["rev-parse", "--verify", "--quiet", f"refs/heads/{branch_name}"],
+        cwd=repo_root,
+    )
+    return rc == 0
+
+
 def _cleanup_worktree_sync(session: SandboxSession) -> dict:
     """Remove worktree and delete branch.
 
-    ``is_active`` is only flipped to ``False`` once both the worktree removal
-    and the branch deletion have actually succeeded — a partial failure keeps
-    the session marked active so a caller cannot mistake it for cleaned up.
+    Retry-safe: a resource that is already absent counts as cleaned up, so a
+    partial failure (e.g. worktree removed but branch deletion blocked by
+    another checkout) can be completed by a later retry instead of failing
+    forever on the step that already succeeded. ``is_active`` is only flipped
+    to ``False`` once both resources are actually gone — a partial failure
+    keeps the session marked active so a caller cannot mistake it for
+    cleaned up.
     """
     _, err1, rc1 = _run_git(
         ["worktree", "remove", session.worktree_path, "--force"],
@@ -158,8 +199,10 @@ def _cleanup_worktree_sync(session: SandboxSession) -> dict:
         ["branch", "-D", session.branch_name],
         cwd=session.repo_root,
     )
-    worktree_removed = rc1 == 0
-    branch_deleted = rc2 == 0
+    worktree_removed = rc1 == 0 or not _worktree_registered(
+        session.repo_root, session.worktree_path
+    )
+    branch_deleted = rc2 == 0 or not _branch_exists(session.repo_root, session.branch_name)
     if worktree_removed and branch_deleted:
         session.is_active = False
     return {
