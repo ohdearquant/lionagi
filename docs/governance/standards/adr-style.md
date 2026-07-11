@@ -1,10 +1,21 @@
 # Governance ADR Style Standard
 
 **Purpose**: File naming, required sections, status lifecycle, cross-reference format, and type
-ownership rules for governance ADRs (ADR-0041 and later).
+ownership rules for governance ADRs (v0-0041 and later, in the numbering current at authoring
+time).
 
 Cross-references: [dsl-style.md](dsl-style.md), [trace-naming.md](trace-naming.md),
 [commit-and-pr-style.md](commit-and-pr-style.md)
+
+> **Historical note**: this standard predates the ADR corpus restructure. Every bare `ADR-00NN`
+> example below in the 0041-0052 range is a reference into the archived v0 corpus
+> (`docs/_archive/v0/ADR-00NN-*.md`), re-anchored here as `v0-00NN` because those numbers now
+> collide with unrelated ADRs in the current `docs/adr/` corpus. Per `docs/adr/dispositions.yaml`,
+> the entire v0-0041-v0-0052 governance type set was merged into
+> [ADR-0087 — Evidence-backed governed execution](../../adr/ADR-0087-evidence-backed-governed-execution.md).
+> The file-naming and archive-path rules in §1 and §5 already anticipated this split and remain
+> current guidance; the §8 type-ownership table is the pre-consolidation (P12-era) design intent,
+> not a live ownership index.
 
 ---
 
@@ -16,8 +27,8 @@ Cross-references: [dsl-style.md](dsl-style.md), [trace-naming.md](trace-naming.m
 - Numbers are never reused.
 - Keep the title stable after acceptance unless a replacement ADR supersedes it.
 
-**Note**: ADR-0043 currently exists as `ADR-0043-governed-tool-declaration.md`. Use that file
-name in references unless the file is deliberately renamed in a revision PR.
+**Note**: v0-0043 is archived as `docs/_archive/v0/ADR-0043-governed-tool-declaration.md`. Use
+that file name in references unless the file is deliberately renamed in a revision PR.
 
 ---
 
@@ -33,8 +44,8 @@ Date: YYYY-MM-DD
 Decision owners: @owner-a, @owner-b
 Supersedes: none
 Superseded by: none
-Depends on: ADR-0041, ADR-0050
-Related: ADR-0044, ADR-0052
+Depends on: v0-0041, v0-0050
+Related: v0-0044, v0-0052
 ```
 
 `Status` values: `proposed`, `accepted`, `revised`, `superseded`, `rejected`.
@@ -77,19 +88,19 @@ materially different form.
 
 ## 5. Cross-Reference Format
 
-- First mention in prose: `ADR-0047 (Agent Charter)`.
-- Dependency list: `Depends on: ADR-0044, ADR-0051`.
-- Inline references: `See ADR-0050 OperationContext propagation`.
+- First mention in prose: `v0-0047 (Agent Charter)`.
+- Dependency list: `Depends on: v0-0044, v0-0051`.
+- Inline references: `See v0-0050 OperationContext propagation`.
 - Avoid bare phrases like "the charter ADR" — the governance set has several charter-adjacent ADRs.
 - File paths: use repo-relative paths: `docs/adr/ADR-0001-element-identity-and-polymorphic-serialization-envelope.md` (archived v0 records: `docs/_archive/v0/ADR-0047-agent-charter.md`).
 - When overlaps exist, name the type owner explicitly. Example:
-  `GateResult is owned by ADR-0044; ADR-0050 embeds references to it.`
+  `GateResult is owned by v0-0044; v0-0050 embeds references to it.`
 
 **Good**:
 
 ```markdown
-This module emits `GateResult` (ADR-0044) and stores a reference in `OperationContext`
-(ADR-0050). See docs/_archive/v0/ADR-0044-tool-gates.md for the v0 record of the type.
+This module emits `GateResult` (v0-0044) and stores a reference in `OperationContext`
+(v0-0050). See docs/_archive/v0/ADR-0044-tool-gates.md for the v0 record of the type.
 ```
 
 **Bad** — ambiguous reference:
@@ -130,23 +141,23 @@ Revise (using `Status: revised`) when:
 Each governance type has exactly one ADR owner. Other ADRs may reference or import the type
 but must not redefine it.
 
-| Type | Owner ADR |
+| Type | Owner (v0 ADR) |
 |------|-----------|
-| `ImmutableEvidenceNode`, `EvidenceRef`, `EvidenceChain` | ADR-0041 |
-| `TaskCertificate`, `CertificateState`, `Defensibility` | ADR-0042 |
-| `GovernedToolMeta`, governed tool declaration fields | ADR-0043 |
-| `GateResult`, `GateEnforcement`, `ToolGate` | ADR-0044 |
-| `BreakGlassWindow`, `BreakGlassEvent` | ADR-0045 |
-| `PermitToken`, `JITGrant` | ADR-0046 |
-| `AgentCharter`, `CharterConstraint` | ADR-0047 |
-| `SoDPolicy`, `RoleAssignment` | ADR-0048 |
-| `LogTier` | ADR-0049 |
-| `OperationContext`, `ServiceContext` | ADR-0050 |
-| `ToolRegistryPolicy`, `RegistryEntry` | ADR-0051 |
-| `PolicyBundle`, `PolicyRelease`, `PolicyResolver` | ADR-0052 |
+| `ImmutableEvidenceNode`, `EvidenceRef`, `EvidenceChain` | v0-0041 |
+| `TaskCertificate`, `CertificateState`, `Defensibility` | v0-0042 |
+| `GovernedToolMeta`, governed tool declaration fields | v0-0043 |
+| `GateResult`, `GateEnforcement`, `ToolGate` | v0-0044 |
+| `BreakGlassWindow`, `BreakGlassEvent` | v0-0045 |
+| `PermitToken`, `JITGrant` | v0-0046 |
+| `AgentCharter`, `CharterConstraint` | v0-0047 |
+| `SoDPolicy`, `RoleAssignment` | v0-0048 |
+| `LogTier` | v0-0049 |
+| `OperationContext`, `ServiceContext` | v0-0050 |
+| `ToolRegistryPolicy`, `RegistryEntry` | v0-0051 |
+| `PolicyBundle`, `PolicyRelease`, `PolicyResolver` | v0-0052 |
 
-**Critical**: ADR-0044 and ADR-0050 both currently sketch `GateResult`. P12 must consolidate
-ownership to ADR-0044 before any implementation begins.
+**Critical**: v0-0044 and v0-0050 both currently sketch `GateResult`. P12 must consolidate
+ownership to v0-0044 before any implementation begins.
 
 ---
 
@@ -160,8 +171,8 @@ Date: 2026-05-27
 Decision owners: @governance-maintainers
 Supersedes: none
 Superseded by: none
-Depends on: ADR-0041, ADR-0044, ADR-0047, ADR-0051, ADR-0052
-Related: ADR-0048, ADR-0049, ADR-0050
+Depends on: v0-0041, v0-0044, v0-0047, v0-0051, v0-0052
+Related: v0-0048, v0-0049, v0-0050
 ```
 
 Why correct: dependencies name the owning ADRs for evidence, gates, charters, registry, and
@@ -180,12 +191,12 @@ Date: 2026-06-03
 Decision owners: @governance-maintainers
 Supersedes: none
 Superseded by: none
-Depends on: ADR-0044, ADR-0050
-Related: ADR-0043
+Depends on: v0-0044, v0-0050
+Related: v0-0043
 
 ## Decision
 
-`GateResult` is owned by ADR-0044. ADR-0050 may store `gate_result_ids` and gate summary
+`GateResult` is owned by v0-0044. v0-0050 may store `gate_result_ids` and gate summary
 projections in `OperationContext`, but must not define a second `GateResult` type.
 ```
 

@@ -151,7 +151,7 @@ base is extracted against.
 
 - ADR-0071 — Cognitive Mode Model (modes composed into engine agents).
 - ADR-0072 — Reactive Capability Bus (`observe`/`emit`/`gate`; the substrate).
-- ADR-0073 — Universal Agent Spec (`AgentSpec.compose`, engine agent construction).
+- ADR-0073 (never published; number unassigned) — Universal Agent Spec (`AgentSpec.compose`, engine agent construction).
 - ADR-0074 — Role Composition & Pack-Based Per-Role Configuration (engine config).
 - `lionagi/session/observer.py` — `SessionObserver` (emission store via `.flow`,
   `by_type`, `route`, `gate`).
