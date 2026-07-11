@@ -1,6 +1,6 @@
 # ADR-0073: Fixed workflow-definition execution
 
-- **Status**: Proposed
+- **Status**: Accepted
 - **Kind**: Retrospective
 - **Area**: scheduling-control-plane
 - **Date**: 2026-07-09

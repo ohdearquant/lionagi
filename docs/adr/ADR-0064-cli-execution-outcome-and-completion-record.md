@@ -1,6 +1,6 @@
 # ADR-0064: CLI execution outcome and completion record
 
-- **Status**: Proposed
+- **Status**: Accepted
 - **Kind**: Retrospective
 - **Area**: cli-surface
 - **Date**: 2026-07-09
@@ -216,7 +216,7 @@ TERMINAL_STATUSES_BY_ENTITY_TYPE = {
         "completed", "completed_empty", "failed",
         "timed_out", "aborted", "cancelled",
     }),
-    "schedule_run": frozenset({"completed", "failed", "skipped", "cancelled"}),
+    "schedule_run": frozenset({"completed", "failed", "timed_out", "skipped", "cancelled"}),
     "show": frozenset({"completed", "aborted"}),
     "play": frozenset({
         "merged", "escalated", "gate_failed", "blocked", "aborted_after_finish",
@@ -284,11 +284,12 @@ EXIT_CODE_BY_STATUS = {
 - `source` must be one of `executor`, `agent`, `admin`, or `system`.
 - `li wait` supports session, invocation, play, and schedule-run records. Show and team
   terminal sets exist in StateDB but are not wait-target kinds.
-- The `schedule_runs` table also admits `timed_out`, `waiting_dependency`, and
-  `retry_wait`, but the terminal and valid-status maps used by `update_status` do not
-  fully include that schema vocabulary. In particular, `li wait` does not currently
-  recognize a `timed_out` schedule run as terminal. This is current code behavior and a
-  delta, not a redefinition of schedule lifecycle.
+- The terminal and valid-status maps used by `update_status` are sourced from the
+  lifecycle policy registry (`lionagi/state/db.py:254-291`,
+  `lionagi/state/lifecycle/policy.py:305-320`), which carries the full schema
+  vocabulary including `timed_out`, `waiting_dependency`, and `retry_wait`. `li wait`
+  reads the same registry-sourced terminal map, so a `timed_out` schedule run is
+  recognized as terminal (`lionagi/cli/wait.py:180`).
 
 **Why this way.** A small status vocabulary supports reliable automation, while reason
 codes and evidence retain the cause without proliferating statuses. Denormalizing the
@@ -756,7 +757,7 @@ claiming the derived path or reused row is a complete execution model.
 | 1 | Bind every CLI execution to one persisted run id and workspace, write a minimal manifest before streaming, and store the workspace link on the execution record; acceptance: `li wait`, monitor tails, context import, and state import resolve the stored link and never synthesize an unverified path. | M | (filled at issue-open time) |
 | 2 | Separate reusable conversation branches from immutable execution outcomes; acceptance: every manual resume creates or deliberately appends to a modeled execution record, and its final outcome is persisted before the command returns an exit code. | M | (filled at issue-open time) |
 | 3 | Introduce a lifecycle-owned persistence scope for CLI and Studio execution; acceptance: one-shot cleanup retains its connection/thread reclamation tests while concurrent long-lived runs cannot close one another's StateDB handle. | M | (filled at issue-open time) |
-| 4 | Align the schedule-run schema, `VALID_STATUSES_BY_ENTITY_TYPE`, and `TERMINAL_STATUSES_BY_ENTITY_TYPE`; acceptance: every schema-valid terminal schedule status, including `timed_out`, is writable through `update_status` and causes `li wait` to terminate with the documented success/failure class. | S | (filled at issue-open time) |
+| 4 | Align the schedule-run schema, `VALID_STATUSES_BY_ENTITY_TYPE`, and `TERMINAL_STATUSES_BY_ENTITY_TYPE`; acceptance: every schema-valid terminal schedule status, including `timed_out`, is writable through `update_status` and causes `li wait` to terminate with the documented success/failure class. | S | Resolved on main (`lionagi/state/lifecycle/policy.py`) |
 
 ## Alternatives considered
 
@@ -823,6 +824,8 @@ implements neither representation. The delta requires a separate decision before
 changes.
 
 ## Notes
+
+An earlier revision of this record transcribed the pre-registry validator behavior; the unified lifecycle policy registry (`lionagi/state/lifecycle/policy.py`) reconciled the schedule-run and dispatch vocabularies, terminal sets, and edge graphs, and the corrected text above reflects that registry.
 
 The current `artifact_dir` field name is historical and stronger than its implementation:
 it is a derived run-directory candidate, not the session's stored `artifacts_path` and
