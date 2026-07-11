@@ -8,6 +8,7 @@ import inspect
 import pytest
 
 from lionagi.agent.hooks import auto_format_python, guard_destructive, guard_paths
+from lionagi.libs.path_safety import DENIED_NAMES
 
 
 async def test_guard_paths_returns_callable_hook(tmp_path):
@@ -229,6 +230,28 @@ async def test_guard_paths_denies_protected_basenames_without_denied_paths(tmp_p
         await allow_root_hook("reader", "read", {"path": str(protected_in_root)})
 
 
+@pytest.mark.parametrize("basename", sorted(DENIED_NAMES))
+@pytest.mark.parametrize("casing", ["upper", "title"])
+async def test_guard_paths_denies_protected_basenames_case_variants(tmp_path, basename, casing):
+    """Every DENIED_NAMES member is denied under an uppercase/mixed-case spelling
+    too, in both deny-only and allow-root modes — not just the exact lowercase
+    spelling — so a case-insensitive filesystem alias (e.g. '.ENV' for '.env')
+    cannot bypass the protected-basename floor."""
+    variant = basename.upper() if casing == "upper" else basename.title()
+
+    protected = tmp_path / variant
+    deny_only_hook = guard_paths()
+    with pytest.raises(PermissionError, match="protected path"):
+        await deny_only_hook("reader", "read", {"path": str(protected)})
+
+    allowed = tmp_path / "project"
+    allowed.mkdir(exist_ok=True)
+    protected_in_root = allowed / variant
+    allow_root_hook = guard_paths(allowed_paths=[str(allowed)])
+    with pytest.raises(PermissionError, match="protected path"):
+        await allow_root_hook("reader", "read", {"path": str(protected_in_root)})
+
+
 async def test_guard_paths_allows_relative_path_under_first_root(tmp_path):
     """A normal relative path resolves against and is allowed under the first root."""
     allowed = tmp_path / "project"
@@ -253,3 +276,35 @@ async def test_guard_paths_absolute_second_root_allowed_relative_resolves_first(
 
     result = await hook("reader", "read", {"path": "under_first.py"})
     assert result is None
+
+
+async def test_guard_paths_cross_root_relative_path_accepted(tmp_path):
+    """Pre-existing multi-root contract: a relative path is formed against the
+    first allowed root, but the resulting candidate is accepted if it resolves
+    under *any* configured root — not rejected outright just because it escapes
+    the first root. With roots [src, docs], '../docs/guide.md' (relative to
+    src) must resolve into docs and be allowed."""
+    src = tmp_path / "src"
+    docs = tmp_path / "docs"
+    src.mkdir()
+    docs.mkdir()
+    (docs / "guide.md").write_text("hello")
+    hook = guard_paths(allowed_paths=[str(src), str(docs)])
+
+    result = await hook("reader", "read", {"path": "../docs/guide.md"})
+    assert result is None
+
+
+async def test_guard_paths_relative_path_outside_all_roots_still_denied(tmp_path):
+    """A relative path that escapes every configured root remains denied."""
+    src = tmp_path / "src"
+    docs = tmp_path / "docs"
+    outside = tmp_path / "outside"
+    src.mkdir()
+    docs.mkdir()
+    outside.mkdir()
+    (outside / "secret.txt").write_text("nope")
+    hook = guard_paths(allowed_paths=[str(src), str(docs)])
+
+    with pytest.raises(PermissionError, match="allowed list"):
+        await hook("reader", "read", {"path": "../outside/secret.txt"})
