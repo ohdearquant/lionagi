@@ -1,6 +1,6 @@
 # ADR-0082: VS Code Studio observability client
 
-- **Status**: Proposed
+- **Status**: Accepted
 - **Kind**: Retrospective
 - **Area**: studio
 - **Date**: 2026-07-09

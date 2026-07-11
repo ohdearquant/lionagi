@@ -1,6 +1,6 @@
 # ADR-0094: Automated PR-review pipeline over github-poll schedules
 
-- **Status**: Proposed
+- **Status**: Accepted
 - **Kind**: Aspirational
 - **Area**: scheduling-control-plane
 - **Date**: 2026-07-10
@@ -46,10 +46,10 @@ A workflow that auto-runs an agent against a PR head must never do so for fork P
 the diff is attacker-controlled input, and an agent that reads it is an injection
 target. Exclusion must hold *before* anything spawns.
 
-The poll event dict today carries `pr_number, pr_title, pr_url, pr_author, updated_at,
-head_sha, draft` — no head-repository identity, so the trigger layer cannot currently
+The poll event dict originally carried `pr_number, pr_title, pr_url, pr_author, updated_at,
+head_sha, draft` — no head-repository identity, so the trigger layer could not
 distinguish a same-repo branch from a fork. The poller therefore gains three event
-fields and one filter:
+fields and one filter (now shipped):
 
 ```text
 head_repo:         "owner/name" | null   # null when the API's head.repo is null (deleted fork source)
@@ -70,8 +70,8 @@ check exposes nothing to attacker-controlled content.
 
 ## D2 — Two generic engine primitives, no review-specific engine code
 
-The engine's action-kind set is closed: `{agent, flow, fanout, play, flow_yaml,
-engine}`. None can invoke an external tool with per-event arguments — `play` is
+The engine's action-kind set was closed over `{agent, flow, fanout, play, flow_yaml,
+engine}`. None could invoke an external tool with per-event arguments — `play` is
 positional-only with no template surface, and `agent` spawns an LLM branch. The review
 workflow needs deterministic per-event setup (fork check, dedup) *before* any LLM
 exists, so pushing the workflow into an `agent`-kind prompt is not an option: it would
@@ -301,3 +301,12 @@ Single-repo pilot with the command allow-list restricted to the wrapper binary, 
 extend the sweep's repo list. The wrapper CLI contract (this document's D5/D6/D7
 surfaces) is implemented in the companion tooling repo; engine-side work is limited to
 the two primitives in D2.
+
+## Notes
+
+This record was written 2026-07-10 as a target-state design. The two engine-surface
+additions it specifies — the head-repo identity fields with the `same_repo_only` filter,
+and the allow-listed `command` action kind — landed on main shortly afterward under the
+exact shapes above, which is why the D1/D2 sentences describing the pre-change engine
+read in the past tense. The wrapper-side surfaces (D5-D7) live in the companion tooling
+repo and are tracked there.
