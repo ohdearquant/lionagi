@@ -1,6 +1,6 @@
 # ADR-0033: Operation-graph orchestration boundary
 
-- **Status**: Proposed
+- **Status**: Accepted
 - **Kind**: Retrospective
 - **Area**: orchestration
 - **Date**: 2026-07-09

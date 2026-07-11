@@ -1,6 +1,6 @@
 # ADR-0034: Domain-engine coordination and autonomy safeguards
 
-- **Status**: Proposed
+- **Status**: Accepted
 - **Kind**: Retrospective
 - **Area**: orchestration
 - **Date**: 2026-07-09

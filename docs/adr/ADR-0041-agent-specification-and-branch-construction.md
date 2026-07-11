@@ -1,6 +1,6 @@
 # ADR-0041: Agent specification and Branch construction boundary
 
-- **Status**: Proposed
+- **Status**: Accepted
 - **Kind**: Retrospective
 - **Area**: agent-roles
 - **Date**: 2026-07-09
