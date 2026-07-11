@@ -203,20 +203,42 @@ def test_immutable_edge_map_item_assignment_raises() -> None:
         edge_map["open"] = ()
 
 
-def test_immutable_edge_map_other_mutators_raise() -> None:
+def test_immutable_edge_map_has_no_mutator_surface() -> None:
     edge_map = ImmutableEdgeMap({"open": (EdgePolicy(to_status="closed"),)})
     with pytest.raises(TypeError):
         del edge_map["open"]
+    for mutator in ("update", "clear", "pop", "popitem", "setdefault"):
+        assert not hasattr(edge_map, mutator)
+
+
+def test_immutable_edge_map_inherited_dict_paths_cannot_mutate() -> None:
+    """The mutation paths a dict subclass cannot close must all fail here:
+    the in-place union operator, re-invoking __init__, reaching for dict's
+    C-level mutators directly, and attribute reassignment — and the map's
+    contents must be unchanged after every attempt."""
+    edge_map = ImmutableEdgeMap({"open": (EdgePolicy(to_status="closed"),)})
+    before = dict(edge_map)
     with pytest.raises(TypeError):
-        edge_map.update({"closed": ()})
+        edge_map |= {"new": ()}
     with pytest.raises(TypeError):
-        edge_map.clear()
+        edge_map.__init__({"new": ()})
     with pytest.raises(TypeError):
-        edge_map.pop("open")
+        dict.__setitem__(edge_map, "new", ())
     with pytest.raises(TypeError):
-        edge_map.popitem()
+        edge_map._edges = {}
+    assert dict(edge_map) == before
+
+
+def test_registered_policy_edges_cannot_be_mutated_via_inherited_paths() -> None:
+    registry = PolicyRegistry()
+    registry.register(_policy(edges={"open": (EdgePolicy(to_status="closed"),)}))
+    edges = registry.get("widget").edges
+    before = dict(edges)
     with pytest.raises(TypeError):
-        edge_map.setdefault("new", ())
+        registry.get("widget").edges["new"] = ()
+    with pytest.raises(TypeError):
+        edges.__init__({"new": ()})
+    assert dict(registry.get("widget").edges) == before
 
 
 def test_registered_policy_dataclasses_replace_works() -> None:
@@ -229,18 +251,18 @@ def test_registered_policy_dataclasses_replace_works() -> None:
 
 
 def test_registered_policy_dataclasses_asdict_works() -> None:
+    """asdict() must not raise on a registered policy. A non-dict Mapping is
+    deep-copied by asdict rather than recursed into, so the edges value stays
+    an ImmutableEdgeMap holding EdgePolicy instances — and the copy is
+    independent of the registered original."""
     registry = PolicyRegistry()
     registry.register(_policy(edges={"open": (EdgePolicy(to_status="closed"),)}))
     policy = registry.get("widget")
     as_dict = dataclasses.asdict(policy)
-    assert as_dict["edges"]["open"] == (
-        {
-            "to_status": "closed",
-            "actor_types": None,
-            "required_patch_fields": frozenset(),
-            "required_guard_fields": frozenset(),
-        },
-    )
+    assert isinstance(as_dict, dict)
+    assert isinstance(as_dict["edges"], ImmutableEdgeMap)
+    assert as_dict["edges"]["open"] == (EdgePolicy(to_status="closed"),)
+    assert as_dict["edges"] is not policy.edges
 
 
 def test_registered_policy_pickle_round_trips() -> None:

@@ -212,10 +212,10 @@ class LifecyclePolicy:
 requires a compare-and-swap guard on, beyond the `status` column itself — the
 dispatch `delivering -> delivering` crash-recovery claim is the motivating case,
 guarded on `attempt` so two workers racing on the same row can never both win it.
-An edge is satisfied only when the caller supplies either an `expected_version`
-guard or an `extra_guard` that covers every column named in
-`required_guard_fields`; neither alone for an edge that declares fields is
-accepted. `PolicyRegistry.register()` validates `required_guard_fields` the same
+An edge that declares guard fields is satisfied when the caller supplies either
+an `expected_version` guard or an `extra_guard` covering every column named in
+`required_guard_fields` — either one alone is accepted; callers may not omit
+both. `PolicyRegistry.register()` validates `required_guard_fields` the same
 way it validates `required_patch_fields`: every named field must be a member of
 the owning policy's `patch_fields` allowlist, or registration raises
 `ValueError` — a guard field can only be one this policy is already prepared to

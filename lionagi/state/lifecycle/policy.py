@@ -9,47 +9,63 @@ malformed policy) rather than deferring integrity checks to first use.
 from __future__ import annotations
 
 import dataclasses
+from collections.abc import Mapping
 
 from .models import EdgePolicy, LifecyclePolicy
 
 
-class ImmutableEdgeMap(dict):
-    """A ``dict`` subclass that rejects in-place mutation.
+class ImmutableEdgeMap(Mapping):
+    """An immutable mapping of from-status -> declared edges.
 
-    Unlike ``types.MappingProxyType``, this stays a real ``dict`` — it
-    remains compatible with ``dataclasses.asdict()``, ``pickle``, and
-    ``copy.deepcopy()``, which all special-case (or fail on) a
-    ``mappingproxy`` view. Mutation is blocked by overriding every
-    dict method that writes through ``self``.
+    Deliberately NOT a ``dict`` subclass: dict's C-level mutators reach the
+    underlying storage without going through Python-level overrides
+    (``dict.__setitem__(m, ...)``, inherited ``__ior__``, re-invoking
+    ``__init__``), so a subclass can never actually guarantee immutability.
+    Wrapping a private dict behind the ``Mapping`` interface leaves no
+    inherited mutation surface at all: there is no ``__setitem__``,
+    ``update``, or ``__ior__`` to reach, and re-invoking ``__init__`` is
+    refused. ``pickle``/``copy.deepcopy`` round-trip via ``__reduce__``
+    (reconstructing through the constructor), and ``dataclasses.asdict()``
+    deep-copies the map rather than raising.
     """
 
-    def _readonly(self, *_args, **_kwargs):
+    __slots__ = ("_edges",)
+
+    def __init__(self, edges) -> None:
+        if hasattr(self, "_edges"):
+            raise TypeError(
+                f"{type(self).__name__} is immutable; registered lifecycle "
+                "policies cannot have their edge map reinitialized in place"
+            )
+        object.__setattr__(self, "_edges", dict(edges))
+
+    def __setattr__(self, name, value) -> None:
         raise TypeError(
             f"{type(self).__name__} is immutable; registered lifecycle "
             "policies cannot have their edge map mutated in place"
         )
 
-    __setitem__ = _readonly
-    __delitem__ = _readonly
-    update = _readonly
-    clear = _readonly
-    pop = _readonly
-    popitem = _readonly
-    setdefault = _readonly
+    def __getitem__(self, key):
+        return self._edges[key]
+
+    def __iter__(self):
+        return iter(self._edges)
+
+    def __len__(self) -> int:
+        return len(self._edges)
+
+    def __repr__(self) -> str:
+        return f"{type(self).__name__}({self._edges!r})"
 
     def __reduce__(self):
-        # dict subclasses pickle by replaying __setitem__ for each item by
-        # default, which would raise through _readonly above. Reconstruct
-        # via the constructor instead, which populates through dict.__init__
-        # (not __setitem__), so unpickling round-trips to an immutable map.
-        return (self.__class__, (dict(self),))
+        return (type(self), (dict(self._edges),))
 
 
 class PolicyRegistry:
     """Maps entity_type -> frozen LifecyclePolicy, validated at registration.
 
     Registered policies are stored with their edge maps wrapped in an
-    immutable dict subclass (``ImmutableEdgeMap``) so a caller holding a
+    immutable mapping (``ImmutableEdgeMap``) so a caller holding a
     policy returned by ``get()`` cannot mutate global transition behavior
     for the process. ``seal()`` additionally closes the registry to further
     registration; ``DEFAULT_REGISTRY`` seals itself once its built-in
@@ -116,13 +132,13 @@ class PolicyRegistry:
                         f"edge {from_status!r} -> {edge.to_status!r} requires guard field(s) "
                         f"{sorted(unknown_guard)} outside the policy's patch_fields allowlist"
                     )
-        # Defensively wrap the edge map in an immutable dict before storing —
+        # Defensively wrap the edge map in an immutable mapping before storing —
         # the caller's own dict (and any built-in `_edges(...)` dict) stays
         # mutable in the caller's hands, but the copy this registry hands
         # back from `get()` cannot be reassigned through item assignment.
-        # ImmutableEdgeMap stays a real dict subclass (unlike
-        # MappingProxyType) so the stored policy remains compatible with
-        # dataclasses.asdict(), pickle, and copy.deepcopy().
+        # ImmutableEdgeMap has no inherited mutation surface (unlike a dict
+        # subclass) while remaining compatible with dataclasses.asdict(),
+        # pickle, and copy.deepcopy().
         frozen_policy = dataclasses.replace(policy, edges=ImmutableEdgeMap(policy.edges))
         self._by_entity_type[policy.entity_type] = frozen_policy
         self._by_table[policy.table] = policy.entity_type
