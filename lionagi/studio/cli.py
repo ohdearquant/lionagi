@@ -834,6 +834,18 @@ def _cmd_create(args: argparse.Namespace) -> int:
             print(f"Error: flow-yaml file not found: {p}", file=sys.stderr)
             return 1
         body["action_flow_yaml"] = p.read_text()
+    if getattr(args, "action_command", None):
+        body["action_command"] = args.action_command
+    if getattr(args, "action_command_args", None):
+        try:
+            parsed_command_args = json.loads(args.action_command_args)
+        except (ValueError, TypeError) as exc:
+            print(f"Error: --action-command-args must be valid JSON: {exc}", file=sys.stderr)
+            return 1
+        if not isinstance(parsed_command_args, list):
+            print("Error: --action-command-args must be a JSON array.", file=sys.stderr)
+            return 1
+        body["action_command_args"] = parsed_command_args
     # ADR-0070 delta 1: give the schedule a stable, persisted execution root
     # instead of depending on wherever the Studio daemon happens to be
     # running from when it eventually fires. An explicit --cwd always wins.
@@ -1081,7 +1093,7 @@ def add_schedule_subparser(subparsers: argparse._SubParsersAction) -> argparse.A
         "--action-kind",
         dest="action_kind",
         default="agent",
-        choices=("agent", "playbook", "flow_yaml"),
+        choices=("agent", "playbook", "flow_yaml", "command"),
         help="Action kind (default: agent).",
     )
     create_p.add_argument("--prompt", help="Prompt for agent action.")
@@ -1093,6 +1105,27 @@ def add_schedule_subparser(subparsers: argparse._SubParsersAction) -> argparse.A
         dest="flow_yaml",
         metavar="FILE",
         help="Path to a YAML flow spec file (for action-kind=flow_yaml).",
+    )
+    create_p.add_argument(
+        "--action-command",
+        dest="action_command",
+        metavar="NAME",
+        help=(
+            "Executable name to spawn directly, bypassing `li` (for "
+            "action-kind=command). Must be a bare name (no path separators) "
+            "and be a member of LIONAGI_SCHEDULER_COMMAND_ALLOWLIST; refused "
+            "loudly at create time and re-checked at fire time."
+        ),
+    )
+    create_p.add_argument(
+        "--action-command-args",
+        dest="action_command_args",
+        metavar="JSON",
+        help=(
+            "action-kind=command argv, as a JSON array of {{var}} templates "
+            "rendered from trigger_context at fire time, e.g. "
+            '\'["review-pr", "--pr", "{{pr_number}}"]\'.'
+        ),
     )
     create_p.add_argument("--project", help="Project name.")
     create_p.add_argument(

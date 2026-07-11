@@ -105,6 +105,10 @@ MIGRATION_COLUMNS: dict[str, list[tuple[str, str]]] = {
         # ADR-0070 delta 1: persisted per-schedule execution root, captured
         # once at creation. NULL on rows created before this migration.
         ("action_cwd", "TEXT"),
+        # Allow-listed executable + templated argv for the
+        # 'command' action kind.
+        ("action_command", "TEXT"),
+        ("action_command_args", "JSON"),
     ],
     "schedule_runs": [
         # ADR-0028: schedule_runs originally had no updated_at.

@@ -222,15 +222,21 @@ async def default_execute(row: dict[str, Any]) -> tuple[int, str]:
     schedule dict would (``action_model``/``action_prompt``/``action_agent``/...)."""
     action_args = row.get("action_args") or {}
     schedule_like = {"action_kind": row["action_kind"], **action_args}
-    li_prefix, li_resolve_error = _subprocess.resolve_li_executable()
-    if li_prefix is None:
-        return 1, f"cannot resolve li executable: {li_resolve_error}"
+    # kind='command' spawns an allow-listed executable directly, never
+    # through `li` -- resolving the `li` executable is unnecessary.
+    li_prefix: list[str] | None = None
+    if schedule_like["action_kind"] != "command":
+        li_prefix, li_resolve_error = _subprocess.resolve_li_executable()
+        if li_prefix is None:
+            return 1, f"cannot resolve li executable: {li_resolve_error}"
     try:
         argv, tmp_path = _subprocess.build_argv(schedule_like, {}, executable_prefix=li_prefix)
     except Exception as exc:  # noqa: BLE001
         return 1, f"{type(exc).__name__}: {exc}"
     invocation_id = uuid.uuid4().hex[:12]
-    return await _subprocess.spawn_and_wait(argv, invocation_id, tmp_path=tmp_path)
+    return await _subprocess.spawn_and_wait(
+        argv, invocation_id, tmp_path=tmp_path, action_kind=schedule_like.get("action_kind")
+    )
 
 
 async def reap_expired_leases(db: StateDB, *, now: float | None = None) -> dict[str, int]:

@@ -27,7 +27,9 @@ from ..services.schedules import (
 
 _log = logging.getLogger(__name__)
 
-_LAUNCH_VALID_KINDS = frozenset({"agent", "flow", "fanout", "play", "flow_yaml", "engine"})
+_LAUNCH_VALID_KINDS = frozenset(
+    {"agent", "flow", "fanout", "play", "flow_yaml", "engine", "command"}
+)
 
 _detached_tasks: set[asyncio.Task] = set()
 _user_cancelled: set[str] = set()
@@ -74,6 +76,20 @@ def _validate_request(data: dict[str, Any]) -> None:
         raise ValueError(
             "action_flow_yaml (the inline flow spec) is required for flow_yaml launches"
         )
+    if kind == "command":
+        from lionagi.studio.scheduler.subprocess import (
+            _validate_action_command,
+            _validate_command_allowlisted,
+        )
+
+        command = data.get("action_command") or ""
+        if not command.strip():
+            raise ValueError("action_command is required for command launches")
+        _validate_action_command(command)
+        _validate_command_allowlisted(command)
+        command_args = data.get("action_command_args")
+        if command_args is not None and not isinstance(command_args, list):
+            raise ValueError("action_command_args must be a list of strings")
 
 
 async def launch(data: dict[str, Any]) -> dict[str, Any]:
@@ -94,6 +110,8 @@ async def launch(data: dict[str, Any]) -> dict[str, Any]:
         "action_project": data.get("action_project"),
         "action_extra_args": data.get("action_extra_args") or [],
         "action_flow_yaml": data.get("action_flow_yaml"),
+        "action_command": data.get("action_command"),
+        "action_command_args": data.get("action_command_args") or [],
     }
     if data["action_kind"] == "engine":
         defn = await _resolve_engine_def(data["action_engine_def"])
@@ -135,7 +153,7 @@ async def launch(data: dict[str, Any]) -> dict[str, Any]:
             )
 
         task = asyncio.create_task(
-            _spawn_detached(argv, inv_id, tmp_path=tmp_path),
+            _spawn_detached(argv, inv_id, tmp_path=tmp_path, action_kind=data["action_kind"]),
             name=f"launch-{inv_id}",
         )
     except BaseException:
@@ -174,14 +192,18 @@ async def shutdown_launches() -> None:
     await asyncio.gather(*tasks, return_exceptions=True)
 
 
-async def _spawn_detached(argv: list[str], inv_id: str, *, tmp_path: str | None) -> None:
+async def _spawn_detached(
+    argv: list[str], inv_id: str, *, tmp_path: str | None, action_kind: str | None = None
+) -> None:
     """Spawn the process and update the invocation row when it exits."""
     from lionagi.state.reasons import RunReasons
 
     from ..scheduler.subprocess import spawn_and_wait
 
     try:
-        exit_code, _stderr = await spawn_and_wait(argv, inv_id, tmp_path=tmp_path)
+        exit_code, _stderr = await spawn_and_wait(
+            argv, inv_id, tmp_path=tmp_path, action_kind=action_kind
+        )
         if exit_code == 0:
             status, reason = "completed", RunReasons.COMPLETED_OK
         else:
@@ -245,6 +267,8 @@ class LaunchRequest(BaseModel):
     action_flow_yaml: str | None = None
     action_engine_def: str | None = None
     action_extra_args: list[str] | None = None
+    action_command: str | None = None
+    action_command_args: list[str] | None = None
 
 
 @studio_route("/launches/", method="POST", area="launches", status_code=202)
