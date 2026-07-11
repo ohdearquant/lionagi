@@ -7,9 +7,11 @@ from __future__ import annotations
 import time
 
 from lionagi._errors import TimeoutError as LionTimeoutError
-from lionagi.ln.concurrency import CancelScope, move_on_after
+from lionagi.ln.concurrency import CancelScope, create_task_group, move_on_after
 from lionagi.orchestration import plan
 from lionagi.orchestration.prompts import SYNTHESIS_INSTRUCTION
+from lionagi.session.exchange import Exchange
+from lionagi.tools.communication.messenger import LionMessenger
 
 from .._logging import log_error, progress
 from .._providers import parse_model_spec
@@ -184,6 +186,9 @@ async def _run_fanout_inner(
 
     if team_name:
         env.team_data = _create_fanout_team(team_name, worker_names)
+        env.exchange = Exchange()
+        env.messenger = LionMessenger(env.exchange)
+        env.roster = {}
         progress(f"Team '{team_name}' created ({env.team_data['id']}): {', '.join(worker_names)}")
 
     if _shared is not None:
@@ -217,11 +222,25 @@ async def _run_fanout_inner(
 
     t1 = time.monotonic()
     conc = max_concurrent if max_concurrent > 0 else len(fanned_nodes)
-    result2 = await env.session.flow(
-        env.builder.get_graph(),
-        max_concurrent=conc,
-        verbose=env.verbose,
-    )
+    if env.exchange is not None:
+        async with create_task_group() as tg:
+            tg.start_soon(env.exchange.run, 0.5)
+            try:
+                result2 = await env.session.flow(
+                    env.builder.get_graph(),
+                    max_concurrent=conc,
+                    verbose=env.verbose,
+                )
+            finally:
+                env.exchange.stop()
+        # Route any final outbox sends left over after the last collect tick.
+        await env.exchange.collect_all()
+    else:
+        result2 = await env.session.flow(
+            env.builder.get_graph(),
+            max_concurrent=conc,
+            verbose=env.verbose,
+        )
     t_fanout = time.monotonic() - t1
 
     op_results = result2.get("operation_results", {})

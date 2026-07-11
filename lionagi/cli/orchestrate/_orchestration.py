@@ -14,7 +14,11 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
+    from uuid import UUID
+
     from lionagi.casts.pack import Pack
+    from lionagi.session.exchange import Exchange
+    from lionagi.tools.communication.messenger import LionMessenger
 
 from lionagi import Branch, Session
 from lionagi._errors import ConfigurationError
@@ -309,6 +313,12 @@ class OrchestrationEnv:
     cwd: str | None
     team_data: dict | None = None
 
+    # In-process team messaging (parallel to team_data's file-based channel).
+    # All three are set together when team mode is active; None otherwise.
+    exchange: Exchange | None = None
+    messenger: LionMessenger | None = None
+    roster: dict[str, UUID] | None = None
+
     # None falls through to the default pack for role_config / resolve_modes.
     pack: Pack | None = None
 
@@ -557,6 +567,17 @@ async def build_worker_branch(
 
     if env._live_persist:
         register_branch_hook(env._live_persist, wb)
+
+    # In-process team messaging: only API-model workers can call tools
+    # (operate() only surfaces branch.acts for non-CLI providers); CLI
+    # workers keep the existing file-based `li team` channel untouched.
+    exchange = getattr(env, "exchange", None)
+    messenger = getattr(env, "messenger", None)
+    if exchange is not None and messenger is not None and not getattr(w_imodel, "is_cli", False):
+        exchange.register(wb.id)
+        env.roster[wname] = wb.id
+        msg_tool = messenger.bind(wb, env.roster, sender_name=wname)
+        wb.register_tools(msg_tool)
 
     return wb, w_model, w_profile
 

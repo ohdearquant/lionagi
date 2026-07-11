@@ -19,6 +19,8 @@ from lionagi._errors import TimeoutError as LionTimeoutError
 from lionagi.casts.emission import SpawnRequest, TaskAssignment
 from lionagi.ln.concurrency import CancelScope, move_on_after
 from lionagi.orchestration import plan, role_node_builder
+from lionagi.session.exchange import Exchange
+from lionagi.tools.communication.messenger import LionMessenger
 
 from .._logging import progress
 from .._logging import warn as _warn
@@ -951,6 +953,8 @@ async def _execute_dag(
     t_exec = time.monotonic()
     _hb_task = _asyncio.ensure_future(_heartbeat_loop())
     _ctl_task = _asyncio.ensure_future(_control_poll_loop())
+    _exchange = getattr(env, "exchange", None)
+    _exch_task = _asyncio.ensure_future(_exchange.run(0.5)) if _exchange is not None else None
     try:
         dag_result = await eng_run.run_dag(
             env.builder.get_graph(),
@@ -975,6 +979,12 @@ async def _execute_dag(
             await _hb_task
         with contextlib.suppress(_asyncio.CancelledError):
             await _ctl_task
+        if _exch_task is not None:
+            _exchange.stop()
+            with contextlib.suppress(_asyncio.CancelledError):
+                await _exch_task
+            # Route any final outbox sends left over after the last collect tick.
+            await _exchange.collect_all()
     t_exec_elapsed = time.monotonic() - t_exec
 
     # Drain every scheduled checkpoint write before returning — the whole
@@ -1736,6 +1746,11 @@ async def _run_flow_inner(
     elif team_name:
         env.team_data = _create_fanout_team(team_name, agent_ids)
         progress(f"Team '{team_name}' created ({env.team_data['id']})")
+
+    if env.team_data:
+        env.exchange = Exchange()
+        env.messenger = LionMessenger(env.exchange)
+        env.roster = {}
 
     budget_preambles: dict[int, str] = {}
     if env.total_budget and assignments:
