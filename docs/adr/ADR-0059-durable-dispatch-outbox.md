@@ -1,6 +1,6 @@
 # ADR-0059: Durable dispatch outbox
 
-- **Status**: Proposed
+- **Status**: Accepted
 - **Kind**: Retrospective
 - **Area**: persistence-state
 - **Date**: 2026-07-09
@@ -418,9 +418,11 @@ Code anchors: `lionagi/dispatch/outbox.py`; `lionagi/state/transitions.py`.
   requested, and `ValueError` for a token mismatch.
 - After token validation, acknowledgement uses the status read from the row as its CAS source. A
   concurrent status change returns `False`.
-- The current dispatch adapter has no legal-edge graph, so a correct token can move an ack-required
-  row from any current six-value status to `acked` if its CAS wins. It is not restricted to the
-  post-send `pending` state.
+- The dispatch adapter enforces the registered closed edge graph
+  (`lionagi/state/lifecycle/policy.py:360-399`): `acked` is reachable only from `pending` and
+  `delivering`, `dead_letter` and `expired` re-enter `pending` only through an operator-gated
+  edge, and terminal statuses have no outgoing edges. An ack attempt against any other current
+  status raises before the CAS runs.
 - Tokens are stored in clear text in the state database and shown by the full-row inspection path.
   This ADR treats them as capability values for local operational use, not as hashed credentials.
 
@@ -618,6 +620,8 @@ schedule vocabulary and SQLite compatibility migration. The library call proves 
 expanding scheduler schema.
 
 ## Notes
+
+An earlier revision of this record transcribed the pre-registry validator behavior; the unified lifecycle policy registry (`lionagi/state/lifecycle/policy.py`) reconciled the schedule-run and dispatch vocabularies, terminal sets, and edge graphs, and the corrected text above reflects that registry.
 
 `DispatchSignal.attempt` and the row's `attempt` currently diverge after the first claim. Consumers
 must use outbox inspection for current attempt count. A future payload rewrite or per-attempt

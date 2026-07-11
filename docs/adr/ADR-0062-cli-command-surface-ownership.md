@@ -1,6 +1,6 @@
 # ADR-0062: CLI command-surface ownership
 
-- **Status**: Proposed
+- **Status**: Accepted
 - **Kind**: Retrospective
 - **Area**: cli-surface
 - **Date**: 2026-07-09
