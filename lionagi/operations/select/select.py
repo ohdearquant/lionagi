@@ -2,6 +2,7 @@
 # SPDX-License-Identifier: Apache-2.0
 
 import logging
+import warnings
 from enum import Enum
 from typing import TYPE_CHECKING, Any
 
@@ -28,6 +29,13 @@ async def select(
     **kwargs: Any,
 ) -> SelectionModel | tuple[SelectionModel, "Branch"]:
     """Legacy wrapper around select_v1; supports deprecated branch_kwargs and optional return_branch tuple."""
+    warnings.warn(
+        "lionagi.operations.select.select.select is deprecated; use "
+        "Branch.operate() with an explicit caller-owned response model "
+        "instead.",
+        DeprecationWarning,
+        stacklevel=2,
+    )
     if verbose:
         logger.debug("Starting selection with up to %d choices.", max_num_selections)
 
