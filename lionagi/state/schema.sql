@@ -416,7 +416,7 @@ CREATE TABLE IF NOT EXISTS schedules (
   github_cursor       TEXT,
   poll_interval_sec   INTEGER,
   action_kind         TEXT    NOT NULL
-                      CHECK(action_kind IN ('agent', 'flow', 'fanout', 'play', 'flow_yaml')),
+                      CHECK(action_kind IN ('agent', 'flow', 'fanout', 'play', 'flow_yaml', 'command')),
   action_model        TEXT,
   action_prompt       TEXT,
   action_agent        TEXT,
@@ -429,6 +429,11 @@ CREATE TABLE IF NOT EXISTS schedules (
   -- pre-migration rows (see MIGRATION_COLUMNS backfill).
   action_cwd          TEXT,
   action_extra_args   JSON    DEFAULT '[]',
+  -- The 'command' action kind spawns an allow-listed
+  -- executable directly (never through `li`); action_command_args are
+  -- {{var}} templates rendered against trigger_context at fire time.
+  action_command       TEXT,
+  action_command_args  JSON    DEFAULT '[]',
   on_success          JSON,
   on_fail             JSON,
   last_fired_at       REAL,

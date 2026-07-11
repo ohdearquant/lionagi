@@ -27,7 +27,9 @@ from ..services.schedules import (
 
 _log = logging.getLogger(__name__)
 
-_LAUNCH_VALID_KINDS = frozenset({"agent", "flow", "fanout", "play", "flow_yaml", "engine"})
+_LAUNCH_VALID_KINDS = frozenset(
+    {"agent", "flow", "fanout", "play", "flow_yaml", "engine", "command"}
+)
 
 _detached_tasks: set[asyncio.Task] = set()
 _user_cancelled: set[str] = set()
@@ -74,6 +76,20 @@ def _validate_request(data: dict[str, Any]) -> None:
         raise ValueError(
             "action_flow_yaml (the inline flow spec) is required for flow_yaml launches"
         )
+    if kind == "command":
+        from lionagi.studio.scheduler.subprocess import (
+            _validate_action_command,
+            _validate_command_allowlisted,
+        )
+
+        command = data.get("action_command") or ""
+        if not command.strip():
+            raise ValueError("action_command is required for command launches")
+        _validate_action_command(command)
+        _validate_command_allowlisted(command)
+        command_args = data.get("action_command_args")
+        if command_args is not None and not isinstance(command_args, list):
+            raise ValueError("action_command_args must be a list of strings")
 
 
 async def launch(data: dict[str, Any]) -> dict[str, Any]:
@@ -94,6 +110,8 @@ async def launch(data: dict[str, Any]) -> dict[str, Any]:
         "action_project": data.get("action_project"),
         "action_extra_args": data.get("action_extra_args") or [],
         "action_flow_yaml": data.get("action_flow_yaml"),
+        "action_command": data.get("action_command"),
+        "action_command_args": data.get("action_command_args") or [],
     }
     if data["action_kind"] == "engine":
         defn = await _resolve_engine_def(data["action_engine_def"])
@@ -245,6 +263,8 @@ class LaunchRequest(BaseModel):
     action_flow_yaml: str | None = None
     action_engine_def: str | None = None
     action_extra_args: list[str] | None = None
+    action_command: str | None = None
+    action_command_args: list[str] | None = None
 
 
 @studio_route("/launches/", method="POST", area="launches", status_code=202)

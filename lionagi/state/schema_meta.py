@@ -470,7 +470,7 @@ schedules = Table(
         "action_kind",
         Text,
         CheckConstraint(
-            "action_kind IN ('agent','flow','fanout','play','flow_yaml')",
+            "action_kind IN ('agent','flow','fanout','play','flow_yaml','command')",
             name="ck_schedules_action_kind",
         ),
         nullable=False,
@@ -485,6 +485,10 @@ schedules = Table(
     # at creation (see schema.sql for the fuller comment).
     Column("action_cwd", Text),
     Column("action_extra_args", JSON, server_default="[]"),
+    # Allow-listed executable + templated argv for the
+    # 'command' action kind (see schema.sql for the fuller comment).
+    Column("action_command", Text),
+    Column("action_command_args", JSON, server_default="[]"),
     Column("on_success", JSON),
     Column("on_fail", JSON),
     Column("last_fired_at", Float),

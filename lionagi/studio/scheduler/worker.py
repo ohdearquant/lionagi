@@ -222,9 +222,13 @@ async def default_execute(row: dict[str, Any]) -> tuple[int, str]:
     schedule dict would (``action_model``/``action_prompt``/``action_agent``/...)."""
     action_args = row.get("action_args") or {}
     schedule_like = {"action_kind": row["action_kind"], **action_args}
-    li_prefix, li_resolve_error = _subprocess.resolve_li_executable()
-    if li_prefix is None:
-        return 1, f"cannot resolve li executable: {li_resolve_error}"
+    # kind='command' spawns an allow-listed executable directly, never
+    # through `li` -- resolving the `li` executable is unnecessary.
+    li_prefix: list[str] | None = None
+    if schedule_like["action_kind"] != "command":
+        li_prefix, li_resolve_error = _subprocess.resolve_li_executable()
+        if li_prefix is None:
+            return 1, f"cannot resolve li executable: {li_resolve_error}"
     try:
         argv, tmp_path = _subprocess.build_argv(schedule_like, {}, executable_prefix=li_prefix)
     except Exception as exc:  # noqa: BLE001

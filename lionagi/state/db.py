@@ -609,6 +609,10 @@ class StateDB:
             # existing DBs created before flow_yaml was added carry a
             # 4-value CHECK on schedules.action_kind that omits 'flow_yaml'.
             await self._drop_legacy_action_kind_check()
+            # Existing DBs (including ones already rebuilt to
+            # admit 'flow_yaml') carry a CHECK on schedules.action_kind that
+            # omits 'command'.
+            await self._drop_legacy_schedules_command_check()
             # existing DBs created before the completion-trust gate carry a
             # 6-value CHECK on invocations.status that omits 'completed_empty'.
             await self._drop_legacy_invocations_status_check()
@@ -859,6 +863,98 @@ class StateDB:
                     await conn.execute(text(idx_sql))
             finally:
                 await conn.execute(text("PRAGMA foreign_keys = ON"))
+
+    # Substring present only in the widened schedules CREATE SQL;
+    # its absence indicates a legacy DB whose action_kind CHECK still omits
+    # 'command'. Distinct from ``_LEGACY_SCHEDULES_FLOW_YAML_MARKER`` above:
+    # a DB already rebuilt to admit 'flow_yaml' carries that marker and
+    # would otherwise never re-run to pick up 'command' too.
+    _LEGACY_SCHEDULES_COMMAND_MARKER = "'command'"
+
+    async def _drop_legacy_schedules_command_check(self) -> None:
+        """Rebuild ``schedules`` if its action_kind CHECK still omits 'command'.
+
+        SQLite cannot widen a CHECK constraint via ALTER TABLE, so this uses
+        the same rename -> CREATE new -> INSERT SELECT -> DROP old pattern as
+        ``_drop_legacy_action_kind_check``. Runs after ``_reconcile_columns``
+        (via ``_apply_schema``), so the ADD COLUMN for action_command /
+        action_command_args has already landed on the pre-rebuild table.
+        """
+        if self.dialect != "sqlite":
+            return
+        async with self._engine.connect() as conn:
+            row = (
+                (
+                    await conn.execute(
+                        text(
+                            "SELECT sql FROM sqlite_master WHERE type='table' AND name='schedules'"
+                        )
+                    )
+                )
+                .mappings()
+                .first()
+            )
+        if row is None or row["sql"] is None:
+            return
+        create_sql: str = row["sql"]
+        if self._LEGACY_SCHEDULES_COMMAND_MARKER in create_sql:
+            # Table was already created / rebuilt with 'command' in the CHECK.
+            return
+
+        async with self._engine.connect() as conn:
+            index_rows = (
+                (
+                    await conn.execute(
+                        text(
+                            "SELECT sql FROM sqlite_master "
+                            "WHERE type='index' AND tbl_name='schedules' AND sql IS NOT NULL"
+                        )
+                    )
+                )
+                .mappings()
+                .all()
+            )
+            index_sqls = [r["sql"] for r in index_rows]
+
+            cols_rows = (await conn.execute(text("PRAGMA table_info(schedules)"))).mappings().all()
+            cols = [r["name"] for r in cols_rows]
+        col_list = ", ".join(cols)
+
+        # Derive the rebuild DDL from the canonical schema_meta Table rather than
+        # a hand-kept literal, so this migration path can never drift from the
+        # live schema (schema.sql / schema_meta.py parity is test-enforced).
+        rebuild_table = _schedules_table.to_metadata(MetaData(), name="schedules_new")
+        create_stmt = str(CreateTable(rebuild_table).compile(dialect=self._engine.dialect))
+
+        # ``schedules`` is an FK target (schedule_runs.schedule_id ON DELETE
+        # CASCADE): dropping it while `PRAGMA foreign_keys` is enforced
+        # cascades away every schedule_runs row that referenced it, even
+        # with the rows already safely copied into the new table first.
+        # `engine.begin()` opens its transaction before our first statement
+        # runs, and SQLite treats `PRAGMA foreign_keys` as a no-op inside a
+        # pending transaction -- so toggling it through a normal SQLAlchemy
+        # connection never actually takes effect (verified: it silently
+        # cascade-deleted schedule_runs rows in this exact rebuild before
+        # this fix). Go through the raw driver connection instead (same
+        # technique as ``_drop_legacy_invocations_status_check``) so the
+        # pragma flip is real autocommit, not swallowed by an open txn.
+        async with self._engine.connect() as conn:
+            driver = (await conn.get_raw_connection()).driver_connection
+            await driver.execute("PRAGMA foreign_keys = OFF")
+            try:
+                await driver.execute(create_stmt)
+                insert_sql = (
+                    f"INSERT INTO schedules_new ({col_list}) SELECT {col_list} FROM schedules"  # noqa: S608
+                )
+                await driver.execute(insert_sql)
+                await driver.execute("DROP TABLE schedules")
+                await driver.execute("ALTER TABLE schedules_new RENAME TO schedules")
+                for idx_sql in index_sqls:
+                    await driver.execute(idx_sql)
+                await driver.commit()
+            finally:
+                await driver.execute("PRAGMA foreign_keys = ON")
+                await driver.commit()
 
     # Substring present only in the post-completion-trust-gate invocations
     # CREATE SQL; its absence indicates a legacy DB whose status CHECK needs
@@ -2169,7 +2265,7 @@ class StateDB:
                         github_cursor, poll_interval_sec,
                         action_kind, action_model, action_prompt, action_agent,
                         action_playbook, action_flow_yaml, action_project, action_cwd,
-                        action_extra_args,
+                        action_extra_args, action_command, action_command_args,
                         on_success, on_fail, last_fired_at, next_fire_at,
                         missed_fire_policy, overlap_policy, max_runs, budget_usd, budget_tokens,
                         project, threshold_config, last_alert_at, created_at, updated_at)
@@ -2178,13 +2274,14 @@ class StateDB:
                                :github_cursor, :poll_interval_sec,
                                :action_kind, :action_model, :action_prompt, :action_agent,
                                :action_playbook, :action_flow_yaml, :action_project, :action_cwd,
-                               :action_extra_args,
+                               :action_extra_args, :action_command, :action_command_args,
                                :on_success, :on_fail, :last_fired_at, :next_fire_at,
                                :missed_fire_policy, :overlap_policy, :max_runs, :budget_usd, :budget_tokens,
                                :project, :threshold_config, :last_alert_at, :created_at, :updated_at)"""
                 ).bindparams(
                     bindparam("github_filter", type_=JSON),
                     bindparam("action_extra_args", type_=JSON),
+                    bindparam("action_command_args", type_=JSON),
                     bindparam("on_success", type_=JSON),
                     bindparam("on_fail", type_=JSON),
                     bindparam("threshold_config", type_=JSON),
@@ -2210,6 +2307,8 @@ class StateDB:
                     "action_project": schedule.get("action_project"),
                     "action_cwd": schedule.get("action_cwd"),
                     "action_extra_args": schedule.get("action_extra_args", []),
+                    "action_command": schedule.get("action_command"),
+                    "action_command_args": schedule.get("action_command_args", []),
                     "on_success": schedule.get("on_success"),
                     "on_fail": schedule.get("on_fail"),
                     "last_fired_at": schedule.get("last_fired_at"),
@@ -2306,6 +2405,8 @@ class StateDB:
             "action_project",
             "action_cwd",
             "action_extra_args",
+            "action_command",
+            "action_command_args",
             "on_success",
             "on_fail",
             "last_fired_at",
@@ -2327,6 +2428,7 @@ class StateDB:
         json_fields = {
             "github_filter",
             "action_extra_args",
+            "action_command_args",
             "on_success",
             "on_fail",
             "threshold_config",
@@ -4234,6 +4336,7 @@ class StateDB:
             "on_fail",
             "github_filter",
             "action_extra_args",
+            "action_command_args",
             "trigger_context",
             "action_args",
             "threshold_config",

@@ -89,6 +89,41 @@ def _svc_validate_extra_args(extra: list | None) -> None:
     _validate_extra_args(extra)
 
 
+def _svc_validate_action_command(command: str | None) -> None:
+    """Service-boundary check: reject an action_command that is unsafe or not
+    allow-listed.
+
+    Delegates to subprocess validators so the charset and allow-list rules
+    are defined in exactly one place. This is the "refused loudly at build
+    time" half of the guarantee; ``build_argv`` re-checks the allow-list
+    again at spawn time since ``LIONAGI_SCHEDULER_COMMAND_ALLOWLIST`` can
+    change between schedule creation and fire.
+    """
+    if not command:
+        return
+    from lionagi.studio.scheduler.subprocess import (
+        _validate_action_command,
+        _validate_command_allowlisted,
+    )
+
+    _validate_action_command(command)
+    _validate_command_allowlisted(command)
+
+
+def _svc_validate_command_args(args: list | None) -> None:
+    """Service-boundary check: action_command_args must be a list.
+
+    Elements are ``{{var}}`` templates rendered against trigger_context only
+    at fire time (no trigger_context exists yet at schedule build time), so
+    the leading-'-'/charset checks on the *rendered* value happen inside
+    ``build_argv`` (via ``_render_command_arg``), not here.
+    """
+    if args is None:
+        return
+    if not isinstance(args, list):
+        raise ValueError(f"action_command_args must be a list of strings, got {args!r}")
+
+
 def _svc_validate_cron_expr(expr: str | None, *, required: bool = False) -> None:
     """Service-boundary check: reject a syntactically invalid cron expression.
 
@@ -469,6 +504,8 @@ async def create_schedule(data: dict[str, Any]) -> dict[str, Any]:
     _svc_validate_identifier(data.get("action_playbook"), "action_playbook")
     _svc_validate_action_cwd(data.get("action_cwd"))
     _svc_validate_extra_args(data.get("action_extra_args"))
+    _svc_validate_action_command(data.get("action_command"))
+    _svc_validate_command_args(data.get("action_command_args"))
     _svc_validate_github_repo(data.get("github_repo"))
     _svc_validate_github_filter(data.get("github_filter"))
     _svc_validate_max_runs(data.get("max_runs"))
@@ -494,6 +531,11 @@ async def create_schedule(data: dict[str, Any]) -> dict[str, Any]:
         spec_err = _validate_flow_yaml_spec(yaml_text)
         if spec_err:
             raise ValueError(f"Invalid flow_yaml spec: {spec_err}")
+
+    if data.get("action_kind") == "command" and not (data.get("action_command") or "").strip():
+        raise ValueError(
+            "action_command is required and must not be empty for action_kind='command'"
+        )
 
     # ADR-0070 delta 1: snapshot a stable execution root at creation time.
     # An explicit action_cwd (already validated above) always wins. Failing
@@ -558,6 +600,10 @@ async def update_schedule(schedule_id: str, fields: dict[str, Any]) -> bool:
             _svc_validate_action_cwd(fields["action_cwd"])
         if "action_extra_args" in fields:
             _svc_validate_extra_args(fields["action_extra_args"])
+        if "action_command" in fields:
+            _svc_validate_action_command(fields["action_command"])
+        if "action_command_args" in fields:
+            _svc_validate_command_args(fields["action_command_args"])
         if "github_repo" in fields:
             _svc_validate_github_repo(fields["github_repo"])
         if "github_filter" in fields:
@@ -584,6 +630,13 @@ async def update_schedule(schedule_id: str, fields: dict[str, Any]) -> bool:
             spec_err = _validate_flow_yaml_spec(yaml_text)
             if spec_err:
                 raise ValueError(f"Invalid flow_yaml spec: {spec_err}")
+        if (
+            effective.get("action_kind") == "command"
+            and not (effective.get("action_command") or "").strip()
+        ):
+            raise ValueError(
+                "action_command is required and must not be empty for action_kind='command'"
+            )
         touches_trigger = "cron_expr" in fields or "trigger_type" in fields
         if touches_trigger and effective.get("trigger_type") == "cron":
             _svc_validate_cron_expr(effective.get("cron_expr"), required=True)
@@ -713,6 +766,8 @@ class CreateScheduleRequest(BaseModel):
     action_project: str | None = None
     action_cwd: str | None = None
     action_extra_args: list[str] | None = None
+    action_command: str | None = None
+    action_command_args: list[str] | None = None
     on_success: dict | None = None
     on_fail: dict | None = None
     missed_fire_policy: str = "skip"
@@ -742,6 +797,8 @@ class UpdateScheduleRequest(BaseModel):
     action_project: str | None = None
     action_cwd: str | None = None
     action_extra_args: list[str] | None = None
+    action_command: str | None = None
+    action_command_args: list[str] | None = None
     on_success: dict | None = None
     on_fail: dict | None = None
     missed_fire_policy: str | None = None
