@@ -9,7 +9,7 @@ a refactor, not a migration. Scoped to ``entity_type='dispatch'``
 (``dispatch_outbox``) and ``entity_type='schedule_run'`` (``schedule_runs``)
 only — it is not a general TransitionStore.
 
-ADR-0058: the guarded read/CAS/vocabulary/write algorithm itself now lives in
+The guarded read/CAS/vocabulary/write algorithm itself now lives in
 ``lionagi.state.lifecycle`` (shared with ``StateDB.update_status()``); this
 module keeps its own narrower entity-type boundary, its ``guard``/``patch``
 column allowlist, and the legacy ``TransitionResult`` return shape.
@@ -79,8 +79,8 @@ _ENTITY_TABLES: dict[str, str] = {
 
 # guard/patch column names are interpolated directly into SQL text (values are
 # still bound params) inside the lifecycle service. Every production call site
-# today passes literal dicts, but this module is a generic surface ADR-0062's
-# full transition backend will absorb, so a per-entity allowlist closes the
+# today passes literal dicts, but this module is a generic surface that a
+# future full transition backend will absorb, so a per-entity allowlist closes the
 # latent injection surface for future callers instead of trusting the
 # caller's dict keys outright.
 _GUARD_PATCH_COLUMNS: dict[str, frozenset[str]] = {
@@ -99,8 +99,8 @@ async def transition(
     """Guarded compare-and-swap transition: ``UPDATE ... WHERE id=:id AND status=:from``.
 
     Writes the row status and an atomic ``status_transitions`` append inside
-    one transaction, via the shared ``lionagi.state.lifecycle`` service
-    (ADR-0058 D4). A mismatched current state reports a conflict rather than
+    one transaction, via the shared ``lionagi.state.lifecycle`` service.
+    A mismatched current state reports a conflict rather than
     raising or silently overwriting (CAS guard). An undeclared status move
     (per the shared policy registry's edge graph) raises ``ValueError`` —
     this surface has no override mechanism, unlike ``StateDB.update_status()``.

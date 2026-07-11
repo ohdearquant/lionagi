@@ -9,18 +9,49 @@ malformed policy) rather than deferring integrity checks to first use.
 from __future__ import annotations
 
 import dataclasses
-from types import MappingProxyType
 
 from .models import EdgePolicy, LifecyclePolicy
+
+
+class ImmutableEdgeMap(dict):
+    """A ``dict`` subclass that rejects in-place mutation.
+
+    Unlike ``types.MappingProxyType``, this stays a real ``dict`` — it
+    remains compatible with ``dataclasses.asdict()``, ``pickle``, and
+    ``copy.deepcopy()``, which all special-case (or fail on) a
+    ``mappingproxy`` view. Mutation is blocked by overriding every
+    dict method that writes through ``self``.
+    """
+
+    def _readonly(self, *_args, **_kwargs):
+        raise TypeError(
+            f"{type(self).__name__} is immutable; registered lifecycle "
+            "policies cannot have their edge map mutated in place"
+        )
+
+    __setitem__ = _readonly
+    __delitem__ = _readonly
+    update = _readonly
+    clear = _readonly
+    pop = _readonly
+    popitem = _readonly
+    setdefault = _readonly
+
+    def __reduce__(self):
+        # dict subclasses pickle by replaying __setitem__ for each item by
+        # default, which would raise through _readonly above. Reconstruct
+        # via the constructor instead, which populates through dict.__init__
+        # (not __setitem__), so unpickling round-trips to an immutable map.
+        return (self.__class__, (dict(self),))
 
 
 class PolicyRegistry:
     """Maps entity_type -> frozen LifecyclePolicy, validated at registration.
 
     Registered policies are stored with their edge maps wrapped in an
-    immutable view (``MappingProxyType``) so a caller holding a policy
-    returned by ``get()`` cannot mutate global transition behavior for the
-    process. ``seal()`` additionally closes the registry to further
+    immutable dict subclass (``ImmutableEdgeMap``) so a caller holding a
+    policy returned by ``get()`` cannot mutate global transition behavior
+    for the process. ``seal()`` additionally closes the registry to further
     registration; ``DEFAULT_REGISTRY`` seals itself once its built-in
     policies are registered, while a locally constructed ``PolicyRegistry()``
     stays open until its own caller seals it.
@@ -78,11 +109,21 @@ class PolicyRegistry:
                         f"edge {from_status!r} -> {edge.to_status!r} requires patch field(s) "
                         f"{sorted(unknown_patch)} outside the policy's patch_fields allowlist"
                     )
-        # Defensively wrap the edge map in an immutable view before storing —
+                unknown_guard = edge.required_guard_fields - policy.patch_fields
+                if unknown_guard:
+                    raise ValueError(
+                        f"lifecycle policy registration: entity_type {policy.entity_type!r} "
+                        f"edge {from_status!r} -> {edge.to_status!r} requires guard field(s) "
+                        f"{sorted(unknown_guard)} outside the policy's patch_fields allowlist"
+                    )
+        # Defensively wrap the edge map in an immutable dict before storing —
         # the caller's own dict (and any built-in `_edges(...)` dict) stays
         # mutable in the caller's hands, but the copy this registry hands
         # back from `get()` cannot be reassigned through item assignment.
-        frozen_policy = dataclasses.replace(policy, edges=MappingProxyType(dict(policy.edges)))
+        # ImmutableEdgeMap stays a real dict subclass (unlike
+        # MappingProxyType) so the stored policy remains compatible with
+        # dataclasses.asdict(), pickle, and copy.deepcopy().
+        frozen_policy = dataclasses.replace(policy, edges=ImmutableEdgeMap(policy.edges))
         self._by_entity_type[policy.entity_type] = frozen_policy
         self._by_table[policy.table] = policy.entity_type
 

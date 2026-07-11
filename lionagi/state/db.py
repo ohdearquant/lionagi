@@ -258,7 +258,7 @@ TERMINAL_STATUSES_BY_ENTITY_TYPE: dict[str, frozenset[str]] = {
 SESSION_TERMINAL_STATUSES = TERMINAL_STATUSES_BY_ENTITY_TYPE["session"]
 INVOCATION_TERMINAL_STATUSES = TERMINAL_STATUSES_BY_ENTITY_TYPE[
     "invocation"
-]  # ADR-0025 vocabulary is shared
+]  # invocations share the session terminal-status vocabulary
 SCHEDULE_RUN_TERMINAL_STATUSES = TERMINAL_STATUSES_BY_ENTITY_TYPE["schedule_run"]
 SHOW_TERMINAL_STATUSES = TERMINAL_STATUSES_BY_ENTITY_TYPE["show"]
 # Still-in-flight play statuses — the schema layer owns this vocabulary
@@ -283,7 +283,7 @@ EXTRA_STATUS_WRITE_FIELDS_BY_ENTITY_TYPE: dict[str, frozenset[str]] = {
 # the terminal-overwrite floor above stops a terminal record from moving;
 # this stops ANY record (terminal or not) from being written to a status
 # that was never declared for its entity type. Sourced from the lifecycle
-# policy registry (ADR-0058) so the facade's vocabulary can never drift from
+# policy registry so the facade's vocabulary can never drift from
 # the statuses the unified policy (and the schema CHECK constraints) declare.
 VALID_STATUSES_BY_ENTITY_TYPE: dict[str, frozenset[str]] = {
     entity_type: _lifecycle_policy.DEFAULT_REGISTRY.get(entity_type).statuses
@@ -300,7 +300,7 @@ def can_transition(current: str | None, target: str) -> bool:
 
 # Re-exported (not redefined) so `from lionagi.state.db import
 # TransitionRejectedError` is unchanged for existing callers — the lifecycle
-# adapter module raises this same class object (ADR-0058 D5); see
+# adapter module raises this same class object; see
 # lionagi/state/lifecycle/adapters.py.
 TransitionRejectedError = _lifecycle_adapters.TransitionRejectedError
 
@@ -411,7 +411,7 @@ class StateDB:
         # natively, so the lock is a no-op for PG paths (they skip it via dialect
         # check in _tx()), but it still serializes Python-side CAS in update_status.
         self._write_lock: Lock = Lock()
-        # Lazily constructed (ADR-0058): the unified lifecycle service that
+        # Lazily constructed: the unified lifecycle service that
         # StateDB.update_status() delegates its guarded read/CAS/history
         # algorithm to. Cheap to build; deferred only so StateDB.__init__
         # never depends on import order inside lionagi.state.lifecycle.
@@ -1682,7 +1682,7 @@ class StateDB:
                 f"update_status() called with new_status={new_status!r} for "
                 f"entity_type={canonical_type!r}; vocabulary is {sorted(valid_statuses)}."
             )
-        # `table` kept for message-format parity with pre-ADR-0058 error text;
+        # `table` kept for message-format parity with the earlier error text;
         # the lifecycle policy for `canonical_type` resolves to the same table.
         table = _reason_entity_table(canonical_type)
         if extra_fields:
@@ -1696,10 +1696,10 @@ class StateDB:
                     f"entity_type={canonical_type!r}; allowed keys are {sorted(allowed_extra)}."
                 )
 
-        # ADR-0058: the guarded read/CAS/edge-validation/history-append
-        # algorithm (D4) now lives in LifecycleService; this method only
-        # keeps its own legacy-specific validation above and the D5
-        # outcome-to-bool/raise mapping below.
+        # The guarded read/CAS/edge-validation/history-append algorithm now
+        # lives in LifecycleService; this method only keeps its own
+        # legacy-specific validation above and the outcome-to-bool/raise
+        # mapping below.
         try:
             return await _lifecycle_adapters.run_update_status(
                 self._lifecycle_service(),
