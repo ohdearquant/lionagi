@@ -1,6 +1,6 @@
 # ADR-0017: Session membership and coordination boundary
 
-- **Status**: Proposed
+- **Status**: Accepted
 - **Kind**: Retrospective
 - **Area**: session-branch
 - **Date**: 2026-07-09

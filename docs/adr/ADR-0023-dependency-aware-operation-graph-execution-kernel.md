@@ -1,6 +1,6 @@
 # ADR-0023: Dependency-aware operation-graph execution kernel
 
-- **Status**: Proposed
+- **Status**: Accepted
 - **Kind**: Retrospective
 - **Area**: operations
 - **Date**: 2026-07-09

@@ -1,6 +1,6 @@
 # ADR-0021: Branch operation facade and turn-adapter contract
 
-- **Status**: Proposed
+- **Status**: Accepted
 - **Kind**: Retrospective
 - **Area**: operations
 - **Date**: 2026-07-09

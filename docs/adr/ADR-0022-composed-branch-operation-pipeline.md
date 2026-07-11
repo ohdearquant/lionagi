@@ -1,6 +1,6 @@
 # ADR-0022: Composed branch operation pipeline
 
-- **Status**: Proposed
+- **Status**: Accepted
 - **Kind**: Retrospective
 - **Area**: operations
 - **Date**: 2026-07-09

@@ -1,6 +1,6 @@
 # ADR-0016: Branch conversation aggregate and attachment boundary
 
-- **Status**: Proposed
+- **Status**: Accepted
 - **Kind**: Retrospective
 - **Area**: session-branch
 - **Date**: 2026-07-09

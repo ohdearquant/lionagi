@@ -1,6 +1,6 @@
 # ADR-0013: Built-in tool provider and Branch binding
 
-- **Status**: Proposed
+- **Status**: Accepted
 - **Kind**: Retrospective
 - **Area**: actions-tools
 - **Date**: 2026-07-09
