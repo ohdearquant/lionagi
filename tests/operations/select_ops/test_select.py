@@ -3,6 +3,7 @@
 
 """Comprehensive tests for select operations."""
 
+import warnings
 from enum import Enum
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -665,3 +666,128 @@ class TestSelectV1Integration:
         )
 
         assert "Optimized for reliability" in result.selected
+
+
+class TestSelectDeprecation:
+    """Regression tests for the legacy select() wrapper's deprecation warning."""
+
+    @pytest.mark.asyncio
+    async def test_select_warns_deprecation_warning(self):
+        branch = MagicMock(spec=Branch)
+
+        async def mock_operate(**kwargs):
+            return SelectionModel(selected=["option1"])
+
+        branch.operate = AsyncMock(side_effect=mock_operate)
+
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always")
+            await select(
+                branch=branch,
+                instruct={"instruction": "Choose"},
+                choices=["option1", "option2"],
+            )
+
+        deprecations = [w for w in caught if issubclass(w.category, DeprecationWarning)]
+        assert len(deprecations) == 1
+        assert "lionagi.operations.select.select.select" in str(deprecations[0].message)
+        assert "Branch.operate()" in str(deprecations[0].message)
+
+    @pytest.mark.asyncio
+    async def test_select_stacklevel_identifies_caller(self):
+        branch = MagicMock(spec=Branch)
+
+        async def mock_operate(**kwargs):
+            return SelectionModel(selected=["option1"])
+
+        branch.operate = AsyncMock(side_effect=mock_operate)
+
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always")
+            await select(  # this exact line
+                branch=branch,
+                instruct={"instruction": "Choose"},
+                choices=["option1", "option2"],
+            )
+
+        deprecations = [w for w in caught if issubclass(w.category, DeprecationWarning)]
+        assert len(deprecations) == 1
+        assert deprecations[0].filename == __file__
+
+    @pytest.mark.asyncio
+    async def test_select_result_unchanged_under_warning(self):
+        branch = MagicMock(spec=Branch)
+
+        async def mock_operate(**kwargs):
+            return SelectionModel(selected=["option1"])
+
+        branch.operate = AsyncMock(side_effect=mock_operate)
+
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", DeprecationWarning)
+            result = await select(
+                branch=branch,
+                instruct={"instruction": "Choose"},
+                choices=["option1", "option2"],
+            )
+
+        assert isinstance(result, SelectionModel)
+        assert result.selected == ["option1"]
+
+    @pytest.mark.asyncio
+    async def test_select_return_branch_unchanged_under_warning(self):
+        branch = MagicMock(spec=Branch)
+
+        async def mock_operate(**kwargs):
+            return SelectionModel(selected=["choice1"])
+
+        branch.operate = AsyncMock(side_effect=mock_operate)
+
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", DeprecationWarning)
+            result, returned_branch = await select(
+                branch=branch,
+                instruct={"instruction": "Select"},
+                choices=["choice1", "choice2"],
+                return_branch=True,
+            )
+
+        assert isinstance(result, SelectionModel)
+        assert returned_branch == branch
+
+    @pytest.mark.asyncio
+    async def test_select_v1_does_not_warn(self):
+        branch = MagicMock(spec=Branch)
+
+        async def mock_operate(**kwargs):
+            return SelectionModel(selected=["choice1"])
+
+        branch.operate = AsyncMock(side_effect=mock_operate)
+
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always")
+            await select_v1(
+                branch=branch,
+                instruct={"instruction": "Select"},
+                choices=["choice1", "choice2"],
+            )
+
+        deprecations = [w for w in caught if issubclass(w.category, DeprecationWarning)]
+        assert len(deprecations) == 0
+
+    @pytest.mark.asyncio
+    async def test_unrelated_branch_operate_does_not_warn(self):
+        """Branch.operate() itself must not pick up a select() deprecation warning."""
+        branch = MagicMock(spec=Branch)
+
+        async def mock_operate(**kwargs):
+            return SelectionModel(selected=["choice1"])
+
+        branch.operate = AsyncMock(side_effect=mock_operate)
+
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always")
+            await branch.operate(instruction="unrelated call")
+
+        deprecations = [w for w in caught if issubclass(w.category, DeprecationWarning)]
+        assert len(deprecations) == 0
