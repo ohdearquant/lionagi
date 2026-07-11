@@ -3,15 +3,12 @@
 
 """Antigravity CLI (`agy`) backend for the `gemini-code` / `gemini-cli` provider.
 
-Google folded the standalone Gemini Code Assist CLI into the Antigravity suite
-(`agy`), so this provider now drives `agy` in headless print mode with
-``--output-format json``. That mode emits one terminal JSON object
-(``conversation_id``, ``status``, ``response``, ``usage``), which is exactly one
-NDJSON record, so the shared ``ndjson_from_cli`` subprocess plumbing consumes it
-unchanged. ``conversation_id`` is stored as ``session.session_id`` so it rides
-the normal AssistantResponse -> branch -> state.db persistence path and native
-resume works via ``--conversation``. The public names, module path, and
-provider aliases (``gemini-code`` / ``gemini-cli`` / ``gemini_cli``) are kept.
+Google folded Gemini Code Assist CLI into Antigravity (`agy`); this provider
+drives `agy` in headless print mode (``--output-format json``), which emits
+one terminal JSON object — exactly one NDJSON record, consumed unchanged by
+the shared ``ndjson_from_cli`` plumbing. ``conversation_id`` is stored as
+``session.session_id`` so native resume works via ``--conversation``. Public
+names/aliases (``gemini-code`` / ``gemini-cli`` / ``gemini_cli``) are kept.
 """
 
 from __future__ import annotations
@@ -138,21 +135,17 @@ def resolve_agy_model(
 ) -> str:
     """Map a lionagi model spec onto an exact `agy --model` name.
 
-    agy has no effort flag/kwarg — effort is expressed only as the
-    Low/Medium/High suffix on the model name. `effort` is lionagi's 5-level
-    scale (none|minimal|low|medium|high|xhigh|max); when given, it selects
-    that suffix for the Gemini flash/pro families instead of the family
-    default below (`_clamp_gemini_effort` collapses onto Gemini 3.1 Pro's
-    Low/High-only range). An exact `(...)`-qualified `model` — already a
-    concrete agy display name — always wins over `effort` by default.
+    agy has no effort flag — effort is expressed only via the Low/Medium/High
+    suffix on the model name. `effort` is lionagi's 5-level scale
+    (none|minimal|low|medium|high|xhigh|max), clamped onto Gemini 3.1 Pro's
+    Low/High-only range (`_clamp_gemini_effort`). An exact `(...)`-qualified
+    `model` (already a concrete agy display name) wins over `effort` by
+    default.
 
-    `reapply_effort=True` bypasses that short-circuit for the Gemini
-    flash/pro families so a new `effort` can replace the suffix already
-    baked into `model`. Callers set this only when `model` is a *persisted*
-    prior resolution rather than something the caller typed on this
-    invocation (e.g. `li agent -r ... --effort ...` re-applying effort to
-    a resumed branch's already-resolved model, with no new `--model` given)
-    — a model the caller explicitly pinned this turn must still win.
+    `reapply_effort=True` lets a new `effort` replace the suffix already
+    baked into a *persisted* prior resolution (e.g. `li agent -r ...
+    --effort ...`); a `model` the caller explicitly typed this turn still
+    wins regardless.
     """
     if not model:
         model = "gemini-3.5-flash"

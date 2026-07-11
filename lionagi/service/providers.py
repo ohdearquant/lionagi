@@ -41,13 +41,10 @@ EFFORT_LEVELS = frozenset(
 def normalize_effort(effort: str | None) -> str | None:
     """Case-fold a raw effort string to lionagi's lowercase vocabulary.
 
-    Every clamp table below (_CODEX_EFFORT_CLAMP, _clamp_claude_effort,
-    _GEMINI_EFFORT_CLAMP) is keyed on lowercase levels and falls back to a
-    default on a lookup miss, so an un-normalized value like "High" silently
-    misclamps rather than raising. Call this once at each boundary where a
-    raw effort string enters lionagi from outside (CLI flag, profile
-    frontmatter, orchestration spec) — accepted vocabulary is unchanged,
-    only case is folded.
+    Clamp tables below are keyed on lowercase levels and silently misclamp
+    (no raise) on an un-normalized value like "High" — call this once at
+    each boundary where a raw effort string enters lionagi (CLI flag,
+    profile frontmatter, orchestration spec).
     """
     return effort.lower() if isinstance(effort, str) else effort
 
