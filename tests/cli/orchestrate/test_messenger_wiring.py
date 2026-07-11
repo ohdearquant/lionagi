@@ -12,6 +12,7 @@ import pytest
 
 from lionagi import iModel
 from lionagi.cli.orchestrate._orchestration import OrchestrationEnv, build_worker_branch
+from lionagi.operations.builder import OperationGraphBuilder
 from lionagi.session.exchange import Exchange
 from lionagi.tools.communication.messenger import LionMessenger
 
@@ -79,13 +80,14 @@ async def test_api_worker_gets_registered_and_bound(tmp_path):
         "lionagi.cli.orchestrate._orchestration.build_imodel_from_spec",
         side_effect=_api_imodel,
     ):
-        wb, _model, _profile = await build_worker_branch(
+        wb, _model, _profile, messenger_bound = await build_worker_branch(
             env, agent_id="alice", role="researcher", explicit_name="alice"
         )
 
     assert exchange.has(wb.id)
     assert roster["alice"] == wb.id
     assert any(t.function == "messenger" for t in wb.acts.registry.values())
+    assert messenger_bound is True
 
 
 @pytest.mark.asyncio
@@ -100,13 +102,14 @@ async def test_cli_worker_skips_messenger_binding(tmp_path):
         "lionagi.cli.orchestrate._orchestration.build_imodel_from_spec",
         side_effect=_cli_imodel,
     ):
-        wb, _model, _profile = await build_worker_branch(
+        wb, _model, _profile, messenger_bound = await build_worker_branch(
             env, agent_id="cli-worker", role="researcher", explicit_name="cli-worker"
         )
 
     assert not exchange.has(wb.id)
     assert "cli-worker" not in roster
     assert not any(t.function == "messenger" for t in wb.acts.registry.values())
+    assert messenger_bound is False
 
 
 @pytest.mark.asyncio
@@ -118,11 +121,12 @@ async def test_no_exchange_configured_skips_binding_entirely(tmp_path):
         "lionagi.cli.orchestrate._orchestration.build_imodel_from_spec",
         side_effect=_api_imodel,
     ):
-        wb, _model, _profile = await build_worker_branch(
+        wb, _model, _profile, messenger_bound = await build_worker_branch(
             env, agent_id="solo", role="researcher", explicit_name="solo"
         )
 
     assert not any(t.function == "messenger" for t in wb.acts.registry.values())
+    assert messenger_bound is False
 
 
 @pytest.mark.asyncio
@@ -137,10 +141,10 @@ async def test_send_collect_receive_roundtrip_renders_sender_name(tmp_path):
         "lionagi.cli.orchestrate._orchestration.build_imodel_from_spec",
         side_effect=_api_imodel,
     ):
-        branch_a, _, _ = await build_worker_branch(
+        branch_a, _, _, _ = await build_worker_branch(
             env, agent_id="alice", role="researcher", explicit_name="alice"
         )
-        branch_b, _, _ = await build_worker_branch(
+        branch_b, _, _, _ = await build_worker_branch(
             env, agent_id="bob", role="implementer", explicit_name="bob"
         )
 
@@ -158,3 +162,95 @@ async def test_send_collect_receive_roundtrip_renders_sender_name(tmp_path):
     # roster is the SAME shared dict passed to both binds — later-registered
     # bob is visible to alice's already-bound tool without rebinding.
     assert roster == {"alice": branch_a.id, "bob": branch_b.id}
+
+
+def _add_worker_operate_node(
+    builder: OperationGraphBuilder, *, branch, instruction, messenger_bound
+):
+    """Mirrors the exact node-creation conditional used by fanout.py/flow.py:
+    pass `actions=True` only when this worker actually got the messenger tool."""
+    return builder.add_operation(
+        "operate",
+        branch=branch,
+        instruction=instruction,
+        context=[{"overall_task": "t"}],
+        **({"actions": True} if messenger_bound else {}),
+    )
+
+
+@pytest.mark.asyncio
+async def test_operate_node_carries_actions_kwarg_when_team_messaging_active(tmp_path):
+    """API worker + active team messaging: the static operate node's request
+    includes actions=True, so Branch.operate() serializes branch.acts."""
+    exchange = Exchange()
+    messenger = LionMessenger(exchange)
+    roster: dict = {}
+    env = _make_env(tmp_path, exchange=exchange, messenger=messenger, roster=roster)
+    builder = OperationGraphBuilder()
+
+    with patch(
+        "lionagi.cli.orchestrate._orchestration.build_imodel_from_spec",
+        side_effect=_api_imodel,
+    ):
+        wb, _model, _profile, messenger_bound = await build_worker_branch(
+            env, agent_id="alice", role="researcher", explicit_name="alice"
+        )
+
+    node_id = _add_worker_operate_node(
+        builder, branch=wb, instruction="do the task", messenger_bound=messenger_bound
+    )
+    node = builder._operations[node_id]
+
+    assert messenger_bound is True
+    assert node.request.get("actions") is True
+
+
+@pytest.mark.asyncio
+async def test_operate_node_omits_actions_kwarg_when_team_mode_off(tmp_path):
+    """No exchange/messenger configured (team mode off): the operate node's
+    request has no actions kwarg — unchanged default (actions=False) behavior."""
+    env = _make_env(tmp_path)  # exchange/messenger/roster default None
+    builder = OperationGraphBuilder()
+
+    with patch(
+        "lionagi.cli.orchestrate._orchestration.build_imodel_from_spec",
+        side_effect=_api_imodel,
+    ):
+        wb, _model, _profile, messenger_bound = await build_worker_branch(
+            env, agent_id="solo", role="researcher", explicit_name="solo"
+        )
+
+    node_id = _add_worker_operate_node(
+        builder, branch=wb, instruction="do the task", messenger_bound=messenger_bound
+    )
+    node = builder._operations[node_id]
+
+    assert messenger_bound is False
+    assert "actions" not in node.request
+
+
+@pytest.mark.asyncio
+async def test_operate_node_omits_actions_kwarg_for_cli_worker(tmp_path):
+    """Team messaging active but this worker is a CLI provider: no messenger
+    binding, so the operate node's request must not carry actions=True either."""
+    exchange = Exchange()
+    messenger = LionMessenger(exchange)
+    roster: dict = {}
+    env = _make_env(tmp_path, exchange=exchange, messenger=messenger, roster=roster)
+    builder = OperationGraphBuilder()
+
+    with patch(
+        "lionagi.cli.orchestrate._orchestration.build_imodel_from_spec",
+        side_effect=_cli_imodel,
+    ):
+        wb, _model, _profile, messenger_bound = await build_worker_branch(
+            env, agent_id="cli-worker", role="researcher", explicit_name="cli-worker"
+        )
+
+    node_id = _add_worker_operate_node(
+        builder, branch=wb, instruction="do the task", messenger_bound=messenger_bound
+    )
+    node = builder._operations[node_id]
+
+    assert messenger_bound is False
+    assert "actions" not in node.request

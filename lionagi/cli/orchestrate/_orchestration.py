@@ -461,8 +461,14 @@ async def build_worker_branch(
     system_prompt_override: str | None = None,
     grant_spawn: bool = False,
     modes: list[str] | None = None,
-) -> tuple[Branch, str, AgentProfile | None]:
-    """Resolve model/profile/system and build a worker Branch."""
+) -> tuple[Branch, str, AgentProfile | None, bool]:
+    """Resolve model/profile/system and build a worker Branch.
+
+    The fourth return value is ``messenger_bound``: True when this worker
+    actually got the in-process messenger tool registered (team messaging
+    active AND a non-CLI worker), so callers building `operate` DAG nodes
+    know to enable action serialization for this branch.
+    """
     from ._common import BARE_WORKER_SYSTEM
 
     # Pack per-role config (ADR-0074): model/effort/modes defaults for casts
@@ -573,13 +579,15 @@ async def build_worker_branch(
     # workers keep the existing file-based `li team` channel untouched.
     exchange = getattr(env, "exchange", None)
     messenger = getattr(env, "messenger", None)
+    messenger_bound = False
     if exchange is not None and messenger is not None and not getattr(w_imodel, "is_cli", False):
         exchange.register(wb.id)
         env.roster[wname] = wb.id
         msg_tool = messenger.bind(wb, env.roster, sender_name=wname)
         wb.register_tools(msg_tool)
+        messenger_bound = True
 
-    return wb, w_model, w_profile
+    return wb, w_model, w_profile, messenger_bound
 
 
 def finalize_orchestration(

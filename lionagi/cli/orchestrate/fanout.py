@@ -200,7 +200,7 @@ async def _run_fanout_inner(
     for i, ta in enumerate(assignments):
         model_override = pool[i % len(pool)] if pool else None
         wname = worker_names[i]
-        w_branch, w_model, _ = await build_worker_branch(
+        w_branch, w_model, _, messenger_bound = await build_worker_branch(
             env,
             agent_id=wname,
             role=ta.assignee,
@@ -213,6 +213,7 @@ async def _run_fanout_inner(
             branch=w_branch,
             instruction=ta.task,
             context=[{"overall_task": prompt}],
+            **({"actions": True} if messenger_bound else {}),
         )
         fanned_nodes.append(node)
         fanned_labels.append(w_model)

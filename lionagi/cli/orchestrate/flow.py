@@ -446,7 +446,7 @@ async def _build_dag(
     role_artifact_defaults: dict[str, dict | None] = {}
 
     for i, ta in enumerate(assignments):
-        w_branch, w_model, w_profile = await build_worker_branch(
+        w_branch, w_model, w_profile, messenger_bound = await build_worker_branch(
             env,
             agent_id=agent_ids[i],
             role=ta.assignee,
@@ -509,6 +509,7 @@ async def _build_dag(
             depends_on=dep_nodes or None,
             instruction=instruction,
             context=ctx,
+            **({"actions": True} if messenger_bound else {}),
         )
         node_ids.append(node)
 

@@ -141,8 +141,14 @@ class Exchange(Element):
         return await self.collect_all()
 
     async def run(self, interval: float = 1.0) -> None:
-        """Continuous sync loop. Call stop() to exit."""
-        self._stop = False
+        """Continuous sync loop. Call stop() to exit.
+
+        Does not reset ``_stop`` on entry: a stop() issued before this
+        coroutine gets its first turn (e.g. the DAG it watches over failed
+        immediately) must make run() return right away instead of clearing
+        that signal and looping forever. Construct a fresh Exchange for a new
+        run rather than reusing one that has already been stopped.
+        """
         while not self._stop:
             await self.sync()
             await sleep(interval)

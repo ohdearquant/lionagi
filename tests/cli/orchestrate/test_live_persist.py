@@ -1566,7 +1566,7 @@ async def test_build_dag_wires_role_artifact_defaults_into_live_contract_and_fai
 
     with patch(
         "lionagi.cli.orchestrate.flow.build_worker_branch",
-        return_value=(Branch(name="reviewer"), "codex/gpt-5.5", None),
+        return_value=(Branch(name="reviewer"), "codex/gpt-5.5", None, False),
     ):
         await _build_dag(env, "review this PR", plan_result, reactive_spec="off")
 
