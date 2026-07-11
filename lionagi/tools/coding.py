@@ -355,7 +355,17 @@ class CodingToolkit(LionTool):
         tools: Sequence[str] | None = None,
         nudge_engine: NudgeEngine | None = None,
         nudge_rules: Sequence[NudgeRule] | None = None,
+        sandbox_allow_protected: bool = False,
     ):
+        """
+        sandbox_allow_protected: whether the bound sandbox tool's 'merge' action
+            is allowed to target a protected branch name (main/master/release*).
+            This is an operator-level trust decision, not something the agent
+            can request per call — it is deliberately absent from
+            ``SandboxRequest`` so an in-band agent cannot self-approve merging
+            into a protected branch. Set it only when composing the agent from
+            code you control (e.g. a CI job that always merges into main).
+        """
         self._security_pre_hooks: dict[str, list[Callable]] = {}
         self._pre_hooks: dict[str, list[Callable]] = {}
         self._post_hooks: dict[str, list[Callable]] = {}
@@ -364,6 +374,7 @@ class CodingToolkit(LionTool):
         self.notify_threshold = notify_threshold
         self.notify_max_tokens = notify_max_tokens
         self.workspace_root = Path(workspace_root or Path.cwd()).expanduser().resolve()
+        self.sandbox_allow_protected = sandbox_allow_protected
         selected = tuple(tools) if tools is not None else DEFAULT_CODING_TOOLS
         unknown = [t for t in selected if t not in ALL_CODING_TOOLS]
         if unknown:
@@ -761,20 +772,33 @@ class CodingToolkit(LionTool):
                 }
 
             if action == "diff":
-                return {"success": True, **(await sandbox_diff(session))}
+                try:
+                    return {"success": True, **(await sandbox_diff(session))}
+                except RuntimeError as e:
+                    return {"success": False, "error": str(e)}
             elif action == "commit":
                 if not message:
                     return {"success": False, "error": "'message' required for commit."}
                 return await sandbox_commit(session, message)
             elif action == "merge":
-                result = await sandbox_merge(session)
-                if result.get("success"):
+                result = await sandbox_merge(session, allow_protected=self.sandbox_allow_protected)
+                if not result.get("success"):
+                    return result
+                if result.get("worktree_removed") and result.get("branch_deleted"):
                     _sandbox_session[0] = None
-                return result
+                    return result
+                # The merge itself landed (merged=True stays visible) but the
+                # worktree/branch cleanup is incomplete — keep the session so
+                # cleanup can be retried via discard, and report non-success
+                # so the caller cannot mistake a stranded worktree for a
+                # fully closed sandbox.
+                return {**result, "success": False}
             elif action == "discard":
                 result = await sandbox_discard(session)
-                _sandbox_session[0] = None
-                return {"success": True, **result}
+                if result.get("worktree_removed") and result.get("branch_deleted"):
+                    _sandbox_session[0] = None
+                    return {"success": True, **result}
+                return {"success": False, **result}
 
             return {"success": False, "error": f"Unknown action: {action}"}
 
