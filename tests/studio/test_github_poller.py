@@ -41,15 +41,24 @@ def _pr(
     merged_at=None,
     head_repo=None,
     head_repo_is_fork=False,
+    head_repo_id=None,
+    base_repo_id=None,
 ):
     """``head_repo=None`` (the default) models the deleted-fork-source case --
     the API's ``head.repo`` is null. Pass a ``"owner/name"`` string to model a
-    same-repo or fork PR (paired with ``head_repo_is_fork``)."""
+    same-repo or fork PR (paired with ``head_repo_is_fork``). ``head_repo_id``
+    and ``base_repo_id`` model the numeric repository ids the API carries on
+    ``head.repo``/``base.repo``: when both are present the poller compares
+    them directly and only falls back to full_name comparison otherwise."""
     head = {"sha": sha or f"sha{number}"}
-    head["repo"] = (
-        {"full_name": head_repo, "fork": head_repo_is_fork} if head_repo is not None else None
-    )
+    if head_repo is not None:
+        head["repo"] = {"full_name": head_repo, "fork": head_repo_is_fork}
+        if head_repo_id is not None:
+            head["repo"]["id"] = head_repo_id
+    else:
+        head["repo"] = None
     return {
+        "base": {"repo": {"id": base_repo_id}} if base_repo_id is not None else {},
         "number": number,
         "title": f"PR {number}",
         "html_url": f"https://github.com/owner/name/pull/{number}",
@@ -392,6 +401,54 @@ def test_github_poll_same_repo_filter_matches_mixed_case_head_repo(monkeypatch):
     assert len(items) == 1
     assert items[0].event["is_same_repo"] is True
     assert items[0].dispatchable is True
+
+
+def test_github_poll_same_repo_filter_equal_repo_ids_dispatch(monkeypatch):
+    """When both head.repo.id and base.repo.id are present and equal, the PR
+    is same-repo by stable identity -- even if the full_name casing differs
+    from the configured github_repo, the id comparison decides."""
+    _install(
+        monkeypatch,
+        [
+            _pr(
+                1,
+                "2026-07-07T10:00:00Z",
+                head_repo="OWNER/NAME",
+                head_repo_id=42,
+                base_repo_id=42,
+            )
+        ],
+    )
+    items = _poll(
+        {"id": "s1", "github_repo": "owner/name", "github_filter": {"same_repo_only": True}}
+    )
+    assert len(items) == 1
+    assert items[0].event["is_same_repo"] is True
+    assert items[0].dispatchable is True
+
+
+def test_github_poll_same_repo_filter_unequal_repo_ids_fail_closed(monkeypatch):
+    """Unequal head/base repo ids identify a fork regardless of what the
+    full_name claims: a fork whose full_name string matches the configured
+    repo must still fail closed on the id comparison."""
+    _install(
+        monkeypatch,
+        [
+            _pr(
+                1,
+                "2026-07-07T10:00:00Z",
+                head_repo="owner/name",
+                head_repo_id=999,
+                base_repo_id=42,
+            )
+        ],
+    )
+    items = _poll(
+        {"id": "s1", "github_repo": "owner/name", "github_filter": {"same_repo_only": True}}
+    )
+    assert len(items) == 1
+    assert items[0].event["is_same_repo"] is False
+    assert items[0].dispatchable is False
 
 
 def test_github_poll_same_repo_filter_false_all_dispatchable(monkeypatch):
