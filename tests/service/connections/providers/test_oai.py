@@ -96,6 +96,7 @@ class TestOpenAIIntegration:
         # Note: Parameter filtering may not be implemented for reasoning models yet
 
     def test_openai_system_message_handling(self, openai_imodel):
+        # gpt-4.1-mini is not gated: system role is preserved.
         payload, _ = openai_imodel.endpoint.create_payload(
             {
                 "messages": [
@@ -110,10 +111,154 @@ class TestOpenAIIntegration:
         )
 
         assert len(payload["messages"]) == 2
-        assert (
-            payload["messages"][0]["role"] == "developer"
-        )  # Converted to developer for reasoning models
+        assert payload["messages"][0]["role"] == "system"
         assert payload["messages"][1]["role"] == "user"
+
+    @pytest.mark.parametrize(
+        "model",
+        [
+            "o1",
+            "o1-preview",
+            "o1-mini",
+            "o1-2024-12-17",
+            "o3",
+            "o3-mini",
+            "o3-2025-04-16",
+            "o4-mini",
+            "o4-mini-2025-04-16",
+            "gpt-5",
+            "gpt-5-mini",
+            "gpt-5-2025-08-07",
+            "gpt-5-chat-latest",
+            "ft:gpt-5-mini:acme::abc123",
+            "ft:o3-mini:acme:custom:xyz789",
+        ],
+    )
+    def test_openai_developer_role_conversion_gated_models(self, openai_imodel, model):
+        payload, _ = openai_imodel.endpoint.create_payload(
+            {
+                "messages": [
+                    {"role": "system", "content": "You are a helpful assistant."},
+                    {"role": "user", "content": "Hello"},
+                ],
+                "model": model,
+            }
+        )
+
+        assert payload["messages"][0]["role"] == "developer"
+        assert payload["messages"][1]["role"] == "user"
+
+    @pytest.mark.parametrize(
+        "model",
+        [
+            "gpt-4.1",
+            "gpt-4.1-mini",
+            "gpt-4o",
+            "gpt-4o-mini",
+            "gpt-4-turbo",
+            "gpt-3.5-turbo",
+            "ft:gpt-4o-mini:acme::abc123",
+            "ft:",
+        ],
+    )
+    def test_openai_system_role_preserved_non_gated_models(self, openai_imodel, model):
+        payload, _ = openai_imodel.endpoint.create_payload(
+            {
+                "messages": [
+                    {"role": "system", "content": "You are a helpful assistant."},
+                    {"role": "user", "content": "Hello"},
+                ],
+                "model": model,
+            }
+        )
+
+        assert payload["messages"][0]["role"] == "system"
+        assert payload["messages"][1]["role"] == "user"
+
+    def test_openai_system_role_preserved_missing_model(self, openai_imodel):
+        # No "model" key in the request at all -> falls back to the config
+        # default (gpt-4.1-mini via the fixture), which is not gated.
+        payload, _ = openai_imodel.endpoint.create_payload(
+            {
+                "messages": [
+                    {"role": "system", "content": "You are a helpful assistant."},
+                    {"role": "user", "content": "Hello"},
+                ],
+            }
+        )
+
+        assert payload["messages"][0]["role"] == "system"
+
+    def test_openai_system_role_preserved_unknown_model(self, openai_imodel):
+        payload, _ = openai_imodel.endpoint.create_payload(
+            {
+                "messages": [
+                    {"role": "system", "content": "You are a helpful assistant."},
+                    {"role": "user", "content": "Hello"},
+                ],
+                "model": "some-custom-compatible-model",
+            }
+        )
+
+        assert payload["messages"][0]["role"] == "system"
+
+    def test_openai_explicit_developer_role_preserved(self, openai_imodel):
+        payload, _ = openai_imodel.endpoint.create_payload(
+            {
+                "messages": [
+                    {"role": "developer", "content": "You are a helpful assistant."},
+                    {"role": "user", "content": "Hello"},
+                ],
+                "model": "o1-preview",
+            }
+        )
+
+        assert payload["messages"][0]["role"] == "developer"
+        assert payload["messages"][0]["content"] == "You are a helpful assistant."
+
+    def test_openai_all_system_messages_converted_for_gated_model(self, openai_imodel):
+        payload, _ = openai_imodel.endpoint.create_payload(
+            {
+                "messages": [
+                    {"role": "system", "content": "First system message."},
+                    {"role": "user", "content": "Hello"},
+                    {"role": "system", "content": "Second system message."},
+                    {"role": "assistant", "content": "Hi there"},
+                ],
+                "model": "o3-mini",
+            }
+        )
+
+        roles = [m["role"] for m in payload["messages"]]
+        assert roles == ["developer", "user", "developer", "assistant"]
+        assert payload["messages"][0]["content"] == "First system message."
+        assert payload["messages"][2]["content"] == "Second system message."
+
+    def test_openai_create_payload_does_not_mutate_caller_input(self, openai_imodel):
+        original_messages = [
+            {"role": "system", "content": "You are a helpful assistant."},
+            {"role": "user", "content": "Hello"},
+        ]
+        request = {
+            "messages": original_messages,
+            "model": "o1-preview",
+        }
+        # Snapshot deep copies for comparison.
+        import copy
+
+        snapshot_request = copy.deepcopy(request)
+        snapshot_messages = copy.deepcopy(original_messages)
+
+        payload, _ = openai_imodel.endpoint.create_payload(request)
+
+        # The gated conversion happened in the returned payload...
+        assert payload["messages"][0]["role"] == "developer"
+        # ...but the caller's original dicts/list are untouched.
+        assert request == snapshot_request
+        assert original_messages == snapshot_messages
+        assert original_messages[0]["role"] == "system"
+        assert payload["messages"] is not original_messages
+        assert payload["messages"][0] is not original_messages[0]
 
     @pytest.mark.asyncio
     async def test_openai_api_calling_creation(self, openai_imodel, mock_response):

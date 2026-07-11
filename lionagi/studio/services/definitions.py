@@ -207,10 +207,8 @@ async def save_definition(
 ) -> dict[str, Any]:
     """Persist a definition version: DB write first, then disk (ADR-0016 §"Save semantics").
 
-    DB write must succeed before the file is written — propagate any exception
-    rather than returning success without a row.  Per-(kind, name) asyncio.Lock
-    spans both operations so concurrent saves for the same definition are
-    serialised.  Returns the new version info.
+    DB write must succeed before the file is written; per-(kind, name) lock
+    serialises concurrent saves for the same definition.
     """
     # Validate at the service boundary — reject traversal sequences, path
     # separators, NUL, and glob metacharacters.
@@ -330,12 +328,10 @@ _EXTENSIONS = (".md", ".playbook.yaml", ".yaml")
 def _find_definition_file(base: Path, name: str) -> Path | None:
     """Locate the on-disk file for a definition.
 
-    ``name`` MUST be pre-validated by ``validate_name_component`` (callers'
-    responsibility).  Candidates are literal-path joins — not glob patterns —
-    so metacharacters in *name* cannot expand across the filesystem.  Symlinks
-    may target outside ``base`` (e.g. ``~/.lionagi/agents/*.md`` → ``firm/agents/``);
-    we intentionally do not resolve-and-restrict, as that breaks every symlinked
-    agent definition.
+    ``name`` must be pre-validated by ``validate_name_component``. Candidates
+    are literal-path joins, not glob patterns. Symlinks outside ``base`` are
+    intentionally left unresolved-and-unrestricted — restricting them would
+    break symlinked agent definitions.
     """
     # Fast path 1: direct child (base/<name><ext>)
     for ext in _EXTENSIONS:

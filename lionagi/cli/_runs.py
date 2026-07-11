@@ -9,6 +9,7 @@ import logging
 import os
 import time
 import uuid
+import warnings
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -766,7 +767,17 @@ async def teardown_persist(
 
 # Keep old names as aliases so callers don't break.
 teardown_agent_persist = teardown_persist
-teardown_orchestration_persist = teardown_persist
+
+
+async def teardown_orchestration_persist(*args, **kwargs) -> str:
+    """Deprecated alias for :func:`teardown_persist`; delegates unchanged."""
+    warnings.warn(
+        "lionagi.cli._runs.teardown_orchestration_persist is deprecated; "
+        "use lionagi.cli._runs.teardown_persist instead.",
+        DeprecationWarning,
+        stacklevel=2,
+    )
+    return await teardown_persist(*args, **kwargs)
 
 
 async def _open_shared_db():

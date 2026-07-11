@@ -15,7 +15,6 @@ _ACTIVE_CONNECTIONS: int = 0
 
 
 def get_active_connection_count() -> int:
-    """Return the number of currently open aiosqlite connections."""
     return _ACTIVE_CONNECTIONS
 
 

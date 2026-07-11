@@ -154,11 +154,7 @@ def _plugin_detail(
 
 
 def _resolve_marketplace_source(source_rel: str) -> Path | None:
-    """Resolve a marketplace manifest source path, rejecting escape attempts.
-
-    Rejects empty, absolute, parent-traversal, and symlink-escaped paths so
-    a malicious marketplace.json cannot reference files outside the repo.
-    """
+    """Resolve a marketplace manifest source path; None if it escapes the repo."""
     if not source_rel:
         return None
     source_path = Path(source_rel)
@@ -208,8 +204,8 @@ def _find_plugin_dir_for(name: str) -> Path | None:
 def _iter_thirdparty_plugins() -> list[tuple[Path, str, str, str]]:
     """Return (plugin_dir, name, description, marketplace_name) for installed plugins.
 
-    Layout: ~/.claude/plugins/cache/{marketplace}/{plugin_name}/{version}/
-    Takes the lexicographically latest version directory per plugin.
+    Layout: ~/.claude/plugins/cache/{marketplace}/{plugin_name}/{version}/ —
+    takes the lexicographically latest version directory per plugin.
     """
     if not THIRDPARTY_DIR.exists():
         return []

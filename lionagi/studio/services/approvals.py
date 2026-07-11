@@ -4,29 +4,21 @@
 
 An action is proposed (pending) -> a human grants or denies it -> the real
 endpoint consumes the granted approval exactly once. Expiry and single-use
-are enforced here, not by the caller's convention: a granted approval that
-is expired, already consumed, or whose params don't hash-match the action
-being executed is rejected.
+are enforced here, not by caller convention: a granted approval that is
+expired, already consumed, or whose params don't hash-match the action being
+executed is rejected.
 
-Principal separation (grant/deny only): these two routes require the
-request to carry no operator/service principal marker. The studio frontend
-never sends that header (see api.ts fetchJson -- only Authorization and
-Content-Type are set), so a legitimate browser confirm click always passes.
-Any caller presenting the marker -- including a future in-process operator
-service context or a spawned driver CLI that learned an approval id -- is
-rejected before the row is touched. The marker is additive to the existing
-bearer-token gate, not a replacement for it.
+Principal separation (grant/deny only): a request carrying the
+operator/service principal marker header is rejected before the row is
+touched -- the studio frontend never sends that header, so a legitimate
+browser confirm click always passes. Additive to the bearer-token gate, not
+a replacement for it.
 
-Evidence chain: every lifecycle event (proposed/granted/denied/consumed/
-expired) appends a row to `approval_evidence` in the same transaction as the
-status change, hash-chained to the prior row (chain_hash = sha256(content_hash
-+ previous_hash), genesis previous_hash = "0"*64). Evidence rows store hashes,
-kinds, statuses, timestamps, and justification only -- never raw params (the
-approvals row already holds the params_hash; raw params never enter the
-chain). Optional HMAC-SHA256 signing over the chain is OFF by default; set
-LIONAGI_STUDIO_EVIDENCE_HMAC_KEY to turn it on -- without a key, the chain
-still detects tampering, it just doesn't require possession of a secret to
-forge (chain-only integrity vs. chain+key integrity).
+Evidence chain: every lifecycle event appends a hash-chained row to
+`approval_evidence` in the same transaction as the status change
+(chain_hash = sha256(content_hash + previous_hash), genesis = "0"*64).
+Evidence rows never store raw params. Optional HMAC-SHA256 signing is OFF by
+default; set LIONAGI_STUDIO_EVIDENCE_HMAC_KEY to turn it on.
 """
 
 from __future__ import annotations
@@ -142,12 +134,9 @@ def _is_service_principal(request: Request) -> bool:
 
 
 def _require_human_principal(request: Request) -> None:
-    """Grant/deny are reserved for the human principal: the browser session's
-    bearer credential. Enforced positively — the caller must PRESENT the
-    configured token — not by trusting callers to identify themselves. With no
-    token configured there is no human credential to distinguish, so granting
-    is unavailable entirely (fail closed) rather than open to any local caller.
-    The service-marker header check stays as defense in depth."""
+    """Grant/deny require the caller to PRESENT the configured bearer token. With
+    no token configured, granting is unavailable entirely (fail closed) rather
+    than open to any local caller."""
     if _is_service_principal(request):
         raise HTTPException(
             status_code=403,
@@ -209,13 +198,10 @@ async def _write_evidence(
     justification_class: str | None = None,
     justification_reason: str | None = None,
 ) -> dict[str, Any]:
-    """Append one evidence row to the chain.
-
-    Caller MUST already hold the write lock on *db* (e.g. via a preceding
-    `BEGIN IMMEDIATE` on this same connection, in the same transaction as the
-    approvals status change) so the tail read below is race-free -- this
-    function does not open its own transaction.
-    """
+    """Append one evidence row to the chain. Caller MUST already hold the write
+    lock on *db* (a preceding `BEGIN IMMEDIATE` in the same transaction as the
+    approvals status change) so the tail read is race-free -- this function
+    does not open its own transaction."""
     cur = await db.execute(
         "SELECT sequence, chain_hash FROM approval_evidence ORDER BY sequence DESC LIMIT 1"
     )
@@ -498,13 +484,12 @@ async def deny_approval(
 async def require_approval(
     approval_id: str, *, action_kind: str, params: dict[str, Any]
 ) -> dict[str, Any]:
-    """Validate a granted approval for exactly this action and consume it atomically.
-
-    Not wired into any route yet -- a future mutating route calls this before
-    performing its side effect, passing the same action_kind/params it is
-    about to act on. Raises HTTPException (404/409/422) on any failure; the
-    approval is consumed only when every check passes.
-    """
+    """Validate a granted approval for exactly this action and consume it
+    atomically. Not wired into any route yet -- a future mutating route calls
+    this before performing its side effect, passing the same
+    action_kind/params it is about to act on. Raises HTTPException
+    (404/409/422) on any failure; the approval is consumed only when every
+    check passes."""
     row = await get_approval(approval_id)
     if row is None:
         raise HTTPException(status_code=404, detail=f"approval {approval_id!r} not found")

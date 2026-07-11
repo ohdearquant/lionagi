@@ -2,14 +2,12 @@
 # SPDX-License-Identifier: Apache-2.0
 """Run a compiled WorkflowDef through lionagi's Session.flow, persisted like any other run.
 
-Deliberately does NOT reuse `lionagi.cli.orchestrate._orchestration.setup_orchestration_persist`
-/ `teardown_persist` verbatim: those helpers open the connection via
-`register_shared_db()`/`close_shared_db()`, a PROCESS-WIDE singleton meant for one-shot CLI
-processes that open it once and exit. The Studio server is long-lived and can have several
-workflow runs (or other StateDB users) in flight at once; teardown_persist's finally block
-closing the *entire* shared registry would tear down every concurrent run's connection, not
-just this one. This module opens and closes its own request-scoped StateDB connection instead,
-while still reusing the session-row/branch-hook/teardown-reason logic those helpers are built on.
+Deliberately does NOT reuse `_orchestration.setup_orchestration_persist`/`teardown_persist`
+verbatim: those helpers close a PROCESS-WIDE shared StateDB singleton meant for one-shot CLI
+processes, but the Studio server is long-lived with several runs in flight at once -- closing
+the shared registry would tear down every concurrent run's connection. This module opens and
+closes its own request-scoped StateDB connection instead, reusing only the session-row/
+branch-hook/teardown-reason logic those helpers are built on.
 """
 
 from __future__ import annotations
@@ -122,19 +120,14 @@ async def run_workflow_def(
 ) -> dict[str, Any]:
     """Load, compile, and execute a WorkflowDef; return ``{run_id, status}``.
 
-    ``run_id`` is the lionagi Session id — the same primary key GET
-    /api/sessions/{id} and the Fleet/History list already read, so the run
-    shows up exactly like any other flow run. Raises WorkflowNotFoundError
-    (404) or WorkflowCompileError (422, carries node_id/edge_id) on failure
-    to compile; never a bare 500 for those two cases.
+    ``run_id`` is the lionagi Session id, so the run shows up like any other
+    flow run via GET /api/sessions/{id}. Raises WorkflowNotFoundError (404)
+    or WorkflowCompileError (422, carries node_id/edge_id) on compile
+    failure -- never a bare 500 for those two cases.
 
     ``base_dir`` is a run-level containment root for node ``config.cwd``
-    values (never a spec field — see compile_workflow_def). A node with no
-    cwd runs unaffected whether or not base_dir is supplied.
-
-    ``_session`` is a private testability seam (inject a Session with a
-    mocked default branch to avoid real provider calls in tests); real
-    callers (the run route) never pass it and get a fresh Session().
+    values (never a spec field). ``_session`` is a private testability seam
+    (inject a Session with a mocked branch); real callers never pass it.
     """
     from lionagi.session.session import Session
 

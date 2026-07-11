@@ -4,6 +4,7 @@
 """Coverage tests for lionagi.ln._utils."""
 
 import threading
+import warnings
 from datetime import datetime, timezone
 from typing import Union
 from uuid import UUID, uuid4
@@ -104,11 +105,13 @@ class TestExtractTypes:
 class TestToUuid:
     def test_passthrough_uuid(self):
         u = uuid4()
-        assert to_uuid(u) is u
+        with pytest.warns(DeprecationWarning):
+            assert to_uuid(u) is u
 
     def test_from_string(self):
         u = uuid4()
-        assert to_uuid(str(u)) == u
+        with pytest.warns(DeprecationWarning):
+            assert to_uuid(str(u)) == u
 
     def test_from_object_with_uuid_id(self):
         u = uuid4()
@@ -118,7 +121,8 @@ class TestToUuid:
 
         o = Obj()
         o.id = u
-        assert to_uuid(o) is u
+        with pytest.warns(DeprecationWarning):
+            assert to_uuid(o) is u
 
     def test_from_object_with_string_id(self):
         u = uuid4()
@@ -128,11 +132,24 @@ class TestToUuid:
 
         o = Obj()
         o.id = str(u)
-        assert to_uuid(o) == u
+        with pytest.warns(DeprecationWarning):
+            assert to_uuid(o) == u
 
     def test_raises_on_invalid(self):
-        with pytest.raises(ValueError, match="Cannot get ID"):
+        with pytest.warns(DeprecationWarning), pytest.raises(ValueError, match="Cannot get ID"):
             to_uuid(42)
+
+    def test_warns_deprecation_with_replacement_guidance(self):
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always")
+            to_uuid(uuid4())
+
+        deprecations = [w for w in caught if issubclass(w.category, DeprecationWarning)]
+        assert len(deprecations) == 1
+        message = str(deprecations[0].message)
+        assert "lionagi.protocols.ids.to_uuid" in message
+        assert "canonical_id" in message
+        assert deprecations[0].filename == __file__
 
 
 class TestCoerceCreatedAt:

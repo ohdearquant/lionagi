@@ -1,6 +1,7 @@
 # Copyright (c) 2023-2025, HaiyangLi <quantocean.li at gmail dot com>
 # SPDX-License-Identifier: Apache-2.0
 
+import warnings
 from typing import Any, Literal
 
 from pydantic import BaseModel, JsonValue
@@ -542,6 +543,12 @@ def create_message(
     action_request: ActionRequest | None = None,
     action_response: ActionResponse | Any = None,
 ) -> System | ActionResponse | ActionRequest | AssistantResponse | Instruction:
+    warnings.warn(
+        "lionagi.protocols.messages.create_message is deprecated; "
+        "use MessageManager.create_message instead.",
+        DeprecationWarning,
+        stacklevel=2,
+    )
     params = {k: v for k, v in locals().items() if v is not None}
     return MessageManager.create_message(**params)
 

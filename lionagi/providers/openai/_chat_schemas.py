@@ -410,4 +410,21 @@ class OpenAIChatCompletionsRequest(BaseModel):
         return self.model in CHAT_MODELS
 
 
-__all__ = ("OpenAIChatCompletionsRequest",)
+def uses_developer_messages(model: object) -> bool:
+    """Whether the given model expects `developer` in place of `system` messages.
+
+    Conservative and prefix-based: only o1/o3/o4/gpt-5 families (and dated
+    variants, matched by prefix after stripping any provider prefix) are
+    gated. Unknown or missing models fail closed and keep `system`.
+    """
+    if not isinstance(model, str):
+        return False
+    model_name = model.rsplit("/", 1)[-1].lower()
+    if model_name.startswith("ft:"):
+        # Fine-tuned ids are "ft:<base-model>:<org>:<suffix>:<id>"; the family
+        # gate applies to the base model, not the "ft" wrapper.
+        model_name = model_name.split(":", 2)[1]
+    return model_name.startswith(("o1", "o3", "o4", "gpt-5"))
+
+
+__all__ = ("OpenAIChatCompletionsRequest", "uses_developer_messages")

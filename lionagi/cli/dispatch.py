@@ -100,18 +100,41 @@ async def _cmd_retry(dispatch_id: str) -> int:
     return 1
 
 
-async def _cmd_purge(dispatch_id: str) -> int:
-    from lionagi.dispatch import purge_dispatch
+async def _cmd_purge(dispatch_id: str, *, dry_run: bool = False) -> int:
+    from lionagi.dispatch import get_dispatch, purge_dispatch
     from lionagi.state.db import StateDB
 
     async with StateDB() as db:
-        deleted = await purge_dispatch(db, dispatch_id)
+        if dry_run:
+            row = await get_dispatch(db, dispatch_id)
+            if row is None:
+                print(f"dispatch not found: {dispatch_id}")
+                return 1
+            print(f"would purge {dispatch_id} (status={row['status']})")
+            return 0
+        deleted = await purge_dispatch(db, dispatch_id, actor="li_dispatch_purge")
 
     if deleted:
         print(f"purged {dispatch_id}")
         return 0
     print(f"dispatch not found: {dispatch_id}")
     return 1
+
+
+async def _cmd_purge_bulk(*, status: str | None, before: float | None, dry_run: bool) -> int:
+    from lionagi.dispatch import purge_dispatches
+    from lionagi.state.db import StateDB
+
+    async with StateDB() as db:
+        result = await purge_dispatches(
+            db, status=status, before=before, dry_run=dry_run, actor="li_dispatch_purge"
+        )
+
+    verb = "would purge" if dry_run else "purged"
+    by_status = {k: v for k, v in result.items() if k not in ("total", "dry_run")}
+    detail = ", ".join(f"{k}={v}" for k, v in sorted(by_status.items())) or "(none matched)"
+    print(f"{verb} {result['total']} dispatch(es): {detail}")
+    return 0
 
 
 def add_dispatch_subparser(subparsers: argparse._SubParsersAction) -> None:
@@ -143,8 +166,46 @@ def add_dispatch_subparser(subparsers: argparse._SubParsersAction) -> None:
     )
     retry.add_argument("id", help="Dispatch id.")
 
-    purge = dispatch_sub.add_parser("purge", help="Delete a dispatch row.")
-    purge.add_argument("id", help="Dispatch id.")
+    purge = dispatch_sub.add_parser(
+        "purge",
+        help="Delete a dispatch row, or bulk-delete by criteria.",
+        description=(
+            "With ID: delete that one row (any status), auditable via admin_events "
+            "action=dispatch_purge. Without ID: bulk-delete by --status/--before "
+            "(at least one required, so a bare `purge` cannot mass-delete); "
+            "--dry-run reports counts without deleting. An explicit --status is "
+            "honored exactly as given, including pending/delivering (naming an "
+            "in-flight status is deliberate operator intent). A bare --before with "
+            "no --status is scoped to terminal statuses only "
+            "(delivered/acked/dead_letter/expired) and never touches "
+            "pending/delivering rows."
+        ),
+    )
+    purge.add_argument("id", nargs="?", default=None, help="Dispatch id (single-row purge).")
+    purge.add_argument(
+        "--status",
+        default=None,
+        help=(
+            "Bulk purge: match this status exactly, including pending/delivering "
+            "(explicit status is deliberate operator intent)."
+        ),
+    )
+    purge.add_argument(
+        "--before",
+        type=float,
+        default=None,
+        help=(
+            "Bulk purge: match rows with updated_at <= this epoch-seconds value. "
+            "Without --status, this is scoped to terminal statuses only "
+            "(delivered/acked/dead_letter/expired) and never sweeps "
+            "pending/delivering rows."
+        ),
+    )
+    purge.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Report what would be deleted without deleting (single-row and bulk).",
+    )
 
 
 def run_dispatch(args: argparse.Namespace) -> int:
@@ -159,5 +220,12 @@ def run_dispatch(args: argparse.Namespace) -> int:
     if args.dispatch_command == "retry":
         return run_async(_cmd_retry(args.id))
     if args.dispatch_command == "purge":
-        return run_async(_cmd_purge(args.id))
+        if args.id is not None:
+            return run_async(_cmd_purge(args.id, dry_run=args.dry_run))
+        if args.status is None and args.before is None:
+            print("purge: specify an id, or --status/--before for a bulk purge")
+            return 2
+        return run_async(
+            _cmd_purge_bulk(status=args.status, before=args.before, dry_run=args.dry_run)
+        )
     return 1

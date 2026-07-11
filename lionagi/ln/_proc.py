@@ -29,13 +29,10 @@ def terminate_process_group(
 ) -> None:
     """Send sig_first to the process group AND the direct child.
 
-    If grace is None, send SIGKILL immediately with no prior SIGTERM.  The
-    sync variant only sends the first signal; callers are responsible for
-    waiting and escalating to SIGKILL (use aterminate_process_group for the
-    full async SIGTERM-wait-SIGKILL cycle).  Swallows ProcessLookupError,
-    PermissionError, and OSError so an already-dead process never raises.
-    The pid-guard suppresses os.killpg for proc.pid None/0/<=1; the direct
-    child is still signalled via proc.terminate()/kill().
+    grace=None sends SIGKILL immediately with no prior SIGTERM. Otherwise
+    sends only sig_first; the caller must wait and escalate to SIGKILL (see
+    aterminate_process_group for the full cycle). Swallows ProcessLookupError,
+    PermissionError, and OSError — an already-dead process never raises.
     """
     pgid = _safe_pgid(proc)
     if grace is None:
@@ -63,10 +60,8 @@ async def aterminate_process_group(
 ) -> None:
     """Async: signal the process group AND the direct child, wait up to grace, then SIGKILL.
 
-    If grace is None, send SIGKILL immediately with no prior signal.  Swallows
-    ProcessLookupError, PermissionError, and OSError.  The pid-guard suppresses
-    os.killpg for proc.pid None/0/<=1; the direct child is still signalled via
-    proc.terminate()/kill().
+    grace=None sends SIGKILL immediately with no prior signal. Swallows
+    ProcessLookupError, PermissionError, and OSError throughout.
     """
     pgid = _safe_pgid(proc)
     if grace is None:

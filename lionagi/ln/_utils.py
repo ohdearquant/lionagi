@@ -4,6 +4,7 @@ import importlib
 import importlib.util
 import types
 import uuid
+import warnings
 from collections.abc import Awaitable, Callable, Mapping
 from datetime import datetime, timezone
 from functools import wraps
@@ -270,6 +271,15 @@ def extract_types(item_type: Any) -> set[type]:
 
 
 def to_uuid(value: Any) -> UUID:
+    warnings.warn(
+        "lionagi.ln.to_uuid is deprecated. For raw UUID/string values, use "
+        "lionagi.protocols.ids.to_uuid instead; for generic objects (an "
+        "Observable-like object with an .id attribute), use "
+        "lionagi.protocols.ids.canonical_id instead. The two are not "
+        "equivalent replacements.",
+        DeprecationWarning,
+        stacklevel=2,
+    )
     if isinstance(value, UUID):
         return value
     if isinstance(value, str):

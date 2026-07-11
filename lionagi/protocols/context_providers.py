@@ -132,12 +132,10 @@ class ContextProviderRegistry:
         return report
 
     async def gather_writeback(self, branch: Branch, action_responses: list) -> None:
-        """POST-turn after-hook: providers that declare an optional
-        `writeback(branch, action_responses)` method get a chance to persist a
-        rule-based extraction from the turn's action responses. Same containment
-        discipline as `gather`: a raising provider is warned + skipped, never
-        blocks the turn. Off by default — a provider only does this when its own
-        policy opts in."""
+        """POST-turn hook: providers with an optional `writeback(branch, action_responses)`
+        method get a chance to persist from the turn's action responses. Same
+        containment as `gather` — a raising provider is warned + skipped, never
+        blocks the turn."""
         for entry in self._entries:
             hook = getattr(entry.provider, "writeback", None)
             if hook is None:
