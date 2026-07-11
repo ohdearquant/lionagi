@@ -5,6 +5,9 @@
 
 from __future__ import annotations
 
+import asyncio
+import contextlib
+import json
 import types
 from unittest.mock import AsyncMock
 
@@ -18,6 +21,7 @@ from lionagi.protocols.messages import (
     ActionResponse,
     AssistantResponse,
     AssistantResponseContent,
+    Instruction,
 )
 from lionagi.service.imodel import iModel
 from lionagi.service.types.stream_chunk import StreamChunk
@@ -347,6 +351,83 @@ async def test_run_stream_persist_snapshot_dir_default_falls_back_to_persist_dir
 
     # Snapshot is in persist_dir
     assert list(tmp_path.glob("*.json"))
+
+
+async def test_run_stream_persist_snapshot_survives_mid_stream_cancellation(tmp_path):
+    """A branch checkpoint exists and is loadable even if the turn is killed
+    before the model produces a single chunk (e.g. SIGTERM mid-stream on a
+    long-running CLI turn). The snapshot is written before streaming starts,
+    not only on clean completion, so `find_branch` + `Branch.from_dict`
+    can resume a branch whose first turn never finished.
+    """
+    import anyio as _anyio
+
+    branches_dir = tmp_path / "branches"
+    branches_dir.mkdir()
+
+    m = iModel(provider="openai", model="gpt-4.1-mini", api_key="test_key")
+    m.endpoint = types.SimpleNamespace(
+        is_cli=True, session_id=None, to_dict=lambda: {"type": "fake_cli"}
+    )
+    m.streaming_process_func = None
+
+    async def create_event(**kw):
+        return object()
+
+    m.create_event = create_event
+    m.executor = types.SimpleNamespace(append=AsyncMock(), config={})
+
+    hang = _anyio.Event()
+
+    async def stream(api_call=None):
+        await hang.wait()  # never set — simulates a subprocess still running
+        yield StreamChunk(type="text", content="unreachable")  # pragma: no cover
+
+    m.stream = stream
+    branch = Branch()
+    branch.chat_model = m
+
+    param = RunParam(stream_persist=True, persist_dir=branches_dir, snapshot_dir=branches_dir)
+    gen = run(branch, "long-running instruction", param)
+
+    first = await gen.__anext__()
+    assert isinstance(first, Instruction)
+
+    task = asyncio.ensure_future(gen.__anext__())
+    await asyncio.sleep(0.05)  # let it run past the pre-stream snapshot write
+
+    snaps = list(branches_dir.glob("*.json"))
+    assert snaps, "checkpoint must exist before the stream produces any output"
+
+    # A resumer must be able to parse it — not a torn/partial write.
+    data = json.loads(snaps[0].read_text())
+    assert data  # non-empty, valid JSON
+
+    task.cancel()
+    with contextlib.suppress(BaseException):
+        await task
+    with contextlib.suppress(Exception):
+        await gen.aclose()
+
+    # Still there (and still valid) after the simulated kill.
+    snaps_after = list(branches_dir.glob("*.json"))
+    assert snaps_after
+    data_after = json.loads(snaps_after[0].read_text())
+    assert data_after["id"] == str(branch.id)
+
+    # The instruction was recorded even though no assistant response arrived —
+    # the checkpoint carries what a resumer needs (find_branch + json.loads
+    # both succeed; the fake CLI endpoint used here isn't a real serializable
+    # Endpoint, so this asserts against the message record directly rather
+    # than round-tripping the whole branch through Branch.from_dict).
+    msg_classes = [
+        entry["metadata"].get("lion_class") for entry in data_after["messages"]["collections"]
+    ]
+    assert any(cls == "lionagi.protocols.messages.instruction.Instruction" for cls in msg_classes)
+    assert not any(
+        cls == "lionagi.protocols.messages.assistant_response.AssistantResponse"
+        for cls in msg_classes
+    )
 
 
 # ---------------------------------------------------------------------------

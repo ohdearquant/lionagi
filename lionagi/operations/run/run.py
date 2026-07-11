@@ -4,9 +4,12 @@
 from __future__ import annotations
 
 import logging
+import os
 import sys
 from collections.abc import AsyncGenerator
 from dataclasses import fields
+from functools import partial
+from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 import anyio
@@ -37,6 +40,30 @@ from lionagi.operations._observe import (
 )
 
 logger = logging.getLogger(__name__)
+
+
+async def _write_branch_snapshot(branch: Branch, snapshot_dir: str | Path) -> None:
+    """Atomically write ``branch``'s current state to ``snapshot_dir/{branch.id}.json``.
+
+    Writes to a sibling temp file first, then renames it into place. A plain
+    ``open(..., "w") + write`` truncates the target before the new content
+    lands — a process kill (SIGTERM/SIGKILL) mid-write would leave a
+    zero-byte or partially-written snapshot that ``find_branch`` locates but
+    ``json.loads`` can't parse, making the branch unresumable even though a
+    snapshot file exists. ``os.replace`` is atomic on POSIX and Windows, so a
+    reader always sees either the previous complete snapshot or the new one,
+    never a torn write.
+    """
+    fp = await acreate_path(
+        snapshot_dir,
+        str(branch.id),
+        ".json",
+        file_exist_ok=True,
+    )
+    tmp_fp = anyio.Path(str(fp) + ".tmp")
+    async with await anyio.open_file(tmp_fp, "w") as f:
+        await f.write(json_dumps(branch.to_dict()))
+    await anyio.to_thread.run_sync(partial(os.replace, str(tmp_fp), str(fp)))
 
 
 async def _stream_with_deadline(model, api_call, deadline: float | None):
@@ -299,16 +326,13 @@ async def run(
         bfp = None
 
         if param.stream_persist:
-            # snapshot_dir for find_branch() lookups; persist_dir for the live JSONL buffer
+            # snapshot_dir for find_branch() lookups; persist_dir for the live JSONL buffer.
+            # Written here, before the stream starts, so a branch killed at any
+            # point during a long-running turn (e.g. SIGTERM mid-stream) still
+            # has a resumable checkpoint — the finally block below overwrites
+            # it with the completed turn's state on a clean exit.
             snapshot_dir = param.snapshot_dir or param.persist_dir
-            fp = await acreate_path(
-                snapshot_dir,
-                str(branch.id),
-                ".json",
-                file_exist_ok=True,
-            )
-            async with await anyio.open_file(fp, "w") as f:
-                await f.write(json_dumps(branch.to_dict()))
+            await _write_branch_snapshot(branch, snapshot_dir)
 
             bfp = await acreate_path(
                 param.persist_dir,
@@ -534,14 +558,7 @@ async def run(
             model.streaming_process_func = prev_stream_func
             if param.stream_persist:
                 snapshot_dir = param.snapshot_dir or param.persist_dir
-                fp = await acreate_path(
-                    snapshot_dir,
-                    str(branch.id),
-                    ".json",
-                    file_exist_ok=True,
-                )
-                async with await anyio.open_file(fp, "w") as f:
-                    await f.write(json_dumps(branch.to_dict()))
+                await _write_branch_snapshot(branch, snapshot_dir)
                 if bfp is not None:
                     bfp_path = anyio.Path(bfp)
                     if await bfp_path.exists():
