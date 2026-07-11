@@ -10,6 +10,14 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
 
 - `AgentSpec.coding(secure=True)`'s built-in guards (`guard_destructive`, `guard_paths`) now register in the same `security_pre` bucket as an explicit `PermissionPolicy`, so they get the same security -> user -> security recheck: a user pre-hook that rewrites a command or path argument into a destructive/out-of-workspace one after the guard already passed is now denied, where it previously slipped through unrechecked. Every security control evaluation (`PermissionPolicy`, the built-in guards, and the session gate) is now expressed as one immutable `GateResult` (`lionagi.agent.gate`); an evaluator that raises unexpectedly now produces a recorded, fail-closed deny instead of an uncaught exception.
 
+### Deprecated
+
+- `Step.request_operative`'s ignored-parameter warning (`parse_kwargs`, `exclude_fields`, `field_descriptions`, `config_dict`, `doc`, `new_model_name`, `parameter_fields`, `request_params`) now names v0.29.0 as the removal target, replacing a stale v0.21.0 promise.
+- The free `lionagi.protocols.messages.create_message` function (also exported as `lionagi.create_message`) now emits a `DeprecationWarning` at call time; use `MessageManager.create_message` instead. Behavior and signature are unchanged.
+- `lionagi.ln.to_uuid` now emits a `DeprecationWarning` at call time. It is not equivalent to `lionagi.protocols.ids.to_uuid` or `lionagi.protocols.ids.canonical_id`; use `lionagi.protocols.ids.to_uuid` for raw UUID/string values and `lionagi.protocols.ids.canonical_id` for generic Observable-like objects.
+- `lionagi.cli._runs.teardown_orchestration_persist` is now an async wrapper that emits a `DeprecationWarning` and delegates unchanged to `teardown_persist`; use `teardown_persist` instead.
+- `lionagi.cli.orchestrate._common.TEAM_WORKER_SYSTEM` is deprecated; use `TEAM_COORD_SECTION` appended to a worker's own system prompt instead.
+
 ## [0.28.0] - 2026-07-08
 
 ### Added
