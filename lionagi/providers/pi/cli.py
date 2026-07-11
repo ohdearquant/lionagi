@@ -603,9 +603,11 @@ class PiCLIEndpoint(AgenticHandlersMixin, AgenticEndpoint):
     _handler_params = _PI_HANDLER_PARAMS
     _handler_kwarg = "pi_handlers"
     _request_model = PiCodeRequest
-    # Pi streams an "agent_start" event right after spawn — see
-    # stream_pi_cli_events() above.
-    streams_first_output_early = True
+    # streams_first_output_early stays False (AgenticEndpoint default): the
+    # transport emits "agent_start" right after spawn, but stream() below
+    # discards raw dict events and yields its first StreamChunk only once a
+    # PiChunk carries text/thinking/tool payload — so the first output the
+    # caller can observe may lag spawn by the model's full think time.
 
     def __init__(self, config: EndpointConfig = None, **kwargs):
         handlers = kwargs.pop("pi_handlers", None)
