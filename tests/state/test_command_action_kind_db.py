@@ -267,6 +267,93 @@ def test_legacy_pre_flow_yaml_rebuild_preserves_dependent_schedule_runs():
     asyncio.run(_run())
 
 
+def test_rebuild_restores_fk_enforcement_when_pragma_flush_commit_fails():
+    """A failure in the flush commit that makes `PRAGMA foreign_keys = OFF`
+    take effect must still restore enforcement: that commit is awaited, so a
+    cancellation or driver error there is a realistic boundary, and leaving
+    the pooled connection with enforcement disabled would silently disable
+    every cascade/integrity check for the rest of the process."""
+
+    async def _run():
+        with tempfile.NamedTemporaryFile(suffix=".db", delete=False) as f:
+            db_path = f.name
+        try:
+            sid = uuid.uuid4().hex[:12]
+            async with aiosqlite.connect(db_path) as raw:
+                await raw.execute("""
+                    CREATE TABLE schedules (
+                        id           TEXT PRIMARY KEY,
+                        name         TEXT NOT NULL UNIQUE,
+                        trigger_type TEXT NOT NULL,
+                        action_kind  TEXT NOT NULL
+                            CHECK(action_kind IN ('agent', 'flow', 'fanout', 'play')),
+                        created_at   REAL NOT NULL,
+                        updated_at   REAL NOT NULL
+                    )
+                """)
+                await raw.execute(
+                    "INSERT INTO schedules "
+                    "(id, name, trigger_type, action_kind, created_at, updated_at) "
+                    "VALUES (?, ?, 'cron', 'agent', 0, 0)",
+                    (sid, "pragma-flush-fault-target"),
+                )
+                await raw.commit()
+
+            real_execute = aiosqlite.Connection.execute
+            real_commit = aiosqlite.Connection.commit
+            fault_state = {"armed": False, "fired": False}
+
+            async def _tracking_execute(self, sql, parameters=None):
+                if (
+                    not fault_state["fired"]
+                    and isinstance(sql, str)
+                    and "foreign_keys = OFF" in sql
+                ):
+                    fault_state["armed"] = True
+                return await real_execute(self, sql, parameters)
+
+            async def _faulty_commit(self):
+                if fault_state["armed"] and not fault_state["fired"]:
+                    fault_state["fired"] = True
+                    fault_state["armed"] = False
+                    raise RuntimeError("fault-injected failure in pragma flush commit")
+                return await real_commit(self)
+
+            db = StateDB(db_path)
+            try:
+                with (
+                    patch.object(aiosqlite.Connection, "execute", _tracking_execute),
+                    patch.object(aiosqlite.Connection, "commit", _faulty_commit),
+                ):
+                    with pytest.raises(RuntimeError, match="pragma flush commit"):
+                        await db.open()
+
+                # Enforcement must be back ON on the live connection even
+                # though the failure happened before the rebuild began.
+                fk_row = await db.fetch_one("PRAGMA foreign_keys")
+                assert fk_row is not None
+                assert list(fk_row.values())[0] == 1
+
+                # The legacy table and its row are untouched: nothing was
+                # rebuilt, nothing was lost.
+                sched_row = await db.fetch_one(
+                    "SELECT * FROM schedules WHERE id = :id", {"id": sid}
+                )
+                assert sched_row is not None
+            finally:
+                await db.close()
+
+            # A fresh open with no fault completes the migration.
+            async with StateDB(db_path) as db2:
+                row2 = await db2.fetch_one("SELECT * FROM schedules WHERE id = :id", {"id": sid})
+                assert row2 is not None
+
+        finally:
+            os.unlink(db_path)
+
+    asyncio.run(_run())
+
+
 def test_legacy_pre_flow_yaml_rebuild_rolls_back_on_fault_and_permits_clean_retry():
     """Fault-injection regression for the schedules-rebuild atomicity fix.
 

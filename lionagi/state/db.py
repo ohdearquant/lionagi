@@ -875,22 +875,28 @@ class StateDB:
         async with self._engine.connect() as conn:
             driver = (await conn.get_raw_connection()).driver_connection
             await driver.execute("PRAGMA foreign_keys = OFF")
-            await driver.commit()
+            # Everything after the OFF pragma — including the flush commit
+            # that makes it take effect — sits inside the outer try so that
+            # ANY failure path restores enforcement in the finally block; a
+            # flush failure must not leave the pooled connection with
+            # foreign keys silently disabled.
             try:
-                await driver.execute("BEGIN IMMEDIATE")
-                await driver.execute(create_stmt)
-                insert_sql = (
-                    f"INSERT INTO schedules_new ({col_list}) SELECT {col_list} FROM schedules"  # noqa: S608
-                )
-                await driver.execute(insert_sql)
-                await driver.execute("DROP TABLE schedules")
-                await driver.execute("ALTER TABLE schedules_new RENAME TO schedules")
-                for idx_sql in index_sqls:
-                    await driver.execute(idx_sql)
                 await driver.commit()
-            except BaseException:
-                await driver.rollback()
-                raise
+                await driver.execute("BEGIN IMMEDIATE")
+                try:
+                    await driver.execute(create_stmt)
+                    insert_sql = (
+                        f"INSERT INTO schedules_new ({col_list}) SELECT {col_list} FROM schedules"  # noqa: S608
+                    )
+                    await driver.execute(insert_sql)
+                    await driver.execute("DROP TABLE schedules")
+                    await driver.execute("ALTER TABLE schedules_new RENAME TO schedules")
+                    for idx_sql in index_sqls:
+                        await driver.execute(idx_sql)
+                    await driver.commit()
+                except BaseException:
+                    await driver.rollback()
+                    raise
             finally:
                 await driver.execute("PRAGMA foreign_keys = ON")
                 await driver.commit()
@@ -983,22 +989,28 @@ class StateDB:
         async with self._engine.connect() as conn:
             driver = (await conn.get_raw_connection()).driver_connection
             await driver.execute("PRAGMA foreign_keys = OFF")
-            await driver.commit()
+            # Everything after the OFF pragma — including the flush commit
+            # that makes it take effect — sits inside the outer try so that
+            # ANY failure path restores enforcement in the finally block; a
+            # flush failure must not leave the pooled connection with
+            # foreign keys silently disabled.
             try:
-                await driver.execute("BEGIN IMMEDIATE")
-                await driver.execute(create_stmt)
-                insert_sql = (
-                    f"INSERT INTO schedules_new ({col_list}) SELECT {col_list} FROM schedules"  # noqa: S608
-                )
-                await driver.execute(insert_sql)
-                await driver.execute("DROP TABLE schedules")
-                await driver.execute("ALTER TABLE schedules_new RENAME TO schedules")
-                for idx_sql in index_sqls:
-                    await driver.execute(idx_sql)
                 await driver.commit()
-            except BaseException:
-                await driver.rollback()
-                raise
+                await driver.execute("BEGIN IMMEDIATE")
+                try:
+                    await driver.execute(create_stmt)
+                    insert_sql = (
+                        f"INSERT INTO schedules_new ({col_list}) SELECT {col_list} FROM schedules"  # noqa: S608
+                    )
+                    await driver.execute(insert_sql)
+                    await driver.execute("DROP TABLE schedules")
+                    await driver.execute("ALTER TABLE schedules_new RENAME TO schedules")
+                    for idx_sql in index_sqls:
+                        await driver.execute(idx_sql)
+                    await driver.commit()
+                except BaseException:
+                    await driver.rollback()
+                    raise
             finally:
                 await driver.execute("PRAGMA foreign_keys = ON")
                 await driver.commit()
