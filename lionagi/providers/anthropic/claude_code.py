@@ -760,6 +760,9 @@ class ClaudeCodeCLIEndpoint(AgenticHandlersMixin, AgenticEndpoint):
     _handler_params = _CLAUDE_HANDLER_PARAMS
     _handler_kwarg = "claude_handlers"
     _request_model = ClaudeCodeRequest
+    # Claude Code streams a "system" event as soon as the CLI session starts,
+    # well before the run completes — see stream_cc_cli() above.
+    streams_first_output_early = True
 
     def __init__(self, config: EndpointConfig = None, **kwargs):
         handlers = kwargs.pop("claude_handlers", None)

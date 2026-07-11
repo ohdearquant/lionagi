@@ -14,6 +14,14 @@ class AgenticEndpoint(Endpoint):
 
     is_cli: ClassVar[bool] = True
 
+    # True when the transport yields its first StreamChunk shortly after the
+    # subprocess spawns (e.g. an ndjson "system"/"init" event), so a stalled
+    # first chunk reliably signals a dead worker. False for transports that
+    # buffer all output until the run completes, where a slow-but-healthy
+    # call looks identical to a dead one until the whole result arrives —
+    # gates run.py's default liveness watchdog (LIONAGI_WORKER_LIVENESS_TIMEOUT).
+    streams_first_output_early: ClassVar[bool] = False
+
     DEFAULT_CONCURRENCY_LIMIT: ClassVar[int] = 3
     DEFAULT_QUEUE_CAPACITY: ClassVar[int] = 10
 

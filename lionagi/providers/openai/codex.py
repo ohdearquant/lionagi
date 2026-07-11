@@ -782,6 +782,9 @@ class CodexCLIEndpoint(AgenticHandlersMixin, AgenticEndpoint):
     _handler_params = _CODEX_HANDLER_PARAMS
     _handler_kwarg = "codex_handlers"
     _request_model = CodexCodeRequest
+    # Codex streams a "thread.started"/"system" event right after spawn —
+    # see stream_codex_cli() above.
+    streams_first_output_early = True
 
     def __init__(self, config: EndpointConfig = None, **kwargs):
         handlers = kwargs.pop("codex_handlers", None)
