@@ -1,6 +1,6 @@
 # ADR-0024: LNDL operate integration adapter
 
-- **Status**: Proposed
+- **Status**: Accepted
 - **Kind**: Retrospective
 - **Area**: operations
 - **Date**: 2026-07-09
