@@ -497,7 +497,7 @@ a projection suitable for APIs and documentation, not a parallel registry or mut
 
 | # | Delta | Size | Issue |
 |---|---|---|---|
-| 1 | Generate and validate a deterministic built-in catalog index from the Python declarations; accept when role files, mode files, canonical names, and default-pack coverage are checked together without changing the authoring format. | S | (filled at issue-open time) |
+| 1 | Generate and validate a deterministic built-in catalog index from the Python declarations; accept when role files, mode files, canonical names, and default-pack coverage are checked together without changing the authoring format. | S | #2028 |
 | 2 | Correct public documentation that says users extend the catalog through packs; accept when packs are described only as overlays unless a typed external Role loader is implemented. | S | (filled at issue-open time) |
 
 ## Alternatives considered

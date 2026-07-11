@@ -633,7 +633,7 @@ the shared agentic output and cleanup contract.
 
 | # | Delta | Size | Issue |
 |---|-------|------|-------|
-| 1 | Replace positional provider declarations with typed authoring records; canonicalize and validate every provider, endpoint, and alias key; report failed bundled imports; and require explicit opt-in for generic OpenAI-compatible fallback, with compatibility coverage for existing custom-provider callers. | M | (filled at issue-open time) |
+| 1 | Replace positional provider declarations with typed authoring records; canonicalize and validate every provider, endpoint, and alias key; report failed bundled imports; and require explicit opt-in for generic OpenAI-compatible fallback, with compatibility coverage for existing custom-provider callers. | M | #2026 |
 | 2 | Route `invoke()` and `stream()` through one bounded admission lifecycle that applies request, token, and concurrency limits before provider work; propagate one deadline through queueing, retries, and transport; and prove that cancellation leaves no queued or active orphan. | L | (filled at issue-open time) |
 | 3 | Apply retry and circuit policy to HTTP stream establishment before the first emitted chunk, prohibit automatic replay after output begins, and add tests for pre-first-byte failure, mid-stream failure, normal EOF, and caller cancellation. | M | (filled at issue-open time) |
 | 4 | Publish an agentic-adapter conformance contract for request construction, normalized chunks, error classification, resume identifiers, and transport cleanup; run it against every subprocess, in-process, and remote adapter while retaining vendor parsers beside their vendors. | M | (filled at issue-open time) |

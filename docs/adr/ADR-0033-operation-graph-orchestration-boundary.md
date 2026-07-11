@@ -542,7 +542,7 @@ entry point.
 | # | Delta | Size | Issue |
 |---|-------|------|-------|
 | 1 | Make sequential linking explicit in `OperationGraphBuilder`, migrate CLI fan-out and dependency-free DAG roots to independent-node construction, and add topology tests proving that no undeclared worker-to-worker edges exist. | M | (filled at issue-open time) |
-| 2 | Implement one `TaskAssignment.depends_on` normalizer for pattern and CLI builders, document whether forward ordinal references are accepted, and validate the normalized graph for cycles before execution. | S | (filled at issue-open time) |
+| 2 | Implement one `TaskAssignment.depends_on` normalizer for pattern and CLI builders, document whether forward ordinal references are accepted, and validate the normalized graph for cycles before execution. | S | #2027 |
 | 3 | Move callback-to-node-signal conversion from `engines` to a neutral flow/session module, expose a named observed-flow facade, and migrate EngineRun, Studio, CLI fan-out, CLI synthesis, and main CLI flow without changing signal ordering or result shape. | M | (filled at issue-open time) |
 | 4 | Parameterize the shared role-task builders with branch, instruction, identity, and artifact decorators, then remove CLI-owned duplicate edge wiring while preserving checkpoint and artifact identities. | M | (filled at issue-open time) |
 
