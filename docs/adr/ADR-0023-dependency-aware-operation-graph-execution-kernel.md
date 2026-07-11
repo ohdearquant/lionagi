@@ -624,7 +624,7 @@ documented above.
 | 2 | Define deterministic shared-context semantics by namespacing node outputs by default and requiring an explicit reducer for colliding shared keys; add parallel collision tests. | M | (filled at issue-open time) |
 | 3 | Pass `on_branch_created` into reactive execution and invoke it for every injected clone; add identical persistence-hook coverage for preallocated and spawned branches. | S | (filled at issue-open time) |
 | 4 | Extract reactive graph mutation and streaming-driver concerns behind internal collaborators while retaining one public executor contract; document the required async backend. | M | (filled at issue-open time) |
-| 5 | Specify durable reactive continuation with persisted spawned topology, parent edges, operation requests, branch reconstruction, context, and conversation-history policy; keep the current fail-closed refusal until all fields can be restored. | L | (filled at issue-open time) |
+| 5 | Specify durable reactive continuation with persisted spawned topology, parent edges, operation requests, branch reconstruction, context, and conversation-history policy; keep the current fail-closed refusal until all fields can be restored. | L | #2015 |
 | 6 | Validate that an operation response's `context` is a mapping before deep merge; on mismatch, produce one explicit failed status/result and add a regression test for progress and streaming status. | S | (filled at issue-open time) |
 | 7 | Define existing-operation UUID injection as reject, no-op, or intentional rerun; enforce that choice before graph mutation and test branch, completion-event, and spawn-count behavior. | S | (filled at issue-open time) |
 

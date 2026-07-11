@@ -441,8 +441,8 @@ explicit degraded flag makes the one supported fidelity loss visible to the call
 | # | Delta | Size | Issue |
 |---|---|---|---|
 | 1 | Add a terminal reactive-flow cancel control; acceptance: after acknowledgement, no new operation starts and the run persists a cancelled terminal state. | M | (filled at issue-open time) |
-| 2 | Replay reactively spawned nodes from checkpoints or reject affected checkpoints before execution; acceptance: resume never returns a partially replayed spawned DAG as successful recovery. | M | (filled at issue-open time) |
-| 3 | Persist predecessor conversation state needed by `inherit_context`; acceptance: eligible resumed operations receive the same inherited conversation without requiring degraded mode. | L | (filled at issue-open time) |
+| 2 | Replay reactively spawned nodes from checkpoints or reject affected checkpoints before execution; acceptance: resume never returns a partially replayed spawned DAG as successful recovery. | M | #2015 |
+| 3 | Persist predecessor conversation state needed by `inherit_context`; acceptance: eligible resumed operations receive the same inherited conversation without requiring degraded mode. | L | #2015 |
 | 4 | Enforce checkpoint-version compatibility and report unsupported versions before graph construction; acceptance: a checkpoint with an unknown version fails with a typed migration/compatibility error. | S | (filled at issue-open time) |
 | 5 | Add operator recovery for controls stranded in `applying`; acceptance: status distinguishes definitely-applied, definitely-not-applied, and indeterminate messages without automatic duplicate injection. | M | (filled at issue-open time) |
 

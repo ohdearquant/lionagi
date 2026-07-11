@@ -766,10 +766,10 @@ unlike callables.
 
 | # | Delta | Size | Issue |
 |---|---|---|---|
-| 1 | Make Session hook attachment independent of lazy access order; accept when branches included before or after `Session.hooks` creation receive the same bus and emit the same tool signals. | S | (filled at issue-open time) |
+| 1 | Make Session hook attachment independent of lazy access order; accept when branches included before or after `Session.hooks` creation receive the same bus and emit the same tool signals. | S | #1964 |
 | 2 | Give the three dormant API `HookPoint` values production semantics through a typed, optional service-to-session observation adapter; accept when a session-bound iModel records API observations without changing service pre-invocation control or standalone iModel behavior. | M | (filled at issue-open time) |
 | 3 | Deprecate the unwired `ARTIFACT_CREATED` point until the artifact owner supplies a typed production emit site; accept when no public HookPoint is advertised without a payload contract and an integration test. | S | (filled at issue-open time) |
-| 4 | Record blocked `TOOL_PRE` attempts without swallowing the blocking exception; accept when denied calls produce an audit signal and the underlying tool is never invoked. | S | (filled at issue-open time) |
+| 4 | Record blocked `TOOL_PRE` attempts without swallowing the blocking exception; accept when denied calls produce an audit signal and the underlying tool is never invoked. | S | #1967 |
 | 5 | Align service hook annotations with runtime behavior; accept when `StreamHandlers` describes the actual stream callback arguments and `iModel.create_event()` has one truthful return type covered by static and runtime tests. | S | (filled at issue-open time) |
 | 6 | Either wire declarative Session hook overrides into a production construction boundary or document `build_session_bus(agent_hooks=...)` as an explicit low-level utility; accept when one public construction path and its tests demonstrate the chosen ownership. | M | (filled at issue-open time) |
 | 7 | Make the default `MESSAGE_ADD` handler compatible with the Branch emission payload or remove it from the default bus; accept when direct Session/Branch use cannot invoke `persist_message` without its required session and progression context. | S | (filled at issue-open time) |
