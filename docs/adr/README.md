@@ -217,6 +217,8 @@ collisions. Unused numbers inside a block are intentional gaps, not missing docu
   memory store
 - [ADR-0093](ADR-0093-external-memory-adapter-fidelity-contract.md) — External memory adapter
   fidelity contract
-- 0094-0095 — unused (intentional gaps)
+- [ADR-0094](ADR-0094-automated-pr-review-pipeline.md) — Automated PR-review pipeline over
+  github-poll schedules
+- 0095 — unused (intentional gap)
 
 Remaining areas land here as their records are accepted.

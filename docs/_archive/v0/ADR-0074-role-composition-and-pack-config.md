@@ -146,7 +146,7 @@ Split the decision so no single point drowns in options:
 
 - ADR-0071 — Cognitive Mode Model (modes; deferred role→mode allowlist + selection).
 - ADR-0072 — Reactive Capability Bus (the emission/orchestration substrate).
-- ADR-0073 — Universal Agent Spec (`AgentSpec.compose`/`from_yaml`, the composition surface).
+- ADR-0073 (never published; number unassigned) — Universal Agent Spec (`AgentSpec.compose`/`from_yaml`, the composition surface).
 - `lionagi/casts/{pattern,profile,pack}.py`; `lionagi/casts/packs/default.yaml`.
 - `lionagi/cli/orchestrate/_orchestration.py` — `casts_role_system`, `role_roster`, `build_worker_branch`.
 - `lionagi/agent/spec.py` — `AgentSpec.compose(role, modes=, model=, effort=)`, `from_yaml`.
