@@ -19,17 +19,15 @@ _log = logging.getLogger(__name__)
 class GithubPollItem:
     """One PR observed by a poll, past the previously stored cursor.
 
-    ``event`` is always populated (even when ``dispatchable`` is False) so a
+    ``event`` is always populated, even when ``dispatchable`` is False, so a
     caller can log which PR was seen without firing it. ``updated_at`` is the
-    cursor high-water-mark field for this item -- normally the PR's raw
-    GitHub ``updated_at``, but under ``github_filter={"event": "pr_merged"}``
-    it holds ``merged_at`` instead, since that's what the merged-PR mode
-    compares against the persisted cursor (the event dict's own
-    ``updated_at`` key still carries the PR's real ``updated_at`` either way,
-    for template rendering). ``dispatchable`` is False when ``github_filter``
-    (e.g. a draft filter) excludes the PR from firing -- it is still
-    returned, not silently dropped, so the caller can advance the cursor
-    past it without the PR being re-listed on every subsequent poll.
+    cursor high-water-mark field for this item -- the PR's raw GitHub
+    ``updated_at``, except under ``github_filter={"event": "pr_merged"}``
+    where it holds ``merged_at`` instead (the event dict's own ``updated_at``
+    key still carries the PR's real ``updated_at`` for template rendering).
+    ``dispatchable`` is False when ``github_filter`` (e.g. a draft filter)
+    excludes the PR from firing -- it is still returned so the caller can
+    advance the cursor past it without re-listing it every poll.
     """
 
     event: dict[str, Any]
@@ -40,29 +38,23 @@ class GithubPollItem:
 class GithubPollResult(NamedTuple):
     """Return shape of ``github_poll()``.
 
-    ``scan_complete`` is False only when merged-mode pagination stopped for
-    an UNSAFE reason -- the ``_MERGED_MODE_MAX_PAGES`` cap was hit, or a
-    pagination fetch/status error truncated the scan -- rather than a safe
-    boundary (a short page, no ``rel="next"`` link, or the stored cursor was
-    reached). ``items`` has already had any event that could not be proven
-    complete filtered out in that case (see the truncation-safety filter in
-    ``github_poll``), so a caller does not need to re-derive that from item
-    counts; ``scan_complete`` exists for observability -- e.g. logging that
-    some events near the cursor boundary are being held for a later poll,
-    when a deeper or safely-bounded scan may resolve them.
+    ``scan_complete`` is False only when merged-mode pagination stopped for an
+    UNSAFE reason (the ``_MERGED_MODE_MAX_PAGES`` cap hit, or a pagination
+    fetch/status error) rather than a safe boundary (short page, no
+    ``rel="next"``, or the stored cursor reached). ``items`` already has any
+    event that couldn't be proven complete filtered out in that case -- a
+    caller does not need to re-derive that from item counts; the flag exists
+    for observability (e.g. logging that boundary events are held for a
+    later poll).
 
-    ``poll_status`` distinguishes a healthy-but-empty poll from a poll that
-    couldn't actually see GitHub -- ``items == []`` alone is ambiguous
-    between "nothing new" and "blind" (a 401 or a network failure also
-    returns no items). ``"ok"`` is any 2xx or 304 (not-modified, itself a
-    successful authenticated read); ``"auth_error"`` is a 401 that survived
-    the gh-CLI-token fallback retry; ``"error"`` covers everything else that
-    prevented a real poll (network exception, missing/invalid github_repo,
-    no token available, or a non-200/304/401 status). The caller
-    (``SchedulerEngine._tick_github``) uses this to stamp the schedule's
-    observer-self-health columns. Defaults to ``"ok"`` so existing call
-    sites that construct a ``GithubPollResult`` directly (tests, mocks)
-    don't need updating.
+    ``poll_status`` distinguishes a healthy-but-empty poll from one that
+    couldn't see GitHub -- ``items == []`` alone is ambiguous between
+    "nothing new" and "blind" (a 401 or network failure also returns no
+    items). ``"ok"`` = any 2xx or 304; ``"auth_error"`` = a 401 that survived
+    the gh-CLI-token fallback retry; ``"error"`` = anything else that
+    prevented a real poll. ``SchedulerEngine._tick_github`` uses this to
+    stamp the schedule's observer-self-health columns. Defaults to ``"ok"``
+    so direct-construction call sites (tests, mocks) don't need updating.
     """
 
     items: list[GithubPollItem]
@@ -104,11 +96,10 @@ _GITHUB_REPO_TRAVERSAL = frozenset({".", ".."})
 
 
 def _validate_github_repo(repo: str) -> None:
-    """Raise ValueError if *repo* is not a safe GitHub owner/name pair (CWE-918).
+    """Raise ValueError if *repo* is not a safe ``owner/name`` pair (CWE-918).
 
-    Defense-in-depth at URL-construction time; service write boundary applies the
-    same check via services/schedules._svc_validate_github_repo.  Rules: exactly
-    one '/' separator, valid owner/repo segments per the regex constants above.
+    Defense-in-depth at URL-construction time; the service write boundary
+    applies the same check via ``services/schedules._svc_validate_github_repo``.
     """
     if not repo or "/" not in repo:
         raise ValueError(
@@ -157,12 +148,9 @@ def _validate_github_repo(repo: str) -> None:
 
 
 def _next_page_url(resp: httpx.Response) -> str | None:
-    """Extract the RFC 5988 ``rel="next"`` URL from a GitHub API response's
-    ``Link`` header, or ``None`` on the last page.
-
-    Parsed with a plain regex rather than ``httpx.Response.links`` so a
-    lightweight test double (a bare ``headers`` dict) works the same as a
-    real ``httpx.Response``.
+    """Extract the RFC 5988 ``rel="next"`` URL from the response's ``Link``
+    header, or ``None`` on the last page. Regex-parsed (not
+    ``httpx.Response.links``) so a bare-dict test double works too.
     """
     link_header = resp.headers.get("link")
     if not link_header:
@@ -199,11 +187,9 @@ async def _gh_cli_token() -> str | None:
 async def _get_gh_token(prefer_cli: bool = False) -> str | None:
     """Get a GitHub token from the environment or the gh CLI.
 
-    By default ``GITHUB_TOKEN`` wins. Set ``prefer_cli=True`` to skip the env
-    var and read a fresh token from ``gh auth token`` instead — used to recover
-    from a ``GITHUB_TOKEN`` that was valid at daemon launch but has since
-    expired (the poller would otherwise stay pinned to the dead credential and
-    go silently blind on every poll).
+    ``GITHUB_TOKEN`` wins by default. ``prefer_cli=True`` skips it and reads a
+    fresh token from ``gh auth token`` instead -- used to recover from a
+    ``GITHUB_TOKEN`` that was valid at daemon launch but has since expired.
     """
     import os
 
@@ -217,18 +203,16 @@ async def _get_gh_token(prefer_cli: bool = False) -> str | None:
 async def github_poll(schedule: dict) -> GithubPollResult:
     """Poll GitHub for PRs newer than the stored cursor.
 
-    Returns items ordered oldest-``updated_at``-first (the GitHub API itself
-    returns them newest-first) so a caller advancing the persisted cursor
-    incrementally, one dispatched item at a time, stays monotone.
+    Returns items ordered oldest-``updated_at``-first (the API itself returns
+    newest-first) so a caller advancing the persisted cursor incrementally
+    stays monotone.
 
-    Does NOT persist ``github_cursor`` -- that is the caller's job now
+    Does NOT persist ``github_cursor`` -- that is the caller's job
     (``SchedulerEngine._tick_github``). Fire-per-event budget gating means
-    some of the dispatchable items returned here may not actually get fired
-    this poll (max_runs/global-slot exhaustion), and those must be re-listed
-    on the next poll rather than silently skipped, so only the caller -- who
-    knows what it actually dispatched -- can decide how far the cursor is
-    safe to advance. See ``GithubPollResult.scan_complete`` for the
-    equivalent truncation-safety concern in merged mode.
+    some dispatchable items may not actually get fired this poll
+    (max_runs/global-slot exhaustion) and must be re-listed on the next poll
+    rather than silently skipped, so only the caller -- who knows what it
+    actually dispatched -- can decide how far the cursor is safe to advance.
     """
     repo = schedule.get("github_repo")
     if not repo:

@@ -103,12 +103,8 @@ async def _list_shows_db() -> list[dict[str, Any]]:
             "path": public_path(Path(row["show_dir"])),
             "play_count": row["play_count"],
             "latest_status": row["status"],
-            # ADR-0011 §"Show status provenance": status_source field.
-            # The status_source column is defined in ADR-0011's schema block but
-            # is absent from the current schema.sql (deferred migration — tracked
-            # separately; adding it requires ALTER TABLE and a backfill pass that
-            # is out of scope for this fix PR).  We derive it in code: db-loaded
-            # rows get "sqlite", filesystem fallback rows get "filesystem".
+            # ADR-0011: status_source is derived in code, not a DB column
+            # (schema migration deferred). db rows -> "sqlite".
             "status_source": "sqlite",
             "last_update": row["latest_play_update"] or row["updated_at"],
             "goal": row["goal"],
@@ -242,9 +238,7 @@ async def get_show(topic: str) -> dict[str, Any] | None:
     else:
         plays = []
 
-    # ADR-0011 §"Show status provenance": status_source mirrors the
-    # derivation in list_shows() — "sqlite" when the row came from the DB,
-    # "filesystem" for filesystem fallback (show_row is None).
+    # ADR-0011: same status_source derivation as list_shows().
     status_source = "sqlite" if show_row else "filesystem"
 
     return {
@@ -533,9 +527,8 @@ _SHOW_DONE_STABLE_SECS = 60.0
 async def watch_show(topic: str) -> AsyncGenerator[str]:
     """SSE stream of file changes under a show directory.
 
-    ADR-0006 reconnect semantics: emits ``{"type":"done"}`` when the show is
-    terminal (completed or aborted) AND no file has changed for 60 seconds.
-    Emits done immediately when the show directory does not exist (Docker deployments).
+    ADR-0006: emits ``{"type":"done"}`` once the show is terminal and stable
+    for 60s, or immediately if the show directory doesn't exist.
     """
     try:
         topic_dir = safe_join(SHOWS_ROOT, topic)
@@ -596,10 +589,9 @@ async def list_shows_route() -> list[dict[str, Any]]:
     return await list_shows()
 
 
-# ADR-0011 §"Migration": import_shows is a state-mutating operation
-# (INSERT OR IGNORE into shows + plays); it must use POST, not GET.
-# ADR-0011 specifies this as a CLI maintenance command (`li state import-shows`).
-# The POST endpoint is retained as a Studio convenience trigger.
+# ADR-0011: state-mutating (INSERT OR IGNORE), so POST not GET. The CLI
+# maintenance command (`li state import-shows`) is canonical; this route is
+# a Studio convenience trigger.
 @studio_route(
     "/shows/import", method="POST", area="shows", tags=["shows", "shows"], name="import_shows"
 )

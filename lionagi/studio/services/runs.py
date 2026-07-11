@@ -448,11 +448,10 @@ def _session_liveness(s: dict[str, Any], ps_snapshot: str | None = None) -> bool
 
 
 def _run_row(s: dict[str, Any], now: float, *, process_alive: bool | None = None) -> dict[str, Any]:
-    """The canonical Run row shape. Shared by the list and detail routes so the
-    two can never drift out of contract (the detail route used to drop fields the
-    list route emits, e.g. invocation_id). Caller supplies a session dict carrying
+    """The canonical Run row shape, shared by list and detail routes so they
+    can't drift out of contract. Caller supplies a session dict carrying
     branch_count / message_count / last_message_at, plus tri-state process
-    liveness (None = unknown) so a process-dead run cannot render as healthy.
+    liveness (None = unknown) so a process-dead run can't render as healthy.
     """
     from lionagi.state.health import classify_session_health
 
@@ -568,14 +567,13 @@ async def get_run(
     message_limit: int = _sessions_svc.DEFAULT_MESSAGE_LIMIT,
     message_cursor: str | None = None,
 ) -> dict[str, Any] | None:
-    """Return run detail from StateDB; flat-file run.json path was removed (write_manifest had zero callers).
+    """Run detail from StateDB (flat-file run.json path removed, no callers).
 
-    The response is a superset of the list Run row (via _run_row) plus detail-only
-    fields. get_session() omits the JOIN aggregates (branch_count / message_count),
-    so they are derived from the hydrated branches here; last_message_at is read
-    straight from get_session()'s session-table aggregate.
-    Fields absent from DB (state_root, artifact_root, task, error, cwd, manifest)
-    return None/""/{} to keep the frontend contract unchanged.
+    Superset of the list Run row (via _run_row) plus detail-only fields.
+    branch_count / message_count are derived here since get_session() omits
+    those JOIN aggregates. Fields absent from DB (state_root, artifact_root,
+    task, error, cwd, manifest) return None/""/{} to keep the frontend
+    contract unchanged.
     """
     session = await _sessions_svc.get_session(
         run_id, message_limit=message_limit, message_cursor=message_cursor
@@ -666,16 +664,13 @@ async def get_run(
 def _build_steps_from_db(branches: list[dict[str, Any]]) -> list[dict[str, Any]] | None:
     """Build a steps list from DB-hydrated branch dicts.
 
-    `messages` on each branch is a tail-windowed display page; `message_count`
-    and `roles` must reflect the full branch progression, so they are read
-    from the branch's full-session `message_stats` (falling back to
-    `message_total` and finally the windowed page length for legacy payloads
-    that predate message_stats).
-
-    The `message_stats.message_count` fallback is KEY-PRESENCE based, not
-    truthiness based: a stale progression referencing pruned/never-persisted
-    message ids legitimately aggregates to 0, and `0 or fallback` would
-    silently replace that correct zero with the (wrong) progression length.
+    `messages` per branch is a tail-windowed display page; `message_count`/
+    `roles` are read from the branch's full-session `message_stats` instead
+    (falling back to `message_total`, then windowed page length, for legacy
+    payloads predating message_stats). The `message_stats.message_count`
+    check is KEY-PRESENCE based, not truthiness: a legitimate 0 (stale
+    progression referencing pruned message ids) must not fall through to
+    `0 or fallback`, which would replace it with the wrong count.
     """
     if not branches:
         return None

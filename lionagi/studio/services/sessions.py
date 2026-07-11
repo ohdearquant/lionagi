@@ -253,12 +253,8 @@ def _window_message_ids(
     cursor_anchors: dict[str, str] | None,
     legacy_offset: int,
 ) -> tuple[list[str], bool, str | None]:
-    """Return (window_ids, has_older, next_anchor) for one branch's progression.
-
-    `cursor_anchors` is None when the caller passed no message_cursor at all; an
-    empty-of-this-branch cursor (branch id absent from the map) means the prior
-    page already reached this branch's oldest message, so it yields nothing more.
-    """
+    """Return (window_ids, has_older, next_anchor); cursor_anchors=None means no
+    cursor was passed, an anchor-less branch entry means that branch is exhausted."""
     if cursor_anchors is not None:
         anchor = cursor_anchors.get(branch_id)
         if anchor is None:
@@ -282,13 +278,8 @@ def _window_message_ids(
 
 
 def _short_lion_class(lion_class: str) -> str:
-    """Strip a fully-qualified lion_class path down to its bare class name.
-
-    Persisted rows carry the canonical dotted path (see message_types seed data
-    in state/schema.sql), e.g. 'lionagi.protocols.messages.action_request.ActionRequest';
-    older/legacy rows may carry just 'ActionRequest'. Compare on the short form so both
-    shapes match.
-    """
+    """Strip a fully-qualified lion_class path to its bare class name, so legacy
+    short-name rows and canonical dotted-path rows compare equal."""
     return lion_class.rsplit(".", 1)[-1] if lion_class else lion_class
 
 
@@ -359,13 +350,8 @@ async def _fetch_role_counts(db: aiosqlite.Connection, msg_ids: list[str]) -> di
 async def _fetch_action_messages(
     db: aiosqlite.Connection, msg_ids: list[str]
 ) -> list[dict[str, Any]]:
-    """Hydrate only the ActionRequest/ActionResponse rows among msg_ids, in progression order.
-
-    Tool/error/file aggregates only ever need these two message kinds; skipping every
-    other message keeps the full-session aggregate pass cheap regardless of session size.
-    Matches both the canonical fully-qualified lion_class paths persisted by the runtime
-    (state/schema.sql message_types seed) and legacy short-name values.
-    """
+    """Hydrate only the ActionRequest/ActionResponse rows among msg_ids, in progression
+    order — the only kinds tool/error/file aggregates need, keeping the pass cheap."""
     if not msg_ids:
         return []
     class_placeholders = ",".join("?" for _ in _ACTION_LION_CLASSES)
@@ -407,11 +393,7 @@ def _branch_message_stats(
     roles: dict[str, int],
     action_messages: list[dict[str, Any]],
 ) -> dict[str, Any]:
-    """Full-branch stats computed over the full progression, never a display window.
-
-    `message_count`/`roles` come from SQL aggregates; `action_messages` holds only the
-    ActionRequest/ActionResponse rows, since tool/error/file summaries never need anything else.
-    """
+    """Full-branch stats over the full progression, never a display window."""
     from .runs import _detect_status
 
     response_by_id: dict[str, dict[str, Any]] = {
