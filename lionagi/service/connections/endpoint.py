@@ -6,7 +6,8 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
-from typing import ClassVar
+from collections.abc import Callable
+from typing import Any, ClassVar, Literal
 
 from pydantic import BaseModel
 
@@ -189,9 +190,19 @@ class Endpoint:
         if self.retry_config:
 
             async def call_func(p, h, **kw):
-                return await retry_with_backoff(
-                    self._call, p, h, **kw, **self.retry_config.as_kwargs()
+                # The 4xx sentinel must stay excluded until this outer retry
+                # layer has decided not to retry — unwrapping earlier would let
+                # a retry_exceptions=(aiohttp.ClientError,) config replay
+                # 400/401/403 responses the transport contract keeps single-shot.
+                retry_kwargs = self.retry_config.as_kwargs()
+                retry_kwargs["exclude_exceptions"] = (
+                    *retry_kwargs.get("exclude_exceptions", ()),
+                    _NonRetryableClientError,
                 )
+                try:
+                    return await retry_with_backoff(self._call, p, h, **kw, **retry_kwargs)
+                except _NonRetryableClientError as exc:
+                    raise exc.original from exc.__cause__
 
         if self.circuit_breaker:
             if self.retry_config:
@@ -228,12 +239,45 @@ class Endpoint:
 
         return await self._call(payload, headers, **kwargs)
 
-    async def _call_aiohttp(self, payload: dict, headers: dict, **kwargs):
+    def _can_retry(self) -> bool:
+        """Whether more than one request attempt can occur for this endpoint.
+
+        True when an explicit RetryConfig wraps the call, or when the native
+        path's total-attempt cap allows a second attempt. Single-shot
+        endpoints (max_retries<=1, no RetryConfig) never replay a body, so
+        callers may hand over non-replayable inputs like one-shot streams.
+        """
+        if self.retry_config:
+            return self.retry_config.max_retries > 0
+        return self.config.max_retries > 1
+
+    async def _call_aiohttp(
+        self,
+        payload: dict[str, Any],
+        headers: dict[str, str],
+        *,
+        request_body_factory: Callable[[], dict[str, Any]] | None = None,
+        response_mode: Literal["json", "bytes"] = "json",
+        error_context: str = "Request",
+        **request_kwargs: Any,
+    ) -> Any:
         self._assert_ssrf_safe_url()
 
         import aiohttp
 
+        build_body = request_body_factory or (lambda: {"json": payload})
+
         async def _make_request():
+            # The body is rebuilt inside the per-attempt function, not before retry
+            # orchestration, because FormData/BytesIO/file streams can be consumed by
+            # the first POST and must not be silently replayed by a later attempt.
+            body_kwargs = build_body()
+            collision = set(body_kwargs) & set(request_kwargs)
+            if collision:
+                raise ValueError(
+                    f"request_body_factory and request_kwargs both supply {sorted(collision)}"
+                )
+
             async with self._create_http_session() as session:
                 response = None
                 try:
@@ -241,8 +285,8 @@ class Endpoint:
                         method=self.config.method,
                         url=self.config.full_url,
                         headers=headers,
-                        json=payload,
-                        **kwargs,
+                        **body_kwargs,
+                        **request_kwargs,
                     )
 
                     if response.status == 429 or response.status >= 500:
@@ -251,10 +295,11 @@ class Endpoint:
                         try:
                             error_body = await response.json()
                             error_message = (
-                                f"Request failed with status {response.status}: {error_body}"
+                                f"{error_context} failed with status "
+                                f"{response.status}: {error_body}"
                             )
                         except Exception:
-                            error_message = f"Request failed with status {response.status}"
+                            error_message = f"{error_context} failed with status {response.status}"
 
                         original = aiohttp.ClientResponseError(
                             request_info=response.request_info,
@@ -267,6 +312,8 @@ class Endpoint:
                         # gives up immediately, preserving the original error on __cause__.
                         raise _NonRetryableClientError(original) from original
 
+                    if response_mode == "bytes":
+                        return await response.read()
                     return await response.json()
                 finally:
                     # Ensure response is properly released if coroutine is cancelled between retries.
@@ -274,8 +321,9 @@ class Endpoint:
                     if response is not None and not response.closed:
                         response.release()
 
-        # When retry_config is set, the outer call() already wraps _call in retry_with_backoff.
-        # _call delegates here, so just run the raw request — no extra retry layer.
+        # When retry_config is set, the outer call() wraps _call in retry_with_backoff
+        # and owns both the sentinel exclusion and the unwrap; run the raw request and
+        # let the sentinel propagate to that layer.
         if self.retry_config:
             return await _make_request()
 
