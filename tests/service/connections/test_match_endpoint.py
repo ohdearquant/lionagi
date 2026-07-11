@@ -150,7 +150,7 @@ class TestMatchEndpoint:
 
         assert isinstance(endpoint, OpenaiChatEndpoint)
 
-    def test_provider_case_insensitive(self):
+    def test_provider_case_sensitive_routing(self):
         from lionagi.providers.openai.chat import OpenaiChatEndpoint
 
         endpoint_lower = match_endpoint(provider="openai", endpoint="chat", model="gpt-4.1-mini")
