@@ -222,3 +222,7 @@ collisions. Unused numbers inside a block are intentional gaps, not missing docu
 - 0095 — unused (intentional gap)
 
 Remaining areas land here as their records are accepted.
+
+Status-set literals quoted in these records (terminal sets, valid-status vocabularies) are
+checked against the lifecycle policy registry in CI (`scripts/check_adr_status_sets.py`);
+a registry change that stale-ifies a quoted set fails the docs job.

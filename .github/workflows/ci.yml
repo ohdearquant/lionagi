@@ -31,6 +31,7 @@ jobs:
       run: scripts/ci.sh lint-python
 
   docs:
+    needs: changes
     runs-on: ubuntu-latest
     steps:
     - uses: actions/checkout@v7
@@ -46,6 +47,25 @@ jobs:
       with:
         args: "--no-progress --offline docs/ README.md AGENT.md CLAUDE.md CONTRIBUTING.md"
         fail: true
+
+    # Only when docs/adr/ or the lifecycle policy registry itself changed —
+    # this check compares the two against each other, so an unrelated docs
+    # PR has nothing new to verify.
+    - name: Install uv
+      if: needs.changes.outputs.adr == 'true'
+      run: |
+        curl -LsSf https://astral.sh/uv/install.sh | sh
+        # The installer prefers XDG_BIN_HOME then ~/.local/bin; ~/.cargo/bin is
+        # a legacy fallback — put both on PATH so either layout resolves.
+        echo "$HOME/.local/bin" >> $GITHUB_PATH
+        echo "$HOME/.cargo/bin" >> $GITHUB_PATH
+
+    - name: Check ADR status sets against the lifecycle policy registry
+      if: needs.changes.outputs.adr == 'true'
+      run: |
+        uv venv
+        uv sync --all-extras
+        uv run python scripts/check_adr_status_sets.py
 
   test:
     runs-on: ubuntu-latest
@@ -191,6 +211,7 @@ jobs:
     runs-on: ubuntu-latest
     outputs:
       studio: ${{ steps.filter.outputs.studio }}
+      adr: ${{ steps.filter.outputs.adr }}
     steps:
     - uses: actions/checkout@v7
     - uses: dorny/paths-filter@v4
@@ -206,6 +227,9 @@ jobs:
             - 'marketplace/**'
             - '.claude-plugin/**'
             - '.github/workflows/ci.yml'
+          adr:
+            - 'docs/adr/**'
+            - 'lionagi/state/lifecycle/**'
 
   # Build the Studio image (Vite SPA + FastAPI single-origin) whenever its inputs
   # change, so a broken image is caught on the PR that breaks it instead of at
