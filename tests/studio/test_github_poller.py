@@ -181,7 +181,7 @@ def test_github_poll_emits_head_sha_and_draft(monkeypatch):
     assert ev["head_sha"] == "deadbeef"
     assert ev["draft"] is False
     assert ev["pr_author"] == "octocat"
-    # New head-repo-identity fields (ADR-0094 D1), present and typed on every item.
+    # Head-repo-identity fields are present and typed on every item.
     assert ev["head_repo"] == "owner/name"
     assert isinstance(ev["head_repo"], str)
     assert ev["head_repo_is_fork"] is False
@@ -298,7 +298,7 @@ def test_github_poll_non_bool_draft_filter_ignored(monkeypatch):
 def test_github_poll_same_repo_filter_true_excludes_fork_pr(monkeypatch):
     """github_filter={'same_repo_only': true} marks a fork PR non-dispatchable
     while a same-repo PR stays dispatchable; both are still returned (cursor
-    bookkeeping), matching the draft filter's shape (D1)."""
+    bookkeeping), matching the draft filter's shape."""
     _install(
         monkeypatch,
         [
@@ -321,7 +321,8 @@ def test_github_poll_same_repo_filter_true_excludes_fork_pr(monkeypatch):
 def test_github_poll_same_repo_filter_fails_closed_on_null_head_repo(monkeypatch):
     """A PR whose head.repo is null (e.g. a deleted fork source) resolves
     is_same_repo=False and, under same_repo_only, is excluded -- fail closed,
-    never fail open, since this feeds a trust decision (D1)."""
+    never fail open, since this feeds a trust decision: fork diffs are
+    attacker-controlled input."""
     _install(
         monkeypatch,
         [_pr(1, "2026-07-07T10:00:00Z", head_repo=None)],
@@ -373,6 +374,57 @@ def test_github_poll_no_same_repo_filter_fork_prs_still_dispatchable(monkeypatch
     items = _poll({"id": "s1", "github_repo": "owner/name"})
     assert all(i.dispatchable for i in items)
     assert sorted(i.event["pr_number"] for i in items) == [1, 2]
+
+
+def test_github_poll_same_repo_filter_matches_mixed_case_head_repo(monkeypatch):
+    """GitHub repository paths are case-insensitive: a head.repo.full_name
+    that differs only in case from the polled github_repo (e.g. because the
+    owner/repo was renamed or the API returns a different canonical casing)
+    must still resolve is_same_repo=True rather than false-negative on a
+    literal string comparison."""
+    _install(
+        monkeypatch,
+        [_pr(1, "2026-07-07T10:00:00Z", head_repo="OWNER/NAME")],
+    )
+    items = _poll(
+        {"id": "s1", "github_repo": "owner/name", "github_filter": {"same_repo_only": True}}
+    )
+    assert len(items) == 1
+    assert items[0].event["is_same_repo"] is True
+    assert items[0].dispatchable is True
+
+
+def test_github_poll_same_repo_filter_false_all_dispatchable(monkeypatch):
+    """github_filter={'same_repo_only': false} is the explicit opt-out shape:
+    a same-repo PR, a fork PR, and a PR with a null head.repo (deleted fork
+    source) must all remain dispatchable, and each item's identity fields
+    (head_repo, head_repo_is_fork, is_same_repo) must still be populated
+    correctly even though the filter isn't narrowing dispatch."""
+    _install(
+        monkeypatch,
+        [
+            _pr(3, "2026-07-07T12:00:00Z", head_repo=None),
+            _pr(2, "2026-07-07T11:00:00Z", head_repo="attacker/name", head_repo_is_fork=True),
+            _pr(1, "2026-07-07T10:00:00Z", head_repo="owner/name"),
+        ],
+    )
+    items = _poll(
+        {"id": "s1", "github_repo": "owner/name", "github_filter": {"same_repo_only": False}}
+    )
+    by_number = {i.event["pr_number"]: i for i in items}
+    assert all(i.dispatchable for i in items)
+
+    assert by_number[1].event["head_repo"] == "owner/name"
+    assert by_number[1].event["head_repo_is_fork"] is False
+    assert by_number[1].event["is_same_repo"] is True
+
+    assert by_number[2].event["head_repo"] == "attacker/name"
+    assert by_number[2].event["head_repo_is_fork"] is True
+    assert by_number[2].event["is_same_repo"] is False
+
+    assert by_number[3].event["head_repo"] is None
+    assert by_number[3].event["head_repo_is_fork"] is False
+    assert by_number[3].event["is_same_repo"] is False
 
 
 def test_github_poll_non_bool_same_repo_filter_ignored(monkeypatch):

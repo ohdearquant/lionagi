@@ -412,11 +412,28 @@ async def github_poll(schedule: dict) -> GithubPollResult:
 
         # head.repo is null for a PR whose fork source was deleted -- fail
         # closed (never same-repo) rather than fail open, since this feeds a
-        # trust decision (D1: fork diffs are attacker-controlled input).
+        # trust decision: fork diffs are attacker-controlled input.
         head_repo_obj = (pr.get("head") or {}).get("repo")
+        base_repo_obj = (pr.get("base") or {}).get("repo")
         head_repo = head_repo_obj.get("full_name") if head_repo_obj else None
         head_repo_is_fork = bool(head_repo_obj.get("fork", False)) if head_repo_obj else False
-        is_same_repo = head_repo is not None and head_repo == repo
+        # Repository ids are stable and case-independent; the configured
+        # github_repo string and the API's returned full_name may differ
+        # only in case (GitHub repo paths are case-insensitive), which would
+        # false-negative a plain string ``==``. Prefer comparing the PR's own
+        # head/base repo ids -- both come from the same API response, so no
+        # external casing assumption is needed -- falling back to a
+        # casefolded full_name comparison when either id is unavailable, and
+        # failing closed (never same-repo) only when head.repo is missing
+        # entirely.
+        head_repo_id = head_repo_obj.get("id") if head_repo_obj else None
+        base_repo_id = base_repo_obj.get("id") if base_repo_obj else None
+        if head_repo_id is not None and base_repo_id is not None:
+            is_same_repo = head_repo_id == base_repo_id
+        elif head_repo is not None:
+            is_same_repo = head_repo.casefold() == repo.casefold()
+        else:
+            is_same_repo = False
         # Same fail-open-on-malformed-filter-value semantics as draft_filter
         # above: only a real JSON boolean narrows the fire set.
         if isinstance(same_repo_filter, bool) and same_repo_filter and not is_same_repo:
