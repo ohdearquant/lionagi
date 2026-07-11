@@ -233,9 +233,11 @@ class TestActionManagerMCPMethodStubs:
     async def test_load_mcp_config_basic_structure(self):
         manager = ActionManager()
 
-        # Mock the MCP connection pool
+        # Mock the MCP connection pool. load_config returns the server names
+        # declared in the loaded file — load_mcp_config's default server set —
+        # so the stub must return them rather than relying on pool state.
         with patch("lionagi.service.connections.mcp_wrapper.MCPConnectionPool") as mock_pool:
-            mock_pool.load_config = Mock()
+            mock_pool.load_config = Mock(return_value=["test_server"])
             mock_pool._configs = {"test_server": {"command": "python"}}
 
             # Mock the register_mcp_server method
