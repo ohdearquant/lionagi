@@ -128,6 +128,12 @@ class ScheduleReasons:
     BUDGET_EXHAUSTED = "schedule.budget.exhausted"
 
 
+class TeamReasons:
+    """Team lifecycle outcomes (entity_type='team')."""
+
+    ARCHIVED_OPERATOR = "team.archived.operator"
+
+
 class DispatchReasons:
     """ADR-0092 dispatch_outbox transition outcomes (entity_type='dispatch')."""
 
@@ -162,6 +168,7 @@ VALID_REASON_CODES: Final[frozenset[str]] = _collect(
     PlayReasons,
     ShowReasons,
     ScheduleReasons,
+    TeamReasons,
     DispatchReasons,
 ) | {LEGACY_IMPORTED}
 

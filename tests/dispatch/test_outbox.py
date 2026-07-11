@@ -273,6 +273,31 @@ async def test_ack_required_flow_with_correct_token(tmp_path: Path):
     assert row["status"] == "acked"
 
 
+async def test_ack_while_delivering_fast_ack(tmp_path: Path):
+    """A consumer may ack while the delivery loop still holds the row mid-tick;
+    delivering -> acked is a declared edge, not an undeclared-move error."""
+    db_path = tmp_path / "state.db"
+    async with StateDB(db_path) as db:
+        from sqlalchemy import text
+
+        dispatch_id = await enqueue_dispatch(
+            db, kind="terminal_notify", deliver_to="seat-1", ack_required=True
+        )
+        row = await get_dispatch(db, dispatch_id)
+        token = row["ack_token"]
+        async with db._tx() as conn:
+            await conn.execute(
+                text("UPDATE dispatch_outbox SET status = 'delivering' WHERE id = :id"),
+                {"id": dispatch_id},
+            )
+
+        applied = await ack_dispatch(db, dispatch_id, token)
+        row = await get_dispatch(db, dispatch_id)
+
+    assert applied is True
+    assert row["status"] == "acked"
+
+
 async def test_ack_wrong_token_raises(tmp_path: Path):
     db_path = tmp_path / "state.db"
     async with StateDB(db_path) as db:

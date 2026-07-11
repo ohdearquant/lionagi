@@ -228,6 +228,26 @@ async def test_wait_for_terminal_on_schedule_run_yields_backing_session_run_dir(
 
 
 @pytest.mark.asyncio
+async def test_wait_for_terminal_on_timed_out_schedule_run_is_treated_as_terminal(
+    temp_db_path: Path,
+) -> None:
+    """TERMINAL_STATUSES_BY_ENTITY_TYPE must be derived from the lifecycle
+    policy registry, not a stale hand-maintained set — the registry's
+    schedule_run terminal_statuses includes 'timed_out', and `li wait` must
+    resolve it immediately rather than polling forever."""
+    async with StateDB() as db:
+        sched_id = await _make_schedule(db)
+        run_id = await _make_schedule_run(db, sched_id, status="timed_out")
+
+    outcomes = await wait_for_terminal([run_id])
+    assert len(outcomes) == 1
+    outcome = outcomes[0]
+    assert outcome["run_id"] == run_id
+    assert outcome["kind"] == "schedule_run"
+    assert outcome["status"] == "timed_out"
+
+
+@pytest.mark.asyncio
 async def test_wait_for_terminal_on_mixed_play_and_session_ids(temp_db_path: Path) -> None:
     async with StateDB() as db:
         sid = await _make_session(db, status="completed", artifacts_path="/tmp/mixed-run")
