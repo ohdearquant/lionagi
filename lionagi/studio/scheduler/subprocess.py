@@ -29,7 +29,11 @@ _DEFAULT_LI_PREFIX: tuple[str, ...] = ("uv", "run", "li")
 
 # ADR-0027 defines the closed set of action kinds.  The CLI parser accepts
 # "playbook" as an alias for "play" for backward compatibility.
-_VALID_ACTION_KINDS = frozenset({"agent", "flow", "fanout", "play", "flow_yaml", "engine"})
+# The "command" kind is an allow-listed executable spawned directly
+# (not through `li`), with templated argv rendered from trigger_context.
+_VALID_ACTION_KINDS = frozenset(
+    {"agent", "flow", "fanout", "play", "flow_yaml", "engine", "command"}
+)
 _ALIAS_ACTION_KINDS: dict[str, str] = {"playbook": "play"}
 
 # action_model must be a safe model-spec token: alphanumerics, dots, slashes,
@@ -126,6 +130,99 @@ def _validate_engine_options(opts: object) -> None:
                 f"action_engine_options.{key} must be a plain token that does not "
                 "start with '-' and contains no shell metacharacters"
             )
+
+
+# action_command must be a bare, PATH-resolvable executable name: no path
+# separators (it is looked up via PATH at spawn time, never treated as a
+# filesystem path), and the same conservative identifier charset as the
+# other single-token fields.
+_COMMAND_RE = re.compile(r"^[a-zA-Z0-9_.-]+$")
+
+# The environment variable gating which command names the "command" action
+# kind is permitted to spawn. Comma-separated; unset or empty
+# resolves to an empty allow-list, refusing every command -- a generic
+# command runner without this gate would be an arbitrary-execution footgun.
+_COMMAND_ALLOWLIST_ENV = "LIONAGI_SCHEDULER_COMMAND_ALLOWLIST"
+
+
+def _validate_action_command(command: str) -> None:
+    """Raise ValueError if *command* is not a safe, bare executable name."""
+    if not command:
+        raise ValueError("action_command is required for action_kind='command'")
+    if "/" in command or "\\" in command:
+        raise ValueError(
+            f"action_command {command!r} must not contain path separators; it "
+            "is resolved via PATH at spawn time, not treated as a filesystem path."
+        )
+    if command.startswith("-"):
+        raise ValueError(
+            f"action_command {command!r} starts with '-' and is not a valid executable name."
+        )
+    if not _COMMAND_RE.match(command):
+        raise ValueError(
+            f"action_command {command!r} contains characters not allowed in an "
+            "executable name. Allowed: letters, digits, '_', '.', '-'."
+        )
+
+
+def _command_allowlist() -> frozenset[str]:
+    """Read the allow-listed command names from the environment, split on ','.
+
+    Read fresh on every call rather than cached at import time, so a
+    spawn-time re-check after the env has changed since schedule-build time
+    actually observes the change.
+    """
+    raw = os.environ.get(_COMMAND_ALLOWLIST_ENV, "")
+    return frozenset(tok.strip() for tok in raw.split(",") if tok.strip())
+
+
+def _validate_command_allowlisted(command: str) -> None:
+    """Raise ValueError if *command* is not on ``LIONAGI_SCHEDULER_COMMAND_ALLOWLIST``.
+
+    Called both at schedule build/validation time (services/schedules.py)
+    and again here inside ``build_argv`` at actual spawn time, since the
+    environment variable can change between schedule creation and fire.
+    """
+    allowlist = _command_allowlist()
+    if command not in allowlist:
+        raise ValueError(
+            f"action_command {command!r} is not in {_COMMAND_ALLOWLIST_ENV} "
+            f"(currently: {sorted(allowlist)!r}). Add it to the allow-list "
+            "environment variable to permit this command."
+        )
+
+
+def _render_command_arg(template: str, context: dict) -> str:
+    """Render one ``action_command_args`` element, validating the substituted
+    portion for CWE-88 flag injection.
+
+    A hand-authored literal token (e.g. ``"--repo"``, a legitimate flag for
+    the target command -- the whole point of a generic command runner) is
+    author-controlled, not attacker-influenceable, and passes through
+    unchanged. A token containing a ``{{var}}`` placeholder pulls its value
+    from ``trigger_context`` (e.g. a PR title or author), which an attacker
+    may influence; the *rendered* result is checked so trigger-context
+    content cannot masquerade as a new flag to the spawned command's own
+    argument parser (mirrors the leading-'-' rejection already applied to
+    ``action_extra_args``, plus the restricted charset already applied to
+    ``action_engine_options`` string values).
+    """
+    if not _TEMPLATE_RE.search(template):
+        return template
+    rendered = _render_template(template, context)
+    if rendered.startswith("-"):
+        raise ValueError(
+            f"action_command_args template {template!r} rendered to "
+            f"{rendered!r}, which starts with '-' and would inject a flag "
+            "into the spawned command."
+        )
+    if not _ENGINE_OPT_VALUE_RE.match(rendered):
+        raise ValueError(
+            f"action_command_args template {template!r} rendered to "
+            f"{rendered!r}, which contains characters not allowed. Allowed "
+            f"charset: {_ENGINE_OPT_VALUE_RE.pattern}"
+        )
+    return rendered
 
 
 def _validate_prompt(prompt: str) -> None:
@@ -423,8 +520,26 @@ def build_argv(
             flags += ["--export-dir", export_dir]
         argv += ["engine", "run", *flags, "--", engine_kind, prompt]
 
+    elif kind == "command":
+        # This kind spawns the allow-listed executable DIRECTLY -- it never
+        # goes through `li`, so the executable_prefix/uv-run-li argv built
+        # above is discarded entirely rather than extended.
+        command = schedule.get("action_command") or ""
+        _validate_action_command(command)
+        _validate_command_allowlisted(command)
+        if isinstance(extra, list) and extra:
+            raise ValueError(
+                "command launches do not accept action_extra_args; set "
+                "arguments via action_command_args instead"
+            )
+        command_args = schedule.get("action_command_args") or []
+        if not isinstance(command_args, list):
+            raise ValueError("action_command_args must be a list of strings")
+        rendered_args = [_render_command_arg(str(a), trigger_context) for a in command_args]
+        argv = [command, *rendered_args]
+
     # Append validated extra positionals (safe, no leading '-').
-    if kind != "engine" and isinstance(extra, list):
+    if kind not in ("engine", "command") and isinstance(extra, list):
         argv.extend(str(a) for a in extra)
 
     return argv, tmp_path
@@ -436,6 +551,7 @@ async def spawn_and_wait(
     *,
     tmp_path: str | None = None,
     cwd: str | None = None,
+    action_kind: str | None = None,
 ) -> tuple[int, str]:
     """Spawn subprocess and wait for completion. Returns (exit_code, stderr_tail).
 
@@ -447,7 +563,22 @@ async def spawn_and_wait(
     a concrete path (e.g. from ``action_project``) before spawning so `uv run
     li` doesn't fail with "No such file or directory" when the daemon was
     started somewhere with no project (see SchedulerEngine._resolve_action_cwd).
+
+    *action_kind* re-runs the command allow-list check right here, immediately
+    before the process is spawned, when it is ``"command"``. ``build_argv``
+    already re-checks the allow-list at argv-construction time, but callers
+    (the scheduler engine, the worker, on-demand launches) perform awaited DB
+    work between building argv and calling this function -- an await is a
+    scheduling point, so revoking the allow-list env var during that window
+    does not stop a spawn checked only at build_argv time. Passing
+    *action_kind* here closes that gap: the check runs with no intervening
+    await before ``create_subprocess_exec``.
     """
+    if action_kind == "command":
+        command = argv[0] if argv else ""
+        _validate_action_command(command)
+        _validate_command_allowlisted(command)
+
     env = {**os.environ, "LIONAGI_INVOCATION_ID": invocation_id}
 
     _log.info("Spawning: %s", " ".join(argv))

@@ -1907,3 +1907,87 @@ async def test_max_runs_reservation_snapshots_inflight_before_stale_count_read()
     assert claim_b is None
     # Exactly one terminal run for max_runs=1 -- B must not have overshot it.
     assert await real_count("sched-once", chain_depth=0) == 1
+
+
+# ---------------------------------------------------------------------------
+# _fire() — action_kind='command'
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_fire_command_kind_skips_li_resolution():
+    """kind='command' spawns an allow-listed executable directly, never
+    through `li` -- _fire() must not call resolve_li_executable() for it
+    (a daemon host where `li` is unresolvable must not block a command fire)."""
+    from lionagi.studio.scheduler.engine import SchedulerEngine
+
+    svc = _make_svc()
+    engine = SchedulerEngine(svc=svc)
+    schedule = _minimal_schedule(
+        action_kind="command",
+        action_model=None,
+        action_prompt=None,
+        action_command="kdev",
+        action_command_args=["review-pr"],
+    )
+
+    with (
+        patch(
+            "lionagi.studio.scheduler.subprocess.resolve_li_executable",
+            return_value=(None, "must not be called for kind='command'"),
+        ) as resolve_mock,
+        patch(
+            "lionagi.studio.scheduler.subprocess.build_argv",
+            return_value=(["kdev", "review-pr"], None),
+        ),
+        patch(
+            "lionagi.studio.scheduler.subprocess.spawn_and_wait",
+            new=AsyncMock(return_value=(0, "")),
+        ),
+    ):
+        await engine._fire(schedule, "run-cmd-001", trigger_context={"scheduled": True})
+
+    resolve_mock.assert_not_called()
+    failed_calls = [
+        c
+        for c in svc.update_status.await_args_list
+        if c.args[0] == "schedule_run" and c.kwargs.get("new_status") == "failed"
+    ]
+    assert not failed_calls, "command-kind fire must not fail from a missing `li` resolution"
+    svc.create_schedule_run.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_fire_command_kind_nonzero_exit_records_failed_status():
+    """Exit-code semantics for kind='command' are unmodified: nonzero exit
+    still produces a 'failed' schedule_run status, same as every other kind."""
+    from lionagi.studio.scheduler.engine import SchedulerEngine
+
+    svc = _make_svc()
+    engine = SchedulerEngine(svc=svc)
+    schedule = _minimal_schedule(
+        action_kind="command",
+        action_model=None,
+        action_prompt=None,
+        action_command="kdev",
+        action_command_args=[],
+    )
+
+    with (
+        patch(
+            "lionagi.studio.scheduler.subprocess.build_argv",
+            return_value=(["kdev"], None),
+        ),
+        patch(
+            "lionagi.studio.scheduler.subprocess.spawn_and_wait",
+            new=AsyncMock(return_value=(1, "command failed")),
+        ),
+    ):
+        await engine._fire(schedule, "run-cmd-002", trigger_context={"scheduled": True})
+
+    failed_calls = [
+        c
+        for c in svc.update_status.await_args_list
+        if c.args[0] == "schedule_run" and c.kwargs.get("new_status") == "failed"
+    ]
+    assert failed_calls, "Expected update_status('schedule_run', ..., new_status='failed')"

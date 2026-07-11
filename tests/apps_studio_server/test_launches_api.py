@@ -443,7 +443,7 @@ class TestSpawnDetachedTerminalUpdate:
 
         captured = {}
 
-        async def _fake_spawn(argv, inv_id, *, tmp_path=None):
+        async def _fake_spawn(argv, inv_id, *, tmp_path=None, cwd=None, action_kind=None):
             if spawn_exc is not None:
                 raise spawn_exc
             return (exit_code, "")
@@ -611,7 +611,7 @@ class TestShutdownDrains:
         mock_db.update_status = _capture_status
         mock_db.update_invocation = AsyncMock()
 
-        async def _blocking_spawn(argv, inv_id, *, tmp_path=None):
+        async def _blocking_spawn(argv, inv_id, *, tmp_path=None, cwd=None, action_kind=None):
             # Block until cancelled so CancelledError propagates naturally.
             await asyncio.sleep(999)
             return (0, "")
@@ -1195,7 +1195,7 @@ class TestLaunchCancelRetrySmoke:
 
         mock_db.update_status = _capture_status
 
-        async def _blocking_spawn(argv, inv_id, *, tmp_path=None):
+        async def _blocking_spawn(argv, inv_id, *, tmp_path=None, cwd=None, action_kind=None):
             await asyncio.sleep(999)  # block until the task is cancelled
             return (0, "")
 

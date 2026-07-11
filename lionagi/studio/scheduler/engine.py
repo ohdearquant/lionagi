@@ -1311,12 +1311,18 @@ class SchedulerEngine:
         )
 
         try:
-            li_prefix, li_resolve_error = _subprocess.resolve_li_executable()
-            if li_prefix is None:
-                raise RuntimeError(
-                    "Cannot spawn scheduled action: unable to resolve an "
-                    f"absolute path to the `li` executable ({li_resolve_error})"
-                )
+            # kind='command' spawns an allow-listed executable directly, never
+            # through `li` -- resolving the `li` executable is unnecessary
+            # (and would wrongly block a command-kind fire on a daemon host
+            # where `li` itself is unresolvable).
+            li_prefix: list[str] | None = None
+            if schedule.get("action_kind") != "command":
+                li_prefix, li_resolve_error = _subprocess.resolve_li_executable()
+                if li_prefix is None:
+                    raise RuntimeError(
+                        "Cannot spawn scheduled action: unable to resolve an "
+                        f"absolute path to the `li` executable ({li_resolve_error})"
+                    )
             argv, _tmp_path = _subprocess.build_argv(
                 schedule, trigger_context, executable_prefix=li_prefix
             )
@@ -1420,7 +1426,11 @@ class SchedulerEngine:
 
             action_cwd, missing_cwd_path = await _resolve_action_cwd(schedule)
             exit_code, stderr_tail = await _subprocess.spawn_and_wait(
-                argv, inv_id, tmp_path=_tmp_path, cwd=action_cwd
+                argv,
+                inv_id,
+                tmp_path=_tmp_path,
+                cwd=action_cwd,
+                action_kind=schedule.get("action_kind"),
             )
             end_time = time.time()
             status = "completed" if exit_code == 0 else "failed"
