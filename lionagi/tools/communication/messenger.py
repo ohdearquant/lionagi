@@ -5,8 +5,9 @@
 
 from __future__ import annotations
 
+import logging
 from enum import Enum
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Literal
 from uuid import UUID
 
 from pydantic import BaseModel, Field
@@ -21,6 +22,8 @@ if TYPE_CHECKING:
 
 __all__ = ("LionMessenger",)
 
+logger = logging.getLogger(__name__)
+
 
 class MessengerAction(str, Enum):
     send = "send"
@@ -28,6 +31,7 @@ class MessengerAction(str, Enum):
     done = "done"
     finished = "finished"
     wakeup = "wakeup"
+    help = "help"
 
 
 class MessengerRequest(BaseModel):
@@ -39,7 +43,10 @@ class MessengerRequest(BaseModel):
             "- 'receive': Read and consume pending messages from teammates.\n"
             "- 'done': Signal you've finished your part (can be woken later).\n"
             "- 'finished': Permanently done, cannot be woken.\n"
-            "- 'wakeup': Wake a teammate who is in done state."
+            "- 'wakeup': Wake a teammate who is in done state.\n"
+            "- 'help': Signal you need input or authority you don't have — for when you "
+            "don't know which peer to ask, or already tried peers and are still stuck. "
+            "Fires and continues; never blocks waiting for a reply."
         ),
     )
     to: str | list[str] | None = Field(
@@ -48,7 +55,14 @@ class MessengerRequest(BaseModel):
     )
     content: str | None = Field(
         None,
-        description="Message content (send/wakeup) or reason (done/finished).",
+        description="Message content (send/wakeup), reason (done/finished), or the help reason (help).",
+    )
+    urgency: Literal["fyi", "blocked"] | None = Field(
+        None,
+        description=(
+            "Only for 'help'. 'fyi' (default): soft, you are continuing. "
+            "'blocked': hard, you cannot proceed without input."
+        ),
     )
 
 
@@ -70,7 +84,29 @@ class LionMessenger(LionTool):
     def _fire(self, event: str, **kwargs):
         cb = self._callbacks.get(event)
         if cb:
-            cb(**kwargs)
+            if event == "help":
+                # Best-effort: a raising coordinator callback must never
+                # surface as an unhandled exception on the emitting worker's
+                # tool-call turn — the whole point of fire-and-continue.
+                try:
+                    cb(**kwargs)
+                except Exception:
+                    logger.warning(
+                        "LionMessenger: callback for event=%r raised; ignoring (fire-and-continue)",
+                        event,
+                        exc_info=True,
+                    )
+            else:
+                cb(**kwargs)
+        else:
+            # A mis-wired coordinator (nobody called .on(event, ...)) must be
+            # discoverable during bring-up, not silently inert — debug-level
+            # so it doesn't spam normal runs where some events are unused.
+            logger.debug(
+                "LionMessenger: no callback registered for event=%r (kwargs=%r)",
+                event,
+                kwargs,
+            )
 
     def bind(
         self,
@@ -92,12 +128,19 @@ class LionMessenger(LionTool):
             if msg not in branch.msgs.messages:
                 branch.msgs.messages.include(msg)
 
-        def messenger(action: str, to: str | list[str] = None, content: str = None) -> str:
+        def messenger(
+            action: str,
+            to: str | list[str] = None,
+            content: str = None,
+            urgency: str = None,
+        ) -> str:
             """Send messages to teammates, receive pending ones, signal
-            done/finished, or wake a teammate. action in {'send', 'receive',
-            'done', 'finished', 'wakeup'}; to (name or list of names) and
-            content are required for send/wakeup, neither is required for
-            receive."""
+            done/finished, wake a teammate, or send a help signal. action in
+            {'send', 'receive', 'done', 'finished', 'wakeup', 'help'}; to
+            (name or list of names) and content are required for
+            send/wakeup, neither is required for receive; content (the
+            reason) is required for help, urgency is optional (defaults to
+            'fyi')."""
             if action == "receive":
                 pending = exchange.receive(sender_id)
                 if not pending:
@@ -168,6 +211,19 @@ class LionMessenger(LionTool):
                     message=content,
                 )
                 return f"Woke up {target_name}"
+
+            elif action == "help":
+                if not content:
+                    return "Error: 'help' requires 'content' (the reason you need help)."
+                _urgency = urgency or "fyi"
+                fire(
+                    "help",
+                    name=_sender_name,
+                    sender_id=sender_id,
+                    reason=content,
+                    urgency=_urgency,
+                )
+                return f"{_sender_name} sent a help signal ({_urgency}): {content}"
 
             return f"Unknown action: {action}"
 

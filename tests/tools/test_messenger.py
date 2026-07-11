@@ -3,6 +3,7 @@
 
 """Coverage tests for LionMessenger."""
 
+import logging
 from types import SimpleNamespace
 from uuid import uuid4
 
@@ -49,6 +50,7 @@ class TestMessengerActionEnum:
         assert MessengerAction.done == "done"
         assert MessengerAction.finished == "finished"
         assert MessengerAction.wakeup == "wakeup"
+        assert MessengerAction.help == "help"
 
 
 class TestMessengerRequestModel:
@@ -91,6 +93,16 @@ class TestLionMessengerBasics:
         result = m._fire("done", name="x")
         assert result is None
         assert "done" not in m._callbacks
+
+    def test_fire_no_callback_logs_debug(self, caplog):
+        """A mis-wired coordinator (no .on() registered) must be discoverable
+        during bring-up: the no-op is debug-logged, not fully silent."""
+        m = LionMessenger(exchange=Exchange())
+        with caplog.at_level(logging.DEBUG, logger="lionagi.tools.communication.messenger"):
+            m._fire("help", name="x", reason="stuck", urgency="fyi")
+        assert any(
+            "no callback registered" in r.message and "help" in r.message for r in caplog.records
+        )
 
 
 class TestMessengerBindSend:
@@ -197,6 +209,115 @@ class TestMessengerBindStateEvents:
         result = tool.func_callable(action="done", content="ok")
         # sender_name defaults to str(branch.id)[:8]
         assert str(branch.id)[:8] in result
+
+    def test_done_callback_raising_propagates_to_caller(self):
+        """Unlike 'help', 'done' is not a fire-and-continue channel: a
+        raising state-recording callback must surface to the messenger
+        caller, not be swallowed behind a success string — otherwise the
+        caller believes the state update landed when it didn't."""
+        ex = Exchange()
+        m = LionMessenger(exchange=ex)
+
+        def _boom(**kw):
+            raise RuntimeError("state store unavailable")
+
+        m.on("done", _boom)
+        branch = _make_branch(ex)
+        tool = m.bind(branch, roster={}, sender_name="bob")
+        with pytest.raises(RuntimeError, match="state store unavailable"):
+            tool.func_callable(action="done", content="task complete")
+
+    def test_finished_callback_raising_propagates_to_caller(self):
+        ex = Exchange()
+        m = LionMessenger(exchange=ex)
+
+        def _boom(**kw):
+            raise RuntimeError("state store unavailable")
+
+        m.on("finished", _boom)
+        branch = _make_branch(ex)
+        tool = m.bind(branch, roster={}, sender_name="bob")
+        with pytest.raises(RuntimeError, match="state store unavailable"):
+            tool.func_callable(action="finished", content="forever")
+
+    def test_wakeup_callback_raising_propagates_to_caller(self):
+        ex = Exchange()
+        m = LionMessenger(exchange=ex)
+
+        def _boom(**kw):
+            raise RuntimeError("state store unavailable")
+
+        m.on("wakeup", _boom)
+        alice_id = uuid4()
+        ex.register(alice_id)
+        branch = _make_branch(ex)
+        tool = m.bind(branch, roster={"alice": alice_id}, sender_name="bob")
+        with pytest.raises(RuntimeError, match="state store unavailable"):
+            tool.func_callable(action="wakeup", to="alice", content="wake up")
+
+
+class TestMessengerBindHelp:
+    def test_help_missing_content(self):
+        ex = Exchange()
+        m = LionMessenger(exchange=ex)
+        branch = _make_branch(ex)
+        tool = m.bind(branch, roster={})
+        result = tool.func_callable(action="help")
+        assert "Error" in result and "'content'" in result
+
+    def test_help_fires_callback_with_default_fyi_urgency(self):
+        ex = Exchange()
+        m = LionMessenger(exchange=ex)
+        events = []
+        m.on("help", lambda **kw: events.append(kw))
+        branch = _make_branch(ex)
+        tool = m.bind(branch, roster={}, sender_name="bob")
+        result = tool.func_callable(action="help", content="not sure who to ask")
+        assert "help signal" in result
+        assert "fyi" in result
+        assert events[0]["name"] == "bob"
+        assert events[0]["reason"] == "not sure who to ask"
+        assert events[0]["urgency"] == "fyi"
+
+    def test_help_fires_callback_with_blocked_urgency(self):
+        ex = Exchange()
+        m = LionMessenger(exchange=ex)
+        events = []
+        m.on("help", lambda **kw: events.append(kw))
+        branch = _make_branch(ex)
+        tool = m.bind(branch, roster={}, sender_name="bob")
+        result = tool.func_callable(action="help", content="cannot proceed", urgency="blocked")
+        assert "blocked" in result
+        assert events[0]["urgency"] == "blocked"
+
+    def test_help_returns_immediately_never_blocks_on_missing_callback(self):
+        """Fire-and-continue: no callback registered -> still a normal,
+        immediate return (never a hang, never an exception)."""
+        ex = Exchange()
+        m = LionMessenger(exchange=ex)
+        branch = _make_branch(ex)
+        tool = m.bind(branch, roster={}, sender_name="bob")
+        result = tool.func_callable(action="help", content="stuck")
+        assert "sent a help signal" in result
+
+    def test_help_returns_immediately_even_if_callback_raises(self, caplog):
+        """A raising coordinator callback must not propagate into the
+        worker's tool-call turn — the help channel is fire-and-continue.
+        The worker still gets its acknowledgment string; the failure is
+        logged, not swallowed silently."""
+        ex = Exchange()
+        m = LionMessenger(exchange=ex)
+
+        def _boom(**kw):
+            raise RuntimeError("coordinator exploded")
+
+        m.on("help", _boom)
+        branch = _make_branch(ex)
+        tool = m.bind(branch, roster={}, sender_name="bob")
+        with caplog.at_level(logging.WARNING, logger="lionagi.tools.communication.messenger"):
+            result = tool.func_callable(action="help", content="stuck")
+        assert "sent a help signal" in result
+        assert any("callback for event='help' raised" in r.message for r in caplog.records)
 
 
 class TestMessengerBindWakeup:
