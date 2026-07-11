@@ -384,6 +384,7 @@ async def github_poll(schedule: dict) -> GithubPollResult:
         unsafe_floor = min(pr.get("updated_at", "") for pr in prs)
 
     draft_filter = github_filter.get("draft")
+    same_repo_filter = github_filter.get("same_repo_only")
     items: list[GithubPollItem] = []
     for pr in prs:
         updated = pr.get("updated_at", "")
@@ -408,6 +409,19 @@ async def github_poll(schedule: dict) -> GithubPollResult:
         # draft filter is ignored (fail open to no filtering) rather than
         # silently matching the wrong side — the string "false" is truthy.
         dispatchable = not (isinstance(draft_filter, bool) and is_draft != draft_filter)
+
+        # head.repo is null for a PR whose fork source was deleted -- fail
+        # closed (never same-repo) rather than fail open, since this feeds a
+        # trust decision (D1: fork diffs are attacker-controlled input).
+        head_repo_obj = (pr.get("head") or {}).get("repo")
+        head_repo = head_repo_obj.get("full_name") if head_repo_obj else None
+        head_repo_is_fork = bool(head_repo_obj.get("fork", False)) if head_repo_obj else False
+        is_same_repo = head_repo is not None and head_repo == repo
+        # Same fail-open-on-malformed-filter-value semantics as draft_filter
+        # above: only a real JSON boolean narrows the fire set.
+        if isinstance(same_repo_filter, bool) and same_repo_filter and not is_same_repo:
+            dispatchable = False
+
         event = {
             "pr_number": pr.get("number"),
             "pr_title": pr.get("title"),
@@ -416,6 +430,9 @@ async def github_poll(schedule: dict) -> GithubPollResult:
             "updated_at": updated,
             "head_sha": (pr.get("head") or {}).get("sha"),
             "draft": is_draft,
+            "head_repo": head_repo,
+            "head_repo_is_fork": head_repo_is_fork,
+            "is_same_repo": is_same_repo,
         }
         if merged_mode:
             event["pr_merged_at"] = merged_at
