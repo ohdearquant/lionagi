@@ -587,6 +587,46 @@ That behavior would be safer for inspection and would remove the 10,000-characte
 loss. It is the preferred ideal, but changing shipped behavior belongs to implementation work and
 tests, not to a retrospective rewrite. The requirement is retained as delta 1.
 
+## Amendment 1 (2026-07-11)
+
+The lifecycle-helper hardening this record deferred to implementation work has landed
+(the sandbox target-safety change, first implementation slice under ADR-0091). The
+retrospective text above is retained as the record of the shipped state it described;
+the following statements in it no longer describe current behavior:
+
+- **Diff collection no longer stages.** `sandbox_diff` reads tracked changes via
+  `git diff HEAD` and enumerates untracked files with
+  `git ls-files --others --exclude-standard -z`; the worktree index is not mutated.
+  The P5 sentence "Diff collection stages changes" and the local-adapter note "the
+  diff sentinel ... stages all changes" describe the displaced behavior. The
+  10,000-character patch truncation is unchanged.
+- **Merge verifies its target.** `sandbox_merge` refuses when the repository root is
+  in a detached HEAD state or is not checked out on the session's recorded base
+  branch, and refuses protected branch names (`main`, `master`, `release*`) unless
+  the caller passes the keyword-only `allow_protected=True`. `CodingToolkit` exposes
+  that override only as a constructor parameter (`sandbox_allow_protected`), never in
+  the model-visible tool schema.
+- **Cleanup is truthful and retryable.** `sandbox_discard` marks a session inactive
+  only when both the worktree removal and the branch deletion succeeded, and the
+  `CodingToolkit` discard action retains the session and reports failure on partial
+  cleanup. Cleanup checks are state-aware: a removal step whose target is already
+  absent (worktree no longer registered, branch no longer existing) counts as
+  succeeded, so retrying a partially-completed discard converges instead of failing
+  forever. `sandbox_diff` raises and `sandbox_commit` returns an error when the
+  worktree directory is missing, rather than reporting an empty diff or a silent
+  success.
+- **The base commit is recorded.** `create_sandbox` resolves and stores the base
+  branch's commit SHA on `SandboxSession.base_sha` at creation time.
+
+Delta 1 in "Current-vs-ideal delta" is substantially closed: base-commit recording,
+non-staging diff, unverified-target refusal, truthful partial-cleanup reporting, and
+repeated-teardown idempotence (state-aware retry convergence, above) are implemented
+and tested. Still open from its acceptance list: behavior when the base branch has
+advanced since creation (`base_sha` is recorded but merge neither detects nor
+reports drift from it), merge-conflict handling (a conflicted merge is reported as
+a failure but the repository root is left in the in-progress merge state), and the
+patch truncation noted above.
+
 ## Notes
 
 Interpretation uses *in pari materia* to resolve the overlapping sandbox records as one current
