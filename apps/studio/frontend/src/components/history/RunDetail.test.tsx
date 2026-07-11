@@ -77,6 +77,50 @@ describe("fleet/SessionDetail.tsx — renders RunDetail without fullPage", () =>
   });
 });
 
+// ─── Authored graph is never transitively reduced ────────────────────────────
+// runGraph is Studio's persisted early_graph — the exact graph the designer
+// authored, edges and conditions included. Applying transitiveReduce() to it
+// would silently drop an authored conditional edge (e.g. A→B, B→C, and a
+// conditional A→C) whenever the runtime happens to also reach C via B — the
+// runtime emitter's depends_on is a predecessor list, not proof an edge is
+// synthetic. Reduction stays scoped to buildOperationGraph's runtime-derived
+// opGraph (whose edges genuinely are a raw ancestor list).
+
+describe("history/RunDetail.tsx — authored run graph is rendered unreduced", () => {
+  const src = fs.readFileSync(path.join(HISTORY_DIR, "RunDetail.tsx"), "utf-8");
+
+  it("does not import transitiveReduce", () => {
+    expect(src).not.toMatch(/transitiveReduce/);
+  });
+
+  it("passes runGraph directly to WorkerCanvas, not a reduced copy", () => {
+    expect(src).toMatch(/graph={runGraph}/);
+  });
+});
+
+describe("transitiveReduce (lib/operationGraph) — why RunDetail must not apply it to runGraph", () => {
+  it("would drop an authored conditional A→C that transitiveReduce sees as redundant via A→B→C", async () => {
+    const { transitiveReduce } = await import("@/lib/operationGraph");
+
+    // Mirrors an authored WorkerGraph: A→B, B→C, and a conditional A→C.
+    const authoredEdges = [
+      { id: "e-ab", source: "A", target: "B" },
+      { id: "e-bc", source: "B", target: "C" },
+      { id: "e-ac", source: "A", target: "C", condition: "score > 0.8" },
+    ];
+
+    // What the old code did (reduce the authored graph): loses the
+    // conditional edge, because C is reachable from A through B.
+    const wouldHaveReduced = transitiveReduce(authoredEdges);
+    expect(wouldHaveReduced.find((e) => e.id === "e-ac")).toBeUndefined();
+
+    // What RunDetail does now: pass the authored edges through unchanged,
+    // so the conditional A→C survives.
+    const rendered = authoredEdges;
+    expect(rendered.find((e) => e.id === "e-ac")).toBeDefined();
+  });
+});
+
 describe("stale-write guard predicate (mirrors the done handler's merge condition)", () => {
   function mergeIfSameSession(
     prev: { id: string; status: string } | null,
