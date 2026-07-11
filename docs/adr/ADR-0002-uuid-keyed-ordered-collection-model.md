@@ -1,6 +1,6 @@
 # ADR-0002: UUID-keyed ordered collection model
 
-- **Status**: Proposed
+- **Status**: Accepted
 - **Kind**: Retrospective
 - **Area**: core-data-model
 - **Date**: 2026-07-09

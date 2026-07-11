@@ -1,6 +1,6 @@
 # ADR-0003: In-process Event execution lifecycle
 
-- **Status**: Proposed
+- **Status**: Accepted
 - **Kind**: Retrospective
 - **Area**: core-data-model
 - **Date**: 2026-07-09
