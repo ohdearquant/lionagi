@@ -193,6 +193,7 @@ class EdgePolicy:
     to_status: str
     actor_types: frozenset[ActorType] | None = None
     required_patch_fields: frozenset[str] = frozenset()
+    required_guard_fields: frozenset[str] = frozenset()
 
 @dataclass(frozen=True)
 class LifecyclePolicy:
@@ -206,6 +207,19 @@ class LifecyclePolicy:
     patch_fields: frozenset[str]
     reason_prefixes: frozenset[str]
 ```
+
+`required_guard_fields` names the columns a same-status (or otherwise racy) edge
+requires a compare-and-swap guard on, beyond the `status` column itself — the
+dispatch `delivering -> delivering` crash-recovery claim is the motivating case,
+guarded on `attempt` so two workers racing on the same row can never both win it.
+An edge that declares guard fields is satisfied when the caller supplies either
+an `expected_version` guard or an `extra_guard` covering every column named in
+`required_guard_fields` — either one alone is accepted; callers may not omit
+both. `PolicyRegistry.register()` validates `required_guard_fields` the same
+way it validates `required_patch_fields`: every named field must be a member of
+the owning policy's `patch_fields` allowlist, or registration raises
+`ValueError` — a guard field can only be one this policy is already prepared to
+read and write.
 
 The initial registry contains these policies:
 
@@ -237,16 +251,23 @@ The target dispatch graph is:
 
 ```text
 pending      -> delivering | expired | acked
-delivering   -> delivering | pending | delivered | dead_letter | expired
+delivering   -> delivering | pending | delivered | acked | dead_letter | expired
 delivered    -> (none)
 acked        -> (none)
 dead_letter  -> pending  [actor type operator; patch attempt,next_attempt_at,last_error]
 expired      -> pending  [actor type operator; patch attempt,next_attempt_at,last_error]
 ```
 
-`delivering -> delivering` is the crash-recovery claim and requires the `attempt` field to be an
-expected guard even though it is a same-status edge. Other same-status commands use the policy's
-`append` rule and record a reason refresh.
+`delivering -> delivering` is the crash-recovery claim and requires an equivalent
+expected-version/`attempt` guard even though it is a same-status edge — the service refuses the
+edge outright without one, so two claimants racing the same pre-claim snapshot can never both win
+it. Other same-status commands use the policy's `append` rule and record a reason refresh.
+
+`delivering -> acked` is a deliberate fast-ack: a consumer may present its `ack_token` while the
+delivery loop still holds the row mid-tick, and the ack must not have to wait for the row to loop
+back to `pending` first. `ack_dispatch()` transitions from whatever status the row currently holds
+to `acked`, so a row acked mid-delivery takes this edge rather than round-tripping through
+`pending` or `delivered` first.
 
 Allowed patch fields are:
 

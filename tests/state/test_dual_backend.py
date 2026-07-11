@@ -449,3 +449,244 @@ async def test_postgres_capability_claim(pg_url):
         assert status == "completed"
     finally:
         await db.close()
+
+
+# ── Postgres leg: lifecycle service load-bearing contract (ADR-0058 Phase 2) ──
+# The applied/conflict/rejected/rollback/parity cases pinned against SQLite in
+# tests/state/lifecycle/test_service.py and test_wrapper_parity.py must hold
+# identically on PostgreSQL (FOR UPDATE locking, JSON binding, transaction
+# rollback, and guarded-update rowcount are backend-specific). These live in
+# this module — which already owns the `pg_url` fixture — rather than adding
+# a second and third module's own `pg_url` consumer: multiple modules
+# requesting the session-scoped `pg_url` fixture in the same run corrupts
+# asyncpg's event-loop-bound connection state across module boundaries
+# (reproducible: "attached to a different loop" RuntimeError on the second
+# module's first checkout) — a pre-existing fragility of this fixture
+# combination that a second file should not paper over by working around it.
+
+
+async def _pg_make_session(db: StateDB, *, status: str = "running") -> str:
+    prog_id = _uid()
+    await db.create_progression(prog_id)
+    sid = _uid()
+    await db.create_session({"id": sid, "progression_id": prog_id, "status": status})
+    return sid
+
+
+async def _pg_make_schedule_run(db: StateDB, *, status: str = "queued") -> str:
+    sched_id = _uid()
+    await db.create_schedule(
+        {
+            "id": sched_id,
+            "name": f"sched-{sched_id}",
+            "trigger_type": "interval",
+            "interval_sec": 60,
+            "action_kind": "agent",
+        }
+    )
+    run_id = _uid()
+    await db.create_schedule_run(
+        {
+            "id": run_id,
+            "schedule_id": sched_id,
+            "trigger_context": {},
+            "action_kind": "agent",
+            "action_args": [],
+            "status": status,
+            "fired_at": time.time(),
+        }
+    )
+    return run_id
+
+
+async def test_postgres_lifecycle_service_applied_conflict_rejected(pg_url):
+    """Load-bearing D1 applied/conflict/rejected contract, on Postgres —
+    mirrors tests/state/lifecycle/test_service.py's SQLite-only cases."""
+    from lionagi.state.lifecycle import ActorRecord, ReasonRecord, TransitionCommand
+    from lionagi.state.lifecycle.service import SQLAlchemyLifecycleService
+
+    def _command(**overrides):
+        base = dict(
+            entity_type="session",
+            entity_id="",
+            to_status="completed",
+            reason=ReasonRecord(code="session.stale.no_heartbeat"),
+            actor=ActorRecord(type="executor", id="executor"),
+        )
+        base.update(overrides)
+        return TransitionCommand(**base)
+
+    db = StateDB(url=pg_url)
+    await db.open()
+    try:
+        service = SQLAlchemyLifecycleService(db)
+
+        # applied
+        sid = await _pg_make_session(db, status="running")
+        outcome = await service.transition(_command(entity_id=sid, to_status="completed"))
+        assert outcome.result == "applied"
+        assert outcome.previous_status == "running"
+        assert outcome.current_status == "completed"
+        assert outcome.transition_id is not None
+
+        # conflict
+        sid2 = await _pg_make_session(db, status="running")
+        outcome = await service.transition(
+            _command(
+                entity_id=sid2,
+                to_status="completed",
+                expected_statuses=frozenset({"failed"}),
+            )
+        )
+        assert outcome.result == "conflict"
+        assert outcome.previous_status == "running"
+        assert outcome.current_status == "running"
+        assert outcome.transition_id is None
+
+        # rejected: terminal exit without override
+        sid3 = await _pg_make_session(db, status="completed")
+        outcome = await service.transition(_command(entity_id=sid3, to_status="running"))
+        assert outcome.result == "rejected"
+        assert outcome.previous_status == "completed"
+        assert outcome.current_status == "completed"
+        assert outcome.transition_id is None
+    finally:
+        await db.close()
+
+
+async def test_postgres_lifecycle_service_history_insert_failure_rolls_back(pg_url):
+    """Load-bearing rollback contract, on Postgres — mirrors
+    tests/state/lifecycle/test_service.py's SQLite-only rollback case: a
+    history-append failure inside the same transaction must roll back the
+    entity UPDATE that already "succeeded"."""
+    from unittest.mock import patch
+
+    from sqlalchemy import text
+
+    from lionagi.state.lifecycle import ActorRecord, ReasonRecord, TransitionCommand
+    from lionagi.state.lifecycle.service import SQLAlchemyLifecycleService
+
+    def _command(**overrides):
+        base = dict(
+            entity_type="session",
+            entity_id="",
+            to_status="completed",
+            reason=ReasonRecord(code="session.stale.no_heartbeat"),
+            actor=ActorRecord(type="executor", id="executor"),
+        )
+        base.update(overrides)
+        return TransitionCommand(**base)
+
+    db = StateDB(url=pg_url)
+    await db.open()
+    try:
+        sid = await _pg_make_session(db, status="running")
+        service = SQLAlchemyLifecycleService(db)
+
+        async def _write_then_break_history_insert(self, conn, table, command, **kwargs):
+            set_clauses = ["status = :status", "updated_at = :now"]
+            result = await conn.execute(
+                text(
+                    f"UPDATE {table} SET {', '.join(set_clauses)} "  # noqa: S608
+                    "WHERE id = :id AND status = :previous_status"
+                ),
+                {
+                    "status": command.to_status,
+                    "now": kwargs["now"],
+                    "id": command.entity_id,
+                    "previous_status": kwargs["previous_status"],
+                },
+            )
+            assert result.rowcount == 1
+            await conn.execute(
+                text("INSERT INTO nonexistent_history_table (id) VALUES (:id)"), {"id": "x"}
+            )
+            return "unreachable"
+
+        with patch.object(SQLAlchemyLifecycleService, "_write", _write_then_break_history_insert):
+            with pytest.raises(Exception):  # noqa: B017, PT011 -- backend-specific DBAPI error
+                await service.transition(_command(entity_id=sid, to_status="completed"))
+
+        row = await db.get_session(sid)
+        assert row["status"] == "running"  # rolled back
+    finally:
+        await db.close()
+
+
+async def test_postgres_wrapper_parity_cas_conflict_and_same_status_append(pg_url):
+    """Load-bearing wrapper-parity contract, on Postgres — mirrors
+    tests/state/lifecycle/test_wrapper_parity.py's SQLite-only cases:
+    StateDB.update_status() and lionagi.state.transitions.transition() must
+    behave identically (CAS conflict is a clean skip; same-status write
+    appends) since both delegate through the same lifecycle service."""
+    from lionagi.state.reasons import RunReasons
+    from lionagi.state.transitions import Actor, StateReason, TransitionRequest, transition
+
+    db = StateDB(url=pg_url)
+    await db.open()
+    try:
+        # CAS conflict: update_status()
+        run_id = await _pg_make_schedule_run(db, status="queued")
+        applied = await db.update_status(
+            "schedule_run",
+            run_id,
+            new_status="running",
+            reason_code=RunReasons.STARTED_OK,
+            source="executor",
+            expected_statuses={"running"},  # actual status is "queued"
+        )
+        assert applied is False
+        row = await db.get_schedule_run(run_id)
+        assert row["status"] == "queued"
+
+        # CAS conflict: transitions.transition()
+        run_id2 = await _pg_make_schedule_run(db, status="queued")
+        result = await transition(
+            db,
+            TransitionRequest(
+                entity_type="schedule_run",
+                entity_id=run_id2,
+                from_state="running",  # actual status is "queued"
+                to_state="completed",
+                reason=StateReason(code=RunReasons.COMPLETED_OK),
+                actor=Actor(type="system", id="w1"),
+                idempotency_key=_uid(),
+            ),
+        )
+        assert result.applied is False
+        assert result.conflict is True
+        row = await db.get_schedule_run(run_id2)
+        assert row["status"] == "queued"
+
+        # same-status append: update_status()
+        run_id3 = await _pg_make_schedule_run(db, status="running")
+        applied = await db.update_status(
+            "schedule_run",
+            run_id3,
+            new_status="running",
+            reason_code=RunReasons.STARTED_OK,
+            source="executor",
+        )
+        assert applied is True
+        row = await db.get_schedule_run(run_id3)
+        assert row["status"] == "running"
+
+        # same-status append: transitions.transition()
+        run_id4 = await _pg_make_schedule_run(db, status="running")
+        result = await transition(
+            db,
+            TransitionRequest(
+                entity_type="schedule_run",
+                entity_id=run_id4,
+                from_state="running",
+                to_state="running",
+                reason=StateReason(code=RunReasons.STARTED_OK),
+                actor=Actor(type="system", id="w1"),
+                idempotency_key=_uid(),
+            ),
+        )
+        assert result.applied is True
+        row = await db.get_schedule_run(run_id4)
+        assert row["status"] == "running"
+    finally:
+        await db.close()

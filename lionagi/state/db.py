@@ -25,6 +25,10 @@ from lionagi.state.engine import (
     make_readonly_engine,
     normalize_state_db_url,
 )
+from lionagi.state.lifecycle import LifecycleNotFoundError as _LifecycleNotFoundError
+from lionagi.state.lifecycle import adapters as _lifecycle_adapters
+from lionagi.state.lifecycle import policy as _lifecycle_policy
+from lionagi.state.lifecycle.service import SQLAlchemyLifecycleService as _LifecycleService
 from lionagi.state.reasons import (
     PlayReasons as _PlayReasons,
 )
@@ -234,9 +238,6 @@ VALID_SESSION_STATUSES = frozenset(
         "cancelled",
     }
 )
-SESSION_TERMINAL_STATUSES = frozenset(
-    {"completed", "completed_empty", "failed", "timed_out", "aborted", "cancelled"}
-)
 # Admin cannot mark completed/completed_empty/timed_out — those are system-determined.
 ADMIN_TRANSITION_TARGETS = frozenset({"failed", "aborted", "cancelled"})
 
@@ -246,29 +247,28 @@ _SESSION_STATUSES = VALID_SESSION_STATUSES
 # Terminal-state definitions live here, with the record schema, rather than
 # in any one CLI surface — update_status() enforces them uniformly for
 # every entity_type at the single write path; `li wait` reads the same
-# tables to build its per-kind terminal predicate.
-INVOCATION_TERMINAL_STATUSES = SESSION_TERMINAL_STATUSES  # ADR-0025 vocabulary is shared
-SCHEDULE_RUN_TERMINAL_STATUSES = frozenset({"completed", "failed", "skipped", "cancelled"})
-SHOW_TERMINAL_STATUSES = frozenset({"completed", "aborted"})
+# tables to build its per-kind terminal predicate. Sourced from the
+# lifecycle policy registry, the same pattern VALID_STATUSES_BY_ENTITY_TYPE
+# below uses, so this facade's terminal map can never drift from the
+# registry's own terminal_statuses.
+TERMINAL_STATUSES_BY_ENTITY_TYPE: dict[str, frozenset[str]] = {
+    entity_type: _lifecycle_policy.DEFAULT_REGISTRY.get(entity_type).terminal_statuses
+    for entity_type in ("session", "invocation", "schedule_run", "show", "play", "team")
+}
+SESSION_TERMINAL_STATUSES = TERMINAL_STATUSES_BY_ENTITY_TYPE["session"]
+INVOCATION_TERMINAL_STATUSES = TERMINAL_STATUSES_BY_ENTITY_TYPE[
+    "invocation"
+]  # invocations share the session terminal-status vocabulary
+SCHEDULE_RUN_TERMINAL_STATUSES = TERMINAL_STATUSES_BY_ENTITY_TYPE["schedule_run"]
+SHOW_TERMINAL_STATUSES = TERMINAL_STATUSES_BY_ENTITY_TYPE["show"]
 # Still-in-flight play statuses — the schema layer owns this vocabulary
 # (kill.py imports it rather than defining its own copy); everything else
 # in PLAY_TERMINAL_STATUSES below is terminal.
 PLAY_ACTIVE_STATUSES = frozenset(
     {"pending", "prepared", "running", "running_complete", "gated", "redoing"}
 )
-PLAY_TERMINAL_STATUSES = frozenset(
-    {"merged", "escalated", "gate_failed", "blocked", "aborted_after_finish"}
-)
-TEAM_TERMINAL_STATUSES = frozenset({"archived"})
-
-TERMINAL_STATUSES_BY_ENTITY_TYPE: dict[str, frozenset[str]] = {
-    "session": SESSION_TERMINAL_STATUSES,
-    "invocation": INVOCATION_TERMINAL_STATUSES,
-    "schedule_run": SCHEDULE_RUN_TERMINAL_STATUSES,
-    "show": SHOW_TERMINAL_STATUSES,
-    "play": PLAY_TERMINAL_STATUSES,
-    "team": TEAM_TERMINAL_STATUSES,
-}
+PLAY_TERMINAL_STATUSES = TERMINAL_STATUSES_BY_ENTITY_TYPE["play"]
+TEAM_TERMINAL_STATUSES = TERMINAL_STATUSES_BY_ENTITY_TYPE["team"]
 
 # Same-row columns update_status() may set alongside a status write, in the
 # same transaction as the status/status_transitions write — keeps a caller
@@ -282,21 +282,12 @@ EXTRA_STATUS_WRITE_FIELDS_BY_ENTITY_TYPE: dict[str, frozenset[str]] = {
 # update_status() rejects any new_status outside its entity_type's set here —
 # the terminal-overwrite floor above stops a terminal record from moving;
 # this stops ANY record (terminal or not) from being written to a status
-# that was never declared for its entity type.
+# that was never declared for its entity type. Sourced from the lifecycle
+# policy registry so the facade's vocabulary can never drift from
+# the statuses the unified policy (and the schema CHECK constraints) declare.
 VALID_STATUSES_BY_ENTITY_TYPE: dict[str, frozenset[str]] = {
-    "session": VALID_SESSION_STATUSES,
-    "invocation": VALID_SESSION_STATUSES,  # shared vocabulary
-    # ADR-0101 D1/D2 slice 2: "queued" is the durable status a task
-    # application (or a schedule fire) now starts in before a worker leases
-    # it. Lease/running vocab beyond the existing "running" stays as-is —
-    # this slice does not add a worker/lease loop.
-    "schedule_run": SCHEDULE_RUN_TERMINAL_STATUSES | frozenset({"pending", "running", "queued"}),
-    # Shows live in {active, completed, aborted} and carry an "imported" marker
-    # for records reconstructed from an on-disk manifest — update_show() already
-    # validates against this same set before routing here.
-    "show": SHOW_TERMINAL_STATUSES | frozenset({"active", "imported"}),
-    "play": PLAY_ACTIVE_STATUSES | PLAY_TERMINAL_STATUSES,
-    "team": TEAM_TERMINAL_STATUSES | frozenset({"active"}),
+    entity_type: _lifecycle_policy.DEFAULT_REGISTRY.get(entity_type).statuses
+    for entity_type in ("session", "invocation", "schedule_run", "show", "play", "team")
 }
 
 
@@ -307,26 +298,11 @@ def can_transition(current: str | None, target: str) -> bool:
     return target in SESSION_TERMINAL_STATUSES
 
 
-class TransitionRejectedError(RuntimeError):
-    """Raised by update_status() when a write would move an entity out of a
-    terminal status without an explicit, justified override (ADR-0094)."""
-
-    def __init__(
-        self,
-        entity_type: str,
-        entity_id: str,
-        previous_status: str | None,
-        attempted_status: str,
-    ) -> None:
-        self.entity_type = entity_type
-        self.entity_id = entity_id
-        self.previous_status = previous_status
-        self.attempted_status = attempted_status
-        super().__init__(
-            f"transition rejected: {entity_type} {entity_id!r} is terminal "
-            f"at {previous_status!r}; refusing to write {attempted_status!r} "
-            "without override=True (ADR-0094)"
-        )
+# Re-exported (not redefined) so `from lionagi.state.db import
+# TransitionRejectedError` is unchanged for existing callers — the lifecycle
+# adapter module raises this same class object; see
+# lionagi/state/lifecycle/adapters.py.
+TransitionRejectedError = _lifecycle_adapters.TransitionRejectedError
 
 
 _INVOCATION_KINDS = frozenset({"agent", "play", "flow", "fanout", "show-play"})
@@ -435,6 +411,16 @@ class StateDB:
         # natively, so the lock is a no-op for PG paths (they skip it via dialect
         # check in _tx()), but it still serializes Python-side CAS in update_status.
         self._write_lock: Lock = Lock()
+        # Lazily constructed: the unified lifecycle service that
+        # StateDB.update_status() delegates its guarded read/CAS/history
+        # algorithm to. Cheap to build; deferred only so StateDB.__init__
+        # never depends on import order inside lionagi.state.lifecycle.
+        self.__lifecycle_service: _LifecycleService | None = None
+
+    def _lifecycle_service(self) -> _LifecycleService:
+        if self.__lifecycle_service is None:
+            self.__lifecycle_service = _LifecycleService(self)
+        return self.__lifecycle_service
 
     # ── backward-compat path property ─────────────────────────────────
 
@@ -1851,6 +1837,8 @@ class StateDB:
                 f"update_status() called with new_status={new_status!r} for "
                 f"entity_type={canonical_type!r}; vocabulary is {sorted(valid_statuses)}."
             )
+        # `table` kept for message-format parity with the earlier error text;
+        # the lifecycle policy for `canonical_type` resolves to the same table.
         table = _reason_entity_table(canonical_type)
         if extra_fields:
             allowed_extra = EXTRA_STATUS_WRITE_FIELDS_BY_ENTITY_TYPE.get(
@@ -1862,222 +1850,32 @@ class StateDB:
                     f"update_status() called with extra_fields keys {sorted(unknown)} for "
                     f"entity_type={canonical_type!r}; allowed keys are {sorted(allowed_extra)}."
                 )
-        now = time.time()
-        terminal_statuses = TERMINAL_STATUSES_BY_ENTITY_TYPE.get(canonical_type, frozenset())
 
-        rejected = False
-        overridden = False
-        async with self._tx() as conn:
-            # FOR UPDATE on PG to prevent read-modify-write races under MVCC.
-            sel = f"SELECT status FROM {table} WHERE id = :id"  # noqa: S608
-            if self.dialect != "sqlite":
-                sel += " FOR UPDATE"
-            row = (await conn.execute(text(sel), {"id": entity_id})).mappings().first()
-            if row is None:
-                raise LookupError(f"{canonical_type} {entity_id!r} not found (table={table})")
-            previous_status = row["status"]
-
-            if expected_statuses is not None and previous_status not in expected_statuses:
-                # CAS guard: current status is not in the expected set — skip.
-                return False
-
-            if previous_status in terminal_statuses and new_status != previous_status:
-                if not override:
-                    rejected = True
-                else:
-                    overridden = True
-
-            if rejected:
-                await conn.execute(
-                    text(
-                        "INSERT INTO admin_events "
-                        "(id, created_at, action, target_id, details, actor) "
-                        "VALUES (:id, :created_at, :action, :target_id, :details, :actor)"
-                    ).bindparams(bindparam("details", type_=JSON)),
-                    {
-                        "id": uuid.uuid4().hex[:12],
-                        "created_at": now,
-                        "action": "status_transition_rejected",
-                        "target_id": entity_id,
-                        "details": {
-                            "entity_type": canonical_type,
-                            "previous_status": previous_status,
-                            "attempted_status": new_status,
-                            "reason_code": reason_code,
-                            "source": source,
-                        },
-                        "actor": actor or source,
-                    },
-                )
-                # Do not raise inside the transaction — the rejection audit
-                # row above must commit even though the status write itself
-                # does not; raise once the `async with` block below exits.
-            else:
-                if overridden:
-                    await conn.execute(
-                        text(
-                            "INSERT INTO admin_events "
-                            "(id, created_at, action, target_id, details, actor) "
-                            "VALUES (:id, :created_at, :action, :target_id, :details, :actor)"
-                        ).bindparams(bindparam("details", type_=JSON)),
-                        {
-                            "id": uuid.uuid4().hex[:12],
-                            "created_at": now,
-                            "action": "status_transition_override",
-                            "target_id": entity_id,
-                            "details": {
-                                "entity_type": canonical_type,
-                                "previous_status": previous_status,
-                                "new_status": new_status,
-                                "reason_code": reason_code,
-                                "justification": override_justification,
-                            },
-                            "actor": override_actor,
-                        },
-                    )
-                written = await self._apply_status_write(
-                    conn,
-                    table,
-                    canonical_type,
-                    entity_id,
-                    previous_status=previous_status,
-                    new_status=new_status,
-                    reason_code=reason_code,
-                    reason_summary=reason_summary,
-                    evidence_refs=evidence_refs,
-                    source=source,
-                    actor=actor,
-                    metadata=metadata,
-                    now=now,
-                    expected_updated_at=expected_updated_at,
-                    extra_fields=extra_fields,
-                )
-                if not written:
-                    # Optimistic-lock guard lost: the row's updated_at moved
-                    # between the caller's snapshot and this write, so a
-                    # concurrent writer owns the row now. Skip, do not reject.
-                    return False
-
-        if rejected:
-            raise TransitionRejectedError(canonical_type, entity_id, previous_status, new_status)
-        return True
-
-    async def _apply_status_write(
-        self,
-        conn: Any,
-        table: str,
-        canonical_type: str,
-        entity_id: str,
-        *,
-        previous_status: str | None,
-        new_status: str,
-        reason_code: str,
-        reason_summary: str,
-        evidence_refs: list[dict[str, Any]] | None,
-        source: str,
-        actor: str | None,
-        metadata: dict[str, Any] | None,
-        now: float,
-        expected_updated_at: float | None = None,
-        extra_fields: dict[str, Any] | None = None,
-    ) -> bool:
-        """The actual status + status_transitions write, factored out of
-        update_status() so both the ordinary and override paths share it.
-
-        The UPDATE's WHERE clause re-asserts `previous_status` (the value read
-        under the row lock in update_status()) so the compare-and-set is
-        enforced by storage itself, not only by the Python read-then-write
-        gap — a concurrent writer that changes the row between the SELECT and
-        this UPDATE loses the race at the database level. The
-        `status = :previous_status OR (status IS NULL AND :previous_status IS
-        NULL)` form is the portable NULL-safe equality: it matches a NULL
-        previous_status (sessions may have no status yet) on both SQLite and
-        PostgreSQL — unlike SQLite's `IS` extension (a NULL-safe `=` for any
-        operand pair), PostgreSQL's `IS` only accepts the NULL/TRUE/FALSE
-        keywords, not a bound parameter.
-
-        When *expected_updated_at* is given, the WHERE also requires
-        `updated_at = :expected_updated_at`, an optimistic-lock version check:
-        a concurrent writer that touched the row bumped `updated_at`, so this
-        UPDATE matches zero rows and the caller learns the row moved. That is a
-        legitimate skip, not the storage anomaly the no-guard path raises on,
-        so return ``False`` instead of raising when the version guard is what
-        lost. Returns ``True`` when the row was written.
-        """
-        params = {
-            "status": new_status,
-            "reason_code": reason_code,
-            "reason_summary": reason_summary,
-            "evidence_refs": evidence_refs or [],
-            "now": now,
-            "id": entity_id,
-            "previous_status": previous_status,
-        }
-        version_guard = ""
-        if expected_updated_at is not None:
-            version_guard = "  AND updated_at = :expected_updated_at "
-            params["expected_updated_at"] = expected_updated_at
-        extra_set = ""
-        if extra_fields:
-            for field_name, field_value in extra_fields.items():
-                param_name = f"extra_{field_name}"
-                extra_set += f"  {field_name} = :{param_name}, "
-                params[param_name] = field_value
-        result = await conn.execute(
-            text(
-                f"UPDATE {table} SET "  # noqa: S608
-                "  status = :status, "
-                "  status_reason_code = :reason_code, "
-                "  status_reason_summary = :reason_summary, "
-                "  status_evidence_refs = :evidence_refs, "
-                f"{extra_set}"
-                "  updated_at = :now "
-                "WHERE id = :id "
-                "  AND (status = :previous_status "
-                "       OR (status IS NULL AND :previous_status IS NULL))"
-                f"{version_guard}"
-            ).bindparams(bindparam("evidence_refs", type_=JSON)),
-            params,
-        )
-        if result.rowcount == 0:
-            if expected_updated_at is not None:
-                # Version guard lost: the row's updated_at moved under us.
-                # A legitimate concurrent writer owns the row — skip cleanly.
-                return False
-            raise RuntimeError(
-                f"status CAS lost for {canonical_type} {entity_id!r}: "
-                "row changed under update_status"
+        # The guarded read/CAS/edge-validation/history-append algorithm now
+        # lives in LifecycleService; this method only keeps its own
+        # legacy-specific validation above and the outcome-to-bool/raise
+        # mapping below.
+        try:
+            return await _lifecycle_adapters.run_update_status(
+                self._lifecycle_service(),
+                entity_type=canonical_type,
+                entity_id=entity_id,
+                new_status=new_status,
+                reason_code=reason_code,
+                reason_summary=reason_summary,
+                evidence_refs=evidence_refs,
+                source=source,
+                actor=actor,
+                metadata=metadata,
+                expected_statuses=expected_statuses,
+                expected_updated_at=expected_updated_at,
+                extra_fields=extra_fields,
+                override=override,
+                override_actor=override_actor,
+                override_justification=override_justification,
             )
-
-        await conn.execute(
-            text(
-                "INSERT INTO status_transitions "
-                "(id, entity_type, entity_id, previous_status, status, "
-                " reason_code, reason_summary, evidence_refs, "
-                " source, actor, created_at, metadata) "
-                "VALUES (:id, :entity_type, :entity_id, :previous_status, :status, "
-                " :reason_code, :reason_summary, :evidence_refs, "
-                " :source, :actor, :created_at, :metadata)"
-            ).bindparams(
-                bindparam("evidence_refs", type_=JSON),
-                bindparam("metadata", type_=JSON),
-            ),
-            {
-                "id": uuid.uuid4().hex,
-                "entity_type": canonical_type,
-                "entity_id": entity_id,
-                "previous_status": previous_status,
-                "status": new_status,
-                "reason_code": reason_code,
-                "reason_summary": reason_summary,
-                "evidence_refs": evidence_refs or [],
-                "source": source,
-                "actor": actor,
-                "created_at": now,
-                "metadata": metadata,
-            },
-        )
-        return True
+        except _LifecycleNotFoundError as exc:
+            raise LookupError(f"{canonical_type} {entity_id!r} not found (table={table})") from exc
 
     async def list_sessions(
         self,
