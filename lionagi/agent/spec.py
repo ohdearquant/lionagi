@@ -118,6 +118,7 @@ class AgentSpec(HooksMixin):
     def coding(
         cls,
         *,
+        role: str = "implementer",
         model: str | None = None,
         effort: str | None = "high",
         system_prompt: str | None = None,
@@ -128,11 +129,15 @@ class AgentSpec(HooksMixin):
     ) -> AgentSpec:
         """Preset for a coding agent; ``secure=True`` wires guard_destructive + guard_paths.
 
+        ``role`` defaults to ``"implementer"`` (every existing caller relies on this
+        default). Pass a different role name to compose the preset's tools/hooks
+        around another role's own body and policy block instead.
+
         ``context_management=False`` drops the context tool from the default coding
         toolset and skips the context-curation one-liner in the system prompt.
         """
         spec = cls.compose(
-            "implementer",
+            role,
             model=model,
             effort=effort,
             tools=["coding"],
@@ -218,9 +223,22 @@ class AgentSpec(HooksMixin):
         pack = _load_pack(self.pack)
         if pack is None:
             return ""
-        policy = pack.policy(self.profile.role.name)
+        role_name = self.profile.role.name
+        policy = pack.policy(role_name)
         if policy is None:
-            return ""
+            # A role that loads (Role.load succeeded) but has no entry in the
+            # active pack must not silently run unconstrained — that is a
+            # privilege gap, not a no-op. A role genuinely meant to run with
+            # no authority/boundary/escalation constraints says so explicitly
+            # via an empty-but-present entry in the pack yaml (e.g. `roles:
+            # {my-role: {}}`), which resolves to an empty RolePolicy here, not
+            # None — distinct from the role being absent from `roles:` entirely.
+            raise ValueError(
+                f"Role {role_name!r} has no policy entry in pack {pack.name!r}. "
+                "Add an entry under `roles:` in the pack yaml — an empty entry "
+                "(e.g. `{}`) is the explicit way to run this role unconstrained; "
+                "a missing entry is treated as a configuration error, not intent."
+            )
 
         lines: list[str] = []
         if policy.authority:

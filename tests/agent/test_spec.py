@@ -99,6 +99,71 @@ class TestAgentSpecCoding:
         spec = AgentSpec.coding(model="anthropic/claude-sonnet-4-6")
         assert spec.model == "anthropic/claude-sonnet-4-6"
 
+    def test_coding_default_role_is_implementer(self):
+        """Regression: every existing AgentSpec.coding() caller omits role= and
+        relies on this default (grepped: no caller in lionagi/, benchmarks/,
+        examples/ passes role= explicitly)."""
+        spec = AgentSpec.coding()
+        assert spec.profile.role.name == "implementer"
+
+    def test_coding_role_param_parameterizes_preset(self):
+        spec = AgentSpec.coding(role="reviewer")
+        assert spec.profile.role.name == "reviewer"
+        assert "coding" in spec.tools
+
+
+# ---------------------------------------------------------------------------
+# Role -> Policy Binding Contract: fail-closed when a valid role has no
+# policy entry in the active pack; empty-but-present entry stays silent.
+# ---------------------------------------------------------------------------
+
+
+class TestRolePolicyBindingContract:
+    def test_missing_policy_entry_raises(self):
+        from lionagi.casts.pack import Pack
+
+        pack = Pack(name="custom", policies={}, configs={})
+        spec = AgentSpec.compose("analyst", pack=pack)
+        with pytest.raises(ValueError, match="no policy entry"):
+            spec.build_system_message()
+
+    def test_empty_but_present_policy_entry_does_not_raise(self):
+        from lionagi.casts.pack import Pack, RolePolicy
+
+        pack = Pack(name="custom", policies={"analyst": RolePolicy()}, configs={})
+        spec = AgentSpec.compose("analyst", pack=pack)
+        msg = spec.build_system_message()
+        assert "## Authority" not in msg
+        assert "## Escalation Conditions" not in msg
+
+    def test_default_pack_covers_every_shipped_role(self):
+        """Regression guard for the fail-closed raise: every role module under
+        lionagi/casts/roles/ must have a matching entry in the packaged
+        default.yaml, or this raise would break every profile using that role."""
+        import os
+
+        from lionagi.casts.catalog import _load_packaged_pack
+
+        roles_dir = os.path.join(os.path.dirname(__file__), "..", "..", "lionagi", "casts", "roles")
+        role_names = {
+            f[:-3].replace("_", "-")
+            for f in os.listdir(roles_dir)
+            if f.endswith(".py") and f != "__init__.py"
+        }
+        pack = _load_packaged_pack(raise_on_error=True)
+        missing = {name for name in role_names if pack.policy(name) is None}
+        assert missing == set(), f"roles missing a default.yaml policy entry: {missing}"
+
+    def test_pack_none_still_bypasses_policy_entirely(self):
+        """spec.pack=None is a distinct, deliberate opt-out of the whole policy
+        system — unaffected by the fail-closed raise (covered pre-existing by
+        TestAgentSpecSystemMessage.test_no_pack; asserted again here to make
+        the two escape hatches' distinction explicit)."""
+        spec = AgentSpec.compose("analyst")
+        spec2 = AgentSpec(profile=spec.profile, pack=None)
+        msg = spec2.build_system_message()  # must not raise
+        assert "## Authority" not in msg
+
 
 # ---------------------------------------------------------------------------
 # AgentSpec.build_system_message

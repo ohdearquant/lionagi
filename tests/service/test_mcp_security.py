@@ -238,6 +238,39 @@ class TestMCPConnectionPoolFailClosed:
 class TestLoadMcpConfigTrustedLoad:
     """load_mcp_config is a trust action: must default to allow policy and surface denials loudly."""
 
+    async def test_default_load_registers_only_the_loaded_files_servers(
+        self, tmp_path, monkeypatch
+    ):
+        """server_names=None means the servers declared in THE FILE being
+        loaded — never every config accumulated in the process-global pool.
+
+        The pool retains configs across loads, so defaulting to its keys
+        would silently re-register servers from previously loaded, unrelated
+        configs (e.g. a home-level config loaded by an earlier agent in the
+        same process) into this manager.
+        """
+        import json
+
+        from lionagi.protocols.action.manager import ActionManager
+        from lionagi.service.connections.mcp_wrapper import MCPConnectionPool
+
+        # Simulate an unrelated, earlier config load in the same process.
+        monkeypatch.setitem(MCPConnectionPool._configs, "earlier-server", {"command": "x"})
+
+        cfg = tmp_path / ".mcp.json"
+        cfg.write_text(json.dumps({"mcpServers": {"local": {"command": "echo", "args": ["hi"]}}}))
+
+        mgr = ActionManager()
+
+        async def fake_register(server_config, update=False, security=None):
+            return ["local_echo"]
+
+        monkeypatch.setattr(mgr, "register_mcp_server", fake_register)
+
+        result = await mgr.load_mcp_config(str(cfg))
+        assert result == {"local": ["local_echo"]}
+        assert "earlier-server" not in result
+
     async def test_default_load_sets_allow_policy_and_registers(self, tmp_path, monkeypatch):
         import json
 

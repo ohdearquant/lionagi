@@ -1058,14 +1058,13 @@ async def test_preset_and_real_profile_nolion_no_lion_system_message(monkeypatch
     """Real profile with lion_system:false + preset=coding → implementer content present,
     profile body present, ZERO occurrences of '# Welcome to LIONAGI'.
 
-    When lion_system=False the profile's raw_body is passed; AgentSpec.lion_system
-    remains True (the implementer preset owns that flag), so the factory adds the
-    header once for the role but NOT for the profile body.
-
-    Wait — AgentSpec.lion_system is always True for AgentSpec.coding(); the
-    flag on AgentProfile.lion_system controls ONLY whether the profile body
-    gets the header prepended.  The factory always prepends once for the spec.
-    So count=1 is expected even for lion_system:false profiles.
+    The profile's explicit `lion_system: false` opt-out must propagate onto the
+    AgentSpec built for the create_agent path (--preset coding or an opted-in
+    `role:` profile): AgentSpec.coding()/compose() default lion_system=True
+    regardless of the profile's own frontmatter, so _run_agent copies
+    profile.lion_system onto the spec before calling create_agent, exactly as
+    the non-preset path already achieves by folding lion_system into
+    profile.system_prompt ahead of time. count=0 is the correct outcome.
     """
     agents_dir = _make_agents_dir(tmp_path, monkeypatch)
     profile_body = "Custom coding instructions, no lion header."
@@ -1098,10 +1097,10 @@ async def test_preset_and_real_profile_nolion_no_lion_system_message(monkeypatch
 
     rendered = tool_branch.msgs.system.rendered
     count = rendered.count("# Welcome to LIONAGI")
-    # The spec itself has lion_system=True so the factory adds it once for the
-    # role; the profile body (raw_body, no header) is appended as extra_prompt.
-    assert count == 1, (
-        f"Expected 1 '# Welcome to LIONAGI' for lion_system:false profile + preset; "
+    assert count == 0, (
+        f"Expected 0 '# Welcome to LIONAGI' for lion_system:false profile + preset "
+        f"(the profile's opt-out must propagate onto the spec); "
         f"got {count}.\nMessage start: {rendered[:600]}"
     )
+    assert profile_body in rendered
     assert profile_body in rendered, "profile body must be present"
