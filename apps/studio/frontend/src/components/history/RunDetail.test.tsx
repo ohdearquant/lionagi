@@ -194,6 +194,28 @@ describe("history/RunDetail.tsx — shouldRenderAuthoredGraph", () => {
     const { shouldRenderAuthoredGraph } = await import("./RunDetail");
     expect(shouldRenderAuthoredGraph(null, { edges: [] })).toBe(false);
   });
+
+  // A persisted graph may omit `edges` entirely. shouldRenderAuthoredGraph
+  // treats that as edgeless, but when the runtime opGraph ALSO has no edges
+  // the authored graph still renders — and WorkerCanvas maps over `edges`,
+  // so the decode site must normalize an omitted field to [] or that valid
+  // combination crashes the run-detail graph instead of rendering it.
+  it("decode site normalizes omitted graph.edges to [] before setRunGraph", () => {
+    const src = fs.readFileSync(path.join(HISTORY_DIR, "RunDetail.tsx"), "utf-8");
+    expect(src).toMatch(/edges:\s*graph\.edges\s*\?\?\s*\[\]/);
+  });
+
+  it("omitted edges + no runtime edges renders the authored graph, and normalized edges survive a WorkerCanvas-style map", async () => {
+    const { shouldRenderAuthoredGraph } = await import("./RunDetail");
+    const persisted = { nodes: [{ id: "a" }, { id: "b" }] } as {
+      nodes: unknown[];
+      edges?: unknown[] | null;
+    };
+    // Mirrors the decode-site normalization under test above.
+    const runGraph = { nodes: persisted.nodes, edges: persisted.edges ?? [] };
+    expect(shouldRenderAuthoredGraph(runGraph, { edges: [] })).toBe(true);
+    expect(() => runGraph.edges.map((e) => e)).not.toThrow();
+  });
 });
 
 describe("stale-write guard predicate (mirrors the done handler's merge condition)", () => {

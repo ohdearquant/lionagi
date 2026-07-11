@@ -708,7 +708,7 @@ export default function RunDetail({ id }: RunDetailProps) {
           }
         }
         const graph = (s as unknown as Record<string, unknown>).graph as
-          | { nodes: WorkerGraph["nodes"]; edges: WorkerGraph["edges"] }
+          | { nodes: WorkerGraph["nodes"]; edges?: WorkerGraph["edges"] | null }
           | null
           | undefined;
         if (graph && graph.nodes && graph.nodes.length > 0) {
@@ -716,7 +716,9 @@ export default function RunDetail({ id }: RunDetailProps) {
             name: s.name || id,
             description: "",
             nodes: graph.nodes,
-            edges: graph.edges,
+            // A persisted graph may omit edges entirely; WorkerCanvas maps
+            // over the array, so an absent field must normalize to empty.
+            edges: graph.edges ?? [],
           });
         }
       })
