@@ -121,6 +121,81 @@ describe("transitiveReduce (lib/operationGraph) — why RunDetail must not apply
   });
 });
 
+// ─── Edgeless authored graph falls through to the runtime opGraph ────────────
+// Reactive runs persist an early `graph` snapshot (nodes only, no edges yet)
+// that is never refreshed. Laid out with zero edges, dagre puts every node
+// in the same rank — a meaningless vertical column. When that snapshot has
+// ≥2 nodes and 0 edges, and the runtime opGraph (built from Node* signal
+// depends_on/parent_id/cause_op_id) has real edges, the authored graph must
+// not be rendered as the DAG — render opGraph instead. An authored graph
+// that already carries edges keeps priority exactly as before.
+
+describe("history/RunDetail.tsx — shouldRenderAuthoredGraph", () => {
+  it("exports shouldRenderAuthoredGraph and wires it into the run-dag render branch", () => {
+    const src = fs.readFileSync(path.join(HISTORY_DIR, "RunDetail.tsx"), "utf-8");
+    expect(src).toMatch(/export function shouldRenderAuthoredGraph/);
+    expect(src).toMatch(/runGraph && shouldRenderAuthoredGraph\(runGraph, opGraph\)/);
+  });
+
+  it("passes compact to the authored-graph WorkerCanvas embed", () => {
+    const src = fs.readFileSync(path.join(HISTORY_DIR, "RunDetail.tsx"), "utf-8");
+    // The <WorkerCanvas ... compact /> block sits between the authored-graph
+    // ternary head and the opGraph fallback branch.
+    const start = src.indexOf("shouldRenderAuthoredGraph(runGraph, opGraph)");
+    const end = src.indexOf("</Suspense>", start);
+    expect(src.slice(start, end)).toMatch(/\bcompact\b/);
+  });
+
+  it("edgeless authored graph + runtime edges → opGraph path chosen", async () => {
+    const { shouldRenderAuthoredGraph } = await import("./RunDetail");
+    const authoredNoEdges = {
+      nodes: [{ id: "a" }, { id: "b" }],
+      edges: [],
+    };
+    const opGraphWithEdges = { edges: [{ source: "op-a", target: "op-b" }] };
+    expect(shouldRenderAuthoredGraph(authoredNoEdges, opGraphWithEdges)).toBe(false);
+  });
+
+  it("edgeless authored graph but opGraph ALSO has no edges → still renders authored (nothing better to fall through to)", async () => {
+    const { shouldRenderAuthoredGraph } = await import("./RunDetail");
+    const authoredNoEdges = { nodes: [{ id: "a" }, { id: "b" }], edges: [] };
+    expect(shouldRenderAuthoredGraph(authoredNoEdges, { edges: [] })).toBe(true);
+  });
+
+  it("authored graph WITH edges is still preferred over opGraph, regardless of opGraph edges", async () => {
+    const { shouldRenderAuthoredGraph } = await import("./RunDetail");
+    const authoredWithEdges = {
+      nodes: [{ id: "a" }, { id: "b" }],
+      edges: [{ id: "e1", source: "a", target: "b" }],
+    };
+    const opGraphWithEdges = { edges: [{ source: "op-a", target: "op-b" }] };
+    expect(shouldRenderAuthoredGraph(authoredWithEdges, opGraphWithEdges)).toBe(true);
+    expect(shouldRenderAuthoredGraph(authoredWithEdges, { edges: [] })).toBe(true);
+  });
+
+  it("missing graph.edges (backend omitted the field) is treated as edgeless", async () => {
+    const { shouldRenderAuthoredGraph } = await import("./RunDetail");
+    const authoredMissingEdges = {
+      nodes: [{ id: "a" }, { id: "b" }],
+      edges: undefined as unknown as unknown[],
+    };
+    const opGraphWithEdges = { edges: [{ source: "op-a", target: "op-b" }] };
+    expect(shouldRenderAuthoredGraph(authoredMissingEdges, opGraphWithEdges)).toBe(false);
+  });
+
+  it("a single-node authored graph is never considered edgeless (nothing to draw an edge between)", async () => {
+    const { shouldRenderAuthoredGraph } = await import("./RunDetail");
+    const singleNode = { nodes: [{ id: "a" }], edges: [] };
+    const opGraphWithEdges = { edges: [{ source: "op-a", target: "op-b" }] };
+    expect(shouldRenderAuthoredGraph(singleNode, opGraphWithEdges)).toBe(true);
+  });
+
+  it("null graph never renders as the authored DAG", async () => {
+    const { shouldRenderAuthoredGraph } = await import("./RunDetail");
+    expect(shouldRenderAuthoredGraph(null, { edges: [] })).toBe(false);
+  });
+});
+
 describe("stale-write guard predicate (mirrors the done handler's merge condition)", () => {
   function mergeIfSameSession(
     prev: { id: string; status: string } | null,

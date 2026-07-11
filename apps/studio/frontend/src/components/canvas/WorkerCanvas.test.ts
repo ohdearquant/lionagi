@@ -10,7 +10,9 @@
  */
 
 import { describe, it, expect } from "vitest";
-import { computeEdgeSourceCompleted } from "./WorkerCanvas";
+import * as fs from "node:fs";
+import * as path from "node:path";
+import { computeEdgeSourceCompleted, shouldShowMiniMap } from "./WorkerCanvas";
 
 describe("computeEdgeSourceCompleted", () => {
   it("uses the legacy completedMap when nodeStatuses is undefined", () => {
@@ -42,5 +44,49 @@ describe("computeEdgeSourceCompleted", () => {
 
   it("node with no coverage anywhere and no legacy record is not completed", () => {
     expect(computeEdgeSourceCompleted("z", {}, new Map())).toBe(false);
+  });
+});
+
+// ─── MiniMap suppressed in compact embeds ─────────────────────────────────────
+// RunDetail's run-dag panel is a fixed 280px-tall container — at that size a
+// MiniMap reads as a floating cluster of gray micro-nodes rather than a
+// useful overview, so `compact` embeds must never show it, no matter how
+// many nodes the graph has. Non-compact usage (the full-page graph editor)
+// keeps the existing >10-nodes threshold.
+
+describe("shouldShowMiniMap", () => {
+  it("compact embed never shows the minimap, even with many nodes", () => {
+    expect(shouldShowMiniMap(true, 50)).toBe(false);
+  });
+
+  it("compact embed hides the minimap when under the node threshold too", () => {
+    expect(shouldShowMiniMap(true, 3)).toBe(false);
+  });
+
+  it("non-compact usage shows the minimap once nodes exceed the threshold", () => {
+    expect(shouldShowMiniMap(false, 11)).toBe(true);
+  });
+
+  it("non-compact usage hides the minimap at or under the threshold", () => {
+    expect(shouldShowMiniMap(false, 10)).toBe(false);
+  });
+});
+
+describe("WorkerCanvas.tsx — source contract for the compact MiniMap fix", () => {
+  const CANVAS_DIR = path.resolve(__dirname);
+  const src = fs.readFileSync(path.join(CANVAS_DIR, "WorkerCanvas.tsx"), "utf-8");
+
+  it("declares a compact prop, defaulting to false", () => {
+    expect(src).toMatch(/compact\?: boolean/);
+    expect(src).toMatch(/compact = false/);
+  });
+
+  it("gates the MiniMap through shouldShowMiniMap, not a raw node-count check", () => {
+    expect(src).toMatch(/shouldShowMiniMap\(compact, nodes\.length\)/);
+  });
+
+  it("docks the minimap bottom-right and sizes it down", () => {
+    expect(src).toMatch(/position="bottom-right"/);
+    expect(src).toMatch(/style=\{\{ width: \d+, height: \d+ \}\}/);
   });
 });

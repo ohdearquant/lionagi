@@ -54,6 +54,25 @@ function classifyLC(lc: string): string {
   return "unknown";
 }
 
+// The persisted/authored graph (Studio's early_graph) is only meaningful as
+// the rendered DAG when it actually carries the designer's edges. Reactive
+// runs persist an early snapshot with nodes but zero edges (they're added
+// later, and the snapshot is never refreshed) — laid out with no edges, every
+// node lands in a single dagre rank, rendering as a meaningless vertical
+// column. When that happens and the runtime opGraph has real edges (derived
+// from Node* depends_on/parent_id/cause_op_id), prefer opGraph instead. An
+// authored graph that already has edges keeps priority, unreduced — see the
+// note above nodeStatuses.
+export function shouldRenderAuthoredGraph(
+  graph: { nodes: unknown[]; edges: unknown[] | null | undefined } | null,
+  opGraph: { edges: unknown[] },
+): boolean {
+  if (!graph) return false;
+  const edgeCount = graph.edges?.length ?? 0;
+  const isEdgeless = graph.nodes.length >= 2 && edgeCount === 0;
+  return !(isEdgeless && opGraph.edges.length > 0);
+}
+
 function branchToRunStep(branch: SessionBranch, status: string): RunStep {
   const msgs = branch.messages;
   const runMessages: RunMessage[] = [];
@@ -689,7 +708,9 @@ export default function RunDetail({ id }: RunDetailProps) {
           }
         }
         const graph = (s as unknown as Record<string, unknown>).graph as
-          { nodes: WorkerGraph["nodes"]; edges: WorkerGraph["edges"] } | null | undefined;
+          | { nodes: WorkerGraph["nodes"]; edges: WorkerGraph["edges"] }
+          | null
+          | undefined;
         if (graph && graph.nodes && graph.nodes.length > 0) {
           setRunGraph({
             name: s.name || id,
@@ -1034,11 +1055,17 @@ export default function RunDetail({ id }: RunDetailProps) {
     errorCount: errors.length,
     partialWindow,
     showTopic: (session as unknown as Record<string, unknown>).show_topic as
-      string | null | undefined,
+      | string
+      | null
+      | undefined,
     showPlayName: (session as unknown as Record<string, unknown>).show_play_name as
-      string | null | undefined,
+      | string
+      | null
+      | undefined,
     playbookName: (session as unknown as Record<string, unknown>).playbook_name as
-      string | null | undefined,
+      | string
+      | null
+      | undefined,
   };
 
   const content = (
@@ -1068,7 +1095,7 @@ export default function RunDetail({ id }: RunDetailProps) {
         contract={session.artifact_contract_json}
         verification={session.artifact_verification_json}
       />
-      {runGraph ? (
+      {runGraph && shouldRenderAuthoredGraph(runGraph, opGraph) ? (
         <div id="run-dag" className="scroll-mt-4">
           <SectionHeader label={t("sectionExecutionGraph")} count={runGraph.nodes.length} />
           <div className="h-[280px] rounded border border-edge bg-surface-raised shadow-card overflow-hidden">
@@ -1078,6 +1105,7 @@ export default function RunDetail({ id }: RunDetailProps) {
                 editable={false}
                 execSteps={execSteps}
                 nodeStatuses={nodeStatuses}
+                compact
               />
             </Suspense>
           </div>
