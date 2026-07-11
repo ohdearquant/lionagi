@@ -1,6 +1,6 @@
 # ADR-0047: Hook mechanism scopes and canonical ownership
 
-- **Status**: Proposed
+- **Status**: Accepted
 - **Kind**: Retrospective
 - **Area**: hooks
 - **Date**: 2026-07-09

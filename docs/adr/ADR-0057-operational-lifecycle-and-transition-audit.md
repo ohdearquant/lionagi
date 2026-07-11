@@ -1,6 +1,6 @@
 # ADR-0057: Operational lifecycle and transition audit
 
-- **Status**: Proposed
+- **Status**: Accepted
 - **Kind**: Retrospective
 - **Area**: persistence-state
 - **Date**: 2026-07-09
@@ -118,13 +118,15 @@ Code anchors: `lionagi/state/db.py`; `lionagi/state/reasons.py`;
 - Session and invocation deliberately share the same seven values and terminal set.
 - A same-status write is permitted even when the value is terminal; it refreshes current reason and
   appends history rather than counting as leaving terminal.
-- The current schedule-run declarations disagree. Its schema admits nine values. The
-  `StateDB.update_status()` validator admits terminal values `completed`, `failed`, `skipped`, and
-  `cancelled` plus `pending`, `running`, and `queued`; it omits `waiting_dependency`, `retry_wait`,
-  and `timed_out` and includes `pending`, which the schema CHECK does not admit.
-- The smaller guarded adapter declares only `queued -> {cancelled, running}`,
-  `running -> {completed, failed, queued}`, and no outgoing edges from `completed`, `failed`, or
-  `cancelled`. Other schedule-run schema states have no declared outgoing edge in that adapter.
+- The schedule-run declarations are reconciled through the lifecycle policy registry. Both the
+  `StateDB.update_status()` validator and the guarded adapter source the nine-value vocabulary and
+  the five-value terminal set (which includes `timed_out`) from the registered policy
+  (`lionagi/state/db.py:284-291`, `lionagi/state/lifecycle/policy.py:305-320`); `pending` is not
+  admitted by either surface.
+- The registered schedule-run edge graph declares `queued -> {waiting_dependency, running, skipped,
+  cancelled}`, `waiting_dependency -> {queued, cancelled}`, `running -> {completed, failed,
+  timed_out, retry_wait, queued, cancelled}`, and `retry_wait -> {queued, cancelled}`; terminal
+  states have no outgoing edges (`lionagi/state/lifecycle/policy.py:321-326`).
 - Dispatch is absent from `VALID_ENTITY_TYPES`; its adapter maps it directly to
   `dispatch_outbox` and validates only its reason code plus database CHECK at write time.
 
@@ -449,8 +451,9 @@ Code anchors: `lionagi/state/transitions.py`; `lionagi/state/db.py`.
 - Dispatch has no adapter-level allowed-edge graph. Any current-to-target pair that passes the
   caller's CAS and the table's six-value CHECK can be written through this function.
 - Schedule run has the partial closed graph described in D1.
-- `StateDB.update_status()` and this adapter both cover `schedule_run`, with different vocabularies,
-  guard/patch allowlists, return types, and terminal behavior.
+- `StateDB.update_status()` and this adapter both cover `schedule_run`. Both source the vocabulary
+  and terminal set from the lifecycle policy registry; they still differ in guard/patch allowlists,
+  return types, and edge-enforcement behavior.
 - Branches and engine runs have stored statuses but are not in the six-type reason registry.
 - Initial entity inserts do not use either transition API, except `enqueue_dispatch()`, which
   explicitly inserts its initial transition in the same transaction.

@@ -1,6 +1,6 @@
 # ADR-0042: Casts pattern catalog and typed role authoring
 
-- **Status**: Proposed
+- **Status**: Accepted
 - **Kind**: Retrospective
 - **Area**: agent-roles
 - **Date**: 2026-07-09
