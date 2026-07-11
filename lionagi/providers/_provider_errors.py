@@ -39,6 +39,23 @@ class ProviderContextError(ProviderError):
     """The provider CLI rejected the request because the context is too long."""
 
 
+class WorkerLivenessError(ProviderError):
+    """The worker CLI subprocess produced no first-stream output within the
+    liveness window across every retry attempt — a spawn/hang failure,
+    distinct from a classified provider-content error (quota/auth/context)."""
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        reason: str = "worker.no_first_output",
+        stderr_tail: str = "",
+        raw: str = "",
+    ) -> None:
+        super().__init__(message, stderr_tail=stderr_tail, raw=raw)
+        self.reason: str = reason
+
+
 # ---------------------------------------------------------------------------
 # Emission error (separate axis — not a provider subprocess failure)
 # ---------------------------------------------------------------------------

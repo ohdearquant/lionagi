@@ -689,3 +689,278 @@ async def test_imodel_stream_propagates_cancellation():
     assert elapsed < chunk_delay, (
         f"cancellation surfaced at {elapsed:.2f}s but first chunk was due at {chunk_delay}s"
     )
+
+
+# ---------------------------------------------------------------------------
+# Worker-liveness watchdog — regression for a CLI subprocess that dies at/near
+# spawn (or otherwise produces no first output): the leg must retry once and
+# then fail loud with WorkerLivenessError instead of hanging as a zombie
+# "running" operation forever.
+# ---------------------------------------------------------------------------
+
+
+def _make_hanging_cli_model(create_event_calls: list, streams_first_output_early: bool = True):
+    """A CLI iModel whose stream() never yields anything — simulates a worker
+    subprocess that dies at/near spawn and never produces a first chunk.
+
+    ``streams_first_output_early`` mirrors the endpoint capability flag that
+    gates run.py's config-default watchdog; defaults True (claude_code/codex-
+    style early streamer) since that's what most of these fakes stand in for."""
+    import anyio
+
+    m = iModel(provider="openai", model="gpt-4.1-mini", api_key="test_key")
+    endpoint_ns = types.SimpleNamespace(
+        is_cli=True,
+        session_id=None,
+        streams_first_output_early=streams_first_output_early,
+        to_dict=lambda: {"type": "fake_cli", "session_id": None},
+    )
+    m.endpoint = endpoint_ns
+    m.streaming_process_func = None
+
+    async def create_event(**kw):
+        create_event_calls.append(kw)
+        return object()
+
+    m.create_event = create_event
+    m.executor = types.SimpleNamespace(append=AsyncMock(), config={})
+
+    async def stream(api_call=None):
+        # Never yields — the subprocess "hangs" forever.
+        await anyio.sleep(999)
+        yield StreamChunk(type="text", content="unreachable")  # pragma: no cover
+
+    m.stream = stream
+    return m
+
+
+def _make_retry_recovers_cli_model(create_event_calls: list):
+    """A CLI iModel whose FIRST invocation hangs forever (dead worker) and
+    whose SECOND invocation (the liveness retry) streams normally — proves
+    the watchdog's retry path actually recovers a transiently-dead worker."""
+    import anyio
+
+    m = iModel(provider="openai", model="gpt-4.1-mini", api_key="test_key")
+    endpoint_ns = types.SimpleNamespace(
+        is_cli=True,
+        session_id=None,
+        streams_first_output_early=True,
+        to_dict=lambda: {"type": "fake_cli", "session_id": None},
+    )
+    m.endpoint = endpoint_ns
+    m.streaming_process_func = None
+
+    async def create_event(**kw):
+        create_event_calls.append(kw)
+        return object()
+
+    m.create_event = create_event
+    m.executor = types.SimpleNamespace(append=AsyncMock(), config={})
+
+    async def stream(api_call=None):
+        if len(create_event_calls) < 2:
+            await anyio.sleep(999)
+            yield StreamChunk(type="text", content="unreachable")  # pragma: no cover
+        else:
+            yield StreamChunk(type="text", content="recovered")
+
+    m.stream = stream
+    return m
+
+
+def _make_buffered_delay_cli_model(create_event_calls: list, delay: float):
+    """A CLI iModel that stands in for a buffered transport (e.g. gemini_code):
+    it does not declare ``streams_first_output_early``, and its stream() sleeps
+    ``delay`` before yielding its one and only chunk — indistinguishable from a
+    dead worker to a naive first-chunk watchdog until the delay elapses."""
+    import anyio
+
+    m = iModel(provider="openai", model="gpt-4.1-mini", api_key="test_key")
+    endpoint_ns = types.SimpleNamespace(
+        is_cli=True,
+        session_id=None,
+        to_dict=lambda: {"type": "fake_cli", "session_id": None},
+    )
+    m.endpoint = endpoint_ns
+    m.streaming_process_func = None
+
+    async def create_event(**kw):
+        create_event_calls.append(kw)
+        return object()
+
+    m.create_event = create_event
+    m.executor = types.SimpleNamespace(append=AsyncMock(), config={})
+
+    async def stream(api_call=None):
+        await anyio.sleep(delay)
+        yield StreamChunk(type="text", content="buffered result")
+
+    m.stream = stream
+    return m
+
+
+async def test_run_liveness_watchdog_raises_after_exhausting_retries():
+    """A worker that never produces a first chunk is retried once, then
+    fails loud with WorkerLivenessError — the operation must be able to
+    transition to FAILED instead of hanging forever."""
+    from lionagi.providers._provider_errors import WorkerLivenessError
+
+    create_event_calls: list = []
+    model = _make_hanging_cli_model(create_event_calls)
+    branch = Branch()
+    branch.chat_model = model
+
+    with pytest.raises(WorkerLivenessError, match="worker.no_first_output|no first stream output"):
+        async for _ in run(branch, "go", RunParam(imodel_kw={"liveness_timeout": 0.05})):
+            pass
+
+    # Exactly one retry: two fresh subprocess invocations total.
+    assert len(create_event_calls) == 2, (
+        f"expected exactly 2 create_event calls (1 initial + 1 retry), got {len(create_event_calls)}"
+    )
+
+
+async def test_run_liveness_watchdog_recovers_on_retry():
+    """A worker whose first subprocess hangs but whose retried subprocess
+    streams normally must succeed — the watchdog does not fail loud when
+    the retry recovers."""
+    create_event_calls: list = []
+    model = _make_retry_recovers_cli_model(create_event_calls)
+    branch = Branch()
+    branch.chat_model = model
+
+    results = await _collect(run(branch, "go", RunParam(imodel_kw={"liveness_timeout": 0.05})))
+
+    text_msgs = [r for r in results if isinstance(r, AssistantResponse)]
+    assert len(text_msgs) == 1
+    assert text_msgs[0].response == "recovered"
+    assert len(create_event_calls) == 2
+
+
+async def test_run_liveness_watchdog_disabled_by_zero():
+    """liveness_timeout=0 disables the watchdog cleanly (deterministic/test
+    runs) — legacy unbounded-wait-for-first-chunk behaviour, no retry."""
+    create_event_calls: list = []
+    model = _make_hanging_cli_model(create_event_calls)
+    branch = Branch()
+    branch.chat_model = model
+
+    import asyncio
+
+    with pytest.raises(asyncio.TimeoutError):
+        # The watchdog is disabled, so the hang is unbounded; wrap with an
+        # outer wait_for as the test-level guard instead.
+        await asyncio.wait_for(
+            _collect(run(branch, "go", RunParam(imodel_kw={"liveness_timeout": 0}))),
+            timeout=0.2,
+        )
+
+    # Disabled watchdog still only spawns the subprocess once — no retry.
+    assert len(create_event_calls) == 1
+
+
+async def test_run_liveness_watchdog_uses_configured_default_when_absent(monkeypatch):
+    """When the caller doesn't pass liveness_timeout, run() falls back to
+    lionagi.config.settings.LIONAGI_WORKER_LIVENESS_TIMEOUT (monkeypatched
+    here to a small value so the test stays fast) — for an endpoint that
+    declares streams_first_output_early (the default of this fake)."""
+    import lionagi.config as config_module
+    from lionagi.providers._provider_errors import WorkerLivenessError
+
+    create_event_calls: list = []
+    model = _make_hanging_cli_model(create_event_calls)
+    branch = Branch()
+    branch.chat_model = model
+
+    fast_settings = config_module.AppSettings(LIONAGI_WORKER_LIVENESS_TIMEOUT=0.05)
+    monkeypatch.setattr(config_module, "settings", fast_settings)
+
+    with pytest.raises(WorkerLivenessError):
+        async for _ in run(branch, "go", RunParam()):
+            pass
+
+    assert len(create_event_calls) == 2
+
+
+async def test_run_liveness_watchdog_strips_kwarg_from_create_event():
+    """liveness_timeout is a run()-only knob; the provider must never see it
+    in create_event kwargs (matches the existing `timeout` strip pattern)."""
+    model, captured = _make_fake_cli_model([StreamChunk(type="text", content="ok")])
+    branch = Branch()
+    branch.chat_model = model
+
+    await _collect(run(branch, "hi", RunParam(imodel_kw={"liveness_timeout": 5})))
+    assert "liveness_timeout" not in captured, (
+        f"liveness_timeout leaked into create_event kwargs: {captured!r}"
+    )
+
+
+async def test_run_liveness_watchdog_yields_to_caller_stream_timeout():
+    """When the caller's own overall stream `timeout` is tighter than the
+    liveness window, the caller's TimeoutError fires unmodified (no retry) —
+    the caller asked for that total-stream budget deliberately, and it must
+    not be reinterpreted as a worker-liveness failure."""
+    import time
+
+    create_event_calls: list = []
+    model = _make_hanging_cli_model(create_event_calls)
+    branch = Branch()
+    branch.chat_model = model
+
+    started = time.monotonic()
+    with pytest.raises(TimeoutError):
+        async for _ in run(
+            branch,
+            "go",
+            RunParam(imodel_kw={"timeout": 0.05, "liveness_timeout": 120}),
+        ):
+            pass
+    elapsed = time.monotonic() - started
+
+    # No retry: the caller's tighter overall deadline owns this timeout.
+    assert len(create_event_calls) == 1
+    assert elapsed < 5.0
+
+
+async def test_run_liveness_watchdog_default_path_skips_buffered_endpoint(monkeypatch):
+    """A buffered transport (streams_first_output_early absent/False) whose
+    first chunk legitimately arrives after the configured default liveness
+    window must complete successfully with no retry and no
+    WorkerLivenessError under the config-default path — the default watchdog
+    is not applied at all for endpoints that don't declare the capability."""
+    import lionagi.config as config_module
+
+    create_event_calls: list = []
+    model = _make_buffered_delay_cli_model(create_event_calls, delay=0.15)
+    branch = Branch()
+    branch.chat_model = model
+
+    fast_settings = config_module.AppSettings(LIONAGI_WORKER_LIVENESS_TIMEOUT=0.05)
+    monkeypatch.setattr(config_module, "settings", fast_settings)
+
+    results = await _collect(run(branch, "go", RunParam()))
+
+    text_msgs = [r for r in results if isinstance(r, AssistantResponse)]
+    assert len(text_msgs) == 1
+    assert text_msgs[0].response == "buffered result"
+    # No retry — the watchdog never engaged for this endpoint.
+    assert len(create_event_calls) == 1
+
+
+async def test_run_liveness_watchdog_explicit_timeout_enforced_on_buffered_endpoint():
+    """An explicitly-passed liveness_timeout is always honored, even for a
+    buffered endpoint that doesn't declare streams_first_output_early — the
+    caller opted in deliberately, so the watchdog must still retry then
+    raise WorkerLivenessError on a worker that never produces output."""
+    from lionagi.providers._provider_errors import WorkerLivenessError
+
+    create_event_calls: list = []
+    model = _make_hanging_cli_model(create_event_calls, streams_first_output_early=False)
+    branch = Branch()
+    branch.chat_model = model
+
+    with pytest.raises(WorkerLivenessError):
+        async for _ in run(branch, "go", RunParam(imodel_kw={"liveness_timeout": 0.05})):
+            pass
+
+    assert len(create_event_calls) == 2
