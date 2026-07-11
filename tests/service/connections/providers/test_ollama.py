@@ -263,7 +263,29 @@ class TestOllamaModelManagement:
 
 
 class TestOllamaCall:
-    """Test Ollama call method and integration."""
+    """Test Ollama call method against the real base HTTP transport.
+
+    Only Ollama's own model listing/pulling SDK calls (``ollama.list`` /
+    ``ollama.pull``) are faked here. ``Endpoint.call`` and ``_call_aiohttp``
+    run for real against a local ``aiohttp`` server, so these tests prove the
+    wrapper actually sends a request over the wire and decodes a realistic
+    response, not merely that it delegates to its parent class.
+    """
+
+    @staticmethod
+    async def _start_chat_completions_server(response_body: dict, received: list):
+        from aiohttp import web
+        from aiohttp.test_utils import TestServer
+
+        async def handler(request):
+            received.append(await request.json())
+            return web.json_response(response_body)
+
+        app = web.Application()
+        app.router.add_post("/chat/completions", handler)
+        server = TestServer(app)
+        await server.start_server()
+        return server
 
     @pytest.mark.asyncio
     @patch("lionagi.providers.ollama.chat._HAS_OLLAMA", True)
@@ -282,21 +304,37 @@ class TestOllamaCall:
 
         endpoint = OllamaChatEndpoint()
 
-        # Mock parent call method
-        with patch.object(
-            endpoint.__class__.__bases__[0], "call", new_callable=AsyncMock
-        ) as mock_super_call:
-            mock_super_call.return_value = {"response": "test"}
-
+        response_body = {
+            "id": "chatcmpl-test",
+            "object": "chat.completion",
+            "model": "llama2",
+            "choices": [
+                {
+                    "index": 0,
+                    "message": {"role": "assistant", "content": "hi there"},
+                    "finish_reason": "stop",
+                }
+            ],
+        }
+        received: list = []
+        server = await self._start_chat_completions_server(response_body, received)
+        endpoint.config.base_url = f"http://127.0.0.1:{server.port}"
+        try:
             request = {
                 "model": "llama2",
                 "messages": [{"role": "user", "content": "hello"}],
             }
+            result = await endpoint.call(request)
+        finally:
+            await server.close()
 
-            await endpoint.call(request)
-
-            # Verify super().call() was invoked
-            mock_super_call.assert_called_once()
+        # Model was already available: no pull, and the wrapper must have
+        # actually sent one request carrying the model and messages.
+        mock_ollama.pull.assert_not_called()
+        assert len(received) == 1
+        assert received[0]["model"] == "llama2"
+        assert received[0]["messages"] == [{"role": "user", "content": "hello"}]
+        assert result == response_body
 
     @pytest.mark.asyncio
     @patch("lionagi.providers.ollama.chat._HAS_OLLAMA", True)
@@ -315,21 +353,38 @@ class TestOllamaCall:
 
         endpoint = OllamaChatEndpoint()
 
-        # Mock parent call method
-        with patch.object(
-            endpoint.__class__.__bases__[0], "call", new_callable=AsyncMock
-        ) as mock_super_call:
-            mock_super_call.return_value = {"response": "test"}
-
+        response_body = {
+            "id": "chatcmpl-test-2",
+            "object": "chat.completion",
+            "model": "mistral",
+            "choices": [
+                {
+                    "index": 0,
+                    "message": {"role": "assistant", "content": "hi there"},
+                    "finish_reason": "stop",
+                }
+            ],
+        }
+        received: list = []
+        server = await self._start_chat_completions_server(response_body, received)
+        endpoint.config.base_url = f"http://127.0.0.1:{server.port}"
+        try:
             request = {
                 "model": "mistral",
                 "messages": [{"role": "user", "content": "hello"}],
             }
 
             with caplog.at_level("DEBUG", logger="lionagi.providers.ollama.chat"):
-                await endpoint.call(request)
+                result = await endpoint.call(request)
+        finally:
+            await server.close()
 
-            assert "not found locally" in caplog.text
+        assert "not found locally" in caplog.text
+        mock_ollama.pull.assert_called_once()
+        assert len(received) == 1
+        assert received[0]["model"] == "mistral"
+        assert received[0]["messages"] == [{"role": "user", "content": "hello"}]
+        assert result == response_body
 
 
 class TestOllamaConfig:
