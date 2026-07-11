@@ -434,9 +434,9 @@ failures retain their original exception type for diagnosis.
 
 | # | Delta | Size | Issue |
 |---|-------|------|-------|
-| 1 | Choose one LNDL action-commit rule for no-`OUT{}` rounds, then align the system prompt, adapter, architecture record, and tests so eager continuation actions or output-gated actions are stated consistently. | M | (filled at issue-open time) |
+| 1 | Choose one LNDL action-commit rule for no-`OUT{}` rounds, then align the system prompt, adapter, architecture record, and tests so eager continuation actions or output-gated actions are stated consistently. | M | #2024 |
 | 2 | Decide whether `note.X` is supported across adapter rounds; either thread and test bounded scratchpad state or remove the cross-round promise from the prompt and public language surface. | M | (filled at issue-open time) |
-| 3 | Align the adapter's public failure contract with the round-outcome vocabulary by defining whether exhaustion and unexpected failures are typed outcomes or raised exceptions, and add end-to-end tests for the chosen policy. | S | (filled at issue-open time) |
+| 3 | Align the adapter's public failure contract with the round-outcome vocabulary by defining whether exhaustion and unexpected failures are typed outcomes or raised exceptions, and add end-to-end tests for the chosen policy. | S | #2025 |
 | 4 | Normalize or explicitly reject non-string `JsonValue` guidance before prompt joining, and add an end-to-end test that fixes the selected wire rendering. | S | (filled at issue-open time) |
 | 5 | Define one endpoint-neutral no-assistant-output transition (`Continue`, `Retry`, or terminal failure), normalize API and CLI adapters to it, and test both families. | S | (filled at issue-open time) |
 

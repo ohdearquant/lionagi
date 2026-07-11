@@ -513,10 +513,10 @@ execution.
 | # | Delta | Size | Issue |
 |---|-------|------|-------|
 | 1 | Replace the `Middle` one-turn wording with a logical-exchange contract that states message-recording, streaming, bounded-loop, native-tool, and validation responsibilities; add conformance tests for `communicate`, `run_and_collect`, and LNDL. | M | (filled at issue-open time) |
-| 2 | Make the branch-operation vocabulary explicitly extensible or align it with the facade by adding or removing `select` and including `run` and `chat_and_record`; publish the intended registry and adapter exports from one canonical namespace. | S | (filled at issue-open time) |
+| 2 | Make the branch-operation vocabulary explicitly extensible or align it with the facade by adding or removing `select` and including `run` and `chat_and_record`; publish the intended registry and adapter exports from one canonical namespace. | S | #2021 |
 | 3 | Document the session ownership of the named-operation registry in its type and public API, preserving built-in precedence and asynchronous registration checks. | S | (filled at issue-open time) |
 | 4 | Represent lifecycle ownership for API turns, CLI streams, and nested operations in an explicit internal contract and add tests that prevent duplicate start or terminal signals. | M | (filled at issue-open time) |
-| 5 | Correct the public `Branch.chat()` return annotation so it expresses response text by default and the instruction/response tuple when `return_ins_res_message=True`; add typing coverage for both call forms. | S | (filled at issue-open time) |
+| 5 | Correct the public `Branch.chat()` return annotation so it expresses response text by default and the instruction/response tuple when `return_ins_res_message=True`; add typing coverage for both call forms. | S | #2022 |
 
 ## Alternatives considered
 

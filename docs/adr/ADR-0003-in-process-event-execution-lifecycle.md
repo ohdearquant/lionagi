@@ -432,7 +432,7 @@ definition of execution versus delivery success, not an enum rename.
 | 1 | Make the flow completion projection total over every terminal EventStatus; acceptance requires `cancelled` and `aborted` to remain non-success outcomes through status or reason fields, with tests for all five terminal states. | S | (filled at issue-open time) |
 | 2 | Document the translation boundary between in-process Event execution and durable dispatch delivery; acceptance requires each integration point to identify ownership of retry, acknowledgement, expiry, and terminal-outcome mapping without merging the two state machines. | M | (filled at issue-open time) |
 | 3 | Validate Processor queue bounds; acceptance requires negative `max_queue_size` to be rejected or assigned one coherent queue and `queue_full` meaning, with zero and positive-bound regression tests. | S | #2013 |
-| 4 | Restore progress after terminal denial exhausts cycle capacity; acceptance requires more than `queue_capacity` terminally denied Events to reach `skipped` under `join` and `execute`, with the capacity-refresh rule stated and tested. | S | (filled at issue-open time) |
+| 4 | Restore progress after terminal denial exhausts cycle capacity; acceptance requires more than `queue_capacity` terminally denied Events to reach `skipped` under `join` and `execute`, with the capacity-refresh rule stated and tested. | S | #2018 |
 
 ## Alternatives considered
 
