@@ -100,6 +100,19 @@ CHECKPOINT_INTERVAL_SECONDS: int = int(
 # Sessions/runs older than this many days (with terminal status) will be pruned.
 PRUNE_KEEP_DAYS: int = int(os.environ.get("LIONAGI_STUDIO_PRUNE_KEEP_DAYS", "30"))
 
+# dispatch_outbox retention (ADR-0059 delta 3). Two windows: terminal-success
+# rows (delivered/acked) are low-signal once past the window, so they use a
+# shorter default; dead-lettered/expired rows carry operator-action signal
+# (a failure worth investigating) and are kept longer. pending/delivering
+# rows are never retention-eligible regardless of these values — they may
+# still be claimed or retried by a live scheduler tick.
+DISPATCH_RETENTION_SUCCESS_DAYS: int = int(
+    os.environ.get("LIONAGI_STUDIO_DISPATCH_RETENTION_SUCCESS_DAYS", "7")
+)
+DISPATCH_RETENTION_DEAD_LETTER_DAYS: int = int(
+    os.environ.get("LIONAGI_STUDIO_DISPATCH_RETENTION_DEAD_LETTER_DAYS", "30")
+)
+
 # ── Ambient Claude Code mirror ────────────────────────────────────────────────
 # When on, studio tails ~/.claude/projects in-process so Claude Code sessions show
 # up (and stream live) without a separate `li mirror`. Bounded by the window below,

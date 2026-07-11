@@ -131,9 +131,13 @@ After this round, teammates or the orchestrator can follow up:
 - `li agent -r {{branch_id}} "follow-up"` to continue your session\
 """
 
-# Backward-compat alias: the old standalone template was
-# "You are a specialist..." + TEAM_COORD_SECTION. External callers that
-# imported TEAM_WORKER_SYSTEM still get the composed version.
+# Deprecated: TEAM_WORKER_SYSTEM is a backward-compatible composed alias for
+# the old standalone template ("You are a specialist..." + TEAM_COORD_SECTION).
+# It has no production caller in this repository. A module-level constant
+# cannot emit a call-time DeprecationWarning without added attribute-access
+# machinery, so this comment (plus the changelog and docs) is the deprecation
+# signal for this cycle. Use TEAM_COORD_SECTION directly, appended onto the
+# worker's own system prompt, instead of importing TEAM_WORKER_SYSTEM.
 TEAM_WORKER_SYSTEM = BARE_WORKER_SYSTEM + "\n\n" + TEAM_COORD_SECTION
 
 

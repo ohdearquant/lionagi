@@ -11,6 +11,7 @@ and emits NodeEscalated on the session bus.
 from __future__ import annotations
 
 import asyncio
+import logging
 from typing import Any
 
 import pytest
@@ -289,3 +290,42 @@ async def test_escalation_via_result_extraction():
     assert len(result["escalated_operations"]) >= 1
     assert len(escalated_signals) >= 1
     assert escalated_signals[0].route == "give_up"
+
+
+# ---------------------------------------------------------------------------
+# Fire-and-forget signal delivery: observer failure never changes the flow
+# result, and the executor's detached-task set drains after the run.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_escalation_observer_failure_does_not_change_flow_result(caplog, monkeypatch):
+    """A raising session.emit() (NodeEscalated observer) is consumed and logged;
+    the escalation routing outcome is unaffected."""
+
+    async def failing_emit(self, event):
+        raise RuntimeError("observer boom")
+
+    async def cheap(**kw):
+        return EscalationRequest(reason="stuck", context={"route": "higher_tier"})
+
+    session = _session(cheap=cheap)
+    monkeypatch.setattr(Session, "emit", failing_emit)
+
+    builder = OperationGraphBuilder()
+    builder.add_operation("cheap")
+    graph = builder.get_graph()
+
+    executor_ref: dict[str, Any] = {}
+    with caplog.at_level(logging.WARNING, logger="lionagi.operations.flow"):
+        result = await flow(session, graph, reactive=True, executor_ref=executor_ref)
+        # Give the detached emission task(s) a moment to run and clean up.
+        for _ in range(50):
+            if not executor_ref["executor"]._signal_tasks:
+                break
+            await asyncio.sleep(0.01)
+
+    assert len(result["escalated_operations"]) >= 1
+    assert result["spawned_operations"] >= 1
+    assert executor_ref["executor"]._signal_tasks == set()
+    assert any("emission failed" in r.message for r in caplog.records)

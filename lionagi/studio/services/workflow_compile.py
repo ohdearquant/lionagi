@@ -135,11 +135,8 @@ def _validate_node(node: ast.AST) -> None:
 def _resolve_node_cwd(node_id: str, raw_cwd: Any, base_dir: str | None) -> str:
     """Resolve and contain a node's config.cwd against the run's base_dir.
 
-    Order matters: the raw-string traversal check runs before any path
-    resolution (so a hostile '..' segment is rejected even when base_dir is
-    absent), symlinks are resolved before the containment check (so a
-    contained-looking path that resolves outside base_dir through a symlink
-    is caught), and the resolved directory must actually exist.
+    Order matters: raw-string traversal check before path resolution, then
+    symlink resolution before the containment check, then existence check.
     """
     if not isinstance(raw_cwd, str) or not raw_cwd:
         raise WorkflowCompileError(
@@ -575,10 +572,8 @@ def build_early_graph(spec: dict[str, Any]) -> dict[str, Any]:
 def _derive_engine_input(context: dict[str, Any] | None) -> str:
     """Heuristic mapping from upstream flow context to an engine's main positional input.
 
-    Prefers an upstream predecessor's textual result (the ``{pred_id}_result``
-    keys `_prepare_operation` injects); falls back to the flow-level inputs.
-    Underspecified in the spec (WorkflowEngineConfig has no explicit prompt/
-    input-mapping field) — this is the compile-time call made for v1.
+    Prefers an upstream predecessor's textual result (``{pred_id}_result``
+    keys), falling back to flow-level inputs.
     """
     if not context:
         return ""

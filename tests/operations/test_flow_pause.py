@@ -6,6 +6,8 @@
 from __future__ import annotations
 
 import asyncio
+import importlib
+import logging
 
 import pytest
 
@@ -353,6 +355,120 @@ async def test_reactive_executor_inherits_pause_gate():
     result = await asyncio.wait_for(task, timeout=5)
     assert executed == ["r1"]
     assert len(result["completed_operations"]) == 1
+
+
+# ---------------------------------------------------------------------------
+# _emit_best_effort: shared fire-and-forget flow signal scheduling helper
+# ---------------------------------------------------------------------------
+
+
+def test_emit_best_effort_construction_failure_is_logged_and_task_free(caplog):
+    """A factory that raises logs a structured warning; nothing is scheduled."""
+    session = Session()
+    executor = DependencyAwareExecutor(session=session, graph=Graph())
+
+    def _bad_factory():
+        raise ValueError("boom")
+
+    with caplog.at_level(logging.WARNING, logger="lionagi.operations.flow"):
+        executor._emit_best_effort(_bad_factory)  # must not raise
+
+    assert executor._signal_tasks == set()
+    assert any("construction failed" in r.message for r in caplog.records)
+
+
+def test_emit_best_effort_no_running_loop_is_silent_noop(caplog):
+    """No running loop is an expected sync/test condition: silent, not a warning."""
+    from lionagi.session.signal import NodePaused
+
+    session = Session()
+    executor = DependencyAwareExecutor(session=session, graph=Graph())
+
+    with caplog.at_level(logging.WARNING, logger="lionagi.operations.flow"):
+        executor._emit_best_effort(lambda: NodePaused(op_id="x", name="x"))
+
+    assert executor._signal_tasks == set()
+    assert caplog.records == []
+
+
+@pytest.mark.asyncio
+async def test_emit_best_effort_scheduling_failure_closes_coro_and_logs(caplog, monkeypatch):
+    """A loop.create_task() failure closes the coroutine and logs, never raises."""
+    from lionagi.session.signal import NodePaused
+
+    session = Session()
+    executor = DependencyAwareExecutor(session=session, graph=Graph())
+
+    class _FailingLoop:
+        def create_task(self, coro):
+            coro.close()
+            raise RuntimeError("scheduling boom")
+
+    flow_module = importlib.import_module("lionagi.operations.flow")
+    monkeypatch.setattr(flow_module.asyncio, "get_running_loop", lambda: _FailingLoop())
+
+    with caplog.at_level(logging.WARNING, logger="lionagi.operations.flow"):
+        executor._emit_best_effort(lambda: NodePaused(op_id="x", name="x"))  # must not raise
+
+    assert executor._signal_tasks == set()
+    assert any("scheduling failed" in r.message for r in caplog.records)
+
+
+@pytest.mark.asyncio
+async def test_emit_best_effort_observer_failure_never_reaches_loop_handler(caplog, monkeypatch):
+    """session.emit() raising is consumed inside the detached task and logged;
+    the loop's default unhandled-exception handler is never invoked."""
+    from lionagi.session.signal import NodePaused
+
+    async def failing_emit(self, event):
+        raise RuntimeError("observer boom")
+
+    session = Session()
+    executor = DependencyAwareExecutor(session=session, graph=Graph())
+    monkeypatch.setattr(Session, "emit", failing_emit)
+
+    loop = asyncio.get_running_loop()
+    unhandled: list[dict] = []
+    loop.set_exception_handler(lambda _loop, context: unhandled.append(context))
+    try:
+        with caplog.at_level(logging.WARNING, logger="lionagi.operations.flow"):
+            executor._emit_best_effort(lambda: NodePaused(op_id="x", name="x"))
+            assert len(executor._signal_tasks) == 1
+
+            for _ in range(50):
+                if not executor._signal_tasks:
+                    break
+                await asyncio.sleep(0.01)
+    finally:
+        loop.set_exception_handler(None)
+
+    assert executor._signal_tasks == set()
+    assert unhandled == []
+    assert any("emission failed" in r.message for r in caplog.records)
+
+
+@pytest.mark.asyncio
+async def test_emit_best_effort_task_set_is_empty_after_successful_emission():
+    """The retained task is removed from the executor-local set once it completes."""
+    from lionagi.session.signal import NodePaused
+
+    session = Session()
+    executor = DependencyAwareExecutor(session=session, graph=Graph())
+
+    signals: list[NodePaused] = []
+    session.observe(NodePaused, handler=lambda s, _ctx: signals.append(s))
+
+    executor._emit_best_effort(lambda: NodePaused(op_id="x", name="x"))
+    assert len(executor._signal_tasks) == 1
+
+    for _ in range(50):
+        if not executor._signal_tasks:
+            break
+        await asyncio.sleep(0.01)
+
+    assert executor._signal_tasks == set()
+    assert len(signals) == 1
+    assert signals[0].op_id == "x"
 
 
 # ---------------------------------------------------------------------------
