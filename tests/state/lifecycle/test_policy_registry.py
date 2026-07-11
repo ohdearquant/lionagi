@@ -6,6 +6,7 @@ policies' structural integrity."""
 
 from __future__ import annotations
 
+import copy
 import dataclasses
 import pickle
 
@@ -226,6 +227,8 @@ def test_immutable_edge_map_inherited_dict_paths_cannot_mutate() -> None:
         dict.__setitem__(edge_map, "new", ())
     with pytest.raises(TypeError):
         edge_map._edges = {}
+    with pytest.raises(TypeError):
+        edge_map._edges["new"] = ()
     assert dict(edge_map) == before
 
 
@@ -238,6 +241,8 @@ def test_registered_policy_edges_cannot_be_mutated_via_inherited_paths() -> None
         registry.get("widget").edges["new"] = ()
     with pytest.raises(TypeError):
         edges.__init__({"new": ()})
+    with pytest.raises(TypeError):
+        edges._edges["new"] = ()
     assert dict(registry.get("widget").edges) == before
 
 
@@ -274,3 +279,8 @@ def test_registered_policy_pickle_round_trips() -> None:
     assert isinstance(restored.edges, ImmutableEdgeMap)
     with pytest.raises(TypeError):
         restored.edges["open"] = ()
+    with pytest.raises(TypeError):
+        restored.edges._edges["open"] = ()
+    copied = copy.deepcopy(policy)
+    with pytest.raises(TypeError):
+        copied.edges._edges["open"] = ()

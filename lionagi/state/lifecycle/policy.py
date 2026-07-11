@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import dataclasses
 from collections.abc import Mapping
+from types import MappingProxyType
 
 from .models import EdgePolicy, LifecyclePolicy
 
@@ -37,7 +38,10 @@ class ImmutableEdgeMap(Mapping):
                 f"{type(self).__name__} is immutable; registered lifecycle "
                 "policies cannot have their edge map reinitialized in place"
             )
-        object.__setattr__(self, "_edges", dict(edges))
+        # The backing store is itself a read-only view: the private slot is
+        # still reachable as an ordinary attribute, so a plain dict here
+        # would leave `m._edges[...] = ...` as a working mutation path.
+        object.__setattr__(self, "_edges", MappingProxyType(dict(edges)))
 
     def __setattr__(self, name, value) -> None:
         raise TypeError(
