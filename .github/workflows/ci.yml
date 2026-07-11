@@ -55,6 +55,9 @@ jobs:
       if: needs.changes.outputs.adr == 'true'
       run: |
         curl -LsSf https://astral.sh/uv/install.sh | sh
+        # The installer prefers XDG_BIN_HOME then ~/.local/bin; ~/.cargo/bin is
+        # a legacy fallback — put both on PATH so either layout resolves.
+        echo "$HOME/.local/bin" >> $GITHUB_PATH
         echo "$HOME/.cargo/bin" >> $GITHUB_PATH
 
     - name: Check ADR status sets against the lifecycle policy registry
