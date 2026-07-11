@@ -4,7 +4,7 @@
 - **Kind**: Aspirational
 - **Area**: orchestration
 - **Date**: 2026-07-09
-- **Relations**: supersedes v0-0098; extends ADR-0033, ADR-0034
+- **Relations**: supersedes v0-0098; extends ADR-0033, ADR-0034; overlaps v0-0101 (the shipped schedule_runs task-application queue covers the durable-queue problem under a different architecture)
 
 ## Context
 

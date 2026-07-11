@@ -1,6 +1,6 @@
 # ADR-0056: StateDB SQLAlchemy Core backend
 
-- **Status**: Proposed
+- **Status**: Accepted
 - **Kind**: Retrospective
 - **Area**: persistence-state
 - **Date**: 2026-07-09
@@ -171,10 +171,11 @@ StateDB.open()
        1. _reconcile_columns()
        2. SQLite: rebuild legacy sessions status CHECK if present
        3. SQLite: rebuild legacy schedules action-kind CHECK if present
-       4. SQLite: rebuild legacy invocations status CHECK if present
-       5. SQLite: rebuild legacy schedule_runs CHECK/nullability if present
-       6. metadata.create_all()
-       7. seed schema_meta version/created_at and message_types rows
+       4. SQLite: rebuild legacy schedules action-kind CHECK to admit `command` if present
+       5. SQLite: rebuild legacy invocations status CHECK if present
+       6. SQLite: rebuild legacy schedule_runs CHECK/nullability if present
+       7. metadata.create_all()
+       8. seed schema_meta version/created_at and message_types rows
 ```
 
 `schema_meta.py` currently declares these tables from one `MetaData` object:

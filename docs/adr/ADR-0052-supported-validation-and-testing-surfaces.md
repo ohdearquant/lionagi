@@ -1,6 +1,6 @@
 # ADR-0052: Supported validation and testing surfaces
 
-- **Status**: Proposed
+- **Status**: Accepted
 - **Kind**: Retrospective
 - **Area**: utilities
 - **Date**: 2026-07-09

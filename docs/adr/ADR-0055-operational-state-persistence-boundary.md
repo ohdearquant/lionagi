@@ -1,6 +1,6 @@
 # ADR-0055: Operational state persistence boundary
 
-- **Status**: Proposed
+- **Status**: Accepted
 - **Kind**: Retrospective
 - **Area**: persistence-state
 - **Date**: 2026-07-09
