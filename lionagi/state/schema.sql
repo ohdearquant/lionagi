@@ -72,7 +72,7 @@ CREATE TABLE IF NOT EXISTS progressions (
   collection    TEXT    NOT NULL DEFAULT '[]' -- JSON array of message id strings
 );
 
--- ── Projects (ADR-0026) ───────────────────────────────────────────────────
+-- ── Projects (ADR-0063) ───────────────────────────────────────────────────
 -- Auto-registered from session detection; also created explicitly via Studio.
 -- Uses name as primary key (project names are unique + used as FK in sessions.project).
 
@@ -129,15 +129,15 @@ CREATE TABLE IF NOT EXISTS sessions (
                     source_kind IS NULL
                     OR source_kind IN ('live', 'imported_fs')
                   ),
-  -- ── Lifecycle (ADR-0025, supersedes ADR-0017) ─────────────────────
-  -- No CHECK constraint: ADR-0025 makes Python the source of truth for
+  -- ── Lifecycle (ADR-0057) ─────────────────────
+  -- No CHECK constraint: ADR-0057 makes Python the source of truth for
   -- session.status (VALID_SESSION_STATUSES in lionagi/state/db.py). The
   -- six-value vocabulary (running, completed, failed, timed_out, aborted,
   -- cancelled) can evolve without a SQLite table rebuild.
   status          TEXT,
   started_at      REAL,
   ended_at        REAL,
-  -- ── Activity (ADR-0019) ────────────────────────────────────────────
+  -- ── Activity ────────────────────────────────────────────
   -- Bumped on every message INSERT so staleness_check() can answer
   -- "is this running session still active?" without scanning messages.
   last_message_at REAL,
@@ -146,7 +146,7 @@ CREATE TABLE IF NOT EXISTS sessions (
   -- surfaced as the PHASE column in `li monitor`. NULL for non-flow
   -- sessions, which fall back to agent_name/playbook_name in the reader.
   current_phase   TEXT,
-  -- ── Skill invocation (ADR-0020) ────────────────────────────────────
+  -- ── Skill invocation ────────────────────────────────────
   -- Optional FK to the higher-order skill orchestration (e.g. /show or
   -- /codex-pr-review) that spawned this session. NULL when the CLI
   -- ran standalone. Orthogonal to invocation_kind, which describes the
@@ -162,7 +162,7 @@ CREATE TABLE IF NOT EXISTS sessions (
   provider        TEXT,
   effort          TEXT,
   agent_hash      TEXT,
-  -- ── Project detection (ADR-0026) ────────────────────────────────────
+  -- ── Project detection (ADR-0063) ────────────────────────────────────
   project         TEXT,
   project_source  TEXT,
   -- ── Status reason (ADR-0028) ────────────────────────────────────────
@@ -196,14 +196,14 @@ CREATE INDEX IF NOT EXISTS idx_sessions_updated
 -- status='running' only.
 CREATE INDEX IF NOT EXISTS idx_sessions_status_updated
   ON sessions(status, updated_at DESC);
--- ADR-0019: lets the staleness query (running sessions sorted by oldest
+-- Lets the staleness query (running sessions sorted by oldest
 -- activity) skip the full table scan.
 CREATE INDEX IF NOT EXISTS idx_sessions_status_last_msg
   ON sessions(status, last_message_at) WHERE status = 'running';
--- ADR-0020: grouped runs view fetches all sessions for an invocation.
+-- The grouped runs view fetches all sessions for an invocation.
 CREATE INDEX IF NOT EXISTS idx_sessions_invocation
   ON sessions(invocation_id) WHERE invocation_id IS NOT NULL;
--- ADR-0026: project-scoped session listing in Studio.
+-- Project-scoped session listing in Studio.
 CREATE INDEX IF NOT EXISTS idx_sessions_project
   ON sessions(project) WHERE project IS NOT NULL;
 
@@ -325,7 +325,7 @@ CREATE INDEX IF NOT EXISTS idx_plays_status ON plays(status);
 CREATE INDEX IF NOT EXISTS idx_plays_session ON plays(session_id);
 CREATE UNIQUE INDEX IF NOT EXISTS idx_plays_show_name ON plays(show_id, name);
 
--- ── Teams (ADR-0019) ─────────────────────────────────────────────────────
+-- ── Teams ────────────────────────────────────────────────────────────────
 -- Mirrors the JSON files at ~/.lionagi/teams/{id}.json (still primary
 -- write path; populated via dual-write or `li state import-teams`).
 -- Storing teams in the DB unlocks queries, cross-session linkage, and
@@ -369,7 +369,7 @@ CREATE INDEX IF NOT EXISTS idx_team_msgs_created ON team_messages(created_at);
 CREATE INDEX IF NOT EXISTS idx_team_msgs_session ON team_messages(session_id)
   WHERE session_id IS NOT NULL;
 
--- ── Invocations (ADR-0020) ───────────────────────────────────────────────
+-- ── Invocations ──────────────────────────────────────────────────────────
 -- Skill-level orchestration records. One invocation row per /show,
 -- /codex-pr-review, etc., aggregating the N sessions that the skill
 -- spawned. invocation_id is FK'd from sessions; invocation_kind on
@@ -481,10 +481,10 @@ CREATE INDEX IF NOT EXISTS idx_schedules_project
   ON schedules(project) WHERE project IS NOT NULL;
 
 -- ── Schedule Runs (ADR-0027) ─────────────────────────────────────────────────
--- ADR-0101 D2: generalized into the durable task-application entity. schedule_id
+-- ADR-0071 D2: generalized into the durable task-application entity. schedule_id
 -- is nullable so an ad-hoc task application (schedule_id IS NULL) can share this
 -- table with schedule-fired runs; the status CHECK is widened to the ADR-0062
--- lifecycle; queued_at/leased_by/lease_expires_at/concurrency_key are ADR-0061's
+-- lifecycle; queued_at/leased_by/lease_expires_at/concurrency_key are ADR-0071's
 -- queue columns.
 CREATE TABLE IF NOT EXISTS schedule_runs (
   id                  TEXT    PRIMARY KEY,
@@ -512,14 +512,14 @@ CREATE TABLE IF NOT EXISTS schedule_runs (
   status_reason_code     TEXT,
   status_reason_summary  TEXT,
   status_evidence_refs   JSON,
-  -- ADR-0101 D2 / ADR-0061: durable queue columns.
+  -- ADR-0071 D2: durable queue columns.
   queued_at           REAL,
   leased_by           TEXT,
   lease_expires_at    REAL,
   concurrency_key     TEXT,
-  -- ADR-0101 D3: bounds the lease-expiry recovery loop (worker.py's reaper).
+  -- ADR-0071 D4: bounds the lease-expiry recovery loop (worker.py's reaper).
   lease_attempts      INTEGER NOT NULL DEFAULT 0,
-  -- ADR-0101 D2: task-application provenance (seam into ADR-0102).
+  -- ADR-0071 D2: task-application provenance.
   required_capabilities  JSON,
   execution_target       TEXT,
   library_ref             TEXT,
@@ -539,13 +539,13 @@ CREATE INDEX IF NOT EXISTS idx_schedule_runs_concurrency
   ON schedule_runs(concurrency_key, status)
   WHERE status IN ('queued', 'running', 'retry_wait');
 
--- ── Workers (ADR-0101 D4) ─────────────────────────────────────────────────
+-- ── Workers (ADR-0071 D5) ─────────────────────────────────────────────────
 -- Capability-matching worker registry -- the only genuinely new table this
 -- ADR pair adds. A worker upserts its own row (worker_tick's heartbeat pass)
 -- with its advertised capability tokens and the execution targets it can
 -- serve; a heartbeat older than the worker.py TTL makes it ineligible for
 -- NEW claims only. In-flight leases still recover solely via
--- schedule_runs.lease_expires_at (ADR-0061, unchanged by this table).
+-- schedule_runs.lease_expires_at (ADR-0071, unchanged by this table).
 CREATE TABLE IF NOT EXISTS workers (
   worker_id                 TEXT    PRIMARY KEY,
   advertised_capabilities   JSON    NOT NULL DEFAULT '[]',
@@ -756,14 +756,14 @@ CREATE INDEX IF NOT EXISTS idx_workflow_defs_name
 CREATE INDEX IF NOT EXISTS idx_workflow_defs_updated
   ON workflow_defs(updated_at);
 
--- ── Session controls (ADR-0085 part 1: run control plane transport) ───────────
+-- ── Session controls (ADR-0069 D1–D3: live-control transport) ───────────
 -- One row per operator control verb queued against a live session.  A poller
--- task in cli/orchestrate/flow.py's _execute_dag (same lifecycle as the
--- heartbeat loop) reads unapplied rows (applied_at IS NULL) and applies them
+-- task in cli/orchestrate/flow.py's _execute_dag reads unapplied rows
+-- (applied_at IS NULL) and applies them
 -- against the running executor.  Apply/stamp ordering is verb-classed:
--- pause/resume/stop are idempotent (apply, then stamp), message is not
+-- pause/resume are idempotent (apply, then stamp), message is not
 -- (stamp 'applying', then apply, then finalize).  'stop' is schema-reserved
--- for a later slice (the checkpoint writer); no CLI verb emits it yet.
+-- and rejected by the current poller as unsupported; no CLI verb emits it yet.
 
 CREATE TABLE IF NOT EXISTS session_controls (
   id          TEXT    PRIMARY KEY,         -- uuid4 hex

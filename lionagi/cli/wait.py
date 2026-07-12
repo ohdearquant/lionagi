@@ -1,6 +1,6 @@
 # Copyright (c) 2023-2026, HaiyangLi <quantocean.li at gmail dot com>
 # SPDX-License-Identifier: Apache-2.0
-"""`li wait <id>...` — the ADR-0094 run-completion contract.
+"""`li wait <id>...` — the ADR-0035 run-completion contract.
 
 Blocks until every named run (an agent session, a play, a flow invocation, or
 a scheduled run — any kind, mixed freely) reaches a terminal state, then
@@ -53,7 +53,7 @@ _SUCCESS_STATUS_BY_ENTITY_TYPE: dict[str, frozenset[str]] = {
 async def _resolve_wait_target(db: Any, raw_id: str) -> tuple[str, dict[str, Any]] | None:
     """Any-kind resolver: session, invocation, play (`_resolve_any_target`,
     which also falls back to a branch_id), then schedule_run. Terminal-state
-    definitions live in TERMINAL_STATUSES_BY_ENTITY_TYPE (lionagi/state/db.py, ADR-0094).
+    definitions live in TERMINAL_STATUSES_BY_ENTITY_TYPE (lionagi/state/db.py, ADR-0035).
     """
     hit = await _resolve_any_target(db, raw_id)
     if hit is not None:
@@ -119,7 +119,7 @@ async def _build_outcome(db: Any, kind: str, row: dict[str, Any]) -> dict[str, A
 
 
 def format_wait_line(outcome: dict[str, Any]) -> str:
-    """Render one outcome as the frozen ADR-0094 contract line."""
+    """Render one outcome as the frozen ADR-0035 contract line."""
     exit_code = outcome.get("exit_code")
     exit_str = "-" if exit_code is None else str(exit_code)
     artifact_dir = outcome.get("artifact_dir") or "-"
@@ -140,7 +140,7 @@ async def wait_for_terminal(
     should_stop: Callable[[], bool] | None = None,
 ) -> list[dict[str, Any]]:
     """Block until every id in *ids* reaches a terminal state; return one
-    outcome dict per id, in the order given (ADR-0094 completion contract).
+    outcome dict per id, in the order given (ADR-0035 completion contract).
 
     Importable and awaitable directly — no CLI concerns (argv, signals,
     printing) live here; `run_wait()` below is the CLI shim over this core.

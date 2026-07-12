@@ -1,7 +1,7 @@
 # Copyright (c) 2023-2026, HaiyangLi <quantocean.li at gmail dot com>
 # SPDX-License-Identifier: Apache-2.0
 
-"""ADR-0029 DB integration tests for artifact_contract_json / artifact_verification_json."""
+"""ADR-0064 DB integration tests for artifact_contract_json / artifact_verification_json."""
 
 from __future__ import annotations
 
@@ -88,7 +88,7 @@ async def test_update_artifact_verification(db: StateDB):
 
 
 async def test_migration_adds_columns():
-    """reconcile_schema() adds both new columns to a pre-ADR-0029 DB."""
+    """reconcile_schema() adds both new columns to a pre-ADR-0064 DB."""
     with tempfile.NamedTemporaryFile(suffix=".db") as f:
         db_path = f.name
         # Build an old-style schema without the two new columns.

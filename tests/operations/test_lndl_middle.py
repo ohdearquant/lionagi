@@ -1,7 +1,7 @@
 # Copyright (c) 2023-2026, HaiyangLi <quantocean.li at gmail dot com>
 # SPDX-License-Identifier: Apache-2.0
 
-"""Tests for lionagi.operations.lndl_middle — the ADR-0087 §1-2 LNDL seam
+"""Tests for lionagi.operations.lndl_middle — the ADR-0024 §1-2 LNDL seam
 Middle: round-outcome classification, the ActionCall -> ActionRequest bridge,
 prompt injection, and repair semantics."""
 
@@ -489,7 +489,7 @@ class TestRoundBudget:
 
 
 class TestPackageImportSurface:
-    """The documented public path (CHANGELOG.md, ADR-0087 §1) is the package
+    """The documented public path (CHANGELOG.md, ADR-0024 §1) is the package
     itself, not the private nested module — a caller writes
     `from lionagi.operations.lndl_middle import lndl_middle`, not
     `...lndl_middle.lndl_middle import lndl_middle`."""

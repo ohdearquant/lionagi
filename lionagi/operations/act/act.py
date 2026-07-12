@@ -46,7 +46,7 @@ async def _act(
             " and 'arguments', or dict with 'function' and 'arguments'."
         )
 
-    # ADR-0076: governance gate — denied calls surface as tool results (not exceptions) so ReAct loops can adapt.
+    # ADR-0047: governance gate — denied calls surface as tool results (not exceptions) so ReAct loops can adapt.
     from lionagi.session.control import ToolInvocation
 
     _args = _request["arguments"] if isinstance(_request["arguments"], dict) else {}

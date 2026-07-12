@@ -1,6 +1,6 @@
 # Copyright (c) 2023-2026, HaiyangLi <quantocean.li at gmail dot com>
 # SPDX-License-Identifier: Apache-2.0
-"""`li dispatch` — inspect and acknowledge durable dispatch_outbox rows (ADR-0092).
+"""`li dispatch` — inspect and acknowledge durable dispatch_outbox rows (ADR-0059).
 
 Enqueue is not a CLI verb here: dispatches are produced by schedule actions and
 the delivery loop, both already running inside the daemon process. The
@@ -142,7 +142,7 @@ def add_dispatch_subparser(subparsers: argparse._SubParsersAction) -> None:
         "dispatch",
         help="Inspect and acknowledge durable dispatch_outbox rows.",
         description=(
-            "Read and acknowledge rows in the durable dispatch outbox (ADR-0092). "
+            "Read and acknowledge rows in the durable dispatch outbox (ADR-0059 D6). "
             "Dispatches are enqueued by schedule actions and delivered by the "
             "Studio daemon's scheduler tick; there is no `enqueue` verb here."
         ),

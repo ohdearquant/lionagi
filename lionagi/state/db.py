@@ -121,7 +121,7 @@ _SESSION_COLUMNS = frozenset(
         "total_cost_usd",
         "num_turns",
         "duration_ms",
-        # ADR-0029 documents artifact_contract_json as fixed at session
+        # ADR-0064 documents artifact_contract_json as fixed at session
         # creation for the single-agent case, where the full contract
         # (playbook + agent profile) is already known at create_session time.
         # DAG flows break that assumption: which role runs which leg is only
@@ -135,9 +135,9 @@ _SESSION_COLUMNS = frozenset(
         # that node completes, but what is expected of it (role defaults +
         # its builder-stamped spawn_id) was frozen before it was ever
         # queued, so this is still a "before work starts" declaration in
-        # substance — see the ADR-0029 "Reactive-spawn exception" paragraph.
+        # substance — see the ADR-0064 "Reactive-spawn exception" paragraph.
         # No other writer may touch this column; the anti-drift intent of
-        # ADR-0029 (no changes once what was expected has been acted on)
+        # ADR-0064 (no changes once what was expected has been acted on)
         # still holds.
         "artifact_contract_json",
     }
@@ -243,7 +243,7 @@ ADMIN_TRANSITION_TARGETS = frozenset({"failed", "aborted", "cancelled"})
 
 _SESSION_STATUSES = VALID_SESSION_STATUSES
 
-# ── ADR-0094 terminal-status vocabulary ────────────────────────────────
+# ── ADR-0035 terminal-status vocabulary ────────────────────────────────
 # Terminal-state definitions live here, with the record schema, rather than
 # in any one CLI surface — update_status() enforces them uniformly for
 # every entity_type at the single write path; `li wait` reads the same
@@ -278,7 +278,7 @@ EXTRA_STATUS_WRITE_FIELDS_BY_ENTITY_TYPE: dict[str, frozenset[str]] = {
     "session": frozenset({"ended_at"}),
 }
 
-# ── ADR-0094 status vocabulary (valid, not just terminal) ──────────────
+# ── ADR-0035 status vocabulary (valid, not just terminal) ──────────────
 # update_status() rejects any new_status outside its entity_type's set here —
 # the terminal-overwrite floor above stops a terminal record from moving;
 # this stops ANY record (terminal or not) from being written to a status
@@ -347,7 +347,7 @@ def _validate_session_status(status: Any) -> None:
     if status not in VALID_SESSION_STATUSES:
         raise ValueError(
             f"Invalid session status {status!r}; "
-            f"ADR-0025 vocabulary is {sorted(VALID_SESSION_STATUSES)}"
+            f"ADR-0057 vocabulary is {sorted(VALID_SESSION_STATUSES)}"
         )
 
 
@@ -602,7 +602,7 @@ class StateDB:
             # existing DBs created before the completion-trust gate carry a
             # 6-value CHECK on invocations.status that omits 'completed_empty'.
             await self._drop_legacy_invocations_status_check()
-            # ADR-0101 D2: existing DBs carry a 5-value CHECK on
+            # ADR-0071 D2: existing DBs carry a 5-value CHECK on
             # schedule_runs.status and a NOT NULL schedule_id, from before
             # schedule_runs was generalized into the task-application entity.
             await self._drop_legacy_schedule_runs_check()
@@ -1106,7 +1106,7 @@ class StateDB:
                 await driver.commit()
 
     async def _backup_before_rebuild(self, label: str) -> None:
-        """Copy the on-disk state.db aside before an in-place table rebuild (ADR-0101 D2).
+        """Copy the on-disk state.db aside before an in-place table rebuild (ADR-0071 D2).
 
         No-op for in-memory databases and non-sqlite dialects, where there is no
         single database file to copy. Rollback path: stop the daemon, restore
@@ -1128,13 +1128,13 @@ class StateDB:
         backup_path = p.with_name(f"{p.name}.pre-{label}.{int(time.time())}.bak")
         shutil.copy2(p, backup_path)
 
-    # Substring present only in the post-ADR-0101 schedule_runs CREATE SQL
+    # Substring present only in the post-ADR-0071 schedule_runs CREATE SQL
     # (the widened status CHECK); its absence indicates a legacy DB whose
     # schedule_runs still carries the 5-value CHECK and a NOT NULL schedule_id.
     _LEGACY_SCHEDULE_RUNS_QUEUE_MARKER = "'waiting_dependency'"
 
     async def _drop_legacy_schedule_runs_check(self) -> None:
-        """Rebuild ``schedule_runs`` if it still carries the pre-ADR-0101 status CHECK.
+        """Rebuild ``schedule_runs`` if it still carries the pre-ADR-0071 status CHECK.
 
         SQLite cannot widen a CHECK constraint nor drop a NOT NULL via ALTER
         TABLE, so this uses the same rename → CREATE new → INSERT SELECT →
@@ -1265,7 +1265,7 @@ class StateDB:
                     await driver.execute(idx_sql)
                 for trig_sql in trigger_sqls:
                     await driver.execute(trig_sql)
-                # New ADR-0061 queue indexes: not part of the pre-rebuild
+                # New ADR-0071 queue indexes: not part of the pre-rebuild
                 # index set, so replaying index_sqls above never creates
                 # them. Create explicitly (idempotent) so a migrated DB ends
                 # up with the same indexes as a freshly-created one.
@@ -1301,7 +1301,7 @@ class StateDB:
 
     async def insert_message(self, msg: dict[str, Any]) -> None:
         if msg.get("content") is None:
-            raise ValueError("messages.content is NOT NULL (ADR-0009)")
+            raise ValueError("messages.content is NOT NULL")
         role = msg.get("role")
         if not isinstance(role, str) or not role.strip():
             raise ValueError(f"messages.role must be a non-empty string; got {role!r}")
@@ -1748,7 +1748,7 @@ class StateDB:
                 f"{caller_name}({entity_id!r}, status={status_value!r}) "
                 "called without reason_code; defaulting to "
                 f"{reason_code!r}. Pass reason_code explicitly "
-                "(ADR-0028 Phase 2 deprecation).",
+                "(this fallback is deprecated).",
                 DeprecationWarning,
                 stacklevel=3,
             )
@@ -1807,7 +1807,7 @@ class StateDB:
         the row's ``updated_at`` no longer matches *expected_updated_at*.  All
         existing callers that ignore the return value are unaffected.
 
-        ADR-0094 integrity floor: once an entity's status is terminal (per
+        ADR-0035 integrity floor: once an entity's status is terminal (per
         TERMINAL_STATUSES_BY_ENTITY_TYPE), any write that would CHANGE it is
         rejected and recorded in admin_events — a terminal record must not
         silently move back to running or oscillate to a different terminal
@@ -1827,7 +1827,7 @@ class StateDB:
         if override and (not override_actor or not override_justification):
             raise ValueError(
                 "override=True requires both override_actor and "
-                "override_justification (ADR-0094 operational-repair trail)."
+                "override_justification (ADR-0035 D5 operational-repair trail)."
             )
         canonical_type = _validate_entity_type_for_reason(entity_type)
         _validate_reason_code(reason_code)
@@ -2109,7 +2109,7 @@ class StateDB:
             )
         return result.rowcount > 0
 
-    # ── Schedules (ADR-0027) ──────────────────────────────────────────
+    # ── Schedules (ADR-0070) ──────────────────────────────────────────
 
     async def create_schedule(self, schedule: dict[str, Any]) -> None:
         now = time.time()
@@ -2313,7 +2313,7 @@ class StateDB:
             )
         return result.rowcount > 0
 
-    # ── Schedule Runs (ADR-0027) ──────────────────────────────────────
+    # ── Schedule Runs (ADR-0070) ──────────────────────────────────────
 
     async def create_schedule_run(self, run: dict[str, Any]) -> None:
         now = time.time()
@@ -2651,7 +2651,7 @@ class StateDB:
         return self._row_to_dict(row) if row else None
 
     async def get_schedule_run_by_invocation(self, invocation_id: str) -> dict[str, Any] | None:
-        """Look up the schedule_run that fired a given invocation (ADR-0027).
+        """Look up the schedule_run that fired a given invocation (ADR-0070).
 
         invocation_id is 1:1 with schedule_runs in practice (each fire mints a
         fresh invocation), but the ORDER BY + LIMIT keeps this defensively
@@ -2689,7 +2689,7 @@ class StateDB:
             )
         return [self._row_to_dict(r) for r in rows]
 
-    # ── Invocations (ADR-0020) ──────────────────────────────────────────
+    # ── Invocations (ADR-0077) ──────────────────────────────────────────
 
     async def create_invocation(self, invocation: dict[str, Any]) -> None:
         status = invocation.get("status", "running")
@@ -2697,7 +2697,7 @@ class StateDB:
             "status",
             status,
             _INVOCATION_STATUSES,
-            adr="ADR-0020",
+            adr="ADR-0057",
             nullable=False,
         )
         now = time.time()
@@ -2744,7 +2744,7 @@ class StateDB:
                 "status",
                 fields["status"],
                 _INVOCATION_STATUSES,
-                adr="ADR-0020",
+                adr="ADR-0057",
                 nullable=False,
             )
 
@@ -2872,7 +2872,7 @@ class StateDB:
             )
         return [self._row_to_dict(r) for r in rows]
 
-    # ── Artifacts (ADR-0021) ─────────────────────────────────────────────
+    # ── Artifacts (ADR-0077) ─────────────────────────────────────────────
 
     async def _find_artifact_id(
         self,
@@ -3007,7 +3007,7 @@ class StateDB:
             )
         return self._row_to_dict(row) if row else None
 
-    # ── Admin events (ADR-0024) ─────────────────────────────────────────
+    # ── Admin events (ADR-0057) ─────────────────────────────────────────
 
     async def insert_admin_event(
         self,
@@ -4057,10 +4057,10 @@ class StateDB:
             )
         return result.rowcount > 0
 
-    # ── Session controls (ADR-0085 part 1: run control plane transport) ────
+    # ── Session controls (ADR-0069 D1–D3: live-control transport) ──────────
     # session_controls rows are written by `li o ctl pause|resume|msg` and
     # consumed by the control poller task in cli/orchestrate/flow.py's
-    # _execute_dag (same lifecycle as the heartbeat loop). Apply/stamp
+    # _execute_dag. Apply/stamp
     # ordering is verb-classed by the poller, not by these methods: pause/
     # resume call insert_session_control() then, once applied against the
     # executor, finalize_session_control() directly (idempotent — safe to

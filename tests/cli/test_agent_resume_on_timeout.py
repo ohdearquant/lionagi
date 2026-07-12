@@ -446,7 +446,7 @@ async def test_profile_resume_on_timeout_opts_in(monkeypatch, tmp_path):
 
 
 # ---------------------------------------------------------------------------
-# Real-persistence regression: the ADR-0094 terminal-guard race between an
+# Real-persistence regression: the ADR-0035 terminal-guard race between an
 # auto-resume leg's premature terminal stamp and the resumed leg's own
 # teardown. Unlike _wire_agent_stubs (which stubs teardown_agent_persist
 # entirely), these tests leave setup_agent_persist/teardown_agent_persist
@@ -532,7 +532,7 @@ async def test_auto_resume_real_teardown_no_terminal_guard_rejection(
     with a durable response. Exercises the REAL teardown/StateDB path
     end-to-end: without the defer_terminal fix, leg-1's teardown stamps the
     session terminal ('timed_out') before the auto-resume decision, and
-    leg-2's own teardown then hits the ADR-0094 guard, losing the durable
+    leg-2's own teardown then hits the ADR-0035 guard, losing the durable
     'concluded' response behind a TransitionRejectedError logged at warning
     level."""
 

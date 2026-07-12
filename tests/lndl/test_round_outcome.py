@@ -1,7 +1,7 @@
 # Copyright (c) 2025 - 2026, HaiyangLi <quantocean.li at gmail dot com>
 # SPDX-License-Identifier: Apache-2.0
 
-"""Unit tests for lionagi.lndl.round_outcome — the RoundOutcome ADT (ADR-0087 §2)."""
+"""Unit tests for lionagi.lndl.round_outcome — the RoundOutcome ADT (ADR-0024 §2)."""
 
 import dataclasses
 

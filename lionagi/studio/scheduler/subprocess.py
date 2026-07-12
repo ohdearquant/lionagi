@@ -1,6 +1,6 @@
 # Copyright (c) 2023-2026, HaiyangLi <quantocean.li at gmail dot com>
 # SPDX-License-Identifier: Apache-2.0
-"""ADR-0027 subprocess spawning for scheduled runs."""
+"""ADR-0070 subprocess spawning for scheduled runs."""
 
 from __future__ import annotations
 
@@ -27,7 +27,7 @@ _TEMPLATE_RE = re.compile(r"\{\{(\w+)\}\}")
 # should prefer the absolute prefix from resolve_li_executable() instead.
 _DEFAULT_LI_PREFIX: tuple[str, ...] = ("uv", "run", "li")
 
-# ADR-0027 defines the closed set of action kinds.  The CLI parser accepts
+# ADR-0070 defines the closed set of action kinds.  The CLI parser accepts
 # "playbook" as an alias for "play" for backward compatibility.
 # The "command" kind is an allow-listed executable spawned directly
 # (not through `li`), with templated argv rendered from trigger_context.

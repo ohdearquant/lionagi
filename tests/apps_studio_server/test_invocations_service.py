@@ -79,7 +79,7 @@ async def _create_failed_schedule_run(
 ) -> str:
     """Insert a minimal schedule (schedule_runs.schedule_id is FK-enforced)
     plus a schedule_runs row linked to *invocation_id* — mirrors what
-    SchedulerEngine._fire_inner writes on a failed run (ADR-0027)."""
+    SchedulerEngine._fire_inner writes on a failed run (ADR-0070)."""
     sched_id = uuid.uuid4().hex[:12]
     now = time.time()
     await db.create_schedule(

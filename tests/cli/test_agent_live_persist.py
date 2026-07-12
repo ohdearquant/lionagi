@@ -63,7 +63,7 @@ async def test_setup_creates_session_branch_progression_rows(
     assert ctx["branch_prog_id"]
     assert ctx["existing_msg_ids"] == set()
     assert ctx["new_msg_ids"] == []
-    # Persistence rides the hook bus (ADR-0023b): the persist handler is on the
+    # Persistence rides the hook bus (ADR-0047): the persist handler is on the
     # session bus, and the branch's emit hook drives MESSAGE_ADD.
     from lionagi.hooks.bus import HookPoint
 
@@ -645,7 +645,7 @@ async def test_teardown_non_resume_timeout_stamps_terminal_unchanged(
     assert s["ended_at"] is not None
 
 
-# ── ADR-0094 terminal-race: a second teardown must not crash past callers ─────
+# ── ADR-0035 terminal-race: a second teardown must not crash past callers ─────
 
 
 async def test_teardown_already_terminal_session_reports_attempted_status(
@@ -657,7 +657,7 @@ async def test_teardown_already_terminal_session_reports_attempted_status(
     session without checking terminality) must not let the stale persisted
     status masquerade as this invocation's outcome: a later leg's genuine
     'failed' must not be silently reported back as the old 'completed'. The
-    rejection must still protect the DB row (ADR-0094 unchanged) — only the
+    rejection must still protect the DB row (ADR-0035 unchanged) — only the
     caller-visible return value differs, and it's logged at warning level."""
     branch = Branch(name="b1")
     ctx1 = await _setup_live_persist(branch)
@@ -680,7 +680,7 @@ async def test_teardown_already_terminal_session_reports_attempted_status(
         for rec in caplog.records
     )
 
-    # The DB record itself is untouched — ADR-0094 still protects it.
+    # The DB record itself is untouched — ADR-0035 still protects it.
     async with StateDB() as db:
         s = await db.get_session(ctx1["session_id"])
     assert s["status"] == "completed"
@@ -1035,7 +1035,7 @@ async def test_setup_resume_repairs_null_session_progression_id(
     await _teardown_live_persist(ctx, status="completed")
 
 
-# ── ADR-0029: artifact contract snapshot and verification ─────────────────────
+# ── ADR-0064: artifact contract snapshot and verification ─────────────────────
 
 
 async def test_setup_persists_artifact_contract(temp_db_path: Path):

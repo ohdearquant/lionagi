@@ -1,14 +1,14 @@
 # Copyright (c) 2023-2026, HaiyangLi <quantocean.li at gmail dot com>
 # SPDX-License-Identifier: Apache-2.0
-"""ADR-0028: controlled vocabulary for status reason codes on Studio entities."""
+"""ADR-0057: controlled vocabulary for status reason codes on Studio entities."""
 
 from __future__ import annotations
 
 from typing import Final
 
 # ── Entity taxonomy ──────────────────────────────────────────────────
-# Canonical singular entity types consumed by ADR-0028 (status reasons),
-# ADR-0030 (attention queue), and ADR-0031 (entity headers). Validated
+# Canonical singular entity types consumed by ADR-0057 (status reasons),
+# the attention queue and entity headers. Validated
 # at write time in StateDB.update_status().
 
 VALID_ENTITY_TYPES: Final[frozenset[str]] = frozenset(
@@ -83,13 +83,13 @@ class RunReasons:
     CANCELLED_FORCE_KILL = "run.cancelled.force_kill"
     CANCELLED_STALE_AUTO = "run.cancelled.stale_auto"
     PAUSED_OPERATOR = "run.paused.operator"
-    # ADR-0101 D3: task-application worker lease outcomes.
+    # ADR-0071 D4: task-application worker lease outcomes.
     QUEUED_LEASE_EXPIRED = "run.queued.lease_expired"
     FAILED_LEASE_ATTEMPTS_EXHAUSTED = "run.failed.lease_attempts_exhausted"
 
 
 class SessionReasons:
-    """Health-derived reason codes written by operator-initiated transitions (ADR-0024)."""
+    """Health-derived reason codes written by operator-initiated transitions (ADR-0057)."""
 
     HEALTH_STALE_NO_HEARTBEAT = "session.stale.no_heartbeat"
     HEALTH_ORPHANED_NO_PROCESS = "session.orphaned.no_process"
@@ -99,7 +99,7 @@ class SessionReasons:
 
 
 class PlayReasons:
-    """Show-play lifecycle reasons (ADR-0011 play vocabulary)."""
+    """Show-play lifecycle reasons (ADR-0057 play vocabulary)."""
 
     PENDING_WAITING_DEPS = "play.pending.waiting_on_deps"
     PENDING_READY = "play.pending.ready"
@@ -119,7 +119,7 @@ class ShowReasons:
 
 
 class ScheduleReasons:
-    """ADR-0027 schedule-fire outcomes."""
+    """ADR-0070 schedule-fire outcomes."""
 
     FIRED_DUE = "schedule.fired.due"
     SKIPPED_OVERLAP = "schedule.skipped.overlap"
@@ -135,7 +135,7 @@ class TeamReasons:
 
 
 class DispatchReasons:
-    """ADR-0092 dispatch_outbox transition outcomes (entity_type='dispatch')."""
+    """ADR-0059 dispatch_outbox transition outcomes (entity_type='dispatch')."""
 
     PENDING_ENQUEUED = "dispatch.pending.enqueued"
     DELIVERING_ATTEMPT = "dispatch.delivering.attempt"

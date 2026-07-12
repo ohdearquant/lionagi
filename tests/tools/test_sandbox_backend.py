@@ -1,7 +1,7 @@
 # Copyright (c) 2023-2025, HaiyangLi <quantocean.li at gmail dot com>
 # SPDX-License-Identifier: Apache-2.0
 
-"""Tests for sandbox_backend.py: the ADR-0089 SandboxBackend seam.
+"""Tests for sandbox_backend.py: the ADR-0090 SandboxBackend seam.
 
 No network, no Daytona API calls: the Daytona adapter is exercised with an
 injected fake sandbox factory, never the real ``daytona`` package.
@@ -109,7 +109,7 @@ class FakeExecOnlyBackend(FakeBackend):
 
 
 # ---------------------------------------------------------------------------
-# ADR-0079 adopted types
+# ADR-0090 adopted types
 # ---------------------------------------------------------------------------
 
 

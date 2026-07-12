@@ -1,6 +1,6 @@
 # Copyright (c) 2023-2026, HaiyangLi <quantocean.li at gmail dot com>
 # SPDX-License-Identifier: Apache-2.0
-"""Tests for `li wait <id>...` — the ADR-0094 run completion contract: one
+"""Tests for `li wait <id>...` — the ADR-0035 run completion contract: one
 frozen tab-delimited line per run (`status=`/`reason=`/`artifact_dir=`/
 `exit_code=`), any run kind (session, play, invocation, schedule_run)."""
 

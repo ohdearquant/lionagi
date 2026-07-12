@@ -1,7 +1,7 @@
 # Copyright (c) 2023-2026, HaiyangLi <quantocean.li at gmail dot com>
 # SPDX-License-Identifier: Apache-2.0
 """Integration tests for the control poller *task lifecycle* wired into
-`_execute_dag` (ADR-0085 part 1) — as opposed to `_apply_session_control`'s
+`_execute_dag` — as opposed to `_apply_session_control`'s
 pure state machine, already covered by `test_control_poller.py`.
 
 These drive `_execute_dag` itself (same fakes as `test_flow_phases.py`) with a
