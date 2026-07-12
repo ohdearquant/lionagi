@@ -1,7 +1,13 @@
 # Copyright (c) 2023-2025, HaiyangLi <quantocean.li at gmail dot com>
 # SPDX-License-Identifier: Apache-2.0
 
-"""Dependency-aware flow execution with structured concurrency."""
+"""Dependency-aware graph execution.
+
+Graph scheduling and executor construction live in this module. New APIs, commands,
+and services that execute operation graphs must delegate through ``Session.flow`` or
+the existing streaming flow kernel. Keep executor construction here and add
+conformance coverage for every new graph-execution surface.
+"""
 
 import asyncio
 import contextlib
