@@ -206,6 +206,7 @@ class Graph(Element, Relational, Generic[T]):
             raise RelationError(f"Node {node} not found in the graph nodes.")
         return tuple(self.node_edge_mapping[_id]["out"].values())
 
+    @_graph_synchronized
     def get_predecessors_cached(self, node: Any, /) -> list[Node]:
         """Plain-list predecessor lookup, memoized until a mutator invalidates it.
 
@@ -217,6 +218,16 @@ class Graph(Element, Relational, Generic[T]):
         the node was valid when memoized, and remove_node() always clears
         its own cache entry in the same call that removes it from
         internal_nodes, so a stale hit past removal cannot occur.
+
+        Synchronized (unlike get_predecessors()/find_node_edge()): this cache
+        is stored on the Graph instance itself, so it is visible to every
+        concurrent consumer, not just the caller that populated it. Without
+        the same lock a mutator holds, a miss could read node_edge_mapping,
+        a mutator could invalidate and update it, and this call could then
+        store the pre-mutation result — a wrong answer that persists until
+        an unrelated future mutation happens to evict that node's entry,
+        rather than the transient, self-healing staleness plain unsynchronized
+        reads already tolerate.
         """
         _id = ID.get_id(node)
         cached = self._predecessor_cache.get(_id)
@@ -230,6 +241,7 @@ class Graph(Element, Relational, Generic[T]):
         self._predecessor_cache[_id] = result
         return result
 
+    @_graph_synchronized
     def get_successors_cached(self, node: Any, /) -> list[Node]:
         """Symmetric with get_predecessors_cached()."""
         _id = ID.get_id(node)

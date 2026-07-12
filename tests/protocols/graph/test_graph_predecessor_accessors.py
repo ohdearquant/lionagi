@@ -8,6 +8,8 @@ identity, and invalidation across every mutator that can change adjacency:
 add_edge, remove_edge, remove_node, replace_node, splice_after.
 """
 
+import threading
+
 import pytest
 
 from lionagi._errors import RelationError
@@ -237,3 +239,98 @@ class TestCacheInvalidationOnMutators:
         cached = graph.get_predecessors_cached(b)
         graph.add_node(Node())
         assert graph.get_predecessors_cached(b) is cached
+
+
+class TestCachedAccessorsSerializeWithMutators:
+    """The cache lives on the Graph instance, so it is visible to every
+    concurrent consumer (unlike the old per-executor cache it replaced). A
+    cache-populating read must not interleave with a mutator: otherwise a
+    miss can read pre-mutation adjacency, a mutator can invalidate and
+    update the graph, and the read can then store the stale result — a
+    wrong answer that persists until an unrelated future mutation happens
+    to evict that node's entry. These tests prove get_predecessors_cached/
+    get_successors_cached block while another thread holds the graph lock,
+    the same guarantee every mutator already provides for itself.
+    """
+
+    def test_get_predecessors_cached_blocks_while_lock_held(self):
+        graph = Graph()
+        a, b = Node(), Node()
+        graph.add_node(a)
+        graph.add_node(b)
+        graph.add_edge(Edge(head=a, tail=b))
+
+        entered = threading.Event()
+        release = threading.Event()
+
+        def hold_lock():
+            with graph._lock:
+                entered.set()
+                release.wait(timeout=5)
+
+        holder = threading.Thread(target=hold_lock)
+        holder.start()
+        try:
+            assert entered.wait(timeout=5)
+
+            started = threading.Event()
+            result = {}
+
+            def read_cache():
+                started.set()
+                result["value"] = graph.get_predecessors_cached(b)
+
+            reader = threading.Thread(target=read_cache)
+            reader.start()
+            try:
+                assert started.wait(timeout=5)
+                reader.join(timeout=0.2)
+                assert reader.is_alive(), "get_predecessors_cached did not respect the graph lock"
+            finally:
+                release.set()
+                reader.join(timeout=5)
+            assert {n.id for n in result["value"]} == {a.id}
+        finally:
+            release.set()
+            holder.join(timeout=5)
+
+    def test_get_successors_cached_blocks_while_lock_held(self):
+        graph = Graph()
+        a, b = Node(), Node()
+        graph.add_node(a)
+        graph.add_node(b)
+        graph.add_edge(Edge(head=a, tail=b))
+
+        entered = threading.Event()
+        release = threading.Event()
+
+        def hold_lock():
+            with graph._lock:
+                entered.set()
+                release.wait(timeout=5)
+
+        holder = threading.Thread(target=hold_lock)
+        holder.start()
+        try:
+            assert entered.wait(timeout=5)
+
+            started = threading.Event()
+            result = {}
+
+            def read_cache():
+                started.set()
+                result["value"] = graph.get_successors_cached(a)
+
+            reader = threading.Thread(target=read_cache)
+            reader.start()
+            try:
+                assert started.wait(timeout=5)
+                reader.join(timeout=0.2)
+                assert reader.is_alive(), "get_successors_cached did not respect the graph lock"
+            finally:
+                release.set()
+                reader.join(timeout=5)
+            assert {n.id for n in result["value"]} == {b.id}
+        finally:
+            release.set()
+            holder.join(timeout=5)
