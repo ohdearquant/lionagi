@@ -593,7 +593,9 @@ async def _build_dag(
 
 def _reconstruct_spawned_nodes(
     env: OrchestrationEnv,
+    plan_result: _PlanResult,
     dag_state: _DagState,
+    checkpoint_ops: dict[str, dict],
     checkpoint_spawned: list[dict],
 ) -> None:
     """Rebuild reactively spawned nodes from a checkpoint into the fresh graph.
@@ -604,19 +606,29 @@ def _reconstruct_spawned_nodes(
     so the executor's terminal-status short-circuit (never a live re-run)
     picks it up.
 
-    Two things must hold for a given entry, checked BEFORE any node is added
+    Three things must hold for a given entry, checked BEFORE any node is added
     to the graph so a refusal never leaves it partially mutated:
 
     1. It must carry `operation` (added in CHECKPOINT_VERSION 2, alongside
-       `assignee`/`instruction`/`parent_id`) — a checkpoint written before
-       that field set existed has nothing to rebuild an Operation node from.
+       `assignee`/`instruction`/`parent_id`/`spawn_id`) — a checkpoint written
+       before that field set existed has nothing to rebuild an Operation node
+       from.
     2. If it has a `parent_id`, that id must resolve to either a planned node
-       (already in the graph from _build_dag) or another entry in this same
-       `checkpoint_spawned` list. If it does not, the op that spawned this
-       node had not itself reached a checkpointed terminal state before the
-       crash — resuming it would either duplicate the spawn (the parent
-       re-runs and emits it again) or lose it outright (the parent never
-       re-emits it), a decision this version cannot soundly replay.
+       that is ITSELF checkpointed terminal (completed or failed in
+       `checkpoint_ops`), or another entry in this same `checkpoint_spawned`
+       list. A planned parent merely existing in the DAG is not enough — if
+       it crashed before its own checkpoint write landed, resume would
+       pre-complete this child while rerunning that parent live, and the
+       rerun can emit the same follow-up spawn again (duplicate work). If
+       the parent hasn't reached a checkpointed terminal state at all, the
+       spawn decision cannot be soundly replayed — resuming risks either
+       duplicating or silently dropping that work.
+    3. If it recorded an `assignee` (role-routed spawn), it must also carry a
+       `spawn_id` — role_node_builder stamps both together unconditionally at
+       construction time, and the finalize-time result-collection scan raises
+       a hard invariant error for any assignee-bearing node it finds without
+       one. A checkpoint entry missing `spawn_id` despite an `assignee` is
+       itself corrupt/pre-dates that field, not soundly replayable.
 
     Either failure refuses resume for only the affected node(s), named in the
     error, never the whole run merely because a spawn occurred.
@@ -647,15 +659,32 @@ def _reconstruct_spawned_nodes(
             "'completed' nor 'failed', so it cannot be safely replayed."
         )
 
+    unstamped = [
+        e["node_id"] for e in checkpoint_spawned if e.get("assignee") and not e.get("spawn_id")
+    ]
+    if unstamped:
+        raise FlowResumeError(
+            "Resume refused for reactively spawned node(s) "
+            f"[{', '.join(unstamped)}]: recorded a role assignee but no "
+            "spawn_id — role_node_builder stamps both together, so this "
+            "checkpoint predates spawn_id capture (or is otherwise corrupt) "
+            "and cannot be soundly rebuilt. Re-run the flow from scratch."
+        )
+
     known_ids = {str(n) for n in dag_state.node_ids}
     candidate_ids = {e["node_id"] for e in checkpoint_spawned}
+    terminal_planned_ids = {
+        str(node_id)
+        for agent_id, node_id in zip(plan_result.agent_ids, dag_state.node_ids, strict=True)
+        if (checkpoint_ops.get(agent_id) or {}).get("status") in ("completed", "failed")
+    }
 
     unsound = [
         f"{e['node_id']} (parent {e['parent_id']})"
         for e in checkpoint_spawned
         if e.get("parent_id")
-        and e["parent_id"] not in known_ids
         and e["parent_id"] not in candidate_ids
+        and not (e["parent_id"] in known_ids and e["parent_id"] in terminal_planned_ids)
     ]
     if unsound:
         raise FlowResumeError(
@@ -671,11 +700,18 @@ def _reconstruct_spawned_nodes(
     for entry in checkpoint_spawned:
         node_id = entry["node_id"]
         assignee = entry.get("assignee")
+        spawn_id = entry.get("spawn_id")
+        metadata: dict[str, Any] = {}
+        if assignee:
+            metadata["assignee"] = assignee
+        if spawn_id:
+            metadata["spawn_id"] = spawn_id
+            metadata["reference_id"] = spawn_id
         node = create_operation(
             entry["operation"],
             parameters={"instruction": entry.get("instruction") or ""},
             id=_UUID(node_id),
-            metadata={"assignee": assignee} if assignee else {},
+            metadata=metadata,
         )
         node.execution.status = (
             EventStatus.COMPLETED if entry["status"] == "completed" else EventStatus.FAILED
@@ -721,7 +757,7 @@ def _apply_checkpoint_precompletion(
     from lionagi.protocols.types import EventStatus
 
     if checkpoint_spawned:
-        _reconstruct_spawned_nodes(env, dag_state, checkpoint_spawned)
+        _reconstruct_spawned_nodes(env, plan_result, dag_state, checkpoint_ops, checkpoint_spawned)
 
     graph = env.builder.get_graph()
     degraded: list[str] = []
@@ -765,6 +801,7 @@ async def _execute_dag(
     checkpoint_config: dict | None = None,
     checkpoint_ops_seed: dict[str, dict] | None = None,
     checkpoint_flow_context: dict | None = None,
+    checkpoint_spawned_seed: list[dict] | None = None,
 ) -> _ExecResult:
     """Drive the planning engine over the DAG and collect per-agent results.
 
@@ -773,6 +810,13 @@ async def _execute_dag(
     completion/failure observers. checkpoint_flow_context seeds the
     executor's shared context workspace on resume with what was accumulated
     before the crash, so pending ops see the same workspace they would live.
+    checkpoint_spawned_seed carries forward any reactively spawned entries a
+    prior checkpoint already recorded (reconstructed into the graph by
+    _apply_checkpoint_precompletion before this call) — without it, this
+    generation's first flush would overwrite `spawned` with `[]`, and since
+    pre-completed nodes never re-emit a completion signal to re-record
+    themselves, a second crash before any NEW spawn occurs would silently
+    lose all the previously reconstructed work.
     """
     assignments = plan_result.assignments
     agent_ids = plan_result.agent_ids
@@ -810,6 +854,7 @@ async def _execute_dag(
             # lose it despite nothing having gone wrong with restoration.
             flow_context=dict(checkpoint_flow_context or {}),
             ops=dict(checkpoint_ops_seed or {}),
+            spawned=list(checkpoint_spawned_seed or []),
         )
         with contextlib.suppress(Exception):
             await _checkpoint_writer.flush()
@@ -942,6 +987,13 @@ async def _execute_dag(
                         if isinstance(params, dict)
                         else getattr(params, "instruction", None)
                     )
+                    # role_node_builder stamps spawn_id unconditionally
+                    # (lionagi/orchestration/patterns.py), independent of
+                    # whether the request carried an assignee — captured the
+                    # same way regardless so reconstruction can restore it
+                    # and the finalize-time assignee-without-spawn_id
+                    # invariant check never trips for a resumed node.
+                    spawn_fields["spawn_id"] = spawned_node.metadata.get("spawn_id")
             _checkpoint_tasks.append(
                 _asyncio.ensure_future(
                     _checkpoint_writer.record_spawned(
@@ -1936,6 +1988,9 @@ async def _run_flow_inner(
         checkpoint_ops_seed=resume_checkpoint.get("ops") if resume_checkpoint is not None else None,
         checkpoint_flow_context=(
             resume_checkpoint.get("flow_context") if resume_checkpoint is not None else None
+        ),
+        checkpoint_spawned_seed=(
+            resume_checkpoint.get("spawned") if resume_checkpoint is not None else None
         ),
     )
 
