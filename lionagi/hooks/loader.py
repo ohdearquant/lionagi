@@ -82,7 +82,7 @@ def build_session_bus(
     *,
     observer: Any = None,
 ) -> HookBus:
-    """Construct a per-session HookBus with defaults merged with profile overrides (ADR-0047)."""
+    """Construct a per-session HookBus with defaults merged with agent-hook overrides (ADR-0047 D3)."""
     bus = HookBus(observer=observer)
     overrides = load_hooks_for_agent(agent_hooks)
 
