@@ -61,13 +61,38 @@ jobs:
         id: baseline
         run: |
           set -euo pipefail
+          zero_sha="0000000000000000000000000000000000000000"
+
           if [ "${{ github.event_name }}" = "pull_request" ]; then
             base_ref="origin/${{ github.event.pull_request.base.ref }}"
             base_sha=$(git merge-base HEAD "$base_ref")
           else
-            # push event: compare against this commit's first parent, i.e.
-            # the tip of the branch immediately before the push.
-            if git rev-parse --verify --quiet HEAD^ > /dev/null 2>&1; then
+            # push event: the webhook's own record of the branch tip right
+            # before this push (github.event.before) is the correct
+            # baseline -- HEAD^ is only the previous commit in the pushed
+            # range, so a push of several commits at once would leave an
+            # earlier commit's regression already inside the "baseline"
+            # and ungated. Two edge cases fall back to HEAD^ instead:
+            #   - a brand new branch, where before is the all-zero SHA;
+            #   - a force push whose old tip is no longer reachable from
+            #     any ref and can't be fetched (rare, but possible if the
+            #     job runs long enough after the push for it to be gone).
+            before_sha="${{ github.event.before }}"
+            if [ -z "$before_sha" ] || [ "$before_sha" = "$zero_sha" ]; then
+              echo "push 'before' is the zero SHA (new branch); falling back to HEAD^."
+              before_sha=""
+            elif ! git rev-parse --verify --quiet "${before_sha}^{commit}" > /dev/null 2>&1; then
+              echo "push 'before' ($before_sha) not present locally (forced=${{ github.event.forced }}); attempting to fetch it directly."
+              git fetch --no-tags --depth=1 origin "$before_sha" > /dev/null 2>&1 || true
+              if ! git rev-parse --verify --quiet "${before_sha}^{commit}" > /dev/null 2>&1; then
+                echo "push 'before' ($before_sha) is not fetchable -- likely discarded by a force-push; falling back to HEAD^."
+                before_sha=""
+              fi
+            fi
+
+            if [ -n "$before_sha" ]; then
+              base_sha="$before_sha"
+            elif git rev-parse --verify --quiet HEAD^ > /dev/null 2>&1; then
               base_sha=$(git rev-parse HEAD^)
             else
               echo "No parent commit found (root commit); using HEAD as its own baseline."
@@ -165,7 +190,7 @@ jobs:
           cd "$RUNNER_TEMP/bench-harness"
           "$GITHUB_WORKSPACE/.venv/bin/python" -m benchmarks.fuzzy_bench --repeat 10 --output "$GITHUB_WORKSPACE/benchmarks/_ci_out/current/fuzzy.json"
 
-      - name: Verify baseline and current used different lionagi installs
+      - name: Verify lionagi provenance and scenario coverage (baseline vs current)
         run: |
           source .venv/bin/activate
           python benchmarks/ci_check_provenance.py --baseline-dir benchmarks/_ci_out/baseline --current-dir benchmarks/_ci_out/current
