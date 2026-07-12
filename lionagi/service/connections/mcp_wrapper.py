@@ -342,6 +342,23 @@ _SUFFICIENCY_MODELED_KEYWORDS = frozenset(
         "deprecated",
         "contentEncoding",
         "contentMediaType",
+        # `contentSchema` is a deliberate, ARGUED exception to "schema-
+        # bearing means deny", not a relaxation of the allowlist's default
+        # posture. It is a Draft 2020-12 Content-vocabulary annotation
+        # (alongside `contentEncoding`/`contentMediaType`) describing the
+        # schema of a string instance's DECODED content. Its value is a
+        # mapping (schema-bearing in shape, like `$defs`), so without this
+        # entry the generic value-shape inertness test would flag it and
+        # deny an otherwise-bounded schema that legitimately uses it. The
+        # exception holds ONLY because the Content vocabulary is
+        # ANNOTATION-ONLY in the default Draft 2020-12 dialect this module
+        # validates against: the content-assertion vocabulary that would
+        # make `contentSchema` actually constrain an instance is NOT
+        # enabled by default, so the value under this keyword is never an
+        # admission channel today. If a future dialect configuration were
+        # to enable the content-assertion vocabulary, `contentSchema` would
+        # need to leave this modeled-as-inert set.
+        "contentSchema",
     }
 )
 
@@ -379,6 +396,50 @@ def _sufficiency_node_has_unmodeled_keyword(schema: Mapping, budget: list[int]) 
         if _could_carry_subschema(value, budget):
             return True
     return False
+
+
+# Object/map applicator keywords whose presence on a property's own VALUE
+# schema makes that value a nested KEY CHANNEL for the sufficiency proof's
+# property-value recursion below, rather than a scalar/array/annotation-only
+# leaf governed by the walker's key-name policy. `$ref`/`allOf`/`anyOf`/
+# `oneOf` are included because the proof's own applicator delegation resolves
+# them; the remaining object/map keywords are included because each can
+# smuggle an undeclared key past an outer "this object is closed" conclusion
+# even when the property value carries no explicit `type: object` (e.g. a
+# bare `patternProperties` node with no `type`).
+_KEY_CHANNEL_APPLICATOR_KEYWORDS = frozenset(
+    {
+        "properties",
+        "patternProperties",
+        "additionalProperties",
+        "unevaluatedProperties",
+        "propertyNames",
+        "dependentSchemas",
+        "$ref",
+        "allOf",
+        "anyOf",
+        "oneOf",
+    }
+)
+
+
+def _property_value_is_key_channel(value: object) -> bool:
+    """True when a declared property's VALUE schema is itself object-shaped
+    or applicator-bearing -- i.e. a nested key channel that the sufficiency
+    proof must recurse into with the FULL allowlist+type-gate+closedness
+    logic, rather than a scalar/array/annotation-only leaf value. A scalar-
+    typed, array-typed, annotation-only, or bare free-form string property
+    value is NOT a key channel: it is a VALUE, and the walker's key-name
+    policy (identifier-suffix exemption, categorized-key detection, ...)
+    governs it -- recursing into those here would strip the identifier-like-
+    key exemption (`service_id: {"type": "string"}`) that the two-mechanism
+    separation depends on."""
+    if not isinstance(value, Mapping):
+        return False
+    value_type = value.get("type")
+    if value_type is not None and _schema_type_includes(value_type, "object"):
+        return True
+    return any(key in value for key in _KEY_CHANNEL_APPLICATOR_KEYWORDS)
 
 
 def _schema_is_insufficient(input_schema: object) -> bool:
@@ -427,7 +488,12 @@ def _schema_is_insufficient_node(
        Otherwise, non-empty `properties` is only bounded if the object is
        actually CLOSED (`additionalProperties: False`, or itself restricted
        to a finite `enum`/`const`); empty/absent `properties` still needs
-       `additionalProperties: False` to admit only a bare `{}`.
+       `additionalProperties: False` to admit only a bare `{}`. Once the
+       OUTER object is proven closed, each DECLARED property's own VALUE is
+       re-checked too (`_property_value_is_key_channel` gates which values
+       qualify): a property value that is itself object-shaped or
+       applicator-bearing is a nested key channel and must independently
+       prove sufficient by this same predicate, or the node is insufficient.
 
     Returns True (fail closed / insufficient) for an external, cyclic,
     unresolvable, or budget/depth-exhausted reference or composition --
@@ -533,11 +599,27 @@ def _schema_is_insufficient_node(
     # `command` property from riding alongside it unless
     # `additionalProperties` is `false` (or itself restricted to a finite
     # enum/const of values).
-    if additional is False:
-        return False
-    if isinstance(additional, Mapping) and ("enum" in additional or "const" in additional):
-        return False
-    return True
+    object_closed = additional is False or (
+        isinstance(additional, Mapping) and ("enum" in additional or "const" in additional)
+    )
+    if not object_closed:
+        return True
+    # The OUTER object being closed against undeclared keys says nothing
+    # about a DECLARED property's own VALUE: a property value that is itself
+    # object-shaped or applicator-bearing is a nested key channel and must be
+    # re-checked with this same predicate (full allowlist + type-gate +
+    # closedness, budget/depth/`$ref`-cycle guards included) -- otherwise a
+    # closed-looking outer shell can smuggle an unmodeled applicator
+    # (`patternProperties`, an open nested object, an unmodeled `$ref`
+    # target, ...) through a property's value. Scalar/array/annotation-only
+    # property values are deliberately NOT recursed here -- see
+    # `_property_value_is_key_channel`.
+    for prop_value in props.values():
+        if _property_value_is_key_channel(prop_value) and _schema_is_insufficient_node(
+            prop_value, root_schema, seen_refs, depth + 1, budget
+        ):
+            return True
+    return False
 
 
 def _property_is_bounded(prop_schema: object) -> bool:
@@ -738,6 +820,15 @@ _MAX_SCHEMA_WALK_NODES = 5000
 # Keywords whose value never itself carries a subschema (or, for `$defs`/
 # `definitions`, is only reachable indirectly via `$ref` resolution, which
 # `_resolve_local_ref` already handles without needing to pre-walk them).
+# `contentSchema` is included on the same footing, as a deliberate, argued
+# exception rather than a relaxation: its value IS a mapping (schema-shaped),
+# but -- like `contentEncoding`/`contentMediaType` in the Draft 2020-12
+# Content vocabulary -- it describes the DECODED content of a string
+# instance and asserts nothing about the instance the walker is classifying,
+# so it is never itself a command-channel destination worth walking into.
+# This holds ONLY while the content-assertion vocabulary stays disabled (the
+# default dialect this module validates against) -- see the matching caveat
+# on `_SUFFICIENCY_MODELED_KEYWORDS` above.
 _SCALAR_ONLY_SCHEMA_KEYWORDS = frozenset(
     {
         "type",
@@ -752,6 +843,7 @@ _SCALAR_ONLY_SCHEMA_KEYWORDS = frozenset(
         "examples",
         "$defs",
         "definitions",
+        "contentSchema",
     }
 )
 

@@ -1291,6 +1291,162 @@ class TestValidateMcpToolAdmission:
             "executor-identity-with-insufficient-schema",
             id="omitted-type-closed-object-denied-by-type-gate",
         ),
+        # --- Sufficiency-proof property-value recursion: the OUTER object
+        # being closed (`additionalProperties: False`) says nothing about a
+        # DECLARED property's own value -- a nested object-shaped property
+        # value that is itself open, or carries an unmodeled applicator, is a
+        # hidden key channel the proof must independently re-check. ---
+        pytest.param(
+            "exec",
+            {
+                "type": "object",
+                "required": ["operation"],
+                "additionalProperties": False,
+                "properties": {
+                    "operation": {"const": "status"},
+                    "options": {
+                        "type": "object",
+                        "additionalProperties": False,
+                        "patternProperties": {"^command_custom$": {"type": "string"}},
+                    },
+                },
+            },
+            None,
+            "executor-identity-with-insufficient-schema",
+            id="nested-patternproperties-custom-key-property-value-denies",
+        ),
+        pytest.param(
+            "exec",
+            {
+                "type": "object",
+                "additionalProperties": False,
+                "properties": {
+                    "operation": {"const": "status"},
+                    "options": {"type": "object"},
+                },
+            },
+            None,
+            "executor-identity-with-insufficient-schema",
+            id="nested-open-object-property-value-denies",
+        ),
+        pytest.param(
+            "exec",
+            {
+                "type": "object",
+                "additionalProperties": False,
+                "properties": {
+                    "operation": {"const": "status"},
+                    "options": {"$ref": "#/$defs/Open"},
+                },
+                "$defs": {"Open": {"type": "object"}},
+            },
+            None,
+            "executor-identity-with-insufficient-schema",
+            id="nested-ref-to-open-object-property-value-denies",
+        ),
+        # --- A synthetic never-modeled applicator keyword
+        # (`quorumProperties`-style, mapping-valued) nested one level deep
+        # inside a closed property value's own schema must still deny -- the
+        # property-value recursion re-runs the FULL sufficiency proof
+        # (including its own allowlist gate) on the nested node, not merely
+        # its type/closedness reasoning. ---
+        pytest.param(
+            "exec",
+            {
+                "type": "object",
+                "additionalProperties": False,
+                "properties": {
+                    "operation": {"const": "status"},
+                    "options": {
+                        "type": "object",
+                        "properties": {"mode": {"type": "string", "enum": ["a", "b"]}},
+                        "additionalProperties": False,
+                        "quorumProperties": {"minMembers": 2},
+                    },
+                },
+            },
+            None,
+            "executor-identity-with-insufficient-schema",
+            id="nested-unmodeled-applicator-keyword-in-property-value-denies",
+        ),
+        # --- The recursive structural scan reaches known-but-denied
+        # applicators at DEPTH -- not only directly inside the first-level
+        # property value. `patternProperties` here sits inside a property
+        # value that is itself the value of another property (depth 2 from
+        # the root), so only a recursion that re-applies itself at every
+        # nested key channel -- not a single extra check bolted onto depth
+        # 1 -- catches it. ---
+        pytest.param(
+            "exec",
+            {
+                "type": "object",
+                "required": ["operation"],
+                "additionalProperties": False,
+                "properties": {
+                    "operation": {"const": "status"},
+                    "options": {
+                        "type": "object",
+                        "additionalProperties": False,
+                        "properties": {
+                            "suboptions": {
+                                "type": "object",
+                                "additionalProperties": False,
+                                "patternProperties": {"^command_custom$": {"type": "string"}},
+                            }
+                        },
+                    },
+                },
+            },
+            None,
+            "executor-identity-with-insufficient-schema",
+            id="depth-2-nested-patternproperties-custom-key-denies",
+        ),
+        # --- `dependentSchemas` is a walker-known-to-be-unmodeled applicator
+        # (it is not in the walker's own keyword whitelist either): nested
+        # inside a property value with no closing `additionalProperties`,
+        # the object remains genuinely open, and `dependentSchemas` adds a
+        # conditional branch on top without narrowing it. ---
+        pytest.param(
+            "exec",
+            {
+                "type": "object",
+                "additionalProperties": False,
+                "properties": {
+                    "operation": {"const": "status"},
+                    "options": {
+                        "type": "object",
+                        "properties": {"mode": {"type": "string"}},
+                        "dependentSchemas": {"mode": {"type": "object"}},
+                    },
+                },
+            },
+            None,
+            "executor-identity-with-insufficient-schema",
+            id="dependentschemas-nested-in-property-value-denies",
+        ),
+        # --- `unevaluatedProperties` nested inside a property value: an
+        # explicit `unevaluatedProperties: true` alongside no
+        # `additionalProperties` leaves every property not otherwise
+        # evaluated open, exactly like the implicit-open default -- the
+        # recursion must still deny it. ---
+        pytest.param(
+            "exec",
+            {
+                "type": "object",
+                "additionalProperties": False,
+                "properties": {
+                    "operation": {"const": "status"},
+                    "options": {
+                        "type": "object",
+                        "properties": {"mode": {"type": "string"}},
+                        "unevaluatedProperties": True,
+                    },
+                },
+            },
+            None,
+            "executor-identity-with-insufficient-schema",
+            id="unevaluatedproperties-nested-in-property-value-denies",
+        ),
     ]
 
     ADMIT_CASES = [
@@ -1739,6 +1895,77 @@ class TestValidateMcpToolAdmission:
             None,
             id="root-enum-pins-instance-without-type",
         ),
+        # --- Sufficiency-proof property-value recursion: a nested object
+        # property value that is itself provably CLOSED (own `properties` +
+        # `additionalProperties: False`, every member bounded) must remain
+        # admitted -- the recursion denies only an unbounded/unmodeled
+        # nested channel, never a genuinely closed one. ---
+        pytest.param(
+            "exec",
+            {
+                "type": "object",
+                "properties": {
+                    "operation": {"const": "status"},
+                    "options": {
+                        "type": "object",
+                        "properties": {"mode": {"type": "string", "enum": ["a", "b"]}},
+                        "additionalProperties": False,
+                    },
+                },
+                "additionalProperties": False,
+            },
+            None,
+            id="nested-closed-object-property-value-remains-admitted",
+        ),
+        # --- LOAD-BEARING anti-over-block: the recursion must NOT fold
+        # value-boundedness into the structural gate. A scalar free-form
+        # identifier property (`service_id`) alongside a fixed operation is
+        # NOT a key channel -- it carries no object/applicator keyword and
+        # is not `type: object` -- so `_property_value_is_key_channel`
+        # excludes it from the recursion entirely; the walker's
+        # identifier-suffix exemption alone governs it, exactly as before
+        # this fix. If the recursion were to also apply to scalar leaf
+        # values, this case would flip to a false DENY. ---
+        pytest.param(
+            "exec",
+            {
+                "type": "object",
+                "properties": {
+                    "operation": {"type": "string", "enum": ["status", "restart"]},
+                    "service_id": {"type": "string"},
+                },
+                "additionalProperties": False,
+            },
+            None,
+            id="scalar-identifier-property-value-not-recursed-remains-admitted",
+        ),
+        # --- `contentSchema` MAJOR fix: a mapping-valued Content-vocabulary
+        # annotation on an otherwise-bounded, closed schema must not be
+        # treated as an unmodeled schema-bearing keyword. ---
+        pytest.param(
+            "exec",
+            {
+                "type": "object",
+                "properties": {"operation": {"const": "status"}},
+                "additionalProperties": False,
+                "contentSchema": {
+                    "type": "object",
+                    "properties": {"x": {"type": "string"}},
+                },
+            },
+            None,
+            id="content-schema-annotation-on-bounded-schema-remains-admitted",
+        ),
+        pytest.param(
+            "exec",
+            {
+                "type": "object",
+                "properties": {"operation": {"const": "status"}},
+                "additionalProperties": False,
+            },
+            None,
+            id="content-schema-annotation-removed-still-remains-admitted",
+        ),
     ]
 
     @pytest.mark.parametrize("tool_name, input_schema, description, reason", DENY_CASES)
@@ -1831,6 +2058,105 @@ class TestValidateMcpToolAdmission:
         validator = Draft202012Validator(schema)
         assert not validator.is_valid({"operation": "status", "command": "rm -rf /"})
 
+    def test_f4_depth_2_nested_patternproperties_denies(self):
+        """The CRITICAL bypass at depth 2: `patternProperties` sits inside
+        a property value that is itself the value of another property
+        (`options.suboptions`, two levels below the root), keyed on a
+        pattern the walker's fixed categorized-key list never matches. Only
+        a recursion that re-applies the FULL sufficiency proof at every
+        nested key channel -- not a single depth-1 check -- reaches it.
+        Documents necessity: the identical schema validates against a raw
+        JSON Schema validator and ACCEPTS the injected key at that depth."""
+        schema = {
+            "type": "object",
+            "required": ["operation"],
+            "additionalProperties": False,
+            "properties": {
+                "operation": {"const": "status"},
+                "options": {
+                    "type": "object",
+                    "additionalProperties": False,
+                    "properties": {
+                        "suboptions": {
+                            "type": "object",
+                            "additionalProperties": False,
+                            "patternProperties": {"^command_custom$": {"type": "string"}},
+                        }
+                    },
+                },
+            },
+        }
+        with pytest.raises(PermissionError) as exc_info:
+            validate_mcp_tool_admission("exec", schema, None)
+        message = str(exc_info.value)
+        assert "exec" in message
+        assert "executor-identity-with-insufficient-schema" in message
+
+        validator = Draft202012Validator(schema)
+        assert validator.is_valid(
+            {"operation": "status", "options": {"suboptions": {"command_custom": "rm -rf /"}}}
+        )
+
+    def test_f5_dependentschemas_nested_in_property_value_denies(self):
+        """`dependentSchemas` nested inside a property value, with no
+        closing `additionalProperties` at that level, leaves the nested
+        object genuinely open -- the conditional branch it adds narrows
+        nothing. Documents necessity: the identical schema validates
+        against a raw JSON Schema validator and ACCEPTS an injected
+        `command` key riding alongside the `dependentSchemas` trigger."""
+        schema = {
+            "type": "object",
+            "additionalProperties": False,
+            "properties": {
+                "operation": {"const": "status"},
+                "options": {
+                    "type": "object",
+                    "properties": {"mode": {"type": "string"}},
+                    "dependentSchemas": {"mode": {"type": "object"}},
+                },
+            },
+        }
+        with pytest.raises(PermissionError) as exc_info:
+            validate_mcp_tool_admission("exec", schema, None)
+        message = str(exc_info.value)
+        assert "exec" in message
+        assert "executor-identity-with-insufficient-schema" in message
+
+        validator = Draft202012Validator(schema)
+        assert validator.is_valid(
+            {"operation": "status", "options": {"mode": "a", "command": "rm -rf /"}}
+        )
+
+    def test_f6_unevaluatedproperties_nested_in_property_value_denies(self):
+        """`unevaluatedProperties: true` nested inside a property value is
+        an explicit-open declaration, functionally identical to the
+        implicit-open default for anything the object's own `properties`
+        does not cover. Documents necessity: the identical schema validates
+        against a raw JSON Schema validator and ACCEPTS an injected
+        `command` key at that nesting level."""
+        schema = {
+            "type": "object",
+            "additionalProperties": False,
+            "properties": {
+                "operation": {"const": "status"},
+                "options": {
+                    "type": "object",
+                    "properties": {"mode": {"type": "string"}},
+                    "unevaluatedProperties": True,
+                },
+            },
+        }
+        with pytest.raises(PermissionError) as exc_info:
+            validate_mcp_tool_admission("exec", schema, None)
+        message = str(exc_info.value)
+        assert "exec" in message
+        assert "executor-identity-with-insufficient-schema" in message
+
+        validator = Draft202012Validator(schema)
+        assert validator.is_valid(
+            {"operation": "status", "options": {"mode": "a", "command": "rm -rf /"}}
+        )
+
     SYNTHETIC_UNKNOWN_KEYWORD_DENY_CASES = [
         pytest.param(
             {
@@ -1904,6 +2230,28 @@ class TestValidateMcpToolAdmission:
             },
             id="inside-anyof-branch",
         ),
+        pytest.param(
+            {
+                "type": "object",
+                "additionalProperties": False,
+                "properties": {
+                    "operation": {"const": "status"},
+                    "options": {
+                        "type": "object",
+                        "additionalProperties": False,
+                        "properties": {
+                            "suboptions": {
+                                "type": "object",
+                                "properties": {"mode": {"type": "string", "enum": ["a", "b"]}},
+                                "additionalProperties": False,
+                                "quorumProperties": {"minMembers": 2},
+                            }
+                        },
+                    },
+                },
+            },
+            id="nested-in-property-value-depth-2",
+        ),
     ]
 
     @pytest.mark.parametrize("input_schema", SYNTHETIC_UNKNOWN_KEYWORD_DENY_CASES)
@@ -1911,12 +2259,16 @@ class TestValidateMcpToolAdmission:
         """`quorumProperties` is a spelling the classifier has never
         modeled (deliberately NOT a vendor `x-`/`$comment` prefix, which
         would be exempt) and its value is schema-bearing (a mapping) at
-        every one of the five positions parametrized here (top-level
-        root; nested inside a property value; inside an `allOf` branch;
-        as a `$ref` sibling; inside an `anyOf` branch). The union of the
+        every one of the six positions parametrized here (top-level root;
+        nested inside a property value at depth 1; inside an `allOf`
+        branch; as a `$ref` sibling; inside an `anyOf` branch; nested
+        inside a property value at depth 2, i.e. the value of a property
+        that is itself the value of another property). The union of the
         walker (property-value interiors) and the sufficiency proof's
-        allowlist gate (root, `allOf`/`anyOf` branches, `$ref` siblings)
-        must deny it regardless of WHERE in the shape skeleton it
+        allowlist gate (root, `allOf`/`anyOf` branches, `$ref` siblings,
+        and -- after the property-value recursion -- every nested key
+        channel at any depth) must deny it regardless of WHERE in the
+        shape skeleton it
         appears, proving the invariant holds independent of keyword
         spelling or position."""
         with pytest.raises(PermissionError) as exc_info:
@@ -2217,6 +2569,37 @@ class TestValidateMcpToolAdmission:
             {"enum": [{"operation": "status"}]},
             {"operation": "status"},
             id="root-enum-pins-instance-without-type",
+        ),
+        pytest.param(
+            "exec",
+            {
+                "type": "object",
+                "properties": {
+                    "operation": {"const": "status"},
+                    "options": {
+                        "type": "object",
+                        "properties": {"mode": {"type": "string", "enum": ["a", "b"]}},
+                        "additionalProperties": False,
+                    },
+                },
+                "additionalProperties": False,
+            },
+            {"operation": "status"},
+            id="nested-closed-object-property-value-remains-admitted",
+        ),
+        pytest.param(
+            "exec",
+            {
+                "type": "object",
+                "properties": {"operation": {"const": "status"}},
+                "additionalProperties": False,
+                "contentSchema": {
+                    "type": "object",
+                    "properties": {"x": {"type": "string"}},
+                },
+            },
+            {"operation": "status"},
+            id="content-schema-annotation-on-bounded-schema-remains-admitted",
         ),
     ]
 
