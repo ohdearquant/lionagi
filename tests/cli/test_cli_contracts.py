@@ -33,13 +33,15 @@ env vars, that is exercised directly: it's cheap, hermetic, and real.
 
 from __future__ import annotations
 
+import argparse
 import os
-import re
 import subprocess
 import sys
 import tempfile
 
 import pytest
+
+import lionagi.cli.main as cli_main
 
 _CLI = [sys.executable, "-m", "lionagi.cli.main"]
 
@@ -54,30 +56,40 @@ def _run(args: list[str], env: dict[str, str] | None = None) -> subprocess.Compl
     )
 
 
-_OPTION_LINE = re.compile(r"^ {2}(-{1,2}[\w][\w-]*)((?:, -{1,2}[\w][\w-]*)*)")
+def _command_parser(command: str, *subs: str) -> argparse.ArgumentParser:
+    """Build the real parser for a command (and optional nested subcommand)
+    the same way `li` does, and return the subcommand's parser object.
 
-
-def _extract_flags(help_text: str) -> list[str]:
-    """Pull the option strings (e.g. `-a`, `--agent`) argparse lists in its
-    `--help` output. Only lines starting with exactly a 2-space indent
-    followed by a dash are option-definition lines; wrapped help-text
-    continuation lines (indented further) and epilog/example lines
-    (indented 2 spaces but starting with a non-dash command name) are
-    excluded by construction.
+    The flag-set goldens introspect `option_strings` off the parser rather
+    than scraping rendered `--help` text: argparse's help formatting changes
+    across Python versions (3.13 collapsed `-a AGENT, --agent AGENT` into
+    `-a, --agent AGENT`), so text-scraping pins the renderer, not the
+    contract. Private argparse attributes are used deliberately — they are
+    the stable introspection surface for this.
     """
-    flags: set[str] = set()
-    for line in help_text.splitlines():
-        m = _OPTION_LINE.match(line)
-        if not m:
-            continue
-        flags.add(m.group(1))
-        flags.update(re.findall(r"-{1,2}[\w][\w-]*", m.group(2)))
-    return sorted(flags)
+    spec = cli_main._COMMAND_BY_NAME[command]
+    parser, _ = cli_main._build_parser(spec)
+    for name in (command, *subs):
+        sub_action = next(a for a in parser._actions if isinstance(a, argparse._SubParsersAction))
+        parser = sub_action.choices[name]
+    return parser
 
 
-# --- goldens: sorted flag sets, pinned from the actual --help output ---
+def _flag_set(command: str, *subs: str) -> list[str]:
+    parser = _command_parser(command, *subs)
+    return sorted({s for action in parser._actions for s in action.option_strings})
+
+
+def _subcommand_set(command: str) -> list[str]:
+    parser = _command_parser(command)
+    sub_action = next(a for a in parser._actions if isinstance(a, argparse._SubParsersAction))
+    return sorted(sub_action.choices.keys())
+
+
+# --- goldens: sorted flag sets, pinned from the actual parser definitions ---
 
 AGENT_HELP_FLAGS = [
+    "--agent",
     "--bypass",
     "--context-budget",
     "--context-from",
@@ -92,6 +104,7 @@ AGENT_HELP_FLAGS = [
     "--project",
     "--prompt",
     "--prompt-file",
+    "--resume",
     "--resume-on-timeout",
     "--theme",
     "--timeout",
@@ -160,6 +173,8 @@ MONITOR_HELP_FLAGS = [
     "--type",
     "--watch",
     "-h",
+    "-p",
+    "-t",
     "-w",
 ]
 
@@ -168,24 +183,23 @@ class TestHelpFlagGoldens:
     def test_agent_help_flag_set(self):
         result = _run(["agent", "--help"])
         assert result.returncode == 0
-        assert _extract_flags(result.stdout) == AGENT_HELP_FLAGS
+        assert _flag_set("agent") == AGENT_HELP_FLAGS
 
     def test_schedule_help_flag_set_and_subcommands(self):
         result = _run(["schedule", "--help"])
         assert result.returncode == 0
-        assert _extract_flags(result.stdout) == SCHEDULE_HELP_FLAGS
-        for sub in SCHEDULE_SUBCOMMANDS:
-            assert sub in result.stdout
+        assert _flag_set("schedule") == SCHEDULE_HELP_FLAGS
+        assert _subcommand_set("schedule") == sorted(SCHEDULE_SUBCOMMANDS)
 
     def test_schedule_create_help_flag_set(self):
         result = _run(["schedule", "create", "--help"])
         assert result.returncode == 0
-        assert _extract_flags(result.stdout) == SCHEDULE_CREATE_HELP_FLAGS
+        assert _flag_set("schedule", "create") == SCHEDULE_CREATE_HELP_FLAGS
 
     def test_monitor_help_flag_set(self):
         result = _run(["monitor", "--help"])
         assert result.returncode == 0
-        assert _extract_flags(result.stdout) == MONITOR_HELP_FLAGS
+        assert _flag_set("monitor") == MONITOR_HELP_FLAGS
 
 
 class TestExitCodesForContractErrors:
