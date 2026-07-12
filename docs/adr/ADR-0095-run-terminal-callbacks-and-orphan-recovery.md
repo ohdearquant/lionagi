@@ -77,18 +77,35 @@ audit ID is a random UUID with no commit ordering. A strict greater-than cursor 
 that row permanently — losing exactly the commit-then-crash window reconciliation exists to
 cover.
 
-Instead, delivery acknowledgment is durable state: a `terminal_deliveries` table keyed by
-`(transition_id, consumer)` records that a named reconciliation consumer has processed a
-terminal event, written by the consumer (never by the push path — the in-process push stays
-fire-and-forget and records nothing). The reconciliation query is a read-only anti-join:
-terminal transitions on execution entities with no delivery row for the requesting consumer,
-bounded by a retention horizon (default seven days; a terminal event older than the horizon
-is expired for reconciliation and only the raw audit history remains). Because membership in
-the unacknowledged set does not depend on any ordering, a late-committing older row is simply
-still in the set the next time the consumer queries. Consumers deduplicate on `event_id`
-(push and reconciliation can both deliver the same event; the push-then-crash-before-ack case
-redelivers). The audit row itself is never mutated; acknowledgment lives entirely in the
-deliveries table, preserving audit immutability.
+Instead, delivery acknowledgment is durable state: a `terminal_deliveries` table with
+composite primary key `(transition_id, consumer)` records that a named reconciliation
+consumer has processed a terminal event, written by the consumer (never by the push path —
+the in-process push stays fire-and-forget and records nothing). Acknowledgment writes are
+idempotent by construction: `INSERT ... ON CONFLICT DO NOTHING` on the composite key, so
+concurrent or repeated acks of the same event by the same consumer are single-row no-ops.
+The reconciliation query is a read-only anti-join: terminal transitions on execution
+entities with no delivery row for the requesting consumer.
+
+Retention never expires an unacknowledged event out of an active consumer's reconciliation
+set: an event remains in that set until the consumer acknowledges it, however old it gets —
+a consumer offline longer than any horizon still recovers every missed terminal event on
+return. What expires is the other side: delivery rows older than the retention horizon
+(default ninety days) may be pruned once acknowledged. Consumer registrations end only by
+explicit retirement — a recorded action taken by the registration's owner or a deployment
+operator, never a side effect of inactivity. A registered consumer that merely stops
+querying remains active and its unacknowledged set is retained indefinitely, regardless of
+how far past any horizon its silence extends. Releasing a retired consumer's outstanding
+unacked set happens atomically with the retirement itself (one transaction), so there is no
+window in which the registration is gone while its set is still owed, or retained while
+unowned. Registering as a reconciliation consumer is what creates the retention obligation;
+an anonymous ad-hoc query gets the plain audit history with no completeness guarantee.
+
+Because membership in the unacknowledged set does not depend on any ordering, a
+late-committing older row is simply still in the set the next time the consumer queries.
+Consumers deduplicate on `event_id` (push and reconciliation can both deliver the same
+event; the push-then-crash-before-ack case redelivers). The audit row itself is never
+mutated; acknowledgment lives entirely in the deliveries table, preserving audit
+immutability.
 
 `SESSION_END` remains supported but is not bridged into the registry; a bridge would create a
 loop and a second authority. Persistent direct engine runs are covered through their
@@ -150,10 +167,18 @@ service startup. Both resolve the handler configuration from settings, so an ext
 adapter is installable from user configuration alone:
 
 - **Settings key**: `notify.on_terminal` (the key the current flow-only prototype already
-  resolves). Accepted shapes: a string (compatibility: the legacy shell command form) or a
-  mapping `{enabled: bool, adapter: {kind: "exec", argv: [...]} | {kind: "python",
-  ref: "module:callable"}, filter: {kinds: [...], ids: [...]}}`. The absent key and
-  `enabled: false` are both the explicit disabled state; the default is disabled.
+  resolves). Accepted shapes: a string (compatibility form) or a mapping `{enabled: bool,
+  adapter: {kind: "exec", argv: [...]} | {kind: "python", ref: "module:callable"},
+  filter: {kinds: [...], ids: [...]}}`. The absent key and `enabled: false` are both the
+  explicit disabled state; the default is disabled. The string form is converted to an
+  argv array by POSIX word-splitting (`shlex.split`) with no shell interpretation of any
+  kind; a string that fails to split, or whose intent requires shell features (pipes,
+  redirection, `&&`, variable expansion), warns with a migration diagnostic naming the
+  argv form and resolves to disabled. A resolution producing an empty argv — an empty or
+  whitespace-only string, an explicit empty `argv` array in the mapping form, or the same
+  through a per-run override or `--notify` — is invalid by the same rule: it logs the same
+  key-naming diagnostic and resolves to disabled before any launch is attempted. No
+  configuration shape reaches a shell.
 - **Precedence**: per-run override > project `.lionagi/settings.yaml` > global
   `~/.lionagi/settings.yaml` > disabled. The per-run override surface is the existing
   `--notify` flag where it exists (flow/play) and the programmatic registration API
@@ -166,9 +191,9 @@ adapter is installable from user configuration alone:
   passed on stdin; LionAGI interprets only launch, the shared timeout budget, and exit code.
 
 Programmatic users register handlers explicitly. Flow/play `--notify` remains as scoped
-compatibility sugar: after the flow session ID is known, it registers the legacy shell
-adapter for the target invocation (if present) or session, and unregisters it in a `finally`
-block. The current direct teardown notify call is removed to prevent double delivery. No new
+compatibility sugar: after the flow session ID is known, it registers the legacy-payload
+exec adapter (same no-shell argv rules as every executable adapter) for the target
+invocation (if present) or session, and unregisters it in a `finally` block. The current direct teardown notify call is removed to prevent double delivery. No new
 `--notify`-style flag is added to agent, fanout, engine, scheduler, or Studio APIs — those
 surfaces are covered by the settings-level handler.
 
@@ -328,9 +353,21 @@ wrapper makes the resume decision against the recovery projection.
 1b. Push-then-crash duplicate: a handler receives the push, the consumer crashes before
    writing its delivery acknowledgment; reconciliation redelivers the same `event_id` and
    consumer-side dedup makes processing idempotent.
+1b-i. Offline-longer-than-horizon: a registered consumer stops querying for longer than the
+   retention horizon while terminal events accumulate; on return, every unacknowledged
+   event is still in its reconciliation set (retention expires acks and explicitly retired
+   consumers, never unacked events for a registered consumer; inactivity alone retires
+   nothing).
+1b-ii. Parallel acknowledgment: two workers of the same consumer ack the same event
+   concurrently; exactly one delivery row exists and neither write errors.
 1c. Settings contract: string form, mapping form, invalid value (warns, disabled, run
    unaffected), per-run override replacing the settings handler for its scope only, and the
-   explicit `enabled: false` state.
+   explicit `enabled: false` state. No-shell path: assert no executable adapter invocation
+   (string form, mapping form, or `--notify`) ever constructs a shell; a shell-feature
+   string (pipe, redirection, conjunction) resolves to disabled with the migration
+   diagnostic, and every empty-argv resolution (empty string, whitespace-only string,
+   empty argv array, and the same via per-run override and `--notify`) resolves to
+   disabled with the diagnostic before any launch.
 1d. Spawn handshake per incomplete phase: crash before intent commit (no row, no leak
    beyond the OS process); crash between spawn and identity commit on a marker-capable
    surface (restart adopts identity from the child marker); same on a marker-less surface
