@@ -1,7 +1,7 @@
 # Copyright (c) 2023-2025, HaiyangLi <quantocean.li at gmail dot com>
 # SPDX-License-Identifier: Apache-2.0
 
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from ..types import ChatParam, InterpretParam
 
@@ -37,8 +37,18 @@ async def interpret(
     branch: "Branch",
     text: str,
     intp_param: InterpretParam,
+    turn_origin: Any = None,
 ) -> str:
-    """Rewrite raw user text into a clearer, explicit LLM prompt using InterpretParam settings."""
+    """Rewrite raw user text into a clearer, explicit LLM prompt using InterpretParam settings.
+
+    This is the earliest point a caller's raw text reaches a model, so a
+    default (unset) ``turn_origin`` mints a fresh token here rather than
+    deferring to whatever call comes after it. Callers that are themselves
+    relaying an already-established turn (e.g. a multi-step operation that
+    runs its own interpret pre-pass before continuing) pass their own
+    ``turn_origin`` through so this call carries it instead of minting a
+    second one.
+    """
 
     from ..chat.chat import chat
 
@@ -62,6 +72,7 @@ async def interpret(
             **intp_param.imodel_kw,
             "temperature": intp_param.imodel_kw.get("temperature", 0.1),
         },
+        turn_origin=turn_origin,
     )
 
     result = await chat(

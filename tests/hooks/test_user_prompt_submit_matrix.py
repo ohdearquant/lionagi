@@ -215,6 +215,28 @@ async def test_react_single_round_no_extension_still_fires_once():
     assert len(calls) == 1
 
 
+async def test_react_with_interpret_fires_once_total():
+    """interpret=True adds a rewrite pre-pass before round 1 — the earliest
+    point this turn's raw text reaches a model. The pre-pass consumes the
+    turn origin; round 1 and every extension/final-answer turn after it are
+    internal continuations of the same turn and must stay silent."""
+    branch = LionAGIMockFactory.create_mocked_branch(
+        responses=[
+            "rewritten: do a multi-step task",
+            '{"analysis": "round 1", "extension_needed": false}',
+            '{"answer": "done"}',
+        ]
+    )
+    calls = _wire_prompt_submit_counter(branch)
+
+    result = await branch.ReAct(
+        instruct={"instruction": "do a multi-step task"}, interpret=True, max_extensions=2
+    )
+
+    assert result == "done"
+    assert len(calls) == 1
+
+
 # ---------------------------------------------------------------------------
 # Row 7: failing-then-repaired parse (parse._inner_parse() -> Branch.chat()
 # with no-origin) -> 1 total, zero additional from the repair
@@ -253,6 +275,23 @@ async def test_parse_inner_parse_uses_no_origin_directly():
     no_origin = TurnOrigin.no_origin()
     assert consume_turn_origin(no_origin) is None
     assert resolve_turn_origin(no_origin).disposition == "no-origin"
+
+
+# ---------------------------------------------------------------------------
+# interpret(): a direct (non-ReAct) call is itself a public ingress — raw
+# user text reaching a model for the first time in a turn — so it mints and
+# fires on its own default disposition, same as chat()/communicate().
+# ---------------------------------------------------------------------------
+
+
+async def test_direct_interpret_call_fires_once():
+    branch = LionAGIMockFactory.create_mocked_branch(response="rewritten prompt")
+    calls = _wire_prompt_submit_counter(branch)
+
+    result = await branch.interpret("raw user text")
+
+    assert result == "rewritten prompt"
+    assert len(calls) == 1
 
 
 # ---------------------------------------------------------------------------

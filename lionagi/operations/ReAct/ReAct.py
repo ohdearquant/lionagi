@@ -393,11 +393,15 @@ async def ReActStream(  # noqa: N802  # public name preserves the ReAct acronym
         else:
             return s_
 
+    # The interpret pre-pass, when requested, is the earliest point this
+    # turn's raw instruction reaches a model — it inherits this call's own
+    # turn-origin disposition (so it mints, iff this ReAct() call is itself
+    # a fresh public ingress) rather than deferring to round 1.
     intp = None
     if intp_param:
         from ..interpret.interpret import interpret
 
-        intp = await interpret(branch, instruction, intp_param)
+        intp = await interpret(branch, instruction, intp_param, turn_origin=chat_param.turn_origin)
 
     fms = handle_field_models(
         field_models,
@@ -409,6 +413,10 @@ async def ReActStream(  # noqa: N802  # public name preserves the ReAct acronym
     from ..operate.operate import operate
 
     initial_chat_param = chat_param.with_updates(response_format=ReActAnalysis)
+    if intp is not None:
+        # The interpret pre-pass already consumed this turn's origin token;
+        # round 1 continues the same turn and must not re-fire.
+        initial_chat_param = initial_chat_param.with_updates(turn_origin=TurnOrigin.no_origin())
 
     initial_parse_param = (
         parse_param.with_updates(response_format=ReActAnalysis) if parse_param else None
