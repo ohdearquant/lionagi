@@ -17,6 +17,17 @@ file:line and why it was flagged) if it finds one that is not in the
 manifest — so adding a new graph entrypoint without registering it here
 breaks the build instead of silently growing a second executor.
 
+The executor-construction scan statically recognizes: a direct
+``DependencyAwareExecutor(...)``/``ReactiveExecutor(...)`` call; a
+``from ... import DependencyAwareExecutor as X`` import alias; a bare
+assignment alias one level deep (``X = DependencyAwareExecutor`` or
+``X = <existing alias>``); and a literal ``getattr(<anything>,
+"DependencyAwareExecutor")`` dynamic-lookup call, whether assigned to a name
+first or called inline. It does not perform general data-flow analysis:
+resolution through a factory function's return value, a non-literal string
+argument, or an alias threaded through more than one intermediate assignment
+is not tracked and remains a residual bypass.
+
 Registering a location in the manifest is necessary but not sufficient: any
 row that names an ``expected_target`` must also name a ``delegation_test`` —
 the exact pytest node id of the test that actually asserts the delegation
@@ -446,23 +457,66 @@ def _collect_kernel_import_bindings(tree: ast.AST) -> set[str]:
     return bound
 
 
+def _resolve_constructor_alias_rhs(value: ast.expr, bound: dict[str, str]) -> str | None:
+    """If *value* is a bare tracked constructor name/alias, or a literal
+    ``getattr(<anything>, "<ConstructorName>")`` dynamic-lookup call naming
+    one, return the canonical constructor name it resolves to. *bound* is the
+    alias map accumulated so far, so an assignment can chain through an
+    already-recognized alias one level deep (``Y = X`` where ``X`` was itself
+    an import or assignment alias). Only these two literal shapes are
+    recognized -- general data-flow (resolving a name threaded through more
+    than one intermediate assignment, a factory function's return value, or a
+    non-literal string argument) is out of scope and remains a residual
+    bypass; see the module docstring."""
+    if isinstance(value, ast.Name):
+        if value.id in _CONSTRUCTOR_SINK_NAMES:
+            return value.id
+        return bound.get(value.id)
+    if (
+        isinstance(value, ast.Call)
+        and isinstance(value.func, ast.Name)
+        and value.func.id == "getattr"
+        and len(value.args) == 2
+        and isinstance(value.args[1], ast.Constant)
+        and isinstance(value.args[1].value, str)
+        and value.args[1].value in _CONSTRUCTOR_SINK_NAMES
+    ):
+        return value.args[1].value
+    return None
+
+
 def _collect_constructor_import_bindings(tree: ast.AST) -> dict[str, str]:
     """Local alias -> canonical name for any `from ... import
     <ConstructorSinkName> [as alias]` in *tree*, regardless of which module
     path it is re-exported from (``Graph`` in particular is re-exported from
     several ``lionagi.protocols.*`` modules, so this deliberately does not
     filter by source module the way ``_collect_kernel_import_bindings``
-    does). Closes the aliased-constructor gap: `from lionagi.operations.flow
-    import DependencyAwareExecutor as GraphRunner` followed by
-    `GraphRunner(...).execute()` must be recognized as constructing
-    ``DependencyAwareExecutor`` even though the call site only ever mentions
-    the local alias."""
+    does), plus every simple one-level assignment alias
+    (``GraphRunner = DependencyAwareExecutor`` or
+    ``GraphRunner = <existing alias>``) and literal dynamic ``getattr``
+    lookup alias (``GraphRunner = getattr(mod, "DependencyAwareExecutor")``)
+    recognized by ``_resolve_constructor_alias_rhs``. Closes the
+    aliased-constructor gap: `from lionagi.operations.flow import
+    DependencyAwareExecutor as GraphRunner` followed by
+    `GraphRunner(...).execute()`, a bare `GraphRunner = DependencyAwareExecutor`
+    assignment, or a `getattr`-based dynamic lookup assigned to a name, must
+    all be recognized as constructing ``DependencyAwareExecutor`` even though
+    the call site only ever mentions the local alias."""
     bound: dict[str, str] = {}
     for node in ast.walk(tree):
         if isinstance(node, ast.ImportFrom):
             for alias in node.names:
                 if alias.name in _CONSTRUCTOR_SINK_NAMES:
                     bound[alias.asname or alias.name] = alias.name
+    for node in ast.walk(tree):
+        if (
+            isinstance(node, ast.Assign)
+            and len(node.targets) == 1
+            and isinstance(node.targets[0], ast.Name)
+        ):
+            canonical = _resolve_constructor_alias_rhs(node.value, bound)
+            if canonical is not None:
+                bound[node.targets[0].id] = canonical
     return bound
 
 
@@ -470,8 +524,10 @@ class _SinkVisitor(ast.NodeVisitor):
     """Attributes qualified `.flow`/`.flow_stream`/`.run_dag` calls, bare
     calls to a locally-imported kernel function, and
     OperationGraphBuilder/executor/Graph construction calls (including
-    through an aliased import) to the innermost enclosing function or method
-    (dotted "Class.method" or "function")."""
+    through an aliased import, a one-level assignment alias, or a literal
+    `getattr`-based dynamic lookup, assigned or called inline) to the
+    innermost enclosing function or method (dotted "Class.method" or
+    "function")."""
 
     def __init__(
         self,
@@ -535,6 +591,16 @@ class _SinkVisitor(ast.NodeVisitor):
                 node.lineno,
                 is_executor=func.attr in _EXECUTOR_CONSTRUCTOR_NAMES,
             )
+        elif isinstance(func, ast.Call):
+            # Inline dynamic lookup called directly, no intermediate name:
+            # getattr(importlib.import_module(...), "DependencyAwareExecutor")(...)
+            canonical = _resolve_constructor_alias_rhs(func, {})
+            if canonical is not None:
+                self._record(
+                    f"constructs {canonical}() (via dynamic getattr lookup)",
+                    node.lineno,
+                    is_executor=canonical in _EXECUTOR_CONSTRUCTOR_NAMES,
+                )
         self.generic_visit(node)
 
 
@@ -660,7 +726,14 @@ def test_only_flow_kernels_construct_graph_executors():
     """Highest-value single assertion: no matter what a novel scheduler calls
     itself, if it constructs DependencyAwareExecutor or ReactiveExecutor
     anywhere outside operations/flow.py's own two kernel functions, this
-    fails — independent of the name-based heuristic above."""
+    fails — independent of the name-based heuristic above. Covers direct
+    calls, `from ... import X as Y` aliases, one-level assignment aliases
+    (`Y = X`), and literal `getattr(obj, "X")` dynamic lookups (assigned or
+    called inline). It does not perform general data-flow analysis, so
+    resolution through a factory function's return value, a non-literal
+    string argument, or an alias chained through more than one intermediate
+    assignment remains an unanalyzable residual bypass -- see the module
+    docstring."""
     discovery = discover_call_and_construct_sites(LIONAGI_ROOT)
     assert discovery.executor_sites == {
         ("lionagi/operations/flow.py", "flow"),
@@ -727,6 +800,91 @@ def test_aliased_executor_import_is_discovered_by_ast_scan(tmp_path):
     assert discovery.executor_sites == {key}, (
         "aliased DependencyAwareExecutor construction must be flagged as an "
         f"executor site — got: {sorted(discovery.executor_sites)}"
+    )
+
+
+def test_assignment_aliased_executor_construction_is_discovered_by_ast_scan(tmp_path):
+    """Regression for the value-assignment-alias evasion: a module that binds
+    a plain module/class-level name to the canonical executor with a bare
+    assignment (`GraphRunner = DependencyAwareExecutor`) and then constructs
+    it through that name must be recognized as an executor construction site
+    — this evades a scanner that only tracks `from ... import X as Y`
+    aliases, since the alias here is created by ordinary assignment, not an
+    import statement. Scans a scratch directory (never lionagi/) so this
+    proves the discovery function's own behavior without shipping a real
+    violation."""
+    rogue = tmp_path / "rogue_assign_runner.py"
+    rogue.write_text(
+        "from lionagi.operations.flow import DependencyAwareExecutor\n\n"
+        "GraphRunner = DependencyAwareExecutor\n\n\n"
+        "class RogueAssignRunner:\n"
+        "    async def run(self, session, graph):\n"
+        "        return await GraphRunner(session, graph).execute()\n"
+    )
+
+    discovery = discover_call_and_construct_sites(tmp_path, base=tmp_path)
+
+    key = ("rogue_assign_runner.py", "RogueAssignRunner.run")
+    assert key in discovery.call_sites, (
+        "constructing an assignment-aliased executor was not discovered — "
+        f"found: {sorted(discovery.call_sites)}"
+    )
+    assert discovery.call_sites[key] == {
+        "constructs DependencyAwareExecutor() (imported as GraphRunner)"
+    }
+    assert discovery.executor_sites == {key}, (
+        "assignment-aliased DependencyAwareExecutor construction must be flagged as an "
+        f"executor site — got: {sorted(discovery.executor_sites)}"
+    )
+
+
+def test_dynamic_getattr_executor_construction_is_discovered_by_ast_scan(tmp_path):
+    """Regression for the literal dynamic-lookup evasion: a module that
+    resolves the canonical executor via `getattr(importlib.import_module(...),
+    "DependencyAwareExecutor")` — either assigned to a name first or called
+    inline — must be recognized as an executor construction site, exactly
+    like a literal `DependencyAwareExecutor(...)` call. Covers both shapes in
+    one scratch directory (never lionagi/) so this proves the discovery
+    function's own behavior without shipping a real violation."""
+    rogue_assigned = tmp_path / "rogue_dynamic_assigned.py"
+    rogue_assigned.write_text(
+        "import importlib\n\n\n"
+        "class RogueDynamicRunner:\n"
+        "    async def run(self, session, graph):\n"
+        '        cls = getattr(importlib.import_module("lionagi.operations.flow"), '
+        '"DependencyAwareExecutor")\n'
+        "        return await cls(session, graph).execute()\n"
+    )
+    rogue_inline = tmp_path / "rogue_dynamic_inline.py"
+    rogue_inline.write_text(
+        "import importlib\n\n\n"
+        "class RogueInlineDynamicRunner:\n"
+        "    async def run(self, session, graph):\n"
+        '        return await getattr(importlib.import_module("lionagi.operations.flow"), '
+        '"DependencyAwareExecutor")(session, graph).execute()\n'
+    )
+
+    discovery = discover_call_and_construct_sites(tmp_path, base=tmp_path)
+
+    assigned_key = ("rogue_dynamic_assigned.py", "RogueDynamicRunner.run")
+    inline_key = ("rogue_dynamic_inline.py", "RogueInlineDynamicRunner.run")
+    assert assigned_key in discovery.call_sites, (
+        "constructing a getattr-assigned dynamic-lookup executor was not discovered — "
+        f"found: {sorted(discovery.call_sites)}"
+    )
+    assert inline_key in discovery.call_sites, (
+        "constructing an inline getattr dynamic-lookup executor was not discovered — "
+        f"found: {sorted(discovery.call_sites)}"
+    )
+    assert discovery.call_sites[assigned_key] == {
+        "constructs DependencyAwareExecutor() (imported as cls)"
+    }
+    assert discovery.call_sites[inline_key] == {
+        "constructs DependencyAwareExecutor() (via dynamic getattr lookup)"
+    }
+    assert discovery.executor_sites == {assigned_key, inline_key}, (
+        "both dynamic-lookup DependencyAwareExecutor constructions must be flagged as "
+        f"executor sites — got: {sorted(discovery.executor_sites)}"
     )
 
 
