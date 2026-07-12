@@ -542,6 +542,95 @@ class TestValidateMcpToolAdmission:
             "unbounded-command-input",
             id="nullable-object-top-level-type-array-still-inspected",
         ),
+        # --- Descriptor-indirection evasion shapes (traversal coverage) ---
+        pytest.param(
+            "maintenance",
+            {
+                "type": "object",
+                "properties": {
+                    "options": {
+                        "type": "object",
+                        "properties": {"command": {"type": "string"}},
+                    }
+                },
+            },
+            "runs shell commands",
+            "unbounded-command-input",
+            id="nested-object-property-command-channel",
+        ),
+        pytest.param(
+            "maintenance",
+            {
+                "type": "object",
+                "anyOf": [
+                    {"properties": {"target": {"type": "string", "enum": ["a", "b"]}}},
+                    {"properties": {"command": {"type": "string"}}},
+                ],
+            },
+            "runs shell commands",
+            "unbounded-command-input",
+            id="anyof-branch-command-channel",
+        ),
+        pytest.param(
+            "maintenance",
+            {
+                "type": "object",
+                "properties": {"config": {"$ref": "#/$defs/CommandConfig"}},
+                "$defs": {
+                    "CommandConfig": {
+                        "type": "object",
+                        "properties": {"command": {"type": "string"}},
+                    }
+                },
+            },
+            "runs shell commands",
+            "unbounded-command-input",
+            id="local-ref-resolves-to-command-channel",
+        ),
+        pytest.param(
+            "maintenance",
+            {"type": "object", "additionalProperties": {"type": "string"}},
+            "runs shell commands",
+            "executor-description-with-broad-input",
+            id="freeform-additionalproperties-channel-with-executor-description",
+        ),
+        pytest.param(
+            "maintenance",
+            {
+                "type": "object",
+                "patternProperties": {"^command$": {"type": "string"}},
+            },
+            "runs shell commands",
+            "unbounded-command-input",
+            id="patternproperties-command-channel",
+        ),
+        pytest.param(
+            "exec",
+            {"type": "object", "additionalProperties": {"type": "string"}},
+            None,
+            "executor-identity-with-insufficient-schema",
+            id="strong-name-freeform-additionalproperties-channel",
+        ),
+        pytest.param(
+            "maintenance",
+            {
+                "type": "object",
+                "properties": {"config": {"$ref": "https://example.com/schemas/x.json"}},
+            },
+            "runs shell commands",
+            "executor-description-with-broad-input",
+            id="external-ref-fails-closed-for-executor-description",
+        ),
+        pytest.param(
+            "exec",
+            {
+                "type": "object",
+                "properties": {"config": {"$ref": "https://example.com/schemas/x.json"}},
+            },
+            None,
+            "executor-identity-with-insufficient-schema",
+            id="external-ref-fails-closed-for-strong-name",
+        ),
     ]
 
     ADMIT_CASES = [
@@ -631,6 +720,75 @@ class TestValidateMcpToolAdmission:
             None,
             id="nullable-object-type-array-with-harmless-property-still-admitted",
         ),
+        # --- False-positive fix: strong name + fixed operation + dynamic
+        # identifier/path/request-id fields is not executor-shaped. ---
+        pytest.param(
+            "exec",
+            {
+                "type": "object",
+                "properties": {
+                    "operation": {"type": "string", "enum": ["status", "restart"]},
+                    "service_id": {"type": "string"},
+                },
+            },
+            None,
+            id="strong-name-fixed-operation-with-dynamic-service-id",
+        ),
+        pytest.param(
+            "exec",
+            {
+                "type": "object",
+                "properties": {
+                    "operation": {"type": "string", "enum": ["status", "restart"]},
+                    "resource_path": {"type": "string"},
+                },
+            },
+            None,
+            id="strong-name-fixed-operation-with-dynamic-resource-path",
+        ),
+        pytest.param(
+            "exec",
+            {
+                "type": "object",
+                "properties": {
+                    "operation": {"type": "string", "enum": ["status", "restart"]},
+                    "request_id": {"type": "string"},
+                },
+            },
+            None,
+            id="strong-name-fixed-operation-with-dynamic-request-id",
+        ),
+        # --- Traversal coverage: harmless nested/composed schemas remain
+        # admitted (no command-like free-form channel reachable). ---
+        pytest.param(
+            "maintenance",
+            {
+                "type": "object",
+                "anyOf": [
+                    {"properties": {"mode": {"type": "string", "enum": ["fast", "slow"]}}},
+                    {"properties": {"level": {"type": "string", "enum": ["low", "high"]}}},
+                ],
+            },
+            None,
+            id="anyof-of-two-bounded-shapes",
+        ),
+        pytest.param(
+            "maintenance",
+            {
+                "type": "object",
+                "properties": {
+                    "options": {
+                        "type": "object",
+                        "properties": {
+                            "verbosity": {"type": "string", "enum": ["low", "high"]},
+                            "label": {"type": "string"},
+                        },
+                    }
+                },
+            },
+            None,
+            id="nested-config-object-without-command-like-fields",
+        ),
     ]
 
     @pytest.mark.parametrize("tool_name, input_schema, description, reason", DENY_CASES)
@@ -646,3 +804,34 @@ class TestValidateMcpToolAdmission:
     @pytest.mark.parametrize("tool_name, input_schema, description", ADMIT_CASES)
     def test_admits_ordinary_or_bounded_tool(self, tool_name, input_schema, description):
         assert validate_mcp_tool_admission(tool_name, input_schema, description) is None
+
+    def test_nested_channel_denial_does_not_echo_schema_or_description_content(self):
+        """Traversal reaches deep into nested/composed schemas to find the
+        command channel, but the denial message must still carry only the
+        tool name and stable reason code -- never schema values, the
+        offending key path, or the description text."""
+        sentinel_command_value_marker = "sentinel-should-never-appear-CmdSecretXYZ"
+        with pytest.raises(PermissionError) as exc_info:
+            validate_mcp_tool_admission(
+                "maintenance",
+                {
+                    "type": "object",
+                    "properties": {
+                        "options": {
+                            "type": "object",
+                            "properties": {
+                                "command": {
+                                    "type": "string",
+                                    "default": sentinel_command_value_marker,
+                                }
+                            },
+                        }
+                    },
+                },
+                f"runs shell commands with {sentinel_command_value_marker}",
+            )
+
+        message = str(exc_info.value)
+        assert sentinel_command_value_marker not in message
+        assert "maintenance" in message
+        assert "unbounded-command-input" in message

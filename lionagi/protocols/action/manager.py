@@ -247,11 +247,21 @@ class ActionManager(Manager):
             client = await MCPConnectionPool.get_client(server_config, security=security)
             tools = await client.list_tools()
 
+            # Validate every discovered descriptor BEFORE mutating the
+            # registry: a denial anywhere in the list must leave the
+            # registry exactly as it was, not partially populated with the
+            # tools that happened to be validated first.
+            for tool in tools:
+                validate_mcp_tool_admission(
+                    tool.name,
+                    getattr(tool, "inputSchema", None),
+                    getattr(tool, "description", None),
+                )
+
             for tool in tools:
                 tool_name = tool.name
                 input_schema = getattr(tool, "inputSchema", None)
                 description = getattr(tool, "description", None)
-                validate_mcp_tool_admission(tool_name, input_schema, description)
 
                 config_with_metadata = dict(server_config)
                 config_with_metadata["_original_tool_name"] = tool_name

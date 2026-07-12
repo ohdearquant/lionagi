@@ -229,6 +229,20 @@ def _has_executor_description_signal(description: object) -> bool:
     return any(f" {phrase} " in padded for phrase in _EXECUTOR_DESCRIPTION_PHRASES)
 
 
+_IDENTIFIER_LIKE_KEY_PATTERN = re.compile(
+    r"^(?:[a-z0-9]+_)*(?:id|ids|path|paths|uri|url|uuid|slug)$"
+)
+
+
+def _is_identifier_like_key(norm_key: str) -> bool:
+    """True for dynamic-but-benign resource identifiers (`service_id`,
+    `resource_path`, `request_id`, ...). These are excluded from the
+    strong-name "must be affirmatively bounded" fallback: a fixed-operation
+    tool with a free-form identifier field is not executor-shaped, even
+    though the identifier itself is an unbounded string."""
+    return bool(_IDENTIFIER_LIKE_KEY_PATTERN.match(norm_key))
+
+
 def _schema_is_insufficient(input_schema: object) -> bool:
     if input_schema is None or not isinstance(input_schema, Mapping):
         return True
@@ -292,6 +306,239 @@ def _property_is_free_form(prop_schema: object, is_categorized_key: bool) -> boo
     return False
 
 
+_MAX_SCHEMA_WALK_DEPTH = 12
+
+
+class _SchemaWalkResult:
+    """Accumulates classifier evidence discovered while traversing a
+    (possibly nested/composed) JSON Schema input descriptor."""
+
+    __slots__ = (
+        "free_form_command_keys",
+        "free_form_program_keys",
+        "free_form_argument_keys",
+        "free_form_payload_keys",
+        "non_auxiliary_free_form_keys",
+        "non_identifier_free_form_keys",
+        "selector_key_present",
+        "unresolvable",
+    )
+
+    def __init__(self) -> None:
+        self.free_form_command_keys: set[str] = set()
+        self.free_form_program_keys: set[str] = set()
+        self.free_form_argument_keys: set[str] = set()
+        self.free_form_payload_keys: set[str] = set()
+        self.non_auxiliary_free_form_keys: set[str] = set()
+        self.non_identifier_free_form_keys: set[str] = set()
+        self.selector_key_present = False
+        # True when a channel could not be proven bounded: an external/
+        # unresolvable `$ref`, a `$ref` cycle, a depth-cap trip, or a
+        # malformed `properties`/composition shape. Fed into fail-closed
+        # handling for descriptor-bearing tools whose name or description
+        # signals an executor; otherwise it is just insufficient evidence.
+        self.unresolvable = False
+
+
+def _resolve_local_ref(ref: str, root_schema: Mapping) -> Mapping | None:
+    """Resolve a same-document `$ref` (e.g. `#/$defs/Foo`) against
+    `root_schema`. Returns None if the pointer cannot be resolved locally."""
+    node: Any = root_schema
+    for raw_part in ref[2:].split("/"):
+        if raw_part == "":
+            continue
+        part = raw_part.replace("~1", "/").replace("~0", "~")
+        if not isinstance(node, Mapping) or part not in node:
+            return None
+        node = node[part]
+    return node if isinstance(node, Mapping) else None
+
+
+def _pattern_matches_categorized_key(pattern: object) -> str | None:
+    """If a `patternProperties` regex would match one of the recognized
+    command/process/argument/payload/selector key names, return that key."""
+    if not isinstance(pattern, str):
+        return None
+    try:
+        compiled = re.compile(pattern)
+    except re.error:
+        return None
+    for key in _CATEGORIZED_KEYS:
+        if compiled.search(key):
+            return key
+    return None
+
+
+def _record_free_form_key(norm_key: str, result: _SchemaWalkResult) -> None:
+    if norm_key in _COMMAND_KEYS:
+        result.free_form_command_keys.add(norm_key)
+    elif norm_key in _PROGRAM_KEYS:
+        result.free_form_program_keys.add(norm_key)
+    elif norm_key in _ARGUMENT_KEYS:
+        result.free_form_argument_keys.add(norm_key)
+    elif norm_key in _PAYLOAD_KEYS:
+        result.free_form_payload_keys.add(norm_key)
+    if norm_key not in _AUXILIARY_KEYS:
+        result.non_auxiliary_free_form_keys.add(norm_key)
+        if not _is_identifier_like_key(norm_key):
+            result.non_identifier_free_form_keys.add(norm_key)
+
+
+def _consider_property(
+    raw_key: object,
+    prop_schema: object,
+    root_schema: Mapping,
+    depth: int,
+    seen_refs: frozenset[str],
+    is_strong_name: bool,
+    is_executor_description: bool,
+    result: _SchemaWalkResult,
+) -> None:
+    norm_key = _normalize_mcp_identifier(raw_key)
+    if norm_key in _SELECTOR_KEYS:
+        result.selector_key_present = True
+
+    if isinstance(prop_schema, Mapping):
+        has_nested_shape = any(
+            k in prop_schema
+            for k in (
+                "properties",
+                "$ref",
+                "allOf",
+                "anyOf",
+                "oneOf",
+                "additionalProperties",
+                "patternProperties",
+            )
+        )
+        prop_type = prop_schema.get("type")
+        type_excludes_object = prop_type is not None and not _schema_type_includes(
+            prop_type, "object"
+        )
+        if has_nested_shape and not type_excludes_object:
+            # A container (e.g. a nested `options` object) is not itself a
+            # command/process/script value; walk its own reachable
+            # properties instead of classifying the container's key.
+            _walk_schema(
+                prop_schema,
+                root_schema,
+                depth + 1,
+                seen_refs,
+                is_strong_name,
+                is_executor_description,
+                result,
+            )
+            return
+
+    if not _property_is_free_form(prop_schema, norm_key in _CATEGORIZED_KEYS):
+        return
+
+    _record_free_form_key(norm_key, result)
+
+
+def _walk_schema(
+    schema: object,
+    root_schema: Mapping,
+    depth: int,
+    seen_refs: frozenset[str],
+    is_strong_name: bool,
+    is_executor_description: bool,
+    result: _SchemaWalkResult,
+) -> None:
+    """Bounded, cycle-safe traversal collecting classifier evidence from
+    `properties` (including nested objects), `allOf`/`anyOf`/`oneOf`
+    branches, local `$ref` resolution, `patternProperties`, and
+    `additionalProperties`."""
+    if depth > _MAX_SCHEMA_WALK_DEPTH:
+        result.unresolvable = True
+        return
+    if not isinstance(schema, Mapping):
+        return
+
+    ref = schema.get("$ref")
+    if ref is not None:
+        if not isinstance(ref, str) or not ref.startswith("#/") or ref in seen_refs:
+            # External/non-local or cyclic reference: cannot be proven
+            # bounded from this document alone.
+            result.unresolvable = True
+            return
+        resolved = _resolve_local_ref(ref, root_schema)
+        if resolved is None:
+            result.unresolvable = True
+            return
+        _walk_schema(
+            resolved,
+            root_schema,
+            depth + 1,
+            seen_refs | {ref},
+            is_strong_name,
+            is_executor_description,
+            result,
+        )
+        return
+
+    for comp_key in ("allOf", "anyOf", "oneOf"):
+        branches = schema.get(comp_key)
+        if branches is None:
+            continue
+        if not isinstance(branches, list):
+            result.unresolvable = True
+            continue
+        for branch in branches:
+            _walk_schema(
+                branch,
+                root_schema,
+                depth + 1,
+                seen_refs,
+                is_strong_name,
+                is_executor_description,
+                result,
+            )
+
+    properties = schema.get("properties")
+    if properties is not None:
+        if not isinstance(properties, Mapping):
+            result.unresolvable = True
+        else:
+            for raw_key, prop_schema in properties.items():
+                _consider_property(
+                    raw_key,
+                    prop_schema,
+                    root_schema,
+                    depth,
+                    seen_refs,
+                    is_strong_name,
+                    is_executor_description,
+                    result,
+                )
+
+    pattern_properties = schema.get("patternProperties")
+    if isinstance(pattern_properties, Mapping):
+        for pattern, pattern_schema in pattern_properties.items():
+            matched_key = _pattern_matches_categorized_key(pattern)
+            if matched_key is not None:
+                _consider_property(
+                    matched_key,
+                    pattern_schema,
+                    root_schema,
+                    depth,
+                    seen_refs,
+                    is_strong_name,
+                    is_executor_description,
+                    result,
+                )
+
+    additional_properties = schema.get("additionalProperties")
+    if additional_properties is not None and additional_properties is not False:
+        if _property_is_free_form(additional_properties, True):
+            # No fixed key name is available for a free-form map channel; it
+            # only counts as executor-shaped evidence when corroborated by
+            # the tool's own name or description (the same corroboration
+            # `unbounded-script-payload` already requires of payload keys).
+            if is_strong_name or is_executor_description:
+                _record_free_form_key("<additionalProperties>", result)
+
+
 def _classify_generic_executor(
     tool_name: str,
     input_schema: object | None,
@@ -301,44 +548,26 @@ def _classify_generic_executor(
     is_executor_description = _has_executor_description_signal(description)
     schema_insufficient = _schema_is_insufficient(input_schema)
 
-    properties: Mapping[str, Any] = {}
-    if not schema_insufficient and isinstance(input_schema, Mapping):
-        raw_properties = input_schema.get("properties")
-        if isinstance(raw_properties, Mapping):
-            properties = raw_properties
+    result = _SchemaWalkResult()
+    if isinstance(input_schema, Mapping):
+        top_type = input_schema.get("type")
+        if top_type is None or _schema_type_includes(top_type, "object"):
+            _walk_schema(
+                input_schema,
+                input_schema,
+                0,
+                frozenset(),
+                is_strong_name,
+                is_executor_description,
+                result,
+            )
 
-    free_form_command_keys: set[str] = set()
-    free_form_program_keys: set[str] = set()
-    free_form_argument_keys: set[str] = set()
-    free_form_payload_keys: set[str] = set()
-    non_auxiliary_free_form_keys: set[str] = set()
-    selector_key_present = False
-
-    for raw_key, prop_schema in properties.items():
-        norm_key = _normalize_mcp_identifier(raw_key)
-        if norm_key in _SELECTOR_KEYS:
-            selector_key_present = True
-
-        if not _property_is_free_form(prop_schema, norm_key in _CATEGORIZED_KEYS):
-            continue
-
-        if norm_key in _COMMAND_KEYS:
-            free_form_command_keys.add(norm_key)
-        elif norm_key in _PROGRAM_KEYS:
-            free_form_program_keys.add(norm_key)
-        elif norm_key in _ARGUMENT_KEYS:
-            free_form_argument_keys.add(norm_key)
-        elif norm_key in _PAYLOAD_KEYS:
-            free_form_payload_keys.add(norm_key)
-        if norm_key not in _AUXILIARY_KEYS:
-            non_auxiliary_free_form_keys.add(norm_key)
-
-    has_free_form_command = bool(free_form_command_keys)
-    s_process = bool(free_form_program_keys) and bool(free_form_argument_keys)
-    s_payload = bool(free_form_payload_keys) and (
-        selector_key_present or is_strong_name or is_executor_description
+    has_free_form_command = bool(result.free_form_command_keys)
+    s_process = bool(result.free_form_program_keys) and bool(result.free_form_argument_keys)
+    s_payload = bool(result.free_form_payload_keys) and (
+        result.selector_key_present or is_strong_name or is_executor_description
     )
-    s_broad = bool(non_auxiliary_free_form_keys)
+    s_broad = bool(result.non_auxiliary_free_form_keys)
 
     # An unbounded command-shaped field is dangerous on its own; unrelated
     # extra properties (benign or not) do not make it safe, and no name or
@@ -349,13 +578,16 @@ def _classify_generic_executor(
         return "unbounded-process-input"
     if s_payload:
         return "unbounded-script-payload"
-    if is_executor_description and s_broad:
+    if is_executor_description and (s_broad or result.unresolvable):
         return "executor-description-with-broad-input"
     # A strong executor identity must be affirmatively demonstrated safe
-    # (empty/no schema, or every property bounded via enum/const); any
-    # remaining free-form property -- even one not in a recognized
-    # command/process/payload key set -- leaves the identity uncorroborated.
-    if is_strong_name and (schema_insufficient or non_auxiliary_free_form_keys):
+    # (empty/no schema, or every property bounded via enum/const, or only
+    # auxiliary/identifier-like free-form fields); an unresolvable channel
+    # or a remaining executor-shaped free-form property leaves the identity
+    # uncorroborated.
+    if is_strong_name and (
+        schema_insufficient or result.unresolvable or result.non_identifier_free_form_keys
+    ):
         return "executor-identity-with-insufficient-schema"
     return None
 

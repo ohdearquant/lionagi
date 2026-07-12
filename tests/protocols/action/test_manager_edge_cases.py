@@ -422,6 +422,201 @@ class TestActionManagerMCPAdmission:
         assert result == ["format_run_command"]
         assert "format_run_command" in manager.registry
 
+    async def _discover_and_register(self, descriptor):
+        """Helper: register a server whose discovery returns a single mock
+        tool built from `descriptor` (name/description/inputSchema)."""
+        manager = ActionManager()
+        with patch("lionagi.service.connections.mcp_wrapper.MCPConnectionPool") as mock_pool:
+            mock_client = AsyncMock()
+            mock_tool = Mock()
+            mock_tool.name = descriptor["name"]
+            mock_tool.description = descriptor.get("description")
+            mock_tool.inputSchema = descriptor.get("inputSchema")
+            mock_client.list_tools = AsyncMock(return_value=[mock_tool])
+            mock_pool.get_client = AsyncMock(return_value=mock_client)
+            return manager, await manager.register_mcp_server(
+                {"command": "python", "args": ["-m", "srv"]}
+            )
+
+    async def _discover_and_expect_denial(self, descriptor):
+        manager = ActionManager()
+        with patch("lionagi.service.connections.mcp_wrapper.MCPConnectionPool") as mock_pool:
+            mock_client = AsyncMock()
+            mock_tool = Mock()
+            mock_tool.name = descriptor["name"]
+            mock_tool.description = descriptor.get("description")
+            mock_tool.inputSchema = descriptor.get("inputSchema")
+            mock_client.list_tools = AsyncMock(return_value=[mock_tool])
+            mock_pool.get_client = AsyncMock(return_value=mock_client)
+            with pytest.raises(PermissionError):
+                await manager.register_mcp_server({"command": "python", "args": ["-m", "srv"]})
+        return manager
+
+    @pytest.mark.asyncio
+    async def test_register_mcp_server_denies_nested_object_command_channel(self):
+        manager = await self._discover_and_expect_denial(
+            {
+                "name": "maintenance",
+                "description": "runs shell commands",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "options": {
+                            "type": "object",
+                            "properties": {"command": {"type": "string"}},
+                        }
+                    },
+                },
+            }
+        )
+        assert "maintenance" not in manager.registry
+
+    @pytest.mark.asyncio
+    async def test_register_mcp_server_denies_anyof_branch_command_channel(self):
+        manager = await self._discover_and_expect_denial(
+            {
+                "name": "maintenance",
+                "description": "runs shell commands",
+                "inputSchema": {
+                    "type": "object",
+                    "anyOf": [
+                        {"properties": {"target": {"type": "string", "enum": ["a", "b"]}}},
+                        {"properties": {"command": {"type": "string"}}},
+                    ],
+                },
+            }
+        )
+        assert "maintenance" not in manager.registry
+
+    @pytest.mark.asyncio
+    async def test_register_mcp_server_denies_local_ref_command_channel(self):
+        manager = await self._discover_and_expect_denial(
+            {
+                "name": "maintenance",
+                "description": "runs shell commands",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {"config": {"$ref": "#/$defs/CommandConfig"}},
+                    "$defs": {
+                        "CommandConfig": {
+                            "type": "object",
+                            "properties": {"command": {"type": "string"}},
+                        }
+                    },
+                },
+            }
+        )
+        assert "maintenance" not in manager.registry
+
+    @pytest.mark.asyncio
+    async def test_register_mcp_server_denies_freeform_additional_properties_channel(self):
+        manager = await self._discover_and_expect_denial(
+            {
+                "name": "maintenance",
+                "description": "runs shell commands",
+                "inputSchema": {
+                    "type": "object",
+                    "additionalProperties": {"type": "string"},
+                },
+            }
+        )
+        assert "maintenance" not in manager.registry
+
+    @pytest.mark.asyncio
+    async def test_register_mcp_server_denies_pattern_properties_command_channel(self):
+        manager = await self._discover_and_expect_denial(
+            {
+                "name": "maintenance",
+                "description": "runs shell commands",
+                "inputSchema": {
+                    "type": "object",
+                    "patternProperties": {"^command$": {"type": "string"}},
+                },
+            }
+        )
+        assert "maintenance" not in manager.registry
+
+    @pytest.mark.asyncio
+    async def test_register_mcp_server_admits_strong_name_with_dynamic_resource_id(self):
+        manager, result = await self._discover_and_register(
+            {
+                "name": "exec",
+                "description": None,
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "operation": {"type": "string", "enum": ["status", "restart"]},
+                        "service_id": {"type": "string"},
+                    },
+                },
+            }
+        )
+        assert result == ["exec"]
+        assert "exec" in manager.registry
+
+    @pytest.mark.asyncio
+    async def test_register_mcp_server_admits_nested_config_without_command_fields(self):
+        manager, result = await self._discover_and_register(
+            {
+                "name": "maintenance",
+                "description": None,
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "options": {
+                            "type": "object",
+                            "properties": {
+                                "verbosity": {"type": "string", "enum": ["low", "high"]},
+                                "label": {"type": "string"},
+                            },
+                        }
+                    },
+                },
+            }
+        )
+        assert result == ["maintenance"]
+        assert "maintenance" in manager.registry
+
+    @pytest.mark.asyncio
+    async def test_register_mcp_server_denied_tool_leaves_registry_untouched_with_earlier_allowed(
+        self,
+    ):
+        """A denied descriptor anywhere in the discovered list must not leave
+        an earlier, already-processed tool registered: the whole descriptor
+        list is validated before any registry mutation."""
+        manager = ActionManager()
+
+        with patch("lionagi.service.connections.mcp_wrapper.MCPConnectionPool") as mock_pool:
+            mock_client = AsyncMock()
+
+            allowed_tool = Mock()
+            allowed_tool.name = "run_tests"
+            allowed_tool.description = "Runs the project test suite"
+            allowed_tool.inputSchema = {
+                "type": "object",
+                "properties": {
+                    "suite": {"type": "string", "enum": ["unit", "integration"]},
+                },
+            }
+
+            denied_tool = Mock()
+            denied_tool.name = "bash"
+            denied_tool.description = None
+            denied_tool.inputSchema = {
+                "type": "object",
+                "properties": {"script": {"type": "string"}},
+            }
+
+            mock_client.list_tools = AsyncMock(return_value=[allowed_tool, denied_tool])
+            mock_pool.get_client = AsyncMock(return_value=mock_client)
+
+            with pytest.raises(PermissionError):
+                await manager.register_mcp_server({"command": "python", "args": ["-m", "srv"]})
+
+        assert "run_tests" not in manager.registry
+        assert "bash" not in manager.registry
+        assert len(manager.registry) == 0
+
 
 class TestLoadMCPToolsFunction:
     @pytest.mark.asyncio
