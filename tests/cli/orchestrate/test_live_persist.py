@@ -297,10 +297,10 @@ async def test_hook_swallows_db_write_failure(
     _register_branch_hook(env._live_persist, worker)
     hook = env._live_persist["hooks"][-1][1]
 
-    async def boom(self, msg):
+    async def boom(self, msg, **kwargs):
         raise RuntimeError("simulated busy timeout")
 
-    monkeypatch.setattr(StateDB, "insert_message", boom)
+    monkeypatch.setattr(StateDB, "_persist_live_message", boom)
 
     msg = MessageManager.create_instruction(
         instruction="hi",
@@ -1224,6 +1224,52 @@ async def test_stop_assistant_output_only_stays_completed(
         s = await db.get_session(ctx["session_id"])
     assert s is not None
     assert s["status"] == "completed"
+
+
+async def test_stop_flushes_pending_only_message_before_completion_evidence(
+    temp_db_path: Path,
+    tmp_path: Path,
+):
+    """Teardown retries the only text event before deciding the run is empty."""
+    from sqlalchemy import event
+
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    _init_git_repo(repo)
+
+    env = _minimal_env()
+    env.cwd = str(repo)
+    await start_live_persist(env, invocation_kind="flow")
+    ctx = env._live_persist
+    assert ctx is not None
+    db = ctx["db"]
+    progression_updates = 0
+
+    def fail_second_progression(conn, cursor, statement, parameters, context, executemany):
+        nonlocal progression_updates
+        if statement.lstrip().startswith("UPDATE progressions"):
+            progression_updates += 1
+            if progression_updates == 2:
+                raise RuntimeError("injected middle progression failure")
+
+    event.listen(db._engine.sync_engine, "before_cursor_execute", fail_second_progression)
+    try:
+        only_message = await env.orc_branch.msgs.a_add_message(assistant_response="durable answer")
+    finally:
+        event.remove(db._engine.sync_engine, "before_cursor_execute", fail_second_progression)
+
+    assert await db.get_progression(ctx["session_prog_id"]) == []
+    assert ctx["message_retry_queues"][0].pending_count == 1
+
+    final_status = await stop_live_persist(env, status="completed")
+
+    async with StateDB() as check_db:
+        session_progression = await check_db.get_progression(ctx["session_prog_id"])
+        session = await check_db.get_session(ctx["session_id"])
+    assert session_progression == [str(only_message.id)]
+    assert final_status == "completed"
+    assert session["status"] == "completed"
+    assert session["status_reason_code"] != "run.completed_empty.no_evidence"
 
 
 async def test_stop_whitespace_only_assistant_message_still_gates(
