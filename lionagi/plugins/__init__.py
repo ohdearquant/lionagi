@@ -19,7 +19,14 @@ from __future__ import annotations
 
 from .discovery import DiscoveredPlugin, discover_plugins
 from .manifest import Capabilities, ManifestError, PluginManifest, parse_manifest
-from .registry import PluginActivationError, PluginRecord, PluginRegistry, PluginState
+from .registry import (
+    PluginActivationError,
+    PluginRecord,
+    PluginRegistry,
+    PluginState,
+    PluginToolCollisionError,
+    ToolTarget,
+)
 from .trust import TrustState, build_trust_disclosure, trust_plugin, trust_state
 
 __all__ = (
@@ -31,6 +38,8 @@ __all__ = (
     "PluginRecord",
     "PluginRegistry",
     "PluginState",
+    "PluginToolCollisionError",
+    "ToolTarget",
     "TrustState",
     "build_trust_disclosure",
     "discover_plugins",

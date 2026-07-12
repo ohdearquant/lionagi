@@ -130,9 +130,41 @@ class ActionManager(Manager):
 
         tool = self.registry.get(func, None)
         if not isinstance(tool, Tool):
+            tool = self._resolve_plugin_tool(func)
+        if not isinstance(tool, Tool):
             raise ValueError(f"Function {func} is not registered.")
 
         return FunctionCalling(func_tool=tool, arguments=args)
+
+    def _resolve_plugin_tool(self, name: str) -> Tool | None:
+        """ADR-0088 D3 consumer: on a registry miss, ask the plugin registry whether a
+        trusted, enabled, version-compatible plugin declares a tool named *name*.
+
+        Deferred import — `lionagi.plugins` must stay out of the import graph
+        until an actual miss occurs (see tests/test_import_laziness.py).
+        Resolution and trust are re-checked fresh on every call (never cached
+        onto ``self.registry``), so a plugin disabled or edited mid-session
+        stops being reachable through this path immediately. Returns ``None``
+        when no plugin declares *name* — the caller's existing "not
+        registered" error applies unchanged. Raises ``PluginToolCollisionError``
+        unmodified when two enabled plugins declare the same tool name
+        (ADR-0088 D6): that is a hard error, not a miss.
+        """
+        from lionagi.libs.schema.function_to_schema import function_to_schema
+        from lionagi.plugins.registry import PluginRegistry
+
+        resolved = PluginRegistry.resolve_tool_target(name)
+        if resolved is None:
+            return None
+
+        callable_ = PluginRegistry.activate_target(resolved.plugin_name, resolved.target)
+        # The manifest's declared tool `name` (what the caller/model asked
+        # for) is independent of the underlying callable's own `__name__` —
+        # the schema advertised for this Tool must reflect the requested
+        # name, not whatever the plugin author called the Python function.
+        schema = function_to_schema(callable_)
+        schema["function"]["name"] = name
+        return Tool(func_callable=callable_, tool_schema=schema)
 
     async def invoke(
         self,

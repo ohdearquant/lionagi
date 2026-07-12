@@ -40,6 +40,8 @@ __all__ = (
     "PluginRecord",
     "PluginRegistry",
     "PluginState",
+    "PluginToolCollisionError",
+    "ToolTarget",
 )
 
 
@@ -82,6 +84,31 @@ class PluginActivationError(RuntimeError):
     def __init__(self, plugin_name: str, target: str, message: str) -> None:
         self.plugin_name = plugin_name
         self.target = target
+        super().__init__(message)
+
+
+@dataclass
+class ToolTarget:
+    """A plugin-declared tool resolved for a consumer, e.g. ``ActionManager``.
+
+    Carries just enough to activate it: which plugin owns the name, and the
+    manifest's bundle-relative ``target`` string to hand to ``activate_target``.
+    """
+
+    plugin_name: str
+    target: str
+
+
+class PluginToolCollisionError(RuntimeError):
+    """ADR-0088 D6: two enabled plugins declare the same non-namespaced tool name.
+
+    Tool names are called bare by the model with no namespace to disambiguate
+    them, so this is a hard error rather than a shadow — the diagnostic names
+    both plugins and the surface, and resolution is human: disable one.
+    """
+
+    def __init__(self, tool_name: str, message: str) -> None:
+        self.tool_name = tool_name
         super().__init__(message)
 
 
@@ -318,6 +345,14 @@ def _revalidate_trust(record: PluginRecord) -> TrustState:
     return _trust_state(discovered)
 
 
+def _tool_target_for(manifest: PluginManifest, tool_name: str) -> str | None:
+    """The declared ``target`` string for *tool_name* in *manifest*, or ``None``."""
+    for tool in manifest.capabilities.tools:
+        if tool.name == tool_name:
+            return tool.target
+    return None
+
+
 def _declared_activation_targets(manifest: PluginManifest) -> frozenset[str]:
     """The exact ``target``/``module`` strings ``activate_target`` may import.
 
@@ -403,6 +438,47 @@ class PluginRegistry:
                 stem = Path(rel).stem
                 out[f"{record.name}/{stem}"] = (record.name, record.bundle_dir / rel)
         return out
+
+    @classmethod
+    def resolve_tool_target(cls, tool_name: str) -> ToolTarget | None:
+        """ADR-0088 D3 consumer trigger: ``ActionManager`` tool-name-resolution miss.
+
+        Scans every plugin record for one declaring *tool_name* under
+        ``capabilities.tools``. Returns the owning plugin's target when
+        exactly one trusted, enabled, ACTIVE plugin declares it; returns
+        ``None`` when no plugin declares it at all, so a caller's own
+        "tool not registered" miss error applies unchanged. Raises
+        ``PluginToolCollisionError`` when the name is claimed by multiple
+        enabled plugins (ADR-0088 D6) — the discovery-time snapshot already
+        computed that ``COLLISION`` state (see ``_build_snapshot``'s
+        ``_NAMED_SURFACES`` pass); this call surfaces the same diagnostic
+        rather than re-deriving it.
+
+        Trust is revalidated per call (``_revalidate_trust``), not read from
+        the cached snapshot verdict, matching every other capability-exposing
+        read in this module.
+        """
+        collision_message: str | None = None
+        match: ToolTarget | None = None
+        for record in cls._ensure_loaded():
+            if record.manifest is None:
+                continue
+            target = _tool_target_for(record.manifest, tool_name)
+            if target is None:
+                continue
+            if record.state is PluginState.COLLISION:
+                collision_message = record.error or collision_message
+                continue
+            if record.state is not PluginState.ACTIVE:
+                continue
+            if _revalidate_trust(record) is not TrustState.TRUSTED:
+                continue
+            match = ToolTarget(plugin_name=record.name, target=target)
+
+        if collision_message is not None:
+            raise PluginToolCollisionError(tool_name, collision_message)
+
+        return match
 
     @classmethod
     def activate_target(cls, plugin_name: str, target: str) -> Any:
