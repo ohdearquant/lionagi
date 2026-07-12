@@ -1201,7 +1201,13 @@ class _SinkVisitor(ast.NodeVisitor):
           Only establishing deltas propagate -- never clears (add-only), and
           never the module overlay the class merely inherited (propagating
           that would un-mask enclosing locals the declaration does not
-          touch).
+          touch). On the single-valued constructor-alias channel the
+          establishment OVERWRITES each view's existing attribution (a
+          stale alias kept in a globally-resolving view would hide the real
+          post-rebind executor construction), except that an executor
+          attribution is never replaced by a non-executor one -- the
+          attribution may only move toward reporting an executor, so every
+          direction of rebind errs reportward.
 
         Ordinary (undeclared) class-body binders never leak OUT to the
         enclosing scope -- ``_collect_scope_binding_events`` stops at
@@ -1271,12 +1277,29 @@ class _SinkVisitor(ast.NodeVisitor):
         # alias assignment) genuinely rebinds the MODULE's `x` -- statements
         # after the class definition really read it. Propagate those
         # establishments (the delta the replay added relative to the
-        # pre-replay snapshot, restricted to declared names) additively to
-        # every view on the scope stacks, module snapshot included. Add-only
-        # by construction: clears never propagate, and the inherited overlay
-        # is excluded by the delta (propagating it would un-mask enclosing
-        # locals the declaration does not touch -- see
+        # pre-replay snapshot, restricted to declared names) to every view on
+        # the scope stacks, module snapshot included. The provenance channels
+        # are pure sets, so their propagation is additive by construction:
+        # clears never propagate, and the inherited overlay is excluded by
+        # the delta (propagating it would un-mask enclosing locals the
+        # declaration does not touch -- see
         # test_class_body_global_declaration_does_not_leak_into_enclosing_function).
+        # The ALIAS channel is single-valued, so "add-only" there means the
+        # attribution may only move TOWARD reporting an executor, never away
+        # from one: the fresh module binding OVERWRITES a view's existing
+        # attribution (a globally-resolving read after the class definition
+        # really constructs the new target, and keeping the stale alias
+        # would hide a real executor site) -- UNLESS the overwrite would
+        # replace an executor attribution with a non-executor one, in which
+        # case the executor attribution is kept. That bias is what makes the
+        # rule safe without resolving, per view, whether the name is a
+        # lexical local, a closure read, or a module read there (and safe
+        # against the temporal ambiguity a resolution walk cannot decide: a
+        # globally-resolving read in an ANCESTOR frame may execute before or
+        # after this class definition ever runs). Every cell errs reportward:
+        # a view whose read really resolves to its own non-executor local
+        # can gain a spurious executor candidate (review cost only), and no
+        # rebind in either direction can ever remove an executor attribution.
         for name in global_names:
             established_channels = [
                 channel
@@ -1305,7 +1328,12 @@ class _SinkVisitor(ast.NodeVisitor):
                 if name in env.importlib_mods and name not in pre_replay.importlib_mods:
                     view_env.importlib_mods.add(name)
                 if established_alias is not None:
-                    view_bound.setdefault(name, established_alias)
+                    current = view_bound.get(name)
+                    if (
+                        current not in _EXECUTOR_CONSTRUCTOR_NAMES
+                        or established_alias in _EXECUTOR_CONSTRUCTOR_NAMES
+                    ):
+                        view_bound[name] = established_alias
         self._flow_env_stack.append(env)
         self._bound_stack.append(bound)
         self.generic_visit(node)
@@ -1351,11 +1379,13 @@ class _SinkVisitor(ast.NodeVisitor):
             # the scope stack (index 0). Function-scope replays never mutate
             # it in place (only ever copies further down; see
             # _flow_env.copy()/dict(self._constructor_aliases) above); the
-            # ONLY in-place updates it ever receives are ADDITIVE class-body
-            # global establishments (see visit_ClassDef), which reflect a
-            # genuine module rebinding executed at class-definition time --
-            # so it always reflects the module's own bindings regardless of
-            # how many function scopes are currently pushed.
+            # ONLY in-place updates it ever receives are class-body global
+            # establishments (see visit_ClassDef) -- additive on the
+            # provenance sets, and on the alias channel a genuine module
+            # rebinding executed at class-definition time may replace a
+            # non-executor attribution (never an executor one) -- so it
+            # always reflects the module's own bindings regardless of how
+            # many function scopes are currently pushed.
             # `nonlocal`-declared names need no such overlay: nonlocal
             # resolves against the nearest ENCLOSING FUNCTION scope, and
             # `env`/`bound` here already start as a copy of that exact
@@ -3067,6 +3097,169 @@ def test_class_body_global_import_establishment_flows_to_enclosing_code(tmp_path
         f"code after the class definition — found: {sorted(discovery.call_sites)}"
     )
     assert key in discovery.executor_sites
+
+
+def test_class_body_global_rebind_of_module_alias_updates_enclosing_attribution(tmp_path):
+    """A class-body ``global`` rebind of a name the MODULE already aliases to
+    a non-executor constructor genuinely rebinds the module name at
+    class-definition time -- the enclosing function's construction after the
+    class really builds the NEW target. Keeping the stale module attribution
+    in any globally-resolving view would record a non-executor construction
+    and omit the real executor site: a missed real site, not a conservative
+    error. The runtime check proves the ordering with recording fakes for
+    both constructors."""
+    rogue = tmp_path / "class_global_alias_rebind.py"
+    source = (
+        "from fake_runtime import Graph as Ctor\n\n\n"
+        "def outer(session, graph):\n"
+        "    class C:\n"
+        "        global Ctor\n"
+        "        from fake_runtime import DependencyAwareExecutor as Ctor\n"
+        "    return Ctor(session, graph)\n"
+    )
+    rogue.write_text(source)
+
+    import symtable as _symtable
+
+    top = _symtable.symtable(source, str(rogue), "exec")
+    (outer_table,) = (c for c in top.get_children() if c.get_name() == "outer")
+    assert outer_table.lookup("Ctor").is_global()
+    (class_table,) = (c for c in outer_table.get_children() if c.get_name() == "C")
+    assert class_table.lookup("Ctor").is_global()
+
+    import sys as _sys
+    import types as _types
+
+    graph_built: list[tuple[object, object]] = []
+    executor_built: list[tuple[object, object]] = []
+    fake_runtime = _types.ModuleType("fake_runtime")
+    fake_runtime.Graph = lambda session, graph: graph_built.append((session, graph))
+    fake_runtime.DependencyAwareExecutor = lambda session, graph: executor_built.append(
+        (session, graph)
+    )
+    namespace: dict[str, object] = {}
+    with mock.patch.dict(_sys.modules, {"fake_runtime": fake_runtime}):
+        exec(compile(source, str(rogue), "exec"), namespace)
+        namespace["outer"]("SESSION", "GRAPH")
+    assert executor_built == [("SESSION", "GRAPH")] and graph_built == [], (
+        "the fixture must really construct the class-rebound executor target at "
+        "runtime, not the stale module alias"
+    )
+
+    discovery = discover_call_and_construct_sites(tmp_path, base=tmp_path)
+
+    key = ("class_global_alias_rebind.py", "outer")
+    assert key in discovery.executor_sites, (
+        "a class-global rebind of an existing module constructor alias must "
+        "update the attribution every globally-resolving view reads — found: "
+        f"{sorted(discovery.executor_sites)}"
+    )
+
+
+def test_enclosing_local_executor_alias_survives_class_global_non_executor_rebind(tmp_path):
+    """The reverse rebind direction: the enclosing function holds its OWN
+    lexical-local executor alias, and the class body's ``global`` rebind
+    points the MODULE name at a non-executor. The enclosing read after the
+    class resolves to the function's local (the module rebind cannot touch
+    it), so the real construction is still the executor -- the propagation
+    must never let a non-executor establishment displace an executor
+    attribution. The runtime check proves the local really wins."""
+    rogue = tmp_path / "class_global_rebind_preserves_local_executor.py"
+    source = (
+        "def outer(session, graph):\n"
+        "    from fake_runtime import DependencyAwareExecutor as Ctor\n"
+        "    class C:\n"
+        "        global Ctor\n"
+        "        from fake_runtime import Graph as Ctor\n"
+        "    return Ctor(session, graph)\n"
+    )
+    rogue.write_text(source)
+
+    import symtable as _symtable
+
+    top = _symtable.symtable(source, str(rogue), "exec")
+    (outer_table,) = (c for c in top.get_children() if c.get_name() == "outer")
+    assert outer_table.lookup("Ctor").is_local()
+    (class_table,) = (c for c in outer_table.get_children() if c.get_name() == "C")
+    assert class_table.lookup("Ctor").is_global()
+
+    import sys as _sys
+    import types as _types
+
+    graph_built: list[tuple[object, object]] = []
+    executor_built: list[tuple[object, object]] = []
+    fake_runtime = _types.ModuleType("fake_runtime")
+    fake_runtime.Graph = lambda session, graph: graph_built.append((session, graph))
+    fake_runtime.DependencyAwareExecutor = lambda session, graph: executor_built.append(
+        (session, graph)
+    )
+    namespace: dict[str, object] = {}
+    with mock.patch.dict(_sys.modules, {"fake_runtime": fake_runtime}):
+        exec(compile(source, str(rogue), "exec"), namespace)
+        namespace["outer"]("SESSION", "GRAPH")
+    assert executor_built == [("SESSION", "GRAPH")] and graph_built == [], (
+        "the fixture must really construct through the function's own local "
+        "executor alias — the class-global rebind targets the module, not it"
+    )
+
+    discovery = discover_call_and_construct_sites(tmp_path, base=tmp_path)
+
+    key = ("class_global_rebind_preserves_local_executor.py", "outer")
+    assert key in discovery.executor_sites, (
+        "a non-executor class-global establishment must never displace an "
+        f"executor attribution — found: {sorted(discovery.executor_sites)}"
+    )
+
+
+def test_class_global_executor_rebind_over_local_non_executor_alias_errs_reportward(tmp_path):
+    """Conscious over-approximation pin for the remaining rebind cell: the
+    enclosing function's OWN lexical-local alias is a non-executor, and the
+    class-global rebind establishes an executor. The runtime proof shows the
+    real construction is the local non-executor (the module rebind cannot
+    touch a lexical local), but the scanner still reports an executor
+    candidate here: distinguishing this cell would require per-view
+    local/closure/module resolution whose mistakes hide real sites, so the
+    alias propagation deliberately errs toward reporting an executor. A
+    spurious candidate costs review attention; the reverse error violates
+    the zero-false-negative contract."""
+    rogue = tmp_path / "class_global_executor_rebind_over_local.py"
+    source = (
+        "def outer(session, graph):\n"
+        "    from fake_runtime import Graph as Ctor\n"
+        "    class C:\n"
+        "        global Ctor\n"
+        "        from fake_runtime import DependencyAwareExecutor as Ctor\n"
+        "    return Ctor(session, graph)\n"
+    )
+    rogue.write_text(source)
+
+    import sys as _sys
+    import types as _types
+
+    graph_built: list[tuple[object, object]] = []
+    executor_built: list[tuple[object, object]] = []
+    fake_runtime = _types.ModuleType("fake_runtime")
+    fake_runtime.Graph = lambda session, graph: graph_built.append((session, graph))
+    fake_runtime.DependencyAwareExecutor = lambda session, graph: executor_built.append(
+        (session, graph)
+    )
+    namespace: dict[str, object] = {}
+    with mock.patch.dict(_sys.modules, {"fake_runtime": fake_runtime}):
+        exec(compile(source, str(rogue), "exec"), namespace)
+        namespace["outer"]("SESSION", "GRAPH")
+    assert graph_built == [("SESSION", "GRAPH")] and executor_built == [], (
+        "the fixture must really construct the local non-executor alias — this "
+        "test pins the scanner's deliberate reportward error for that cell"
+    )
+
+    discovery = discover_call_and_construct_sites(tmp_path, base=tmp_path)
+
+    key = ("class_global_executor_rebind_over_local.py", "outer")
+    assert key in discovery.executor_sites, (
+        "the alias propagation must err reportward in this cell (spurious "
+        "executor candidate, never a hidden one) — found: "
+        f"{sorted(discovery.executor_sites)}"
+    )
 
 
 def test_annotated_assignment_establishes_provenance_like_plain_assignment(tmp_path):
