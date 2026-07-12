@@ -396,6 +396,12 @@ class TestActionManagerMCPAdmission:
                                 "enum": ["status", "restart"],
                             }
                         },
+                        # `additionalProperties: False` closes the object so
+                        # the strong-name sufficiency gate can prove it
+                        # bounded (an implicit-open object never proves
+                        # sufficient no matter how bounded its declared
+                        # properties are).
+                        "additionalProperties": False,
                     },
                 },
             },
@@ -548,6 +554,7 @@ class TestActionManagerMCPAdmission:
                         "operation": {"type": "string", "enum": ["status", "restart"]},
                         "service_id": {"type": "string"},
                     },
+                    "additionalProperties": False,
                 },
             }
         )
@@ -739,6 +746,91 @@ class TestActionManagerMCPAdmission:
             }
         )
         assert "maintenance" not in manager.registry
+
+    @pytest.mark.asyncio
+    async def test_register_mcp_server_denies_nested_array_item_defaulting_open(self):
+        """A missing `items` keyword on a nested array item
+        defaults to `true` (an unconstrained rest) in Draft 2020-12 -- an
+        inner `{"type": "array"}` with no `items`/`prefixItems` of its own
+        is a free-form argv channel one level deeper, not bounded."""
+        manager = await self._discover_and_expect_denial(
+            {
+                "name": "exec",
+                "description": None,
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "operation": {"const": "status"},
+                        "args": {"type": "array", "items": {"type": "array"}},
+                    },
+                },
+            }
+        )
+        assert "exec" not in manager.registry
+
+    @pytest.mark.asyncio
+    async def test_register_mcp_server_denies_prefixitems_only_array_open_rest(self):
+        """`prefixItems` only constrains the array's prefix; an
+        absent `items` leaves every position after it entirely open."""
+        manager = await self._discover_and_expect_denial(
+            {
+                "name": "exec",
+                "description": None,
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "operation": {"const": "status"},
+                        "args": {
+                            "type": "array",
+                            "prefixItems": [{"enum": ["fixed"]}],
+                        },
+                    },
+                },
+            }
+        )
+        assert "exec" not in manager.registry
+
+    @pytest.mark.asyncio
+    async def test_register_mcp_server_denies_bounded_items_with_unbounded_prefixitems(self):
+        """A bounded `items` schema (enum-restricted) does not
+        launder an unbounded `prefixItems` member sitting in the array's
+        fixed prefix."""
+        manager = await self._discover_and_expect_denial(
+            {
+                "name": "exec",
+                "description": None,
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "operation": {"const": "status"},
+                        "args": {
+                            "type": "array",
+                            "items": {"enum": ["fixed"]},
+                            "prefixItems": [{"type": "string"}],
+                        },
+                    },
+                },
+            }
+        )
+        assert "exec" not in manager.registry
+
+    @pytest.mark.asyncio
+    async def test_register_mcp_server_denies_open_object_with_only_bounded_properties(self):
+        """A strong-executor-name schema with non-empty
+        `properties` is only actually bounded when the object is closed
+        (`additionalProperties: False`); the implicit-open default still
+        admits an undeclared key riding alongside a bounded `operation`."""
+        manager = await self._discover_and_expect_denial(
+            {
+                "name": "exec",
+                "description": None,
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {"operation": {"const": "status"}},
+                },
+            }
+        )
+        assert "exec" not in manager.registry
 
     @pytest.mark.asyncio
     async def test_register_mcp_server_tool_names_mixed_list_leaves_registry_untouched(self):

@@ -260,6 +260,36 @@ def _is_exec_tainted_key(norm_key: str) -> bool:
     return any(token in _EXEC_TAINTED_KEY_TOKENS for token in norm_key.split("_"))
 
 
+# Non-object JSON Schema types whose instances are not intrinsically
+# finite: a root `type` UNION that includes one of these (without a
+# top-level `enum`/`const` collapsing the whole instance to a fixed set) has
+# a branch that can carry an arbitrary value, bypassing every object-shaped
+# constraint (`properties`, `additionalProperties`, ...) entirely.
+_UNBOUNDED_NON_OBJECT_TYPES = frozenset({"string", "number", "integer", "array"})
+
+
+def _type_union_has_free_form_alternative(top_type: list, schema: Mapping) -> bool:
+    if "enum" in schema or "const" in schema:
+        return False
+    return any(t in _UNBOUNDED_NON_OBJECT_TYPES for t in top_type)
+
+
+# Keywords on a node carrying a `$ref` that are annotation-only and never
+# themselves constrain the instance -- present alongside `$ref`, they add no
+# sibling obligation the sufficiency check needs to evaluate.
+_ANNOTATION_ONLY_REF_SIBLING_KEYWORDS = frozenset(
+    {"description", "title", "$comment", "examples", "default", "$defs", "definitions"}
+)
+
+
+def _has_structural_ref_siblings(siblings: Mapping) -> bool:
+    """True when a `$ref` node's sibling keywords (the node minus `$ref`
+    itself) include anything beyond pure annotation -- i.e. something that,
+    per Draft 2020-12, constrains the same instance as the reference target
+    and must be evaluated in its own right rather than discarded."""
+    return any(key not in _ANNOTATION_ONLY_REF_SIBLING_KEYWORDS for key in siblings)
+
+
 def _schema_is_insufficient(input_schema: object) -> bool:
     if input_schema is None or not isinstance(input_schema, Mapping):
         return True
@@ -302,6 +332,14 @@ def _schema_is_insufficient_node(
     # insufficient.
     if top_type is not None and not _schema_type_includes(top_type, "object"):
         return True
+    # A type UNION that includes "object" alongside a type that can itself
+    # carry a free-form value (`string`/`number`/`integer`/`array`, absent a
+    # top-level `enum`/`const` pinning the whole instance) is only as
+    # bounded as its least-bounded alternative: an instance satisfying the
+    # non-object branch never even reaches the object-specific
+    # `properties`/`additionalProperties` keywords below.
+    if isinstance(top_type, list) and _type_union_has_free_form_alternative(top_type, schema):
+        return True
 
     ref = schema.get(_REF_KEYWORD)
     if ref is not None:
@@ -310,9 +348,25 @@ def _schema_is_insufficient_node(
         resolved = _resolve_local_ref(ref, root_schema)
         if resolved is None:
             return True
-        return _schema_is_insufficient_node(
+        target_insufficient = _schema_is_insufficient_node(
             resolved, root_schema, seen_refs | {ref}, depth + 1, budget
         )
+        if not target_insufficient:
+            return False
+        # Draft 2020-12 evaluates `$ref` SIBLINGS -- they are not discarded.
+        # A closed/bounded target does not make the overall node sufficient
+        # if a sibling keyword (evaluated against the SAME instance)
+        # reopens it (e.g. a sibling `properties` entry with its own
+        # implicit-open `additionalProperties`). Pure annotation siblings
+        # (`description`, `title`, ...) contribute nothing and must not
+        # force an otherwise-open target's insufficiency onto an
+        # unrelated, harmless caller-facing property.
+        siblings = {k: v for k, v in schema.items() if k != _REF_KEYWORD}
+        if _has_structural_ref_siblings(siblings):
+            return _schema_is_insufficient_node(
+                siblings, root_schema, seen_refs | {ref}, depth + 1, budget
+            )
+        return True
 
     for comp_key in ("oneOf", "anyOf"):
         branches = schema.get(comp_key)
@@ -340,9 +394,21 @@ def _schema_is_insufficient_node(
         return True
     properties = schema.get("properties")
     props = properties if isinstance(properties, Mapping) else {}
+    additional = schema.get("additionalProperties")
     if not props:
-        return schema.get("additionalProperties") is not False
-    return False
+        return additional is not False
+    # A non-empty `properties` mapping only proves the schema bounded if the
+    # object is actually CLOSED: JSON Schema's `additionalProperties`
+    # defaults to permissive (implicit `true`), so a caller can always add
+    # an undeclared key -- a fixed `operation` enum/const does not stop a
+    # `command` property from riding alongside it unless
+    # `additionalProperties` is `false` (or itself restricted to a finite
+    # enum/const of values).
+    if additional is False:
+        return False
+    if isinstance(additional, Mapping) and ("enum" in additional or "const" in additional):
+        return False
+    return True
 
 
 def _property_is_bounded(prop_schema: object) -> bool:
@@ -350,10 +416,12 @@ def _property_is_bounded(prop_schema: object) -> bool:
         return False
     if "enum" in prop_schema or "const" in prop_schema:
         return True
-    if _schema_type_includes(prop_schema.get("type"), "array"):
-        items = prop_schema.get("items")
-        if isinstance(items, Mapping) and ("enum" in items or "const" in items):
-            return True
+    # Deliberately no array carve-out here: an array's boundedness depends on
+    # BOTH its `prefixItems` members and its `items` (rest-of-array) schema
+    # together (see `_array_reaches_free_form`) -- a bounded `items` alone
+    # (e.g. `items: {"enum": [...]}`) says nothing about an unbounded
+    # `prefixItems` member sitting alongside it, so this shortcut must not
+    # short-circuit before the full array check runs.
     return False
 
 
@@ -412,20 +480,7 @@ def _item_schema_reaches_free_form_string(
         if _schema_type_includes(item_type, "string"):
             return True
         if _schema_type_includes(item_type, "array"):
-            nested_items = item_schema.get("items")
-            if nested_items is not None and _item_schema_reaches_free_form_string(
-                nested_items, root_schema, depth + 1, seen_refs, result
-            ):
-                return True
-            nested_prefix_items = item_schema.get("prefixItems")
-            if isinstance(nested_prefix_items, list):
-                return any(
-                    _item_schema_reaches_free_form_string(
-                        nested_item, root_schema, depth + 1, seen_refs, result
-                    )
-                    for nested_item in nested_prefix_items
-                )
-            return False
+            return _array_reaches_free_form(item_schema, root_schema, depth + 1, seen_refs, result)
         return False
 
     ref = item_schema.get(_REF_KEYWORD)
@@ -461,6 +516,52 @@ def _item_schema_reaches_free_form_string(
     return True
 
 
+def _array_reaches_free_form(
+    array_schema: Mapping,
+    root_schema: Mapping,
+    depth: int,
+    seen_refs: frozenset[str],
+    result: _SchemaWalkResult,
+) -> bool:
+    """True when an array-shaped schema node (property-level or nested
+    item-level) admits a free-form element -- i.e. is an argv-shaped
+    channel.
+
+    Draft 2020-12 `prefixItems`/`items` semantics: `prefixItems` validates
+    only the array's PREFIX positions; `items` validates every position AT
+    OR AFTER that prefix (the "rest" of the array). Critically, a MISSING
+    `items` keyword defaults to `true` -- an entirely unconstrained rest --
+    so an array whose `prefixItems` are all enum/const-bounded is still a
+    free-form channel unless `items` is explicitly present and itself
+    bounded (or `false`, closing the tuple to exactly its prefix). Every
+    `prefixItems` member is checked too: a bounded `items` schema says
+    nothing about an unbounded value sitting in the fixed prefix.
+    """
+    prefix_items = array_schema.get("prefixItems")
+    if isinstance(prefix_items, list):
+        for item in prefix_items:
+            if _item_schema_reaches_free_form_string(
+                item, root_schema, depth + 1, seen_refs, result
+            ):
+                return True
+
+    if "items" not in array_schema:
+        # No `items` keyword: per Draft 2020-12 this defaults to `true`,
+        # leaving every position beyond `prefixItems` totally unconstrained.
+        return True
+
+    items_val = array_schema.get("items")
+    if items_val is False:
+        # Explicitly closed: no elements beyond `prefixItems` are permitted
+        # at all, so the array's shape is exactly its (already-checked)
+        # prefix.
+        return False
+
+    return _item_schema_reaches_free_form_string(
+        items_val, root_schema, depth + 1, seen_refs, result
+    )
+
+
 def _property_is_free_form(
     prop_schema: object,
     is_categorized_key: bool,
@@ -481,23 +582,7 @@ def _property_is_free_form(
     if _schema_type_includes(prop_type, "string"):
         return True
     if _schema_type_includes(prop_type, "array"):
-        items = prop_schema.get("items")
-        if items is not None and _item_schema_reaches_free_form_string(
-            items, root_schema, depth + 1, seen_refs, result
-        ):
-            return True
-        # Positional/tuple validation is an argv-shaped channel too: an
-        # array whose prefixItems admit strings carries caller-controlled
-        # string elements exactly like items-of-strings.
-        prefix_items = prop_schema.get("prefixItems")
-        if isinstance(prefix_items, list):
-            return any(
-                _item_schema_reaches_free_form_string(
-                    item, root_schema, depth + 1, seen_refs, result
-                )
-                for item in prefix_items
-            )
-        return False
+        return _array_reaches_free_form(prop_schema, root_schema, depth, seen_refs, result)
     if prop_type is None and is_categorized_key:
         return True
     return False
@@ -585,14 +670,21 @@ def _is_known_scalar_only_keyword(key: str) -> bool:
     return key.startswith("min") or key.startswith("max")
 
 
-def _could_carry_subschema(value: object) -> bool:
+def _could_carry_subschema(value: object, depth: int = 0) -> bool:
     """True when an unrecognized keyword's value is shaped like it could
-    itself hold a schema (a mapping, or a list containing a mapping) -- the
-    signal that makes an unknown keyword unresolvable rather than inert."""
+    itself hold a schema (a mapping, or a list -- at any nesting depth --
+    containing a mapping) -- the signal that makes an unknown keyword
+    unresolvable rather than inert. Recurses through nested lists (a list of
+    lists of ... of mappings) under the same depth cap as the walker,
+    instead of only inspecting one level, so a schema-bearing value cannot
+    be laundered past the whitelist by wrapping it in extra list nesting.
+    Fails closed (treated as could-carry) once the depth cap is hit."""
+    if depth > _MAX_SCHEMA_WALK_DEPTH:
+        return True
     if isinstance(value, Mapping):
         return True
     if isinstance(value, list):
-        return any(isinstance(item, Mapping) for item in value)
+        return any(_could_carry_subschema(item, depth + 1) for item in value)
     return False
 
 
@@ -975,7 +1067,11 @@ def _walk_schema(
             is_executor_description,
             result,
         )
-        return
+        # Draft 2020-12 evaluates `$ref` SIBLINGS -- they are not discarded.
+        # Fall through (no early `return`) so every other keyword on THIS
+        # node (`properties`, `additionalProperties`, `allOf`/`anyOf`, ...)
+        # is still walked for a free-form channel reachable alongside the
+        # reference, instead of being silently skipped.
 
     for comp_key in ("allOf", "anyOf", "oneOf", "prefixItems"):
         branches = schema.get(comp_key)

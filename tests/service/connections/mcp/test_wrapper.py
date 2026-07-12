@@ -631,7 +631,7 @@ class TestValidateMcpToolAdmission:
             "executor-identity-with-insufficient-schema",
             id="external-ref-fails-closed-for-strong-name",
         ),
-        # --- Round-2 evasions: conditional/array/object-map command channels ---
+        # Conditional/array/object-map command channels must fail closed.
         pytest.param(
             "maintenance",
             {
@@ -694,7 +694,7 @@ class TestValidateMcpToolAdmission:
             "unbounded-command-input",
             id="object-valued-additionalproperties-map-command-channel",
         ),
-        # --- Round-2: identifier-suffix exemption must not launder exec targets ---
+        # Identifier-suffix exemption must not launder exec targets.
         pytest.param(
             "exec",
             {
@@ -760,7 +760,7 @@ class TestValidateMcpToolAdmission:
             "executor-identity-with-insufficient-schema",
             id="program-path-not-exempted-under-strong-name",
         ),
-        # --- Round-2: malformed patternProperties must fail closed, not open ---
+        # Malformed patternProperties must fail closed, not open.
         pytest.param(
             "maintenance",
             {"type": "object", "patternProperties": ["not-a-mapping"]},
@@ -775,7 +775,7 @@ class TestValidateMcpToolAdmission:
             "executor-description-with-broad-input",
             id="invalid-pattern-regex-fails-closed",
         ),
-        # --- Round-2: unresolvable node-work budget denies fast for
+        # Unresolvable node-work budget denies fast for
         # executor-signaling descriptors with harmless-looking wide fan-out. ---
         pytest.param(
             "maintenance",
@@ -1068,6 +1068,133 @@ class TestValidateMcpToolAdmission:
             "executor-identity-with-insufficient-schema",
             id="schema-bearing-vendor-extension-is-not-exempted",
         ),
+        # --- A missing `items` keyword defaults to `true` in
+        # Draft 2020-12 -- an entirely unconstrained "rest of the array" --
+        # and every `prefixItems` member must itself be checked, not just
+        # whatever `items` says. An inner `{"type": "array"}` item with no
+        # `items`/`prefixItems` of its own is free-form one level deeper,
+        # not "non-string and therefore bounded". ---
+        pytest.param(
+            "exec",
+            {
+                "type": "object",
+                "properties": {
+                    "operation": {"const": "status"},
+                    "args": {"type": "array", "items": {"type": "array"}},
+                },
+            },
+            None,
+            "executor-identity-with-insufficient-schema",
+            id="nested-array-item-with-no-items-defaults-open",
+        ),
+        pytest.param(
+            "exec",
+            {
+                "type": "object",
+                "properties": {
+                    "operation": {"const": "status"},
+                    "args": {
+                        "type": "array",
+                        "prefixItems": [{"enum": ["fixed"]}],
+                    },
+                },
+            },
+            None,
+            "executor-identity-with-insufficient-schema",
+            id="prefixitems-only-array-with-no-items-rest-is-open",
+        ),
+        pytest.param(
+            "exec",
+            {
+                "type": "object",
+                "properties": {
+                    "operation": {"const": "status"},
+                    "args": {
+                        "type": "array",
+                        "items": {"enum": ["fixed"]},
+                        "prefixItems": [{"type": "string"}],
+                    },
+                },
+            },
+            None,
+            "executor-identity-with-insufficient-schema",
+            id="bounded-items-does-not-launder-an-unbounded-prefixitems-member",
+        ),
+        # --- A strong-executor-name schema with non-empty
+        # `properties` is only actually bounded when the object is CLOSED
+        # (`additionalProperties: False`, or an additionalProperties schema
+        # itself restricted to a finite enum/const) -- JSON Schema's
+        # implicit-open default otherwise still admits an undeclared
+        # "command"-shaped key riding alongside a perfectly bounded
+        # `operation`. ---
+        pytest.param(
+            "exec",
+            {"type": "object", "properties": {"operation": {"const": "status"}}},
+            None,
+            "executor-identity-with-insufficient-schema",
+            id="open-object-with-only-bounded-properties-is-still-insufficient",
+        ),
+        pytest.param(
+            "exec",
+            {
+                "type": ["object", "string"],
+                "properties": {"operation": {"const": "status"}},
+                "additionalProperties": False,
+            },
+            None,
+            "executor-identity-with-insufficient-schema",
+            id="root-type-union-with-free-form-string-alternative-is-insufficient",
+        ),
+        pytest.param(
+            "exec",
+            {
+                "allOf": [
+                    {"type": "object", "properties": {"operation": {"const": "status"}}},
+                    {"type": "object"},
+                ]
+            },
+            None,
+            "executor-identity-with-insufficient-schema",
+            id="allof-open-object-branch-does-not-narrow-to-sufficient",
+        ),
+        # --- `$ref` SIBLINGS are evaluated in Draft 2020-12, not
+        # discarded -- a free-form property declared alongside a `$ref` must
+        # still be walked and caught, even though the ref target itself is
+        # (partially) bounded. ---
+        pytest.param(
+            "exec",
+            {
+                "$ref": "#/$defs/open",
+                "properties": {"command": {"type": "string"}},
+                "$defs": {
+                    "open": {
+                        "type": "object",
+                        "properties": {"operation": {"const": "status"}},
+                    }
+                },
+            },
+            None,
+            "unbounded-command-input",
+            id="ref-sibling-command-property-is-not-discarded",
+        ),
+        # --- The unknown-keyword whitelist's could-carry-a-
+        # subschema test must recurse through nested lists (a list of lists
+        # of mappings), not just one level -- otherwise wrapping a hidden
+        # command channel in extra list nesting under an unrecognized
+        # keyword bypasses deny-by-default entirely. ---
+        pytest.param(
+            "exec",
+            {
+                "type": "object",
+                "properties": {"operation": {"const": "status"}},
+                "required": ["operation"],
+                "additionalProperties": False,
+                "future-extension": [[{"properties": {"command": {"type": "string"}}}]],
+            },
+            None,
+            "executor-identity-with-insufficient-schema",
+            id="nested-list-of-list-of-mapping-unknown-keyword-is-unresolvable",
+        ),
     ]
 
     ADMIT_CASES = [
@@ -1138,6 +1265,14 @@ class TestValidateMcpToolAdmission:
             {
                 "type": "object",
                 "properties": {"operation": {"type": "string", "enum": ["status", "restart"]}},
+                # `additionalProperties: False` is required for the strong-name
+                # sufficiency gate to treat this object as closed:
+                # an object schema whose `properties` are all bounded is only
+                # actually bounded if the object cannot also carry an
+                # undeclared key (JSON Schema's implicit-open default would
+                # otherwise still admit an arbitrary extra "command"-shaped
+                # property alongside "operation").
+                "additionalProperties": False,
             },
             None,
             id="strong-name-with-rich-bounded-schema-overrides-heuristic",
@@ -1167,6 +1302,11 @@ class TestValidateMcpToolAdmission:
                     "operation": {"type": "string", "enum": ["status", "restart"]},
                     "service_id": {"type": "string"},
                 },
+                # See "strong-name-with-rich-bounded-schema-overrides-heuristic"
+                # above: closedness is required for the strong-name
+                # sufficiency gate; this test's own concern (the identifier-
+                # suffix exemption for "service_id") is orthogonal.
+                "additionalProperties": False,
             },
             None,
             id="strong-name-fixed-operation-with-dynamic-service-id",
@@ -1179,6 +1319,7 @@ class TestValidateMcpToolAdmission:
                     "operation": {"type": "string", "enum": ["status", "restart"]},
                     "resource_path": {"type": "string"},
                 },
+                "additionalProperties": False,
             },
             None,
             id="strong-name-fixed-operation-with-dynamic-resource-path",
@@ -1191,6 +1332,7 @@ class TestValidateMcpToolAdmission:
                     "operation": {"type": "string", "enum": ["status", "restart"]},
                     "request_id": {"type": "string"},
                 },
+                "additionalProperties": False,
             },
             None,
             id="strong-name-fixed-operation-with-dynamic-request-id",
@@ -1226,7 +1368,7 @@ class TestValidateMcpToolAdmission:
             None,
             id="nested-config-object-without-command-like-fields",
         ),
-        # --- Round-2: benign identifier-suffix fields remain admitted. ---
+        # Benign identifier-suffix fields remain admitted.
         pytest.param(
             "exec",
             {
@@ -1235,6 +1377,7 @@ class TestValidateMcpToolAdmission:
                     "operation": {"type": "string", "enum": ["status", "restart"]},
                     "tenant_uuid": {"type": "string"},
                 },
+                "additionalProperties": False,
             },
             None,
             id="strong-name-fixed-operation-with-dynamic-tenant-uuid",
@@ -1247,6 +1390,7 @@ class TestValidateMcpToolAdmission:
                     "operation": {"type": "string", "enum": ["status", "restart"]},
                     "callback_url": {"type": "string"},
                 },
+                "additionalProperties": False,
             },
             None,
             id="strong-name-fixed-operation-with-dynamic-callback-url",
@@ -1259,11 +1403,12 @@ class TestValidateMcpToolAdmission:
                     "operation": {"type": "string", "enum": ["status", "restart"]},
                     "page_slug": {"type": "string"},
                 },
+                "additionalProperties": False,
             },
             None,
             id="strong-name-fixed-operation-with-dynamic-page-slug",
         ),
-        # --- Round-1 regression: array-of-strings free-form leaf channel
+        # Regression: array-of-strings free-form leaf channel
         # (argv) must still be caught even though the walker now also
         # recurses into `items` for hidden object-shaped command channels. ---
         pytest.param(
@@ -1307,6 +1452,7 @@ class TestValidateMcpToolAdmission:
                 "type": "object",
                 "properties": {"operation": {"type": "string", "enum": ["status", "restart"]}},
                 "x-ui": {"widget": "select", "order": 1},
+                "additionalProperties": False,
             },
             None,
             id="strong-name-bounded-schema-with-vendor-extension-annotation",
@@ -1341,6 +1487,7 @@ class TestValidateMcpToolAdmission:
                         "items": {"type": "array", "items": {"enum": ["a", "b"]}},
                     },
                 },
+                "additionalProperties": False,
             },
             None,
             id="nested-array-bounded-by-enum-items-remains-admitted",
@@ -1368,6 +1515,77 @@ class TestValidateMcpToolAdmission:
             },
             None,
             id="anyof-with-every-alternative-closed-bounded-remains-admitted",
+        ),
+        # --- Anti-over-block: a closed tuple (`prefixItems` all
+        # enum/const-bounded AND `items: false`, so no elements beyond the
+        # prefix are permitted at all) must remain admitted. ---
+        pytest.param(
+            "exec",
+            {
+                "type": "object",
+                "properties": {
+                    "operation": {"const": "status"},
+                    "args": {
+                        "type": "array",
+                        "prefixItems": [{"enum": ["a"]}, {"const": "b"}],
+                        "items": False,
+                    },
+                },
+                "additionalProperties": False,
+            },
+            None,
+            id="closed-tuple-prefixitems-bounded-with-items-false-remains-admitted",
+        ),
+        # --- Anti-over-block: `items` alone (bounded, no
+        # `prefixItems`) must remain admitted -- every position is governed
+        # by the same enum-restricted schema. ---
+        pytest.param(
+            "exec",
+            {
+                "type": "object",
+                "properties": {
+                    "operation": {"const": "status"},
+                    "args": {"type": "array", "items": {"enum": ["a", "b"]}},
+                },
+                "additionalProperties": False,
+            },
+            None,
+            id="items-enum-with-no-prefixitems-remains-admitted",
+        ),
+        # --- Anti-over-block: the exact open-object shape that
+        # must now DENY (see "open-object-with-only-bounded-properties-is-
+        # still-insufficient" in DENY_CASES), but with an explicit
+        # `additionalProperties: False` closing it, must still ADMIT. ---
+        pytest.param(
+            "exec",
+            {
+                "type": "object",
+                "properties": {"operation": {"const": "status"}},
+                "additionalProperties": False,
+            },
+            None,
+            id="closed-object-with-only-bounded-properties-remains-admitted",
+        ),
+        # --- Anti-over-block: a `$ref` whose only siblings are
+        # pure annotations (`description`) must still admit -- annotation
+        # siblings constrain nothing and must not be treated as reopening an
+        # otherwise-closed reference target. ---
+        pytest.param(
+            "exec",
+            {
+                "$ref": "#/$defs/BoundedOperation",
+                "description": "Restart or check status of a managed process",
+                "$defs": {
+                    "BoundedOperation": {
+                        "type": "object",
+                        "properties": {"operation": {"const": "status"}},
+                        "required": ["operation"],
+                        "additionalProperties": False,
+                    }
+                },
+            },
+            None,
+            id="ref-with-only-annotation-siblings-remains-admitted",
         ),
     ]
 
