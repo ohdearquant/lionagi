@@ -22,25 +22,36 @@ fixed 10-second timeout, and — critically — no stdout read-back. An external
 veto (nonzero exit becomes `PermissionError` on the pre phase) but cannot rewrite
 arguments, attach context, or return a structured decision.
 
-Meanwhile the two dominant agent harnesses have converged on one external-hook wire
-contract. Claude Code and Codex CLI both ship: a JSON envelope on stdin carrying
-`session_id`, `cwd`, `hook_event_name`, and per-event fields (`tool_name`,
-`tool_input`, `tool_response`); an exit-code protocol (0 = success and stdout is
-parsed as JSON, 2 = block with stderr as the reason, other = non-blocking failure);
-and a stdout decision shape (`hookSpecificOutput.permissionDecision` ∈
-`allow|deny|ask` with `permissionDecisionReason` and optional `updatedInput` for
-`PreToolUse`; top-level `decision: "block"` + `reason` for most other events). Both
-use the same nested config shape (`hooks.<EventName>` → `[{matcher, hooks: [{type,
-command, timeout}]}]`) and largely the same event names. Codex additionally ships a
-hash-pinned trust gate: a non-managed hook's exact command must be explicitly trusted
-before it runs.
+Meanwhile the two dominant agent harnesses ship external-hook contracts of the same
+*family*: a JSON envelope on stdin carrying `session_id`, `cwd`, `hook_event_name`,
+and per-event fields (`tool_name`, `tool_input`, `tool_response`); an exit-code
+protocol (0 = success and stdout is parsed as JSON, 2 = block with stderr as the
+reason, other = non-blocking failure); a stdout decision shape
+(`hookSpecificOutput.permissionDecision` with `permissionDecisionReason` and optional
+`updatedInput` for `PreToolUse`; top-level `decision: "block"` + `reason` for most
+other events); and a nested config shape (`hooks.<EventName>` → `[{matcher, hooks:
+[{type, command, timeout}]}]`) with largely shared event names. The family
+resemblance is real, but they are **not one contract**, and this ADR must not
+pretend otherwise. Divergences that matter here: Claude Code configures `command`
+as a shell string (with a separate args-array form for no-shell execution) while
+Codex executes the configured command as shell text; Codex's `UserPromptSubmit`
+input schema *requires* fields (`model`, `permission_mode`, `transcript_path`,
+`turn_id`) that Claude Code does not; Codex's `PreToolUse` decision vocabulary
+admits only `allow|deny|ask`; and Claude Code cancels a timed-out
+`UserPromptSubmit` hook and lets the prompt proceed, i.e. fails open. Codex
+additionally ships a hash-pinned trust gate: a non-managed hook's exact command
+must be explicitly trusted before it runs.
 
-This convergence is an opportunity with a deadline attached. Users who already
-maintain a hardened hook suite for Claude Code or Codex (guards, formatters, audit
-loggers, notification bridges) should be able to point LionAGI at it and have it
-work; hooks written for LionAGI should run unmodified under either harness. If
-LionAGI invents a third wire contract, every hook gets written twice and the
-ecosystem's existing hook tooling is unusable here.
+The shared family is still an opportunity with a deadline attached. Users who
+already maintain a hardened hook suite for Claude Code or Codex (guards,
+formatters, audit loggers, notification bridges) should be able to bring most of it
+to LionAGI, and hooks written against the common subset should travel the other
+way. If LionAGI invents an unrelated third dialect, every hook gets written twice
+and the ecosystem's existing hook tooling is unusable here. But because the two
+harnesses genuinely differ, the deliverable is a **stated, versioned compatibility
+profile** — exactly which events, fields, decisions, and config forms LionAGI
+guarantees, and where it knowingly diverges from each harness — not a claim of
+equivalence the upstream systems themselves do not have.
 
 Named problems:
 
@@ -71,13 +82,13 @@ Named problems:
 
 | Concern | Decision |
 |---------|----------|
-| External wire contract | D1: adopt the converged CC/Codex stdin/exit-code/stdout-JSON contract |
-| Event vocabulary and mapping | D2: fixed mapping table; `USER_PROMPT_SUBMIT` added with its emit site; unmapped events fail loud at load |
-| Which internal seam serves tool events | D3: tool pre/post events route to the tool-hook chain, relocated to the `ActionManager` invoke chokepoint so MCP tools are covered |
-| Executor | D4: one exec adapter extending `_make_shell_hook` — argv-only, stdout parse-back, per-hook timeout |
-| Decision semantics | D5: `allow`/`defer` continue, `deny` raises, `ask` fails closed; `updatedInput` honored only at the preprocessor seam |
-| Config surface | D6: CC-shaped `hooks:` block in `.lionagi/settings.yaml`, plus explicit import of CC/Codex hook configs |
-| Trust | D7: hash-pinned trust for command hooks that are not project-committed |
+| External wire contract | D1: a versioned LionAGI compatibility profile over the CC/Codex family — exact field guarantees and named divergences, no equivalence claim |
+| Event vocabulary and mapping | D2: fixed mapping table; `USER_PROMPT_SUBMIT` added with a turn-origin token consumed exactly once; unmapped events fail loud at load |
+| Which internal seam serves tool events | D3: tool pre/post events route to the tool-hook chain, relocated to the `ActionManager` invoke chokepoint (Branch-mediated coverage incl. MCP; direct `FunctionCalling` construction is a documented, tested bypass) |
+| Executor | D4: one exec adapter extending `_make_shell_hook` — non-empty argv only, stdout parse-back, per-hook timeout |
+| Decision semantics | D5: `allow` continues, `deny` raises, `ask` fails closed, unrecognized decisions fail closed; `updatedInput` honored only at the preprocessor seam |
+| Config surface | D6: CC-shaped `hooks_external:` block in `.lionagi/settings.yaml`, plus explicit import of CC/Codex hook configs with per-entry source provenance |
+| Trust | D7: hash-pinned trust for command hooks that are not project-authored; provenance markers survive import |
 
 Out of scope for this ADR:
 
@@ -97,10 +108,16 @@ Out of scope for this ADR:
 
 ## Decision
 
-### D1 — Adopt the converged external-hook wire contract
+### D1 — A versioned compatibility profile, not an equivalence claim
 
-LionAGI's contract for external hook processes is the CC/Codex contract, not a new
-one.
+LionAGI defines **external-hook compatibility profile v1**: an explicit, versioned
+statement of the envelope LionAGI emits, the decisions it accepts, and how foreign
+configurations translate. The profile follows the CC/Codex family shape wherever the
+two harnesses agree, and **names every divergence** where they do not (or where
+LionAGI deliberately departs). Nothing in this ADR claims the contract is verbatim,
+converged, or that arbitrary foreign hooks run unmodified — those are properties the
+conformance matrix (below) must demonstrate per event, not properties asserted by
+adoption.
 
 **Stdin envelope** (one JSON object, UTF-8, single line or pretty — the hook must
 parse, not line-split):
@@ -117,20 +134,50 @@ parse, not line-split):
 }
 ```
 
-Common fields (`session_id`, `cwd`, `hook_event_name`) are always present. Per-event
-fields follow the CC/Codex field names exactly (`tool_name`, `tool_input`,
-`tool_response`, `prompt`). The translation is mechanical and total: LionAGI's tool
-argument dict (the `arguments` mapping a `FunctionCalling` invocation carries) is
-placed under `tool_input` verbatim — it is already an arbitrary JSON-serializable
-dict, so no reshaping occurs; a returned `updatedInput` replaces that same dict
-whole (no per-key merge — partial rewrites are the hook's job to construct from the
-`tool_input` it was sent). `tool_name` is the registered tool name string
-(`Tool.function`), and `tool_response` is the tool's result as JSON where
-serializable, else its string form. One LionAGI addition: `harness: "lionagi"` — a
-hook that must behave differently per harness keys off this; CC and Codex omit it,
-so its absence means "not lionagi." Fields LionAGI cannot populate (for example
-`transcript_path` when no transcript file exists for the surface) are omitted, never
-sent as fabricated values.
+**Per-event field guarantees.** Common fields (`session_id`, `cwd`,
+`hook_event_name`, `harness`) are always present. Per-event fields use the CC/Codex
+field names, with an explicit presence guarantee each:
+
+| Event | Field | Guarantee |
+|---|---|---|
+| `PreToolUse` | `tool_name` | always; the LionAGI registered name (`Tool.function`) — see the tool-naming divergence below |
+| `PreToolUse` | `tool_input` | always; the LionAGI argument dict verbatim (already an arbitrary JSON-serializable mapping, no reshaping); a returned `updatedInput` replaces this dict whole — no per-key merge |
+| `PostToolUse` | `tool_name`, `tool_input` | as above |
+| `PostToolUse` | `tool_response` | always; the tool result as JSON where serializable, else its string form |
+| `UserPromptSubmit` | `prompt` | always; the rendered instruction text actually being submitted |
+| `UserPromptSubmit` | `model` | always; the branch's active model identifier |
+| `UserPromptSubmit` | `permission_mode` | always; the attached `PermissionPolicy` mode, else `"default"` |
+| all | `harness` | always `"lionagi"` — a hook that must behave differently per harness keys off this; CC and Codex omit it, so its absence means "not lionagi" |
+
+**Named divergence Dv1-1 (envelope):** Codex's `UserPromptSubmit` input schema
+additionally requires `transcript_path` and `turn_id`. LionAGI has no transcript
+file or turn identifier on every surface and does not fabricate values: the fields
+are present when the surface has them (a persisted run's branch-snapshot path; a
+flow node id) and **omitted** otherwise. A Codex hook that hard-requires them does
+not run unmodified on LionAGI; it must tolerate their absence when
+`harness == "lionagi"`. The import command (D6) warns when it cannot prove an
+imported hook tolerates this.
+
+**Named divergence Dv1-2 (tool naming):** matchers and `tool_name` carry LionAGI
+registered tool names, not CC/Codex built-in names (`Bash`, `Read`, …). No automatic
+name mapping exists in v1 — a matcher written as `"Bash"` matches a LionAGI tool
+only if a tool is registered under that exact name. `li hooks import` (D6) reports
+every matcher that references a name with no registered LionAGI tool so the user
+can re-target it; an alias table is future work that belongs to the tool registry,
+not to this profile.
+
+**Named divergence Dv1-3 (command form):** LionAGI executes argv vectors only —
+never a shell (D4). CC configures `command` as a shell string (argv is a separate
+form); Codex executes command text via a shell. Import translation (D6) tokenizes a
+foreign command string only when it contains no shell metacharacters; anything else
+is rejected-with-reason, never reinterpreted.
+
+**Named divergence Dv1-4 (blocking timeout):** Claude Code cancels a timed-out
+`UserPromptSubmit` hook and lets the prompt proceed — fail open. LionAGI fails
+closed on every blocking point (D1 timeout rule below, D5). This is a deliberate
+policy divergence: an unattended runtime must not admit an action its guard never
+cleared. Hook authors porting from CC must know their timeout now blocks instead of
+waving through.
 
 **Exit-code protocol**, exactly as the harnesses define it:
 
@@ -147,17 +194,33 @@ sent as fabricated values.
 
 **Stdout decision shape** on exit 0: `hookSpecificOutput.permissionDecision` +
 `permissionDecisionReason` + `updatedInput` for `PreToolUse`-mapped events;
-`decision: "block"` + `reason` for other events; unknown fields ignored (forward
-compatibility with harness spec evolution).
+`decision: "block"` + `reason` for other events. The accepted
+`permissionDecision` vocabulary is the genuine cross-harness intersection —
+`allow | deny | ask` (Codex's schemas admit nothing else) — with the exact
+semantics in D5. Unknown *fields* are ignored (forward compatibility with harness
+spec evolution); an unrecognized *decision value* fails closed as `deny` with a
+diagnostic naming the value — a guard channel does not guess at verbs it does not
+know.
+
+**Conformance matrix (acceptance artifact).** The implementation ships a
+conformance test matrix: for each profile event, fixture hooks authored against the
+current CC documentation and the current Codex schemas run under LionAGI, asserting
+each field-guarantee row and each named divergence above. Until that matrix exists
+and passes, neither documentation nor `li hooks import` output may describe a
+foreign hook as running "unmodified" — the import report says "imported; verify
+against profile v1" and lists the divergences that apply to that entry.
 
 Why this way: the alternative — a LionAGI-native contract with an adapter shim per
-harness — was rejected because the two harnesses have *already* converged on one
-contract between themselves; a third dialect creates permanent translation liability
-for zero expressive gain. Adopting the contract verbatim means the same guard binary
-serves three harnesses, and the existing ecosystem of published CC/Codex hooks runs
-on LionAGI unmodified. The contract is external-facing and versioned by the harness
-docs; where CC and Codex diverge in the future, LionAGI follows the intersection and
-documents the divergence in this ADR's Notes.
+harness — was rejected because the CC/Codex family shape is expressive enough for
+every P1–P5 need, and a third unrelated dialect creates permanent translation
+liability for zero expressive gain. But the opposite temptation — declaring the
+family a single converged contract and adopting it "verbatim" — fails on the facts:
+the harnesses differ in command form, required input fields, decision vocabulary,
+and timeout semantics, so an equivalence claim would leave every implementer to
+rediscover the exceptions. A versioned profile with named divergences keeps the
+portability of the shared shape and makes the residual differences a checkable
+contract. The profile is LionAGI-owned and versioned here; when CC or Codex moves,
+the profile revs with a new version entry in Notes, never silently.
 
 ### D2 — Event vocabulary: fixed mapping, fail-loud on the unmappable
 
@@ -176,26 +239,42 @@ each drives:
 Exact semantics:
 
 - `USER_PROMPT_SUBMIT` is a new `HookPoint` enum member **shipped in the same change
-  as its emit sites** — plural, because the API path and the CLI/stream path are
-  architecturally disjoint and share no single "instruction submission" function:
-  one `blocking_emit` in the `communicate` middle before its chat call, and one in
-  the `run` middle before streaming begins. Payload: `{session_id, branch_id,
-  prompt}` where `prompt` is the rendered instruction text. Adding the enum member
-  without both emit sites is forbidden; ADR-0047 already documents four never-wired
-  hook points as exactly this trap, and this ADR does not add a fifth.
-- **Fires exactly once per user-originated turn.** `operate()` delegates to
-  `communicate` through the `Middle` protocol, so a naive emit at both layers would
-  double-fire on one turn; a turn-scoped emitted-flag on the operation context
-  guards this — the outermost entry emits, the delegated inner call sees the flag
-  and stays silent. The point fires **only for a user-originated instruction**:
-  internal instructions the runtime synthesizes (ReAct sub-steps, parse-retry
-  turns) never emit it. The discriminator is placement — the emits live in the
-  top-level middle entries named above, never in `a_add_message` or any shared
-  message-construction primitive, because internal turns traverse those shared
-  primitives too and a prompt guard firing on the model's own reasoning steps
-  would block the run from inside. Implementation acceptance: an integration test
-  asserting exactly one emission for an `operate→communicate` turn and zero
-  emissions for a ReAct internal step.
+  as its emit mechanism**. Placement alone cannot express "user-originated": the
+  public ingress APIs are plural (`Branch.chat()` and `Branch.chat_and_record()`
+  call the low-level chat operation directly, never entering `communicate`), and
+  the internal callers of the same middles are also plural (ReAct drives repeated
+  synthetic `operate()` calls through the very `communicate`/`run_and_collect`
+  middles a middle-level emit would live in). Any fixed emit site is therefore
+  either incomplete or over-broad. The mechanism is a **turn-origin token**:
+  - **Created** at each public user-ingress API — `Branch.chat()`,
+    `Branch.chat_and_record()`, `Branch.communicate()`, `Branch.operate()`,
+    `Branch.run()`, and `Branch.ReAct()` — and carried on the operation context as
+    an explicit field threaded through the call chain (not ambient task-local
+    state, which would leak across concurrently running branch operations).
+  - **Consumed exactly once** at the model-submission boundary: immediately before
+    provider invocation in the chat operation (which serves the chat,
+    chat_and_record, communicate, and operate→communicate paths), and immediately
+    before streaming begins in the `run` middle. Consumption is
+    check-and-clear: if the token is present, `blocking_emit` fires with payload
+    `{session_id, branch_id, prompt}` — `prompt` being the rendered instruction
+    text actually submitted at that boundary — and the token is cleared for the
+    remainder of the turn; if absent, the boundary stays silent.
+  - **Internal turns never carry the token.** Instructions the runtime synthesizes
+    (ReAct extension and final-answer turns, parse-retry turns) are issued without
+    ingress, so their submissions find no token and emit nothing. For a multi-step
+    `ReAct()` call this means exactly one emission — at the first model submission
+    of the user's turn — and silence for every internal continuation.
+  - Adding the enum member without the token mechanism and both consuming
+    boundaries is forbidden; ADR-0047 already documents four never-wired hook
+    points as exactly this trap, and this ADR does not add a fifth.
+- **Acceptance: exact-once, enumerated per path.** The implementation ships
+  integration tests asserting the emission count for every ingress: direct
+  `chat()` → 1; direct `chat_and_record()` → 1; `communicate()` → 1;
+  `operate()` delegating to communicate → 1; direct `run()` → 1; a `ReAct()`
+  call with multiple internal extension turns and a final-answer turn → exactly 1
+  total; a parse-retry inside any of the above → 0 additional. A new public
+  ingress added later must add its row to this matrix — the test file carries a
+  comment stating that rule.
 - A blocked `USER_PROMPT_SUBMIT` surfaces as the same `PermissionError`-family
   failure the blocking convention already defines, at the operation boundary: an
   interactive session fails the turn with the hook's reason; a headless DAG node
@@ -223,14 +302,32 @@ Exact semantics:
 ### D3 — Tool events route through the invoke chokepoint
 
 `PreToolUse`/`PostToolUse` adapters register into the tool preprocessor/postprocessor
-chain, not `HookBus` — and that chain moves to the one place every tool call passes
-through: `ActionManager.invoke`.
+chain, not `HookBus` — and that chain moves to `ActionManager.invoke`, the point
+every **Branch-mediated** tool call passes through.
+
+**Coverage, stated precisely.** The guarantee of this decision is scoped to tool
+calls that flow through `ActionManager.invoke()`: the Branch action path
+(`act`/`operate`/`ReAct` action requests) and every tool registered on the manager,
+including MCP-discovered tools. That is the entire product surface LionAGI ships
+today. It is **not** a universal interception point: `FunctionCalling` is itself an
+executable event that runs `Tool.preprocessor`, the callable, and
+`Tool.postprocessor` directly — code that constructs a `FunctionCalling` and
+invokes it bypasses the manager layer, and always has. v1 does not internalize that
+constructor (privatizing a long-public API is a breaking change with its own blast
+radius, recorded below as deferred hardening); instead the bypass is a **named,
+documented, tested limit**: an acceptance test constructs a `FunctionCalling`
+directly and asserts external hooks do *not* fire, so the boundary is a pinned
+contract rather than an accident, and code review owns keeping product paths on the
+manager. Deferred hardening decision, recorded for a future ADR: make
+`ActionManager` the sole constructor/invoker of `FunctionCalling` (or gate direct
+construction behind an internal token), at which point the guarantee upgrades from
+"Branch-mediated" to universal.
 
 The contract:
 
 - `ActionManager` gains an optional pre/post processor pair applied inside `invoke`,
-  around the `Tool` call, for **every** tool — plain function tools, `Tool` objects,
-  and MCP-discovered tools alike. The existing per-`Tool` `preprocessor`/
+  around the `Tool` call, for **every** tool invoked through it — plain function
+  tools, `Tool` objects, and MCP-discovered tools alike. The existing per-`Tool` `preprocessor`/
   `postprocessor` attributes remain and run innermost (closest to the tool), so
   current `AgentSpec`/`HooksMixin` wiring keeps its behavior and ordering
   (`security -> user -> security recheck` is preserved within the existing layer).
@@ -300,13 +397,22 @@ def external_hook_adapter(
   other nonzero exits (the current executor collapses all nonzero to
   `PermissionError` on pre hooks; the new one reserves that meaning for exit 2 and
   the `deny` decision).
-- **Argv-only, no shell — ever.** A string-form `command` is a config error with a
-  diagnostic, not something to `shlex.split` heuristically. This is ADR-0095 D3's
-  posture applied to hooks: the config shape is the argv vector, so there is nothing
-  for a shell to interpret and no injection surface. (CC supports a shell-string
-  form; LionAGI deliberately does not import that part of the contract — a portable
-  hook config that must also run on LionAGI uses the argv form, which both harnesses
-  accept.)
+- **Argv-only, no shell — ever, and never empty.** A string-form `command` is a
+  config error with a diagnostic, not something to `shlex.split` heuristically.
+  This is ADR-0095 D3's posture applied to hooks: the config shape is the argv
+  vector, so there is nothing for a shell to interpret and no injection surface.
+  (CC supports a shell-string form and Codex executes shell text; LionAGI
+  deliberately does not import that behavior — divergence Dv1-3. Import
+  translation is D6's job.) `command` must additionally be a **non-empty list of
+  non-empty, non-whitespace strings** — the same invalid-argv classification
+  ADR-0095 applies to callback argv from every source. The rule is enforced at
+  three gates: config load, `li hooks import`, and trust recording (D7). A
+  violating entry **fails config load** with a diagnostic naming the file, event,
+  and entry (`hooks_external: command must be a non-empty argv list`) — load
+  failure rather than ADR-0095's disable-before-launch, because a hook config is
+  durable declared policy, and a declared-but-undefined guard is the silent-absence
+  failure mode D2 already refuses. Consequently no trust record can ever pin the
+  hash of an empty argv.
 - Timeout is per-hook-configurable with a 60s default (CC defaults to 600s;
   LionAGI's runtime is frequently a synchronous step inside an orchestration DAG
   where a ten-minute stall is a run-killer; 60s is generous for a guard and loud for
@@ -342,8 +448,13 @@ For a blocking-capable seam (`PreToolUse` via D3, `USER_PROMPT_SUBMIT` via D2):
   strict relaxation (more permissive, and only for `ask`; headless contexts keep
   fail-closed unchanged), so no carve-out is needed now to avoid a breaking
   semantic change later.
-- `"defer"` — continue (defer means "let the normal permission flow decide"; LionAGI's
-  normal flow at that point is the remaining chain, so deferral is continuation).
+- Any other `permissionDecision` value — **fail closed**: treated as `deny` with a
+  diagnostic naming the unrecognized value. The accepted vocabulary is the
+  cross-harness intersection `allow | deny | ask` (D1); Codex's schemas admit
+  nothing else, and a decision channel that guesses at unknown verbs is a guard
+  that can be talked past. If a harness later standardizes a new value (a `defer`,
+  a `warn`), supporting it is a profile revision recorded in Notes, not a silent
+  acceptance.
 - `decision: "block"` on advisory events (`PostToolUse`, `UserPromptSubmit` via the
   top-level shape) — on `USER_PROMPT_SUBMIT` it blocks (that point is blocking); on
   `PostToolUse` the action already happened, so `block` cannot un-run it: the reason
@@ -378,13 +489,24 @@ hooks_external:
 - **Import, not live-read, of foreign configs.** `li hooks import claude|codex
   [path]` translates a `.claude/settings.json` `hooks` block or a Codex `hooks.json`
   into `hooks_external` entries in the project `.lionagi/settings.yaml`, reporting
-  per-event: imported, or rejected-with-reason (unmappable event per D2, shell-string
-  command per D4, unsupported handler type). Live-reading `.claude/settings.json` at
-  session start was rejected: it creates an invisible cross-product coupling where
-  editing Claude Code's config silently changes LionAGI runtime behavior, and the
-  fail-loud rule of D2 would make LionAGI refuse to start on a CC config that uses
-  CC-only events — hostile when the file was written for CC, informative when the
-  user explicitly ran an import.
+  per-event: imported, or rejected-with-reason (unmappable event per D2,
+  untranslatable shell command per Dv1-3, empty argv per D4, unsupported handler
+  type), plus the Dv1-1/Dv1-2 warnings that apply to each imported entry.
+  Live-reading `.claude/settings.json` at session start was rejected: it creates an
+  invisible cross-product coupling where editing Claude Code's config silently
+  changes LionAGI runtime behavior, and the fail-loud rule of D2 would make LionAGI
+  refuse to start on a CC config that uses CC-only events — hostile when the file
+  was written for CC, informative when the user explicitly ran an import.
+- **Imported entries carry provenance in the data.** Every entry `li hooks import`
+  writes includes `source: imported:claude` or `source: imported:codex` as a field
+  of the hook entry itself, so the trust class survives the write, file merges, and
+  later commits. An entry authored in place has no `source` field and belongs to
+  the tier of the file it lives in. The loader's execution rule is D7's, driven by
+  this field — *where the entry sits* never upgrades *what the entry is*.
+  Promotion to project-authored status is an explicit edit: deleting the `source`
+  field in the project settings file, which is a reviewed, git-diffable change —
+  that visible diff is the transition mechanism, and no separate promote command
+  exists in v1.
 - Merge semantics across global → project: entries concatenate (project entries run
   after global entries for the same event); project may not silently delete a global
   entry — removal is done where the entry is defined. This matches Codex's
@@ -393,21 +515,33 @@ hooks_external:
 
 ### D7 — Trust: hash-pinned approval for non-project command hooks
 
-Command hooks are arbitrary code execution. The trust rule, by config source:
+Command hooks are arbitrary code execution. Trust attaches to the **entry's
+provenance** (the D6 `source` field plus load location), never to the file it
+happens to sit in — an imported entry inside the project settings file is still an
+imported entry. The tiers:
 
-- **Project-committed** (`.lionagi/settings.yaml` inside the repo): trusted as code —
-  it is versioned, reviewed, and diffable exactly like the code it sits next to.
-- **User-global** (`~/.lionagi/settings.yaml`): trusted — the user wrote it on their
-  own machine.
-- **Imported or plugin-bundled** (output of `li hooks import`, or a plugin's hook
-  block per ADR-0088): requires an explicit trust record before first execution. The
-  record pins `sha256(json.dumps(argv))` per hook command; `li hooks trust` lists
-  pending commands and records approval into `~/.lionagi/settings.yaml`
-  (`trusted_hook_commands: [<hash>, …]`). An untrusted command hook does not run:
-  blocking events fail closed (`deny` with a diagnostic naming the untrusted
-  command), advisory events skip with a warning. A changed argv changes the hash and
-  re-enters pending state — an update to a plugin's hook is a new approval, which is
-  the point.
+- **Project-authored** (entry with no `source` field in the repo's
+  `.lionagi/settings.yaml`): trusted as code — it is versioned, reviewed, and
+  diffable exactly like the code it sits next to.
+- **User-authored** (entry with no `source` field in `~/.lionagi/settings.yaml`):
+  trusted — the user wrote it on their own machine.
+- **Imported or plugin-bundled** (entry carrying `source: imported:*` wherever it
+  sits, or any hook loaded from a plugin bundle per ADR-0088): requires an explicit
+  trust record before first execution. The record pins `sha256(json.dumps(argv))`
+  per hook command — argv is validated non-empty first (D4), so no record ever pins
+  an empty command; `li hooks trust` lists pending commands and records approval
+  into `~/.lionagi/settings.yaml` (`trusted_hook_commands: [<hash>, …]`). An
+  untrusted command hook does not run: blocking events fail closed (`deny` with a
+  diagnostic naming the untrusted command), advisory events skip with a warning. A
+  changed argv changes the hash and re-enters pending state — an update to a
+  plugin's hook is a new approval, which is the point.
+- **Loader rule, exact.** Before executing any external hook command the loader
+  resolves: entry from a plugin bundle → tier `plugin`; else entry has `source:
+  imported:*` → tier `imported`; else → the tier of the defining file (project /
+  user). Tiers `project` and `user` execute; tiers `imported` and `plugin` execute
+  only when the argv hash is in `trusted_hook_commands`. There is no path by which
+  location, merging, or committing a file changes an entry's tier — only the
+  explicit promotion edit defined in D6.
 - No bypass flag in v1. Codex ships `--dangerously-bypass-hook-trust`; LionAGI's
   hook execution frequently happens in unattended scheduled runs where a bypass flag
   in a wrapper script would become permanent invisible policy. If operational
@@ -419,14 +553,17 @@ Command hooks are arbitrary code execution. The trust rule, by config source:
 
 ## Consequences
 
-- A hook binary written against the CC/Codex contract runs on LionAGI unmodified
-  (argv form), and hooks written for LionAGI run under CC and Codex. Guard suites
-  become write-once.
-- `ActionManager.invoke` becomes the single tool-call chokepoint with an
-  external-enforcement layer; MCP-discovered tools stop being exempt from tool
-  hooks. Contributors must know that tool-hook ordering is now two-layered
-  (manager-level external, spec-level internal) and that the manager layer sees
-  every tool.
+- A hook binary written against compatibility profile v1 (the CC/Codex common
+  subset plus the named divergences) runs under all three harnesses; a foreign hook
+  ports with the Dv1-1…Dv1-4 checklist rather than a rewrite. Guard suites become
+  write-mostly-once; the conformance matrix is what turns that from a hope into a
+  tested property.
+- `ActionManager.invoke` becomes the enforcement chokepoint for Branch-mediated
+  tool calls with an external layer; MCP-discovered tools stop being exempt from
+  tool hooks. Contributors must know that tool-hook ordering is now two-layered
+  (manager-level external, spec-level internal), that the manager layer sees every
+  tool invoked through it, and that direct `FunctionCalling` construction is a
+  documented, tested bypass that code review keeps out of product paths.
 - Two new failure modes exist and are deliberate: a hanging blocking hook denies its
   action after timeout (fail closed), and an unmappable event name refuses to load.
   Both trade convenience for the property that a configured guard is either running
@@ -448,8 +585,9 @@ Command hooks are arbitrary code execution. The trust rule, by config source:
 - **LionAGI-native wire contract + per-harness shims** — maximum expressive freedom
   (could expose `BRANCH_CREATE` etc. natively). Lost: every existing CC/Codex hook
   needs a shim, every LionAGI hook needs two shims to travel, and the shims are
-  permanent maintenance. The converged contract's expressiveness is sufficient for
-  every P1–P5 need identified.
+  permanent maintenance. The CC/Codex family shape's expressiveness is sufficient
+  for every P1–P5 need identified, and the compatibility profile handles the
+  residual divergence at far lower cost than a full dialect.
 - **Route `PreToolUse` through `HookBus.TOOL_PRE`** — smallest diff, reuses the
   existing blocking point. Lost on two hard requirements: the summary-only payload
   cannot honor `updatedInput`, and MCP tools stay invisible. Keeping the audit plane
@@ -479,7 +617,10 @@ Command hooks are arbitrary code execution. The trust rule, by config source:
   is unrelated to the harnesses' `Stop` event (turn-stop arbitration). This ADR maps
   no `Stop` event, and any future ADR that does must not reuse the `StopHook` name for
   it.
-- The CC and Codex hook specs are actively evolving surfaces. This ADR pins the
-  intersection contract as of 2026-07-12 (envelope fields, exit codes, decision
-  shapes listed in D1); divergences discovered later are recorded here with the
-  chosen side.
+- The CC and Codex hook specs are actively evolving surfaces. Compatibility profile
+  v1 is pinned as of 2026-07-12: the field-guarantee table, exit-code protocol,
+  decision vocabulary `allow|deny|ask`, and named divergences Dv1-1 through Dv1-4
+  in D1. When either harness moves, the profile revs — a new version entry is
+  appended here naming what changed and which side LionAGI takes; the loader and
+  import command reference the profile version they implement. No revision happens
+  silently.

@@ -69,7 +69,7 @@ run at `import lionagi` at all.
 | Manifest schema | D2: declarative capability manifest; pure data, no code references executed at parse |
 | Activation timing | D3: manifest-only discovery on first registry miss; code import deferred to capability first-use |
 | Pluggable surfaces (v1) | D4: tools, external hooks, agent profiles, playbooks, providers |
-| Trust | D5: manifest-hash trust record required before any plugin code or command runs |
+| Trust | D5: content-pinned trust record (manifest + every declared capability file) required before any plugin code, command, profile, or playbook is used |
 | Collisions | D6: built-ins always win; plugin-vs-plugin same-name is a hard load error |
 | Lifecycle | D7: `li plugin list/info/trust/enable/disable`; uninstall is directory removal |
 | Python-package plugins | D8 (DEFERRED): `lionagi.plugins` entry-points group resolving to the same manifest |
@@ -249,21 +249,33 @@ do not exist), and roles by recorded design decision — see out-of-scope.
   cannot bury one in an elided display. User-level, not project-level: a repo must
   not be able to self-trust the plugin it carries by committing a settings line —
   the human on the machine approves.
-- The trust record pins **content, not just declaration**: `sha256` of the
-  canonical-JSON manifest plus `sha256` of every file the manifest declares as
-  executable capability — tool `target` files, provider `module` files, hook
-  binaries. Any change to the manifest or to a declared file reverts the plugin to
-  `changed — re-trust required` and it stops loading. Pinning only the manifest
-  was considered and rejected as incoherent: it would argv-pin the *subprocess*
-  hooks (the lower-privilege surface) while letting the in-process Python behind
-  fixed `target` strings — which runs with the host's full privileges on the
-  shared event loop — swap freely without re-approval. The set of hashed files is
-  exactly the declared set, so the cost is O(declared capabilities) at trust time
-  and at each load-time verification. Files inside the bundle that the manifest
-  does not declare (prompts, data, docs a declared module might read) are **not**
-  hashed — that is the honest, bounded limitation of this design, stated rather
-  than hidden: the boundary pins what may execute, not every byte a trusted
-  execution may consume.
+- The trust record pins **content, not just declaration**, for **every declared
+  capability file** — executable *and* consumed-as-instructions alike: `sha256` of
+  the canonical-JSON manifest, plus `sha256` of every tool `target` file, provider
+  `module` file, hook binary, **agent profile file, playbook file, and pack data
+  file** the manifest declares. Any change to the manifest or to any declared file
+  reverts the plugin to `changed — re-trust required` and it stops loading —
+  the changed capability is not exposed again before re-approval. Two narrower
+  scopes were considered and rejected:
+  - *Manifest-only pinning* is incoherent: it would argv-pin the subprocess hooks
+    (the lower-privilege surface) while letting the in-process Python behind fixed
+    `target` strings — which runs with the host's full privileges on the shared
+    event loop — swap freely without re-approval.
+  - *Executables-only pinning* repeats the same mistake one layer up: this ADR
+    itself classifies a poisoned profile prompt as an attack (first bullet), and a
+    profile or playbook is injected into a session's instruction stream — content
+    the model acts on. Leaving those files unhashed means a bundle can pass trust
+    with a benign `agents/researcher.md`, then swap in attacker instructions
+    without touching any pinned hash. The displayed-then-mutable gap is exactly
+    the attack the display contract exists to prevent, so everything the display
+    contract shows, the trust record pins.
+  The set of hashed files is exactly the declared set, so the cost is O(declared
+  capabilities) at trust time and at each load-time verification. The one remaining
+  unpinned category is bundle files the manifest does **not** declare (auxiliary
+  data or docs a declared module might read at runtime) — that is the honest,
+  bounded limitation of this design, stated rather than hidden: the boundary pins
+  every capability LionAGI itself loads into a session or execution path, not every
+  byte a trusted execution may choose to consume.
 - Plugin hook commands additionally pass through ADR-0048 D7 (they are the
   "plugin-bundled" tier there); trusting a plugin records their argv hashes in the
   same step — defensible precisely because the display contract above already put
@@ -357,10 +369,11 @@ The design, recorded in full for the follow-up:
 - Failure surface moves earlier and louder: manifest typos, collisions, and
   incompatible ranges all surface at discovery with plugin-named diagnostics,
   instead of as deep-stack ImportErrors at call time.
-- The trust boundary pins declared executable content (manifest + target files +
-  hook binaries), so a bundle edit behind a trusted manifest stops the plugin
-  loading until re-approved. Undeclared bundle files remain unpinned — stated in
-  D5 as the design's honest limit.
+- The trust boundary pins every declared capability file (manifest, target files,
+  hook binaries, profiles, playbooks, packs), so a bundle edit behind a trusted
+  manifest stops the plugin loading until re-approved — including a swap of
+  instruction-bearing prompt files. Undeclared bundle files remain unpinned —
+  stated in D5 as the design's honest limit.
 - Built-in-collision detection for the code surfaces (providers, tools) happens at
   activation, not discovery — deferred by construction, because knowing the
   built-in set requires the loads D3 forbids at discovery. A colliding plugin
