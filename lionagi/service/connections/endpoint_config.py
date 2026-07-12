@@ -54,7 +54,7 @@ class EndpointConfig(BaseModel):
     @model_validator(mode="before")
     def _validate_kwargs(cls, data: dict):
         kwargs = data.pop("kwargs", {})
-        field_keys = list(cls.model_json_schema().get("properties", {}).keys())
+        field_keys = cls.model_fields
         for k in list(data.keys()):
             if k not in field_keys:
                 kwargs[k] = data.pop(k)

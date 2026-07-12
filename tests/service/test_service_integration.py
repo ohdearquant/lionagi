@@ -177,6 +177,19 @@ class TestServiceIntegration:
         assert config.kwargs["custom_field"] == "custom_value"
         assert config.kwargs["another_param"] == 123
 
+    def test_endpoint_config_kwargs_only_collect_unknown_fields(self):
+        config = EndpointConfig(
+            name="test",
+            provider="openai",
+            endpoint="chat",
+            timeout=42,
+            kwargs={"preserved": "value"},
+            unknown_option="kept",
+        )
+
+        assert config.timeout == 42
+        assert config.kwargs == {"preserved": "value", "unknown_option": "kept"}
+
 
 class TestServiceErrorHandling:
     def test_endpoint_config_missing_required_fields(self):
