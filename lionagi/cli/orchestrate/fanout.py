@@ -33,6 +33,7 @@ from ._orchestration import (
     setup_orchestration,
     start_live_persist,
     stop_live_persist,
+    team_history_context,
     worker_is_cli,
 )
 
@@ -222,11 +223,17 @@ async def _run_fanout_inner(
             explicit_name=wname,
             modes=ta.modes or None,
         )
+        ctx = [{"overall_task": prompt}]
+        # Attached-team history (if any) rides in operation context, not the
+        # system prompt — see team_history_context's docstring for why.
+        history_ctx = team_history_context(env.team_data, wname, messenger_bound=messenger_bound)
+        if history_ctx:
+            ctx.append(history_ctx)
         node = _build_worker_operate_node(
             env.builder,
             branch=w_branch,
             instruction=ta.task,
-            context=[{"overall_task": prompt}],
+            context=ctx,
             messenger_bound=messenger_bound,
         )
         fanned_nodes.append(node)

@@ -52,6 +52,7 @@ from ._orchestration import (
     start_live_persist,
     stop_live_persist,
     team_guidance,
+    team_history_context,
     worker_is_cli,
 )
 
@@ -497,6 +498,13 @@ async def _build_dag(
                     }
                 }
             )
+            # Attached-team history (if any) rides in operation context, not
+            # the system prompt — see team_history_context's docstring for why.
+            history_ctx = team_history_context(
+                env.team_data, agent_ids[i], messenger_bound=messenger_bound
+            )
+            if history_ctx:
+                ctx.append(history_ctx)
         w_effort = env.effort
         if not env.bare and w_profile and w_profile.effort:
             w_effort = w_profile.effort

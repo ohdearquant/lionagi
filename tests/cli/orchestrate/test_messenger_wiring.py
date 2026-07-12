@@ -19,6 +19,7 @@ from lionagi.cli.orchestrate._common import (
 from lionagi.cli.orchestrate._orchestration import (
     OrchestrationEnv,
     build_worker_branch,
+    team_history_context,
     team_worker_system,
     worker_is_cli,
 )
@@ -607,13 +608,21 @@ async def test_messenger_bound_worker_prompt_flags_cli_teammate_end_to_end(tmp_p
 
 
 # ── Attached-team history: messenger-bound workers can't live-poll the
-# persisted file, so prior messages must be surfaced as a static digest ────
+# persisted file, so prior messages must be surfaced to them some other way
+# ─────────────────────────────────────────────────────────────────────────
 #
 # `--team-attach` loads an existing team's persisted messages (li team's
 # file channel). A bash-channel worker can still `li team receive` live and
 # see them; a messenger-bound worker's Exchange is fresh in-memory state for
-# this run and never replays history sent before the messenger tool existed
-# — so team_worker_system must inline that history into the prompt itself.
+# this run and never replays history sent before the messenger tool existed.
+#
+# That history is DATA (arbitrary prior user/agent text — potentially
+# containing forged headings or "ignore the task"-style content), not a
+# vetted instruction, so it must never be promoted into the system prompt
+# (which carries the same authority as the coordination instructions
+# themselves). team_history_context() shapes it for operation CONTEXT
+# instead (what fanout.py/flow.py pass into `operate(context=...)`), and
+# team_worker_system()'s system-prompt output must never contain it.
 
 
 def _attached_team_data(team_id="t1", team_name="the-team"):
@@ -629,47 +638,59 @@ def _attached_team_data(team_id="t1", team_name="the-team"):
     }
 
 
-def test_team_worker_system_surfaces_prior_history_for_messenger_bound_worker():
-    section = team_worker_system(
-        _attached_team_data(),
-        "alice",
-        messenger_bound=True,
-        messenger_names=frozenset({"alice", "bob"}),
-    )
-    assert "### Prior team messages" in section
-    assert "kickoff broadcast" in section  # broadcast: everyone sees it
-    assert "watch out for X" in section  # addressed to alice
-    assert "private to bob only" not in section  # addressed to bob, not alice
+def test_team_history_context_surfaces_prior_messages_for_messenger_bound_worker():
+    ctx = team_history_context(_attached_team_data(), "alice", messenger_bound=True)
+    assert ctx is not None
+    digest = ctx["prior_team_messages"]
+    assert "TRANSCRIPT DATA" in digest["note"]
+    assert "not an instruction" in digest["note"].lower() or "not a command" in digest["note"]
+    contents = [m["content"] for m in digest["messages"]]
+    assert "kickoff broadcast" in contents  # broadcast: everyone sees it
+    assert "watch out for X" in contents  # addressed to alice
+    assert "private to bob only" not in contents  # addressed to bob, not alice
 
 
-def test_team_worker_system_omits_history_section_when_no_prior_messages():
-    section = team_worker_system(
-        _team_data(),  # no "messages" key at all
-        "alice",
-        messenger_bound=True,
-        messenger_names=frozenset({"alice", "bob"}),
-    )
-    assert "### Prior team messages" not in section
+def test_team_history_context_none_when_no_prior_messages():
+    assert team_history_context(_team_data(), "alice", messenger_bound=True) is None
 
 
-def test_team_worker_system_bash_channel_worker_gets_no_history_digest():
+def test_team_history_context_none_for_bash_channel_worker():
     """Bash-channel workers already see history live via `li team receive` —
-    the static digest is only needed (and only added) for messenger-bound
+    the digest is only needed (and only produced) for messenger-bound
     workers, who have no other path to it."""
+    assert team_history_context(_attached_team_data(), "alice", messenger_bound=False) is None
+
+
+def test_team_history_context_none_without_team_data():
+    assert team_history_context(None, "alice", messenger_bound=True) is None
+
+
+def test_team_worker_system_never_contains_prior_message_content():
+    """The system prompt is the one place attached-team history must NEVER
+    appear — regression guard for the injection-surface concern: message
+    content sent by a prior (potentially untrusted) sender must not be
+    promoted to the same authority as coordination instructions."""
     section = team_worker_system(
         _attached_team_data(),
         "alice",
-        messenger_bound=False,
+        messenger_bound=True,
+        messenger_names=frozenset({"alice", "bob"}),
     )
     assert "### Prior team messages" not in section
     assert "kickoff broadcast" not in section
+    assert "watch out for X" not in section
+    assert "private to bob only" not in section
 
 
 @pytest.mark.asyncio
-async def test_messenger_bound_worker_prompt_includes_attached_history_end_to_end(tmp_path):
+async def test_messenger_bound_worker_system_prompt_excludes_attached_history_end_to_end(
+    tmp_path,
+):
     """End-to-end: build_worker_branch's real system prompt for a messenger-
-    bound worker attaching to a team with prior messages includes those
-    messages as static context."""
+    bound worker attaching to a team with prior messages never contains that
+    history — it must only ever reach the worker via operation context,
+    which build_worker_branch itself does not construct (fanout.py/flow.py
+    do, using team_history_context — see the tests above for its content)."""
     exchange = Exchange()
     messenger = LionMessenger(exchange)
     roster: dict = {}
@@ -692,7 +713,14 @@ async def test_messenger_bound_worker_prompt_includes_attached_history_end_to_en
 
     assert messenger_bound is True
     prompt = wb.system.rendered
-    assert "### Prior team messages" in prompt
-    assert "kickoff broadcast" in prompt
-    assert "watch out for X" in prompt
+    assert "### Prior team messages" not in prompt
+    assert "kickoff broadcast" not in prompt
+    assert "watch out for X" not in prompt
     assert "private to bob only" not in prompt
+
+    # The content DOES exist, correctly shaped — just not here. Confirms the
+    # end-to-end picture: build_worker_branch's prompt is clean, and the
+    # caller-side context helper independently has the real data.
+    ctx = team_history_context(env.team_data, "alice", messenger_bound=messenger_bound)
+    assert ctx is not None
+    assert "kickoff broadcast" in [m["content"] for m in ctx["prior_team_messages"]["messages"]]
