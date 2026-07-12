@@ -237,6 +237,15 @@ def _patch_db(monkeypatch, db_path: Path) -> None:
     import lionagi.studio.services.schedules as schedules_mod
     import lionagi.studio.services.sessions as sessions_mod
 
+    # StateDB's path cascade consults settings.LIONAGI_STATE_DB_URL BEFORE
+    # DEFAULT_DB_PATH, so an environment with that set (dev machine, CI)
+    # would route these tests at the real configured DB — neutralize it.
+    # AppSettings is frozen, so swap the module's reference for a copy.
+    monkeypatch.setattr(
+        state_db_mod,
+        "settings",
+        state_db_mod.settings.model_copy(update={"LIONAGI_STATE_DB_URL": None}),
+    )
     monkeypatch.setattr(state_db_mod, "DEFAULT_DB_PATH", db_path)
     monkeypatch.setattr(admin_mod, "DEFAULT_DB_PATH", db_path)
     monkeypatch.setattr(admin_mod, "_DB", str(db_path))
