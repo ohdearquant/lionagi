@@ -28,16 +28,24 @@ provenance a prior import established, whichever comes last wins); and a
 literal ``getattr(<flow module>, "DependencyAwareExecutor")`` dynamic-lookup
 call — recognized only when the receiver statically denotes
 ``lionagi.operations.flow`` — whether assigned to a name first or called
-inline. Import provenance is additionally tracked per lexical scope: a
-function or lambda parameter that shadows a module-level
-``importlib``/``lionagi``/flow-module name is not trusted as that import for
-the duration of that function body. It does not perform general data-flow
+inline. Import provenance is tracked per lexical scope, not as one flat
+whole-module timeline: each function/lambda scope starts from a copy of its
+enclosing scope's provenance with parameter-shadowed names discarded, then
+replays its OWN body's binding events (in source order) on top of that copy —
+so a function-local reimport genuinely restores what a same-named parameter
+shadowed. Within a scope, a binding event nested inside an
+``if``/``try``/``except``/``for``/``while``/``with`` block is CONDITIONAL:
+it may only DISCARD provenance (a conditional rebinding to something
+unrecognized is treated as if it might have executed, since trusting the name
+afterward risks a false-positive executor site) and may never ESTABLISH or
+RESTORE it (a conditional import might never execute, so applying it anyway
+risks the same false positive from the other direction) — only an
+unconditional binding, a direct statement of the scope's own body, can
+establish or restore provenance. It does not perform general data-flow
 analysis: resolution through a factory function's return value, a
 non-literal string argument, an alias threaded through more than one
-intermediate assignment, or a function-local *reassignment* (as opposed to a
-parameter) of a provenance name — which still folds into the same flat,
-whole-module ordering rather than true per-scope resolution — is not tracked
-and remains a residual imprecision.
+intermediate assignment, or any binding inside a class body, comprehension,
+or walrus assignment is not tracked and remains a residual imprecision.
 
 Registering a location in the manifest is necessary but not sufficient: any
 row that names an ``expected_target`` must also name a ``delegation_test`` —
@@ -607,59 +615,82 @@ def _resolve_constructor_alias_rhs(
     return None
 
 
-def _collect_constructor_import_bindings(tree: ast.AST) -> dict[str, str]:
-    """Local alias -> canonical name for any `from ... import
-    <ConstructorSinkName> [as alias]` in *tree*, regardless of which module
-    path it is re-exported from (``Graph`` in particular is re-exported from
-    several ``lionagi.protocols.*`` modules, so this deliberately does not
-    filter by source module the way ``_collect_kernel_import_bindings``
-    does), plus every simple one-level assignment alias
-    (``GraphRunner = DependencyAwareExecutor`` or
-    ``GraphRunner = <existing alias>``) and literal dynamic ``getattr``
-    lookup alias (``GraphRunner = getattr(mod, "DependencyAwareExecutor")``)
-    recognized by ``_resolve_constructor_alias_rhs``. Closes the
-    aliased-constructor gap: `from lionagi.operations.flow import
-    DependencyAwareExecutor as GraphRunner` followed by
-    `GraphRunner(...).execute()`, a bare `GraphRunner = DependencyAwareExecutor`
-    assignment, or a `getattr`-based dynamic lookup assigned to a name, must
-    all be recognized as constructing ``DependencyAwareExecutor`` even though
-    the call site only ever mentions the local alias.
+_BindingEvent = tuple[ast.Import | ast.ImportFrom | ast.Assign, bool]
 
-    Imports and assignments are collected as a single list of binding events
-    and replayed in ONE combined source-order pass (by lineno, col_offset) --
-    not imports-then-assignments as two independent passes -- so a later
-    genuine import RESTORES provenance an earlier unrelated rebinding
-    discarded, and a later unrelated rebinding still DISCARDS provenance an
-    earlier import established; whichever event is last in source wins. An
-    alias is DROPPED again when its name is rebound to anything unrecognized
-    (``GraphRunner = SomethingElse`` after ``GraphRunner =
-    DependencyAwareExecutor``), so a rebound name is not misreported as an
-    executor construction. This is still a flat, whole-module binding model,
-    not true lexical scoping -- a function-local rebinding of a
-    module-level alias (or the reverse) is folded into the same flat,
-    source-ordered timeline rather than resolved per scope, and remains a
-    documented residual imprecision (parameter shadowing is handled
-    separately, per scope, by ``_SinkVisitor``).
 
-    Returns ``(alias_map, flow_env)`` where the second element is the
-    import-provenance environment (:class:`_FlowModuleEnv`) of names bound
-    to ``lionagi.operations.flow``, the ``lionagi`` package root,
-    ``importlib``, and ``import_module`` -- used to restrict ``getattr``
-    recognition to receivers that provably denote the flow module."""
-    bound: dict[str, str] = {}
-    env = _FlowModuleEnv.empty()
-    events: list[ast.Import | ast.ImportFrom | ast.Assign] = [
-        node
-        for node in ast.walk(tree)
-        if isinstance(node, (ast.Import, ast.ImportFrom))
-        or (
-            isinstance(node, ast.Assign)
-            and len(node.targets) == 1
-            and isinstance(node.targets[0], ast.Name)
-        )
-    ]
-    for node in sorted(events, key=lambda n: (n.lineno, n.col_offset)):
+def _collect_scope_binding_events(
+    stmts: list[ast.stmt], conditional: bool, events: list[_BindingEvent]
+) -> None:
+    """Collect Import/ImportFrom/simple-Name-Assign binding events out of
+    *stmts* -- the statement list of ONE lexical scope (a module body or a
+    function body) -- tagging each with whether it is CONDITIONAL: nested
+    inside an ``if``/``try``/``except``/``for``/``while``/``with`` body
+    rather than a direct statement of *stmts* itself. Descends into a nested
+    class body transparently (a class body is not a distinct scope for this
+    analysis and was never treated as one) but stops at a nested function,
+    async function, or lambda -- those get their own independent scope when
+    ``_SinkVisitor`` reaches them, each replaying only its own body's events
+    on top of a copy of its enclosing scope's provenance."""
+    for stmt in stmts:
+        if isinstance(stmt, (ast.Import, ast.ImportFrom)):
+            events.append((stmt, conditional))
+        elif (
+            isinstance(stmt, ast.Assign)
+            and len(stmt.targets) == 1
+            and isinstance(stmt.targets[0], ast.Name)
+        ):
+            events.append((stmt, conditional))
+
+        if isinstance(stmt, ast.If):
+            _collect_scope_binding_events(stmt.body, True, events)
+            _collect_scope_binding_events(stmt.orelse, True, events)
+        elif isinstance(stmt, ast.Try):
+            _collect_scope_binding_events(stmt.body, True, events)
+            for handler in stmt.handlers:
+                _collect_scope_binding_events(handler.body, True, events)
+            _collect_scope_binding_events(stmt.orelse, True, events)
+            _collect_scope_binding_events(stmt.finalbody, True, events)
+        elif isinstance(stmt, (ast.For, ast.AsyncFor)):
+            _collect_scope_binding_events(stmt.body, True, events)
+            _collect_scope_binding_events(stmt.orelse, True, events)
+        elif isinstance(stmt, ast.While):
+            _collect_scope_binding_events(stmt.body, True, events)
+            _collect_scope_binding_events(stmt.orelse, True, events)
+        elif isinstance(stmt, (ast.With, ast.AsyncWith)):
+            _collect_scope_binding_events(stmt.body, True, events)
+        elif isinstance(stmt, ast.ClassDef):
+            _collect_scope_binding_events(stmt.body, conditional, events)
+        # FunctionDef/AsyncFunctionDef/Lambda: a new scope: stop here.
+
+
+def _replay_binding_events(
+    events: list[_BindingEvent], bound: dict[str, str], env: _FlowModuleEnv
+) -> None:
+    """Replay *events* (as collected by ``_collect_scope_binding_events``) in
+    source order (by lineno, col_offset), mutating *bound*/*env* in place.
+
+    An event that would ESTABLISH or RESTORE provenance -- an import, or an
+    assignment recognized as a flow-module expression or a constructor
+    alias -- is applied only when UNCONDITIONAL: a conditional import or a
+    conditional alias-assignment might never execute, and trusting it anyway
+    risks exactly the false-positive executor site a conditionally-dead
+    branch must not produce.
+
+    An event that would CLEAR provenance -- an assignment to anything
+    unrecognized -- is ALWAYS applied, conditional or not: a conditional
+    rebinding might genuinely execute, and the conservative, false-positive-
+    safe choice is to stop trusting the name rather than assume the
+    rebinding didn't happen.
+
+    Net effect: within one scope, unconditional bindings behave exactly like
+    the old flat whole-module pass (source-order, last-one-wins); a
+    conditional import/alias-assignment is a no-op that neither restores nor
+    disturbs whatever provenance already held; a conditional rebinding to an
+    unrecognized value still clears it."""
+    for node, conditional in sorted(events, key=lambda pair: (pair[0].lineno, pair[0].col_offset)):
         if isinstance(node, ast.ImportFrom):
+            if conditional:
+                continue
             for alias in node.names:
                 if alias.name in _CONSTRUCTOR_SINK_NAMES:
                     bound[alias.asname or alias.name] = alias.name
@@ -670,6 +701,8 @@ def _collect_constructor_import_bindings(tree: ast.AST) -> dict[str, str]:
                     elif node.module == "importlib" and alias.name == "import_module":
                         env.import_module_funcs.add(alias.asname or alias.name)
         elif isinstance(node, ast.Import):
+            if conditional:
+                continue
             for alias in node.names:
                 if alias.name == _FLOW_MODULE_PATH and alias.asname:
                     env.names.add(alias.asname)
@@ -680,15 +713,56 @@ def _collect_constructor_import_bindings(tree: ast.AST) -> dict[str, str]:
         else:
             target = node.targets[0].id
             if _is_flow_module_expr(node.value, env):
+                if conditional:
+                    continue
                 env.names.add(target)
                 bound.pop(target, None)
                 continue
             canonical = _resolve_constructor_alias_rhs(node.value, bound, env)
             if canonical is not None:
+                if conditional:
+                    continue
                 bound[target] = canonical
             else:
                 bound.pop(target, None)
                 env.discard(target)
+
+
+def _collect_constructor_import_bindings(tree: ast.Module) -> tuple[dict[str, str], _FlowModuleEnv]:
+    """Local alias -> canonical name for any `from ... import
+    <ConstructorSinkName> [as alias]` in *tree*'s MODULE scope, regardless of
+    which module path it is re-exported from (``Graph`` in particular is
+    re-exported from several ``lionagi.protocols.*`` modules, so this
+    deliberately does not filter by source module the way
+    ``_collect_kernel_import_bindings`` does), plus every simple one-level
+    assignment alias (``GraphRunner = DependencyAwareExecutor`` or
+    ``GraphRunner = <existing alias>``) and literal dynamic ``getattr``
+    lookup alias (``GraphRunner = getattr(mod, "DependencyAwareExecutor")``)
+    recognized by ``_resolve_constructor_alias_rhs``. Closes the
+    aliased-constructor gap: `from lionagi.operations.flow import
+    DependencyAwareExecutor as GraphRunner` followed by
+    `GraphRunner(...).execute()`, a bare `GraphRunner = DependencyAwareExecutor`
+    assignment, or a `getattr`-based dynamic lookup assigned to a name, must
+    all be recognized as constructing ``DependencyAwareExecutor`` even though
+    the call site only ever mentions the local alias.
+
+    Only the module's OWN top-level statements (plus anything nested inside
+    module-level control flow, which is CONDITIONAL -- see
+    ``_collect_scope_binding_events``/``_replay_binding_events``) feed this
+    pass; a binding inside a nested function/lambda body is that function's
+    OWN scope and is resolved separately by ``_SinkVisitor`` when it enters
+    that scope, starting from a copy of this module-level result.
+
+    Returns ``(alias_map, flow_env)`` where the second element is the
+    import-provenance environment (:class:`_FlowModuleEnv`) of names bound
+    to ``lionagi.operations.flow``, the ``lionagi`` package root,
+    ``importlib``, and ``import_module`` -- used to restrict ``getattr``
+    recognition to receivers that provably denote the flow module."""
+    bound: dict[str, str] = {}
+    env = _FlowModuleEnv.empty()
+    events: list[_BindingEvent] = []
+    _collect_scope_binding_events(tree.body, False, events)
+    _replay_binding_events(events, bound, env)
     return bound, env
 
 
@@ -701,13 +775,19 @@ class _SinkVisitor(ast.NodeVisitor):
     innermost enclosing function or method (dotted "Class.method" or
     "function").
 
-    Import provenance (:class:`_FlowModuleEnv`) is tracked per lexical
-    scope, not just at module level: entering a function or lambda whose own
-    parameter shadows a module-level ``importlib``/``lionagi``/flow-module
-    name pushes a scoped copy of the environment with that name masked, so a
-    same-named parameter is never mistaken for the real import inside that
-    function body. The scope is popped again on the way out, restoring the
-    enclosing environment for sibling functions."""
+    Import provenance (:class:`_FlowModuleEnv`) and constructor aliases
+    (``bound``) are tracked per lexical scope, not as one flat whole-module
+    timeline: entering a function or lambda pushes a scoped copy of both,
+    derived from the enclosing scope with any parameter-shadowed name
+    discarded from each. For a function/async function (never a lambda,
+    which can hold no statements), that copy is then advanced by replaying
+    the function's OWN body's binding events on top of it -- via the same
+    ``_collect_scope_binding_events``/``_replay_binding_events`` machinery
+    ``_collect_constructor_import_bindings`` uses for the module scope -- so
+    a genuine in-body reimport restores provenance a same-named parameter
+    shadowed, exactly as a module-level reimport restores provenance an
+    unrelated rebinding discarded. The scope is popped again on the way out,
+    restoring the enclosing scope's view for sibling functions."""
 
     def __init__(
         self,
@@ -717,7 +797,7 @@ class _SinkVisitor(ast.NodeVisitor):
     ) -> None:
         self._stack: list[str] = []
         self._kernel_names = kernel_names
-        self._constructor_aliases = constructor_aliases or {}
+        self._bound_stack: list[dict[str, str]] = [dict(constructor_aliases or {})]
         self._flow_env_stack: list[_FlowModuleEnv] = [flow_env or _FlowModuleEnv.empty()]
         self.hits: dict[str, set[str]] = {}
         self.linenos: dict[str, int] = {}
@@ -726,6 +806,10 @@ class _SinkVisitor(ast.NodeVisitor):
     @property
     def _flow_env(self) -> _FlowModuleEnv:
         return self._flow_env_stack[-1]
+
+    @property
+    def _constructor_aliases(self) -> dict[str, str]:
+        return self._bound_stack[-1]
 
     def _qualname(self) -> str:
         return ".".join(self._stack)
@@ -744,31 +828,38 @@ class _SinkVisitor(ast.NodeVisitor):
         self.generic_visit(node)
         self._stack.pop()
 
-    def _push_param_scope(self, args: ast.arguments) -> None:
-        shadowed = _param_names(args)
-        env = self._flow_env.copy() if shadowed else self._flow_env
-        if shadowed:
-            for name in shadowed:
-                env.discard(name)
+    def _push_func_scope(self, node: ast.FunctionDef | ast.AsyncFunctionDef | ast.Lambda) -> None:
+        shadowed = _param_names(node.args)
+        env = self._flow_env.copy()
+        bound = dict(self._constructor_aliases)
+        for name in shadowed:
+            env.discard(name)
+            bound.pop(name, None)
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            events: list[_BindingEvent] = []
+            _collect_scope_binding_events(node.body, False, events)
+            _replay_binding_events(events, bound, env)
         self._flow_env_stack.append(env)
+        self._bound_stack.append(bound)
 
-    def _pop_param_scope(self) -> None:
+    def _pop_func_scope(self) -> None:
         self._flow_env_stack.pop()
+        self._bound_stack.pop()
 
     def _visit_func(self, node: ast.FunctionDef | ast.AsyncFunctionDef) -> None:
         self._stack.append(node.name)
-        self._push_param_scope(node.args)
+        self._push_func_scope(node)
         self.generic_visit(node)
-        self._pop_param_scope()
+        self._pop_func_scope()
         self._stack.pop()
 
     visit_FunctionDef = _visit_func
     visit_AsyncFunctionDef = _visit_func
 
     def visit_Lambda(self, node: ast.Lambda) -> None:
-        self._push_param_scope(node.args)
+        self._push_func_scope(node)
         self.generic_visit(node)
-        self._pop_param_scope()
+        self._pop_func_scope()
 
     def visit_Call(self, node: ast.Call) -> None:
         func = node.func
@@ -1295,6 +1386,153 @@ def test_function_parameter_shadowing_lionagi_import_is_not_misreported(tmp_path
         f"executor site — got: {sorted(discovery.executor_sites)}"
     )
     assert ("param_shadows_lionagi.py", "run") not in discovery.call_sites
+
+
+def test_conditional_rebind_and_conditional_reimport_is_not_misreported(tmp_path):
+    """Regression for the conditional-provenance false positive: an
+    unconditional `import importlib` followed by an if/else where the `if`
+    branch rebinds `importlib` to an arbitrary object and the `else` branch
+    re-imports it must NOT register a site. The checker cannot know which
+    branch runs, so the conservative/false-positive-safe reading is that the
+    rebind might have happened (clears provenance) while the re-import might
+    never run (does not restore it) -- net: no provenance, no site. Under
+    the old flat whole-module source-ordered replay, the `else`-branch
+    re-import (later in source than the rebind) wrongly restored provenance
+    regardless of which branch is live."""
+    rogue = tmp_path / "conditional_if_else.py"
+    rogue.write_text(
+        "import importlib\n"
+        "if True:\n"
+        "    importlib = object()\n"
+        "else:\n"
+        "    import importlib\n\n\n"
+        "async def run(session, graph):\n"
+        '    return await getattr(importlib.import_module("lionagi.operations.flow"), '
+        '"DependencyAwareExecutor")(session, graph).execute()\n'
+    )
+
+    discovery = discover_call_and_construct_sites(tmp_path, base=tmp_path)
+
+    assert discovery.executor_sites == set(), (
+        "an if/else rebind-then-conditionally-reimport must not register as an "
+        f"executor site — got: {sorted(discovery.executor_sites)}"
+    )
+    assert ("conditional_if_else.py", "run") not in discovery.call_sites
+
+
+def test_conditional_rebind_and_conditional_reimport_in_try_except_is_not_misreported(tmp_path):
+    """Same conditional-provenance false positive, `try`/`except` shape:
+    the `try` body rebinds `importlib` and the `except` handler re-imports
+    it -- neither is guaranteed to run in the reported order, so this must
+    not register a site either."""
+    rogue = tmp_path / "conditional_try_except.py"
+    rogue.write_text(
+        "import importlib\n"
+        "try:\n"
+        "    importlib = object()\n"
+        "except Exception:\n"
+        "    import importlib\n\n\n"
+        "async def run(session, graph):\n"
+        '    return await getattr(importlib.import_module("lionagi.operations.flow"), '
+        '"DependencyAwareExecutor")(session, graph).execute()\n'
+    )
+
+    discovery = discover_call_and_construct_sites(tmp_path, base=tmp_path)
+
+    assert discovery.executor_sites == set(), (
+        "a try/except rebind-then-conditionally-reimport must not register as an "
+        f"executor site — got: {sorted(discovery.executor_sites)}"
+    )
+    assert ("conditional_try_except.py", "run") not in discovery.call_sites
+
+
+def test_unconditional_import_after_conditional_block_still_yields_a_site(tmp_path):
+    """Companion to the two conditional false-positive regressions above: a
+    conditional rebind inside an `if` block must not poison an unconditional,
+    real import that comes AFTER the block ends at the same (module) scope --
+    provenance still resolves normally once control flow returns to an
+    unconditional statement."""
+    rogue = tmp_path / "conditional_then_unconditional.py"
+    rogue.write_text(
+        "import importlib\n"
+        "if True:\n"
+        "    importlib = object()\n"
+        "import importlib\n\n\n"
+        "async def run(session, graph):\n"
+        '    return await getattr(importlib.import_module("lionagi.operations.flow"), '
+        '"DependencyAwareExecutor")(session, graph).execute()\n'
+    )
+
+    discovery = discover_call_and_construct_sites(tmp_path, base=tmp_path)
+
+    key = ("conditional_then_unconditional.py", "run")
+    assert key in discovery.call_sites, (
+        "an unconditional import after a conditional rebind block was not discovered — "
+        f"found: {sorted(discovery.call_sites)}"
+    )
+    assert discovery.executor_sites == {key}, (
+        "the unconditional post-block import must be flagged as an executor site — got: "
+        f"{sorted(discovery.executor_sites)}"
+    )
+
+
+def test_in_body_reimport_restores_importlib_provenance_masked_by_parameter(tmp_path):
+    """Regression for the parameter-shadow false negative: a function whose
+    parameter is named `importlib` (masking the module-level import for the
+    duration of the function body, per
+    test_function_parameter_shadowing_importlib_import_is_not_misreported)
+    but which then performs its OWN `import importlib` inside the body must
+    have that re-import recognized -- the in-body import is a genuine,
+    unconditional statement of the function's own scope and really does
+    rebind the name to the real module at runtime."""
+    rogue = tmp_path / "reimport_inside_shadowed_scope.py"
+    rogue.write_text(
+        "import importlib\n\n\n"
+        "async def run(importlib, session, graph):\n"
+        "    import importlib\n"
+        '    return await getattr(importlib.import_module("lionagi.operations.flow"), '
+        '"DependencyAwareExecutor")(session, graph).execute()\n'
+    )
+
+    discovery = discover_call_and_construct_sites(tmp_path, base=tmp_path)
+
+    key = ("reimport_inside_shadowed_scope.py", "run")
+    assert key in discovery.call_sites, (
+        "a genuine in-body reimport restoring parameter-shadowed provenance was not "
+        f"discovered — found: {sorted(discovery.call_sites)}"
+    )
+    assert discovery.executor_sites == {key}, (
+        "the in-body-reimport-restored dynamic lookup must be flagged as an executor "
+        f"site — got: {sorted(discovery.executor_sites)}"
+    )
+
+
+def test_in_body_reimport_restores_lionagi_root_provenance_masked_by_parameter(tmp_path):
+    """Same parameter-shadow false negative for the `lionagi` package root,
+    dotted-attribute shape: a function parameter named `lionagi` masks the
+    module-level `import lionagi`, but an in-body `import lionagi` genuinely
+    restores it for a dotted `lionagi.operations.flow` receiver."""
+    rogue = tmp_path / "reimport_lionagi_inside_shadowed_scope.py"
+    rogue.write_text(
+        "import lionagi\n\n\n"
+        "async def run(lionagi, session, graph):\n"
+        "    import lionagi\n"
+        '    return await getattr(lionagi.operations.flow, "DependencyAwareExecutor")(\n'
+        "        session, graph\n"
+        "    ).execute()\n"
+    )
+
+    discovery = discover_call_and_construct_sites(tmp_path, base=tmp_path)
+
+    key = ("reimport_lionagi_inside_shadowed_scope.py", "run")
+    assert key in discovery.call_sites, (
+        "a genuine in-body reimport restoring parameter-shadowed lionagi-root provenance "
+        f"was not discovered — found: {sorted(discovery.call_sites)}"
+    )
+    assert discovery.executor_sites == {key}, (
+        "the in-body-reimport-restored dotted lionagi receiver must be flagged as an "
+        f"executor site — got: {sorted(discovery.executor_sites)}"
+    )
 
 
 def test_session_flow_and_flow_stream_are_discovered_via_bare_import_not_hardcoding(tmp_path):
