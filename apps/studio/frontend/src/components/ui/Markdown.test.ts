@@ -58,6 +58,16 @@ describe("Markdown.tsx — file-link resolution wiring", () => {
     expect(SRC).toMatch(/status: "error"/);
   });
 
+  it("handles a rejected getRunFile promise (network failure) instead of leaving the modal stuck loading", () => {
+    // getRunFile rethrows on a fetch() network error rather than resolving
+    // an { ok: false } shape (see lib/api.ts) — the effect chain must attach
+    // a .catch, not just a bare .then, or a dropped connection leaves the
+    // modal in "loading" forever.
+    expect(SRC).toMatch(/getRunFile\(runId, path\)\s*\.then\(/);
+    expect(SRC).toMatch(/\.catch\(\s*\(err\)\s*=>\s*\{/);
+    expect(SRC).toMatch(/setState\(\{ status: "error", detail: err instanceof Error/);
+  });
+
   it("never fabricates a target from text alone — file surface comes only from fileContext.knownFiles", () => {
     expect(SRC).toMatch(/knownFiles: fileContext\.knownFiles/);
   });

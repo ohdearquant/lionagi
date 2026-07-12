@@ -935,13 +935,17 @@ export default function RunDetail({ id }: RunDetailProps) {
   // Run-wide known file surface (union across every step/agent branch) —
   // the file-link resolver's save-root fallback when a bare filename isn't
   // in the emitting agent's own step but was written by a sibling agent.
+  // Steps only cover the loaded (tail-windowed) messages, so a reference to
+  // a file touched earlier in a long session can't resolve from steps alone
+  // — seed/merge with the server's full-session union (message_stats.files),
+  // which is computed over every branch's full progression, not the window.
   const runFiles = useMemo(() => {
-    const set = new Set<string>();
+    const set = new Set<string>(session?.message_stats?.files ?? []);
     for (const step of steps) {
       for (const p of extractFilePaths(step.messages ?? [])) set.add(p);
     }
     return Array.from(set);
-  }, [steps]);
+  }, [steps, session]);
 
   const errors = useMemo(() => {
     const errs: ErrorEntry[] = [];

@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import math
+import os
+import stat
 import time
 from pathlib import Path
 from typing import Any
@@ -761,6 +763,40 @@ async def get_run_route(
     return run
 
 
+def _open_regular_file_no_follow(root: Path, resolved: Path) -> int:
+    """Open `resolved` (already containment-checked under `root`) through a
+    root-anchored, no-follow descriptor walk and return the open fd.
+
+    `resolve_workspace_path` only validates the path at check time — nothing
+    stops the target from being replaced with a symlink before a later
+    `open()`-by-path follows it out of the artifact root (CWE-367/59). This
+    walks each path component with `os.open(..., dir_fd=parent_fd)` instead:
+    every component is resolved relative to a directory descriptor obtained
+    *before* it, never by re-walking a path string, and `O_NOFOLLOW` refuses
+    a symlink at any position (including an intermediate directory). The
+    caller owns closing the returned fd.
+    """
+    parts = resolved.relative_to(root).parts
+    if not parts:
+        raise PermissionError(f"no path components under root: {resolved!r}")
+    dir_fd = os.open(root, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+    try:
+        for i, part in enumerate(parts):
+            is_last = i == len(parts) - 1
+            flags = os.O_RDONLY | os.O_NOFOLLOW
+            if not is_last:
+                flags |= os.O_DIRECTORY
+            fd = os.open(part, flags, dir_fd=dir_fd)
+            os.close(dir_fd)
+            dir_fd = fd
+        if not stat.S_ISREG(os.fstat(dir_fd).st_mode):
+            raise PermissionError(f"not a regular file: {resolved!r}")
+        return dir_fd
+    except BaseException:
+        os.close(dir_fd)
+        raise
+
+
 async def get_run_file(run_id: str, path: str) -> dict[str, Any]:
     """Read-only content fetch for a file inside a run's artifact root.
 
@@ -779,19 +815,32 @@ async def get_run_file(run_id: str, path: str) -> dict[str, Any]:
     artifact_root = Path(artifacts_path)
     if not artifact_root.exists():
         raise HTTPException(status_code=404, detail="Run artifact root no longer exists")
+    root = artifact_root.resolve()
 
     try:
-        resolved = resolve_workspace_path(path, artifact_root.resolve())
+        resolved = resolve_workspace_path(path, root)
     except PermissionError as exc:
         raise HTTPException(status_code=403, detail=str(exc)) from exc
 
-    if not resolved.exists() or not resolved.is_file():
-        raise HTTPException(status_code=404, detail=f"File '{path}' not found")
-
-    size = resolved.stat().st_size
-    raw = resolved.read_bytes()[:_MAX_FILE_READ_BYTES]
     try:
-        content = raw.decode("utf-8")
+        fd = _open_regular_file_no_follow(root, resolved)
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=f"File '{path}' not found") from exc
+    except (OSError, PermissionError) as exc:
+        raise HTTPException(status_code=403, detail=f"File '{path}' is not accessible") from exc
+
+    try:
+        size = os.fstat(fd).st_size
+        # Read at most cap+1 bytes in a single syscall — the extra byte only
+        # decides `truncated`, never a full-file materialization regardless
+        # of actual file size.
+        raw = os.read(fd, _MAX_FILE_READ_BYTES + 1)
+    finally:
+        os.close(fd)
+
+    truncated = len(raw) > _MAX_FILE_READ_BYTES
+    try:
+        content = raw[:_MAX_FILE_READ_BYTES].decode("utf-8")
     except UnicodeDecodeError:
         raise HTTPException(status_code=415, detail="File is not text/UTF-8") from None
 
@@ -799,7 +848,7 @@ async def get_run_file(run_id: str, path: str) -> dict[str, Any]:
         "path": str(resolved),
         "content": content,
         "size": size,
-        "truncated": size > _MAX_FILE_READ_BYTES,
+        "truncated": truncated,
     }
 
 

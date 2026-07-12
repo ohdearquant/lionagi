@@ -635,6 +635,17 @@ export interface SessionDetail {
   // Absolute artifact-root path on disk (services/sessions.py get_session
   // returns this verbatim) — the run's save root for file-link resolution.
   artifacts_path?: string | null;
+  // Full-session aggregate (services/sessions.py get_session, computed over
+  // every branch's full progression, not the display window) — `files` is
+  // the run-wide known-file union, including files touched before the
+  // 200-message tail window this response's `branches[].messages` covers.
+  message_stats?: {
+    message_count: number;
+    roles: Record<string, number>;
+    tool_call_count: number;
+    error_count: number;
+    files: string[];
+  };
 }
 
 export async function listSessions(): Promise<{ sessions: SessionSummary[] }> {

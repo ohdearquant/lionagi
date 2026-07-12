@@ -132,19 +132,27 @@ function FileViewerModal({
 
   useEffect(() => {
     let cancelled = false;
-    getRunFile(runId, path).then((result) => {
-      if (cancelled) return;
-      if (!result.ok) {
-        if (result.status === 404) setState({ status: "missing" });
-        else setState({ status: "error", detail: result.detail });
-        return;
-      }
-      setState({
-        status: "ready",
-        content: result.data.content,
-        truncated: result.data.truncated,
+    getRunFile(runId, path)
+      .then((result) => {
+        if (cancelled) return;
+        if (!result.ok) {
+          if (result.status === 404) setState({ status: "missing" });
+          else setState({ status: "error", detail: result.detail });
+          return;
+        }
+        setState({
+          status: "ready",
+          content: result.data.content,
+          truncated: result.data.truncated,
+        });
+      })
+      .catch((err) => {
+        // getRunFile rethrows on network failure (fetch reject) rather than
+        // resolving an { ok: false } shape — without this the modal is stuck
+        // in "loading" forever on a dropped connection.
+        if (cancelled) return;
+        setState({ status: "error", detail: err instanceof Error ? err.message : undefined });
       });
-    });
     return () => {
       cancelled = true;
     };
