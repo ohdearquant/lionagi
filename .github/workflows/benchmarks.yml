@@ -1,5 +1,11 @@
 name: Benchmarks
 
+# Same-machine A/B: every suite runs twice on this runner, once against a
+# baseline lionagi install (older commit) and once against the current
+# checkout, using the exact same benchmark harness both times. Only the
+# library implementation differs between the two runs, so the comparison
+# isolates the code change instead of cross-runner hardware/load variance.
+
 on:
   push:
     branches: [ main, master ]
@@ -20,6 +26,10 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v7
+        with:
+          # Full history is required to compute a true merge-base for the
+          # baseline ref below (a shallow clone has no common ancestor).
+          fetch-depth: 0
 
       - name: Setup Python ${{ matrix.python-version }}
         uses: actions/setup-python@v6
@@ -30,62 +40,131 @@ jobs:
         run: |
           curl -LsSf https://astral.sh/uv/install.sh | sh
           echo "$HOME/.cargo/bin" >> $GITHUB_PATH
-      
+
       - name: Install dependencies
         run: |
           uv venv
           source .venv/bin/activate
           uv sync --all-extras
 
-      - name: Run concurrency benchmarks (asyncio)
+      - name: Determine baseline ref
+        id: baseline
         run: |
-          source .venv/bin/activate
-          python -m benchmarks.concurrency_bench --repeat 100 --backend asyncio --output benchmarks/_ci_out/concurrency-asyncio.json
+          set -euo pipefail
+          if [ "${{ github.event_name }}" = "pull_request" ]; then
+            base_ref="origin/${{ github.event.pull_request.base.ref }}"
+            base_sha=$(git merge-base HEAD "$base_ref")
+          else
+            # push event: compare against this commit's first parent, i.e.
+            # the tip of the branch immediately before the push.
+            if git rev-parse --verify --quiet HEAD^ > /dev/null 2>&1; then
+              base_sha=$(git rev-parse HEAD^)
+            else
+              echo "No parent commit found (root commit); using HEAD as its own baseline."
+              base_sha=$(git rev-parse HEAD)
+            fi
+          fi
+          echo "sha=$base_sha" >> "$GITHUB_OUTPUT"
+          echo "Baseline ref resolved to: $base_sha"
+          git log -1 --format='  %h %s (%ci)' "$base_sha"
 
-      - name: Run concurrency benchmarks (trio)
+      - name: Build baseline venv (same runner, older lionagi)
+        env:
+          BASELINE_SHA: ${{ steps.baseline.outputs.sha }}
         run: |
-          source .venv/bin/activate
-          python -m benchmarks.concurrency_bench --repeat 100 --backend trio --output benchmarks/_ci_out/concurrency-trio.json
+          set -euo pipefail
+          git worktree add --detach "$RUNNER_TEMP/lionagi-baseline" "$BASELINE_SHA"
+          uv venv "$RUNNER_TEMP/.venv-baseline" --python ${{ matrix.python-version }}
+          # Pin trio to the same version used by the current venv so the
+          # trio backend isn't itself a variable in the comparison.
+          trio_version=$(.venv/bin/python -c "import trio; print(trio.__version__)")
+          uv pip install --python "$RUNNER_TEMP/.venv-baseline/bin/python" \
+            "$RUNNER_TEMP/lionagi-baseline" "trio==$trio_version"
 
-      - name: Run ln benchmarks (asyncio)
-        run: |
-          source .venv/bin/activate
-          python -m benchmarks.ln_bench --repeat 10 --backend asyncio --output benchmarks/_ci_out/ln-asyncio.json
+      # Every suite below runs once under the baseline venv and once under
+      # the current venv, using the *current* checkout's benchmark scripts
+      # both times (identical harness + scenarios). --repeat counts are
+      # lower than a single-run-per-suite design would use: paired
+      # same-machine comparison removes cross-runner variance, the dominant
+      # noise source that produced false regressions under the old
+      # frozen-baseline design, so fewer repeats still give a reliable
+      # signal, and it keeps the doubled suite count close to the job's
+      # previous wall-clock time.
 
-      - name: Run ln benchmarks (trio)
+      - name: Run concurrency benchmarks - baseline (asyncio)
         run: |
           source .venv/bin/activate
-          python -m benchmarks.ln_bench --repeat 10 --backend trio --output benchmarks/_ci_out/ln-trio.json
+          "$RUNNER_TEMP/.venv-baseline/bin/python" -m benchmarks.concurrency_bench --repeat 50 --backend asyncio --output benchmarks/_ci_out/baseline/concurrency-asyncio.json
 
-      - name: Run fuzzy benchmarks
+      - name: Run concurrency benchmarks - current (asyncio)
         run: |
           source .venv/bin/activate
-          python -m benchmarks.fuzzy_bench --repeat 10 --output benchmarks/_ci_out/fuzzy.json
+          python -m benchmarks.concurrency_bench --repeat 50 --backend asyncio --output benchmarks/_ci_out/current/concurrency-asyncio.json
 
-      - name: Compare concurrency asyncio vs baseline (if present)
+      - name: Run concurrency benchmarks - baseline (trio)
         run: |
           source .venv/bin/activate
-          python benchmarks/ci_compare.py --baseline benchmarks/baselines/concurrency-asyncio.json --current benchmarks/_ci_out/concurrency-asyncio.json --threshold 0.2
+          "$RUNNER_TEMP/.venv-baseline/bin/python" -m benchmarks.concurrency_bench --repeat 50 --backend trio --output benchmarks/_ci_out/baseline/concurrency-trio.json
 
-      - name: Compare concurrency trio vs baseline (if present)
+      - name: Run concurrency benchmarks - current (trio)
         run: |
           source .venv/bin/activate
-          python benchmarks/ci_compare.py --baseline benchmarks/baselines/concurrency-trio.json --current benchmarks/_ci_out/concurrency-trio.json --threshold 0.2
+          python -m benchmarks.concurrency_bench --repeat 50 --backend trio --output benchmarks/_ci_out/current/concurrency-trio.json
 
-      - name: Compare ln asyncio vs baseline (if present)
+      - name: Run ln benchmarks - baseline (asyncio)
         run: |
           source .venv/bin/activate
-          python benchmarks/ci_compare.py --baseline benchmarks/baselines/ln-asyncio.json --current benchmarks/_ci_out/ln-asyncio.json --threshold 0.2
+          "$RUNNER_TEMP/.venv-baseline/bin/python" -m benchmarks.ln_bench --repeat 10 --backend asyncio --output benchmarks/_ci_out/baseline/ln-asyncio.json
 
-      - name: Compare ln trio vs baseline (if present)
+      - name: Run ln benchmarks - current (asyncio)
         run: |
           source .venv/bin/activate
-          python benchmarks/ci_compare.py --baseline benchmarks/baselines/ln-trio.json --current benchmarks/_ci_out/ln-trio.json --threshold 0.2
+          python -m benchmarks.ln_bench --repeat 10 --backend asyncio --output benchmarks/_ci_out/current/ln-asyncio.json
 
-      - name: Compare fuzzy vs baseline (if present)
+      - name: Run ln benchmarks - baseline (trio)
         run: |
           source .venv/bin/activate
-          python benchmarks/ci_compare.py --baseline benchmarks/baselines/fuzzy.json --current benchmarks/_ci_out/fuzzy.json --threshold 0.2
+          "$RUNNER_TEMP/.venv-baseline/bin/python" -m benchmarks.ln_bench --repeat 10 --backend trio --output benchmarks/_ci_out/baseline/ln-trio.json
+
+      - name: Run ln benchmarks - current (trio)
+        run: |
+          source .venv/bin/activate
+          python -m benchmarks.ln_bench --repeat 10 --backend trio --output benchmarks/_ci_out/current/ln-trio.json
+
+      - name: Run fuzzy benchmarks - baseline
+        run: |
+          source .venv/bin/activate
+          "$RUNNER_TEMP/.venv-baseline/bin/python" -m benchmarks.fuzzy_bench --repeat 10 --output benchmarks/_ci_out/baseline/fuzzy.json
+
+      - name: Run fuzzy benchmarks - current
+        run: |
+          source .venv/bin/activate
+          python -m benchmarks.fuzzy_bench --repeat 10 --output benchmarks/_ci_out/current/fuzzy.json
+
+      - name: Compare concurrency asyncio (baseline vs current, same machine)
+        run: |
+          source .venv/bin/activate
+          python benchmarks/ci_compare.py --baseline benchmarks/_ci_out/baseline/concurrency-asyncio.json --current benchmarks/_ci_out/current/concurrency-asyncio.json --threshold 0.2
+
+      - name: Compare concurrency trio (baseline vs current, same machine)
+        run: |
+          source .venv/bin/activate
+          python benchmarks/ci_compare.py --baseline benchmarks/_ci_out/baseline/concurrency-trio.json --current benchmarks/_ci_out/current/concurrency-trio.json --threshold 0.2
+
+      - name: Compare ln asyncio (baseline vs current, same machine)
+        run: |
+          source .venv/bin/activate
+          python benchmarks/ci_compare.py --baseline benchmarks/_ci_out/baseline/ln-asyncio.json --current benchmarks/_ci_out/current/ln-asyncio.json --threshold 0.2
+
+      - name: Compare ln trio (baseline vs current, same machine)
+        run: |
+          source .venv/bin/activate
+          python benchmarks/ci_compare.py --baseline benchmarks/_ci_out/baseline/ln-trio.json --current benchmarks/_ci_out/current/ln-trio.json --threshold 0.2
+
+      - name: Compare fuzzy (baseline vs current, same machine)
+        run: |
+          source .venv/bin/activate
+          python benchmarks/ci_compare.py --baseline benchmarks/_ci_out/baseline/fuzzy.json --current benchmarks/_ci_out/current/fuzzy.json --threshold 0.2
 
       - name: Upload results artifact
         uses: actions/upload-artifact@v7

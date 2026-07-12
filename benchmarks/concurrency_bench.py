@@ -14,13 +14,17 @@ from typing import Any
 
 import anyio
 
-from lionagi.ln.concurrency import (
-    CompletionStream,
-    bounded_map,
-    create_task_group,
-    gather,
-    race,
+from benchmarks._compat import soft_import
+
+_sym = soft_import(
+    "lionagi.ln.concurrency",
+    ["CompletionStream", "bounded_map", "create_task_group", "gather", "race"],
 )
+CompletionStream = _sym["CompletionStream"]
+bounded_map = _sym["bounded_map"]
+create_task_group = _sym["create_task_group"]
+gather = _sym["gather"]
+race = _sym["race"]
 
 
 @dataclass
@@ -120,7 +124,7 @@ def scenario_cancel_propagation_500() -> Callable[[], Coroutine[Any, Any, Any]]:
         async def sleeper():
             try:
                 await anyio.sleep(0.5)
-            except BaseException:
+            except BaseException:  # noqa: S110 -- expected cancellation, not logged (would skew the timed hot path)
                 pass
 
         try:
@@ -128,8 +132,7 @@ def scenario_cancel_propagation_500() -> Callable[[], Coroutine[Any, Any, Any]]:
                 tg.start_soon(bad)
                 for _ in range(499):
                     tg.start_soon(sleeper)
-        except BaseException:
-            # Expected: failure cancels peers and exits quickly
+        except BaseException:  # noqa: S110 -- expected: failure cancels peers and exits quickly
             pass
 
     return _run
@@ -147,16 +150,25 @@ def scenario_taskgroup_start_1000_noop() -> Callable[[], Coroutine[Any, Any, Any
     return _run
 
 
-SCENARIOS: list[tuple[str, Callable[[], Coroutine[Any, Any, Any]]]] = [
-    ("gather_100_yield", scenario_gather_100_yield()),
-    ("bounded_map_2000_limit_100", scenario_bounded_map_2000_limit_100()),
+_SCENARIO_SPECS: list[
+    tuple[str, Callable[[], Callable[[], Coroutine[Any, Any, Any]]], tuple[str, ...]]
+] = [
+    ("gather_100_yield", scenario_gather_100_yield, ("gather",)),
+    ("bounded_map_2000_limit_100", scenario_bounded_map_2000_limit_100, ("bounded_map",)),
     (
         "completion_stream_1000_limit_100",
-        scenario_completion_stream_1000_limit_100(),
+        scenario_completion_stream_1000_limit_100,
+        ("CompletionStream",),
     ),
-    ("race_first_completion_10", scenario_race_first_completion_10()),
-    ("cancel_propagation_500", scenario_cancel_propagation_500()),
-    ("taskgroup_start_1000_noop", scenario_taskgroup_start_1000_noop()),
+    ("race_first_completion_10", scenario_race_first_completion_10, ("race",)),
+    ("cancel_propagation_500", scenario_cancel_propagation_500, ("create_task_group",)),
+    ("taskgroup_start_1000_noop", scenario_taskgroup_start_1000_noop, ("create_task_group",)),
+]
+
+SCENARIOS: list[tuple[str, Callable[[], Coroutine[Any, Any, Any]]]] = [
+    (name, factory())
+    for name, factory, required in _SCENARIO_SPECS
+    if all(_sym.get(sym) is not None for sym in required)
 ]
 
 

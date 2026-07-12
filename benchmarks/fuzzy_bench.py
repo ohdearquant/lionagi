@@ -16,12 +16,16 @@ from typing import Any
 import anyio
 import orjson
 
-from lionagi.ln.fuzzy import (
-    extract_json,
-    fuzzy_json,
-    fuzzy_match_keys,
-    string_similarity,
+from benchmarks._compat import soft_import
+
+_sym = soft_import(
+    "lionagi.ln.fuzzy",
+    ["extract_json", "fuzzy_json", "fuzzy_match_keys", "string_similarity"],
 )
+extract_json = _sym["extract_json"]
+fuzzy_json = _sym["fuzzy_json"]
+fuzzy_match_keys = _sym["fuzzy_match_keys"]
+string_similarity = _sym["string_similarity"]
 
 
 @dataclass
@@ -154,19 +158,31 @@ def scenario_string_similarity_bulk_2000() -> Callable[[], None]:
     return _run
 
 
-SCENARIOS: list[tuple[str, Callable[[], None]]] = [
-    ("fuzzy_json_valid_1000", scenario_fuzzy_json_valid_1000()),
+_SCENARIO_SPECS: list[tuple[str, Callable[[], Callable[[], None]], tuple[str, ...]]] = [
+    ("fuzzy_json_valid_1000", scenario_fuzzy_json_valid_1000, ("fuzzy_json",)),
     (
         "fuzzy_json_dirty_single_quotes_500",
-        scenario_fuzzy_json_dirty_single_quotes_500(),
+        scenario_fuzzy_json_dirty_single_quotes_500,
+        ("fuzzy_json",),
     ),
-    ("extract_json_direct_1000", scenario_extract_json_direct_1000()),
+    ("extract_json_direct_1000", scenario_extract_json_direct_1000, ("extract_json",)),
     (
         "extract_json_markdown_blocks_200",
-        scenario_extract_json_markdown_blocks_200(),
+        scenario_extract_json_markdown_blocks_200,
+        ("extract_json",),
     ),
-    ("fuzzy_match_keys_2000", scenario_fuzzy_match_keys_2000()),
-    ("string_similarity_bulk_2000", scenario_string_similarity_bulk_2000()),
+    ("fuzzy_match_keys_2000", scenario_fuzzy_match_keys_2000, ("fuzzy_match_keys",)),
+    (
+        "string_similarity_bulk_2000",
+        scenario_string_similarity_bulk_2000,
+        ("string_similarity",),
+    ),
+]
+
+SCENARIOS: list[tuple[str, Callable[[], None]]] = [
+    (name, factory())
+    for name, factory, required in _SCENARIO_SPECS
+    if all(_sym.get(sym) is not None for sym in required)
 ]
 
 

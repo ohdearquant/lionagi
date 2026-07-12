@@ -53,3 +53,23 @@ Notes
   throughput.
 - Run on a quiet machine for less noisy results. Prefer CI runners for
   consistency.
+
+CI gating (same-machine A/B)
+
+- `.github/workflows/benchmarks.yml` no longer compares against a frozen
+  JSON recorded on a different machine at a different time. Cross-runner
+  hardware and load variance made that comparison noisy enough to produce
+  false regressions on an unrelated commit.
+- Instead, each CI run builds a second Python environment on the *same*
+  runner with lionagi installed from a baseline ref (the PR's merge-base
+  with its target branch, or the previous commit on a push), then runs the
+  current checkout's benchmark scripts once against that baseline install
+  and once against the current install. `benchmarks/ci_compare.py` diffs
+  the two same-machine result JSONs with the existing 20% threshold.
+- The frozen `benchmarks/baselines/*.json` files and the
+  `refresh-bench-baselines` workflow that maintained them are gone; there
+  is nothing to keep in sync anymore.
+- A benchmark scenario that imports a symbol not yet present in the
+  baseline lionagi (e.g. a bench added alongside a brand-new API) is
+  skipped for that run rather than crashing the whole script — see
+  `benchmarks/_compat.py`.
