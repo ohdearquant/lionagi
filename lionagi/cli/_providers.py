@@ -15,7 +15,6 @@ from lionagi.libs.frontmatter import parse_frontmatter as _parse_frontmatter
 from lionagi.libs.path_safety import validate_bare_name
 from lionagi.service.providers import (
     _CLAUDE_PROVIDER_NAMES,
-    _CODEX_EFFORT_CLAMP,
     BACKENDS,
     CLI_PROVIDERS,
     EFFORT_LEVELS,
@@ -28,6 +27,7 @@ from lionagi.service.providers import (
     PROVIDERS_NO_EFFORT,
     ModelSpec,
     _clamp_claude_effort,
+    _clamp_codex_effort,
     normalize_effort,
     parse_model_spec,
 )
@@ -97,7 +97,7 @@ def build_imodel_from_spec(
         kwarg = PROVIDER_EFFORT_KWARG.get(provider_raw)
         if kwarg is not None:
             if provider_raw == "codex":
-                effort = _CODEX_EFFORT_CLAMP.get(effort, effort)
+                effort = _clamp_codex_effort(effort, ms.model)
             elif provider_raw in _CLAUDE_PROVIDER_NAMES:
                 effort = _clamp_claude_effort(effort, ms.model)
             extra[kwarg] = effort
@@ -144,7 +144,7 @@ def build_chat_model(
         kwarg = PROVIDER_EFFORT_KWARG.get(provider)
         if kwarg is not None:
             if provider == "codex":
-                effort = _CODEX_EFFORT_CLAMP.get(effort, effort)
+                effort = _clamp_codex_effort(effort, model)
             elif provider in _CLAUDE_PROVIDER_NAMES:
                 effort = _clamp_claude_effort(effort, model)
             extra[kwarg] = effort
@@ -220,7 +220,8 @@ def add_common_cli_args(parser: argparse.ArgumentParser) -> None:
         help=(
             "Override effort (overrides spec suffix). "
             "claude: low|medium|high|xhigh|max. "
-            "codex: none|minimal|low|medium|high|xhigh. "
+            "codex: none|minimal|low|medium|high|xhigh|max|ultra "
+            "(max/ultra clamp per model support). "
             "gemini-code/gemini-cli: folded into --model as Low|Medium|High "
             "(Gemini 3.1 Pro has no Medium)."
         ),
