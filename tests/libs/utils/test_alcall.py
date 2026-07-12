@@ -8,7 +8,7 @@ from unittest.mock import AsyncMock, patch
 import pytest
 from pydantic import BaseModel
 
-from lionagi.ln import AlcallParams, BcallParams, _async_call, alcall, bcall
+from lionagi.ln import AlcallParams, BcallParams, alcall, bcall
 
 # Import ExceptionGroup for Python 3.11+
 if sys.version_info >= (3, 11):
@@ -350,81 +350,6 @@ class TestAlcallOutputProcessing:
 
 
 # =============================================================================
-# Test alcall fast-path parity
-# =============================================================================
-
-
-class TestAlcallFastPathParity:
-    @pytest.mark.anyio
-    async def test_fast_path_matches_slow_path_for_one_item_exception(self):
-        async def one_fails(value: int) -> int:
-            if value == 2:
-                raise ValueError("boom")
-            return value * 10
-
-        with patch(
-            "lionagi.ln._async_call.asyncio.gather",
-            wraps=_async_call.asyncio.gather,
-        ) as fast_gather:
-            fast = await alcall([1, 2, 3], one_fails, return_exceptions=True)
-        with patch(
-            "lionagi.ln._async_call.asyncio.gather",
-            wraps=_async_call.asyncio.gather,
-        ) as slow_gather:
-            slow = await alcall(
-                [1, 2, 3],
-                one_fails,
-                return_exceptions=True,
-                retry_initial_delay=1,
-            )
-
-        try:
-            asyncio.get_running_loop()
-        except RuntimeError:
-            expected_fast_gathers = 0
-        else:
-            expected_fast_gathers = 1
-        assert fast_gather.call_count == expected_fast_gathers
-        assert slow_gather.call_count == 0
-        assert fast[0] == slow[0] == 10
-        assert fast[2] == slow[2] == 30
-        assert type(fast[1]) is type(slow[1]) is ValueError
-        assert str(fast[1]) == str(slow[1]) == "boom"
-
-        with pytest.raises(ValueError, match="boom"):
-            await alcall([1, 2, 3], one_fails)
-        with pytest.raises(ValueError, match="boom"):
-            await alcall([1, 2, 3], one_fails, retry_initial_delay=1)
-
-    @pytest.mark.anyio
-    async def test_fast_path_matches_slow_path_for_empty_input_and_generator(self):
-        async def double(value: int) -> int:
-            return value * 2
-
-        assert await alcall([], double) == await alcall([], double, retry_initial_delay=1)
-        assert await alcall((i for i in range(3)), double) == await alcall(
-            (i for i in range(3)),
-            double,
-            retry_initial_delay=1,
-        )
-
-    @pytest.mark.anyio
-    async def test_fast_path_matches_slow_path_for_output_sanitization(self):
-        async def values(value: int) -> list[int | None]:
-            return [value, None, value]
-
-        options = {
-            "output_flatten": True,
-            "output_dropna": True,
-            "output_unique": True,
-            "output_flatten_tuple_set": True,
-        }
-        fast = await alcall([1, 2], values, **options)
-        slow = await alcall([1, 2], values, retry_initial_delay=1, **options)
-        assert fast == slow == [1, 2]
-
-
-# =============================================================================
 # Test bcall function
 # =============================================================================
 
@@ -597,6 +522,21 @@ class TestReturnExceptions:
     async def test_return_exceptions_all_succeed(self):
         results = await alcall([1, 2, 3], async_func, return_exceptions=True)
         assert results == [1, 2, 3]
+
+    @pytest.mark.anyio
+    async def test_return_exceptions_preserves_child_cancel_payload(self):
+        import asyncio
+
+        async def work(x: int) -> int:
+            async def nested():
+                raise asyncio.CancelledError("nested-child-cancel")
+
+            await nested()
+            return x
+
+        results = await alcall([0], work, return_exceptions=True)
+        assert type(results[0]) is asyncio.CancelledError
+        assert results[0].args == ("nested-child-cancel",)
 
     @pytest.mark.anyio
     async def test_default_path_failure_cancels_running_siblings(self):

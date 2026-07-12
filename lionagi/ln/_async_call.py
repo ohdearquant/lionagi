@@ -3,7 +3,6 @@
 
 """Async batch processing with retry, timeout, and concurrency control."""
 
-import asyncio
 from collections.abc import AsyncGenerator, Callable
 from contextlib import nullcontext
 from dataclasses import dataclass
@@ -200,43 +199,6 @@ async def alcall(
 
     if delay_before_start:
         await sleep(delay_before_start)
-
-    # With return_exceptions=True and none of the retry, timeout, semaphore,
-    # or throttling layers engaged, a bare exception-collecting gather is
-    # behavior-identical to the general path and skips its per-item wrappers.
-    # The default (raising) mode stays on the general path: its task-group
-    # sibling-cancellation contract is not worth re-implementing — a measured
-    # quiet-host comparison showed a shielded-task re-implementation saved
-    # nothing over the task group. Sync callables and non-asyncio backends
-    # also stay general, preserving their execution contracts.
-    fast_path = (
-        return_exceptions
-        and is_coro_func(func)
-        and retry_attempts == 0
-        and retry_timeout is None
-        and max_concurrent is None
-        and throttle_period in (None, 0)
-        and retry_initial_delay == 0
-        and retry_backoff == 1
-        and not_sentinel(retry_default) is False
-    )
-    if fast_path:
-        try:
-            asyncio.get_running_loop()
-        except RuntimeError:
-            pass
-        else:
-            out = await asyncio.gather(
-                *(func(item, **kwargs) for item in input_),
-                return_exceptions=True,
-            )
-            return to_list(
-                out,
-                flatten=output_flatten,
-                dropna=output_dropna,
-                unique=output_unique,
-                flatten_tuple_set=output_flatten_tuple_set,
-            )
 
     semaphore = Semaphore(max_concurrent) if max_concurrent else None
     throttle_delay = throttle_period or 0
