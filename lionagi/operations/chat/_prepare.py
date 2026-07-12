@@ -66,7 +66,13 @@ def _build_instruction(
     instruction: JsonValue | Instruction,
     param: ChatParam,
 ) -> Instruction:
-    to_exclude = {"imodel", "imodel_kw", "include_token_usage_to_model", "progression"}
+    to_exclude = {
+        "imodel",
+        "imodel_kw",
+        "include_token_usage_to_model",
+        "progression",
+        "turn_origin",
+    }
     if isinstance(param, RunParam):
         to_exclude.add("stream_persist")
         to_exclude.add("persist_dir")

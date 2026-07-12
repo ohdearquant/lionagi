@@ -25,6 +25,7 @@ from lionagi.protocols.messages import (
 )
 from lionagi.providers._provider_errors import WorkerLivenessError, classify_provider_error
 
+from .._turn_origin import consume_turn_origin
 from ..chat._prepare import _apply_context_providers, _prepare_run_kwargs
 from ..types import ChatParam, ParseParam, RunParam
 
@@ -405,6 +406,23 @@ async def run(
                 _liveness_timeout = _app_settings.LIONAGI_WORKER_LIVENESS_TIMEOUT
         if not isinstance(_liveness_timeout, int | float) or _liveness_timeout <= 0:
             _liveness_timeout = None
+
+        # Consumed exactly once, immediately before streaming begins: fires
+        # USER_PROMPT_SUBMIT iff the operation context carries a turn-origin
+        # token (see operations/_turn_origin.py).
+        _turn_origin_token = consume_turn_origin(param.turn_origin)
+        if _turn_origin_token is not None and branch._hooks is not None:
+            from lionagi.hooks.bus import HookPoint
+
+            _prompt = ins.rendered
+            if not isinstance(_prompt, str):
+                _prompt = str(_prompt)
+            await branch._hooks.emit(
+                HookPoint.USER_PROMPT_SUBMIT,
+                session_id=str(branch._owning_session_id or branch.id),
+                branch_id=str(branch.id),
+                prompt=_prompt,
+            )
 
         kw["stream"] = True
         _api_call_holder: list = []

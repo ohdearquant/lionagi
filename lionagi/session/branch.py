@@ -664,6 +664,7 @@ class Branch(Element, Relational):
         plain_content: str = None,
         return_ins_res_message: bool = False,
         include_token_usage_to_model: bool = False,
+        _turn_origin: Any = None,
         **kwargs,
     ) -> tuple[Instruction, AssistantResponse]:
         """Invoke the chat model. Does not auto-add messages to the branch."""
@@ -686,6 +687,7 @@ class Branch(Element, Relational):
                 include_token_usage_to_model=include_token_usage_to_model,
                 imodel=imodel or self.chat_model,
                 imodel_kw=kwargs,
+                turn_origin=_turn_origin,
             ),
             return_ins_res_message=return_ins_res_message,
         )
@@ -693,9 +695,19 @@ class Branch(Element, Relational):
     async def chat_and_record(self, instruction: Instruction | JsonValue = None, **kwargs) -> str:
         """Like ``chat()``, but adds the turn via the hooked async add-path
         (mirrors ``communicate()``), so ``on_message_added`` observers (e.g.
-        persistence) see it."""
+        persistence) see it.
+
+        Mints a turn-origin token (this is a public ingress) and forwards it
+        unchanged into the delegated ``chat()`` call, so that call consumes
+        the same token rather than minting a second one of its own.
+        """
+        from lionagi.operations._turn_origin import TurnOrigin
+
         kwargs.pop("return_ins_res_message", None)
-        ins, res = await self.chat(instruction, return_ins_res_message=True, **kwargs)
+        turn_origin = TurnOrigin.unset().mint_if_unset()
+        ins, res = await self.chat(
+            instruction, return_ins_res_message=True, _turn_origin=turn_origin, **kwargs
+        )
         await self.msgs.a_add_message(instruction=ins)
         await self.msgs.a_add_message(assistant_response=res)
         return res.response

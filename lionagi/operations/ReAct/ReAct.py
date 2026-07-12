@@ -14,6 +14,7 @@ from lionagi.models.field_model import FieldModel
 from lionagi.service.imodel import iModel
 
 from .._defaults import make_parse_param
+from .._turn_origin import TurnOrigin
 from ..fields import Instruct
 from ..types import ActionParam, ChatParam, HandleValidation, InterpretParam, ParseParam
 from .utils import Analysis, ReActAnalysis
@@ -459,7 +460,10 @@ async def ReActStream(  # noqa: N802  # public name preserves the ReAct acronym
         else:
             new_instruction = ReActAnalysis.CONTINUE_EXT_PROMPT.format(extensions=exts)
 
-        updates = {"response_format": ReActAnalysis}
+        # Extension round: an internal continuation of the same ReAct() call,
+        # not a fresh user turn — no-origin, so it never re-fires
+        # USER_PROMPT_SUBMIT (only the round-1 analysis call does).
+        updates = {"response_format": ReActAnalysis, "turn_origin": TurnOrigin.no_origin()}
 
         if reasoning_effort:
             guide = {
@@ -504,7 +508,12 @@ async def ReActStream(  # noqa: N802  # public name preserves the ReAct acronym
             if injected:
                 from ..operate.operate import operate as _op
 
-                _inj_chat = chat_param.with_updates(response_format=ReActAnalysis)
+                # Injected between-round turn: an internal continuation of the
+                # same ReAct() call, not a fresh user turn — no-origin, so it
+                # never re-fires USER_PROMPT_SUBMIT.
+                _inj_chat = chat_param.with_updates(
+                    response_format=ReActAnalysis, turn_origin=TurnOrigin.no_origin()
+                )
                 analysis = await _op(
                     branch,
                     instruction=injected,
@@ -577,6 +586,11 @@ async def ReActStream(  # noqa: N802  # public name preserves the ReAct acronym
         for k, v in resp_ctx.items():
             if k in chat_param.allowed() and k != "response_format":
                 resp_ctx_updates[k] = v
+
+    # Final-answer turn: an internal continuation of the same ReAct() call,
+    # not a fresh user turn — always no-origin, unconditionally (never
+    # overridable via resp_ctx), so it never re-fires USER_PROMPT_SUBMIT.
+    resp_ctx_updates["turn_origin"] = TurnOrigin.no_origin()
 
     final_chat_param = chat_param.with_updates(**resp_ctx_updates)
 
