@@ -148,6 +148,12 @@ async def ndjson_from_cli(
 def resolve_cli_workspace(repo: Path | None, workspace: str | None) -> Path:
     if repo is None:
         repo = Path.cwd()
+    # A user-supplied repo/cwd that doesn't exist must fail here, before any
+    # caller can spawn a subprocess into it (or, worse, silently mkdir it —
+    # every CLI-backed provider's spawn path shares this helper, so this is
+    # the single point that catches a nonexistent cwd regardless of surface).
+    if not repo.is_dir():
+        raise ValueError(f"cwd does not exist or is not a directory: {repo}")
     if not workspace:
         return repo
 
