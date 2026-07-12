@@ -132,3 +132,19 @@ def test_operative_model_type_cache_preserves_cold_and_warm_validation_behavior(
         cold.response_type.model_validate(payload).model_dump()
         == warm.response_type.model_validate(payload).model_dump()
     )
+
+
+def test_operative_model_type_cache_size_zero_restores_per_call_classes(
+    monkeypatch,
+):
+    from lionagi.adapters.spec_adapters import pydantic_field
+
+    monkeypatch.setattr(pydantic_field._model_type_cache, "_max_size", 0)
+
+    class Payload(BaseModel):
+        value: int = 0
+
+    first = Step.request_operative(base_type=Payload)
+    second = Step.request_operative(base_type=Payload)
+
+    assert first.request_type is not second.request_type

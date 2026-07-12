@@ -52,7 +52,13 @@ class Step:
         request_params: dict | None = None,
         **kwargs,
     ) -> Operative:
-        """Build a request-phase Operative with optional reason/action fields; deprecated params are silently ignored."""
+        """Build a request-phase Operative with optional reason/action fields; deprecated params are silently ignored.
+
+        Identically-constructed Operatives may share one request/response model
+        TYPE (a process-wide cache); instances and their state stay per-call.
+        Do not mutate a returned model class. Set
+        LIONAGI_OPERATIVE_MODEL_CACHE_SIZE=0 to restore per-call classes.
+        """
         from .._guards import reject_removed_kwargs
 
         reject_removed_kwargs(
@@ -145,7 +151,12 @@ class Step:
         operative: Operative,
         additional_fields: dict[str, Spec] | None = None,
     ) -> Operative:
-        """Extend an operative with optional additional response fields and materialize its response model."""
+        """Extend an operative with optional additional response fields and materialize its response model.
+
+        The materialized response model type follows the same sharing contract
+        as request_operative(): identical construction may return a shared
+        class; never mutate it.
+        """
         if additional_fields:
             # Get existing fields
             existing_fields = list(operative.operable.__op_fields__)
