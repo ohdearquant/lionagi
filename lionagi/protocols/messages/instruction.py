@@ -77,6 +77,23 @@ class InstructionContent(MessageContent):
             self, "_structure_instance", _build_structure(self.response_format, structure_cls)
         )
 
+    def __setstate__(self, state: tuple[Any, Any]) -> None:
+        # Restore copied/unpickled state through __setattr__ so mutable render
+        # inputs are re-wrapped, then rebuild the private structure from the
+        # restored response_format: keeping the copied structure would leave
+        # the renderer reading a dict detached from the restored public field.
+        dict_state, slots_state = state
+        for source in (dict_state, slots_state):
+            if not source:
+                continue
+            for name, value in source.items():
+                setattr(self, name, value)
+        object.__setattr__(
+            self,
+            "_structure_instance",
+            _build_structure(self.response_format, _resolve_structure_cls(self.structure)),
+        )
+
     def to_dict(self, exclude: set[str] | frozenset[str] | None = None) -> dict[str, Any]:
         # Conditionally include response_format when its value is a plain dict
         # (JSON-serializable); keep excluding it for type/BaseModel references

@@ -162,3 +162,40 @@ def test_message_deepcopy_pickle_and_prepare_roundtrip():
     duplicate.content.prompt_context.append({"more": [2]})
     assert duplicate.content._render_revision > revision
     assert "more" not in str(message.content.prompt_context)
+
+
+@pytest.mark.parametrize("via", ["deepcopy", "pickle"])
+def test_copied_dict_response_format_stays_wired_to_structure(via: str):
+    import copy
+    import pickle
+
+    from lionagi.protocols.messages.instruction import Instruction, InstructionContent
+
+    message = Instruction(
+        content=InstructionContent(
+            instruction="copy",
+            response_format={"answer": {"description": "before"}},
+        )
+    )
+    if via == "deepcopy":
+        clone = copy.deepcopy(message)
+    else:
+        clone = pickle.loads(pickle.dumps(message))
+
+    # The restored private structure must read the restored public field, so a
+    # public mutation on the copy changes the rendered schema.
+    assert clone.content._structure_instance.base_dict is clone.content.response_format
+    revision = clone.content._render_revision
+    clone.content.response_format["answer"]["description"] = "after"
+    assert clone.content._render_revision > revision
+    assert "after" in clone.rendered
+    assert "before" not in clone.rendered
+    assert "before" in message.rendered
+
+    from lionagi.protocols.messages.manager import MessageManager
+
+    manager = MessageManager(messages=[clone])
+    cached = manager.to_chat_msgs()
+    uncached = manager.to_chat_msgs(_use_render_cache=False)
+    assert orjson.dumps(cached) == orjson.dumps(uncached)
+    assert "after" in orjson.dumps(cached).decode()
