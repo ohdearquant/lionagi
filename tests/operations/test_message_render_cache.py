@@ -108,3 +108,57 @@ def test_render_cache_is_message_identity_scoped_across_branches():
     assert "First branch changed." in first.msgs.to_chat_msgs()[0]["content"]
     assert second.msgs.to_chat_msgs()[0]["content"] != first.msgs.to_chat_msgs()[0]["content"]
     assert second_message._render_cache["chat"] is second_before
+
+
+def test_response_format_structure_derives_from_tracked_copy():
+    schema = {"answer": {"type": "string", "description": "before"}}
+    branch = Branch()
+    message = branch.msgs.add_message(instruction="historic", response_format=schema)
+    branch.msgs.to_chat_msgs()
+
+    # Mutating the caller's original dict is invisible: the structure was
+    # built from the tracked copy, so cached and uncached renderings agree.
+    schema["answer"]["description"] = "external-alias-edit"
+    cached = branch.msgs.to_chat_msgs()
+    uncached = branch.msgs.to_chat_msgs(_use_render_cache=False)
+    assert orjson.dumps(cached) == orjson.dumps(uncached)
+    assert "external-alias-edit" not in cached[0]["content"]
+
+    # Mutating the tracked field advances the revision and stays in parity.
+    revision = message.content._render_revision
+    message.content.response_format["answer"]["description"] = "tracked-edit"
+    assert message.content._render_revision > revision
+    assert orjson.dumps(branch.msgs.to_chat_msgs()) == orjson.dumps(
+        branch.msgs.to_chat_msgs(_use_render_cache=False)
+    )
+
+
+def test_message_deepcopy_pickle_and_prepare_roundtrip():
+    import copy
+    import pickle
+
+    from lionagi.protocols.generic.pile import Pile
+    from lionagi.protocols.messages.instruction import Instruction, InstructionContent
+    from lionagi.protocols.messages.prepare import prepare_messages_for_chat
+
+    content = InstructionContent(
+        instruction="copy me",
+        prompt_context=[{"nested": [1]}],
+        tool_schemas=[{"name": "lookup"}],
+        images=["data:image/png;base64,aGVsbG8="],
+    )
+    message = Instruction(content=content)
+
+    duplicate = copy.deepcopy(message)
+    assert duplicate.rendered == message.rendered
+
+    restored = pickle.loads(pickle.dumps(message))
+    assert restored.rendered == message.rendered
+
+    assert prepare_messages_for_chat(Pile(), new_instruction=message) is not None
+
+    # The copy tracks revisions independently of the original.
+    revision = duplicate.content._render_revision
+    duplicate.content.prompt_context.append({"more": [2]})
+    assert duplicate.content._render_revision > revision
+    assert "more" not in str(message.content.prompt_context)

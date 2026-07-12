@@ -33,6 +33,12 @@ class _TrackedList(list):
         if self._touch is not None:
             self._touch()
 
+    def __reduce__(self):
+        # Copy/pickle as a plain list: the revision callback is bound to the
+        # owning content and must not survive reconstruction. The owning
+        # content re-wraps its fields when its own state is restored.
+        return (list, (list(self),))
+
     def append(self, value) -> None:
         super().append(_track_mutable(value, self._touch))
         self._changed()
@@ -101,6 +107,10 @@ class _TrackedDict(dict):
     def _changed(self) -> None:
         if self._touch is not None:
             self._touch()
+
+    def __reduce__(self):
+        # Copy/pickle as a plain dict; see _TrackedList.__reduce__.
+        return (dict, (dict(self),))
 
     def __setitem__(self, key, value) -> None:
         super().__setitem__(key, _track_mutable(value, self._touch))
