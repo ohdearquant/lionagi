@@ -227,7 +227,7 @@ class TestBuildArgvValidation:
         assert "audit" in argv, f"playbook name not in argv: {argv}"
 
     def test_valid_kinds_do_not_raise(self):
-        """All four ADR-0027 action kinds must be accepted."""
+        """All four ADR-0070 action kinds must be accepted."""
         from lionagi.studio.scheduler.subprocess import build_argv
 
         for kind in ("agent", "flow", "fanout", "play"):

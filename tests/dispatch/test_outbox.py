@@ -1,6 +1,6 @@
 # Copyright (c) 2023-2026, HaiyangLi <quantocean.li at gmail dot com>
 # SPDX-License-Identifier: Apache-2.0
-"""Tests for the durable dispatch outbox core (ADR-0092 slice 1): CAS transitions,
+"""Tests for the durable dispatch outbox core (ADR-0059 slice 1): CAS transitions,
 backoff, dead_letter, dedup_key, ack flow, argv-safety, and direct-DB writes
 with no daemon running.
 """

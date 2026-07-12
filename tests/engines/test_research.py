@@ -133,7 +133,7 @@ async def test_synthesis_reads_findings_from_store():
     assert "the topic" in captured["instruction"]
 
 
-# -- emission repair (ADR-0077 §3) -------------------------------------------
+# -- emission repair (ADR-0034 §3) -------------------------------------------
 
 
 class _ProseTeamMember:

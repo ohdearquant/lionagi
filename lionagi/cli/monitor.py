@@ -1026,7 +1026,7 @@ async def _effective_session_status(db: Any, row: dict[str, Any]) -> dict[str, A
     at "running" forever after teardown. When the linked row is terminal,
     persists that status onto the profile row via CAS-guarded update_status()
     so the DB reflects it, not just the return value. An already-terminal
-    profile row is authoritative and never rewritten (ADR-0094 terminal guard).
+    profile row is authoritative and never rewritten (ADR-0035 terminal guard).
     """
     from lionagi.state.db import SESSION_TERMINAL_STATUSES, TransitionRejectedError
     from lionagi.state.reasons import RunReasons

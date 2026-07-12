@@ -1,6 +1,6 @@
 # Copyright (c) 2023-2026, HaiyangLi <quantocean.li at gmail dot com>
 # SPDX-License-Identifier: Apache-2.0
-"""`li invoke` — ADR-0020 skill-level orchestration tracking (opt-in session grouping)."""
+"""`li invoke` — skill-level orchestration tracking (opt-in session grouping)."""
 
 from __future__ import annotations
 
@@ -80,7 +80,7 @@ async def _list_invocations(*, skill: str | None, status: str | None, limit: int
 def add_invoke_subparser(subparsers: argparse._SubParsersAction) -> None:
     invoke = subparsers.add_parser(
         "invoke",
-        help="Track a skill-level orchestration (ADR-0020).",
+        help="Track a skill-level orchestration.",
         description=(
             "Group sessions spawned by a skill (e.g. /show, /codex-pr-review) "
             "into a single parent invocation record. Opt-in: sessions spawned "
@@ -126,7 +126,7 @@ def add_invoke_subparser(subparsers: argparse._SubParsersAction) -> None:
             "aborted",
             "cancelled",
         ],
-        help="Terminal status (ADR-0025 vocabulary).",
+        help="Terminal status (ADR-0057 vocabulary).",
     )
     end.add_argument(
         "--metadata",

@@ -1,7 +1,7 @@
 # Copyright (c) 2023-2026, HaiyangLi <quantocean.li at gmail dot com>
 # SPDX-License-Identifier: Apache-2.0
 
-"""Signal types and per-node lifecycle projection for the reactive bus (ADR-0083).
+"""Signal types and per-node lifecycle projection for the reactive bus (ADR-0033).
 
 Payload contract (schema_version=1):
   RunStart        — no payload fields
@@ -17,7 +17,7 @@ Payload contract (schema_version=1):
   NodePaused      — op_id, name
   GateDenied      — data: any
   MessageAdded    — data: RoledMessage (stored as message_ref in payload)
-  DispatchSignal  — dispatch_id, kind, deliver_to, attempt, ack_token, body (ADR-0092)
+  DispatchSignal  — dispatch_id, kind, deliver_to, attempt, ack_token, body (ADR-0059)
 
 Version policy: schema_version is bumped on any breaking field removal or rename.
 Adding nullable fields is non-breaking and does not bump the version.
@@ -139,7 +139,7 @@ class MessageAdded(Signal):
 
 
 class DispatchSignal(Signal):
-    """Outbound dispatch payload contract (ADR-0092); schema_version rides Signal.
+    """Outbound dispatch payload contract (ADR-0059); schema_version rides Signal.
 
     One stable envelope (``to_dict(mode="json")``) shared by every dispatch kind,
     so the transport template never churns per-kind.
@@ -153,7 +153,7 @@ class DispatchSignal(Signal):
     body: dict = {}
 
 
-# -- Extended node lifecycle (ADR-0083) ---------------------------------------
+# -- Extended node lifecycle (ADR-0033) ---------------------------------------
 # queued → running → awaiting_approval → succeeded | failed | escalated
 # NodeStarted/NodeCompleted/NodeFailed (above) cover running/succeeded/failed;
 # these three cover the remaining states.
@@ -199,7 +199,7 @@ class NodePaused(Signal):
     name: str = ""
 
 
-# -- Lifecycle projection (ADR-0083) ------------------------------------------
+# -- Lifecycle projection (ADR-0033) ------------------------------------------
 
 #: The seven canonical per-node lifecycle states.
 NodeLifecycleState = Literal[

@@ -151,16 +151,16 @@ async def list_sessions() -> list[dict[str, Any]]:
             "node_metadata": row["node_metadata"],
             "branch_count": row["branch_count"],
             "message_count": row["message_count"],
-            # ADR-0017: read status directly from column;
+            # ADR-0057: read status directly from column;
             # fall back to "completed" only for legacy rows where status is NULL.
             "status": row["status"] or "completed",
             "started_at": row["started_at"],
             "ended_at": row["ended_at"],
-            # ADR-0019: caller (runs service) feeds this to staleness_check.
+            # Caller (runs service) feeds this to staleness_check (ADR-0057 D6).
             "last_message_at": row["last_message_at"],
-            # ADR-0020: optional parent skill orchestration.
+            # Optional parent skill orchestration.
             "invocation_id": row["invocation_id"],
-            # ADR-0022: provenance disclosure — resolved values.
+            # Provenance disclosure — resolved values.
             "model": row["model"],
             "provider": row["provider"],
             "effort": row["effort"],
@@ -174,10 +174,10 @@ async def list_sessions() -> list[dict[str, Any]]:
             "source_kind": row["source_kind"] or "live",
             "artifact_contract_json": _parse_json_col(row["artifact_contract_json"]),
             "artifact_verification_json": _parse_json_col(row["artifact_verification_json"]),
-            # ADR-0026: project detection.
+            # ADR-0063: project detection.
             "project": row["project"],
             "project_source": row["project_source"],
-            # ADR-0028: denormalized status reason for the hot read path.
+            # ADR-0057: denormalized status reason for the hot read path.
             "status_reason_code": row["status_reason_code"],
             "status_reason_summary": row["status_reason_summary"],
         }
@@ -466,8 +466,7 @@ async def get_session(
 
     async with _open_db(_DB) as db:
         cur = await db.execute(
-            # ADR-0017: include lifecycle columns in session detail
-            # ADR-0022: include provenance columns (model/provider/effort/agent_hash)
+            # Include lifecycle and provenance columns (model/provider/effort/agent_hash).
             """SELECT id, name, created_at, updated_at,
                       playbook_name, agent_name, invocation_kind,
                       show_topic, show_play_name, artifacts_path,
@@ -621,7 +620,7 @@ async def get_session(
         "started_at": started_at,
         "ended_at": ended_at,
         "duration_ms": duration_ms,
-        # ADR-0019: full-session aggregate, not derived from the windowed page.
+        # Full-session aggregate, not derived from the windowed page.
         "last_message_at": session_row["last_message_at"],
         "source_show": source_show,
         "branches": branches,
@@ -629,16 +628,16 @@ async def get_session(
         "message_cursor": message_cursor,
         "message_next_cursor": message_next_cursor,
         "message_stats": full_stats,
-        # ADR-0022: provenance disclosure — same fields exposed on list_sessions().
+        # Provenance disclosure — same fields exposed on list_sessions().
         "model": session_row["model"],
         "provider": session_row["provider"],
         "effort": session_row["effort"],
         "agent_hash": session_row["agent_hash"],
         "invocation_id": session_row["invocation_id"],
-        # ADR-0026: project detection.
+        # ADR-0063: project detection.
         "project": session_row["project"],
         "project_source": session_row["project_source"],
-        # ADR-0028: status reason surfaced on detail (drives the failure banner).
+        # ADR-0057: status reason surfaced on detail (drives the failure banner).
         "status_reason_code": session_row["status_reason_code"],
         "status_reason_summary": session_row["status_reason_summary"],
         "status_evidence_refs": _parse_json_col(session_row["status_evidence_refs"]),
@@ -772,7 +771,7 @@ async def get_session_route(
     response_class=None,
 )
 async def stream_session_route(session_id: str):
-    # ADR-0006: pre-flight 404 guard. Without it a non-existent session
+    # ADR-0076: pre-flight 404 guard. Without it a non-existent session
     # silently returns no messages and waits 60s before "done" — the client
     # hangs with no indication. Mirrors the shows router's pattern.
     if not await session_exists(session_id):
@@ -821,7 +820,7 @@ async def stream_session_route(session_id: str):
     response_class=None,
 )
 async def stream_signals(session_id: str) -> Any:
-    # Pre-flight 404 guard before opening the stream (ADR-0006).
+    # Pre-flight 404 guard before opening the stream (ADR-0076).
     if not await session_exists(session_id):
         raise NotFoundError(f"Session '{session_id}' not found")
 

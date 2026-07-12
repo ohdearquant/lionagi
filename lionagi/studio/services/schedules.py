@@ -1,6 +1,6 @@
 # Copyright (c) 2023-2026, HaiyangLi <quantocean.li at gmail dot com>
 # SPDX-License-Identifier: Apache-2.0
-"""ADR-0027 schedules service — backs /api/schedules endpoints."""
+"""ADR-0070 schedules service — backs /api/schedules endpoints."""
 
 from __future__ import annotations
 

@@ -211,7 +211,7 @@ async def test_delete_show_with_no_plays_succeeds(db: StateDB):
 
 
 async def test_delete_session_referenced_by_play_is_rejected(db: StateDB):
-    """plays.session_id has no cascade — SQLite rejects deleting a session still referenced by a play (ADR-0012)."""
+    """plays.session_id has no cascade — SQLite rejects deleting a session still referenced by a play."""
     show_id = str(uuid.uuid4())
     await db.create_show(
         {

@@ -1,6 +1,6 @@
 # Copyright (c) 2023-2026, HaiyangLi <quantocean.li at gmail dot com>
 # SPDX-License-Identifier: Apache-2.0
-"""ADR-0020 invocations service — backs /api/invocations endpoints."""
+"""Invocations service — backs /api/invocations endpoints."""
 
 from __future__ import annotations
 
@@ -51,11 +51,11 @@ async def list_invocations(
                 "created_at": r["created_at"],
                 "updated_at": r["updated_at"],
                 "node_metadata": node_meta,
-                # ADR-0026: project provenance from the most-recently updated
+                # ADR-0063: project provenance from the most-recently updated
                 # child session.  NULL when the invocation has no sessions yet.
                 "project": r.get("project"),
                 "project_source": r.get("project_source"),
-                # From the schedule_run that fired this invocation (ADR-0027),
+                # From the schedule_run that fired this invocation (ADR-0070),
                 # when it was a scheduled run. NULL for interactive invocations.
                 "schedule_run_exit_code": r.get("schedule_run_exit_code"),
                 "schedule_run_error_detail": r.get("schedule_run_error_detail"),
@@ -78,9 +78,9 @@ async def get_invocation(invocation_id: str) -> dict[str, Any] | None:
             except json.JSONDecodeError:
                 node_meta = None
         sessions = await db.list_sessions_for_invocation(invocation_id)
-        # ADR-0021: structured outcomes alongside child sessions for the invocation detail page.
+        # Structured outcomes alongside child sessions for the invocation detail page.
         artifacts = await db.list_artifacts_for_invocation(invocation_id)
-        # ADR-0027: the schedule_run that fired this invocation, when it was a
+        # ADR-0070: the schedule_run that fired this invocation, when it was a
         # scheduled run, so the detail page can show exit_code/error_detail
         # for a failed run without the UI having to correlate two IDs itself.
         schedule_run = await db.get_schedule_run_by_invocation(invocation_id)
@@ -112,7 +112,7 @@ async def get_invocation(invocation_id: str) -> dict[str, Any] | None:
                 "last_message_at": s.get("last_message_at"),
                 "started_at": s.get("started_at"),
                 "ended_at": s.get("ended_at"),
-                # ADR-0022: model disclosure on the child sessions list.
+                # Model disclosure on the child sessions list.
                 "model": s.get("model"),
                 "effort": s.get("effort"),
             }
@@ -142,7 +142,7 @@ def _serialize_artifact(row: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-# ── Artifacts (ADR-0021) ──────────────────────────────────────────────────────
+# ── Artifacts (ADR-0077) ──────────────────────────────────────────────────────
 
 
 async def list_artifacts_for_session(session_id: str) -> list[dict[str, Any]]:
@@ -205,7 +205,7 @@ async def get_artifact_route(artifact_id: str) -> dict[str, Any]:
 
 
 # Convenience: sessions don't have their own router-level artifacts endpoint
-# (sessions.router predates ADR-0021). This sub-route under /api/artifacts
+# (sessions.router has never exposed one). This sub-route under /api/artifacts
 # keeps the artifact concern in one place.
 @studio_route(
     "/artifacts/by-session/{session_id}", method="GET", area="invocations", tags=["artifacts"]

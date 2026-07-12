@@ -1,7 +1,7 @@
 # Copyright (c) 2023-2026, HaiyangLi <quantocean.li at gmail dot com>
 # SPDX-License-Identifier: Apache-2.0
 
-"""lionagi.engines — domain-specific agent engines over the reactive substrate (ADR-0075)."""
+"""lionagi.engines — domain-specific agent engines over the reactive substrate (ADR-0034)."""
 
 from __future__ import annotations
 

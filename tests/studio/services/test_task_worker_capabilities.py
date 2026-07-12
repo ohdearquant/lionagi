@@ -1,7 +1,7 @@
 # Copyright (c) 2023-2026, HaiyangLi <quantocean.li at gmail dot com>
 # SPDX-License-Identifier: Apache-2.0
 
-"""ADR-0101 D4: capability-class matching in the claim loop.
+"""ADR-0071 D5: capability-class matching in the claim loop.
 
 Covers the workers-registry heartbeat upsert, the subset-match claim rule
 (eligibility∪serialization tokens), execution_target matching (including the

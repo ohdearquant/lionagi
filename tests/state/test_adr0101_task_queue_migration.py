@@ -1,8 +1,8 @@
 # Copyright (c) 2023-2026, HaiyangLi <quantocean.li at gmail dot com>
 # SPDX-License-Identifier: Apache-2.0
 
-"""ADR-0101 D2 schema-layer tests: schedule_runs generalized into the durable
-task-application entity (nullable schedule_id, widened status CHECK, ADR-0061
+"""ADR-0071 D2 schema-layer tests: schedule_runs generalized into the durable
+task-application entity (nullable schedule_id, widened status CHECK, ADR-0071
 queue columns, CAS registration in transitions._ENTITY_TABLES).
 """
 
@@ -121,7 +121,7 @@ async def test_migration_idempotent_on_already_migrated_db(tmp_path):
 
 
 async def test_migration_preserves_populated_pre_migration_rows(tmp_path):
-    """Applying the migration to a populated pre-ADR-0101 db preserves every
+    """Applying the migration to a populated pre-ADR-0071 db preserves every
     existing row's values (the rebuild copies data, not just structure)."""
     db_path = tmp_path / "legacy_populated.db"
 
@@ -306,7 +306,7 @@ async def test_migration_preserves_triggers(tmp_path):
 
 
 async def test_migration_adds_lease_attempts_column_to_legacy_db(tmp_path):
-    """A schedule_runs table already at ADR-0101 D2 shape (all D2 columns
+    """A schedule_runs table already at ADR-0071 D2 shape (all D2 columns
     present) but pre-dating D3's lease_attempts column gains it additively —
     no rebuild, just StateDB._reconcile_columns's ALTER TABLE ADD COLUMN."""
     db_path = tmp_path / "legacy_no_lease_attempts.db"
@@ -684,7 +684,7 @@ async def test_transition_rejects_unknown_patch_column(db: StateDB) -> None:
 
 # ── 4. Load-bearing: schedule-spawned runs stay byte-identical ──────────────
 #
-# Golden values captured by running the ORIGINAL (pre-ADR-0101) codebase
+# Golden values captured by running the ORIGINAL (pre-ADR-0071) codebase
 # through the exact same operations below (create_schedule_run then
 # update_schedule_run through _route_status_change/update_status), on a
 # schema without this change. `id`, `schedule_id`, and `created_at` are
@@ -742,9 +742,9 @@ _EXCLUDED_COLUMNS = {
     "schedule_id",
     "created_at",
     "updated_at",
-    # ADR-0101 D2 additive columns — asserted separately (must be NULL for a
+    # ADR-0071 D2 additive columns — asserted separately (must be NULL for a
     # schedule-spawned run); excluded here so the golden dicts captured from
-    # the pre-ADR-0101 codebase (which never had these columns) still apply.
+    # the pre-ADR-0071 codebase (which never had these columns) still apply.
     "queued_at",
     "leased_by",
     "lease_expires_at",
@@ -753,7 +753,7 @@ _EXCLUDED_COLUMNS = {
     "execution_target",
     "library_ref",
     "library_content_hash",
-    # ADR-0101 D3 additive column — asserted separately (must default to 0
+    # ADR-0071 D4 additive column — asserted separately (must default to 0
     # for a schedule-spawned run); excluded here for the same reason as the
     # D2 columns above.
     "lease_attempts",
@@ -768,7 +768,7 @@ async def test_schedule_spawned_run_stays_byte_identical(db: StateDB) -> None:
     """The schedule_id-populated path (create_schedule_run + update_schedule_run,
     i.e. an ordinary schedule fire) writes the same rows with the same column
     values, and produces the same status_transitions sequence, as the
-    pre-ADR-0101 code — this codepath was not touched by the schema
+    pre-ADR-0071 code — this codepath was not touched by the schema
     generalization; new queue/task columns simply default to NULL.
     """
     sched_id = _uid()
@@ -798,7 +798,7 @@ async def test_schedule_spawned_run_stays_byte_identical(db: StateDB) -> None:
 
     row_after_create = await db.fetch_one("SELECT * FROM schedule_runs WHERE id = ?", (run_id,))
     assert _strip(row_after_create) == _GOLDEN_ROW_AFTER_CREATE
-    # New ADR-0101 queue/task columns are present on the row and default to NULL
+    # New ADR-0071 queue/task columns are present on the row and default to NULL
     # for a schedule-spawned run — they are additive, not a behavior change.
     for col in (
         "queued_at",
@@ -811,7 +811,7 @@ async def test_schedule_spawned_run_stays_byte_identical(db: StateDB) -> None:
         "library_content_hash",
     ):
         assert row_after_create[col] is None
-    # ADR-0101 D3 additive column — defaults to 0, not NULL.
+    # ADR-0071 D4 additive column — defaults to 0, not NULL.
     assert row_after_create["lease_attempts"] == 0
 
     await db.update_schedule_run(

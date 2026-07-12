@@ -1,6 +1,6 @@
 # Copyright (c) 2023-2026, HaiyangLi <quantocean.li at gmail dot com>
 # SPDX-License-Identifier: Apache-2.0
-"""ADR-0027 GitHub polling for event-triggered schedules."""
+"""ADR-0070 GitHub polling for event-triggered schedules."""
 
 from __future__ import annotations
 

@@ -1,4 +1,4 @@
-"""Tests for lionagi/state/artifact_verifier.py (ADR-0029)."""
+"""Tests for lionagi/state/artifact_verifier.py (ADR-0064)."""
 
 from __future__ import annotations
 
@@ -240,7 +240,7 @@ def test_missing_artifact_evidence():
     assert evidence == [{"kind": "expected_artifact", "id": "report", "label": "report.md"}]
 
 
-# ── canonical names required by ADR-0029 test plan ───────────────────────────
+# ── canonical names required by ADR-0064 test plan ───────────────────────────
 
 
 def test_resolve_contract_both_none():

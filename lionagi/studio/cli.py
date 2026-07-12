@@ -862,7 +862,7 @@ def _cmd_create(args: argparse.Namespace) -> int:
     if args.project:
         body["action_project"] = args.project
     else:
-        # Best-effort: auto-capture the project from cwd (ADR-0026 detection
+        # Best-effort: auto-capture the project from cwd (ADR-0063 detection
         # cascade) so a schedule created inside a registered project resolves
         # its spawn cwd at trigger time (see scheduler.engine._resolve_action_cwd).
         # Any failure here must never block schedule creation.
