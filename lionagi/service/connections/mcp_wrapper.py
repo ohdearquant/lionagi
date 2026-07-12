@@ -290,6 +290,97 @@ def _has_structural_ref_siblings(siblings: Mapping) -> bool:
     return any(key not in _ANNOTATION_ONLY_REF_SIBLING_KEYWORDS for key in siblings)
 
 
+# Keyword allowlist for the SUFFICIENCY PROOF specifically -- a STRICT
+# SUBSET of the walker's `_KNOWN_SCHEMA_KEYWORDS` (defined further below).
+# The walker additionally understands applicators it can safely WALK for
+# command-channel evidence (`patternProperties`, `if`/`then`/`else`,
+# `items`, ...); the sufficiency proof only ever asks "is this shape
+# provably closed against an undeclared value", which only the four
+# composition applicators it actually recurses through (`$ref`/`allOf`/
+# `anyOf`/`oneOf`) and the object-closing keywords answer. Every other
+# keyword the walker walks -- `patternProperties`, `propertyNames`,
+# `unevaluatedProperties`, `dependentSchemas`, `if`/`then`/`else`, `not`,
+# `contains`, `items`, `prefixItems` -- is therefore DENIED by this gate
+# even though it is walker-known, because none of them is modeled by this
+# shape logic; the proof must not silently treat an applicator it does not
+# implement as harmless. `$defs`/`definitions` are included here as
+# MODELED (not merely inert) because their value is a mapping of
+# subschemas -- schema-bearing, so the generic value-shape inertness test
+# would otherwise flag them -- that is only ever reachable through `$ref`
+# resolution, which this function already performs.
+_SUFFICIENCY_MODELED_KEYWORDS = frozenset(
+    {
+        # shape/bounding keywords the proof reasons over directly
+        "type",
+        "const",
+        "enum",
+        "required",
+        "additionalProperties",
+        "properties",
+        "$ref",
+        "allOf",
+        "anyOf",
+        "oneOf",
+        "$defs",
+        "definitions",
+        # pure-inert annotations: collect no assertion that admits an
+        # instance value, so their presence must never force the
+        # unmodeled-keyword branch even though most are not numeric bounds
+        "description",
+        "title",
+        "$comment",
+        "examples",
+        "default",
+        "format",
+        "pattern",
+        "$schema",
+        "$id",
+        "$anchor",
+        "$vocabulary",
+        "readOnly",
+        "writeOnly",
+        "deprecated",
+        "contentEncoding",
+        "contentMediaType",
+    }
+)
+
+
+def _sufficiency_node_has_unmodeled_keyword(schema: Mapping, budget: list[int]) -> bool:
+    """Allowlist pre-gate for the sufficiency proof (`_schema_is_insufficient_node`
+    step 1): True when `schema` carries a keyword that the shape logic
+    downstream does not model, so the node must fail closed before any
+    type/closedness reasoning runs.
+
+    Reuses the walker's OWN inertness vocabulary as the single source of
+    truth -- `_UNRESOLVABLE_REFERENCE_KEYWORDS`, `_NUMERIC_BOUND_KEYWORDS`,
+    `_could_carry_subschema`, `_is_vendor_annotation_keyword` (all defined
+    further below in this module) -- rather than re-listing a divergent
+    keyword table. A key is allowed through when it is a
+    `_SUFFICIENCY_MODELED_KEYWORDS` shape/bounding/inert-annotation
+    keyword, a standardized numeric/size bound, a vendor extension whose
+    value is demonstrably inert, or ANY other keyword whose value cannot
+    itself carry a subschema (a plain scalar, or a scalar-only list/map --
+    e.g. `future-extension: [0, 1, 2]`). Everything else -- a walker-known
+    applicator this proof does not implement (`patternProperties`, `if`/
+    `then`/`else`, `contains`, `items`, `prefixItems`, ...) or a genuinely
+    unknown schema-bearing keyword -- makes the node insufficient. A
+    `$dynamicRef`/`$recursiveRef` anywhere on the node is denied outright by
+    keyword identity, mirroring the walker's own unresolvable-reference
+    treatment (their value is a plain string, so the schema-bearing value
+    test alone would miss them)."""
+    if any(key in schema for key in _UNRESOLVABLE_REFERENCE_KEYWORDS):
+        return True
+    for key, value in schema.items():
+        if key in _SUFFICIENCY_MODELED_KEYWORDS or key in _NUMERIC_BOUND_KEYWORDS:
+            continue
+        if _is_vendor_annotation_keyword(key, value, budget):
+            continue
+        if _could_carry_subschema(value, budget):
+            return True
+    return False
+
+
 def _schema_is_insufficient(input_schema: object) -> bool:
     if input_schema is None or not isinstance(input_schema, Mapping):
         return True
@@ -306,22 +397,47 @@ def _schema_is_insufficient_node(
     """Recursive, union-aware sufficiency check for the strong-name
     fallback gate.
 
-    A schema is sufficient (not insufficient) only when it is itself
-    affirmatively bounded (has its own non-empty `properties`, or is a
-    closed `additionalProperties: False` object), or resolves to such a
-    schema through `$ref`/composition. `oneOf`/`anyOf` are UNIONS: an
-    instance need only satisfy one branch, so a caller-shaped tool descriptor
-    is only as bounded as its LEAST bounded alternative -- EVERY reachable
-    branch must independently prove sufficient, or the whole union is
-    insufficient. `allOf` is an INTERSECTION: an instance must satisfy every
-    branch simultaneously, so a single branch that is itself provably
-    bounded is enough by itself -- the remaining branches can only add
-    constraints on top of it, never relax it. Returns True (fail closed /
-    insufficient) for an external, cyclic, unresolvable, or budget/depth-
-    exhausted reference or composition -- never wider than what the walker
-    itself would already treat as unresolvable."""
+    Order of checks (binding -- see module design notes; applicator
+    delegation MUST run before the omitted-type denial, or an applicator-
+    root node that legitimately omits a top-level `type` because `type`
+    lives in its resolved target/branches would false-deny):
+
+    1. Budget/depth cap -- fail closed.
+    2. ALLOWLIST PRE-GATE (`_sufficiency_node_has_unmodeled_keyword`): any
+       keyword this shape logic does not model makes the node insufficient,
+       before any type/closedness reasoning runs.
+    3. `type` present and excludes `"object"` -- insufficient.
+    4. `type` is a union with a free-form (non-object) alternative and no
+       `const`/`enum` pinning the instance -- insufficient.
+    5. APPLICATOR DELEGATION -- `$ref` (resolve local `#/...` only, and
+       intersect structural siblings); then `oneOf`/`anyOf` (UNION: an
+       instance need only satisfy one branch, so a caller-shaped tool
+       descriptor is only as bounded as its LEAST bounded alternative --
+       EVERY reachable branch must independently prove sufficient); then
+       `allOf` (INTERSECTION: an instance must satisfy every branch
+       simultaneously, so a single branch that is itself provably bounded
+       is enough by itself). Each recurses, re-applying this same
+       predicate, so the gate and every check below it re-run inside every
+       resolved target/branch.
+    6. A top-level `const`/`enum` pins the whole instance to author-declared
+       literal value(s) -- sufficient, regardless of `type`.
+    7. LEAF-OBJECT branch (no applicator delegated): an omitted `type`
+       (with no `const`/`enum`, already handled above) is insufficient here
+       -- a bare non-object instance never reaches object keywords at all.
+       Otherwise, non-empty `properties` is only bounded if the object is
+       actually CLOSED (`additionalProperties: False`, or itself restricted
+       to a finite `enum`/`const`); empty/absent `properties` still needs
+       `additionalProperties: False` to admit only a bare `{}`.
+
+    Returns True (fail closed / insufficient) for an external, cyclic,
+    unresolvable, or budget/depth-exhausted reference or composition --
+    never wider than what the walker itself would already treat as
+    unresolvable."""
     budget[0] += 1
     if budget[0] > _MAX_SCHEMA_WALK_NODES or depth > _MAX_SCHEMA_WALK_DEPTH:
+        return True
+
+    if _sufficiency_node_has_unmodeled_keyword(schema, budget):
         return True
 
     top_type = schema.get("type")
@@ -388,6 +504,19 @@ def _schema_is_insufficient_node(
                 branch, root_schema, seen_refs, depth + 1, budget
             ):
                 return False
+        return True
+
+    # A top-level `const`/`enum` pins the entire instance to author-declared
+    # literal value(s) -- the caller cannot inject beyond the enumerated
+    # set, so this alone satisfies the type-gate regardless of `type`.
+    if "const" in schema or "enum" in schema:
+        return False
+
+    # LEAF-OBJECT branch: no applicator delegated above, so `type` is
+    # evaluated node-locally. An omitted `type` (no `const`/`enum`, already
+    # handled) means a bare non-object instance never reaches the
+    # `properties`/`additionalProperties` keywords below at all.
+    if top_type is None:
         return True
 
     if "properties" in schema and not isinstance(schema["properties"], Mapping):

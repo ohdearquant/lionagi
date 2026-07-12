@@ -5,6 +5,7 @@ from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, mock_open, patch
 
 import pytest
+from jsonschema import Draft202012Validator
 
 from lionagi.service.connections.mcp_wrapper import (
     MCPConnectionPool,
@@ -1255,6 +1256,41 @@ class TestValidateMcpToolAdmission:
             "executor-identity-with-insufficient-schema",
             id="annotation-scalar-list-exceeding-node-budget-fails-closed",
         ),
+        # --- Sufficiency-proof allowlist gate: a `patternProperties`
+        # entry whose PATTERN does not match any of the walker's fixed
+        # categorized key names (so the walker never even considers the
+        # pattern's own subschema) is a caller-chosen-key command channel
+        # the walker's key-name classifier structurally cannot see. The
+        # sufficiency proof's allowlist gate denies it directly: a
+        # `patternProperties` value is a mapping (schema-bearing) and the
+        # keyword itself is not in the proof's modeled-keyword set. ---
+        pytest.param(
+            "exec",
+            {
+                "type": "object",
+                "patternProperties": {"^command_custom$": {"type": "string"}},
+                "additionalProperties": False,
+            },
+            None,
+            "executor-identity-with-insufficient-schema",
+            id="patternproperties-non-categorized-key-denied-by-sufficiency-gate",
+        ),
+        # --- Sufficiency-proof type-gate: an object descriptor that omits
+        # `type` entirely (a common hand-authored shape:
+        # `properties`+`additionalProperties: false` with no explicit
+        # `type`) never actually constrains the instance to an object --
+        # a caller can submit a bare scalar and never reach the
+        # `properties`/`additionalProperties` keywords at all. ---
+        pytest.param(
+            "exec",
+            {
+                "properties": {"operation": {"const": "status"}},
+                "additionalProperties": False,
+            },
+            None,
+            "executor-identity-with-insufficient-schema",
+            id="omitted-type-closed-object-denied-by-type-gate",
+        ),
     ]
 
     ADMIT_CASES = [
@@ -1687,6 +1723,22 @@ class TestValidateMcpToolAdmission:
             None,
             id="ref-with-only-annotation-siblings-remains-admitted",
         ),
+        # --- Type-gate literal-pin path: a top-level `const`/`enum`
+        # pins the whole instance to author-declared literal value(s), so
+        # it satisfies the type-gate on its own -- the caller cannot
+        # inject beyond the enumerated set even with no `type` present. ---
+        pytest.param(
+            "exec",
+            {"const": {"operation": "status"}},
+            None,
+            id="root-const-pins-instance-without-type",
+        ),
+        pytest.param(
+            "exec",
+            {"enum": [{"operation": "status"}]},
+            None,
+            id="root-enum-pins-instance-without-type",
+        ),
     ]
 
     @pytest.mark.parametrize("tool_name, input_schema, description, reason", DENY_CASES)
@@ -1702,6 +1754,508 @@ class TestValidateMcpToolAdmission:
     @pytest.mark.parametrize("tool_name, input_schema, description", ADMIT_CASES)
     def test_admits_ordinary_or_bounded_tool(self, tool_name, input_schema, description):
         assert validate_mcp_tool_admission(tool_name, input_schema, description) is None
+
+    def test_f1_patternproperties_custom_key_denies(self):
+        """`patternProperties` keyed on a pattern the walker's fixed
+        categorized-key list never matches is a caller-chosen-key command
+        channel: `_consider_property` (the walker's command-detection path)
+        is only reached for a pattern that matches one of the fixed
+        `_CATEGORIZED_KEYS`, so a pattern like `^command_custom$` (never
+        equal to the literal key "command") slips past the walker
+        entirely. The sufficiency proof's allowlist gate denies it
+        directly instead: `patternProperties` is not a modeled keyword and
+        its value is a mapping. Documents necessity: the identical schema
+        validates against a raw JSON Schema validator and ACCEPTS the
+        injected key, proving the schema itself was never actually
+        closed."""
+        schema = {
+            "type": "object",
+            "patternProperties": {"^command_custom$": {"type": "string"}},
+            "additionalProperties": False,
+        }
+        with pytest.raises(PermissionError) as exc_info:
+            validate_mcp_tool_admission("exec", schema, None)
+        message = str(exc_info.value)
+        assert "exec" in message
+        assert "executor-identity-with-insufficient-schema" in message
+
+        validator = Draft202012Validator(schema)
+        assert validator.is_valid({"command_custom": "rm -rf /"})
+
+    def test_f2_omitted_type_denies(self):
+        """An object descriptor with no `type` keyword never actually
+        constrains the instance shape -- `properties`/`additionalProperties`
+        are only evaluated against object instances, so a bare scalar
+        satisfies the schema untouched, bypassing every object-shaped
+        constraint. Documents necessity: the identical schema validates a
+        malicious bare string."""
+        schema = {
+            "properties": {"operation": {"const": "status"}},
+            "additionalProperties": False,
+        }
+        with pytest.raises(PermissionError) as exc_info:
+            validate_mcp_tool_admission("exec", schema, None)
+        message = str(exc_info.value)
+        assert "exec" in message
+        assert "executor-identity-with-insufficient-schema" in message
+
+        validator = Draft202012Validator(schema)
+        assert validator.is_valid("rm -rf /")
+
+    def test_f3_unevaluated_properties_false_denies_in_core(self):
+        """`unevaluatedProperties: false` is a legitimate Draft-2020-12
+        closing mechanism -- the raw validator below REJECTS the injected
+        `command` key -- but the sufficiency proof does not model
+        `unevaluatedProperties` as a closing keyword: only
+        `additionalProperties: false` (or an enum/const-restricted
+        `additionalProperties`) closes an object here. This is an
+        ACCEPTED over-block (a real bounded schema authored with
+        `unevaluatedProperties` instead of `additionalProperties` is
+        denied today). A strictly-additive recovery rule -- treat
+        `unevaluatedProperties: false` as closing iff the node carries no
+        `patternProperties`/`allOf`/`anyOf`/`oneOf`/`$ref`/`if` -- is a
+        documented follow-up that must never relax the core allowlist;
+        deferred until the support cost of this over-block proves real."""
+        schema = {
+            "type": "object",
+            "properties": {"operation": {"const": "status"}},
+            "required": ["operation"],
+            "unevaluatedProperties": False,
+        }
+        with pytest.raises(PermissionError) as exc_info:
+            validate_mcp_tool_admission("exec", schema, None)
+        message = str(exc_info.value)
+        assert "exec" in message
+        assert "executor-identity-with-insufficient-schema" in message
+
+        validator = Draft202012Validator(schema)
+        assert not validator.is_valid({"operation": "status", "command": "rm -rf /"})
+
+    SYNTHETIC_UNKNOWN_KEYWORD_DENY_CASES = [
+        pytest.param(
+            {
+                "type": "object",
+                "properties": {"operation": {"const": "status"}},
+                "additionalProperties": False,
+                "quorumProperties": {"minMembers": 2},
+            },
+            id="top-level-root",
+        ),
+        pytest.param(
+            {
+                "type": "object",
+                "properties": {
+                    "opts": {
+                        "type": "object",
+                        "properties": {"mode": {"type": "string", "enum": ["a", "b"]}},
+                        "additionalProperties": False,
+                        "quorumProperties": {"minMembers": 2},
+                    }
+                },
+                "additionalProperties": False,
+            },
+            id="nested-in-property-value",
+        ),
+        pytest.param(
+            {
+                "type": "object",
+                "allOf": [
+                    {
+                        "type": "object",
+                        "properties": {"operation": {"const": "status"}},
+                        "additionalProperties": False,
+                        "quorumProperties": {"minMembers": 2},
+                    }
+                ],
+            },
+            id="inside-allof-branch",
+        ),
+        pytest.param(
+            {
+                "$ref": "#/$defs/BoundedOperation",
+                "quorumProperties": {"minMembers": 2},
+                "$defs": {
+                    "BoundedOperation": {
+                        "type": "object",
+                        "properties": {"operation": {"const": "status"}},
+                        "required": ["operation"],
+                        "additionalProperties": False,
+                    }
+                },
+            },
+            id="ref-sibling",
+        ),
+        pytest.param(
+            {
+                "type": "object",
+                "anyOf": [
+                    {
+                        "type": "object",
+                        "properties": {"operation": {"const": "status"}},
+                        "additionalProperties": False,
+                        "quorumProperties": {"minMembers": 2},
+                    },
+                    {
+                        "type": "object",
+                        "properties": {"operation": {"const": "restart"}},
+                        "additionalProperties": False,
+                    },
+                ],
+            },
+            id="inside-anyof-branch",
+        ),
+    ]
+
+    @pytest.mark.parametrize("input_schema", SYNTHETIC_UNKNOWN_KEYWORD_DENY_CASES)
+    def test_synthetic_unknown_keyword_denies_at_every_position(self, input_schema):
+        """`quorumProperties` is a spelling the classifier has never
+        modeled (deliberately NOT a vendor `x-`/`$comment` prefix, which
+        would be exempt) and its value is schema-bearing (a mapping) at
+        every one of the five positions parametrized here (top-level
+        root; nested inside a property value; inside an `allOf` branch;
+        as a `$ref` sibling; inside an `anyOf` branch). The union of the
+        walker (property-value interiors) and the sufficiency proof's
+        allowlist gate (root, `allOf`/`anyOf` branches, `$ref` siblings)
+        must deny it regardless of WHERE in the shape skeleton it
+        appears, proving the invariant holds independent of keyword
+        spelling or position."""
+        with pytest.raises(PermissionError) as exc_info:
+            validate_mcp_tool_admission("exec", input_schema, None)
+        assert "executor-identity-with-insufficient-schema" in str(exc_info.value)
+
+    def test_synthetic_unknown_keyword_with_inert_scalar_value_remains_admitted(self):
+        """Control for the case above: the SAME unmodeled keyword spelling
+        with a provably-inert SCALAR value (not a mapping/list-of-mapping)
+        on an otherwise-closed schema must still admit -- the gate keys
+        off VALUE SHAPE, not keyword spelling, so this does not regress
+        the existing `future-extension`-style admit."""
+        schema = {
+            "type": "object",
+            "properties": {"operation": {"const": "status"}},
+            "required": ["operation"],
+            "additionalProperties": False,
+            "quorumProperties": 3,
+        }
+        assert validate_mcp_tool_admission("exec", schema, None) is None
+
+    # jsonschema-oracle differential harness (§Fork 4): every ADMIT case
+    # whose tool name is a strong executor name compiles to a schema that
+    # must still REJECT a battery of command-injection attempts -- proof,
+    # independent of `validate_mcp_tool_admission` admitting the
+    # descriptor, that the admitted shape is actually closed. Includes the
+    # four §8 applicator-root ADMITs (`$ref`-only-root ×2, `anyOf`-only-
+    # root, `$ref`-with-annotation-siblings) so the binding ordering
+    # correction (applicator delegation before the omitted-type denial)
+    # is caught by test, not just by review.
+    ADMIT_ORACLE_CASES = [
+        pytest.param(
+            "exec",
+            {
+                "type": "object",
+                "properties": {"operation": {"type": "string", "enum": ["status", "restart"]}},
+                "additionalProperties": False,
+            },
+            {},
+            id="strong-name-with-rich-bounded-schema-overrides-heuristic",
+        ),
+        pytest.param(
+            "exec",
+            {
+                "type": "object",
+                "properties": {
+                    "operation": {"type": "string", "enum": ["status", "restart"]},
+                    "service_id": {"type": "string"},
+                },
+                "additionalProperties": False,
+            },
+            {},
+            id="strong-name-fixed-operation-with-dynamic-service-id",
+        ),
+        pytest.param(
+            "exec",
+            {
+                "type": "object",
+                "properties": {
+                    "operation": {"type": "string", "enum": ["status", "restart"]},
+                    "resource_path": {"type": "string"},
+                },
+                "additionalProperties": False,
+            },
+            {},
+            id="strong-name-fixed-operation-with-dynamic-resource-path",
+        ),
+        pytest.param(
+            "exec",
+            {
+                "type": "object",
+                "properties": {
+                    "operation": {"type": "string", "enum": ["status", "restart"]},
+                    "request_id": {"type": "string"},
+                },
+                "additionalProperties": False,
+            },
+            {},
+            id="strong-name-fixed-operation-with-dynamic-request-id",
+        ),
+        pytest.param(
+            "exec",
+            {
+                "type": "object",
+                "properties": {
+                    "operation": {"type": "string", "enum": ["status", "restart"]},
+                    "tenant_uuid": {"type": "string"},
+                },
+                "additionalProperties": False,
+            },
+            {},
+            id="strong-name-fixed-operation-with-dynamic-tenant-uuid",
+        ),
+        pytest.param(
+            "exec",
+            {
+                "type": "object",
+                "properties": {
+                    "operation": {"type": "string", "enum": ["status", "restart"]},
+                    "callback_url": {"type": "string"},
+                },
+                "additionalProperties": False,
+            },
+            {},
+            id="strong-name-fixed-operation-with-dynamic-callback-url",
+        ),
+        pytest.param(
+            "exec",
+            {
+                "type": "object",
+                "properties": {
+                    "operation": {"type": "string", "enum": ["status", "restart"]},
+                    "page_slug": {"type": "string"},
+                },
+                "additionalProperties": False,
+            },
+            {},
+            id="strong-name-fixed-operation-with-dynamic-page-slug",
+        ),
+        pytest.param(
+            "exec",
+            {
+                "$ref": "#/$defs/BoundedOperation",
+                "$defs": {
+                    "BoundedOperation": {
+                        "type": "object",
+                        "properties": {"operation": {"const": "status"}},
+                        "required": ["operation"],
+                        "additionalProperties": False,
+                    }
+                },
+            },
+            {"operation": "status"},
+            id="strong-name-root-ref-to-bounded-closed-schema",
+        ),
+        pytest.param(
+            "exec",
+            {
+                "type": "object",
+                "properties": {"operation": {"type": "string", "enum": ["status", "restart"]}},
+                "x-ui": {"widget": "select", "order": 1},
+                "additionalProperties": False,
+            },
+            {},
+            id="strong-name-bounded-schema-with-vendor-extension-annotation",
+        ),
+        pytest.param(
+            "exec",
+            {
+                "type": "object",
+                "properties": {
+                    "operation": {"const": "status"},
+                    "count": {
+                        "type": "integer",
+                        "minimum": 0,
+                        "maximum": 10,
+                        "multipleOf": 2,
+                    },
+                },
+                "required": ["operation"],
+                "additionalProperties": False,
+                "minProperties": 1,
+                "maxProperties": 3,
+            },
+            {"operation": "status"},
+            id="strong-name-standard-numeric-bounds-remain-scalar-only",
+        ),
+        pytest.param(
+            "exec",
+            {
+                "type": "object",
+                "properties": {"operation": {"const": "status"}},
+                "required": ["operation"],
+                "additionalProperties": False,
+                "future-extension": [0, 1, 2],
+            },
+            {"operation": "status"},
+            id="strong-name-small-scalar-unknown-keyword-remains-admitted",
+        ),
+        pytest.param(
+            "spawn_process",
+            {
+                "$ref": "#/$defs/BoundedOperation",
+                "$defs": {
+                    "BoundedOperation": {
+                        "type": "object",
+                        "properties": {"operation": {"const": "status"}},
+                        "required": ["operation"],
+                        "additionalProperties": False,
+                    }
+                },
+            },
+            {"operation": "status"},
+            id="strong-name-spawn-process-root-ref-to-bounded-closed-schema",
+        ),
+        pytest.param(
+            "exec",
+            {
+                "type": "object",
+                "properties": {
+                    "operation": {"const": "status"},
+                    "args": {
+                        "type": "array",
+                        "items": {"type": "array", "items": {"enum": ["a", "b"]}},
+                    },
+                },
+                "additionalProperties": False,
+            },
+            {},
+            id="nested-array-bounded-by-enum-items-remains-admitted",
+        ),
+        pytest.param(
+            "exec",
+            {
+                "anyOf": [
+                    {
+                        "type": "object",
+                        "properties": {"operation": {"const": "status"}},
+                        "required": ["operation"],
+                        "additionalProperties": False,
+                    },
+                    {
+                        "type": "object",
+                        "properties": {"operation": {"const": "restart"}},
+                        "required": ["operation"],
+                        "additionalProperties": False,
+                    },
+                ]
+            },
+            {"operation": "status"},
+            id="anyof-with-every-alternative-closed-bounded-remains-admitted",
+        ),
+        pytest.param(
+            "exec",
+            {
+                "type": "object",
+                "properties": {
+                    "operation": {"const": "status"},
+                    "args": {
+                        "type": "array",
+                        "prefixItems": [{"enum": ["a"]}, {"const": "b"}],
+                        "items": False,
+                    },
+                },
+                "additionalProperties": False,
+            },
+            {},
+            id="closed-tuple-prefixitems-bounded-with-items-false-remains-admitted",
+        ),
+        pytest.param(
+            "exec",
+            {
+                "type": "object",
+                "properties": {
+                    "operation": {"const": "status"},
+                    "args": {"type": "array", "items": {"enum": ["a", "b"]}},
+                },
+                "additionalProperties": False,
+            },
+            {},
+            id="items-enum-with-no-prefixitems-remains-admitted",
+        ),
+        pytest.param(
+            "exec",
+            {
+                "type": "object",
+                "properties": {"operation": {"const": "status"}},
+                "additionalProperties": False,
+            },
+            {},
+            id="closed-object-with-only-bounded-properties-remains-admitted",
+        ),
+        pytest.param(
+            "exec",
+            {
+                "$ref": "#/$defs/BoundedOperation",
+                "description": "Restart or check status of a managed process",
+                "$defs": {
+                    "BoundedOperation": {
+                        "type": "object",
+                        "properties": {"operation": {"const": "status"}},
+                        "required": ["operation"],
+                        "additionalProperties": False,
+                    }
+                },
+            },
+            {"operation": "status"},
+            id="ref-with-only-annotation-siblings-remains-admitted",
+        ),
+        pytest.param(
+            "exec",
+            {"const": {"operation": "status"}},
+            {"operation": "status"},
+            id="root-const-pins-instance-without-type",
+        ),
+        pytest.param(
+            "exec",
+            {"enum": [{"operation": "status"}]},
+            {"operation": "status"},
+            id="root-enum-pins-instance-without-type",
+        ),
+    ]
+
+    # The four §8 applicator-root ADMITs that a naive "omitted type ==
+    # insufficient" gate placed BEFORE applicator delegation would
+    # false-deny -- must be present in the oracle differential above.
+    _APPLICATOR_ROOT_ORACLE_IDS = frozenset(
+        {
+            "strong-name-root-ref-to-bounded-closed-schema",
+            "strong-name-spawn-process-root-ref-to-bounded-closed-schema",
+            "anyof-with-every-alternative-closed-bounded-remains-admitted",
+            "ref-with-only-annotation-siblings-remains-admitted",
+        }
+    )
+
+    def test_applicator_root_admits_are_covered_by_oracle_differential(self):
+        """Confirms the four §8 applicator-root ADMITs are actually
+        present in `ADMIT_ORACLE_CASES` below -- the exact ordering
+        regression (applicator delegation must run before the
+        omitted-type denial) is caught by test, not just by review."""
+        covered_ids = {case.id for case in self.ADMIT_ORACLE_CASES}
+        assert self._APPLICATOR_ROOT_ORACLE_IDS <= covered_ids
+
+    @pytest.mark.parametrize("tool_name, input_schema, minimal_instance", ADMIT_ORACLE_CASES)
+    def test_admit_schemas_reject_command_injection(
+        self, tool_name, input_schema, minimal_instance
+    ):
+        """jsonschema-oracle differential harness (test-only; the
+        `jsonschema` import lives in this test module only, never on the
+        core admission path). Any ADMIT case whose oracle ACCEPTS a
+        command-injection attempt is a design failure surfaced here as a
+        red test rather than a production incident."""
+        assert validate_mcp_tool_admission(tool_name, input_schema, None) is None
+
+        validator = Draft202012Validator(input_schema)
+        assert not validator.is_valid("rm -rf /")
+        assert not validator.is_valid({**minimal_instance, "command": "rm -rf /"})
+        assert not validator.is_valid({"cmd": "rm -rf /"})
+        assert not validator.is_valid({"command_custom": "rm -rf /"})
 
     def test_nested_channel_denial_does_not_echo_schema_or_description_content(self):
         """Traversal reaches deep into nested/composed schemas to find the
