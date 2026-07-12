@@ -52,9 +52,10 @@ from the other direction) — only an unconditional binding, a direct
 statement of the scope's own body, can establish or restore provenance. It
 does not perform general data-flow analysis: resolution through a factory
 function's return value, a non-literal string argument, an alias threaded
-through more than one intermediate assignment, or any binding inside a class
-body, comprehension, or walrus assignment is not tracked and remains a
-residual imprecision.
+through more than one intermediate assignment, or any binding inside a
+comprehension or walrus assignment is not tracked and remains a residual
+imprecision. (Class bodies ARE tracked: each gets its own add-only
+environment -- see ``_SinkVisitor.visit_ClassDef``.)
 
 A name declared ``global``/``nonlocal`` anywhere in a function's own body is
 NOT a lexical local of that function and must not be masked the way a
@@ -780,8 +781,11 @@ def _scope_declared_names(stmts: list[ast.stmt]) -> tuple[set[str], set[str]]:
 def _collect_scope_binding_events(
     stmts: list[ast.stmt], conditional: bool, events: list[_BindingEvent]
 ) -> None:
-    """Collect Import/ImportFrom/simple-Name-Assign binding events, plus
-    mask-only ``_NameBindingEvent``s for AugAssign targets, out of *stmts* --
+    """Collect Import/ImportFrom/simple-Name-Assign binding events (an
+    annotated single-Name assignment with a value counts as one too), plus
+    mask-only ``_NameBindingEvent``s for AugAssign targets and bare
+    annotations (``name: T`` binds nothing at runtime but is a lexical
+    local of the whole scope), out of *stmts* --
     the statement list of ONE lexical scope (a module body or a function
     body) -- tagging each with whether it is CONDITIONAL: nested inside an
     ``if``/``try``/``except``/``for``/``while``/``with`` body, or inside any
@@ -814,6 +818,24 @@ def _collect_scope_binding_events(
             and isinstance(stmt.targets[0], ast.Name)
         ):
             events.append((stmt, conditional))
+        elif isinstance(stmt, ast.AnnAssign) and isinstance(stmt.target, ast.Name):
+            # An annotated assignment WITH a value binds exactly like a
+            # simple assignment (it can establish, restore, or clear
+            # provenance, so it must be a full event -- an annotated
+            # `name: object = importlib.import_module(...)` establishing
+            # provenance would otherwise be invisible and its construction
+            # site missed). A BARE annotation (`name: object`) never binds
+            # at runtime but still makes the name a lexical local of the
+            # whole function scope, so it is a mask-only event.
+            if stmt.value is not None:
+                events.append((stmt, conditional))
+            else:
+                events.append(
+                    (
+                        _NameBindingEvent(stmt.target.id, stmt.lineno, stmt.col_offset),
+                        conditional,
+                    )
+                )
         elif isinstance(stmt, ast.AugAssign) and isinstance(stmt.target, ast.Name):
             events.append(
                 (
@@ -936,7 +958,10 @@ def _replay_binding_events(
                 elif alias.name == "importlib":
                     env.importlib_mods.add(alias.asname or "importlib")
         else:
-            target = node.targets[0].id
+            # ast.Assign (single Name target) or ast.AnnAssign (Name target,
+            # non-None value) -- collection guarantees no other shape lands
+            # here, and both carry the binding in `.value`.
+            target = node.target.id if isinstance(node, ast.AnnAssign) else node.targets[0].id
             if _is_flow_module_expr(node.value, env):
                 if conditional:
                     continue
@@ -976,6 +1001,8 @@ def _scope_bound_names(events: list[_BindingEvent]) -> set[str]:
                 names.add(alias.asname or alias.name)
         elif isinstance(node, _NameBindingEvent):
             names.add(node.name)
+        elif isinstance(node, ast.AnnAssign):
+            names.add(node.target.id)
         else:
             names.add(node.targets[0].id)
     return names
@@ -1090,7 +1117,13 @@ class _SinkVisitor(ast.NodeVisitor):
     test_global_declared_executing_binder_is_conservative_overapproximation,
     which pins this exact shape as an expected, named false-positive so a
     future change that trades it for a missed site fails that test instead
-    of quietly regressing."""
+    of quietly regressing.
+
+    The class-body environment (``visit_ClassDef``) applies the same
+    principle system-wide: it is built ADD-ONLY because adding provenance
+    can only add candidate sites, and adding sites is the false-positive-
+    safe side of the zero-false-negatives invariant -- every deliberate
+    imprecision in this scanner errs in that one direction."""
 
     def __init__(
         self,
@@ -1152,11 +1185,28 @@ class _SinkVisitor(ast.NodeVisitor):
           drops enclosing-inherited provenance;
         - a class-body ``global`` declaration overlays MODULE-scope
           provenance additively (class-body lookups of that name go to the
-          module even when an enclosing function masked it).
+          module even when an enclosing function masked it) -- and the
+          overlay is re-applied AFTER replay too, so a class-body rebind of
+          a global-declared name (conditional or not, since replay here is
+          forced unconditional) can never erase the module baseline the
+          declaration grants;
+        - the class body's OWN establishing events for global-declared
+          names (a recognized import or constructor/module alias gained
+          during replay relative to the pre-replay snapshot) are propagated
+          additively to every view currently on the scope stacks, module
+          snapshot included: a ``global x`` establishment executes at
+          class-definition time and genuinely rebinds the MODULE's ``x``,
+          which statements after the class definition (in the enclosing
+          function, and via later ``global`` overlays anywhere) really read.
+          Only establishing deltas propagate -- never clears (add-only), and
+          never the module overlay the class merely inherited (propagating
+          that would un-mask enclosing locals the declaration does not
+          touch).
 
-        The class body's binders never leak OUT to the enclosing scope --
-        ``_collect_scope_binding_events`` stops at ``ClassDef`` -- and its
-        environment is popped when the body is done."""
+        Ordinary (undeclared) class-body binders never leak OUT to the
+        enclosing scope -- ``_collect_scope_binding_events`` stops at
+        ``ClassDef`` -- and the class environment is popped when the body is
+        done."""
         self._stack.append(node.name)
         enclosing_env = self._flow_env
         enclosing_bound = self._constructor_aliases
@@ -1167,30 +1217,95 @@ class _SinkVisitor(ast.NodeVisitor):
         global_names, _ = _scope_declared_names(node.body)
         module_env = self._flow_env_stack[0]
         module_bound = self._bound_stack[0]
-        for name in global_names:
-            if name in module_env.names:
-                env.names.add(name)
-            if name in module_env.lionagi_roots:
-                env.lionagi_roots.add(name)
-            if name in module_env.import_module_funcs:
-                env.import_module_funcs.add(name)
-            if name in module_env.importlib_mods:
-                env.importlib_mods.add(name)
-            if name in module_bound:
-                bound[name] = module_bound[name]
+
+        def _overlay_module_globals(*, overwrite: bool) -> None:
+            # Pre-replay (overwrite=True): a global-declared name reads the
+            # MODULE binding, never the lexical one the enclosing copy
+            # carried, so the module attribution replaces it outright.
+            # Post-replay (overwrite=False): only RESTORE a name the forced-
+            # unconditional replay cleared -- an attribution the replay
+            # itself established is later in source order and must win.
+            for name in global_names:
+                if name in module_env.names:
+                    env.names.add(name)
+                if name in module_env.lionagi_roots:
+                    env.lionagi_roots.add(name)
+                if name in module_env.import_module_funcs:
+                    env.import_module_funcs.add(name)
+                if name in module_env.importlib_mods:
+                    env.importlib_mods.add(name)
+                if name in module_bound:
+                    if overwrite:
+                        bound[name] = module_bound[name]
+                    else:
+                        bound.setdefault(name, module_bound[name])
+
+        _overlay_module_globals(overwrite=True)
+        # Snapshot the pre-replay view so the propagation step below can
+        # distinguish what the class body itself ESTABLISHED (delta vs this
+        # snapshot) from what it merely inherited via the overlay/enclosing
+        # copy -- only the class body's own establishments rebind the module.
+        pre_replay = env.copy()
+        pre_replay_bound = dict(bound)
         # Force every event unconditional so replay applies establishes that
         # sit inside an if/try/for body too -- in a class body a conditional
         # import that DOES execute is readable by later class-body
         # statements, and skipping it (the function-scope rule) would miss a
-        # real construction. Clears still apply, then the union below
-        # restores anything enclosing-inherited that they dropped.
+        # real construction. Clears still apply, then the overlay re-run and
+        # enclosing union below restore anything they dropped.
         _replay_binding_events([(evt, False) for evt, _ in events], bound, env)
+        # Re-apply the module overlay AFTER replay: a class-body rebind of a
+        # global-declared name (forced unconditional above, so even an
+        # `if False:` assignment clears) must not erase the module baseline
+        # the `global` declaration grants -- dropping it here is exactly the
+        # missed-real-site direction the contract forbids.
+        _overlay_module_globals(overwrite=False)
         env.names |= enclosing_env.names
         env.lionagi_roots |= enclosing_env.lionagi_roots
         env.import_module_funcs |= enclosing_env.import_module_funcs
         env.importlib_mods |= enclosing_env.importlib_mods
         for name, target in enclosing_bound.items():
             bound.setdefault(name, target)
+        # A class body executes at definition time, so an ESTABLISHING event
+        # for a global-declared name (`global x` + `import x` / recognized
+        # alias assignment) genuinely rebinds the MODULE's `x` -- statements
+        # after the class definition really read it. Propagate those
+        # establishments (the delta the replay added relative to the
+        # pre-replay snapshot, restricted to declared names) additively to
+        # every view on the scope stacks, module snapshot included. Add-only
+        # by construction: clears never propagate, and the inherited overlay
+        # is excluded by the delta (propagating it would un-mask enclosing
+        # locals the declaration does not touch -- see
+        # test_class_body_global_declaration_does_not_leak_into_enclosing_function).
+        for name in global_names:
+            established_channels = [
+                channel
+                for channel, pre_channel in (
+                    (env.names, pre_replay.names),
+                    (env.lionagi_roots, pre_replay.lionagi_roots),
+                    (env.import_module_funcs, pre_replay.import_module_funcs),
+                    (env.importlib_mods, pre_replay.importlib_mods),
+                )
+                if name in channel and name not in pre_channel
+            ]
+            established_alias = (
+                bound.get(name)
+                if name in bound and pre_replay_bound.get(name) != bound[name]
+                else None
+            )
+            if not established_channels and established_alias is None:
+                continue
+            for view_env, view_bound in zip(self._flow_env_stack, self._bound_stack):
+                if name in env.names and name not in pre_replay.names:
+                    view_env.names.add(name)
+                if name in env.lionagi_roots and name not in pre_replay.lionagi_roots:
+                    view_env.lionagi_roots.add(name)
+                if name in env.import_module_funcs and name not in pre_replay.import_module_funcs:
+                    view_env.import_module_funcs.add(name)
+                if name in env.importlib_mods and name not in pre_replay.importlib_mods:
+                    view_env.importlib_mods.add(name)
+                if established_alias is not None:
+                    view_bound.setdefault(name, established_alias)
         self._flow_env_stack.append(env)
         self._bound_stack.append(bound)
         self.generic_visit(node)
@@ -1232,12 +1347,15 @@ class _SinkVisitor(ast.NodeVisitor):
             # `env`/`bound` at this point still hold whatever the lexical
             # parent's copy carried (correct for `nonlocal`, wrong for
             # `global`), so every global-declared name is first cleared and
-            # then overlaid from a pristine MODULE-scope snapshot -- the
-            # bottom of the scope stack (index 0), which this visitor never
-            # mutates in place (only ever copies further down; see
-            # _flow_env.copy()/dict(self._constructor_aliases) above), so it
-            # always reflects the module's own top-level bindings regardless
-            # of how many function scopes are currently pushed.
+            # then overlaid from a MODULE-scope snapshot -- the bottom of
+            # the scope stack (index 0). Function-scope replays never mutate
+            # it in place (only ever copies further down; see
+            # _flow_env.copy()/dict(self._constructor_aliases) above); the
+            # ONLY in-place updates it ever receives are ADDITIVE class-body
+            # global establishments (see visit_ClassDef), which reflect a
+            # genuine module rebinding executed at class-definition time --
+            # so it always reflects the module's own bindings regardless of
+            # how many function scopes are currently pushed.
             # `nonlocal`-declared names need no such overlay: nonlocal
             # resolves against the nearest ENCLOSING FUNCTION scope, and
             # `env`/`bound` here already start as a copy of that exact
@@ -2863,6 +2981,217 @@ def test_try_star_suite_global_declaration_overlays_module_scope(tmp_path):
         f"provenance like any other suite — found: {sorted(discovery.call_sites)}"
     )
     assert key in discovery.executor_sites
+
+
+def test_class_body_global_overlay_survives_conditional_class_rebind(tmp_path):
+    """A class-body ``global`` declaration grants the class body the MODULE
+    binding of the name even when an enclosing parameter shadows it -- and a
+    class-body rebind of that name (here inside ``if False:``, which can
+    never execute) must not erase that module baseline: the class body's
+    construction really reads the module import and is a real site. The
+    class replay forces events unconditional (a conditional establish that
+    executes must be visible), so the module overlay is re-applied after
+    replay -- dropping it would be a missed real site, not a conservative
+    error."""
+    rogue = tmp_path / "class_global_conditional_rebind.py"
+    source = (
+        "import importlib\n\n\n"
+        "def outer(importlib, session, graph):\n"
+        "    class C:\n"
+        "        global importlib\n"
+        "        if False:\n"
+        "            importlib = object()\n"
+        '        built = getattr(importlib.import_module("lionagi.operations.flow"), '
+        '"DependencyAwareExecutor")(session, graph)\n'
+        "    return C.built\n"
+    )
+    rogue.write_text(source)
+
+    import symtable as _symtable
+
+    top = _symtable.symtable(source, str(rogue), "exec")
+    (outer_table,) = (c for c in top.get_children() if c.get_name() == "outer")
+    assert outer_table.lookup("importlib").is_local()
+    (class_table,) = (c for c in outer_table.get_children() if c.get_name() == "C")
+    assert class_table.lookup("importlib").is_global()
+
+    discovery = discover_call_and_construct_sites(tmp_path, base=tmp_path)
+
+    key = ("class_global_conditional_rebind.py", "outer.C")
+    assert key in discovery.call_sites, (
+        "a class-body rebind of a global-declared name must not erase the module "
+        f"baseline the declaration grants — found: {sorted(discovery.call_sites)}"
+    )
+    assert key in discovery.executor_sites
+
+
+def test_class_body_global_import_establishment_flows_to_enclosing_code(tmp_path):
+    """A class body executes at class-definition time, so ``global NAME`` +
+    ``import NAME`` inside it genuinely rebinds the MODULE's ``NAME`` before
+    the statements after the class definition run -- the enclosing
+    function's construction after the class really reads that fresh module
+    binding and is a real site. The runtime check below proves the ordering
+    claim with a recording fake constructor; the scanner must propagate the
+    class body's own establishing events outward (add-only, never clears)."""
+    rogue = tmp_path / "class_global_import_flows_out.py"
+    source = (
+        "def outer(session, graph):\n"
+        "    class C:\n"
+        "        global importlib\n"
+        "        import importlib\n"
+        '    return getattr(importlib.import_module("lionagi.operations.flow"), '
+        '"DependencyAwareExecutor")(session, graph)\n'
+    )
+    rogue.write_text(source)
+
+    import sys as _sys
+    import types as _types
+
+    constructed: list[tuple[object, object]] = []
+    fake_flow = _types.ModuleType("lionagi.operations.flow")
+    fake_flow.DependencyAwareExecutor = lambda session, graph: constructed.append((session, graph))
+    namespace: dict[str, object] = {}
+    with mock.patch.dict(_sys.modules, {"lionagi.operations.flow": fake_flow}):
+        exec(compile(source, str(rogue), "exec"), namespace)
+        namespace["outer"]("SESSION", "GRAPH")
+    assert constructed == [("SESSION", "GRAPH")], (
+        "the fixture must really construct through the class-established module "
+        "binding at runtime — the class body executes before the return statement"
+    )
+
+    discovery = discover_call_and_construct_sites(tmp_path, base=tmp_path)
+
+    key = ("class_global_import_flows_out.py", "outer")
+    assert key in discovery.call_sites, (
+        "an establishing class-global import must stay visible to the enclosing "
+        f"code after the class definition — found: {sorted(discovery.call_sites)}"
+    )
+    assert key in discovery.executor_sites
+
+
+def test_annotated_assignment_establishes_provenance_like_plain_assignment(tmp_path):
+    """An annotated assignment with a value binds exactly like a plain
+    assignment -- ``flow_mod: object = importlib.import_module(...)`` gives
+    ``flow_mod`` flow-module provenance, and the construction through it is
+    a real site. Missing this establish path would be a missed real site,
+    not a conservative error."""
+    rogue = tmp_path / "annassign_establishes.py"
+    source = (
+        "import importlib\n\n\n"
+        "def run(session, graph):\n"
+        '    flow_mod: object = importlib.import_module("lionagi.operations.flow")\n'
+        '    return getattr(flow_mod, "DependencyAwareExecutor")(session, graph)\n'
+    )
+    rogue.write_text(source)
+
+    discovery = discover_call_and_construct_sites(tmp_path, base=tmp_path)
+
+    key = ("annassign_establishes.py", "run")
+    assert key in discovery.call_sites, (
+        "an annotated assignment establishing flow-module provenance must be "
+        f"tracked like a plain assignment — found: {sorted(discovery.call_sites)}"
+    )
+    assert key in discovery.executor_sites
+
+
+def test_annotated_assignment_masks_inherited_provenance_like_plain_assignment(tmp_path):
+    """An annotated assignment to something unrecognized makes the name a
+    function-local rebound to junk -- inherited module provenance must be
+    masked exactly as a plain assignment masks it, and a BARE annotation
+    (``name: object`` with no value) still makes the name a lexical local of
+    the whole scope (reading it raises UnboundLocalError at runtime), so
+    both shapes must produce no site."""
+    rogue = tmp_path / "annassign_masks.py"
+    rogue.write_text(
+        "import importlib\n\n\n"
+        "def rebound(session, graph):\n"
+        "    importlib: object = object()\n"
+        '    return getattr(importlib.import_module("lionagi.operations.flow"), '
+        '"DependencyAwareExecutor")(session, graph)\n\n\n'
+        "def annotated_only(session, graph):\n"
+        "    importlib: object\n"
+        '    return getattr(importlib.import_module("lionagi.operations.flow"), '
+        '"DependencyAwareExecutor")(session, graph)\n'
+    )
+
+    discovery = discover_call_and_construct_sites(tmp_path, base=tmp_path)
+
+    assert discovery.executor_sites == set(), (
+        "annotated assignments and bare annotations are lexical locals and must "
+        f"mask inherited provenance — got: {sorted(discovery.executor_sites)}"
+    )
+
+
+def test_every_statement_class_is_handled_or_consciously_excluded():
+    """Exhaustiveness pin for the statement-level traversal: every concrete
+    ``ast.stmt`` subclass the running interpreter defines must be either
+    HANDLED by the scope machinery (declaration collection, binding-event
+    collection, control-flow descent, or a deliberate scope stop) or listed
+    here as CONSCIOUSLY EXCLUDED with a direction argument. A statement
+    class added by a future Python version is silently untraversed by
+    default -- exactly how a new compound-statement form would otherwise
+    slip past both collectors unnoticed -- so its absence from these sets
+    must fail THIS test and force an explicit disposition."""
+    declaration_stmts = {ast.Global, ast.Nonlocal}
+    event_stmts = {
+        ast.Import,
+        ast.ImportFrom,
+        ast.Assign,
+        ast.AnnAssign,
+        ast.AugAssign,
+        ast.Delete,
+    }
+    descent_stmts = {
+        ast.If,
+        ast.For,
+        ast.AsyncFor,
+        ast.While,
+        ast.With,
+        ast.AsyncWith,
+        ast.Match,
+        *_TRY_STMT_TYPES,
+    }
+    scope_stops = {ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef}
+    # No statement body and no name binding at statement level; expression-
+    # level binders inside them (walrus, comprehensions) are the documented
+    # residual imprecision.
+    excluded_inert = {
+        ast.Return,
+        ast.Expr,
+        ast.Pass,
+        ast.Break,
+        ast.Continue,
+        ast.Raise,
+        ast.Assert,
+    }
+    # Binders whose omission errs only false-positive-safe: the bound value
+    # can never carry flow-module provenance (a def/class binds a function/
+    # class object, a type-alias statement binds a TypeAliasType), so an
+    # unmasked same-named inherited provenance at worst ADDS a spurious
+    # site -- never hides a real one. FunctionDef/AsyncFunctionDef/ClassDef
+    # appear in scope_stops for traversal; their NAME bindings fall in this
+    # class too.
+    excluded_fp_safe_binders = {ast.TypeAlias} if hasattr(ast, "TypeAlias") else set()
+    accounted = (
+        declaration_stmts
+        | event_stmts
+        | descent_stmts
+        | scope_stops
+        | excluded_inert
+        | excluded_fp_safe_binders
+    )
+    concrete_stmt_classes = {
+        cls
+        for cls in vars(ast).values()
+        if isinstance(cls, type) and issubclass(cls, ast.stmt) and cls is not ast.stmt
+    }
+    unaccounted = concrete_stmt_classes - accounted
+    assert not unaccounted, (
+        "statement classes with no explicit disposition in the scope machinery "
+        "(handle them in _scope_declared_names/_collect_scope_binding_events or "
+        "consciously exclude them here with a direction argument): "
+        f"{sorted(cls.__name__ for cls in unaccounted)}"
+    )
 
 
 def test_session_flow_and_flow_stream_are_discovered_via_bare_import_not_hardcoding(tmp_path):
