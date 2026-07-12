@@ -1,6 +1,6 @@
 # ADR-0060: Run supervision — generic terminal callback and two-stage orphan detection
 
-- **Status**: Proposed
+- **Status**: Superseded by ADR-0095
 - **Kind**: Aspirational
 - **Area**: persistence-state
 - **Date**: 2026-07-10
@@ -10,6 +10,9 @@
   hardens), touches ADR-0057 (operational lifecycle and transition audit) and ADR-0035
   (persisted run-completion contract — the "terminal is terminal" guard this ADR relies
   on). None of these are superseded; this ADR adds a phase on top of each.
+  Superseded by ADR-0095, which replaces the outbox-coupled callback delivery and
+  two-stage orphan design decided here with a post-commit registry, set-based
+  reconciliation acknowledgment, and a single classifier/coordinator contract.
 
 ## Context
 

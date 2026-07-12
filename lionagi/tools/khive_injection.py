@@ -1,7 +1,7 @@
 # Copyright (c) 2023-2026, HaiyangLi <quantocean.li at gmail dot com>
 # SPDX-License-Identifier: Apache-2.0
 
-"""KhiveInjectionProvider: the reference ContextProvider (ADR-0100) that recalls
+"""KhiveInjectionProvider: the reference ContextProvider (ADR-0008) that recalls
 (and optionally composes) from a khive daemon and renders the result into the
 pre-turn guidance fold. Talks to khive over the same MCP transport lionagi
 already uses for tool servers (`service.connections.mcp_wrapper`) — no new
@@ -57,7 +57,7 @@ class WritebackPolicy:
 
 @dataclass(frozen=True)
 class KhiveInjectionPolicy:
-    """Policy block controlling pre-turn khive injection (ADR-0100).
+    """Policy block controlling pre-turn khive injection (ADR-0008).
 
     ``namespace``, when set, is threaded onto every khive verb this policy's
     provider emits (recall, compose, auto_feedback, remember) — the bench-arm
@@ -213,7 +213,7 @@ def _extract_writeback_pairs(action_responses: list) -> list[dict]:
 
 
 class KhiveInjectionProvider:
-    """Pre-turn ContextProvider (ADR-0100): recall + optional compose against khive,
+    """Pre-turn ContextProvider (ADR-0008): recall + optional compose against khive,
     rendered into the guidance fold. Every recall emits `brain.auto_feedback` in the
     same round-trip with the policy's explicit `profile_id` — khive's auto_feedback
     does no binding resolution, so an implicit/default profile mis-attributes the event.

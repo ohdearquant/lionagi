@@ -1,7 +1,7 @@
 # Copyright (c) 2023-2026, HaiyangLi <quantocean.li at gmail dot com>
 # SPDX-License-Identifier: Apache-2.0
 
-"""Pre-invoke governance gate (ADR-0076 Follow-up 1).
+"""Pre-invoke governance gate (ADR-0047 Follow-up 1).
 
 ``session.gate(check)`` is consulted BEFORE a tool runs, not just after an event
 is recorded. A falsy/raised verdict blocks the tool; the denial is surfaced to

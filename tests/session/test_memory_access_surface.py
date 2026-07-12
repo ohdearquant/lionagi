@@ -1,7 +1,7 @@
 # Copyright (c) 2023-2025, HaiyangLi <quantocean.li at gmail dot com>
 # SPDX-License-Identifier: Apache-2.0
 
-"""Tests for the Branch/Session memory access surface (ADR-0090 slice 2):
+"""Tests for the Branch/Session memory access surface (ADR-0092 slice 2):
 the `memory=` constructor param, the lazy read-only `.memory` property, and
 `Session.include_branches()` wiring a shared store into branches that don't
 already have their own."""

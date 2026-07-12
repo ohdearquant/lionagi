@@ -1,7 +1,7 @@
 # Copyright (c) 2023-2026, HaiyangLi <quantocean.li at gmail dot com>
 # SPDX-License-Identifier: Apache-2.0
 
-"""ADR-0094 integrity floor: `update_status()` is the single write path and
+"""ADR-0035 integrity floor: `update_status()` is the single write path and
 refuses to move a terminal entity without an explicit, justified override.
 Every rejection and every override is recorded in admin_events; a guarded
 CAS write always beats a stale concurrent write."""

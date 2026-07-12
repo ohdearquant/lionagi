@@ -1,7 +1,7 @@
 # Copyright (c) 2023-2026, HaiyangLi <quantocean.li at gmail dot com>
 # SPDX-License-Identifier: Apache-2.0
 
-"""Tests for KhiveInjectionProvider (ADR-0100): query construction, cadence
+"""Tests for KhiveInjectionProvider (ADR-0008): query construction, cadence
 gating, the recall+auto_feedback round-trip, failure containment, writeback
 extraction, and module-load purity. The khive MCP transport is fully mocked —
 no live daemon required."""

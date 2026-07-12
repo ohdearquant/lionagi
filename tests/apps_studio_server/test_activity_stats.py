@@ -198,7 +198,7 @@ def test_null_and_unknown_statuses_count_in_total_only(tmp_path, monkeypatch):
 
     asyncio.run(seed())
 
-    # create_session enforces the ADR-0025 vocabulary, but legacy rows can hold
+    # create_session enforces the ADR-0057 vocabulary, but legacy rows can hold
     # NULL or retired statuses — inject those directly to exercise the fold.
     import sqlite3
 

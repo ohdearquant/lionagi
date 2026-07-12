@@ -1,7 +1,7 @@
 # Copyright (c) 2023-2026, HaiyangLi <quantocean.li at gmail dot com>
 # SPDX-License-Identifier: Apache-2.0
 
-"""ADR-0029 teardown integration tests for artifact contract verification in agent.py."""
+"""ADR-0064 teardown integration tests for artifact contract verification in agent.py."""
 
 from __future__ import annotations
 

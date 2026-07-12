@@ -1,7 +1,7 @@
 # Copyright (c) 2023-2026, HaiyangLi <quantocean.li at gmail dot com>
 # SPDX-License-Identifier: Apache-2.0
 
-"""ADR-0101 D1 slice 2: the task-application submit surface.
+"""ADR-0071 D1 slice 2: the task-application submit surface.
 
 Covers submit_task's round-trip write, the CAS-governed queued -> cancelled
 cancel path, and rejection of a malformed TaskApplication. The transition

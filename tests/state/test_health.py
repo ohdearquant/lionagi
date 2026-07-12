@@ -1,7 +1,7 @@
 # Copyright (c) 2023-2026, HaiyangLi <quantocean.li at gmail dot com>
 # SPDX-License-Identifier: Apache-2.0
 
-"""ADR-0024 session health classifier tests — pure-function; caller passes process/artifact/lock signals."""
+"""ADR-0057 session health classifier tests — pure-function; caller passes process/artifact/lock signals."""
 
 from __future__ import annotations
 
@@ -284,7 +284,7 @@ def test_running_liveness_unknown_no_messages_but_has_artifacts_not_orphaned():
 
 
 def test_null_status_treated_as_completed():
-    """ADR-0017 legacy rows with NULL status fall through the terminal branch."""
+    """ADR-0057 legacy rows with NULL status fall through the terminal branch."""
     s = {"status": None}
     h = classify_session_health(
         s,

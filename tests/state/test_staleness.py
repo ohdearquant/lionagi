@@ -1,7 +1,7 @@
 # Copyright (c) 2023-2026, HaiyangLi <quantocean.li at gmail dot com>
 # SPDX-License-Identifier: Apache-2.0
 
-"""ADR-0019 staleness detection tests.
+"""ADR-0057 D6 staleness detection tests.
 
 Covers: kind-aware thresholds, terminal sessions are non-stale,
 last_message_at preferred over updated_at, touch_session_activity()
@@ -86,7 +86,7 @@ def test_flow_threshold_is_more_lenient_than_agent():
 
 
 def test_terminal_status_is_not_stale():
-    """ADR-0019 defers terminal-session classification to ADR-0024's health."""
+    """Terminal sessions are never stale; classification defers to ADR-0057 health."""
     now = 1_000_000.0
     for status in ("completed", "failed", "timed_out", "aborted", "cancelled"):
         s = {
@@ -179,7 +179,7 @@ async def test_touch_updates_updated_at_too(db: StateDB):
 
 
 def test_thresholds_cover_all_invocation_kinds():
-    """ADR-0012 invocation_kind vocabulary must all have explicit thresholds.
+    """Every invocation_kind must have an explicit staleness threshold.
 
     A missing kind silently falls back to DEFAULT_STALE_THRESHOLD, which
     is correct *behavior* but indicates the ADR was updated without

@@ -174,7 +174,7 @@ async def _seed_terminal_session(
 
 def test_transition_sessions_leaves_already_terminal_session_untouched(tmp_path, monkeypatch):
     """The reconcile's `WHERE status='running'` CAS (lionagi/studio/services/admin.py,
-    transition_sessions) is the ADR-0094 integrity-floor guard for this write path:
+    transition_sessions) is the ADR-0035 integrity-floor guard for this write path:
     a session already in a terminal status must never be moved, and no spurious
     status_transitions row may be recorded for it.
 

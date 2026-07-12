@@ -150,7 +150,7 @@ async def test_schema_version(db: StateDB):
 
 
 async def test_apply_schema_adds_missing_columns_on_old_db(tmp_path):
-    """Regression: an older state.db that pre-dates ADR-0012 / ADR-0017
+    """Regression: an older state.db missing later-added
     columns must have them ADD COLUMN'd in by ``_reconcile_columns``.
 
     Without this migration, ``CREATE TABLE IF NOT EXISTS`` is a no-op
@@ -166,9 +166,8 @@ async def test_apply_schema_adds_missing_columns_on_old_db(tmp_path):
 
     path = tmp_path / "old.db"
 
-    # Simulate a real pre-PR-980 DB: ADR-0009 core columns are present
-    # (since they shipped first), but the provenance/lifecycle columns
-    # added later are missing.
+    # Simulate an older DB: core columns are present, but the
+    # provenance/lifecycle columns added later are missing.
     bootstrap = create_async_engine(f"sqlite+aiosqlite:///{path}")
     async with bootstrap.begin() as conn:
         await conn.execute(
@@ -207,7 +206,7 @@ async def test_apply_schema_adds_missing_columns_on_old_db(tmp_path):
             "artifacts_path",
             "source_kind",
             "updated_at",
-            # ADR-0029: new artifact columns must be reconciled on old DBs.
+            # ADR-0064: new artifact columns must be reconciled on old DBs.
             "artifact_contract_json",
             "artifact_verification_json",
             # live flow phase column for `li monitor`.
@@ -774,10 +773,10 @@ async def test_update_play(db: StateDB):
     await db.create_play(play)
 
     end_time = time.time()
-    # ADR-0011 vocab: plays use ``running_complete`` (not ``completed``)
+    # ADR-0057 vocab: plays use ``running_complete`` (not ``completed``)
     # for the "finished running" terminal — ``completed`` belongs to the
-    # sessions vocabulary (ADR-0017), not plays.
-    # ADR-0028 Phase 2: `running_complete` has no canonical default
+    # sessions vocabulary (ADR-0057), not plays.
+    # ADR-0057 Phase 2: `running_complete` has no canonical default
     # reason_code (the gate hasn't run yet at that point — the caller
     # has the context to choose between PENDING_READY / GATE_FAILED_
     # VERDICT / etc.), so we must pass reason_code explicitly.
@@ -879,7 +878,7 @@ async def test_list_definition_versions(db: StateDB):
 
 
 async def test_save_definition_rejects_non_editable_kind(db: StateDB):
-    """ADR-0016: skills + arbitrary kinds are read-only and must be rejected."""
+    """ADR-0077: skills + arbitrary kinds are read-only and must be rejected."""
     import pytest
 
     for bad_kind in ("skill", "plugin", "something_else"):
@@ -1051,7 +1050,7 @@ async def test_message_content_dict_roundtrips_as_dict(db: StateDB):
 
 
 async def test_create_session_rejects_invalid_invocation_kind(db: StateDB):
-    """R4-B MED-2: ADR-0012 closed vocabulary, was unenforced before."""
+    """invocation_kind is a closed vocabulary; invalid kinds are rejected at creation."""
     prog_id = uid()
     await db.create_progression(prog_id)
     with pytest.raises(ValueError, match="invocation_kind"):
@@ -1066,7 +1065,7 @@ async def test_create_session_rejects_invalid_invocation_kind(db: StateDB):
 
 
 async def test_create_session_rejects_invalid_source_kind(db: StateDB):
-    """ADR-0012: source_kind ∈ {live, imported_fs}."""
+    """source_kind ∈ {live, imported_fs}."""
     prog_id = uid()
     await db.create_progression(prog_id)
     with pytest.raises(ValueError, match="source_kind"):
@@ -1102,7 +1101,7 @@ async def test_update_session_rejects_invalid_enums(db: StateDB):
 
 
 async def test_create_play_rejects_invalid_status(db: StateDB):
-    """ADR-0011: play status ∈ 11-vocabulary."""
+    """ADR-0057: play status ∈ 11-vocabulary."""
     show = await _make_show(db)
     with pytest.raises(ValueError, match="play status"):
         await db.create_play(
@@ -1116,7 +1115,7 @@ async def test_create_play_rejects_invalid_status(db: StateDB):
 
 
 async def test_create_show_rejects_invalid_status(db: StateDB):
-    """ADR-0011: show status ∈ {active, completed, aborted, imported}."""
+    """ADR-0057: show status ∈ {active, completed, aborted, imported}."""
     with pytest.raises(ValueError, match="show status"):
         await db.create_show(
             {
@@ -1160,7 +1159,7 @@ async def test_session_delete_cascades_branches(db: StateDB):
     assert await db.get_branch(bid) is None
 
 
-# ── ADR-0029: Artifact contract storage ───────────────────────────────────────
+# ── ADR-0064: Artifact contract storage ───────────────────────────────────────
 
 
 async def test_create_session_with_artifact_contract(db: StateDB):

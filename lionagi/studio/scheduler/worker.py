@@ -1,12 +1,12 @@
 # Copyright (c) 2023-2026, HaiyangLi <quantocean.li at gmail dot com>
 # SPDX-License-Identifier: Apache-2.0
-"""ADR-0101 D3/D4: the local (host-only) worker/claim loop with capability
+"""ADR-0071 D4/D5: the local (host-only) worker/claim loop with capability
 matching.
 
 v1 ships ONE worker — the Studio daemon engine itself. A claim is one guarded
 CAS through ``lionagi.state.transitions.transition()`` (``queued -> running``)
 that also sets ``leased_by``/``lease_expires_at``/``lease_attempts`` in the
-same UPDATE — no second write, no parallel CAS path (ADR-0101 scope fence).
+same UPDATE — no second write, no parallel CAS path (ADR-0071 scope fence).
 Execution resolves through ``lionagi.studio.scheduler.subprocess``; this
 module never spawns a process itself.
 
@@ -15,7 +15,7 @@ heartbeat before every claim pass, and the claim predicate matches a queued
 row's ``required_capabilities``/``execution_target`` against the calling
 worker's advertised capabilities/execution targets. A row this worker cannot
 serve is left ``queued``, never faked. Remote execution targets and
-workflow-registry resolution remain later slices (ADR-0102, remote worker
+workflow-registry resolution remain later slices (ADR-0073, remote worker
 binding).
 """
 
@@ -51,7 +51,7 @@ __all__ = (
     "worker_tick",
 )
 
-# Module-level enable flag (ADR-0101 D3 host worker), default ON. The Studio
+# Module-level enable flag (ADR-0071 D4 host worker), default ON. The Studio
 # daemon's scheduler tick checks this before running a worker_tick pass.
 TASK_WORKER_ENABLED = True
 
@@ -118,7 +118,7 @@ _MAX_CLAIM_SCAN_ROWS = 5000
 
 # D4: same-concurrency_key rows currently 'running' block admission of a new
 # claim sharing that key -- advisory ordering only; the worker-side host lock
-# stays authoritative over the resource itself (ADR-0101 scope fence).
+# stays authoritative over the resource itself (ADR-0071 scope fence).
 _RUNNING_CONCURRENCY_KEYS_SQL = """
     SELECT DISTINCT concurrency_key FROM schedule_runs
     WHERE status = 'running' AND concurrency_key IS NOT NULL

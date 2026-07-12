@@ -1,7 +1,7 @@
 # Copyright (c) 2023-2026, HaiyangLi <quantocean.li at gmail dot com>
 # SPDX-License-Identifier: Apache-2.0
 
-"""Planning engine — reactive DAG flow as an Engine (ADR-0075 §4); the library-level backend for ``li o flow``."""
+"""Planning engine — reactive DAG flow as an Engine (ADR-0034 §4); the library-level backend for ``li o flow``."""
 
 from __future__ import annotations
 

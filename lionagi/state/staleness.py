@@ -1,6 +1,6 @@
 # Copyright (c) 2023-2026, HaiyangLi <quantocean.li at gmail dot com>
 # SPDX-License-Identifier: Apache-2.0
-"""ADR-0019: kind-aware staleness thresholds for session health classification (ADR-0024)."""
+"""Kind-aware staleness thresholds for session health classification (ADR-0057 D6)."""
 
 from __future__ import annotations
 
