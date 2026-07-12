@@ -119,9 +119,16 @@ parse, not line-split):
 
 Common fields (`session_id`, `cwd`, `hook_event_name`) are always present. Per-event
 fields follow the CC/Codex field names exactly (`tool_name`, `tool_input`,
-`tool_response`, `prompt`). One LionAGI addition: `harness: "lionagi"` — a hook that
-must behave differently per harness keys off this; CC and Codex omit it, so its
-absence means "not lionagi." Fields LionAGI cannot populate (for example
+`tool_response`, `prompt`). The translation is mechanical and total: LionAGI's tool
+argument dict (the `arguments` mapping a `FunctionCalling` invocation carries) is
+placed under `tool_input` verbatim — it is already an arbitrary JSON-serializable
+dict, so no reshaping occurs; a returned `updatedInput` replaces that same dict
+whole (no per-key merge — partial rewrites are the hook's job to construct from the
+`tool_input` it was sent). `tool_name` is the registered tool name string
+(`Tool.function`), and `tool_response` is the tool's result as JSON where
+serializable, else its string form. One LionAGI addition: `harness: "lionagi"` — a
+hook that must behave differently per harness keys off this; CC and Codex omit it,
+so its absence means "not lionagi." Fields LionAGI cannot populate (for example
 `transcript_path` when no transcript file exists for the surface) are omitted, never
 sent as fabricated values.
 
@@ -169,12 +176,31 @@ each drives:
 Exact semantics:
 
 - `USER_PROMPT_SUBMIT` is a new `HookPoint` enum member **shipped in the same change
-  as its emit site** — a `blocking_emit` immediately before instruction submission in
-  the operations layer, covering both the API path (`communicate`) and the CLI/stream
-  path (`run`), with payload `{session_id, branch_id, prompt}` where `prompt` is the
-  rendered instruction text. Adding the enum member without the emit site is
-  forbidden; ADR-0047 already documents four never-wired hook points as exactly this
-  trap, and this ADR does not add a fifth.
+  as its emit sites** — plural, because the API path and the CLI/stream path are
+  architecturally disjoint and share no single "instruction submission" function:
+  one `blocking_emit` in the `communicate` middle before its chat call, and one in
+  the `run` middle before streaming begins. Payload: `{session_id, branch_id,
+  prompt}` where `prompt` is the rendered instruction text. Adding the enum member
+  without both emit sites is forbidden; ADR-0047 already documents four never-wired
+  hook points as exactly this trap, and this ADR does not add a fifth.
+- **Fires exactly once per user-originated turn.** `operate()` delegates to
+  `communicate` through the `Middle` protocol, so a naive emit at both layers would
+  double-fire on one turn; a turn-scoped emitted-flag on the operation context
+  guards this — the outermost entry emits, the delegated inner call sees the flag
+  and stays silent. The point fires **only for a user-originated instruction**:
+  internal instructions the runtime synthesizes (ReAct sub-steps, parse-retry
+  turns) never emit it. The discriminator is placement — the emits live in the
+  top-level middle entries named above, never in `a_add_message` or any shared
+  message-construction primitive, because internal turns traverse those shared
+  primitives too and a prompt guard firing on the model's own reasoning steps
+  would block the run from inside. Implementation acceptance: an integration test
+  asserting exactly one emission for an `operate→communicate` turn and zero
+  emissions for a ReAct internal step.
+- A blocked `USER_PROMPT_SUBMIT` surfaces as the same `PermissionError`-family
+  failure the blocking convention already defines, at the operation boundary: an
+  interactive session fails the turn with the hook's reason; a headless DAG node
+  fails that node through the node's normal error path — never a silent skip,
+  never a process abort.
 - `USER_PROMPT_SUBMIT` becomes the second blocking point in `HookBus` (after
   `TOOL_PRE`). The blocking set remains hardcoded in `bus.py` — extending it is a
   code change with review, not configuration (see out-of-scope).
@@ -215,10 +241,33 @@ The contract:
   the postprocessor receives the full result. The postprocessor applies regardless of
   result type — the current dict-only restriction on the spec-level post chain is a
   known gap and is not inherited by the new layer.
+- **Rewritten arguments are revalidated before the tool runs.** The current
+  `FunctionCalling` path does not re-run request-model validation after a
+  preprocessor replaces arguments (a gap ADR-0047 records). This ADR does not ship
+  arg-rewrite on top of that gap: after the external hooks and the spec-level chain
+  have both run, the final argument dict is validated against the tool's
+  `request_options` (when the tool declares one) before the callable executes; a
+  validation failure is a `deny`-equivalent block carrying the validation error.
+  A tool without `request_options` runs on the rewritten dict as-is — that tool
+  never had schema enforcement, and the external layer does not weaken or invent
+  one.
+- **`security_pre` stays the last pre-stage validator.** External hooks are
+  strictly outside the spec-level chain, so any `updatedInput` rewrite happens
+  before `security_pre` sees the arguments; the guard therefore always validates
+  the post-rewrite values that will actually reach the tool. This holds in the
+  no-user-hook case too (external rewrite, no spec-level user pre-hook: the single
+  `security_pre` run still sees final args, because external ran first). The
+  ordering is a load-bearing invariant of this design, not an accident — an
+  implementation must not move external hooks inside or after the security stage.
 - `HookBus.TOOL_PRE`/`TOOL_POST`/`TOOL_ERROR` continue to fire exactly as today
   (summary payloads, audit plane). D3 adds a mutation-capable layer; it does not
   repurpose the audit layer. A config-driven external hook therefore produces both
-  its own effect and the ordinary `HookSignal` audit trail.
+  its own effect and the ordinary `HookSignal` audit trail. One consequence to
+  know: the bus's `TOOL_PRE` emit happens in the act layer before
+  `ActionManager.invoke`, so its argument summary reflects the **pre-rewrite**
+  arguments by construction. The faithful post-rewrite record lives in the tool
+  event itself; if the audit plane ever needs the final args, that is a follow-up
+  emit-site move, decided there, not silently here.
 
 Why this way: the alternative — wiring external tool hooks into `HookBus.TOOL_PRE` —
 was rejected because that point's payload is a truncated summary by design (the audit
@@ -265,6 +314,10 @@ def external_hook_adapter(
   `{pre,post,on_error}` shape until that shape is migrated.
 - Concurrency: hooks for one event fire sequentially in config order (a rewrite
   must see the previous rewrite's output; parallel rewriters have no defined merge).
+  Across tool calls, hook concurrency mirrors the tool-call strategy: concurrent
+  tool invocations run their hook chains concurrently, so a hook touching shared
+  external state (a file-backed rate limiter, a counter) owns its own mutual
+  exclusion — the harness serializes within a call's chain, not across calls.
 
 ### D5 — Decision semantics, enumerated
 
@@ -284,7 +337,11 @@ For a blocking-capable seam (`PreToolUse` via D3, `USER_PROMPT_SUBMIT` via D2):
   headless (CLI runs, scheduled runs, orchestration DAG nodes); inventing a blocking
   interactive prompt inside those is a separate product decision. Fail-open
   (`ask`→`allow`) was rejected outright: a hook author who wrote `ask` expressed
-  doubt, and doubt must not admit the action unattended.
+  doubt, and doubt must not admit the action unattended. Deferring the interactive
+  path is also forward-safe: moving `ask` from deny to a TTY prompt later is a
+  strict relaxation (more permissive, and only for `ask`; headless contexts keep
+  fail-closed unchanged), so no carve-out is needed now to avoid a breaking
+  semantic change later.
 - `"defer"` — continue (defer means "let the normal permission flow decide"; LionAGI's
   normal flow at that point is the remaining chain, so deferral is continuation).
 - `decision: "block"` on advisory events (`PostToolUse`, `UserPromptSubmit` via the

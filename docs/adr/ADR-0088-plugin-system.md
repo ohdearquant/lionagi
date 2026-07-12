@@ -2,7 +2,7 @@
 
 - **Status**: Proposed
 - **Kind**: Aspirational
-- **Area**: governance
+- **Area**: substrates
 - **Date**: 2026-07-12
 - **Relations**: builds on ADR-0047 (hook mechanism scopes) and ADR-0048 (external
   hook contract — a plugin's hook block is delivered through it, including its D7
@@ -18,7 +18,10 @@ discovery timing, and trust model:
    `find_lionagi_dirs()`, first match wins. Data-only, no install step. The most
    mature "drop a file, it works" seam.
 2. **Playbooks** — `~/.lionagi/playbooks/*.playbook.yaml`, discovered by glob at
-   `li play` time. Same drop-a-file shape.
+   `li play` time. Same drop-a-file shape, but **global-only** (no project-local
+   `.lionagi/playbooks/`, no `find_lionagi_dirs()` cascade), and the discovery is
+   split across two sites: a pre-argparse CLI branch resolves the playbook name
+   and rewrites argv, and the downstream flow subcommand resolves the file again.
 3. **Tools** — imperative runtime registration (`branch.register_tools`,
    `ActionManager.register_mcp_server`). No declarative form, no discovery.
 4. **Hooks** — a name→callable registry (`lionagi/hooks/loader.py:_REGISTRY`,
@@ -179,12 +182,26 @@ Two-stage laziness, mirroring the endpoint registry's `_ensure_loaded` pattern:
   trigger points:
   - `ActionManager` tool-name miss → "does a trusted, enabled plugin declare this
     tool?"
-  - `match_endpoint` registry miss → import declared provider modules (which
-    self-register via the existing decorator), then re-match once.
+  - provider resolution: **`EndpointRegistry.match()` never misses today** — on no
+    registered match it silently falls through to a generic OpenAI-compatible
+    endpoint, so there is no existing miss event to hook. This decision therefore
+    requires a small, named refactor of the registry: an interception point after
+    "no registered entry matched" and **before** the generic fallback, which
+    consults the plugin registry, imports any declared provider module for that
+    provider name (the module self-registers at import time via the existing
+    decorator, so importing before the fallback is sufficient — no registry
+    reload), re-runs the match once, and only then falls back. Without this
+    interception a plugin provider would silently receive the generic endpoint
+    instead of its own — a wrong-answer failure, not an error.
   - agent-profile resolution miss → plugin `agents/` entries join the search list
     after project and global profiles.
-  - `li play` name resolution and playbook listing → plugin playbooks join the
-    scan, namespaced (D6).
+  - playbooks: discovery today is global-only and split across a pre-argparse CLI
+    branch (name resolution + argv rewrite) and the downstream flow resolver.
+    Plugin-playbook support therefore lands **with** a unification of playbook
+    discovery onto `find_lionagi_dirs()` (project, global, then plugin dirs), and
+    both resolution sites consult the unified scan. A `<plugin>/<name>` token (D6)
+    is passed through the argv rewrite as an opaque playbook identifier — the
+    rewrite branch must not split on `/` — and resolved only at the unified scan.
   - session-bus construction (`build_session_bus`) and agent-factory hook wiring →
     plugin `hooks_external` blocks join the ADR-0048 loader input.
   - `li plugin *` commands → full scan, eagerly.
@@ -198,7 +215,11 @@ Two-stage laziness, mirroring the endpoint registry's `_ensure_loaded` pattern:
 - Failure cases: a `target` whose file is missing or whose callable name is absent
   raises at first use with a diagnostic carrying plugin name + manifest path (not
   an ImportError three frames deep); a provider module that raises on import is
-  reported once, cached as failed, and does not retry per call.
+  reported once, cached as failed, and does not retry per call. The failed-import
+  cache is **new infrastructure** — the built-in provider auto-loader swallows
+  ImportError per module with no memory of the failure, so the plugin loader
+  builds its own (a per-plugin `{target: error}` map held by the plugin registry),
+  it does not extend an existing one.
 
 ### D4 — v1 pluggable surfaces
 
@@ -219,33 +240,59 @@ do not exist), and roles by recorded design decision — see out-of-scope.
   list`/`info` (rendered from manifest data only), and completely inert — no code
   import, no command execution, no profile/playbook exposure (a poisoned system
   prompt is an attack, not just code).
-- `li plugin trust <name>` shows what the plugin declares (capability inventory,
-  argv of every hook command, module list) and records
-  `sha256(canonical-json(manifest))` into `~/.lionagi/settings.yaml` under
-  `trusted_plugins: {<name>: <hash>}`. User-level, not project-level: a repo must
+- `li plugin trust <name>` shows what the plugin declares and records trust into
+  `~/.lionagi/settings.yaml` under `trusted_plugins: {<name>: {manifest: <hash>,
+  targets: {<path>: <hash>, …}}}`. The display contract is **complete and
+  non-skippable**: every hook command's full argv (no truncation, no counts-only
+  summary), every `target`/`module` path, and every profile/playbook file are
+  rendered before the approval prompt — a bundle carrying many hook commands
+  cannot bury one in an elided display. User-level, not project-level: a repo must
   not be able to self-trust the plugin it carries by committing a settings line —
   the human on the machine approves.
-- Any manifest change invalidates the hash; the plugin reverts to untrusted and
-  `list` shows `changed — re-trust required`. Contents referenced by the manifest
-  (tool modules, hook binaries) are *not* content-hashed in v1: the manifest hash
-  pins *what may run* (targets, argv, capability set), not every byte of it. A
-  bundle whose code you cannot trust to stay benign at fixed argv/targets should
-  not be trusted at all. This is recorded as an accepted, revisitable limitation —
-  content pinning is a straightforward hardening if evidence demands it.
+- The trust record pins **content, not just declaration**: `sha256` of the
+  canonical-JSON manifest plus `sha256` of every file the manifest declares as
+  executable capability — tool `target` files, provider `module` files, hook
+  binaries. Any change to the manifest or to a declared file reverts the plugin to
+  `changed — re-trust required` and it stops loading. Pinning only the manifest
+  was considered and rejected as incoherent: it would argv-pin the *subprocess*
+  hooks (the lower-privilege surface) while letting the in-process Python behind
+  fixed `target` strings — which runs with the host's full privileges on the
+  shared event loop — swap freely without re-approval. The set of hashed files is
+  exactly the declared set, so the cost is O(declared capabilities) at trust time
+  and at each load-time verification. Files inside the bundle that the manifest
+  does not declare (prompts, data, docs a declared module might read) are **not**
+  hashed — that is the honest, bounded limitation of this design, stated rather
+  than hidden: the boundary pins what may execute, not every byte a trusted
+  execution may consume.
 - Plugin hook commands additionally pass through ADR-0048 D7 (they are the
   "plugin-bundled" tier there); trusting a plugin records their argv hashes in the
-  same step, so one approval covers the bundle without weakening the hook-level
-  gate (an edited hook argv still re-pends on its own).
+  same step — defensible precisely because the display contract above already put
+  every argv in front of the approver — and an edited hook argv still re-pends on
+  its own through the hook-level gate.
 - Trusted plugin code runs in-process with the host's privileges. The ADR says so
   plainly; see out-of-scope for why no sandbox is claimed.
 
 ### D6 — Collisions: built-ins win; peers hard-fail
 
-- A plugin capability whose name collides with a **built-in** (a lionagi-shipped
-  tool name, provider match, or playbook) is rejected at discovery with a
-  diagnostic; the built-in stays authoritative. A plugin must never silently
-  change what a stock name does — that is a supply-chain attack shape, not a
-  customization feature.
+- A plugin capability must never silently change what a stock name does — that is
+  a supply-chain attack shape, not a customization feature. The built-in stays
+  authoritative and the plugin capability is rejected with a diagnostic. **When**
+  that check runs is surface-dependent, because for the code surfaces the set of
+  built-in names is itself only knowable by loading code, which D3 forbids at
+  discovery:
+  - **Data-only surfaces** (agent profiles, playbooks, packs): checked at
+    discovery — the built-in/shipped set is enumerable from data.
+  - **Providers**: checked at the activation trigger (the D3 match
+    interception), where the built-in registry has necessarily been loaded
+    anyway. A plugin provider name shadowing a built-in provider match is
+    rejected there, first use, with the diagnostic.
+  - **Tools**: there is no global built-in tool set today — tool registries are
+    per-`ActionManager`, populated imperatively. "Built-in" for tools therefore
+    means: a plugin tool may never replace a name already present in the
+    consuming manager's registry (whatever put it there — factory wiring, user
+    code, another plugin), checked at the point the plugin tool would be
+    registered/matched. No abstract shipped-tool list is claimed, because none
+    exists.
 - Two **enabled plugins** declaring the same capability name is a hard error at
   discovery, naming both plugins and the surface (the Studio route-registry
   precedent: duplicates are `ValueError`, not last-writer-wins). Resolution is
@@ -310,9 +357,16 @@ The design, recorded in full for the follow-up:
 - Failure surface moves earlier and louder: manifest typos, collisions, and
   incompatible ranges all surface at discovery with plugin-named diagnostics,
   instead of as deep-stack ImportErrors at call time.
-- The trust model is honest but coarse (manifest-hash, not content-hash): a trusted
-  plugin's author can change code behind fixed targets. Accepted and documented in
-  D5; revisit with content pinning if real-world evidence demands.
+- The trust boundary pins declared executable content (manifest + target files +
+  hook binaries), so a bundle edit behind a trusted manifest stops the plugin
+  loading until re-approved. Undeclared bundle files remain unpinned — stated in
+  D5 as the design's honest limit.
+- Built-in-collision detection for the code surfaces (providers, tools) happens at
+  activation, not discovery — deferred by construction, because knowing the
+  built-in set requires the loads D3 forbids at discovery. A colliding plugin
+  provider therefore surfaces its rejection diagnostic at first use of that
+  provider name, not at `li plugin trust` time; maintainers should expect the
+  later timing when triaging reports.
 - Studio's CC-bundle viewer and this system stay separate concepts sharing a
   directory idiom. A repository may ship one directory that is both (a
   `.claude-plugin/plugin.json` for CC and a `plugin.yaml` for LionAGI, side by
@@ -358,6 +412,11 @@ The design, recorded in full for the follow-up:
 
 ## Notes
 
+- Numbering: this record's area is `substrates`, whose number block (0090-0095) is
+  exhausted; the number is allocated from the adjacent free gap. The `Area` header
+  is authoritative for classification — the block ranges are an allocation
+  convenience, and recent records have already outgrown strict block-area
+  correspondence.
 - Naming: "plugin" here always means a LionAGI runtime extension bundle.
   Studio's existing plugin routes render *Claude Code* bundles; the two appear
   together only in the marketplace directory of this repository, which may carry

@@ -207,9 +207,7 @@ collisions. Unused numbers inside a block are intentional gaps, not missing docu
 - [ADR-0086](ADR-0086-local-tool-controls-and-session-authorization.md) — Local tool controls and
   session authorization observation
 - [ADR-0087](ADR-0087-evidence-backed-governed-execution.md) — Evidence-backed governed execution
-- [ADR-0088](ADR-0088-plugin-system.md) — Plugin system (directory-bundle manifest with
-  lazy activation)
-- 0089 — unused (intentional gap)
+- 0088-0089 — unused (0088 allocated to a substrates record from this gap; see below)
 
 ### substrates (0090-0095)
 
@@ -225,6 +223,8 @@ collisions. Unused numbers inside a block are intentional gaps, not missing docu
   github-poll schedules
 - [ADR-0095](ADR-0095-run-terminal-callbacks-and-orphan-recovery.md) — Run-terminal
   callbacks and orphan recovery (supersedes ADR-0060)
+- [ADR-0088](ADR-0088-plugin-system.md) — Plugin system (directory-bundle manifest with
+  lazy activation; number from the adjacent free gap — the substrates block is exhausted)
 
 Remaining areas land here as their records are accepted.
 
