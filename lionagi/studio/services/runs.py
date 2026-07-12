@@ -1,15 +1,23 @@
 from __future__ import annotations
 
 import math
+import os
+import stat
 import time
 from pathlib import Path
 from typing import Any
 
 from fastapi import HTTPException, Query
 
+from lionagi.libs.path_safety import resolve_workspace_path
+
 from ..registry import studio_route
 from . import sessions as _sessions_svc
 from ._path_safety import public_path
+
+# Read-only file viewer cap (ADR file-links feature): large artifacts are
+# truncated rather than rejected outright, so a giant log still previews.
+_MAX_FILE_READ_BYTES = 2_000_000
 
 _STATUS_ALIASES: dict[str, set[str]] = {
     "done": {"done", "completed", "success", "finished"},
@@ -753,6 +761,111 @@ async def get_run_route(
     if run is None:
         raise HTTPException(status_code=404, detail=f"Run '{run_id}' not found")
     return run
+
+
+def _open_regular_file_no_follow(root: Path, resolved: Path) -> int:
+    """Open `resolved` (already containment-checked under `root`) through a
+    root-anchored, no-follow descriptor walk and return the open fd.
+
+    `resolve_workspace_path` only validates the path at check time — nothing
+    stops the target from being replaced with a symlink before a later
+    `open()`-by-path follows it out of the artifact root (CWE-367/59). This
+    walks each path component with `os.open(..., dir_fd=parent_fd)` instead:
+    every component is resolved relative to a directory descriptor obtained
+    *before* it, never by re-walking a path string, and `O_NOFOLLOW` refuses
+    a symlink at any position (including an intermediate directory). The
+    caller owns closing the returned fd.
+    """
+    parts = resolved.relative_to(root).parts
+    if not parts:
+        raise PermissionError(f"no path components under root: {resolved!r}")
+    dir_fd = os.open(root, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+    try:
+        for i, part in enumerate(parts):
+            is_last = i == len(parts) - 1
+            flags = os.O_RDONLY | os.O_NOFOLLOW
+            if not is_last:
+                flags |= os.O_DIRECTORY
+            fd = os.open(part, flags, dir_fd=dir_fd)
+            os.close(dir_fd)
+            dir_fd = fd
+        if not stat.S_ISREG(os.fstat(dir_fd).st_mode):
+            raise PermissionError(f"not a regular file: {resolved!r}")
+        return dir_fd
+    except BaseException:
+        os.close(dir_fd)
+        raise
+
+
+async def get_run_file(run_id: str, path: str) -> dict[str, Any]:
+    """Read-only content fetch for a file inside a run's artifact root.
+
+    Backs the message-renderer's clickable file links: a link is only ever
+    rendered when the frontend already believes the path is part of the
+    run's known file surface (message_stats.files / tool-call args), but a
+    file can still vanish between render and click — this always re-validates
+    against the live artifact root rather than trusting the caller.
+    """
+    session = await _sessions_svc.get_session(run_id, message_limit=1)
+    if session is None:
+        raise HTTPException(status_code=404, detail=f"Run '{run_id}' not found")
+    artifacts_path = session.get("artifacts_path")
+    if not artifacts_path:
+        raise HTTPException(status_code=404, detail=f"Run '{run_id}' has no artifact root")
+    artifact_root = Path(artifacts_path)
+    if not artifact_root.exists():
+        raise HTTPException(status_code=404, detail="Run artifact root no longer exists")
+    root = artifact_root.resolve()
+
+    try:
+        resolved = resolve_workspace_path(path, root)
+    except PermissionError as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
+
+    try:
+        fd = _open_regular_file_no_follow(root, resolved)
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=f"File '{path}' not found") from exc
+    except (OSError, PermissionError) as exc:
+        raise HTTPException(status_code=403, detail=f"File '{path}' is not accessible") from exc
+
+    try:
+        size = os.fstat(fd).st_size
+        # Read at most cap+1 bytes total — the extra byte only decides
+        # `truncated`, never a full-file materialization regardless of actual
+        # file size. os.read may legally return fewer bytes than requested
+        # without signaling EOF, so accumulate until EOF or the allowance is
+        # exhausted; a single short read must not mislabel an oversized file
+        # as complete.
+        chunks: list[bytes] = []
+        remaining = _MAX_FILE_READ_BYTES + 1
+        while remaining > 0:
+            chunk = os.read(fd, remaining)
+            if not chunk:
+                break
+            chunks.append(chunk)
+            remaining -= len(chunk)
+        raw = b"".join(chunks)
+    finally:
+        os.close(fd)
+
+    truncated = len(raw) > _MAX_FILE_READ_BYTES
+    try:
+        content = raw[:_MAX_FILE_READ_BYTES].decode("utf-8")
+    except UnicodeDecodeError:
+        raise HTTPException(status_code=415, detail="File is not text/UTF-8") from None
+
+    return {
+        "path": str(resolved),
+        "content": content,
+        "size": size,
+        "truncated": truncated,
+    }
+
+
+@studio_route("/runs/{run_id}/file", method="GET", area="runs", name="get_run_file")
+async def get_run_file_route(run_id: str, path: str = Query(...)) -> dict[str, Any]:
+    return await get_run_file(run_id, path)
 
 
 # ADR-0008: /api/runs/{id}/events SSE (read stream/*.buffer.jsonl, forbidden

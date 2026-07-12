@@ -12,7 +12,7 @@ import InvocationSection from "@/components/history/InvocationDetail";
 import OperationGraphSection from "@/components/history/OperationGraphSection";
 import StatusVerdictChips from "@/components/ui/StatusVerdictChips";
 import ExpectedArtifacts from "@/components/runs/ExpectedArtifacts";
-import RunStepCard from "@/components/RunStepCard";
+import RunStepCard, { extractFilePaths } from "@/components/RunStepCard";
 import { IconChevronDown, IconChevronRight } from "@/components/ui/icons";
 import { getSession, streamSession, streamSignals, SESSION_MESSAGE_PAGE } from "@/lib/api";
 import type { SessionDetail, SessionBranch, SessionMessage, SignalEvent } from "@/lib/api";
@@ -303,11 +303,17 @@ function BranchesSection({
   live,
   expandedSteps,
   onToggleExpand,
+  runId,
+  artifactRoot,
+  runFiles,
 }: {
   steps: RunStep[];
   live: boolean;
   expandedSteps: Set<string>;
   onToggleExpand: (stepId: string, next: boolean) => void;
+  runId?: string;
+  artifactRoot?: string | null;
+  runFiles?: string[];
 }) {
   const t = useTranslations("history.detail");
   return (
@@ -335,6 +341,9 @@ function BranchesSection({
               step={step}
               expanded={expandedSteps.has(step.step)}
               onToggleExpand={onToggleExpand}
+              runId={runId}
+              artifactRoot={artifactRoot}
+              runFiles={runFiles}
             />
           ))
         )}
@@ -923,6 +932,21 @@ export default function RunDetail({ id }: RunDetailProps) {
     return result;
   }, [session, sessionStatus, segments]);
 
+  // Run-wide known file surface (union across every step/agent branch) —
+  // the file-link resolver's save-root fallback when a bare filename isn't
+  // in the emitting agent's own step but was written by a sibling agent.
+  // Steps only cover the loaded (tail-windowed) messages, so a reference to
+  // a file touched earlier in a long session can't resolve from steps alone
+  // — seed/merge with the server's full-session union (message_stats.files),
+  // which is computed over every branch's full progression, not the window.
+  const runFiles = useMemo(() => {
+    const set = new Set<string>(session?.message_stats?.files ?? []);
+    for (const step of steps) {
+      for (const p of extractFilePaths(step.messages ?? [])) set.add(p);
+    }
+    return Array.from(set);
+  }, [steps, session]);
+
   const errors = useMemo(() => {
     const errs: ErrorEntry[] = [];
     for (const step of steps) {
@@ -1137,6 +1161,9 @@ export default function RunDetail({ id }: RunDetailProps) {
         live={live}
         expandedSteps={expandedSteps}
         onToggleExpand={handleToggleExpand}
+        runId={session.id}
+        artifactRoot={session.artifacts_path}
+        runFiles={runFiles}
       />
       <ErrorsSection errors={errors} partial={partialWindow} />
       <FilesSection files={files} partial={partialWindow} />

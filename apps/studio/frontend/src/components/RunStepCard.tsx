@@ -17,6 +17,7 @@ import {
   IconTerminal,
 } from "@/components/ui/icons";
 import type { RunMessage, RunStep } from "@/lib/types";
+import type { FileResolutionContext } from "@/components/ui/Markdown";
 
 const Markdown = lazy(() => import("@/components/ui/Markdown"));
 
@@ -42,6 +43,16 @@ export interface RunStepCardProps {
   defaultExpanded?: boolean;
   expanded?: boolean;
   onToggleExpand?: (stepId: string, next: boolean) => void;
+  /** Run id — enables file-link resolution/viewing in rendered messages. */
+  runId?: string;
+  /** Run's artifact save root (absolute path), for the agent-dir-first
+   * resolution fallback (requirement: bare/relative names resolve against
+   * the emitting agent's own artifact subdir first, then the run root). */
+  artifactRoot?: string | null;
+  /** Known file surface for the WHOLE run (union across all steps/agents),
+   * so a bare filename this step didn't itself touch can still resolve
+   * against a sibling agent's output — the run's save-root fallback. */
+  runFiles?: string[];
 }
 
 const STATUS_TONE: Record<string, "ok" | "pending" | "failed"> = {
@@ -146,7 +157,7 @@ function isEditTool(fn: string): boolean {
   return /Edit|patch/i.test(fn);
 }
 
-function pathFromArgs(args: Record<string, unknown>, summary: string): string[] {
+export function pathFromArgs(args: Record<string, unknown>, summary: string): string[] {
   const out: string[] = [];
   if (args.file_path) out.push(String(args.file_path));
   if (args.path) out.push(String(args.path));
@@ -166,11 +177,27 @@ function pathFromArgs(args: Record<string, unknown>, summary: string): string[] 
   return out;
 }
 
+/** The run's known file surface for one branch's messages — same source
+ * (`pathFromArgs` over tool-call args) the "top files" panel already uses,
+ * reused here for file-link resolution so both stay in lockstep. */
+export function extractFilePaths(messages: RunMessage[]): string[] {
+  const toolMessages = messages.filter((m) => m.role === "tool_call" || m.role === "action");
+  const paths = new Set<string>();
+  for (const t of toolMessages) {
+    const args = (t.arguments as Record<string, unknown>) ?? {};
+    for (const p of pathFromArgs(args, t.summary || "")) paths.add(p);
+  }
+  return Array.from(paths);
+}
+
 function RunStepCard({
   step,
   defaultExpanded = false,
   expanded: expandedProp,
   onToggleExpand,
+  runId,
+  artifactRoot,
+  runFiles,
 }: RunStepCardProps) {
   const t = useTranslations("runCard");
   const [internalExpanded, setInternalExpanded] = useState(defaultExpanded);
@@ -291,6 +318,19 @@ function RunStepCard({
       lastTs,
     };
   }, [messages]);
+
+  // File-link resolution context (shared by the overview + conversation
+  // Markdown renderers): agent dir first, then the run-wide file surface.
+  const fileContext = useMemo<FileResolutionContext | undefined>(() => {
+    if (!runId) return undefined;
+    const agentId = result.agent || step.step;
+    const agentDir =
+      artifactRoot && agentId ? `${artifactRoot.replace(/\/+$/, "")}/${agentId}` : undefined;
+    const knownFiles = Array.from(
+      new Set([...summary.files.map((f) => f.path), ...(runFiles ?? [])]),
+    );
+    return { runId, knownFiles, agentDir };
+  }, [runId, artifactRoot, runFiles, result.agent, step.step, summary.files]);
 
   const tone = STATUS_TONE[step.status] ?? "pending";
 
@@ -475,6 +515,7 @@ function RunStepCard({
                 summary={summary}
                 lastAssistant={lastAssistant}
                 onJumpToConversation={() => setTab("conversation")}
+                fileContext={fileContext}
               />
             </div>
           )}
@@ -553,6 +594,8 @@ function RunStepCard({
                 filters={filters}
                 expandedTools={expandedTools}
                 onToggleTool={toggleTool}
+                stepKey={step.step}
+                fileContext={fileContext}
               />
             </div>
           )}
@@ -606,6 +649,9 @@ export function stepPropsEqual(prev: RunStepCardProps, next: RunStepCardProps): 
     prev.step.timestamp === next.step.timestamp &&
     prevResult.agent === nextResult.agent &&
     prevResult.model === nextResult.model &&
+    prev.runId === next.runId &&
+    prev.artifactRoot === next.artifactRoot &&
+    prev.runFiles === next.runFiles &&
     runMessagesEqualForMemo(prev.step.messages, next.step.messages)
   );
 }
@@ -668,6 +714,7 @@ function OverviewPanel({
   summary,
   lastAssistant,
   onJumpToConversation,
+  fileContext,
 }: {
   summary: {
     toolCount: number;
@@ -679,6 +726,7 @@ function OverviewPanel({
   };
   lastAssistant: RunMessage | null;
   onJumpToConversation: () => void;
+  fileContext?: FileResolutionContext;
 }) {
   const t = useTranslations("runCard");
   return (
@@ -692,7 +740,7 @@ function OverviewPanel({
         {lastAssistant?.content ? (
           <>
             <Suspense fallback={null}>
-              <Markdown className="text-body leading-snug">
+              <Markdown className="text-body leading-snug" fileContext={fileContext}>
                 {lastAssistant.content.length > 1200
                   ? lastAssistant.content.slice(0, 1200) + "\n\n…"
                   : lastAssistant.content}
@@ -901,6 +949,7 @@ interface MessageFeedProps {
   expandedTools: Set<number>;
   onToggleTool: (idx: number) => void;
   stepKey?: string;
+  fileContext?: FileResolutionContext;
 }
 
 const MESSAGE_WINDOW = 80;
@@ -911,6 +960,7 @@ function MessageFeed({
   expandedTools,
   onToggleTool,
   stepKey = "",
+  fileContext,
 }: MessageFeedProps) {
   const t = useTranslations("runCard");
   // Render only the most recent window; long conversations reveal older turns
@@ -960,6 +1010,7 @@ function MessageFeed({
               content={m.content || ""}
               timestamp={m.timestamp}
               ordinal={ordinal}
+              fileContext={fileContext}
             />
           );
         }
@@ -1035,11 +1086,13 @@ function AssistantBlock({
   content,
   timestamp,
   ordinal,
+  fileContext,
 }: {
   anchorId: string;
   content: string;
   timestamp?: number | null;
   ordinal: number;
+  fileContext?: FileResolutionContext;
 }) {
   const t = useTranslations("runCard");
   const isThinking = content.startsWith("[thinking]");
@@ -1078,7 +1131,9 @@ function AssistantBlock({
         </p>
       ) : (
         <Suspense fallback={null}>
-          <Markdown className="text-body leading-snug">{displayText}</Markdown>
+          <Markdown className="text-body leading-snug" fileContext={fileContext}>
+            {displayText}
+          </Markdown>
         </Suspense>
       )}
     </div>

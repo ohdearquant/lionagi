@@ -218,6 +218,61 @@ describe("history/RunDetail.tsx — shouldRenderAuthoredGraph", () => {
   });
 });
 
+// ─── runFiles seeds from the server's full-session file union ────────────────
+// Sessions are windowed to SESSION_MESSAGE_PAGE (200) messages (lib/api.ts).
+// A step's own messages therefore cannot resolve a file reference that was
+// touched earlier in a long session — the server already computes the full
+// union over every branch's whole progression (services/sessions.py
+// _branch_message_stats -> get_session's message_stats.files) and returns it
+// on SessionDetail. runFiles must seed from that surface, not just the
+// loaded steps.
+
+describe("history/RunDetail.tsx — runFiles seeds from session.message_stats.files", () => {
+  const src = fs.readFileSync(path.join(HISTORY_DIR, "RunDetail.tsx"), "utf-8");
+
+  it("unions the server-side full-session file surface into runFiles", () => {
+    expect(src).toMatch(/session\?\.message_stats\?\.files/);
+  });
+
+  it("runFiles depends on session, not steps alone, so a server-only update refreshes it", () => {
+    const start = src.indexOf("const runFiles = useMemo(");
+    const end = src.indexOf(";", src.indexOf("}, [", start));
+    const block = src.slice(start, end);
+    expect(block).toMatch(/\[steps, session\]/);
+  });
+});
+
+describe("runFiles union logic (mirrors the useMemo body) — file outside the loaded window resolves", () => {
+  // Mirrors: const set = new Set(session?.message_stats?.files ?? []);
+  //          for (const step of steps) for (const p of extractFilePaths(...)) set.add(p);
+  function computeRunFiles(
+    serverFiles: string[] | undefined,
+    stepDerivedFiles: string[],
+  ): string[] {
+    const set = new Set<string>(serverFiles ?? []);
+    for (const p of stepDerivedFiles) set.add(p);
+    return Array.from(set);
+  }
+
+  it("includes a file only present in the server's full-session union (touched before the 200-message tail window)", () => {
+    const serverUnion = ["consolidatedfixspec.md", "review.md"]; // computed over the FULL progression
+    const loadedStepFiles = ["review.md"]; // only what's in the windowed tail
+    const result = computeRunFiles(serverUnion, loadedStepFiles);
+    expect(result).toContain("consolidatedfixspec.md");
+    expect(result).toContain("review.md");
+  });
+
+  it("still includes client-derived files the server union happens to miss (defensive union, not a replacement)", () => {
+    const result = computeRunFiles(["a.md"], ["b.md"]);
+    expect(result.sort()).toEqual(["a.md", "b.md"]);
+  });
+
+  it("degrades gracefully when message_stats is absent (older/partial session payloads)", () => {
+    const result = computeRunFiles(undefined, ["c.md"]);
+    expect(result).toEqual(["c.md"]);
+  });
+});
+
 describe("stale-write guard predicate (mirrors the done handler's merge condition)", () => {
   function mergeIfSameSession(
     prev: { id: string; status: string } | null,

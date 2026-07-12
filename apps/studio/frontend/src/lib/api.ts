@@ -227,6 +227,48 @@ export async function getRun(runId: string): Promise<RunDetail> {
   return fetchJson<RunDetail>(`/api/runs/${encodeURIComponent(runId)}`);
 }
 
+export interface RunFileContent {
+  path: string;
+  content: string;
+  size: number;
+  truncated: boolean;
+}
+
+export type RunFileResult =
+  | { ok: true; data: RunFileContent }
+  | { ok: false; status: number; detail?: string };
+
+/** Read-only fetch of a run artifact's content, for the message-renderer's
+ * file viewer. Reports status/detail on failure (rather than throwing) so
+ * the click-time 404/403 path renders a graceful missing-file state instead
+ * of an unhandled error. */
+export async function getRunFile(runId: string, path: string): Promise<RunFileResult> {
+  const query = new URLSearchParams({ path });
+  const url = `${API_BASE}/api/runs/${encodeURIComponent(runId)}/file?${query.toString()}`;
+  const token = resolveAuthToken();
+  const headers: HeadersInit = {};
+  if (token) (headers as Record<string, string>)["Authorization"] = `Bearer ${token}`;
+
+  let response: Response;
+  try {
+    response = await fetch(url, { headers });
+  } catch (err) {
+    reportConnectivityFailure();
+    throw err;
+  }
+  if (!response.ok) {
+    let detail: string | undefined;
+    try {
+      const body = (await response.json()) as { detail?: string };
+      if (typeof body?.detail === "string") detail = body.detail;
+    } catch {
+      // not JSON — ignore
+    }
+    return { ok: false, status: response.status, detail };
+  }
+  return { ok: true, data: (await response.json()) as RunFileContent };
+}
+
 // ─── Workers (playbooks) ──────────────────────────────────────────────────────
 
 interface PlaybookDetail {
@@ -590,6 +632,20 @@ export interface SessionDetail {
   // ADR-0029: artifact contract and verification result.
   artifact_contract_json?: ArtifactContract | null;
   artifact_verification_json?: ArtifactVerification | null;
+  // Absolute artifact-root path on disk (services/sessions.py get_session
+  // returns this verbatim) — the run's save root for file-link resolution.
+  artifacts_path?: string | null;
+  // Full-session aggregate (services/sessions.py get_session, computed over
+  // every branch's full progression, not the display window) — `files` is
+  // the run-wide known-file union, including files touched before the
+  // 200-message tail window this response's `branches[].messages` covers.
+  message_stats?: {
+    message_count: number;
+    roles: Record<string, number>;
+    tool_call_count: number;
+    error_count: number;
+    files: string[];
+  };
 }
 
 export async function listSessions(): Promise<{ sessions: SessionSummary[] }> {
