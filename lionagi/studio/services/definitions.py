@@ -257,7 +257,7 @@ async def save_definition(
 async def rollback_definition(kind: str, name: str, target_version: int) -> dict[str, Any] | None:
     """Restore a previous version: read old content from DB, write to disk, record as new version.
 
-    ADR-0077 D2: returns
+    Returns
         { version: N+1, rolled_back_from: current_version, rolled_back_to: N }
     """
     validate_name_component(kind, label="kind")
@@ -398,7 +398,7 @@ async def get_version_route(kind: str, name: str, version: int) -> dict[str, Any
     return v
 
 
-# ADR-0077 D2: POST /api/definitions/{kind}/{name}
+# POST /api/definitions/{kind}/{name}
 @studio_route(
     "/definitions/{kind}/{name}", method="POST", area="definitions", name="save_definition"
 )
@@ -411,7 +411,7 @@ async def save_definition_route(kind: str, name: str, body: SaveBody) -> dict[st
         raise HTTPException(status_code=422, detail=str(e)) from e
 
 
-# ADR-0077 D2: version as query param, not path segment
+# version as query param, not path segment
 @studio_route(
     "/definitions/{kind}/{name}/rollback",
     method="POST",

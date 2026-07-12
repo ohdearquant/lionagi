@@ -150,7 +150,7 @@ async def test_schema_version(db: StateDB):
 
 
 async def test_apply_schema_adds_missing_columns_on_old_db(tmp_path):
-    """Regression: an older state.db that pre-dates ADR-0077 / ADR-0057
+    """Regression: an older state.db missing later-added
     columns must have them ADD COLUMN'd in by ``_reconcile_columns``.
 
     Without this migration, ``CREATE TABLE IF NOT EXISTS`` is a no-op

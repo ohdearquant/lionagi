@@ -1,7 +1,7 @@
 # Copyright (c) 2023-2026, HaiyangLi <quantocean.li at gmail dot com>
 # SPDX-License-Identifier: Apache-2.0
 
-"""ADR-0077 teams + team_messages schema tests — schema constraints, FK cascade, and import-teams backfill path."""
+"""Teams + team_messages schema tests — schema constraints, FK cascade, and import-teams backfill path."""
 
 from __future__ import annotations
 

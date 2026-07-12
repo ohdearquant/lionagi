@@ -325,7 +325,7 @@ CREATE INDEX IF NOT EXISTS idx_plays_status ON plays(status);
 CREATE INDEX IF NOT EXISTS idx_plays_session ON plays(session_id);
 CREATE UNIQUE INDEX IF NOT EXISTS idx_plays_show_name ON plays(show_id, name);
 
--- ── Teams (ADR-0077) ─────────────────────────────────────────────────────
+-- ── Teams ────────────────────────────────────────────────────────────────
 -- Mirrors the JSON files at ~/.lionagi/teams/{id}.json (still primary
 -- write path; populated via dual-write or `li state import-teams`).
 -- Storing teams in the DB unlocks queries, cross-session linkage, and
@@ -369,7 +369,7 @@ CREATE INDEX IF NOT EXISTS idx_team_msgs_created ON team_messages(created_at);
 CREATE INDEX IF NOT EXISTS idx_team_msgs_session ON team_messages(session_id)
   WHERE session_id IS NOT NULL;
 
--- ── Invocations (ADR-0077) ───────────────────────────────────────────────
+-- ── Invocations ──────────────────────────────────────────────────────────
 -- Skill-level orchestration records. One invocation row per /show,
 -- /codex-pr-review, etc., aggregating the N sessions that the skill
 -- spawned. invocation_id is FK'd from sessions; invocation_kind on

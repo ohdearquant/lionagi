@@ -164,7 +164,7 @@ async def persist_branch_provenance(
     agent_name: str | None = None,
     **_unused: Any,
 ) -> None:
-    """ADR-0077 per-branch model / provider / agent_name."""
+    """Persist per-branch model / provider / agent_name provenance."""
     db = await _db()
     await db.update_branch(
         branch_id,
@@ -185,7 +185,7 @@ async def persist_message(
     progression_id: str | None = None,
     **_unused: Any,
 ) -> None:
-    """ADR-0077 + ADR-0056 message persistence; ``progression_id`` is a legacy alias."""
+    """ADR-0056 message persistence; ``progression_id`` is a legacy alias."""
     effective_branch_prog = branch_progression_id or progression_id
 
     db = await _db()

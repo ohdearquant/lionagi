@@ -1,6 +1,6 @@
 # Copyright (c) 2023-2026, HaiyangLi <quantocean.li at gmail dot com>
 # SPDX-License-Identifier: Apache-2.0
-"""ADR-0077 invocations service — backs /api/invocations endpoints."""
+"""Invocations service — backs /api/invocations endpoints."""
 
 from __future__ import annotations
 
@@ -205,7 +205,7 @@ async def get_artifact_route(artifact_id: str) -> dict[str, Any]:
 
 
 # Convenience: sessions don't have their own router-level artifacts endpoint
-# (sessions.router predates ADR-0077). This sub-route under /api/artifacts
+# (sessions.router has never exposed one). This sub-route under /api/artifacts
 # keeps the artifact concern in one place.
 @studio_route(
     "/artifacts/by-session/{session_id}", method="GET", area="invocations", tags=["artifacts"]
