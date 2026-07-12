@@ -219,6 +219,67 @@ def test_reap_stale_schedule_runs_excludes_leased_task_queue_rows(tmp_path, monk
     assert sched_run["status"] == "timed_out"
 
 
+def test_pre_terminal_write_bumps_updated_at_so_reaper_does_not_race_completion(
+    tmp_path, monkeypatch
+):
+    """A schedule_run legitimately running past the stale window is about
+    to finish: _fire_inner() first writes exit_code/ended_at via
+    update_schedule_run() (fields-only, no status), then transitions the
+    row to its terminal status via update_status(). If a periodic reaper
+    scan landed in that gap while the row's updated_at was still the old
+    stale snapshot, its expected_updated_at guard would still match and it
+    could mark the row timed_out out from under the run that is in the
+    middle of legitimately completing.
+
+    update_schedule_run()'s field-only write now bumps updated_at on every
+    call (mirroring update_status()'s own behavior), so a reaper scan
+    landing in this exact window sees a fresh updated_at and skips the row
+    outright -- it never even reaches the CAS write. This directly
+    simulates that interleaving: seed a stale running row, perform the
+    pre-terminal field write, run the reaper, then perform the terminal
+    transition -- the row must land in its true terminal status, not
+    timed_out.
+    """
+    db_path = tmp_path / "state.db"
+    _monkey_db(monkeypatch, db_path)
+
+    sid = run_async(_seed_schedule(db_path))
+    run_id = run_async(_seed_schedule_run(db_path, sid, status="running", updated_at=_STALE))
+
+    async def _interleaving():
+        async with StateDB(db_path) as db:
+            # Pre-terminal write: exit_code/ended_at land while status is
+            # still "running" -- exactly what _fire_inner() does right
+            # before its terminal update_status() call.
+            await db.update_schedule_run(run_id, exit_code=0, ended_at=time.time())
+
+        from lionagi.studio.services.lifecycle import reap_stale_schedule_runs
+
+        # A periodic reaper tick lands in the gap between the field write
+        # and the terminal status transition.
+        count = await reap_stale_schedule_runs(stale_hours=6.0)
+
+        async with StateDB(db_path) as db:
+            # Terminal transition, as _fire_inner() performs it next.
+            await db.update_status(
+                "schedule_run",
+                run_id,
+                new_status="completed",
+                reason_code="run.completed.ok",
+                reason_summary="Scheduled process completed successfully.",
+                source="executor",
+                actor=run_id,
+                expected_statuses={"running"},
+            )
+        return count
+
+    count = run_async(_interleaving())
+
+    assert count == 0  # the reaper skipped it -- updated_at was fresh
+    run = run_async(_get_schedule_run(db_path, run_id))
+    assert run["status"] == "completed"
+
+
 def test_reap_stale_schedule_runs_falls_back_to_fired_at_when_never_touched(tmp_path, monkeypatch):
     """A row that was inserted and never subsequently touched has
     updated_at=NULL (create_schedule_run's INSERT does not set it) -- the

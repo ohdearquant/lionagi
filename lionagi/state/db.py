@@ -2487,6 +2487,18 @@ class StateDB:
         )
 
         if fields:
+            # updated_at must move on every write to this row, not only on a
+            # status transition -- update_status() already bumps it as part
+            # of the status UPDATE above, but a plain field-only call (e.g.
+            # the exit_code/ended_at write that lands *before* the terminal
+            # status transition, while the row is still "running") would
+            # otherwise leave it stale. A stale updated_at is exactly the
+            # snapshot value reap_stale_schedule_runs()'s expected_updated_at
+            # guard would still match on a scan landing in that window,
+            # letting the reaper race a legitimately-finishing run to
+            # "timed_out" ahead of its own terminal write.
+            fields = dict(fields)
+            fields["updated_at"] = time.time()
             sets = ", ".join(f'"{k}" = :{k}' for k in fields)
             params = dict(fields)
             params["_id"] = run_id
@@ -2743,24 +2755,36 @@ class StateDB:
         return streak, last_status
 
     async def schedule_run_exists_since(self, schedule_id: str, since: float) -> bool:
-        """True if *schedule_id* already has a schedule_runs row fired at or
-        after *since*.
+        """True if *schedule_id* already has a genuinely-fired schedule_runs
+        row at or after *since*.
 
         Used by the missed-fire recovery scan (``SchedulerEngine.
         _check_missed_fires``) to distinguish "genuinely never fired" from
         "occurrence was durably recorded before a crash interrupted
         whatever bookkeeping came after it" -- firing a fresh recovery run
         for the latter would double-execute the external action for an
-        occurrence that already has a row. Any status counts (running,
-        completed, failed, ...): the row's mere existence is what matters
-        here, not how it resolved.
+        occurrence that already has a row. Any non-skipped status counts
+        (running, completed, failed, ...): the row's mere existence is what
+        matters here, not how it resolved.
+
+        Excludes ``status = 'skipped'`` rows. Two of the three writers of
+        that status (missed-fire skip, overlap skip) advance next_fire_at
+        in the same breath as writing the row, so the schedule is no
+        longer due by the time this scan would run again -- moot either
+        way. But the third, capacity-deferred throttling
+        (``_maybe_record_deferred``), deliberately leaves next_fire_at
+        untouched so the *same* due occurrence retries on the next tick;
+        counting that audit-only row as "already recorded" would make this
+        scan advance the cursor past a due occurrence that never actually
+        ran, silently dropping it if the process dies before that retry.
         """
         async with self._read() as conn:
             row = (
                 await conn.execute(
                     text(
                         "SELECT 1 FROM schedule_runs "
-                        "WHERE schedule_id = :schedule_id AND fired_at >= :since LIMIT 1"
+                        "WHERE schedule_id = :schedule_id AND fired_at >= :since "
+                        "AND status != 'skipped' LIMIT 1"
                     ),
                     {"schedule_id": schedule_id, "since": since},
                 )

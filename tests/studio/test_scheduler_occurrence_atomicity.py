@@ -239,3 +239,67 @@ async def test_missed_fire_recovery_skips_occurrence_already_in_schedule_runs(
     assert len(runs) == 1
     assert schedule["next_fire_at"] is not None
     assert schedule["next_fire_at"] > due_at
+
+
+@pytest.mark.asyncio
+async def test_missed_fire_recovery_still_fires_past_capacity_deferred_skip(tmp_path, monkeypatch):
+    """(c2) A capacity-deferred fire (global concurrent-fire cap reached)
+    writes an audit-only 'skipped' schedule_run row via
+    _maybe_record_deferred() and deliberately leaves next_fire_at
+    untouched, so the same due occurrence retries on the next tick. If the
+    process restarts before that retry, the recovery scan must not mistake
+    this audit row for a genuine fire -- schedule_run_exists_since()
+    excludes status='skipped' rows precisely so this occurrence still gets
+    a real recovery fire instead of being silently cursor-advanced past.
+    """
+    import lionagi.state.db as state_db_mod
+
+    db_path = tmp_path / "state.db"
+    monkeypatch.setattr(state_db_mod, "DEFAULT_DB_PATH", db_path)
+
+    sid = "sched-c2"
+    due_at = 1000.0
+
+    async with StateDB(db_path) as db:
+        await db.create_schedule(
+            _schedule_row(sid, next_fire_at=due_at, missed_fire_policy="run_once")
+        )
+        # The capacity-deferred audit row: status='skipped', schedule_id
+        # cursor untouched (mirrors _maybe_record_deferred + create_skipped_run,
+        # which calls create_schedule_run() directly -- never
+        # create_schedule_run_and_advance() -- exactly so next_fire_at stays
+        # put for the retry).
+        await db.create_schedule_run(
+            _run_row(
+                "run-deferred",
+                sid,
+                fired_at=due_at,
+                status="skipped",
+                trigger_context={"deferred_capacity": True, "fired_at": due_at},
+            )
+        )
+
+    svc = _DBSchedulerStateService()
+    engine = SchedulerEngine(svc=svc)
+
+    with (
+        patch.object(engine, "_recover_missed_fire_run_once") as mock_recover,
+        patch.object(engine, "_record_missed_fire_skip") as mock_skip,
+    ):
+        await engine._check_missed_fires()
+
+    # The deferred-skip audit row must not be treated as "already fired":
+    # recovery proceeds through the normal missed_fire_policy branch
+    # instead of taking the already-recorded shortcut that would silently
+    # advance the cursor without ever firing this occurrence.
+    mock_recover.assert_called_once()
+    mock_skip.assert_not_called()
+
+    # Genuinely-fired rows are unaffected by the exclusion: a completed run
+    # still counts as "already recorded".
+    async with StateDB(db_path) as db:
+        await db.create_schedule_run(
+            _run_row("run-completed", sid, fired_at=due_at, status="completed")
+        )
+        exists = await db.schedule_run_exists_since(sid, since=due_at)
+    assert exists is True
