@@ -500,11 +500,14 @@ class MessageManager(Manager):
             else:
                 break
 
-    def to_chat_msgs(self, progression=None) -> list[dict]:
+    def to_chat_msgs(self, progression=None, *, _use_render_cache: bool = True) -> list[dict]:
         if progression == []:
             return []
         try:
-            return [self.messages[mid].chat_msg for mid in (progression or self.progression)]
+            return [
+                self.messages[mid]._chat_msg(use_render_cache=_use_render_cache)
+                for mid in (progression or self.progression)
+            ]
         except Exception as e:
             raise ValueError(
                 "One or more messages in the requested progression are invalid."

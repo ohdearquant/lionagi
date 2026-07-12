@@ -70,6 +70,7 @@ class InstructionContent(MessageContent):
         object.__setattr__(self, "_structure_instance", structure_inst)
         object.__setattr__(self, "images", images if images is not None else [])
         object.__setattr__(self, "image_detail", image_detail)
+        MessageContent.__post_init__(self)
 
     def to_dict(self, exclude: set[str] | frozenset[str] | None = None) -> dict[str, Any]:
         # Conditionally include response_format when its value is a plain dict
@@ -159,9 +160,9 @@ class InstructionContent(MessageContent):
             if valid:
                 structure_cls = _resolve_structure_cls(structure)
                 structure_inst = _build_structure(response_format, structure_cls)
-                object.__setattr__(inst, "response_format", response_format)
-                object.__setattr__(inst, "structure", structure_cls)
-                object.__setattr__(inst, "_structure_instance", structure_inst)
+                inst.response_format = response_format
+                inst.structure = structure_cls
+                inst._structure_instance = structure_inst
 
         return inst
 

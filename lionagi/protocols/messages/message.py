@@ -1,10 +1,12 @@
 # Copyright (c) 2023-2025, HaiyangLi <quantocean.li at gmail dot com>
 # SPDX-License-Identifier: Apache-2.0
 
-from dataclasses import dataclass
+from collections.abc import Callable
+from copy import deepcopy
+from dataclasses import dataclass, field
 from typing import Any, ClassVar
 
-from pydantic import Field, field_serializer, field_validator
+from pydantic import Field, PrivateAttr, field_serializer, field_validator
 
 from lionagi.ln.types import DataClass, ModelConfig
 
@@ -18,11 +20,180 @@ from .base import (
 )
 
 
+class _TrackedList(list):
+    """List that bumps its owning content revision after mutation."""
+
+    __slots__ = ("_touch",)
+
+    def __init__(self, values=(), touch: Callable[[], None] | None = None):
+        self._touch = touch
+        super().__init__(_track_mutable(value, touch) for value in values)
+
+    def _changed(self) -> None:
+        if self._touch is not None:
+            self._touch()
+
+    def append(self, value) -> None:
+        super().append(_track_mutable(value, self._touch))
+        self._changed()
+
+    def extend(self, values) -> None:
+        super().extend(_track_mutable(value, self._touch) for value in values)
+        self._changed()
+
+    def insert(self, index, value) -> None:
+        super().insert(index, _track_mutable(value, self._touch))
+        self._changed()
+
+    def __setitem__(self, index, value) -> None:
+        if isinstance(index, slice):
+            value = [_track_mutable(item, self._touch) for item in value]
+        else:
+            value = _track_mutable(value, self._touch)
+        super().__setitem__(index, value)
+        self._changed()
+
+    def __delitem__(self, index) -> None:
+        super().__delitem__(index)
+        self._changed()
+
+    def clear(self) -> None:
+        super().clear()
+        self._changed()
+
+    def pop(self, index=-1):
+        value = super().pop(index)
+        self._changed()
+        return value
+
+    def remove(self, value) -> None:
+        super().remove(value)
+        self._changed()
+
+    def reverse(self) -> None:
+        super().reverse()
+        self._changed()
+
+    def sort(self, *args, **kwargs) -> None:
+        super().sort(*args, **kwargs)
+        self._changed()
+
+    def __iadd__(self, values):
+        self.extend(values)
+        return self
+
+    def __imul__(self, value):
+        super().__imul__(value)
+        self._changed()
+        return self
+
+
+class _TrackedDict(dict):
+    """Dict that bumps its owning content revision after mutation."""
+
+    __slots__ = ("_touch",)
+
+    def __init__(self, values=(), touch: Callable[[], None] | None = None, **kwargs):
+        self._touch = touch
+        super().__init__()
+        self.update(values, **kwargs)
+
+    def _changed(self) -> None:
+        if self._touch is not None:
+            self._touch()
+
+    def __setitem__(self, key, value) -> None:
+        super().__setitem__(key, _track_mutable(value, self._touch))
+        self._changed()
+
+    def __delitem__(self, key) -> None:
+        super().__delitem__(key)
+        self._changed()
+
+    def clear(self) -> None:
+        super().clear()
+        self._changed()
+
+    def pop(self, key, *args):
+        value = super().pop(key, *args)
+        self._changed()
+        return value
+
+    def popitem(self):
+        value = super().popitem()
+        self._changed()
+        return value
+
+    def setdefault(self, key, default=None):
+        if key in self:
+            return super().setdefault(key, default)
+        value = _track_mutable(default, self._touch)
+        super().__setitem__(key, value)
+        self._changed()
+        return value
+
+    def update(self, *args, **kwargs) -> None:
+        values = dict(*args, **kwargs)
+        for key, value in values.items():
+            dict.__setitem__(self, key, _track_mutable(value, self._touch))
+        if values:
+            self._changed()
+
+    def __ior__(self, values):
+        self.update(values)
+        return self
+
+
+def _track_mutable(value: Any, touch: Callable[[], None] | None) -> Any:
+    """Copy mutable render inputs into revision-aware containers."""
+    if isinstance(value, _TrackedList):
+        value = list(value)
+    elif isinstance(value, _TrackedDict):
+        value = dict(value)
+
+    if isinstance(value, list):
+        return _TrackedList(value, touch)
+    if isinstance(value, dict):
+        return _TrackedDict(value, touch)
+    return value
+
+
 @dataclass(slots=True)
 class MessageContent(DataClass):
     """A base class for message content structures."""
 
     _config: ClassVar[ModelConfig] = ModelConfig(none_as_sentinel=True)
+    _revision: int = field(default=0, init=False, repr=False, compare=False)
+
+    def __setattr__(self, name: str, value: Any) -> None:
+        track_mutation = not name.startswith("_") and hasattr(self, "_revision")
+        if not name.startswith("_"):
+            value = _track_mutable(value, self._touch_revision)
+        object.__setattr__(self, name, value)
+        if track_mutation:
+            self._touch_revision()
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "_revision", 0)
+        DataClass.__post_init__(self)
+        self._track_render_inputs()
+        object.__setattr__(self, "_revision", 0)
+
+    def _track_render_inputs(self) -> None:
+        for name in self.allowed():
+            object.__setattr__(
+                self,
+                name,
+                _track_mutable(getattr(self, name), self._touch_revision),
+            )
+
+    def _touch_revision(self) -> None:
+        object.__setattr__(self, "_revision", self._revision + 1)
+
+    @property
+    def _render_revision(self) -> int:
+        """Internal revision used to invalidate rendered-message cache entries."""
+        return self._revision
 
     @property
     def rendered(self) -> str:
@@ -45,6 +216,7 @@ class Message(Node, Sendable):
     _content_type: ClassVar[type] = MessageContent
 
     content: Any = None
+    _render_cache: dict[str, tuple[Any, int, Any]] = PrivateAttr(default_factory=dict)
 
     @field_validator("content", mode="before")
     @classmethod
@@ -108,11 +280,38 @@ class Message(Node, Sendable):
     @property
     def chat_msg(self) -> dict[str, Any] | None:
         """A dictionary representation typically used in chat-based contexts."""
+        return self._chat_msg()
+
+    def _chat_msg(self, *, use_render_cache: bool = True) -> dict[str, Any] | None:
+        """Build a provider chat message, reusing the stable content rendering when safe."""
         try:
             role_str = self.role.value if isinstance(self.role, MessageRole) else str(self.role)
-            return {"role": role_str, "content": self.rendered}
+            return {
+                "role": role_str,
+                "content": self._render_cached("chat", lambda: self.rendered)
+                if use_render_cache
+                else self.rendered,
+            }
         except Exception:
             return None
+
+    def _render_cached(self, variant: str, render: Callable[[], Any]) -> Any:
+        """Return a rendering cached by content identity and revision.
+
+        The entry retains the content object itself and is served only when
+        the stored content IS the current content: an id()-based key could
+        cross-wire two content objects whose lifetimes never overlap but
+        happen to reuse the same address.
+        """
+        content = self.content
+        revision = getattr(content, "_render_revision", 0)
+        cached = self._render_cache.get(variant)
+        if cached is not None and cached[0] is content and cached[1] == revision:
+            return _copy_rendered(cached[2])
+
+        rendered = render()
+        self._render_cache[variant] = (content, revision, _copy_rendered(rendered))
+        return rendered
 
     @property
     def rendered(self) -> str:
@@ -150,6 +349,13 @@ class Message(Node, Sendable):
         if isinstance(msg_, dict) and isinstance(msg_["content"], list):
             return [i for i in msg_["content"] if i["type"] == "image_url"]
         return None
+
+
+def _copy_rendered(rendered: Any) -> Any:
+    """Keep cached structured content isolated from provider-side mutation."""
+    if isinstance(rendered, list | dict):
+        return deepcopy(rendered)
+    return rendered
 
 
 RoledMessage = Message
