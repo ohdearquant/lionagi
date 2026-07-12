@@ -103,7 +103,7 @@ async def _list_shows_db() -> list[dict[str, Any]]:
             "path": public_path(Path(row["show_dir"])),
             "play_count": row["play_count"],
             "latest_status": row["status"],
-            # ADR-0011: status_source is derived in code, not a DB column
+            # ADR-0077: status_source is derived in code, not a DB column
             # (schema migration deferred). db rows -> "sqlite".
             "status_source": "sqlite",
             "last_update": row["latest_play_update"] or row["updated_at"],
@@ -238,7 +238,7 @@ async def get_show(topic: str) -> dict[str, Any] | None:
     else:
         plays = []
 
-    # ADR-0011: same status_source derivation as list_shows().
+    # ADR-0077: same status_source derivation as list_shows().
     status_source = "sqlite" if show_row else "filesystem"
 
     return {
@@ -527,7 +527,7 @@ _SHOW_DONE_STABLE_SECS = 60.0
 async def watch_show(topic: str) -> AsyncGenerator[str]:
     """SSE stream of file changes under a show directory.
 
-    ADR-0006: emits ``{"type":"done"}`` once the show is terminal and stable
+    ADR-0076: emits ``{"type":"done"}`` once the show is terminal and stable
     for 60s, or immediately if the show directory doesn't exist.
     """
     try:
@@ -589,7 +589,7 @@ async def list_shows_route() -> list[dict[str, Any]]:
     return await list_shows()
 
 
-# ADR-0011: state-mutating (INSERT OR IGNORE), so POST not GET. The CLI
+# ADR-0077: state-mutating (INSERT OR IGNORE), so POST not GET. The CLI
 # maintenance command (`li state import-shows`) is canonical; this route is
 # a Studio convenience trigger.
 @studio_route(

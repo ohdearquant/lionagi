@@ -149,7 +149,7 @@ def _extract_message_text(msg: dict) -> str:
 
 
 def _load_saved_artifact_text(session_row: dict) -> str | None:
-    """ADR-0094 completion contract step 1: a produced artifact/summary, verbatim."""
+    """ADR-0035 completion contract step 1: a produced artifact/summary, verbatim."""
     contract = session_row.get("artifact_contract_json")
     artifacts_root = session_row.get("artifacts_path")
     if not contract or not artifacts_root:

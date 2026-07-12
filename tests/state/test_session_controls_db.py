@@ -1,7 +1,7 @@
 # Copyright (c) 2023-2026, HaiyangLi <quantocean.li at gmail dot com>
 # SPDX-License-Identifier: Apache-2.0
 
-"""Tests for StateDB session_controls CRUD (ADR-0085 part 1: run control plane transport)."""
+"""Tests for StateDB session_controls CRUD (ADR-0069 D1: live-control transport)."""
 
 from __future__ import annotations
 

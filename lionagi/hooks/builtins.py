@@ -1,6 +1,6 @@
 # Copyright (c) 2023-2026, HaiyangLi <quantocean.li at gmail dot com>
 # SPDX-License-Identifier: Apache-2.0
-"""ADR-0023 built-in handlers wired to ADR-0019/0020/0022 persistence helpers."""
+"""ADR-0047 built-in handlers wired to StateDB persistence helpers."""
 
 from __future__ import annotations
 
@@ -41,7 +41,7 @@ async def persist_session_start(
     invocation_id: str | None = None,
     **_unused: Any,
 ) -> None:
-    """Write the ADR-0022 provenance set + open the lifecycle window."""
+    """Write the session provenance set + open the lifecycle window."""
     from lionagi.state.db import SESSION_TERMINAL_STATUSES
     from lionagi.state.reasons import RunReasons
 
@@ -164,7 +164,7 @@ async def persist_branch_provenance(
     agent_name: str | None = None,
     **_unused: Any,
 ) -> None:
-    """ADR-0022 per-branch model / provider / agent_name."""
+    """Persist per-branch model / provider / agent_name provenance."""
     db = await _db()
     await db.update_branch(
         branch_id,
@@ -185,7 +185,7 @@ async def persist_message(
     progression_id: str | None = None,
     **_unused: Any,
 ) -> None:
-    """ADR-0019 + ADR-0009 message persistence; ``progression_id`` is a legacy alias."""
+    """Persist a message; ``progression_id`` is a legacy alias."""
     effective_branch_prog = branch_progression_id or progression_id
 
     db = await _db()

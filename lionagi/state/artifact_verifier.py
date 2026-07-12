@@ -1,6 +1,6 @@
 # Copyright (c) 2023-2026, HaiyangLi <quantocean.li at gmail dot com>
 # SPDX-License-Identifier: Apache-2.0
-"""ADR-0029: Artifact contract validation and verification."""
+"""ADR-0064: Artifact contract validation and verification."""
 
 from __future__ import annotations
 
@@ -15,7 +15,7 @@ from lionagi.libs.path_safety import GLOB_CHARS as _GLOB_CHARS
 _ARTIFACT_ID_RE = re.compile(r"^[A-Za-z0-9_-]+$")
 _VALIDATION_ROOT = os.path.realpath("/tmp/__contract_validate__")  # noqa: S108 — synthetic root for path-validation only, never written to
 
-# ADR-0029 §2: v1 entry fields. `kind`, `min_size`, `mime_type` are
+# ADR-0064 D3: v1 entry fields. `kind`, `min_size`, `mime_type` are
 # reserved for v1.1 — silently accepting them now would let contract
 # files drift into looking stricter than the executor actually is.
 # Both the `li play check` pre-flight AND the real `li play` runtime
@@ -82,7 +82,7 @@ def warn_unknown_artifact_keys(
     source: str = "playbook",
     emit: Any = None,
 ) -> list[str]:
-    """Warn about unrecognized subfields in expected[] entries (ADR-0029 v1.1-reserved fields); returns messages."""
+    """Warn about unrecognized subfields in expected[] entries (ADR-0064 v1.1-reserved fields); returns messages."""
     if contract is None:
         return []
     expected = contract.get("expected") or []

@@ -1,6 +1,6 @@
 # Copyright (c) 2023-2026, HaiyangLi <quantocean.li at gmail dot com>
 # SPDX-License-Identifier: Apache-2.0
-"""Tests for `li dispatch` — direct-DB read/ack, no daemon required (ADR-0092)."""
+"""Tests for `li dispatch` — direct-DB read/ack, no daemon required (ADR-0059)."""
 
 from __future__ import annotations
 

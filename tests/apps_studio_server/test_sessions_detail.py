@@ -460,7 +460,7 @@ async def test_list_sessions_single_session_correct_fields(patched_sessions_db):
 
 
 async def test_list_sessions_surfaces_status_reason(patched_sessions_db):
-    """ADR-0028: list_sessions must carry the reason fields the detail path does."""
+    """ADR-0057: list_sessions must carry the reason fields the detail path does."""
     svc, db_path = patched_sessions_db
     await seed_session(db_path, session_id="sess-failed", status="running")
     from lionagi.state.db import StateDB

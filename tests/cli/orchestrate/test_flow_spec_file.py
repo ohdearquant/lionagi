@@ -694,7 +694,7 @@ class TestPlaybookEndToEnd:
         assert code == 1
 
 
-# ── ADR-0029: artifacts: block pass-through ───────────────────────────────────
+# ── ADR-0064: artifacts: block pass-through ───────────────────────────────────
 
 
 class TestPlaybookArtifactsPassThrough:

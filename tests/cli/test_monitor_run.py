@@ -1429,14 +1429,14 @@ def test_run_monitor_wait_empty_string_token_rejected_as_usage_error():
 # ── CLI wiring: `li monitor run --help` / `li monitor --help` subprocess ────
 
 
-# ── ADR-0094 regression: `li monitor run` output format is untouched ───────
+# ── ADR-0035 regression: `li monitor run` output format is untouched ───────
 
 
 @pytest.mark.asyncio
 async def test_monitor_run_output_format_byte_identical_after_adr_0094(
     temp_db_path: Path, capsys: pytest.CaptureFixture
 ) -> None:
-    """The new `li wait` verb (ADR-0094) must not change a single byte of
+    """The new `li wait` verb (ADR-0035) must not change a single byte of
     `li monitor run`'s own line format — it is a distinct contract
     (`name=`/`chain_depth=`, no `reason=`/`artifact_dir=`)."""
     async with StateDB() as db:
@@ -1709,7 +1709,7 @@ async def test_dispatch_wait_reconciliation_never_flips_an_already_terminal_row(
 ) -> None:
     """A profile row that is ALREADY terminal ('failed') must never be
     force-reconciled to a *different* terminal status the linked engine
-    later reports ('completed') -- ADR-0094's terminal guard rejects that
+    later reports ('completed') -- ADR-0035's terminal guard rejects that
     write, and `li monitor run` must report the persisted 'failed' status
     (the terminal row is authoritative) instead of crashing on the
     rejected transition."""
@@ -1775,7 +1775,7 @@ async def test_effective_session_status_cas_mismatch_reports_persisted_status(
     `TransitionRejectedError`) when the persisted row simply no longer matches
     `expected_statuses` at write time -- e.g. it moved between our stale read
     and this write, but the guard rejects on the CAS mismatch before it ever
-    reaches ADR-0094's terminal check. `_effective_session_status()` must not
+    reaches ADR-0035's terminal check. `_effective_session_status()` must not
     ignore that `False` and fall through to the synthesized linked-engine
     status; it must re-read and report the persisted row instead."""
     from lionagi import Branch

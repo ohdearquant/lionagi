@@ -28,7 +28,7 @@ async def old_schema_db():
     async with aiosqlite.connect(":memory:") as db:
         db.row_factory = aiosqlite.Row
         await db.execute("PRAGMA journal_mode=WAL")
-        # sessions: bare-minimum columns from the ADR-0017 era
+        # sessions: bare-minimum columns from the ADR-0057 era
         await db.execute("""
             CREATE TABLE sessions (
                 id           TEXT PRIMARY KEY,
@@ -186,7 +186,7 @@ async def test_reconcile_is_idempotent(old_schema_db):
 
 
 async def test_sessions_upgrade_path_populates_adr0028_columns(old_schema_db):
-    """After upgrade, sessions table has the ADR-0028 status-reason columns."""
+    """After upgrade, sessions table has the ADR-0057 status-reason columns."""
     db = old_schema_db
 
     # Perform migration
@@ -201,7 +201,7 @@ async def test_sessions_upgrade_path_populates_adr0028_columns(old_schema_db):
                 await db.execute(f"ALTER TABLE {table} ADD COLUMN {name} {defn}")
     await db.commit()
 
-    # Insert a row and write to the ADR-0028 columns
+    # Insert a row and write to the ADR-0057 columns
     await db.execute(
         "INSERT INTO sessions (id, created_at, progression_id,"
         " status_reason_code, status_reason_summary, status_evidence_refs)"
@@ -222,7 +222,7 @@ async def test_sessions_upgrade_path_populates_adr0028_columns(old_schema_db):
 
 
 async def test_schedule_runs_upgrade_path(old_schema_db):
-    """After upgrade, schedule_runs has updated_at and ADR-0028 reason columns."""
+    """After upgrade, schedule_runs has updated_at and ADR-0057 reason columns."""
     db = old_schema_db
 
     for table, columns in MIGRATION_COLUMNS.items():

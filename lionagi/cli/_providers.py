@@ -244,7 +244,7 @@ def add_common_cli_args(parser: argparse.ArgumentParser) -> None:
             "accordingly."
         ),
     )
-    # ADR-0020: opt-in skill-orchestration grouping. Set by a skill via
+    # Opt-in skill-orchestration grouping. Set by a skill via
     # ``li invoke start``; threaded through to the session row so the
     # Studio /invocations page can show 14 sessions under one /show row.
     parser.add_argument(

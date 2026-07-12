@@ -1,4 +1,4 @@
-"""Tests for ADR-0029 artifact_defaults in AgentProfile frontmatter."""
+"""Tests for ADR-0064 artifact_defaults in AgentProfile frontmatter."""
 
 from __future__ import annotations
 

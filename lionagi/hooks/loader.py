@@ -1,6 +1,6 @@
 # Copyright (c) 2023-2026, HaiyangLi <quantocean.li at gmail dot com>
 # SPDX-License-Identifier: Apache-2.0
-"""ADR-0023 hook registry + agent-YAML loader; profile overrides replace defaults per point."""
+"""ADR-0047 hook registry + agent-YAML loader; profile overrides replace defaults per point."""
 
 from __future__ import annotations
 
@@ -21,7 +21,7 @@ __all__ = (
     "build_session_bus",
 )
 
-# Default wiring per ADR-0023 §"Default hooks (no configuration needed)".
+# Default wiring per ADR-0047 D3.
 DEFAULT_HOOKS: dict[HookPoint, list[HookHandler]] = {
     HookPoint.SESSION_START: [_builtins.persist_session_start],
     HookPoint.SESSION_END: [_builtins.persist_session_end],
@@ -82,7 +82,7 @@ def build_session_bus(
     *,
     observer: Any = None,
 ) -> HookBus:
-    """Construct a per-session HookBus with defaults merged with profile overrides (ADR-0023)."""
+    """Construct a per-session HookBus with defaults merged with profile overrides (ADR-0047)."""
     bus = HookBus(observer=observer)
     overrides = load_hooks_for_agent(agent_hooks)
 

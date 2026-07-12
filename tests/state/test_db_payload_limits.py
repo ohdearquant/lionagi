@@ -1,7 +1,7 @@
 # Copyright (c) 2023-2026, HaiyangLi <quantocean.li at gmail dot com>
 # SPDX-License-Identifier: Apache-2.0
 
-"""Payload-shape regression tests for StateDB.insert_message — pins ADR-0009 NOT NULL invariants and verifies large payload roundtrip up to ~1MB."""
+"""Payload-shape regression tests for StateDB.insert_message — pins NOT NULL invariants and verifies large payload roundtrip up to ~1MB."""
 
 from __future__ import annotations
 
@@ -37,18 +37,18 @@ def _base_msg(**overrides) -> dict:
     return msg
 
 
-# ── Required-field rejection (ADR-0009 invariants) ───────────────────────────
+# ── Required-field rejection ─────────────────────────────────────────────────
 
 
 async def test_insert_message_rejects_null_content(db: StateDB):
-    """ADR-0009: content is NOT NULL; ValueError raised before reaching SQLite to prevent INSERT OR IGNORE from silently swallowing the violation."""
+    """content is NOT NULL; ValueError is raised before SQLite can silently swallow the violation through INSERT OR IGNORE."""
     msg = _base_msg(content=None)
     with pytest.raises(ValueError, match="content is NOT NULL"):
         await db.insert_message(msg)
 
 
 async def test_insert_message_rejects_empty_role(db: StateDB):
-    """ADR-0009: role must be a non-empty string."""
+    """role must be a non-empty string."""
     msg = _base_msg(role="")
     with pytest.raises(ValueError, match="role must be a non-empty string"):
         await db.insert_message(msg)

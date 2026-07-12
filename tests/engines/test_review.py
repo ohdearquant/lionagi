@@ -114,7 +114,7 @@ async def test_verdict_reads_issues_from_store():
     assert "X-issue" in captured["instruction"]
 
 
-# -- emission repair (ADR-0077 §3) -------------------------------------------
+# -- emission repair (ADR-0034 §3) -------------------------------------------
 
 
 @pytest.mark.asyncio

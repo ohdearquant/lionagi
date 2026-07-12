@@ -1,6 +1,6 @@
 # Copyright (c) 2023-2026, HaiyangLi <quantocean.li at gmail dot com>
 # SPDX-License-Identifier: Apache-2.0
-"""Unit tests for `_apply_session_control` (ADR-0085 part 1 control poller).
+"""Unit tests for `_apply_session_control` (ADR-0069 D1–D3 control poller).
 
 Drives apply/stamp ordering per verb class against a real StateDB (for the
 finalize/mark-applying side effects) and a minimal fake executor (pause/

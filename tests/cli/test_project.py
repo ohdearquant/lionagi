@@ -1,7 +1,7 @@
 # Copyright (c) 2023-2026, HaiyangLi <quantocean.li at gmail dot com>
 # SPDX-License-Identifier: Apache-2.0
 
-"""Tests for ADR-0026 project detection (lionagi/cli/_project.py)."""
+"""Tests for ADR-0063 project detection (lionagi/cli/_project.py)."""
 
 from __future__ import annotations
 

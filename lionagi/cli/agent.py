@@ -555,7 +555,7 @@ async def _run_agent(
         # Known before teardown runs: an auto-resume leg is about to fire on
         # this same session, so this leg's teardown must not stamp a terminal
         # status the resumed leg would then be blocked from overwriting by
-        # the ADR-0094 terminal guard.
+        # the ADR-0035 terminal guard.
         will_auto_resume = (
             _terminal_status == "timed_out" and resume_on_timeout and not _auto_resumed
         )

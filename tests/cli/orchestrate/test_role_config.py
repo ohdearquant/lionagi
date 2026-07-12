@@ -1,7 +1,7 @@
 # Copyright (c) 2023-2026, HaiyangLi <quantocean.li at gmail dot com>
 # SPDX-License-Identifier: Apache-2.0
 
-"""ADR-0074 wiring: pack-backed mode resolution + casts role/mode composition."""
+"""ADR-0043 wiring: pack-backed mode resolution + casts role/mode composition."""
 
 from __future__ import annotations
 

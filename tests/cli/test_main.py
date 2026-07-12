@@ -34,7 +34,7 @@ def test_handle_play_shortcut_passthrough_for_non_play():
     assert result == argv
 
 
-# ─── ADR-0029 §9: `li play check` pre-flight artifact contract ───
+# ─── ADR-0064 D3: `li play check` pre-flight artifact contract ───
 
 
 def test_play_check_no_args_prints_usage(capsys):
