@@ -56,7 +56,6 @@ class InstructionContent(MessageContent):
         structure: type | str | None = None,
     ):
         structure_cls = _resolve_structure_cls(structure)
-        structure_inst = _build_structure(response_format, structure_cls)
 
         object.__setattr__(self, "instruction", instruction)
         object.__setattr__(self, "guidance", guidance)
@@ -67,9 +66,49 @@ class InstructionContent(MessageContent):
         object.__setattr__(self, "tool_schemas", tool_schemas if tool_schemas is not None else [])
         object.__setattr__(self, "response_format", response_format)
         object.__setattr__(self, "structure", structure_cls)
-        object.__setattr__(self, "_structure_instance", structure_inst)
+        object.__setattr__(self, "_structure_instance", None)
         object.__setattr__(self, "images", images if images is not None else [])
         object.__setattr__(self, "image_detail", image_detail)
+        MessageContent.__post_init__(self)
+        # Build the structure from the tracked copy, not the caller's dict: a
+        # structure holding the caller's alias would let external mutation
+        # change the rendering without advancing the content revision.
+        object.__setattr__(
+            self, "_structure_instance", _build_structure(self.response_format, structure_cls)
+        )
+
+    def __getstate__(self) -> tuple[Any, Any]:
+        # The private structure may cache a dynamically created request-model
+        # class that cannot be serialized; it is disposable state, excluded
+        # here and rebuilt from the restored public fields in __setstate__.
+        import dataclasses
+
+        slots: dict[str, Any] = {}
+        for f in dataclasses.fields(self):
+            if f.name == "_structure_instance":
+                continue
+            try:
+                slots[f.name] = getattr(self, f.name)
+            except AttributeError:
+                continue
+        return (None, slots)
+
+    def __setstate__(self, state: tuple[Any, Any]) -> None:
+        # Restore copied/unpickled state through __setattr__ so mutable render
+        # inputs are re-wrapped, then rebuild the private structure from the
+        # restored response_format: keeping the copied structure would leave
+        # the renderer reading a dict detached from the restored public field.
+        dict_state, slots_state = state
+        for source in (dict_state, slots_state):
+            if not source:
+                continue
+            for name, value in source.items():
+                setattr(self, name, value)
+        object.__setattr__(
+            self,
+            "_structure_instance",
+            _build_structure(self.response_format, _resolve_structure_cls(self.structure)),
+        )
 
     def to_dict(self, exclude: set[str] | frozenset[str] | None = None) -> dict[str, Any]:
         # Conditionally include response_format when its value is a plain dict
@@ -158,10 +197,9 @@ class InstructionContent(MessageContent):
             )
             if valid:
                 structure_cls = _resolve_structure_cls(structure)
-                structure_inst = _build_structure(response_format, structure_cls)
-                object.__setattr__(inst, "response_format", response_format)
-                object.__setattr__(inst, "structure", structure_cls)
-                object.__setattr__(inst, "_structure_instance", structure_inst)
+                inst.response_format = response_format
+                inst.structure = structure_cls
+                inst._structure_instance = _build_structure(inst.response_format, structure_cls)
 
         return inst
 

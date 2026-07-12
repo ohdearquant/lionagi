@@ -68,6 +68,7 @@ async def _setup_run_persist(
         "session_prog_id": session_prog_id,
         "branch_prog_ids": {},
         "hooks": [],
+        "message_retry_queues": [],
     }
     session.observer.bind_db_persistence(session_id, db=db)
     for branch in session.branches:
@@ -84,11 +85,12 @@ async def _teardown_run_persist(
     if ctx is None:
         return status
 
-    from lionagi.cli._runs import _teardown_common
+    from lionagi.cli._runs import _flush_pending_message_events, _teardown_common
     from lionagi.hooks import unroute_message_persistence
 
     db = ctx["db"]
     try:
+        await _flush_pending_message_events(ctx)
         final_status = await _teardown_common(
             db,
             session_id=ctx["session_id"],

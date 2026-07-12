@@ -734,6 +734,7 @@ async def setup_orchestration_persist(
             "session_prog_id": session_prog_id,
             "branch_prog_ids": {},
             "hooks": [],
+            "message_retry_queues": [],
             "artifacts_path": artifacts_path,
             "artifact_contract": artifact_contract,
             "identity_markers": _identity_markers,
@@ -838,6 +839,7 @@ def register_branch_hook(ctx: dict[str, Any], branch: Any) -> None:
         branch_prog_id,
         session_prog_id,
         on_first_msg=_ensure_branch_row,
+        message_retry_queues=ctx["message_retry_queues"],
     )
 
     from lionagi.hooks import route_message_persistence

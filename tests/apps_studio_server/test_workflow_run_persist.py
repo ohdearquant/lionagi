@@ -190,3 +190,57 @@ async def test_default_branch_op_with_no_predecessor_is_not_cloned(patched_env):
     )
 
     assert created_branches == []
+
+
+async def test_transient_only_message_failure_flushes_before_completion_evidence(patched_env):
+    """A transient persistence failure on the run's only message must be
+    retained and flushed by `_teardown_run_persist` before the session
+    progression is read for completion evidence, so the run does not tear
+    down as `completed_empty`."""
+    db_path = patched_env
+
+    from sqlalchemy import event
+
+    from lionagi.session.session import Session
+    from lionagi.studio.services.workflow_run import (
+        _setup_run_persist,
+        _teardown_run_persist,
+    )
+
+    mock_branch = _mock_chat_branch()
+    session = Session(default_branch=mock_branch)
+
+    ctx = await _setup_run_persist(session, invocation_kind="flow")
+    db = ctx["db"]
+    progression_updates = 0
+
+    def fail_second_progression(conn, cursor, statement, parameters, context, executemany):
+        nonlocal progression_updates
+        if statement.lstrip().startswith("UPDATE progressions"):
+            progression_updates += 1
+            if progression_updates == 2:
+                raise RuntimeError("injected middle progression failure")
+
+    event.listen(db._engine.sync_engine, "before_cursor_execute", fail_second_progression)
+    try:
+        only_message = await mock_branch.msgs.a_add_message(assistant_response="durable answer")
+    finally:
+        event.remove(db._engine.sync_engine, "before_cursor_execute", fail_second_progression)
+
+    assert await db.get_progression(ctx["session_prog_id"]) == []
+    assert ctx["message_retry_queues"][0].pending_count == 1
+
+    await _teardown_run_persist(ctx, status="completed", exception=None)
+
+    from lionagi.state.db import StateDB
+
+    check_db = StateDB(db_path)
+    await check_db.open()
+    try:
+        session_progression = await check_db.get_progression(ctx["session_prog_id"])
+        session_row = await check_db.get_session(ctx["session_id"])
+    finally:
+        await check_db.close()
+    assert session_progression == [str(only_message.id)]
+    assert session_row["status"] == "completed"
+    assert session_row["status_reason_code"] != "run.completed_empty.no_evidence"
