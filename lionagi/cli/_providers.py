@@ -220,7 +220,8 @@ def add_common_cli_args(parser: argparse.ArgumentParser) -> None:
         help=(
             "Override effort (overrides spec suffix). "
             "claude: low|medium|high|xhigh|max. "
-            "codex: none|minimal|low|medium|high|xhigh. "
+            "codex: none|minimal|low|medium|high|xhigh|max|ultra "
+            "(max/ultra clamp per model support). "
             "gemini-code/gemini-cli: folded into --model as Low|Medium|High "
             "(Gemini 3.1 Pro has no Medium)."
         ),
