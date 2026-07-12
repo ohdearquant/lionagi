@@ -25,6 +25,21 @@ row with ``persistence="required"`` must name a ``persistence_evidence`` node
 id backed by a real StateDB write. Both are validated against real source
 (not just checked for non-emptiness), so a stale or nonexistent reference
 fails the suite instead of reading as coverage.
+
+Known limitation of the delegation-test-id mechanism:
+``test_every_delegation_test_id_resolves_to_a_real_test_function`` only
+proves the named node id resolves to a real top-level test function in the
+right module — it does not read what that test's body actually asserts, so
+a row can cite a real, passing test that asserts an entirely different
+relationship (this is exactly how the studio-engine-node row's prior
+``EngineRun.run_dag`` claim went unnoticed: the cited coding-engine test is
+real and passing, but only ever exercises ``engine.run``, never
+``run_dag``). ``test_every_delegation_test_source_mentions_its_expected_target``
+adds a loud but weak structural companion — a substring check that the
+cited test's own source at least mentions a token drawn from
+``expected_target`` — which would have caught that exact drift. It is a
+necessary-not-sufficient tripwire, not a substitute for reading the cited
+test yourself before trusting a manifest row.
 """
 
 from __future__ import annotations
@@ -32,6 +47,7 @@ from __future__ import annotations
 import argparse
 import ast
 import inspect
+import re
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal
@@ -170,10 +186,11 @@ GRAPH_SURFACES: tuple[GraphSurface, ...] = (
         role="adapter",
         expected_target="env.session.flow",
         persistence="required",
-        reason="CLI fan-out; opens/binds live-persist StateDB state before submitting the graph",
+        reason="CLI fan-out; the owning wrapper _run_fanout opens/binds live-persist StateDB state "
+        "via its own start_live_persist call before _run_fanout_inner submits the graph",
         persistence_evidence=(
-            "tests/cli/orchestrate/test_live_persist.py::"
-            "test_start_creates_session_and_registers_hook_on_orc_branch"
+            "tests/operations/test_graph_entrypoint_conformance.py::"
+            "test_run_fanout_persists_session_via_start_live_persist"
         ),
         delegation_test=(
             "tests/operations/test_graph_entrypoint_conformance.py::"
@@ -187,10 +204,12 @@ GRAPH_SURFACES: tuple[GraphSurface, ...] = (
         role="adapter",
         expected_target="EngineRun.run_dag",
         persistence="required",
-        reason="CLI flow execution phase; drives the planning engine's run_dag over the built DAG",
+        reason="CLI flow execution phase; the owning wrapper _run_flow opens/binds live-persist "
+        "StateDB state via its own start_live_persist call before _execute_dag drives the "
+        "planning engine's run_dag over the built DAG",
         persistence_evidence=(
-            "tests/cli/orchestrate/test_live_persist.py::"
-            "test_start_creates_session_and_registers_hook_on_orc_branch"
+            "tests/operations/test_graph_entrypoint_conformance.py::"
+            "test_run_flow_persists_session_via_start_live_persist"
         ),
         delegation_test=(
             "tests/operations/test_graph_entrypoint_conformance.py::"
@@ -288,10 +307,14 @@ GRAPH_SURFACES: tuple[GraphSurface, ...] = (
         symbol="lionagi.studio.services.workflow_compile.make_engine_operation",
         location=None,
         role="alias",
-        expected_target="EngineRun.run_dag",
+        expected_target="engine.run",
         persistence="inherited",
-        reason="registers the 'engine' operation consumed by run-workflow-def; the DAG hop this node "
-        "takes is covered by planning-engine-run and engine-run-dag",
+        reason="registers the 'engine' operation consumed by run-workflow-def; production "
+        "make_engine_operation resolves whichever engine kind the node names and calls "
+        "engine.run(...) generically (lionagi/studio/services/workflow_compile.py:613-643) — "
+        "the cited test drives a coding-kind engine through exactly that dispatch. Only the "
+        "planning kind's engine.run subsequently reaches EngineRun.run_dag, and that further hop "
+        "is covered separately by planning-engine-run and engine-run-dag, not by this row",
         delegation_test=(
             "tests/apps_studio_server/test_workflow_run.py::"
             "test_workflow_run_node_cwd_reaches_engine_invocation"
@@ -423,15 +446,41 @@ def _collect_kernel_import_bindings(tree: ast.AST) -> set[str]:
     return bound
 
 
+def _collect_constructor_import_bindings(tree: ast.AST) -> dict[str, str]:
+    """Local alias -> canonical name for any `from ... import
+    <ConstructorSinkName> [as alias]` in *tree*, regardless of which module
+    path it is re-exported from (``Graph`` in particular is re-exported from
+    several ``lionagi.protocols.*`` modules, so this deliberately does not
+    filter by source module the way ``_collect_kernel_import_bindings``
+    does). Closes the aliased-constructor gap: `from lionagi.operations.flow
+    import DependencyAwareExecutor as GraphRunner` followed by
+    `GraphRunner(...).execute()` must be recognized as constructing
+    ``DependencyAwareExecutor`` even though the call site only ever mentions
+    the local alias."""
+    bound: dict[str, str] = {}
+    for node in ast.walk(tree):
+        if isinstance(node, ast.ImportFrom):
+            for alias in node.names:
+                if alias.name in _CONSTRUCTOR_SINK_NAMES:
+                    bound[alias.asname or alias.name] = alias.name
+    return bound
+
+
 class _SinkVisitor(ast.NodeVisitor):
     """Attributes qualified `.flow`/`.flow_stream`/`.run_dag` calls, bare
     calls to a locally-imported kernel function, and
-    OperationGraphBuilder/executor/Graph construction calls to the innermost
-    enclosing function or method (dotted "Class.method" or "function")."""
+    OperationGraphBuilder/executor/Graph construction calls (including
+    through an aliased import) to the innermost enclosing function or method
+    (dotted "Class.method" or "function")."""
 
-    def __init__(self, kernel_names: set[str] = frozenset()) -> None:
+    def __init__(
+        self,
+        kernel_names: set[str] = frozenset(),
+        constructor_aliases: dict[str, str] = None,  # type: ignore[assignment]
+    ) -> None:
         self._stack: list[str] = []
         self._kernel_names = kernel_names
+        self._constructor_aliases = constructor_aliases or {}
         self.hits: dict[str, set[str]] = {}
         self.linenos: dict[str, int] = {}
         self.executor_hits: set[str] = set()
@@ -473,6 +522,13 @@ class _SinkVisitor(ast.NodeVisitor):
                 node.lineno,
                 is_executor=func.id in _EXECUTOR_CONSTRUCTOR_NAMES,
             )
+        elif isinstance(func, ast.Name) and func.id in self._constructor_aliases:
+            canonical = self._constructor_aliases[func.id]
+            self._record(
+                f"constructs {canonical}() (imported as {func.id})",
+                node.lineno,
+                is_executor=canonical in _EXECUTOR_CONSTRUCTOR_NAMES,
+            )
         elif isinstance(func, ast.Attribute) and func.attr in _CONSTRUCTOR_SINK_NAMES:
             self._record(
                 f"constructs {func.attr}()",
@@ -504,7 +560,8 @@ def discover_call_and_construct_sites(root: Path, *, base: Path = REPO_ROOT) -> 
         rel = path.relative_to(base).as_posix()
         tree = ast.parse(path.read_text(), filename=rel)
         kernel_names = _collect_kernel_import_bindings(tree)
-        visitor = _SinkVisitor(kernel_names)
+        constructor_aliases = _collect_constructor_import_bindings(tree)
+        visitor = _SinkVisitor(kernel_names, constructor_aliases)
         visitor.visit(tree)
         for qualname, reasons in visitor.hits.items():
             call_sites[(rel, qualname)] = reasons
@@ -542,7 +599,8 @@ def discover_session_facade_locations() -> dict[tuple[str, str], int]:
         except (OSError, TypeError, SyntaxError):
             continue
         kernel_names = _collect_kernel_import_bindings(tree)
-        visitor = _SinkVisitor(kernel_names)
+        constructor_aliases = _collect_constructor_import_bindings(tree)
+        visitor = _SinkVisitor(kernel_names, constructor_aliases)
         visitor._stack = ["Session"]
         visitor.visit(tree)
         qualname = f"Session.{name}"
@@ -636,6 +694,42 @@ def test_bare_import_facade_is_discovered_by_ast_scan(tmp_path):
     assert discovery.call_linenos[key] == 5
 
 
+def test_aliased_executor_import_is_discovered_by_ast_scan(tmp_path):
+    """Regression for the aliased-constructor evasion: a module that imports
+    the canonical executor under a different local name (`from
+    lionagi.operations.flow import DependencyAwareExecutor as GraphRunner`)
+    and constructs it must be recognized as an executor construction site by
+    feed 1, exactly like a literal `DependencyAwareExecutor(...)` call is —
+    otherwise a new production entrypoint could quietly construct the
+    canonical executor outside operations/flow.py under a fresh name and
+    pass both test_every_ast_discovered_graph_candidate_is_registered and
+    test_only_flow_kernels_construct_graph_executors unnoticed. Scans a
+    scratch directory (never lionagi/) so this proves the discovery
+    function's own behavior without shipping a real violation."""
+    rogue = tmp_path / "rogue_runner.py"
+    rogue.write_text(
+        "from lionagi.operations.flow import DependencyAwareExecutor as GraphRunner\n\n"
+        "class RogueRunner:\n"
+        "    async def run(self, session, graph):\n"
+        "        return await GraphRunner(session, graph).execute()\n"
+    )
+
+    discovery = discover_call_and_construct_sites(tmp_path, base=tmp_path)
+
+    key = ("rogue_runner.py", "RogueRunner.run")
+    assert key in discovery.call_sites, (
+        "constructing an aliased executor import was not discovered — "
+        f"found: {sorted(discovery.call_sites)}"
+    )
+    assert discovery.call_sites[key] == {
+        "constructs DependencyAwareExecutor() (imported as GraphRunner)"
+    }
+    assert discovery.executor_sites == {key}, (
+        "aliased DependencyAwareExecutor construction must be flagged as an "
+        f"executor site — got: {sorted(discovery.executor_sites)}"
+    )
+
+
 def test_session_flow_and_flow_stream_are_discovered_via_bare_import_not_hardcoding(tmp_path):
     """The Session facade methods are no longer special-cased by literal name
     (the original discover_session_facade_locations hardcoded "flow" and
@@ -705,6 +799,63 @@ def test_every_delegation_test_id_resolves_to_a_real_test_function():
         assert _test_function_exists(surface.delegation_test), (
             f"{surface.key}.delegation_test={surface.delegation_test!r} does not resolve "
             "to a real test function — fix the reference or the test"
+        )
+
+
+_GENERIC_TARGET_WORDS = {"the", "and", "for"}
+
+
+def _derive_target_tokens(expected_target: str) -> set[str]:
+    """Cheap, deliberately weak structural signal: identifier-like tokens
+    pulled out of a manifest row's ``expected_target`` (dotted symbols like
+    ``Session.flow``, or free-form argv-shape text like ``["o", "flow",
+    ...]``). Used only to sanity-check that a cited ``delegation_test``'s own
+    source at least mentions something related to what the row claims it
+    proves — not a replacement for reading the test."""
+    tokens = re.findall(r"[A-Za-z_][A-Za-z0-9_]*", expected_target)
+    return {t for t in tokens if len(t) >= 3 and t.lower() not in _GENERIC_TARGET_WORDS}
+
+
+def test_every_delegation_test_source_mentions_its_expected_target():
+    """Weak structural companion to
+    test_every_delegation_test_id_resolves_to_a_real_test_function: a
+    resolvable test function name alone proves nothing about what the test
+    body actually asserts. That gap is exactly how the studio-engine-node
+    row's prior ``expected_target="EngineRun.run_dag"`` went unnoticed while
+    citing a real, passing test that only ever exercises ``engine.run`` — a
+    different relationship entirely. This does not read intent or assert
+    call counts; it only fails loudly if a cited test's source text mentions
+    NONE of the identifier-like tokens drawn from expected_target, which
+    would catch a row citing a wildly unrelated test (wrong class/module/
+    symbol). A passing result here is necessary, not sufficient."""
+    for surface in GRAPH_SURFACES:
+        if surface.expected_target is None or surface.delegation_test is None:
+            continue
+        tokens = _derive_target_tokens(surface.expected_target)
+        if not tokens:
+            continue
+        module_path_str, _, test_name = surface.delegation_test.partition("::")
+        module_path = REPO_ROOT / module_path_str
+        source = module_path.read_text()
+        tree = ast.parse(source, filename=module_path_str)
+        func_node = next(
+            (
+                node
+                for node in ast.walk(tree)
+                if isinstance(node, ast.FunctionDef | ast.AsyncFunctionDef)
+                and node.name == test_name
+            ),
+            None,
+        )
+        assert func_node is not None, (
+            f"{surface.key}.delegation_test={surface.delegation_test!r} did not resolve "
+            "while deriving its source — should have failed the resolution test first"
+        )
+        func_source = ast.get_source_segment(source, func_node) or ""
+        assert any(tok.lower() in func_source.lower() for tok in tokens), (
+            f"{surface.key}.delegation_test={surface.delegation_test!r} source mentions none "
+            f"of {sorted(tokens)} derived from expected_target={surface.expected_target!r} — "
+            "the cited test may not actually assert this relationship"
         )
 
 
@@ -1072,6 +1223,120 @@ async def test_run_fanout_inner_calls_env_session_flow_with_builder_graph(tmp_pa
     called_graph = env.session.flow.call_args.args[0]
     assert called_graph.nodes == env.builder._nodes
     assert len(called_graph.nodes) == 1
+
+
+def _persistence_seam_env(tmp_path):
+    """Real Session/Branch OrchestrationEnv for driving a CLI wrapper's own
+    start_live_persist call site for real, the same shape
+    tests/cli/orchestrate/test_flow_terminal_notify.py's `_make_env` uses —
+    unlike the generic tests/cli/orchestrate/test_live_persist.py fixture,
+    the tests below never call start_live_persist directly."""
+    from types import SimpleNamespace
+
+    from lionagi import Branch, Session
+    from lionagi.cli.orchestrate._orchestration import OrchestrationEnv
+
+    orc_branch = Branch(name="orchestrator")
+    session = Session(default_branch=orc_branch)
+    run = SimpleNamespace(run_id="run-test-1", artifact_root=tmp_path / "artifacts")
+    env = OrchestrationEnv(
+        run=run,
+        session=session,
+        orc_branch=orc_branch,
+        builder=mock.MagicMock(),
+        orc_profile=None,
+        default_model_spec="claude",
+        bare=False,
+        effort=None,
+        theme=None,
+        yolo=False,
+        bypass=False,
+        verbose=False,
+        fast=False,
+        cwd=None,
+    )
+    return session, env
+
+
+@pytest.mark.asyncio
+async def test_run_fanout_persists_session_via_start_live_persist(tmp_path, monkeypatch):
+    """cli-o-fanout persistence: drives the REAL `_run_fanout` wrapper (only
+    `setup_orchestration` and the heavy `_run_fanout_inner` execution are
+    stubbed — the wrapper's own `start_live_persist` call at
+    lionagi/cli/orchestrate/fanout.py:93 is NOT) and asserts a real StateDB
+    session row exists afterward. This is the seam the generic
+    tests/cli/orchestrate/test_live_persist.py::
+    test_start_creates_session_and_registers_hook_on_orc_branch test cannot
+    cover: that test calls start_live_persist directly and never touches
+    `_run_fanout` at all, so deleting fanout.py's call site would leave it
+    green. Deleting that call site here leaves no StateDB row and fails."""
+    from lionagi.cli.orchestrate.fanout import _run_fanout
+    from lionagi.state.db import StateDB
+
+    monkeypatch.setattr("lionagi.state.db.DEFAULT_DB_PATH", tmp_path / "state.db")
+    session, env = _persistence_seam_env(tmp_path)
+
+    with (
+        mock.patch(
+            "lionagi.cli.orchestrate.fanout.setup_orchestration",
+            AsyncMock(return_value=env),
+        ),
+        mock.patch(
+            "lionagi.cli.orchestrate.fanout._run_fanout_inner",
+            AsyncMock(return_value="ok result"),
+        ),
+    ):
+        result, status = await _run_fanout("claude", "do the batch")
+
+    assert result == "ok result"
+    assert status == "completed"
+
+    async with StateDB() as db:
+        row = await db.get_session(str(session.id))
+    assert row is not None, (
+        "no StateDB session row after _run_fanout — its start_live_persist call site is gone"
+    )
+    assert row["invocation_kind"] == "fanout"
+
+
+@pytest.mark.asyncio
+async def test_run_flow_persists_session_via_start_live_persist(tmp_path, monkeypatch):
+    """cli-o-flow-exec/cli-o-flow-synth persistence: drives the REAL
+    `_run_flow` wrapper (only `setup_orchestration` and the heavy
+    `_run_flow_inner` execution are stubbed — the wrapper's own
+    `start_live_persist` call at lionagi/cli/orchestrate/flow.py:1477 is NOT)
+    and asserts a real StateDB session row exists afterward, closing the
+    same gap as test_run_fanout_persists_session_via_start_live_persist for
+    the flow CLI. HOME is isolated so the finally block's
+    fire_terminal_notify never picks up a real machine's notify settings."""
+    from lionagi.cli.orchestrate.flow import _run_flow
+    from lionagi.state.db import StateDB
+
+    monkeypatch.setenv("HOME", str(tmp_path / "isolated_home"))
+    monkeypatch.setattr("lionagi.state.db.DEFAULT_DB_PATH", tmp_path / "state.db")
+    session, env = _persistence_seam_env(tmp_path)
+
+    with (
+        mock.patch(
+            "lionagi.cli.orchestrate.flow.setup_orchestration",
+            AsyncMock(return_value=env),
+        ),
+        mock.patch(
+            "lionagi.cli.orchestrate.flow._run_flow_inner",
+            AsyncMock(return_value="ok result"),
+        ),
+    ):
+        result, status = await _run_flow("claude", "do the thing")
+
+    assert result == "ok result"
+    assert status == "completed"
+
+    async with StateDB() as db:
+        row = await db.get_session(str(session.id))
+    assert row is not None, (
+        "no StateDB session row after _run_flow — its start_live_persist call site is gone"
+    )
+    assert row["invocation_kind"] == "flow"
 
 
 @pytest.mark.asyncio
