@@ -30,22 +30,28 @@ call — recognized only when the receiver statically denotes
 ``lionagi.operations.flow`` — whether assigned to a name first or called
 inline. Import provenance is tracked per lexical scope, not as one flat
 whole-module timeline: each function/lambda scope starts from a copy of its
-enclosing scope's provenance with parameter-shadowed names discarded, then
-replays its OWN body's binding events (in source order) on top of that copy —
+enclosing scope's provenance, first masking every name any local import or
+assignment in the function body binds -- ANYWHERE in the body, conditional
+or not, since Python function scope is not statement-ordered: a name bound
+only inside an ``if``/``try`` is still a lexical local for the whole
+function, so an inherited same-named binding must not leak through -- and
+also discarding any parameter-shadowed name, then replays its OWN body's
+UNCONDITIONAL binding events (in source order) on top of that masked copy —
 so a function-local reimport genuinely restores what a same-named parameter
-shadowed. Within a scope, a binding event nested inside an
-``if``/``try``/``except``/``for``/``while``/``with`` block is CONDITIONAL:
-it may only DISCARD provenance (a conditional rebinding to something
-unrecognized is treated as if it might have executed, since trusting the name
-afterward risks a false-positive executor site) and may never ESTABLISH or
-RESTORE it (a conditional import might never execute, so applying it anyway
-risks the same false positive from the other direction) — only an
-unconditional binding, a direct statement of the scope's own body, can
-establish or restore provenance. It does not perform general data-flow
-analysis: resolution through a factory function's return value, a
-non-literal string argument, an alias threaded through more than one
-intermediate assignment, or any binding inside a class body, comprehension,
-or walrus assignment is not tracked and remains a residual imprecision.
+(or a conditional in-body import of the same name) masked. Within a scope, a
+binding event nested inside an ``if``/``try``/``except``/``for``/``while``/
+``with``/``match``-case block is CONDITIONAL: it may only DISCARD provenance
+(a conditional rebinding to something unrecognized is treated as if it might
+have executed, since trusting the name afterward risks a false-positive
+executor site) and may never ESTABLISH or RESTORE it (a conditional import
+might never execute, so applying it anyway risks the same false positive
+from the other direction) — only an unconditional binding, a direct
+statement of the scope's own body, can establish or restore provenance. It
+does not perform general data-flow analysis: resolution through a factory
+function's return value, a non-literal string argument, an alias threaded
+through more than one intermediate assignment, or any binding inside a class
+body, comprehension, or walrus assignment is not tracked and remains a
+residual imprecision.
 
 Registering a location in the manifest is necessary but not sufficient: any
 row that names an ``expected_target`` must also name a ``delegation_test`` —
@@ -624,13 +630,17 @@ def _collect_scope_binding_events(
     """Collect Import/ImportFrom/simple-Name-Assign binding events out of
     *stmts* -- the statement list of ONE lexical scope (a module body or a
     function body) -- tagging each with whether it is CONDITIONAL: nested
-    inside an ``if``/``try``/``except``/``for``/``while``/``with`` body
-    rather than a direct statement of *stmts* itself. Descends into a nested
-    class body transparently (a class body is not a distinct scope for this
-    analysis and was never treated as one) but stops at a nested function,
-    async function, or lambda -- those get their own independent scope when
-    ``_SinkVisitor`` reaches them, each replaying only its own body's events
-    on top of a copy of its enclosing scope's provenance."""
+    inside an ``if``/``try``/``except``/``for``/``while``/``with`` body, or
+    inside any ``match`` statement's case body (a case might not match, so
+    every case body is conditional regardless of which case, if any, is the
+    one that runs -- the subject expression and per-case guards hold no
+    binding statements themselves and are not walked), rather than a direct
+    statement of *stmts* itself. Descends into a nested class body
+    transparently (a class body is not a distinct scope for this analysis and
+    was never treated as one) but stops at a nested function, async function,
+    or lambda -- those get their own independent scope when ``_SinkVisitor``
+    reaches them, each replaying only its own body's events on top of a copy
+    of its enclosing scope's provenance."""
     for stmt in stmts:
         if isinstance(stmt, (ast.Import, ast.ImportFrom)):
             events.append((stmt, conditional))
@@ -658,6 +668,9 @@ def _collect_scope_binding_events(
             _collect_scope_binding_events(stmt.orelse, True, events)
         elif isinstance(stmt, (ast.With, ast.AsyncWith)):
             _collect_scope_binding_events(stmt.body, True, events)
+        elif isinstance(stmt, ast.Match):
+            for case in stmt.cases:
+                _collect_scope_binding_events(case.body, True, events)
         elif isinstance(stmt, ast.ClassDef):
             _collect_scope_binding_events(stmt.body, conditional, events)
         # FunctionDef/AsyncFunctionDef/Lambda: a new scope: stop here.
@@ -728,6 +741,32 @@ def _replay_binding_events(
                 env.discard(target)
 
 
+def _scope_bound_names(events: list[_BindingEvent]) -> set[str]:
+    """Every name that some binding statement collected in *events* assigns
+    at runtime -- CONDITIONAL bindings included. Used to mask a function
+    scope's inherited provenance before replaying its own unconditional
+    events: Python function scope is not statement-ordered, so a name
+    imported or assigned only inside an ``if``/``try``/``for``/``match``-case
+    anywhere in the body is still a lexical LOCAL for the ENTIRE function --
+    never the enclosing scope's same-named binding -- even on a code path
+    where that conditional statement never executes and the name ends up
+    merely unbound. Trusting an inherited binding for such a name would be
+    the same false-positive shape a conditional import already guards
+    against, just leaking in from the other direction (down from the
+    enclosing scope instead of sideways within one)."""
+    names: set[str] = set()
+    for node, _conditional in events:
+        if isinstance(node, ast.Import):
+            for alias in node.names:
+                names.add(alias.asname or alias.name.split(".", 1)[0])
+        elif isinstance(node, ast.ImportFrom):
+            for alias in node.names:
+                names.add(alias.asname or alias.name)
+        else:
+            names.add(node.targets[0].id)
+    return names
+
+
 def _collect_constructor_import_bindings(tree: ast.Module) -> tuple[dict[str, str], _FlowModuleEnv]:
     """Local alias -> canonical name for any `from ... import
     <ConstructorSinkName> [as alias]` in *tree*'s MODULE scope, regardless of
@@ -780,14 +819,22 @@ class _SinkVisitor(ast.NodeVisitor):
     timeline: entering a function or lambda pushes a scoped copy of both,
     derived from the enclosing scope with any parameter-shadowed name
     discarded from each. For a function/async function (never a lambda,
-    which can hold no statements), that copy is then advanced by replaying
-    the function's OWN body's binding events on top of it -- via the same
-    ``_collect_scope_binding_events``/``_replay_binding_events`` machinery
-    ``_collect_constructor_import_bindings`` uses for the module scope -- so
-    a genuine in-body reimport restores provenance a same-named parameter
-    shadowed, exactly as a module-level reimport restores provenance an
-    unrelated rebinding discarded. The scope is popped again on the way out,
-    restoring the enclosing scope's view for sibling functions."""
+    which can hold no statements), that copy is then further masked for
+    every name the function's OWN body binds ANYWHERE -- via
+    ``_scope_bound_names``, conditional bindings included, since a name
+    bound only inside an ``if``/``try``/``match``-case is still a lexical
+    local for the whole function and must not fall through to the enclosing
+    scope's same-named binding -- and only then advanced by replaying the
+    body's UNCONDITIONAL binding events on top of that masked copy, via the
+    same ``_collect_scope_binding_events``/``_replay_binding_events``
+    machinery ``_collect_constructor_import_bindings`` uses for the module
+    scope. Net effect: a genuine unconditional in-body reimport restores
+    provenance a same-named parameter shadowed (exactly as a module-level
+    reimport restores provenance an unrelated rebinding discarded), while a
+    conditional in-body reimport of an inherited name masks it and leaves it
+    masked -- it does not leak the outer scope's provenance through. The
+    scope is popped again on the way out, restoring the enclosing scope's
+    view for sibling functions."""
 
     def __init__(
         self,
@@ -838,6 +885,14 @@ class _SinkVisitor(ast.NodeVisitor):
         if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
             events: list[_BindingEvent] = []
             _collect_scope_binding_events(node.body, False, events)
+            # Mask every name the body binds ANYWHERE (conditional included)
+            # before replaying -- see _scope_bound_names: a name imported or
+            # assigned only inside an if/try/match-case is still a lexical
+            # local for the whole function, so an inherited same-named
+            # binding from the enclosing scope must not leak through here.
+            for name in _scope_bound_names(events):
+                env.discard(name)
+                bound.pop(name, None)
             _replay_binding_events(events, bound, env)
         self._flow_env_stack.append(env)
         self._bound_stack.append(bound)
@@ -1533,6 +1588,121 @@ def test_in_body_reimport_restores_lionagi_root_provenance_masked_by_parameter(t
         "the in-body-reimport-restored dotted lionagi receiver must be flagged as an "
         f"executor site — got: {sorted(discovery.executor_sites)}"
     )
+
+
+def test_match_case_clear_and_sibling_case_restore_is_not_misreported(tmp_path):
+    """Regression for the match/case conditional-provenance false positive:
+    a `match` statement's cases are exactly as conditional as an if/elif
+    chain -- only one case (if any) actually runs -- so a `case` that rebinds
+    `importlib` to something unrecognized and a SIBLING `case` that
+    re-imports it must NOT combine into a discovered site, for the same
+    reason an if/else rebind-then-reimport does not: the checker cannot know
+    which case matched, so the conservative reading nets no provenance.
+    Before recursing into `ast.Match`, `_collect_scope_binding_events` never
+    walked into case bodies at all, so this module-level match was invisible
+    to the module-scope pass and the (accidentally still-unconditional)
+    original `import importlib` provenance was trusted straight through --
+    wrongly reporting a site."""
+    rogue = tmp_path / "match_clear_sibling_restore.py"
+    rogue.write_text(
+        "import importlib\n\n\n"
+        "match selection:\n"
+        "    case 1:\n"
+        "        importlib = object()\n"
+        "    case _:\n"
+        "        import importlib\n\n\n"
+        "async def run(session, graph):\n"
+        '    return await getattr(importlib.import_module("lionagi.operations.flow"), '
+        '"DependencyAwareExecutor")(session, graph).execute()\n'
+    )
+
+    discovery = discover_call_and_construct_sites(tmp_path, base=tmp_path)
+
+    assert discovery.executor_sites == set(), (
+        "a match/case rebind-then-conditionally-reimport must not register as an "
+        f"executor site — got: {sorted(discovery.executor_sites)}"
+    )
+    assert ("match_clear_sibling_restore.py", "run") not in discovery.call_sites
+
+
+def test_conditional_in_body_reimport_does_not_leak_outer_importlib_provenance(tmp_path):
+    """Regression for the conditional-in-body-import masking false positive:
+    a conditional `import importlib` inside a function body (`if False:
+    import importlib`) is still a Python lexical LOCAL for the whole
+    function -- at runtime the name is merely unbound on the branch that
+    doesn't run, never the module-level `importlib`. The pushed function
+    scope must MASK the inherited outer provenance for `importlib` (not just
+    skip applying the conditional import, which left the inherited binding
+    trusted) so this does NOT register a site."""
+    rogue = tmp_path / "conditional_inbody_importlib_no_leak.py"
+    rogue.write_text(
+        "import importlib\n\n\n"
+        "async def run(session, graph):\n"
+        "    if False:\n"
+        "        import importlib\n"
+        '    return await getattr(importlib.import_module("lionagi.operations.flow"), '
+        '"DependencyAwareExecutor")(session, graph).execute()\n'
+    )
+
+    discovery = discover_call_and_construct_sites(tmp_path, base=tmp_path)
+
+    assert discovery.executor_sites == set(), (
+        "a conditional in-body reimport must mask, not inherit, outer importlib provenance "
+        f"— got: {sorted(discovery.executor_sites)}"
+    )
+    assert ("conditional_inbody_importlib_no_leak.py", "run") not in discovery.call_sites
+
+
+def test_conditional_in_body_reimport_does_not_leak_outer_lionagi_root_provenance(tmp_path):
+    """Same conditional-in-body masking false positive for the `lionagi`
+    package root, dotted-attribute shape: `if False: import lionagi` inside
+    the function body is still a lexical local for the whole function and
+    must mask the module-level `import lionagi`'s provenance rather than
+    leave it trusted."""
+    rogue = tmp_path / "conditional_inbody_lionagi_no_leak.py"
+    rogue.write_text(
+        "import lionagi\n\n\n"
+        "async def run(session, graph):\n"
+        "    if False:\n"
+        "        import lionagi\n"
+        '    return await getattr(lionagi.operations.flow, "DependencyAwareExecutor")(\n'
+        "        session, graph\n"
+        "    ).execute()\n"
+    )
+
+    discovery = discover_call_and_construct_sites(tmp_path, base=tmp_path)
+
+    assert discovery.executor_sites == set(), (
+        "a conditional in-body reimport must mask, not inherit, outer lionagi-root "
+        f"provenance — got: {sorted(discovery.executor_sites)}"
+    )
+    assert ("conditional_inbody_lionagi_no_leak.py", "run") not in discovery.call_sites
+
+
+def test_conditional_in_body_alias_reimport_does_not_leak_outer_constructor_alias(tmp_path):
+    """Same conditional-in-body masking false positive for a constructor
+    alias: a module-level `from lionagi.operations.flow import
+    DependencyAwareExecutor as X` establishes an unconditional alias, but a
+    conditional `if cond: from somewhere import DependencyAwareExecutor as X`
+    inside the function body is still a lexical local `X` for the whole
+    function -- the local binding must mask the outer alias rather than let
+    it leak through to the `X(...)` call."""
+    rogue = tmp_path / "conditional_inbody_alias_no_leak.py"
+    rogue.write_text(
+        "from lionagi.operations.flow import DependencyAwareExecutor as X\n\n\n"
+        "async def run(cond, session, graph):\n"
+        "    if cond:\n"
+        "        from somewhere import DependencyAwareExecutor as X\n"
+        "    return await X(session, graph).execute()\n"
+    )
+
+    discovery = discover_call_and_construct_sites(tmp_path, base=tmp_path)
+
+    assert discovery.executor_sites == set(), (
+        "a conditional in-body alias reimport must mask, not inherit, the outer constructor "
+        f"alias — got: {sorted(discovery.executor_sites)}"
+    )
+    assert ("conditional_inbody_alias_no_leak.py", "run") not in discovery.call_sites
 
 
 def test_session_flow_and_flow_stream_are_discovered_via_bare_import_not_hardcoding(tmp_path):
