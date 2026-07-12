@@ -477,22 +477,59 @@ def _dotted_name(expr: ast.expr) -> str | None:
     return None
 
 
-def _is_flow_module_expr(expr: ast.expr, flow_module_names: frozenset[str] | set[str]) -> bool:
-    """True when *expr* statically denotes the flow kernel module: a local
-    name bound to it by import or ``importlib.import_module`` assignment, the
-    fully dotted module path, or an inline ``import_module`` call with the
-    exact literal path."""
-    if isinstance(expr, ast.Name) and expr.id in flow_module_names:
+@dataclass
+class _FlowModuleEnv:
+    """Import-provenance environment for recognizing expressions that
+    statically denote ``lionagi.operations.flow``. Every set holds LOCAL
+    names whose binding was actually observed in the module's imports (or a
+    recognized ``import_module`` assignment), so a same-shaped expression
+    rooted in an arbitrary object (``lionagi = plugin`` shadowing, a
+    ``plugin.import_module(...)`` method) is NOT treated as the kernel
+    module."""
+
+    names: set[str]  # names bound to the flow module itself
+    lionagi_roots: set[str]  # names under which the lionagi package is import-bound
+    import_module_funcs: set[str]  # names bound to importlib.import_module
+    importlib_mods: set[str]  # names bound to the importlib module
+
+    @classmethod
+    def empty(cls) -> _FlowModuleEnv:
+        return cls(set(), set(), set(), set())
+
+    def discard(self, name: str) -> None:
+        self.names.discard(name)
+        self.lionagi_roots.discard(name)
+        self.import_module_funcs.discard(name)
+        self.importlib_mods.discard(name)
+
+
+def _is_flow_module_expr(expr: ast.expr, env: _FlowModuleEnv) -> bool:
+    """True when *expr* statically denotes the flow kernel module WITH
+    import provenance: a local name import-bound to it (or bound via a
+    recognized ``importlib.import_module`` assignment), the dotted module
+    path rooted in an import-bound ``lionagi`` name, or an inline
+    ``import_module`` call with the exact literal path whose callee is
+    itself import-bound (``importlib.import_module`` or a
+    ``from importlib import import_module`` name). A textual match without
+    that provenance (``lionagi = plugin`` shadowing, a same-named method on
+    an arbitrary object) does not qualify."""
+    if isinstance(expr, ast.Name) and expr.id in env.names:
         return True
-    if isinstance(expr, ast.Name | ast.Attribute) and _dotted_name(expr) == _FLOW_MODULE_PATH:
-        return True
+    if isinstance(expr, ast.Attribute):
+        dotted = _dotted_name(expr)
+        if dotted == _FLOW_MODULE_PATH:
+            root = dotted.split(".", 1)[0]
+            return root in env.lionagi_roots
     if isinstance(expr, ast.Call) and len(expr.args) == 1:
         callee = expr.func
-        callee_name = (
-            callee.attr if isinstance(callee, ast.Attribute) else getattr(callee, "id", None)
+        callee_ok = (isinstance(callee, ast.Name) and callee.id in env.import_module_funcs) or (
+            isinstance(callee, ast.Attribute)
+            and callee.attr == "import_module"
+            and isinstance(callee.value, ast.Name)
+            and callee.value.id in env.importlib_mods
         )
         return (
-            callee_name == "import_module"
+            callee_ok
             and isinstance(expr.args[0], ast.Constant)
             and expr.args[0].value == _FLOW_MODULE_PATH
         )
@@ -502,7 +539,7 @@ def _is_flow_module_expr(expr: ast.expr, flow_module_names: frozenset[str] | set
 def _resolve_constructor_alias_rhs(
     value: ast.expr,
     bound: dict[str, str],
-    flow_module_names: frozenset[str] | set[str] = frozenset(),
+    flow_env: _FlowModuleEnv | None = None,
 ) -> str | None:
     """If *value* is a bare tracked constructor name/alias, or a literal
     ``getattr(<flow module>, "<ConstructorName>")`` dynamic-lookup call naming
@@ -530,7 +567,8 @@ def _resolve_constructor_alias_rhs(
         and isinstance(value.args[1], ast.Constant)
         and isinstance(value.args[1].value, str)
         and value.args[1].value in _CONSTRUCTOR_SINK_NAMES
-        and _is_flow_module_expr(value.args[0], flow_module_names)
+        and flow_env is not None
+        and _is_flow_module_expr(value.args[0], flow_env)
     ):
         return value.args[1].value
     return None
@@ -562,12 +600,13 @@ def _collect_constructor_import_bindings(tree: ast.AST) -> dict[str, str]:
     function-local rebinding of a module-level alias (or the reverse) is a
     documented residual imprecision.
 
-    Returns ``(alias_map, flow_module_names)`` where the second element is
-    the set of local names statically bound to ``lionagi.operations.flow``
-    (via ``import``/``from ... import``/``importlib.import_module``
-    assignment), used to restrict ``getattr`` recognition to that module."""
+    Returns ``(alias_map, flow_env)`` where the second element is the
+    import-provenance environment (:class:`_FlowModuleEnv`) of names bound
+    to ``lionagi.operations.flow``, the ``lionagi`` package root,
+    ``importlib``, and ``import_module`` -- used to restrict ``getattr``
+    recognition to receivers that provably denote the flow module."""
     bound: dict[str, str] = {}
-    flow_modules: set[str] = set()
+    env = _FlowModuleEnv.empty()
     for node in ast.walk(tree):
         if isinstance(node, ast.ImportFrom):
             for alias in node.names:
@@ -576,11 +615,17 @@ def _collect_constructor_import_bindings(tree: ast.AST) -> dict[str, str]:
             if node.module is not None:
                 for alias in node.names:
                     if f"{node.module}.{alias.name}" == _FLOW_MODULE_PATH:
-                        flow_modules.add(alias.asname or alias.name)
+                        env.names.add(alias.asname or alias.name)
+                    elif node.module == "importlib" and alias.name == "import_module":
+                        env.import_module_funcs.add(alias.asname or alias.name)
         elif isinstance(node, ast.Import):
             for alias in node.names:
                 if alias.name == _FLOW_MODULE_PATH and alias.asname:
-                    flow_modules.add(alias.asname)
+                    env.names.add(alias.asname)
+                elif alias.name.split(".", 1)[0] == "lionagi" and not alias.asname:
+                    env.lionagi_roots.add("lionagi")
+                elif alias.name == "importlib":
+                    env.importlib_mods.add(alias.asname or "importlib")
     assigns = [
         node
         for node in ast.walk(tree)
@@ -590,17 +635,17 @@ def _collect_constructor_import_bindings(tree: ast.AST) -> dict[str, str]:
     ]
     for node in sorted(assigns, key=lambda n: (n.lineno, n.col_offset)):
         target = node.targets[0].id
-        if _is_flow_module_expr(node.value, flow_modules):
-            flow_modules.add(target)
+        if _is_flow_module_expr(node.value, env):
+            env.names.add(target)
             bound.pop(target, None)
             continue
-        canonical = _resolve_constructor_alias_rhs(node.value, bound, flow_modules)
+        canonical = _resolve_constructor_alias_rhs(node.value, bound, env)
         if canonical is not None:
             bound[target] = canonical
         else:
             bound.pop(target, None)
-            flow_modules.discard(target)
-    return bound, flow_modules
+            env.discard(target)
+    return bound, env
 
 
 class _SinkVisitor(ast.NodeVisitor):
@@ -616,12 +661,12 @@ class _SinkVisitor(ast.NodeVisitor):
         self,
         kernel_names: set[str] = frozenset(),
         constructor_aliases: dict[str, str] = None,  # type: ignore[assignment]
-        flow_module_names: set[str] = frozenset(),
+        flow_env: _FlowModuleEnv | None = None,
     ) -> None:
         self._stack: list[str] = []
         self._kernel_names = kernel_names
         self._constructor_aliases = constructor_aliases or {}
-        self._flow_module_names = flow_module_names
+        self._flow_env = flow_env or _FlowModuleEnv.empty()
         self.hits: dict[str, set[str]] = {}
         self.linenos: dict[str, int] = {}
         self.executor_hits: set[str] = set()
@@ -679,7 +724,7 @@ class _SinkVisitor(ast.NodeVisitor):
         elif isinstance(func, ast.Call):
             # Inline dynamic lookup called directly, no intermediate name:
             # getattr(importlib.import_module(...), "DependencyAwareExecutor")(...)
-            canonical = _resolve_constructor_alias_rhs(func, {}, self._flow_module_names)
+            canonical = _resolve_constructor_alias_rhs(func, {}, self._flow_env)
             if canonical is not None:
                 self._record(
                     f"constructs {canonical}() (via dynamic getattr lookup)",
@@ -711,8 +756,8 @@ def discover_call_and_construct_sites(root: Path, *, base: Path = REPO_ROOT) -> 
         rel = path.relative_to(base).as_posix()
         tree = ast.parse(path.read_text(), filename=rel)
         kernel_names = _collect_kernel_import_bindings(tree)
-        constructor_aliases, flow_module_names = _collect_constructor_import_bindings(tree)
-        visitor = _SinkVisitor(kernel_names, constructor_aliases, flow_module_names)
+        constructor_aliases, flow_env = _collect_constructor_import_bindings(tree)
+        visitor = _SinkVisitor(kernel_names, constructor_aliases, flow_env)
         visitor.visit(tree)
         for qualname, reasons in visitor.hits.items():
             call_sites[(rel, qualname)] = reasons
@@ -750,8 +795,8 @@ def discover_session_facade_locations() -> dict[tuple[str, str], int]:
         except (OSError, TypeError, SyntaxError):
             continue
         kernel_names = _collect_kernel_import_bindings(tree)
-        constructor_aliases, flow_module_names = _collect_constructor_import_bindings(tree)
-        visitor = _SinkVisitor(kernel_names, constructor_aliases, flow_module_names)
+        constructor_aliases, flow_env = _collect_constructor_import_bindings(tree)
+        visitor = _SinkVisitor(kernel_names, constructor_aliases, flow_env)
         visitor._stack = ["Session"]
         visitor.visit(tree)
         qualname = f"Session.{name}"
@@ -813,8 +858,10 @@ def test_only_flow_kernels_construct_graph_executors():
     anywhere outside operations/flow.py's own two kernel functions, this
     fails — independent of the name-based heuristic above. Covers direct
     calls, `from ... import X as Y` aliases, one-level assignment aliases
-    (`Y = X`), and literal `getattr(obj, "X")` dynamic lookups (assigned or
-    called inline). It does not perform general data-flow analysis, so
+    (`Y = X`), and literal `getattr(<flow module>, "X")` dynamic lookups
+    (assigned or called inline) whose receiver statically denotes
+    `lionagi.operations.flow` via an import-provenance-checked binding.
+    It does not perform general data-flow analysis, so
     resolution through a factory function's return value, a non-literal
     string argument, or an alias chained through more than one intermediate
     assignment remains an unanalyzable residual bypass -- see the module
@@ -1021,6 +1068,50 @@ def test_getattr_on_arbitrary_object_is_not_misreported_as_executor_construction
         f"{sorted(discovery.executor_sites)}"
     )
     assert ("plugin_getattr.py", "PluginHost.run") not in discovery.call_sites
+
+
+def test_shadowed_lionagi_name_dotted_getattr_is_not_misreported(tmp_path):
+    """A local name `lionagi` bound to something else means the dotted
+    expression `lionagi.operations.flow` no longer denotes the real package;
+    without an import-bound `lionagi` root, the getattr receiver must not be
+    treated as the flow module."""
+    benign = tmp_path / "shadowed_root.py"
+    benign.write_text(
+        "lionagi = plugin\n"
+        "async def run(session, graph):\n"
+        '    return await getattr(lionagi.operations.flow, "DependencyAwareExecutor")(\n'
+        "        session, graph\n"
+        "    ).execute()\n"
+    )
+
+    discovery = discover_call_and_construct_sites(tmp_path, base=tmp_path)
+
+    assert discovery.executor_sites == set(), (
+        "a shadowed dotted receiver must not register as an executor site — got: "
+        f"{sorted(discovery.executor_sites)}"
+    )
+    assert ("shadowed_root.py", "run") not in discovery.call_sites
+
+
+def test_arbitrary_import_module_named_callee_is_not_misreported(tmp_path):
+    """A method merely *named* `import_module` on an arbitrary object is not
+    importlib's; without an import-bound `importlib` (or `from importlib
+    import import_module`) provenance, the call must not be treated as
+    producing the flow module."""
+    benign = tmp_path / "plugin_import_module.py"
+    benign.write_text(
+        "async def run(plugin, session, graph):\n"
+        '    return await getattr(plugin.import_module("lionagi.operations.flow"),\n'
+        '                         "DependencyAwareExecutor")(session, graph).execute()\n'
+    )
+
+    discovery = discover_call_and_construct_sites(tmp_path, base=tmp_path)
+
+    assert discovery.executor_sites == set(), (
+        "an arbitrary import_module-named callee must not register as an executor site — got: "
+        f"{sorted(discovery.executor_sites)}"
+    )
+    assert ("plugin_import_module.py", "run") not in discovery.call_sites
 
 
 def test_session_flow_and_flow_stream_are_discovered_via_bare_import_not_hardcoding(tmp_path):
