@@ -11,7 +11,11 @@ Two-stage laziness, mirroring ``EndpointRegistry._ensure_loaded``:
   imported only when that specific capability is actually invoked, never as a
   side effect of discovery, listing, or an unrelated capability of the same
   plugin firing. Import failures are cached per ``(plugin, target)`` so a
-  raising module is reported once and never retried.
+  raising module is reported once and never retried — but trust is
+  revalidated fresh on every call before either cache is read, so a
+  previously-activated target stops being handed out the moment its trust
+  no longer verifies, and the cache is dropped so a subsequent re-trust
+  starts clean.
 
 Nothing in this module runs at ``import lionagi`` time — the registry is
 inert until a consumer calls one of its classmethods.
@@ -19,9 +23,9 @@ inert until a consumer calls one of its classmethods.
 
 from __future__ import annotations
 
-import importlib.util
 import sys
 import threading
+import types
 from dataclasses import dataclass
 from enum import Enum
 from pathlib import Path
@@ -335,15 +339,27 @@ def _declared_activation_targets(manifest: PluginManifest) -> frozenset[str]:
 
 
 def _import_bundle_module(file_path: Path, *, module_key: str) -> Any:
+    """Compile and exec *file_path* fresh — deliberately not ``importlib``'s
+    ``spec_from_file_location``/``exec_module`` path.
+
+    That path writes and reads a ``__pycache__`` ``.pyc`` validated by a
+    *second*-granularity source mtime: two writes to the same target within
+    the same wall-clock second are indistinguishable to it, so a re-import
+    right after a re-trusted edit can silently execute the stale bytecode
+    instead of the content that was just re-hashed and approved. Trust is
+    already content-hash based, not mtime based — the import step must not
+    reintroduce a weaker, mtime-based staleness window underneath it. Reading
+    and compiling the source directly has no cache to go stale.
+    """
     if not file_path.is_file():
         raise FileNotFoundError(f"target file not found: {file_path}")
-    spec = importlib.util.spec_from_file_location(module_key, file_path)
-    if spec is None or spec.loader is None:
-        raise ImportError(f"cannot create import spec for {file_path}")
-    module = importlib.util.module_from_spec(spec)
+    source = file_path.read_text()
+    module = types.ModuleType(module_key)
+    module.__file__ = str(file_path)
     sys.modules[module_key] = module
     try:
-        spec.loader.exec_module(module)
+        code = compile(source, str(file_path), "exec")
+        exec(code, module.__dict__)  # noqa: S102 — the bundle content this trust model is built to gate
     except BaseException:
         sys.modules.pop(module_key, None)
         raise
@@ -409,28 +425,36 @@ class PluginRegistry:
         """Stage 2: resolve a bundle-relative ``path.py:callable`` (or bare ``path.py`` module) reference.
 
         Imported only on first use, cached (success or failure) — a raising
-        module is reported once and never retried.
+        module is reported once and never retried, as long as the plugin's
+        trust hasn't changed since. Trust is revalidated fresh on *every*
+        call, before either cache is consulted: an already-activated target
+        must stop being handed out the moment a declared file changes, not
+        just refuse brand-new activations. Executed code can't be
+        un-imported — the guarantee here is narrower and enforceable: this
+        method never hands out (or imports) content once trust no longer
+        verifies, and drops whatever was cached under the old verdict so a
+        subsequent re-trust starts clean.
         """
-        cache_key = (plugin_name, target)
-        if cache_key in cls._activation_errors:
-            raise PluginActivationError(plugin_name, target, cls._activation_errors[cache_key])
-        if cache_key in cls._activation_cache:
-            return cls._activation_cache[cache_key]
-
         record = cls.get(plugin_name)
         if record is None or record.state is not PluginState.ACTIVE or record.manifest is None:
             msg = f"plugin {plugin_name!r} is not active (no such plugin, or untrusted/disabled/incompatible)"
-            cls._activation_errors[cache_key] = msg
             raise PluginActivationError(plugin_name, target, msg)
 
+        cache_key = (plugin_name, target)
         if _revalidate_trust(record) is not TrustState.TRUSTED:
+            cls._activation_cache.pop(cache_key, None)
+            cls._activation_errors.pop(cache_key, None)
             msg = (
                 f"plugin {plugin_name!r} is no longer trusted (a declared file changed "
                 f"since the cached scan) — re-run `li plugin trust {plugin_name}` or "
                 "`li plugin list` to refresh"
             )
-            cls._activation_errors[cache_key] = msg
             raise PluginActivationError(plugin_name, target, msg)
+
+        if cache_key in cls._activation_errors:
+            raise PluginActivationError(plugin_name, target, cls._activation_errors[cache_key])
+        if cache_key in cls._activation_cache:
+            return cls._activation_cache[cache_key]
 
         if target not in _declared_activation_targets(record.manifest):
             msg = (

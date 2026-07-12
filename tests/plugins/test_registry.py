@@ -175,6 +175,29 @@ class TestActivateTarget:
         # Cached: same object on second call.
         assert PluginRegistry.activate_target("p1", "tools/t.py:t") is fn
 
+    def test_editing_declared_file_after_activation_refuses_and_re_trusting_recovers(
+        self, write_plugin
+    ):
+        """Complement of the list-time trust recheck: a target that was already
+        activated and cached must stop being handed out once its trust no longer
+        verifies, not just refuse brand-new activations. After re-trusting, the
+        stale cache from the rejected call must not keep blocking activation."""
+        bundle = _write_tool_plugin(write_plugin, "p1", tool_body="def t():\n    return 1\n")
+        _trust_by_dir_name("p1")
+        PluginRegistry.reset()
+
+        fn = PluginRegistry.activate_target("p1", "tools/t.py:t")
+        assert fn() == 1
+
+        (bundle / "tools" / "t.py").write_text("def t():\n    return 2\n")
+
+        with pytest.raises(PluginActivationError, match="no longer trusted"):
+            PluginRegistry.activate_target("p1", "tools/t.py:t")
+
+        _trust_by_dir_name("p1")
+        fn2 = PluginRegistry.activate_target("p1", "tools/t.py:t")
+        assert fn2() == 2
+
     def test_declared_file_deleted_after_trust_refuses_activation_as_untrusted(self, write_plugin):
         """A target that *was* declared and trusted, but whose file is gone by the time
         anything tries to activate it, is caught by the trust recheck (content-pinned
