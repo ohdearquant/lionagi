@@ -665,6 +665,7 @@ async def teardown_persist(
 
     db = ctx["db"]
     try:
+        await _flush_pending_message_events(ctx)
         final_status = await _teardown_common(
             db,
             session_id=ctx["session_id"],
@@ -815,6 +816,7 @@ def _make_message_handler(
     dedup_set: set | None = None,
     new_msg_ids_list: list | None = None,
     on_first_msg=None,
+    message_retry_queues: list | None = None,
 ):
     """Return an async _on_message handler for live DB persistence.
 
@@ -824,6 +826,17 @@ def _make_message_handler(
     on_first_msg: async callable invoked at the start of each message write
                   (used for lazy branch-row creation on the orchestration path).
     """
+    from copy import deepcopy
+
+    from lionagi.hooks._message_retry import MessagePersistRetryQueue, PendingMessageEvent
+
+    retry_queue = MessagePersistRetryQueue(
+        db,
+        logger=_log,
+        owner=f"branch {branch_id}",
+    )
+    if message_retry_queues is not None:
+        message_retry_queues.append(retry_queue)
 
     async def _on_message(msg):
         try:
@@ -832,16 +845,24 @@ def _make_message_handler(
             msg_dict = msg.to_dict(mode="db")
             msg_id = msg_dict["id"]
             append_to_progressions = dedup_set is None or msg_id not in dedup_set
-            await db._persist_live_message(
-                msg_dict,
-                session_id=session_id,
-                branch_progression_id=branch_prog_id if append_to_progressions else None,
-                session_progression_id=session_prog_id if append_to_progressions else None,
-                system_branch_id=branch_id if msg_dict.get("role") == "system" else None,
-                activity_at=msg_dict.get("created_at"),
-            )
+            on_persisted = None
             if append_to_progressions and new_msg_ids_list is not None:
-                new_msg_ids_list.append(msg_id)
+
+                def _record_persisted() -> None:
+                    new_msg_ids_list.append(msg_id)
+
+                on_persisted = _record_persisted
+            await retry_queue.submit(
+                PendingMessageEvent(
+                    message=deepcopy(msg_dict),
+                    session_id=session_id,
+                    branch_progression_id=(branch_prog_id if append_to_progressions else None),
+                    session_progression_id=(session_prog_id if append_to_progressions else None),
+                    system_branch_id=branch_id if msg_dict.get("role") == "system" else None,
+                    activity_at=msg_dict.get("created_at"),
+                    on_persisted=on_persisted,
+                )
+            )
         except Exception as exc:
             _log.warning(
                 "live persist write failed for branch %s: %s",
@@ -851,6 +872,12 @@ def _make_message_handler(
             )
 
     return _on_message
+
+
+async def _flush_pending_message_events(ctx: dict) -> None:
+    """Retry queued messages before teardown reads completion evidence."""
+    for retry_queue in ctx.get("message_retry_queues", []):
+        await retry_queue.flush()
 
 
 async def setup_agent_persist(
@@ -989,6 +1016,7 @@ async def setup_agent_persist(
             )
 
         new_msg_ids: list = []
+        message_retry_queues: list = []
         ctx = {
             "db": db,
             "session": session,
@@ -998,6 +1026,7 @@ async def setup_agent_persist(
             "branch_prog_id": branch_prog_id,
             "existing_msg_ids": existing_msg_ids,
             "new_msg_ids": new_msg_ids,
+            "message_retry_queues": message_retry_queues,
             "artifacts_path": artifacts_path,
             "artifact_contract": artifact_contract,
         }
@@ -1010,6 +1039,7 @@ async def setup_agent_persist(
             session_prog_id,
             dedup_set=existing_msg_ids,
             new_msg_ids_list=new_msg_ids,
+            message_retry_queues=message_retry_queues,
         )
 
         # Bind signal persistence through the already-open DB so every Signal

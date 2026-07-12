@@ -152,6 +152,79 @@ async def test_persist_message_legacy_progression_id_still_works():
     )
 
 
+async def test_default_message_hook_retries_middle_transaction_failure(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path,
+):
+    """HookBus keeps a rolled-back transcript event for the next emission."""
+    from sqlalchemy import event
+
+    import lionagi.state.db as state_db_module
+    from lionagi.hooks import build_session_bus
+    from lionagi.hooks.bus import HookPoint
+    from lionagi.protocols.messages.manager import MessageManager
+    from lionagi.state.engine import normalize_state_db_url
+
+    db_url = _redirect_shared_db(monkeypatch, tmp_path)
+    null_url = normalize_state_db_url(None)
+    db = await _shared(db_url)
+    session_id = "hook-retry-session"
+    branch_id = "hook-retry-branch"
+    branch_prog_id = "hook-retry-branch-progression"
+    session_prog_id = "hook-retry-session-progression"
+    await _seed_session(db, session_id, session_prog_id)
+    await _seed_branch(db, branch_id, session_id, branch_prog_id)
+    bus = build_session_bus()
+    progression_updates = 0
+
+    def fail_second_progression(conn, cursor, statement, parameters, context, executemany):
+        nonlocal progression_updates
+        if statement.lstrip().startswith("UPDATE progressions"):
+            progression_updates += 1
+            if progression_updates == 2:
+                raise RuntimeError("injected middle progression failure")
+
+    lost = MessageManager.create_instruction(instruction="lost").to_dict(mode="db")
+    event.listen(db._engine.sync_engine, "before_cursor_execute", fail_second_progression)
+    try:
+        await bus.emit(
+            HookPoint.MESSAGE_ADD,
+            message=lost,
+            session_id=session_id,
+            branch_id=branch_id,
+            branch_progression_id=branch_prog_id,
+            session_progression_id=session_prog_id,
+        )
+    finally:
+        event.remove(db._engine.sync_engine, "before_cursor_execute", fail_second_progression)
+
+    retry_queue = next(iter(bus._message_retry_queues.values()))
+    assert retry_queue.pending_count == 1
+    assert await db.get_message(lost["id"]) is None
+    assert await db.get_progression(branch_prog_id) == []
+    assert await db.get_progression(session_prog_id) == []
+
+    next_message = MessageManager.create_instruction(instruction="next").to_dict(mode="db")
+    await bus.emit(
+        HookPoint.MESSAGE_ADD,
+        message=next_message,
+        session_id=session_id,
+        branch_id=branch_id,
+        branch_progression_id=branch_prog_id,
+        session_progression_id=session_prog_id,
+    )
+
+    assert await db.get_progression(branch_prog_id) == [lost["id"], next_message["id"]]
+    assert await db.get_progression(session_prog_id) == [lost["id"], next_message["id"]]
+    assert await db.get_message(lost["id"]) is not None
+    assert await db.get_message(next_message["id"]) is not None
+    assert retry_queue.pending_count == 0
+
+    await db.close()
+    state_db_module._SHARED.pop(db_url, None)
+    state_db_module._SHARED.pop(null_url, None)
+
+
 # ── persist_session_start: running status must carry a reason_code ─────────────
 
 

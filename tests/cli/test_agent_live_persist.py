@@ -463,6 +463,97 @@ async def test_hook_swallows_db_write_failure(
     await _teardown_live_persist(ctx, status="completed")
 
 
+async def test_hook_retries_middle_transaction_failure_before_next_message(
+    temp_db_path: Path,
+):
+    """A rolled-back message remains pending and commits before the next event."""
+    from sqlalchemy import event
+
+    branch = Branch(name="b1")
+    ctx = await _setup_live_persist(branch)
+    db = ctx["db"]
+    progression_updates = 0
+
+    def fail_second_progression(conn, cursor, statement, parameters, context, executemany):
+        nonlocal progression_updates
+        if statement.lstrip().startswith("UPDATE progressions"):
+            progression_updates += 1
+            if progression_updates == 2:
+                raise RuntimeError("injected middle progression failure")
+
+    event.listen(db._engine.sync_engine, "before_cursor_execute", fail_second_progression)
+    try:
+        lost = await branch.msgs.a_add_message(instruction="lost")
+    finally:
+        event.remove(db._engine.sync_engine, "before_cursor_execute", fail_second_progression)
+
+    assert await db.get_message(str(lost.id)) is None
+    assert await db.get_progression(ctx["branch_prog_id"]) == []
+    assert await db.get_progression(ctx["session_prog_id"]) == []
+    assert ctx["message_retry_queues"][0].pending_count == 1
+    assert ctx["new_msg_ids"] == []
+
+    next_message = await branch.msgs.a_add_message(instruction="next")
+
+    assert await db.get_progression(ctx["branch_prog_id"]) == [
+        str(lost.id),
+        str(next_message.id),
+    ]
+    assert await db.get_progression(ctx["session_prog_id"]) == [
+        str(lost.id),
+        str(next_message.id),
+    ]
+    assert await db.get_message(str(lost.id)) is not None
+    assert await db.get_message(str(next_message.id)) is not None
+    assert ctx["message_retry_queues"][0].pending_count == 0
+    assert ctx["new_msg_ids"] == [str(lost.id), str(next_message.id)]
+
+    await _teardown_live_persist(ctx, status="completed")
+
+
+async def test_hook_preserves_order_when_first_queued_retry_fails_again(
+    temp_db_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """A later event cannot bypass an earlier queued event that still fails."""
+    from lionagi.protocols.messages.manager import MessageManager
+
+    branch = Branch(name="b1")
+    ctx = await _setup_live_persist(branch)
+    original_persist = StateDB._persist_live_message
+    attempted_ids: list[str] = []
+
+    async def fail_persist(self, message, **kwargs):
+        attempted_ids.append(message["id"])
+        raise RuntimeError("simulated transient failure")
+
+    monkeypatch.setattr(StateDB, "_persist_live_message", fail_persist)
+
+    first = MessageManager.create_instruction(
+        instruction="first",
+        sender="user",
+        recipient=str(branch.id),
+    )
+    await ctx["hook"](first)
+    attempted_ids.clear()
+
+    second = MessageManager.create_instruction(
+        instruction="second",
+        sender="user",
+        recipient=str(branch.id),
+    )
+    await ctx["hook"](second)
+
+    assert attempted_ids == [str(first.id)]
+    assert ctx["message_retry_queues"][0].pending_count == 2
+    async with StateDB() as db:
+        assert await db.get_message(str(second.id)) is None
+        assert await db.get_progression(ctx["branch_prog_id"]) == []
+
+    monkeypatch.setattr(StateDB, "_persist_live_message", original_persist)
+    await _teardown_live_persist(ctx, status="completed")
+
+
 async def test_hook_updates_system_msg_id_when_system_replaced(
     temp_db_path: Path,
 ):
