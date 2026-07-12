@@ -75,6 +75,35 @@ async def _make_show(db: StateDB, *, status: str = "active") -> dict:
     return show
 
 
+async def _make_live_persist_fixture(db: StateDB) -> tuple[str, str, str, str]:
+    session_id = "live-persist-session"
+    session_prog_id = "live-persist-session-progression"
+    branch_id = "live-persist-branch"
+    branch_prog_id = "live-persist-branch-progression"
+    await db.create_progression(session_prog_id)
+    await db.create_progression(branch_prog_id)
+    await db.create_session(
+        {
+            "id": session_id,
+            "created_at": 100.0,
+            "progression_id": session_prog_id,
+            "status": "running",
+            "started_at": 100.0,
+            "last_message_at": 100.0,
+            "updated_at": 100.0,
+        }
+    )
+    await db.create_branch(
+        {
+            "id": branch_id,
+            "created_at": 100.0,
+            "session_id": session_id,
+            "progression_id": branch_prog_id,
+        }
+    )
+    return session_id, session_prog_id, branch_id, branch_prog_id
+
+
 # ── Connection lifecycle ───────────────────────────────────────────────────────
 
 
@@ -293,6 +322,92 @@ async def test_insert_message_idempotent(db: StateDB):
             .first()
         )
     assert row["n"] == 1
+
+
+async def test_persist_live_message_uses_one_transaction_and_preserves_rows(db: StateDB):
+    """The live message bundle matches the prior writes in one SQLite transaction."""
+    baseline = StateDB(":memory:")
+    await baseline.open()
+    try:
+        session_id, session_prog_id, branch_id, branch_prog_id = await _make_live_persist_fixture(
+            db
+        )
+        await _make_live_persist_fixture(baseline)
+        msg = make_message(role="assistant")
+        msg["id"] = "live-persist-message"
+        msg["created_at"] = 200.0
+
+        await baseline.insert_message(msg)
+        await baseline.append_to_progression(branch_prog_id, msg["id"])
+        await baseline.append_to_progression(session_prog_id, msg["id"])
+        await baseline.touch_session_activity(session_id, at=msg["created_at"])
+
+        statements: list[str] = []
+        async with db._read() as conn:
+            raw_conn = await conn.get_raw_connection()
+            await raw_conn.driver_connection.set_trace_callback(statements.append)
+        try:
+            await db._persist_live_message(
+                msg,
+                session_id=session_id,
+                branch_progression_id=branch_prog_id,
+                session_progression_id=session_prog_id,
+                activity_at=msg["created_at"],
+            )
+        finally:
+            async with db._read() as conn:
+                raw_conn = await conn.get_raw_connection()
+                await raw_conn.driver_connection.set_trace_callback(None)
+
+        tx_statements = [statement.strip().upper() for statement in statements]
+        assert tx_statements.count("BEGIN IMMEDIATE") == 1
+        assert tx_statements.count("COMMIT") == 1
+        assert await db.get_message(msg["id"]) == await baseline.get_message(msg["id"])
+        assert await db.get_progression(branch_prog_id) == await baseline.get_progression(
+            branch_prog_id
+        )
+        assert await db.get_progression(session_prog_id) == await baseline.get_progression(
+            session_prog_id
+        )
+        assert await db.get_session(session_id) == await baseline.get_session(session_id)
+        assert await db.get_branch(branch_id) == await baseline.get_branch(branch_id)
+    finally:
+        await baseline.close()
+
+
+async def test_persist_live_message_rolls_back_when_last_statement_fails(db: StateDB):
+    """A failure on activity touch leaves no message or progression orphan."""
+    from sqlalchemy import event
+
+    session_id, session_prog_id, _branch_id, branch_prog_id = await _make_live_persist_fixture(db)
+    msg = make_message(role="assistant")
+    msg["id"] = "live-persist-rollback-message"
+    msg["created_at"] = 200.0
+
+    def fail_activity_touch(conn, cursor, statement, parameters, context, executemany):
+        if statement.startswith("UPDATE sessions SET last_message_at"):
+            raise RuntimeError("simulated final live-persist statement failure")
+
+    event.listen(db._engine.sync_engine, "before_cursor_execute", fail_activity_touch)
+    try:
+        with pytest.raises(RuntimeError, match="final live-persist statement"):
+            await db._persist_live_message(
+                msg,
+                session_id=session_id,
+                branch_progression_id=branch_prog_id,
+                session_progression_id=session_prog_id,
+                activity_at=msg["created_at"],
+            )
+    finally:
+        event.remove(db._engine.sync_engine, "before_cursor_execute", fail_activity_touch)
+
+    assert await db.get_message(msg["id"]) is None
+    assert await db.get_progression(branch_prog_id) == []
+    assert await db.get_progression(session_prog_id) == []
+    session = await db.get_session(session_id)
+    assert session is not None
+    assert session["last_message_at"] == 100.0
+    assert session["updated_at"] == 100.0
 
 
 async def test_resolve_lion_class_known(db: StateDB):

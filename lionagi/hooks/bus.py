@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import logging
 from collections.abc import Awaitable, Callable
+from contextvars import ContextVar
 from enum import Enum
 from typing import TYPE_CHECKING, Any
 
@@ -18,6 +19,13 @@ if TYPE_CHECKING:
     from lionagi.session.observer import SessionObserver
 
 logger = logging.getLogger("lionagi.hooks")
+
+_emitting_bus: ContextVar[HookBus | None] = ContextVar("emitting_hook_bus", default=None)
+
+
+def _current_emitting_bus() -> HookBus | None:
+    return _emitting_bus.get()
+
 
 __all__ = (
     "HookPoint",
@@ -119,19 +127,30 @@ class HookBus:
         if point is HookPoint.TOOL_PRE:
             await self.blocking_emit(point, **kwargs)
             return
-        handlers = list(self._handlers.get(point, []))
-        for handler in handlers:
-            try:
-                await maybe_await(handler(**kwargs))
-            except StopHook:
-                break
-            except Exception:  # noqa: BLE001 — hook isolation invariant
-                logger.exception("Hook failed: %s", point.value)
+        token = _emitting_bus.set(self)
+        try:
+            if point is HookPoint.SESSION_END:
+                await self.flush_message_retries()
+            handlers = list(self._handlers.get(point, []))
+            for handler in handlers:
+                try:
+                    await maybe_await(handler(**kwargs))
+                except StopHook:
+                    break
+                except Exception:  # noqa: BLE001 — hook isolation invariant
+                    logger.exception("Hook failed: %s", point.value)
+        finally:
+            _emitting_bus.reset(token)
         # MESSAGE_ADD is represented on the signal bus by MessageAdded (emitted
         # directly via on_message_added); a redundant HookSignal here would
         # duplicate every message event on the observable stream.
         if point is not HookPoint.MESSAGE_ADD:
             await self._record(point, kwargs)
+
+    async def flush_message_retries(self) -> None:
+        """Flush default message-hook retries before terminal lifecycle work."""
+        for retry_queue in getattr(self, "_message_retry_queues", {}).values():
+            await retry_queue.flush()
 
 
 # ── Decorator for user-defined handlers ───────────────────────────────────────
