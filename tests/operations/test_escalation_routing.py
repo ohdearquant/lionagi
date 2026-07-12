@@ -298,6 +298,80 @@ async def test_escalation_via_result_extraction():
 # ---------------------------------------------------------------------------
 
 
+# ---------------------------------------------------------------------------
+# Help-signal urgency: urgency="fyi" -> "notify" route, non-hanging
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_help_signal_fyi_defaults_to_notify_route():
+    """A soft ('fyi') EscalationRequest defaults to route='notify': NodeEscalated
+    still fires for visibility, but the op is neither retried nor marked
+    escalated — the help-signal channel is orthogonal to the op's own
+    completion (an unanswered help signal must never hang the worker)."""
+    escalated_signals: list[NodeEscalated] = []
+
+    async def chatty(**kw):
+        return EscalationRequest(reason="fyi, just letting you know", urgency="fyi")
+
+    session = _session(chatty=chatty)
+    session.observe(NodeEscalated, handler=lambda s, _: escalated_signals.append(s))
+
+    builder = OperationGraphBuilder()
+    builder.add_operation("chatty")
+    graph = builder.get_graph()
+
+    result = await flow(session, graph, reactive=True)
+    await asyncio.sleep(0)
+
+    assert len(escalated_signals) >= 1
+    assert escalated_signals[0].route == "notify"
+    assert result["spawned_operations"] == 0
+    assert result["escalated_operations"] == []
+
+
+@pytest.mark.asyncio
+async def test_help_signal_blocked_urgency_preserves_higher_tier_default():
+    """Back-compat: urgency='blocked' (the default) preserves the historical
+    higher_tier retry when no explicit route is given."""
+
+    async def stuck(**kw):
+        return EscalationRequest(reason="blocked", urgency="blocked")
+
+    session = _session(stuck=stuck)
+
+    builder = OperationGraphBuilder()
+    builder.add_operation("stuck")
+    graph = builder.get_graph()
+
+    result = await flow(session, graph, reactive=True)
+
+    assert result["spawned_operations"] >= 1
+
+
+@pytest.mark.asyncio
+async def test_help_signal_explicit_route_overrides_urgency_default():
+    """An explicit context['route'] always wins over the urgency-derived default."""
+
+    async def soft_but_explicit_giveup(**kw):
+        return EscalationRequest(
+            reason="fyi but give up anyway",
+            urgency="fyi",
+            context={"route": "give_up"},
+        )
+
+    session = _session(soft_but_explicit_giveup=soft_but_explicit_giveup)
+
+    builder = OperationGraphBuilder()
+    builder.add_operation("soft_but_explicit_giveup")
+    graph = builder.get_graph()
+
+    result = await flow(session, graph, reactive=True)
+
+    assert result["spawned_operations"] == 0
+    assert len(result["escalated_operations"]) >= 1
+
+
 @pytest.mark.asyncio
 async def test_escalation_observer_failure_does_not_change_flow_result(caplog, monkeypatch):
     """A raising session.emit() (NodeEscalated observer) is consumed and logged;

@@ -6,9 +6,9 @@
 from __future__ import annotations
 
 import re
-from typing import Literal
+from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from lionagi.ln.types import Operable, Spec
 
@@ -398,19 +398,48 @@ class Postmortem(_EmissionModel):
 
 
 class EscalationRequest(_EmissionModel):
-    """Hand off to a human or higher authority — the universal escape hatch."""
+    """Hand off to a human or higher authority, or ask for help while continuing.
+
+    ``urgency`` is the single authoritative field for how hard the ask is:
+    ``"fyi"`` is soft (work continues, this is informational — a help
+    signal), ``"blocked"`` is hard (work cannot continue without a resolution
+    — the original escalation semantics). ``blocking`` is a read-only,
+    back-compat alias for ``urgency == "blocked"``; it can no longer be set
+    directly (a legacy ``blocking=`` constructor kwarg is still accepted and
+    mapped onto ``urgency`` for one release of grace) and will be removed in
+    a future release — set ``urgency`` instead.
+    """
 
     reason: str = Field(
-        description="Why escalation is needed — the blocker or decision beyond your authority."
+        description="Why escalation is needed — the blocker, uncertainty, or decision beyond your authority."
     )
     context: dict = Field(
         default_factory=dict,
         description="Structured context the recipient needs to decide (relevant state, options).",
     )
-    blocking: bool = Field(
-        default=True, description="Whether work cannot continue until this is resolved."
+    urgency: Literal["fyi", "blocked"] = Field(
+        default="blocked",
+        description=(
+            "'fyi': soft — you are continuing, this is informational (a help signal). "
+            "'blocked': hard — you cannot proceed until this is resolved (the default, "
+            "matching the historical 'blocking=True' behavior)."
+        ),
     )
     from_role: str | None = Field(default=None, description="The role raising the escalation.")
+
+    @model_validator(mode="before")
+    @classmethod
+    def _map_legacy_blocking(cls, data: Any) -> Any:
+        if isinstance(data, dict) and "blocking" in data:
+            data = dict(data)
+            legacy = data.pop("blocking")
+            data.setdefault("urgency", "blocked" if legacy else "fyi")
+        return data
+
+    @property
+    def blocking(self) -> bool:
+        """Deprecated back-compat alias for ``urgency == "blocked"``. Read-only."""
+        return self.urgency == "blocked"
 
 
 class SpawnRequest(_EmissionModel):

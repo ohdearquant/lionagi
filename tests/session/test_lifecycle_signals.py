@@ -97,6 +97,39 @@ def test_lane_for_escalated_via_structured_output():
     assert lane_for([NodeStarted(), so]) == "escalated"
 
 
+def test_lane_for_fyi_help_signal_via_node_escalated_is_not_terminal():
+    """A soft ('fyi') help signal is informational only — it must not pin
+    the node into the terminal 'escalated' lane (urgency reconciliation:
+    urgency='blocked' is the only urgency that projects to 'escalated')."""
+    from lionagi.casts.emission import EscalationRequest
+
+    req = EscalationRequest(reason="fyi", urgency="fyi")
+    sig = NodeEscalated(op_id="x", name="x", reason="fyi", route="notify", escalation_request=req)
+    # lane stays at the last real state ('running'), not pinned to 'escalated'.
+    assert lane_for([NodeStarted(), sig]) == "running"
+
+
+def test_lane_for_fyi_help_signal_via_structured_output_is_not_terminal():
+    from lionagi.casts.emission import EscalationRequest
+
+    req = EscalationRequest(reason="fyi", urgency="fyi")
+    so = StructuredOutput(data=req)
+    # lane stays at the last real state ('running'), not pinned to 'escalated'.
+    assert lane_for([NodeStarted(), so]) == "running"
+
+
+def test_lane_for_blocked_help_signal_via_node_escalated_is_terminal():
+    """urgency='blocked' (explicit or default) still projects to 'escalated' —
+    this preserves the original give_up/higher_tier behavior exactly."""
+    from lionagi.casts.emission import EscalationRequest
+
+    req = EscalationRequest(reason="blocked", urgency="blocked")
+    sig = NodeEscalated(
+        op_id="x", name="x", reason="blocked", route="give_up", escalation_request=req
+    )
+    assert lane_for([NodeStarted(), sig]) == "escalated"
+
+
 def test_lane_for_terminal_sticky_succeeded():
     signals = [NodeStarted(), NodeCompleted(), NodeFailed()]
     assert lane_for(signals) == "succeeded"

@@ -41,6 +41,7 @@ from ._orchestration import (
     available_roles,
     build_worker_branch,
     finalize_orchestration,
+    make_help_coordinator,
     mode_roster,
     parse_orchestrator_provider,
     resolve_modes,
@@ -1034,7 +1035,11 @@ async def _execute_dag(
         )
     escalated_agent_ids = [entry["id"] for entry in escalated_evidence]
     if escalated_evidence:
-        env._escalated_evidence = escalated_evidence
+        # Merge, don't overwrite: a team-mode "blocked" help signal (see
+        # make_help_coordinator) may already have appended entries to
+        # env._escalated_evidence mid-run via the messenger callback.
+        prior_evidence = getattr(env, "_escalated_evidence", None) or []
+        env._escalated_evidence = [*prior_evidence, *escalated_evidence]
 
     agent_results: list[dict] = []
 
@@ -1752,6 +1757,7 @@ async def _run_flow_inner(
     if env.team_data:
         env.exchange = Exchange()
         env.messenger = LionMessenger(env.exchange)
+        env.messenger.on("help", make_help_coordinator(env))
         env.roster = {}
 
     budget_preambles: dict[int, str] = {}

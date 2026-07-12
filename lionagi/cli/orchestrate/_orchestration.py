@@ -51,6 +51,7 @@ __all__ = (
     "resolve_worker_spec",
     "setup_orchestration",
     "build_worker_branch",
+    "make_help_coordinator",
     "finalize_orchestration",
     "start_live_persist",
     "stop_live_persist",
@@ -588,6 +589,33 @@ async def build_worker_branch(
         messenger_bound = True
 
     return wb, w_model, w_profile, messenger_bound
+
+
+def make_help_coordinator(env: OrchestrationEnv) -> Any:
+    """Build the rung-2 coordinator callback for ``LionMessenger``'s "help" event.
+
+    Plain Python routing logic — no LLM call, matching the shape
+    ``ReactiveExecutor._schedule_escalation`` already uses for flow-mode.
+    Every help signal is logged for bring-up visibility; a "blocked"-urgency
+    signal is additionally folded into ``env._escalated_evidence``, the same
+    list the human rung already surfaces post-hoc in the run summary (rung 4
+    stays post-hoc by default). Model-bump (rung 3) and
+    synchronous human paging are out of scope for this coordinator.
+    """
+
+    def _on_help(*, name: str, sender_id: Any, reason: str, urgency: str = "fyi") -> None:
+        _log_orch.info(
+            "help signal from %s (urgency=%s): %s",
+            name,
+            urgency,
+            reason,
+        )
+        if urgency == "blocked":
+            entry = {"kind": "help_signal", "id": name, "label": reason}
+            existing = getattr(env, "_escalated_evidence", None) or []
+            env._escalated_evidence = [*existing, entry]
+
+    return _on_help
 
 
 def finalize_orchestration(

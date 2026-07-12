@@ -852,13 +852,23 @@ class ReactiveExecutor(DependencyAwareExecutor):
         self._schedule_escalation(req, emitter=_CURRENT_OP.get())
 
     def _schedule_escalation(self, req: Any, *, emitter: Operation | None) -> None:
-        """Consume an EscalationRequest: higher_tier re-spawns the op; give_up just signals."""
+        """Consume an EscalationRequest/help signal.
+
+        Route resolution: an explicit ``context["route"]`` always wins.
+        Otherwise the default route follows ``urgency`` — "blocked" (the
+        historical default) still defaults to "higher_tier" (retry); a soft
+        "fyi" help signal defaults to "notify" (informational, no retry, the
+        emitting node's own completion is untouched — an unanswered help
+        semantics: a help signal must never hang or redirect the worker).
+        """
         if id(req) in self._seen_reqs:
             return
         self._seen_reqs.add(id(req))
 
         context = getattr(req, "context", {}) or {}
-        route = context.get("route", "higher_tier")
+        urgency = getattr(req, "urgency", "blocked")
+        default_route = "higher_tier" if urgency == "blocked" else "notify"
+        route = context.get("route", default_route)
 
         reason = getattr(req, "reason", "")
         emitter_id = emitter.id if emitter is not None else None
@@ -879,6 +889,12 @@ class ReactiveExecutor(DependencyAwareExecutor):
             child.metadata["escalated_from"] = op_id
             if self._accept_node(child, emitter_id=emitter_id, independent=True):
                 self._escalated_ids.add(emitter_id)
+        elif route == "notify":
+            # Soft help signal: NodeEscalated already fired above for
+            # observability; the node is NOT marked escalated (it still
+            # completes on its own terms — orthogonal channel, not a
+            # give-up/retry decision).
+            pass
         else:
             if emitter_id is not None:
                 self._escalated_ids.add(emitter_id)

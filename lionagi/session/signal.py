@@ -178,12 +178,17 @@ class NodeAwaitingApproval(Signal):
 
 
 class NodeEscalated(Signal):
-    """A DAG node escalated; route is "higher_tier" or "give_up" (see docs/reference/testing-state-session.md)."""
+    """A DAG node escalated or sent a help signal.
+
+    route is "higher_tier" (retry), "give_up" (terminal), or "notify" (soft
+    help signal — informational only, the node's own lifecycle is
+    unaffected). See docs/reference/testing-state-session.md.
+    """
 
     op_id: str = ""
     name: str = ""
     reason: str = ""
-    route: str = ""  # "higher_tier" | "give_up"
+    route: str = ""  # "higher_tier" | "give_up" | "notify"
     escalation_request: Any = None
 
 
@@ -219,12 +224,22 @@ def _signal_to_state(sig: Any) -> NodeLifecycleState | None:
     if isinstance(sig, NodeFailed | RunFailed):
         return "failed"
     if isinstance(sig, NodeEscalated):
+        req = sig.escalation_request
+        # A soft ("fyi") help signal is informational only — the emitting
+        # node keeps working toward its own terminal state, so it must not
+        # get pinned into the terminal "escalated" lane. Only a "blocked"
+        # urgency (the default, matching historical give_up/higher_tier
+        # behavior) or an unaccompanied signal (no request attached, e.g.
+        # a bare NodeEscalated built directly) is treated as escalated.
+        if getattr(req, "urgency", "blocked") == "fyi":
+            return None
         return "escalated"
-    # StructuredOutput carrying an EscalationRequest also projects to escalated.
+    # StructuredOutput carrying an EscalationRequest also projects to escalated,
+    # unless it is a soft ("fyi") help signal.
     if isinstance(sig, StructuredOutput):
         from lionagi.casts.emission import EscalationRequest  # noqa: PLC0415
 
-        if isinstance(sig.data, EscalationRequest):
+        if isinstance(sig.data, EscalationRequest) and sig.data.urgency != "fyi":
             return "escalated"
     return None
 
