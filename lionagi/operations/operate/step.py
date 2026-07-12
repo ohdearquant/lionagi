@@ -15,6 +15,16 @@ if TYPE_CHECKING:
     from pydantic import BaseModel
 
 
+_DEFAULT_SPECS = {}
+
+
+def _get_default_spec(kind: str):
+    """Return the immutable Spec used by a standard Operative field."""
+    if kind not in _DEFAULT_SPECS:
+        _DEFAULT_SPECS[kind] = get_default_field(kind).to_spec()
+    return _DEFAULT_SPECS[kind]
+
+
 class Step:
     """Factory methods for creating pre-configured Operative instances (ReAct, QA, task execution)."""
 
@@ -92,13 +102,13 @@ class Step:
         fields_dict = {}
 
         if reason:
-            reason_spec = get_default_field("reason").to_spec()
+            reason_spec = _get_default_spec("reason")
             fields_dict["reason"] = reason_spec
 
         if actions:
-            fields_dict["action_required"] = get_default_field("action_required").to_spec()
-            fields_dict["action_requests"] = get_default_field("action_requests").to_spec()
-            fields_dict["action_responses"] = get_default_field("action_responses").to_spec()
+            fields_dict["action_required"] = _get_default_spec("action_required")
+            fields_dict["action_requests"] = _get_default_spec("action_requests")
+            fields_dict["action_responses"] = _get_default_spec("action_responses")
 
         if fields:
             for field_name, spec in fields.items():
