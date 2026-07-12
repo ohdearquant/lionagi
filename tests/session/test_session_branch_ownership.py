@@ -84,6 +84,107 @@ class TestCrossSessionInclude:
         assert len(session.branches) == 2  # default branch + b
 
 
+class TestSessionHookAttachment:
+    """Hook-bus attachment must not depend on whether `include_branches()` or
+    the first `Session.hooks` access happens first."""
+
+    async def test_hook_delivery_is_construction_order_invariant(self):
+        from lionagi.hooks import HookPoint
+
+        async def deliver(bus, members):
+            received = []
+
+            async def capture(*, member, **_):
+                received.append(member)
+
+            bus.on(HookPoint.TOOL_POST, capture)
+            for label, branch in members:
+                assert branch._hooks is bus
+                await branch._hooks.emit(HookPoint.TOOL_POST, member=label)
+            return received
+
+        hooks_then_include = Session()
+        bus_a = hooks_then_include.hooks
+        extra_a = Branch(name="extra")
+        hooks_then_include.include_branches(extra_a)
+
+        include_then_hooks = Session()
+        extra_b = Branch(name="extra")
+        include_then_hooks.include_branches(extra_b)
+        bus_b = include_then_hooks.hooks
+
+        delivered_a = await deliver(
+            bus_a,
+            [
+                ("default", hooks_then_include.default_branch),
+                ("extra", extra_a),
+            ],
+        )
+        delivered_b = await deliver(
+            bus_b,
+            [
+                ("default", include_then_hooks.default_branch),
+                ("extra", extra_b),
+            ],
+        )
+
+        assert delivered_a == ["default", "extra"]
+        assert delivered_b == delivered_a
+
+    def test_include_then_hooks_attaches_default_and_explicit_branch(self):
+        """Branches present before the first `session.hooks` access (the
+        constructor's default branch, and one explicitly included early)
+        must both receive the bus once it is created."""
+        session = Session()
+        explicit = Branch(name="explicit")
+        session.include_branches(explicit)
+
+        bus = session.hooks
+
+        assert session.default_branch._hooks is bus
+        assert explicit._hooks is bus
+
+    def test_hooks_then_include_still_attaches_new_branch(self):
+        """The reverse order keeps working: a branch included after the bus
+        already exists gets the same bus (unchanged existing behavior)."""
+        session = Session()
+        bus = session.hooks
+        branch = Branch(name="late")
+
+        session.include_branches(branch)
+
+        assert branch._hooks is bus
+        assert session.default_branch._hooks is bus
+
+    async def test_remove_detaches_branch_from_functional_hook_delivery(self):
+        """After removal, the branch's own hook-emission guard must no
+        longer deliver — proving detachment beyond the `_hooks is None`
+        identity check already covered by TestRemoveBranchTeardown."""
+        from lionagi.hooks import HookPoint
+
+        session = Session()
+        bus = session.hooks
+        branch = Branch(name="b")
+        session.include_branches(branch)
+        assert branch._hooks is bus
+
+        received = []
+
+        async def capture(**kw):
+            received.append(kw["branch_id"])
+
+        bus.on(HookPoint.MESSAGE_ADD, capture)
+
+        await branch._persist_via_bus({"role": "user"})
+        assert received == [str(branch.id)]
+
+        session.remove_branch(branch)
+        assert branch._hooks is None
+
+        await branch._persist_via_bus({"role": "user"})
+        assert received == [str(branch.id)]  # unchanged: removed branch is a no-op
+
+
 class TestRemoveBranchTeardown:
     def test_remove_clears_routing_keeps_data(self):
         session = Session()
