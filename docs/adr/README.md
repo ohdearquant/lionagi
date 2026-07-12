@@ -155,7 +155,7 @@ collisions. Unused numbers inside a block are intentional gaps, not missing docu
   service
 - [ADR-0059](ADR-0059-durable-dispatch-outbox.md) — Durable dispatch outbox
 - [ADR-0060](ADR-0060-run-supervision-terminal-callback-and-orphan-detection.md) — Run
-  supervision: generic terminal callback and two-stage orphan detection
+  supervision: generic terminal callback and two-stage orphan detection (superseded by ADR-0095)
 - 0061 — unused (intentional gap)
 
 ### cli-surface (0062-0067)
@@ -219,7 +219,8 @@ collisions. Unused numbers inside a block are intentional gaps, not missing docu
   fidelity contract
 - [ADR-0094](ADR-0094-automated-pr-review-pipeline.md) — Automated PR-review pipeline over
   github-poll schedules
-- 0095 — unused (intentional gap)
+- [ADR-0095](ADR-0095-run-terminal-callbacks-and-orphan-recovery.md) — Run-terminal
+  callbacks and orphan recovery (supersedes ADR-0060)
 
 Remaining areas land here as their records are accepted.
 
