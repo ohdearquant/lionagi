@@ -14,7 +14,7 @@ from typing import Any
 
 import anyio
 
-from benchmarks._compat import lionagi_provenance, soft_import
+from benchmarks._compat import dep_version, lionagi_provenance, soft_import
 
 _sym = soft_import("lionagi.ln", ["alcall", "bcall", "to_list"])
 _sym.update(soft_import("lionagi.ln._hash", ["hash_dict"]))
@@ -200,12 +200,10 @@ async def run_benchmarks_async(repeat: int) -> dict[str, Any]:
 
 
 def system_info() -> dict[str, Any]:
-    import anyio as _anyio
-
     return {
         "python": sys.version.split()[0],
         "platform": platform.platform(),
-        "anyio": getattr(_anyio, "__version__", "unknown"),
+        "anyio": dep_version("anyio"),
         "timestamp": datetime.now(timezone.utc).isoformat(),
         **lionagi_provenance(),
     }

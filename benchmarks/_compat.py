@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import importlib
+import importlib.metadata
 import sys
 
 
@@ -35,6 +36,26 @@ def soft_import(module_path: str, names: list[str]) -> dict[str, object | None]:
             )
         out[name] = obj
     return out
+
+
+def dep_version(distribution_name: str) -> str:
+    """Installed version of a distribution, by package metadata rather than
+    `module.__version__`.
+
+    Some packages (anyio, on the release this repo currently locks) use a
+    lazy `__getattr__` module loader that raises for any name it doesn't
+    recognize, including `__version__` -- `getattr(module, "__version__",
+    "unknown")` silently returns "unknown" in that case even though the
+    version is perfectly well defined in the package's own metadata. This
+    matters here because ci_check_provenance.py compares these values
+    across the baseline/current arms to catch dependency-version drift; a
+    field that always reads "unknown" would make that check pass trivially
+    without checking anything.
+    """
+    try:
+        return importlib.metadata.version(distribution_name)
+    except importlib.metadata.PackageNotFoundError:
+        return "unknown"
 
 
 def lionagi_provenance() -> dict[str, str]:

@@ -110,11 +110,35 @@ jobs:
           set -euo pipefail
           git worktree add --detach "$RUNNER_TEMP/lionagi-baseline" "$BASELINE_SHA"
           uv venv "$RUNNER_TEMP/.venv-baseline" --python ${{ matrix.python-version }}
-          # Pin trio to the same version used by the current venv so the
-          # trio backend isn't itself a variable in the comparison.
-          trio_version=$(.venv/bin/python -c "import trio; print(trio.__version__)")
+          # Same-machine A/B applies to the dependency axis too, not just
+          # the interpreter and the OS: only the lionagi implementation
+          # should differ between arms. Export every package version
+          # uv.lock actually resolved for the current venv and pass it as
+          # a constraints file to the baseline install, so anyio, orjson,
+          # and every other shared dependency land on identical versions
+          # in both venvs -- otherwise a compare delta could be dependency
+          # drift (a transitive package released a new version between
+          # the baseline commit and today) rather than a lionagi change.
+          # Drop the `-e file://...` line: that is this checkout's own
+          # editable lionagi entry, and constraining the *baseline*
+          # install to point back at the *current* checkout's source
+          # would defeat the whole point of building a separate baseline.
+          # If the baseline commit's own pyproject.toml requirements are
+          # incompatible with a constraint from today's lock (e.g. a
+          # dependency floor or cap that has since changed), `uv pip
+          # install` fails this step outright with an unresolvable-
+          # constraints error rather than silently falling back to an
+          # unconstrained resolution -- treated as a hard CI failure here,
+          # consistent with this workflow's fail-loud posture elsewhere.
+          uv pip freeze --python .venv/bin/python | grep -v '^-e ' > "$RUNNER_TEMP/current-deps.constraints.txt"
+          # trio is a dev-only extra, not a runtime dependency of the
+          # lionagi package itself, so it must be requested explicitly (a
+          # constraints file only pins versions of packages something else
+          # already pulls in -- it can't cause trio to be installed on its
+          # own). Its version still comes from the constraints file above.
           uv pip install --python "$RUNNER_TEMP/.venv-baseline/bin/python" \
-            "$RUNNER_TEMP/lionagi-baseline" "trio==$trio_version"
+            --constraints "$RUNNER_TEMP/current-deps.constraints.txt" \
+            "$RUNNER_TEMP/lionagi-baseline" trio
 
       - name: Build neutral bench harness (no sibling lionagi/ source dir)
         run: |

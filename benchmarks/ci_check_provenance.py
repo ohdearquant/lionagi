@@ -7,11 +7,17 @@ from pathlib import Path
 
 SUITES = ["concurrency-asyncio", "concurrency-trio", "ln-asyncio", "ln-trio", "fuzzy"]
 
+# Shared (non-lionagi) dependency versions recorded in each result JSON's
+# meta. These must match across baseline and current: the baseline venv's
+# install is now constrained to the current venv's resolved versions (see
+# benchmarks.yml), so any drift here means that constraint mechanism broke.
+SHARED_DEP_META_KEYS = ["anyio", "orjson"]
+
 
 def check(baseline_dir: Path, current_dir: Path, suites: list[str]) -> bool:
-    """Return True iff, for every suite, (1) baseline and current used
-    distinct lionagi installs, and (2) current covers every scenario
-    baseline reported.
+    """Return True iff, for every suite: (1) baseline and current used
+    distinct lionagi installs, (2) current covers every scenario baseline
+    reported, and (3) shared dependency versions match across both arms.
 
     (1) is only meaningful if the baseline run and the current run
     actually imported different code. A prior version of this job ran
@@ -34,6 +40,17 @@ def check(baseline_dir: Path, current_dir: Path, suites: list[str]) -> bool:
     ci_compare.py only iterates current's results, so it would never
     notice the scenario went missing. Any scenario present in baseline
     but absent from current fails this check.
+
+    (3) guards the dependency axis of the same-machine A/B design: only
+    the lionagi implementation should differ between baseline and
+    current, not a transitive dependency's version. If a package like
+    anyio or orjson released a newer version between the baseline commit
+    and today, an unconstrained baseline install could pick it up while
+    current stays pinned to what uv.lock resolved (or vice versa), and a
+    compare delta could then reflect dependency drift instead of a
+    lionagi change. benchmarks.yml constrains the baseline install to
+    current's exact resolved versions; this is the check that the
+    constraint actually held.
     """
     ok = True
     for suite in suites:
@@ -84,6 +101,25 @@ def check(baseline_dir: Path, current_dir: Path, suites: list[str]) -> bool:
                 file=sys.stderr,
             )
             ok = False
+
+        b_meta = baseline.get("meta", {})
+        c_meta = current.get("meta", {})
+        for dep in SHARED_DEP_META_KEYS:
+            b_version = b_meta.get(dep)
+            c_version = c_meta.get(dep)
+            if not b_version or not c_version:
+                continue  # not applicable to this suite (e.g. orjson outside fuzzy)
+            if b_version != c_version:
+                print(
+                    f"[provenance] {suite}: {dep} version differs between arms -- "
+                    f"baseline={b_version} current={c_version}. A compare delta for "
+                    "this suite could reflect this dependency's version change "
+                    "instead of a lionagi change; the baseline install's constraint "
+                    "on current's resolved versions (see benchmarks.yml) did not "
+                    "hold.",
+                    file=sys.stderr,
+                )
+                ok = False
     return ok
 
 
