@@ -68,6 +68,7 @@ async def _setup_run_persist(
         "session_prog_id": session_prog_id,
         "branch_prog_ids": {},
         "hooks": [],
+        "message_retry_queues": [],
     }
     session.observer.bind_db_persistence(session_id, db=db)
     for branch in session.branches:
