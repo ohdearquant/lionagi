@@ -291,13 +291,6 @@ VALID_STATUSES_BY_ENTITY_TYPE: dict[str, frozenset[str]] = {
 }
 
 
-def can_transition(current: str | None, target: str) -> bool:
-    """Return True iff a session may move from *current* to *target*."""
-    if current != "running":
-        return False
-    return target in SESSION_TERMINAL_STATUSES
-
-
 # Re-exported (not redefined) so `from lionagi.state.db import
 # TransitionRejectedError` is unchanged for existing callers — the lifecycle
 # adapter module raises this same class object; see

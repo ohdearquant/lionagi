@@ -18,7 +18,6 @@ from lionagi.state.db import (
     SESSION_TERMINAL_STATUSES,
     VALID_SESSION_STATUSES,
     StateDB,
-    can_transition,
 )
 
 # ── Fixtures ──────────────────────────────────────────────────────────────────
@@ -76,31 +75,6 @@ def test_admin_targets_exclude_completed_and_timed_out():
     assert "completed" not in ADMIN_TRANSITION_TARGETS
     assert "timed_out" not in ADMIN_TRANSITION_TARGETS
     assert ADMIN_TRANSITION_TARGETS == frozenset({"failed", "aborted", "cancelled"})
-
-
-# ── can_transition ────────────────────────────────────────────────────────────
-
-
-def test_can_transition_only_from_running():
-    for target in SESSION_TERMINAL_STATUSES:
-        assert can_transition("running", target)
-
-
-def test_can_transition_rejects_terminal_origin():
-    for current in SESSION_TERMINAL_STATUSES:
-        for target in SESSION_TERMINAL_STATUSES:
-            assert not can_transition(current, target), (
-                f"transition {current!r} → {target!r} should be rejected"
-            )
-
-
-def test_can_transition_rejects_unknown_target():
-    assert not can_transition("running", "in_progress")
-    assert not can_transition("running", "stale")  # stale = health, not status
-
-
-def test_can_transition_rejects_none_origin():
-    assert not can_transition(None, "completed")
 
 
 # ── DB-level validation ───────────────────────────────────────────────────────
