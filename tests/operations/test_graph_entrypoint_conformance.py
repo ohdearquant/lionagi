@@ -677,6 +677,45 @@ def _pattern_capture_names(pattern: ast.pattern) -> set[str]:
     return names
 
 
+def _scope_global_nonlocal_names(stmts: list[ast.stmt]) -> set[str]:
+    """Every name declared ``global`` or ``nonlocal`` anywhere in ONE lexical
+    scope's statement list *stmts*, descending transparently into
+    control-flow bodies (a ``global``/``nonlocal`` nested inside an
+    ``if``/``try``/``for``/``while``/``with``/``match``-case/class body still
+    applies to the whole enclosing function scope) but stopping at a nested
+    ``FunctionDef``/``AsyncFunctionDef``/``Lambda`` -- those own their own
+    ``global``/``nonlocal`` declarations, mirroring the exact scope-boundary
+    logic ``_collect_scope_binding_events`` uses."""
+    names: set[str] = set()
+    for stmt in stmts:
+        if isinstance(stmt, (ast.Global, ast.Nonlocal)):
+            names.update(stmt.names)
+        elif isinstance(stmt, ast.If):
+            names.update(_scope_global_nonlocal_names(stmt.body))
+            names.update(_scope_global_nonlocal_names(stmt.orelse))
+        elif isinstance(stmt, ast.Try):
+            names.update(_scope_global_nonlocal_names(stmt.body))
+            for handler in stmt.handlers:
+                names.update(_scope_global_nonlocal_names(handler.body))
+            names.update(_scope_global_nonlocal_names(stmt.orelse))
+            names.update(_scope_global_nonlocal_names(stmt.finalbody))
+        elif isinstance(stmt, (ast.For, ast.AsyncFor)):
+            names.update(_scope_global_nonlocal_names(stmt.body))
+            names.update(_scope_global_nonlocal_names(stmt.orelse))
+        elif isinstance(stmt, ast.While):
+            names.update(_scope_global_nonlocal_names(stmt.body))
+            names.update(_scope_global_nonlocal_names(stmt.orelse))
+        elif isinstance(stmt, (ast.With, ast.AsyncWith)):
+            names.update(_scope_global_nonlocal_names(stmt.body))
+        elif isinstance(stmt, ast.Match):
+            for case in stmt.cases:
+                names.update(_scope_global_nonlocal_names(case.body))
+        elif isinstance(stmt, ast.ClassDef):
+            names.update(_scope_global_nonlocal_names(stmt.body))
+        # FunctionDef/AsyncFunctionDef/Lambda: a new scope: stop here.
+    return names
+
+
 def _collect_scope_binding_events(
     stmts: list[ast.stmt], conditional: bool, events: list[_BindingEvent]
 ) -> None:
@@ -992,7 +1031,13 @@ class _SinkVisitor(ast.NodeVisitor):
             # assigned only inside an if/try/match-case is still a lexical
             # local for the whole function, so an inherited same-named
             # binding from the enclosing scope must not leak through here.
-            for name in _scope_bound_names(events):
+            # EXCEPT a name declared `global`/`nonlocal` anywhere in this
+            # scope (see _scope_global_nonlocal_names): such a name is NOT a
+            # function-local at all -- every reference and rebinding in this
+            # function operates on the enclosing binding, so it must not be
+            # discarded from inherited provenance the way a genuine local is.
+            declared = _scope_global_nonlocal_names(node.body)
+            for name in _scope_bound_names(events) - declared:
                 env.discard(name)
                 bound.pop(name, None)
             _replay_binding_events(events, bound, env)
@@ -2117,6 +2162,159 @@ def test_del_target_masks_inherited_importlib_provenance(tmp_path):
         f"{sorted(discovery.executor_sites)}"
     )
     assert ("del_masks.py", "run") not in discovery.call_sites
+
+
+def test_global_declared_name_not_masked_discovers_executor_with_as(tmp_path):
+    """A name carrying a `global NAME` declaration is NOT a lexical local of
+    the function -- Python resolves every reference and rebinding of it
+    against the module-level binding, regardless of any `with ... as NAME`
+    (or other binder-form) rebind nested in a branch that never actually
+    runs. The masking pass must not discard inherited provenance for such a
+    name: here `with contextlib.nullcontext() as importlib` never executes
+    (guarded by `if False`), so `importlib` is still the module-level import
+    at the getattr call, and this is a genuine executor construction site.
+    Verified against `symtable`: `importlib.is_local() == False` for `run`,
+    the opposite of the with-as-without-`global` case pinned by
+    test_with_as_target_masks_inherited_importlib_provenance."""
+    import symtable as _symtable
+
+    rogue = tmp_path / "global_declared_with_as.py"
+    source = (
+        "import contextlib\n"
+        "import importlib\n\n\n"
+        "def run(session, graph):\n"
+        "    global importlib\n"
+        "    if False:\n"
+        "        with contextlib.nullcontext() as importlib:\n"
+        "            pass\n"
+        '    return getattr(importlib.import_module("lionagi.operations.flow"), '
+        '"DependencyAwareExecutor")(session, graph)\n'
+    )
+    rogue.write_text(source)
+
+    top = _symtable.symtable(source, str(rogue), "exec")
+    (func_table,) = (c for c in top.get_children() if c.get_name() == "run")
+    assert not func_table.lookup("importlib").is_local()
+
+    discovery = discover_call_and_construct_sites(tmp_path, base=tmp_path)
+
+    key = ("global_declared_with_as.py", "run")
+    assert key in discovery.call_sites, (
+        "a global-declared name must not be masked by a never-entered with-as rebind — "
+        f"found: {sorted(discovery.call_sites)}"
+    )
+    assert discovery.executor_sites == {key}, (
+        "the global-declared importlib construction must be flagged as an executor site — "
+        f"got: {sorted(discovery.executor_sites)}"
+    )
+
+
+def test_global_declared_name_not_masked_discovers_executor_except_as(tmp_path):
+    """Same `global`-not-a-local principle for an `except ... as NAME`
+    binder: the handler that would rebind `importlib` never fires (the `try`
+    body raises nothing), so at the getattr call `importlib` is still the
+    module-level import. The `global importlib` declaration must keep that
+    provenance visible rather than masking it the way an ordinary (non-
+    `global`) `except ... as importlib` does in
+    test_except_as_target_masks_inherited_importlib_provenance."""
+    rogue = tmp_path / "global_declared_except_as.py"
+    rogue.write_text(
+        "import importlib\n\n\n"
+        "def run(session, graph):\n"
+        "    global importlib\n"
+        "    try:\n"
+        "        pass\n"
+        "    except Exception as importlib:\n"
+        "        pass\n"
+        '    return getattr(importlib.import_module("lionagi.operations.flow"), '
+        '"DependencyAwareExecutor")(session, graph)\n'
+    )
+
+    discovery = discover_call_and_construct_sites(tmp_path, base=tmp_path)
+
+    key = ("global_declared_except_as.py", "run")
+    assert key in discovery.call_sites, (
+        "a global-declared name must not be masked by a never-fired except-as rebind — "
+        f"found: {sorted(discovery.call_sites)}"
+    )
+    assert discovery.executor_sites == {key}, (
+        "the global-declared importlib construction must be flagged as an executor site — "
+        f"got: {sorted(discovery.executor_sites)}"
+    )
+
+
+def test_global_declared_name_not_masked_discovers_executor_del(tmp_path):
+    """Same `global`-not-a-local principle for `del NAME`: the `del
+    importlib` inside `if False` never executes, so `importlib` is still
+    bound at the getattr call. The `global importlib` declaration must keep
+    that provenance visible rather than masking it the way an ordinary
+    (non-`global`) `del importlib` does in
+    test_del_target_masks_inherited_importlib_provenance."""
+    rogue = tmp_path / "global_declared_del.py"
+    rogue.write_text(
+        "import importlib\n\n\n"
+        "def run(session, graph):\n"
+        "    global importlib\n"
+        "    if False:\n"
+        "        del importlib\n"
+        '    return getattr(importlib.import_module("lionagi.operations.flow"), '
+        '"DependencyAwareExecutor")(session, graph)\n'
+    )
+
+    discovery = discover_call_and_construct_sites(tmp_path, base=tmp_path)
+
+    key = ("global_declared_del.py", "run")
+    assert key in discovery.call_sites, (
+        "a global-declared name must not be masked by a never-entered del rebind — "
+        f"found: {sorted(discovery.call_sites)}"
+    )
+    assert discovery.executor_sites == {key}, (
+        "the global-declared importlib construction must be flagged as an executor site — "
+        f"got: {sorted(discovery.executor_sites)}"
+    )
+
+
+def test_nonlocal_declared_name_not_masked_discovers_executor(tmp_path):
+    """`nonlocal NAME` carries the same not-a-local principle one scope
+    level up: an inner function that declares `nonlocal importlib` resolves
+    every reference and rebinding of it against the OUTER function's
+    binding, not its own. Here the inner function's `if False: del
+    importlib` never executes, so `importlib` still denotes the outer
+    function's `importlib` module object at the getattr call, and this is a
+    genuine executor construction site. Verified against `symtable`:
+    `importlib.is_local() == False` for the inner function."""
+    import symtable as _symtable
+
+    rogue = tmp_path / "nonlocal_declared.py"
+    source = (
+        "def outer(session, graph):\n"
+        "    import importlib\n\n"
+        "    def inner():\n"
+        "        nonlocal importlib\n"
+        "        if False:\n"
+        "            del importlib\n"
+        '        return getattr(importlib.import_module("lionagi.operations.flow"), '
+        '"DependencyAwareExecutor")(session, graph)\n\n'
+        "    return inner()\n"
+    )
+    rogue.write_text(source)
+
+    top = _symtable.symtable(source, str(rogue), "exec")
+    (outer_table,) = (c for c in top.get_children() if c.get_name() == "outer")
+    (inner_table,) = (c for c in outer_table.get_children() if c.get_name() == "inner")
+    assert not inner_table.lookup("importlib").is_local()
+
+    discovery = discover_call_and_construct_sites(tmp_path, base=tmp_path)
+
+    key = ("nonlocal_declared.py", "outer.inner")
+    assert key in discovery.call_sites, (
+        "a nonlocal-declared name must not be masked by a never-entered del rebind — "
+        f"found: {sorted(discovery.call_sites)}"
+    )
+    assert discovery.executor_sites == {key}, (
+        "the nonlocal-declared importlib construction must be flagged as an executor site — "
+        f"got: {sorted(discovery.executor_sites)}"
+    )
 
 
 def test_session_flow_and_flow_stream_are_discovered_via_bare_import_not_hardcoding(tmp_path):
