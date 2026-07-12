@@ -63,6 +63,7 @@ def role_node_builder(
     roles: dict[str, Branch],
     *,
     decorate_instruction: Callable[[SpawnRequest, str], str] | None = None,
+    start: int = 1,
 ):
     """Return a node_builder closure that routes SpawnRequests to role branches.
 
@@ -72,6 +73,14 @@ def role_node_builder(
     same artifact-directory + REQUIRED-file text a planned leg gets (see
     ``lionagi.cli.orchestrate.flow``); library/engine callers that pass
     nothing keep the plain no-artifact instruction.
+
+    *start* seeds the closure's spawn-id sequence past whatever ordinals a
+    caller already handed out in a prior generation (e.g. a CLI resume that
+    reconstructed completed spawns from a checkpoint) — this closure is
+    rebuilt fresh every generation, so without it a brand new sequence
+    starting back at 1 would reissue an id already used by a restored node,
+    and any live spawn this generation would collide with it (same
+    spawn_id, same artifact directory).
     """
     # Closure-scoped monotonic sequence: the ONLY correct source of a spawned
     # node's stable id. It must be allocated here, at construction time,
@@ -82,7 +91,7 @@ def role_node_builder(
     # spawn". Minting the id at completion-time let an unrelated node "steal"
     # spawn-1 depending on which sibling happened to finish first — that is
     # the bug this closure exists to fix.
-    _next_spawn_seq = itertools.count(1)
+    _next_spawn_seq = itertools.count(start)
 
     def build(req: SpawnRequest, emitter: Operation) -> Operation:
         # Defense-in-depth: validate the operation at the routing boundary even

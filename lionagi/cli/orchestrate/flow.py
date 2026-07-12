@@ -879,6 +879,22 @@ async def _execute_dag(
     # cannot quietly fan out to dozens of (costly) child agents. Either way,
     # spawns already restored from a checkpoint count against it.
     max_spawn = max(0, (max_ops - len(assignments) if max_ops > 0 else 20) - restored_spawn_count)
+    # role_node_builder's spawn-id sequence is closure-scoped and rebuilt
+    # fresh below every generation — on resume it must start past whatever
+    # ordinals the restored spawns already used, or a live spawn this
+    # generation reissues the same spawn_id (and artifact directory) as a
+    # restored one. Takes the MAX existing ordinal + 1 rather than assuming
+    # count == max: a crashed run can have gaps (a spawn allocated but never
+    # completed before the crash never made it into `spawned` at all), so
+    # counting restored entries would double-allocate into that gap.
+    _spawn_seq_start = 1
+    for _entry in checkpoint_spawned_seed or []:
+        _sid = _entry.get("spawn_id")
+        if not _sid:
+            continue
+        _, _, _suffix = _sid.rpartition("-")
+        if _suffix.isdigit():
+            _spawn_seq_start = max(_spawn_seq_start, int(_suffix) + 1)
 
     heartbeat_interval = 60
     max_idle_seconds = 600
@@ -1151,7 +1167,11 @@ async def _execute_dag(
             reactive=reactive,
             spawn_type=SpawnRequest if reactive else None,
             node_builder=(
-                role_node_builder(role_base, decorate_instruction=_decorate_spawn_instruction)
+                role_node_builder(
+                    role_base,
+                    decorate_instruction=_decorate_spawn_instruction,
+                    start=_spawn_seq_start,
+                )
                 if reactive
                 else None
             ),

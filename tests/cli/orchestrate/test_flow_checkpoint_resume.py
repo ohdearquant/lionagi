@@ -1473,6 +1473,163 @@ async def test_resumed_run_with_only_restored_spawns_triggers_synthesis(tmp_path
     synthesize_mock.assert_called_once()
 
 
+# ── Spawn-id sequence: resume must not reissue a restored spawn's id ────────
+
+
+def test_role_node_builder_start_seeds_first_spawn_id_past_restored_ordinal():
+    """Direct proof of the resume-facing knob: role_node_builder(..., start=2)
+    must issue spawn-2 for the first live spawn built through it, not
+    spawn-1 -- the exact collision (same spawn_id, same artifact directory,
+    since the CLI derives one from the other) a resumed run's fresh closure
+    would otherwise reissue against an already-restored spawn-1.
+    """
+    from lionagi.casts.emission import SpawnRequest
+    from lionagi.orchestration.patterns import role_node_builder
+
+    build = role_node_builder({}, start=2)
+    node = build(SpawnRequest(instruction="follow-up"), None)
+
+    assert node.metadata["spawn_id"] == "spawn-2"
+    assert node.metadata["reference_id"] == "spawn-2"
+
+
+async def test_execute_dag_seeds_spawn_sequence_past_restored_ordinal(tmp_path: Path):
+    """When resuming a checkpoint that already restored spawn-1, the fresh
+    role_node_builder(...) this _execute_dag call constructs must start its
+    sequence at 2, not 1 -- otherwise any pending op that emits a new spawn
+    after the resume reuses spawn-1's id (and artifact directory) instead of
+    representing a distinct spawned operation.
+    """
+    env = _make_resume_env(tmp_path)
+    env.session = Session(default_branch=Branch(name="orchestrator"))
+    env.run.checkpoint_path = tmp_path / "checkpoint.json"
+
+    assignments = [TaskAssignment(task="write the brief", assignee="worker")]
+    plan_result = _PlanResult(
+        assignments=assignments,
+        agent_ids=["worker"],
+        dep_indices=[[]],
+        pool=[],
+        budget_preambles={},
+    )
+    dag_state = _DagState(
+        node_ids=["node-0"],
+        known_nodes={"node-0"},
+        deps_by_node={"node-0": []},
+        reactive=True,
+        spawn_roles=None,
+        role_base={},
+        worker_models=["claude"],
+    )
+    seeded_spawned = [
+        {
+            "node_id": str(uuid4()),
+            "status": "completed",
+            "response": "child done",
+            "operation": "operate",
+            "assignee": None,
+            "instruction": "follow-up",
+            "parent_id": "node-0",
+            "spawn_id": "spawn-1",
+        }
+    ]
+
+    fake_engine_run = MagicMock()
+    fake_engine_run.run_dag = AsyncMock(
+        return_value={"operation_results": {}, "spawned_operations": 0, "escalated_operations": []}
+    )
+
+    from lionagi.engines import PlanningEngine
+
+    with (
+        patch.object(PlanningEngine, "new_run", return_value=fake_engine_run),
+        patch("lionagi.cli.orchestrate.flow.role_node_builder") as role_node_builder_mock,
+    ):
+        await _execute_dag(
+            env,
+            plan_result,
+            dag_state,
+            max_concurrent=1,
+            max_ops=0,
+            checkpoint_prompt="write the brief",
+            checkpoint_plan=[{"agent_id": "worker"}],
+            checkpoint_config={"model_spec": "claude"},
+            checkpoint_spawned_seed=seeded_spawned,
+        )
+
+    assert role_node_builder_mock.call_args.kwargs["start"] == 2
+
+
+async def test_execute_dag_seeds_spawn_sequence_past_gap_in_restored_ordinals(tmp_path: Path):
+    """A crashed run may have gaps -- a spawn allocated (consuming an
+    ordinal from role_node_builder's sequence) but never reaching a
+    checkpointed terminal state before the crash never appears in a
+    checkpoint's `spawned` list at all. The next-ordinal seed must take the
+    MAX existing restored ordinal + 1, not len(restored) + 1, or it would
+    double-allocate into the gap and still collide. Restoring only
+    "spawn-3" (as if spawn-1/spawn-2 existed but crashed before completing)
+    must still seed the next sequence at 4, not 2.
+    """
+    env = _make_resume_env(tmp_path)
+    env.session = Session(default_branch=Branch(name="orchestrator"))
+    env.run.checkpoint_path = tmp_path / "checkpoint.json"
+
+    assignments = [TaskAssignment(task="write the brief", assignee="worker")]
+    plan_result = _PlanResult(
+        assignments=assignments,
+        agent_ids=["worker"],
+        dep_indices=[[]],
+        pool=[],
+        budget_preambles={},
+    )
+    dag_state = _DagState(
+        node_ids=["node-0"],
+        known_nodes={"node-0"},
+        deps_by_node={"node-0": []},
+        reactive=True,
+        spawn_roles=None,
+        role_base={},
+        worker_models=["claude"],
+    )
+    seeded_spawned = [
+        {
+            "node_id": str(uuid4()),
+            "status": "completed",
+            "response": "child done",
+            "operation": "operate",
+            "assignee": None,
+            "instruction": "follow-up",
+            "parent_id": "node-0",
+            "spawn_id": "spawn-3",
+        }
+    ]
+
+    fake_engine_run = MagicMock()
+    fake_engine_run.run_dag = AsyncMock(
+        return_value={"operation_results": {}, "spawned_operations": 0, "escalated_operations": []}
+    )
+
+    from lionagi.engines import PlanningEngine
+
+    with (
+        patch.object(PlanningEngine, "new_run", return_value=fake_engine_run),
+        patch("lionagi.cli.orchestrate.flow.role_node_builder") as role_node_builder_mock,
+    ):
+        await _execute_dag(
+            env,
+            plan_result,
+            dag_state,
+            max_concurrent=1,
+            max_ops=0,
+            checkpoint_prompt="write the brief",
+            checkpoint_plan=[{"agent_id": "worker"}],
+            checkpoint_config={"model_spec": "claude"},
+            checkpoint_spawned_seed=seeded_spawned,
+        )
+
+    assert role_node_builder_mock.call_args.kwargs["start"] == 4
+
+
 # ── Resume sequencing: planner skipped, finalization tail still runs ────────
 
 
