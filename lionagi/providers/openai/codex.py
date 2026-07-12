@@ -67,6 +67,8 @@ CodexReasoningEffort = Literal[
     "medium",
     "high",
     "xhigh",
+    "max",
+    "ultra",
 ]
 
 __all__ = ("CodexCodeRequest", "stream_codex_cli", "CodexCLIEndpoint")
@@ -217,10 +219,13 @@ class CodexCodeRequest(BaseModel):
     @model_validator(mode="before")
     @classmethod
     def _clamp_effort(cls, values):
-        """Clamp effort 'max' → 'xhigh' for both effort fields (Codex enum does not include 'max')."""
+        """Clamp max/ultra down to the target model's supported ceiling (model-dependent: the gpt-5.6 family accepts max, sol/terra also ultra; earlier models top out at xhigh)."""
+        from lionagi.service.providers import _clamp_codex_effort
+
         for key in ("reasoning_effort", "plan_mode_reasoning_effort"):
-            if values.get(key) == "max":
-                values[key] = "xhigh"
+            effort = values.get(key)
+            if isinstance(effort, str):
+                values[key] = _clamp_codex_effort(effort, values.get("model"))
         return values
 
     # ── images & config (special-cased) ───────────────────────────

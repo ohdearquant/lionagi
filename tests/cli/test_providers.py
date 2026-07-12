@@ -256,7 +256,7 @@ def test_resolve_persisted_effort_gemini_code_keeps_requested_effort():
 
 
 # ── mixed-case --effort on effort-via-model-name paths ─
-# All clamp tables (_CODEX_EFFORT_CLAMP, _clamp_claude_effort,
+# All clamp tables (_clamp_codex_effort, _clamp_claude_effort,
 # _GEMINI_EFFORT_CLAMP) are lowercase-keyed. A mixed-case --effort silently
 # misclamps instead of raising (worst on gemini: "High" -> "Medium" fallback).
 
@@ -317,3 +317,92 @@ def test_build_imodel_from_spec_mixed_case_xhigh_clamps_claude_to_high(monkeypat
     build_imodel_from_spec("claude/sonnet", effort_override="XHigh")
 
     assert captor.captures[0].get("effort") == "high"
+
+
+# ── model-dependent codex effort ceilings ─
+# Codex effort support varies by model: the gpt-5.6 family accepts max
+# (sol/terra also ultra); every earlier model tops out at xhigh. The clamp
+# must key on the target model, and unrecognized (future) models must pass
+# through rather than silently degrade.
+
+
+@pytest.mark.parametrize(
+    ("model", "effort", "expected"),
+    [
+        ("gpt-5.6-sol", "max", "max"),
+        ("gpt-5.6-sol", "ultra", "ultra"),
+        ("gpt-5.6-terra", "ultra", "ultra"),
+        ("gpt-5.6-luna", "max", "max"),
+        ("gpt-5.6-luna", "ultra", "max"),
+        ("gpt-5.5", "max", "xhigh"),
+        ("gpt-5.5", "ultra", "xhigh"),
+        ("gpt-5.4", "max", "xhigh"),
+        ("gpt-5.3-codex-spark", "ultra", "xhigh"),
+        ("gpt-5.7-future", "ultra", "ultra"),
+        ("gpt-5.6-sol", "high", "high"),
+        (None, "max", "max"),
+    ],
+)
+def test_clamp_codex_effort_is_model_aware(model, effort, expected):
+    from lionagi.service.providers import _clamp_codex_effort
+
+    assert _clamp_codex_effort(effort, model) == expected
+
+
+def test_build_imodel_from_spec_codex_sol_keeps_max(monkeypatch):
+    """gpt-5.6-sol supports max natively — no clamp to xhigh."""
+    import lionagi.cli._providers as pmod
+    from lionagi.testing import IModelKwargCaptor
+
+    captor = IModelKwargCaptor.fresh()
+    monkeypatch.setattr(pmod, "iModel", captor)
+
+    build_imodel_from_spec("codex/gpt-5.6-sol", effort_override="max")
+
+    assert captor.captures[0].get("reasoning_effort") == "max"
+
+
+def test_build_imodel_from_spec_codex_sol_ultra_suffix_parses_and_passes(monkeypatch):
+    """The -ultra effort suffix parses off the spec and reaches codex intact
+    on a model that supports it."""
+    import lionagi.cli._providers as pmod
+    from lionagi.testing import IModelKwargCaptor
+
+    captor = IModelKwargCaptor.fresh()
+    monkeypatch.setattr(pmod, "iModel", captor)
+
+    build_imodel_from_spec("codex/gpt-5.6-sol-ultra")
+
+    assert captor.captures[0].get("reasoning_effort") == "ultra"
+
+
+def test_build_imodel_from_spec_codex_old_model_clamps_ultra(monkeypatch):
+    """A model without max/ultra support clamps both down to xhigh."""
+    import lionagi.cli._providers as pmod
+    from lionagi.testing import IModelKwargCaptor
+
+    captor = IModelKwargCaptor.fresh()
+    monkeypatch.setattr(pmod, "iModel", captor)
+
+    build_imodel_from_spec("codex/gpt-5.5", effort_override="ultra")
+
+    assert captor.captures[0].get("reasoning_effort") == "xhigh"
+
+
+def test_claude_ultra_clamps_to_max(monkeypatch):
+    """Claude has no ultra tier: ultra clamps to max for every model."""
+    from lionagi.service.providers import _clamp_claude_effort
+
+    assert _clamp_claude_effort("ultra", "claude-opus-4-7") == "max"
+    assert _clamp_claude_effort("ultra", "claude-sonnet-5") == "max"
+
+
+def test_gemini_ultra_folds_to_high():
+    """agy has no ultra tier: ultra folds onto the High model suffix."""
+    from lionagi.cli._providers import build_chat_model
+
+    chat_model = build_chat_model(
+        "gemini-code", "gemini-3.5-flash", False, False, None, "ultra", False
+    )
+    assert isinstance(chat_model, str)
+    assert "High" in chat_model
