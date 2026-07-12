@@ -21,12 +21,16 @@ The executor-construction scan statically recognizes: a direct
 ``DependencyAwareExecutor(...)``/``ReactiveExecutor(...)`` call; a
 ``from ... import DependencyAwareExecutor as X`` import alias; a bare
 assignment alias one level deep (``X = DependencyAwareExecutor`` or
-``X = <existing alias>``); and a literal ``getattr(<anything>,
-"DependencyAwareExecutor")`` dynamic-lookup call, whether assigned to a name
-first or called inline. It does not perform general data-flow analysis:
-resolution through a factory function's return value, a non-literal string
-argument, or an alias threaded through more than one intermediate assignment
-is not tracked and remains a residual bypass.
+``X = <existing alias>``), processed in source order with rebinding to
+anything unrecognized dropping the alias again; and a literal
+``getattr(<flow module>, "DependencyAwareExecutor")`` dynamic-lookup call —
+recognized only when the receiver statically denotes
+``lionagi.operations.flow`` — whether assigned to a name first or called
+inline. It does not perform general data-flow analysis: resolution through a
+factory function's return value, a non-literal string argument, an alias
+threaded through more than one intermediate assignment, or a lexically scoped
+rebinding (function-local shadowing of a module-level alias) is not tracked
+and remains a residual imprecision.
 
 Registering a location in the manifest is necessary but not sufficient: any
 row that names an ``expected_target`` must also name a ``delegation_test`` —
@@ -457,17 +461,63 @@ def _collect_kernel_import_bindings(tree: ast.AST) -> set[str]:
     return bound
 
 
-def _resolve_constructor_alias_rhs(value: ast.expr, bound: dict[str, str]) -> str | None:
+_FLOW_MODULE_PATH = "lionagi.operations.flow"
+
+
+def _dotted_name(expr: ast.expr) -> str | None:
+    """Render a Name/Attribute chain as a dotted path, or None if any link
+    is not a plain attribute access."""
+    parts: list[str] = []
+    while isinstance(expr, ast.Attribute):
+        parts.append(expr.attr)
+        expr = expr.value
+    if isinstance(expr, ast.Name):
+        parts.append(expr.id)
+        return ".".join(reversed(parts))
+    return None
+
+
+def _is_flow_module_expr(expr: ast.expr, flow_module_names: frozenset[str] | set[str]) -> bool:
+    """True when *expr* statically denotes the flow kernel module: a local
+    name bound to it by import or ``importlib.import_module`` assignment, the
+    fully dotted module path, or an inline ``import_module`` call with the
+    exact literal path."""
+    if isinstance(expr, ast.Name) and expr.id in flow_module_names:
+        return True
+    if isinstance(expr, ast.Name | ast.Attribute) and _dotted_name(expr) == _FLOW_MODULE_PATH:
+        return True
+    if isinstance(expr, ast.Call) and len(expr.args) == 1:
+        callee = expr.func
+        callee_name = (
+            callee.attr if isinstance(callee, ast.Attribute) else getattr(callee, "id", None)
+        )
+        return (
+            callee_name == "import_module"
+            and isinstance(expr.args[0], ast.Constant)
+            and expr.args[0].value == _FLOW_MODULE_PATH
+        )
+    return False
+
+
+def _resolve_constructor_alias_rhs(
+    value: ast.expr,
+    bound: dict[str, str],
+    flow_module_names: frozenset[str] | set[str] = frozenset(),
+) -> str | None:
     """If *value* is a bare tracked constructor name/alias, or a literal
-    ``getattr(<anything>, "<ConstructorName>")`` dynamic-lookup call naming
+    ``getattr(<flow module>, "<ConstructorName>")`` dynamic-lookup call naming
     one, return the canonical constructor name it resolves to. *bound* is the
     alias map accumulated so far, so an assignment can chain through an
     already-recognized alias one level deep (``Y = X`` where ``X`` was itself
-    an import or assignment alias). Only these two literal shapes are
-    recognized -- general data-flow (resolving a name threaded through more
-    than one intermediate assignment, a factory function's return value, or a
-    non-literal string argument) is out of scope and remains a residual
-    bypass; see the module docstring."""
+    an import or assignment alias). The ``getattr`` shape is recognized only
+    when its receiver statically denotes ``lionagi.operations.flow`` (a bound
+    module name, the dotted path, or a literal ``import_module`` call) --
+    ``getattr(plugin, "DependencyAwareExecutor")`` on an arbitrary object is
+    an unrelated same-named API, not a kernel-executor construction. Only
+    these literal shapes are recognized -- general data-flow (a name threaded
+    through more than one intermediate assignment, a factory function's
+    return value, or a non-literal string argument) is out of scope and
+    remains a residual bypass; see the module docstring."""
     if isinstance(value, ast.Name):
         if value.id in _CONSTRUCTOR_SINK_NAMES:
             return value.id
@@ -480,6 +530,7 @@ def _resolve_constructor_alias_rhs(value: ast.expr, bound: dict[str, str]) -> st
         and isinstance(value.args[1], ast.Constant)
         and isinstance(value.args[1].value, str)
         and value.args[1].value in _CONSTRUCTOR_SINK_NAMES
+        and _is_flow_module_expr(value.args[0], flow_module_names)
     ):
         return value.args[1].value
     return None
@@ -501,23 +552,55 @@ def _collect_constructor_import_bindings(tree: ast.AST) -> dict[str, str]:
     `GraphRunner(...).execute()`, a bare `GraphRunner = DependencyAwareExecutor`
     assignment, or a `getattr`-based dynamic lookup assigned to a name, must
     all be recognized as constructing ``DependencyAwareExecutor`` even though
-    the call site only ever mentions the local alias."""
+    the call site only ever mentions the local alias.
+
+    Assignments are processed in source order and an alias is DROPPED again
+    when its name is rebound to anything unrecognized (``GraphRunner =
+    SomethingElse`` after ``GraphRunner = DependencyAwareExecutor``), so a
+    rebound name is not misreported as an executor construction. This is a
+    flat, source-ordered binding model, not lexical scoping -- a
+    function-local rebinding of a module-level alias (or the reverse) is a
+    documented residual imprecision.
+
+    Returns ``(alias_map, flow_module_names)`` where the second element is
+    the set of local names statically bound to ``lionagi.operations.flow``
+    (via ``import``/``from ... import``/``importlib.import_module``
+    assignment), used to restrict ``getattr`` recognition to that module."""
     bound: dict[str, str] = {}
+    flow_modules: set[str] = set()
     for node in ast.walk(tree):
         if isinstance(node, ast.ImportFrom):
             for alias in node.names:
                 if alias.name in _CONSTRUCTOR_SINK_NAMES:
                     bound[alias.asname or alias.name] = alias.name
-    for node in ast.walk(tree):
-        if (
-            isinstance(node, ast.Assign)
-            and len(node.targets) == 1
-            and isinstance(node.targets[0], ast.Name)
-        ):
-            canonical = _resolve_constructor_alias_rhs(node.value, bound)
-            if canonical is not None:
-                bound[node.targets[0].id] = canonical
-    return bound
+            if node.module is not None:
+                for alias in node.names:
+                    if f"{node.module}.{alias.name}" == _FLOW_MODULE_PATH:
+                        flow_modules.add(alias.asname or alias.name)
+        elif isinstance(node, ast.Import):
+            for alias in node.names:
+                if alias.name == _FLOW_MODULE_PATH and alias.asname:
+                    flow_modules.add(alias.asname)
+    assigns = [
+        node
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Assign)
+        and len(node.targets) == 1
+        and isinstance(node.targets[0], ast.Name)
+    ]
+    for node in sorted(assigns, key=lambda n: (n.lineno, n.col_offset)):
+        target = node.targets[0].id
+        if _is_flow_module_expr(node.value, flow_modules):
+            flow_modules.add(target)
+            bound.pop(target, None)
+            continue
+        canonical = _resolve_constructor_alias_rhs(node.value, bound, flow_modules)
+        if canonical is not None:
+            bound[target] = canonical
+        else:
+            bound.pop(target, None)
+            flow_modules.discard(target)
+    return bound, flow_modules
 
 
 class _SinkVisitor(ast.NodeVisitor):
@@ -533,10 +616,12 @@ class _SinkVisitor(ast.NodeVisitor):
         self,
         kernel_names: set[str] = frozenset(),
         constructor_aliases: dict[str, str] = None,  # type: ignore[assignment]
+        flow_module_names: set[str] = frozenset(),
     ) -> None:
         self._stack: list[str] = []
         self._kernel_names = kernel_names
         self._constructor_aliases = constructor_aliases or {}
+        self._flow_module_names = flow_module_names
         self.hits: dict[str, set[str]] = {}
         self.linenos: dict[str, int] = {}
         self.executor_hits: set[str] = set()
@@ -594,7 +679,7 @@ class _SinkVisitor(ast.NodeVisitor):
         elif isinstance(func, ast.Call):
             # Inline dynamic lookup called directly, no intermediate name:
             # getattr(importlib.import_module(...), "DependencyAwareExecutor")(...)
-            canonical = _resolve_constructor_alias_rhs(func, {})
+            canonical = _resolve_constructor_alias_rhs(func, {}, self._flow_module_names)
             if canonical is not None:
                 self._record(
                     f"constructs {canonical}() (via dynamic getattr lookup)",
@@ -626,8 +711,8 @@ def discover_call_and_construct_sites(root: Path, *, base: Path = REPO_ROOT) -> 
         rel = path.relative_to(base).as_posix()
         tree = ast.parse(path.read_text(), filename=rel)
         kernel_names = _collect_kernel_import_bindings(tree)
-        constructor_aliases = _collect_constructor_import_bindings(tree)
-        visitor = _SinkVisitor(kernel_names, constructor_aliases)
+        constructor_aliases, flow_module_names = _collect_constructor_import_bindings(tree)
+        visitor = _SinkVisitor(kernel_names, constructor_aliases, flow_module_names)
         visitor.visit(tree)
         for qualname, reasons in visitor.hits.items():
             call_sites[(rel, qualname)] = reasons
@@ -665,8 +750,8 @@ def discover_session_facade_locations() -> dict[tuple[str, str], int]:
         except (OSError, TypeError, SyntaxError):
             continue
         kernel_names = _collect_kernel_import_bindings(tree)
-        constructor_aliases = _collect_constructor_import_bindings(tree)
-        visitor = _SinkVisitor(kernel_names, constructor_aliases)
+        constructor_aliases, flow_module_names = _collect_constructor_import_bindings(tree)
+        visitor = _SinkVisitor(kernel_names, constructor_aliases, flow_module_names)
         visitor._stack = ["Session"]
         visitor.visit(tree)
         qualname = f"Session.{name}"
@@ -886,6 +971,56 @@ def test_dynamic_getattr_executor_construction_is_discovered_by_ast_scan(tmp_pat
         "both dynamic-lookup DependencyAwareExecutor constructions must be flagged as "
         f"executor sites — got: {sorted(discovery.executor_sites)}"
     )
+
+
+def test_rebound_alias_is_not_misreported_as_executor_construction(tmp_path):
+    """A name that once aliased the executor but was rebound to something
+    else must not be reported as an executor construction: the call resolves
+    to the later binding, and flagging it would let the parity gate block a
+    legitimate module over a name it no longer holds."""
+    benign = tmp_path / "rebound_alias.py"
+    benign.write_text(
+        "from lionagi.operations.flow import DependencyAwareExecutor\n\n\n"
+        "class LocalRunner:\n"
+        "    async def execute(self):\n"
+        "        return None\n\n\n"
+        "GraphRunner = DependencyAwareExecutor\n"
+        "GraphRunner = LocalRunner\n\n\n"
+        "class OrdinaryCaller:\n"
+        "    async def run(self):\n"
+        "        return await GraphRunner().execute()\n"
+    )
+
+    discovery = discover_call_and_construct_sites(tmp_path, base=tmp_path)
+
+    assert discovery.executor_sites == set(), (
+        "a rebound alias must not register as an executor site — got: "
+        f"{sorted(discovery.executor_sites)}"
+    )
+    assert ("rebound_alias.py", "OrdinaryCaller.run") not in discovery.call_sites
+
+
+def test_getattr_on_arbitrary_object_is_not_misreported_as_executor_construction(tmp_path):
+    """`getattr(plugin, "DependencyAwareExecutor")` on an arbitrary receiver
+    is an unrelated same-named API, not a kernel-executor construction; only
+    receivers statically denoting lionagi.operations.flow (bound module name,
+    dotted path, or literal import_module call) are recognized."""
+    benign = tmp_path / "plugin_getattr.py"
+    benign.write_text(
+        "class PluginHost:\n"
+        "    async def run(self, plugin, session, graph):\n"
+        '        runner = getattr(plugin, "DependencyAwareExecutor")\n'
+        "        await runner(session, graph).execute()\n"
+        '        return await getattr(plugin, "DependencyAwareExecutor")(session, graph).execute()\n'
+    )
+
+    discovery = discover_call_and_construct_sites(tmp_path, base=tmp_path)
+
+    assert discovery.executor_sites == set(), (
+        "getattr on an arbitrary object must not register as an executor site — got: "
+        f"{sorted(discovery.executor_sites)}"
+    )
+    assert ("plugin_getattr.py", "PluginHost.run") not in discovery.call_sites
 
 
 def test_session_flow_and_flow_stream_are_discovered_via_bare_import_not_hardcoding(tmp_path):
