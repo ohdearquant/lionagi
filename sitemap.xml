@@ -569,6 +569,10 @@
          <lastmod>2026-07-12</lastmod>
     </url>
     <url>
+         <loc>https://ohdearquant.github.io/lionagi/adr/ADR-0048-interoperable-external-hooks/</loc>
+         <lastmod>2026-07-12</lastmod>
+    </url>
+    <url>
          <loc>https://ohdearquant.github.io/lionagi/adr/ADR-0050-foundational-utility-and-typed-adaptation-strata/</loc>
          <lastmod>2026-07-12</lastmod>
     </url>
@@ -682,6 +686,10 @@
     </url>
     <url>
          <loc>https://ohdearquant.github.io/lionagi/adr/ADR-0087-evidence-backed-governed-execution/</loc>
+         <lastmod>2026-07-12</lastmod>
+    </url>
+    <url>
+         <loc>https://ohdearquant.github.io/lionagi/adr/ADR-0088-plugin-system/</loc>
          <lastmod>2026-07-12</lastmod>
     </url>
     <url>
