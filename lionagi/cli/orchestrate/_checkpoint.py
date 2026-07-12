@@ -24,7 +24,7 @@ __all__ = (
     "resolve_checkpoint_target",
 )
 
-CHECKPOINT_VERSION = 1
+CHECKPOINT_VERSION = 2
 
 
 class FlowResumeError(LionError):
@@ -90,15 +90,36 @@ class CheckpointWriter:
         status: str,
         response: Any,
         flow_context: dict[str, Any] | None = None,
+        operation: str | None = None,
+        assignee: str | None = None,
+        instruction: str | None = None,
+        parent_id: str | None = None,
     ) -> None:
         """Record one reactively spawned node's outcome, keyed by its own node id.
 
         Spawned nodes must never share the `ops` keyspace: a spawned child's
         branch can carry a name identical to a planned agent_id's, so using
         that name as the key would silently overwrite the planned entry.
+
+        operation/assignee/instruction/parent_id (added in CHECKPOINT_VERSION 2)
+        are what resume needs to reconstruct the spawned node into a fresh
+        graph — the operation type, its routed role (if any), the instruction
+        it ran with, and the node id of whichever op's completion produced the
+        SpawnRequest (None for an independent spawn or one with no emitter). A
+        checkpoint written before this field set existed carries entries
+        without `operation`; resume treats those as unreconstructable and
+        refuses only for the affected node(s), not the whole run.
         """
         async with self._lock:
-            entry = {"node_id": node_id, "status": status, "response": response}
+            entry = {
+                "node_id": node_id,
+                "status": status,
+                "response": response,
+                "operation": operation,
+                "assignee": assignee,
+                "instruction": instruction,
+                "parent_id": parent_id,
+            }
             for i, existing in enumerate(self.spawned):
                 if existing.get("node_id") == node_id:
                     self.spawned[i] = entry

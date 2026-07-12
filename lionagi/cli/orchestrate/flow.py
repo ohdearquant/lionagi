@@ -591,6 +591,111 @@ async def _build_dag(
 # ── Resume: pre-mark checkpoint-completed nodes ───────────────────────────────
 
 
+def _reconstruct_spawned_nodes(
+    env: OrchestrationEnv,
+    dag_state: _DagState,
+    checkpoint_spawned: list[dict],
+) -> None:
+    """Rebuild reactively spawned nodes from a checkpoint into the fresh graph.
+
+    A reactively spawned node has no entry in the persisted plan (only
+    planned legs do) — it must be reconstructed from what its own `spawned`
+    checkpoint entry recorded, then pre-completed exactly like a planned node
+    so the executor's terminal-status short-circuit (never a live re-run)
+    picks it up.
+
+    Two things must hold for a given entry, checked BEFORE any node is added
+    to the graph so a refusal never leaves it partially mutated:
+
+    1. It must carry `operation` (added in CHECKPOINT_VERSION 2, alongside
+       `assignee`/`instruction`/`parent_id`) — a checkpoint written before
+       that field set existed has nothing to rebuild an Operation node from.
+    2. If it has a `parent_id`, that id must resolve to either a planned node
+       (already in the graph from _build_dag) or another entry in this same
+       `checkpoint_spawned` list. If it does not, the op that spawned this
+       node had not itself reached a checkpointed terminal state before the
+       crash — resuming it would either duplicate the spawn (the parent
+       re-runs and emits it again) or lose it outright (the parent never
+       re-emits it), a decision this version cannot soundly replay.
+
+    Either failure refuses resume for only the affected node(s), named in the
+    error, never the whole run merely because a spawn occurred.
+    """
+    from uuid import UUID as _UUID
+
+    from lionagi.operations.node import create_operation
+    from lionagi.protocols.graph.edge import Edge
+    from lionagi.protocols.types import EventStatus
+
+    legacy = [e for e in checkpoint_spawned if not e.get("operation")]
+    if legacy:
+        ids = ", ".join(str(e.get("node_id", "?")) for e in legacy)
+        raise FlowResumeError(
+            f"Resume refused for reactively spawned node(s) [{ids}]: this "
+            "checkpoint predates spawn-reconstruction support (no operation "
+            "type recorded for them), so they cannot be rebuilt. Re-run the "
+            "flow from scratch."
+        )
+
+    unrecognized = [
+        e["node_id"] for e in checkpoint_spawned if e.get("status") not in ("completed", "failed")
+    ]
+    if unrecognized:
+        raise FlowResumeError(
+            "Resume refused for reactively spawned node(s) "
+            f"[{', '.join(unrecognized)}]: checkpoint status is neither "
+            "'completed' nor 'failed', so it cannot be safely replayed."
+        )
+
+    known_ids = {str(n) for n in dag_state.node_ids}
+    candidate_ids = {e["node_id"] for e in checkpoint_spawned}
+
+    unsound = [
+        f"{e['node_id']} (parent {e['parent_id']})"
+        for e in checkpoint_spawned
+        if e.get("parent_id")
+        and e["parent_id"] not in known_ids
+        and e["parent_id"] not in candidate_ids
+    ]
+    if unsound:
+        raise FlowResumeError(
+            f"Resume refused for reactively spawned node(s) [{'; '.join(unsound)}]: "
+            "the op that spawned them had not itself reached a checkpointed "
+            "terminal state, so the spawn decision cannot be soundly replayed "
+            "— resuming risks either duplicating or silently dropping that "
+            "work. Re-run the flow from scratch."
+        )
+
+    graph = env.builder.get_graph()
+    built: dict[str, Any] = {}
+    for entry in checkpoint_spawned:
+        node_id = entry["node_id"]
+        assignee = entry.get("assignee")
+        node = create_operation(
+            entry["operation"],
+            parameters={"instruction": entry.get("instruction") or ""},
+            id=_UUID(node_id),
+            metadata={"assignee": assignee} if assignee else {},
+        )
+        node.execution.status = (
+            EventStatus.COMPLETED if entry["status"] == "completed" else EventStatus.FAILED
+        )
+        node.execution.response = entry.get("response")
+        role_branch = dag_state.role_base.get(assignee) if assignee else None
+        if role_branch is not None:
+            node.branch_id = role_branch.id
+        built[node_id] = node
+
+    for node in built.values():
+        graph.add_node(node)
+    for entry in checkpoint_spawned:
+        parent_id = entry.get("parent_id")
+        if not parent_id:
+            continue
+        parent_uuid = _UUID(parent_id) if parent_id in known_ids else built[parent_id].id
+        graph.add_edge(Edge(head=parent_uuid, tail=built[entry["node_id"]].id, label=["spawn"]))
+
+
 def _apply_checkpoint_precompletion(
     env: OrchestrationEnv,
     plan_result: _PlanResult,
@@ -607,21 +712,16 @@ def _apply_checkpoint_precompletion(
     FAILED rather than silently re-run (they may have had side effects before
     the process died). A pending op with inherit_context is refused unless the
     caller passes allow_degraded_context — resume restores results-context
-    only, not conversation history (v1). checkpoint_spawned refuses resume
-    outright when non-empty: reactively spawned nodes aren't replayable from
-    the persisted plan, and silently proceeding would drop completed work.
+    only, not conversation history (v1). checkpoint_spawned entries are
+    rebuilt into the graph and pre-completed the same way (see
+    _reconstruct_spawned_nodes) — resume refuses only the specific spawned
+    node(s) it genuinely cannot replay soundly, never the whole run just
+    because a spawn occurred.
     """
     from lionagi.protocols.types import EventStatus
 
     if checkpoint_spawned:
-        spawned_ids = ", ".join(str(e.get("node_id", "?")) for e in checkpoint_spawned)
-        raise FlowResumeError(
-            "Resume refused: this checkpoint recorded reactively spawned "
-            f"node(s) [{spawned_ids}] that this version cannot replay. "
-            "Resuming would silently drop that completed work. Re-run the "
-            "flow from scratch, or resume only checkpoints without spawned "
-            "entries."
-        )
+        _reconstruct_spawned_nodes(env, dag_state, checkpoint_spawned)
 
     graph = env.builder.get_graph()
     degraded: list[str] = []
@@ -819,10 +919,37 @@ async def _execute_dag(
                 )
             )
         else:
+            # Capture what resume needs to rebuild this node into a fresh
+            # graph: the operation type, its routed role (if any), and the
+            # instruction it ran with, read back off the still-live graph
+            # node (never removed once _accept_node adds it). parent_id
+            # comes straight off the signal — flow_progress_signals already
+            # resolves it (including through reactive spawns) via its own
+            # NodeSpawned observer. A lookup failure (should not normally
+            # happen) leaves operation/assignee/instruction unset, which
+            # resume treats as unreconstructable for this node alone.
+            spawn_fields: dict[str, Any] = {"parent_id": sig.parent_id}
+            with contextlib.suppress(Exception):
+                from uuid import UUID as _UUID
+
+                spawned_node = env.builder.get_graph().internal_nodes.get(_UUID(sig.op_id))
+                if spawned_node is not None:
+                    params = spawned_node.parameters
+                    spawn_fields["operation"] = spawned_node.operation
+                    spawn_fields["assignee"] = spawned_node.metadata.get("assignee")
+                    spawn_fields["instruction"] = (
+                        params.get("instruction")
+                        if isinstance(params, dict)
+                        else getattr(params, "instruction", None)
+                    )
             _checkpoint_tasks.append(
                 _asyncio.ensure_future(
                     _checkpoint_writer.record_spawned(
-                        sig.op_id, status=status, response=response, flow_context=flow_ctx
+                        sig.op_id,
+                        status=status,
+                        response=response,
+                        flow_context=flow_ctx,
+                        **spawn_fields,
                     )
                 )
             )

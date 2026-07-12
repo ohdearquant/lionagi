@@ -10,7 +10,7 @@ import json
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 import pytest
 
@@ -33,8 +33,10 @@ from lionagi.cli.orchestrate.flow import (
     _DagState,
     _execute_dag,
     _PlanResult,
+    _reconstruct_spawned_nodes,
     _run_flow_inner,
 )
+from lionagi.operations.builder import OperationGraphBuilder
 from lionagi.protocols.types import EventStatus
 from lionagi.session.signal import NodeCompleted, NodeFailed
 from lionagi.state.db import StateDB
@@ -207,7 +209,7 @@ async def test_checkpoint_writer_record_writes_valid_schema_no_leftover_tmp(tmp_
     assert not list(tmp_path.glob("checkpoint.*.tmp"))
 
     data = load_checkpoint(path)
-    assert data["version"] == 1
+    assert data["version"] == 2
     assert data["session_id"] == "sess-1"
     assert data["prompt"] == "do the thing"
     assert data["ops"]["worker"] == {
@@ -287,20 +289,41 @@ async def test_checkpoint_writer_record_spawned_keeps_separate_from_ops_and_dedu
     (clones inherit the source branch's name), so `ops` and `spawned` are kept
     as two distinct groves, and re-recording the same spawned node id updates
     its one entry rather than appending a duplicate.
+
+    Also pins the CHECKPOINT_VERSION 2 reconstruction fields (operation,
+    assignee, instruction, parent_id) round-tripping through the same entry,
+    and defaulting to None when the caller (an old-format write path, or one
+    that couldn't resolve the live graph node) omits them.
     """
     path = tmp_path / "checkpoint.json"
     writer = CheckpointWriter(path=path, session_id="s", prompt="p", plan=[], config={})
 
     await writer.record("critic", status="completed", response="planned-result")
     await writer.record_spawned("spawned-1", status="completed", response="child-result-v1")
-    await writer.record_spawned("spawned-1", status="completed", response="child-result-v2")
+    await writer.record_spawned(
+        "spawned-1",
+        status="completed",
+        response="child-result-v2",
+        operation="operate",
+        assignee="critic",
+        instruction="critique the draft",
+        parent_id="node-0",
+    )
 
     data = load_checkpoint(path)
     assert data["ops"] == {
         "critic": {"agent_id": "critic", "status": "completed", "response": "planned-result"}
     }
     assert data["spawned"] == [
-        {"node_id": "spawned-1", "status": "completed", "response": "child-result-v2"}
+        {
+            "node_id": "spawned-1",
+            "status": "completed",
+            "response": "child-result-v2",
+            "operation": "operate",
+            "assignee": "critic",
+            "instruction": "critique the draft",
+            "parent_id": "node-0",
+        }
     ]
 
 
@@ -432,11 +455,14 @@ def test_apply_checkpoint_precompletion_preserves_failed_ops_as_terminal_not_rer
 
 
 def test_apply_checkpoint_precompletion_refuses_when_spawned_entries_present():
-    """Replaying reactively spawned work on resume isn't implemented, so a
-    checkpoint that recorded any must refuse resume outright rather than
-    silently drop that completed work. Refusal is unconditional -- it is not
-    something --allow-degraded-context (a different concern) can bypass -- and
-    happens before any node is mutated.
+    """A checkpoint's `spawned` entries in the pre-CHECKPOINT_VERSION-2 shape
+    (no `operation` recorded) carry nothing resume can rebuild an Operation
+    node from, so they must refuse resume outright rather than silently drop
+    that completed work. Refusal is unconditional -- it is not something
+    --allow-degraded-context (a different concern) can bypass -- and happens
+    before any node is mutated. Contrast with
+    test_apply_checkpoint_precompletion_reconstructs_valid_spawned_entry_without_refusing
+    below, where a CHECKPOINT_VERSION-2-shaped entry resumes cleanly.
     """
     nodes = {"n-worker": _FakeNode("n-worker")}
     env = SimpleNamespace(
@@ -481,6 +507,269 @@ def test_apply_checkpoint_precompletion_refuses_when_spawned_entries_present():
             checkpoint_spawned=checkpoint_spawned,
         )
     assert nodes["n-worker"].execution.status is None
+
+
+# ── _reconstruct_spawned_nodes: sound resume-after-partial-reactive-run ─────
+#
+# These use a REAL OperationGraphBuilder/Graph (not the dict-backed _FakeNode
+# fixtures above) because reconstruction adds real Operation nodes and Edge
+# objects into the graph -- something a plain dict can't stand in for.
+
+
+def _real_planned_node(assignee: str = "worker") -> tuple[OperationGraphBuilder, UUID, Branch]:
+    builder = OperationGraphBuilder()
+    branch = Branch(name=assignee)
+    node_id = builder.add_operation("operate", branch=branch, instruction="do it")
+    return builder, node_id, branch
+
+
+def test_reconstruct_spawned_nodes_precompletes_completed_child_with_edge_and_branch():
+    """The core sound-replay case: a reactively spawned node whose own
+    checkpoint entry recorded operation/assignee/instruction/parent_id (the
+    CHECKPOINT_VERSION 2 fields) is rebuilt into the graph, wired to its
+    parent by a 'spawn' edge, routed to the same role branch a live spawn
+    would have used, and pre-completed -- so the executor's terminal-status
+    short-circuit picks it up instead of re-running it.
+    """
+    builder, parent_id, worker_branch = _real_planned_node("worker")
+    env = SimpleNamespace(builder=builder)
+    dag_state = _DagState(
+        node_ids=[parent_id],
+        known_nodes={parent_id},
+        deps_by_node={},
+        reactive=True,
+        spawn_roles=None,
+        role_base={"worker": worker_branch},
+        worker_models=[],
+    )
+    child_id = str(uuid4())
+    checkpoint_spawned = [
+        {
+            "node_id": child_id,
+            "status": "completed",
+            "response": "child result",
+            "operation": "operate",
+            "assignee": "worker",
+            "instruction": "follow-up task",
+            "parent_id": str(parent_id),
+        }
+    ]
+
+    _reconstruct_spawned_nodes(env, dag_state, checkpoint_spawned)
+
+    graph = builder.get_graph()
+    child = graph.internal_nodes[UUID(child_id)]
+    assert child.execution.status == EventStatus.COMPLETED
+    assert child.execution.response == "child result"
+    assert child.branch_id == worker_branch.id
+    incoming_heads = list(graph.node_edge_mapping[UUID(child_id)]["in"].values())
+    assert parent_id in incoming_heads
+
+
+def test_reconstruct_spawned_nodes_marks_failed_child_terminal_not_rerun():
+    builder, parent_id, worker_branch = _real_planned_node("worker")
+    env = SimpleNamespace(builder=builder)
+    dag_state = _DagState(
+        node_ids=[parent_id],
+        known_nodes={parent_id},
+        deps_by_node={},
+        reactive=True,
+        spawn_roles=None,
+        role_base={"worker": worker_branch},
+        worker_models=[],
+    )
+    child_id = str(uuid4())
+    checkpoint_spawned = [
+        {
+            "node_id": child_id,
+            "status": "failed",
+            "response": {"error": "boom"},
+            "operation": "operate",
+            "assignee": "worker",
+            "instruction": "follow-up task",
+            "parent_id": str(parent_id),
+        }
+    ]
+
+    _reconstruct_spawned_nodes(env, dag_state, checkpoint_spawned)
+
+    child = builder.get_graph().internal_nodes[UUID(child_id)]
+    assert child.execution.status == EventStatus.FAILED
+    assert child.execution.response == {"error": "boom"}
+
+
+def test_reconstruct_spawned_nodes_chains_through_another_reconstructed_spawn():
+    """A grandchild spawn (spawned by a node that was itself reactively
+    spawned) resolves its parent against the other entries in the SAME
+    checkpoint_spawned batch, not just the statically planned nodes.
+    """
+    builder = OperationGraphBuilder()
+    env = SimpleNamespace(builder=builder)
+    dag_state = _DagState(
+        node_ids=[],
+        known_nodes=set(),
+        deps_by_node={},
+        reactive=True,
+        spawn_roles=None,
+        role_base={},
+        worker_models=[],
+    )
+    grandparent_id = str(uuid4())
+    child_id = str(uuid4())
+    checkpoint_spawned = [
+        {
+            "node_id": grandparent_id,
+            "status": "completed",
+            "response": "a",
+            "operation": "operate",
+            "assignee": None,
+            "instruction": "a",
+            "parent_id": None,
+        },
+        {
+            "node_id": child_id,
+            "status": "completed",
+            "response": "b",
+            "operation": "operate",
+            "assignee": None,
+            "instruction": "b",
+            "parent_id": grandparent_id,
+        },
+    ]
+
+    _reconstruct_spawned_nodes(env, dag_state, checkpoint_spawned)
+
+    graph = builder.get_graph()
+    assert len(graph.internal_nodes) == 2
+    incoming_heads = list(graph.node_edge_mapping[UUID(child_id)]["in"].values())
+    assert UUID(grandparent_id) in incoming_heads
+
+
+def test_reconstruct_spawned_nodes_refuses_when_parent_not_checkpointed_terminal():
+    """The genuinely unsound subcase named in the design: a spawned node
+    whose parent op had NOT itself reached a checkpointed terminal state
+    before the crash. Resuming would either duplicate the spawn (the parent
+    re-runs and emits it again) or lose it outright (the parent never
+    re-emits it) -- a decision this version cannot soundly replay. Refusal
+    names only the affected node, and mutates nothing first.
+    """
+    builder = OperationGraphBuilder()
+    env = SimpleNamespace(builder=builder)
+    dag_state = _DagState(
+        node_ids=[],
+        known_nodes=set(),
+        deps_by_node={},
+        reactive=True,
+        spawn_roles=None,
+        role_base={},
+        worker_models=[],
+    )
+    checkpoint_spawned = [
+        {
+            "node_id": "spawn-a",
+            "status": "completed",
+            "response": "x",
+            "operation": "operate",
+            "assignee": None,
+            "instruction": "do it",
+            "parent_id": "some-op-that-never-reached-a-checkpointed-terminal-state",
+        }
+    ]
+
+    with pytest.raises(FlowResumeError, match="spawn-a"):
+        _reconstruct_spawned_nodes(env, dag_state, checkpoint_spawned)
+
+    assert len(builder.get_graph().internal_nodes) == 0
+
+
+def test_reconstruct_spawned_nodes_refuses_unrecognized_status():
+    builder = OperationGraphBuilder()
+    env = SimpleNamespace(builder=builder)
+    dag_state = _DagState(
+        node_ids=[],
+        known_nodes=set(),
+        deps_by_node={},
+        reactive=True,
+        spawn_roles=None,
+        role_base={},
+        worker_models=[],
+    )
+    checkpoint_spawned = [
+        {
+            "node_id": "spawn-x",
+            "status": "running",
+            "response": None,
+            "operation": "operate",
+            "assignee": None,
+            "instruction": "x",
+            "parent_id": None,
+        }
+    ]
+
+    with pytest.raises(FlowResumeError, match="spawn-x"):
+        _reconstruct_spawned_nodes(env, dag_state, checkpoint_spawned)
+
+    assert len(builder.get_graph().internal_nodes) == 0
+
+
+def test_apply_checkpoint_precompletion_reconstructs_valid_spawned_entry_without_refusing():
+    """End-to-end through the actual entry point _run_flow_inner calls: a
+    CHECKPOINT_VERSION-2-shaped spawned entry resumes cleanly alongside the
+    normal planned-op precompletion -- no refusal just because a spawn
+    occurred, matching the design's core fix (contrast with the legacy-format
+    refusal test above).
+    """
+    builder, parent_id, worker_branch = _real_planned_node("worker")
+    env = SimpleNamespace(builder=builder)
+
+    assignments = [TaskAssignment(task="do it", assignee="worker")]
+    plan_result = _PlanResult(
+        assignments=assignments,
+        agent_ids=["worker"],
+        dep_indices=[[]],
+        pool=[],
+        budget_preambles={},
+    )
+    dag_state = _DagState(
+        node_ids=[parent_id],
+        known_nodes={parent_id},
+        deps_by_node={},
+        reactive=True,
+        spawn_roles=None,
+        role_base={"worker": worker_branch},
+        worker_models=[],
+    )
+    checkpoint_ops = {"worker": {"agent_id": "worker", "status": "completed", "response": "done"}}
+    child_id = str(uuid4())
+    checkpoint_spawned = [
+        {
+            "node_id": child_id,
+            "status": "completed",
+            "response": "child done",
+            "operation": "operate",
+            "assignee": "worker",
+            "instruction": "follow-up",
+            "parent_id": str(parent_id),
+        }
+    ]
+
+    _apply_checkpoint_precompletion(
+        env,
+        plan_result,
+        dag_state,
+        checkpoint_ops,
+        allow_degraded_context=False,
+        checkpoint_spawned=checkpoint_spawned,
+    )
+
+    graph = builder.get_graph()
+    parent_node = graph.internal_nodes[parent_id]
+    child_node = graph.internal_nodes[UUID(child_id)]
+    assert parent_node.execution.status == EventStatus.COMPLETED
+    assert parent_node.execution.response == "done"
+    assert child_node.execution.status == EventStatus.COMPLETED
+    assert child_node.execution.response == "child done"
+    assert child_node.branch_id == worker_branch.id
 
 
 # ── _execute_dag: checkpoint write correctness ───────────────────────────────
@@ -634,8 +923,20 @@ async def test_checkpoint_spawned_node_name_collision_does_not_overwrite_planned
     assert data["ops"] == {
         "critic": {"agent_id": "critic", "status": "completed", "response": None}
     }
+    # op_id "spawned-node-xyz" isn't a real UUID (test shorthand), so the
+    # live-graph-node lookup in _checkpoint_record can't resolve it and
+    # operation/assignee/instruction stay unset -- only parent_id, which
+    # comes straight off the NodeFailed signal, is captured.
     assert data["spawned"] == [
-        {"node_id": "spawned-node-xyz", "status": "failed", "response": None}
+        {
+            "node_id": "spawned-node-xyz",
+            "status": "failed",
+            "response": None,
+            "operation": None,
+            "assignee": None,
+            "instruction": None,
+            "parent_id": "node-critic",
+        }
     ]
 
 
