@@ -384,6 +384,9 @@ def test_event_status_terminal_set_golden():
 
 class _DummyEvent(Event):
     async def _invoke(self):
+        # Observed from inside the running body: invoke() must have already
+        # flipped PENDING -> PROCESSING before dispatching to _invoke().
+        assert self.status == EventStatus.PROCESSING
         return "ok"
 
 
