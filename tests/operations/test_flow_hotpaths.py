@@ -90,3 +90,30 @@ def test_predecessor_cache_refreshes_after_reactive_expansion_rewires_a_node():
     refreshed = executor._get_predecessors(target)
     assert refreshed is not cached
     assert [node.id for node in refreshed] == [root.id, spawned.id]
+
+
+@pytest.mark.asyncio
+async def test_edge_condition_check_survives_reactive_rewire_during_wait():
+    """A reactive injection that attaches an edge to the checked operation
+    while a predecessor is awaited must not break the in-flight check; the
+    late dependency is deferred to the next check."""
+    import asyncio
+
+    class _TaskGroupStub:
+        def start_soon(self, *args):
+            pass
+
+    left, right, target = (Operation(operation="chat", parameters={}) for _ in range(3))
+    graph = Graph()
+    for node in (left, right, target):
+        graph.add_node(node)
+    graph.add_edge(Edge(head=left.id, tail=target.id, condition=_AlwaysFalse()))
+    executor = ReactiveExecutor(session=_session(), graph=graph)
+
+    checking = asyncio.create_task(executor._check_edge_conditions(target))
+    await asyncio.sleep(0)  # checker is awaiting left's completion event
+    executor.node_builder = lambda request, emitter: target
+    executor._tg = _TaskGroupStub()
+    assert executor._inject_request(SpawnRequest(instruction="rewire"), emitter=right)
+    executor.completion_events[left.id].set()
+    assert await checking is False

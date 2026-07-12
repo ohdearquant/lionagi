@@ -597,3 +597,70 @@ class TestReturnExceptions:
     async def test_return_exceptions_all_succeed(self):
         results = await alcall([1, 2, 3], async_func, return_exceptions=True)
         assert results == [1, 2, 3]
+
+    @pytest.mark.anyio
+    async def test_default_path_failure_cancels_running_siblings(self):
+        import asyncio
+
+        started = asyncio.Event()
+        peer_cancelled = asyncio.Event()
+
+        async def work(x: int) -> int:
+            if x == 0:
+                await started.wait()
+                raise ValueError("boom")
+            started.set()
+            try:
+                await asyncio.Event().wait()
+            except asyncio.CancelledError:
+                peer_cancelled.set()
+                raise
+            return x
+
+        with pytest.raises(ValueError, match="boom"):
+            await alcall([0, 1], work)
+        assert peer_cancelled.is_set()
+
+    @pytest.mark.anyio
+    async def test_default_path_child_self_cancel_matches_task_group_shape(self):
+        import asyncio
+
+        started = asyncio.Event()
+        peer_cancelled = asyncio.Event()
+
+        async def work(x: int) -> int:
+            if x == 0:
+                await started.wait()
+                raise asyncio.CancelledError("child cancelled")
+            started.set()
+            try:
+                await asyncio.Event().wait()
+            except asyncio.CancelledError:
+                peer_cancelled.set()
+                raise
+            return x
+
+        results = await alcall([0, 1], work)
+        assert peer_cancelled.is_set()
+        assert all(isinstance(r, asyncio.CancelledError) for r in results)
+
+    @pytest.mark.anyio
+    async def test_default_path_external_cancellation_propagates(self):
+        import asyncio
+
+        child_cancelled = asyncio.Event()
+
+        async def work(x: int) -> int:
+            try:
+                await asyncio.Event().wait()
+            except asyncio.CancelledError:
+                child_cancelled.set()
+                raise
+            return x
+
+        task = asyncio.ensure_future(alcall([1, 2], work))
+        await asyncio.sleep(0.05)
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+        assert child_cancelled.is_set()

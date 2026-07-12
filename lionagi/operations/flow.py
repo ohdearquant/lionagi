@@ -461,7 +461,12 @@ class DependencyAwareExecutor:
 
     async def _check_edge_conditions(self, operation: Operation) -> bool:
         """Return True if at least one valid incoming path exists or no edges; False if all incoming edges failed."""
-        incoming_edge_ids = self.graph.node_edge_mapping[operation.id]["in"]
+        # Snapshot before awaiting: reactive injection can attach an edge to
+        # this operation while a predecessor is awaited, and iterating the
+        # live adjacency dict across that await would raise RuntimeError. A
+        # dependency added after the snapshot is deferred to the next check,
+        # matching the previous full-scan's stable-list semantics.
+        incoming_edge_ids = tuple(self.graph.node_edge_mapping[operation.id]["in"])
         if not incoming_edge_ids:
             return True
 
