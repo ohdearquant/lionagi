@@ -2287,8 +2287,11 @@ class StateDB:
             rows = (await conn.execute(text(query), params)).mappings().all()
         return [self._row_to_dict(r) for r in rows]
 
-    async def update_schedule(self, schedule_id: str, **fields: Any) -> None:
-        allowed = {
+    # Fields update_schedule() (and create_schedule_run_and_advance()'s
+    # folded-in schedule update) may write. A single choke point so the two
+    # write paths can never drift on what's allowed.
+    _SCHEDULE_UPDATE_ALLOWED_FIELDS = frozenset(
+        {
             "name",
             "description",
             "enabled",
@@ -2325,7 +2328,25 @@ class StateDB:
             "last_healthy_poll_at",
             "poller_consecutive_401",
         }
-        bad = set(fields) - allowed
+    )
+
+    async def update_schedule(self, schedule_id: str, **fields: Any) -> None:
+        stmt, params = self._build_update_schedule_stmt(schedule_id, fields)
+        async with self._tx() as conn:
+            await conn.execute(stmt, params)
+
+    @classmethod
+    def _build_update_schedule_stmt(cls, schedule_id: str, fields: dict[str, Any]):
+        """Validate + build the ``UPDATE schedules`` statement + bound
+        params for *fields* without opening a transaction.
+
+        Shared by ``update_schedule`` (its own standalone commit) and
+        ``create_schedule_run_and_advance`` (folded into the same
+        transaction as the occurrence insert) -- the single choke point for
+        both the field allowlist and the SQL shape, so the two write paths
+        can never drift apart.
+        """
+        bad = set(fields) - cls._SCHEDULE_UPDATE_ALLOWED_FIELDS
         if bad:
             raise ValueError(f"Invalid schedule field(s): {bad}")
         json_fields = {
@@ -2336,6 +2357,7 @@ class StateDB:
             "on_fail",
             "threshold_config",
         }
+        fields = dict(fields)
         fields["updated_at"] = time.time()
         sets_parts = []
         bind_params = []
@@ -2348,8 +2370,7 @@ class StateDB:
         stmt = text(f"UPDATE schedules SET {', '.join(sets_parts)} WHERE id = :_id")  # noqa: S608
         if bind_params:
             stmt = stmt.bindparams(*bind_params)
-        async with self._tx() as conn:
-            await conn.execute(stmt, params)
+        return stmt, params
 
     async def delete_schedule(self, schedule_id: str) -> bool:
         async with self._tx() as conn:
@@ -2362,40 +2383,79 @@ class StateDB:
     # ── Schedule Runs (ADR-0070) ──────────────────────────────────────
 
     async def create_schedule_run(self, run: dict[str, Any]) -> None:
-        now = time.time()
+        stmt, params = self._build_schedule_run_insert_stmt(run)
         async with self._tx() as conn:
-            await conn.execute(
-                text(
-                    """INSERT INTO schedule_runs
-                       (id, schedule_id, invocation_id, trigger_context,
-                        action_kind, action_args, status, exit_code,
-                        chain_parent_id, chain_depth, fired_at, ended_at,
-                        error_detail, created_at)
-                       VALUES (:id, :schedule_id, :invocation_id, :trigger_context,
-                               :action_kind, :action_args, :status, :exit_code,
-                               :chain_parent_id, :chain_depth, :fired_at, :ended_at,
-                               :error_detail, :created_at)"""
-                ).bindparams(
-                    bindparam("trigger_context", type_=JSON),
-                    bindparam("action_args", type_=JSON),
-                ),
-                {
-                    "id": run["id"],
-                    "schedule_id": run["schedule_id"],
-                    "invocation_id": run.get("invocation_id"),
-                    "trigger_context": run["trigger_context"],
-                    "action_kind": run["action_kind"],
-                    "action_args": run["action_args"],
-                    "status": run.get("status", "running"),
-                    "exit_code": run.get("exit_code"),
-                    "chain_parent_id": run.get("chain_parent_id"),
-                    "chain_depth": run.get("chain_depth", 0),
-                    "fired_at": run["fired_at"],
-                    "ended_at": run.get("ended_at"),
-                    "error_detail": run.get("error_detail"),
-                    "created_at": run.get("created_at", now),
-                },
-            )
+            await conn.execute(stmt, params)
+
+    @staticmethod
+    def _build_schedule_run_insert_stmt(run: dict[str, Any]):
+        """Build the ``INSERT INTO schedule_runs`` statement + bound params
+        for *run* without opening a transaction -- shared by
+        ``create_schedule_run`` and ``create_schedule_run_and_advance``."""
+        now = time.time()
+        stmt = text(
+            """INSERT INTO schedule_runs
+               (id, schedule_id, invocation_id, trigger_context,
+                action_kind, action_args, status, exit_code,
+                chain_parent_id, chain_depth, fired_at, ended_at,
+                error_detail, created_at)
+               VALUES (:id, :schedule_id, :invocation_id, :trigger_context,
+                       :action_kind, :action_args, :status, :exit_code,
+                       :chain_parent_id, :chain_depth, :fired_at, :ended_at,
+                       :error_detail, :created_at)"""
+        ).bindparams(
+            bindparam("trigger_context", type_=JSON),
+            bindparam("action_args", type_=JSON),
+        )
+        params = {
+            "id": run["id"],
+            "schedule_id": run["schedule_id"],
+            "invocation_id": run.get("invocation_id"),
+            "trigger_context": run["trigger_context"],
+            "action_kind": run["action_kind"],
+            "action_args": run["action_args"],
+            "status": run.get("status", "running"),
+            "exit_code": run.get("exit_code"),
+            "chain_parent_id": run.get("chain_parent_id"),
+            "chain_depth": run.get("chain_depth", 0),
+            "fired_at": run["fired_at"],
+            "ended_at": run.get("ended_at"),
+            "error_detail": run.get("error_detail"),
+            "created_at": run.get("created_at", now),
+        }
+        return stmt, params
+
+    async def create_schedule_run_and_advance(
+        self,
+        run: dict[str, Any],
+        *,
+        schedule_id: str,
+        schedule_fields: dict[str, Any],
+    ) -> None:
+        """Insert one schedule_runs occurrence row and advance the owning
+        schedule's cursor fields (``next_fire_at`` / ``github_cursor`` /
+        ``last_fired_at``) in a single transaction.
+
+        This closes the gap that let a crash re-fire an already-recorded
+        occurrence: with two independently-committed writes, a process
+        death between them leaves a durable schedule_run row while the
+        schedule's cursor still points before it, so a restart re-derives
+        "still due" and queues another fire for a occurrence that already
+        exists. Wrapping both statements in one ``StateDB.transaction()``
+        means either both land or neither does -- a crash here can only
+        ever discard an occurrence that was never durably recorded, never
+        one that was.
+
+        *schedule_fields* goes through the same allowlist + JSON-column
+        handling as ``update_schedule`` (``_build_update_schedule_stmt`` is
+        the shared choke point for both), so an invalid key raises the same
+        ``ValueError`` here as it would through the public entrypoint.
+        """
+        run_stmt, run_params = self._build_schedule_run_insert_stmt(run)
+        sched_stmt, sched_params = self._build_update_schedule_stmt(schedule_id, schedule_fields)
+        async with self._tx() as conn:
+            await conn.execute(run_stmt, run_params)
+            await conn.execute(sched_stmt, sched_params)
 
     async def update_schedule_run(
         self,
@@ -2681,6 +2741,31 @@ class StateDB:
             if status == "failed":
                 streak += 1
         return streak, last_status
+
+    async def schedule_run_exists_since(self, schedule_id: str, since: float) -> bool:
+        """True if *schedule_id* already has a schedule_runs row fired at or
+        after *since*.
+
+        Used by the missed-fire recovery scan (``SchedulerEngine.
+        _check_missed_fires``) to distinguish "genuinely never fired" from
+        "occurrence was durably recorded before a crash interrupted
+        whatever bookkeeping came after it" -- firing a fresh recovery run
+        for the latter would double-execute the external action for an
+        occurrence that already has a row. Any status counts (running,
+        completed, failed, ...): the row's mere existence is what matters
+        here, not how it resolved.
+        """
+        async with self._read() as conn:
+            row = (
+                await conn.execute(
+                    text(
+                        "SELECT 1 FROM schedule_runs "
+                        "WHERE schedule_id = :schedule_id AND fired_at >= :since LIMIT 1"
+                    ),
+                    {"schedule_id": schedule_id, "since": since},
+                )
+            ).first()
+        return row is not None
 
     async def get_schedule_run(self, run_id: str) -> dict[str, Any] | None:
         async with self._read() as conn:

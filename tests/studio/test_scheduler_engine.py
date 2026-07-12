@@ -49,6 +49,8 @@ def _make_svc() -> AsyncMock:
     svc.list_schedules = AsyncMock(return_value=[])
     svc.update_schedule = AsyncMock()
     svc.create_schedule_run = AsyncMock()
+    svc.create_schedule_run_and_advance = AsyncMock()
+    svc.schedule_run_exists_since = AsyncMock(return_value=False)
     svc.update_schedule_run = AsyncMock()
     svc.create_invocation = AsyncMock()
     svc.update_invocation = AsyncMock()
@@ -197,7 +199,14 @@ async def test_fire_happy_path_records_invocation_and_run():
         await engine._fire(schedule, "run-001", trigger_context={"scheduled": True})
 
     svc.create_invocation.assert_awaited_once()
-    svc.create_schedule_run.assert_awaited_once()
+    # Occurrence-insert + cursor-advance land together, atomically, through
+    # create_schedule_run_and_advance() -- not two separate service calls.
+    svc.create_schedule_run.assert_not_awaited()
+    svc.create_schedule_run_and_advance.assert_awaited_once()
+    (run_payload,), kwargs = svc.create_schedule_run_and_advance.await_args
+    assert run_payload["status"] == "running"
+    assert kwargs["schedule_id"] == "sched-001"
+    assert "last_fired_at" in kwargs["schedule_fields"]
     svc.update_schedule_run.assert_awaited_once()
     # update_status called for schedule_run AND invocation
     assert svc.update_status.await_count == 3  # running + completed + invocation
@@ -205,7 +214,11 @@ async def test_fire_happy_path_records_invocation_and_run():
     # flush_run_telemetry's read-modify-write of node_metadata["coordination"]
     # after the invocation's terminal write lands (see scheduler_state.py).
     assert svc.update_invocation.await_count == 2
-    svc.update_schedule.assert_awaited()
+    # update_schedule() itself isn't called for a plain fire -- its old job
+    # (last_fired_at/next_fire_at) now rides create_schedule_run_and_advance's
+    # schedule_fields above; update_schedule stays for other paths (backfill,
+    # max_runs auto-disable, etc.).
+    svc.update_schedule.assert_not_awaited()
 
 
 @pytest.mark.asyncio
@@ -285,8 +298,9 @@ async def test_fire_executable_resolution_failure_records_failed_run_with_action
         await engine._fire(schedule, "run-003", trigger_context={"scheduled": True})
 
     spawn_mock.assert_not_awaited()
-    svc.create_schedule_run.assert_awaited_once()
-    (run_payload,), _kwargs = svc.create_schedule_run.await_args
+    svc.create_schedule_run.assert_not_awaited()
+    svc.create_schedule_run_and_advance.assert_awaited_once()
+    (run_payload,), _kwargs = svc.create_schedule_run_and_advance.await_args
     assert run_payload["status"] == "failed"
     assert "resolve" in run_payload["error_detail"]
     assert "shutil.which" in run_payload["error_detail"]
@@ -344,7 +358,8 @@ async def test_fire_build_argv_exception_records_failed_run():
         await engine._fire(schedule, "run-003", trigger_context={"scheduled": True})
 
     mock_spawn.assert_not_awaited()
-    svc.create_schedule_run.assert_awaited_once()
+    svc.create_schedule_run.assert_not_awaited()
+    svc.create_schedule_run_and_advance.assert_awaited_once()
     failed_calls = [
         c for c in svc.update_status.await_args_list if c.kwargs.get("new_status") == "failed"
     ]
@@ -1876,6 +1891,16 @@ class _StatefulSvc:
     async def create_schedule_run(self, run):
         self.runs[run["id"]] = dict(run)
 
+    async def create_schedule_run_and_advance(self, run, *, schedule_id, schedule_fields):
+        self.runs[run["id"]] = dict(run)
+        self.schedule_updates.append((schedule_id, dict(schedule_fields)))
+
+    async def schedule_run_exists_since(self, schedule_id, since):
+        return any(
+            r.get("schedule_id") == schedule_id and (r.get("fired_at") or 0) >= since
+            for r in self.runs.values()
+        )
+
     async def update_schedule_run(self, run_id, **fields):
         self.runs[run_id].update(fields)
 
@@ -2164,13 +2189,13 @@ async def test_fire_command_kind_skips_li_resolution():
         await engine._fire(schedule, "run-cmd-001", trigger_context={"scheduled": True})
 
     resolve_mock.assert_not_called()
+    svc.create_schedule_run_and_advance.assert_awaited_once()
     failed_calls = [
         c
         for c in svc.update_status.await_args_list
         if c.args[0] == "schedule_run" and c.kwargs.get("new_status") == "failed"
     ]
     assert not failed_calls, "command-kind fire must not fail from a missing `li` resolution"
-    svc.create_schedule_run.assert_awaited_once()
 
 
 @pytest.mark.asyncio

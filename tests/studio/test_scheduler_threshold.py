@@ -44,6 +44,8 @@ def _make_svc() -> AsyncMock:
     svc.list_schedules = AsyncMock(return_value=[])
     svc.update_schedule = AsyncMock()
     svc.create_schedule_run = AsyncMock()
+    svc.create_schedule_run_and_advance = AsyncMock()
+    svc.schedule_run_exists_since = AsyncMock(return_value=False)
     svc.update_schedule_run = AsyncMock()
     svc.create_invocation = AsyncMock()
     svc.update_invocation = AsyncMock()
@@ -527,7 +529,14 @@ def _threshold_ctx(**overrides) -> dict:
 
 
 def _last_alert_calls(svc: AsyncMock) -> list:
-    return [c for c in svc.update_schedule.await_args_list if "last_alert_at" in c.kwargs]
+    """last_alert_at now rides create_schedule_run_and_advance()'s
+    schedule_fields, folded into the same atomic call as the occurrence
+    insert -- not a standalone update_schedule() call."""
+    return [
+        c
+        for c in svc.create_schedule_run_and_advance.await_args_list
+        if "last_alert_at" in c.kwargs.get("schedule_fields", {})
+    ]
 
 
 @pytest.mark.asyncio
@@ -559,10 +568,11 @@ async def test_fire_threshold_schedule_stamps_last_alert_at_after_run_persisted(
     ):
         await engine._fire(schedule, "run-alert-1", trigger_context=_threshold_ctx())
 
-    svc.create_schedule_run.assert_awaited_once()
+    svc.create_schedule_run.assert_not_awaited()
+    svc.create_schedule_run_and_advance.assert_awaited_once()
     calls = _last_alert_calls(svc)
     assert len(calls) == 1
-    assert calls[0].args[0] == "sched-001"
+    assert calls[0].kwargs["schedule_id"] == "sched-001"
 
 
 @pytest.mark.asyncio
@@ -617,7 +627,8 @@ async def test_fire_invalid_action_still_stamps_last_alert_at_after_failed_run_p
     ):
         await engine._fire(schedule, "run-alert-2", trigger_context=_threshold_ctx())
 
-    svc.create_schedule_run.assert_awaited_once()
+    svc.create_schedule_run.assert_not_awaited()
+    svc.create_schedule_run_and_advance.assert_awaited_once()
     calls = _last_alert_calls(svc)
     assert len(calls) == 1
 
@@ -655,7 +666,8 @@ async def test_fire_invalid_action_releases_threshold_cooldown_claim():
             threshold_cooldown_claim=claim,
         )
 
-    svc.create_schedule_run.assert_awaited_once()
+    svc.create_schedule_run.assert_not_awaited()
+    svc.create_schedule_run_and_advance.assert_awaited_once()
     assert sid not in engine._threshold_pending
 
 

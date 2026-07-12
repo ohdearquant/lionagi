@@ -453,13 +453,103 @@ async def reap_stale_plays(*, stale_hours: float | None = None) -> int:
     return reaped
 
 
+# ── schedule_run staleness reaper ─────────────────────────────────────────────
+
+
+async def reap_stale_schedule_runs(*, stale_hours: float | None = None) -> int:
+    """Transition ``schedule_runs`` rows stuck at ``status="running"`` to
+    ``timed_out``.
+
+    A schedule_run row is created and its owning schedule's cursor
+    (``next_fire_at``/``github_cursor``) advanced atomically in the same
+    transaction (``StateDB.create_schedule_run_and_advance``), so by the
+    time this row is durable the scheduler has already committed to firing
+    it -- but the process can still die anywhere between that commit and
+    the run's own terminal write (mid-spawn, or before
+    ``update_schedule_run``'s exit-code write lands), leaving the row
+    orphaned at ``running`` forever. ``count_schedule_runs()`` already
+    excludes ``running`` from budget bookkeeping, so these rows are
+    harmless for max_runs, but they are audit-trail zombies that (unlike
+    stale sessions/plays) have no process-liveness signal to check against
+    -- the "process" here is the scheduler daemon itself, and its own
+    restart is what triggers reaping. This is a pure wall-clock deadline
+    against the row's own ``updated_at`` (falling back to ``fired_at`` for
+    a row that was never otherwise touched), mirroring
+    ``reap_stale_invocations``'s deadline condition, with the version guard
+    (``expected_updated_at``) revalidating the row hasn't moved between the
+    scan and the write -- the same optimistic-lock pattern
+    ``reap_stale_plays`` uses.
+    """
+    from lionagi.studio.config import SCHEDULE_RUN_STALE_HOURS
+
+    if stale_hours is None:
+        stale_hours = SCHEDULE_RUN_STALE_HOURS
+    stale_seconds = stale_hours * 3600
+
+    if not DEFAULT_DB_PATH.exists():
+        return 0
+
+    now = time.time()
+    deadline_cutoff = now - stale_seconds
+    reaped = 0
+
+    try:
+        async with StateDB() as db:
+            rows = await db.fetch_all(
+                "SELECT id, fired_at, updated_at FROM schedule_runs WHERE status = 'running'"
+            )
+            for row in rows:
+                run_id = row["id"]
+                fired_at = row.get("fired_at") or now
+                updated_at_raw = row.get("updated_at")
+                reference = updated_at_raw if updated_at_raw is not None else fired_at
+                if reference >= deadline_cutoff:
+                    continue
+
+                _log.info(
+                    "Reaping stale schedule_run %s: running past deadline (%.1fh)",
+                    run_id,
+                    stale_hours,
+                )
+                try:
+                    transitioned = await db.update_status(
+                        "schedule_run",
+                        run_id,
+                        new_status="timed_out",
+                        reason_code=RunReasons.TIMED_OUT_DEADLINE,
+                        reason_summary="schedule_run_stale_running_reaped",
+                        evidence_refs=[{"kind": "schedule_run", "id": run_id}],
+                        source="system",
+                        actor="studio_lifecycle_reaper",
+                        metadata={
+                            "stale_hours": stale_hours,
+                            "fired_at": fired_at,
+                            "reference": reference,
+                        },
+                        expected_statuses={"running"},
+                        expected_updated_at=updated_at_raw,
+                    )
+                    if transitioned:
+                        reaped += 1
+                    else:
+                        _log.debug(
+                            "schedule_run %s skipped (status changed before CAS lock)", run_id
+                        )
+                except LookupError:
+                    pass
+    except Exception:
+        _log.exception("reap_stale_schedule_runs error")
+
+    return reaped
+
+
 # ── Startup + periodic entry points ──────────────────────────────────────────
 
 
 async def run_startup_reconciliation() -> dict[str, int]:
     """One-shot reconciliation called on Studio startup.
 
-    Runs all three reapers so stale rows left from an unclean shutdown are
+    Runs all reapers so stale rows left from an unclean shutdown are
     cleaned up before the scheduler begins firing new invocations.
     """
     results: dict[str, int] = {}
@@ -483,6 +573,11 @@ async def run_startup_reconciliation() -> dict[str, int]:
     except Exception:
         _log.exception("Startup play reaper failed")
         results["stale_plays"] = 0
+    try:
+        results["stale_schedule_runs"] = await reap_stale_schedule_runs()
+    except Exception:
+        _log.exception("Startup schedule_run reaper failed")
+        results["stale_schedule_runs"] = 0
     if any(v for v in results.values()):
         _log.info("Startup reconciliation: %s", results)
     return results
@@ -516,6 +611,11 @@ async def run_periodic_reapers(now: float | None = None) -> dict[str, int]:
     except Exception:
         _log.exception("Periodic play reaper failed")
         results["stale_plays"] = 0
+    try:
+        results["stale_schedule_runs"] = await reap_stale_schedule_runs()
+    except Exception:
+        _log.exception("Periodic schedule_run reaper failed")
+        results["stale_schedule_runs"] = 0
     return results
 
 

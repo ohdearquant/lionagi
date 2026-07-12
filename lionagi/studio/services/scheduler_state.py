@@ -37,6 +37,16 @@ class SchedulerStateService(Protocol):
 
     async def create_schedule_run(self, run: dict[str, Any]) -> None: ...
 
+    async def create_schedule_run_and_advance(
+        self,
+        run: dict[str, Any],
+        *,
+        schedule_id: str,
+        schedule_fields: dict[str, Any],
+    ) -> None: ...
+
+    async def schedule_run_exists_since(self, schedule_id: str, since: float) -> bool: ...
+
     async def update_schedule_run(self, run_id: str, **fields: Any) -> None: ...
 
     async def create_invocation(self, invocation: dict[str, Any]) -> None: ...
@@ -97,6 +107,22 @@ class _DBSchedulerStateService:
     async def create_schedule_run(self, run: dict[str, Any]) -> None:
         async with StateDB() as db:
             await db.create_schedule_run(run)
+
+    async def create_schedule_run_and_advance(
+        self,
+        run: dict[str, Any],
+        *,
+        schedule_id: str,
+        schedule_fields: dict[str, Any],
+    ) -> None:
+        async with StateDB() as db:
+            await db.create_schedule_run_and_advance(
+                run, schedule_id=schedule_id, schedule_fields=schedule_fields
+            )
+
+    async def schedule_run_exists_since(self, schedule_id: str, since: float) -> bool:
+        async with StateDB() as db:
+            return await db.schedule_run_exists_since(schedule_id, since)
 
     async def update_schedule_run(self, run_id: str, **fields: Any) -> None:
         async with StateDB() as db:

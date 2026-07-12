@@ -338,6 +338,13 @@ class SchedulerEngine:
         past-due timestamp. Only schedules whose stored next_fire_at is
         still ahead of now — the timezone-migration correction case this
         hook exists for — are recomputed here.
+
+        This method never fires anything itself (it only rewrites a
+        not-yet-due next_fire_at), so it has no occurrence-insert to
+        reconcile against schedule_runs. Any due schedule always goes
+        through _check_missed_fires(), which is where that consultation
+        happens (schedule_run_exists_since() before queuing a recovery
+        fire — see its docstring for why).
         """
         try:
             schedules = await self._svc.list_schedules(enabled=True)
@@ -481,6 +488,34 @@ class SchedulerEngine:
             for s in schedules:
                 next_fire_at = s.get("next_fire_at")
                 if next_fire_at is None or next_fire_at > now:
+                    continue
+                # Recovery scan before recompute: with occurrence-insert +
+                # cursor-advance atomic (create_schedule_run_and_advance),
+                # a schedule_run row can only exist here for one of two
+                # reasons -- (a) the atomic transaction committed and then
+                # the process died before spawn_and_wait/its terminal write
+                # (next_fire_at should already be in the future in that
+                # case, so this branch shouldn't normally see it due at
+                # all), or (b) a pre-existing row from before this fix
+                # shipped, or some other write path, left an occurrence
+                # recorded without the cursor having moved. Either way,
+                # firing again here would double-execute the external
+                # action for an occurrence that already has a durable row
+                # -- so treat "already recorded" as evidence the slot was
+                # handled and just advance the cursor past it, the same
+                # bookkeeping _record_missed_fire_skip does, without
+                # queuing a second fire.
+                if await self._svc.schedule_run_exists_since(s["id"], next_fire_at):
+                    next_at = self._compute_next_fire(s, now)
+                    if next_at:
+                        try:
+                            await self._svc.update_schedule(s["id"], next_fire_at=next_at)
+                        except Exception:
+                            _log.exception(
+                                "Failed to advance next_fire_at past an already-recorded "
+                                "occurrence for schedule %s",
+                                s.get("id"),
+                            )
                     continue
                 policy = s.get("missed_fire_policy")
                 if policy == "run_once":
@@ -771,13 +806,27 @@ class SchedulerEngine:
                         trigger_context=ctx,
                         max_runs_claim=max_runs_claim,
                         global_slot_claim=slot_claim,
+                        # Advances github_cursor to this event's own
+                        # updated_at INSIDE the same atomic transaction as
+                        # this event's occurrence insert (_fire_inner ->
+                        # create_schedule_run_and_advance), durably before
+                        # spawn_and_wait() runs the actual action. This is
+                        # what closes the double-fire hazard: batching the
+                        # cursor write until after the whole loop (the old
+                        # shape, still mirrored below for trailing
+                        # non-dispatched items) left a window where 1..N
+                        # events could be fully fired and executed while the
+                        # persisted cursor still pointed before all of them,
+                        # so a crash mid-poll made the next poll re-fetch
+                        # and re-fire every already-executed event.
+                        extra_schedule_fields={"github_cursor": item.updated_at},
                     )
-                    # Only advance the cursor past a dispatchable event once
-                    # it has actually been fired — the invariant this
-                    # rewrite exists to hold. Any event left undispatched by
-                    # a break above (and everything after it, since PRs are
-                    # processed oldest-first) must be re-listed on the next
-                    # poll.
+                    # Track locally too, for the batched trailing-write
+                    # safety net below (covers only non-dispatched/filtered
+                    # items after the last fire, or an all-filtered poll
+                    # with no fire at all -- harmless/idempotent to re-write
+                    # the same value this event's own fire already
+                    # persisted).
                     cursor = item.updated_at
                 finally:
                     # slot_claim is None when MAX_SCHEDULED_CONCURRENT is
@@ -798,6 +847,14 @@ class SchedulerEngine:
                     dropped_prs,
                 )
 
+            # Safety-net batched write: every DISPATCHED event already
+            # advanced github_cursor atomically with its own occurrence
+            # insert above. This only still does work when the loop ends
+            # on non-dispatched/filtered items (dispatchable=False, cursor
+            # advances past them with no fire) or when nothing was fired
+            # at all -- both no-occurrence cases with nothing to be
+            # atomic with. For a dispatched item it re-writes the same
+            # value already committed, a harmless no-op.
             if cursor != schedule.get("github_cursor"):
                 await self._svc.update_schedule(sid, github_cursor=cursor)
         finally:
@@ -1249,6 +1306,7 @@ class SchedulerEngine:
         max_runs_claim: _MaxRunsClaim | None = None,
         global_slot_claim: _GlobalSlotClaim | None = None,
         threshold_cooldown_claim: _ThresholdCooldownClaim | None = None,
+        extra_schedule_fields: dict[str, Any] | None = None,
     ) -> None:
         """Thin wrapper around _fire_inner() that guarantees max_runs_claim,
         global_slot_claim, and threshold_cooldown_claim are each released
@@ -1262,6 +1320,11 @@ class SchedulerEngine:
         even when _fire_inner() blows up before ever reaching
         _check_max_runs() (e.g. create_invocation() raising), which is the
         leak this wrapper exists to close.
+
+        *extra_schedule_fields*: passed through to _fire_inner() -- only
+        _tick_github() uses this, to fold that event's github_cursor
+        advance into the SAME atomic transaction as its occurrence insert
+        (see _fire_inner()'s docstring).
         """
         try:
             await self._fire_inner(
@@ -1270,6 +1333,7 @@ class SchedulerEngine:
                 trigger_context=trigger_context,
                 chain_parent_id=chain_parent_id,
                 chain_depth=chain_depth,
+                extra_schedule_fields=extra_schedule_fields,
             )
         finally:
             if max_runs_claim is not None:
@@ -1313,7 +1377,26 @@ class SchedulerEngine:
         trigger_context: dict,
         chain_parent_id: str | None = None,
         chain_depth: int = 0,
+        extra_schedule_fields: dict[str, Any] | None = None,
     ) -> None:
+        """Fire one occurrence of *schedule*.
+
+        The occurrence-insert (``create_schedule_run``) and the schedule's
+        cursor advance (``last_fired_at``/``next_fire_at``, plus whatever
+        *extra_schedule_fields* adds -- e.g. ``github_cursor`` for a
+        github_poll event) land in a SINGLE transaction via
+        ``create_schedule_run_and_advance()``, executed BEFORE
+        ``spawn_and_wait()`` ever runs the external action. A crash at any
+        point before that transaction commits leaves neither the row nor
+        the cursor move durable, so a restart sees "never fired" and fires
+        fresh -- never a duplicate. A crash any time after it commits
+        (including mid-spawn) leaves a row + advanced cursor that will
+        never be re-derived as "still due" (closing the double-fire this
+        replaces), at the cost of the row staying at status="running"
+        until the schedule_runs reaper (lifecycle.reap_stale_schedule_runs)
+        or the run's own terminal write, whichever comes first, resolves
+        it.
+        """
         sid = schedule["id"]
         now = time.time()
 
@@ -1361,7 +1444,19 @@ class SchedulerEngine:
             _log.exception("Invalid schedule action for %s (run %s)", schedule.get("name"), run_id)
             _end_time = time.time()
             next_at = self._compute_next_fire(schedule, now)
-            await self._svc.create_schedule_run(
+            failed_schedule_fields: dict[str, Any] = {"last_fired_at": now}
+            if next_at:
+                failed_schedule_fields["next_fire_at"] = next_at
+            failed_schedule_fields.update(
+                self._threshold_alert_update_fields(schedule, chain_depth, now)
+            )
+            if extra_schedule_fields:
+                failed_schedule_fields.update(extra_schedule_fields)
+            # Occurrence-insert + cursor-advance atomic even on this
+            # invalid-action failure path -- otherwise a permanently
+            # misconfigured github_poll schedule would never advance its
+            # cursor past the offending event and re-fail it forever.
+            await self._svc.create_schedule_run_and_advance(
                 {
                     "id": run_id,
                     "schedule_id": sid,
@@ -1375,7 +1470,9 @@ class SchedulerEngine:
                     "fired_at": now,
                     "ended_at": _end_time,
                     "error_detail": str(exc),
-                }
+                },
+                schedule_id=sid,
+                schedule_fields=failed_schedule_fields,
             )
             written = await self._svc.update_status(
                 "schedule_run",
@@ -1428,11 +1525,8 @@ class SchedulerEngine:
                 # per-run_id map forever (it never gets a second flush call
                 # for this run_id to consume them).
                 self._signal_bus.pop_run_counters(run_id)
-            update_fields: dict[str, Any] = {"last_fired_at": now}
-            if next_at:
-                update_fields["next_fire_at"] = next_at
-            update_fields.update(self._threshold_alert_update_fields(schedule, chain_depth, now))
-            await self._svc.update_schedule(sid, **update_fields)
+            # last_fired_at/next_fire_at (and any extra_schedule_fields)
+            # already landed atomically with the occurrence insert above.
             await self._check_max_runs(schedule, chain_depth)
             return
 
@@ -1440,7 +1534,22 @@ class SchedulerEngine:
         # cancellation in the DB ops below, before spawn_and_wait() runs.
         # suppress(OSError) makes double-unlink (spawn_and_wait already cleaned up) safe.
         try:
-            await self._svc.create_schedule_run(
+            next_at = self._compute_next_fire(schedule, now)
+            update_fields: dict[str, Any] = {"last_fired_at": now}
+            if next_at:
+                update_fields["next_fire_at"] = next_at
+            update_fields.update(self._threshold_alert_update_fields(schedule, chain_depth, now))
+            if extra_schedule_fields:
+                update_fields.update(extra_schedule_fields)
+
+            # Occurrence-insert + cursor-advance MUST land atomically: a
+            # crash between two independently-committed writes here is
+            # exactly what let a restart re-derive "still due" for an
+            # occurrence that was already durably recorded (double-fire).
+            # spawn_and_wait() below always runs AFTER this transaction
+            # commits, never inside it, so a crash before this call can at
+            # worst discard an occurrence that was never durably recorded.
+            await self._svc.create_schedule_run_and_advance(
                 {
                     "id": run_id,
                     "schedule_id": sid,
@@ -1452,7 +1561,9 @@ class SchedulerEngine:
                     "chain_parent_id": chain_parent_id,
                     "chain_depth": chain_depth,
                     "fired_at": now,
-                }
+                },
+                schedule_id=sid,
+                schedule_fields=update_fields,
             )
             await self._svc.update_status(
                 "schedule_run",
@@ -1468,13 +1579,6 @@ class SchedulerEngine:
 
             if chain_depth == 0:
                 self._running[sid] = run_id
-
-            next_at = self._compute_next_fire(schedule, now)
-            update_fields = {"last_fired_at": now}
-            if next_at:
-                update_fields["next_fire_at"] = next_at
-            update_fields.update(self._threshold_alert_update_fields(schedule, chain_depth, now))
-            await self._svc.update_schedule(sid, **update_fields)
 
             _log.info(
                 "Firing schedule %s (run %s, chain_depth=%d)", schedule["name"], run_id, chain_depth
