@@ -27,7 +27,7 @@ ADR-0095 (Reactive Spawn Observability and DX), which already documents `dropped
 escalation-driven respawns alongside reactive `SpawnRequest`s and manual `inject()` calls. It is a
 different layer, and a different blast radius, from ADR-0098's resident-engine host loop, which
 only cares about lane-**boundary** transitions (done/failed/blocked) and treats each lane's
-internal escalation behavior as unchanged. The advisor verdict that resolved this split (see
+internal escalation behavior as unchanged. An earlier design pass that resolved this split (see
 References) rejected folding this into ADR-0098 on exactly that basis: bloats the resident-engine
 ADR and couples two things that ship on independent clocks.
 
@@ -128,6 +128,6 @@ This ADR does not change `route="higher_tier"`'s or `route="give_up"`'s signal s
   `_accept_node` chokepoint this ADR's re-spawn path uses.
 - `lionagi/operations/flow.py:804-834` (`_schedule_escalation`) — current same-model re-spawn
   behavior this ADR replaces.
-- `lionagi/.khive/workspaces/20260707/resident-engine/ADVISOR_VERDICT.md` — Fork F, the resolved
-  decision this ADR encodes, including the split-into-its-own-ADR call and the anti-footgun fence.
+- An internal design-review record (not in this repo) — Fork F, the resolved decision this ADR
+  encodes, including the split-into-its-own-ADR call and the anti-footgun fence.
 - GH #1253 / #1254 — the broader escalation program this ADR scopes a narrow slice of.

@@ -206,6 +206,63 @@ sys.exit(rc)
 }
 
 # ---------------------------------------------------------------------------
+# Publication hygiene (docs/, docs/_archive/, notebooks/, repo root)
+#
+# lint-marketplace's absolute-path check above only covers marketplace/ +
+# .claude-plugin/ + README.md. This check covers the rest of the tree that
+# can carry publication leaks: archived ADRs, notebooks, and stray files
+# dropped at the repo root (e.g. internal review scratch files).
+# ---------------------------------------------------------------------------
+
+lint-hygiene() {
+  echo "==> publication hygiene lint (docs/notebooks/root)"
+  cd "$REPO_ROOT"
+  local rc=0
+  # docs/ is scanned recursively, so docs/_archive/ (nested under it) is
+  # covered by the same pass. Repo root is scanned at depth 1 only (its own
+  # files), so this never descends into src/tests/benchmarks trees where
+  # "lambda:" is overwhelmingly Python's own closure syntax.
+  local DOC_PATHS="docs/ notebooks/"
+  # Known, tracked exception: these three notebooks carry absolute local
+  # paths inside already-executed output cells (LLM tool-call results from
+  # a prior run). Fixing them means re-running the notebooks end to end,
+  # which is out of scope for a text-only hygiene pass — tracked as a
+  # follow-up rather than silently left to rot the gate.
+  local IPYNB_EXCEPTIONS=(-g '!notebooks/react.ipynb' -g '!notebooks/react_rag.ipynb' -g '!notebooks/references/test_instruct.ipynb')
+
+  echo "  checking absolute machine-local paths..."
+  if rg --hidden -g '!*.py' "${IPYNB_EXCEPTIONS[@]}" "/Users/lion" $DOC_PATHS 2>/dev/null; then
+    echo "  FAIL: absolute /Users/lion paths found in docs/notebooks"; rc=1
+  fi
+  if rg --hidden --max-depth 1 -g '!*.py' -g '!.git' "/Users/lion" . 2>/dev/null; then
+    echo "  FAIL: absolute /Users/lion paths found at repo root"; rc=1
+  fi
+
+  echo "  checking internal actor identifiers (lambda:<name>)..."
+  # "lambda:" immediately followed by a non-whitespace char is the internal
+  # actor-identifier shape. Python's own zero-arg lambda syntax always has a
+  # space after the colon once ruff-formatted (lambda: expr), so this does
+  # not match committed .py source; -g '!*.py' additionally excludes .py
+  # files outright as a second guard.
+  if rg --hidden -g '!*.py' "${IPYNB_EXCEPTIONS[@]}" 'lambda:\S' $DOC_PATHS 2>/dev/null; then
+    echo "  FAIL: internal actor identifiers (lambda:...) found in docs/notebooks"; rc=1
+  fi
+  if rg --hidden --max-depth 1 -g '!*.py' -g '!.git' 'lambda:\S' . 2>/dev/null; then
+    echo "  FAIL: internal actor identifiers (lambda:...) found at repo root"; rc=1
+  fi
+
+  echo "  checking founder-name process narration (Ocean's)..."
+  if rg --hidden -g '!*.py' "${IPYNB_EXCEPTIONS[@]}" "\bOcean's\b" $DOC_PATHS 2>/dev/null; then
+    echo "  FAIL: founder-name process narration found in docs/notebooks"; rc=1
+  fi
+  if rg --hidden --max-depth 1 -g '!*.py' -g '!.git' "\bOcean's\b" . 2>/dev/null; then
+    echo "  FAIL: founder-name process narration found at repo root"; rc=1
+  fi
+
+  [ $rc -eq 0 ] && echo "  publication hygiene: PASS" || { echo "  publication hygiene: FAIL"; return 1; }
+}
+
+# ---------------------------------------------------------------------------
 # Composite
 # ---------------------------------------------------------------------------
 
@@ -213,6 +270,7 @@ lint() {
   lint-python "$@"
   lint-frontend
   lint-marketplace
+  lint-hygiene
 }
 
 fmt() {
@@ -225,6 +283,7 @@ ci() {
   lint-python
   lint-frontend
   lint-marketplace
+  lint-hygiene
 
   echo ""
   echo "=== CI: test ==="
@@ -248,7 +307,7 @@ shift 2>/dev/null || true
 case "$cmd" in
   lint-python|fmt-python|test-python|test-python-cov) "$cmd" "$@" ;;
   lint-frontend|fmt-frontend|fmt-check-frontend|build-frontend|typecheck-frontend|fe-install) "$cmd" "$@" ;;
-  lint-marketplace) "$cmd" "$@" ;;
+  lint-marketplace|lint-hygiene) "$cmd" "$@" ;;
   lint|fmt|ci) "$cmd" "$@" ;;
   help|--help|-h)
     echo "Usage: scripts/ci.sh <command>"
@@ -257,6 +316,7 @@ case "$cmd" in
     echo "Frontend:    fe-install, lint-frontend, fmt-frontend, fmt-check-frontend,"
     echo "             build-frontend, typecheck-frontend"
     echo "Marketplace: lint-marketplace"
+    echo "Hygiene:     lint-hygiene (publication leaks: docs/notebooks/root)"
     echo "Composite:   lint (all linters), fmt (all formatters), ci (full pipeline)"
     ;;
   *)

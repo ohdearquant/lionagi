@@ -367,7 +367,7 @@ PcmZQz%+E>DP5ci42%Q4X_logo_b_secret_2
 
 
 def test_scrub_task_text_strips_two_hunk_binary_patch_internal_blank_line():
-    """Round-3 regression: real `git diff --binary` puts a blank line BETWEEN
+    """Regression: real `git diff --binary` puts a blank line BETWEEN
     a file's two binary hunk records (literal N / base85 / blank / literal M
     / base85) — that blank line is not the end of the patch. The previous
     fix disarmed binary mode on it and leaked the second hunk."""

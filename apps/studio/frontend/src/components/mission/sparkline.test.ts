@@ -99,7 +99,7 @@ describe("completionRateFromBuckets", () => {
     expect(rate).toBeNull();
   });
 
-  it("excludes cancelled from the denominator — the Ocean 7/6 Pulse bug", () => {
+  it("excludes cancelled from the denominator — the Pulse completion-rate denominator bug", () => {
     // 2 completed, 1 failed, 1 cancelled: old server-side denom (completed+
     // failed+cancelled) gave 2/4 = 0.5. The correct rate ignores cancelled
     // entirely: 2/3.

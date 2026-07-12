@@ -36,7 +36,7 @@ def _make_instance(instance_id="lionagi__1843", subject="lionagi", validated=Tru
         gold_patch="diff --git a/src/x.py b/src/x.py\n",
         merged_at="2026-06-14T00:00:00Z",
         subject=subject,
-        provenance=Provenance(pr=1843, issue=1791, nominated_by="lambda:lionagi", why="regression"),
+        provenance=Provenance(pr=1843, issue=1791, nominated_by="maintainer-x", why="regression"),
     )
     if validated:
         inst.validation = Validation(gold_passes=True, null_fails=True, leak_review="pass")
@@ -104,7 +104,7 @@ def test_save_instance_redacts_validation_output_and_nominated_by_on_disk(tmp_pa
     assert on_disk["provenance"]["why"] == ""
     # in-memory instance is untouched -- redaction only applies at the write boundary
     assert inst.validation.gold_output != ""
-    assert inst.provenance.nominated_by == "lambda:lionagi"
+    assert inst.provenance.nominated_by == "maintainer-x"
     assert inst.provenance.why == "regression"
 
 

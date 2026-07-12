@@ -826,7 +826,7 @@ class SchedulerEngine:
         to ``_fire()`` as ``max_runs_claim=`` (even when it is ``None``) so
         it gets released — exactly once, on every exit path including
         pre-run failures — from ``_fire()``'s own ``finally`` block. Unlike
-        the round-1 shape, the claim is no longer released from inside
+        an earlier implementation, the claim is no longer released from inside
         ``_check_max_runs()`` alone: a fire that fails before ever reaching
         ``_check_max_runs()`` (e.g. ``create_invocation`` raising) would
         otherwise leak the claim permanently for the life of the process,
@@ -839,12 +839,12 @@ class SchedulerEngine:
         this lock, which would otherwise reintroduce cancellation-unsafe
         lock-acquire-in-finally hazards), so a concurrent fire's claim can
         be released by another task while this call is suspended awaiting
-        the DB. If ``inflight`` were read *after* that await (the round-2
-        shape), a fire that both completes its terminal write and releases
+        the DB. If ``inflight`` were read *after* that await (an intermediate
+        design), a fire that both completes its terminal write and releases
         its claim entirely within this call's await window would vanish
         from both the persisted count (read too early, before the write)
         and the in-flight snapshot (read too late, after the release) —
-        the exact gap the round-3 review's forced interleaving exploited.
+        the exact gap that adversarial concurrency testing exploited.
         Reading ``inflight`` first captures that other fire's claim before
         it can disappear: the persisted count may still be stale, but the
         in-flight snapshot backstops it, so the sum can only ever
