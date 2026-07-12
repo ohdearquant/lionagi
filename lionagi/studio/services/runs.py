@@ -850,10 +850,16 @@ async def get_run_file(run_id: str, path: str) -> dict[str, Any]:
         os.close(fd)
 
     truncated = len(raw) > _MAX_FILE_READ_BYTES
-    try:
-        content = raw[:_MAX_FILE_READ_BYTES].decode("utf-8")
-    except UnicodeDecodeError:
-        raise HTTPException(status_code=415, detail="File is not text/UTF-8") from None
+    if truncated:
+        # The cap can split a multibyte UTF-8 sequence at the boundary of an
+        # otherwise-valid file; that must read as truncation, not as a binary
+        # file. Only genuinely non-text files (untruncated branch) get a 415.
+        content = raw[:_MAX_FILE_READ_BYTES].decode("utf-8", errors="replace")
+    else:
+        try:
+            content = raw.decode("utf-8")
+        except UnicodeDecodeError:
+            raise HTTPException(status_code=415, detail="File is not text/UTF-8") from None
 
     return {
         "path": str(resolved),
