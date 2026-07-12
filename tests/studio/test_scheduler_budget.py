@@ -51,6 +51,8 @@ def _make_svc() -> AsyncMock:
     svc.list_sessions_for_invocation = AsyncMock(return_value=[])
     svc.count_schedule_runs = AsyncMock(return_value=0)
     svc.sum_schedule_spend = AsyncMock(return_value={"cost_usd": 0.0, "tokens": 0})
+    svc.get_invocation = AsyncMock(return_value=None)
+    svc.compute_files_overlap = AsyncMock(return_value={"count": 0, "top": []})
     return svc
 
 

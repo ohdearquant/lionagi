@@ -9,11 +9,13 @@ SchedulerStateService.
 
 from __future__ import annotations
 
+import json
 import logging
 from typing import Any, Protocol
 
 from lionagi.state.db import StateDB
 from lionagi.state.reasons import RunReasons
+from lionagi.studio.scheduler import coordination as _coordination
 
 _log = logging.getLogger(__name__)
 
@@ -40,6 +42,12 @@ class SchedulerStateService(Protocol):
     async def create_invocation(self, invocation: dict[str, Any]) -> None: ...
 
     async def update_invocation(self, inv_id: str, **fields: Any) -> None: ...
+
+    async def get_invocation(self, invocation_id: str) -> dict[str, Any] | None: ...
+
+    async def compute_files_overlap(
+        self, invocation_id: str, *, top_n: int = 5
+    ) -> dict[str, Any]: ...
 
     async def update_status(
         self,
@@ -101,6 +109,14 @@ class _DBSchedulerStateService:
     async def update_invocation(self, inv_id: str, **fields: Any) -> None:
         async with StateDB() as db:
             await db.update_invocation(inv_id, **fields)
+
+    async def get_invocation(self, invocation_id: str) -> dict[str, Any] | None:
+        async with StateDB() as db:
+            return await db.get_invocation(invocation_id)
+
+    async def compute_files_overlap(self, invocation_id: str, *, top_n: int = 5) -> dict[str, Any]:
+        async with StateDB() as db:
+            return await _coordination.compute_files_overlap(db, invocation_id, top_n=top_n)
 
     async def update_status(
         self,
@@ -315,6 +331,59 @@ async def resolve_invocation_terminal(
         evidence_refs,
         metadata,
     )
+
+
+async def flush_run_telemetry(
+    svc: SchedulerStateService,
+    bus: Any,
+    *,
+    run_id: str,
+    invocation_id: str,
+    top_n: int = 5,
+) -> dict[str, Any] | None:
+    """Compute and persist one run's coordination telemetry exactly once,
+    riding the invocation's own terminal write (engine.py calls this only
+    after its own ``_guarded_terminal_status("invocation", ...)`` returns
+    True -- the same guard that makes that write itself land exactly once,
+    see the four `_fire_inner` terminal sites).
+
+    Pulls the bus's accumulated signal counters for *run_id* (popping them
+    -- see ``SchedulerSignalBus.pop_run_counters``) and the invocation's
+    files-read overlap across its child sessions, then merges both under a
+    ``"coordination"`` key in ``invocations.node_metadata`` (a
+    read-modify-write, since ``update_invocation`` replaces node_metadata
+    wholesale rather than merging it). *bus* is typed ``Any`` to avoid a
+    scheduler.signals import here; it only needs ``pop_run_counters``.
+
+    Returns the telemetry dict that was persisted, or ``None`` when there
+    is nothing to report at all (no signal ever emitted for this run_id AND
+    no file overlap) -- a schedule action that never touches the signal bus
+    or the files-read pattern leaves node_metadata untouched, matching the
+    "measure-only" surfacing rule (the CLI/monitor summary lines only print
+    when non-zero).
+    """
+    signals = bus.pop_run_counters(run_id)
+    overlap = await svc.compute_files_overlap(invocation_id, top_n=top_n)
+    if signals is None and not overlap.get("count"):
+        return None
+
+    telemetry = {
+        "signals": signals or {"emitted": {}, "received": 0, "acted_on": 0},
+        "files_overlap": overlap,
+    }
+
+    invocation = await svc.get_invocation(invocation_id)
+    node_metadata = (invocation or {}).get("node_metadata")
+    if isinstance(node_metadata, str):
+        try:
+            node_metadata = json.loads(node_metadata)
+        except (ValueError, TypeError):
+            node_metadata = {}
+    if not isinstance(node_metadata, dict):
+        node_metadata = {}
+    node_metadata["coordination"] = telemetry
+    await svc.update_invocation(invocation_id, node_metadata=node_metadata)
+    return telemetry
 
 
 # Singleton for production use

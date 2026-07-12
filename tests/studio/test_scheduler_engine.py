@@ -55,6 +55,8 @@ def _make_svc() -> AsyncMock:
     svc.update_status = AsyncMock()
     svc.list_sessions_for_invocation = AsyncMock(return_value=[])
     svc.count_schedule_runs = AsyncMock(return_value=0)
+    svc.get_invocation = AsyncMock(return_value=None)
+    svc.compute_files_overlap = AsyncMock(return_value={"count": 0, "top": []})
     return svc
 
 
@@ -199,7 +201,10 @@ async def test_fire_happy_path_records_invocation_and_run():
     svc.update_schedule_run.assert_awaited_once()
     # update_status called for schedule_run AND invocation
     assert svc.update_status.await_count == 3  # running + completed + invocation
-    svc.update_invocation.assert_awaited_once()
+    # update_invocation is called twice: once to stamp ended_at, once more by
+    # flush_run_telemetry's read-modify-write of node_metadata["coordination"]
+    # after the invocation's terminal write lands (see scheduler_state.py).
+    assert svc.update_invocation.await_count == 2
     svc.update_schedule.assert_awaited()
 
 

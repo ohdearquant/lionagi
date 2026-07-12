@@ -33,6 +33,7 @@ import inspect
 import logging
 import time
 from collections.abc import Callable
+from dataclasses import dataclass, field
 from typing import Any
 
 from lionagi.ln.concurrency import ExceptionGroup, gather
@@ -135,6 +136,36 @@ def build_schedule_run_signal(
     return cls(**kwargs)
 
 
+@dataclass
+class _RunSignalCounters:
+    """Per-``run_id`` coordination counters, accumulated across every signal
+    :meth:`SchedulerSignalBus.emit` dispatches for that run.
+
+    ``emitted`` is a signal-type-name histogram: today's mint site fires
+    exactly one terminal ``ScheduleRun*`` signal per run (see
+    ``engine.py._fire_inner``), so in practice every value is 1, but the
+    histogram shape survives a future run minting more than one signal
+    without a counter-shape change. ``received`` counts deliveries where a
+    subscription's types AND predicates both matched (regardless of what
+    the handler returned or whether it raised); ``acted_on`` counts only
+    the subset where the handler additionally returned a truthy "acted"
+    marker — the opt-in convention that keeps this measure-only (no
+    handler is required to participate; a non-participating handler simply
+    contributes to ``received``, never to ``acted_on``).
+    """
+
+    emitted: dict[str, int] = field(default_factory=dict)
+    received: int = 0
+    acted_on: int = 0
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "emitted": dict(self.emitted),
+            "received": self.received,
+            "acted_on": self.acted_on,
+        }
+
+
 class SchedulerSignalBus:
     """Stripped-down sibling of :class:`~lionagi.session.observer.SessionObserver`.
 
@@ -144,10 +175,33 @@ class SchedulerSignalBus:
     signals describe. Matching is ``isinstance``-based against any ``type``
     key, AND-composed with any callable predicate keys (e.g. filtering on
     ``reason_code``) — no topic/pattern machinery.
+
+    Also accumulates per-``run_id`` coordination counters (signals
+    emitted/received/acted-on — see :class:`_RunSignalCounters`) so a
+    caller can report them at that run's finalize via
+    :meth:`pop_run_counters`. The bus itself is the least invasive place to
+    keep them: it already sees every signal and every handler dispatch, and
+    it requires no change to the handler API (``observe``/the ``Handler``
+    signature are untouched).
     """
 
     def __init__(self) -> None:
         self._subs: list[tuple[tuple[type, ...], tuple[Predicate, ...], Handler]] = []
+        self._counters: dict[str, _RunSignalCounters] = {}
+
+    def pop_run_counters(self, run_id: str) -> dict[str, Any] | None:
+        """Remove and return *run_id*'s accumulated signal counters as a
+        plain dict, or ``None`` if no signal was ever emitted for it.
+
+        Pop, not peek: the bus is a long-lived per-daemon singleton (one
+        per :class:`SchedulerEngine`, spanning every schedule it ever
+        fires), so counters must not accumulate for the process's whole
+        lifetime past the one terminal flush each run_id gets (see
+        ``lionagi.studio.services.scheduler_state.flush_run_telemetry``,
+        the intended sole caller).
+        """
+        counters = self._counters.pop(run_id, None)
+        return counters.to_dict() if counters is not None else None
 
     def observe(self, *keys: type | Predicate, handler: Handler) -> Handler:
         """Register *handler* for signals matching all *keys* (types AND predicates)."""
@@ -183,6 +237,16 @@ class SchedulerSignalBus:
         not a handler bug to record.
         """
         candidates = [entry for entry in self._subs if not entry[0] or isinstance(signal, entry[0])]
+
+        # Emitted counts regardless of whether any handler is even
+        # listening -- it describes what the mint site dispatched, not
+        # what got delivered (that's `received`, below).
+        run_id = getattr(signal, "run_id", "") or ""
+        if run_id:
+            counters = self._counters.setdefault(run_id, _RunSignalCounters())
+            type_name = type(signal).__name__
+            counters.emitted[type_name] = counters.emitted.get(type_name, 0) + 1
+
         if not candidates:
             return []
 
@@ -192,9 +256,19 @@ class SchedulerSignalBus:
             _types, predicates, handler = entry
             if not all(pred(signal) for pred in predicates):
                 return _NO_MATCH
+            # Received: candidate matched (isinstance, above) AND every
+            # predicate passed -- counted before invocation so a handler
+            # that raises still counts as delivered, just not acted-on.
+            if run_id:
+                self._counters[run_id].received += 1
             out = handler(signal)
             if inspect.isawaitable(out):
                 out = await out
+            # Acted-on: the opt-in truthy-return convention (see
+            # _RunSignalCounters docstring) -- a non-participating handler
+            # returning None/falsy stays received-only.
+            if run_id and out:
+                self._counters[run_id].acted_on += 1
             return out
 
         raw = await gather(*(_invoke(entry) for entry in candidates), return_exceptions=True)

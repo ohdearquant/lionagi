@@ -567,6 +567,44 @@ async def _detail_session(db: Any, sess: dict[str, Any]) -> str:
     return "\n".join(lines)
 
 
+def _parse_json_field(value: Any) -> dict[str, Any] | None:
+    """Best-effort JSON-object decode for a column that may come back as a
+    Python dict (Postgres JSON auto-decode) or a raw string (SQLite text
+    storage via an ad-hoc `text()` query with no column typing)."""
+    if isinstance(value, dict):
+        return value
+    if isinstance(value, str):
+        try:
+            parsed = json.loads(value)
+        except (ValueError, TypeError):
+            return None
+        return parsed if isinstance(parsed, dict) else None
+    return None
+
+
+def _format_coordination_line(telemetry: dict[str, Any]) -> str | None:
+    """One-liner rendering of an invocation's coordination telemetry
+    (`node_metadata["coordination"]`, written by the scheduler engine's
+    finalize path -- see `lionagi.studio.services.scheduler_state.
+    flush_run_telemetry`). Returns None when everything is zero: both the
+    monitor drill-in and the `li monitor run` wait-line only print this when
+    non-zero.
+    """
+    signals = telemetry.get("signals") or {}
+    emitted = signals.get("emitted") or {}
+    emitted_total = sum(emitted.values()) if isinstance(emitted, dict) else 0
+    received = signals.get("received") or 0
+    acted_on = signals.get("acted_on") or 0
+    overlap = telemetry.get("files_overlap") or {}
+    overlap_count = overlap.get("count") or 0
+    if not (emitted_total or received or acted_on or overlap_count):
+        return None
+    return (
+        f"emitted={emitted_total} received={received} "
+        f"acted_on={acted_on} files_overlap={overlap_count}"
+    )
+
+
 async def _detail_invocation(db: Any, inv: dict[str, Any]) -> str:
     lines: list[str] = []
     lines.append(_bold(f"INVOCATION  {inv['id']}"))
@@ -580,6 +618,19 @@ async def _detail_invocation(db: Any, inv: dict[str, Any]) -> str:
         lines.append(
             f"  started:       {time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(started))}"
         )
+
+    node_metadata = _parse_json_field(inv.get("node_metadata"))
+    coordination = (node_metadata or {}).get("coordination")
+    if isinstance(coordination, dict):
+        coord_line = _format_coordination_line(coordination)
+        if coord_line:
+            lines.append("")
+            lines.append(_dim("  -- coordination --"))
+            lines.append(f"    {coord_line}")
+            top = (coordination.get("files_overlap") or {}).get("top") or []
+            for entry in top:
+                if isinstance(entry, dict) and entry.get("path"):
+                    lines.append(f"      {entry['path']}  (workers={entry.get('workers', '?')})")
 
     child_rows = await db.fetch_all(
         "SELECT id, status, model, started_at FROM sessions WHERE invocation_id = ? ORDER BY created_at",
@@ -1106,7 +1157,19 @@ async def _poll_pending_once(
         elif row["status"] not in _TERMINAL_SCHEDULE_RUN_STATUSES:
             continue
         name = await _schedule_name(db, row["schedule_id"], cache=schedule_names)
+        # Resolved before the print/append/delete trio below (not between
+        # them) so that trio stays await-free and atomic wrt cancellation.
+        coord_line = None
+        invocation_id = row.get("invocation_id")
+        if invocation_id:
+            invocation = await db.get_invocation(invocation_id)
+            node_metadata = _parse_json_field((invocation or {}).get("node_metadata"))
+            coordination = (node_metadata or {}).get("coordination")
+            if isinstance(coordination, dict):
+                coord_line = _format_coordination_line(coordination)
         print(_format_wait_line(row, name))
+        if coord_line:
+            print(f"  coordination: {coord_line}")
         done.append(row)
         del pending[run_id]
 

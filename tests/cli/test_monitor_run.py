@@ -73,12 +73,14 @@ async def _make_schedule_run(
     exit_code: int | None = None,
     chain_depth: int = 0,
     chain_parent_id: str | None = None,
+    invocation_id: str | None = None,
 ) -> str:
     rid = uuid.uuid4().hex[:12]
     await db.create_schedule_run(
         {
             "id": rid,
             "schedule_id": schedule_id,
+            "invocation_id": invocation_id,
             "trigger_context": {},
             "action_kind": "agent",
             "action_args": [],
@@ -193,6 +195,86 @@ async def test_poll_pending_once_reports_immediately_terminal_run(
     assert run_id in out
     assert "nightly-build" in out
     assert "status=completed" in out
+
+
+@pytest.mark.asyncio
+async def test_poll_pending_once_prints_coordination_line_when_nonzero(
+    temp_db_path: Path, capsys: pytest.CaptureFixture
+) -> None:
+    """The wait primitive's per-run print (`li monitor run <id>`) appends a
+    coordination one-liner sourced from the run's invocation node_metadata,
+    written by the scheduler engine's finalize path -- only when non-zero."""
+    coordination = {
+        "signals": {"emitted": {"ScheduleRunSucceeded": 1}, "received": 1, "acted_on": 1},
+        "files_overlap": {"count": 1, "top": [{"path": "/repo/shared.py", "workers": 2}]},
+    }
+    async with StateDB() as db:
+        inv_id = uuid.uuid4().hex[:12]
+        await db.create_invocation(
+            {
+                "id": inv_id,
+                "skill": "scheduled:test",
+                "started_at": time.time(),
+                "node_metadata": {"coordination": coordination},
+            }
+        )
+        sched_id = await _make_schedule(db, name="coord-sched")
+        run_id = await _make_schedule_run(
+            db, sched_id, status="completed", exit_code=0, invocation_id=inv_id
+        )
+        pending = {run_id: await db.get_schedule_run(run_id)}
+        done: list[dict[str, Any]] = []
+        await _poll_pending_once(db, pending, {}, done)
+
+    out = capsys.readouterr().out
+    assert "coordination: emitted=1 received=1 acted_on=1 files_overlap=1" in out
+
+
+@pytest.mark.asyncio
+async def test_poll_pending_once_omits_coordination_line_when_all_zero(
+    temp_db_path: Path, capsys: pytest.CaptureFixture
+) -> None:
+    coordination = {
+        "signals": {"emitted": {}, "received": 0, "acted_on": 0},
+        "files_overlap": {"count": 0, "top": []},
+    }
+    async with StateDB() as db:
+        inv_id = uuid.uuid4().hex[:12]
+        await db.create_invocation(
+            {
+                "id": inv_id,
+                "skill": "scheduled:test",
+                "started_at": time.time(),
+                "node_metadata": {"coordination": coordination},
+            }
+        )
+        sched_id = await _make_schedule(db, name="zero-sched")
+        run_id = await _make_schedule_run(
+            db, sched_id, status="completed", exit_code=0, invocation_id=inv_id
+        )
+        pending = {run_id: await db.get_schedule_run(run_id)}
+        done: list[dict[str, Any]] = []
+        await _poll_pending_once(db, pending, {}, done)
+
+    out = capsys.readouterr().out
+    assert "coordination" not in out
+
+
+@pytest.mark.asyncio
+async def test_poll_pending_once_no_invocation_id_omits_coordination_line(
+    temp_db_path: Path, capsys: pytest.CaptureFixture
+) -> None:
+    """A schedule_run with no invocation_id (or none found) must not error;
+    it simply prints no coordination line."""
+    async with StateDB() as db:
+        sched_id = await _make_schedule(db, name="no-inv-sched")
+        run_id = await _make_schedule_run(db, sched_id, status="completed", exit_code=0)
+        pending = {run_id: await db.get_schedule_run(run_id)}
+        done: list[dict[str, Any]] = []
+        await _poll_pending_once(db, pending, {}, done)
+
+    out = capsys.readouterr().out
+    assert "coordination" not in out
 
 
 @pytest.mark.asyncio
