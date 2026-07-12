@@ -561,12 +561,12 @@ why consolidation is a delta rather than claimed current architecture.
 
 | # | Delta | Size | Issue |
 |---|-------|------|-------|
-| 1 | Reconcile the schedule-run database CHECK, status validator, terminal set, and guarded-transition vocabulary for `waiting_dependency`, `retry_wait`, and `timed_out`; acceptance requires one tested vocabulary in every sanctioned write path. | M | (filled at issue-open time) |
-| 2 | Consolidate `StateDB.update_status()` and `lionagi/state/transitions.py` behind the lifecycle service in ADR-0058; acceptance requires one conflict result, one policy registry, atomic reason/history writes, and compatibility wrappers for existing callers. | M | (filled at issue-open time) |
-| 3 | Define and enforce allowed transition graphs for sessions, schedule runs, dispatches, shows, and plays; acceptance requires tests for every allowed edge, every terminal edge, and the selected same-status reason-refresh rule. | M | (filled at issue-open time) |
-| 4 | Make terminal companion fields such as `sessions.ended_at` part of the same guarded status transaction; acceptance requires teardown and wrapper paths to leave no crash window between terminal status and its companion fields. | S | (filled at issue-open time) |
-| 5 | Emit a reason-bearing initial lifecycle event when creating every managed entity, as required by ADR-0058; acceptance requires `previous_status=NULL` creation history in the same transaction as the entity insert. | S | (filled at issue-open time) |
-| 6 | Replace the overlapping session health and staleness entry points with one threshold source and evaluator; acceptance requires both current call patterns to return the same classification at threshold boundaries. | S | (filled at issue-open time) |
+| 1 | Reconcile the schedule-run database CHECK, status validator, terminal set, and guarded-transition vocabulary for `waiting_dependency`, `retry_wait`, and `timed_out`; acceptance requires one tested vocabulary in every sanctioned write path. | M | [#1906](https://github.com/ohdearquant/lionagi/issues/1906) (closed) |
+| 2 | Consolidate `StateDB.update_status()` and `lionagi/state/transitions.py` behind the lifecycle service in ADR-0058; acceptance requires one conflict result, one policy registry, atomic reason/history writes, and compatibility wrappers for existing callers. | M | [#2074](https://github.com/ohdearquant/lionagi/issues/2074) (closed) |
+| 3 | Define and enforce allowed transition graphs for sessions, schedule runs, dispatches, shows, and plays; acceptance requires tests for every allowed edge, every terminal edge, and the selected same-status reason-refresh rule. | M | [#2077](https://github.com/ohdearquant/lionagi/issues/2077) |
+| 4 | Make terminal companion fields such as `sessions.ended_at` part of the same guarded status transaction; acceptance requires teardown and wrapper paths to leave no crash window between terminal status and its companion fields. | S | [#2078](https://github.com/ohdearquant/lionagi/issues/2078) |
+| 5 | Emit a reason-bearing initial lifecycle event when creating every managed entity, as required by ADR-0058; acceptance requires `previous_status=NULL` creation history in the same transaction as the entity insert. | S | [#2079](https://github.com/ohdearquant/lionagi/issues/2079) |
+| 6 | Replace the overlapping session health and staleness entry points with one threshold source and evaluator; acceptance requires both current call patterns to return the same classification at threshold boundaries. | S | [#2080](https://github.com/ohdearquant/lionagi/issues/2080) |
 
 ## Alternatives considered
 
