@@ -90,9 +90,14 @@ Retention never expires an unacknowledged event out of an active consumer's reco
 set: an event remains in that set until the consumer acknowledges it, however old it gets —
 a consumer offline longer than any horizon still recovers every missed terminal event on
 return. What expires is the other side: delivery rows older than the retention horizon
-(default ninety days) may be pruned once acknowledged, and a consumer registration that has
-not queried within the horizon may be retired, at which point its outstanding unacked set is
-released. Registering as a reconciliation consumer is what creates the retention obligation;
+(default ninety days) may be pruned once acknowledged. Consumer registrations end only by
+explicit retirement — a recorded action taken by the registration's owner or a deployment
+operator, never a side effect of inactivity. A registered consumer that merely stops
+querying remains active and its unacknowledged set is retained indefinitely, regardless of
+how far past any horizon its silence extends. Releasing a retired consumer's outstanding
+unacked set happens atomically with the retirement itself (one transaction), so there is no
+window in which the registration is gone while its set is still owed, or retained while
+unowned. Registering as a reconciliation consumer is what creates the retention obligation;
 an anonymous ad-hoc query gets the plain audit history with no completeness guarantee.
 
 Because membership in the unacknowledged set does not depend on any ordering, a
@@ -169,7 +174,11 @@ adapter is installable from user configuration alone:
   argv array by POSIX word-splitting (`shlex.split`) with no shell interpretation of any
   kind; a string that fails to split, or whose intent requires shell features (pipes,
   redirection, `&&`, variable expansion), warns with a migration diagnostic naming the
-  argv form and resolves to disabled. No configuration shape reaches a shell.
+  argv form and resolves to disabled. A resolution producing an empty argv — an empty or
+  whitespace-only string, an explicit empty `argv` array in the mapping form, or the same
+  through a per-run override or `--notify` — is invalid by the same rule: it logs the same
+  key-naming diagnostic and resolves to disabled before any launch is attempted. No
+  configuration shape reaches a shell.
 - **Precedence**: per-run override > project `.lionagi/settings.yaml` > global
   `~/.lionagi/settings.yaml` > disabled. The per-run override surface is the existing
   `--notify` flag where it exists (flow/play) and the programmatic registration API
@@ -346,8 +355,9 @@ wrapper makes the resume decision against the recovery projection.
    consumer-side dedup makes processing idempotent.
 1b-i. Offline-longer-than-horizon: a registered consumer stops querying for longer than the
    retention horizon while terminal events accumulate; on return, every unacknowledged
-   event is still in its reconciliation set (retention expires acks and retired consumers,
-   never unacked events for an active consumer).
+   event is still in its reconciliation set (retention expires acks and explicitly retired
+   consumers, never unacked events for a registered consumer; inactivity alone retires
+   nothing).
 1b-ii. Parallel acknowledgment: two workers of the same consumer ack the same event
    concurrently; exactly one delivery row exists and neither write errors.
 1c. Settings contract: string form, mapping form, invalid value (warns, disabled, run
@@ -355,7 +365,9 @@ wrapper makes the resume decision against the recovery projection.
    explicit `enabled: false` state. No-shell path: assert no executable adapter invocation
    (string form, mapping form, or `--notify`) ever constructs a shell; a shell-feature
    string (pipe, redirection, conjunction) resolves to disabled with the migration
-   diagnostic.
+   diagnostic, and every empty-argv resolution (empty string, whitespace-only string,
+   empty argv array, and the same via per-run override and `--notify`) resolves to
+   disabled with the diagnostic before any launch.
 1d. Spawn handshake per incomplete phase: crash before intent commit (no row, no leak
    beyond the OS process); crash between spawn and identity commit on a marker-capable
    surface (restart adopts identity from the child marker); same on a marker-less surface
