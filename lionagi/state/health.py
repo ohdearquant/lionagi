@@ -16,7 +16,7 @@ IDLE_THRESHOLD: int = 3600
 
 
 class SessionHealth(str, Enum):
-    """Six-level derived health (ADR-0057 §A)."""
+    """Six-level derived health (ADR-0057 D6)."""
 
     HEALTHY = "healthy"
     IDLE = "idle"

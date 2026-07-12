@@ -21,7 +21,7 @@ from lionagi.hooks import (
 
 
 def test_builtins_resolvable_by_name():
-    """ADR-0047 §"Built-in handlers" — names must be agent-YAML addressable."""
+    """ADR-0047 D3 — names must be agent-YAML addressable."""
     for name in (
         "persist_session_start",
         "persist_session_end",
@@ -123,7 +123,7 @@ def test_build_session_bus_adds_handlers_for_non_default_points():
 
 
 def test_default_hooks_only_cover_session_lifecycle_and_persistence():
-    """ADR-0047 §"Default hooks" — pinned set."""
+    """ADR-0047 D3 — pinned set."""
     assert set(DEFAULT_HOOKS) == {
         HookPoint.SESSION_START,
         HookPoint.SESSION_END,

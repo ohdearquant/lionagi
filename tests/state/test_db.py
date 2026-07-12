@@ -1051,7 +1051,7 @@ async def test_message_content_dict_roundtrips_as_dict(db: StateDB):
 
 
 async def test_create_session_rejects_invalid_invocation_kind(db: StateDB):
-    """R4-B MED-2: ADR-0077 closed vocabulary, was unenforced before."""
+    """invocation_kind is a closed vocabulary; invalid kinds are rejected at creation."""
     prog_id = uid()
     await db.create_progression(prog_id)
     with pytest.raises(ValueError, match="invocation_kind"):

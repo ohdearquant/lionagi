@@ -1,6 +1,6 @@
 # Copyright (c) 2023-2026, HaiyangLi <quantocean.li at gmail dot com>
 # SPDX-License-Identifier: Apache-2.0
-"""ADR-0071 D4: capability-class matching.
+"""ADR-0071 D5: capability-class matching.
 
 Declarative token -> class map, not a policy engine. Every capability token
 falls into exactly one class:

@@ -835,13 +835,13 @@ def add_state_subparser(subparsers: argparse._SubParsersAction) -> None:
         ),
     )
 
-    # li state import-teams (ADR-0077)
+    # li state import-teams
     state_sub.add_parser(
         "import-teams",
         help="Backfill team JSON files (~/.lionagi/teams/*.json) into state.db.",
         description=(
             "Scan ~/.lionagi/teams/*.json and INSERT each team + its messages "
-            "into the `teams` and `team_messages` tables (ADR-0019). Idempotent: "
+            "into the `teams` and `team_messages` tables. Idempotent: "
             "existing rows (matched by team id) are left alone. Run once after "
             "upgrading; the runtime can keep using JSON until the dual-write "
             "path ships."

@@ -21,7 +21,7 @@ __all__ = (
     "build_session_bus",
 )
 
-# Default wiring per ADR-0047 §"Default hooks (no configuration needed)".
+# Default wiring per ADR-0047 D3.
 DEFAULT_HOOKS: dict[HookPoint, list[HookHandler]] = {
     HookPoint.SESSION_START: [_builtins.persist_session_start],
     HookPoint.SESSION_END: [_builtins.persist_session_end],

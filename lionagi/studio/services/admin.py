@@ -680,7 +680,7 @@ async def doctor_route(
 
 @studio_route("/admin/health", method="GET", area="admin", name="health")
 async def health_route() -> dict[str, Any]:
-    """ADR-0057 §B: composite session health report."""
+    """ADR-0057 D6: composite session health report."""
     return await health_report()
 
 

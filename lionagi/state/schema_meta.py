@@ -600,7 +600,7 @@ schedule_runs = Table(
     Column("leased_by", Text),
     Column("lease_expires_at", Float),
     Column("concurrency_key", Text),
-    # ADR-0071 D3: bounds the lease-expiry recovery loop (worker.py's reaper).
+    # ADR-0071 D4: bounds the lease-expiry recovery loop (worker.py's reaper).
     Column("lease_attempts", Integer, nullable=False, server_default="0"),
     # ADR-0071 D2: task-application provenance (seam into ADR-0073).
     Column("required_capabilities", JSON),
@@ -638,7 +638,7 @@ Index(
 )
 
 # ── workers ─────────────────────────────────────────────────────────────────
-# ADR-0071 D4: capability-matching worker registry -- the only genuinely new
+# ADR-0071 D5: capability-matching worker registry -- the only genuinely new
 # table this ADR pair adds.
 
 workers = Table(

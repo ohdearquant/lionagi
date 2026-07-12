@@ -1,7 +1,7 @@
 # Copyright (c) 2023-2026, HaiyangLi <quantocean.li at gmail dot com>
 # SPDX-License-Identifier: Apache-2.0
 
-"""ADR-0071 D3: the local (host-only) worker/claim loop.
+"""ADR-0071 D4: the local (host-only) worker/claim loop.
 
 Covers the claim CAS race, cancel-beats-claim, bounded lease-expiry
 recovery (R1), terminal re-entry rejection (R2), the D3 claim predicate,

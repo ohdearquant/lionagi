@@ -127,7 +127,7 @@ async def test_update_session_accepts_cancelled(db: StateDB):
 
 async def test_update_session_rejects_unknown_status(db: StateDB):
     s = await _make_session(db, status="running")
-    with pytest.raises(ValueError, match="ADR-0025 vocabulary"):
+    with pytest.raises(ValueError, match="ADR-0057 vocabulary"):
         await db.update_session(s["id"], status="stale")
 
 

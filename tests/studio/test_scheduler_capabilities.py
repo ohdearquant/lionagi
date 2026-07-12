@@ -1,7 +1,7 @@
 # Copyright (c) 2023-2026, HaiyangLi <quantocean.li at gmail dot com>
 # SPDX-License-Identifier: Apache-2.0
 
-"""ADR-0071 D4: the capability-class declarative map, pure unit tests (no DB)."""
+"""ADR-0071 D5: the capability-class declarative map, pure unit tests (no DB)."""
 
 from __future__ import annotations
 

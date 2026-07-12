@@ -6,7 +6,7 @@ Durability and delivery are separate guarantees: an outbox row persists in
 ``state.db`` independent of any consumer's liveness (durability); a surviving
 producer — the Studio daemon's scheduler tick — re-attempts the configured
 notify template until it succeeds, backs off, or exhausts ``max_attempts``
-(delivery). The transport is a shell command template (ADR-0069 §5 shape):
+(delivery). The transport is a shell command template (ADR-0059 D3):
 best-effort, argv-safe, no specific messaging CLI baked in — the command is
 configuration.
 

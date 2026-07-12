@@ -205,7 +205,7 @@ async def save_definition(
     content: str,
     message: str | None = None,
 ) -> dict[str, Any]:
-    """Persist a definition version: DB write first, then disk (ADR-0077 §"Save semantics").
+    """Persist a definition version: DB write first, then disk (ADR-0077 D2).
 
     DB write must succeed before the file is written; per-(kind, name) lock
     serialises concurrent saves for the same definition.
@@ -244,7 +244,7 @@ async def save_definition(
 
         await anyio.to_thread.run_sync(_write_disk)
 
-    # ADR-0077 §"Save semantics": response field is "saved_at", not "created_at"
+    # ADR-0077 D2: response field is "saved_at", not "created_at"
     return {
         "kind": kind,
         "name": name,
@@ -257,7 +257,7 @@ async def save_definition(
 async def rollback_definition(kind: str, name: str, target_version: int) -> dict[str, Any] | None:
     """Restore a previous version: read old content from DB, write to disk, record as new version.
 
-    ADR-0077 §"Rollback semantics": returns
+    ADR-0077 D2: returns
         { version: N+1, rolled_back_from: current_version, rolled_back_to: N }
     """
     validate_name_component(kind, label="kind")
@@ -398,7 +398,7 @@ async def get_version_route(kind: str, name: str, version: int) -> dict[str, Any
     return v
 
 
-# ADR-0077 §"Save semantics": POST /api/definitions/{kind}/{name}
+# ADR-0077 D2: POST /api/definitions/{kind}/{name}
 @studio_route(
     "/definitions/{kind}/{name}", method="POST", area="definitions", name="save_definition"
 )
@@ -411,7 +411,7 @@ async def save_definition_route(kind: str, name: str, body: SaveBody) -> dict[st
         raise HTTPException(status_code=422, detail=str(e)) from e
 
 
-# ADR-0077 §"Rollback semantics": version as query param, not path segment
+# ADR-0077 D2: version as query param, not path segment
 @studio_route(
     "/definitions/{kind}/{name}/rollback",
     method="POST",

@@ -107,7 +107,7 @@ async def test_update_invocation_status_terminal(db: StateDB):
 
 async def test_update_invocation_rejects_unknown_status(db: StateDB):
     inv = await _make_invocation(db)
-    with pytest.raises(ValueError, match="ADR-0020"):
+    with pytest.raises(ValueError, match="ADR-0057"):
         await db.update_invocation(inv["id"], status="stale")
 
 

@@ -243,7 +243,7 @@ class LocalWorktreeBackend:
         if cell.kind == "prompt_cell" and cell.env:
             raise ValueError(
                 "prompt-cells never receive env/secrets in the box "
-                "(ADR-0089 §3): put provider auth on the host, not on cell.env"
+                "(ADR-0090): put provider auth on the host, not on cell.env"
             )
 
         base = Path(handle.remote_repo_path)

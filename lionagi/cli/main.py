@@ -91,7 +91,7 @@ def _print_playbook_help(name: str) -> int:
 
 
 def _handle_play_check(argv: list[str]) -> int:
-    """`li play check <name>` — ADR-0064 §9 pre-flight artifact-contract validation; does not fire the playbook."""
+    """`li play check <name>` — ADR-0064 D3 pre-flight artifact-contract validation; does not fire the playbook."""
     if not argv or argv[0].startswith("-"):
         print("Usage: li play check <name>")
         return 1
@@ -315,7 +315,7 @@ def main(argv: list[str] | None = None) -> int:
 
     # `li agent status [<id>] [--json]` is a pure-read status surface, not a
     # prompt to send — must be intercepted before the intermixed agent-flag
-    # parsing below, which otherwise treats "status" as query text (ADR-0069).
+    # parsing below, which otherwise treats "status" as query text.
     if _argv and _argv[0] == "agent" and len(_argv) > 1 and _argv[1] == "status":
         from .status import run_agent_status
 

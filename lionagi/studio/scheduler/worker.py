@@ -1,6 +1,6 @@
 # Copyright (c) 2023-2026, HaiyangLi <quantocean.li at gmail dot com>
 # SPDX-License-Identifier: Apache-2.0
-"""ADR-0071 D3/D4: the local (host-only) worker/claim loop with capability
+"""ADR-0071 D4/D5: the local (host-only) worker/claim loop with capability
 matching.
 
 v1 ships ONE worker — the Studio daemon engine itself. A claim is one guarded
@@ -51,7 +51,7 @@ __all__ = (
     "worker_tick",
 )
 
-# Module-level enable flag (ADR-0071 D3 host worker), default ON. The Studio
+# Module-level enable flag (ADR-0071 D4 host worker), default ON. The Studio
 # daemon's scheduler tick checks this before running a worker_tick pass.
 TASK_WORKER_ENABLED = True
 

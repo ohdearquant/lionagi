@@ -318,7 +318,7 @@ roles:
     escalations:
     - A CRITICAL finding needs a requirements change to resolve
     - The test environment is not representative enough to evaluate
-    # ADR-0074: per-role runtime config. default_modes overlay the role body;
+    # ADR-0043: per-role runtime config. default_modes overlay the role body;
     # modes_allow (empty = unrestricted) bounds a per-task mode override.
     default_modes: [adversarial]
     modes_allow: [adversarial, premortem, evidential, metacognitive]

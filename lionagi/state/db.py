@@ -347,7 +347,7 @@ def _validate_session_status(status: Any) -> None:
     if status not in VALID_SESSION_STATUSES:
         raise ValueError(
             f"Invalid session status {status!r}; "
-            f"ADR-0025 vocabulary is {sorted(VALID_SESSION_STATUSES)}"
+            f"ADR-0057 vocabulary is {sorted(VALID_SESSION_STATUSES)}"
         )
 
 
@@ -1301,7 +1301,7 @@ class StateDB:
 
     async def insert_message(self, msg: dict[str, Any]) -> None:
         if msg.get("content") is None:
-            raise ValueError("messages.content is NOT NULL (ADR-0009)")
+            raise ValueError("messages.content is NOT NULL (ADR-0056)")
         role = msg.get("role")
         if not isinstance(role, str) or not role.strip():
             raise ValueError(f"messages.role must be a non-empty string; got {role!r}")
@@ -2697,7 +2697,7 @@ class StateDB:
             "status",
             status,
             _INVOCATION_STATUSES,
-            adr="ADR-0020",
+            adr="ADR-0057",
             nullable=False,
         )
         now = time.time()
@@ -2744,7 +2744,7 @@ class StateDB:
                 "status",
                 fields["status"],
                 _INVOCATION_STATUSES,
-                adr="ADR-0020",
+                adr="ADR-0057",
                 nullable=False,
             )
 

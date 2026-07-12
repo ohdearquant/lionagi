@@ -753,7 +753,7 @@ _EXCLUDED_COLUMNS = {
     "execution_target",
     "library_ref",
     "library_content_hash",
-    # ADR-0071 D3 additive column — asserted separately (must default to 0
+    # ADR-0071 D4 additive column — asserted separately (must default to 0
     # for a schedule-spawned run); excluded here for the same reason as the
     # D2 columns above.
     "lease_attempts",
@@ -811,7 +811,7 @@ async def test_schedule_spawned_run_stays_byte_identical(db: StateDB) -> None:
         "library_content_hash",
     ):
         assert row_after_create[col] is None
-    # ADR-0071 D3 additive column — defaults to 0, not NULL.
+    # ADR-0071 D4 additive column — defaults to 0, not NULL.
     assert row_after_create["lease_attempts"] == 0
 
     await db.update_schedule_run(

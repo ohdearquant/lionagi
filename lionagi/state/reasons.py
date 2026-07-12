@@ -83,7 +83,7 @@ class RunReasons:
     CANCELLED_FORCE_KILL = "run.cancelled.force_kill"
     CANCELLED_STALE_AUTO = "run.cancelled.stale_auto"
     PAUSED_OPERATOR = "run.paused.operator"
-    # ADR-0071 D3: task-application worker lease outcomes.
+    # ADR-0071 D4: task-application worker lease outcomes.
     QUEUED_LEASE_EXPIRED = "run.queued.lease_expired"
     FAILED_LEASE_ATTEMPTS_EXHAUSTED = "run.failed.lease_attempts_exhausted"
 

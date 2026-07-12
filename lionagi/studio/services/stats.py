@@ -234,7 +234,7 @@ async def get_stats() -> dict[str, Any]:
 
 @studio_route("/stats", method="GET", area="stats", tags=[], name="get_stats")
 async def get_stats_route() -> dict[str, Any]:
-    # ADR-0077 §10: "runs" count must come from SQLite sessions so the dashboard
+    # ADR-0077 D1: "runs" count must come from SQLite sessions so the dashboard
     # matches the Runs list page; runs_svc.list_runs() reads filesystem dirs and
     # returns a different count than the sessions-backed list endpoint.
     return await get_stats()

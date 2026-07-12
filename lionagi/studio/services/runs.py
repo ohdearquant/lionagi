@@ -722,7 +722,7 @@ async def list_runs_route(
     playbook: str | None = Query(
         default=None, description="Case-insensitive playbook contains filter"
     ),
-    project: str | None = Query(default=None, description="Exact project name filter (ADR-0026)"),
+    project: str | None = Query(default=None, description="Exact project name filter (ADR-0063)"),
     project_null: bool = Query(default=False, description="Filter to runs with no project"),
     tag: list[str] | None = Query(  # noqa: B008
         default=None, description="Repeated tag filter (AND-composed)"
