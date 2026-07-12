@@ -266,7 +266,7 @@ class SchedulerEngine:
         # closes the race a DB-only last_alert_at check can't (see
         # _maybe_fire).
         self._threshold_pending: set[str] = set()
-        # ADR-0101 D3: this daemon process is the one host worker (v1).
+        # ADR-0071 D3: this daemon process is the one host worker (v1).
         self._task_worker_id = f"host:{uuid.uuid4().hex[:8]}"
 
     async def start(self) -> None:
@@ -631,7 +631,7 @@ class SchedulerEngine:
                 _log.exception("Error evaluating schedule %s", s.get("name"))
 
     async def _deliver_due_dispatches(self, now: float) -> None:
-        """Scan due dispatch_outbox rows and attempt delivery (ADR-0092 slice 1).
+        """Scan due dispatch_outbox rows and attempt delivery (ADR-0059 slice 1).
 
         Unlike the reaper/checkpoint maintenance above, this is not
         interval-gated: the 30s tick itself is the latency floor the ADR
@@ -645,7 +645,7 @@ class SchedulerEngine:
             await deliver_due_dispatches(db, now=now)
 
     async def _run_task_worker_tick(self, now: float) -> None:
-        """ADR-0101 D3: reap lapsed leases and claim/execute eligible host
+        """ADR-0071 D3: reap lapsed leases and claim/execute eligible host
         task applications. Not interval-gated for the same reason as
         ``_deliver_due_dispatches`` — the 30s tick is the latency floor.
         """

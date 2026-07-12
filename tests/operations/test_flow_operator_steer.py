@@ -1,7 +1,7 @@
 # Copyright (c) 2023-2026, HaiyangLi <quantocean.li at gmail dot com>
 # SPDX-License-Identifier: Apache-2.0
 
-"""Operator-message render slot tests (ADR-0088 slice 1, Mode A).
+"""Operator-message render slot tests (ADR-0069 slice 1, Mode A).
 
 Covers: the labeled [OPERATOR STEER] block renders into the next op's
 instruction and is lifted out of the raw context dict; consume-once so a
@@ -146,7 +146,7 @@ def test_consume_once_new_message_queued_between_ops_renders_into_next_op_only()
     executor._prepare_operation(op1)
     assert "first steer" in op1.parameters["instruction"]
 
-    # Simulate the control poller appending a new message mid-run (ADR-0085
+    # Simulate the control poller appending a new message mid-run (ADR-0069
     # part 1 semantics) between op1's prep and op2's prep.
     existing = executor.context.content.get("operator_messages", [])
     executor.context.content["operator_messages"] = [*existing, {"ts": 2.0, "text": "second steer"}]
@@ -257,7 +257,7 @@ def test_steer_appended_after_prepare_is_caught_by_invoke_time_recheck():
     assert "rendered_into_op" not in op2.metadata
 
     # A steer lands after op2's prepare already ran, mirroring the control
-    # poller appending mid-run (ADR-0085 part 1) after op2's slot passed.
+    # poller appending mid-run (ADR-0069 part 1) after op2's slot passed.
     executor.context.content["operator_messages"] = [{"ts": 1.0, "text": "late steer"}]
 
     # The invoke-time recheck (called by _execute_operation immediately

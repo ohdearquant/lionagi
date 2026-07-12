@@ -1,7 +1,7 @@
 # Copyright (c) 2023-2026, HaiyangLi <quantocean.li at gmail dot com>
 # SPDX-License-Identifier: Apache-2.0
 
-"""Pack parsing — RolePolicy (prompt envelope) + RoleConfig (runtime, ADR-0074)."""
+"""Pack parsing — RolePolicy (prompt envelope) + RoleConfig (runtime, ADR-0043)."""
 
 from __future__ import annotations
 

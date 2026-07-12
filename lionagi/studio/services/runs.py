@@ -717,8 +717,8 @@ async def list_runs_route(
     page: int = Query(default=1, ge=1, description="1-based page number"),
     per_page: int = Query(default=20, ge=1, le=5000, description="Rows per page"),
     status: list[str] | None = Query(default=None, description="Repeated status filter"),  # noqa: B008
-    # ADR-0005: renamed from ?worker= to ?playbook= — "worker" is
-    # not in lionagi's Studio vocabulary per ADR-0005.
+    # ADR-0079: renamed from ?worker= to ?playbook= — "worker" is
+    # not in lionagi's Studio vocabulary per ADR-0079.
     playbook: str | None = Query(
         default=None, description="Case-insensitive playbook contains filter"
     ),
@@ -874,8 +874,8 @@ async def get_run_file_route(run_id: str, path: str = Query(...)) -> dict[str, A
     return await get_run_file(run_id, path)
 
 
-# ADR-0008: /api/runs/{id}/events SSE (read stream/*.buffer.jsonl, forbidden
-# by ADR-0004) and the rerun/delete stub routes were removed — run data is
-# read-only per ADR-0008. Live monitoring: /api/sessions/{id}/stream;
+# ADR-0076: /api/runs/{id}/events SSE (read stream/*.buffer.jsonl, forbidden
+# by ADR-0055) and the rerun/delete stub routes were removed — run data is
+# read-only per ADR-0076. Live monitoring: /api/sessions/{id}/stream;
 # re-running: the terminal (`li play ...`). Restoring either requires an
-# ADR-0008 amendment.
+# ADR-0076 amendment.

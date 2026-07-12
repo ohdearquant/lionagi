@@ -1,6 +1,6 @@
 # Copyright (c) 2023-2026, HaiyangLi <quantocean.li at gmail dot com>
 # SPDX-License-Identifier: Apache-2.0
-"""Tests for `li o ctl pause|resume|msg` (ADR-0085 part 1: session_controls transport).
+"""Tests for `li o ctl pause|resume|msg` (ADR-0069 part 1: session_controls transport).
 
 Covers enqueue row shapes (verb, payload) and id resolution (session,
 invocation, play, short prefix, unknown id) through the same generic

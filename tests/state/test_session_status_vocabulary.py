@@ -1,7 +1,7 @@
 # Copyright (c) 2023-2026, HaiyangLi <quantocean.li at gmail dot com>
 # SPDX-License-Identifier: Apache-2.0
 
-"""ADR-0025 session status vocabulary tests — seven-value vocabulary (adds
+"""ADR-0057 session status vocabulary tests — seven-value vocabulary (adds
 completed_empty for the completion-trust gate), FSM transitions, admin
 transitions, and legacy CHECK-constraint rebuild path."""
 
@@ -135,10 +135,10 @@ async def test_update_session_rejects_unknown_status(db: StateDB):
 
 
 async def test_drop_legacy_check_rebuilds_table(tmp_path: Path):
-    """An existing DB with the ADR-0017 4-value CHECK is migrated on open."""
+    """An existing DB with the ADR-0057 4-value CHECK is migrated on open."""
     path = tmp_path / "legacy.db"
 
-    # Hand-build the legacy schema: ADR-0017 4-value CHECK on sessions.status.
+    # Hand-build the legacy schema: ADR-0057 4-value CHECK on sessions.status.
     async with aiosqlite.connect(str(path)) as old:
         await old.execute(
             """
@@ -225,7 +225,7 @@ async def test_drop_legacy_check_is_idempotent(tmp_path: Path):
 def test_cli_exit_code_map_matches_adr0025():
     from lionagi.cli._util import EXIT_CODE_BY_STATUS as _EXIT_CODE_BY_TERMINAL_STATUS
 
-    # ADR-0025 spec table: 0 / 1 / 124 / 130 / 143. completed_empty (the
+    # ADR-0057 spec table: 0 / 1 / 124 / 130 / 143. completed_empty (the
     # completion-trust gate) shares exit code 1 with failed — both are
     # non-zero so scripts/CI/schedule chaining treat them as a failure.
     assert _EXIT_CODE_BY_TERMINAL_STATUS == {

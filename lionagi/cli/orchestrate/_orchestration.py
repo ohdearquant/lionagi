@@ -472,7 +472,7 @@ async def build_worker_branch(
     """
     from ._common import BARE_WORKER_SYSTEM
 
-    # Pack per-role config (ADR-0074): model/effort/modes defaults for casts
+    # Pack per-role config (ADR-0043): model/effort/modes defaults for casts
     # roles. Ignored in bare mode (workers are the raw CLI spec there).
     w_cfg = None if env.bare else role_config(role, env.pack)
 

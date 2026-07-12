@@ -149,7 +149,7 @@ class DependencyAwareExecutor:
         # NodeSpawned), retained until each finishes so a weakly referenced
         # task can't disappear before it runs. See _emit_best_effort().
         self._signal_tasks: set[asyncio.Task[Any]] = set()
-        # ADR-0085 part 1: an out-of-band handle the caller can pass so a
+        # ADR-0069 part 1: an out-of-band handle the caller can pass so a
         # control poller running alongside this flow (cli/orchestrate/flow.py)
         # can reach pause()/resume()/context/graph on the live executor. Set
         # synchronously here (before any awaiting) so it is available the

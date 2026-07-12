@@ -19,7 +19,7 @@ VALID_METRICS: frozenset[str] = frozenset(
         "failed_sessions",
         "total_cost_usd",
         "p95_latency_ms",
-        # Observer self-health (ADR-0027 poller): point-in-time gauges, not
+        # Observer self-health (ADR-0070 poller): point-in-time gauges, not
         # windowed aggregates -- see StateDB.metric_value.
         "github_poll_healthy_age_minutes",
         "github_poll_consecutive_401",

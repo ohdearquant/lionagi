@@ -389,7 +389,7 @@ def test_hook_bus_lifecycle_integration():
                 f"Default handler {h.__name__!r} missing from bus for {point.name}"
             )
 
-    # Bus must be bound to the session observer (ADR-0076)
+    # Bus must be bound to the session observer (ADR-0047)
     assert bus._observer is session.observer
 
 

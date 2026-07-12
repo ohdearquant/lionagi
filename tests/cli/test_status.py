@@ -2,7 +2,7 @@
 # SPDX-License-Identifier: Apache-2.0
 """Tests for `li agent status` / `li play status` / `li o ctl status` —
 read-only lifecycle surfaces that resolve BY ID regardless of terminal
-state (ADR-0085 section 6)."""
+state (ADR-0069 section 6)."""
 
 from __future__ import annotations
 
@@ -181,7 +181,7 @@ def test_classify_session_failure():
 
 
 def test_classify_session_cancelled_is_failure():
-    """'cancelled' has no literal mention in the ADR-0085 exit-code list but
+    """'cancelled' has no literal mention in the ADR-0069 exit-code list but
     is a real terminal non-success status — lands in failure by elimination."""
     assert _classify("session", "cancelled") == (True, "failure", 1)
 
@@ -787,7 +787,7 @@ def test_cli_play_status_help_subprocess():
     assert "audit-degraded" in result.stdout.lower()
 
 
-# ── pending_controls (ADR-0085 part 1: session_controls transport) ────────
+# ── pending_controls (ADR-0069 part 1: session_controls transport) ────────
 
 
 @pytest.mark.asyncio

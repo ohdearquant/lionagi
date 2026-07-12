@@ -178,7 +178,7 @@ async def _import_one_run(
             "progression_id": session_prog_id,
             "first_msg_id": None,
             "last_msg_id": None,
-            # ADR-0012 enriched provenance — written so imported rows are
+            # ADR-0077 enriched provenance — written so imported rows are
             # queryable by the same fields live runs use.
             "invocation_kind": invocation_kind,
             "playbook_name": manifest.get("playbook_name") or manifest.get("playbook"),
@@ -616,7 +616,7 @@ async def _doctor(
         if dry_run:
             swept_count = len(victims)
         else:
-            # Per-row, through the single guarded write path (ADR-0094):
+            # Per-row, through the single guarded write path (ADR-0035):
             # expected_statuses={"running"} re-asserts the CAS the old bulk
             # UPDATE did inline, and routes the sweep through update_status()
             # so it gets a reason_code + status_transitions audit row instead
@@ -835,7 +835,7 @@ def add_state_subparser(subparsers: argparse._SubParsersAction) -> None:
         ),
     )
 
-    # li state import-teams (ADR-0019)
+    # li state import-teams (ADR-0077)
     state_sub.add_parser(
         "import-teams",
         help="Backfill team JSON files (~/.lionagi/teams/*.json) into state.db.",

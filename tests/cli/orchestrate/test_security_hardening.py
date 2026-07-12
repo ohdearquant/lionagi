@@ -301,7 +301,7 @@ class TestSavePathContainment:
         run_flow.assert_called_once()
 
 
-# ── ADR-0029: artifacts: field validation in _validate_spec_fields ────────────
+# ── ADR-0064: artifacts: field validation in _validate_spec_fields ────────────
 
 
 class TestArtifactsFieldValidation:

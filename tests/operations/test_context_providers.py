@@ -1,7 +1,7 @@
 # Copyright (c) 2023-2026, HaiyangLi <quantocean.li at gmail dot com>
 # SPDX-License-Identifier: Apache-2.0
 
-"""Tests for the ContextProvider injection seam (ADR-0100): registry
+"""Tests for the ContextProvider injection seam (ADR-0008): registry
 budget/failure semantics, and the pre-turn fold that renders provider
 blocks into the first message without ever touching the durable record."""
 

@@ -1,6 +1,6 @@
 # Copyright (c) 2023-2026, HaiyangLi <quantocean.li at gmail dot com>
 # SPDX-License-Identifier: Apache-2.0
-"""`li invoke` — ADR-0020 skill-level orchestration tracking (opt-in session grouping)."""
+"""`li invoke` — ADR-0077 skill-level orchestration tracking (opt-in session grouping)."""
 
 from __future__ import annotations
 

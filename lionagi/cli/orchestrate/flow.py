@@ -108,11 +108,11 @@ def _artifact_directive(run, node_id: str, leg_expected: list[dict]) -> str:
     return note
 
 
-# ── Control poller (ADR-0085 part 1: session_controls transport) ─────────────
+# ── Control poller (ADR-0069 part 1: session_controls transport) ─────────────
 # `li o ctl pause|resume|msg` enqueues a session_controls row from a separate
 # process; this poller — running alongside the heartbeat loop in _execute_dag,
 # same lifecycle — is the only consumer, and applies each row against the live
-# executor. See docs/_archive/v0/ADR-0085-flow-control-plane.md section 1 for the
+# executor. See docs/_archive/v0/ADR-0069-flow-control-plane.md section 1 for the
 # verb-classed apply/stamp ordering this implements.
 
 _CONTROL_POLL_INTERVAL = 2.0
@@ -460,7 +460,7 @@ async def _build_dag(
         worker_models.append(w_model)
         role_base.setdefault(ta.assignee, w_branch)
 
-        # ADR-0029: fold this leg's OWN declared artifact contract (profile
+        # ADR-0064: fold this leg's OWN declared artifact contract (profile
         # first, else the casts role's artifact_defaults — e.g. reviewer/
         # critic) into the flow-wide contract, namespaced under this leg's
         # own artifact subdirectory. A role that declares nothing leaves the
@@ -552,7 +552,7 @@ async def _build_dag(
     # sees the full picture. Validated eagerly: a malformed role declaration
     # should fail loudly here, not be silently dropped.
     #
-    # ADR-0029 extension (see db.py _SESSION_COLUMNS comment): this is the
+    # ADR-0064 extension (see db.py _SESSION_COLUMNS comment): this is the
     # planned-leg write to artifact_contract_json, happening once here at
     # DAG-build time, before _execute_dag runs any leg. It must reach the
     # session row (not just env._live_persist) — a crash or orphan exit
@@ -561,7 +561,7 @@ async def _build_dag(
     # directly from artifact_contract_json. A SECOND, append-only write class
     # exists for reactively spawned nodes (_execute_dag, after a spawned
     # node completes) — see the "Reactive-spawn exception" paragraph in
-    # ADR-0029, which explains why folding a spawned node's entries in after
+    # ADR-0064, which explains why folding a spawned node's entries in after
     # it runs is still sound: what is expected of it was frozen (role
     # defaults + spawn_id) before it was ever queued.
     if role_artifact_entries and ctx_lp is not None:
@@ -845,7 +845,7 @@ async def _execute_dag(
         _record_segment(sig.op_id, sig.name, "failed")
         _checkpoint_record(sig, "failed")
 
-    # ADR-0075 §4: run_dag drives the session bus; observers above consume the signals.
+    # ADR-0034 §4: run_dag drives the session bus; observers above consume the signals.
     async def _heartbeat_loop() -> None:
         while True:
             await _asyncio.sleep(heartbeat_interval)
@@ -862,7 +862,7 @@ async def _execute_dag(
                         "with no completion — possible hung child process"
                     )
 
-    # ADR-0085 part 1: control poller — the only consumer of session_controls
+    # ADR-0069 part 1: control poller — the only consumer of session_controls
     # rows queued by `li o ctl pause|resume|msg`. _executor_ref (declared
     # above, shared with the checkpoint writer's completion hook) is
     # populated synchronously by DependencyAwareExecutor.__init__ the moment
@@ -1726,7 +1726,7 @@ async def _run_flow_inner(
             cfg = role_config(ta.assignee, env.pack)
             if rp:
                 # A user profile supplies its own body — casts modes don't apply
-                # (profile shadows casts; ADR-0074 follow-up makes them compose).
+                # (profile shadows casts; ADR-0043 follow-up makes them compose).
                 model, src, modes = rm, "profile", []
             elif cfg and cfg.model:
                 model, src = cfg.model, "pack"

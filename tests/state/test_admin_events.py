@@ -1,7 +1,7 @@
 # Copyright (c) 2023-2026, HaiyangLi <quantocean.li at gmail dot com>
 # SPDX-License-Identifier: Apache-2.0
 
-"""ADR-0024 admin event log tests."""
+"""ADR-0057 admin event log tests."""
 
 from __future__ import annotations
 

@@ -390,7 +390,7 @@ async def test_get_run_satisfies_run_list_contract(patched_runs_svc):
 
 
 async def test_get_run_surfaces_status_reason(patched_runs_svc):
-    """ADR-0028: a failed run surfaces the reason fields the detail banner reads."""
+    """ADR-0057: a failed run surfaces the reason fields the detail banner reads."""
     svc, db_path = patched_runs_svc
 
     # A run transitioned to failed with a reason round-trips all three fields.

@@ -47,7 +47,7 @@ __all__ = (
 )
 
 # ---------------------------------------------------------------------------
-# ADR-0079 types, adopted verbatim (frozen, codeless data types).
+# ADR-0090 types, adopted verbatim (frozen, codeless data types).
 # ---------------------------------------------------------------------------
 
 
@@ -88,7 +88,7 @@ class ExecutionTarget:
 
 
 # ---------------------------------------------------------------------------
-# ADR-0080's stream event shape, absorbed here (ADR-0089 §4 Lineage).
+# ADR-0090's stream event shape, absorbed here (ADR-0090 §4 Lineage).
 # ---------------------------------------------------------------------------
 
 
@@ -102,7 +102,7 @@ class SubstrateStreamEvent:
 
 
 # ---------------------------------------------------------------------------
-# New ADR-0089 seam types.
+# New ADR-0090 seam types.
 # ---------------------------------------------------------------------------
 
 BackendName = Literal["local_worktree", "daytona"]
@@ -144,7 +144,7 @@ class ProvisionSpec:
 
 @dataclass(slots=True)
 class Handle:
-    """State, not behavior — extends ADR-0080's ``SandboxSession`` shape."""
+    """State, not behavior — extends ADR-0090's ``SandboxSession`` shape."""
 
     backend: BackendName
     remote_id: str | None
@@ -444,7 +444,7 @@ def select_backend_for_cell(cell: Cell, candidates: Sequence[SandboxBackend]) ->
     """Pick the first candidate whose ``capabilities()`` can host ``cell``.
 
     Reads ``capabilities()`` only — never a backend's name or type. This is
-    the pattern every caller is expected to follow (ADR-0089 §1).
+    the pattern every caller is expected to follow (ADR-0090 §1).
     """
     for backend in candidates:
         caps = backend.capabilities()

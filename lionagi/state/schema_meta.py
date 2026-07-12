@@ -134,7 +134,7 @@ invocations = Table(
     Column("created_at", Float, nullable=False),
     Column("updated_at", Float, nullable=False),
     Column("node_metadata", JSON),
-    # ADR-0028 denormalized reason columns.
+    # ADR-0057 denormalized reason columns.
     Column("status_reason_code", Text),
     Column("status_reason_summary", Text),
     Column("status_evidence_refs", JSON),
@@ -181,7 +181,7 @@ sessions = Table(
         ),
         server_default="live",
     ),
-    # Lifecycle — no CHECK (ADR-0025: Python is source of truth).
+    # Lifecycle — no CHECK (ADR-0057: Python is source of truth).
     Column("status", Text),
     Column("started_at", Float),
     Column("ended_at", Float),
@@ -199,11 +199,11 @@ sessions = Table(
     # Project detection.
     Column("project", Text),
     Column("project_source", Text),
-    # ADR-0028 denormalized reason columns.
+    # ADR-0057 denormalized reason columns.
     Column("status_reason_code", Text),
     Column("status_reason_summary", Text),
     Column("status_evidence_refs", JSON),
-    # ADR-0029 artifact contract.
+    # ADR-0064 artifact contract.
     Column("artifact_contract_json", JSON),
     Column("artifact_verification_json", JSON),
     # Run usage.
@@ -315,7 +315,7 @@ shows = Table(
     Column("status_source", Text, nullable=False, server_default="unknown"),
     Column("created_at", Float, nullable=False),
     Column("updated_at", Float, nullable=False),
-    # ADR-0028 denormalized reason columns.
+    # ADR-0057 denormalized reason columns.
     Column("status_reason_code", Text),
     Column("status_reason_summary", Text),
     Column("status_evidence_refs", JSON),
@@ -366,7 +366,7 @@ plays = Table(
     Column("sort_order", Integer, nullable=False, server_default="0"),
     Column("created_at", Float, nullable=False),
     Column("updated_at", Float, nullable=False),
-    # ADR-0028 denormalized reason columns.
+    # ADR-0057 denormalized reason columns.
     Column("status_reason_code", Text),
     Column("status_reason_summary", Text),
     Column("status_evidence_refs", JSON),
@@ -396,7 +396,7 @@ teams = Table(
         nullable=False,
         server_default="active",
     ),
-    # ADR-0028 denormalized reason columns.
+    # ADR-0057 denormalized reason columns.
     Column("status_reason_code", Text),
     Column("status_reason_summary", Text),
     Column("status_evidence_refs", JSON),
@@ -554,10 +554,10 @@ Index(
 )
 
 # ── schedule_runs ─────────────────────────────────────────────────────────────
-# ADR-0101 D2: generalized into the durable task-application entity. schedule_id
+# ADR-0071 D2: generalized into the durable task-application entity. schedule_id
 # is nullable (an ad-hoc task application has schedule_id IS NULL); the status
-# CHECK carries the full ADR-0062 lifecycle; queued_at/leased_by/
-# lease_expires_at/concurrency_key are ADR-0061's queue columns.
+# CHECK carries the full ADR-0072 lifecycle; queued_at/leased_by/
+# lease_expires_at/concurrency_key are ADR-0071's queue columns.
 
 schedule_runs = Table(
     "schedule_runs",
@@ -590,19 +590,19 @@ schedule_runs = Table(
     Column("ended_at", Float),
     Column("error_detail", Text),
     Column("created_at", Float, nullable=False),
-    # ADR-0028.
+    # ADR-0057.
     Column("updated_at", Float),
     Column("status_reason_code", Text),
     Column("status_reason_summary", Text),
     Column("status_evidence_refs", JSON),
-    # ADR-0101 D2 / ADR-0061: durable queue columns.
+    # ADR-0071 D2 / ADR-0071: durable queue columns.
     Column("queued_at", Float),
     Column("leased_by", Text),
     Column("lease_expires_at", Float),
     Column("concurrency_key", Text),
-    # ADR-0101 D3: bounds the lease-expiry recovery loop (worker.py's reaper).
+    # ADR-0071 D3: bounds the lease-expiry recovery loop (worker.py's reaper).
     Column("lease_attempts", Integer, nullable=False, server_default="0"),
-    # ADR-0101 D2: task-application provenance (seam into ADR-0102).
+    # ADR-0071 D2: task-application provenance (seam into ADR-0073).
     Column("required_capabilities", JSON),
     Column("execution_target", Text),
     Column("library_ref", Text),
@@ -638,7 +638,7 @@ Index(
 )
 
 # ── workers ─────────────────────────────────────────────────────────────────
-# ADR-0101 D4: capability-matching worker registry -- the only genuinely new
+# ADR-0071 D4: capability-matching worker registry -- the only genuinely new
 # table this ADR pair adds.
 
 workers = Table(
@@ -890,7 +890,7 @@ workflow_defs = Table(
 Index("idx_workflow_defs_name", workflow_defs.c.name)
 Index("idx_workflow_defs_updated", workflow_defs.c.updated_at)
 
-# ── session_controls (ADR-0085 part 1: run control plane transport) ────────────
+# ── session_controls (ADR-0069 part 1: run control plane transport) ────────────
 # One row per operator control verb queued against a live session. A poller task
 # in `cli/orchestrate/flow.py`'s `_execute_dag` (the same lifecycle as the
 # heartbeat loop) reads unapplied rows and applies them against the running
@@ -936,7 +936,7 @@ Index(
     postgresql_where=text("applied_at IS NULL"),
 )
 
-# ── dispatch_outbox (ADR-0092: durable dispatch outbox) ─────────────────────
+# ── dispatch_outbox (ADR-0059: durable dispatch outbox) ─────────────────────
 # Producer-driven at-least-once outbound delivery. A row survives independent
 # of any consumer's liveness; the scheduler tick re-attempts the configured
 # notify template until it succeeds, backs off, or exhausts max_attempts.

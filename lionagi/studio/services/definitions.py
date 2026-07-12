@@ -21,7 +21,7 @@ from ._path_safety import validate_name_component
 # Per-(kind, name) concurrency lock — shared across all requests in this
 # process.  Spans the DB write inside StateDB.save_definition() AND the
 # subsequent disk write so that both operations are atomic from the service's
-# perspective.  See "HIGH: definition save current-file race" in ADR-0016.
+# perspective.  See "HIGH: definition save current-file race" in ADR-0077.
 # ---------------------------------------------------------------------------
 
 _DEFINITION_LOCKS: dict[tuple[str, str], asyncio.Lock] = {}
@@ -205,7 +205,7 @@ async def save_definition(
     content: str,
     message: str | None = None,
 ) -> dict[str, Any]:
-    """Persist a definition version: DB write first, then disk (ADR-0016 §"Save semantics").
+    """Persist a definition version: DB write first, then disk (ADR-0077 §"Save semantics").
 
     DB write must succeed before the file is written; per-(kind, name) lock
     serialises concurrent saves for the same definition.
@@ -244,7 +244,7 @@ async def save_definition(
 
         await anyio.to_thread.run_sync(_write_disk)
 
-    # ADR-0016 §"Save semantics": response field is "saved_at", not "created_at"
+    # ADR-0077 §"Save semantics": response field is "saved_at", not "created_at"
     return {
         "kind": kind,
         "name": name,
@@ -257,7 +257,7 @@ async def save_definition(
 async def rollback_definition(kind: str, name: str, target_version: int) -> dict[str, Any] | None:
     """Restore a previous version: read old content from DB, write to disk, record as new version.
 
-    ADR-0016 §"Rollback semantics": returns
+    ADR-0077 §"Rollback semantics": returns
         { version: N+1, rolled_back_from: current_version, rolled_back_to: N }
     """
     validate_name_component(kind, label="kind")
@@ -367,7 +367,7 @@ class SaveBody(BaseModel):
 
 @studio_route("/definitions/", method="GET", area="definitions", name="list_definitions")
 async def list_definitions_route(
-    # ADR-0016: "skill" removed — KIND_DIRS excludes it and ADR-0016
+    # ADR-0077: "skill" removed — KIND_DIRS excludes it and ADR-0077
     # §"What is editable" explicitly marks skills as not editable/not in the
     # definitions write path.
     kind: str | None = Query(default=None, description="Filter by kind: agent, playbook"),
@@ -398,12 +398,12 @@ async def get_version_route(kind: str, name: str, version: int) -> dict[str, Any
     return v
 
 
-# ADR-0016 §"Save semantics": POST /api/definitions/{kind}/{name}
+# ADR-0077 §"Save semantics": POST /api/definitions/{kind}/{name}
 @studio_route(
     "/definitions/{kind}/{name}", method="POST", area="definitions", name="save_definition"
 )
 async def save_definition_route(kind: str, name: str, body: SaveBody) -> dict[str, Any]:
-    # ADR-0016: unknown kind (e.g. "skill") raises ValueError in the
+    # ADR-0077: unknown kind (e.g. "skill") raises ValueError in the
     # service layer; catch it and return 422 instead of propagating a 500.
     try:
         return await save_definition(kind, name, body.content, body.message)
@@ -411,7 +411,7 @@ async def save_definition_route(kind: str, name: str, body: SaveBody) -> dict[st
         raise HTTPException(status_code=422, detail=str(e)) from e
 
 
-# ADR-0016 §"Rollback semantics": version as query param, not path segment
+# ADR-0077 §"Rollback semantics": version as query param, not path segment
 @studio_route(
     "/definitions/{kind}/{name}/rollback",
     method="POST",

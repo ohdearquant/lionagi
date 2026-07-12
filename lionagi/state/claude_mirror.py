@@ -316,7 +316,7 @@ async def reconcile_session_status(
     ``completed`` session read as fresh again on the next pass and oscillate back
     to ``running``.
 
-    ADR-0094's integrity floor treats every session terminal status (not just
+    ADR-0035's integrity floor treats every session terminal status (not just
     ``completed``) as terminal on the sessions table for orchestrated runs, so
     reactivating a mirror session out of any of them goes through the
     sanctioned override path — it is a real, deliberate, well-understood write

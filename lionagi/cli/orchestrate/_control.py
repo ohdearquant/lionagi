@@ -10,7 +10,7 @@ cli/orchestrate/flow.py `_execute_dag` is the only consumer; use
 
 Only context-mode `msg` ships in this slice: the poller deep-merges the
 message into the flow workspace, visible to ops not yet started. Op-mode
-(`--as-op`) lands with a later slice. See ADR-0085 sections 1-3.
+(`--as-op`) lands with a later slice. See ADR-0069 sections 1-3.
 """
 
 from __future__ import annotations
@@ -153,5 +153,5 @@ def run_ctl_resume(args: argparse.Namespace) -> int:
 
 
 def run_ctl_msg(args: argparse.Namespace) -> int:
-    """`li o ctl msg <id> "text"` — queue a context-mode operator message (ADR-0085 §3)."""
+    """`li o ctl msg <id> "text"` — queue a context-mode operator message (ADR-0069 §3)."""
     return _dispatch_control(entity_id=args.id, verb="message", payload={"text": args.text})

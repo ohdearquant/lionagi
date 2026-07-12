@@ -1,7 +1,7 @@
 # Copyright (c) 2023-2026, HaiyangLi <quantocean.li at gmail dot com>
 # SPDX-License-Identifier: Apache-2.0
 
-"""ADR-0026: project detection cascade (config.toml → global overrides → git remote → None)."""
+"""ADR-0063: project detection cascade (config.toml → global overrides → git remote → None)."""
 
 from __future__ import annotations
 

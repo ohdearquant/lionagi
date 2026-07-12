@@ -1,7 +1,7 @@
 # Copyright (c) 2023-2026, HaiyangLi <quantocean.li at gmail dot com>
 # SPDX-License-Identifier: Apache-2.0
 
-"""ADR-0028 status reason model tests."""
+"""ADR-0057 status reason model tests."""
 
 from __future__ import annotations
 
@@ -196,7 +196,7 @@ class TestMigration:
         assert "idx_status_transitions_created" in names
 
     async def test_sessions_status_updated_index_for_failed_queries(self, db: StateDB):
-        # ADR-0030's attention queue needs this for failed/timed_out lookups.
+        # The attention queue needs this for failed/timed_out lookups.
         async with db._read() as conn:
             row = (
                 (
@@ -518,7 +518,7 @@ class TestTeardownReasonResolution:
         assert "bad input" in summary
 
 
-# ── ADR-0028 Phase 2: invocation transition writes reason ────────────
+# ── ADR-0057 Phase 2: invocation transition writes reason ────────────
 
 
 async def _create_invocation(db: StateDB, *, status: str = "running") -> str:
@@ -593,7 +593,7 @@ class TestInvocationTransition:
         assert rows[0]["reason_code"] == RunReasons.COMPLETED_OK
 
     async def test_update_invocation_routes_status_through_update_status(self, db: StateDB):
-        """ADR-0028 Phase 2: update_invocation(status=...) writes reason atomically."""
+        """ADR-0057 Phase 2: update_invocation(status=...) writes reason atomically."""
         inv_id = await _create_invocation(db)
         await db.update_invocation(
             inv_id,

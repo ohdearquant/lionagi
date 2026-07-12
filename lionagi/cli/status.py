@@ -5,7 +5,7 @@
 Pure reads over sessions/invocations/plays/session_signals. Resolves an id (or
 the latest matching run) regardless of terminal state, unlike `li monitor`
 which only lists running/active rows. See
-docs/_archive/v0/ADR-0085-flow-control-plane.md section 6.
+docs/_archive/v0/ADR-0069-flow-control-plane.md section 6.
 
 `--json` emits a flat object with this stable key set (parsed by other
 lambdas/tools):
@@ -24,7 +24,7 @@ usage-error code).
 `pending_controls`: unapplied session_controls rows (id, verb, created_at)
 for the resolved session, oldest first — queued via `li o ctl
 pause|resume|msg`, consumed by the control poller alongside a live flow's
-heartbeat (ADR-0085 part 1). `[]` when no backing session or nothing queued.
+heartbeat (ADR-0069 part 1). `[]` when no backing session or nothing queued.
 """
 
 from __future__ import annotations
@@ -47,7 +47,7 @@ __all__ = (
 
 # ── Status vocabularies (mirror the CHECK constraints / VALID_* sets in state/db.py) ──
 # sessions/invocations share one vocabulary (VALID_SESSION_STATUSES); plays have
-# their own (_PLAY_STATUSES). "cancelled" has no literal mention in the ADR-0085
+# their own (_PLAY_STATUSES). "cancelled" has no literal mention in the ADR-0069
 # exit-code list but is a real terminal non-success status — it lands in FAILURE
 # by elimination (neither success nor still-running).
 
@@ -130,7 +130,7 @@ async def _resolve_session_by_branch_id(db: Any, entity_id: str) -> dict[str, An
 async def _resolve_agent_target(
     db: Any, entity_id: str | None, project: str | None
 ) -> tuple[str, dict[str, Any]] | None:
-    """`li agent status` resolution: session (any kind), ADR-0020 invocation, or
+    """`li agent status` resolution: session (any kind), ADR-0077 invocation, or
     a branch_id (resolved to its owning session), by id; default-latest is
     scoped to agent-kind sessions for *project*.
 
@@ -155,7 +155,7 @@ async def _resolve_agent_target(
 async def _resolve_play_target(
     db: Any, entity_id: str | None, project: str | None
 ) -> tuple[str, dict[str, Any]] | None:
-    """`li play status` resolution: session, then ADR-0020 invocation, then a show
+    """`li play status` resolution: session, then ADR-0077 invocation, then a show
     sub-play row, by id; default-latest is scoped to play/flow-kind sessions.
     """
     if entity_id:
@@ -211,7 +211,7 @@ async def _resolve_primary_session(
     return None
 
 
-# ── Op progress (session_signals → lane_for reduction, ADR-0083) ───────────
+# ── Op progress (session_signals → lane_for reduction, ADR-0033) ───────────
 
 
 async def _all_session_signals(db: Any, session_id: str) -> list[dict[str, Any]]:
@@ -653,5 +653,5 @@ def run_play_status(argv: list[str]) -> int:
 
 
 def run_ctl_status(args: argparse.Namespace) -> int:
-    """`li o ctl status <id> [--json]` — generic alias, no kind scoping (ADR-0085)."""
+    """`li o ctl status <id> [--json]` — generic alias, no kind scoping (ADR-0069)."""
     return _dispatch("ctl", args.id, args.as_json)

@@ -87,7 +87,7 @@ async def _run_fanout(
     )
     _shared: dict = {}
 
-    # ADR-0022: orchestrator default model + effort on the session row.
+    # ADR-0077: orchestrator default model + effort on the session row.
     # Per-worker model is written branch-side when build_worker_branch runs.
     _orc_model, _orc_provider = parse_orchestrator_provider(env.default_model_spec)
     await start_live_persist(
@@ -116,7 +116,7 @@ async def _run_fanout(
         _shared=_shared,
     )
 
-    # ADR-0025: distinguish timed_out / aborted / cancelled / failed.
+    # ADR-0057: distinguish timed_out / aborted / cancelled / failed.
     _terminal_status = "completed"
     result: str = ""
     try:

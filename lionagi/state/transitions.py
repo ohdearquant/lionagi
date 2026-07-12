@@ -1,6 +1,6 @@
 # Copyright (c) 2023-2026, HaiyangLi <quantocean.li at gmail dot com>
 # SPDX-License-Identifier: Apache-2.0
-"""Guarded compare-and-swap state transitions (ADR-0092 slice 1, spec-gate ruling 1).
+"""Guarded compare-and-swap state transitions (ADR-0059 slice 1, spec-gate ruling 1).
 
 ADR-0058's ``transition()`` API (entity-agnostic, idempotency-key-deduplicated)
 is proposed and unbuilt. This module ships a minimal fallback carrying the same
@@ -66,9 +66,9 @@ class TransitionResult(BaseModel):
     event_id: str | None = None
 
 
-# Entities the minimal fallback knows how to CAS-transition. ADR-0062's full
+# Entities the minimal fallback knows how to CAS-transition. ADR-0058's full
 # backend generalizes this; slice 1 needs only dispatch_outbox.
-# "schedule_run" is ADR-0101 D2's generalized task-application entity
+# "schedule_run" is ADR-0071 D2's generalized task-application entity
 # (schedule_runs table, schedule_id now nullable) — registered here so ALL
 # status movement on it can route through this guarded CAS store rather than
 # a second, parallel implementation.

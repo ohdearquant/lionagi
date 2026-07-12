@@ -113,7 +113,7 @@ def test_runs_list_filters_multi_status_and_playbook_contains(tmp_path, monkeypa
 
 
 def test_runs_list_surfaces_status_reason(tmp_path, monkeypatch):
-    """GET /api/runs list rows must carry status_reason_code/summary (ADR-0028),
+    """GET /api/runs list rows must carry status_reason_code/summary (ADR-0057),
     the same fields the detail route (_run_row via get_run) already exposes."""
     from lionagi.state.reasons import RunReasons
 
@@ -201,7 +201,7 @@ def test_runs_list_project_null_filter(tmp_path, monkeypatch):
     assert r2.json()["total"] == 2
 
 
-# ─── ADR-0024/FIX-1: UNRESPONSIVE maps to 'stale' in runs list ───────────────
+# ─── ADR-0057/FIX-1: UNRESPONSIVE maps to 'stale' in runs list ───────────────
 
 
 async def _seed_running_session_with_activity(
