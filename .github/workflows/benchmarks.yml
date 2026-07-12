@@ -5,6 +5,16 @@ name: Benchmarks
 # checkout, using the exact same benchmark harness both times. Only the
 # library implementation differs between the two runs, so the comparison
 # isolates the code change instead of cross-runner hardware/load variance.
+#
+# Both runs execute from a neutral working directory (a copy of benchmarks/
+# with no sibling lionagi/ source tree) rather than the checkout root.
+# `python -m benchmarks.X` prepends cwd to sys.path; running from the
+# checkout root would let a stray `lionagi/` directory there shadow
+# whichever venv's install the interpreter should actually be using,
+# silently making both runs measure identical code. See
+# benchmarks/_compat.py:lionagi_provenance and
+# benchmarks/ci_check_provenance.py, which asserts the two runs disagree
+# on which lionagi install they imported.
 
 on:
   push:
@@ -81,65 +91,84 @@ jobs:
           uv pip install --python "$RUNNER_TEMP/.venv-baseline/bin/python" \
             "$RUNNER_TEMP/lionagi-baseline" "trio==$trio_version"
 
+      - name: Build neutral bench harness (no sibling lionagi/ source dir)
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/bench-harness"
+          cp -R "$GITHUB_WORKSPACE/benchmarks" "$RUNNER_TEMP/bench-harness/benchmarks"
+          # Sanity: this dir must contain benchmarks/ but NOT a lionagi/
+          # source tree, otherwise `-m benchmarks.X` would shadow both
+          # venvs' installs the same way the checkout root does.
+          if [ -e "$RUNNER_TEMP/bench-harness/lionagi" ]; then
+            echo "::error::neutral bench harness unexpectedly contains a lionagi/ dir"
+            exit 1
+          fi
+
       # Every suite below runs once under the baseline venv and once under
-      # the current venv, using the *current* checkout's benchmark scripts
-      # both times (identical harness + scenarios). --repeat counts are
-      # lower than a single-run-per-suite design would use: paired
-      # same-machine comparison removes cross-runner variance, the dominant
-      # noise source that produced false regressions under the old
-      # frozen-baseline design, so fewer repeats still give a reliable
+      # the current venv, both times as `-m benchmarks.X` from the neutral
+      # harness directory built above (identical benchmark scripts, only
+      # the invoking interpreter's own site-packages install differs).
+      # --repeat counts are lower than a single-run-per-suite design would
+      # use: paired same-machine comparison removes cross-runner variance,
+      # the dominant noise source that produced false regressions under the
+      # old frozen-baseline design, so fewer repeats still give a reliable
       # signal, and it keeps the doubled suite count close to the job's
       # previous wall-clock time.
 
       - name: Run concurrency benchmarks - baseline (asyncio)
         run: |
-          source .venv/bin/activate
-          "$RUNNER_TEMP/.venv-baseline/bin/python" -m benchmarks.concurrency_bench --repeat 50 --backend asyncio --output benchmarks/_ci_out/baseline/concurrency-asyncio.json
+          cd "$RUNNER_TEMP/bench-harness"
+          "$RUNNER_TEMP/.venv-baseline/bin/python" -m benchmarks.concurrency_bench --repeat 50 --backend asyncio --output "$GITHUB_WORKSPACE/benchmarks/_ci_out/baseline/concurrency-asyncio.json"
 
       - name: Run concurrency benchmarks - current (asyncio)
         run: |
-          source .venv/bin/activate
-          python -m benchmarks.concurrency_bench --repeat 50 --backend asyncio --output benchmarks/_ci_out/current/concurrency-asyncio.json
+          cd "$RUNNER_TEMP/bench-harness"
+          "$GITHUB_WORKSPACE/.venv/bin/python" -m benchmarks.concurrency_bench --repeat 50 --backend asyncio --output "$GITHUB_WORKSPACE/benchmarks/_ci_out/current/concurrency-asyncio.json"
 
       - name: Run concurrency benchmarks - baseline (trio)
         run: |
-          source .venv/bin/activate
-          "$RUNNER_TEMP/.venv-baseline/bin/python" -m benchmarks.concurrency_bench --repeat 50 --backend trio --output benchmarks/_ci_out/baseline/concurrency-trio.json
+          cd "$RUNNER_TEMP/bench-harness"
+          "$RUNNER_TEMP/.venv-baseline/bin/python" -m benchmarks.concurrency_bench --repeat 50 --backend trio --output "$GITHUB_WORKSPACE/benchmarks/_ci_out/baseline/concurrency-trio.json"
 
       - name: Run concurrency benchmarks - current (trio)
         run: |
-          source .venv/bin/activate
-          python -m benchmarks.concurrency_bench --repeat 50 --backend trio --output benchmarks/_ci_out/current/concurrency-trio.json
+          cd "$RUNNER_TEMP/bench-harness"
+          "$GITHUB_WORKSPACE/.venv/bin/python" -m benchmarks.concurrency_bench --repeat 50 --backend trio --output "$GITHUB_WORKSPACE/benchmarks/_ci_out/current/concurrency-trio.json"
 
       - name: Run ln benchmarks - baseline (asyncio)
         run: |
-          source .venv/bin/activate
-          "$RUNNER_TEMP/.venv-baseline/bin/python" -m benchmarks.ln_bench --repeat 10 --backend asyncio --output benchmarks/_ci_out/baseline/ln-asyncio.json
+          cd "$RUNNER_TEMP/bench-harness"
+          "$RUNNER_TEMP/.venv-baseline/bin/python" -m benchmarks.ln_bench --repeat 10 --backend asyncio --output "$GITHUB_WORKSPACE/benchmarks/_ci_out/baseline/ln-asyncio.json"
 
       - name: Run ln benchmarks - current (asyncio)
         run: |
-          source .venv/bin/activate
-          python -m benchmarks.ln_bench --repeat 10 --backend asyncio --output benchmarks/_ci_out/current/ln-asyncio.json
+          cd "$RUNNER_TEMP/bench-harness"
+          "$GITHUB_WORKSPACE/.venv/bin/python" -m benchmarks.ln_bench --repeat 10 --backend asyncio --output "$GITHUB_WORKSPACE/benchmarks/_ci_out/current/ln-asyncio.json"
 
       - name: Run ln benchmarks - baseline (trio)
         run: |
-          source .venv/bin/activate
-          "$RUNNER_TEMP/.venv-baseline/bin/python" -m benchmarks.ln_bench --repeat 10 --backend trio --output benchmarks/_ci_out/baseline/ln-trio.json
+          cd "$RUNNER_TEMP/bench-harness"
+          "$RUNNER_TEMP/.venv-baseline/bin/python" -m benchmarks.ln_bench --repeat 10 --backend trio --output "$GITHUB_WORKSPACE/benchmarks/_ci_out/baseline/ln-trio.json"
 
       - name: Run ln benchmarks - current (trio)
         run: |
-          source .venv/bin/activate
-          python -m benchmarks.ln_bench --repeat 10 --backend trio --output benchmarks/_ci_out/current/ln-trio.json
+          cd "$RUNNER_TEMP/bench-harness"
+          "$GITHUB_WORKSPACE/.venv/bin/python" -m benchmarks.ln_bench --repeat 10 --backend trio --output "$GITHUB_WORKSPACE/benchmarks/_ci_out/current/ln-trio.json"
 
       - name: Run fuzzy benchmarks - baseline
         run: |
-          source .venv/bin/activate
-          "$RUNNER_TEMP/.venv-baseline/bin/python" -m benchmarks.fuzzy_bench --repeat 10 --output benchmarks/_ci_out/baseline/fuzzy.json
+          cd "$RUNNER_TEMP/bench-harness"
+          "$RUNNER_TEMP/.venv-baseline/bin/python" -m benchmarks.fuzzy_bench --repeat 10 --output "$GITHUB_WORKSPACE/benchmarks/_ci_out/baseline/fuzzy.json"
 
       - name: Run fuzzy benchmarks - current
         run: |
+          cd "$RUNNER_TEMP/bench-harness"
+          "$GITHUB_WORKSPACE/.venv/bin/python" -m benchmarks.fuzzy_bench --repeat 10 --output "$GITHUB_WORKSPACE/benchmarks/_ci_out/current/fuzzy.json"
+
+      - name: Verify baseline and current used different lionagi installs
+        run: |
           source .venv/bin/activate
-          python -m benchmarks.fuzzy_bench --repeat 10 --output benchmarks/_ci_out/current/fuzzy.json
+          python benchmarks/ci_check_provenance.py --baseline-dir benchmarks/_ci_out/baseline --current-dir benchmarks/_ci_out/current
 
       - name: Compare concurrency asyncio (baseline vs current, same machine)
         run: |

@@ -35,3 +35,32 @@ def soft_import(module_path: str, names: list[str]) -> dict[str, object | None]:
             )
         out[name] = obj
     return out
+
+
+def lionagi_provenance() -> dict[str, str]:
+    """Which lionagi install actually served this run.
+
+    `python -m benchmarks.X` prepends the current working directory to
+    sys.path. If cwd happens to contain a `lionagi/` source directory (e.g.
+    the repo checkout root), `import lionagi` silently resolves there
+    regardless of what is installed in the invoking interpreter's own
+    site-packages -- the interpreter's venv is shadowed. This is exactly the
+    failure mode that makes a same-machine A/B comparison worthless: both
+    the "baseline" and "current" runs would import identical code.
+
+    Every result JSON records this so the mistake is visible in the data
+    itself, and CI can assert baseline/current disagree on lionagi_file.
+    """
+    try:
+        import lionagi as _lionagi
+
+        lionagi_file = str(getattr(_lionagi, "__file__", "unknown"))
+        lionagi_version = str(getattr(_lionagi, "__version__", "unknown"))
+    except ImportError as e:
+        lionagi_file = f"IMPORT FAILED: {e}"
+        lionagi_version = "unknown"
+    return {
+        "lionagi_file": lionagi_file,
+        "lionagi_version": lionagi_version,
+        "python_executable": sys.executable,
+    }
