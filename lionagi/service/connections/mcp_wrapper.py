@@ -290,220 +290,235 @@ def _has_structural_ref_siblings(siblings: Mapping) -> bool:
     return any(key not in _ANNOTATION_ONLY_REF_SIBLING_KEYWORDS for key in siblings)
 
 
-# Keyword allowlist for the SUFFICIENCY PROOF specifically -- a STRICT
-# SUBSET of the walker's `_KNOWN_SCHEMA_KEYWORDS` (defined further below).
-# The walker additionally understands applicators it can safely WALK for
-# command-channel evidence (`patternProperties`, `if`/`then`/`else`,
-# `items`, ...); the sufficiency proof only ever asks "is this shape
-# provably closed against an undeclared value", which only the four
-# composition applicators it actually recurses through (`$ref`/`allOf`/
-# `anyOf`/`oneOf`) and the object-closing keywords answer. Every other
-# keyword the walker walks -- `patternProperties`, `propertyNames`,
-# `unevaluatedProperties`, `dependentSchemas`, `if`/`then`/`else`, `not`,
-# `contains`, `items`, `prefixItems` -- is therefore DENIED by this gate
-# even though it is walker-known, because none of them is modeled by this
-# shape logic; the proof must not silently treat an applicator it does not
-# implement as harmless. `$defs`/`definitions` are included here as
-# MODELED (not merely inert) because their value is a mapping of
-# subschemas -- schema-bearing, so the generic value-shape inertness test
-# would otherwise flag them -- that is only ever reachable through `$ref`
-# resolution, which this function already performs.
-_SUFFICIENCY_MODELED_KEYWORDS = frozenset(
+# --- Keyword registry for the sufficiency proof --------------------------
+#
+# The sufficiency proof answers exactly one question: "is this schema
+# document provably closed against an undeclared value?" An earlier
+# iteration answered it with a per-property "is this value a key channel"
+# discriminator deciding WHICH POSITIONS deserve full scrutiny -- the same
+# defect class as enumerating "which keywords are dangerous", just re-
+# entered through the traversal axis instead of the keyword axis: that
+# discriminator omitted the conditional applicators (`if`/`then`/`else`/
+# `not`) and the array applicators (`items`/`prefixItems`), so a property
+# value carrying one of them was never visited at all, and the allowlist
+# check that would have denied it never ran there.
+#
+# The fix: classify EVERY JSON Schema Draft 2020-12 keyword into EXACTLY ONE
+# of four classes (below), then walk the ENTIRE document -- every property
+# value, every composition branch, every `$ref` target, every `$defs` entry
+# -- UNCONDITIONALLY, checking each node's OWN keywords against this
+# registry (`_structural_coverage_insufficient`, defined further below).
+# There is no longer a discriminator deciding "should this node be
+# visited"; every schema-bearing position is visited, and the registry
+# alone decides what its keywords mean. A keyword not in the registry is
+# UNKNOWN and fails closed unless its value provably cannot carry a
+# subschema.
+
+# Annotation-only: carry no assertion that admits/denies an instance value.
+_INERT_ANNOTATION_KEYWORDS = frozenset(
     {
-        # shape/bounding keywords the proof reasons over directly
-        "type",
-        "const",
-        "enum",
-        "required",
-        "additionalProperties",
-        "properties",
-        "$ref",
-        "allOf",
-        "anyOf",
-        "oneOf",
-        "$defs",
-        "definitions",
-        # pure-inert annotations: collect no assertion that admits an
-        # instance value, so their presence must never force the
-        # unmodeled-keyword branch even though most are not numeric bounds
-        "description",
         "title",
-        "$comment",
-        "examples",
+        "description",
         "default",
-        "format",
-        "pattern",
+        "examples",
+        "deprecated",
+        "readOnly",
+        "writeOnly",
+        "$comment",
         "$schema",
         "$id",
         "$anchor",
         "$vocabulary",
-        "readOnly",
-        "writeOnly",
-        "deprecated",
+        "format",
+        "pattern",
         "contentEncoding",
         "contentMediaType",
-        # `contentSchema` is a deliberate, ARGUED exception to "schema-
-        # bearing means deny", not a relaxation of the allowlist's default
-        # posture. It is a Draft 2020-12 Content-vocabulary annotation
-        # (alongside `contentEncoding`/`contentMediaType`) describing the
-        # schema of a string instance's DECODED content. Its value is a
-        # mapping (schema-bearing in shape, like `$defs`), so without this
-        # entry the generic value-shape inertness test would flag it and
-        # deny an otherwise-bounded schema that legitimately uses it. The
-        # exception holds ONLY because the Content vocabulary is
-        # ANNOTATION-ONLY in the default Draft 2020-12 dialect this module
-        # validates against: the content-assertion vocabulary that would
-        # make `contentSchema` actually constrain an instance is NOT
-        # enabled by default, so the value under this keyword is never an
-        # admission channel today. If a future dialect configuration were
-        # to enable the content-assertion vocabulary, `contentSchema` would
-        # need to leave this modeled-as-inert set.
+        # `contentSchema` KEEPS its own individually-argued caveat: its
+        # value is a mapping (schema-shaped), describing the DECODED
+        # content of a string instance, like `contentEncoding`/
+        # `contentMediaType` in the Draft 2020-12 Content vocabulary -- it
+        # asserts nothing about the instance itself. This holds ONLY while
+        # the content-assertion vocabulary stays disabled (the default
+        # dialect this module validates against); enabling that vocabulary
+        # in a future dialect configuration would require `contentSchema`
+        # to leave this class.
         "contentSchema",
     }
 )
 
-
-def _sufficiency_node_has_unmodeled_keyword(schema: Mapping, budget: list[int]) -> bool:
-    """Allowlist pre-gate for the sufficiency proof (`_schema_is_insufficient_node`
-    step 1): True when `schema` carries a keyword that the shape logic
-    downstream does not model, so the node must fail closed before any
-    type/closedness reasoning runs.
-
-    Reuses the walker's OWN inertness vocabulary as the single source of
-    truth -- `_UNRESOLVABLE_REFERENCE_KEYWORDS`, `_NUMERIC_BOUND_KEYWORDS`,
-    `_could_carry_subschema`, `_is_vendor_annotation_keyword` (all defined
-    further below in this module) -- rather than re-listing a divergent
-    keyword table. A key is allowed through when it is a
-    `_SUFFICIENCY_MODELED_KEYWORDS` shape/bounding/inert-annotation
-    keyword, a standardized numeric/size bound, a vendor extension whose
-    value is demonstrably inert, or ANY other keyword whose value cannot
-    itself carry a subschema (a plain scalar, or a scalar-only list/map --
-    e.g. `future-extension: [0, 1, 2]`). Everything else -- a walker-known
-    applicator this proof does not implement (`patternProperties`, `if`/
-    `then`/`else`, `contains`, `items`, `prefixItems`, ...) or a genuinely
-    unknown schema-bearing keyword -- makes the node insufficient. A
-    `$dynamicRef`/`$recursiveRef` anywhere on the node is denied outright by
-    keyword identity, mirroring the walker's own unresolvable-reference
-    treatment (their value is a plain string, so the schema-bearing value
-    test alone would miss them)."""
-    if any(key in schema for key in _UNRESOLVABLE_REFERENCE_KEYWORDS):
-        return True
-    for key, value in schema.items():
-        if key in _SUFFICIENCY_MODELED_KEYWORDS or key in _NUMERIC_BOUND_KEYWORDS:
-            continue
-        if _is_vendor_annotation_keyword(key, value, budget):
-            continue
-        if _could_carry_subschema(value, budget):
-            return True
-    return False
-
-
-# Object/map applicator keywords whose presence on a property's own VALUE
-# schema makes that value a nested KEY CHANNEL for the sufficiency proof's
-# property-value recursion below, rather than a scalar/array/annotation-only
-# leaf governed by the walker's key-name policy. `$ref`/`allOf`/`anyOf`/
-# `oneOf` are included because the proof's own applicator delegation resolves
-# them; the remaining object/map keywords are included because each can
-# smuggle an undeclared key past an outer "this object is closed" conclusion
-# even when the property value carries no explicit `type: object` (e.g. a
-# bare `patternProperties` node with no `type`).
-_KEY_CHANNEL_APPLICATOR_KEYWORDS = frozenset(
+# Narrows the admitted set; carries no recursable subschema of its own.
+_BOUNDING_KEYWORDS = frozenset(
     {
-        "properties",
-        "patternProperties",
-        "additionalProperties",
-        "unevaluatedProperties",
-        "propertyNames",
-        "dependentSchemas",
-        "$ref",
-        "allOf",
-        "anyOf",
-        "oneOf",
+        "type",
+        "const",
+        "enum",
+        "required",
+        "dependentRequired",
+        "multipleOf",
+        "maximum",
+        "exclusiveMaximum",
+        "minimum",
+        "exclusiveMinimum",
+        "maxLength",
+        "minLength",
+        "maxItems",
+        "minItems",
+        "uniqueItems",
+        "maxContains",
+        "minContains",
+        "maxProperties",
+        "minProperties",
     }
 )
 
+# Applicators the proof RECURSES into and credits.
+_MODELED_APPLICATOR_KEYWORDS = frozenset(
+    {
+        "properties",
+        "additionalProperties",
+        "allOf",
+        "anyOf",
+        "oneOf",
+        "$ref",
+        "$defs",
+        "definitions",
+    }
+)
 
-def _property_value_is_key_channel(value: object) -> bool:
-    """True when a declared property's VALUE schema is itself object-shaped
-    or applicator-bearing -- i.e. a nested key channel that the sufficiency
-    proof must recurse into with the FULL allowlist+type-gate+closedness
-    logic, rather than a scalar/array/annotation-only leaf value. A scalar-
-    typed, array-typed, annotation-only, or bare free-form string property
-    value is NOT a key channel: it is a VALUE, and the walker's key-name
-    policy (identifier-suffix exemption, categorized-key detection, ...)
-    governs it -- recursing into those here would strip the identifier-like-
-    key exemption (`service_id: {"type": "string"}`) that the two-mechanism
-    separation depends on."""
+# Applicators recognized BY NAME but not modeled: presence anywhere in the
+# document denies the node outright, and the proof never recurses beneath
+# one (an ancestor denial already covers everything nested inside it).
+# Promoting one of these to modeled is a separate, individually-argued
+# change with its own oracle-soundness argument -- never a silent
+# reclassification. (If `items`/`prefixItems` for bounded arrays is ever
+# wanted, that is such a delta -- NOT this change.)
+_DENIED_APPLICATOR_KEYWORDS = frozenset(
+    {
+        "patternProperties",
+        "propertyNames",
+        "unevaluatedProperties",
+        "unevaluatedItems",
+        "dependentSchemas",
+        "if",
+        "then",
+        "else",
+        "not",
+        "contains",
+        "items",
+        "prefixItems",
+        "$dynamicRef",
+        "$dynamicAnchor",
+        "$recursiveRef",
+        "$recursiveAnchor",
+    }
+)
+
+_KeywordClass: TypeAlias = Literal["inert", "bounding", "modeled", "denied", "unknown"]
+
+
+def _classify_keyword(name: str) -> _KeywordClass:
+    """Classify a JSON Schema keyword into exactly one of the four registry
+    classes above. A name in none of them is UNKNOWN -- the registry is a
+    closed enumeration, not a spelling heuristic, so a keyword this module
+    has never seen fails closed rather than being guessed at."""
+    if name in _INERT_ANNOTATION_KEYWORDS:
+        return "inert"
+    if name in _BOUNDING_KEYWORDS:
+        return "bounding"
+    if name in _MODELED_APPLICATOR_KEYWORDS:
+        return "modeled"
+    if name in _DENIED_APPLICATOR_KEYWORDS:
+        return "denied"
+    return "unknown"
+
+
+def _property_value_may_be_object_shaped(value: object) -> bool:
+    """True when a declared property's VALUE could itself resolve to an
+    OBJECT instance -- i.e. the object-boundedness proof's type-gate and
+    closedness reasoning must be re-run on it, rather than left to the
+    walker's key-name policy. Deliberately narrow: it only ever answers
+    "does closedness apply here", never "is a keyword modeled" -- that
+    second question is answered totally and unconditionally, for every
+    keyword at every position, by `_structural_coverage_insufficient`
+    below regardless of whether THIS gate recurses. So an omission here
+    (a value reachable only through a DENIED applicator such as `if`/
+    `then`/`items`) is harmless: the denied applicator's mere presence
+    already makes the whole document insufficient before object-
+    boundedness ever needs to look inside it. A scalar-typed, array-typed,
+    annotation-only, or bare free-form string property value returns
+    False here on purpose -- it is a VALUE, not an object-boundedness
+    position, and remains the walker's territory by key name
+    (`service_id: {"type": "string"}` stays admitted)."""
     if not isinstance(value, Mapping):
         return False
     value_type = value.get("type")
     if value_type is not None and _schema_type_includes(value_type, "object"):
         return True
-    return any(key in value for key in _KEY_CHANNEL_APPLICATOR_KEYWORDS)
+    return any(_classify_keyword(key) == "modeled" for key in value)
 
 
 def _schema_is_insufficient(input_schema: object) -> bool:
+    """Top-level sufficiency gate: insufficient (fail closed) if EITHER the
+    object-boundedness proof fails (root not provably closed to a finite
+    object shape) OR the structural-coverage proof finds a denied/unknown
+    keyword anywhere in the document. See the two functions below -- they
+    are deliberately independent, run over the same document, and combined
+    by OR."""
     if input_schema is None or not isinstance(input_schema, Mapping):
         return True
-    return _schema_is_insufficient_node(input_schema, input_schema, frozenset(), 0, [0])
+    if _object_boundedness_insufficient(input_schema, input_schema, frozenset(), 0, [0]):
+        return True
+    return _structural_coverage_insufficient(input_schema, input_schema, frozenset(), 0, [0])
 
 
-def _schema_is_insufficient_node(
+def _object_boundedness_insufficient(
     schema: Mapping,
     root_schema: Mapping,
     seen_refs: frozenset[str],
     depth: int,
     budget: list[int],
 ) -> bool:
-    """Recursive, union-aware sufficiency check for the strong-name
-    fallback gate.
+    """Recursive, union-aware TYPE-GATE + CLOSEDNESS check -- orthogonal to
+    `_structural_coverage_insufficient` below, and unaware of the keyword
+    registry: it never denies on keyword identity, only on whether the
+    instance is provably constrained to a closed, finite object shape.
 
-    Order of checks (binding -- see module design notes; applicator
-    delegation MUST run before the omitted-type denial, or an applicator-
-    root node that legitimately omits a top-level `type` because `type`
-    lives in its resolved target/branches would false-deny):
+    Order of checks (binding; applicator delegation MUST run before the
+    omitted-type denial, or an applicator-root node that legitimately omits
+    a top-level `type` because `type` lives in its resolved target/branches
+    would false-deny):
 
     1. Budget/depth cap -- fail closed.
-    2. ALLOWLIST PRE-GATE (`_sufficiency_node_has_unmodeled_keyword`): any
-       keyword this shape logic does not model makes the node insufficient,
-       before any type/closedness reasoning runs.
-    3. `type` present and excludes `"object"` -- insufficient.
-    4. `type` is a union with a free-form (non-object) alternative and no
+    2. `type` present and excludes `"object"` -- insufficient.
+    3. `type` is a union with a free-form (non-object) alternative and no
        `const`/`enum` pinning the instance -- insufficient.
-    5. APPLICATOR DELEGATION -- `$ref` (resolve local `#/...` only, and
-       intersect structural siblings); then `oneOf`/`anyOf` (UNION: an
-       instance need only satisfy one branch, so a caller-shaped tool
-       descriptor is only as bounded as its LEAST bounded alternative --
-       EVERY reachable branch must independently prove sufficient); then
-       `allOf` (INTERSECTION: an instance must satisfy every branch
-       simultaneously, so a single branch that is itself provably bounded
-       is enough by itself). Each recurses, re-applying this same
-       predicate, so the gate and every check below it re-run inside every
-       resolved target/branch.
-    6. A top-level `const`/`enum` pins the whole instance to author-declared
+    4. APPLICATOR DELEGATION -- `$ref` (resolve local `#/...` only, and
+       intersect structural siblings); then `oneOf`/`anyOf` (UNION: every
+       reachable branch must independently prove sufficient); then `allOf`
+       (INTERSECTION: one provably-bounded branch suffices). Each recurses,
+       re-applying this same predicate.
+    5. A top-level `const`/`enum` pins the whole instance to author-declared
        literal value(s) -- sufficient, regardless of `type`.
-    7. LEAF-OBJECT branch (no applicator delegated): an omitted `type`
+    6. LEAF-OBJECT branch (no applicator delegated): an omitted `type`
        (with no `const`/`enum`, already handled above) is insufficient here
        -- a bare non-object instance never reaches object keywords at all.
        Otherwise, non-empty `properties` is only bounded if the object is
        actually CLOSED (`additionalProperties: False`, or itself restricted
        to a finite `enum`/`const`); empty/absent `properties` still needs
        `additionalProperties: False` to admit only a bare `{}`. Once the
-       OUTER object is proven closed, each DECLARED property's own VALUE is
-       re-checked too (`_property_value_is_key_channel` gates which values
-       qualify): a property value that is itself object-shaped or
-       applicator-bearing is a nested key channel and must independently
-       prove sufficient by this same predicate, or the node is insufficient.
+       OUTER object is proven closed, each DECLARED property's own VALUE
+       that could itself be object-shaped
+       (`_property_value_may_be_object_shaped`) is re-checked by this same
+       predicate, or the node is insufficient. A value that cannot be
+       object-shaped is left to the walker's key-name policy; any DENIED
+       applicator such a value might carry is caught independently and
+       unconditionally by `_structural_coverage_insufficient`, so skipping
+       it here never reopens a hole.
 
     Returns True (fail closed / insufficient) for an external, cyclic,
-    unresolvable, or budget/depth-exhausted reference or composition --
-    never wider than what the walker itself would already treat as
-    unresolvable."""
+    unresolvable, or budget/depth-exhausted reference or composition."""
     budget[0] += 1
     if budget[0] > _MAX_SCHEMA_WALK_NODES or depth > _MAX_SCHEMA_WALK_DEPTH:
-        return True
-
-    if _sufficiency_node_has_unmodeled_keyword(schema, budget):
         return True
 
     top_type = schema.get("type")
@@ -530,7 +545,7 @@ def _schema_is_insufficient_node(
         resolved = _resolve_local_ref(ref, root_schema)
         if resolved is None:
             return True
-        target_insufficient = _schema_is_insufficient_node(
+        target_insufficient = _object_boundedness_insufficient(
             resolved, root_schema, seen_refs | {ref}, depth + 1, budget
         )
         if not target_insufficient:
@@ -538,14 +553,12 @@ def _schema_is_insufficient_node(
         # Draft 2020-12 evaluates `$ref` SIBLINGS -- they are not discarded.
         # A closed/bounded target does not make the overall node sufficient
         # if a sibling keyword (evaluated against the SAME instance)
-        # reopens it (e.g. a sibling `properties` entry with its own
-        # implicit-open `additionalProperties`). Pure annotation siblings
-        # (`description`, `title`, ...) contribute nothing and must not
-        # force an otherwise-open target's insufficiency onto an
-        # unrelated, harmless caller-facing property.
+        # reopens it. Pure annotation siblings (`description`, `title`, ...)
+        # contribute nothing and must not force an otherwise-open target's
+        # insufficiency onto an unrelated, harmless caller-facing property.
         siblings = {k: v for k, v in schema.items() if k != _REF_KEYWORD}
         if _has_structural_ref_siblings(siblings):
-            return _schema_is_insufficient_node(
+            return _object_boundedness_insufficient(
                 siblings, root_schema, seen_refs | {ref}, depth + 1, budget
             )
         return True
@@ -558,7 +571,9 @@ def _schema_is_insufficient_node(
             for branch in branches:
                 if not isinstance(branch, Mapping):
                     return True
-                if _schema_is_insufficient_node(branch, root_schema, seen_refs, depth + 1, budget):
+                if _object_boundedness_insufficient(
+                    branch, root_schema, seen_refs, depth + 1, budget
+                ):
                     return True
             # Every alternative independently proved sufficient.
             return False
@@ -566,7 +581,7 @@ def _schema_is_insufficient_node(
     all_of = schema.get("allOf")
     if isinstance(all_of, list) and all_of and "properties" not in schema:
         for branch in all_of:
-            if isinstance(branch, Mapping) and not _schema_is_insufficient_node(
+            if isinstance(branch, Mapping) and not _object_boundedness_insufficient(
                 branch, root_schema, seen_refs, depth + 1, budget
             ):
                 return False
@@ -605,20 +620,125 @@ def _schema_is_insufficient_node(
     if not object_closed:
         return True
     # The OUTER object being closed against undeclared keys says nothing
-    # about a DECLARED property's own VALUE: a property value that is itself
-    # object-shaped or applicator-bearing is a nested key channel and must be
-    # re-checked with this same predicate (full allowlist + type-gate +
-    # closedness, budget/depth/`$ref`-cycle guards included) -- otherwise a
-    # closed-looking outer shell can smuggle an unmodeled applicator
-    # (`patternProperties`, an open nested object, an unmodeled `$ref`
-    # target, ...) through a property's value. Scalar/array/annotation-only
-    # property values are deliberately NOT recursed here -- see
-    # `_property_value_is_key_channel`.
+    # about a DECLARED property's own VALUE: a value that could itself be
+    # object-shaped is re-checked with this same predicate (full type-gate
+    # + closedness, budget/depth/`$ref`-cycle guards included), or the node
+    # is insufficient.
     for prop_value in props.values():
-        if _property_value_is_key_channel(prop_value) and _schema_is_insufficient_node(
+        if _property_value_may_be_object_shaped(prop_value) and _object_boundedness_insufficient(
             prop_value, root_schema, seen_refs, depth + 1, budget
         ):
             return True
+    return False
+
+
+def _structural_coverage_insufficient(
+    schema: object,
+    root_schema: Mapping,
+    seen_refs: frozenset[str],
+    depth: int,
+    budget: list[int],
+) -> bool:
+    """Total, registry-driven traversal answering "does any schema-bearing
+    position in this document carry a keyword the sufficiency proof does
+    not model?" -- independent of `_object_boundedness_insufficient`'s
+    type-gate and closedness reasoning; this function applies NEITHER. A
+    scalar leaf `{"type": "string"}` is sufficient here on its own, which is
+    what preserves a free-form identifier-key property (`service_id`)
+    alongside a fixed operation: it carries no denied/unknown keyword, so
+    this traversal has nothing to say about it, and the object-boundedness
+    proof never recurses into it either (it is not object-shaped).
+
+    Every schema-bearing position is visited UNCONDITIONALLY -- not gated
+    by the shape of its own value: every `properties` value, the
+    `additionalProperties` schema (when Mapping-valued), every composition
+    branch (`allOf`/`anyOf`/`oneOf`), every resolved local `$ref` target,
+    and every `$defs`/`definitions` entry (visited even when unreferenced
+    from anywhere in the document -- the fail-closed choice). This closes
+    the traversal-axis gap a per-position discriminator could always
+    reopen: there is no discriminator left that could omit a position.
+
+    Totality argument: every schema-bearing position in the document is
+    reached by exactly one of three routes -- (i) it sits under a chain of
+    MODELED applicators from the root, in which case this function's own
+    recursion visits it; (ii) it sits under a DENIED applicator, in which
+    case the ancestor node already returned True the moment it saw that
+    keyword, before ever needing to look inside it; or (iii) it sits under
+    an UNKNOWN keyword, which is itself checked for subschema-shaped value
+    and denied at that node. No fourth route exists, so no schema-bearing
+    position escapes the registry."""
+    budget[0] += 1
+    if budget[0] > _MAX_SCHEMA_WALK_NODES or depth > _MAX_SCHEMA_WALK_DEPTH:
+        return True
+    if not isinstance(schema, Mapping):
+        return True
+
+    for key, value in schema.items():
+        keyword_class = _classify_keyword(key)
+        if keyword_class == "inert" or keyword_class == "bounding":
+            continue
+        if keyword_class == "denied":
+            return True
+        if keyword_class == "unknown":
+            if _is_vendor_annotation_keyword(key, value, budget):
+                continue
+            if _could_carry_subschema(value, budget):
+                return True
+            continue
+
+        # keyword_class == "modeled": recurse into every subschema slot.
+        if key == "properties":
+            if not isinstance(value, Mapping):
+                return True
+            for prop_value in value.values():
+                if _structural_coverage_insufficient(
+                    prop_value, root_schema, seen_refs, depth + 1, budget
+                ):
+                    return True
+        elif key == "additionalProperties":
+            # A boolean value is closedness, not a recursable subschema --
+            # that question belongs to `_object_boundedness_insufficient`.
+            if isinstance(value, Mapping):
+                if _structural_coverage_insufficient(
+                    value, root_schema, seen_refs, depth + 1, budget
+                ):
+                    return True
+        elif key in ("allOf", "anyOf", "oneOf"):
+            if not isinstance(value, list) or not value:
+                return True
+            for branch in value:
+                if not isinstance(branch, Mapping):
+                    return True
+                if _structural_coverage_insufficient(
+                    branch, root_schema, seen_refs, depth + 1, budget
+                ):
+                    return True
+        elif key == _REF_KEYWORD:
+            if not isinstance(value, str) or not value.startswith("#/") or value in seen_refs:
+                return True
+            resolved = _resolve_local_ref(value, root_schema)
+            if resolved is None:
+                return True
+            if _structural_coverage_insufficient(
+                resolved, root_schema, seen_refs | {value}, depth + 1, budget
+            ):
+                return True
+        elif key in ("$defs", "definitions"):
+            if not isinstance(value, Mapping):
+                return True
+            # Visited UNCONDITIONALLY, not reachability-gated: an entry
+            # never referenced by any `$ref` in the document is still
+            # covered, so a future reference (or a caller relying on
+            # tooling that resolves `$defs` by convention rather than an
+            # explicit `$ref`) cannot smuggle an unmodeled keyword through
+            # an entry this proof never bothered to look at.
+            for sub_schema in value.values():
+                if not isinstance(sub_schema, Mapping):
+                    return True
+                if _structural_coverage_insufficient(
+                    sub_schema, root_schema, seen_refs, depth + 1, budget
+                ):
+                    return True
     return False
 
 
@@ -828,7 +948,7 @@ _MAX_SCHEMA_WALK_NODES = 5000
 # so it is never itself a command-channel destination worth walking into.
 # This holds ONLY while the content-assertion vocabulary stays disabled (the
 # default dialect this module validates against) -- see the matching caveat
-# on `_SUFFICIENCY_MODELED_KEYWORDS` above.
+# on `_INERT_ANNOTATION_KEYWORDS` above.
 _SCALAR_ONLY_SCHEMA_KEYWORDS = frozenset(
     {
         "type",

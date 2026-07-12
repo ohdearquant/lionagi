@@ -7,9 +7,22 @@ from unittest.mock import AsyncMock, MagicMock, mock_open, patch
 import pytest
 from jsonschema import Draft202012Validator
 
+# Private sufficiency-proof internals -- imported directly so the
+# registry-generated regression matrix below can assert the STRUCTURAL
+# coverage claim in isolation, independent of the (separately tested)
+# key-name walker layer. `_schema_is_insufficient` is the same function
+# `validate_mcp_tool_admission` calls; testing it directly avoids a
+# confound where the walker's own command-key detection would raise a
+# DENY for a reason unrelated to the sufficiency proof's own coverage.
 from lionagi.service.connections.mcp_wrapper import (
+    _BOUNDING_KEYWORDS,
+    _DENIED_APPLICATOR_KEYWORDS,
+    _INERT_ANNOTATION_KEYWORDS,
+    _MODELED_APPLICATOR_KEYWORDS,
     MCPConnectionPool,
     MCPSecurityConfig,
+    _classify_keyword,
+    _schema_is_insufficient,
     create_mcp_tool,
     validate_mcp_tool_admission,
 )
@@ -1447,6 +1460,74 @@ class TestValidateMcpToolAdmission:
             "executor-identity-with-insufficient-schema",
             id="unevaluatedproperties-nested-in-property-value-denies",
         ),
+        # --- Array-applicator over-block: `items`/`prefixItems` are DENIED
+        # applicators -- their mere presence denies regardless of what their
+        # own subschema contains, including a fully bounded one. These three
+        # schemas are provably safe on their own (see the oracle
+        # differentials in `ARRAY_APPLICATOR_OVER_BLOCK_CASES` below, which
+        # confirm the validator itself still bounds them): a caller cannot
+        # inject a free-form value through any of them. The denial is a
+        # deliberate, accepted over-block, not evidence the schema is
+        # unsafe -- recovering admission for a bounded array position is a
+        # separate, individually-argued delta with its own oracle-soundness
+        # argument, not folded into this change. A nested array bounded by
+        # `enum`/`const` items at every level. ---
+        pytest.param(
+            "exec",
+            {
+                "type": "object",
+                "properties": {
+                    "operation": {"const": "status"},
+                    "args": {
+                        "type": "array",
+                        "items": {"type": "array", "items": {"enum": ["a", "b"]}},
+                    },
+                },
+                "additionalProperties": False,
+            },
+            None,
+            "executor-identity-with-insufficient-schema",
+            id="nested-array-bounded-by-enum-items-denies-under-array-applicator-rule",
+        ),
+        # A closed tuple (`prefixItems` all enum/const-bounded AND
+        # `items: false`, so no elements beyond the prefix are permitted at
+        # all) denies too -- `prefixItems` is a denied applicator regardless
+        # of the closing `items: false` sitting alongside it.
+        pytest.param(
+            "exec",
+            {
+                "type": "object",
+                "properties": {
+                    "operation": {"const": "status"},
+                    "args": {
+                        "type": "array",
+                        "prefixItems": [{"enum": ["a"]}, {"const": "b"}],
+                        "items": False,
+                    },
+                },
+                "additionalProperties": False,
+            },
+            None,
+            "executor-identity-with-insufficient-schema",
+            id="closed-tuple-prefixitems-bounded-denies-under-array-applicator-rule",
+        ),
+        # `items` alone (bounded, no `prefixItems`) denies too -- every
+        # position being governed by the same enum-restricted schema does
+        # not matter; `items`' mere presence is what denies.
+        pytest.param(
+            "exec",
+            {
+                "type": "object",
+                "properties": {
+                    "operation": {"const": "status"},
+                    "args": {"type": "array", "items": {"enum": ["a", "b"]}},
+                },
+                "additionalProperties": False,
+            },
+            None,
+            "executor-identity-with-insufficient-schema",
+            id="items-enum-with-no-prefixitems-denies-under-array-applicator-rule",
+        ),
     ]
 
     ADMIT_CASES = [
@@ -1765,25 +1846,6 @@ class TestValidateMcpToolAdmission:
             None,
             id="strong-name-spawn-process-root-ref-to-bounded-closed-schema",
         ),
-        # --- Anti-over-block: a nested array bounded by enum/const
-        # items at every level must remain admitted -- only a nested array
-        # that itself REACHES a free-form string is denied. ---
-        pytest.param(
-            "exec",
-            {
-                "type": "object",
-                "properties": {
-                    "operation": {"const": "status"},
-                    "args": {
-                        "type": "array",
-                        "items": {"type": "array", "items": {"enum": ["a", "b"]}},
-                    },
-                },
-                "additionalProperties": False,
-            },
-            None,
-            id="nested-array-bounded-by-enum-items-remains-admitted",
-        ),
         # --- Anti-over-block: `anyOf` where EVERY alternative is
         # independently closed-bounded must still admit -- the union check
         # only denies when at least one alternative is unbounded. ---
@@ -1807,42 +1869,6 @@ class TestValidateMcpToolAdmission:
             },
             None,
             id="anyof-with-every-alternative-closed-bounded-remains-admitted",
-        ),
-        # --- Anti-over-block: a closed tuple (`prefixItems` all
-        # enum/const-bounded AND `items: false`, so no elements beyond the
-        # prefix are permitted at all) must remain admitted. ---
-        pytest.param(
-            "exec",
-            {
-                "type": "object",
-                "properties": {
-                    "operation": {"const": "status"},
-                    "args": {
-                        "type": "array",
-                        "prefixItems": [{"enum": ["a"]}, {"const": "b"}],
-                        "items": False,
-                    },
-                },
-                "additionalProperties": False,
-            },
-            None,
-            id="closed-tuple-prefixitems-bounded-with-items-false-remains-admitted",
-        ),
-        # --- Anti-over-block: `items` alone (bounded, no
-        # `prefixItems`) must remain admitted -- every position is governed
-        # by the same enum-restricted schema. ---
-        pytest.param(
-            "exec",
-            {
-                "type": "object",
-                "properties": {
-                    "operation": {"const": "status"},
-                    "args": {"type": "array", "items": {"enum": ["a", "b"]}},
-                },
-                "additionalProperties": False,
-            },
-            None,
-            id="items-enum-with-no-prefixitems-remains-admitted",
         ),
         # --- Anti-over-block: the exact open-object shape that
         # must now DENY (see "open-object-with-only-bounded-properties-is-
@@ -1917,15 +1943,19 @@ class TestValidateMcpToolAdmission:
             None,
             id="nested-closed-object-property-value-remains-admitted",
         ),
-        # --- LOAD-BEARING anti-over-block: the recursion must NOT fold
-        # value-boundedness into the structural gate. A scalar free-form
-        # identifier property (`service_id`) alongside a fixed operation is
-        # NOT a key channel -- it carries no object/applicator keyword and
-        # is not `type: object` -- so `_property_value_is_key_channel`
-        # excludes it from the recursion entirely; the walker's
+        # --- LOAD-BEARING anti-over-block: the object-boundedness proof's
+        # recursion must NOT fold value-boundedness into the structural
+        # gate. A scalar free-form identifier property (`service_id`)
+        # alongside a fixed operation carries no object/applicator keyword
+        # and is not `type: object` -- so
+        # `_property_value_may_be_object_shaped` excludes it from the
+        # boundedness recursion entirely, and the registry-driven
+        # structural-coverage traversal finds nothing but bounding
+        # keywords (`type`) on its own value; the walker's
         # identifier-suffix exemption alone governs it, exactly as before
-        # this fix. If the recursion were to also apply to scalar leaf
-        # values, this case would flip to a false DENY. ---
+        # this fix. If either proof recursed into scalar leaf values as if
+        # they needed object-closedness, this case would flip to a false
+        # DENY. ---
         pytest.param(
             "exec",
             {
@@ -2156,6 +2186,92 @@ class TestValidateMcpToolAdmission:
         assert validator.is_valid(
             {"operation": "status", "options": {"mode": "a", "command": "rm -rf /"}}
         )
+
+    # --- Array-applicator over-block: `items`/`prefixItems` are DENIED
+    # applicators under the sufficiency proof's keyword registry -- their
+    # mere presence denies a node regardless of what their own subschema
+    # contains, including a subschema that is itself fully bounded
+    # (`enum`/`const`-restricted items, or a closed tuple via `prefixItems`
+    # + `items: false`). Unlike the other named necessity cases above
+    # (F1-F6), the oracle differential here goes the OTHER way: the raw
+    # validator does NOT accept an injected command through any of these
+    # schemas -- they were already closed on their own -- so denying them is
+    # a deliberate, accepted over-block, not a missed bypass. Behavior-
+    # visible consequence: a strong-executor-named tool that declares a
+    # bounded array argument (e.g. `args: {"type": "array", "items":
+    # {"enum": [...]}}`) alongside a fixed operation, and that was
+    # previously admitted, now refuses registration. Recovering admission
+    # for a bounded array position is a separate, individually-argued delta
+    # with its own oracle-soundness argument -- not part of this change; a
+    # bounded schema wrongly denied is a support cost, an unbounded schema
+    # admitted is a security defect, so ties break to deny.
+    ARRAY_APPLICATOR_OVER_BLOCK_DENY_CASES = [
+        pytest.param(
+            {
+                "type": "object",
+                "properties": {
+                    "operation": {"const": "status"},
+                    "args": {
+                        "type": "array",
+                        "items": {"type": "array", "items": {"enum": ["a", "b"]}},
+                    },
+                },
+                "additionalProperties": False,
+            },
+            {"operation": "status"},
+            id="nested-array-bounded-by-enum-items",
+        ),
+        pytest.param(
+            {
+                "type": "object",
+                "properties": {
+                    "operation": {"const": "status"},
+                    "args": {
+                        "type": "array",
+                        "prefixItems": [{"enum": ["a"]}, {"const": "b"}],
+                        "items": False,
+                    },
+                },
+                "additionalProperties": False,
+            },
+            {"operation": "status"},
+            id="closed-tuple-prefixitems-bounded-with-items-false",
+        ),
+        pytest.param(
+            {
+                "type": "object",
+                "properties": {
+                    "operation": {"const": "status"},
+                    "args": {"type": "array", "items": {"enum": ["a", "b"]}},
+                },
+                "additionalProperties": False,
+            },
+            {"operation": "status"},
+            id="items-enum-with-no-prefixitems",
+        ),
+    ]
+
+    @pytest.mark.parametrize("schema, minimal_instance", ARRAY_APPLICATOR_OVER_BLOCK_DENY_CASES)
+    def test_array_applicator_over_block_denies_despite_oracle_confirming_schema_is_bounded(
+        self, schema, minimal_instance
+    ):
+        """`items`/`prefixItems` deny at sight under the sufficiency proof's
+        keyword registry even when their own subschema is fully bounded.
+        The inverted oracle differential proves this is an over-block, not
+        a bypass: the raw validator accepts the minimal, honest instance,
+        and rejects both a bare command string and a command riding
+        alongside the fixed operation -- the schema was never actually
+        unsafe on its own."""
+        with pytest.raises(PermissionError) as exc_info:
+            validate_mcp_tool_admission("exec", schema, None)
+        message = str(exc_info.value)
+        assert "exec" in message
+        assert "executor-identity-with-insufficient-schema" in message
+
+        validator = Draft202012Validator(schema)
+        assert validator.is_valid(minimal_instance)
+        assert not validator.is_valid("rm -rf /")
+        assert not validator.is_valid({**minimal_instance, "command": "rm -rf /"})
 
     SYNTHETIC_UNKNOWN_KEYWORD_DENY_CASES = [
         pytest.param(
@@ -2467,22 +2583,6 @@ class TestValidateMcpToolAdmission:
         pytest.param(
             "exec",
             {
-                "type": "object",
-                "properties": {
-                    "operation": {"const": "status"},
-                    "args": {
-                        "type": "array",
-                        "items": {"type": "array", "items": {"enum": ["a", "b"]}},
-                    },
-                },
-                "additionalProperties": False,
-            },
-            {},
-            id="nested-array-bounded-by-enum-items-remains-admitted",
-        ),
-        pytest.param(
-            "exec",
-            {
                 "anyOf": [
                     {
                         "type": "object",
@@ -2500,36 +2600,6 @@ class TestValidateMcpToolAdmission:
             },
             {"operation": "status"},
             id="anyof-with-every-alternative-closed-bounded-remains-admitted",
-        ),
-        pytest.param(
-            "exec",
-            {
-                "type": "object",
-                "properties": {
-                    "operation": {"const": "status"},
-                    "args": {
-                        "type": "array",
-                        "prefixItems": [{"enum": ["a"]}, {"const": "b"}],
-                        "items": False,
-                    },
-                },
-                "additionalProperties": False,
-            },
-            {},
-            id="closed-tuple-prefixitems-bounded-with-items-false-remains-admitted",
-        ),
-        pytest.param(
-            "exec",
-            {
-                "type": "object",
-                "properties": {
-                    "operation": {"const": "status"},
-                    "args": {"type": "array", "items": {"enum": ["a", "b"]}},
-                },
-                "additionalProperties": False,
-            },
-            {},
-            id="items-enum-with-no-prefixitems-remains-admitted",
         ),
         pytest.param(
             "exec",
@@ -2707,3 +2777,420 @@ class TestValidateMcpToolAdmission:
         }
 
         assert validate_mcp_tool_admission("search_config", huge_schema, None) is None
+
+
+class TestSufficiencyProofKeywordRegistry:
+    """Registry-GENERATED regression matrix for the total structural-
+    coverage traversal (`_structural_coverage_insufficient`, invoked
+    through `_schema_is_insufficient`).
+
+    Every case below is parametrized by ITERATING THE REGISTRY FROZENSETS
+    directly (`_MODELED_APPLICATOR_KEYWORDS`, `_DENIED_APPLICATOR_KEYWORDS`)
+    -- never a hand-listed keyword table. This is the anti-hand-enumeration
+    mechanism the design requires: enumerating "which keywords need a test"
+    by hand is the exact defect class (enumerate positions/keywords one at a
+    time, miss the next one) the registry-driven proof exists to close. A
+    keyword added to either frozenset later gains matrix coverage here
+    automatically, with no test-file edit required.
+
+    Tests exercise `_schema_is_insufficient` directly (rather than the full
+    `validate_mcp_tool_admission` pipeline) so the assertions are about the
+    sufficiency proof's own coverage, isolated from the separately-tested
+    key-name walker (which would otherwise sometimes deny for an unrelated
+    reason -- e.g. a literal `command` key -- and mask what this matrix is
+    actually proving)."""
+
+    # ---- schema-construction helpers ----------------------------------
+
+    # Object-shaped (not a bare scalar): a composition applicator
+    # (`allOf`/`anyOf`/`oneOf`/`$ref`) can resolve to ANY instance type, and
+    # the object-boundedness proof's own gate for recursing into a property
+    # value (`_property_value_may_be_object_shaped`) triggers on the
+    # PRESENCE of a modeled-applicator keyword, not on what it resolves to
+    # -- so a composition wrapping a bare scalar would independently fail
+    # the (orthogonal, unchanged) object-boundedness type-gate, which is
+    # not what this matrix is testing. An object-shaped benign leaf keeps
+    # object-boundedness satisfied at every wrapper while still exercising
+    # structural-coverage's recursion through each modeled applicator.
+    BENIGN_LEAF = {
+        "type": "object",
+        "properties": {"x": {"const": 1}},
+        "additionalProperties": False,
+    }
+    # Carries a DENIED-applicator keyword (`not`) -- any value works, since
+    # a denied applicator's mere PRESENCE denies, regardless of content.
+    DENIED_LEAF = {"not": {"type": "null"}}
+    # A keyword the registry has never seen, Mapping-valued (schema-bearing
+    # in shape) -- must be denied as UNKNOWN, not silently admitted.
+    UNKNOWN_LEAF = {"quorumProperties": {"minMembers": 2}}
+    # Same synthetic keyword, but with a scalar value: cannot itself carry
+    # a subschema, so it is the one tolerated UNKNOWN residual.
+    UNKNOWN_LEAF_SCALAR_VALUE = 3
+
+    @staticmethod
+    def _nest_property(inner, depth):
+        """Wrap `inner` `depth - 1` levels deep inside closed nested-object
+        property values (`{"nested": ...}`), so the recursion under test is
+        exercised at nesting depths 1 (direct), 2, and 3."""
+        node = inner
+        for _ in range(depth - 1):
+            node = {
+                "type": "object",
+                "additionalProperties": False,
+                "properties": {"nested": node},
+            }
+        return node
+
+    @staticmethod
+    def _root_with_target(target_value):
+        """A closed, bounded root object with a fixed `operation` and one
+        additional declared property (`target`) holding the position under
+        test."""
+        return {
+            "type": "object",
+            "required": ["operation"],
+            "additionalProperties": False,
+            "properties": {"operation": {"const": "status"}, "target": target_value},
+        }
+
+    @staticmethod
+    def _inject_at_depth(depth):
+        """A `command`-shaped injection payload buried `depth` levels deep
+        under the SAME `{"nested": ...}` chain `_nest_property` builds --
+        for the oracle differential proving an ADMIT verdict is not a
+        security hole."""
+        node = {"command": "rm -rf /"}
+        for _ in range(depth - 1):
+            node = {"nested": node}
+        return node
+
+    @classmethod
+    def _build_modeled(cls, keyword, payload):
+        """A minimal schema in which `keyword` (a MODELED applicator) is
+        the applicator the sufficiency proof must recurse THROUGH to reach
+        `payload`."""
+        if keyword == "properties":
+            return {
+                "type": "object",
+                "properties": {"inner": payload},
+                "additionalProperties": False,
+            }
+        if keyword == "additionalProperties":
+            # `additionalProperties` recursion is only reachable through a
+            # Mapping value. Give the merged value an `enum` so the
+            # (unrelated) object-boundedness closedness check for this
+            # node doesn't independently deny regardless of payload --
+            # this matrix is about structural-coverage recursion, not
+            # closedness, and the two proofs are deliberately orthogonal.
+            merged = {"enum": ["x"], **payload}
+            return {
+                "type": "object",
+                "properties": {"mode": {"type": "string", "enum": ["a", "b"]}},
+                "additionalProperties": merged,
+            }
+        if keyword == "allOf":
+            return {"allOf": [payload]}
+        if keyword in ("anyOf", "oneOf"):
+            # UNION semantics: pair with one other independently-bounded
+            # branch so a benign payload's admit isn't accidental.
+            bounded_branch = {
+                "type": "object",
+                "properties": {"x": {"const": 1}},
+                "additionalProperties": False,
+            }
+            return {keyword: [payload, bounded_branch]}
+        raise AssertionError(f"unhandled modeled keyword in test helper: {keyword!r}")
+
+    @classmethod
+    def _build_schema(cls, keyword, payload, depth):
+        """Build the FULL schema under test for the MODELED-applicator
+        matrix. `$ref`/`$defs`/`definitions` need special handling here: a
+        JSON Pointer `$ref` always resolves against the schema's DOCUMENT
+        ROOT (`_resolve_local_ref` is called with the true root passed to
+        `_schema_is_insufficient`, never with whichever local node the
+        `$ref` happens to sit inside) -- so their `$defs`/`definitions`
+        companion must live at the true root, not nested inside the
+        `target` property alongside the `$ref` itself, or resolution fails
+        closed regardless of payload. Every other modeled keyword is
+        self-contained and uses the generic `properties`-nested wrapper."""
+        if keyword in ("$ref", "$defs", "definitions"):
+            defs_key = "$defs" if keyword != "definitions" else "definitions"
+            schema = cls._root_with_target({"$ref": f"#/{defs_key}/Target"})
+            schema[defs_key] = {"Target": cls._nest_property(payload, depth)}
+            return schema
+        return cls._root_with_target(
+            cls._nest_property(cls._build_modeled(keyword, payload), depth)
+        )
+
+    @staticmethod
+    def _keyword_only_schema(keyword):
+        """A minimal schema carrying `keyword` (a DENIED applicator or a
+        synthetic unknown keyword) with an arbitrary Mapping value -- the
+        keyword's mere presence is what the assertion is about, not its
+        content."""
+        return {keyword: {"type": "null"}}
+
+    # ---- (1) every MODELED applicator: benign payload admits ----------
+
+    @pytest.mark.parametrize("depth", [1, 2, 3])
+    @pytest.mark.parametrize("keyword", sorted(_MODELED_APPLICATOR_KEYWORDS))
+    def test_modeled_applicator_benign_payload_admits(self, keyword, depth):
+        schema = self._build_schema(keyword, self.BENIGN_LEAF, depth)
+        assert not _schema_is_insufficient(schema)
+
+        # Oracle differential: the admitted schema must still reject an
+        # injected command-shaped instance buried at the matching depth.
+        validator = Draft202012Validator(schema)
+        instance = {"operation": "status", "target": self._inject_at_depth(depth)}
+        assert not validator.is_valid(instance)
+
+    # ---- (1) every MODELED applicator: denied/unknown payload denies --
+
+    @pytest.mark.parametrize("depth", [1, 2, 3])
+    @pytest.mark.parametrize("bad_payload_name", ["denied", "unknown"])
+    @pytest.mark.parametrize("keyword", sorted(_MODELED_APPLICATOR_KEYWORDS))
+    def test_modeled_applicator_bad_payload_denies(self, keyword, bad_payload_name, depth):
+        bad_payload = self.DENIED_LEAF if bad_payload_name == "denied" else self.UNKNOWN_LEAF
+        schema = self._build_schema(keyword, bad_payload, depth)
+        assert _schema_is_insufficient(schema)
+
+    # ---- (2) every DENIED applicator: denies at every subschema position ---
+
+    @staticmethod
+    def _denied_at_property_value(keyword, depth):
+        return TestSufficiencyProofKeywordRegistry._root_with_target(
+            TestSufficiencyProofKeywordRegistry._nest_property(
+                TestSufficiencyProofKeywordRegistry._keyword_only_schema(keyword), depth
+            )
+        )
+
+    @staticmethod
+    def _denied_at_additional_properties(keyword):
+        return {
+            "type": "object",
+            "properties": {"operation": {"const": "status"}},
+            "additionalProperties": TestSufficiencyProofKeywordRegistry._keyword_only_schema(
+                keyword
+            ),
+        }
+
+    @staticmethod
+    def _denied_at_composition_branch(keyword):
+        return {
+            "type": "object",
+            "allOf": [TestSufficiencyProofKeywordRegistry._keyword_only_schema(keyword)],
+        }
+
+    @staticmethod
+    def _denied_at_ref_target(keyword):
+        return {
+            "$ref": "#/$defs/Target",
+            "$defs": {"Target": TestSufficiencyProofKeywordRegistry._keyword_only_schema(keyword)},
+        }
+
+    @staticmethod
+    def _denied_at_defs_entry_unreferenced(keyword):
+        return {
+            "type": "object",
+            "required": ["operation"],
+            "additionalProperties": False,
+            "properties": {"operation": {"const": "status"}},
+            "$defs": {"Unused": TestSufficiencyProofKeywordRegistry._keyword_only_schema(keyword)},
+        }
+
+    @pytest.mark.parametrize("depth", [1, 2, 3])
+    @pytest.mark.parametrize("keyword", sorted(_DENIED_APPLICATOR_KEYWORDS))
+    def test_denied_applicator_denies_at_property_value(self, keyword, depth):
+        assert _schema_is_insufficient(self._denied_at_property_value(keyword, depth))
+
+    @pytest.mark.parametrize("keyword", sorted(_DENIED_APPLICATOR_KEYWORDS))
+    def test_denied_applicator_denies_at_additional_properties(self, keyword):
+        assert _schema_is_insufficient(self._denied_at_additional_properties(keyword))
+
+    @pytest.mark.parametrize("keyword", sorted(_DENIED_APPLICATOR_KEYWORDS))
+    def test_denied_applicator_denies_at_composition_branch(self, keyword):
+        assert _schema_is_insufficient(self._denied_at_composition_branch(keyword))
+
+    @pytest.mark.parametrize("keyword", sorted(_DENIED_APPLICATOR_KEYWORDS))
+    def test_denied_applicator_denies_at_ref_target(self, keyword):
+        assert _schema_is_insufficient(self._denied_at_ref_target(keyword))
+
+    @pytest.mark.parametrize("keyword", sorted(_DENIED_APPLICATOR_KEYWORDS))
+    def test_denied_applicator_denies_at_unreferenced_defs_entry(self, keyword):
+        """`$defs` entries are visited UNCONDITIONALLY, not reachability-
+        gated -- an entry never reached by any `$ref` in the document must
+        still deny when it carries a denied applicator."""
+        assert _schema_is_insufficient(self._denied_at_defs_entry_unreferenced(keyword))
+
+    def test_denied_applicator_property_value_necessity_oracle_differential(self):
+        """Documents necessity for a representative denied applicator
+        (`patternProperties`, the F1/F4 case already covered by name
+        elsewhere): the identical schema validates against a raw
+        Draft2020-12 validator and ACCEPTS the injected key, proving the
+        schema was never actually closed."""
+        schema = self._denied_at_property_value("patternProperties", depth=2)
+        assert _schema_is_insufficient(schema)
+        # `patternProperties` here has no fixed key pattern matching a real
+        # instance key, so the necessity differential uses the sibling
+        # keyword form directly to keep the injected instance constructible.
+        raw = {
+            "type": "object",
+            "required": ["operation"],
+            "additionalProperties": False,
+            "properties": {
+                "operation": {"const": "status"},
+                "target": {
+                    "type": "object",
+                    "additionalProperties": False,
+                    "properties": {
+                        "nested": {
+                            "type": "object",
+                            "patternProperties": {"^injected$": {"type": "string"}},
+                        }
+                    },
+                },
+            },
+        }
+        validator = Draft202012Validator(raw)
+        assert validator.is_valid(
+            {"operation": "status", "target": {"nested": {"injected": "rm -rf /"}}}
+        )
+
+    # ---- (3) synthetic never-registered keyword at every position -----
+
+    @pytest.mark.parametrize("depth", [1, 2, 3])
+    def test_synthetic_unknown_keyword_mapping_value_denies_at_property_value(self, depth):
+        schema = self._root_with_target(self._nest_property(self.UNKNOWN_LEAF, depth))
+        assert _schema_is_insufficient(schema)
+
+    def test_synthetic_unknown_keyword_mapping_value_denies_at_additional_properties(self):
+        schema = {
+            "type": "object",
+            "properties": {"operation": {"const": "status"}},
+            "additionalProperties": {"enum": ["x"], **self.UNKNOWN_LEAF},
+        }
+        assert _schema_is_insufficient(schema)
+
+    def test_synthetic_unknown_keyword_mapping_value_denies_at_composition_branch(self):
+        schema = {"type": "object", "allOf": [self.UNKNOWN_LEAF]}
+        assert _schema_is_insufficient(schema)
+
+    def test_synthetic_unknown_keyword_mapping_value_denies_at_ref_target(self):
+        schema = {"$ref": "#/$defs/Target", "$defs": {"Target": self.UNKNOWN_LEAF}}
+        assert _schema_is_insufficient(schema)
+
+    def test_synthetic_unknown_keyword_mapping_value_denies_at_unreferenced_defs_entry(self):
+        schema = {
+            "type": "object",
+            "required": ["operation"],
+            "additionalProperties": False,
+            "properties": {"operation": {"const": "status"}},
+            "$defs": {"Unused": self.UNKNOWN_LEAF},
+        }
+        assert _schema_is_insufficient(schema)
+
+    @pytest.mark.parametrize("depth", [1, 2, 3])
+    def test_synthetic_unknown_keyword_scalar_value_control_admits_at_property_value(self, depth):
+        """Control: the SAME never-registered keyword spelling with a
+        provably-inert SCALAR value stays admitted at every depth -- the
+        gate keys off VALUE SHAPE, not keyword spelling."""
+        node = self._nest_property({"quorumProperties": 3}, depth)
+        schema = self._root_with_target(node)
+        assert not _schema_is_insufficient(schema)
+
+    # ---- registry completeness/partition proof -------------------------
+
+    def test_registry_partitions_with_no_keyword_in_two_classes(self):
+        classes = (
+            _INERT_ANNOTATION_KEYWORDS,
+            _BOUNDING_KEYWORDS,
+            _MODELED_APPLICATOR_KEYWORDS,
+            _DENIED_APPLICATOR_KEYWORDS,
+        )
+        seen: set[str] = set()
+        overlaps: set[str] = set()
+        for keyword_set in classes:
+            overlaps |= seen & keyword_set
+            seen |= keyword_set
+        assert not overlaps, f"keyword(s) classified in more than one registry class: {overlaps}"
+
+    def test_registry_covers_representative_draft202012_keyword_list(self):
+        """A representative Draft 2020-12 core-vocabulary keyword list must
+        be fully covered by the union of the four registry classes -- no
+        keyword this module is expected to understand falls through to the
+        UNKNOWN default silently."""
+        representative_keywords = {
+            "type",
+            "const",
+            "enum",
+            "required",
+            "dependentRequired",
+            "multipleOf",
+            "maximum",
+            "exclusiveMaximum",
+            "minimum",
+            "exclusiveMinimum",
+            "maxLength",
+            "minLength",
+            "maxItems",
+            "minItems",
+            "uniqueItems",
+            "maxContains",
+            "minContains",
+            "maxProperties",
+            "minProperties",
+            "properties",
+            "patternProperties",
+            "additionalProperties",
+            "unevaluatedProperties",
+            "unevaluatedItems",
+            "propertyNames",
+            "dependentSchemas",
+            "allOf",
+            "anyOf",
+            "oneOf",
+            "not",
+            "if",
+            "then",
+            "else",
+            "items",
+            "prefixItems",
+            "contains",
+            "$ref",
+            "$dynamicRef",
+            "$recursiveRef",
+            "$dynamicAnchor",
+            "$recursiveAnchor",
+            "$defs",
+            "definitions",
+            "$schema",
+            "$id",
+            "$anchor",
+            "$vocabulary",
+            "$comment",
+            "title",
+            "description",
+            "default",
+            "examples",
+            "deprecated",
+            "readOnly",
+            "writeOnly",
+            "format",
+            "pattern",
+            "contentEncoding",
+            "contentMediaType",
+            "contentSchema",
+        }
+        covered = (
+            _INERT_ANNOTATION_KEYWORDS
+            | _BOUNDING_KEYWORDS
+            | _MODELED_APPLICATOR_KEYWORDS
+            | _DENIED_APPLICATOR_KEYWORDS
+        )
+        missing = representative_keywords - covered
+        assert not missing, f"registry does not classify: {sorted(missing)}"
+        for keyword in representative_keywords:
+            assert _classify_keyword(keyword) != "unknown"
+
+    def test_classify_keyword_defaults_unknown_for_unregistered_name(self):
+        assert _classify_keyword("this-spelling-was-never-registered") == "unknown"
