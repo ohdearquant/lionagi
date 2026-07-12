@@ -198,6 +198,65 @@ async def test_spawn_branch_setup_fires_with_operation_and_cloned_branch():
     assert isinstance(branch, Branch)
 
 
+@pytest.mark.xfail(
+    strict=True,
+    reason="Reactive flows do not yet notify branch-created persistence callbacks "
+    "(the reactive kernel path never forwards on_branch_created to the executor, "
+    "and injected clones never invoke it either).",
+)
+@pytest.mark.asyncio
+async def test_reactive_flow_notifies_for_preallocated_and_injected_clones():
+    """A dependency-created (preallocated) branch clone and a reactively
+    injected (SpawnRequest) branch clone must each fire on_branch_created
+    exactly once, the same guarantee non-reactive flow already provides.
+    Both currently fire zero times: this reproduces the confirmed gap so a
+    future runtime fix turns this into a loud XPASS instead of silently
+    leaving branch-created persistence hooks unfired for reactive runs."""
+
+    # Leg 1: a dependent two-node graph — the second node has no explicit
+    # branch, so the executor preallocates a clone of the default branch.
+    async def dependent_step(**kw):
+        return "done"
+
+    dep_session = _session_with_ops(dependent_step=dependent_step)
+    dep_builder = OperationGraphBuilder()
+    n1 = dep_builder.add_operation("dependent_step")
+    dep_builder.add_operation("dependent_step", depends_on=[n1])
+    dep_graph = dep_builder.get_graph()
+
+    preallocated_created: list = []
+    await flow(dep_session, dep_graph, reactive=True, on_branch_created=preallocated_created.append)
+
+    # Leg 2: a spawner node injects a follow-up node via SpawnRequest — the
+    # injected node's branch is cloned by _assign_injected_branch.
+    async def spawner(**kw):
+        return SpawnRequest(instruction="follow-up", independent=True)
+
+    async def follow_up(**kw):
+        return "did the follow-up work"
+
+    inj_session = _session_with_ops(spawner=spawner, follow_up=follow_up)
+
+    def node_builder(req: SpawnRequest, emitter: Operation) -> Operation:
+        return create_operation("follow_up", parameters={})
+
+    inj_builder = OperationGraphBuilder()
+    inj_builder.add_operation("spawner")
+    inj_graph = inj_builder.get_graph()
+
+    injected_created: list = []
+    await flow(
+        inj_session,
+        inj_graph,
+        reactive=True,
+        node_builder=node_builder,
+        on_branch_created=injected_created.append,
+    )
+
+    assert len(preallocated_created) == 1
+    assert len(injected_created) == 1
+
+
 def test_inject_rejected_when_not_running():
     """inject() is a no-op (returns False) outside an active flow."""
     from lionagi.operations.flow import ReactiveExecutor

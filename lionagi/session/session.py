@@ -1,6 +1,13 @@
 # Copyright (c) 2023-2025, HaiyangLi <quantocean.li at gmail dot com>
 # SPDX-License-Identifier: Apache-2.0
 
+"""Public session orchestration and graph-execution facade.
+
+Submit ordinary operation graphs through ``Session.flow``. Streaming graph surfaces
+must use the existing streaming flow kernel. Every new graph-execution surface must
+delegate through one of these paths and include conformance coverage.
+"""
+
 import contextlib
 from collections.abc import Callable
 from typing import TYPE_CHECKING, Any
