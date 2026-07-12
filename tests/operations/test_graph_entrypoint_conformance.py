@@ -56,6 +56,30 @@ through more than one intermediate assignment, or any binding inside a class
 body, comprehension, or walrus assignment is not tracked and remains a
 residual imprecision.
 
+A name declared ``global``/``nonlocal`` anywhere in a function's own body is
+NOT a lexical local of that function and must not be masked the way a
+genuine local is, but the two declarations resolve against different target
+scopes and are handled accordingly: ``global`` overlays provenance from a
+pristine MODULE-scope snapshot rather than the lexical-enclosing scope (a
+`global NAME` reference skips every intermediate function scope, including
+one whose own parameter or local happens to shadow the same name), while
+``nonlocal`` resolves against the nearest enclosing FUNCTION scope, which the
+ordinary lexical inheritance chain already reproduces without any extra
+overlay. A ``global``/``nonlocal`` statement nested inside a CLASS body does
+not count as a declaration of the surrounding function at all -- a class
+body is its own namespace for this purpose, unlike the ordinary binding
+events collected within it. This scanner's governing invariant is
+ZERO-FALSE-NEGATIVES: a missed executor-construction site is a coverage hole
+(dangerous), while a spurious one only costs a review (safe); every
+global/nonlocal refinement above exists to close a false-negative, and where
+closing a remaining false-positive would require reasoning about whether a
+declared name's own binder form (a ``for``-target, match-capture, ``with``/
+``except ... as``, ``del``, or augmented assignment reached under the
+declaration) actually executes, that reasoning is deliberately NOT attempted
+-- the scanner keeps the (possibly stale) inherited/overlaid provenance and
+reports a site, a documented conservative over-approximation pinned by
+``test_global_declared_executing_binder_is_conservative_overapproximation``.
+
 Registering a location in the manifest is necessary but not sufficient: any
 row that names an ``expected_target`` must also name a ``delegation_test`` —
 the exact pytest node id of the test that actually asserts the delegation
@@ -677,43 +701,71 @@ def _pattern_capture_names(pattern: ast.pattern) -> set[str]:
     return names
 
 
-def _scope_global_nonlocal_names(stmts: list[ast.stmt]) -> set[str]:
-    """Every name declared ``global`` or ``nonlocal`` anywhere in ONE lexical
-    scope's statement list *stmts*, descending transparently into
-    control-flow bodies (a ``global``/``nonlocal`` nested inside an
-    ``if``/``try``/``for``/``while``/``with``/``match``-case/class body still
-    applies to the whole enclosing function scope) but stopping at a nested
-    ``FunctionDef``/``AsyncFunctionDef``/``Lambda`` -- those own their own
-    ``global``/``nonlocal`` declarations, mirroring the exact scope-boundary
-    logic ``_collect_scope_binding_events`` uses."""
-    names: set[str] = set()
+def _scope_declared_names(stmts: list[ast.stmt]) -> tuple[set[str], set[str]]:
+    """Every name declared ``global`` and, separately, every name declared
+    ``nonlocal``, anywhere in ONE lexical scope's statement list *stmts* --
+    returned as ``(global_names, nonlocal_names)`` since the two declarations
+    resolve against DIFFERENT target scopes (see ``_SinkVisitor._push_func_scope``:
+    ``global`` overlays provenance from the MODULE scope, ``nonlocal`` keeps
+    inheriting from the lexical-enclosing scope) and must not be merged into
+    one set the way an earlier version of this function did.
+
+    Descends transparently into control-flow bodies -- a ``global``/
+    ``nonlocal`` nested inside an ``if``/``try``/``for``/``while``/``with``/
+    ``match``-case still applies to the whole enclosing function scope -- but
+    STOPS at a nested ``FunctionDef``/``AsyncFunctionDef``/``Lambda`` (those
+    own their own declarations) AND at a nested ``ClassDef``. The ``ClassDef``
+    stop is a deliberate DIVERGENCE from ``_collect_scope_binding_events``,
+    which DOES descend into class bodies when collecting binding EVENTS: an
+    ordinary (undeclared) assignment inside a class body still executes in
+    the surrounding function's call frame at class-definition time and can
+    rebind an enclosing name, so it is correctly collected as that function's
+    own binding event. A ``global``/``nonlocal`` STATEMENT inside a class
+    body is different -- per Python's own scoping rules a class body is its
+    own namespace (not a true function scope, but not transparent to the
+    enclosing function either), so ``global x`` there only redirects lookups
+    of ``x`` within the CLASS body's own execution; it does not declare the
+    surrounding function's same-named binding at all. Descending into the
+    class body here would wrongly un-mask a same-named local the enclosing
+    function itself never declared global/nonlocal (see
+    test_class_body_global_declaration_does_not_leak_into_enclosing_function)."""
+    global_names: set[str] = set()
+    nonlocal_names: set[str] = set()
+
+    def _merge(body: list[ast.stmt]) -> None:
+        g, n = _scope_declared_names(body)
+        global_names.update(g)
+        nonlocal_names.update(n)
+
     for stmt in stmts:
-        if isinstance(stmt, (ast.Global, ast.Nonlocal)):
-            names.update(stmt.names)
+        if isinstance(stmt, ast.Global):
+            global_names.update(stmt.names)
+        elif isinstance(stmt, ast.Nonlocal):
+            nonlocal_names.update(stmt.names)
         elif isinstance(stmt, ast.If):
-            names.update(_scope_global_nonlocal_names(stmt.body))
-            names.update(_scope_global_nonlocal_names(stmt.orelse))
+            _merge(stmt.body)
+            _merge(stmt.orelse)
         elif isinstance(stmt, ast.Try):
-            names.update(_scope_global_nonlocal_names(stmt.body))
+            _merge(stmt.body)
             for handler in stmt.handlers:
-                names.update(_scope_global_nonlocal_names(handler.body))
-            names.update(_scope_global_nonlocal_names(stmt.orelse))
-            names.update(_scope_global_nonlocal_names(stmt.finalbody))
+                _merge(handler.body)
+            _merge(stmt.orelse)
+            _merge(stmt.finalbody)
         elif isinstance(stmt, (ast.For, ast.AsyncFor)):
-            names.update(_scope_global_nonlocal_names(stmt.body))
-            names.update(_scope_global_nonlocal_names(stmt.orelse))
+            _merge(stmt.body)
+            _merge(stmt.orelse)
         elif isinstance(stmt, ast.While):
-            names.update(_scope_global_nonlocal_names(stmt.body))
-            names.update(_scope_global_nonlocal_names(stmt.orelse))
+            _merge(stmt.body)
+            _merge(stmt.orelse)
         elif isinstance(stmt, (ast.With, ast.AsyncWith)):
-            names.update(_scope_global_nonlocal_names(stmt.body))
+            _merge(stmt.body)
         elif isinstance(stmt, ast.Match):
             for case in stmt.cases:
-                names.update(_scope_global_nonlocal_names(case.body))
-        elif isinstance(stmt, ast.ClassDef):
-            names.update(_scope_global_nonlocal_names(stmt.body))
+                _merge(case.body)
+        # ClassDef: its own namespace for global/nonlocal purposes: stop here
+        # (see docstring divergence note above).
         # FunctionDef/AsyncFunctionDef/Lambda: a new scope: stop here.
-    return names
+    return global_names, nonlocal_names
 
 
 def _collect_scope_binding_events(
@@ -937,7 +989,12 @@ def _collect_constructor_import_bindings(tree: ast.Module) -> tuple[dict[str, st
     import-provenance environment (:class:`_FlowModuleEnv`) of names bound
     to ``lionagi.operations.flow``, the ``lionagi`` package root,
     ``importlib``, and ``import_module`` -- used to restrict ``getattr``
-    recognition to receivers that provably denote the flow module."""
+    recognition to receivers that provably denote the flow module. This pair
+    also becomes index 0 of ``_SinkVisitor``'s scope stacks (the pristine
+    MODULE-scope snapshot that never gets mutated in place -- see
+    ``_SinkVisitor.__init__``/``_push_func_scope``), which a ``global``
+    declaration inside any nested function scope overlays its provenance
+    from, rather than the lexical-enclosing scope."""
     bound: dict[str, str] = {}
     env = _FlowModuleEnv.empty()
     events: list[_BindingEvent] = []
@@ -975,7 +1032,44 @@ class _SinkVisitor(ast.NodeVisitor):
     conditional in-body reimport of an inherited name masks it and leaves it
     masked -- it does not leak the outer scope's provenance through. The
     scope is popped again on the way out, restoring the enclosing scope's
-    view for sibling functions."""
+    view for sibling functions.
+
+    A name declared ``global``/``nonlocal`` anywhere in a function's OWN body
+    (via ``_scope_declared_names``, which stops at a nested class body -- see
+    its docstring) is exempt from that masking pass, since it is not a
+    lexical local at all. The two declarations resolve against DIFFERENT
+    target scopes and are handled accordingly: ``global`` is overlaid from a
+    pristine MODULE-scope snapshot (index 0 of the scope stacks, never
+    mutated in place) rather than inherited from the lexical-enclosing
+    scope's copy, since a `global NAME` reference skips every intermediate
+    function scope no matter what any of them locally bind NAME to;
+    ``nonlocal`` needs no such overlay because it resolves against the
+    nearest ENCLOSING FUNCTION scope, which the ordinary lexical copy-chain
+    already reproduces by construction. See the module docstring's
+    zero-false-negatives invariant and ``_push_func_scope`` for the full
+    argument, and the ``test_global_declared_*``/``test_nonlocal_declared_*``
+    regressions for both directions of each.
+
+    A declared name's own binder forms (``for``-target, match-capture,
+    ``with``/``except ... as``, ``del``, augmented assignment) are still only
+    ever mask-only events in ``_replay_binding_events`` -- they never
+    establish or restore provenance there, so a declared name whose ONLY
+    in-scope binder is one of these forms keeps whatever provenance the
+    overlay/inheritance step already gave it, even though that binder form
+    may actually execute and rebind/clear the real module or enclosing
+    binding at runtime. This is a DELIBERATE, documented conservative
+    over-approximation, not a bug: this scanner's contract is
+    zero-false-negatives (a missed executor-construction site is dangerous; a
+    spurious one only costs a review), so keeping stale-but-possibly-correct
+    provenance through a maybe-executing declared binder can only ever ADD a
+    reported site, never drop one that is real. Eliminating this residual
+    would require reasoning about whether the binder actually executes --
+    genuine dead/live-code analysis -- which this scanner intentionally does
+    not do; see
+    test_global_declared_executing_binder_is_conservative_overapproximation,
+    which pins this exact shape as an expected, named false-positive so a
+    future change that trades it for a missed site fails that test instead
+    of quietly regressing."""
 
     def __init__(
         self,
@@ -1032,14 +1126,54 @@ class _SinkVisitor(ast.NodeVisitor):
             # local for the whole function, so an inherited same-named
             # binding from the enclosing scope must not leak through here.
             # EXCEPT a name declared `global`/`nonlocal` anywhere in this
-            # scope (see _scope_global_nonlocal_names): such a name is NOT a
-            # function-local at all -- every reference and rebinding in this
-            # function operates on the enclosing binding, so it must not be
+            # scope's OWN body (see _scope_declared_names, which stops at a
+            # nested class body -- a global/nonlocal statement inside a
+            # nested class does NOT declare a name of THIS scope): such a
+            # name is NOT a function-local at all, so it must not be
             # discarded from inherited provenance the way a genuine local is.
-            declared = _scope_global_nonlocal_names(node.body)
+            global_names, nonlocal_names = _scope_declared_names(node.body)
+            declared = global_names | nonlocal_names
             for name in _scope_bound_names(events) - declared:
                 env.discard(name)
                 bound.pop(name, None)
+            # A `global NAME` declaration resolves EVERY reference and
+            # rebinding of NAME in this function against the MODULE scope,
+            # never the lexical-enclosing scope -- even when an enclosing
+            # function's own parameter or local binding shadows the same
+            # name for ITS OWN body (see
+            # test_global_declared_name_resolves_against_module_scope_not_shadowed_param).
+            # `env`/`bound` at this point still hold whatever the lexical
+            # parent's copy carried (correct for `nonlocal`, wrong for
+            # `global`), so every global-declared name is first cleared and
+            # then overlaid from a pristine MODULE-scope snapshot -- the
+            # bottom of the scope stack (index 0), which this visitor never
+            # mutates in place (only ever copies further down; see
+            # _flow_env.copy()/dict(self._constructor_aliases) above), so it
+            # always reflects the module's own top-level bindings regardless
+            # of how many function scopes are currently pushed.
+            # `nonlocal`-declared names need no such overlay: nonlocal
+            # resolves against the nearest ENCLOSING FUNCTION scope, and
+            # `env`/`bound` here already start as a copy of that exact
+            # lexical parent's (already fully masked-and-replayed) view, so
+            # inheritance alone reproduces nonlocal's real target by
+            # construction (verified by
+            # test_nonlocal_declared_name_not_masked_discovers_executor and
+            # its masked-outer control, test_nonlocal_declared_name_with_masked_outer_binding_finds_no_site).
+            module_env = self._flow_env_stack[0]
+            module_bound = self._bound_stack[0]
+            for name in global_names:
+                env.discard(name)
+                bound.pop(name, None)
+                if name in module_env.names:
+                    env.names.add(name)
+                if name in module_env.lionagi_roots:
+                    env.lionagi_roots.add(name)
+                if name in module_env.import_module_funcs:
+                    env.import_module_funcs.add(name)
+                if name in module_env.importlib_mods:
+                    env.importlib_mods.add(name)
+                if name in module_bound:
+                    bound[name] = module_bound[name]
             _replay_binding_events(events, bound, env)
         self._flow_env_stack.append(env)
         self._bound_stack.append(bound)
@@ -2314,6 +2448,224 @@ def test_nonlocal_declared_name_not_masked_discovers_executor(tmp_path):
     assert discovery.executor_sites == {key}, (
         "the nonlocal-declared importlib construction must be flagged as an executor site — "
         f"got: {sorted(discovery.executor_sites)}"
+    )
+
+
+def test_nonlocal_declared_name_with_masked_outer_binding_finds_no_site(tmp_path):
+    """Control for test_nonlocal_declared_name_not_masked_discovers_executor,
+    proving `nonlocal`'s resolution-by-lexical-inheritance by construction
+    (Condition 2): `nonlocal` needs no MODULE-scope overlay because the
+    pushed scope for `inner` starts as a COPY of `outer`'s own (already
+    fully masked-and-replayed) view -- so whatever `outer` itself ended up
+    with is exactly what `inner`'s nonlocal-declared name inherits. Here
+    `outer`'s OWN body conditionally rebinds `importlib` to an unrecognized
+    object (never restored by a real reimport), which masks -- not
+    restores -- `outer`'s own copy of the module-level import per
+    ordinary (non-declared) masking rules; `inner`'s `nonlocal importlib`
+    then correctly inherits that masked-away state and finds no site,
+    proving the chain resolves against the ENCLOSING FUNCTION's actual
+    binding, not a fresh module lookup."""
+    import symtable as _symtable
+
+    rogue = tmp_path / "nonlocal_declared_masked_outer.py"
+    source = (
+        "import importlib\n\n\n"
+        "def outer(session, graph):\n"
+        "    if False:\n"
+        "        importlib = object()\n\n"
+        "    def inner():\n"
+        "        nonlocal importlib\n"
+        '        return getattr(importlib.import_module("lionagi.operations.flow"), '
+        '"DependencyAwareExecutor")(session, graph)\n\n'
+        "    return inner()\n"
+    )
+    rogue.write_text(source)
+
+    top = _symtable.symtable(source, str(rogue), "exec")
+    (outer_table,) = (c for c in top.get_children() if c.get_name() == "outer")
+    (inner_table,) = (c for c in outer_table.get_children() if c.get_name() == "inner")
+    assert not inner_table.lookup("importlib").is_local()
+
+    discovery = discover_call_and_construct_sites(tmp_path, base=tmp_path)
+
+    assert discovery.executor_sites == set(), (
+        "a nonlocal-declared name must inherit the enclosing FUNCTION scope's own masked "
+        f"state, not the module's — got: {sorted(discovery.executor_sites)}"
+    )
+    assert ("nonlocal_declared_masked_outer.py", "outer.inner") not in discovery.call_sites
+
+
+def test_global_declared_name_resolves_against_module_scope_not_shadowed_param(tmp_path):
+    """F1 (direction a): `global NAME` resolves every reference and
+    rebinding of NAME against the MODULE scope, never the lexical-enclosing
+    scope -- even when the lexical-enclosing function's OWN parameter
+    shadows the same name for its own body. `outer`'s parameter `importlib`
+    shadows the module import for `outer`'s own body (see
+    test_function_parameter_shadowing_importlib_import_is_not_misreported),
+    but `inner`'s `global importlib` skips straight past that shadow to the
+    real module-level import, so this is a genuine executor construction
+    site -- discarding the shadowed PARAMETER binding (as an earlier,
+    unsound version of this masking pass did, by overlaying from the
+    lexical parent instead of the module) silently missed it."""
+    import symtable as _symtable
+
+    rogue = tmp_path / "global_resolves_against_module_param_shadow.py"
+    source = (
+        "import importlib\n\n\n"
+        "def outer(importlib, session, graph):\n"
+        "    def inner():\n"
+        "        global importlib\n"
+        '        return getattr(importlib.import_module("lionagi.operations.flow"), '
+        '"DependencyAwareExecutor")(session, graph)\n\n'
+        "    return inner()\n"
+    )
+    rogue.write_text(source)
+
+    top = _symtable.symtable(source, str(rogue), "exec")
+    (outer_table,) = (c for c in top.get_children() if c.get_name() == "outer")
+    (inner_table,) = (c for c in outer_table.get_children() if c.get_name() == "inner")
+    assert inner_table.lookup("importlib").is_global()
+    assert not inner_table.lookup("importlib").is_local()
+
+    discovery = discover_call_and_construct_sites(tmp_path, base=tmp_path)
+
+    key = ("global_resolves_against_module_param_shadow.py", "outer.inner")
+    assert key in discovery.call_sites, (
+        "a global declaration must resolve against the module scope even when an enclosing "
+        f"function's own parameter shadows the name — found: {sorted(discovery.call_sites)}"
+    )
+    assert discovery.executor_sites == {key}, (
+        "the module-resolved global-declared importlib construction must be flagged as an "
+        f"executor site — got: {sorted(discovery.executor_sites)}"
+    )
+
+
+def test_global_declared_name_ignores_outer_local_import_when_module_lacks_binding(tmp_path):
+    """F1 (direction b): the mirror-image false positive an earlier, unsound
+    version of this masking pass produced. There is NO module-level `import
+    importlib` at all here; `outer` has its OWN local `import importlib`,
+    and `inner` declares `global importlib`. Since `global` resolves against
+    the MODULE scope -- which never bound `importlib` -- and never against
+    `outer`'s local (regardless of how `outer` itself bound it), `inner`'s
+    reference is to an unbound module global, not `outer`'s import; this
+    must NOT register a site. An overlay that pulled from the lexical
+    parent's copy instead of the module's would wrongly inherit `outer`'s
+    local here and report a phantom site."""
+    import symtable as _symtable
+
+    rogue = tmp_path / "global_ignores_outer_local_no_module_binding.py"
+    source = (
+        "def outer(session, graph):\n"
+        "    import importlib\n\n"
+        "    def inner():\n"
+        "        global importlib\n"
+        '        return getattr(importlib.import_module("lionagi.operations.flow"), '
+        '"DependencyAwareExecutor")(session, graph)\n\n'
+        "    return inner()\n"
+    )
+    rogue.write_text(source)
+
+    top = _symtable.symtable(source, str(rogue), "exec")
+    (outer_table,) = (c for c in top.get_children() if c.get_name() == "outer")
+    (inner_table,) = (c for c in outer_table.get_children() if c.get_name() == "inner")
+    assert inner_table.lookup("importlib").is_global()
+
+    discovery = discover_call_and_construct_sites(tmp_path, base=tmp_path)
+
+    assert discovery.executor_sites == set(), (
+        "a global declaration with no module-level binding must not inherit an outer "
+        f"function's own local import — got: {sorted(discovery.executor_sites)}"
+    )
+    assert (
+        "global_ignores_outer_local_no_module_binding.py",
+        "outer.inner",
+    ) not in discovery.call_sites
+
+
+def test_class_body_global_declaration_does_not_leak_into_enclosing_function(tmp_path):
+    """F2: a `global`/`nonlocal` STATEMENT inside a nested class body only
+    redirects lookups within that CLASS body's own namespace -- it does not
+    declare the surrounding function's same-named binding at all, unlike an
+    ordinary (undeclared) assignment inside the same class body, which DOES
+    count as the surrounding function's own binding event (see
+    ``_collect_scope_binding_events``'s deliberate divergence, documented on
+    ``_scope_declared_names``). Here `outer`'s own body has an unreachable
+    `with ... as importlib` (masked per
+    test_with_as_target_masks_inherited_importlib_provenance) and a nested
+    class body that declares `global importlib`; if that class-body
+    declaration wrongly leaked out and exempted `importlib` from `outer`'s
+    own masking pass, the scanner would report an impossible site -- the
+    with-as rebind inside `if False` never executes, so if `importlib` truly
+    were still masked as a local the getattr call would resolve an unbound
+    local, not the module import. This must NOT register a site."""
+    rogue = tmp_path / "class_body_global_no_leak.py"
+    source = (
+        "import contextlib\n"
+        "import importlib\n\n\n"
+        "def outer(session, graph):\n"
+        "    if False:\n"
+        "        with contextlib.nullcontext() as importlib:\n"
+        "            pass\n\n"
+        "    class C:\n"
+        "        global importlib\n\n"
+        '    return getattr(importlib.import_module("lionagi.operations.flow"), '
+        '"DependencyAwareExecutor")(session, graph)\n'
+    )
+    rogue.write_text(source)
+
+    discovery = discover_call_and_construct_sites(tmp_path, base=tmp_path)
+
+    assert discovery.executor_sites == set(), (
+        "a global declaration inside a nested class body must not un-mask the enclosing "
+        f"function's own local binder — got: {sorted(discovery.executor_sites)}"
+    )
+    assert ("class_body_global_no_leak.py", "outer") not in discovery.call_sites
+
+
+def test_global_declared_executing_binder_is_conservative_overapproximation(tmp_path):
+    """F3: a declared name's own binder forms (here, a `for`-target) are
+    still only ever MASK-only events in ``_replay_binding_events`` -- they
+    never establish or restore provenance there, regardless of whether the
+    surrounding name is declared `global`. `global importlib` means
+    `importlib` is exempt from the masking pass (it is not a lexical local),
+    so it keeps the MODULE-overlaid provenance straight through the `for
+    importlib in [1, 2]: pass` loop even though that loop is UNCONDITIONAL
+    and genuinely executes, rebinding `importlib` to a plain `int` by the
+    time the getattr call runs -- at real runtime this is NOT an executor
+    construction site.
+
+    This is a DELIBERATE, documented false positive, not a bug: this
+    scanner's contract is zero-false-negatives (see the module docstring) --
+    a missed executor-construction site is dangerous, a spurious one only
+    costs a review -- and treating a declared name's own potentially-
+    executing binder as still-provenance-carrying can only ever ADD a
+    reported site, never drop a real one. Eliminating this residual would
+    require reasoning about whether the binder actually executes (dead/live
+    code analysis), which this scanner intentionally does not attempt. A
+    future change that trades this false positive for a missed real site
+    must fail THIS test, not slip through review unnoticed."""
+    rogue = tmp_path / "global_declared_executing_for_binder.py"
+    source = (
+        "import importlib\n\n\n"
+        "def run(session, graph):\n"
+        "    global importlib\n"
+        "    for importlib in [1, 2]:\n"
+        "        pass\n"
+        '    return getattr(importlib.import_module("lionagi.operations.flow"), '
+        '"DependencyAwareExecutor")(session, graph)\n'
+    )
+    rogue.write_text(source)
+
+    discovery = discover_call_and_construct_sites(tmp_path, base=tmp_path)
+
+    key = ("global_declared_executing_for_binder.py", "run")
+    assert key in discovery.call_sites, (
+        "a declared name's own executing binder form must still leave the declared-name "
+        f"provenance in place (conservative over-approximation) — found: {sorted(discovery.call_sites)}"
+    )
+    assert discovery.executor_sites == {key}, (
+        "the conservatively-over-approximated site must be flagged as an executor site — got: "
+        f"{sorted(discovery.executor_sites)}"
     )
 
 
