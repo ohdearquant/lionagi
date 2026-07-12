@@ -140,6 +140,8 @@ class Session(Node, Relational):
             from lionagi.hooks import build_session_bus
 
             self._hooks = build_session_bus(observer=self.observer)
+            for branch in self.branches:
+                branch._hooks = self._hooks
         return self._hooks
 
     @property
