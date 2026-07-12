@@ -79,6 +79,19 @@ _SCHEMA_PATH = Path(__file__).resolve().parents[2] / "lionagi" / "state" / "sche
 _REAPABLE_PLAY_STATUSES = frozenset({"running", "running_complete", "prepared", "redoing"})
 
 
+def _wait_clock_past(ts: float) -> None:
+    """Block until time.time() is strictly greater than ``ts``.
+
+    updated_at is a float-seconds timestamp; on a coarse clock two immediate
+    writes can land the same value, which would let a "stale" version
+    snapshot accidentally still match. Version-guard tests call this between
+    taking the snapshot and the concurrent write so staleness is guaranteed,
+    not clock-dependent.
+    """
+    while time.time() <= ts:
+        time.sleep(0.001)
+
+
 # ── Fixtures / helpers ───────────────────────────────────────────────────────
 
 
@@ -442,6 +455,7 @@ async def test_cas_miss_on_expected_updated_at_returns_false_silently(db: StateD
     sid = await _make_session(db, status="running")
     stale_snapshot = await db.get_session(sid)
     stale_version = stale_snapshot["updated_at"]
+    _wait_clock_past(stale_version)
 
     # A concurrent write bumps updated_at (and status) first.
     await db.update_status(
@@ -560,6 +574,7 @@ async def test_reaper_pattern_row_claimed_between_read_and_write_is_not_clobbere
     pass every status-only test and still over-reap this exact case."""
     play_id = await _make_play(db, status="running")
     snapshot = await db.get_play(play_id)
+    _wait_clock_past(snapshot["updated_at"])
 
     # Simulate a legitimate concurrent claim: another writer refreshes the
     # row (status untouched, still "running") between the reaper's read and
