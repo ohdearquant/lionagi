@@ -865,6 +865,117 @@ class TestValidateMcpToolAdmission:
             "executor-identity-with-insufficient-schema",
             id="unknown-subschema-keyword-on-property-is-unresolvable",
         ),
+        # --- $dynamicRef / $recursiveRef are schema-bearing REFERENCE
+        # keywords whose value is a plain string, not a Mapping -- they must
+        # be recognized by keyword identity (not the generic value-type
+        # test) and treated as unresolvable, so a command channel reachable
+        # only behind one is not silently admitted. ---
+        pytest.param(
+            "exec",
+            {
+                "$schema": "https://json-schema.org/draft/2020-12/schema",
+                "type": "object",
+                "properties": {"options": {"$dynamicRef": "#command_object"}},
+                "$defs": {
+                    "command_object": {
+                        "$dynamicAnchor": "command_object",
+                        "type": "object",
+                        "properties": {"command": {"type": "string"}},
+                        "required": ["command"],
+                    }
+                },
+            },
+            None,
+            "executor-identity-with-insufficient-schema",
+            id="dynamic-ref-string-valued-reference-is-unresolvable",
+        ),
+        pytest.param(
+            "maintenance",
+            {
+                "type": "object",
+                "properties": {"options": {"$recursiveRef": "#"}},
+            },
+            "runs shell commands",
+            "executor-description-with-broad-input",
+            id="recursive-ref-string-valued-reference-is-unresolvable",
+        ),
+        # --- Array-leaf free-form detection must be a recursive,
+        # key-preserving predicate over `items`/`prefixItems`: `true`, `{}`
+        # (an empty/unconstrained item schema), item-level `anyOf` reaching
+        # a string, and a `prefixItems` member of `true` are all just as
+        # free-form as `items: {"type": "string"}`. ---
+        pytest.param(
+            "exec",
+            {
+                "type": "object",
+                "properties": {
+                    "operation": {"const": "status"},
+                    "args": {"type": "array", "items": True},
+                },
+            },
+            None,
+            "executor-identity-with-insufficient-schema",
+            id="array-items-boolean-true-is-free-form-argv-channel",
+        ),
+        pytest.param(
+            "exec",
+            {
+                "type": "object",
+                "properties": {
+                    "operation": {"const": "status"},
+                    "args": {"type": "array", "items": {}},
+                },
+            },
+            None,
+            "executor-identity-with-insufficient-schema",
+            id="array-items-empty-schema-is-free-form-argv-channel",
+        ),
+        pytest.param(
+            "exec",
+            {
+                "type": "object",
+                "properties": {
+                    "operation": {"const": "status"},
+                    "args": {
+                        "type": "array",
+                        "items": {"anyOf": [{"type": "string"}]},
+                    },
+                },
+            },
+            None,
+            "executor-identity-with-insufficient-schema",
+            id="array-items-anyof-reaches-string-is-free-form-argv-channel",
+        ),
+        pytest.param(
+            "exec",
+            {
+                "type": "object",
+                "properties": {
+                    "operation": {"const": "status"},
+                    "argv": {"type": "array", "prefixItems": [True]},
+                },
+            },
+            None,
+            "executor-identity-with-insufficient-schema",
+            id="prefixitems-boolean-true-member-is-free-form-argv-channel",
+        ),
+        pytest.param(
+            "exec",
+            {
+                "type": "object",
+                "properties": {
+                    "operation": {"const": "status"},
+                    "args": {
+                        "type": "array",
+                        "items": {"$ref": "#/$defs/StringArg"},
+                    },
+                },
+                "$defs": {"StringArg": {"type": "string"}},
+            },
+            None,
+            "executor-identity-with-insufficient-schema",
+            id="array-items-local-ref-reaches-string-is-free-form-argv-channel",
+        ),
     ]
 
     ADMIT_CASES = [
@@ -1074,6 +1185,55 @@ class TestValidateMcpToolAdmission:
             },
             None,
             id="array-of-strings-leaf-remains-benign-when-not-corroborated",
+        ),
+        # --- False-positive fix: a bounded, closed schema expressed via a
+        # top-level local `$ref` is not "schema-less" -- the sufficiency
+        # gate must resolve it (as the walker itself already does) instead
+        # of demanding the caller-provided root carry `properties` directly.
+        pytest.param(
+            "exec",
+            {
+                "$ref": "#/$defs/BoundedOperation",
+                "$defs": {
+                    "BoundedOperation": {
+                        "type": "object",
+                        "properties": {"operation": {"const": "status"}},
+                        "required": ["operation"],
+                        "additionalProperties": False,
+                    }
+                },
+            },
+            None,
+            id="strong-name-root-ref-to-bounded-closed-schema",
+        ),
+        # --- False-positive fix: a vendor-extension/annotation keyword
+        # (`x-ui`) on an otherwise bounded schema is metadata, not an
+        # applicator, and must not trip the unknown-subschema-bearing check.
+        pytest.param(
+            "exec",
+            {
+                "type": "object",
+                "properties": {"operation": {"type": "string", "enum": ["status", "restart"]}},
+                "x-ui": {"widget": "select", "order": 1},
+            },
+            None,
+            id="strong-name-bounded-schema-with-vendor-extension-annotation",
+        ),
+        pytest.param(
+            "spawn_process",
+            {
+                "$ref": "#/$defs/BoundedOperation",
+                "$defs": {
+                    "BoundedOperation": {
+                        "type": "object",
+                        "properties": {"operation": {"const": "status"}},
+                        "required": ["operation"],
+                        "additionalProperties": False,
+                    }
+                },
+            },
+            None,
+            id="strong-name-spawn-process-root-ref-to-bounded-closed-schema",
         ),
     ]
 

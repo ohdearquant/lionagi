@@ -260,6 +260,56 @@ def _is_exec_tainted_key(norm_key: str) -> bool:
     return any(token in _EXEC_TAINTED_KEY_TOKENS for token in norm_key.split("_"))
 
 
+def _resolve_effective_schema_for_sufficiency(
+    schema: Mapping,
+    root_schema: Mapping,
+    seen_refs: frozenset[str],
+    depth: int,
+) -> Mapping | None:
+    """Resolve `schema` to the node whose own `properties`/
+    `additionalProperties` should be inspected for the strong-name
+    sufficiency gate.
+
+    A schema expressed purely via a top-level local `$ref` (or via
+    `oneOf`/`anyOf`/`allOf` composition with no properties of its own) is
+    not automatically "schema-less": the walker can resolve it exactly as
+    `_walk_schema` does, so the sufficiency gate should judge the RESOLVED
+    schema rather than demanding the caller-provided root carry `properties`
+    directly. Returns None (fail closed / insufficient) for an external,
+    cyclic, or otherwise unresolvable reference -- never widens what the
+    walker itself would already treat as unresolvable. Returns `schema`
+    unchanged when there is no `$ref`/composition to resolve, or when
+    composition branches exist but none of them resolve to a schema with its
+    own `properties` (the original conservative default: fall through to the
+    caller's own empty-properties/`additionalProperties` check)."""
+    if depth > _MAX_SCHEMA_WALK_DEPTH:
+        return None
+    ref = schema.get(_REF_KEYWORD)
+    if ref is not None:
+        if not isinstance(ref, str) or not ref.startswith("#/") or ref in seen_refs:
+            return None
+        resolved = _resolve_local_ref(ref, root_schema)
+        if resolved is None:
+            return None
+        return _resolve_effective_schema_for_sufficiency(
+            resolved, root_schema, seen_refs | {ref}, depth + 1
+        )
+    if "properties" in schema:
+        return schema
+    for comp_key in ("oneOf", "anyOf", "allOf"):
+        branches = schema.get(comp_key)
+        if isinstance(branches, list):
+            for branch in branches:
+                if not isinstance(branch, Mapping):
+                    continue
+                resolved_branch = _resolve_effective_schema_for_sufficiency(
+                    branch, root_schema, seen_refs, depth + 1
+                )
+                if resolved_branch is not None and "properties" in resolved_branch:
+                    return resolved_branch
+    return schema
+
+
 def _schema_is_insufficient(input_schema: object) -> bool:
     if input_schema is None or not isinstance(input_schema, Mapping):
         return True
@@ -271,16 +321,24 @@ def _schema_is_insufficient(input_schema: object) -> bool:
     # insufficient.
     if top_type is not None and not _schema_type_includes(top_type, "object"):
         return True
-    if "properties" in input_schema and not isinstance(input_schema["properties"], Mapping):
-        return True
+
+    resolved = input_schema
     if "properties" not in input_schema and any(
         k in input_schema for k in ("$ref", "oneOf", "anyOf", "allOf")
     ):
+        candidate = _resolve_effective_schema_for_sufficiency(
+            input_schema, input_schema, frozenset(), 0
+        )
+        if candidate is None:
+            return True
+        resolved = candidate
+
+    if "properties" in resolved and not isinstance(resolved["properties"], Mapping):
         return True
-    properties = input_schema.get("properties")
+    properties = resolved.get("properties")
     props = properties if isinstance(properties, Mapping) else {}
     if not props:
-        return input_schema.get("additionalProperties") is not False
+        return resolved.get("additionalProperties") is not False
     return False
 
 
@@ -303,7 +361,88 @@ def _schema_type_includes(type_value: object, target: str) -> bool:
     return type_value == target
 
 
-def _property_is_free_form(prop_schema: object, is_categorized_key: bool) -> bool:
+def _item_schema_reaches_free_form_string(
+    item_schema: object,
+    root_schema: Mapping,
+    depth: int,
+    seen_refs: frozenset[str],
+    result: _SchemaWalkResult,
+) -> bool:
+    """True when an array's `items`/`prefixItems` member schema may itself
+    admit an arbitrary string value -- i.e. the array is a free-form,
+    argv-shaped channel at that position.
+
+    Item schemas are always treated conservatively: unlike a keyed object
+    property (which gets the identifier-suffix exemption), an array element
+    has no name of its own, so an opaque/unsupported/unconstrained item
+    shape -- `true`, `{}` (no constraints), an untyped schema, an external
+    or cyclic `$ref`, a malformed items entry -- is presumed free-form
+    rather than benign. Local `$ref` and `allOf`/`anyOf`/`oneOf`/
+    `if`/`then`/`else`/`not` composition are resolved/recursed so an item
+    schema that only reaches a string through one layer of indirection
+    (`{"anyOf": [{"type": "string"}]}`, a `$ref` to a string schema, ...) is
+    still caught.
+    """
+    if item_schema is True:
+        return True
+    if item_schema is False:
+        return False
+    if not isinstance(item_schema, Mapping):
+        # Malformed item schema (not a boolean, not a mapping): cannot be
+        # proven bounded -- fail closed.
+        return True
+    if depth > _MAX_SCHEMA_WALK_DEPTH:
+        result.unresolvable = True
+        return True
+    if not _consume_node_budget(result):
+        return True
+    if _property_is_bounded(item_schema):
+        return False
+    item_type = item_schema.get("type")
+    if item_type is not None:
+        return _schema_type_includes(item_type, "string")
+
+    ref = item_schema.get(_REF_KEYWORD)
+    branches: list[object] = []
+    if isinstance(ref, str):
+        if ref.startswith("#/") and ref not in seen_refs:
+            resolved = _resolve_local_ref(ref, root_schema)
+            if resolved is None:
+                return True
+            seen_refs = seen_refs | {ref}
+            branches.append(resolved)
+        else:
+            # External or cyclic $ref: cannot be proven bounded.
+            return True
+
+    for comp_key in ("allOf", "anyOf", "oneOf"):
+        comp = item_schema.get(comp_key)
+        if isinstance(comp, list):
+            branches.extend(comp)
+    for single_key in _SINGLE_SUBSCHEMA_KEYWORDS:
+        branch = item_schema.get(single_key)
+        if branch is not None:
+            branches.append(branch)
+
+    if branches:
+        return any(
+            _item_schema_reaches_free_form_string(branch, root_schema, depth + 1, seen_refs, result)
+            for branch in branches
+        )
+
+    # No type, no $ref, no composition: a genuinely empty/opaque schema
+    # (`{}`) constrains nothing -- conservatively free-form.
+    return True
+
+
+def _property_is_free_form(
+    prop_schema: object,
+    is_categorized_key: bool,
+    root_schema: Mapping,
+    depth: int,
+    seen_refs: frozenset[str],
+    result: _SchemaWalkResult,
+) -> bool:
     # JSON Schema boolean `true` matches any value, so it is at least as
     # permissive as an untyped free-form string; `false` matches nothing.
     if prop_schema is True:
@@ -317,16 +456,22 @@ def _property_is_free_form(prop_schema: object, is_categorized_key: bool) -> boo
         return True
     if _schema_type_includes(prop_type, "array"):
         items = prop_schema.get("items")
-        if isinstance(items, Mapping) and _schema_type_includes(items.get("type"), "string"):
+        if items is not None and _item_schema_reaches_free_form_string(
+            items, root_schema, depth + 1, seen_refs, result
+        ):
             return True
         # Positional/tuple validation is an argv-shaped channel too: an
         # array whose prefixItems admit strings carries caller-controlled
         # string elements exactly like items-of-strings.
         prefix_items = prop_schema.get("prefixItems")
-        return isinstance(prefix_items, list) and any(
-            isinstance(item, Mapping) and _schema_type_includes(item.get("type"), "string")
-            for item in prefix_items
-        )
+        if isinstance(prefix_items, list):
+            return any(
+                _item_schema_reaches_free_form_string(
+                    item, root_schema, depth + 1, seen_refs, result
+                )
+                for item in prefix_items
+            )
+        return False
     if prop_type is None and is_categorized_key:
         return True
     return False
@@ -381,6 +526,17 @@ _PATTERN_PROPERTIES_KEYWORD = "patternProperties"
 _ADDITIONAL_PROPERTIES_KEYWORD = "additionalProperties"
 _REF_KEYWORD = "$ref"
 
+# Reference-bearing keywords the walker does NOT resolve: Draft 2020-12
+# `$dynamicRef` and Draft-2019-09 `$recursiveRef` are schema-bearing exactly
+# like `$ref`, but their VALUE is a plain string (a URI fragment / dynamic
+# anchor lookup), not a Mapping -- so `_could_carry_subschema`'s value-type
+# test (Mapping, or list-of-Mapping) never flags them, and a command channel
+# reachable only behind one of these keywords would otherwise be silently
+# admitted. Recognized by KEYWORD IDENTITY, always treated as unresolvable
+# (conservative: dynamic-scope `$dynamicAnchor` resolution is not something
+# this walker can safely reproduce).
+_UNRESOLVABLE_REFERENCE_KEYWORDS = frozenset({"$dynamicRef", "$recursiveRef"})
+
 _KNOWN_SCHEMA_KEYWORDS = (
     _SCALAR_ONLY_SCHEMA_KEYWORDS
     | _SINGLE_SUBSCHEMA_KEYWORDS
@@ -414,6 +570,20 @@ def _could_carry_subschema(value: object) -> bool:
     return False
 
 
+def _is_vendor_annotation_keyword(key: str) -> bool:
+    """True for a keyword that is metadata/annotation-only, never an
+    applicator or reference -- exempt from the unknown-subschema-bearing
+    check even though its value may be a Mapping. Deliberately narrow: only
+    the `x-` vendor-extension convention (the OpenAPI/JSON-Schema community
+    convention for non-standard annotations, e.g. `x-ui`, `x-order`) and
+    JSON Schema's own `$comment` (annotation-only by spec). NEVER exempt
+    `$`-prefixed keywords in general -- that prefix is exactly where real
+    reference/applicator keywords live (`$ref`, `$dynamicRef`,
+    `$recursiveRef`, ...), so a blanket `$*` exemption would reopen the
+    reference-bypass class this walker closes."""
+    return key.startswith("x-") or key == "$comment"
+
+
 def _mark_unknown_schema_keywords(schema: Mapping, result: _SchemaWalkResult) -> None:
     """Whitelist enforcement: any keyword this walker does not explicitly
     understand, whose value is shaped like it could itself carry a subschema,
@@ -422,9 +592,21 @@ def _mark_unknown_schema_keywords(schema: Mapping, result: _SchemaWalkResult) ->
     `propertyNames`, ...) deny-by-default for executor-signaling tools
     instead of admit-by-default -- applied to every schema node the
     classifier inspects, including property schemas that are otherwise
-    treated as leaves."""
+    treated as leaves.
+
+    Two carve-outs on top of the base whitelist test: (1) a `$dynamicRef`/
+    `$recursiveRef` anywhere on this node makes it unresolvable outright,
+    regardless of the (string-shaped) value's container type -- see
+    `_UNRESOLVABLE_REFERENCE_KEYWORDS`; (2) a vendor-extension/annotation
+    keyword (`_is_vendor_annotation_keyword`) is exempt even when
+    Mapping-valued, since it is never an applicator."""
+    if any(key in schema for key in _UNRESOLVABLE_REFERENCE_KEYWORDS):
+        result.unresolvable = True
+        return
     for key, value in schema.items():
         if key in _KNOWN_SCHEMA_KEYWORDS or _is_known_scalar_only_keyword(key):
+            continue
+        if _is_vendor_annotation_keyword(key):
             continue
         if _could_carry_subschema(value):
             result.unresolvable = True
@@ -588,7 +770,9 @@ def _composition_branch_reaches_free_form(
     for branch in branches:
         if not _consume_node_budget(result):
             return False
-        if _property_is_free_form(branch, is_categorized_key):
+        if _property_is_free_form(
+            branch, is_categorized_key, root_schema, depth, seen_refs, result
+        ):
             return True
         if _composition_branch_reaches_free_form(
             branch, root_schema, is_categorized_key, depth + 1, seen_refs, result
@@ -657,7 +841,9 @@ def _consider_property(
                 result,
             )
 
-    if not _property_is_free_form(prop_schema, norm_key in _CATEGORIZED_KEYS):
+    if not _property_is_free_form(
+        prop_schema, norm_key in _CATEGORIZED_KEYS, root_schema, depth, seen_refs, result
+    ):
         return
 
     _record_free_form_key(norm_key, result)
@@ -853,7 +1039,9 @@ def _walk_schema(
                 is_executor_description,
                 result,
             )
-        if _property_is_free_form(additional_properties, True):
+        if _property_is_free_form(
+            additional_properties, True, root_schema, depth, seen_refs, result
+        ):
             # No fixed key name is available for a free-form map channel; it
             # only counts as executor-shaped evidence when corroborated by
             # the tool's own name or description (the same corroboration
