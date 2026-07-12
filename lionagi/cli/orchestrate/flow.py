@@ -458,11 +458,12 @@ async def _build_dag(
         worker_models.append(w_model)
         role_base.setdefault(ta.assignee, w_branch)
 
-        # ADR-0064: fold this leg's OWN declared artifact contract (profile
-        # first, else the casts role's artifact_defaults — e.g. reviewer/
-        # critic) into the flow-wide contract, namespaced under this leg's
-        # own artifact subdirectory. A role that declares nothing leaves the
-        # contract untouched — this only fires for a real declaration.
+        # Fold this leg's OWN declared artifact contract (profile first, else
+        # the casts role's artifact_defaults — e.g. reviewer/critic) into the
+        # flow-wide contract, namespaced under this leg's own artifact
+        # subdirectory (ADR-0064 D3: per-leg role-default artifact
+        # expectations). A role that declares nothing leaves the contract
+        # untouched — this only fires for a real declaration.
         if ta.assignee in role_artifact_defaults:
             role_defaults = role_artifact_defaults[ta.assignee]
         else:
@@ -1000,12 +1001,12 @@ async def _execute_dag(
     n_spawned = dag_result.get("spawned_operations", 0)
 
     # Escalation backstop: a leg the executor tracked as escalated (gave up
-    # instead of producing a result — see NodeEscalated / EscalationRequest,
-    # ADR-0072/0083) reads as a normal completed op_result to the loop below.
-    # Without this, a reviewer/critic that emits EscalationRequest(route=
-    # "give_up") instead of writing its artifact is indistinguishable from a
-    # clean completion once execution finishes — this makes it loud at
-    # teardown even when no artifact_defaults declaration exists to catch it.
+    # instead of producing a result — see NodeEscalated / EscalationRequest)
+    # reads as a normal completed op_result to the loop below. Without this,
+    # a reviewer/critic that emits EscalationRequest(route="give_up") instead
+    # of writing its artifact is indistinguishable from a clean completion
+    # once execution finishes — this makes it loud at teardown even when no
+    # artifact_defaults declaration exists to catch it.
     #
     # The escalation tracker itself is plan-agnostic: it records any emitting
     # node's id whether that node was planned up front or spawned mid-run via

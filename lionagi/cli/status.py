@@ -129,7 +129,7 @@ async def _resolve_session_by_branch_id(db: Any, entity_id: str) -> dict[str, An
 async def _resolve_agent_target(
     db: Any, entity_id: str | None, project: str | None
 ) -> tuple[str, dict[str, Any]] | None:
-    """`li agent status` resolution: session (any kind), ADR-0077 invocation, or
+    """`li agent status` resolution: session (any kind), invocation, or
     a branch_id (resolved to its owning session), by id; default-latest is
     scoped to agent-kind sessions for *project*.
 
@@ -154,7 +154,7 @@ async def _resolve_agent_target(
 async def _resolve_play_target(
     db: Any, entity_id: str | None, project: str | None
 ) -> tuple[str, dict[str, Any]] | None:
-    """`li play status` resolution: session, then ADR-0077 invocation, then a show
+    """`li play status` resolution: session, then invocation, then a show
     sub-play row, by id; default-latest is scoped to play/flow-kind sessions.
     """
     if entity_id:

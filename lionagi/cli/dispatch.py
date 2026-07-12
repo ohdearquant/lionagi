@@ -142,7 +142,7 @@ def add_dispatch_subparser(subparsers: argparse._SubParsersAction) -> None:
         "dispatch",
         help="Inspect and acknowledge durable dispatch_outbox rows.",
         description=(
-            "Read and acknowledge rows in the durable dispatch outbox (ADR-0092). "
+            "Read and acknowledge rows in the durable dispatch outbox (ADR-0059 D6). "
             "Dispatches are enqueued by schedule actions and delivered by the "
             "Studio daemon's scheduler tick; there is no `enqueue` verb here."
         ),
