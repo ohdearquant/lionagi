@@ -756,14 +756,14 @@ CREATE INDEX IF NOT EXISTS idx_workflow_defs_name
 CREATE INDEX IF NOT EXISTS idx_workflow_defs_updated
   ON workflow_defs(updated_at);
 
--- ── Session controls (ADR-0069: run control plane transport) ───────────
+-- ── Session controls (ADR-0069 D1–D3: live-control transport) ───────────
 -- One row per operator control verb queued against a live session.  A poller
--- task in cli/orchestrate/flow.py's _execute_dag (same lifecycle as the
--- heartbeat loop) reads unapplied rows (applied_at IS NULL) and applies them
+-- task in cli/orchestrate/flow.py's _execute_dag reads unapplied rows
+-- (applied_at IS NULL) and applies them
 -- against the running executor.  Apply/stamp ordering is verb-classed:
 -- pause/resume/stop are idempotent (apply, then stamp), message is not
 -- (stamp 'applying', then apply, then finalize).  'stop' is schema-reserved
--- for a later slice (the checkpoint writer); no CLI verb emits it yet.
+-- for later support; no CLI verb emits it yet.
 
 CREATE TABLE IF NOT EXISTS session_controls (
   id          TEXT    PRIMARY KEY,         -- uuid4 hex

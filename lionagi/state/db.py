@@ -4057,10 +4057,10 @@ class StateDB:
             )
         return result.rowcount > 0
 
-    # ── Session controls (ADR-0069 part 1: run control plane transport) ────
+    # ── Session controls (ADR-0069 D1–D3: live-control transport) ──────────
     # session_controls rows are written by `li o ctl pause|resume|msg` and
     # consumed by the control poller task in cli/orchestrate/flow.py's
-    # _execute_dag (same lifecycle as the heartbeat loop). Apply/stamp
+    # _execute_dag. Apply/stamp
     # ordering is verb-classed by the poller, not by these methods: pause/
     # resume call insert_session_control() then, once applied against the
     # executor, finalize_session_control() directly (idempotent — safe to

@@ -8,9 +8,9 @@ They do not wait for the control to apply — the poller in
 cli/orchestrate/flow.py `_execute_dag` is the only consumer; use
 `li o ctl status <id>` to check whether it landed.
 
-Only context-mode `msg` ships in this slice: the poller deep-merges the
-message into the flow workspace, visible to ops not yet started. Op-mode
-(`--as-op`) lands with a later slice. See ADR-0069 sections 1-3.
+Only context-mode `msg` is currently supported: the poller appends the message
+to shared flow context for operations not yet rendered. Operation-mode messages
+are unsupported. See ADR-0069 D1 and D3.
 """
 
 from __future__ import annotations
@@ -153,5 +153,5 @@ def run_ctl_resume(args: argparse.Namespace) -> int:
 
 
 def run_ctl_msg(args: argparse.Namespace) -> int:
-    """`li o ctl msg <id> "text"` — queue a context-mode operator message (ADR-0069 §3)."""
+    """`li o ctl msg <id> "text"` — queue a context-mode operator message (ADR-0069 D3)."""
     return _dispatch_control(entity_id=args.id, verb="message", payload={"text": args.text})

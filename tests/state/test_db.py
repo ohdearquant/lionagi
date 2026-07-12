@@ -166,9 +166,8 @@ async def test_apply_schema_adds_missing_columns_on_old_db(tmp_path):
 
     path = tmp_path / "old.db"
 
-    # Simulate a real pre-PR-980 DB: ADR-0056 core columns are present
-    # (since they shipped first), but the provenance/lifecycle columns
-    # added later are missing.
+    # Simulate an older DB: core columns are present, but the
+    # provenance/lifecycle columns added later are missing.
     bootstrap = create_async_engine(f"sqlite+aiosqlite:///{path}")
     async with bootstrap.begin() as conn:
         await conn.execute(

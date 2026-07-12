@@ -4,8 +4,7 @@
 
 Pure reads over sessions/invocations/plays/session_signals. Resolves an id (or
 the latest matching run) regardless of terminal state, unlike `li monitor`
-which only lists running/active rows. See
-docs/_archive/v0/ADR-0069-flow-control-plane.md section 6.
+which only lists running/active rows.
 
 `--json` emits a flat object with this stable key set (parsed by other
 lambdas/tools):
@@ -23,8 +22,8 @@ usage-error code).
 
 `pending_controls`: unapplied session_controls rows (id, verb, created_at)
 for the resolved session, oldest first — queued via `li o ctl
-pause|resume|msg`, consumed by the control poller alongside a live flow's
-heartbeat (ADR-0069 part 1). `[]` when no backing session or nothing queued.
+pause|resume|msg`, then consumed by the control poller while a flow runs.
+`[]` when no backing session or nothing queued.
 """
 
 from __future__ import annotations
@@ -47,8 +46,8 @@ __all__ = (
 
 # ── Status vocabularies (mirror the CHECK constraints / VALID_* sets in state/db.py) ──
 # sessions/invocations share one vocabulary (VALID_SESSION_STATUSES); plays have
-# their own (_PLAY_STATUSES). "cancelled" has no literal mention in the ADR-0069
-# exit-code list but is a real terminal non-success status — it lands in FAILURE
+# their own (_PLAY_STATUSES). "cancelled" is a real terminal non-success status
+# and lands in FAILURE
 # by elimination (neither success nor still-running).
 
 _SESSION_SUCCESS = frozenset({"completed"})
@@ -653,5 +652,5 @@ def run_play_status(argv: list[str]) -> int:
 
 
 def run_ctl_status(args: argparse.Namespace) -> int:
-    """`li o ctl status <id> [--json]` — generic alias, no kind scoping (ADR-0069)."""
+    """`li o ctl status <id> [--json]` — generic alias, with no kind scoping."""
     return _dispatch("ctl", args.id, args.as_json)

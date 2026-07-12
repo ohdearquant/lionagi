@@ -325,7 +325,7 @@ def main(argv: list[str] | None = None) -> int:
     # wait-for-terminal primitive, not a detail-view lookup — must be
     # intercepted before argparse's positional `id` slot would otherwise
     # swallow the literal token "run" as an entity-id (same reasoning as the
-    # `agent status` interception above, ADR-0069 slice 3).
+    # `agent status` interception above).
     if _argv and _argv[0] in ("monitor", "mon") and len(_argv) > 1 and _argv[1] == "run":
         from .monitor import run_monitor_wait
 

@@ -466,8 +466,7 @@ async def get_session(
 
     async with _open_db(_DB) as db:
         cur = await db.execute(
-            # ADR-0057: include lifecycle columns in session detail
-            # Include provenance columns (model/provider/effort/agent_hash)
+            # Include lifecycle and provenance columns (model/provider/effort/agent_hash).
             """SELECT id, name, created_at, updated_at,
                       playbook_name, agent_name, invocation_kind,
                       show_topic, show_play_name, artifacts_path,

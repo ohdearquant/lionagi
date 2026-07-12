@@ -890,11 +890,11 @@ workflow_defs = Table(
 Index("idx_workflow_defs_name", workflow_defs.c.name)
 Index("idx_workflow_defs_updated", workflow_defs.c.updated_at)
 
-# ── session_controls (ADR-0069 part 1: run control plane transport) ────────────
+# ── session_controls (ADR-0069 D1–D3: live-control transport) ─────────────────
 # One row per operator control verb queued against a live session. A poller task
-# in `cli/orchestrate/flow.py`'s `_execute_dag` (the same lifecycle as the
-# heartbeat loop) reads unapplied rows and applies them against the running
-# executor. Apply/stamp ordering is verb-classed: pause/resume/stop are
+# in `cli/orchestrate/flow.py`'s `_execute_dag` reads unapplied rows and applies
+# them against the running executor. Apply/stamp ordering is verb-classed:
+# pause/resume/stop are
 # idempotent (apply, then stamp — safe to re-apply on a poller crash); message
 # is not (stamp 'applying', then apply, then finalize — a crash surfaces as an
 # unapplied 'applying' row rather than risking a double injection). 'stop' is

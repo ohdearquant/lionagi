@@ -62,7 +62,7 @@ class PruneOldDataBody(BaseModel):
 
 
 class TransitionBody(BaseModel):
-    """ADR-0057/ADR-0057 admin session transition; reason_code preferred over deprecated reason field."""
+    """Admin session transition; reason_code is preferred over deprecated reason."""
 
     session_ids: list[str] = Field(..., min_length=1)
     target_status: Literal["failed", "aborted", "cancelled"]
@@ -686,7 +686,7 @@ async def health_route() -> dict[str, Any]:
 
 @studio_route("/admin/transition", method="POST", area="admin", name="transition")
 async def transition_route(body: TransitionBody) -> dict[str, Any]:
-    """ADR-0057/ADR-0057: mark running sessions terminal with a reason code."""
+    """Mark running sessions terminal with a reason code."""
     reason_code = body.reason_code
     reason_summary = body.reason_summary
 

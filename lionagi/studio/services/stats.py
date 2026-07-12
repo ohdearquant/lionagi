@@ -20,11 +20,10 @@ from ._path_safety import public_path
 
 _DB = str(DEFAULT_DB_PATH)
 
-# ADR-0057 session status vocabulary folded down to the 4 activity buckets
-# the Pulse sparkline renders. timed_out joins failed (both are terminal
-# non-success outcomes); aborted joins cancelled (both are deliberate stops,
-# user or system initiated) per the ADR-0057 tone grouping used elsewhere in
-# Studio (StatusPill.tsx TONE_BY_TAXONOMY.session).
+# ADR-0057 D1 defines the seven-value session status vocabulary.
+# The Pulse sparkline folds that vocabulary into four activity buckets:
+# timed_out joins failed (both are terminal non-success outcomes), and aborted
+# joins cancelled (both are deliberate user- or system-initiated stops).
 _ACTIVITY_WINDOWS: dict[str, tuple[int, int]] = {
     # window key -> (bucket_seconds, bucket_count)
     "24h": (3600, 24),
@@ -234,7 +233,7 @@ async def get_stats() -> dict[str, Any]:
 
 @studio_route("/stats", method="GET", area="stats", tags=[], name="get_stats")
 async def get_stats_route() -> dict[str, Any]:
-    # ADR-0077 D1: "runs" count must come from SQLite sessions so the dashboard
-    # matches the Runs list page; runs_svc.list_runs() reads filesystem dirs and
-    # returns a different count than the sessions-backed list endpoint.
+    # The runs count comes from SQLite sessions so the dashboard matches the
+    # Runs list page; runs_svc.list_runs() reads filesystem dirs and returns a
+    # different count than the sessions-backed list endpoint.
     return await get_stats()

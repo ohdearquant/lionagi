@@ -185,7 +185,7 @@ async def persist_message(
     progression_id: str | None = None,
     **_unused: Any,
 ) -> None:
-    """ADR-0056 message persistence; ``progression_id`` is a legacy alias."""
+    """Persist a message; ``progression_id`` is a legacy alias."""
     effective_branch_prog = branch_progression_id or progression_id
 
     db = await _db()

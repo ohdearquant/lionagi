@@ -108,12 +108,10 @@ def _artifact_directive(run, node_id: str, leg_expected: list[dict]) -> str:
     return note
 
 
-# ── Control poller (ADR-0069 part 1: session_controls transport) ─────────────
+# ── Control poller (ADR-0069 D1–D3: session-control transport) ──────────────
 # `li o ctl pause|resume|msg` enqueues a session_controls row from a separate
-# process; this poller — running alongside the heartbeat loop in _execute_dag,
-# same lifecycle — is the only consumer, and applies each row against the live
-# executor. See docs/_archive/v0/ADR-0069-flow-control-plane.md section 1 for the
-# verb-classed apply/stamp ordering this implements.
+# process; this poller is the only consumer and applies each row against the
+# live executor with verb-specific apply/stamp ordering.
 
 _CONTROL_POLL_INTERVAL = 2.0
 
@@ -862,7 +860,7 @@ async def _execute_dag(
                         "with no completion — possible hung child process"
                     )
 
-    # ADR-0069 part 1: control poller — the only consumer of session_controls
+    # ADR-0069 D1: control poller — the only consumer of session_controls
     # rows queued by `li o ctl pause|resume|msg`. _executor_ref (declared
     # above, shared with the checkpoint writer's completion hook) is
     # populated synchronously by DependencyAwareExecutor.__init__ the moment
