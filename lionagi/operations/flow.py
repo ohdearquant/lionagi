@@ -148,6 +148,11 @@ class DependencyAwareExecutor:
         self.results = {}
         self.completion_events = {}
         self.operation_branches = {}
+        # Flow call sites only need to iterate predecessors. Keep their plain
+        # lists private so Graph.get_predecessors() retains its public Pile
+        # contract. Each entry is keyed by the incoming adjacency topology,
+        # which makes an entry refresh if a reactive expansion rewires a node.
+        self._predecessor_cache: dict[Any, tuple[tuple[tuple[Any, Any], ...], list[Any]]] = {}
         self.skipped_operations = set()
         self._op_start_times = {}
         self._pause_event: ConcurrencyEvent | None = None
@@ -176,6 +181,7 @@ class DependencyAwareExecutor:
         if not self.graph.is_acyclic():
             raise OperationError("Graph must be acyclic for flow execution")
 
+        self._predecessor_cache.clear()
         self._validate_edge_conditions()
         await self._preallocate_all_branches()
 
@@ -224,7 +230,7 @@ class DependencyAwareExecutor:
                     )
                 continue
 
-            predecessors = self.graph.get_predecessors(node)
+            predecessors = self._get_predecessors(node)
             if predecessors or node.metadata.get("inherit_context"):
                 operations_needing_branches.append(node)
 
@@ -260,6 +266,25 @@ class DependencyAwareExecutor:
 
         if self.verbose:
             logger.debug("Pre-allocated %d branches", len(operations_needing_branches))
+
+    def _get_predecessors(self, operation: Operation) -> list[Any]:
+        """Return a cached plain predecessor list for executor-internal use.
+
+        Graph maintains incoming adjacency in insertion order. The tuple key
+        preserves that order and refreshes the cached list if a running
+        reactive flow adds or replaces an incoming edge.
+        """
+        incoming = self.graph.node_edge_mapping[operation.id]["in"]
+        topology = tuple(incoming.items())
+        cached = self._predecessor_cache.get(operation.id)
+        if cached is not None and cached[0] == topology:
+            return cached[1]
+
+        predecessors = [
+            self.graph.internal_nodes[predecessor_id] for predecessor_id in incoming.values()
+        ]
+        self._predecessor_cache[operation.id] = (topology, predecessors)
+        return predecessors
 
     def pause(self) -> None:
         """Install a pause gate at the next operation boundary; idempotent."""
@@ -436,16 +461,14 @@ class DependencyAwareExecutor:
 
     async def _check_edge_conditions(self, operation: Operation) -> bool:
         """Return True if at least one valid incoming path exists or no edges; False if all incoming edges failed."""
-        incoming_edges = [
-            edge for edge in self.graph.internal_edges.values() if edge.tail == operation.id
-        ]
-
-        if not incoming_edges:
+        incoming_edge_ids = self.graph.node_edge_mapping[operation.id]["in"]
+        if not incoming_edge_ids:
             return True
 
         has_valid_path = False
 
-        for edge in incoming_edges:
+        for edge_id in incoming_edge_ids:
+            edge = self.graph.internal_edges[edge_id]
             if edge.head in self.completion_events:
                 await self.completion_events[edge.head].wait()
 
@@ -483,7 +506,7 @@ class DependencyAwareExecutor:
                         await self.completion_events[op_id].wait()
                         break
 
-        predecessors = self.graph.get_predecessors(operation)
+        predecessors = self._get_predecessors(operation)
         for pred in predecessors:
             if self.verbose:
                 logger.debug(
@@ -495,7 +518,7 @@ class DependencyAwareExecutor:
 
     def _prepare_operation(self, operation: Operation):
         """Prepare operation with context and branch assignment."""
-        predecessors = self.graph.get_predecessors(operation)
+        predecessors = self._get_predecessors(operation)
         if predecessors:
             pred_ctx = Note()
             for pred in predecessors:
@@ -718,6 +741,7 @@ class ReactiveExecutor(DependencyAwareExecutor):
     async def execute(self) -> dict[str, Any]:
         if not self.graph.is_acyclic():
             raise OperationError("Graph must be acyclic for flow execution")
+        self._predecessor_cache.clear()
         self._validate_edge_conditions()
         await self._preallocate_all_branches()
 
@@ -764,6 +788,7 @@ class ReactiveExecutor(DependencyAwareExecutor):
         """Yield a FlowEvent the instant each operation completes."""
         if not self.graph.is_acyclic():
             raise OperationError("Graph must be acyclic for flow execution")
+        self._predecessor_cache.clear()
         self._validate_edge_conditions()
         await self._preallocate_all_branches()
 
