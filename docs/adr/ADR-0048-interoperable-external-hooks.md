@@ -251,6 +251,21 @@ Exact semantics:
     `Branch.run()`, and `Branch.ReAct()` — and carried on the operation context as
     an explicit field threaded through the call chain (not ambient task-local
     state, which would leak across concurrently running branch operations).
+    Origination is **conditional on an explicit origin disposition** threaded on
+    the same call chain, with three states: *unset* (the default a genuine
+    outside caller produces), *forwarded token*, and *no-origin*. A public
+    ingress mints a fresh token only when the disposition is *unset*; a
+    forwarded token is carried through unchanged and never re-originated; and
+    *no-origin* means the call traverses the public method without ever holding
+    a token. This disposition — not the method being public — is the
+    deterministic rule that distinguishes a user's call to `Branch.chat()` from
+    the runtime's own call to the same public method.
+  - **Nested public ingresses forward, never re-originate.** The in-tree nested
+    path is named: `Branch.chat_and_record()` delegates to `Branch.chat()` — it
+    mints (on *unset*) before delegating and passes that same token down as the
+    *forwarded* disposition, so the delegated `chat()` mints nothing and the one
+    token is consumed at the chat boundary as usual. Any future public wrapper
+    that delegates to another public ingress inherits this forwarding rule.
   - **Consumed exactly once** at the model-submission boundary: immediately before
     provider invocation in the chat operation (which serves the chat,
     chat_and_record, communicate, and operate→communicate paths), and immediately
@@ -259,20 +274,28 @@ Exact semantics:
     `{session_id, branch_id, prompt}` — `prompt` being the rendered instruction
     text actually submitted at that boundary — and the token is cleared for the
     remainder of the turn; if absent, the boundary stays silent.
-  - **Internal turns never carry the token.** Instructions the runtime synthesizes
-    (ReAct extension and final-answer turns, parse-retry turns) are issued without
-    ingress, so their submissions find no token and emit nothing. For a multi-step
-    `ReAct()` call this means exactly one emission — at the first model submission
-    of the user's turn — and silence for every internal continuation.
+  - **Internal turns pass the explicit *no-origin* disposition.** Instructions
+    the runtime synthesizes are issued with *no-origin* at their named seams:
+    parse-repair turns, where `parse._inner_parse()` calls the public
+    `Branch.chat()` — the traversal of a public method with *no-origin* mints
+    nothing — and ReAct extension/final-answer turns, which drive `operate()`
+    directly with *no-origin*. Their submissions find no token and emit nothing.
+    For a multi-step `ReAct()` call this means exactly one emission — at the
+    first model submission of the user's turn — and silence for every internal
+    continuation.
   - Adding the enum member without the token mechanism and both consuming
     boundaries is forbidden; ADR-0047 already documents four never-wired hook
     points as exactly this trap, and this ADR does not add a fifth.
 - **Acceptance: exact-once, enumerated per path.** The implementation ships
   integration tests asserting the emission count for every ingress: direct
-  `chat()` → 1; direct `chat_and_record()` → 1; `communicate()` → 1;
+  `chat()` → 1; `chat_and_record()` delegating to `chat()` → 1 total (proving
+  the forwarded disposition does not re-originate); `communicate()` → 1;
   `operate()` delegating to communicate → 1; direct `run()` → 1; a `ReAct()`
   call with multiple internal extension turns and a final-answer turn → exactly 1
-  total; a parse-retry inside any of the above → 0 additional. A new public
+  total; and a failing-then-repaired parse inside any of the above → exactly 1
+  total, with the repair submission itself asserted as zero additional events —
+  the row names its call path, `parse._inner_parse()` → `Branch.chat()` with
+  *no-origin*. A new public
   ingress added later must add its row to this matrix — the test file carries a
   comment stating that rule.
 - A blocked `USER_PROMPT_SUBMIT` surfaces as the same `PermissionError`-family
