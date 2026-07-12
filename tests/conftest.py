@@ -71,6 +71,52 @@ def pytest_addoption(parser):
     )
 
 
+@pytest.fixture
+def plugin_home(monkeypatch, tmp_path):
+    """Point HOME at a scratch dir and cd into it, so plugin discovery only sees test bundles."""
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.chdir(tmp_path)
+    return tmp_path
+
+
+@pytest.fixture
+def write_plugin(plugin_home):
+    """Factory: write_plugin(dir_name, manifest_yaml, files={"rel/path": "content"}) -> bundle dir.
+
+    Writes under the global ``~/.lionagi/plugins/<dir_name>/`` (== ``plugin_home``
+    since HOME and cwd are the same scratch dir here).
+    """
+
+    def _write(dir_name, manifest_yaml, files=None):
+        bundle = plugin_home / ".lionagi" / "plugins" / dir_name
+        bundle.mkdir(parents=True, exist_ok=True)
+        (bundle / "plugin.yaml").write_text(manifest_yaml)
+        for rel, content in (files or {}).items():
+            p = bundle / rel
+            p.parent.mkdir(parents=True, exist_ok=True)
+            p.write_text(content)
+        return bundle
+
+    return _write
+
+
+@pytest.fixture(autouse=True)
+def _reset_plugin_registry():
+    """Reset PluginRegistry's process-lifetime scan cache around every test.
+
+    The registry caches its filesystem scan (keyed off HOME/.lionagi) for the
+    life of the process, mirroring EndpointRegistry's ``_ensure_loaded``
+    pattern. Tests routinely monkeypatch HOME per-test, so without a reset the
+    first test to touch plugin resolution would leak its cached snapshot into
+    every later test in the same worker.
+    """
+    from lionagi.plugins import PluginRegistry
+
+    PluginRegistry.reset()
+    yield
+    PluginRegistry.reset()
+
+
 _MISSING_DEP_HINTS = ("not installed", "is required for", "no module named")
 
 # Optional extras whose absence should be skipped (not failed) under --skip-missing-deps.
