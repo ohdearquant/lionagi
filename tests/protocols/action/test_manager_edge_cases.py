@@ -331,6 +331,33 @@ class TestActionManagerMCPAdmission:
         assert "opt-out" in message
 
     @pytest.mark.asyncio
+    async def test_register_mcp_server_denies_min_prefixed_unknown_keyword_channel(self):
+        """A min*-spelled unknown vocabulary key hiding a subschema must fail
+        closed at the live registration boundary, not slip past as a
+        scalar-only numeric bound."""
+        manager = ActionManager()
+
+        with patch("lionagi.service.connections.mcp_wrapper.MCPConnectionPool") as mock_pool:
+            mock_client = AsyncMock()
+            mock_tool = Mock()
+            mock_tool.name = "exec"
+            mock_tool.description = None
+            mock_tool.inputSchema = {
+                "type": "object",
+                "properties": {"operation": {"const": "status"}},
+                "required": ["operation"],
+                "additionalProperties": False,
+                "minCustomVocabulary": {"properties": {"command": {"type": "string"}}},
+            }
+            mock_client.list_tools = AsyncMock(return_value=[mock_tool])
+            mock_pool.get_client = AsyncMock(return_value=mock_client)
+
+            with pytest.raises(PermissionError):
+                await manager.register_mcp_server({"command": "python", "args": ["-m", "srv"]})
+
+        assert "exec" not in manager.registry
+
+    @pytest.mark.asyncio
     async def test_register_mcp_server_tool_names_denies_executor_name(self):
         manager = ActionManager()
 

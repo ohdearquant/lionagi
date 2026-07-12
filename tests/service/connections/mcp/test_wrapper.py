@@ -1195,6 +1195,66 @@ class TestValidateMcpToolAdmission:
             "executor-identity-with-insufficient-schema",
             id="nested-list-of-list-of-mapping-unknown-keyword-is-unresolvable",
         ),
+        # Scalar-only keyword recognition is an explicit enumeration of the
+        # standardized numeric/size bounds, never a min*/max* spelling
+        # heuristic -- an unknown vocabulary key that merely STARTS with
+        # min/max must still reach the could-carry-subschema check.
+        pytest.param(
+            "exec",
+            {
+                "type": "object",
+                "properties": {"operation": {"const": "status"}},
+                "required": ["operation"],
+                "additionalProperties": False,
+                "minCustomVocabulary": {"properties": {"command": {"type": "string"}}},
+            },
+            None,
+            "executor-identity-with-insufficient-schema",
+            id="min-prefixed-unknown-keyword-hiding-a-subschema-is-unresolvable",
+        ),
+        pytest.param(
+            "exec",
+            {
+                "type": "object",
+                "properties": {"operation": {"const": "status"}},
+                "required": ["operation"],
+                "additionalProperties": False,
+                "maxFuture": [[{"properties": {"command": {"type": "string"}}}]],
+            },
+            None,
+            "executor-identity-with-insufficient-schema",
+            id="max-prefixed-unknown-keyword-nested-list-is-unresolvable",
+        ),
+        # Unknown-keyword and annotation value inspection consumes the same
+        # node budget as schema traversal and fails closed on exhaustion --
+        # a pathologically wide scalar list cannot force unbounded work and
+        # cannot be admitted unexamined.
+        pytest.param(
+            "exec",
+            {
+                "type": "object",
+                "properties": {"operation": {"const": "status"}},
+                "required": ["operation"],
+                "additionalProperties": False,
+                "future-extension": [0] * 100_000,
+            },
+            None,
+            "executor-identity-with-insufficient-schema",
+            id="unknown-keyword-scalar-list-exceeding-node-budget-fails-closed",
+        ),
+        pytest.param(
+            "exec",
+            {
+                "type": "object",
+                "properties": {"operation": {"const": "status"}},
+                "required": ["operation"],
+                "additionalProperties": False,
+                "x-huge": [0] * 100_000,
+            },
+            None,
+            "executor-identity-with-insufficient-schema",
+            id="annotation-scalar-list-exceeding-node-budget-fails-closed",
+        ),
     ]
 
     ADMIT_CASES = [
@@ -1456,6 +1516,46 @@ class TestValidateMcpToolAdmission:
             },
             None,
             id="strong-name-bounded-schema-with-vendor-extension-annotation",
+        ),
+        # The standardized numeric/size-bound keywords stay recognized as
+        # scalar-only after the explicit enumeration replaced the min*/max*
+        # spelling heuristic -- a bounded executor descriptor using them must
+        # not be denied.
+        pytest.param(
+            "exec",
+            {
+                "type": "object",
+                "properties": {
+                    "operation": {"const": "status"},
+                    "count": {
+                        "type": "integer",
+                        "minimum": 0,
+                        "maximum": 10,
+                        "multipleOf": 2,
+                    },
+                },
+                "required": ["operation"],
+                "additionalProperties": False,
+                "minProperties": 1,
+                "maxProperties": 3,
+            },
+            None,
+            id="strong-name-standard-numeric-bounds-remain-scalar-only",
+        ),
+        # A small unknown-keyword value made purely of scalars carries no
+        # subschema and stays admitted -- the node-budget fail-closed rule
+        # applies to pathological width, not ordinary inert extensions.
+        pytest.param(
+            "exec",
+            {
+                "type": "object",
+                "properties": {"operation": {"const": "status"}},
+                "required": ["operation"],
+                "additionalProperties": False,
+                "future-extension": [0, 1, 2],
+            },
+            None,
+            id="strong-name-small-scalar-unknown-keyword-remains-admitted",
         ),
         pytest.param(
             "spawn_process",

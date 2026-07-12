@@ -662,15 +662,35 @@ _KNOWN_SCHEMA_KEYWORDS = (
 )
 
 
+# The standardized numeric/size-bound keywords, all scalar-valued by spec.
+# An explicit enumeration, NOT a `min*`/`max*` spelling heuristic: a prefix
+# test would exempt an arbitrary unknown vocabulary key (`minCustomThing`)
+# from the could-carry-subschema check and reopen the whitelist bypass this
+# walker exists to close.
+_NUMERIC_BOUND_KEYWORDS = frozenset(
+    {
+        "minLength",
+        "maxLength",
+        "minItems",
+        "maxItems",
+        "minProperties",
+        "maxProperties",
+        "minimum",
+        "maximum",
+        "exclusiveMinimum",
+        "exclusiveMaximum",
+        "minContains",
+        "maxContains",
+        "multipleOf",
+    }
+)
+
+
 def _is_known_scalar_only_keyword(key: str) -> bool:
-    if key in _SCALAR_ONLY_SCHEMA_KEYWORDS:
-        return True
-    # Numeric/size bounds (`minLength`, `maxItems`, `minimum`, `maxProperties`,
-    # `exclusiveMinimum`, `multipleOf`'s siblings, ...) are always scalar.
-    return key.startswith("min") or key.startswith("max")
+    return key in _SCALAR_ONLY_SCHEMA_KEYWORDS or key in _NUMERIC_BOUND_KEYWORDS
 
 
-def _could_carry_subschema(value: object, depth: int = 0) -> bool:
+def _could_carry_subschema(value: object, budget: list[int], depth: int = 0) -> bool:
     """True when an unrecognized keyword's value is shaped like it could
     itself hold a schema (a mapping, or a list -- at any nesting depth --
     containing a mapping) -- the signal that makes an unknown keyword
@@ -678,17 +698,21 @@ def _could_carry_subschema(value: object, depth: int = 0) -> bool:
     lists of ... of mappings) under the same depth cap as the walker,
     instead of only inspecting one level, so a schema-bearing value cannot
     be laundered past the whitelist by wrapping it in extra list nesting.
-    Fails closed (treated as could-carry) once the depth cap is hit."""
-    if depth > _MAX_SCHEMA_WALK_DEPTH:
+    Charges every visited element against the shared node budget and fails
+    closed (treated as could-carry) when either the depth cap or the node
+    budget is exhausted, so a pathologically wide value cannot force
+    unbounded traversal work."""
+    budget[0] += 1
+    if budget[0] > _MAX_SCHEMA_WALK_NODES or depth > _MAX_SCHEMA_WALK_DEPTH:
         return True
     if isinstance(value, Mapping):
         return True
     if isinstance(value, list):
-        return any(_could_carry_subschema(item, depth + 1) for item in value)
+        return any(_could_carry_subschema(item, budget, depth + 1) for item in value)
     return False
 
 
-def _is_inert_annotation_value(value: object, depth: int = 0) -> bool:
+def _is_inert_annotation_value(value: object, budget: list[int], depth: int = 0) -> bool:
     """True when `value` cannot itself carry a subschema: recursively, a
     scalar (string/number/bool/None), or a list/mapping built entirely from
     such values with no JSON-Schema-vocabulary key appearing anywhere inside
@@ -696,21 +720,24 @@ def _is_inert_annotation_value(value: object, depth: int = 0) -> bool:
     UI/ordering metadata (`{"widget": "select", "order": 1}`) is inert; one
     that embeds real schema vocabulary (`x-input-schema: {"properties":
     {...}}`) is not, regardless of the `x-`/`$comment` key it hangs off --
-    the value's SHAPE decides inertness, not the key's spelling."""
-    if depth > _MAX_SCHEMA_WALK_DEPTH:
+    the value's SHAPE decides inertness, not the key's spelling. Charges
+    every visited element against the shared node budget and fails closed
+    (not inert) on exhaustion, mirroring `_could_carry_subschema`."""
+    budget[0] += 1
+    if budget[0] > _MAX_SCHEMA_WALK_NODES or depth > _MAX_SCHEMA_WALK_DEPTH:
         return False
     if value is None or isinstance(value, (str, int, float, bool)):
         return True
     if isinstance(value, list):
-        return all(_is_inert_annotation_value(item, depth + 1) for item in value)
+        return all(_is_inert_annotation_value(item, budget, depth + 1) for item in value)
     if isinstance(value, Mapping):
         if any(key in _KNOWN_SCHEMA_KEYWORDS for key in value):
             return False
-        return all(_is_inert_annotation_value(v, depth + 1) for v in value.values())
+        return all(_is_inert_annotation_value(v, budget, depth + 1) for v in value.values())
     return False
 
 
-def _is_vendor_annotation_keyword(key: str, value: object) -> bool:
+def _is_vendor_annotation_keyword(key: str, value: object, budget: list[int]) -> bool:
     """True for a keyword that is metadata/annotation-only, never an
     applicator or reference, AND whose value carries no schema-bearing
     content -- exempt from the unknown-subschema-bearing check. Narrow on
@@ -728,7 +755,7 @@ def _is_vendor_annotation_keyword(key: str, value: object) -> bool:
     reopen the reference-bypass class this walker closes."""
     if key != "$comment" and not key.startswith("x-"):
         return False
-    return _is_inert_annotation_value(value)
+    return _is_inert_annotation_value(value, budget)
 
 
 def _mark_unknown_schema_keywords(schema: Mapping, result: _SchemaWalkResult) -> None:
@@ -750,14 +777,19 @@ def _mark_unknown_schema_keywords(schema: Mapping, result: _SchemaWalkResult) ->
     if any(key in schema for key in _UNRESOLVABLE_REFERENCE_KEYWORDS):
         result.unresolvable = True
         return
+    # Value inspection shares the walker's node budget: work spent deciding
+    # whether an unknown/annotation value is inert counts against the same
+    # cap as schema traversal, and exhaustion fails closed via the helpers.
+    budget = [result.nodes_visited]
     for key, value in schema.items():
         if key in _KNOWN_SCHEMA_KEYWORDS or _is_known_scalar_only_keyword(key):
             continue
-        if _is_vendor_annotation_keyword(key, value):
+        if _is_vendor_annotation_keyword(key, value, budget):
             continue
-        if _could_carry_subschema(value):
+        if _could_carry_subschema(value, budget):
             result.unresolvable = True
             break
+    result.nodes_visited = max(result.nodes_visited, budget[0])
 
 
 # Object-applicator keywords: presence of any of these on a property's own
