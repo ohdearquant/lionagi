@@ -629,10 +629,12 @@ class _NameBindingEvent:
     """A binder form that makes *name* a lexical local of the enclosing
     scope but is never recognized as establishing/restoring import
     provenance: a ``for``/``async for`` statement target, a match-pattern
-    capture, or an augmented-assignment target. Carries only the name (plus
-    position, so it sorts alongside the other event kinds) -- ``_replay_
-    binding_events`` always skips it (these forms only MASK; see
-    ``_scope_bound_names``), it exists purely to feed the mask collection."""
+    capture, an augmented-assignment target, a ``with``/``async with`` ``as``
+    target, an ``except ... as`` handler name, or a ``del`` target. Carries
+    only the name (plus position, so it sorts alongside the other event
+    kinds) -- ``_replay_binding_events`` always skips it (these forms only
+    MASK; see ``_scope_bound_names``), it exists purely to feed the mask
+    collection."""
 
     name: str
     lineno: int
@@ -687,11 +689,17 @@ def _collect_scope_binding_events(
     body is conditional regardless of which case, if any, is the one that
     runs), rather than a direct statement of *stmts* itself. Also emits
     mask-only ``_NameBindingEvent``s (always CONDITIONAL, since the
-    surrounding loop/case may not execute) for ``for``/``async for``
-    statement targets and match-pattern captures -- these ARE lexical locals
-    of the enclosing function scope (unlike a comprehension target, which is
-    its own separate scope and is never walked here since comprehensions are
-    expressions, not statements). Descends into a nested class body
+    surrounding loop/case/with/handler may not execute) for ``for``/``async
+    for`` statement targets, match-pattern captures, every ``with``/``async
+    with`` item's ``as`` target (reusing the same Store-name walker as
+    for-targets, so tuple/destructuring ``as (a, b)`` is collected too), and
+    every ``except ... as NAME`` handler name -- these ARE lexical locals of
+    the enclosing function scope (unlike a comprehension target, which is its
+    own separate scope and is never walked here since comprehensions are
+    expressions, not statements). A ``del NAME`` target gets the same
+    mask-only treatment but tagged with the CURRENT *conditional* value
+    (like ``AugAssign``, it is a direct statement of *stmts*, not a nested
+    body). Descends into a nested class body
     transparently (a class body is not a distinct scope for this analysis and
     was never treated as one) but stops at a nested function, async function,
     or lambda -- those get their own independent scope when ``_SinkVisitor``
@@ -713,6 +721,15 @@ def _collect_scope_binding_events(
                     conditional,
                 )
             )
+        elif isinstance(stmt, ast.Delete):
+            for target in stmt.targets:
+                if isinstance(target, ast.Name):
+                    events.append(
+                        (
+                            _NameBindingEvent(target.id, stmt.lineno, stmt.col_offset),
+                            conditional,
+                        )
+                    )
 
         if isinstance(stmt, ast.If):
             _collect_scope_binding_events(stmt.body, True, events)
@@ -720,6 +737,13 @@ def _collect_scope_binding_events(
         elif isinstance(stmt, ast.Try):
             _collect_scope_binding_events(stmt.body, True, events)
             for handler in stmt.handlers:
+                if handler.name is not None:
+                    events.append(
+                        (
+                            _NameBindingEvent(handler.name, handler.lineno, handler.col_offset),
+                            True,
+                        )
+                    )
                 _collect_scope_binding_events(handler.body, True, events)
             _collect_scope_binding_events(stmt.orelse, True, events)
             _collect_scope_binding_events(stmt.finalbody, True, events)
@@ -732,6 +756,10 @@ def _collect_scope_binding_events(
             _collect_scope_binding_events(stmt.body, True, events)
             _collect_scope_binding_events(stmt.orelse, True, events)
         elif isinstance(stmt, (ast.With, ast.AsyncWith)):
+            for item in stmt.items:
+                if item.optional_vars is not None:
+                    for name in _store_names(item.optional_vars):
+                        events.append((_NameBindingEvent(name, stmt.lineno, stmt.col_offset), True))
             _collect_scope_binding_events(stmt.body, True, events)
         elif isinstance(stmt, ast.Match):
             for case in stmt.cases:
@@ -1957,6 +1985,138 @@ def test_for_target_tuple_unpack_masks_inherited_importlib_provenance(tmp_path):
         f"got: {sorted(discovery.executor_sites)}"
     )
     assert ("for_target_tuple_unpack.py", "run") not in discovery.call_sites
+
+
+def test_with_as_target_masks_inherited_importlib_provenance(tmp_path):
+    """Regression for the under-collection defect: a `with ... as NAME`
+    target is a lexical local of the enclosing function scope (a
+    Store-context ``Name`` in ``item.optional_vars``) and must mask the
+    module-level import for the whole function body the same way a
+    for-target does. Verified against `symtable`: `importlib.is_local() ==
+    True`."""
+    import symtable as _symtable
+
+    rogue = tmp_path / "with_as_masks.py"
+    source = (
+        "import contextlib\n"
+        "import importlib\n\n\n"
+        "async def run(session, graph):\n"
+        "    with contextlib.nullcontext() as importlib:\n"
+        "        pass\n"
+        '    return await getattr(importlib.import_module("lionagi.operations.flow"), '
+        '"DependencyAwareExecutor")(session, graph).execute()\n'
+    )
+    rogue.write_text(source)
+
+    top = _symtable.symtable(source, str(rogue), "exec")
+    (func_table,) = (c for c in top.get_children() if c.get_name() == "run")
+    assert func_table.lookup("importlib").is_local()
+
+    discovery = discover_call_and_construct_sites(tmp_path, base=tmp_path)
+
+    assert discovery.executor_sites == set(), (
+        "a with-as target must mask, not inherit, outer importlib provenance — got: "
+        f"{sorted(discovery.executor_sites)}"
+    )
+    assert ("with_as_masks.py", "run") not in discovery.call_sites
+
+
+def test_with_as_masks_then_unconditional_reimport_restores_discovery(tmp_path):
+    """Companion to test_with_as_target_masks_inherited_importlib_provenance:
+    masking is not permanent -- a genuine UNCONDITIONAL `import importlib`
+    later in the same function body must still restore provenance and yield
+    a site, exactly like a for-target mask followed by a reimport does."""
+    rogue = tmp_path / "with_as_then_reimport.py"
+    rogue.write_text(
+        "import contextlib\n"
+        "import importlib\n\n\n"
+        "async def run(session, graph):\n"
+        "    with contextlib.nullcontext() as importlib:\n"
+        "        pass\n"
+        "    import importlib\n"
+        '    return await getattr(importlib.import_module("lionagi.operations.flow"), '
+        '"DependencyAwareExecutor")(session, graph).execute()\n'
+    )
+
+    discovery = discover_call_and_construct_sites(tmp_path, base=tmp_path)
+
+    key = ("with_as_then_reimport.py", "run")
+    assert key in discovery.call_sites, (
+        "an unconditional reimport after a with-as mask was not discovered — found: "
+        f"{sorted(discovery.call_sites)}"
+    )
+    assert discovery.executor_sites == {key}, (
+        "the reimport-restored dynamic lookup after a with-as mask must be flagged as an "
+        f"executor site — got: {sorted(discovery.executor_sites)}"
+    )
+
+
+def test_except_as_target_masks_inherited_importlib_provenance(tmp_path):
+    """Regression for the under-collection defect: an `except ... as NAME`
+    handler binds `NAME` as a lexical local of the enclosing function scope
+    (`ExceptHandler.name`, a plain str -- and even though the name is
+    deleted again at the end of the handler, Python still treats it as a
+    local for the WHOLE function) and must mask the module-level import for
+    the whole function body. Verified against `symtable`: `importlib.
+    is_local() == True`."""
+    import symtable as _symtable
+
+    rogue = tmp_path / "except_as_masks.py"
+    source = (
+        "import importlib\n\n\n"
+        "async def run(session, graph):\n"
+        "    try:\n"
+        "        pass\n"
+        "    except Exception as importlib:\n"
+        "        pass\n"
+        '    return await getattr(importlib.import_module("lionagi.operations.flow"), '
+        '"DependencyAwareExecutor")(session, graph).execute()\n'
+    )
+    rogue.write_text(source)
+
+    top = _symtable.symtable(source, str(rogue), "exec")
+    (func_table,) = (c for c in top.get_children() if c.get_name() == "run")
+    assert func_table.lookup("importlib").is_local()
+
+    discovery = discover_call_and_construct_sites(tmp_path, base=tmp_path)
+
+    assert discovery.executor_sites == set(), (
+        "an except-as target must mask, not inherit, outer importlib provenance — got: "
+        f"{sorted(discovery.executor_sites)}"
+    )
+    assert ("except_as_masks.py", "run") not in discovery.call_sites
+
+
+def test_del_target_masks_inherited_importlib_provenance(tmp_path):
+    """Regression for the under-collection defect: `del importlib` is a
+    Del-context Name binding/unbinding target (`ast.Delete.targets`) and
+    must mask the module-level import for the whole function body the same
+    way a conditional rebind does. Verified against `symtable`: `importlib.
+    is_local() == True`."""
+    import symtable as _symtable
+
+    rogue = tmp_path / "del_masks.py"
+    source = (
+        "import importlib\n\n\n"
+        "async def run(session, graph):\n"
+        "    if False:\n"
+        "        del importlib\n"
+        '    return await getattr(importlib.import_module("lionagi.operations.flow"), '
+        '"DependencyAwareExecutor")(session, graph).execute()\n'
+    )
+    rogue.write_text(source)
+
+    top = _symtable.symtable(source, str(rogue), "exec")
+    (func_table,) = (c for c in top.get_children() if c.get_name() == "run")
+    assert func_table.lookup("importlib").is_local()
+
+    discovery = discover_call_and_construct_sites(tmp_path, base=tmp_path)
+
+    assert discovery.executor_sites == set(), (
+        "a del target must mask, not inherit, outer importlib provenance — got: "
+        f"{sorted(discovery.executor_sites)}"
+    )
+    assert ("del_masks.py", "run") not in discovery.call_sites
 
 
 def test_session_flow_and_flow_stream_are_discovered_via_bare_import_not_hardcoding(tmp_path):
