@@ -58,6 +58,53 @@ When an agent profile's `hooks` section mentions a point, the profile list
 (e.g. `message.add: []` turns off built-in persistence). Points not mentioned
 keep their defaults.
 
+## Tool-event hooks at the invoke chokepoint
+
+`lionagi.protocols.action.tool_hooks` defines a second, mutation-capable
+tool-event layer, separate from the `HookBus` points above. It attaches to
+`ActionManager` (`manager.add_tool_pre_hook(hook)` /
+`manager.add_tool_post_hook(hook)`) and runs inside `ActionManager.invoke`,
+outermost around every tool call the manager mediates — plain function
+tools, `Tool` objects, and MCP-discovered tools alike. Constructing a
+`FunctionCalling` directly (bypassing the manager) skips this layer
+entirely; that is a documented, tested limit, not an oversight.
+
+Call order on a single tool invocation:
+
+```text
+tool-pre hooks (registration order)
+  -> Tool.preprocessor (spec-level security/user chain, security_pre last)
+  -> [rewritten arguments revalidated against Tool.request_options]
+  -> the tool callable
+  -> Tool.postprocessor (spec-level chain)
+  -> tool-post hooks (registration order)
+```
+
+A tool-pre hook receives `(tool_name, arguments)` and returns `None` (allow,
+unchanged), a `dict` (allow, replace the arguments), or a `ToolPreDecision`
+(`decision` ∈ `allow | deny | ask`, plus optional `reason` /
+`updated_input`). `deny`, `ask` (no interactive-approval surface exists in
+this runtime), and any unrecognized decision value all fail closed, raising
+`ToolHookDeniedError` (a `PermissionError`) directly out of
+`ActionManager.invoke` before the tool ever runs. `security_pre` always
+stays the last pre-stage validator: tool-pre hooks run entirely outside the
+spec-level chain, so any rewrite they make is visible to `security_pre`,
+never the other way around.
+
+Whichever layer rewrites the arguments — tool-pre hooks or the spec-level
+chain — the final dict is revalidated against the tool's `request_options`
+(when declared) immediately before the callable executes; a validation
+failure is captured as a `FAILED` event (matching the existing
+spec-level-preprocessor-error convention) rather than raised out of
+`invoke`. A tool with no `request_options` never had schema enforcement,
+and this step does not invent one.
+
+A tool-post hook receives `(tool_name, arguments, result, error)` — exactly
+one of `result`/`error` is set — after invocation completes, success or
+failure. Post hooks are advisory only: a raised exception from one is
+logged and skipped, and nothing a post hook returns can change the already-
+completed outcome.
+
 ## Built-in handlers
 
 | Handler | Registered for |
