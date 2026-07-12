@@ -664,3 +664,18 @@ class TestReturnExceptions:
         with pytest.raises(asyncio.CancelledError):
             await task
         assert child_cancelled.is_set()
+
+    @pytest.mark.anyio
+    async def test_default_path_user_raised_internal_marker_propagates(self):
+        from lionagi.ln._async_call import _ChildCancelled
+
+        async def work(x: int) -> int:
+            raise _ChildCancelled("raised by user code")
+
+        # The internal marker is stamped with a per-batch token; an instance
+        # raised by a callback must propagate like any other exception on
+        # both the fast route and the forced-general route.
+        with pytest.raises(_ChildCancelled):
+            await alcall([0], work)
+        with pytest.raises(_ChildCancelled):
+            await alcall([0], work, retry_initial_delay=0.001)

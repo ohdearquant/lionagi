@@ -166,8 +166,15 @@ class _ChildCancelled(BaseException):
     """Internal marker: a child raised CancelledError on its own.
 
     Distinguishes a self-cancelled child from cancellation of the whole
-    batch, which must keep propagating as CancelledError.
+    batch, which must keep propagating as CancelledError. Each batch stamps
+    its markers with a per-call token so an instance raised by user code is
+    never mistaken for the internal signal and propagates like any other
+    exception.
     """
+
+    def __init__(self, token: object = None) -> None:
+        super().__init__()
+        self.token = token
 
 
 async def _gather_all_or_cancel(loop, func, input_, kwargs) -> list[Any]:
@@ -180,13 +187,14 @@ async def _gather_all_or_cancel(loop, func, input_, kwargs) -> list[Any]:
     batch keeps propagating.
     """
     out: list[Any] = [None] * len(input_)
+    token = object()
 
     async def _run(item: Any, idx: int) -> None:
         try:
             out[idx] = await func(item, **kwargs)
         except asyncio.CancelledError as exc:
             out[idx] = exc
-            raise _ChildCancelled() from exc
+            raise _ChildCancelled(token) from exc
         except BaseException as exc:
             out[idx] = exc
             raise
@@ -202,7 +210,7 @@ async def _gather_all_or_cancel(loop, func, input_, kwargs) -> list[Any]:
         for task in tasks:
             task.cancel()
         await asyncio.gather(*tasks, return_exceptions=True)
-        if isinstance(exc, _ChildCancelled):
+        if isinstance(exc, _ChildCancelled) and exc.token is token:
             return out
         raise
 
