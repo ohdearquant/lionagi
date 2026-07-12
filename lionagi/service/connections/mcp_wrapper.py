@@ -260,60 +260,41 @@ def _is_exec_tainted_key(norm_key: str) -> bool:
     return any(token in _EXEC_TAINTED_KEY_TOKENS for token in norm_key.split("_"))
 
 
-def _resolve_effective_schema_for_sufficiency(
+def _schema_is_insufficient(input_schema: object) -> bool:
+    if input_schema is None or not isinstance(input_schema, Mapping):
+        return True
+    return _schema_is_insufficient_node(input_schema, input_schema, frozenset(), 0, [0])
+
+
+def _schema_is_insufficient_node(
     schema: Mapping,
     root_schema: Mapping,
     seen_refs: frozenset[str],
     depth: int,
-) -> Mapping | None:
-    """Resolve `schema` to the node whose own `properties`/
-    `additionalProperties` should be inspected for the strong-name
-    sufficiency gate.
+    budget: list[int],
+) -> bool:
+    """Recursive, union-aware sufficiency check for the strong-name
+    fallback gate.
 
-    A schema expressed purely via a top-level local `$ref` (or via
-    `oneOf`/`anyOf`/`allOf` composition with no properties of its own) is
-    not automatically "schema-less": the walker can resolve it exactly as
-    `_walk_schema` does, so the sufficiency gate should judge the RESOLVED
-    schema rather than demanding the caller-provided root carry `properties`
-    directly. Returns None (fail closed / insufficient) for an external,
-    cyclic, or otherwise unresolvable reference -- never widens what the
-    walker itself would already treat as unresolvable. Returns `schema`
-    unchanged when there is no `$ref`/composition to resolve, or when
-    composition branches exist but none of them resolve to a schema with its
-    own `properties` (the original conservative default: fall through to the
-    caller's own empty-properties/`additionalProperties` check)."""
-    if depth > _MAX_SCHEMA_WALK_DEPTH:
-        return None
-    ref = schema.get(_REF_KEYWORD)
-    if ref is not None:
-        if not isinstance(ref, str) or not ref.startswith("#/") or ref in seen_refs:
-            return None
-        resolved = _resolve_local_ref(ref, root_schema)
-        if resolved is None:
-            return None
-        return _resolve_effective_schema_for_sufficiency(
-            resolved, root_schema, seen_refs | {ref}, depth + 1
-        )
-    if "properties" in schema:
-        return schema
-    for comp_key in ("oneOf", "anyOf", "allOf"):
-        branches = schema.get(comp_key)
-        if isinstance(branches, list):
-            for branch in branches:
-                if not isinstance(branch, Mapping):
-                    continue
-                resolved_branch = _resolve_effective_schema_for_sufficiency(
-                    branch, root_schema, seen_refs, depth + 1
-                )
-                if resolved_branch is not None and "properties" in resolved_branch:
-                    return resolved_branch
-    return schema
-
-
-def _schema_is_insufficient(input_schema: object) -> bool:
-    if input_schema is None or not isinstance(input_schema, Mapping):
+    A schema is sufficient (not insufficient) only when it is itself
+    affirmatively bounded (has its own non-empty `properties`, or is a
+    closed `additionalProperties: False` object), or resolves to such a
+    schema through `$ref`/composition. `oneOf`/`anyOf` are UNIONS: an
+    instance need only satisfy one branch, so a caller-shaped tool descriptor
+    is only as bounded as its LEAST bounded alternative -- EVERY reachable
+    branch must independently prove sufficient, or the whole union is
+    insufficient. `allOf` is an INTERSECTION: an instance must satisfy every
+    branch simultaneously, so a single branch that is itself provably
+    bounded is enough by itself -- the remaining branches can only add
+    constraints on top of it, never relax it. Returns True (fail closed /
+    insufficient) for an external, cyclic, unresolvable, or budget/depth-
+    exhausted reference or composition -- never wider than what the walker
+    itself would already treat as unresolvable."""
+    budget[0] += 1
+    if budget[0] > _MAX_SCHEMA_WALK_NODES or depth > _MAX_SCHEMA_WALK_DEPTH:
         return True
-    top_type = input_schema.get("type")
+
+    top_type = schema.get("type")
     # `type` may be a Draft 2020-12 type array (e.g. `["object", "null"]`);
     # such a schema is an object schema whenever "object" is one of its
     # allowed types, and its properties must still be inspected. Only a
@@ -322,23 +303,45 @@ def _schema_is_insufficient(input_schema: object) -> bool:
     if top_type is not None and not _schema_type_includes(top_type, "object"):
         return True
 
-    resolved = input_schema
-    if "properties" not in input_schema and any(
-        k in input_schema for k in ("$ref", "oneOf", "anyOf", "allOf")
-    ):
-        candidate = _resolve_effective_schema_for_sufficiency(
-            input_schema, input_schema, frozenset(), 0
-        )
-        if candidate is None:
+    ref = schema.get(_REF_KEYWORD)
+    if ref is not None:
+        if not isinstance(ref, str) or not ref.startswith("#/") or ref in seen_refs:
             return True
-        resolved = candidate
+        resolved = _resolve_local_ref(ref, root_schema)
+        if resolved is None:
+            return True
+        return _schema_is_insufficient_node(
+            resolved, root_schema, seen_refs | {ref}, depth + 1, budget
+        )
 
-    if "properties" in resolved and not isinstance(resolved["properties"], Mapping):
+    for comp_key in ("oneOf", "anyOf"):
+        branches = schema.get(comp_key)
+        if branches is not None:
+            if not isinstance(branches, list) or not branches:
+                return True
+            for branch in branches:
+                if not isinstance(branch, Mapping):
+                    return True
+                if _schema_is_insufficient_node(branch, root_schema, seen_refs, depth + 1, budget):
+                    return True
+            # Every alternative independently proved sufficient.
+            return False
+
+    all_of = schema.get("allOf")
+    if isinstance(all_of, list) and all_of and "properties" not in schema:
+        for branch in all_of:
+            if isinstance(branch, Mapping) and not _schema_is_insufficient_node(
+                branch, root_schema, seen_refs, depth + 1, budget
+            ):
+                return False
         return True
-    properties = resolved.get("properties")
+
+    if "properties" in schema and not isinstance(schema["properties"], Mapping):
+        return True
+    properties = schema.get("properties")
     props = properties if isinstance(properties, Mapping) else {}
     if not props:
-        return resolved.get("additionalProperties") is not False
+        return schema.get("additionalProperties") is not False
     return False
 
 
@@ -381,7 +384,13 @@ def _item_schema_reaches_free_form_string(
     `if`/`then`/`else`/`not` composition are resolved/recursed so an item
     schema that only reaches a string through one layer of indirection
     (`{"anyOf": [{"type": "string"}]}`, a `$ref` to a string schema, ...) is
-    still caught.
+    still caught. A nested array item (`items: {type: array, items: ...}`,
+    or `prefixItems` at that position) is itself recursed into with the
+    same depth cap / `$ref`-cycle guard / node budget: an immediate
+    `type: "array"` item is NOT non-string-and-therefore-bounded on its
+    own -- it is only bounded if its OWN item schema is bounded (e.g.
+    `enum`/`const`-restricted), otherwise a caller can smuggle a free-form
+    argv-shaped channel one array level deeper (`args: [["sh", "-c", ...]]`).
     """
     if item_schema is True:
         return True
@@ -400,7 +409,24 @@ def _item_schema_reaches_free_form_string(
         return False
     item_type = item_schema.get("type")
     if item_type is not None:
-        return _schema_type_includes(item_type, "string")
+        if _schema_type_includes(item_type, "string"):
+            return True
+        if _schema_type_includes(item_type, "array"):
+            nested_items = item_schema.get("items")
+            if nested_items is not None and _item_schema_reaches_free_form_string(
+                nested_items, root_schema, depth + 1, seen_refs, result
+            ):
+                return True
+            nested_prefix_items = item_schema.get("prefixItems")
+            if isinstance(nested_prefix_items, list):
+                return any(
+                    _item_schema_reaches_free_form_string(
+                        nested_item, root_schema, depth + 1, seen_refs, result
+                    )
+                    for nested_item in nested_prefix_items
+                )
+            return False
+        return False
 
     ref = item_schema.get(_REF_KEYWORD)
     branches: list[object] = []
@@ -570,18 +596,47 @@ def _could_carry_subschema(value: object) -> bool:
     return False
 
 
-def _is_vendor_annotation_keyword(key: str) -> bool:
+def _is_inert_annotation_value(value: object, depth: int = 0) -> bool:
+    """True when `value` cannot itself carry a subschema: recursively, a
+    scalar (string/number/bool/None), or a list/mapping built entirely from
+    such values with no JSON-Schema-vocabulary key appearing anywhere inside
+    it. A vendor annotation whose value is genuinely just descriptive
+    UI/ordering metadata (`{"widget": "select", "order": 1}`) is inert; one
+    that embeds real schema vocabulary (`x-input-schema: {"properties":
+    {...}}`) is not, regardless of the `x-`/`$comment` key it hangs off --
+    the value's SHAPE decides inertness, not the key's spelling."""
+    if depth > _MAX_SCHEMA_WALK_DEPTH:
+        return False
+    if value is None or isinstance(value, (str, int, float, bool)):
+        return True
+    if isinstance(value, list):
+        return all(_is_inert_annotation_value(item, depth + 1) for item in value)
+    if isinstance(value, Mapping):
+        if any(key in _KNOWN_SCHEMA_KEYWORDS for key in value):
+            return False
+        return all(_is_inert_annotation_value(v, depth + 1) for v in value.values())
+    return False
+
+
+def _is_vendor_annotation_keyword(key: str, value: object) -> bool:
     """True for a keyword that is metadata/annotation-only, never an
-    applicator or reference -- exempt from the unknown-subschema-bearing
-    check even though its value may be a Mapping. Deliberately narrow: only
-    the `x-` vendor-extension convention (the OpenAPI/JSON-Schema community
-    convention for non-standard annotations, e.g. `x-ui`, `x-order`) and
-    JSON Schema's own `$comment` (annotation-only by spec). NEVER exempt
-    `$`-prefixed keywords in general -- that prefix is exactly where real
-    reference/applicator keywords live (`$ref`, `$dynamicRef`,
-    `$recursiveRef`, ...), so a blanket `$*` exemption would reopen the
-    reference-bypass class this walker closes."""
-    return key.startswith("x-") or key == "$comment"
+    applicator or reference, AND whose value carries no schema-bearing
+    content -- exempt from the unknown-subschema-bearing check. Narrow on
+    two axes: (1) only the `x-` vendor-extension convention (the
+    OpenAPI/JSON-Schema community convention for non-standard annotations,
+    e.g. `x-ui`, `x-order`) and JSON Schema's own `$comment` (annotation-only
+    by spec) are even considered; (2) even for those keys, the VALUE must be
+    demonstrably inert (`_is_inert_annotation_value`) -- a vendor extension
+    whose value is itself schema-shaped (`x-input-schema: {"properties":
+    {"command": {"type": "string"}}}`) is exactly the kind of hidden channel
+    this walker exists to catch, so it is NOT exempted just because its key
+    starts with `x-`. NEVER exempt `$`-prefixed keywords in general -- that
+    prefix is exactly where real reference/applicator keywords live (`$ref`,
+    `$dynamicRef`, `$recursiveRef`, ...), so a blanket `$*` exemption would
+    reopen the reference-bypass class this walker closes."""
+    if key != "$comment" and not key.startswith("x-"):
+        return False
+    return _is_inert_annotation_value(value)
 
 
 def _mark_unknown_schema_keywords(schema: Mapping, result: _SchemaWalkResult) -> None:
@@ -606,7 +661,7 @@ def _mark_unknown_schema_keywords(schema: Mapping, result: _SchemaWalkResult) ->
     for key, value in schema.items():
         if key in _KNOWN_SCHEMA_KEYWORDS or _is_known_scalar_only_keyword(key):
             continue
-        if _is_vendor_annotation_keyword(key):
+        if _is_vendor_annotation_keyword(key, value):
             continue
         if _could_carry_subschema(value):
             result.unresolvable = True

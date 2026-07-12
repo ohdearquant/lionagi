@@ -976,6 +976,98 @@ class TestValidateMcpToolAdmission:
             "executor-identity-with-insufficient-schema",
             id="array-items-local-ref-reaches-string-is-free-form-argv-channel",
         ),
+        # --- Nested-array items: an array item is not "non-string, therefore
+        # bounded" on its own -- the walker must recurse into ITS OWN
+        # items/prefixItems, or a caller can smuggle a free-form argv
+        # channel one array level deeper (`args: [["sh", "-c", ...]]`). ---
+        pytest.param(
+            "exec",
+            {
+                "type": "object",
+                "properties": {
+                    "operation": {"const": "status"},
+                    "args": {
+                        "type": "array",
+                        "items": {"type": "array", "items": {"type": "string"}},
+                    },
+                },
+            },
+            None,
+            "executor-identity-with-insufficient-schema",
+            id="nested-array-items-reaches-free-form-string-is-argv-channel",
+        ),
+        pytest.param(
+            "exec",
+            {
+                "type": "object",
+                "properties": {
+                    "operation": {"const": "status"},
+                    "args": {
+                        "type": "array",
+                        "items": {
+                            "type": "array",
+                            "prefixItems": [{"type": "string"}],
+                        },
+                    },
+                },
+            },
+            None,
+            "executor-identity-with-insufficient-schema",
+            id="nested-prefixitems-reaches-free-form-string-is-argv-channel",
+        ),
+        # --- Union-composition sufficiency: `_schema_is_insufficient` must judge `anyOf`/`oneOf`
+        # as UNIONS -- every branch must independently prove bounded, or a
+        # caller can register under the least-bounded alternative. ---
+        pytest.param(
+            "exec",
+            {
+                "anyOf": [
+                    {
+                        "type": "object",
+                        "properties": {"operation": {"const": "status"}},
+                        "required": ["operation"],
+                        "additionalProperties": False,
+                    },
+                    {"type": "object"},
+                ]
+            },
+            None,
+            "executor-identity-with-insufficient-schema",
+            id="anyof-with-fully-open-object-alternative-is-insufficient",
+        ),
+        pytest.param(
+            "exec",
+            {
+                "anyOf": [
+                    {
+                        "type": "object",
+                        "properties": {"operation": {"const": "status"}},
+                        "required": ["operation"],
+                        "additionalProperties": False,
+                    },
+                    {},
+                ]
+            },
+            None,
+            "executor-identity-with-insufficient-schema",
+            id="anyof-with-empty-schema-alternative-is-insufficient",
+        ),
+        # --- Vendor-annotation exemption must be VALUE-based,
+        # not just key-based -- an `x-*` extension whose value embeds real
+        # schema vocabulary is a hidden channel, not inert metadata. ---
+        pytest.param(
+            "exec",
+            {
+                "type": "object",
+                "properties": {"operation": {"const": "status"}},
+                "required": ["operation"],
+                "additionalProperties": False,
+                "x-input-schema": {"properties": {"command": {"type": "string"}}},
+            },
+            None,
+            "executor-identity-with-insufficient-schema",
+            id="schema-bearing-vendor-extension-is-not-exempted",
+        ),
     ]
 
     ADMIT_CASES = [
@@ -1234,6 +1326,48 @@ class TestValidateMcpToolAdmission:
             },
             None,
             id="strong-name-spawn-process-root-ref-to-bounded-closed-schema",
+        ),
+        # --- Anti-over-block: a nested array bounded by enum/const
+        # items at every level must remain admitted -- only a nested array
+        # that itself REACHES a free-form string is denied. ---
+        pytest.param(
+            "exec",
+            {
+                "type": "object",
+                "properties": {
+                    "operation": {"const": "status"},
+                    "args": {
+                        "type": "array",
+                        "items": {"type": "array", "items": {"enum": ["a", "b"]}},
+                    },
+                },
+            },
+            None,
+            id="nested-array-bounded-by-enum-items-remains-admitted",
+        ),
+        # --- Anti-over-block: `anyOf` where EVERY alternative is
+        # independently closed-bounded must still admit -- the union check
+        # only denies when at least one alternative is unbounded. ---
+        pytest.param(
+            "exec",
+            {
+                "anyOf": [
+                    {
+                        "type": "object",
+                        "properties": {"operation": {"const": "status"}},
+                        "required": ["operation"],
+                        "additionalProperties": False,
+                    },
+                    {
+                        "type": "object",
+                        "properties": {"operation": {"const": "restart"}},
+                        "required": ["operation"],
+                        "additionalProperties": False,
+                    },
+                ]
+            },
+            None,
+            id="anyof-with-every-alternative-closed-bounded-remains-admitted",
         ),
     ]
 
