@@ -231,10 +231,15 @@ lint-hygiene() {
   local IPYNB_EXCEPTIONS=(-g '!notebooks/react.ipynb' -g '!notebooks/react_rag.ipynb' -g '!notebooks/references/test_instruct.ipynb')
 
   echo "  checking absolute machine-local paths..."
-  if rg --hidden -g '!*.py' "${IPYNB_EXCEPTIONS[@]}" "/Users/lion" $DOC_PATHS 2>/dev/null; then
+  # Scanned across ALL file types, including .py — a hardcoded /Users/lion
+  # path in a committed Python helper (e.g. a notebook script) is exactly
+  # as much of a leak as one in markdown; the .py exclusion below is scoped
+  # to the lambda: actor-identifier check only, where it guards against
+  # Python's own closure syntax, not this check.
+  if rg --hidden "${IPYNB_EXCEPTIONS[@]}" "/Users/lion" $DOC_PATHS 2>/dev/null; then
     echo "  FAIL: absolute /Users/lion paths found in docs/notebooks"; rc=1
   fi
-  if rg --hidden --max-depth 1 -g '!*.py' -g '!.git' "/Users/lion" . 2>/dev/null; then
+  if rg --hidden --max-depth 1 -g '!.git' "/Users/lion" . 2>/dev/null; then
     echo "  FAIL: absolute /Users/lion paths found at repo root"; rc=1
   fi
 
@@ -252,10 +257,10 @@ lint-hygiene() {
   fi
 
   echo "  checking founder-name process narration (Ocean's)..."
-  if rg --hidden -g '!*.py' "${IPYNB_EXCEPTIONS[@]}" "\bOcean's\b" $DOC_PATHS 2>/dev/null; then
+  if rg --hidden "${IPYNB_EXCEPTIONS[@]}" "\bOcean's\b" $DOC_PATHS 2>/dev/null; then
     echo "  FAIL: founder-name process narration found in docs/notebooks"; rc=1
   fi
-  if rg --hidden --max-depth 1 -g '!*.py' -g '!.git' "\bOcean's\b" . 2>/dev/null; then
+  if rg --hidden --max-depth 1 -g '!.git' "\bOcean's\b" . 2>/dev/null; then
     echo "  FAIL: founder-name process narration found at repo root"; rc=1
   fi
 
