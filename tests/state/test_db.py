@@ -736,6 +736,94 @@ async def test_get_branch_messages(db: StateDB):
     assert [r["id"] for r in result] == [m["id"] for m in msgs]
 
 
+# ── finalize_branch (BRANCH_END guarded terminal write) ─────────────────────
+
+
+async def _make_branch(db: StateDB, *, status: str | None = None) -> dict:
+    s = await _make_session(db)
+    prog_id = uid()
+    await db.create_progression(prog_id)
+    branch = {
+        "id": uid(),
+        "session_id": s["id"],
+        "progression_id": prog_id,
+        "name": "leg",
+    }
+    await db.create_branch(branch)
+    if status is not None:
+        await db.update_branch(branch["id"], status=status)
+    return branch
+
+
+async def test_finalize_branch_stamps_status_and_ended_at_when_null(db: StateDB):
+    """A branch row that never had a status written (the single-branch agent
+    path's gap) is finalized on the first BRANCH_END-equivalent call."""
+    branch = await _make_branch(db)
+    assert (await db.get_branch(branch["id"]))["status"] is None
+
+    updated = await db.finalize_branch(branch["id"], status="completed", ended_at=123.0)
+
+    assert updated is True
+    row = await db.get_branch(branch["id"])
+    assert row["status"] == "completed"
+    assert row["ended_at"] == 123.0
+
+
+async def test_finalize_branch_stamps_failed_status(db: StateDB):
+    """A raising operation must not leave the branch row 'running' forever."""
+    branch = await _make_branch(db, status="running")
+
+    updated = await db.finalize_branch(branch["id"], status="failed", ended_at=456.0)
+
+    assert updated is True
+    row = await db.get_branch(branch["id"])
+    assert row["status"] == "failed"
+    assert row["ended_at"] == 456.0
+
+
+async def test_finalize_branch_skips_already_completed(db: StateDB):
+    """A per-op writer's 'completed' must not be clobbered by a coarser run-level finalize."""
+    branch = await _make_branch(db, status="completed")
+    await db.update_branch(branch["id"], ended_at=100.0)
+
+    updated = await db.finalize_branch(branch["id"], status="failed", ended_at=999.0)
+
+    assert updated is False
+    row = await db.get_branch(branch["id"])
+    assert row["status"] == "completed"
+    assert row["ended_at"] == 100.0
+
+
+async def test_finalize_branch_skips_already_failed(db: StateDB):
+    """Same guard, the other terminal value: 'failed' is never overwritten either."""
+    branch = await _make_branch(db, status="failed")
+    await db.update_branch(branch["id"], ended_at=200.0)
+
+    updated = await db.finalize_branch(branch["id"], status="completed", ended_at=999.0)
+
+    assert updated is False
+    row = await db.get_branch(branch["id"])
+    assert row["status"] == "failed"
+    assert row["ended_at"] == 200.0
+
+
+async def test_finalize_branch_missing_row_is_noop(db: StateDB):
+    """A branch id with no row (e.g. a DAG leg that never emitted a first
+    message, so create_branch() never ran) matches zero rows — harmless."""
+    updated = await db.finalize_branch(uid(), status="completed")
+    assert updated is False
+
+
+async def test_finalize_branch_defaults_ended_at_to_now(db: StateDB):
+    branch = await _make_branch(db)
+    before = time.time()
+
+    await db.finalize_branch(branch["id"], status="completed")
+
+    row = await db.get_branch(branch["id"])
+    assert row["ended_at"] >= before
+
+
 # ── Shows ─────────────────────────────────────────────────────────────────────
 
 

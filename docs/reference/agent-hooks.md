@@ -19,6 +19,7 @@ lifecycle hook points — and the built-in handlers registered via
 | `SESSION_START` | `session.start` | `persist_session_start` |
 | `SESSION_END` | `session.end` | `persist_session_end` |
 | `BRANCH_CREATE` | `branch.create` | `persist_branch_provenance` |
+| `BRANCH_END` | `branch.end` | `persist_branch_end` |
 
 ### Reserved (vocabulary only; no handler and no emit callsite yet, per ADR-0023)
 
@@ -56,6 +57,7 @@ keep their defaults.
 | `persist_session_start` | `SESSION_START` |
 | `persist_session_end` | `SESSION_END` |
 | `persist_branch_provenance` | `BRANCH_CREATE` |
+| `persist_branch_end` | `BRANCH_END` |
 | `persist_message` | `MESSAGE_ADD` |
 | `log_api_metrics` | (name-addressable; not in DEFAULT_HOOKS) |
 | `log_tool_call` | (name-addressable; not in DEFAULT_HOOKS) |

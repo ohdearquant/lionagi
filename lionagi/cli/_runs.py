@@ -704,22 +704,40 @@ async def teardown_persist(
             err_str = str(exception) if exception is not None else None
             _usage: dict = {}
             _branch = ctx.get("branch")
+            # Orchestrator/DAG sessions never set a singular ctx["branch"];
+            # every leg (including the orchestrator branch itself) is
+            # tracked in ctx["hooks"] as (branch, handler) pairs instead.
+            _hook_branches = [b for b, _h in ctx.get("hooks", [])]
             try:
                 if _branch is not None:
                     from lionagi.session.signal import _collect_branch_usage
 
                     _usage = _collect_branch_usage(_branch)
-                else:
-                    # Orchestrator/DAG sessions never set a singular ctx["branch"];
-                    # every leg (including the orchestrator branch itself) is
-                    # tracked in ctx["hooks"] as (branch, handler) pairs instead.
-                    _hook_branches = [b for b, _h in ctx.get("hooks", [])]
-                    if _hook_branches:
-                        from lionagi.session.signal import _collect_multi_branch_usage
+                elif _hook_branches:
+                    from lionagi.session.signal import _collect_multi_branch_usage
 
-                        _usage = _collect_multi_branch_usage(_hook_branches)
+                    _usage = _collect_multi_branch_usage(_hook_branches)
             except Exception:  # noqa: BLE001, S110
                 pass
+
+            # BRANCH_END: finalize terminal status/ended_at for every branch
+            # this teardown owns. The single-branch agent path (ctx["branch"])
+            # never gets branches.status written anywhere else, so this is its
+            # only finalize. The multi-leg DAG path (ctx["hooks"]) already gets
+            # per-op status from flow.py's NodeCompleted/NodeFailed handlers;
+            # this is the safety net for legs that never reached a terminal
+            # signal (queued-but-never-started, or still "running" when the
+            # DAG itself raised) -- persist_branch_end()/finalize_branch()'s
+            # own guard skips any branch a per-op writer already finalized.
+            _end_at = time.time()
+            for _b in [_branch] if _branch is not None else _hook_branches:
+                await session_obj.hooks.emit(
+                    HookPoint.BRANCH_END,
+                    branch_id=str(_b.id),
+                    status=final_status,
+                    ended_at=_end_at,
+                )
+
             await session_obj.hooks.emit(
                 HookPoint.SESSION_END,
                 session_id=ctx["session_id"],

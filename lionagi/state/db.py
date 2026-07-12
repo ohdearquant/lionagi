@@ -223,6 +223,10 @@ _BRANCH_COLUMNS = frozenset(
     }
 )
 
+# Terminal branches.status values; kept in sync with the literal SQL in
+# StateDB.finalize_branch()'s guard clause below.
+_BRANCH_TERMINAL_STATUSES = frozenset({"completed", "failed"})
+
 VALID_SESSION_STATUSES = frozenset(
     {
         "running",
@@ -3171,6 +3175,34 @@ class StateDB:
         if bind_params:
             stmt = stmt.bindparams(*bind_params)
         await conn.execute(stmt, params)
+
+    async def finalize_branch(
+        self, branch_id: str, *, status: str, ended_at: float | None = None
+    ) -> bool:
+        """Guarded terminal-status write for one branch row (BRANCH_END).
+
+        Only touches a row whose status is NULL or not already in
+        ``_BRANCH_TERMINAL_STATUSES`` — a run-level finalize (single-branch
+        agent teardown, or the DAG-orchestration safety net) must never
+        clobber a more specific outcome a per-op writer already recorded
+        (cli/orchestrate/flow.py's NodeCompleted/NodeFailed branch-status
+        updates). A branch row that was never created (a DAG leg that never
+        emitted a first message) matches zero rows and is a harmless no-op.
+        Returns True when a row was actually updated.
+        """
+        async with self._tx() as conn:
+            result = await conn.execute(
+                text(
+                    "UPDATE branches SET status = :status, ended_at = :ended_at "
+                    "WHERE id = :id AND (status IS NULL OR status NOT IN ('completed', 'failed'))"
+                ),
+                {
+                    "status": status,
+                    "ended_at": ended_at if ended_at is not None else time.time(),
+                    "id": branch_id,
+                },
+            )
+        return result.rowcount > 0
 
     async def repair_branch_progression(
         self,
