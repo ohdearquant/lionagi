@@ -51,7 +51,7 @@ from ._runs import (
     setup_agent_persist,
     teardown_agent_persist,
 )
-from ._util import EXIT_CODE_BY_STATUS, classify_exception
+from ._util import EXIT_CODE_BY_STATUS, classify_exception, validate_cwd_exists
 
 # ---------------------------------------------------------------------------
 # Preset names supported by --preset
@@ -221,6 +221,11 @@ async def _run_agent(
     called, or setup itself failed and disabled persistence for this run).
     """
     effort = normalize_effort(effort)
+    # Fail fast: a nonexistent --cwd must never silently spawn into a
+    # provider-created directory (or a deep, opaque subprocess failure) —
+    # validate before any run is allocated or persistence is set up.
+    # Forward the returned tilde-expanded path; providers never expand `~`.
+    cwd = validate_cwd_exists(cwd)
     if resume and continue_last:
         raise ConfigurationError("--resume / -r and --continue-last / -c are mutually exclusive.")
     if preset and (resume or continue_last):
