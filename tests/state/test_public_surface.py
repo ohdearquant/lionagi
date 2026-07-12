@@ -34,3 +34,13 @@ assert StateDB is state.StateDB
         [sys.executable, "-c", code], capture_output=True, text=True, timeout=120
     )
     assert result.returncode == 0, result.stderr
+
+
+def test_statedb_listed_in_fresh_module_dir():
+    result = subprocess.run(
+        [sys.executable, "-c", "import lionagi.state as s; assert 'StateDB' in dir(s)"],
+        capture_output=True,
+        text=True,
+        timeout=120,
+    )
+    assert result.returncode == 0, result.stderr

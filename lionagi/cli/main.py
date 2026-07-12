@@ -206,13 +206,17 @@ def _build_parser(selected: _CommandSpec | None) -> tuple[argparse.ArgumentParse
         version=f"%(prog)s {_get_version()}",
     )
     subparsers = parser.add_subparsers(dest="command", required=True)
-    if selected is not None:
-        factory = getattr(selected.loader(), selected.parser_factory)
-        return parser, factory(subparsers)
-
+    # Every command is always registered so the root usage line and error
+    # messages list the full command set; only the selected command loads its
+    # real parser module, the rest stay metadata-only stubs.
+    selected_parser = None
     for spec in _COMMAND_REGISTRY:
-        subparsers.add_parser(spec.name, aliases=list(spec.aliases), help=spec.help)
-    return parser, None
+        if selected is not None and spec.name == selected.name:
+            factory = getattr(selected.loader(), selected.parser_factory)
+            selected_parser = factory(subparsers)
+        else:
+            subparsers.add_parser(spec.name, aliases=list(spec.aliases), help=spec.help)
+    return parser, selected_parser
 
 
 # These forwarding functions preserve the main module's existing patch points
@@ -586,7 +590,13 @@ def main(argv: list[str] | None = None) -> int:
         return run_wait(_argv[1:])
 
     selected = _COMMAND_BY_NAME.get(_argv[0]) if _argv else None
-    parser, selected_parser = _build_parser(selected)
+    try:
+        parser, selected_parser = _build_parser(selected)
+    except Exception as exc:
+        # A lazy command module that fails to import surfaces here at
+        # dispatch; report it as a command-scoped error, not a traceback.
+        log_error(f"command {_argv[0]!r} failed to load: {type(exc).__name__}: {exc}")
+        return 1
 
     # If the user is invoking `li o flow -p NAME`, inject the playbook's
     # declared args as flags on the flow sub-parser BEFORE argparse runs,

@@ -236,3 +236,38 @@ def test_version_and_root_help_work_in_fresh_cli_processes():
             timeout=120,
         )
         assert result.returncode == 0, result.stderr
+
+
+def test_leaf_command_parse_error_preserves_full_root_usage():
+    result = subprocess.run(
+        [sys.executable, "-m", "lionagi.cli", "casts", "--__registry_bogus__"],
+        capture_output=True,
+        text=True,
+        timeout=120,
+    )
+    assert result.returncode == 2
+    # The root usage in the error must list the whole command set, not just
+    # the selected command.
+    assert "agent" in result.stderr
+    assert "doctor" in result.stderr
+
+
+def test_broken_command_loader_reports_error_without_traceback(capsys, monkeypatch):
+    import lionagi.cli.main as main_module
+
+    monkeypatch.setitem(
+        main_module._COMMAND_BY_NAME,
+        "agent",
+        main_module._CommandSpec(
+            "agent",
+            "broken",
+            lambda: __import__("missing_lionagi_command_module"),
+            "add_agent_subparser",
+            "run_agent",
+        ),
+    )
+    rc = main_module.main(["agent", "--help"])
+    assert rc == 1
+    err = capsys.readouterr().err
+    assert "failed to load" in err
+    assert "Traceback" not in err
