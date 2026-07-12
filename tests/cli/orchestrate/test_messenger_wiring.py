@@ -20,6 +20,7 @@ from lionagi.cli.orchestrate._orchestration import (
     OrchestrationEnv,
     build_worker_branch,
     team_worker_system,
+    worker_is_cli,
 )
 from lionagi.operations.builder import OperationGraphBuilder
 from lionagi.session.exchange import Exchange
@@ -34,7 +35,15 @@ class _FakeSession:
         self.branches.append(branch)
 
 
-def _make_env(tmp_path, *, exchange=None, messenger=None, roster=None, team_data=None):
+def _make_env(
+    tmp_path,
+    *,
+    exchange=None,
+    messenger=None,
+    roster=None,
+    team_data=None,
+    messenger_names=None,
+):
     name_counts: dict = {}
 
     def assign_name(role: str) -> str:
@@ -67,11 +76,22 @@ def _make_env(tmp_path, *, exchange=None, messenger=None, roster=None, team_data
     env.exchange = exchange
     env.messenger = messenger
     env.roster = roster
+    env.messenger_names = messenger_names
     return env
 
 
 def _team_data(team_id="t1", team_name="the-team"):
     return {"id": team_id, "name": team_name, "members": ["orchestrator", "alice", "bob"]}
+
+
+def _mixed_team_data(team_id="t1", team_name="the-team"):
+    """A team with a third member ('cli-carl') that is never messenger-bound —
+    for mixed-provider-team tests exercising the messenger_names filter."""
+    return {
+        "id": team_id,
+        "name": team_name,
+        "members": ["orchestrator", "alice", "bob", "cli-carl"],
+    }
 
 
 def _api_imodel(*_a, **_kw):
@@ -475,3 +495,112 @@ async def test_cli_worker_branch_prompt_has_bash_channel_only(tmp_path):
         assert marker in prompt
     for marker in _MESSENGER_MARKERS:
         assert marker not in prompt
+
+
+# ── Mixed-provider teams: messenger roster must match actual reachability ──
+#
+# In a heterogeneous --workers pool (some CLI-provider specs, some API
+# specs) under team mode, only the API workers end up messenger-bound. A
+# messenger-bound worker's prompt must never advertise a CLI-only teammate
+# as a valid `messenger(action="send", to=...)` target — LionMessenger.send
+# rejects any name never registered in env.roster, and CLI-only teammates
+# never get registered (see test_cli_worker_skips_messenger_binding above).
+
+
+def test_worker_is_cli_true_for_cli_provider_spec(tmp_path):
+    env = _make_env(tmp_path)
+    assert worker_is_cli(env, "researcher", model_override="claude_code/opus") is True
+    assert worker_is_cli(env, "researcher", model_override="codex/gpt-5.5") is True
+
+
+def test_worker_is_cli_false_for_api_provider_spec(tmp_path):
+    env = _make_env(tmp_path)
+    assert worker_is_cli(env, "researcher", model_override="openai/gpt-4o-mini") is False
+
+
+def test_worker_is_cli_falls_back_to_env_default_model_spec(tmp_path):
+    """bare env, no override: resolves env.default_model_spec (an API spec here)."""
+    env = _make_env(tmp_path)
+    assert worker_is_cli(env, "researcher") is False
+
+
+def test_team_worker_system_flags_cli_teammates_as_unreachable_via_messenger():
+    """messenger-bound worker + messenger_names excluding cli-carl: cli-carl
+    is annotated in the roster and explicitly called out as unreachable —
+    the section must never instruct sending it a messenger message."""
+    section = team_worker_system(
+        _mixed_team_data(),
+        "alice",
+        messenger_bound=True,
+        messenger_names=frozenset({"alice", "bob"}),
+    )
+    assert "cli-carl" in section
+    assert "no messenger channel" in section
+    assert "### Messenger reach" in section
+    assert "Unknown recipient" in section
+    # bob IS messenger-bound: no unreachable annotation on bob's own line.
+    assert "bob (no messenger channel" not in section
+
+
+def test_team_worker_system_no_unreachable_note_when_all_teammates_bound():
+    """messenger_names covers every teammate: no unreachable flag, no extra
+    section — matches the plain messenger-only template exactly."""
+    section = team_worker_system(
+        _team_data(),
+        "alice",
+        messenger_bound=True,
+        messenger_names=frozenset({"alice", "bob"}),
+    )
+    assert "no messenger channel" not in section
+    assert "### Messenger reach" not in section
+
+
+def test_team_worker_system_bash_channel_ignores_messenger_names():
+    """A bash-channel (messenger_bound=False) worker's prompt is unaffected by
+    messenger_names — only messenger-bound workers need the reachability
+    filter, since the bash `li team` channel's own reachability is unrelated
+    to Exchange/roster registration."""
+    section = team_worker_system(
+        _mixed_team_data(),
+        "alice",
+        messenger_bound=False,
+        messenger_names=frozenset({"alice", "bob"}),
+    )
+    assert "no messenger channel" not in section
+    assert "### Messenger reach" not in section
+    assert "cli-carl" in section  # still listed as a plain teammate
+
+
+@pytest.mark.asyncio
+async def test_messenger_bound_worker_prompt_flags_cli_teammate_end_to_end(tmp_path):
+    """End-to-end: build_worker_branch's real system prompt for a messenger-bound
+    worker in a mixed-provider team (env.messenger_names precomputed the way
+    fanout.py/flow.py do it) never tells the worker to message a CLI-only
+    teammate as if it were reachable."""
+    exchange = Exchange()
+    messenger = LionMessenger(exchange)
+    roster: dict = {}
+    env = _make_env(
+        tmp_path,
+        exchange=exchange,
+        messenger=messenger,
+        roster=roster,
+        team_data=_mixed_team_data(),
+        # Precomputed exactly like fanout.py/flow.py: only alice/bob resolve
+        # to API specs; cli-carl resolves to a CLI spec and is excluded.
+        messenger_names=frozenset({"alice", "bob"}),
+    )
+
+    with patch(
+        "lionagi.cli.orchestrate._orchestration.build_imodel_from_spec",
+        side_effect=_api_imodel,
+    ):
+        wb, _model, _profile, messenger_bound = await build_worker_branch(
+            env, agent_id="alice", role="researcher", explicit_name="alice"
+        )
+
+    assert messenger_bound is True
+    prompt = wb.system.rendered
+    assert "cli-carl (no messenger channel" in prompt
+    assert "### Messenger reach" in prompt
+    assert "Unknown recipient" in prompt

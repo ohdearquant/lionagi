@@ -33,6 +33,7 @@ from ._orchestration import (
     setup_orchestration,
     start_live_persist,
     stop_live_persist,
+    worker_is_cli,
 )
 
 
@@ -190,6 +191,18 @@ async def _run_fanout_inner(
         env.exchange = Exchange()
         env.messenger = LionMessenger(env.exchange)
         env.roster = {}
+        # Mixed-provider teams (heterogeneous --workers pool) build one worker
+        # branch at a time, so which teammates end up messenger-bound isn't
+        # fully known until the whole loop below finishes. Resolve it here,
+        # for every team member up front, so each worker's prompt can flag
+        # CLI-provider teammates as unreachable via messenger regardless of
+        # build order (worker_is_cli is a cheap, side-effect-free pre-pass —
+        # no branch/iModel with real I/O is constructed).
+        env.messenger_names = frozenset(
+            wname
+            for i, (wname, ta) in enumerate(zip(worker_names, assignments, strict=True))
+            if not worker_is_cli(env, ta.assignee, pool[i % len(pool)] if pool else None)
+        )
         progress(f"Team '{team_name}' created ({env.team_data['id']}): {', '.join(worker_names)}")
 
     if _shared is not None:
