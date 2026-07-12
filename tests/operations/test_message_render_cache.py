@@ -199,3 +199,43 @@ def test_copied_dict_response_format_stays_wired_to_structure(via: str):
     uncached = manager.to_chat_msgs(_use_render_cache=False)
     assert orjson.dumps(cached) == orjson.dumps(uncached)
     assert "after" in orjson.dumps(cached).decode()
+
+
+def test_model_response_format_message_pickles_after_render():
+    import copy
+    import pickle
+
+    from lionagi.operations.select.utils import SelectionModel
+    from lionagi.protocols.messages.instruction import Instruction, InstructionContent
+
+    for response_format in (SelectionModel, SelectionModel(selected=["x"])):
+        message = Instruction(
+            content=InstructionContent(instruction="model", response_format=response_format)
+        )
+        rendered = message.rendered  # caches the dynamic request-model class
+        for protocol in (2, pickle.HIGHEST_PROTOCOL):
+            restored = pickle.loads(pickle.dumps(message, protocol=protocol))
+            assert restored.rendered == rendered
+        assert copy.deepcopy(message).rendered == rendered
+
+
+def test_warmed_message_clone_starts_uncached():
+    import copy
+    import pickle
+
+    from lionagi.protocols.messages.instruction import Instruction, InstructionContent
+    from lionagi.protocols.messages.manager import MessageManager
+
+    source = Instruction(
+        content=InstructionContent(instruction="warm", response_format={"answer": "before"})
+    )
+    source.content.response_format["answer"] = "changed"
+    MessageManager(messages=[source]).to_chat_msgs()
+    assert source._render_cache
+
+    for op in (copy.deepcopy, lambda x: pickle.loads(pickle.dumps(x, pickle.HIGHEST_PROTOCOL))):
+        clone = op(source)
+        assert clone._render_cache == {}
+        MessageManager(messages=[clone]).to_chat_msgs()
+        assert clone._render_cache
+    assert source._render_cache

@@ -228,6 +228,24 @@ class Message(Node, Sendable):
     content: Any = None
     _render_cache: dict[str, tuple[Any, int, Any]] = PrivateAttr(default_factory=dict)
 
+    def __getstate__(self) -> dict[str, Any]:
+        # A clone must start uncached: the copied entry would hold the source
+        # content/revision pair and never be servable.
+        state = super().__getstate__()
+        private = state.get("__pydantic_private__")
+        if private and private.get("_render_cache"):
+            private = dict(private)
+            private["_render_cache"] = {}
+            state = {**state, "__pydantic_private__": private}
+        return state
+
+    def __deepcopy__(self, memo: dict | None = None) -> "Message":
+        clone = super().__deepcopy__(memo)
+        private = getattr(clone, "__pydantic_private__", None)
+        if private is not None and private.get("_render_cache"):
+            private["_render_cache"] = {}
+        return clone
+
     @field_validator("content", mode="before")
     @classmethod
     def _validate_content(cls, v: Any) -> Any:

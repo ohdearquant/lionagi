@@ -77,6 +77,22 @@ class InstructionContent(MessageContent):
             self, "_structure_instance", _build_structure(self.response_format, structure_cls)
         )
 
+    def __getstate__(self) -> tuple[Any, Any]:
+        # The private structure may cache a dynamically created request-model
+        # class that cannot be serialized; it is disposable state, excluded
+        # here and rebuilt from the restored public fields in __setstate__.
+        import dataclasses
+
+        slots: dict[str, Any] = {}
+        for f in dataclasses.fields(self):
+            if f.name == "_structure_instance":
+                continue
+            try:
+                slots[f.name] = getattr(self, f.name)
+            except AttributeError:
+                continue
+        return (None, slots)
+
     def __setstate__(self, state: tuple[Any, Any]) -> None:
         # Restore copied/unpickled state through __setattr__ so mutable render
         # inputs are re-wrapped, then rebuild the private structure from the
