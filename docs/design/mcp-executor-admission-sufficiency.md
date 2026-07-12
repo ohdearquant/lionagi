@@ -55,12 +55,16 @@ four classes, once, in a single module-level registry:
 - **Inert annotation** — carries no assertion, contributes nothing to
   admission: `title`, `description`, `default`, `examples`, `deprecated`,
   `readOnly`, `writeOnly`, `$comment`, `$schema`, `$id`, `$anchor`,
-  `$vocabulary`, `format`, `pattern`, `contentEncoding`, `contentMediaType`,
+  `$vocabulary`, `format`, `contentEncoding`, `contentMediaType`,
   `contentSchema`.
 - **Bounding** — narrows the admitted set, carries no recursable subschema of
   its own: `type`, `const`, `enum`, `required`, `dependentRequired`, and the
   standardized numeric/size bounds (`multipleOf`, `maximum`, `minLength`,
-  `maxItems`, `maxContains`, `maxProperties`, ...). An explicit enumeration,
+  `pattern`, `maxItems`, `maxContains`, `maxProperties`, ...). `pattern` is a
+  Draft 2020-12 *assertion* that narrows the admitted set of string
+  instances to those matching a regular expression — it belongs on this
+  list, not among the inert annotations, and carries no recursable
+  subschema of its own either way. An explicit enumeration,
   never a `min*`/`max*` spelling heuristic — a prefix test would exempt an
   arbitrary `minCustomVocabulary` and reopen the bypass this registry exists
   to close.

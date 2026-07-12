@@ -330,7 +330,6 @@ _INERT_ANNOTATION_KEYWORDS = frozenset(
         "$anchor",
         "$vocabulary",
         "format",
-        "pattern",
         "contentEncoding",
         "contentMediaType",
         # `contentSchema` KEEPS its own individually-argued caveat: its
@@ -361,6 +360,7 @@ _BOUNDING_KEYWORDS = frozenset(
         "exclusiveMinimum",
         "maxLength",
         "minLength",
+        "pattern",
         "maxItems",
         "minItems",
         "uniqueItems",

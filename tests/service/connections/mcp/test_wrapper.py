@@ -3194,3 +3194,96 @@ class TestSufficiencyProofKeywordRegistry:
 
     def test_classify_keyword_defaults_unknown_for_unregistered_name(self):
         assert _classify_keyword("this-spelling-was-never-registered") == "unknown"
+
+    def test_classify_keyword_exact_class_per_registered_keyword(self):
+        """A literal keyword -> expected-class mapping for the full union of
+        all four registry sets, checked one keyword at a time against
+        `_classify_keyword`. Stronger than the partition/coverage tests
+        above: those prove no keyword is double-classified or silently
+        unknown, but neither pins any SPECIFIC keyword to a SPECIFIC class --
+        a keyword could be moved between the two non-applicator classes
+        (inert annotation <-> bounding assertion) without either test
+        noticing. This dict is a literal, so any future reclassification is
+        a conscious, reviewed edit to this test, never a silent pass-through."""
+        expected_class = {
+            # inert annotation -- carries no assertion
+            "title": "inert",
+            "description": "inert",
+            "default": "inert",
+            "examples": "inert",
+            "deprecated": "inert",
+            "readOnly": "inert",
+            "writeOnly": "inert",
+            "$comment": "inert",
+            "$schema": "inert",
+            "$id": "inert",
+            "$anchor": "inert",
+            "$vocabulary": "inert",
+            "format": "inert",
+            "contentEncoding": "inert",
+            "contentMediaType": "inert",
+            "contentSchema": "inert",
+            # bounding -- narrows the admitted set, no recursable subschema
+            "type": "bounding",
+            "const": "bounding",
+            "enum": "bounding",
+            "required": "bounding",
+            "dependentRequired": "bounding",
+            "multipleOf": "bounding",
+            "maximum": "bounding",
+            "exclusiveMaximum": "bounding",
+            "minimum": "bounding",
+            "exclusiveMinimum": "bounding",
+            "maxLength": "bounding",
+            "minLength": "bounding",
+            "pattern": "bounding",
+            "maxItems": "bounding",
+            "minItems": "bounding",
+            "uniqueItems": "bounding",
+            "maxContains": "bounding",
+            "minContains": "bounding",
+            "maxProperties": "bounding",
+            "minProperties": "bounding",
+            # modeled applicator -- recursed into and credited
+            "properties": "modeled",
+            "additionalProperties": "modeled",
+            "allOf": "modeled",
+            "anyOf": "modeled",
+            "oneOf": "modeled",
+            "$ref": "modeled",
+            "$defs": "modeled",
+            "definitions": "modeled",
+            # denied applicator -- presence alone denies
+            "patternProperties": "denied",
+            "propertyNames": "denied",
+            "unevaluatedProperties": "denied",
+            "unevaluatedItems": "denied",
+            "dependentSchemas": "denied",
+            "if": "denied",
+            "then": "denied",
+            "else": "denied",
+            "not": "denied",
+            "contains": "denied",
+            "items": "denied",
+            "prefixItems": "denied",
+            "$dynamicRef": "denied",
+            "$dynamicAnchor": "denied",
+            "$recursiveRef": "denied",
+            "$recursiveAnchor": "denied",
+        }
+        all_registered = (
+            _INERT_ANNOTATION_KEYWORDS
+            | _BOUNDING_KEYWORDS
+            | _MODELED_APPLICATOR_KEYWORDS
+            | _DENIED_APPLICATOR_KEYWORDS
+        )
+        assert set(expected_class) == all_registered, (
+            "expected-class mapping in this test is out of sync with the "
+            "registry's own union -- update the mapping alongside any "
+            "registry change"
+        )
+        for keyword, expected in expected_class.items():
+            actual = _classify_keyword(keyword)
+            assert actual == expected, (
+                f"{keyword!r} classified as {actual!r}, expected {expected!r}"
+            )
