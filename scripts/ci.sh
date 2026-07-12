@@ -255,6 +255,15 @@ lint-hygiene() {
   if rg --hidden --max-depth 1 -g '!*.py' -g '!.git' 'lambda:\S' . 2>/dev/null; then
     echo "  FAIL: internal actor identifiers (lambda:...) found at repo root"; rc=1
   fi
+  # The Unicode "λ:" shorthand for the same actor-identifier shape (λ:leo,
+  # λ:lionagi). λ is not Python's lambda keyword, so there is no closure-
+  # syntax ambiguity here — no .py exclusion needed.
+  if rg --hidden "${IPYNB_EXCEPTIONS[@]}" 'λ:\S' $DOC_PATHS 2>/dev/null; then
+    echo "  FAIL: internal actor identifiers (λ:...) found in docs/notebooks"; rc=1
+  fi
+  if rg --hidden --max-depth 1 -g '!.git' 'λ:\S' . 2>/dev/null; then
+    echo "  FAIL: internal actor identifiers (λ:...) found at repo root"; rc=1
+  fi
 
   echo "  checking founder-name process narration (Ocean's)..."
   if rg --hidden "${IPYNB_EXCEPTIONS[@]}" "\bOcean's\b" $DOC_PATHS 2>/dev/null; then
