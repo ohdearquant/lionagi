@@ -774,7 +774,7 @@ async def test_update_play(db: StateDB):
     await db.create_play(play)
 
     end_time = time.time()
-    # ADR-0077 vocab: plays use ``running_complete`` (not ``completed``)
+    # ADR-0057 vocab: plays use ``running_complete`` (not ``completed``)
     # for the "finished running" terminal — ``completed`` belongs to the
     # sessions vocabulary (ADR-0057), not plays.
     # ADR-0057 Phase 2: `running_complete` has no canonical default
@@ -1066,7 +1066,7 @@ async def test_create_session_rejects_invalid_invocation_kind(db: StateDB):
 
 
 async def test_create_session_rejects_invalid_source_kind(db: StateDB):
-    """ADR-0077: source_kind ∈ {live, imported_fs}."""
+    """source_kind ∈ {live, imported_fs}."""
     prog_id = uid()
     await db.create_progression(prog_id)
     with pytest.raises(ValueError, match="source_kind"):
@@ -1102,7 +1102,7 @@ async def test_update_session_rejects_invalid_enums(db: StateDB):
 
 
 async def test_create_play_rejects_invalid_status(db: StateDB):
-    """ADR-0077: play status ∈ 11-vocabulary."""
+    """ADR-0057: play status ∈ 11-vocabulary."""
     show = await _make_show(db)
     with pytest.raises(ValueError, match="play status"):
         await db.create_play(
@@ -1116,7 +1116,7 @@ async def test_create_play_rejects_invalid_status(db: StateDB):
 
 
 async def test_create_show_rejects_invalid_status(db: StateDB):
-    """ADR-0077: show status ∈ {active, completed, aborted, imported}."""
+    """ADR-0057: show status ∈ {active, completed, aborted, imported}."""
     with pytest.raises(ValueError, match="show status"):
         await db.create_show(
             {

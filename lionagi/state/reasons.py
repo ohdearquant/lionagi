@@ -99,7 +99,7 @@ class SessionReasons:
 
 
 class PlayReasons:
-    """Show-play lifecycle reasons (ADR-0077 play vocabulary)."""
+    """Show-play lifecycle reasons (ADR-0057 play vocabulary)."""
 
     PENDING_WAITING_DEPS = "play.pending.waiting_on_deps"
     PENDING_READY = "play.pending.ready"

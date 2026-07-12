@@ -1,6 +1,6 @@
 # Copyright (c) 2023-2026, HaiyangLi <quantocean.li at gmail dot com>
 # SPDX-License-Identifier: Apache-2.0
-"""ADR-0047 built-in handlers wired to ADR-0077/0020/0022 persistence helpers."""
+"""ADR-0047 built-in handlers wired to StateDB persistence helpers."""
 
 from __future__ import annotations
 
@@ -41,7 +41,7 @@ async def persist_session_start(
     invocation_id: str | None = None,
     **_unused: Any,
 ) -> None:
-    """Write the ADR-0077 provenance set + open the lifecycle window."""
+    """Write the session provenance set + open the lifecycle window."""
     from lionagi.state.db import SESSION_TERMINAL_STATUSES
     from lionagi.state.reasons import RunReasons
 

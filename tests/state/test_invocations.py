@@ -121,7 +121,7 @@ async def test_update_invocation_rejects_unknown_column(db: StateDB):
 
 
 async def test_create_session_with_invocation_bumps_count(db: StateDB):
-    """ADR-0077: invocations.session_count tracks attached sessions
+    """invocations.session_count tracks attached sessions
     via the create_session denormalized increment."""
     inv = await _make_invocation(db)
     await _make_session(db, invocation_id=inv["id"], status="running")

@@ -178,7 +178,7 @@ async def _import_one_run(
             "progression_id": session_prog_id,
             "first_msg_id": None,
             "last_msg_id": None,
-            # ADR-0077 enriched provenance — written so imported rows are
+            # Enriched provenance — written so imported rows are
             # queryable by the same fields live runs use.
             "invocation_kind": invocation_kind,
             "playbook_name": manifest.get("playbook_name") or manifest.get("playbook"),

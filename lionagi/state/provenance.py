@@ -1,6 +1,6 @@
 # Copyright (c) 2023-2026, HaiyangLi <quantocean.li at gmail dot com>
 # SPDX-License-Identifier: Apache-2.0
-"""ADR-0077: provenance helpers for writing model/provider/agent_hash columns at session creation."""
+"""Provenance helpers for writing model/provider/agent_hash columns at session creation."""
 
 from __future__ import annotations
 
@@ -34,7 +34,7 @@ def _hash_file(path: Path) -> str:
 
 
 def resolve_model_spec(provider: str | None, model: str | None) -> str | None:
-    """Return the canonical "provider/model" string for ADR-0077 storage, or None if both absent."""
+    """Return the canonical "provider/model" string for StateDB storage, or None if both absent."""
     if not provider and not model:
         return None
     if provider and model:

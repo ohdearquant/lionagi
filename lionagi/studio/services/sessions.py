@@ -156,11 +156,11 @@ async def list_sessions() -> list[dict[str, Any]]:
             "status": row["status"] or "completed",
             "started_at": row["started_at"],
             "ended_at": row["ended_at"],
-            # ADR-0077: caller (runs service) feeds this to staleness_check.
+            # Caller (runs service) feeds this to staleness_check (ADR-0057 D6).
             "last_message_at": row["last_message_at"],
-            # ADR-0077: optional parent skill orchestration.
+            # Optional parent skill orchestration.
             "invocation_id": row["invocation_id"],
-            # ADR-0077: provenance disclosure — resolved values.
+            # Provenance disclosure — resolved values.
             "model": row["model"],
             "provider": row["provider"],
             "effort": row["effort"],
@@ -467,7 +467,7 @@ async def get_session(
     async with _open_db(_DB) as db:
         cur = await db.execute(
             # ADR-0057: include lifecycle columns in session detail
-            # ADR-0077: include provenance columns (model/provider/effort/agent_hash)
+            # Include provenance columns (model/provider/effort/agent_hash)
             """SELECT id, name, created_at, updated_at,
                       playbook_name, agent_name, invocation_kind,
                       show_topic, show_play_name, artifacts_path,
@@ -621,7 +621,7 @@ async def get_session(
         "started_at": started_at,
         "ended_at": ended_at,
         "duration_ms": duration_ms,
-        # ADR-0077: full-session aggregate, not derived from the windowed page.
+        # Full-session aggregate, not derived from the windowed page.
         "last_message_at": session_row["last_message_at"],
         "source_show": source_show,
         "branches": branches,
@@ -629,7 +629,7 @@ async def get_session(
         "message_cursor": message_cursor,
         "message_next_cursor": message_next_cursor,
         "message_stats": full_stats,
-        # ADR-0077: provenance disclosure — same fields exposed on list_sessions().
+        # Provenance disclosure — same fields exposed on list_sessions().
         "model": session_row["model"],
         "provider": session_row["provider"],
         "effort": session_row["effort"],

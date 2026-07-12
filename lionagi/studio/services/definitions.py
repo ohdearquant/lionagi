@@ -21,7 +21,7 @@ from ._path_safety import validate_name_component
 # Per-(kind, name) concurrency lock — shared across all requests in this
 # process.  Spans the DB write inside StateDB.save_definition() AND the
 # subsequent disk write so that both operations are atomic from the service's
-# perspective.  See "HIGH: definition save current-file race" in ADR-0077.
+# perspective, so a crash between them cannot leave disk ahead of history.
 # ---------------------------------------------------------------------------
 
 _DEFINITION_LOCKS: dict[tuple[str, str], asyncio.Lock] = {}

@@ -475,7 +475,7 @@ def test_admin_transition_with_reason_code_succeeds(tmp_path, monkeypatch):
         },
     )
     # IDLE is one of the "healthy enough to refuse" classifications —
-    # admin transition is refused on IDLE/HEALTHY per ADR-0057 D6.
+    # admin transition is refused on IDLE/HEALTHY.
     # Pin to STALE instead so we get a real classifier-override case.
     monkeypatch.setattr(health_mod, "classify_session_health", lambda *a, **kw: SessionHealth.STALE)
     # Re-issue against the same (running) session — the previous call

@@ -1,7 +1,7 @@
 # Copyright (c) 2023-2026, HaiyangLi <quantocean.li at gmail dot com>
 # SPDX-License-Identifier: Apache-2.0
 
-"""ADR-0077 provenance tests — agent_definition_hash(), resolve_model_spec(), and the DB write path for provenance columns."""
+"""Provenance tests — agent_definition_hash(), resolve_model_spec(), and the DB write path for provenance columns."""
 
 from __future__ import annotations
 
@@ -67,7 +67,7 @@ def test_hash_none_for_empty_name():
 
 
 def test_hash_finds_nested_md(tmp_path: Path, monkeypatch):
-    """ADR-0077 lookup order: ``agents/<name>/<name>.md`` first."""
+    """Definition lookup order: ``agents/<name>/<name>.md`` first."""
     import lionagi._paths as _paths_mod
 
     home = tmp_path / "lionagi-home"

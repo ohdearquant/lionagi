@@ -18,13 +18,13 @@ MIGRATION_COLUMNS: dict[str, list[tuple[str, str]]] = {
         ("status", "TEXT"),
         ("started_at", "REAL"),
         ("ended_at", "REAL"),
-        # ADR-0077: activity marker for staleness detection.
+        # Activity marker for staleness detection (read by ADR-0057 D6).
         ("last_message_at", "REAL"),
         # #1235: live flow phase for the `li monitor` PHASE column.
         ("current_phase", "TEXT"),
-        # ADR-0077: optional FK to invocations table.
+        # Optional FK to invocations table.
         ("invocation_id", "TEXT"),
-        # ADR-0077: provenance disclosure columns.
+        # Provenance disclosure columns.
         ("model", "TEXT"),
         ("provider", "TEXT"),
         ("effort", "TEXT"),
@@ -48,7 +48,7 @@ MIGRATION_COLUMNS: dict[str, list[tuple[str, str]]] = {
     ],
     "branches": [
         ("system_msg_id", "TEXT"),
-        # ADR-0077: per-branch provenance.
+        # Per-branch provenance.
         ("model", "TEXT"),
         ("provider", "TEXT"),
         ("agent_name", "TEXT"),

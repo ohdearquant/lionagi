@@ -1301,7 +1301,7 @@ class StateDB:
 
     async def insert_message(self, msg: dict[str, Any]) -> None:
         if msg.get("content") is None:
-            raise ValueError("messages.content is NOT NULL (ADR-0056)")
+            raise ValueError("messages.content is NOT NULL")
         role = msg.get("role")
         if not isinstance(role, str) or not role.strip():
             raise ValueError(f"messages.role must be a non-empty string; got {role!r}")

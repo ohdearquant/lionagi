@@ -78,7 +78,7 @@ async def get_invocation(invocation_id: str) -> dict[str, Any] | None:
             except json.JSONDecodeError:
                 node_meta = None
         sessions = await db.list_sessions_for_invocation(invocation_id)
-        # ADR-0077: structured outcomes alongside child sessions for the invocation detail page.
+        # Structured outcomes alongside child sessions for the invocation detail page.
         artifacts = await db.list_artifacts_for_invocation(invocation_id)
         # ADR-0070: the schedule_run that fired this invocation, when it was a
         # scheduled run, so the detail page can show exit_code/error_detail
@@ -112,7 +112,7 @@ async def get_invocation(invocation_id: str) -> dict[str, Any] | None:
                 "last_message_at": s.get("last_message_at"),
                 "started_at": s.get("started_at"),
                 "ended_at": s.get("ended_at"),
-                # ADR-0077: model disclosure on the child sessions list.
+                # Model disclosure on the child sessions list.
                 "model": s.get("model"),
                 "effort": s.get("effort"),
             }

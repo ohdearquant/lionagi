@@ -138,7 +138,7 @@ async def test_drop_legacy_check_rebuilds_table(tmp_path: Path):
     """An existing DB with the ADR-0057 4-value CHECK is migrated on open."""
     path = tmp_path / "legacy.db"
 
-    # Hand-build the legacy schema: ADR-0057 4-value CHECK on sessions.status.
+    # Hand-build the legacy schema: the old 4-value CHECK on sessions.status.
     async with aiosqlite.connect(str(path)) as old:
         await old.execute(
             """
