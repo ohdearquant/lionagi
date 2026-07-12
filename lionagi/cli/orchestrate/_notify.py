@@ -11,7 +11,20 @@ unregisters it once the run's teardown has fired. This is deliberately
 different from the settings-level `notify.on_terminal` handler (bootstrapped
 once per process, unscoped, delivering the new minimal envelope) -- the
 `--notify` flag is a per-run override carrying the old payload shape for
-existing consumers, not a second copy of the same delivery.
+existing consumers, not a second copy of the same delivery. It registers as
+an *override* (see `TerminalCallbackRegistry.register`), so it replaces the
+settings-resolved handler for this one run's entity only -- other runs still
+get the settings-level handler unaffected.
+
+For backward compatibility with the documented `{payload}`/`{status}`/
+`{invocation_id}` command-template placeholders and the legacy
+`LIONAGI_NOTIFY_PAYLOAD`/`LIONAGI_NOTIFY_STATUS`/`LIONAGI_NOTIFY_INVOCATION_ID`
+environment variables, both are still populated for this adapter -- the
+placeholders are substituted into each parsed argv token directly (no shell
+is ever constructed, so a literal `{payload}` inside a quoted argument is
+still exactly one argv element, never re-parsed), and the same three values
+are set as environment variables on the child process for consumers that
+read them from the environment instead of argv or stdin.
 
 There is no longer a direct teardown call into a notify hook: the terminal
 event that used to trigger it now comes from the guarded lifecycle
@@ -21,6 +34,8 @@ is what prevents double delivery.
 """
 
 from __future__ import annotations
+
+import json
 
 from lionagi.cli.status import _classify
 from lionagi.state.lifecycle.callbacks import (
@@ -34,6 +49,10 @@ from lionagi.state.lifecycle.notify_settings import (
 )
 
 __all__ = ("register_flow_notify_scope", "unregister_flow_notify_scope")
+
+_PAYLOAD_ENV = "LIONAGI_NOTIFY_PAYLOAD"
+_STATUS_ENV = "LIONAGI_NOTIFY_STATUS"
+_INVOCATION_ID_ENV = "LIONAGI_NOTIFY_INVOCATION_ID"
 
 
 def _legacy_payload_builder(
@@ -80,13 +99,13 @@ def register_flow_notify_scope(
 
     Returns the registration name (pass to ``unregister_flow_notify_scope``
     in a ``finally`` block), or ``None`` if *override* resolved to the
-    disabled state (empty, shell-feature, or unparseable -- already logged
-    by ``resolve_notify_config``; never raised).
+    disabled state (empty, shell-feature, unparseable, or a malformed
+    adapter -- already logged by ``resolve_notify_config``/``build_handler``;
+    never raised).
     """
     resolved = resolve_notify_config(override=override)
     if resolved is None:
         return None
-    name = f"notify.flow.{entity_kind}.{entity_id}"
     payload_fn = _legacy_payload_builder(
         invocation_id=invocation_id,
         kind=flow_kind,
@@ -95,11 +114,35 @@ def register_flow_notify_scope(
         cwd=cwd,
         started_at=started_at,
     )
+
+    def _argv_fn(argv: tuple[str, ...], envelope: RunTerminalEnvelope) -> list[str]:
+        payload_json = json.dumps(payload_fn(envelope))
+        status = envelope.terminal_status
+        inv_id = invocation_id or ""
+        return [
+            tok.replace("{payload}", payload_json)
+            .replace("{status}", status)
+            .replace("{invocation_id}", inv_id)
+            for tok in argv
+        ]
+
+    def _env_fn(envelope: RunTerminalEnvelope) -> dict[str, str]:
+        return {
+            _PAYLOAD_ENV: json.dumps(payload_fn(envelope)),
+            _STATUS_ENV: envelope.terminal_status,
+            _INVOCATION_ID_ENV: invocation_id or "",
+        }
+
+    handler = build_handler(resolved, payload_fn=payload_fn, argv_fn=_argv_fn, env_fn=_env_fn)
+    if handler is None:
+        return None
+    name = f"notify.flow.{entity_kind}.{entity_id}"
     registry.register(
         name,
-        build_handler(resolved, payload_fn=payload_fn),
+        handler,
         kinds=[entity_kind],
         ids=[entity_id],
+        override=True,
     )
     return name
 

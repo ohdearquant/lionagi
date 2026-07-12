@@ -168,6 +168,52 @@ async def test_registry_swallows_handler_exception_and_still_runs_others():
 
 
 @pytest.mark.asyncio
+async def test_override_registration_replaces_matching_handler_for_its_own_scope():
+    # An override registration (the flow/play `--notify` scoped sugar) must
+    # win outright for any envelope it matches -- an unscoped, non-override
+    # settings-level handler that would ALSO match is skipped for that one
+    # envelope, but still fires for every other entity the override does
+    # not cover.
+    registry = TerminalCallbackRegistry()
+    settings_hits: list[str] = []
+    override_hits: list[str] = []
+
+    registry.register("settings", lambda env: settings_hits.append(env.entity.id))
+    registry.register(
+        "override",
+        lambda env: override_hits.append(env.entity.id),
+        kinds=["invocation"],
+        ids=["inv-scoped"],
+        override=True,
+    )
+
+    scoped_envelope = RunTerminalEnvelope(
+        event_id="ev-scoped",
+        entity=EntityRef(kind="invocation", id="inv-scoped"),
+        previous_status="running",
+        terminal_status="completed",
+        reason_code="run.completed.ok",
+        occurred_at=time.time(),
+    )
+    other_envelope = RunTerminalEnvelope(
+        event_id="ev-other",
+        entity=EntityRef(kind="invocation", id="inv-other"),
+        previous_status="running",
+        terminal_status="completed",
+        reason_code="run.completed.ok",
+        occurred_at=time.time(),
+    )
+
+    await registry.emit(scoped_envelope)
+    assert override_hits == ["inv-scoped"]
+    assert settings_hits == []  # replaced for this entity's scope only
+
+    await registry.emit(other_envelope)
+    assert override_hits == ["inv-scoped"]  # unaffected -- doesn't match
+    assert settings_hits == ["inv-other"]  # settings handler still fires elsewhere
+
+
+@pytest.mark.asyncio
 async def test_hanging_handler_does_not_starve_a_successful_one_and_is_bounded():
     # Verification item 3: one hanging, one successful handler -- the
     # successful handler is not starved, and total delay is bounded by the
@@ -366,6 +412,43 @@ async def test_reconcile_is_per_consumer(db: StateDB):
     # consumer-a must not affect consumer-b's unacknowledged set.
     pending_b = await reconcile_unacknowledged(db, "consumer-b")
     assert outcome.transition_id in {row["transition_id"] for row in pending_b}
+
+
+@pytest.mark.asyncio
+async def test_late_older_commit_still_reconciles_after_newer_commit_acked(db: StateDB):
+    # Verification item 1a: transaction A captures an earlier timestamp but
+    # stalls and commits after B, which captures a later timestamp, commits
+    # first, and is reconciled and acknowledged. A's event -- despite its
+    # earlier created_at -- MUST still appear in the consumer's next
+    # unacknowledged set: a positional (created_at, id) cursor advanced past
+    # B's timestamp would have skipped it permanently. Real interleaving
+    # requires two concurrent stalled transactions; simulated here by
+    # backdating A's committed row to sort before the already-acked B, since
+    # the reconciliation query is a pure anti-join with no ordering cursor
+    # and therefore cannot distinguish the two cases.
+    service = SQLAlchemyLifecycleService(db, terminal_callbacks=TerminalCallbackRegistry())
+
+    sid_b = await _make_session(db, status="running")
+    outcome_b = await service.transition(_command(entity_id=sid_b, to_status="completed"))
+    pending_before = await reconcile_unacknowledged(db, "consumer-interleave")
+    assert outcome_b.transition_id in {r["transition_id"] for r in pending_before}
+    await ack_delivery(db, outcome_b.transition_id, "consumer-interleave")
+
+    sid_a = await _make_session(db, status="running")
+    outcome_a = await service.transition(_command(entity_id=sid_a, to_status="completed"))
+    b_row = await db.fetch_one(
+        "SELECT created_at FROM status_transitions WHERE id = :id",
+        {"id": outcome_b.transition_id},
+    )
+    await db.execute(
+        "UPDATE status_transitions SET created_at = :ts WHERE id = :id",
+        {"ts": b_row["created_at"] - 5.0, "id": outcome_a.transition_id},
+    )
+
+    pending_after = await reconcile_unacknowledged(db, "consumer-interleave")
+    ids_after = {r["transition_id"] for r in pending_after}
+    assert outcome_a.transition_id in ids_after
+    assert outcome_b.transition_id not in ids_after  # B stays acked
 
 
 @pytest.mark.asyncio

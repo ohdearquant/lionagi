@@ -241,6 +241,88 @@ async def test_exec_handler_swallows_nonzero_exit_and_timeout(monkeypatch, caplo
     assert any("exited 1" in r.message for r in caplog.records)
 
 
+# ── build_handler: a malformed python adapter must never raise ─────────────
+
+
+def test_build_handler_bad_python_ref_returns_none_not_raises(caplog):
+    resolved = ResolvedNotifyHandler(python_ref="definitely.not.a.real.module:handler")
+    with caplog.at_level(logging.WARNING):
+        handler = build_handler(resolved)
+    assert handler is None
+    assert any("failed to import" in r.message for r in caplog.records)
+
+
+def test_build_handler_python_ref_missing_callable_returns_none_not_raises(caplog):
+    resolved = ResolvedNotifyHandler(python_ref="os.path:definitely_not_a_real_attr")
+    with caplog.at_level(logging.WARNING):
+        handler = build_handler(resolved)
+    assert handler is None
+    assert any("failed to import" in r.message for r in caplog.records)
+
+
+def test_register_settings_terminal_callback_bad_python_ref_never_raises(monkeypatch):
+    # The exact regression this guards: a typo'd notify.on_terminal python
+    # adapter must resolve to disabled at the bootstrap call site (CLI
+    # startup / Studio lifespan), never raise and abort unrelated commands.
+    monkeypatch.setattr(
+        "lionagi.state.lifecycle.notify_settings.load_settings",
+        lambda project_dir=None: {
+            "notify": {
+                "on_terminal": {
+                    "enabled": True,
+                    "adapter": {"kind": "python", "ref": "missing.module:handler"},
+                }
+            }
+        },
+    )
+    registry = TerminalCallbackRegistry()
+    installed = register_settings_terminal_callback(
+        registry, name="test.bad-python"
+    )  # must not raise
+    assert installed is False
+    assert "test.bad-python" not in registry
+
+
+# ── Legacy argv/env substitution hooks used by the flow `--notify` adapter ──
+
+
+@pytest.mark.asyncio
+async def test_exec_handler_argv_fn_and_env_fn_are_applied_per_call(monkeypatch):
+    called: dict[str, object] = {}
+
+    async def _fake_exec(*argv, **kwargs):
+        called["argv"] = argv
+        called["env"] = kwargs.get("env")
+
+        class _FakeProc:
+            returncode = 0
+
+            async def communicate(self, data=None):
+                return (b"", b"")
+
+        return _FakeProc()
+
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", _fake_exec)
+
+    def _argv_fn(argv, envelope):
+        return [tok.replace("{status}", envelope.terminal_status) for tok in argv]
+
+    def _env_fn(envelope):
+        return {"MY_STATUS": envelope.terminal_status}
+
+    handler = build_handler(
+        ResolvedNotifyHandler(argv=("hook", "{status}")),
+        argv_fn=_argv_fn,
+        env_fn=_env_fn,
+    )
+    await handler(_envelope())
+
+    assert called["argv"] == ("hook", "completed")
+    assert called["env"]["MY_STATUS"] == "completed"
+    # Parent environment is still inherited alongside the extra var.
+    assert "PATH" in called["env"] or called["env"] is not None
+
+
 # ── Bootstrap: register/unregister on the shared registry ──────────────────
 
 

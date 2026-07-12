@@ -27,9 +27,10 @@ import asyncio
 import importlib
 import json
 import logging
+import os
 import re
 import shlex
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any
 
@@ -236,6 +237,8 @@ async def _await_proc_dead(proc: asyncio.subprocess.Process, grace: float = 2.0)
 
 
 PayloadBuilder = Callable[[RunTerminalEnvelope], dict[str, Any]]
+ArgvBuilder = Callable[[tuple[str, ...], RunTerminalEnvelope], Sequence[str]]
+EnvBuilder = Callable[[RunTerminalEnvelope], Mapping[str, str]]
 
 
 def _default_payload(envelope: RunTerminalEnvelope) -> dict[str, Any]:
@@ -243,19 +246,26 @@ def _default_payload(envelope: RunTerminalEnvelope) -> dict[str, Any]:
 
 
 def _make_exec_handler(
-    argv: Sequence[str], *, payload_fn: PayloadBuilder = _default_payload
+    argv: Sequence[str],
+    *,
+    payload_fn: PayloadBuilder = _default_payload,
+    argv_fn: ArgvBuilder | None = None,
+    env_fn: EnvBuilder | None = None,
 ) -> TerminalCallbackHandler:
-    argv = tuple(argv)
+    static_argv = tuple(argv)
 
     async def _exec_handler(envelope: RunTerminalEnvelope) -> None:
         payload = json.dumps(payload_fn(envelope)).encode()
+        launch_argv = tuple(argv_fn(static_argv, envelope)) if argv_fn is not None else static_argv
+        env = {**os.environ, **env_fn(envelope)} if env_fn is not None else None
         proc = None
         try:
             proc = await asyncio.create_subprocess_exec(
-                *argv,
+                *launch_argv,
                 stdin=asyncio.subprocess.PIPE,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
+                env=env,
                 start_new_session=True,
             )
             _, stderr_bytes = await asyncio.wait_for(
@@ -265,16 +275,19 @@ def _make_exec_handler(
             if proc is not None:
                 await aterminate_process_group(proc, grace=None)
                 await _await_proc_dead(proc)
-            logger.warning("notify.on_terminal exec adapter %r timed out", argv)
+            logger.warning("notify.on_terminal exec adapter %r timed out", launch_argv)
             return
         except Exception as exc:  # noqa: BLE001 -- an adapter failure must never affect the run
-            logger.warning("notify.on_terminal exec adapter %r failed to run: %s", argv, exc)
+            logger.warning("notify.on_terminal exec adapter %r failed to run: %s", launch_argv, exc)
             return
         if proc.returncode != 0:
             detail = stderr_bytes.decode(errors="replace").strip()
             suffix = f": {detail}" if detail else ""
             logger.warning(
-                "notify.on_terminal exec adapter %r exited %s%s", argv, proc.returncode, suffix
+                "notify.on_terminal exec adapter %r exited %s%s",
+                launch_argv,
+                proc.returncode,
+                suffix,
             )
 
     return _exec_handler
@@ -287,18 +300,39 @@ def _make_python_handler(ref: str) -> TerminalCallbackHandler:
 
 
 def build_handler(
-    resolved: ResolvedNotifyHandler, *, payload_fn: PayloadBuilder = _default_payload
-) -> TerminalCallbackHandler:
-    """Build the process-local handler for a resolved adapter spec.
+    resolved: ResolvedNotifyHandler,
+    *,
+    payload_fn: PayloadBuilder = _default_payload,
+    argv_fn: ArgvBuilder | None = None,
+    env_fn: EnvBuilder | None = None,
+) -> TerminalCallbackHandler | None:
+    """Build the process-local handler for a resolved adapter spec, or
+    ``None`` if the spec fails to build (never raises).
 
     *payload_fn* only affects the exec adapter (whose stdin bytes are the
     only surface an external payload shape controls); a python adapter is
-    called with the envelope object directly regardless.
+    called with the envelope object directly regardless. *argv_fn*/*env_fn*
+    let a caller (the flow/play `--notify` legacy adapter) derive per-event
+    argv substitutions or extra environment variables from the same
+    envelope; the generic settings-driven adapter leaves both unset.
+
+    A python adapter ref is imported eagerly here (at build time, not at
+    call time), so a malformed ``module:callable`` reference is caught and
+    logged rather than raised -- a typo in configuration must resolve to
+    disabled, never crash the bootstrap call site.
     """
     if resolved.python_ref is not None:
-        return _make_python_handler(resolved.python_ref)
+        try:
+            return _make_python_handler(resolved.python_ref)
+        except Exception as exc:  # noqa: BLE001 -- a bad adapter ref must resolve to disabled
+            logger.warning(
+                "notify.on_terminal python adapter %r failed to import: %s; resolving to disabled.",
+                resolved.python_ref,
+                exc,
+            )
+            return None
     assert resolved.argv is not None  # _resolve_* never returns an empty spec
-    return _make_exec_handler(resolved.argv, payload_fn=payload_fn)
+    return _make_exec_handler(resolved.argv, payload_fn=payload_fn, argv_fn=argv_fn, env_fn=env_fn)
 
 
 def register_settings_terminal_callback(
@@ -319,9 +353,13 @@ def register_settings_terminal_callback(
     if resolved is None:
         registry.unregister(name)
         return False
+    handler = build_handler(resolved)
+    if handler is None:
+        registry.unregister(name)
+        return False
     registry.register(
         name,
-        build_handler(resolved),
+        handler,
         kinds=resolved.filter_kinds,
         ids=resolved.filter_ids,
     )

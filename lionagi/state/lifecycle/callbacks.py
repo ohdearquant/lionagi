@@ -137,6 +137,7 @@ class _Registration:
     handler: TerminalCallbackHandler
     kinds: frozenset[str] | None
     ids: frozenset[str] | None
+    override: bool = False
 
     def matches(self, envelope: RunTerminalEnvelope) -> bool:
         if self.kinds is not None and envelope.entity.kind not in self.kinds:
@@ -165,12 +166,25 @@ class TerminalCallbackRegistry:
         *,
         kinds: Sequence[str] | None = None,
         ids: Sequence[str] | None = None,
+        override: bool = False,
     ) -> None:
+        """Register *handler* under *name* (replaces an existing same-name
+        registration in place).
+
+        *override* marks this registration as a per-run override: for any
+        envelope it matches, only override registrations fire -- any
+        non-override registration that would otherwise also match (e.g. an
+        unscoped settings-level handler) is skipped for that one envelope.
+        This is scoped strictly to the envelopes the override itself
+        matches (normally via ``ids``); it never disables a non-override
+        handler for entities outside the override's own filter.
+        """
         self._registrations[name] = _Registration(
             name=name,
             handler=handler,
             kinds=frozenset(kinds) if kinds is not None else None,
             ids=frozenset(ids) if ids is not None else None,
+            override=override,
         )
 
     def unregister(self, name: str) -> None:
@@ -193,6 +207,14 @@ class TerminalCallbackRegistry:
         targets = [r for r in self._registrations.values() if r.matches(envelope)]
         if not targets:
             return
+        overrides = [r for r in targets if r.override]
+        if overrides:
+            # A per-run override wins this envelope outright -- any
+            # non-override handler that would also have matched (typically
+            # an unscoped settings-level handler) is skipped, replacing it
+            # for this run's scope only. Other envelopes the override does
+            # not match are entirely unaffected.
+            targets = overrides
 
         async def _run_one(reg: _Registration) -> None:
             try:

@@ -6,7 +6,74 @@
 import subprocess
 import sys
 
-from lionagi.cli.main import _handle_play_shortcut
+from lionagi.cli.main import _handle_play_shortcut, main
+
+
+def test_main_resolves_notify_settings_project_dir_from_cwd_flag(monkeypatch):
+    """`li <cmd> --cwd DIR ...` must resolve notify.on_terminal against DIR's
+    own .lionagi/settings.yaml, not the shell's own cwd -- the bootstrap
+    call happens before argparse has parsed --cwd for any subcommand, so
+    main() pre-scans argv for it the same way it already does for -v."""
+    calls: list[dict] = []
+
+    def _spy(*, project_dir=None):
+        calls.append({"project_dir": project_dir})
+        return False
+
+    monkeypatch.setattr(
+        "lionagi.state.lifecycle.notify_settings.register_settings_terminal_callback",
+        _spy,
+    )
+    main(["skill", "--cwd", "/some/project", "definitely-not-a-real-skill-xyz"])
+    assert calls == [{"project_dir": "/some/project"}]
+
+
+def test_main_resolves_notify_settings_project_dir_from_cwd_equals_form(monkeypatch):
+    calls: list[dict] = []
+
+    def _spy(*, project_dir=None):
+        calls.append({"project_dir": project_dir})
+        return False
+
+    monkeypatch.setattr(
+        "lionagi.state.lifecycle.notify_settings.register_settings_terminal_callback",
+        _spy,
+    )
+    main(["skill", "--cwd=/other/project", "definitely-not-a-real-skill-xyz"])
+    assert calls == [{"project_dir": "/other/project"}]
+
+
+def test_main_notify_settings_project_dir_none_without_cwd_flag(monkeypatch):
+    calls: list[dict] = []
+
+    def _spy(*, project_dir=None):
+        calls.append({"project_dir": project_dir})
+        return False
+
+    monkeypatch.setattr(
+        "lionagi.state.lifecycle.notify_settings.register_settings_terminal_callback",
+        _spy,
+    )
+    main(["skill", "definitely-not-a-real-skill-xyz"])
+    assert calls == [{"project_dir": None}]
+
+
+def test_main_notify_settings_ignores_cwd_after_end_of_options_sentinel(monkeypatch):
+    """A literal '--cwd VALUE' occurring only after '--' (e.g. inside a
+    scheduled action_prompt's free-form text) must not be picked up, mirroring
+    the existing -v/--verbose sentinel-respecting scan."""
+    calls: list[dict] = []
+
+    def _spy(*, project_dir=None):
+        calls.append({"project_dir": project_dir})
+        return False
+
+    monkeypatch.setattr(
+        "lionagi.state.lifecycle.notify_settings.register_settings_terminal_callback",
+        _spy,
+    )
+    main(["skill", "definitely-not-a-real-skill-xyz", "--", "--cwd", "/should/not/be/used"])
+    assert calls == [{"project_dir": None}]
 
 
 def test_handle_play_shortcut_rewrites_name_to_flow_argv():

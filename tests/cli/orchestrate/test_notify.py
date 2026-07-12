@@ -24,6 +24,7 @@ from lionagi.state.lifecycle.callbacks import (
     RunTerminalEnvelope,
     TerminalCallbackRegistry,
 )
+from lionagi.state.lifecycle.notify_settings import ResolvedNotifyHandler, build_handler
 
 
 def _capture_command(out_file: Path) -> str:
@@ -226,6 +227,107 @@ async def test_timeout_is_swallowed_and_logged(caplog, monkeypatch: pytest.Monke
     elapsed = time.monotonic() - start
     assert elapsed < 5.0
     assert any("timed out" in r.message for r in caplog.records)
+
+
+def _capture_env_and_argv_command(out_file: Path) -> str:
+    """An argv command that writes both its argv (post-substitution) and
+    the three legacy env vars to *out_file* as JSON, for asserting
+    backward-compatible placeholder/env delivery."""
+    return (
+        f"{shlex.quote(sys.executable)} -c "
+        '"import json, os, pathlib, sys; '
+        "data = json.dumps({"
+        "'argv': sys.argv[1:-1], "
+        "'env': {k: os.environ.get(k) for k in "
+        "('LIONAGI_NOTIFY_PAYLOAD', 'LIONAGI_NOTIFY_STATUS', 'LIONAGI_NOTIFY_INVOCATION_ID')}"
+        "}); "
+        'pathlib.Path(sys.argv[-1]).write_text(data)" '
+        "{status} {invocation_id} "
+        f"{shlex.quote(str(out_file))}"
+    )
+
+
+async def test_notify_substitutes_legacy_placeholders_into_argv_tokens(tmp_path: Path):
+    out_file = tmp_path / "captured.json"
+    registry = TerminalCallbackRegistry()
+    register_flow_notify_scope(
+        registry,
+        override=_capture_env_and_argv_command(out_file),
+        entity_kind="invocation",
+        entity_id="inv-1",
+        invocation_id="inv-42",
+        flow_kind="flow",
+        playbook=None,
+        save_dir=None,
+        cwd="/repo",
+        started_at=0.0,
+    )
+    await registry.emit(_envelope(eid="inv-1", status="failed"))
+
+    captured = json.loads(out_file.read_text())
+    # {status}/{invocation_id} were substituted directly into argv tokens --
+    # never re-parsed by a shell, so this is exactly one argv element each.
+    assert captured["argv"] == ["failed", "inv-42"]
+
+
+async def test_notify_sets_legacy_env_vars_on_child_process(tmp_path: Path):
+    out_file = tmp_path / "captured.json"
+    registry = TerminalCallbackRegistry()
+    register_flow_notify_scope(
+        registry,
+        override=_capture_env_and_argv_command(out_file),
+        entity_kind="invocation",
+        entity_id="inv-1",
+        invocation_id="inv-42",
+        flow_kind="flow",
+        playbook=None,
+        save_dir=None,
+        cwd="/repo",
+        started_at=0.0,
+    )
+    await registry.emit(_envelope(eid="inv-1", status="failed"))
+
+    captured = json.loads(out_file.read_text())
+    assert captured["env"]["LIONAGI_NOTIFY_STATUS"] == "failed"
+    assert captured["env"]["LIONAGI_NOTIFY_INVOCATION_ID"] == "inv-42"
+    payload = json.loads(captured["env"]["LIONAGI_NOTIFY_PAYLOAD"])
+    assert payload["invocation_id"] == "inv-42"
+    assert payload["status"] == "failed"
+
+
+async def test_notify_override_replaces_settings_handler_for_its_own_scope(tmp_path: Path):
+    # The P1 fix: an already-registered unscoped settings-level handler must
+    # NOT also fire for the entity `--notify` is scoped to -- the override
+    # replaces it for that one entity, but leaves the settings handler
+    # active for every other entity.
+    settings_out = tmp_path / "settings.json"
+    override_out = tmp_path / "override.json"
+    registry = TerminalCallbackRegistry()
+    registry.register(
+        "notify.settings.on_terminal",
+        build_handler(
+            ResolvedNotifyHandler(argv=tuple(shlex.split(_capture_command(settings_out))))
+        ),
+    )
+    register_flow_notify_scope(
+        registry,
+        override=_capture_command(override_out),
+        entity_kind="invocation",
+        entity_id="inv-scoped",
+        invocation_id="inv-scoped",
+        flow_kind="flow",
+        playbook=None,
+        save_dir=None,
+        cwd="/repo",
+        started_at=0.0,
+    )
+
+    await registry.emit(_envelope(kind="invocation", eid="inv-scoped"))
+    assert override_out.exists()
+    assert not settings_out.exists()  # settings handler suppressed for this entity
+
+    await registry.emit(_envelope(kind="invocation", eid="some-other-invocation"))
+    assert settings_out.exists()  # unaffected for a different entity
 
 
 async def test_no_shell_ever_used(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):

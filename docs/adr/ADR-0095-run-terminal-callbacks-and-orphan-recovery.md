@@ -1,6 +1,6 @@
 # ADR-0095: Run-terminal callbacks and orphan recovery
 
-- **Status**: Proposed
+- **Status**: Accepted
 - **Kind**: Aspirational
 - **Area**: scheduling-control-plane
 - **Date**: 2026-07-12

@@ -220,6 +220,75 @@ async def test_run_flow_fires_real_hook_with_settings_configured_command(
     assert payload["terminal_status"] == "completed"
 
 
+async def test_run_flow_notify_flag_overrides_settings_handler_for_this_run_only(
+    temp_db_path: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    """The P1 fix, end to end: when a process-wide settings handler is
+    already bootstrapped, `--notify` on one run must replace it for that
+    run's own invocation entity only -- not fire both for the SAME
+    invocation event. A tracked run's teardown also independently finalizes
+    its own session entity (a session-shutdown terminal transition unrelated
+    to `--notify`'s scope), which the unscoped settings handler legitimately
+    still receives -- that is a different entity, not a double-fire of the
+    invocation event the override targets."""
+    monkeypatch.setenv("HOME", str(tmp_path / "isolated_home"))
+    env = _make_env(tmp_path)
+    invocation_id = str(uuid4())
+    await _make_invocation(temp_db_path, invocation_id)
+    settings_out = tmp_path / "settings.json"
+    override_out = tmp_path / "override.json"
+    repo_dir = tmp_path / "repo"
+    repo_dir.mkdir()
+    _write_project_settings(
+        repo_dir,
+        {
+            "enabled": True,
+            "adapter": {"kind": "exec", "argv": shlex.split(_capture_command(settings_out))},
+        },
+    )
+
+    from lionagi.state.lifecycle.notify_settings import register_settings_terminal_callback
+
+    installed = register_settings_terminal_callback(project_dir=str(repo_dir))
+    assert installed is True
+    try:
+        with (
+            patch(
+                "lionagi.cli.orchestrate.flow.setup_orchestration",
+                AsyncMock(return_value=env),
+            ),
+            patch(
+                "lionagi.cli.orchestrate.flow._run_flow_inner",
+                AsyncMock(return_value="ok"),
+            ),
+        ):
+            result, terminal_status = await _run_flow(
+                "claude",
+                "do the thing",
+                cwd=str(repo_dir),
+                invocation_id=invocation_id,
+                notify=_capture_command(override_out),
+            )
+    finally:
+        from lionagi.state.lifecycle.callbacks import DEFAULT_TERMINAL_CALLBACKS
+
+        DEFAULT_TERMINAL_CALLBACKS.unregister("notify.settings.on_terminal")
+
+    assert result == "ok"
+    assert terminal_status == "completed"
+    assert override_out.exists()  # --notify's legacy adapter fired
+    override_payload = json.loads(override_out.read_text())
+    assert override_payload["invocation_id"] == invocation_id
+
+    # The settings handler still fires for the run's separate session-level
+    # terminal transition (a different entity `--notify` never scoped to),
+    # but it must never receive the invocation's own event -- that one was
+    # replaced by the override for this run's scope.
+    if settings_out.exists():
+        settings_payload = json.loads(settings_out.read_text())
+        assert settings_payload["entity"]["kind"] != "invocation"
+
+
 async def test_run_flow_swallows_failing_hook_and_keeps_real_terminal_status(
     temp_db_path: Path, tmp_path: Path
 ):
