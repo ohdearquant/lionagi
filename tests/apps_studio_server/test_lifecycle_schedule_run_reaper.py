@@ -81,6 +81,44 @@ async def _seed_schedule_run(
     return rid
 
 
+async def _seed_leased_task_row(
+    db_path: Path,
+    *,
+    run_id: str | None = None,
+    status: str = "running",
+    fired_at: float | None = None,
+    updated_at: float | None = None,
+    lease_expires_at: float | None = None,
+) -> str:
+    """Seed an ad-hoc task-queue row: schedule_id IS NULL, claimed via the
+    lease columns worker.py's own reap_expired_leases() consults -- distinct
+    from a scheduler-fired occurrence row."""
+    rid = run_id or str(uuid.uuid4())
+    now = time.time()
+    async with StateDB(db_path) as db:
+        await db.create_schedule_run(
+            {
+                "id": rid,
+                "schedule_id": None,
+                "trigger_context": {"source": "task_queue"},
+                "action_kind": "agent",
+                "action_args": {"prompt": "do the thing"},
+                "status": status,
+                "fired_at": fired_at or now,
+            }
+        )
+        await db.execute(
+            "UPDATE schedule_runs SET leased_by = ?, lease_expires_at = ? WHERE id = ?",
+            ("worker-1", lease_expires_at, rid),
+        )
+        if updated_at is not None:
+            await db.execute(
+                "UPDATE schedule_runs SET updated_at = ? WHERE id = ?",
+                (updated_at, rid),
+            )
+    return rid
+
+
 async def _get_schedule_run(db_path: Path, run_id: str) -> dict | None:
     async with StateDB(db_path) as db:
         return await db.get_schedule_run(run_id)
@@ -144,6 +182,41 @@ def test_reap_stale_schedule_runs_skips_terminal_status(tmp_path, monkeypatch):
 
     run = run_async(_get_schedule_run(db_path, run_id))
     assert run["status"] == "completed"
+
+
+def test_reap_stale_schedule_runs_excludes_leased_task_queue_rows(tmp_path, monkeypatch):
+    """schedule_runs also backs the ad-hoc task queue (schedule_id IS NULL,
+    claimed via leased_by/lease_expires_at) which worker.reap_expired_leases()
+    already owns via its own lease-attempts retry policy. A leased task row
+    stuck at 'running' past this reaper's stale window must survive
+    untouched -- reaping it here would mark it timed_out before the lease
+    even expires, bypassing the lease's requeue/retry-budget semantics
+    entirely. A scheduler-fired row (schedule_id set) in the same scan must
+    still be reaped as usual."""
+    db_path = tmp_path / "state.db"
+    _monkey_db(monkeypatch, db_path)
+
+    task_run_id = run_async(
+        _seed_leased_task_row(
+            db_path,
+            status="running",
+            updated_at=_STALE,
+            lease_expires_at=time.time() + 3600,  # lease still live
+        )
+    )
+    sid = run_async(_seed_schedule(db_path))
+    sched_run_id = run_async(_seed_schedule_run(db_path, sid, status="running", updated_at=_STALE))
+
+    from lionagi.studio.services.lifecycle import reap_stale_schedule_runs
+
+    count = run_async(reap_stale_schedule_runs(stale_hours=6.0))
+    assert count == 1
+
+    task_run = run_async(_get_schedule_run(db_path, task_run_id))
+    assert task_run["status"] == "running"
+
+    sched_run = run_async(_get_schedule_run(db_path, sched_run_id))
+    assert sched_run["status"] == "timed_out"
 
 
 def test_reap_stale_schedule_runs_falls_back_to_fired_at_when_never_touched(tmp_path, monkeypatch):

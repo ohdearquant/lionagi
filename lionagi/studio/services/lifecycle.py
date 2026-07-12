@@ -479,6 +479,17 @@ async def reap_stale_schedule_runs(*, stale_hours: float | None = None) -> int:
     (``expected_updated_at``) revalidating the row hasn't moved between the
     scan and the write -- the same optimistic-lock pattern
     ``reap_stale_plays`` uses.
+
+    Scoped to ``schedule_id IS NOT NULL`` -- scheduler-fired occurrence
+    rows only. schedule_runs also backs the ad-hoc task queue (schedule_id
+    IS NULL, claimed via a lease: ``leased_by``/``lease_expires_at``/
+    ``lease_attempts``), which has its own recovery loop and policy
+    (``worker.reap_expired_leases``, run every ``worker_tick``): a task
+    whose lease is still live but has been running longer than this
+    reaper's stale window would otherwise get marked ``timed_out`` here
+    before the lease even expires, bypassing the lease's own
+    requeue/retry-budget semantics entirely. Excluding those rows leaves
+    them exclusively to the lease reaper.
     """
     from lionagi.studio.config import SCHEDULE_RUN_STALE_HOURS
 
@@ -496,7 +507,8 @@ async def reap_stale_schedule_runs(*, stale_hours: float | None = None) -> int:
     try:
         async with StateDB() as db:
             rows = await db.fetch_all(
-                "SELECT id, fired_at, updated_at FROM schedule_runs WHERE status = 'running'"
+                "SELECT id, fired_at, updated_at FROM schedule_runs "
+                "WHERE status = 'running' AND schedule_id IS NOT NULL"
             )
             for row in rows:
                 run_id = row["id"]
