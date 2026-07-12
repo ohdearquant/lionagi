@@ -30,11 +30,14 @@ call — recognized only when the receiver statically denotes
 ``lionagi.operations.flow`` — whether assigned to a name first or called
 inline. Import provenance is tracked per lexical scope, not as one flat
 whole-module timeline: each function/lambda scope starts from a copy of its
-enclosing scope's provenance, first masking every name any local import or
-assignment in the function body binds -- ANYWHERE in the body, conditional
-or not, since Python function scope is not statement-ordered: a name bound
-only inside an ``if``/``try`` is still a lexical local for the whole
-function, so an inherited same-named binding must not leak through -- and
+enclosing scope's provenance, first masking every name any local import,
+assignment, ``for``/``async for`` target, match-pattern capture, or
+augmented assignment in the function body binds -- ANYWHERE in the body,
+conditional or not, since Python function scope is not statement-ordered: a
+name bound only inside an ``if``/``try``/``for``/``match``-case is still a
+lexical local for the whole function, so an inherited same-named binding
+must not leak through (masking-only binder forms never establish or restore
+provenance themselves) -- and
 also discarding any parameter-shadowed name, then replays its OWN body's
 UNCONDITIONAL binding events (in source order) on top of that masked copy —
 so a function-local reimport genuinely restores what a same-named parameter
@@ -621,21 +624,74 @@ def _resolve_constructor_alias_rhs(
     return None
 
 
-_BindingEvent = tuple[ast.Import | ast.ImportFrom | ast.Assign, bool]
+@dataclass(frozen=True)
+class _NameBindingEvent:
+    """A binder form that makes *name* a lexical local of the enclosing
+    scope but is never recognized as establishing/restoring import
+    provenance: a ``for``/``async for`` statement target, a match-pattern
+    capture, or an augmented-assignment target. Carries only the name (plus
+    position, so it sorts alongside the other event kinds) -- ``_replay_
+    binding_events`` always skips it (these forms only MASK; see
+    ``_scope_bound_names``), it exists purely to feed the mask collection."""
+
+    name: str
+    lineno: int
+    col_offset: int
+
+
+_BindingEvent = tuple[ast.Import | ast.ImportFrom | ast.Assign | _NameBindingEvent, bool]
+
+
+def _store_names(target: ast.expr) -> set[str]:
+    """Every ``Name`` bound (Store context) anywhere inside *target*,
+    including tuple/list unpacking (``for (a, importlib) in ...``). A
+    Name embedded in an Attribute/Subscript base (``obj`` in ``obj.attr``)
+    is Load context, not Store, so ``ast.walk`` naturally excludes it --
+    only genuine new local bindings are collected."""
+    return {
+        node.id
+        for node in ast.walk(target)
+        if isinstance(node, ast.Name) and isinstance(node.ctx, ast.Store)
+    }
+
+
+def _pattern_capture_names(pattern: ast.pattern) -> set[str]:
+    """Every name a match *pattern* binds as a capture: bare-name captures
+    and as-patterns (``MatchAs.name``, including under a ``MatchOr`` --
+    ``case {"x": importlib} | {"y": importlib}:`` is two ``MatchMapping``
+    patterns each holding a ``MatchAs`` capture named ``importlib``, both
+    found by walking), star captures in a sequence pattern (``MatchStar.
+    name``), and the ``**rest`` capture of a mapping pattern (``MatchMapping.
+    rest``). Match patterns never contain a nested function/lambda scope, so
+    a plain ``ast.walk`` is safe here."""
+    names: set[str] = set()
+    for node in ast.walk(pattern):
+        if isinstance(node, ast.MatchAs) and node.name is not None:
+            names.add(node.name)
+        elif isinstance(node, ast.MatchStar) and node.name is not None:
+            names.add(node.name)
+        elif isinstance(node, ast.MatchMapping) and node.rest is not None:
+            names.add(node.rest)
+    return names
 
 
 def _collect_scope_binding_events(
     stmts: list[ast.stmt], conditional: bool, events: list[_BindingEvent]
 ) -> None:
-    """Collect Import/ImportFrom/simple-Name-Assign binding events out of
-    *stmts* -- the statement list of ONE lexical scope (a module body or a
-    function body) -- tagging each with whether it is CONDITIONAL: nested
-    inside an ``if``/``try``/``except``/``for``/``while``/``with`` body, or
-    inside any ``match`` statement's case body (a case might not match, so
-    every case body is conditional regardless of which case, if any, is the
-    one that runs -- the subject expression and per-case guards hold no
-    binding statements themselves and are not walked), rather than a direct
-    statement of *stmts* itself. Descends into a nested class body
+    """Collect Import/ImportFrom/simple-Name-Assign binding events, plus
+    mask-only ``_NameBindingEvent``s for AugAssign targets, out of *stmts* --
+    the statement list of ONE lexical scope (a module body or a function
+    body) -- tagging each with whether it is CONDITIONAL: nested inside an
+    ``if``/``try``/``except``/``for``/``while``/``with`` body, or inside any
+    ``match`` statement's case body (a case might not match, so every case
+    body is conditional regardless of which case, if any, is the one that
+    runs), rather than a direct statement of *stmts* itself. Also emits
+    mask-only ``_NameBindingEvent``s (always CONDITIONAL, since the
+    surrounding loop/case may not execute) for ``for``/``async for``
+    statement targets and match-pattern captures -- these ARE lexical locals
+    of the enclosing function scope (unlike a comprehension target, which is
+    its own separate scope and is never walked here since comprehensions are
+    expressions, not statements). Descends into a nested class body
     transparently (a class body is not a distinct scope for this analysis and
     was never treated as one) but stops at a nested function, async function,
     or lambda -- those get their own independent scope when ``_SinkVisitor``
@@ -650,6 +706,13 @@ def _collect_scope_binding_events(
             and isinstance(stmt.targets[0], ast.Name)
         ):
             events.append((stmt, conditional))
+        elif isinstance(stmt, ast.AugAssign) and isinstance(stmt.target, ast.Name):
+            events.append(
+                (
+                    _NameBindingEvent(stmt.target.id, stmt.lineno, stmt.col_offset),
+                    conditional,
+                )
+            )
 
         if isinstance(stmt, ast.If):
             _collect_scope_binding_events(stmt.body, True, events)
@@ -661,6 +724,8 @@ def _collect_scope_binding_events(
             _collect_scope_binding_events(stmt.orelse, True, events)
             _collect_scope_binding_events(stmt.finalbody, True, events)
         elif isinstance(stmt, (ast.For, ast.AsyncFor)):
+            for name in _store_names(stmt.target):
+                events.append((_NameBindingEvent(name, stmt.lineno, stmt.col_offset), True))
             _collect_scope_binding_events(stmt.body, True, events)
             _collect_scope_binding_events(stmt.orelse, True, events)
         elif isinstance(stmt, ast.While):
@@ -670,6 +735,8 @@ def _collect_scope_binding_events(
             _collect_scope_binding_events(stmt.body, True, events)
         elif isinstance(stmt, ast.Match):
             for case in stmt.cases:
+                for name in _pattern_capture_names(case.pattern):
+                    events.append((_NameBindingEvent(name, stmt.lineno, stmt.col_offset), True))
                 _collect_scope_binding_events(case.body, True, events)
         elif isinstance(stmt, ast.ClassDef):
             _collect_scope_binding_events(stmt.body, conditional, events)
@@ -701,6 +768,11 @@ def _replay_binding_events(
     disturbs whatever provenance already held; a conditional rebinding to an
     unrecognized value still clears it."""
     for node, conditional in sorted(events, key=lambda pair: (pair[0].lineno, pair[0].col_offset)):
+        if isinstance(node, _NameBindingEvent):
+            # for-target / match-capture / augassign-target: a lexical local
+            # for masking purposes only (see _scope_bound_names) -- never
+            # recognized as establishing or restoring import provenance.
+            continue
         if isinstance(node, ast.ImportFrom):
             if conditional:
                 continue
@@ -762,6 +834,8 @@ def _scope_bound_names(events: list[_BindingEvent]) -> set[str]:
         elif isinstance(node, ast.ImportFrom):
             for alias in node.names:
                 names.add(alias.asname or alias.name)
+        elif isinstance(node, _NameBindingEvent):
+            names.add(node.name)
         else:
             names.add(node.targets[0].id)
     return names
@@ -1703,6 +1777,186 @@ def test_conditional_in_body_alias_reimport_does_not_leak_outer_constructor_alia
         f"alias — got: {sorted(discovery.executor_sites)}"
     )
     assert ("conditional_inbody_alias_no_leak.py", "run") not in discovery.call_sites
+
+
+def test_match_or_pattern_capture_masks_inherited_importlib_provenance(tmp_path):
+    """Regression for the under-collection defect: a match-pattern capture
+    binds a name just as a Name-Assign target does -- ``case {"x": importlib}
+    | {"y": importlib}:`` binds ``importlib`` in both alternatives of the
+    or-pattern -- so it must mask the module-level `import importlib` for
+    the rest of the function, exactly like a conditional in-body reimport
+    already does. Verified against Python's own `symtable`:
+    `importlib.is_local() == True` for this function."""
+    import symtable as _symtable
+
+    rogue = tmp_path / "match_or_pattern_capture.py"
+    source = (
+        "import importlib\n\n\n"
+        "async def run(value, session, graph):\n"
+        "    match value:\n"
+        '        case {"x": importlib} | {"y": importlib}:\n'
+        "            pass\n"
+        '    return await getattr(importlib.import_module("lionagi.operations.flow"), '
+        '"DependencyAwareExecutor")(session, graph).execute()\n'
+    )
+    rogue.write_text(source)
+
+    top = _symtable.symtable(source, str(rogue), "exec")
+    (func_table,) = (c for c in top.get_children() if c.get_name() == "run")
+    assert func_table.lookup("importlib").is_local()
+
+    discovery = discover_call_and_construct_sites(tmp_path, base=tmp_path)
+
+    assert discovery.executor_sites == set(), (
+        "a match-or-pattern capture must mask, not inherit, outer importlib provenance — "
+        f"got: {sorted(discovery.executor_sites)}"
+    )
+    assert ("match_or_pattern_capture.py", "run") not in discovery.call_sites
+
+
+def test_for_target_masks_inherited_importlib_provenance(tmp_path):
+    """Regression for the under-collection defect: a ``for``/``async for``
+    STATEMENT target is a lexical local of the enclosing function (unlike a
+    comprehension target, which is its own separate scope and must not be
+    collected) -- ``for importlib in ():`` binds ``importlib`` and must mask
+    the module-level import for the whole function body. Verified against
+    `symtable`: `importlib.is_local() == True`."""
+    import symtable as _symtable
+
+    rogue = tmp_path / "for_target_masks.py"
+    source = (
+        "import importlib\n\n\n"
+        "async def run(session, graph):\n"
+        "    for importlib in ():\n"
+        "        pass\n"
+        '    return await getattr(importlib.import_module("lionagi.operations.flow"), '
+        '"DependencyAwareExecutor")(session, graph).execute()\n'
+    )
+    rogue.write_text(source)
+
+    top = _symtable.symtable(source, str(rogue), "exec")
+    (func_table,) = (c for c in top.get_children() if c.get_name() == "run")
+    assert func_table.lookup("importlib").is_local()
+
+    discovery = discover_call_and_construct_sites(tmp_path, base=tmp_path)
+
+    assert discovery.executor_sites == set(), (
+        "a for-loop target must mask, not inherit, outer importlib provenance — got: "
+        f"{sorted(discovery.executor_sites)}"
+    )
+    assert ("for_target_masks.py", "run") not in discovery.call_sites
+
+
+def test_augmented_assignment_masks_inherited_importlib_provenance(tmp_path):
+    """Regression for the under-collection defect: `importlib += 1` is a
+    Name-target binding (`AugAssign`, not `Assign`) and must mask the
+    module-level import for the whole function body the same way a plain
+    conditional rebind does. Verified against `symtable`: `importlib.
+    is_local() == True`."""
+    import symtable as _symtable
+
+    rogue = tmp_path / "augassign_masks.py"
+    source = (
+        "import importlib\n\n\n"
+        "async def run(session, graph):\n"
+        "    if False:\n"
+        "        importlib += 1\n"
+        '    return await getattr(importlib.import_module("lionagi.operations.flow"), '
+        '"DependencyAwareExecutor")(session, graph).execute()\n'
+    )
+    rogue.write_text(source)
+
+    top = _symtable.symtable(source, str(rogue), "exec")
+    (func_table,) = (c for c in top.get_children() if c.get_name() == "run")
+    assert func_table.lookup("importlib").is_local()
+
+    discovery = discover_call_and_construct_sites(tmp_path, base=tmp_path)
+
+    assert discovery.executor_sites == set(), (
+        "an augmented-assignment target must mask, not inherit, outer importlib provenance "
+        f"— got: {sorted(discovery.executor_sites)}"
+    )
+    assert ("augassign_masks.py", "run") not in discovery.call_sites
+
+
+def test_for_target_masks_then_unconditional_reimport_restores_discovery(tmp_path):
+    """Companion to test_for_target_masks_inherited_importlib_provenance:
+    masking is not permanent -- a genuine UNCONDITIONAL `import importlib`
+    later in the same function body must still restore provenance and yield
+    a site, exactly like any other in-body reimport restoring a
+    parameter-shadowed or conditionally-masked name."""
+    rogue = tmp_path / "for_target_then_reimport.py"
+    rogue.write_text(
+        "import importlib\n\n\n"
+        "async def run(session, graph):\n"
+        "    for importlib in ():\n"
+        "        pass\n"
+        "    import importlib\n"
+        '    return await getattr(importlib.import_module("lionagi.operations.flow"), '
+        '"DependencyAwareExecutor")(session, graph).execute()\n'
+    )
+
+    discovery = discover_call_and_construct_sites(tmp_path, base=tmp_path)
+
+    key = ("for_target_then_reimport.py", "run")
+    assert key in discovery.call_sites, (
+        "an unconditional reimport after a for-target mask was not discovered — found: "
+        f"{sorted(discovery.call_sites)}"
+    )
+    assert discovery.executor_sites == {key}, (
+        "the reimport-restored dynamic lookup after a for-target mask must be flagged as an "
+        f"executor site — got: {sorted(discovery.executor_sites)}"
+    )
+
+
+def test_for_target_masks_inherited_lionagi_root_provenance_dotted(tmp_path):
+    """Dotted-provenance variant of the for-target masking regression: the
+    mask keys on the bound NAME, so a for-target named `lionagi` must mask
+    the module-level `import lionagi` root for a dotted
+    `lionagi.operations.flow` receiver just as it does for the `importlib`
+    single-name provenance kind."""
+    rogue = tmp_path / "for_target_masks_lionagi_root.py"
+    rogue.write_text(
+        "import lionagi\n\n\n"
+        "async def run(session, graph):\n"
+        "    for lionagi in ():\n"
+        "        pass\n"
+        '    return await getattr(lionagi.operations.flow, "DependencyAwareExecutor")(\n'
+        "        session, graph\n"
+        "    ).execute()\n"
+    )
+
+    discovery = discover_call_and_construct_sites(tmp_path, base=tmp_path)
+
+    assert discovery.executor_sites == set(), (
+        "a for-target named lionagi must mask, not inherit, the lionagi-root provenance — "
+        f"got: {sorted(discovery.executor_sites)}"
+    )
+    assert ("for_target_masks_lionagi_root.py", "run") not in discovery.call_sites
+
+
+def test_for_target_tuple_unpack_masks_inherited_importlib_provenance(tmp_path):
+    """Tuple-unpacking variant: `for (a, importlib) in ...:` binds BOTH `a`
+    and `importlib` as lexical locals of the enclosing function -- every
+    `Name` in Store context nested inside the for-target must be collected,
+    not just a single bare-name target."""
+    rogue = tmp_path / "for_target_tuple_unpack.py"
+    rogue.write_text(
+        "import importlib\n\n\n"
+        "async def run(session, graph):\n"
+        "    for a, importlib in [(1, 2)]:\n"
+        "        pass\n"
+        '    return await getattr(importlib.import_module("lionagi.operations.flow"), '
+        '"DependencyAwareExecutor")(session, graph).execute()\n'
+    )
+
+    discovery = discover_call_and_construct_sites(tmp_path, base=tmp_path)
+
+    assert discovery.executor_sites == set(), (
+        "a tuple-unpacking for-target must mask, not inherit, outer importlib provenance — "
+        f"got: {sorted(discovery.executor_sites)}"
+    )
+    assert ("for_target_tuple_unpack.py", "run") not in discovery.call_sites
 
 
 def test_session_flow_and_flow_stream_are_discovered_via_bare_import_not_hardcoding(tmp_path):
