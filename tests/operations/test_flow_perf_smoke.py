@@ -49,6 +49,8 @@ import pytest
 
 from lionagi.operations.builder import OperationGraphBuilder
 from lionagi.operations.flow import flow
+from lionagi.operations.node import Operation
+from lionagi.protocols.types import EventStatus
 from lionagi.session.branch import Branch
 from lionagi.session.session import Session
 
@@ -96,9 +98,27 @@ def stub_branch_chat(monkeypatch):
 async def _run_flow(builder: OperationGraphBuilder, n: int) -> float:
     session = Session()
     graph = builder.get_graph()
+    nodes = [node for node in graph.internal_nodes if isinstance(node, Operation)]
     t0 = time.perf_counter()
     result = await flow(session, graph, max_concurrent=50)
     elapsed = time.perf_counter() - t0
+
+    # A count-only check on completed_operations is not enough: the executor
+    # records a FAILED operation's id alongside its {"error": ...} result, so
+    # a fast-failing stub (e.g. a broken Branch.chat signature) would still
+    # produce `len(completed_operations) == n` and a low elapsed time, greening
+    # the ceiling assert below without ever exercising successful scheduling.
+    # Assert every node actually completed.
+    not_completed = [
+        (str(node.id)[:8], node.execution.status)
+        for node in nodes
+        if node.execution.status != EventStatus.COMPLETED
+    ]
+    assert not not_completed, (
+        f"{len(not_completed)}/{n} operations did not reach COMPLETED "
+        f"status (first few: {not_completed[:5]}) — the smoke gate must "
+        "exercise real successful flow scheduling, not just a node count"
+    )
     assert len(result["completed_operations"]) == n
     return elapsed
 
