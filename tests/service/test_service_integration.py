@@ -5,7 +5,7 @@ import os
 from unittest.mock import patch
 
 import pytest
-from pydantic import ValidationError
+from pydantic import Field, ValidationError
 
 from lionagi.service.connections.api_calling import APICalling
 from lionagi.service.connections.endpoint import Endpoint
@@ -176,6 +176,74 @@ class TestServiceIntegration:
 
         assert config.kwargs["custom_field"] == "custom_value"
         assert config.kwargs["another_param"] == 123
+
+    def test_endpoint_config_kwargs_only_collect_unknown_fields(self):
+        config = EndpointConfig(
+            name="test",
+            provider="openai",
+            endpoint="chat",
+            timeout=42,
+            kwargs={"preserved": "value"},
+            unknown_option="kept",
+        )
+
+        assert config.timeout == 42
+        assert config.kwargs == {"preserved": "value", "unknown_option": "kept"}
+
+    def test_endpoint_config_subclass_accepts_aliased_field_key(self):
+        class AliasedEndpointConfig(EndpointConfig):
+            wire_timeout: int = Field(alias="wireTimeout")
+
+        config = AliasedEndpointConfig(
+            name="test",
+            provider="openai",
+            endpoint="chat",
+            wireTimeout=7,
+        )
+
+        assert config.wire_timeout == 7
+        assert "wireTimeout" not in config.kwargs
+
+    def test_endpoint_config_field_key_cache_is_per_class_identity(self):
+        from lionagi.service.connections.endpoint_config import (
+            _FIELD_KEYS_BY_CLASS,
+        )
+
+        class ExtendedEndpointConfig(EndpointConfig):
+            extra_knob: int = 0
+
+        EndpointConfig(name="a", provider="openai", endpoint="chat")
+        ExtendedEndpointConfig(name="b", provider="openai", endpoint="chat", extra_knob=1)
+
+        base_cls, base_keys = _FIELD_KEYS_BY_CLASS[id(EndpointConfig)]
+        sub_cls, sub_keys = _FIELD_KEYS_BY_CLASS[id(ExtendedEndpointConfig)]
+        assert base_cls is EndpointConfig
+        assert sub_cls is ExtendedEndpointConfig
+        assert base_keys is not sub_keys
+        assert "extra_knob" in sub_keys
+        assert "extra_knob" not in base_keys
+
+    def test_endpoint_config_cache_ignores_metaclass_equality(self):
+        class EqualModelMeta(type(EndpointConfig)):
+            def __eq__(cls, other):
+                return isinstance(other, EqualModelMeta)
+
+            def __hash__(cls):
+                return 1
+
+        class First(EndpointConfig, metaclass=EqualModelMeta):
+            first_only: int = 0
+
+        class Second(EndpointConfig, metaclass=EqualModelMeta):
+            second_only: int = 0
+
+        assert First is not Second and First == Second
+
+        First(name="first", provider="openai", endpoint="chat", first_only=1)
+        second = Second(name="second", provider="openai", endpoint="chat", second_only=2)
+
+        assert second.second_only == 2
+        assert "second_only" not in second.kwargs
 
 
 class TestServiceErrorHandling:

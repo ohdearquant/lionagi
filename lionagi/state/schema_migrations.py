@@ -18,25 +18,25 @@ MIGRATION_COLUMNS: dict[str, list[tuple[str, str]]] = {
         ("status", "TEXT"),
         ("started_at", "REAL"),
         ("ended_at", "REAL"),
-        # ADR-0019: activity marker for staleness detection.
+        # Activity marker for staleness detection (read by ADR-0057 D6).
         ("last_message_at", "REAL"),
         # #1235: live flow phase for the `li monitor` PHASE column.
         ("current_phase", "TEXT"),
-        # ADR-0020: optional FK to invocations table.
+        # Optional FK to invocations table.
         ("invocation_id", "TEXT"),
-        # ADR-0022: provenance disclosure columns.
+        # Provenance disclosure columns.
         ("model", "TEXT"),
         ("provider", "TEXT"),
         ("effort", "TEXT"),
         ("agent_hash", "TEXT"),
-        # ADR-0026: project detection for session organization.
+        # ADR-0063: project detection for session organization.
         ("project", "TEXT"),
         ("project_source", "TEXT"),
-        # ADR-0028: denormalized current status reason (hot read path).
+        # ADR-0057: denormalized current status reason (hot read path).
         ("status_reason_code", "TEXT"),
         ("status_reason_summary", "TEXT"),
         ("status_evidence_refs", "JSON"),
-        # ADR-0029: resolved artifact contract and teardown result.
+        # ADR-0064: resolved artifact contract and teardown result.
         ("artifact_contract_json", "JSON"),
         ("artifact_verification_json", "JSON"),
         # Run usage populated at RunEnd.
@@ -48,7 +48,7 @@ MIGRATION_COLUMNS: dict[str, list[tuple[str, str]]] = {
     ],
     "branches": [
         ("system_msg_id", "TEXT"),
-        # ADR-0022: per-branch provenance.
+        # Per-branch provenance.
         ("model", "TEXT"),
         ("provider", "TEXT"),
         ("agent_name", "TEXT"),
@@ -58,25 +58,25 @@ MIGRATION_COLUMNS: dict[str, list[tuple[str, str]]] = {
     ],
     "shows": [
         ("status_source", "TEXT NOT NULL DEFAULT 'unknown'"),
-        # ADR-0028.
+        # ADR-0057.
         ("status_reason_code", "TEXT"),
         ("status_reason_summary", "TEXT"),
         ("status_evidence_refs", "JSON"),
     ],
     "plays": [
-        # ADR-0028.
+        # ADR-0057.
         ("status_reason_code", "TEXT"),
         ("status_reason_summary", "TEXT"),
         ("status_evidence_refs", "JSON"),
     ],
     "invocations": [
-        # ADR-0028.
+        # ADR-0057.
         ("status_reason_code", "TEXT"),
         ("status_reason_summary", "TEXT"),
         ("status_evidence_refs", "JSON"),
     ],
     "teams": [
-        # ADR-0028.
+        # ADR-0057.
         ("status_reason_code", "TEXT"),
         ("status_reason_summary", "TEXT"),
         ("status_evidence_refs", "JSON"),
@@ -111,23 +111,23 @@ MIGRATION_COLUMNS: dict[str, list[tuple[str, str]]] = {
         ("action_command_args", "JSON"),
     ],
     "schedule_runs": [
-        # ADR-0028: schedule_runs originally had no updated_at.
+        # ADR-0057: schedule_runs originally had no updated_at.
         # update_status() writes it, so it must exist.
         ("updated_at", "REAL"),
         ("status_reason_code", "TEXT"),
         ("status_reason_summary", "TEXT"),
         ("status_evidence_refs", "JSON"),
-        # ADR-0101 D2 / ADR-0061: durable queue columns.
+        # ADR-0071 D2 / ADR-0071: durable queue columns.
         ("queued_at", "REAL"),
         ("leased_by", "TEXT"),
         ("lease_expires_at", "REAL"),
         ("concurrency_key", "TEXT"),
-        # ADR-0101 D2: task-application provenance columns.
+        # ADR-0071 D2: task-application provenance columns.
         ("required_capabilities", "JSON"),
         ("execution_target", "TEXT"),
         ("library_ref", "TEXT"),
         ("library_content_hash", "TEXT"),
-        # ADR-0101 D3: bounds the lease-expiry recovery loop (worker.py's reaper).
+        # ADR-0071 D4: bounds the lease-expiry recovery loop (worker.py's reaper).
         ("lease_attempts", "INTEGER NOT NULL DEFAULT 0"),
     ],
     # Phase C Move 2: engine run persistence.
@@ -144,7 +144,7 @@ MIGRATION_COLUMNS: dict[str, list[tuple[str, str]]] = {
         ("export_dir", "TEXT"),
         ("error", "TEXT"),
     ],
-    # ADR-0092: durable dispatch outbox.
+    # ADR-0059: durable dispatch outbox.
     # New table created via schema.sql; these columns allow ALTER TABLE on
     # existing databases that pre-date this table (rare, but handled uniformly).
     "dispatch_outbox": [

@@ -1,7 +1,7 @@
 # Copyright (c) 2023-2026, HaiyangLi <quantocean.li at gmail dot com>
 # SPDX-License-Identifier: Apache-2.0
 
-"""ADR-0020 invocations table tests.
+"""ADR-0077 invocations table tests.
 
 Covers: CRUD lifecycle, session_count denormalization, session ↔
 invocation linkage, validation of the status vocabulary, and list /
@@ -62,7 +62,7 @@ async def _make_session(db: StateDB, *, invocation_id: str | None = None, **fiel
 
 
 def test_invocation_status_vocabulary_matches_adr0025():
-    """Invocations share the ADR-0025 terminal set (now seven values, with
+    """Invocations share the ADR-0057 terminal set (now seven values, with
     'completed_empty' for the completion-trust gate) + 'running'."""
     assert _INVOCATION_STATUSES == frozenset(
         {
@@ -107,7 +107,7 @@ async def test_update_invocation_status_terminal(db: StateDB):
 
 async def test_update_invocation_rejects_unknown_status(db: StateDB):
     inv = await _make_invocation(db)
-    with pytest.raises(ValueError, match="ADR-0020"):
+    with pytest.raises(ValueError, match="ADR-0057"):
         await db.update_invocation(inv["id"], status="stale")
 
 
@@ -121,7 +121,7 @@ async def test_update_invocation_rejects_unknown_column(db: StateDB):
 
 
 async def test_create_session_with_invocation_bumps_count(db: StateDB):
-    """ADR-0020: invocations.session_count tracks attached sessions
+    """invocations.session_count tracks attached sessions
     via the create_session denormalized increment."""
     inv = await _make_invocation(db)
     await _make_session(db, invocation_id=inv["id"], status="running")

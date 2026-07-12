@@ -1,6 +1,6 @@
 # Copyright (c) 2023-2026, HaiyangLi <quantocean.li at gmail dot com>
 # SPDX-License-Identifier: Apache-2.0
-"""ADR-0023b: route per-branch live persistence through the session hook bus."""
+"""ADR-0047: route per-branch live persistence through the session hook bus."""
 
 from __future__ import annotations
 

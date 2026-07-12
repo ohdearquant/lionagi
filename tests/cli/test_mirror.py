@@ -307,7 +307,7 @@ async def test_reconcile_idle_session_stays_completed_across_passes(temp_db_path
 async def test_reconcile_reactivates_cancelled_terminal_when_fresh(temp_db_path: Path) -> None:
     # A mirror session independently marked "cancelled" (or any non-"completed"
     # terminal status) must reactivate to "running" the same way a dormant
-    # "completed" one does, instead of raising the ADR-0094 terminal-status
+    # "completed" one does, instead of raising the ADR-0035 terminal-status
     # floor as an ordinary, unguarded transition attempt would.
     async with StateDB() as db:
         await mirror_session(

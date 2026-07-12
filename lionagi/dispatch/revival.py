@@ -1,6 +1,6 @@
 # Copyright (c) 2023-2026, HaiyangLi <quantocean.li at gmail dot com>
 # SPDX-License-Identifier: Apache-2.0
-"""Revival heartbeat reference implementation (ADR-0092 slice 1, item 5).
+"""Revival heartbeat reference implementation (ADR-0059 slice 1, item 5).
 
 Demonstrates the durable-dispatch end-to-end case the ADR is built for: a
 consumer that is dead at fire time. Enqueues one ``dispatch_outbox`` row per

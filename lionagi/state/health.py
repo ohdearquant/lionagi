@@ -1,6 +1,6 @@
 # Copyright (c) 2023-2026, HaiyangLi <quantocean.li at gmail dot com>
 # SPDX-License-Identifier: Apache-2.0
-"""ADR-0024: six-level session health classification (see docs/reference/testing-state-session.md)."""
+"""ADR-0057: six-level session health classification (see docs/reference/testing-state-session.md)."""
 
 from __future__ import annotations
 
@@ -16,7 +16,7 @@ IDLE_THRESHOLD: int = 3600
 
 
 class SessionHealth(str, Enum):
-    """Six-level derived health (ADR-0024 §A)."""
+    """Six-level derived health (ADR-0057 D6)."""
 
     HEALTHY = "healthy"
     IDLE = "idle"

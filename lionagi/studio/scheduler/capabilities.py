@@ -1,6 +1,6 @@
 # Copyright (c) 2023-2026, HaiyangLi <quantocean.li at gmail dot com>
 # SPDX-License-Identifier: Apache-2.0
-"""ADR-0101 D4: capability-class matching.
+"""ADR-0071 D5: capability-class matching.
 
 Declarative token -> class map, not a policy engine. Every capability token
 falls into exactly one class:
@@ -8,7 +8,7 @@ falls into exactly one class:
 - ``eligibility`` (default): plain subset-match filter -- worker must
   advertise the token to claim a task carrying it.
 - ``serialization`` (e.g. exclusive-GPU): folds into the task's host-scoped
-  ``concurrency_key`` at submit time (ADR-0061 admission queues at most one
+  ``concurrency_key`` at submit time (ADR-0071 admission queues at most one
   such task per host). Admission ordering is ADVISORY only -- a worker-side
   OS flock stays authoritative; this module never arbitrates the machine lock.
 - ``affinity`` (e.g. warmed-cache): soft ordering preference, never a filter

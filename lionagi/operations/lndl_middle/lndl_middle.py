@@ -2,7 +2,7 @@
 # SPDX-License-Identifier: Apache-2.0
 
 """LNDL seam Middle — advances a branch one LNDL round per inner chat call,
-looping internally up to a round budget (default 3). Implements ADR-0087
+looping internally up to a round budget (default 3). Implements ADR-0024
 §1 (the seam over ``operate()``) and §2 (round outcomes and repair
 semantics).
 
@@ -110,7 +110,7 @@ def _render_target_spec(target: Any) -> str | None:
 async def _bridge_action_calls(branch: Branch, calls: list[ActionCall]) -> dict[str, Any]:
     """Translate ActionCall placeholders into ActionRequests and execute them
     through the branch's normal act() path, so permission policies and hooks
-    apply unchanged (ADR-0087 §1). Returns a dict of alias -> result."""
+    apply unchanged (ADR-0024 §1). Returns a dict of alias -> result."""
     if not calls:
         return {}
 
@@ -196,7 +196,7 @@ def _classify_round(
 
 
 def build_lndl_middle(round_budget: int = DEFAULT_ROUND_BUDGET):
-    """Build an LNDL seam Middle (ADR-0087 §1) with a custom round budget.
+    """Build an LNDL seam Middle (ADR-0024 §1) with a custom round budget.
 
     Returns a callable satisfying the Middle protocol (``operations/types.py``).
     ``lndl_middle`` (module-level, below) is the ready-to-use default.

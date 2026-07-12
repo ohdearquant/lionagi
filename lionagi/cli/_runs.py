@@ -363,7 +363,7 @@ async def _teardown_common(
         # (see _run_agent's finally block) and will own the real terminal
         # write. Stamping ended_at/status here would leave the session
         # terminal while the resumed leg is still working, so the resumed
-        # leg's own teardown hits the ADR-0094 terminal guard. Skip every
+        # leg's own teardown hits the ADR-0035 terminal guard. Skip every
         # DB mutation and let the caller's non-status bookkeeping (hook
         # unroute, usage emit, observer detach) run as usual.
         return status
@@ -554,7 +554,7 @@ async def _teardown_common(
         # This teardown's OWN view of the session was already terminal before
         # it attempted anything (e.g. a later resume/follow-up reattached to
         # a session an earlier, unrelated run already finalized). Writing
-        # again would be a redundant terminal overwrite the ADR-0094 floor
+        # again would be a redundant terminal overwrite the ADR-0035 floor
         # would reject -- skip it outright rather than attempt-and-catch, and
         # report THIS invocation's honest outcome rather than the persisted
         # one, or a genuine failure/timeout would silently read back as
@@ -693,7 +693,7 @@ async def teardown_persist(
         session_obj = ctx.get("session")
         # persist_session_end's own fallback branch (row not yet terminal)
         # writes status straight through update_session() -- a plain column
-        # SET with no ADR-0094 guard. Emitting SESSION_END here would let that
+        # SET with no ADR-0035 guard. Emitting SESSION_END here would let that
         # fallback re-introduce the exact premature terminal stamp
         # defer_terminal just skipped, through a side door _teardown_common
         # never touches. The resumed leg's own (non-deferred) teardown emits

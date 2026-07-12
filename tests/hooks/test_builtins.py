@@ -1,7 +1,7 @@
 # Copyright (c) 2023-2026, HaiyangLi <quantocean.li at gmail dot com>
 # SPDX-License-Identifier: Apache-2.0
 
-"""Tests for ADR-0023 built-in handlers (FIX 4: persist_message dual progressions)."""
+"""Tests for ADR-0047 built-in handlers (FIX 4: persist_message dual progressions)."""
 
 from __future__ import annotations
 

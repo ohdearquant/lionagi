@@ -15,6 +15,16 @@ if TYPE_CHECKING:
     from pydantic import BaseModel
 
 
+_DEFAULT_SPECS = {}
+
+
+def _get_default_spec(kind: str):
+    """Return the immutable Spec used by a standard Operative field."""
+    if kind not in _DEFAULT_SPECS:
+        _DEFAULT_SPECS[kind] = get_default_field(kind).to_spec()
+    return _DEFAULT_SPECS[kind]
+
+
 class Step:
     """Factory methods for creating pre-configured Operative instances (ReAct, QA, task execution)."""
 
@@ -42,7 +52,13 @@ class Step:
         request_params: dict | None = None,
         **kwargs,
     ) -> Operative:
-        """Build a request-phase Operative with optional reason/action fields; deprecated params are silently ignored."""
+        """Build a request-phase Operative with optional reason/action fields; deprecated params are silently ignored.
+
+        Identically-constructed Operatives may share one request/response model
+        TYPE (a process-wide cache); instances and their state stay per-call.
+        Do not mutate a returned model class. Set
+        LIONAGI_OPERATIVE_MODEL_CACHE_SIZE=0 to restore per-call classes.
+        """
         from .._guards import reject_removed_kwargs
 
         reject_removed_kwargs(
@@ -92,13 +108,13 @@ class Step:
         fields_dict = {}
 
         if reason:
-            reason_spec = get_default_field("reason").to_spec()
+            reason_spec = _get_default_spec("reason")
             fields_dict["reason"] = reason_spec
 
         if actions:
-            fields_dict["action_required"] = get_default_field("action_required").to_spec()
-            fields_dict["action_requests"] = get_default_field("action_requests").to_spec()
-            fields_dict["action_responses"] = get_default_field("action_responses").to_spec()
+            fields_dict["action_required"] = _get_default_spec("action_required")
+            fields_dict["action_requests"] = _get_default_spec("action_requests")
+            fields_dict["action_responses"] = _get_default_spec("action_responses")
 
         if fields:
             for field_name, spec in fields.items():
@@ -135,7 +151,12 @@ class Step:
         operative: Operative,
         additional_fields: dict[str, Spec] | None = None,
     ) -> Operative:
-        """Extend an operative with optional additional response fields and materialize its response model."""
+        """Extend an operative with optional additional response fields and materialize its response model.
+
+        The materialized response model type follows the same sharing contract
+        as request_operative(): identical construction may return a shared
+        class; never mutate it.
+        """
         if additional_fields:
             # Get existing fields
             existing_fields = list(operative.operable.__op_fields__)

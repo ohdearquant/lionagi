@@ -1,7 +1,7 @@
 # Copyright (c) 2023-2026, HaiyangLi <quantocean.li at gmail dot com>
 # SPDX-License-Identifier: Apache-2.0
 
-"""ADR-0076 — HookBus observer transport: bound bus records HookSignals, reactive subscription, and dispatch semantics."""
+"""ADR-0047 — HookBus observer transport: bound bus records HookSignals, reactive subscription, and dispatch semantics."""
 
 from __future__ import annotations
 
@@ -129,7 +129,7 @@ async def test_blocking_guard_pass_records_but_raise_does_not():
     with pytest.raises(PermissionError, match="denied"):
         await bus.emit(HookPoint.TOOL_PRE, tool_name="rm")
     # Blocking raise propagates and is NOT recorded — deny-audit arrives with
-    # the real pre-invoke gate (ADR-0076 Follow-up 1).
+    # the real pre-invoke gate (ADR-0047 Follow-up 1).
     assert len(obs.by_type(HookSignal)) == 1
 
 

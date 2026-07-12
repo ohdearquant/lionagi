@@ -125,7 +125,7 @@ async def test_start_create_session_failure_closes_db(
 
     assert env._live_persist is None
     # No persistence is wired after the DB failure. Persistence rides the hook
-    # bus (ADR-0023b) and its emit hook (_persist_via_bus) is registered only by
+    # bus (ADR-0047) and its emit hook (_persist_via_bus) is registered only by
     # route_message_persistence — never reached here — so on_message_added holds
     # just the branch's baseline signal-emission hook (_schedule_emit).
     assert env.orc_branch.on_message_added == [env.orc_branch._schedule_emit]
@@ -966,7 +966,7 @@ async def test_stop_persists_cancelled_status_with_dag_metadata(
     assert s["ended_at"] is not None
 
 
-# ── ADR-0029: artifact contract snapshot and verification ─────────────────────
+# ── ADR-0064: artifact contract snapshot and verification ─────────────────────
 
 
 async def test_start_persists_artifact_contract(
@@ -1080,7 +1080,7 @@ async def test_stop_verification_preserves_non_completed_reason(
     assert v["status"] == "failed"
 
 
-# ── ADR-0029 + ADR-0028: session→invocation propagation on missing artifact ──
+# ── ADR-0064 + ADR-0057: session→invocation propagation on missing artifact ──
 #
 # The tests above prove the *session* row flips to failed/FAILED_MISSING_ARTIFACT.
 # A multi-leg `li play`/`li o flow` run is read by callers (Studio, `li status`,
@@ -1286,7 +1286,7 @@ async def test_teardown_skips_already_terminal_session_without_rejection_audit(
 ):
     """A session already terminal (e.g. finalized by an earlier, concurrent
     teardown of the same session) must not attempt a redundant terminal
-    overwrite — that trips the ADR-0094 floor and records a
+    overwrite — that trips the ADR-0035 floor and records a
     status_transition_rejected admin event for a write that was never a real
     integrity violation."""
     env = _minimal_env()
