@@ -604,3 +604,95 @@ async def test_messenger_bound_worker_prompt_flags_cli_teammate_end_to_end(tmp_p
     assert "cli-carl (no messenger channel" in prompt
     assert "### Messenger reach" in prompt
     assert "Unknown recipient" in prompt
+
+
+# ── Attached-team history: messenger-bound workers can't live-poll the
+# persisted file, so prior messages must be surfaced as a static digest ────
+#
+# `--team-attach` loads an existing team's persisted messages (li team's
+# file channel). A bash-channel worker can still `li team receive` live and
+# see them; a messenger-bound worker's Exchange is fresh in-memory state for
+# this run and never replays history sent before the messenger tool existed
+# — so team_worker_system must inline that history into the prompt itself.
+
+
+def _attached_team_data(team_id="t1", team_name="the-team"):
+    return {
+        "id": team_id,
+        "name": team_name,
+        "members": ["orchestrator", "alice", "bob"],
+        "messages": [
+            {"id": "m1", "from": "orchestrator", "to": ["*"], "content": "kickoff broadcast"},
+            {"id": "m2", "from": "bob", "to": ["alice"], "content": "watch out for X"},
+            {"id": "m3", "from": "orchestrator", "to": ["bob"], "content": "private to bob only"},
+        ],
+    }
+
+
+def test_team_worker_system_surfaces_prior_history_for_messenger_bound_worker():
+    section = team_worker_system(
+        _attached_team_data(),
+        "alice",
+        messenger_bound=True,
+        messenger_names=frozenset({"alice", "bob"}),
+    )
+    assert "### Prior team messages" in section
+    assert "kickoff broadcast" in section  # broadcast: everyone sees it
+    assert "watch out for X" in section  # addressed to alice
+    assert "private to bob only" not in section  # addressed to bob, not alice
+
+
+def test_team_worker_system_omits_history_section_when_no_prior_messages():
+    section = team_worker_system(
+        _team_data(),  # no "messages" key at all
+        "alice",
+        messenger_bound=True,
+        messenger_names=frozenset({"alice", "bob"}),
+    )
+    assert "### Prior team messages" not in section
+
+
+def test_team_worker_system_bash_channel_worker_gets_no_history_digest():
+    """Bash-channel workers already see history live via `li team receive` —
+    the static digest is only needed (and only added) for messenger-bound
+    workers, who have no other path to it."""
+    section = team_worker_system(
+        _attached_team_data(),
+        "alice",
+        messenger_bound=False,
+    )
+    assert "### Prior team messages" not in section
+    assert "kickoff broadcast" not in section
+
+
+@pytest.mark.asyncio
+async def test_messenger_bound_worker_prompt_includes_attached_history_end_to_end(tmp_path):
+    """End-to-end: build_worker_branch's real system prompt for a messenger-
+    bound worker attaching to a team with prior messages includes those
+    messages as static context."""
+    exchange = Exchange()
+    messenger = LionMessenger(exchange)
+    roster: dict = {}
+    env = _make_env(
+        tmp_path,
+        exchange=exchange,
+        messenger=messenger,
+        roster=roster,
+        team_data=_attached_team_data(),
+        messenger_names=frozenset({"alice", "bob"}),
+    )
+
+    with patch(
+        "lionagi.cli.orchestrate._orchestration.build_imodel_from_spec",
+        side_effect=_api_imodel,
+    ):
+        wb, _model, _profile, messenger_bound = await build_worker_branch(
+            env, agent_id="alice", role="researcher", explicit_name="alice"
+        )
+
+    assert messenger_bound is True
+    prompt = wb.system.rendered
+    assert "### Prior team messages" in prompt
+    assert "kickoff broadcast" in prompt
+    assert "watch out for X" in prompt
+    assert "private to bob only" not in prompt

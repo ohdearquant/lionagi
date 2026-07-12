@@ -277,6 +277,14 @@ def team_worker_system(
     when this worker IS messenger-bound, those teammates are flagged in the
     roster and called out explicitly, so the prompt never tells a worker to
     `messenger(action="send", to=...)` a name the tool will reject.
+
+    A messenger-bound worker's Exchange is fresh in-memory state for this run
+    — it never sees messages predating this session. For `--team-attach`
+    onto an existing team (persisted messages already on `team_data`), a
+    bash-channel worker can still read them live with `li team receive`; a
+    messenger-bound worker has no other path to that history, so any prior
+    messages addressed to it or broadcast are rendered as a static digest
+    into its prompt below.
     """
     if not team_data:
         return None
@@ -313,6 +321,25 @@ def team_worker_system(
             "'Unknown recipient'. You'll only see their work in the final team "
             "results at flow end."
         )
+    if messenger_bound:
+        prior = [
+            m
+            for m in team_data.get("messages", [])
+            if m.get("to") == ["*"] or worker_name in (m.get("to") or [])
+        ]
+        if prior:
+            max_history = 20
+            shown = prior[-max_history:]
+            lines = [
+                "\n\n### Prior team messages (attached team history)",
+                "This team existed before your session — these messages predate "
+                "the messenger tool and were exchanged over the `li team` file "
+                "channel. Context only; no reply expected unless still relevant.",
+            ]
+            if len(prior) > len(shown):
+                lines.append(f"(showing the last {len(shown)} of {len(prior)})")
+            lines += [f"[{m.get('from', '?')}] {m.get('content', '')}" for m in shown]
+            section += "\n".join(lines)
     return section
 
 
