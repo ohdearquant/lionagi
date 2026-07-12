@@ -652,59 +652,38 @@ async def get_session(
 
 
 async def get_session_messages_after(session_id: str, after_ts: float) -> list[dict[str, Any]]:
+    """Poll-friendly tail read for the SSE stream/signals endpoints.
+
+    Joins each branch's progression collection via json_each rather than binding
+    every message id into an IN (...) clause — a branch with thousands of messages
+    would otherwise blow past SQLite's 999 bound-variable limit (OperationalError:
+    too many SQL variables), killing the stream on every poll tick.
+    """
     if not DEFAULT_DB_PATH.exists():
         return []
 
     async with _open_db(_DB) as db:
-        branch_cur = await db.execute(
-            "SELECT id, progression_id FROM branches WHERE session_id = ?",
-            (session_id,),
+        cur = await db.execute(
+            """
+            SELECT m.id, m.created_at, m.content, m.sender, m.role,
+                   mt.lion_class AS lion_class_str, b.id AS branch_id
+            FROM branches b
+            JOIN progressions p ON p.id = b.progression_id
+            JOIN json_each(p.collection) je ON 1=1
+            JOIN messages m ON m.id = je.value
+            LEFT JOIN message_types mt ON m.lion_class = mt.type_id
+            WHERE b.session_id = ? AND m.created_at > ?
+            ORDER BY m.created_at
+            """,
+            (session_id, after_ts),
         )
-        branch_rows = await branch_cur.fetchall()
+        rows = await cur.fetchall()
 
-        result = []
-        for br in branch_rows:
-            branch_id = br["id"]
-            prog_id = br["progression_id"]
-            if not prog_id:
-                continue
-
-            prog_cur = await db.execute(
-                "SELECT collection FROM progressions WHERE id = ?",
-                (prog_id,),
-            )
-            prog_row = await prog_cur.fetchone()
-            if not prog_row or not prog_row["collection"]:
-                continue
-
-            try:
-                msg_ids = json.loads(prog_row["collection"])
-            except (json.JSONDecodeError, TypeError):
-                continue
-
-            if not msg_ids:
-                continue
-
-            placeholders = ",".join("?" for _ in msg_ids)
-            msg_cur = await db.execute(
-                f"""
-                SELECT m.id, m.created_at, m.content, m.sender, m.role,
-                       mt.lion_class AS lion_class_str
-                FROM messages m
-                LEFT JOIN message_types mt ON m.lion_class = mt.type_id
-                WHERE m.id IN ({placeholders}) AND m.created_at > ?
-                """,  # noqa: S608
-                (*msg_ids, after_ts),
-            )
-            msg_rows = await msg_cur.fetchall()
-            by_id = {r["id"]: r for r in msg_rows}
-
-            for mid in msg_ids:
-                if mid in by_id:
-                    msg = _format_message(by_id[mid])
-                    msg["branch_id"] = branch_id
-                    result.append(msg)
-
+    result = []
+    for row in rows:
+        msg = _format_message(row)
+        msg["branch_id"] = row["branch_id"]
+        result.append(msg)
     return result
 
 
