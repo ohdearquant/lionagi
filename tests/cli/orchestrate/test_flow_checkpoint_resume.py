@@ -1246,6 +1246,233 @@ async def test_execute_dag_seeds_fresh_checkpoint_with_already_reconstructed_spa
     assert data["spawned"] == [seeded_spawned_entry]
 
 
+async def test_execute_dag_max_spawn_budget_accounts_for_restored_spawns(tmp_path: Path):
+    """--max-ops is a TOTAL budget for the whole logical run, including
+    resumes -- _resume_flow replays the checkpoint's persisted config
+    verbatim rather than re-deriving max_ops, and the CLI's own progress
+    text calls it "at most {max_ops} ops total, INCLUDING any reactively
+    spawned" ones. Recomputing the live spawn budget on resume as
+    max_ops - len(assignments), with no adjustment for spawns already
+    restored from a prior checkpoint generation, would silently re-grant
+    the SAME budget every resume -- a run that had already exhausted its
+    spawn budget before a crash could accept spawns beyond what --max-ops
+    ever allowed.
+    """
+    env = _make_resume_env(tmp_path)
+    env.session = Session(default_branch=Branch(name="orchestrator"))
+    env.run.checkpoint_path = tmp_path / "checkpoint.json"
+
+    assignments = [TaskAssignment(task="write the brief", assignee="worker")]
+    plan_result = _PlanResult(
+        assignments=assignments,
+        agent_ids=["worker"],
+        dep_indices=[[]],
+        pool=[],
+        budget_preambles={},
+    )
+    dag_state = _DagState(
+        node_ids=["node-0"],
+        known_nodes={"node-0"},
+        deps_by_node={"node-0": []},
+        reactive=True,
+        spawn_roles=None,
+        role_base={},
+        worker_models=["claude"],
+    )
+
+    # max_ops=10 total; 1 planned assignment; 8 spawns already restored from
+    # the checkpoint -- only 1 more spawn slot should remain this generation
+    # (10 - 1 - 8 == 1), not the naive 9 (10 - 1) a resume without this fix
+    # would recompute every time.
+    seeded_spawned = [
+        {
+            "node_id": str(uuid4()),
+            "status": "completed",
+            "response": f"child-{i}",
+            "operation": "operate",
+            "assignee": None,
+            "instruction": "follow-up",
+            "parent_id": "node-0",
+            "spawn_id": None,
+        }
+        for i in range(8)
+    ]
+
+    fake_engine_run = MagicMock()
+    fake_engine_run.run_dag = AsyncMock(
+        return_value={"operation_results": {}, "spawned_operations": 0, "escalated_operations": []}
+    )
+
+    from lionagi.engines import PlanningEngine
+
+    with patch.object(PlanningEngine, "new_run", return_value=fake_engine_run):
+        await _execute_dag(
+            env,
+            plan_result,
+            dag_state,
+            max_concurrent=1,
+            max_ops=10,
+            checkpoint_prompt="write the brief",
+            checkpoint_plan=[{"agent_id": "worker"}],
+            checkpoint_config={"model_spec": "claude"},
+            checkpoint_spawned_seed=seeded_spawned,
+        )
+
+    assert fake_engine_run.run_dag.call_args.kwargs["max_spawn"] == 1
+
+
+async def test_execute_dag_n_spawned_counts_restored_spawns_alongside_new_ones(tmp_path: Path):
+    """The synthesis gate in _run_flow_inner is `with_synthesis or
+    exec_result.n_spawned`. A resume where every reactively spawned node was
+    already completed before the crash -- so THIS generation's live run_dag
+    produces zero new spawns -- must still report the restored count as
+    n_spawned, or a fully-restored, spawn-having run would silently skip
+    synthesis solely because nothing NEW happened to spawn this generation.
+    """
+    env = _make_resume_env(tmp_path)
+    env.session = Session(default_branch=Branch(name="orchestrator"))
+    env.run.checkpoint_path = tmp_path / "checkpoint.json"
+
+    assignments = [TaskAssignment(task="write the brief", assignee="worker")]
+    plan_result = _PlanResult(
+        assignments=assignments,
+        agent_ids=["worker"],
+        dep_indices=[[]],
+        pool=[],
+        budget_preambles={},
+    )
+    dag_state = _DagState(
+        node_ids=["node-0"],
+        known_nodes={"node-0"},
+        deps_by_node={"node-0": []},
+        reactive=True,
+        spawn_roles=None,
+        role_base={},
+        worker_models=["claude"],
+    )
+    seeded_spawned = [
+        {
+            "node_id": str(uuid4()),
+            "status": "completed",
+            "response": "child done",
+            "operation": "operate",
+            "assignee": None,
+            "instruction": "follow-up",
+            "parent_id": "node-0",
+            "spawn_id": None,
+        }
+    ]
+
+    fake_engine_run = MagicMock()
+    fake_engine_run.run_dag = AsyncMock(
+        return_value={"operation_results": {}, "spawned_operations": 0, "escalated_operations": []}
+    )
+
+    from lionagi.engines import PlanningEngine
+
+    with patch.object(PlanningEngine, "new_run", return_value=fake_engine_run):
+        exec_result = await _execute_dag(
+            env,
+            plan_result,
+            dag_state,
+            max_concurrent=1,
+            max_ops=0,
+            checkpoint_prompt="write the brief",
+            checkpoint_plan=[{"agent_id": "worker"}],
+            checkpoint_config={"model_spec": "claude"},
+            checkpoint_spawned_seed=seeded_spawned,
+        )
+
+    assert exec_result.n_spawned == 1
+
+
+async def test_resumed_run_with_only_restored_spawns_triggers_synthesis(tmp_path: Path):
+    """End-to-end through _run_flow_inner: the synthesis gate must fire even
+    when every reactively spawned node was already completed before the
+    crash and this generation's live run_dag produces zero new spawns --
+    proving the n_spawned accounting fix actually reaches the gate check,
+    not just the _execute_dag return value in isolation. Reconstruction
+    itself (_apply_checkpoint_precompletion) is stubbed here since its
+    correctness is covered elsewhere; this isolates the downstream
+    accounting/gating consequence of a checkpoint carrying `spawned` entries
+    into a resume.
+    """
+    env = _make_resume_env(tmp_path)
+    checkpoint = {
+        "version": 2,
+        "session_id": "prior-session",
+        "prompt": "write the brief",
+        "plan": [
+            {
+                "task": "write the brief",
+                "assignee": "worker",
+                "inputs": [],
+                "exit_criteria": None,
+                "depends_on": [],
+                "modes": [],
+                "agent_id": "worker",
+                "dep_indices": [],
+            }
+        ],
+        "config": {},
+        "flow_context": {},
+        "ops": {
+            "worker": {"agent_id": "worker", "status": "completed", "response": "already done"}
+        },
+        "spawned": [
+            {
+                "node_id": str(uuid4()),
+                "status": "completed",
+                "response": "child done",
+                "operation": "operate",
+                "assignee": None,
+                "instruction": "follow-up",
+                "parent_id": "node-0",
+                "spawn_id": None,
+            }
+        ],
+    }
+
+    fake_engine_run = MagicMock()
+    fake_engine_run.run_dag = MagicMock(
+        return_value=_asyncio_coro(
+            {
+                "operation_results": {"node-0": "already done"},
+                "spawned_operations": 0,
+                "escalated_operations": [],
+            }
+        )
+    )
+
+    synthesize_mock = AsyncMock(return_value="synthesized")
+
+    from lionagi.engines import PlanningEngine
+
+    with (
+        patch(
+            "lionagi.cli.orchestrate.flow.build_worker_branch",
+            return_value=(_FakeBranch("worker"), "codex/gpt-5.5", None, False),
+        ),
+        patch.object(PlanningEngine, "new_run", return_value=fake_engine_run),
+        patch("lionagi.cli.orchestrate.flow.plan") as plan_mock,
+        patch("lionagi.cli.orchestrate.flow._apply_checkpoint_precompletion"),
+        patch("lionagi.cli.orchestrate.flow._synthesize", synthesize_mock),
+        patch("lionagi.cli.orchestrate.flow._finalize_flow", return_value="ok"),
+    ):
+        await _run_flow_inner(
+            "codex/gpt-5.5",
+            "write the brief",
+            env=env,
+            resume_checkpoint=checkpoint,
+            allow_degraded_context=False,
+            checkpoint_config=None,
+            reactive_spec="on",
+        )
+
+    plan_mock.assert_not_called()
+    synthesize_mock.assert_called_once()
+
+
 # ── Resume sequencing: planner skipped, finalization tail still runs ────────
 
 

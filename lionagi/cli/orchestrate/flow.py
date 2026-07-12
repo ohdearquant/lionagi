@@ -866,10 +866,19 @@ async def _execute_dag(
     else:
         progress(f"Executing DAG (reactive off): {len(assignments)} assignments...")
     conc = max_concurrent if max_concurrent > 0 else max(len(assignments), 1)
+    # Restored spawns (from a prior checkpoint's `spawned` list, reconstructed
+    # into the graph before this call) already consumed part of the run's
+    # spawn budget and already exist as completed/failed work — both the
+    # live budget below and this generation's spawn accounting must count
+    # them, or a resumed --max-ops run could accept spawns beyond what was
+    # ever allowed, and restored-only spawned work would look like zero
+    # spawns happened at all.
+    restored_spawn_count = len(checkpoint_spawned_seed or [])
     # Spawn budget: when --max-ops is set, the initial plan + spawns share it.
     # Otherwise fall back to a conservative default so an un-capped reactive run
-    # cannot quietly fan out to dozens of (costly) child agents.
-    max_spawn = max(0, max_ops - len(assignments)) if max_ops > 0 else 20
+    # cannot quietly fan out to dozens of (costly) child agents. Either way,
+    # spawns already restored from a checkpoint count against it.
+    max_spawn = max(0, (max_ops - len(assignments) if max_ops > 0 else 20) - restored_spawn_count)
 
     heartbeat_interval = 60
     max_idle_seconds = 600
@@ -1177,7 +1186,13 @@ async def _execute_dag(
             await _asyncio.gather(*_checkpoint_tasks, return_exceptions=True)
 
     op_results = dag_result.get("operation_results", {})
-    n_spawned = dag_result.get("spawned_operations", 0)
+    # Total spawn count for this run includes restored spawns from a prior
+    # checkpoint generation, not just what this generation's live executor
+    # spawned — otherwise a resume that reconstructs every spawned node as
+    # already-terminal (zero NEW spawns this generation) would report
+    # n_spawned=0 and silently skip the automatic synthesis path that gates
+    # on it (see the with_synthesis-or-n_spawned check in _run_flow_inner).
+    n_spawned = restored_spawn_count + dag_result.get("spawned_operations", 0)
 
     # Escalation backstop: a leg the executor tracked as escalated (gave up
     # instead of producing a result — see NodeEscalated / EscalationRequest)
