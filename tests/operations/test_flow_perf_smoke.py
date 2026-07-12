@@ -103,7 +103,6 @@ async def _run_flow(builder: OperationGraphBuilder, n: int) -> float:
     return elapsed
 
 
-@pytest.mark.performance
 @pytest.mark.timeout(TEST_TIMEOUT_S)
 @pytest.mark.xdist_group(name="flow_perf_smoke")
 async def test_linear_flow_1000_nodes_under_ceiling(stub_branch_chat):
@@ -116,7 +115,6 @@ async def test_linear_flow_1000_nodes_under_ceiling(stub_branch_chat):
     )
 
 
-@pytest.mark.performance
 @pytest.mark.timeout(TEST_TIMEOUT_S)
 @pytest.mark.xdist_group(name="flow_perf_smoke")
 async def test_fanout_flow_1000_nodes_under_ceiling(stub_branch_chat):
