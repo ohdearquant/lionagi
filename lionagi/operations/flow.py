@@ -260,8 +260,8 @@ class DependencyAwareExecutor:
         if self.verbose:
             logger.debug("Pre-allocated %d branches", len(operations_needing_branches))
 
-    def _get_predecessors(self, operation: Operation) -> list[Any]:
-        """Return a cached plain predecessor list for executor-internal use.
+    def _get_predecessors(self, operation: Operation) -> tuple[Any, ...]:
+        """Return a cached, immutable predecessor tuple for executor-internal use.
 
         Delegates to Graph's own memoized accessor, which is invalidated by
         Graph's own mutators (add_edge/remove_edge/etc.) — including the

@@ -73,13 +73,13 @@ class TestCachedAccessorsCorrectness:
     def test_get_predecessors_cached_matches_get_predecessors(self, complex_graph):
         graph, nodes, _ = complex_graph
         cached = graph.get_predecessors_cached(nodes[3])
-        assert isinstance(cached, list)
+        assert isinstance(cached, tuple)
         assert {n.id for n in cached} == {n.id for n in graph.get_predecessors(nodes[3])}
 
     def test_get_successors_cached_matches_get_successors(self, complex_graph):
         graph, nodes, _ = complex_graph
         cached = graph.get_successors_cached(nodes[0])
-        assert isinstance(cached, list)
+        assert isinstance(cached, tuple)
         assert {n.id for n in cached} == {n.id for n in graph.get_successors(nodes[0])}
 
     def test_get_predecessors_cached_missing_node_raises(self):
@@ -152,8 +152,8 @@ class TestCacheInvalidationOnMutators:
         fresh_succ = graph.get_successors_cached(a)
         assert fresh_pred is not stale_pred
         assert fresh_succ is not stale_succ
-        assert fresh_pred == []
-        assert fresh_succ == []
+        assert fresh_pred == ()
+        assert fresh_succ == ()
 
     def test_remove_node_invalidates_neighbors(self):
         graph = Graph()
@@ -175,8 +175,8 @@ class TestCacheInvalidationOnMutators:
         fresh_pred_c = graph.get_predecessors_cached(c)
         assert fresh_succ_a is not stale_succ_a
         assert fresh_pred_c is not stale_pred_c
-        assert fresh_succ_a == []
-        assert fresh_pred_c == []
+        assert fresh_succ_a == ()
+        assert fresh_pred_c == ()
 
     def test_replace_node_invalidates_old_new_and_neighbors(self):
         graph = Graph()
@@ -239,6 +239,53 @@ class TestCacheInvalidationOnMutators:
         cached = graph.get_predecessors_cached(b)
         graph.add_node(Node())
         assert graph.get_predecessors_cached(b) is cached
+
+
+class TestCachedAccessorsReturnImmutableTuples:
+    """get_predecessors_cached/get_successors_cached hand back the exact
+    memoized object on every cache hit. If that object were a mutable list,
+    a caller doing e.g. ``graph.get_predecessors_cached(node).append(x)``
+    would silently corrupt the graph-level cache for every other reader
+    until an unrelated mutator happened to evict the entry. Returning a
+    tuple closes that hazard structurally: there is no in-place mutation
+    API to call in the first place, so a corrupted-cache scenario is
+    impossible to construct, not just discouraged by convention.
+    """
+
+    def test_predecessor_cache_entry_rejects_append(self, complex_graph):
+        graph, nodes, _ = complex_graph
+        cached = graph.get_predecessors_cached(nodes[3])
+        with pytest.raises(AttributeError):
+            cached.append(Node())
+
+    def test_predecessor_cache_entry_rejects_item_assignment(self, complex_graph):
+        graph, nodes, _ = complex_graph
+        cached = graph.get_predecessors_cached(nodes[3])
+        with pytest.raises(TypeError):
+            cached[0] = Node()
+
+    def test_successor_cache_entry_rejects_clear(self, complex_graph):
+        graph, nodes, _ = complex_graph
+        cached = graph.get_successors_cached(nodes[0])
+        assert not hasattr(cached, "clear")
+
+    def test_attempted_mutation_cannot_corrupt_subsequent_reads(self, complex_graph):
+        """Even after a failed mutation attempt, later cache hits must still
+        return the same, correct data — proving there is no partial-mutation
+        window a tuple's immutability could otherwise leave open.
+        """
+        graph, nodes, _ = complex_graph
+        expected_ids = {n.id for n in graph.get_predecessors(nodes[3])}
+
+        cached = graph.get_predecessors_cached(nodes[3])
+        with pytest.raises(AttributeError):
+            cached.append(Node())
+        with pytest.raises(TypeError):
+            cached[0] = Node()
+
+        again = graph.get_predecessors_cached(nodes[3])
+        assert again is cached
+        assert {n.id for n in again} == expected_ids
 
 
 class TestCachedAccessorsSerializeWithMutators:

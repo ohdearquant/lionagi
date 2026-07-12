@@ -207,17 +207,27 @@ class Graph(Element, Relational, Generic[T]):
         return tuple(self.node_edge_mapping[_id]["out"].values())
 
     @_graph_synchronized
-    def get_predecessors_cached(self, node: Any, /) -> list[Node]:
-        """Plain-list predecessor lookup, memoized until a mutator invalidates it.
+    def get_predecessors_cached(self, node: Any, /) -> tuple[Node, ...]:
+        """Plain-tuple predecessor lookup, memoized until a mutator invalidates it.
 
-        Semantically identical to get_predecessors() but returns list[Node]
-        instead of Pile[Node], avoiding Pile-construction cost on repeat
-        reads. Memoized per node id; the cache is cleared for affected ids by
-        add_edge/remove_edge/remove_node/replace_node/splice_after. The
-        existence check only runs on a cache miss — a cached entry is proof
-        the node was valid when memoized, and remove_node() always clears
-        its own cache entry in the same call that removes it from
-        internal_nodes, so a stale hit past removal cannot occur.
+        Semantically identical to get_predecessors() but returns
+        tuple[Node, ...] instead of Pile[Node], avoiding Pile-construction
+        cost on repeat reads. Memoized per node id; the cache is cleared for
+        affected ids by add_edge/remove_edge/remove_node/replace_node/
+        splice_after. The existence check only runs on a cache miss — a
+        cached entry is proof the node was valid when memoized, and
+        remove_node() always clears its own cache entry in the same call
+        that removes it from internal_nodes, so a stale hit past removal
+        cannot occur.
+
+        Returns a tuple, not a list: the memoized entry is the exact object
+        handed back on every cache hit, so a mutable list would let one
+        caller's in-place edit (append/clear/sort) corrupt what every other
+        concurrent reader of this Graph sees — tuples make that aliasing
+        hazard impossible rather than relying on callers to treat the result
+        as read-only. This is also zero-copy on a cache hit (returns the
+        stored tuple directly, no per-call copy), so it costs nothing extra
+        over returning a list.
 
         Synchronized (unlike get_predecessors()/find_node_edge()): this cache
         is stored on the Graph instance itself, so it is visible to every
@@ -235,14 +245,14 @@ class Graph(Element, Relational, Generic[T]):
             return cached
         if _id not in self.internal_nodes:
             raise RelationError(f"Node {node} not found in the graph nodes.")
-        result = [
+        result = tuple(
             self.internal_nodes[head_id] for head_id in self.node_edge_mapping[_id]["in"].values()
-        ]
+        )
         self._predecessor_cache[_id] = result
         return result
 
     @_graph_synchronized
-    def get_successors_cached(self, node: Any, /) -> list[Node]:
+    def get_successors_cached(self, node: Any, /) -> tuple[Node, ...]:
         """Symmetric with get_predecessors_cached()."""
         _id = ID.get_id(node)
         cached = self._successor_cache.get(_id)
@@ -250,9 +260,9 @@ class Graph(Element, Relational, Generic[T]):
             return cached
         if _id not in self.internal_nodes:
             raise RelationError(f"Node {node} not found in the graph nodes.")
-        result = [
+        result = tuple(
             self.internal_nodes[tail_id] for tail_id in self.node_edge_mapping[_id]["out"].values()
-        ]
+        )
         self._successor_cache[_id] = result
         return result
 
