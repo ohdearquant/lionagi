@@ -19,9 +19,11 @@ from lionagi.cli.monitor import (
     _colour_status,
     _elapsed,
     _find_entity,
+    _format_coordination_line,
     _format_table,
     _gather_table_rows,
     _invocation_to_row,
+    _parse_json_field,
     _pid_alive,
     _play_to_row,
     _render_branch_lines,
@@ -102,7 +104,13 @@ async def _make_session(
     return sid
 
 
-async def _make_invocation(db: StateDB, *, status: str = "running", skill: str = "show") -> str:
+async def _make_invocation(
+    db: StateDB,
+    *,
+    status: str = "running",
+    skill: str = "show",
+    node_metadata: dict | None = None,
+) -> str:
     inv_id = uuid.uuid4().hex[:12]
     await db.create_invocation(
         {
@@ -110,6 +118,7 @@ async def _make_invocation(db: StateDB, *, status: str = "running", skill: str =
             "skill": skill,
             "started_at": time.time(),
             "status": status,
+            "node_metadata": node_metadata,
         }
     )
     return inv_id
@@ -462,6 +471,67 @@ def test_session_to_row_current_phase_wins():
     # Before a flow leaves planning, current_phase is NULL → fall back.
     sess["current_phase"] = None
     assert _session_to_row(sess)["phase"] == "orchestrator"
+
+
+def test_parse_json_field_passes_through_dict():
+    assert _parse_json_field({"a": 1}) == {"a": 1}
+
+
+def test_parse_json_field_decodes_string():
+    assert _parse_json_field('{"a": 1}') == {"a": 1}
+
+
+def test_parse_json_field_rejects_non_object():
+    assert _parse_json_field("[1, 2]") is None
+    assert _parse_json_field("not json") is None
+    assert _parse_json_field(None) is None
+    assert _parse_json_field(42) is None
+
+
+def test_format_coordination_line_none_when_all_zero():
+    telemetry = {
+        "signals": {"emitted": {}, "received": 0, "acted_on": 0},
+        "files_overlap": {"count": 0, "top": []},
+    }
+    assert _format_coordination_line(telemetry) is None
+
+
+def test_format_coordination_line_renders_nonzero_counts():
+    telemetry = {
+        "signals": {"emitted": {"ScheduleRunSucceeded": 1}, "received": 2, "acted_on": 1},
+        "files_overlap": {"count": 3, "top": [{"path": "/a.py", "workers": 2}]},
+    }
+    line = _format_coordination_line(telemetry)
+    assert line == "emitted=1 received=2 acted_on=1 files_overlap=3"
+
+
+def test_format_coordination_line_none_when_missing_keys():
+    assert _format_coordination_line({}) is None
+
+
+def test_format_coordination_line_malformed_signals_list_does_not_raise():
+    """`signals` persisted as a list (not a dict) must be treated as absent
+    rather than raising AttributeError on `.get()`."""
+    assert _format_coordination_line({"signals": [1]}) is None
+
+
+def test_format_coordination_line_malformed_emitted_and_overlap_do_not_raise():
+    telemetry = {
+        "signals": {"emitted": [1, 2], "received": "not-a-number", "acted_on": None},
+        "files_overlap": [{"path": "/a.py"}],
+    }
+    assert _format_coordination_line(telemetry) is None
+
+
+def test_format_coordination_line_malformed_nested_counts_ignored_alongside_valid_ones():
+    """A malformed `files_overlap` shape must not suppress a legitimate
+    nonzero signal count elsewhere in the same telemetry dict."""
+    telemetry = {
+        "signals": {"emitted": {"ScheduleRunSucceeded": 1}, "received": 1, "acted_on": 1},
+        "files_overlap": "not-a-dict",
+    }
+    line = _format_coordination_line(telemetry)
+    assert line == "emitted=1 received=1 acted_on=1 files_overlap=0"
 
 
 def test_invocation_to_row():
@@ -1054,6 +1124,69 @@ async def test_run_detail_invocation(temp_db_path: Path) -> None:
     output = await _run_detail(inv_id)
     assert "INVOCATION" in output
     assert "codex-review" in output
+
+
+@pytest.mark.asyncio
+async def test_run_detail_invocation_shows_coordination_block(temp_db_path: Path) -> None:
+    coordination = {
+        "signals": {"emitted": {"ScheduleRunSucceeded": 1}, "received": 1, "acted_on": 1},
+        "files_overlap": {"count": 1, "top": [{"path": "/repo/shared.py", "workers": 2}]},
+    }
+    async with StateDB() as db:
+        inv_id = await _make_invocation(
+            db, skill="scheduled:flow", node_metadata={"coordination": coordination}
+        )
+    output = await _run_detail(inv_id)
+    assert "coordination" in output
+    assert "emitted=1 received=1 acted_on=1 files_overlap=1" in output
+    assert "/repo/shared.py" in output
+    assert "workers=2" in output
+
+
+@pytest.mark.asyncio
+async def test_run_detail_invocation_omits_coordination_block_when_all_zero(
+    temp_db_path: Path,
+) -> None:
+    coordination = {
+        "signals": {"emitted": {}, "received": 0, "acted_on": 0},
+        "files_overlap": {"count": 0, "top": []},
+    }
+    async with StateDB() as db:
+        inv_id = await _make_invocation(
+            db, skill="scheduled:agent", node_metadata={"coordination": coordination}
+        )
+    output = await _run_detail(inv_id)
+    assert "coordination" not in output
+
+
+@pytest.mark.asyncio
+async def test_run_detail_invocation_no_node_metadata_omits_coordination(
+    temp_db_path: Path,
+) -> None:
+    async with StateDB() as db:
+        inv_id = await _make_invocation(db, skill="show")
+    output = await _run_detail(inv_id)
+    assert "coordination" not in output
+
+
+@pytest.mark.asyncio
+async def test_run_detail_invocation_malformed_nested_telemetry_does_not_raise(
+    temp_db_path: Path,
+) -> None:
+    """A `coordination` dict whose nested `signals`/`files_overlap` values
+    do not match the shape this module writes (e.g. hand-edited state.db,
+    or a future writer bug) must render without raising."""
+    coordination = {
+        "signals": [1],
+        "files_overlap": {"count": 1, "top": "not-a-list"},
+    }
+    async with StateDB() as db:
+        inv_id = await _make_invocation(
+            db, skill="scheduled:flow", node_metadata={"coordination": coordination}
+        )
+    output = await _run_detail(inv_id)
+    assert "INVOCATION" in output
+    assert "files_overlap=1" in output
 
 
 @pytest.mark.asyncio

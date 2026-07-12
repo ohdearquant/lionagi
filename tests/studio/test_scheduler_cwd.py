@@ -393,6 +393,8 @@ def _make_svc() -> AsyncMock:
     svc.update_invocation = AsyncMock()
     svc.update_status = AsyncMock()
     svc.list_sessions_for_invocation = AsyncMock(return_value=[])
+    svc.get_invocation = AsyncMock(return_value=None)
+    svc.compute_files_overlap = AsyncMock(return_value={"count": 0, "top": []})
     return svc
 
 

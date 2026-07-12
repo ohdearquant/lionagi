@@ -75,6 +75,8 @@ def _make_svc() -> AsyncMock:
     svc.update_status = AsyncMock()
     svc.list_sessions_for_invocation = AsyncMock(return_value=[])
     svc.count_schedule_runs = AsyncMock(return_value=0)
+    svc.get_invocation = AsyncMock(return_value=None)
+    svc.compute_files_overlap = AsyncMock(return_value={"count": 0, "top": []})
     return svc
 
 
@@ -193,6 +195,168 @@ async def test_emit_with_zero_handlers_is_a_noop():
         ScheduleRunSucceeded(run_id="r1", schedule_id="s1", reason_code=RunReasons.COMPLETED_OK)
     )
     assert results == []
+
+
+# ---------------------------------------------------------------------------
+# Per-run coordination counters (emitted/received/acted_on) + pop_run_counters
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_emit_counts_emitted_even_with_zero_handlers():
+    """Emitted describes what the mint site dispatched, not what got
+    delivered -- it counts regardless of whether anyone is listening."""
+    bus = SchedulerSignalBus()
+    await bus.emit(
+        ScheduleRunSucceeded(run_id="r1", schedule_id="s1", reason_code=RunReasons.COMPLETED_OK)
+    )
+    counters = bus.pop_run_counters("r1")
+    assert counters == {
+        "emitted": {"ScheduleRunSucceeded": 1},
+        "received": 0,
+        "acted_on": 0,
+    }
+
+
+@pytest.mark.asyncio
+async def test_emit_counts_received_for_matching_handler_with_falsy_return():
+    """A handler that matches but returns None/falsy (the default, opt-out
+    convention) counts as received-only -- never acted_on."""
+    bus = SchedulerSignalBus()
+    bus.observe(ScheduleRunSucceeded, handler=lambda sig: None)
+
+    await bus.emit(
+        ScheduleRunSucceeded(run_id="r1", schedule_id="s1", reason_code=RunReasons.COMPLETED_OK)
+    )
+    counters = bus.pop_run_counters("r1")
+    assert counters["received"] == 1
+    assert counters["acted_on"] == 0
+
+
+@pytest.mark.asyncio
+async def test_emit_counts_acted_on_when_handler_returns_truthy_marker():
+    """The opt-in truthy-return convention: a handler that returns a truthy
+    value counts as acted_on, on top of received."""
+    bus = SchedulerSignalBus()
+    bus.observe(ScheduleRunSucceeded, handler=lambda sig: "acted")
+
+    await bus.emit(
+        ScheduleRunSucceeded(run_id="r1", schedule_id="s1", reason_code=RunReasons.COMPLETED_OK)
+    )
+    counters = bus.pop_run_counters("r1")
+    assert counters["received"] == 1
+    assert counters["acted_on"] == 1
+
+
+@pytest.mark.asyncio
+async def test_emit_async_handler_acted_on_marker_is_awaited_first():
+    bus = SchedulerSignalBus()
+
+    async def _handler(sig):
+        return True
+
+    bus.observe(ScheduleRunSucceeded, handler=_handler)
+    await bus.emit(
+        ScheduleRunSucceeded(run_id="r1", schedule_id="s1", reason_code=RunReasons.COMPLETED_OK)
+    )
+    counters = bus.pop_run_counters("r1")
+    assert counters["acted_on"] == 1
+
+
+@pytest.mark.asyncio
+async def test_emit_predicate_reject_not_counted_as_received():
+    """A candidate whose type matched but whose predicate rejected the
+    signal must not count as received (received == "predicate passed")."""
+    bus = SchedulerSignalBus()
+    bus.observe(
+        ScheduleRunFailed,
+        lambda s: s.reason_code == RunReasons.FAILED_MISSING_CWD,
+        handler=lambda sig: True,
+    )
+
+    await bus.emit(
+        ScheduleRunFailed(run_id="r1", schedule_id="s1", reason_code=RunReasons.FAILED_EXIT_NONZERO)
+    )
+    counters = bus.pop_run_counters("r1")
+    assert counters["received"] == 0
+    assert counters["acted_on"] == 0
+    assert counters["emitted"] == {"ScheduleRunFailed": 1}
+
+
+@pytest.mark.asyncio
+async def test_emit_predicate_exception_not_counted_as_received():
+    """A predicate that raises never reaches the "passed" branch -- it must
+    not be counted as received even though emit() still surfaces the
+    failure as an ExceptionGroup."""
+    from lionagi.ln.concurrency import ExceptionGroup
+
+    bus = SchedulerSignalBus()
+    bus.observe(
+        ScheduleRunFailed,
+        lambda s: (_ for _ in ()).throw(RuntimeError("predicate bug")),
+        handler=lambda sig: True,
+    )
+
+    with pytest.raises(ExceptionGroup):
+        await bus.emit(
+            ScheduleRunFailed(
+                run_id="r1", schedule_id="s1", reason_code=RunReasons.FAILED_EXCEPTION
+            )
+        )
+    counters = bus.pop_run_counters("r1")
+    assert counters["received"] == 0
+
+
+@pytest.mark.asyncio
+async def test_emit_multiple_handlers_each_contribute_to_received_and_acted_on():
+    bus = SchedulerSignalBus()
+    bus.observe(ScheduleRunSucceeded, handler=lambda sig: True)
+    bus.observe(ScheduleRunSucceeded, handler=lambda sig: False)
+    bus.observe(ScheduleRunSucceeded, handler=lambda sig: None)
+
+    await bus.emit(
+        ScheduleRunSucceeded(run_id="r1", schedule_id="s1", reason_code=RunReasons.COMPLETED_OK)
+    )
+    counters = bus.pop_run_counters("r1")
+    assert counters["received"] == 3
+    assert counters["acted_on"] == 1
+
+
+def test_pop_run_counters_returns_none_for_unknown_run():
+    bus = SchedulerSignalBus()
+    assert bus.pop_run_counters("never-emitted") is None
+
+
+@pytest.mark.asyncio
+async def test_pop_run_counters_removes_the_entry():
+    """Pop, not peek -- the bus is a long-lived per-daemon singleton, so a
+    run's counters must not linger past its one terminal flush."""
+    bus = SchedulerSignalBus()
+    await bus.emit(
+        ScheduleRunSucceeded(run_id="r1", schedule_id="s1", reason_code=RunReasons.COMPLETED_OK)
+    )
+    first = bus.pop_run_counters("r1")
+    second = bus.pop_run_counters("r1")
+    assert first is not None
+    assert second is None
+
+
+@pytest.mark.asyncio
+async def test_counters_are_isolated_per_run_id():
+    bus = SchedulerSignalBus()
+    bus.observe(ScheduleRunSucceeded, handler=lambda sig: True)
+
+    await bus.emit(
+        ScheduleRunSucceeded(run_id="r1", schedule_id="s1", reason_code=RunReasons.COMPLETED_OK)
+    )
+    await bus.emit(
+        ScheduleRunSucceeded(run_id="r2", schedule_id="s1", reason_code=RunReasons.COMPLETED_OK)
+    )
+
+    counters_r1 = bus.pop_run_counters("r1")
+    counters_r2 = bus.pop_run_counters("r2")
+    assert counters_r1 == {"emitted": {"ScheduleRunSucceeded": 1}, "received": 1, "acted_on": 1}
+    assert counters_r2 == {"emitted": {"ScheduleRunSucceeded": 1}, "received": 1, "acted_on": 1}
 
 
 # ---------------------------------------------------------------------------
