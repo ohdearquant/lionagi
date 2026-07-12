@@ -10,6 +10,11 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import os
+import shlex
+import sys
+import time
+from pathlib import Path
 
 import pytest
 
@@ -239,6 +244,62 @@ async def test_exec_handler_swallows_nonzero_exit_and_timeout(monkeypatch, caplo
     with caplog.at_level(logging.WARNING):
         await handler(_envelope())  # must not raise
     assert any("exited 1" in r.message for r in caplog.records)
+
+
+# ── Cancellation (the registry's outer deadline winning the race against
+# the handler's own identical wait_for) must still reap the child ──────────
+
+
+@pytest.mark.asyncio
+async def test_cancelled_exec_handler_still_kills_its_child_process_group(tmp_path: Path):
+    # Reproduces the race: TerminalCallbackRegistry's own move_on_after
+    # budget is set far shorter than the exec handler's internal
+    # asyncio.wait_for budget, so the OUTER scope wins and delivers
+    # cancellation to _exec_handler mid-communicate() -- the same failure
+    # shape asyncio.TimeoutError would hit, but through a different
+    # exception. The child (its own process group via start_new_session)
+    # must still be dead by the time emit() returns, not orphaned alive.
+    pid_file = tmp_path / "pid.txt"
+    cmd = (
+        f"{shlex.quote(sys.executable)} -c "
+        '"import os, pathlib, sys, time; '
+        "pathlib.Path(sys.argv[1]).write_text(str(os.getpid())); "
+        'time.sleep(30)" '
+        f"{shlex.quote(str(pid_file))}"
+    )
+    resolved = resolve_notify_config(override=cmd)
+    assert resolved is not None
+    handler = build_handler(resolved)
+    assert handler is not None
+
+    registry = TerminalCallbackRegistry(budget_seconds=0.3)
+    registry.register("slow-notify", handler)
+
+    start = time.monotonic()
+    await registry.emit(_envelope())  # must not raise
+    elapsed = time.monotonic() - start
+    assert elapsed < 5.0  # bounded by the outer 0.3s budget, not the 30s sleep
+
+    # The child had time to write its pid before being killed.
+    for _ in range(50):
+        if pid_file.exists():
+            break
+        await asyncio.sleep(0.05)
+    assert pid_file.exists()
+    child_pid = int(pid_file.read_text())
+
+    # aterminate_process_group's own SIGKILL + proc.wait() already ran
+    # inside the shielded cleanup before emit() returned; give the OS a
+    # brief grace period for the zombie to clear, then confirm the process
+    # is actually gone -- never left running past the run's own return.
+    for _ in range(50):
+        try:
+            os.kill(child_pid, 0)
+        except ProcessLookupError:
+            break
+        await asyncio.sleep(0.05)
+    else:
+        pytest.fail(f"child pid {child_pid} was still alive after cancellation cleanup")
 
 
 # ── build_handler: a malformed python adapter must never raise ─────────────

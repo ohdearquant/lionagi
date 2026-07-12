@@ -36,6 +36,7 @@ from typing import Any
 
 from lionagi.agent.settings import load_settings
 from lionagi.ln._proc import aterminate_process_group
+from lionagi.ln.concurrency import CancelScope, get_cancelled_exc_class
 
 from .callbacks import (
     DEFAULT_TERMINAL_CALLBACKS,
@@ -277,6 +278,24 @@ def _make_exec_handler(
                 await _await_proc_dead(proc)
             logger.warning("notify.on_terminal exec adapter %r timed out", launch_argv)
             return
+        except get_cancelled_exc_class():
+            # The registry's own shared deadline (TerminalCallbackRegistry's
+            # move_on_after, HANDLER_BUDGET_SECONDS by default) races this
+            # call's identical wait_for timeout -- the outer one started
+            # counting first, so it typically wins and delivers cancellation
+            # here instead of the asyncio.TimeoutError branch above. Either
+            # way the child must be reaped: it was launched with
+            # start_new_session=True (its own process group), so leaving it
+            # unkilled orphans a live notify.on_terminal/--notify subprocess
+            # after this run has already returned. Cleanup runs inside a
+            # shielded scope since the enclosing scope is already cancelled
+            # -- an unshielded await here would itself be cancelled before
+            # the kill completes.
+            if proc is not None:
+                with CancelScope(shield=True):
+                    await aterminate_process_group(proc, grace=None)
+                    await _await_proc_dead(proc)
+            raise
         except Exception as exc:  # noqa: BLE001 -- an adapter failure must never affect the run
             logger.warning("notify.on_terminal exec adapter %r failed to run: %s", launch_argv, exc)
             return
