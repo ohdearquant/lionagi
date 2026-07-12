@@ -7,33 +7,278 @@ from __future__ import annotations
 import argparse
 import signal
 import sys
-
-from lionagi.studio.cli import (
-    add_schedule_subparser,
-    add_studio_subparser,
-    run_schedule,
-    run_studio,
-)
+from collections.abc import Callable
+from dataclasses import dataclass
+from importlib import import_module
+from types import ModuleType
 
 from ._logging import configure_cli_logging, log_error
-from .agent import add_agent_subparser, run_agent
-from .casts import add_casts_subparser, run_casts
-from .dispatch import add_dispatch_subparser, run_dispatch
-from .doctor import add_doctor_subparser, run_doctor
-from .engine import add_engine_subparser, run_engine
-from .invoke import add_invoke_subparser, run_invoke
-from .kill import add_kill_subparser, run_kill
-from .mirror import add_mirror_subparser, run_mirror
-from .monitor import add_monitor_subparser, run_monitor
-from .orchestrate import (
-    add_orchestrate_subparser,
-    inject_playbook_schema_into_parser,
-    run_orchestrate,
+
+
+def _load_agent() -> ModuleType:
+    return import_module(".agent", __package__)
+
+
+def _load_casts() -> ModuleType:
+    return import_module(".casts", __package__)
+
+
+def _load_dispatch() -> ModuleType:
+    return import_module(".dispatch", __package__)
+
+
+def _load_doctor() -> ModuleType:
+    return import_module(".doctor", __package__)
+
+
+def _load_engine() -> ModuleType:
+    return import_module(".engine", __package__)
+
+
+def _load_invoke() -> ModuleType:
+    return import_module(".invoke", __package__)
+
+
+def _load_kill() -> ModuleType:
+    return import_module(".kill", __package__)
+
+
+def _load_mirror() -> ModuleType:
+    return import_module(".mirror", __package__)
+
+
+def _load_monitor() -> ModuleType:
+    return import_module(".monitor", __package__)
+
+
+def _load_orchestrate() -> ModuleType:
+    return import_module(".orchestrate", __package__)
+
+
+def _load_state() -> ModuleType:
+    return import_module(".state", __package__)
+
+
+def _load_stats() -> ModuleType:
+    return import_module(".stats", __package__)
+
+
+def _load_team() -> ModuleType:
+    return import_module(".team", __package__)
+
+
+def _load_studio() -> ModuleType:
+    return import_module("lionagi.studio.cli")
+
+
+@dataclass(frozen=True)
+class _CommandSpec:
+    name: str
+    help: str
+    loader: Callable[[], ModuleType]
+    parser_factory: str
+    handler: str
+    aliases: tuple[str, ...] = ()
+
+
+_COMMAND_REGISTRY = (
+    _CommandSpec(
+        "orchestrate",
+        "Multi-agent orchestration patterns.",
+        _load_orchestrate,
+        "add_orchestrate_subparser",
+        "run_orchestrate",
+        ("o",),
+    ),
+    _CommandSpec(
+        "agent",
+        "Spawn one-shot subagent (blocking); prints final response.",
+        _load_agent,
+        "add_agent_subparser",
+        "run_agent",
+    ),
+    _CommandSpec(
+        "casts",
+        "inspect built-in roles and modes",
+        _load_casts,
+        "add_casts_subparser",
+        "run_casts",
+    ),
+    _CommandSpec(
+        "engine",
+        "Run domain-specific multi-agent engine pipelines.",
+        _load_engine,
+        "add_engine_subparser",
+        "run_engine",
+    ),
+    _CommandSpec(
+        "team",
+        "Team messaging — send/receive between named agents.",
+        _load_team,
+        "add_team_subparser",
+        "run_team",
+    ),
+    _CommandSpec(
+        "studio",
+        "Lion Studio server",
+        _load_studio,
+        "add_studio_subparser",
+        "run_studio",
+    ),
+    _CommandSpec(
+        "schedule",
+        "Manage lionagi Studio schedules.",
+        _load_studio,
+        "add_schedule_subparser",
+        "run_schedule",
+    ),
+    _CommandSpec(
+        "state",
+        "Inspect and migrate lionagi state.db.",
+        _load_state,
+        "add_state_subparser",
+        "run_state",
+    ),
+    _CommandSpec(
+        "invoke",
+        "Track a skill-level orchestration (ADR-0020).",
+        _load_invoke,
+        "add_invoke_subparser",
+        "run_invoke",
+    ),
+    _CommandSpec(
+        "kill",
+        "Terminate a running entity (run/session/play/show).",
+        _load_kill,
+        "add_kill_subparser",
+        "run_kill",
+    ),
+    _CommandSpec(
+        "mirror",
+        "Mirror Claude Code sessions into studio (live).",
+        _load_mirror,
+        "add_mirror_subparser",
+        "run_mirror",
+    ),
+    _CommandSpec(
+        "monitor",
+        "Observe play/agent/run progress in real-time.",
+        _load_monitor,
+        "add_monitor_subparser",
+        "run_monitor",
+        ("mon",),
+    ),
+    _CommandSpec(
+        "dispatch",
+        "Inspect and acknowledge durable dispatch_outbox rows.",
+        _load_dispatch,
+        "add_dispatch_subparser",
+        "run_dispatch",
+    ),
+    _CommandSpec(
+        "doctor",
+        "Check the lionagi CLI environment/install for common failure modes.",
+        _load_doctor,
+        "add_doctor_subparser",
+        "run_doctor",
+    ),
+    _CommandSpec(
+        "stats",
+        "Read-only aggregate reporting over lionagi's StateDB.",
+        _load_stats,
+        "add_stats_subparser",
+        "run_stats",
+    ),
 )
-from .skill import run_skill
-from .state import add_state_subparser, run_state
-from .stats import add_stats_subparser, run_stats
-from .team import add_team_subparser, run_team
+_COMMAND_BY_NAME = {
+    command_name: spec for spec in _COMMAND_REGISTRY for command_name in (spec.name, *spec.aliases)
+}
+
+
+def _build_parser(selected: _CommandSpec | None) -> tuple[argparse.ArgumentParser, object | None]:
+    parser = argparse.ArgumentParser(
+        prog="li",
+        description="lionagi command line — spawn subagents via any CLI-backed provider.",
+    )
+    parser.add_argument(
+        "--version",
+        action="version",
+        version=f"%(prog)s {_get_version()}",
+    )
+    subparsers = parser.add_subparsers(dest="command", required=True)
+    if selected is not None:
+        factory = getattr(selected.loader(), selected.parser_factory)
+        return parser, factory(subparsers)
+
+    for spec in _COMMAND_REGISTRY:
+        subparsers.add_parser(spec.name, aliases=list(spec.aliases), help=spec.help)
+    return parser, None
+
+
+# These forwarding functions preserve the main module's existing patch points
+# without importing a command implementation until that command is dispatched.
+def run_agent(args: argparse.Namespace) -> int:
+    return _load_agent().run_agent(args)
+
+
+def run_casts(args: argparse.Namespace) -> int:
+    return _load_casts().run_casts(args)
+
+
+def run_dispatch(args: argparse.Namespace) -> int:
+    return _load_dispatch().run_dispatch(args)
+
+
+def run_doctor(args: argparse.Namespace) -> int:
+    return _load_doctor().run_doctor(args)
+
+
+def run_engine(args: argparse.Namespace) -> int:
+    return _load_engine().run_engine(args)
+
+
+def run_invoke(args: argparse.Namespace) -> int:
+    return _load_invoke().run_invoke(args)
+
+
+def run_kill(args: argparse.Namespace) -> int:
+    return _load_kill().run_kill(args)
+
+
+def run_mirror(args: argparse.Namespace) -> int:
+    return _load_mirror().run_mirror(args)
+
+
+def run_monitor(args: argparse.Namespace) -> int:
+    return _load_monitor().run_monitor(args)
+
+
+def run_orchestrate(args: argparse.Namespace) -> int:
+    return _load_orchestrate().run_orchestrate(args)
+
+
+def run_schedule(args: argparse.Namespace) -> int:
+    return _load_studio().run_schedule(args)
+
+
+def run_state(args: argparse.Namespace) -> int:
+    return _load_state().run_state(args)
+
+
+def run_stats(args: argparse.Namespace) -> int:
+    return _load_stats().run_stats(args)
+
+
+def run_studio(args: argparse.Namespace) -> int:
+    return _load_studio().run_studio(args)
+
+
+def run_team(args: argparse.Namespace) -> int:
+    return _load_team().run_team(args)
+
+
+def run_skill(argv: list[str]) -> int:
+    return import_module(".skill", __package__).run_skill(argv)
 
 
 def _print_playbook_help(name: str) -> int:
@@ -233,7 +478,7 @@ def _handle_play_shortcut(argv: list[str]) -> list[str] | int:
         # playbook flags placed before NAME — they must follow it.
         probe_parser = argparse.ArgumentParser(prog="li", add_help=False)
         probe_sub = probe_parser.add_subparsers(dest="command")
-        fl_probe = add_orchestrate_subparser(probe_sub)["flow"]
+        fl_probe = _load_orchestrate().add_orchestrate_subparser(probe_sub)["flow"]
         if "--" in rest:
             i = rest.index("--")
             p_head, p_post = rest[:i], rest[i + 1 :]
@@ -340,37 +585,16 @@ def main(argv: list[str] | None = None) -> int:
 
         return run_wait(_argv[1:])
 
-    parser = argparse.ArgumentParser(
-        prog="li",
-        description="lionagi command line — spawn subagents via any CLI-backed provider.",
-    )
-    parser.add_argument(
-        "--version",
-        action="version",
-        version=f"%(prog)s {_get_version()}",
-    )
-    sub = parser.add_subparsers(dest="command", required=True)
-
-    orch_parsers = add_orchestrate_subparser(sub)
-    agent_parser = add_agent_subparser(sub)
-    add_casts_subparser(sub)
-    add_engine_subparser(sub)
-    add_team_subparser(sub)
-    add_studio_subparser(sub)
-    schedule_parser = add_schedule_subparser(sub)
-    add_state_subparser(sub)
-    add_invoke_subparser(sub)
-    add_kill_subparser(sub)
-    add_mirror_subparser(sub)
-    add_monitor_subparser(sub)
-    add_dispatch_subparser(sub)
-    add_doctor_subparser(sub)
-    add_stats_subparser(sub)
+    selected = _COMMAND_BY_NAME.get(_argv[0]) if _argv else None
+    parser, selected_parser = _build_parser(selected)
 
     # If the user is invoking `li o flow -p NAME`, inject the playbook's
     # declared args as flags on the flow sub-parser BEFORE argparse runs,
     # so positional prompts don't swallow flag values.
-    inject_playbook_schema_into_parser(orch_parsers["flow"], _argv)
+    orch_parsers: dict[str, argparse.ArgumentParser] | None = None
+    if selected is _COMMAND_BY_NAME["orchestrate"]:
+        orch_parsers = selected_parser
+        _load_orchestrate().inject_playbook_schema_into_parser(orch_parsers["flow"], _argv)
 
     # `li agent` parses standalone so flags may appear anywhere relative to
     # the [MODEL] PROMPT positionals (subparser dispatch cannot intermix).
@@ -378,7 +602,8 @@ def main(argv: list[str] | None = None) -> int:
     # between its two passes, letting a hostile prompt like "--bypass" placed
     # after `--` toggle real flags on the re-parse. Split at the sentinel
     # ourselves, parse flags, and fold leftover positionals back in order.
-    if _argv and _argv[0] == "agent":
+    if selected is _COMMAND_BY_NAME["agent"]:
+        agent_parser = selected_parser
         tail = _argv[1:]
         if "--" in tail:
             i = tail.index("--")
@@ -403,11 +628,12 @@ def main(argv: list[str] | None = None) -> int:
     # argparse can't reconcile). Same sentinel-safe split + fold as `agent`.
     if (
         _argv
-        and _argv[0] in ("orchestrate", "o")
+        and selected is _COMMAND_BY_NAME["orchestrate"]
         and len(_argv) > 1
         and _argv[1] in ("fanout", "flow")
     ):
         sub_name = _argv[1]
+        assert orch_parsers is not None
         sub_parser = orch_parsers[sub_name]
         tail = _argv[2:]
         if "--" in tail:
@@ -427,7 +653,8 @@ def main(argv: list[str] | None = None) -> int:
     # `li schedule ...` parses its own subparser directly (mirroring the
     # `agent` special-case above) so an unrecognized flag gets a one-line
     # "did you mean --X?" suggestion instead of argparse's generic usage dump.
-    if _argv and _argv[0] == "schedule":
+    if selected is _COMMAND_BY_NAME["schedule"]:
+        schedule_parser = selected_parser
         ns, extras = schedule_parser.parse_known_args(_argv[1:])
         if extras:
             from lionagi.studio.cli import suggest_schedule_flag
@@ -448,50 +675,8 @@ def main(argv: list[str] | None = None) -> int:
 
     args = parser.parse_args(_argv)
 
-    if args.command in ("orchestrate", "o"):
-        return run_orchestrate(args)
-
-    if args.command == "agent":
-        return run_agent(args)
-
-    if args.command == "casts":
-        return run_casts(args)
-
-    if args.command == "engine":
-        return run_engine(args)
-
-    if args.command == "team":
-        return run_team(args)
-
-    if args.command == "studio":
-        return run_studio(args)
-
-    if args.command == "state":
-        return run_state(args)
-
-    if args.command == "invoke":
-        return run_invoke(args)
-
-    if args.command == "kill":
-        return run_kill(args)
-
-    if args.command == "mirror":
-        return run_mirror(args)
-
-    if args.command in ("monitor", "mon"):
-        return run_monitor(args)
-
-    if args.command == "dispatch":
-        return run_dispatch(args)
-
-    if args.command == "schedule":
-        return run_schedule(args)
-
-    if args.command == "doctor":
-        return run_doctor(args)
-
-    if args.command == "stats":
-        return run_stats(args)
+    if selected is not None:
+        return globals()[selected.handler](args)
 
     parser.print_help()
     return 1

@@ -3,6 +3,9 @@
 
 """Tests for lionagi.cli.main — _handle_play_shortcut."""
 
+import subprocess
+import sys
+
 from lionagi.cli.main import _handle_play_shortcut
 
 
@@ -212,3 +215,24 @@ def test_cli_package_getattr_raises_for_unknown_attr():
         [sys.executable, "-c", code], capture_output=True, text=True, timeout=120
     )
     assert result.returncode == 0, result.stderr
+
+
+def test_command_registry_loaders_expose_parser_and_handler():
+    """Every registry entry resolves before a command-specific parse needs it."""
+    import lionagi.cli.main as main_module
+
+    for spec in main_module._COMMAND_REGISTRY:
+        module = spec.loader()
+        assert callable(getattr(module, spec.parser_factory))
+        assert callable(getattr(module, spec.handler))
+
+
+def test_version_and_root_help_work_in_fresh_cli_processes():
+    for argv in (["--version"], ["--help"]):
+        result = subprocess.run(
+            [sys.executable, "-m", "lionagi.cli", *argv],
+            capture_output=True,
+            text=True,
+            timeout=120,
+        )
+        assert result.returncode == 0, result.stderr
