@@ -4,9 +4,10 @@
 - **Kind**: Aspirational
 - **Area**: scheduling-control-plane
 - **Date**: 2026-07-12
-- **Relations**: builds on ADR-0057 (lifecycle transitions), ADR-0035 (terminal-status
-  integrity floor), ADR-0059 (dispatch outbox), ADR-0064 (run outcome records),
-  ADR-0071 (task-worker leases)
+- **Relations**: supersedes ADR-0060 (run supervision — its outbox-coupled callback and
+  two-stage orphan design are replaced by D1/D3/D4 here); builds on ADR-0057 (lifecycle
+  transitions), ADR-0035 (terminal-status integrity floor), ADR-0059 (dispatch outbox),
+  ADR-0064 (run outcome records), ADR-0071 (task-worker leases)
 
 ## Context
 
@@ -67,10 +68,27 @@ logged and swallowed. Awaiting the registry may delay the transition caller's re
 most that budget; it cannot delay, roll back, overwrite, or recategorize the terminal write.
 
 The push contract is **best effort**. LionAGI claims neither exactly-once nor at-least-once
-callback delivery. The committed transition audit is the durable reconciliation source: a
-read-only terminal-event query, cursor-ordered by `(created_at, id)`, lets an external
-wrapper recover a missed push by target entity or correlation ID. Consumers deduplicate on
-`event_id`.
+callback delivery. The committed transition audit is the durable reconciliation source, and
+its consumption contract is **set-based, not cursor-based**. A positional cursor over
+`(created_at, id)` cannot be made safe here: the transition timestamp is captured before the
+transaction begins while commit happens at context exit, so a slow transaction can commit a
+row whose `created_at` sorts *behind* a cursor another consumer already acknowledged, and the
+audit ID is a random UUID with no commit ordering. A strict greater-than cursor would skip
+that row permanently — losing exactly the commit-then-crash window reconciliation exists to
+cover.
+
+Instead, delivery acknowledgment is durable state: a `terminal_deliveries` table keyed by
+`(transition_id, consumer)` records that a named reconciliation consumer has processed a
+terminal event, written by the consumer (never by the push path — the in-process push stays
+fire-and-forget and records nothing). The reconciliation query is a read-only anti-join:
+terminal transitions on execution entities with no delivery row for the requesting consumer,
+bounded by a retention horizon (default seven days; a terminal event older than the horizon
+is expired for reconciliation and only the raw audit history remains). Because membership in
+the unacknowledged set does not depend on any ordering, a late-committing older row is simply
+still in the set the next time the consumer queries. Consumers deduplicate on `event_id`
+(push and reconciliation can both deliver the same event; the push-then-crash-before-ack case
+redelivers). The audit row itself is never mutated; acknowledgment lives entirely in the
+deliveries table, preserving audit immutability.
 
 `SESSION_END` remains supported but is not bridged into the registry; a bridge would create a
 loop and a second authority. Persistent direct engine runs are covered through their
@@ -111,6 +129,15 @@ filesystem discovery or surface-specific joins inside the transaction to populat
 fields. Concrete notification payloads and transports (mail, chat, fleet inboxes) belong to
 the external run wrapper, not to this envelope.
 
+**Version evolution rules.** Within `schema_version: 1`, the guaranteed fields' names,
+types, semantics, and requiredness are immutable. New *optional* fields may be added without
+a version bump; consumers MUST ignore fields they do not recognize. Any removal, type
+change, semantic change, requiredness change, or change to the correlation-key set requires
+incrementing `schema_version`. A consumer receiving a version it does not support MUST NOT
+process the envelope as if it were v1; it logs and drops (or dead-letters) it, and can always
+fall back to the reconciliation query, whose row shape is governed by the schema, not the
+envelope.
+
 ### D3 — Direct in-process delivery; two bootstrap points; `--notify` becomes scoped sugar
 
 The core mechanism is a direct in-process handler call through the registry, post-commit and
@@ -119,12 +146,31 @@ external-executable adapter, where LionAGI passes the v1 JSON envelope and inter
 process launch, timeout, and exit code, while the executable owns the transport.
 
 There are two bootstrap points rather than N command flags: common CLI startup and Studio
-service startup. Programmatic users register handlers explicitly. Flow/play `--notify`
-remains as scoped compatibility sugar: after the flow session ID is known, it registers the
-legacy shell adapter for the target invocation (if present) or session, and unregisters it in
-a `finally` block. The current direct teardown notify call is removed to prevent double
-delivery. No `--notify`-style flag is added to agent, fanout, engine, scheduler, or Studio
-APIs.
+service startup. Both resolve the handler configuration from settings, so an external
+adapter is installable from user configuration alone:
+
+- **Settings key**: `notify.on_terminal` (the key the current flow-only prototype already
+  resolves). Accepted shapes: a string (compatibility: the legacy shell command form) or a
+  mapping `{enabled: bool, adapter: {kind: "exec", argv: [...]} | {kind: "python",
+  ref: "module:callable"}, filter: {kinds: [...], ids: [...]}}`. The absent key and
+  `enabled: false` are both the explicit disabled state; the default is disabled.
+- **Precedence**: per-run override > project `.lionagi/settings.yaml` > global
+  `~/.lionagi/settings.yaml` > disabled. The per-run override surface is the existing
+  `--notify` flag where it exists (flow/play) and the programmatic registration API
+  everywhere; an override replaces the settings-resolved handler for that run's scope only.
+- **Resolution and validation**: settings are resolved once per process at bootstrap
+  (snapshot semantics; a settings edit takes effect on the next process). An invalid value
+  logs a warning naming the key and falls back to disabled — configuration errors never
+  fail or delay a run.
+- **Exec adapter safety**: `argv` is an array executed without a shell; the envelope is
+  passed on stdin; LionAGI interprets only launch, the shared timeout budget, and exit code.
+
+Programmatic users register handlers explicitly. Flow/play `--notify` remains as scoped
+compatibility sugar: after the flow session ID is known, it registers the legacy shell
+adapter for the target invocation (if present) or session, and unregisters it in a `finally`
+block. The current direct teardown notify call is removed to prevent double delivery. No new
+`--notify`-style flag is added to agent, fanout, engine, scheduler, or Studio APIs — those
+surfaces are covered by the settings-level handler.
 
 The dispatch outbox is not used by v1: its delivery loop is daemon-tick-driven, and a
 callback enqueued by a dying CLI process would deliver only when a Studio daemon runs. A
@@ -136,10 +182,25 @@ identity, ack state, retention, and security policy — a separate decision if e
 No persisted `orphaned` status is added. Canonical reasons carry the fact on the sanctioned
 vocabularies: execution entities ending in `failed` use `run.failed.orphaned_parent`; plays
 ending in `blocked` use `play.blocked.runner_orphaned`; task-worker lease recovery keeps
-`run.queued.lease_expired` and `run.failed.lease_attempts_exhausted`. Studio and CLI project
-`display_status="orphaned"` (and health `ORPHANED`) when a row is nonterminal with positive
-orphan evidence or terminal with a canonical orphan reason. Downstream state machines stop
-waiting on `failed`/`blocked`; operators still see "orphaned".
+`run.queued.lease_expired` and `run.failed.lease_attempts_exhausted`; a spawn whose executor
+identity was never durably acquired terminalizes after spawn grace with
+`run.failed.spawn_identity_lost`. Studio and CLI project `display_status="orphaned"` (and
+health `ORPHANED`) when a row is nonterminal with positive orphan evidence or terminal with a
+canonical orphan reason. Downstream state machines stop waiting on `failed`/`blocked`;
+operators still see "orphaned".
+
+`display_status` for a **nonterminal** row is a live, non-replayable advisory projection and
+is never a recovery source: it consumes the OS process table, marker presence, and elapsed
+grace at read time, and the same stored row may legitimately project differently as those
+observations change. No decision may be made from it. Recovery decisions are made only by
+the coordinator through guarded transitions, and every terminalizing transition persists the
+classification evidence it acted on — observed PID and create-time (or their absence),
+marker state, lease state, elapsed grace against the configured threshold, and the
+classifier policy version — in the transition row's evidence payload. Terminal decisions are
+therefore replayable from persisted bytes even though the live advisory is not. Time-source
+rules: persisted stamps use the coordinator's wall clock; grace elapse is measured against
+persisted `updated_at`/activity stamps, never against a remembered in-process instant, so a
+coordinator restart cannot shrink a grace window.
 
 One pure ownership classifier and one `reconcile_orphans()` coordinator replace the current
 per-reaper predicates. Existing startup and periodic Studio reaper triggers call the
@@ -163,6 +224,30 @@ current identity into the signal session's `node_metadata`, and reconciliation f
 terminal signal session onto the same-ID engine-run row. Task-worker executions retain lease
 identity as their ownership proof.
 
+**Spawn handshake.** Identity acquisition is a durable, ordered protocol, not a best-effort
+callback:
+
+1. *Intent*: before the child process is created, the supervisor persists a spawn-attempt
+   record (attempt ID, argv summary, log path) on the linked invocation and commits it. A
+   spawn with no committed intent must not proceed.
+2. *Identity acquisition*: immediately after process creation returns — before any await
+   point in the supervisor — the child's PID and process-creation time are written to the
+   intent record and committed. This commit is the identity point.
+3. *Child registration*: on surfaces whose child runs LionAGI bootstrap code, the child
+   additionally writes its own marker row carrying the attempt ID, durably linking marker to
+   invocation. Marker-less surfaces (bare `command` children) rely solely on step 2.
+
+Restart behavior is defined per incomplete phase: intent committed but no identity and the
+surface is marker-capable — look up the child's marker by attempt ID and adopt its identity;
+intent committed, no identity, no marker — the row waits out the spawn grace and then
+terminalizes with `run.failed.spawn_identity_lost`, with the intent's log path preserved for
+manual audit. The residual window is the gap between process creation and the step-2 commit;
+it is milliseconds wide by construction (no intervening awaits), and a child lost in it on a
+marker-less surface is an accepted, documented loss: its row terminalizes honestly rather
+than hanging, and the OS process, if alive, is discoverable through the logged intent. PID
+reuse is excluded at every use of a recorded identity by comparing process-creation time,
+both when adopting a marker and when classifying liveness.
+
 ### D5 — Orphan detection ships now; resume stays explicit and per-surface
 
 This slice ships detection and an explicit recovery contract, not universal or automatic
@@ -177,7 +262,13 @@ resume. The status/monitor response for an orphan names one recovery capability:
 | Direct engine run | `rerun_only` | No checkpoint contract; new engine run |
 | Studio compiled workflow | `rerun_only` | StateDB persistence but no checkpoint/replay contract |
 | Direct schedule fire / schedule-run wrapper | `child_dependent` | If the child resolves to a supported flow checkpoint, expose the child recovery; otherwise rerun as a new schedule attempt |
+| Studio on-demand launch: `agent`, `flow`, `fanout`, `play`, `flow_yaml`, `engine` | Same as the equivalent CLI surface above | The launch's invocation carries the child identity from the spawn handshake; recovery is the child surface's row (flow checkpoint, agent branch continuation, rerun) |
+| Studio on-demand launch: `command` (no LionAGI child root) | `pid_liveness_only` | Liveness from the recorded PID/create-time only; no marker, no resume; dead or identity-lost rows terminalize and the action is rerun |
 | Invocation umbrella | `children_only` | Recover eligible child roots; fold the new attempt separately |
+
+The launch kinds named here are the closed set accepted by the Studio launches service;
+verification item 4 iterates exactly this table's surface inventory, so the promised
+capability and the tested coverage cannot drift apart.
 
 Automatic flow re-arm is deferred until replay can prove idempotency boundaries, attempt
 limits, budget inheritance, and behavior for side-effecting completed nodes. The known
@@ -213,7 +304,8 @@ wrapper makes the resume decision against the recovery projection.
 | Capability | Current | Target in this ADR | Size |
 |---|---|---|---:|
 | Terminal source | Flow direct notify plus partial `SESSION_END`; other surfaces none | Post-commit registry driven by applied lifecycle terminal transitions | M |
-| Durable callback fact | Status audit exists, no terminal-event reader | Read-only projection/query over `status_transitions` | S |
+| Durable callback fact | Status audit exists, no terminal-event reader | Anti-join reconciliation over `status_transitions` plus `terminal_deliveries` ack table | M |
+| Settings-level handler | Flow-only `notify.on_terminal` string command | Same key, generic: exec/python adapter shapes, precedence, snapshot resolution, explicit disabled state | S |
 | Payload | Flow-specific environment payload | Versioned minimal terminal envelope; legacy adapter preserves old payload | S |
 | Delivery | Flow shell hook, 10 s, swallowed failures | Direct bounded registry; shell/executable only as adapter; external retry | M |
 | Flow `--notify` | Direct teardown call | Scoped sugar over the registry, same legacy payload/timeout | S |
@@ -229,6 +321,22 @@ wrapper makes the resume decision against the recovery projection.
 
 1. Fault-inject process death after commit and before handler emission: the terminal row and
    audit row exist; reconciliation returns the same `event_id`.
+1a. Late-older-commit interleaving: transaction A captures its timestamp, stalls; B captures
+   a later timestamp, commits, and is reconciled and acknowledged; A then commits. A's event
+   MUST appear in the consumer's next unacknowledged set (this is the case a positional
+   cursor loses).
+1b. Push-then-crash duplicate: a handler receives the push, the consumer crashes before
+   writing its delivery acknowledgment; reconciliation redelivers the same `event_id` and
+   consumer-side dedup makes processing idempotent.
+1c. Settings contract: string form, mapping form, invalid value (warns, disabled, run
+   unaffected), per-run override replacing the settings handler for its scope only, and the
+   explicit `enabled: false` state.
+1d. Spawn handshake per incomplete phase: crash before intent commit (no row, no leak
+   beyond the OS process); crash between spawn and identity commit on a marker-capable
+   surface (restart adopts identity from the child marker); same on a marker-less surface
+   (row terminalizes with `run.failed.spawn_identity_lost` only after spawn grace, log path
+   retained); PID reuse injected at adoption and at classification (create-time mismatch
+   rejects).
 2. Concurrent terminal transitions plus a same-status reason append: only the winning
    transition emits; no handler runs under the transaction.
 3. One hanging, one failing, one successful handler registered: the successful handler is not
