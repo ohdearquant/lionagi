@@ -1299,54 +1299,60 @@ class StateDB:
 
     _UNKNOWN_TYPE_ID = 0
 
-    async def insert_message(self, msg: dict[str, Any]) -> None:
+    @staticmethod
+    def _validate_message(msg: dict[str, Any]) -> None:
         if msg.get("content") is None:
             raise ValueError("messages.content is NOT NULL")
         role = msg.get("role")
         if not isinstance(role, str) or not role.strip():
             raise ValueError(f"messages.role must be a non-empty string; got {role!r}")
 
+    async def _insert_message_in_tx(self, conn, msg: dict[str, Any]) -> None:
         lion_class_str = (msg.get("node_metadata") or {}).get("lion_class", "")
+        type_id = await self._resolve_lion_class_in_tx(conn, lion_class_str)
+
+        # ON CONFLICT(id) DO UPDATE so re-emitted hooks overwrite stale content.
+        await conn.execute(
+            text(
+                """INSERT INTO messages (id, created_at, node_metadata, content,
+                   embedding, sender, recipient, channel, role, lion_class)
+                   VALUES (:id, :created_at, :node_metadata, :content,
+                           :embedding, :sender, :recipient, :channel, :role, :lion_class)
+                   ON CONFLICT(id) DO UPDATE SET
+                     node_metadata = excluded.node_metadata,
+                     content       = excluded.content,
+                     embedding     = excluded.embedding,
+                     sender        = excluded.sender,
+                     recipient     = excluded.recipient,
+                     channel       = excluded.channel,
+                     role          = excluded.role,
+                     lion_class    = excluded.lion_class"""
+            ).bindparams(
+                bindparam("node_metadata", type_=JSON),
+                bindparam("content", type_=JSON),
+            ),
+            {
+                "id": msg["id"],
+                "created_at": msg["created_at"],
+                "node_metadata": msg.get("node_metadata"),
+                "content": msg["content"],
+                "embedding": msg.get("embedding"),
+                "sender": msg.get("sender"),
+                "recipient": msg.get("recipient"),
+                "channel": msg.get("channel"),
+                "role": msg["role"],
+                "lion_class": type_id,
+            },
+        )
+
+    async def insert_message(self, msg: dict[str, Any]) -> None:
+        self._validate_message(msg)
 
         # Serialise the full message write (including the message_types upsert
         # in _resolve_lion_class) behind _write_lock so this path cannot
         # interleave with insert_session_signal's or update_status's _tx() on SQLite.
         async with self._tx() as conn:
-            type_id = await self._resolve_lion_class_in_tx(conn, lion_class_str)
-
-            # ON CONFLICT(id) DO UPDATE so re-emitted hooks overwrite stale content.
-            await conn.execute(
-                text(
-                    """INSERT INTO messages (id, created_at, node_metadata, content,
-                       embedding, sender, recipient, channel, role, lion_class)
-                       VALUES (:id, :created_at, :node_metadata, :content,
-                               :embedding, :sender, :recipient, :channel, :role, :lion_class)
-                       ON CONFLICT(id) DO UPDATE SET
-                         node_metadata = excluded.node_metadata,
-                         content       = excluded.content,
-                         embedding     = excluded.embedding,
-                         sender        = excluded.sender,
-                         recipient     = excluded.recipient,
-                         channel       = excluded.channel,
-                         role          = excluded.role,
-                         lion_class    = excluded.lion_class"""
-                ).bindparams(
-                    bindparam("node_metadata", type_=JSON),
-                    bindparam("content", type_=JSON),
-                ),
-                {
-                    "id": msg["id"],
-                    "created_at": msg["created_at"],
-                    "node_metadata": msg.get("node_metadata"),
-                    "content": msg["content"],
-                    "embedding": msg.get("embedding"),
-                    "sender": msg.get("sender"),
-                    "recipient": msg.get("recipient"),
-                    "channel": msg.get("channel"),
-                    "role": msg["role"],
-                    "lion_class": type_id,
-                },
-            )
+            await self._insert_message_in_tx(conn, msg)
 
     async def get_message(self, message_id: str) -> dict[str, Any] | None:
         async with self._read() as conn:
@@ -1454,10 +1460,15 @@ class StateDB:
     async def append_to_progression(self, progression_id: str, message_id: str) -> None:
         """Idempotent append of message_id to the progression JSON array."""
         async with self._tx() as conn:
-            await conn.execute(
-                text(self._progression_append_sql(self.dialect)),
-                {"v": message_id, "id": progression_id},
-            )
+            await self._append_to_progression_in_tx(conn, progression_id, message_id)
+
+    async def _append_to_progression_in_tx(
+        self, conn, progression_id: str, message_id: str
+    ) -> None:
+        await conn.execute(
+            text(self._progression_append_sql(self.dialect)),
+            {"v": message_id, "id": progression_id},
+        )
 
     # ── Sessions ───────────────────────────────────────────────────────
 
@@ -1586,12 +1597,54 @@ class StateDB:
 
     async def touch_session_activity(self, session_id: str, *, at: float | None = None) -> None:
         """Bump last_message_at and updated_at for staleness detection."""
-        ts = at if at is not None else time.time()
         async with self._tx() as conn:
-            await conn.execute(
-                text(self._touch_activity_sql(self.dialect)),
-                {"ts": ts, "id": session_id},
-            )
+            await self._touch_session_activity_in_tx(conn, session_id, at=at)
+
+    async def _touch_session_activity_in_tx(
+        self,
+        conn,
+        session_id: str,
+        *,
+        at: float | None = None,
+    ) -> None:
+        ts = at if at is not None else time.time()
+        await conn.execute(
+            text(self._touch_activity_sql(self.dialect)),
+            {"ts": ts, "id": session_id},
+        )
+
+    async def _persist_live_message(
+        self,
+        msg: dict[str, Any],
+        *,
+        session_id: str,
+        branch_progression_id: str | None = None,
+        session_progression_id: str | None = None,
+        system_branch_id: str | None = None,
+        system_branch_update_before_activity: bool = False,
+        activity_at: float | None = None,
+    ) -> None:
+        """Atomically persist one live message and its immediate bookkeeping."""
+        self._validate_message(msg)
+        async with self._tx() as conn:
+            await self._insert_message_in_tx(conn, msg)
+            if branch_progression_id is not None:
+                await self._append_to_progression_in_tx(conn, branch_progression_id, msg["id"])
+            if session_progression_id is not None:
+                await self._append_to_progression_in_tx(conn, session_progression_id, msg["id"])
+            if system_branch_id is not None and system_branch_update_before_activity:
+                await self._update_branch_in_tx(
+                    conn,
+                    system_branch_id,
+                    system_msg_id=msg["id"],
+                )
+            await self._touch_session_activity_in_tx(conn, session_id, at=activity_at)
+            if system_branch_id is not None and not system_branch_update_before_activity:
+                await self._update_branch_in_tx(
+                    conn,
+                    system_branch_id,
+                    system_msg_id=msg["id"],
+                )
 
     async def update_session(
         self,
@@ -3105,6 +3158,13 @@ class StateDB:
         _validate_columns(fields, _BRANCH_COLUMNS)
         if not fields:
             return
+        async with self._tx() as conn:
+            await self._update_branch_in_tx(conn, branch_id, **fields)
+
+    async def _update_branch_in_tx(self, conn, branch_id: str, **fields: Any) -> None:
+        _validate_columns(fields, _BRANCH_COLUMNS)
+        if not fields:
+            return
         json_fields = {"node_metadata"}
         sets_parts = []
         bind_params = []
@@ -3117,8 +3177,7 @@ class StateDB:
         stmt = text(f"UPDATE branches SET {', '.join(sets_parts)} WHERE id = :_id")  # noqa: S608
         if bind_params:
             stmt = stmt.bindparams(*bind_params)
-        async with self._tx() as conn:
-            await conn.execute(stmt, params)
+        await conn.execute(stmt, params)
 
     async def repair_branch_progression(
         self,

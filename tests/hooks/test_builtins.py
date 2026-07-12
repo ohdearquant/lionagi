@@ -1,7 +1,7 @@
 # Copyright (c) 2023-2026, HaiyangLi <quantocean.li at gmail dot com>
 # SPDX-License-Identifier: Apache-2.0
 
-"""Tests for ADR-0047 built-in handlers (FIX 4: persist_message dual progressions)."""
+"""Tests for ADR-0047 built-in handlers and message persistence."""
 
 from __future__ import annotations
 
@@ -21,7 +21,7 @@ def _make_mock_db():
     return AsyncMock()
 
 
-# ── persist_message: dual progressions ───────────────────────────────────────
+# ── persist_message: one logical persistence event ───────────────────────────
 
 
 async def test_persist_message_appends_to_branch_progression():
@@ -35,9 +35,14 @@ async def test_persist_message_appends_to_branch_progression():
             branch_progression_id="bp1",
         )
 
-    mock_db.insert_message.assert_awaited_once_with(msg)
-    mock_db.append_to_progression.assert_any_await("bp1", "msg1")
-    mock_db.touch_session_activity.assert_awaited_once_with("sess1")
+    mock_db._persist_live_message.assert_awaited_once_with(
+        msg,
+        session_id="sess1",
+        branch_progression_id="bp1",
+        session_progression_id=None,
+        system_branch_id=None,
+        system_branch_update_before_activity=True,
+    )
 
 
 async def test_persist_message_appends_to_session_progression():
@@ -51,7 +56,14 @@ async def test_persist_message_appends_to_session_progression():
             session_progression_id="sp1",
         )
 
-    mock_db.append_to_progression.assert_any_await("sp1", "msg2")
+    mock_db._persist_live_message.assert_awaited_once_with(
+        msg,
+        session_id="sess1",
+        branch_progression_id=None,
+        session_progression_id="sp1",
+        system_branch_id=None,
+        system_branch_update_before_activity=True,
+    )
 
 
 async def test_persist_message_appends_to_both_progressions():
@@ -66,10 +78,14 @@ async def test_persist_message_appends_to_both_progressions():
             session_progression_id="sp1",
         )
 
-    calls = mock_db.append_to_progression.await_args_list
-    progression_ids = [c.args[0] for c in calls]
-    assert "bp1" in progression_ids
-    assert "sp1" in progression_ids
+    mock_db._persist_live_message.assert_awaited_once_with(
+        msg,
+        session_id="sess1",
+        branch_progression_id="bp1",
+        session_progression_id="sp1",
+        system_branch_id=None,
+        system_branch_update_before_activity=True,
+    )
 
 
 async def test_persist_message_updates_system_msg_id_for_system_role():
@@ -83,7 +99,14 @@ async def test_persist_message_updates_system_msg_id_for_system_role():
             branch_id="branch1",
         )
 
-    mock_db.update_branch.assert_awaited_once_with("branch1", system_msg_id="sys1")
+    mock_db._persist_live_message.assert_awaited_once_with(
+        msg,
+        session_id="sess1",
+        branch_progression_id=None,
+        session_progression_id=None,
+        system_branch_id="branch1",
+        system_branch_update_before_activity=True,
+    )
 
 
 async def test_persist_message_no_system_msg_update_for_non_system_role():
@@ -97,7 +120,14 @@ async def test_persist_message_no_system_msg_update_for_non_system_role():
             branch_id="branch1",
         )
 
-    mock_db.update_branch.assert_not_awaited()
+    mock_db._persist_live_message.assert_awaited_once_with(
+        msg,
+        session_id="sess1",
+        branch_progression_id=None,
+        session_progression_id=None,
+        system_branch_id=None,
+        system_branch_update_before_activity=True,
+    )
 
 
 async def test_persist_message_legacy_progression_id_still_works():
@@ -112,7 +142,14 @@ async def test_persist_message_legacy_progression_id_still_works():
             progression_id="legacy_prog",
         )
 
-    mock_db.append_to_progression.assert_any_await("legacy_prog", "msg_legacy")
+    mock_db._persist_live_message.assert_awaited_once_with(
+        msg,
+        session_id="sess1",
+        branch_progression_id="legacy_prog",
+        session_progression_id=None,
+        system_branch_id=None,
+        system_branch_update_before_activity=True,
+    )
 
 
 # ── persist_session_start: running status must carry a reason_code ─────────────

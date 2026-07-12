@@ -189,14 +189,14 @@ async def persist_message(
     effective_branch_prog = branch_progression_id or progression_id
 
     db = await _db()
-    await db.insert_message(message)
-    if effective_branch_prog is not None:
-        await db.append_to_progression(effective_branch_prog, message["id"])
-    if session_progression_id is not None:
-        await db.append_to_progression(session_progression_id, message["id"])
-    if message.get("role") == "system" and branch_id is not None:
-        await db.update_branch(branch_id, system_msg_id=message["id"])
-    await db.touch_session_activity(session_id)
+    await db._persist_live_message(
+        message,
+        session_id=session_id,
+        branch_progression_id=effective_branch_prog,
+        session_progression_id=session_progression_id,
+        system_branch_id=branch_id if message.get("role") == "system" else None,
+        system_branch_update_before_activity=True,
+    )
 
 
 async def log_api_metrics(

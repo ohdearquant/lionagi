@@ -831,15 +831,17 @@ def _make_message_handler(
                 await on_first_msg()
             msg_dict = msg.to_dict(mode="db")
             msg_id = msg_dict["id"]
-            await db.insert_message(msg_dict)
-            if dedup_set is None or msg_id not in dedup_set:
-                await db.append_to_progression(branch_prog_id, msg_id)
-                await db.append_to_progression(session_prog_id, msg_id)
-                if new_msg_ids_list is not None:
-                    new_msg_ids_list.append(msg_id)
-            await db.touch_session_activity(session_id, at=msg_dict.get("created_at"))
-            if msg_dict.get("role") == "system":
-                await db.update_branch(branch_id, system_msg_id=msg_id)
+            append_to_progressions = dedup_set is None or msg_id not in dedup_set
+            await db._persist_live_message(
+                msg_dict,
+                session_id=session_id,
+                branch_progression_id=branch_prog_id if append_to_progressions else None,
+                session_progression_id=session_prog_id if append_to_progressions else None,
+                system_branch_id=branch_id if msg_dict.get("role") == "system" else None,
+                activity_at=msg_dict.get("created_at"),
+            )
+            if append_to_progressions and new_msg_ids_list is not None:
+                new_msg_ids_list.append(msg_id)
         except Exception as exc:
             _log.warning(
                 "live persist write failed for branch %s: %s",

@@ -297,10 +297,10 @@ async def test_hook_swallows_db_write_failure(
     _register_branch_hook(env._live_persist, worker)
     hook = env._live_persist["hooks"][-1][1]
 
-    async def boom(self, msg):
+    async def boom(self, msg, **kwargs):
         raise RuntimeError("simulated busy timeout")
 
-    monkeypatch.setattr(StateDB, "insert_message", boom)
+    monkeypatch.setattr(StateDB, "_persist_live_message", boom)
 
     msg = MessageManager.create_instruction(
         instruction="hi",
