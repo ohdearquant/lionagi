@@ -267,6 +267,8 @@ _EXPECTED_STATUSES: dict[str, list[str]] = {
             "cancelled",
         }
     ),
+    "show": sorted({"active", "completed", "aborted", "imported"}),
+    "team": sorted({"active", "archived"}),
 }
 
 # Tables whose status vocabulary is *also* enforced by a SQLite CHECK
@@ -277,7 +279,17 @@ _CHECK_ENFORCED_TABLES: dict[str, str] = {
     "invocation": "invocations",
     "play": "plays",
     "schedule_run": "schedule_runs",
+    "show": "shows",
+    "team": "teams",
 }
+
+
+def test_status_vocabulary_covers_every_status_managed_entity() -> None:
+    """Every entity type the update_status() gate manages must have a pinned
+    expected list above — a new status-managed entity added to the registry
+    without a matching golden entry here would otherwise sit outside the
+    drift gate entirely."""
+    assert sorted(_EXPECTED_STATUSES) == sorted(VALID_STATUSES_BY_ENTITY_TYPE)
 
 
 @pytest.mark.parametrize("entity_type", sorted(_EXPECTED_STATUSES))
