@@ -1,0 +1,328 @@
+# Copyright (c) 2023-2026, HaiyangLi <quantocean.li at gmail dot com>
+# SPDX-License-Identifier: Apache-2.0
+"""Settings-driven terminal-callback handler.
+
+Resolves ``notify.on_terminal`` -- a string (compatibility form) or a mapping
+(``{enabled, adapter: {kind: exec|python, ...}, filter: {kinds, ids}}``) --
+into a handler installable on a ``TerminalCallbackRegistry``. Precedence is
+per-run override > project settings > global settings > disabled; the
+absent key and an explicit ``enabled: false`` are both the disabled state.
+
+No configuration shape ever reaches a shell. A plain command string is
+POSIX-word-split (``shlex.split``) and launched via
+``asyncio.create_subprocess_exec`` -- never ``create_subprocess_shell``. A
+string that fails to split, or whose intent requires shell features (pipes,
+redirection, conjunction, variable expansion), warns with a migration
+diagnostic naming the argv-list mapping form and resolves to disabled. Any
+resolution producing an empty argv (empty string, whitespace-only string, an
+explicit empty ``argv`` array, or the same via a per-run override or
+``--notify``) resolves to disabled the same way, before any process is
+launched. A resolution error never fails or delays the run it would have
+described.
+"""
+
+from __future__ import annotations
+
+import asyncio
+import importlib
+import json
+import logging
+import re
+import shlex
+from collections.abc import Callable, Sequence
+from dataclasses import dataclass
+from typing import Any
+
+from lionagi.agent.settings import load_settings
+from lionagi.ln._proc import aterminate_process_group
+
+from .callbacks import (
+    DEFAULT_TERMINAL_CALLBACKS,
+    HANDLER_BUDGET_SECONDS,
+    RunTerminalEnvelope,
+    TerminalCallbackHandler,
+    TerminalCallbackRegistry,
+)
+
+logger = logging.getLogger(__name__)
+
+__all__ = (
+    "PayloadBuilder",
+    "ResolvedNotifyHandler",
+    "build_handler",
+    "register_settings_terminal_callback",
+    "resolve_notify_config",
+)
+
+# Matches inside a quoted span are stripped before this runs, so a literal
+# pipe/ampersand/dollar-sign inside a quoted argument is never mistaken for
+# shell syntax -- only bare, unquoted shell metacharacters trip it.
+_QUOTED_SPAN_RE = re.compile(r"'[^']*'|\"[^\"]*\"")
+_SHELL_FEATURE_RE = re.compile(r"\|\||&&|[|<>;&`]|\$\(|\$\{|\$[A-Za-z_]")
+
+
+def _looks_like_shell(command: str) -> bool:
+    unquoted = _QUOTED_SPAN_RE.sub("", command)
+    return bool(_SHELL_FEATURE_RE.search(unquoted))
+
+
+def _warn_empty_argv(scope: str) -> None:
+    logger.warning(
+        "notify.on_terminal (%s) resolved to an empty command; use the "
+        "argv-list mapping form ({adapter: {kind: exec, argv: [...]}}) to "
+        "configure a real command. Resolving to disabled.",
+        scope,
+    )
+
+
+def _warn_shell_feature(command: str, scope: str) -> None:
+    logger.warning(
+        "notify.on_terminal (%s) value %r requires shell features (pipes, "
+        "redirection, conjunction, or variable expansion) that are never "
+        "honored -- no configuration shape reaches a shell. Use the "
+        "argv-list mapping form instead. Resolving to disabled.",
+        scope,
+        command,
+    )
+
+
+@dataclass(frozen=True)
+class ResolvedNotifyHandler:
+    """A validated, launchable adapter -- exactly one of argv/python_ref is set."""
+
+    argv: tuple[str, ...] | None = None
+    python_ref: str | None = None
+    filter_kinds: tuple[str, ...] | None = None
+    filter_ids: tuple[str, ...] | None = None
+
+
+def resolve_notify_config(
+    *,
+    settings: dict[str, Any] | None = None,
+    override: str | dict[str, Any] | None = None,
+    project_dir: str | None = None,
+) -> ResolvedNotifyHandler | None:
+    """Resolve ``notify.on_terminal`` to a handler spec, or ``None`` (disabled).
+
+    *override* wins outright when supplied (the per-run/``--notify`` case);
+    otherwise settings are loaded once (snapshot semantics -- a settings edit
+    takes effect on the next process, not this one) and resolved through the
+    project-then-global merge ``load_settings`` already implements.
+    """
+    if override is not None:
+        return _resolve_shape(override, scope="override")
+
+    if settings is None:
+        try:
+            settings = load_settings(project_dir=project_dir)
+        except Exception as exc:  # noqa: BLE001 -- malformed settings must never affect the run
+            logger.warning("notify.on_terminal settings resolution failed: %s", exc)
+            return None
+    notify_cfg = settings.get("notify") if isinstance(settings, dict) else None
+    source = notify_cfg.get("on_terminal") if isinstance(notify_cfg, dict) else None
+    if source is None:
+        return None
+    return _resolve_shape(source, scope="settings")
+
+
+def _resolve_shape(source: Any, *, scope: str) -> ResolvedNotifyHandler | None:
+    if isinstance(source, str):
+        return _resolve_string(source, scope=scope)
+    if isinstance(source, dict):
+        return _resolve_mapping(source, scope=scope)
+    logger.warning(
+        "notify.on_terminal (%s) must be a string or mapping, got %s: %r",
+        scope,
+        type(source).__name__,
+        source,
+    )
+    return None
+
+
+def _resolve_string(command: str, *, scope: str) -> ResolvedNotifyHandler | None:
+    if not command.strip():
+        _warn_empty_argv(scope)
+        return None
+    if _looks_like_shell(command):
+        _warn_shell_feature(command, scope)
+        return None
+    try:
+        argv = shlex.split(command)
+    except ValueError as exc:
+        logger.warning(
+            "notify.on_terminal (%s) value %r failed to parse as an argv "
+            "command (%s); use the argv-list mapping form instead. "
+            "Resolving to disabled.",
+            scope,
+            command,
+            exc,
+        )
+        return None
+    if not argv:
+        _warn_empty_argv(scope)
+        return None
+    return ResolvedNotifyHandler(argv=tuple(argv))
+
+
+def _resolve_mapping(cfg: dict[str, Any], *, scope: str) -> ResolvedNotifyHandler | None:
+    if cfg.get("enabled") is False:
+        return None
+    filt = cfg.get("filter") or {}
+    kinds = filt.get("kinds") if isinstance(filt, dict) else None
+    ids = filt.get("ids") if isinstance(filt, dict) else None
+    filter_kinds = tuple(kinds) if kinds else None
+    filter_ids = tuple(ids) if ids else None
+
+    adapter = cfg.get("adapter")
+    if not isinstance(adapter, dict):
+        if cfg.get("enabled"):
+            logger.warning(
+                "notify.on_terminal (%s) mapping form is enabled with no "
+                "adapter configured; resolving to disabled.",
+                scope,
+            )
+        return None
+
+    kind = adapter.get("kind")
+    if kind == "exec":
+        argv = adapter.get("argv")
+        if not isinstance(argv, list) or not all(isinstance(a, str) for a in argv):
+            logger.warning(
+                "notify.on_terminal (%s) exec adapter requires an argv "
+                "list of strings, got %r; resolving to disabled.",
+                scope,
+                argv,
+            )
+            return None
+        if not argv:
+            _warn_empty_argv(scope)
+            return None
+        return ResolvedNotifyHandler(
+            argv=tuple(argv), filter_kinds=filter_kinds, filter_ids=filter_ids
+        )
+
+    if kind == "python":
+        ref = adapter.get("ref")
+        if not isinstance(ref, str) or ":" not in ref:
+            logger.warning(
+                "notify.on_terminal (%s) python adapter requires a "
+                "'module:callable' ref, got %r; resolving to disabled.",
+                scope,
+                ref,
+            )
+            return None
+        return ResolvedNotifyHandler(
+            python_ref=ref, filter_kinds=filter_kinds, filter_ids=filter_ids
+        )
+
+    logger.warning(
+        "notify.on_terminal (%s) adapter kind must be 'exec' or 'python', "
+        "got %r; resolving to disabled.",
+        scope,
+        kind,
+    )
+    return None
+
+
+async def _await_proc_dead(proc: asyncio.subprocess.Process, grace: float = 2.0) -> None:
+    try:
+        await asyncio.wait_for(proc.wait(), timeout=grace)
+    except Exception:  # noqa: BLE001 -- best-effort reap, never let this raise
+        logger.debug(
+            "timed out waiting for notify.on_terminal adapter process %s to exit",
+            proc.pid,
+            exc_info=True,
+        )
+
+
+PayloadBuilder = Callable[[RunTerminalEnvelope], dict[str, Any]]
+
+
+def _default_payload(envelope: RunTerminalEnvelope) -> dict[str, Any]:
+    return envelope.to_dict()
+
+
+def _make_exec_handler(
+    argv: Sequence[str], *, payload_fn: PayloadBuilder = _default_payload
+) -> TerminalCallbackHandler:
+    argv = tuple(argv)
+
+    async def _exec_handler(envelope: RunTerminalEnvelope) -> None:
+        payload = json.dumps(payload_fn(envelope)).encode()
+        proc = None
+        try:
+            proc = await asyncio.create_subprocess_exec(
+                *argv,
+                stdin=asyncio.subprocess.PIPE,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+                start_new_session=True,
+            )
+            _, stderr_bytes = await asyncio.wait_for(
+                proc.communicate(payload), timeout=HANDLER_BUDGET_SECONDS
+            )
+        except asyncio.TimeoutError:
+            if proc is not None:
+                await aterminate_process_group(proc, grace=None)
+                await _await_proc_dead(proc)
+            logger.warning("notify.on_terminal exec adapter %r timed out", argv)
+            return
+        except Exception as exc:  # noqa: BLE001 -- an adapter failure must never affect the run
+            logger.warning("notify.on_terminal exec adapter %r failed to run: %s", argv, exc)
+            return
+        if proc.returncode != 0:
+            detail = stderr_bytes.decode(errors="replace").strip()
+            suffix = f": {detail}" if detail else ""
+            logger.warning(
+                "notify.on_terminal exec adapter %r exited %s%s", argv, proc.returncode, suffix
+            )
+
+    return _exec_handler
+
+
+def _make_python_handler(ref: str) -> TerminalCallbackHandler:
+    module_path, _, func_name = ref.rpartition(":")
+    module = importlib.import_module(module_path)
+    return getattr(module, func_name)
+
+
+def build_handler(
+    resolved: ResolvedNotifyHandler, *, payload_fn: PayloadBuilder = _default_payload
+) -> TerminalCallbackHandler:
+    """Build the process-local handler for a resolved adapter spec.
+
+    *payload_fn* only affects the exec adapter (whose stdin bytes are the
+    only surface an external payload shape controls); a python adapter is
+    called with the envelope object directly regardless.
+    """
+    if resolved.python_ref is not None:
+        return _make_python_handler(resolved.python_ref)
+    assert resolved.argv is not None  # _resolve_* never returns an empty spec
+    return _make_exec_handler(resolved.argv, payload_fn=payload_fn)
+
+
+def register_settings_terminal_callback(
+    registry: TerminalCallbackRegistry = DEFAULT_TERMINAL_CALLBACKS,
+    *,
+    name: str = "notify.settings.on_terminal",
+    project_dir: str | None = None,
+) -> bool:
+    """Resolve ``notify.on_terminal`` from settings once and register it.
+
+    This is one of the two bootstrap points: the CLI entry
+    point and the Studio service startup each call this once per process
+    rather than every command growing its own ``--notify``-style flag.
+    Returns ``True`` if a handler was installed, ``False`` for the disabled
+    state (absent key, ``enabled: false``, or an invalid value).
+    """
+    resolved = resolve_notify_config(project_dir=project_dir)
+    if resolved is None:
+        registry.unregister(name)
+        return False
+    registry.register(
+        name,
+        build_handler(resolved),
+        kinds=resolved.filter_kinds,
+        ids=resolved.filter_ids,
+    )
+    return True

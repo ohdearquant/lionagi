@@ -1,7 +1,7 @@
 # Copyright (c) 2023-2026, HaiyangLi <quantocean.li at gmail dot com>
 # SPDX-License-Identifier: Apache-2.0
 
-"""SQLAlchemy MetaData for all 27 StateDB tables — single source of truth for schema DDL."""
+"""SQLAlchemy MetaData for all 28 StateDB tables — single source of truth for schema DDL."""
 
 from __future__ import annotations
 
@@ -791,6 +791,28 @@ Index(
     status_transitions.c.created_at,
 )
 Index("idx_status_transitions_created", status_transitions.c.created_at)
+
+# ── terminal_deliveries ─────────────────────────────────────────────────────────
+# Durable reconciliation-consumer acknowledgment ledger for post-commit
+# terminal-event callbacks (never written by the in-process push path itself —
+# only a registered reconciliation consumer inserts a row, once it has
+# durably processed a terminal event). The composite primary key makes
+# concurrent/repeated acks of the same event by the same consumer a
+# single-row no-op.
+
+terminal_deliveries = Table(
+    "terminal_deliveries",
+    metadata,
+    Column("transition_id", Text, ForeignKey("status_transitions.id"), primary_key=True),
+    Column("consumer", Text, primary_key=True),
+    Column("acked_at", Float, nullable=False),
+)
+
+Index(
+    "idx_terminal_deliveries_consumer",
+    terminal_deliveries.c.consumer,
+    terminal_deliveries.c.acked_at,
+)
 
 # ── session_signals ───────────────────────────────────────────────────────────
 

@@ -1,60 +1,72 @@
 # Copyright (c) 2023-2026, HaiyangLi <quantocean.li at gmail dot com>
 # SPDX-License-Identifier: Apache-2.0
-"""Tests for the terminal-notify hook: settings/flag resolution, payload shape, and
-failure containment (nonzero exit / timeout must never propagate)."""
+"""Tests for `--notify` scoped compatibility sugar: legacy
+payload shape, entity-scoped filtering, no-shell safety, and failure
+containment (nonzero exit / timeout must never propagate)."""
 
 from __future__ import annotations
 
 import json
+import logging
 import shlex
 import sys
+import time
 from pathlib import Path
-from unittest.mock import patch
 
 import pytest
-import yaml
 
-from lionagi.cli.orchestrate import _notify
-from lionagi.cli.orchestrate._notify import fire_terminal_notify
+from lionagi.cli.orchestrate._notify import (
+    register_flow_notify_scope,
+    unregister_flow_notify_scope,
+)
+from lionagi.state.lifecycle.callbacks import (
+    EntityRef,
+    RunTerminalEnvelope,
+    TerminalCallbackRegistry,
+)
 
 
 def _capture_command(out_file: Path) -> str:
-    """A shell template that writes the substituted {payload} to *out_file*.
-
-    {payload} renders to a double-quoted env-var reference (never raw text
-    on the command line), so it is passed here unquoted — the substitution
-    itself supplies the quoting.
-    """
+    """An argv command (no shell) that writes its stdin JSON to *out_file*."""
     return (
         f"{shlex.quote(sys.executable)} -c "
-        '"import pathlib, sys; pathlib.Path(sys.argv[1]).write_text(sys.argv[2])" '
-        f"{shlex.quote(str(out_file))} {{payload}}"
+        '"import pathlib, sys, json; '
+        "data = sys.stdin.read(); "
+        'pathlib.Path(sys.argv[1]).write_text(data)" '
+        f"{shlex.quote(str(out_file))}"
     )
 
 
-def _write_project_settings(project_dir: Path, on_terminal: str) -> None:
-    lionagi_dir = project_dir / ".lionagi"
-    lionagi_dir.mkdir(parents=True, exist_ok=True)
-    (lionagi_dir / "settings.yaml").write_text(yaml.dump({"notify": {"on_terminal": on_terminal}}))
+def _envelope(*, kind: str = "invocation", eid: str = "inv-123", status: str = "completed"):
+    return RunTerminalEnvelope(
+        event_id="ev-1",
+        entity=EntityRef(kind=kind, id=eid),
+        previous_status="running",
+        terminal_status=status,
+        reason_code="run.completed.ok",
+        occurred_at=2.0,
+    )
 
 
-async def test_settings_configured_hook_fires_with_correct_payload(tmp_path: Path):
+async def test_registered_scope_fires_with_legacy_payload_shape(tmp_path: Path):
     out_file = tmp_path / "captured.json"
-    _write_project_settings(tmp_path, _capture_command(out_file))
+    registry = TerminalCallbackRegistry()
 
-    await fire_terminal_notify(
+    name = register_flow_notify_scope(
+        registry,
+        override=_capture_command(out_file),
+        entity_kind="invocation",
+        entity_id="inv-123",
         invocation_id="inv-123",
-        kind="flow",
+        flow_kind="flow",
         playbook=None,
-        status="completed",
         save_dir="/tmp/saves",
         cwd="/repo",
-        exit_class="success",
         started_at=1.0,
-        ended_at=2.0,
-        override_command=None,
-        project_dir=str(tmp_path),
     )
+    assert name is not None
+
+    await registry.emit(_envelope(status="completed"))
 
     payload = json.loads(out_file.read_text())
     assert payload == {
@@ -69,228 +81,174 @@ async def test_settings_configured_hook_fires_with_correct_payload(tmp_path: Pat
         "ended_at": 2.0,
     }
 
+    unregister_flow_notify_scope(name, registry)
+    assert name not in registry
 
-async def test_status_and_invocation_id_substitution(tmp_path: Path):
-    out_file = tmp_path / "captured.txt"
-    template = (
-        f"{shlex.quote(sys.executable)} -c "
-        '"import pathlib, sys; '
-        "pathlib.Path(sys.argv[1]).write_text(sys.argv[2] + ':' + sys.argv[3])\" "
-        f"{shlex.quote(str(out_file))} {{status}} {{invocation_id}}"
-    )
-    _write_project_settings(tmp_path, template)
 
-    await fire_terminal_notify(
-        invocation_id="inv-xyz",
-        kind="play",
-        playbook="ship",
-        status="failed",
+async def test_scope_only_fires_for_its_own_entity(tmp_path: Path):
+    out_file = tmp_path / "captured.json"
+    registry = TerminalCallbackRegistry()
+    register_flow_notify_scope(
+        registry,
+        override=_capture_command(out_file),
+        entity_kind="invocation",
+        entity_id="inv-123",
+        invocation_id="inv-123",
+        flow_kind="flow",
+        playbook=None,
         save_dir=None,
         cwd="/repo",
-        exit_class="failure",
-        started_at=1.0,
-        ended_at=2.0,
-        override_command=None,
-        project_dir=str(tmp_path),
-    )
-
-    assert out_file.read_text() == "failed:inv-xyz"
-
-
-async def test_notify_flag_overrides_settings(tmp_path: Path):
-    settings_out = tmp_path / "from_settings.json"
-    override_out = tmp_path / "from_override.json"
-    _write_project_settings(tmp_path, _capture_command(settings_out))
-
-    await fire_terminal_notify(
-        invocation_id="inv-1",
-        kind="flow",
-        playbook=None,
-        status="completed",
-        save_dir=None,
-        cwd="/repo",
-        exit_class="success",
         started_at=0.0,
-        ended_at=1.0,
-        override_command=_capture_command(override_out),
-        project_dir=str(tmp_path),
     )
 
-    assert override_out.exists()
-    assert not settings_out.exists()
-    assert json.loads(override_out.read_text())["invocation_id"] == "inv-1"
+    # A different invocation's terminal event must not fire this scope.
+    await registry.emit(_envelope(kind="invocation", eid="some-other-invocation"))
+    assert not out_file.exists()
+
+    # A session-kind envelope with a coincidentally equal id must not fire
+    # either -- the scope filters on kind too.
+    await registry.emit(_envelope(kind="session", eid="inv-123"))
+    assert not out_file.exists()
+
+    await registry.emit(_envelope(kind="invocation", eid="inv-123"))
+    assert out_file.exists()
 
 
-async def test_no_hook_configured_is_a_noop(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
-    # Isolate from any real ~/.lionagi/settings.yaml on the host so this
-    # assertion holds regardless of the machine running the suite.
-    monkeypatch.setenv("HOME", str(tmp_path / "isolated_home"))
-    with patch("asyncio.create_subprocess_shell") as spawn:
-        await fire_terminal_notify(
-            invocation_id="inv-1",
-            kind="flow",
-            playbook=None,
-            status="completed",
-            save_dir=None,
-            cwd="/repo",
-            exit_class="success",
-            started_at=0.0,
-            ended_at=1.0,
-            override_command=None,
-            project_dir=str(tmp_path),
-        )
-    spawn.assert_not_called()
-
-
-async def test_nonzero_exit_is_swallowed_and_logged(tmp_path: Path):
-    cmd = f'{shlex.quote(sys.executable)} -c "import sys; sys.exit(3)"'
-
-    with patch.object(_notify, "warn") as warn_mock:
-        await fire_terminal_notify(
-            invocation_id="inv-1",
-            kind="flow",
-            playbook=None,
-            status="failed",
-            save_dir=None,
-            cwd="/repo",
-            exit_class="failure",
-            started_at=0.0,
-            ended_at=1.0,
-            override_command=cmd,
-            project_dir=None,
-        )
-
-    warn_mock.assert_called_once()
-    assert "exited 3" in warn_mock.call_args.args[0]
-
-
-async def test_timeout_is_swallowed_and_logged(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
-    monkeypatch.setattr(_notify, "_HOOK_TIMEOUT", 0.2)
-    cmd = f'{shlex.quote(sys.executable)} -c "import time; time.sleep(5)"'
-
-    with patch.object(_notify, "warn") as warn_mock:
-        await fire_terminal_notify(
-            invocation_id="inv-1",
-            kind="flow",
-            playbook=None,
-            status="timed_out",
-            save_dir=None,
-            cwd="/repo",
-            exit_class="failure",
-            started_at=0.0,
-            ended_at=1.0,
-            override_command=cmd,
-            project_dir=None,
-        )
-
-    warn_mock.assert_called_once()
-    assert "timed out" in warn_mock.call_args.args[0]
-
-
-async def test_single_quote_in_payload_field_cannot_break_out_of_shell_template(tmp_path: Path):
-    """A payload field containing a single quote plus trailing shell syntax
-    must not execute — {payload} is transported via an env var, never
-    textually substituted into the command line."""
-    canary = tmp_path / "pwned"
+async def test_fires_with_null_invocation_id_for_session_scoped_run(tmp_path: Path):
+    """An invocation-less run scopes to its session id; the legacy payload's
+    own invocation_id field stays null."""
     out_file = tmp_path / "captured.json"
-    malicious_cwd = f"' ; touch {shlex.quote(str(canary))} ; echo '"
-    _write_project_settings(tmp_path, _capture_command(out_file))
-
-    await fire_terminal_notify(
-        invocation_id="inv-1",
-        kind="flow",
-        playbook=None,
-        status="completed",
-        save_dir=None,
-        cwd=malicious_cwd,
-        exit_class="success",
-        started_at=0.0,
-        ended_at=1.0,
-        override_command=None,
-        project_dir=str(tmp_path),
-    )
-
-    assert not canary.exists()
-    payload = json.loads(out_file.read_text())
-    assert payload["cwd"] == malicious_cwd
-
-
-async def test_fires_with_null_invocation_id(tmp_path: Path):
-    """An invocation-less run must still fire the hook the caller asked
-    for — the payload just carries a null invocation_id."""
-    out_file = tmp_path / "captured.json"
-
-    await fire_terminal_notify(
+    registry = TerminalCallbackRegistry()
+    register_flow_notify_scope(
+        registry,
+        override=_capture_command(out_file),
+        entity_kind="session",
+        entity_id="sess-1",
         invocation_id=None,
-        kind="flow",
+        flow_kind="flow",
         playbook=None,
-        status="completed",
         save_dir=None,
         cwd="/repo",
-        exit_class="success",
         started_at=0.0,
-        ended_at=1.0,
-        override_command=_capture_command(out_file),
-        project_dir=None,
     )
+
+    await registry.emit(_envelope(kind="session", eid="sess-1", status="completed"))
 
     payload = json.loads(out_file.read_text())
     assert payload["invocation_id"] is None
+    assert payload["status"] == "completed"
 
 
-async def test_malformed_settings_yaml_is_swallowed_and_logged(tmp_path: Path):
-    """A broken .lionagi/settings.yaml must not raise out of
-    fire_terminal_notify after the run has already completed."""
-    lionagi_dir = tmp_path / ".lionagi"
-    lionagi_dir.mkdir(parents=True)
-    (lionagi_dir / "settings.yaml").write_text("notify: {on_terminal: [unterminated")
-
-    with patch.object(_notify, "warn") as warn_mock:
-        await fire_terminal_notify(
+async def test_invalid_override_registers_nothing(caplog):
+    registry = TerminalCallbackRegistry()
+    with caplog.at_level(logging.WARNING):
+        name = register_flow_notify_scope(
+            registry,
+            override="",
+            entity_kind="invocation",
+            entity_id="inv-1",
             invocation_id="inv-1",
-            kind="flow",
+            flow_kind="flow",
             playbook=None,
-            status="completed",
             save_dir=None,
             cwd="/repo",
-            exit_class="success",
             started_at=0.0,
-            ended_at=1.0,
-            override_command=None,
-            project_dir=str(tmp_path),
         )
+    assert name is None
+    assert len(registry._registrations) == 0
 
-    warn_mock.assert_called_once()
-    assert "settings" in warn_mock.call_args.args[0]
+
+async def test_shell_feature_override_registers_nothing(caplog):
+    registry = TerminalCallbackRegistry()
+    with caplog.at_level(logging.WARNING):
+        name = register_flow_notify_scope(
+            registry,
+            override="echo hi | grep x",
+            entity_kind="invocation",
+            entity_id="inv-1",
+            invocation_id="inv-1",
+            flow_kind="flow",
+            playbook=None,
+            save_dir=None,
+            cwd="/repo",
+            started_at=0.0,
+        )
+    assert name is None
+    assert any("shell features" in r.message for r in caplog.records)
 
 
-async def test_wrong_typed_settings_value_is_a_warned_noop(tmp_path: Path):
-    """notify.on_terminal as a list (or any non-str) must not raise —
-    warned no-op, same containment guarantee as every other failure mode."""
-    lionagi_dir = tmp_path / ".lionagi"
-    lionagi_dir.mkdir(parents=True)
-    (lionagi_dir / "settings.yaml").write_text(
-        yaml.dump({"notify": {"on_terminal": ["not", "a", "string"]}})
+async def test_nonzero_exit_is_swallowed_and_logged(caplog):
+    registry = TerminalCallbackRegistry()
+    cmd = f'{shlex.quote(sys.executable)} -c "import sys; sys.exit(3)"'
+    register_flow_notify_scope(
+        registry,
+        override=cmd,
+        entity_kind="invocation",
+        entity_id="inv-1",
+        invocation_id="inv-1",
+        flow_kind="flow",
+        playbook=None,
+        save_dir=None,
+        cwd="/repo",
+        started_at=0.0,
     )
+    with caplog.at_level(logging.WARNING):
+        await registry.emit(_envelope(eid="inv-1"))  # must not raise
+    assert any("exited 3" in r.message for r in caplog.records)
 
-    with (
-        patch.object(_notify, "warn") as warn_mock,
-        patch("asyncio.create_subprocess_shell") as spawn,
-    ):
-        await fire_terminal_notify(
-            invocation_id="inv-1",
-            kind="flow",
-            playbook=None,
-            status="completed",
-            save_dir=None,
-            cwd="/repo",
-            exit_class="success",
-            started_at=0.0,
-            ended_at=1.0,
-            override_command=None,
-            project_dir=str(tmp_path),
-        )
 
-    spawn.assert_not_called()
-    warn_mock.assert_called_once()
-    assert "on_terminal" in warn_mock.call_args.args[0]
+async def test_timeout_is_swallowed_and_logged(caplog, monkeypatch: pytest.MonkeyPatch):
+    # The exec adapter's own internal timeout (patched short here) fires
+    # before the registry's outer per-emit budget (left at the default 10s)
+    # so this exercises the handler's own "timed out" diagnostic, not just
+    # the registry's generic external cancellation.
+    import lionagi.state.lifecycle.notify_settings as notify_settings_mod
+
+    monkeypatch.setattr(notify_settings_mod, "HANDLER_BUDGET_SECONDS", 0.2)
+
+    registry = TerminalCallbackRegistry()
+    slow_cmd = f'{shlex.quote(sys.executable)} -c "import time; time.sleep(5)"'
+    register_flow_notify_scope(
+        registry,
+        override=slow_cmd,
+        entity_kind="invocation",
+        entity_id="inv-1",
+        invocation_id="inv-1",
+        flow_kind="flow",
+        playbook=None,
+        save_dir=None,
+        cwd="/repo",
+        started_at=0.0,
+    )
+    start = time.monotonic()
+    with caplog.at_level(logging.WARNING):
+        await registry.emit(_envelope(eid="inv-1"))
+    elapsed = time.monotonic() - start
+    assert elapsed < 5.0
+    assert any("timed out" in r.message for r in caplog.records)
+
+
+async def test_no_shell_ever_used(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    import asyncio
+
+    def _fail(*a, **k):
+        raise AssertionError("create_subprocess_shell must never be called")
+
+    monkeypatch.setattr(asyncio, "create_subprocess_shell", _fail)
+
+    out_file = tmp_path / "captured.json"
+    registry = TerminalCallbackRegistry()
+    register_flow_notify_scope(
+        registry,
+        override=_capture_command(out_file),
+        entity_kind="invocation",
+        entity_id="inv-1",
+        invocation_id="inv-1",
+        flow_kind="flow",
+        playbook=None,
+        save_dir=None,
+        cwd="/repo",
+        started_at=0.0,
+    )
+    await registry.emit(_envelope(eid="inv-1"))
+    assert out_file.exists()  # ran fine via create_subprocess_exec, never the shell

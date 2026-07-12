@@ -550,6 +550,16 @@ def main(argv: list[str] | None = None) -> int:
     verbose = "-v" in _pre_sentinel or "--verbose" in _pre_sentinel
     configure_cli_logging(verbose)
 
+    # One of the two settings-driven notify bootstrap points: resolve
+    # notify.on_terminal from settings once per process and register it on
+    # the shared terminal-callback registry (the other is Studio service
+    # startup).
+    # Settings-resolution failures are already swallowed inside this call
+    # (a malformed .lionagi/settings.yaml must never block a CLI command).
+    from lionagi.state.lifecycle.notify_settings import register_settings_terminal_callback
+
+    register_settings_terminal_callback()
+
     # `li skill NAME` prints a CC-compatible skill body to stdout.
     # Never falls through to argparse — dispatch directly.
     if _argv and _argv[0] == "skill":
