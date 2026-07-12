@@ -19,9 +19,12 @@ from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from typing import Any
 
+import anyio.to_thread
+
 from lionagi.ln.concurrency import (
     create_task_group,
     get_cancelled_exc_class,
+    is_coro_func,
     maybe_await,
     move_on_after,
 )
@@ -218,7 +221,34 @@ class TerminalCallbackRegistry:
 
         async def _run_one(reg: _Registration) -> None:
             try:
-                await maybe_await(reg.handler(envelope))
+                if is_coro_func(reg.handler):
+                    await maybe_await(reg.handler(envelope))
+                else:
+                    # A plain (non-async-def) handler is invoked in a worker
+                    # thread, not on this event loop. Calling it directly
+                    # here would run its body -- and any blocking I/O or
+                    # time.sleep() inside it -- synchronously on the loop,
+                    # during which the shared move_on_after deadline can
+                    # never fire (nothing yields back to it) and no other
+                    # handler in this fan-out can make progress either.
+                    # abandon_on_cancel=True is required, not just the
+                    # default offload: with the default (False), anyio
+                    # defers delivering cancellation to this awaiting task
+                    # until the worker thread finishes on its own, which
+                    # would let a slow handler silently re-block the shared
+                    # deadline it was just moved off of. With True, the
+                    # move_on_after deadline can still cut this await short
+                    # -- but the thread itself is only abandoned, not
+                    # killed: its body may keep running to completion in
+                    # the background after this returns. The budget
+                    # guarantees the fan-out and the caller are never
+                    # blocked by a slow sync handler, not that the handler
+                    # itself stops.
+                    await maybe_await(
+                        await anyio.to_thread.run_sync(
+                            reg.handler, envelope, abandon_on_cancel=True
+                        )
+                    )
             except get_cancelled_exc_class():
                 raise
             except BaseException:  # noqa: BLE001 — a handler failure is swallowed by design

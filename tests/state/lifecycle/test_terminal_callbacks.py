@@ -250,6 +250,78 @@ async def test_hanging_handler_does_not_starve_a_successful_one_and_is_bounded()
     assert elapsed < 5.0
 
 
+@pytest.mark.asyncio
+async def test_blocking_sync_handler_does_not_stall_the_fan_out():
+    # A plain synchronous handler that blocks (I/O, time.sleep(), ...) must
+    # not run directly on the event loop: doing so would prevent the shared
+    # move_on_after deadline from ever firing and would starve every other
+    # handler in the same emit() call. It must be offloaded to a worker
+    # thread so the deadline still cuts the fan-out short.
+    registry = TerminalCallbackRegistry(budget_seconds=0.2)
+    ran: list[str] = []
+
+    def _blocking_sync(env):
+        time.sleep(30)  # far longer than the budget
+        ran.append("blocking-completed")  # should never observably append
+
+    async def _fast_async(env):
+        ran.append("fast-async")
+
+    registry.register("blocking", _blocking_sync)
+    registry.register("fast", _fast_async)
+
+    envelope = RunTerminalEnvelope(
+        event_id="ev5",
+        entity=EntityRef(kind="session", id="s"),
+        previous_status="running",
+        terminal_status="completed",
+        reason_code="run.completed.ok",
+        occurred_at=time.time(),
+    )
+
+    start = time.monotonic()
+    await registry.emit(envelope)
+    elapsed = time.monotonic() - start
+
+    assert "fast-async" in ran
+    assert "blocking-completed" not in ran
+    # Bounded well under the blocking handler's 30s sleep -- the offloaded
+    # thread is abandoned at the deadline, not awaited to completion.
+    assert elapsed < 5.0
+
+
+@pytest.mark.asyncio
+async def test_fast_sync_handler_still_runs_and_error_handling_is_unchanged():
+    # Offloading synchronous handlers to a worker thread must not change
+    # observable behavior for the common case: a fast sync handler still
+    # runs to completion and contributes its result, and a sync handler
+    # that raises is still logged and swallowed exactly like an async one.
+    registry = TerminalCallbackRegistry()
+    ran: list[str] = []
+
+    def _boom_sync(env):
+        raise RuntimeError("sync handler blew up")
+
+    def _ok_sync(env):
+        ran.append("ok-sync")
+
+    registry.register("boom-sync", _boom_sync)
+    registry.register("ok-sync", _ok_sync)
+
+    envelope = RunTerminalEnvelope(
+        event_id="ev6",
+        entity=EntityRef(kind="session", id="s"),
+        previous_status="running",
+        terminal_status="completed",
+        reason_code="run.completed.ok",
+        occurred_at=time.time(),
+    )
+    # Must not raise -- the sync handler's exception is swallowed exactly
+    # like the existing async/sync-on-loop behavior.
+    await registry.emit(envelope)
+    assert ran == ["ok-sync"]
+
+
 # ── Lifecycle-service integration (D1 hook point) ────────────────────────────
 
 
