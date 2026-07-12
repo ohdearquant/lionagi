@@ -405,6 +405,28 @@ class PluginRegistry:
         return out
 
     @classmethod
+    def active_provider_targets(cls) -> list[tuple[str, str]]:
+        """``(plugin_name, module)`` pairs for every declared provider capability, across every ACTIVE plugin.
+
+        Consumed by ``EndpointRegistry.match`` (``lionagi.service.connections.registry``)
+        on a provider-resolution miss: the manifest schema names only the
+        bundle-relative module to import (a provider module self-registers
+        the provider name it serves via ``@register_endpoint`` as an import
+        side effect — there is no separate declared-name field to filter on
+        ahead of time), so the caller imports each returned module through
+        ``activate_target`` and re-runs its match afterward.
+        """
+        out: list[tuple[str, str]] = []
+        for record in cls._ensure_loaded():
+            if record.state is not PluginState.ACTIVE or record.manifest is None:
+                continue
+            if _revalidate_trust(record) is not TrustState.TRUSTED:
+                continue
+            for cap in record.manifest.capabilities.providers:
+                out.append((record.name, cap.module))
+        return out
+
+    @classmethod
     def activate_target(cls, plugin_name: str, target: str) -> Any:
         """Stage 2: resolve a bundle-relative ``path.py:callable`` (or bare ``path.py`` module) reference.
 

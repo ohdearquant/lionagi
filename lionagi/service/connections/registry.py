@@ -115,9 +115,42 @@ class EndpointRegistry:
 
     @classmethod
     def match(cls, provider: str, endpoint: str = "", **kwargs) -> Any:
-        """Find and instantiate the best matching endpoint."""
+        """Find and instantiate the best matching endpoint.
+
+        On a registry miss, consults the plugin registry (ADR-0088 D3) before
+        falling back to the generic OpenAI-compatible endpoint: any
+        trusted + enabled + still-trusted plugin's declared provider modules
+        are imported (firing their ``@register_endpoint`` decorators), and
+        the match is re-run once. A plugin that supplies no matching provider
+        — or none at all — leaves the fallback identical to today's.
+        """
         cls._ensure_loaded()
 
+        matched = cls._match_registered(provider, endpoint, kwargs)
+        if matched is not None:
+            return matched
+
+        if cls._consult_plugin_providers():
+            matched = cls._match_registered(provider, endpoint, kwargs)
+            if matched is not None:
+                return matched
+
+        from .endpoint import Endpoint, EndpointConfig
+
+        config = EndpointConfig(
+            provider=provider,
+            endpoint=endpoint or "chat/completions",
+            name="openai_compatible_chat",
+            auth_type="bearer",
+            content_type="application/json",
+            method="POST",
+            requires_tokens=True,
+        )
+        return Endpoint(config, **kwargs)
+
+    @classmethod
+    def _match_registered(cls, provider: str, endpoint: str, kwargs: dict[str, Any]) -> Any | None:
+        """Scan currently-registered entries (built-in + any plugin-activated). ``None`` = no match."""
         first_for_provider = None
         for entry in cls._entries:
             m = entry.meta
@@ -141,18 +174,38 @@ class EndpointRegistry:
             if n == 1:
                 return first_for_provider.cls(None, **kwargs)
 
-        from .endpoint import Endpoint, EndpointConfig
+        return None
 
-        config = EndpointConfig(
-            provider=provider,
-            endpoint=endpoint or "chat/completions",
-            name="openai_compatible_chat",
-            auth_type="bearer",
-            content_type="application/json",
-            method="POST",
-            requires_tokens=True,
-        )
-        return Endpoint(config, **kwargs)
+    @classmethod
+    def _consult_plugin_providers(cls) -> bool:
+        """Import every ACTIVE plugin's declared provider module (ADR-0088 D3), lazily.
+
+        Runs only from ``match()`` after a registered-entry miss — never at
+        import time or discovery, preserving import-time O(1). Goes through
+        ``PluginRegistry.activate_target`` exclusively (never a direct
+        ``importlib`` call on plugin code), so the trust/enabled/active
+        chokepoints already enforced there apply here too. Each activation is
+        cached by the plugin registry itself, so repeated misses are cheap.
+        Returns whether any module import succeeded — the caller only retries
+        the match when this is true.
+        """
+        try:
+            from lionagi.plugins import PluginActivationError, PluginRegistry
+        except ImportError:
+            return False
+
+        targets = PluginRegistry.active_provider_targets()
+        if not targets:
+            return False
+
+        imported = False
+        for plugin_name, module in targets:
+            try:
+                PluginRegistry.activate_target(plugin_name, module)
+                imported = True
+            except PluginActivationError:
+                continue
+        return imported
 
     @classmethod
     def _ensure_loaded(cls):
