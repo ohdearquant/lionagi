@@ -257,11 +257,22 @@ def team_guidance(team_name: str | None) -> str:
 def team_worker_system(
     team_data: dict | None,
     worker_name: str,
+    *,
+    messenger_bound: bool = False,
 ) -> str | None:
-    """TEAM coordination section to append to worker system prompt, or None."""
+    """TEAM coordination section to append to worker system prompt, or None.
+
+    ``messenger_bound`` selects which channel's instructions the section
+    describes: the in-process `messenger` tool (bound to API-model workers)
+    or the bash `li team` channel (the only path CLI-provider workers have).
+    A worker never has both, so the section must never describe both.
+    """
     if not team_data:
         return None
-    from ._common import TEAM_COORD_SECTION  # avoid import cycle
+    from ._common import (  # avoid import cycle
+        TEAM_COORD_SECTION,
+        TEAM_COORD_SECTION_MESSENGER,
+    )
 
     all_members = team_data.get("members", [])
     worker_names = [m for m in all_members if m != "orchestrator"]
@@ -269,7 +280,8 @@ def team_worker_system(
     roster_lines = ["- orchestrator (coordinator)"]
     roster_lines += [f"- {t}" for t in teammates]
     roster_lines.append(f"- **{worker_name}** (you)")
-    return TEAM_COORD_SECTION.format(
+    template = TEAM_COORD_SECTION_MESSENGER if messenger_bound else TEAM_COORD_SECTION
+    return template.format(
         worker_name=worker_name,
         team_name=team_data["name"],
         team_id=team_data["id"],
@@ -526,8 +538,20 @@ async def build_worker_branch(
     else:
         wname = env.assign_name(role)
 
+    # In-process team messaging: only API-model workers can call tools
+    # (operate() only surfaces branch.acts for non-CLI providers); CLI
+    # workers keep the existing file-based `li team` channel untouched.
+    # Decided here, before the system prompt is assembled below, so the
+    # coordination section names the channel this worker actually gets
+    # instead of unconditionally instructing the bash `li team` path.
+    exchange = getattr(env, "exchange", None)
+    messenger = getattr(env, "messenger", None)
+    messenger_bound = (
+        exchange is not None and messenger is not None and not getattr(w_imodel, "is_cli", False)
+    )
+
     resolved_modes = [] if env.bare else resolve_modes(role, modes, env.pack)
-    team_section = team_worker_system(env.team_data, wname)
+    team_section = team_worker_system(env.team_data, wname, messenger_bound=messenger_bound)
 
     # Casts-role workers route through the factory; verbatim-prompt workers set
     # the string directly (no Role to compose from).
@@ -575,18 +599,13 @@ async def build_worker_branch(
     if env._live_persist:
         register_branch_hook(env._live_persist, wb)
 
-    # In-process team messaging: only API-model workers can call tools
-    # (operate() only surfaces branch.acts for non-CLI providers); CLI
-    # workers keep the existing file-based `li team` channel untouched.
-    exchange = getattr(env, "exchange", None)
-    messenger = getattr(env, "messenger", None)
-    messenger_bound = False
-    if exchange is not None and messenger is not None and not getattr(w_imodel, "is_cli", False):
+    # messenger_bound was decided above (before the system prompt was
+    # assembled); here we just act on it now that the branch exists.
+    if messenger_bound:
         exchange.register(wb.id)
         env.roster[wname] = wb.id
         msg_tool = messenger.bind(wb, env.roster, sender_name=wname)
         wb.register_tools(msg_tool)
-        messenger_bound = True
 
     return wb, w_model, w_profile, messenger_bound
 
