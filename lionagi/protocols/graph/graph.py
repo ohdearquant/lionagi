@@ -34,6 +34,8 @@ class Graph(Element, Relational, Generic[T]):
     """Directed graph of Nodes and Edges with adjacency mapping."""
 
     _lock: threading.RLock = PrivateAttr(default_factory=threading.RLock)
+    _predecessor_cache: dict = PrivateAttr(default_factory=dict)
+    _successor_cache: dict = PrivateAttr(default_factory=dict)
 
     internal_nodes: Pile[T] = Field(
         default_factory=lambda: Pile(item_type={Node}, strict_type=False),
@@ -50,6 +52,8 @@ class Graph(Element, Relational, Generic[T]):
     @model_validator(mode="after")
     def _validate_node_mapping(self) -> Self:
         self.node_edge_mapping = {}
+        self._predecessor_cache = {}
+        self._successor_cache = {}
         if self.internal_nodes:
             for node in self.internal_nodes:
                 if node.id not in self.node_edge_mapping:
@@ -68,6 +72,18 @@ class Graph(Element, Relational, Generic[T]):
     @field_validator("internal_nodes", "internal_edges", mode="before")
     def _deserialize_nodes_edges(cls, value: Any):
         return Pile.from_dict(value)
+
+    @_graph_synchronized
+    def _invalidate_adjacency(self, *node_ids: Any) -> None:
+        """Drop cached predecessor/successor lists for the given node ids.
+
+        Called from every mutator that changes node_edge_mapping so
+        get_predecessors_cached()/get_successors_cached() never serve stale
+        adjacency; add_node is exempt (a brand-new node has no edges yet).
+        """
+        for nid in node_ids:
+            self._predecessor_cache.pop(nid, None)
+            self._successor_cache.pop(nid, None)
 
     @_graph_synchronized
     def add_node(self, node: Relational) -> None:
@@ -92,6 +108,7 @@ class Graph(Element, Relational, Generic[T]):
             self.internal_edges.insert(len(self.internal_edges), edge)
             self.node_edge_mapping[edge.head]["out"][edge.id] = edge.tail
             self.node_edge_mapping[edge.tail]["in"][edge.id] = edge.head
+            self._invalidate_adjacency(edge.head, edge.tail)
         except ItemExistsError as e:
             raise RelationError(f"Error adding node: {e}") from e
 
@@ -105,12 +122,15 @@ class Graph(Element, Relational, Generic[T]):
         for edge_id, node_id in in_edges.items():
             self.node_edge_mapping[node_id]["out"].pop(edge_id)
             self.internal_edges.pop(edge_id)
+            self._invalidate_adjacency(node_id)
 
         out_edges: dict = self.node_edge_mapping[_id]["out"]
         for edge_id, node_id in out_edges.items():
             self.node_edge_mapping[node_id]["in"].pop(edge_id)
             self.internal_edges.pop(edge_id)
+            self._invalidate_adjacency(node_id)
 
+        self._invalidate_adjacency(_id)
         self.node_edge_mapping.pop(_id)
         return self.internal_nodes.pop(_id)
 
@@ -123,6 +143,7 @@ class Graph(Element, Relational, Generic[T]):
         edge = self.internal_edges[_id]
         self.node_edge_mapping[edge.head]["out"].pop(_id)
         self.node_edge_mapping[edge.tail]["in"].pop(_id)
+        self._invalidate_adjacency(edge.head, edge.tail)
 
         return self.internal_edges.pop(_id)
 
@@ -170,6 +191,58 @@ class Graph(Element, Relational, Generic[T]):
         for edge in edges:
             result.append(self.internal_nodes[edge.tail])
         return Pile(result, item_type={Node}, strict_type=False)
+
+    def predecessor_ids(self, node: Any, /) -> tuple[Any, ...]:
+        """This node's predecessor node ids, insertion-ordered, as a plain tuple."""
+        _id = ID.get_id(node)
+        if _id not in self.internal_nodes:
+            raise RelationError(f"Node {node} not found in the graph nodes.")
+        return tuple(self.node_edge_mapping[_id]["in"].values())
+
+    def successor_ids(self, node: Any, /) -> tuple[Any, ...]:
+        """Symmetric with predecessor_ids, over node_edge_mapping[id]['out']."""
+        _id = ID.get_id(node)
+        if _id not in self.internal_nodes:
+            raise RelationError(f"Node {node} not found in the graph nodes.")
+        return tuple(self.node_edge_mapping[_id]["out"].values())
+
+    def get_predecessors_cached(self, node: Any, /) -> list[Node]:
+        """Plain-list predecessor lookup, memoized until a mutator invalidates it.
+
+        Semantically identical to get_predecessors() but returns list[Node]
+        instead of Pile[Node], avoiding Pile-construction cost on repeat
+        reads. Memoized per node id; the cache is cleared for affected ids by
+        add_edge/remove_edge/remove_node/replace_node/splice_after. The
+        existence check only runs on a cache miss — a cached entry is proof
+        the node was valid when memoized, and remove_node() always clears
+        its own cache entry in the same call that removes it from
+        internal_nodes, so a stale hit past removal cannot occur.
+        """
+        _id = ID.get_id(node)
+        cached = self._predecessor_cache.get(_id)
+        if cached is not None:
+            return cached
+        if _id not in self.internal_nodes:
+            raise RelationError(f"Node {node} not found in the graph nodes.")
+        result = [
+            self.internal_nodes[head_id] for head_id in self.node_edge_mapping[_id]["in"].values()
+        ]
+        self._predecessor_cache[_id] = result
+        return result
+
+    def get_successors_cached(self, node: Any, /) -> list[Node]:
+        """Symmetric with get_predecessors_cached()."""
+        _id = ID.get_id(node)
+        cached = self._successor_cache.get(_id)
+        if cached is not None:
+            return cached
+        if _id not in self.internal_nodes:
+            raise RelationError(f"Node {node} not found in the graph nodes.")
+        result = [
+            self.internal_nodes[tail_id] for tail_id in self.node_edge_mapping[_id]["out"].values()
+        ]
+        self._successor_cache[_id] = result
+        return result
 
     def to_networkx(self, **kwargs) -> Any:
         global _NETWORKX_AVAILABLE
@@ -365,13 +438,16 @@ class Graph(Element, Relational, Generic[T]):
             edge.tail = new_id
             self.node_edge_mapping[new_id]["in"][edge_id] = head_id
             self.node_edge_mapping[head_id]["out"][edge_id] = new_id
+            self._invalidate_adjacency(head_id)
 
         for edge_id, tail_id in list(mapping["out"].items()):
             edge = self.internal_edges[edge_id]
             edge.head = new_id
             self.node_edge_mapping[new_id]["out"][edge_id] = tail_id
             self.node_edge_mapping[tail_id]["in"][edge_id] = new_id
+            self._invalidate_adjacency(tail_id)
 
+        self._invalidate_adjacency(old_id, new_id)
         self.node_edge_mapping.pop(old_id)
         return self.internal_nodes.pop(old_id)
 
@@ -411,6 +487,7 @@ class Graph(Element, Relational, Generic[T]):
             self.node_edge_mapping[tail_id]["in"].pop(edge_id)
             self.node_edge_mapping[anchor_id]["out"].pop(edge_id)
             self.internal_edges.pop(edge_id)
+            self._invalidate_adjacency(tail_id)
 
             new_edges.append(replacement)
 
@@ -420,6 +497,7 @@ class Graph(Element, Relational, Generic[T]):
         self.node_edge_mapping[new_id]["in"][link.id] = anchor_id
 
         new_edges.insert(0, link)
+        self._invalidate_adjacency(anchor_id, new_id)
         return new_edges
 
     def __contains__(self, item: object) -> bool:
