@@ -165,6 +165,42 @@ async def test_large_file_is_truncated(patched_runs_svc, tmp_path, monkeypatch):
     assert result["size"] == 100
 
 
+async def test_multibyte_char_split_at_cap_is_truncation_not_415(
+    patched_runs_svc, tmp_path, monkeypatch
+):
+    """A valid UTF-8 file whose multibyte character straddles the read cap must
+    come back as truncated text with a replacement character, not a 415."""
+    svc, db_path = patched_runs_svc
+    monkeypatch.setattr(svc, "_MAX_FILE_READ_BYTES", 10)
+    artifact_root = tmp_path / "artifacts"
+    artifact_root.mkdir()
+    target = artifact_root / "unicode.txt"
+    # 9 ASCII bytes then a 3-byte character: bytes 10-12 hold the sequence, so
+    # the 10-byte cap slices it mid-character while the file itself is valid.
+    target.write_text("a" * 9 + "€" * 10, encoding="utf-8")
+    await seed_session(db_path, session_id="run-12", artifacts_path=str(artifact_root))
+
+    result = await svc.get_run_file("run-12", str(target))
+    assert result["truncated"] is True
+    assert result["content"].startswith("a" * 9)
+    assert "�" in result["content"]
+
+
+async def test_untruncated_binary_file_still_returns_415(patched_runs_svc, tmp_path, monkeypatch):
+    """The lenient decode applies only to the truncated branch — a small
+    genuinely non-text file keeps the strict 415 contract."""
+    svc, db_path = patched_runs_svc
+    artifact_root = tmp_path / "artifacts"
+    artifact_root.mkdir()
+    target = artifact_root / "blob.bin"
+    target.write_bytes(b"\xff\xfe\x00\x01binary")
+    await seed_session(db_path, session_id="run-13", artifacts_path=str(artifact_root))
+
+    with pytest.raises(HTTPException) as exc_info:
+        await svc.get_run_file("run-13", str(target))
+    assert exc_info.value.status_code == 415
+
+
 # ---------------------------------------------------------------------------
 # Bounded read: the cap must be enforced by the read itself, not by slicing
 # an already-materialized full read (Path.read_bytes() then [:cap] would
