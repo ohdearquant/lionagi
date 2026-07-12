@@ -21,6 +21,11 @@ from .header_factory import AUTH_TYPES
 
 logger = logging.getLogger(__name__)
 
+# Keyed on the class object itself (identity), never on name or structure:
+# distinct same-shaped classes must not share an entry, and the strong
+# reference keeps the key stable for the cache's lifetime.
+_FIELD_KEYS_BY_CLASS: dict[type, frozenset[str]] = {}
+
 
 B = TypeVar("B", bound=type[BaseModel])
 
@@ -54,7 +59,14 @@ class EndpointConfig(BaseModel):
     @model_validator(mode="before")
     def _validate_kwargs(cls, data: dict):
         kwargs = data.pop("kwargs", {})
-        field_keys = cls.model_fields
+        # Accepted keys are the validation-schema property names (aliases when
+        # a field declares one), computed once per class: subclasses may add
+        # fields or aliases, and rebuilding the JSON schema on every
+        # construction costs more than the rest of model validation combined.
+        field_keys = _FIELD_KEYS_BY_CLASS.get(cls)
+        if field_keys is None:
+            properties = cls.model_json_schema().get("properties", {})
+            field_keys = _FIELD_KEYS_BY_CLASS[cls] = frozenset(properties)
         for k in list(data.keys()):
             if k not in field_keys:
                 kwargs[k] = data.pop(k)

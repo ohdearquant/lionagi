@@ -5,7 +5,7 @@ import os
 from unittest.mock import patch
 
 import pytest
-from pydantic import ValidationError
+from pydantic import Field, ValidationError
 
 from lionagi.service.connections.api_calling import APICalling
 from lionagi.service.connections.endpoint import Endpoint
@@ -189,6 +189,37 @@ class TestServiceIntegration:
 
         assert config.timeout == 42
         assert config.kwargs == {"preserved": "value", "unknown_option": "kept"}
+
+    def test_endpoint_config_subclass_accepts_aliased_field_key(self):
+        class AliasedEndpointConfig(EndpointConfig):
+            wire_timeout: int = Field(alias="wireTimeout")
+
+        config = AliasedEndpointConfig(
+            name="test",
+            provider="openai",
+            endpoint="chat",
+            wireTimeout=7,
+        )
+
+        assert config.wire_timeout == 7
+        assert "wireTimeout" not in config.kwargs
+
+    def test_endpoint_config_field_key_cache_is_per_class_identity(self):
+        from lionagi.service.connections.endpoint_config import (
+            _FIELD_KEYS_BY_CLASS,
+        )
+
+        class ExtendedEndpointConfig(EndpointConfig):
+            extra_knob: int = 0
+
+        EndpointConfig(name="a", provider="openai", endpoint="chat")
+        ExtendedEndpointConfig(name="b", provider="openai", endpoint="chat", extra_knob=1)
+
+        base_keys = _FIELD_KEYS_BY_CLASS[EndpointConfig]
+        sub_keys = _FIELD_KEYS_BY_CLASS[ExtendedEndpointConfig]
+        assert base_keys is not sub_keys
+        assert "extra_knob" in sub_keys
+        assert "extra_knob" not in base_keys
 
 
 class TestServiceErrorHandling:
