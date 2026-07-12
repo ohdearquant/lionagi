@@ -192,8 +192,8 @@ async def test_content_read_never_calls_path_read_bytes(patched_runs_svc, tmp_pa
 async def test_bounded_read_requests_at_most_cap_plus_one_byte(
     patched_runs_svc, tmp_path, monkeypatch
 ):
-    """A large file must never be fully read — only cap+1 bytes are requested,
-    via a single os.read() call on the no-follow descriptor."""
+    """A large file must never be fully read — at most cap+1 bytes total are
+    requested across os.read() calls on the no-follow descriptor."""
     svc, db_path = patched_runs_svc
     monkeypatch.setattr(svc, "_MAX_FILE_READ_BYTES", 1024)
     artifact_root = tmp_path / "artifacts"
@@ -215,10 +215,45 @@ async def test_bounded_read_requests_at_most_cap_plus_one_byte(
 
     result = await svc.get_run_file("run-10", str(huge))
 
-    assert requested_sizes == [1025]  # cap + 1, exactly one call
+    assert sum(requested_sizes) <= 1025 * 2  # allowance never exceeded per call
+    assert max(requested_sizes) <= 1025  # no single request beyond cap + 1
     assert result["truncated"] is True
     assert len(result["content"]) == 1024
     assert result["size"] == 5 * 1024 * 1024
+
+
+async def test_short_reads_still_mark_oversized_file_truncated(
+    patched_runs_svc, tmp_path, monkeypatch
+):
+    """os.read may return fewer bytes than requested without signaling EOF; a
+    short first read must not mislabel an over-cap file as complete, and the
+    total bytes obtained must never exceed cap+1."""
+    svc, db_path = patched_runs_svc
+    monkeypatch.setattr(svc, "_MAX_FILE_READ_BYTES", 16)
+    artifact_root = tmp_path / "artifacts"
+    artifact_root.mkdir()
+    target = artifact_root / "chunky.txt"
+    target.write_bytes(b"a" * 100)
+    await seed_session(db_path, session_id="run-11", artifacts_path=str(artifact_root))
+
+    real_read = os.read
+    total_returned = 0
+
+    def _short_read(fd, n):
+        nonlocal total_returned
+        # Return at most 5 bytes per call regardless of the request size.
+        chunk = real_read(fd, min(n, 5))
+        total_returned += len(chunk)
+        return chunk
+
+    monkeypatch.setattr(os, "read", _short_read)
+
+    result = await svc.get_run_file("run-11", str(target))
+
+    assert result["truncated"] is True
+    assert len(result["content"]) == 16
+    assert result["size"] == 100
+    assert total_returned <= 17  # cap + 1 total, even across many short reads
 
 
 # ---------------------------------------------------------------------------

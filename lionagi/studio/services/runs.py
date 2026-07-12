@@ -831,10 +831,21 @@ async def get_run_file(run_id: str, path: str) -> dict[str, Any]:
 
     try:
         size = os.fstat(fd).st_size
-        # Read at most cap+1 bytes in a single syscall — the extra byte only
-        # decides `truncated`, never a full-file materialization regardless
-        # of actual file size.
-        raw = os.read(fd, _MAX_FILE_READ_BYTES + 1)
+        # Read at most cap+1 bytes total — the extra byte only decides
+        # `truncated`, never a full-file materialization regardless of actual
+        # file size. os.read may legally return fewer bytes than requested
+        # without signaling EOF, so accumulate until EOF or the allowance is
+        # exhausted; a single short read must not mislabel an oversized file
+        # as complete.
+        chunks: list[bytes] = []
+        remaining = _MAX_FILE_READ_BYTES + 1
+        while remaining > 0:
+            chunk = os.read(fd, remaining)
+            if not chunk:
+                break
+            chunks.append(chunk)
+            remaining -= len(chunk)
+        raw = b"".join(chunks)
     finally:
         os.close(fd)
 
