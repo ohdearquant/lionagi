@@ -50,6 +50,10 @@ interface WorkerCanvasProps {
   nodeStatuses?: Record<string, NodeExecStatus>;
   currentStep?: string | null;
   onChange?: (nodes: WorkerStepNode[], edges: WorkerLinkEdge[]) => void;
+  /** Read-only embed in a small container (e.g. RunDetail's 280px run-dag
+   * panel). Suppresses the MiniMap — at that size it reads as a floating
+   * cluster of gray nodes rather than a useful overview. */
+  compact?: boolean;
 }
 
 // ─── Conversion helpers ─────────────────────────────────
@@ -63,6 +67,16 @@ const edgeTypes = { condition: ConditionEdgeComponent };
 // the legacy case). An edge's source node absent from that map must fall
 // back to the legacy execSteps-derived completedMap rather than being
 // treated as "not completed" just because *some* nodeStatuses object exists.
+// A MiniMap only earns its keep once the canvas is large enough for an
+// overview to mean something. In a `compact` embed (RunDetail's 280px
+// run-dag panel) it instead reads as a floating cluster of gray micro-nodes
+// overlapping the real graph, so suppress it outright there regardless of
+// node count.
+export function shouldShowMiniMap(compact: boolean, nodeCount: number): boolean {
+  if (compact) return false;
+  return nodeCount > 10;
+}
+
 export function computeEdgeSourceCompleted(
   source: string,
   nodeStatuses: Record<string, NodeExecStatus> | undefined,
@@ -143,6 +157,7 @@ export default function WorkerCanvas({
   nodeStatuses,
   currentStep = null,
   onChange,
+  compact = false,
 }: WorkerCanvasProps) {
   const initialised = useRef(false);
 
@@ -352,11 +367,15 @@ export default function WorkerCanvas({
             showInteractive={false}
             className="!bg-surface-raised !border-edge !shadow-none [&>button]:!bg-surface-raised [&>button]:!border-edge [&>button]:!text-content-secondary [&>button:hover]:!bg-surface-overlay [&>button:hover]:!text-content-primary"
           />
-          {nodes.length > 10 ? (
+          {shouldShowMiniMap(compact, nodes.length) ? (
             <MiniMap
+              position="bottom-right"
+              pannable={false}
+              zoomable={false}
               nodeColor={() => "var(--edge-strong)"}
               maskColor="rgba(0, 0, 0, 0.5)"
               className="!bg-surface-raised !border-edge"
+              style={{ width: 120, height: 80 }}
             />
           ) : null}
 
