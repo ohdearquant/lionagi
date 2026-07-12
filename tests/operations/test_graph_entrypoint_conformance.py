@@ -111,6 +111,7 @@ import argparse
 import ast
 import inspect
 import re
+import sys
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal
@@ -701,6 +702,16 @@ def _pattern_capture_names(pattern: ast.pattern) -> set[str]:
     return names
 
 
+# Both try-statement forms carry the same body/handlers/orelse/finalbody
+# slots and must be traversed identically -- a `global` declaration or a
+# binding inside a `try`/`except*` suite belongs to the enclosing function
+# scope exactly like its plain-`try` counterpart. `ast.TryStar` only exists
+# on Python 3.11+, so reference it conditionally.
+_TRY_STMT_TYPES: tuple[type[ast.stmt], ...] = (
+    (ast.Try, ast.TryStar) if hasattr(ast, "TryStar") else (ast.Try,)
+)
+
+
 def _scope_declared_names(stmts: list[ast.stmt]) -> tuple[set[str], set[str]]:
     """Every name declared ``global`` and, separately, every name declared
     ``nonlocal``, anywhere in ONE lexical scope's statement list *stmts* --
@@ -711,24 +722,22 @@ def _scope_declared_names(stmts: list[ast.stmt]) -> tuple[set[str], set[str]]:
     one set the way an earlier version of this function did.
 
     Descends transparently into control-flow bodies -- a ``global``/
-    ``nonlocal`` nested inside an ``if``/``try``/``for``/``while``/``with``/
-    ``match``-case still applies to the whole enclosing function scope -- but
-    STOPS at a nested ``FunctionDef``/``AsyncFunctionDef``/``Lambda`` (those
-    own their own declarations) AND at a nested ``ClassDef``. The ``ClassDef``
-    stop is a deliberate DIVERGENCE from ``_collect_scope_binding_events``,
-    which DOES descend into class bodies when collecting binding EVENTS: an
-    ordinary (undeclared) assignment inside a class body still executes in
-    the surrounding function's call frame at class-definition time and can
-    rebind an enclosing name, so it is correctly collected as that function's
-    own binding event. A ``global``/``nonlocal`` STATEMENT inside a class
-    body is different -- per Python's own scoping rules a class body is its
-    own namespace (not a true function scope, but not transparent to the
-    enclosing function either), so ``global x`` there only redirects lookups
-    of ``x`` within the CLASS body's own execution; it does not declare the
-    surrounding function's same-named binding at all. Descending into the
-    class body here would wrongly un-mask a same-named local the enclosing
-    function itself never declared global/nonlocal (see
-    test_class_body_global_declaration_does_not_leak_into_enclosing_function)."""
+    ``nonlocal`` nested inside an ``if``/``try``/``try``-``except*``/``for``/
+    ``while``/``with``/``match``-case still applies to the whole enclosing
+    function scope (a ``global`` statement is a compile-time scope directive;
+    its surrounding control flow never conditions it) -- but STOPS at a
+    nested ``FunctionDef``/``AsyncFunctionDef``/``Lambda`` (those own their
+    own declarations) AND at a nested ``ClassDef``: a class body is its own
+    namespace, so ``global x`` there only redirects lookups of ``x`` within
+    the CLASS body's own execution; it does not declare the surrounding
+    function's same-named binding at all. Descending into the class body
+    here would wrongly un-mask a same-named local the enclosing function
+    itself never declared global/nonlocal (see
+    test_class_body_global_declaration_does_not_leak_into_enclosing_function).
+    ``_collect_scope_binding_events`` stops at ``ClassDef`` for the matching
+    reason on the binding side: an ordinary assignment in a class body binds
+    the CLASS namespace, never the enclosing function's; the class body gets
+    its own environment in ``_SinkVisitor.visit_ClassDef``."""
     global_names: set[str] = set()
     nonlocal_names: set[str] = set()
 
@@ -745,7 +754,7 @@ def _scope_declared_names(stmts: list[ast.stmt]) -> tuple[set[str], set[str]]:
         elif isinstance(stmt, ast.If):
             _merge(stmt.body)
             _merge(stmt.orelse)
-        elif isinstance(stmt, ast.Try):
+        elif isinstance(stmt, _TRY_STMT_TYPES):
             _merge(stmt.body)
             for handler in stmt.handlers:
                 _merge(handler.body)
@@ -790,10 +799,10 @@ def _collect_scope_binding_events(
     expressions, not statements). A ``del NAME`` target gets the same
     mask-only treatment but tagged with the CURRENT *conditional* value
     (like ``AugAssign``, it is a direct statement of *stmts*, not a nested
-    body). Descends into a nested class body
-    transparently (a class body is not a distinct scope for this analysis and
-    was never treated as one) but stops at a nested function, async function,
-    or lambda -- those get their own independent scope when ``_SinkVisitor``
+    body). Stops at a nested class body (its assignments and imports bind the
+    CLASS namespace, not this scope; ``_SinkVisitor.visit_ClassDef`` gives it
+    its own environment) and at a nested function, async function, or
+    lambda -- those get their own independent scope when ``_SinkVisitor``
     reaches them, each replaying only its own body's events on top of a copy
     of its enclosing scope's provenance."""
     for stmt in stmts:
@@ -825,7 +834,7 @@ def _collect_scope_binding_events(
         if isinstance(stmt, ast.If):
             _collect_scope_binding_events(stmt.body, True, events)
             _collect_scope_binding_events(stmt.orelse, True, events)
-        elif isinstance(stmt, ast.Try):
+        elif isinstance(stmt, _TRY_STMT_TYPES):
             _collect_scope_binding_events(stmt.body, True, events)
             for handler in stmt.handlers:
                 if handler.name is not None:
@@ -857,8 +866,20 @@ def _collect_scope_binding_events(
                 for name in _pattern_capture_names(case.pattern):
                     events.append((_NameBindingEvent(name, stmt.lineno, stmt.col_offset), True))
                 _collect_scope_binding_events(case.body, True, events)
-        elif isinstance(stmt, ast.ClassDef):
-            _collect_scope_binding_events(stmt.body, conditional, events)
+        # ClassDef: an ordinary assignment (or import) in a class body binds
+        # the CLASS namespace, never the enclosing function's -- Python gives
+        # the class body its own namespace, so emitting its binders here
+        # would wrongly MASK a same-named enclosing binding and hide a real
+        # construction site in the enclosing function (see
+        # test_class_body_assignment_does_not_mask_enclosing_scope_name).
+        # The class body's own view is modeled by _SinkVisitor.visit_ClassDef.
+        # The one thing this deliberately gives up: a `global x` declaration
+        # INSIDE the class body can make a class-body assignment rebind the
+        # module's x at class-definition time, which this scope's replay now
+        # never sees -- but not clearing module provenance there keeps stale-
+        # but-possibly-correct provenance, which can only ADD a reported
+        # site, never miss a real one (the safe direction under this
+        # scanner's zero-false-negatives contract).
         # FunctionDef/AsyncFunctionDef/Lambda: a new scope: stop here.
 
 
@@ -1106,8 +1127,74 @@ class _SinkVisitor(ast.NodeVisitor):
             self.executor_hits.add(qualname)
 
     def visit_ClassDef(self, node: ast.ClassDef) -> None:
+        """Class bodies get their own environment, built ADD-ONLY on top of
+        the enclosing scope's view.
+
+        A class body is its own namespace but NOT a function scope: name
+        resolution inside it is SEQUENTIAL (a read before any class-local
+        binding of that name falls through to the enclosing scope; there is
+        no scope-wide "assigned anywhere means local everywhere" rule the
+        way function bodies have). That rule is what justifies function
+        scopes' mask-then-replay model -- a use before an unconditional
+        rebinding is an UnboundLocalError at runtime, so no real construction
+        is lost by masking. Class bodies offer no such justification, so any
+        mask or provenance-clear applied to the class view could hide a
+        construction that really reads the enclosing binding. The class
+        environment is therefore strictly additive relative to the enclosing
+        scope:
+
+        - no ``_scope_bound_names`` masking at all;
+        - every establishing event in the class body applies, conditional
+          ones included (trusting a maybe-executed class-body import can
+          only ADD a reported site, the safe direction);
+        - after replaying the class body's own events on private copies, the
+          enclosing view is unioned back in, so a replay-applied clear never
+          drops enclosing-inherited provenance;
+        - a class-body ``global`` declaration overlays MODULE-scope
+          provenance additively (class-body lookups of that name go to the
+          module even when an enclosing function masked it).
+
+        The class body's binders never leak OUT to the enclosing scope --
+        ``_collect_scope_binding_events`` stops at ``ClassDef`` -- and its
+        environment is popped when the body is done."""
         self._stack.append(node.name)
+        enclosing_env = self._flow_env
+        enclosing_bound = self._constructor_aliases
+        env = enclosing_env.copy()
+        bound = dict(enclosing_bound)
+        events: list[_BindingEvent] = []
+        _collect_scope_binding_events(node.body, False, events)
+        global_names, _ = _scope_declared_names(node.body)
+        module_env = self._flow_env_stack[0]
+        module_bound = self._bound_stack[0]
+        for name in global_names:
+            if name in module_env.names:
+                env.names.add(name)
+            if name in module_env.lionagi_roots:
+                env.lionagi_roots.add(name)
+            if name in module_env.import_module_funcs:
+                env.import_module_funcs.add(name)
+            if name in module_env.importlib_mods:
+                env.importlib_mods.add(name)
+            if name in module_bound:
+                bound[name] = module_bound[name]
+        # Force every event unconditional so replay applies establishes that
+        # sit inside an if/try/for body too -- in a class body a conditional
+        # import that DOES execute is readable by later class-body
+        # statements, and skipping it (the function-scope rule) would miss a
+        # real construction. Clears still apply, then the union below
+        # restores anything enclosing-inherited that they dropped.
+        _replay_binding_events([(evt, False) for evt, _ in events], bound, env)
+        env.names |= enclosing_env.names
+        env.lionagi_roots |= enclosing_env.lionagi_roots
+        env.import_module_funcs |= enclosing_env.import_module_funcs
+        env.importlib_mods |= enclosing_env.importlib_mods
+        for name, target in enclosing_bound.items():
+            bound.setdefault(name, target)
+        self._flow_env_stack.append(env)
+        self._bound_stack.append(bound)
         self.generic_visit(node)
+        self._pop_func_scope()
         self._stack.pop()
 
     def _push_func_scope(self, node: ast.FunctionDef | ast.AsyncFunctionDef | ast.Lambda) -> None:
@@ -2585,11 +2672,10 @@ def test_global_declared_name_ignores_outer_local_import_when_module_lacks_bindi
 def test_class_body_global_declaration_does_not_leak_into_enclosing_function(tmp_path):
     """F2: a `global`/`nonlocal` STATEMENT inside a nested class body only
     redirects lookups within that CLASS body's own namespace -- it does not
-    declare the surrounding function's same-named binding at all, unlike an
-    ordinary (undeclared) assignment inside the same class body, which DOES
-    count as the surrounding function's own binding event (see
-    ``_collect_scope_binding_events``'s deliberate divergence, documented on
-    ``_scope_declared_names``). Here `outer`'s own body has an unreachable
+    declare the surrounding function's same-named binding at all (just as an
+    ordinary assignment there binds only the class namespace; see
+    test_class_body_assignment_does_not_mask_enclosing_scope_name for the
+    binding side). Here `outer`'s own body has an unreachable
     `with ... as importlib` (masked per
     test_with_as_target_masks_inherited_importlib_provenance) and a nested
     class body that declares `global importlib`; if that class-body
@@ -2667,6 +2753,116 @@ def test_global_declared_executing_binder_is_conservative_overapproximation(tmp_
         "the conservatively-over-approximated site must be flagged as an executor site — got: "
         f"{sorted(discovery.executor_sites)}"
     )
+
+
+def test_class_body_assignment_does_not_mask_enclosing_scope_name(tmp_path):
+    """An ordinary assignment inside a nested class body binds the CLASS
+    namespace, never the enclosing function's -- `outer`'s `importlib` stays
+    the module-level import (symtable agrees: global in `outer`, local only
+    in `C`), so the construction in `outer`'s own body is REAL and must be
+    reported. Collecting class-body binders as enclosing-function binding
+    events would wrongly mask `importlib` here and miss the site."""
+    rogue = tmp_path / "class_body_assignment_no_mask.py"
+    source = (
+        "import importlib\n\n\n"
+        "def outer(session, graph):\n"
+        "    class C:\n"
+        "        importlib = object()\n\n"
+        '    return getattr(importlib.import_module("lionagi.operations.flow"), '
+        '"DependencyAwareExecutor")(session, graph)\n'
+    )
+    rogue.write_text(source)
+
+    import symtable as _symtable
+
+    top = _symtable.symtable(source, str(rogue), "exec")
+    (outer_table,) = (c for c in top.get_children() if c.get_name() == "outer")
+    assert outer_table.lookup("importlib").is_global()
+    (class_table,) = (c for c in outer_table.get_children() if c.get_name() == "C")
+    assert class_table.lookup("importlib").is_local()
+
+    discovery = discover_call_and_construct_sites(tmp_path, base=tmp_path)
+
+    key = ("class_body_assignment_no_mask.py", "outer")
+    assert key in discovery.call_sites, (
+        "a class-body assignment must not mask the enclosing function's module-level "
+        f"import — found: {sorted(discovery.call_sites)}"
+    )
+    assert key in discovery.executor_sites
+
+
+def test_class_body_import_provenance_visible_to_class_body_construction(tmp_path):
+    """The flip side of stopping event collection at ``ClassDef``: an import
+    INSIDE a class body binds the class namespace, and a construction later
+    in the SAME class body can read it (class-body name resolution is
+    sequential, falling through to enclosing scopes only when the name is
+    not yet class-bound). ``visit_ClassDef``'s own class environment must
+    carry that establishment, or dropping class-body events from the
+    enclosing scope would trade the old false positive for a new missed
+    real site."""
+    rogue = tmp_path / "class_body_import_construct.py"
+    source = (
+        "def outer(session, graph):\n"
+        "    class C:\n"
+        "        import importlib\n"
+        '        built = getattr(importlib.import_module("lionagi.operations.flow"), '
+        '"DependencyAwareExecutor")(session, graph)\n'
+        "    return C.built\n"
+    )
+    rogue.write_text(source)
+
+    discovery = discover_call_and_construct_sites(tmp_path, base=tmp_path)
+
+    key = ("class_body_import_construct.py", "outer.C")
+    assert key in discovery.call_sites, (
+        "a class-body import must stay visible to a construction in the same class "
+        f"body — found: {sorted(discovery.call_sites)}"
+    )
+    assert key in discovery.executor_sites
+
+
+@pytest.mark.skipif(
+    sys.version_info < (3, 11),
+    reason="try/except* syntax requires Python 3.11+",
+)
+def test_try_star_suite_global_declaration_overlays_module_scope(tmp_path):
+    """A `global` declaration is a compile-time scope directive wherever it
+    parses, including inside a `try`/`except*` suite -- declaration
+    collection must traverse ``ast.TryStar`` exactly like ``ast.Try``, or
+    the module-scope overlay is skipped and an outer parameter shadow hides
+    a real module-level import (a missed real site). The fixture source is
+    built as a string because `except*` does not parse on older supported
+    interpreters; this test is version-gated instead."""
+    rogue = tmp_path / "try_star_global_decl.py"
+    source = (
+        "import importlib\n\n\n"
+        "def outer(importlib, session, graph):\n"
+        "    def inner():\n"
+        "        try:\n"
+        "            global importlib\n"
+        "        except* Exception:\n"
+        "            pass\n"
+        '        return getattr(importlib.import_module("lionagi.operations.flow"), '
+        '"DependencyAwareExecutor")(session, graph)\n'
+        "    return inner()\n"
+    )
+    rogue.write_text(source)
+
+    import symtable as _symtable
+
+    top = _symtable.symtable(source, str(rogue), "exec")
+    (outer_table,) = (c for c in top.get_children() if c.get_name() == "outer")
+    (inner_table,) = (c for c in outer_table.get_children() if c.get_name() == "inner")
+    assert inner_table.lookup("importlib").is_global()
+
+    discovery = discover_call_and_construct_sites(tmp_path, base=tmp_path)
+
+    key = ("try_star_global_decl.py", "outer.inner")
+    assert key in discovery.call_sites, (
+        "a global declaration inside a try/except* suite must overlay module-scope "
+        f"provenance like any other suite — found: {sorted(discovery.call_sites)}"
+    )
+    assert key in discovery.executor_sites
 
 
 def test_session_flow_and_flow_stream_are_discovered_via_bare_import_not_hardcoding(tmp_path):
