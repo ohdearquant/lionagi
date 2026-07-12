@@ -233,6 +233,14 @@ _IDENTIFIER_LIKE_KEY_PATTERN = re.compile(
     r"^(?:[a-z0-9]+_)*(?:id|ids|path|paths|uri|url|uuid|slug)$"
 )
 
+# Tokens that make an otherwise identifier-shaped key (`*_path`, `*_id`, ...)
+# still executor-shaped: an `executable_path`/`script_path`/`command_path` is
+# a caller-controlled executor target, not a benign resource locator, even
+# though it lexically matches the identifier-like suffix pattern.
+_EXEC_TAINTED_KEY_TOKENS = frozenset(
+    {"command", "cmd", "shell", "script", "program", "binary", "executable", "argv", "args"}
+)
+
 
 def _is_identifier_like_key(norm_key: str) -> bool:
     """True for dynamic-but-benign resource identifiers (`service_id`,
@@ -241,6 +249,15 @@ def _is_identifier_like_key(norm_key: str) -> bool:
     tool with a free-form identifier field is not executor-shaped, even
     though the identifier itself is an unbounded string."""
     return bool(_IDENTIFIER_LIKE_KEY_PATTERN.match(norm_key))
+
+
+def _is_exec_tainted_key(norm_key: str) -> bool:
+    """True when a key's own tokens name an executor channel (`executable_path`,
+    `script_path`, `command_path`, `binary_path`, `program_path`, ...), even
+    though the key otherwise lexically matches the identifier-like suffix
+    exemption. Such a key must NOT be exempted from the strong-name fallback:
+    an arbitrary executable/script/command target is itself executor input."""
+    return any(token in _EXEC_TAINTED_KEY_TOKENS for token in norm_key.split("_"))
 
 
 def _schema_is_insufficient(input_schema: object) -> bool:
@@ -300,13 +317,142 @@ def _property_is_free_form(prop_schema: object, is_categorized_key: bool) -> boo
         return True
     if _schema_type_includes(prop_type, "array"):
         items = prop_schema.get("items")
-        return isinstance(items, Mapping) and _schema_type_includes(items.get("type"), "string")
+        if isinstance(items, Mapping) and _schema_type_includes(items.get("type"), "string"):
+            return True
+        # Positional/tuple validation is an argv-shaped channel too: an
+        # array whose prefixItems admit strings carries caller-controlled
+        # string elements exactly like items-of-strings.
+        prefix_items = prop_schema.get("prefixItems")
+        return isinstance(prefix_items, list) and any(
+            isinstance(item, Mapping) and _schema_type_includes(item.get("type"), "string")
+            for item in prefix_items
+        )
     if prop_type is None and is_categorized_key:
         return True
     return False
 
 
 _MAX_SCHEMA_WALK_DEPTH = 12
+_MAX_SCHEMA_WALK_NODES = 5000
+
+# --- Walker keyword whitelist -------------------------------------------
+#
+# The walker is a WHITELIST, not a blacklist of applicator keywords: earlier
+# rounds each closed specific evasions (nested `properties`, `anyOf`, `$ref`,
+# `additionalProperties`, `patternProperties`; then `if`/`then`/`else`,
+# `not`, `items`, `prefixItems`) only to have the next JSON Schema keyword
+# reopen the same class of bypass. Enumerating "keywords we deny" loses that
+# arms race by construction. Instead we enumerate keywords we affirmatively
+# understand (and walk or treat as inert scalars); ANY OTHER key whose value
+# could itself carry a subschema (a `dict`, or a `list` containing a `dict`)
+# is unresolvable -- future/unsupported schema-bearing keywords (e.g.
+# `unevaluatedProperties`, `dependentSchemas`, `contains`, `propertyNames`)
+# deny by default for executor-signaling tools instead of admitting by
+# default.
+
+# Keywords whose value never itself carries a subschema (or, for `$defs`/
+# `definitions`, is only reachable indirectly via `$ref` resolution, which
+# `_resolve_local_ref` already handles without needing to pre-walk them).
+_SCALAR_ONLY_SCHEMA_KEYWORDS = frozenset(
+    {
+        "type",
+        "enum",
+        "const",
+        "description",
+        "title",
+        "format",
+        "pattern",
+        "required",
+        "default",
+        "examples",
+        "$defs",
+        "definitions",
+    }
+)
+
+# Applicator/structural keywords the walker knows how to traverse.
+_SINGLE_SUBSCHEMA_KEYWORDS = frozenset({"if", "then", "else", "not"})
+_LIST_OF_SUBSCHEMAS_KEYWORDS = frozenset({"allOf", "anyOf", "oneOf", "prefixItems"})
+# `items` is Draft 2020-12 single-schema ("the rest of the array") or
+# Draft-07-style list-of-schemas (positional/tuple validation); both walked.
+_ITEMS_KEYWORD = "items"
+_PROPERTIES_KEYWORD = "properties"
+_PATTERN_PROPERTIES_KEYWORD = "patternProperties"
+_ADDITIONAL_PROPERTIES_KEYWORD = "additionalProperties"
+_REF_KEYWORD = "$ref"
+
+_KNOWN_SCHEMA_KEYWORDS = (
+    _SCALAR_ONLY_SCHEMA_KEYWORDS
+    | _SINGLE_SUBSCHEMA_KEYWORDS
+    | _LIST_OF_SUBSCHEMAS_KEYWORDS
+    | {
+        _ITEMS_KEYWORD,
+        _PROPERTIES_KEYWORD,
+        _PATTERN_PROPERTIES_KEYWORD,
+        _ADDITIONAL_PROPERTIES_KEYWORD,
+        _REF_KEYWORD,
+    }
+)
+
+
+def _is_known_scalar_only_keyword(key: str) -> bool:
+    if key in _SCALAR_ONLY_SCHEMA_KEYWORDS:
+        return True
+    # Numeric/size bounds (`minLength`, `maxItems`, `minimum`, `maxProperties`,
+    # `exclusiveMinimum`, `multipleOf`'s siblings, ...) are always scalar.
+    return key.startswith("min") or key.startswith("max")
+
+
+def _could_carry_subschema(value: object) -> bool:
+    """True when an unrecognized keyword's value is shaped like it could
+    itself hold a schema (a mapping, or a list containing a mapping) -- the
+    signal that makes an unknown keyword unresolvable rather than inert."""
+    if isinstance(value, Mapping):
+        return True
+    if isinstance(value, list):
+        return any(isinstance(item, Mapping) for item in value)
+    return False
+
+
+def _mark_unknown_schema_keywords(schema: Mapping, result: _SchemaWalkResult) -> None:
+    """Whitelist enforcement: any keyword this walker does not explicitly
+    understand, whose value is shaped like it could itself carry a subschema,
+    is unresolvable. This is what makes an unsupported or future JSON Schema
+    keyword (`unevaluatedProperties`, `dependentSchemas`, `contains`,
+    `propertyNames`, ...) deny-by-default for executor-signaling tools
+    instead of admit-by-default -- applied to every schema node the
+    classifier inspects, including property schemas that are otherwise
+    treated as leaves."""
+    for key, value in schema.items():
+        if key in _KNOWN_SCHEMA_KEYWORDS or _is_known_scalar_only_keyword(key):
+            continue
+        if _could_carry_subschema(value):
+            result.unresolvable = True
+            break
+
+
+# Object-applicator keywords: presence of any of these on a property's own
+# schema means the property IS itself a restated/composed schema, not a leaf
+# value -- classify by recursing into it instead of treating it as a scalar.
+_OBJECT_CONTAINER_KEYWORDS = (
+    _PROPERTIES_KEYWORD,
+    _PATTERN_PROPERTIES_KEYWORD,
+    _ADDITIONAL_PROPERTIES_KEYWORD,
+    _REF_KEYWORD,
+    "allOf",
+    "anyOf",
+    "oneOf",
+    "if",
+    "then",
+    "else",
+    "not",
+)
+# Array-shape keywords: an array property can be BOTH a free-form leaf
+# channel in its own right (e.g. `argv: array-of-strings`, matched by
+# `_property_is_free_form`) AND hide a command channel inside an
+# object-shaped item (`items`/`prefixItems`); both must be checked, so these
+# do not short-circuit leaf classification the way object applicators do.
+_ARRAY_ITEM_KEYWORDS = (_ITEMS_KEYWORD, "prefixItems")
 
 
 class _SchemaWalkResult:
@@ -322,6 +468,7 @@ class _SchemaWalkResult:
         "non_identifier_free_form_keys",
         "selector_key_present",
         "unresolvable",
+        "nodes_visited",
     )
 
     def __init__(self) -> None:
@@ -333,11 +480,29 @@ class _SchemaWalkResult:
         self.non_identifier_free_form_keys: set[str] = set()
         self.selector_key_present = False
         # True when a channel could not be proven bounded: an external/
-        # unresolvable `$ref`, a `$ref` cycle, a depth-cap trip, or a
-        # malformed `properties`/composition shape. Fed into fail-closed
-        # handling for descriptor-bearing tools whose name or description
-        # signals an executor; otherwise it is just insufficient evidence.
+        # unresolvable `$ref`, a `$ref` cycle, a depth-cap or node-budget
+        # trip, a malformed `properties`/composition/`patternProperties`
+        # shape, or an unrecognized schema-bearing keyword. Fed into
+        # fail-closed handling for descriptor-bearing tools whose name or
+        # description signals an executor; otherwise it is just
+        # insufficient evidence.
         self.unresolvable = False
+        # Total-work budget companion to the depth cap: bounds runtime
+        # against a schema with harmless but extremely wide fan-out (e.g.
+        # tens of thousands of `anyOf` branches).
+        self.nodes_visited = 0
+
+
+def _consume_node_budget(result: _SchemaWalkResult) -> bool:
+    """Count one unit of walker work; returns False (and marks the result
+    unresolvable) once the total-node budget is exceeded, so callers can stop
+    iterating further branches/properties instead of finishing a huge fan-out
+    node by node."""
+    result.nodes_visited += 1
+    if result.nodes_visited > _MAX_SCHEMA_WALK_NODES:
+        result.unresolvable = True
+        return False
+    return True
 
 
 def _resolve_local_ref(ref: str, root_schema: Mapping) -> Mapping | None:
@@ -354,19 +519,20 @@ def _resolve_local_ref(ref: str, root_schema: Mapping) -> Mapping | None:
     return node if isinstance(node, Mapping) else None
 
 
-def _pattern_matches_categorized_key(pattern: object) -> str | None:
-    """If a `patternProperties` regex would match one of the recognized
-    command/process/argument/payload/selector key names, return that key."""
+def _compile_pattern_or_mark_unresolvable(
+    pattern: object, result: _SchemaWalkResult
+) -> re.Pattern | None:
+    """Compile a `patternProperties` regex key; a non-string key or an
+    invalid regex cannot be inspected and must fail closed rather than be
+    silently skipped."""
     if not isinstance(pattern, str):
+        result.unresolvable = True
         return None
     try:
-        compiled = re.compile(pattern)
+        return re.compile(pattern)
     except re.error:
+        result.unresolvable = True
         return None
-    for key in _CATEGORIZED_KEYS:
-        if compiled.search(key):
-            return key
-    return None
 
 
 def _record_free_form_key(norm_key: str, result: _SchemaWalkResult) -> None:
@@ -380,8 +546,55 @@ def _record_free_form_key(norm_key: str, result: _SchemaWalkResult) -> None:
         result.free_form_payload_keys.add(norm_key)
     if norm_key not in _AUXILIARY_KEYS:
         result.non_auxiliary_free_form_keys.add(norm_key)
-        if not _is_identifier_like_key(norm_key):
+        if _is_exec_tainted_key(norm_key) or not _is_identifier_like_key(norm_key):
             result.non_identifier_free_form_keys.add(norm_key)
+
+
+def _composition_branch_reaches_free_form(
+    prop_schema: object,
+    root_schema: Mapping,
+    is_categorized_key: bool,
+    depth: int,
+    seen_refs: frozenset[str],
+    result: _SchemaWalkResult,
+) -> bool:
+    """True when any composition/conditional/`$ref` branch of a keyed
+    property resolves to a free-form leaf. A property like
+    `{"anyOf": [{"type": "string"}]}` or `{"if": ..., "then": {"type":
+    "string"}}` constrains the SAME instance the key names, so the key is an
+    unbounded channel even though the leaf type is expressed indirectly --
+    without this, wrapping a plain string schema in one applicator layer
+    would strip the key association the classifier relies on."""
+    if not isinstance(prop_schema, Mapping):
+        return False
+    if depth > _MAX_SCHEMA_WALK_DEPTH:
+        result.unresolvable = True
+        return False
+    branches: list[object] = []
+    ref = prop_schema.get(_REF_KEYWORD)
+    if isinstance(ref, str) and ref.startswith("#/") and ref not in seen_refs:
+        resolved = _resolve_local_ref(ref, root_schema)
+        if resolved is not None:
+            seen_refs = seen_refs | {ref}
+            branches.append(resolved)
+    for comp_key in ("allOf", "anyOf", "oneOf"):
+        comp = prop_schema.get(comp_key)
+        if isinstance(comp, list):
+            branches.extend(comp)
+    for single_key in _SINGLE_SUBSCHEMA_KEYWORDS:
+        branch = prop_schema.get(single_key)
+        if branch is not None:
+            branches.append(branch)
+    for branch in branches:
+        if not _consume_node_budget(result):
+            return False
+        if _property_is_free_form(branch, is_categorized_key):
+            return True
+        if _composition_branch_reaches_free_form(
+            branch, root_schema, is_categorized_key, depth + 1, seen_refs, result
+        ):
+            return True
+    return False
 
 
 def _consider_property(
@@ -399,26 +612,26 @@ def _consider_property(
         result.selector_key_present = True
 
     if isinstance(prop_schema, Mapping):
-        has_nested_shape = any(
-            k in prop_schema
-            for k in (
-                "properties",
-                "$ref",
-                "allOf",
-                "anyOf",
-                "oneOf",
-                "additionalProperties",
-                "patternProperties",
-            )
-        )
-        prop_type = prop_schema.get("type")
-        type_excludes_object = prop_type is not None and not _schema_type_includes(
-            prop_type, "object"
-        )
-        if has_nested_shape and not type_excludes_object:
+        # A leaf-shaped property schema is never handed to _walk_schema, so
+        # enforce the unknown-keyword whitelist here as well; redundant for
+        # container-shaped properties (which are walked) but harmless.
+        _mark_unknown_schema_keywords(prop_schema, result)
+        if any(k in prop_schema for k in _OBJECT_CONTAINER_KEYWORDS):
             # A container (e.g. a nested `options` object) is not itself a
             # command/process/script value; walk its own reachable
-            # properties instead of classifying the container's key.
+            # properties instead of classifying the container's key -- but
+            # first attribute to the key any free-form leaf reachable purely
+            # through composition/conditional branches, which constrain the
+            # key's own value.
+            if _composition_branch_reaches_free_form(
+                prop_schema,
+                root_schema,
+                norm_key in _CATEGORIZED_KEYS,
+                depth,
+                seen_refs,
+                result,
+            ):
+                _record_free_form_key(norm_key, result)
             _walk_schema(
                 prop_schema,
                 root_schema,
@@ -429,11 +642,51 @@ def _consider_property(
                 result,
             )
             return
+        if any(k in prop_schema for k in _ARRAY_ITEM_KEYWORDS):
+            # Walk `items`/`prefixItems` for a hidden object-shaped command
+            # channel, but still fall through to the leaf check below: the
+            # array property itself may also be a free-form channel (e.g.
+            # `argv: array-of-strings`).
+            _walk_schema(
+                prop_schema,
+                root_schema,
+                depth + 1,
+                seen_refs,
+                is_strong_name,
+                is_executor_description,
+                result,
+            )
 
     if not _property_is_free_form(prop_schema, norm_key in _CATEGORIZED_KEYS):
         return
 
     _record_free_form_key(norm_key, result)
+
+
+def _walk_subschema_list(
+    branches: object,
+    root_schema: Mapping,
+    depth: int,
+    seen_refs: frozenset[str],
+    is_strong_name: bool,
+    is_executor_description: bool,
+    result: _SchemaWalkResult,
+) -> None:
+    if not isinstance(branches, list):
+        result.unresolvable = True
+        return
+    for branch in branches:
+        if not _consume_node_budget(result):
+            return
+        _walk_schema(
+            branch,
+            root_schema,
+            depth + 1,
+            seen_refs,
+            is_strong_name,
+            is_executor_description,
+            result,
+        )
 
 
 def _walk_schema(
@@ -445,17 +698,23 @@ def _walk_schema(
     is_executor_description: bool,
     result: _SchemaWalkResult,
 ) -> None:
-    """Bounded, cycle-safe traversal collecting classifier evidence from
-    `properties` (including nested objects), `allOf`/`anyOf`/`oneOf`
-    branches, local `$ref` resolution, `patternProperties`, and
-    `additionalProperties`."""
+    """Bounded, cycle-safe, budgeted traversal collecting classifier
+    evidence. Recognizes `properties` (including nested objects),
+    `allOf`/`anyOf`/`oneOf`, `if`/`then`/`else`/`not`, `items`/`prefixItems`,
+    local `$ref` resolution, `patternProperties`, and `additionalProperties`
+    (both as a scalar free-form map channel and, when object-valued, as a
+    nested subschema to recurse into). Any other keyword whose value could
+    itself carry a subschema is unresolvable -- see the whitelist rationale
+    above `_KNOWN_SCHEMA_KEYWORDS`."""
     if depth > _MAX_SCHEMA_WALK_DEPTH:
         result.unresolvable = True
+        return
+    if not _consume_node_budget(result):
         return
     if not isinstance(schema, Mapping):
         return
 
-    ref = schema.get("$ref")
+    ref = schema.get(_REF_KEYWORD)
     if ref is not None:
         if not isinstance(ref, str) or not ref.startswith("#/") or ref in seen_refs:
             # External/non-local or cyclic reference: cannot be proven
@@ -477,16 +736,26 @@ def _walk_schema(
         )
         return
 
-    for comp_key in ("allOf", "anyOf", "oneOf"):
+    for comp_key in ("allOf", "anyOf", "oneOf", "prefixItems"):
         branches = schema.get(comp_key)
-        if branches is None:
-            continue
-        if not isinstance(branches, list):
-            result.unresolvable = True
-            continue
-        for branch in branches:
+        if branches is not None:
+            _walk_subschema_list(
+                branches,
+                root_schema,
+                depth,
+                seen_refs,
+                is_strong_name,
+                is_executor_description,
+                result,
+            )
+
+    for single_key in _SINGLE_SUBSCHEMA_KEYWORDS:
+        branch_schema = schema.get(single_key)
+        if branch_schema is not None:
+            if not _consume_node_budget(result):
+                return
             _walk_schema(
-                branch,
+                branch_schema,
                 root_schema,
                 depth + 1,
                 seen_refs,
@@ -495,12 +764,44 @@ def _walk_schema(
                 result,
             )
 
-    properties = schema.get("properties")
+    items_schema = schema.get(_ITEMS_KEYWORD)
+    if items_schema is not None:
+        if isinstance(items_schema, list):
+            _walk_subschema_list(
+                items_schema,
+                root_schema,
+                depth,
+                seen_refs,
+                is_strong_name,
+                is_executor_description,
+                result,
+            )
+        elif isinstance(items_schema, Mapping):
+            if _consume_node_budget(result):
+                _walk_schema(
+                    items_schema,
+                    root_schema,
+                    depth + 1,
+                    seen_refs,
+                    is_strong_name,
+                    is_executor_description,
+                    result,
+                )
+        elif items_schema is True or items_schema is False:
+            # Boolean item schemas ("any item"/"no items") carry no nested
+            # subschema to walk.
+            pass
+        else:
+            result.unresolvable = True
+
+    properties = schema.get(_PROPERTIES_KEYWORD)
     if properties is not None:
         if not isinstance(properties, Mapping):
             result.unresolvable = True
         else:
             for raw_key, prop_schema in properties.items():
+                if not _consume_node_budget(result):
+                    break
                 _consider_property(
                     raw_key,
                     prop_schema,
@@ -512,24 +813,46 @@ def _walk_schema(
                     result,
                 )
 
-    pattern_properties = schema.get("patternProperties")
-    if isinstance(pattern_properties, Mapping):
-        for pattern, pattern_schema in pattern_properties.items():
-            matched_key = _pattern_matches_categorized_key(pattern)
-            if matched_key is not None:
-                _consider_property(
-                    matched_key,
-                    pattern_schema,
-                    root_schema,
-                    depth,
-                    seen_refs,
-                    is_strong_name,
-                    is_executor_description,
-                    result,
-                )
+    pattern_properties = schema.get(_PATTERN_PROPERTIES_KEYWORD)
+    if pattern_properties is not None:
+        if not isinstance(pattern_properties, Mapping):
+            result.unresolvable = True
+        else:
+            for pattern, pattern_schema in pattern_properties.items():
+                if not _consume_node_budget(result):
+                    break
+                compiled = _compile_pattern_or_mark_unresolvable(pattern, result)
+                if compiled is None:
+                    continue
+                matched_key = next((key for key in _CATEGORIZED_KEYS if compiled.search(key)), None)
+                if matched_key is not None:
+                    _consider_property(
+                        matched_key,
+                        pattern_schema,
+                        root_schema,
+                        depth,
+                        seen_refs,
+                        is_strong_name,
+                        is_executor_description,
+                        result,
+                    )
 
-    additional_properties = schema.get("additionalProperties")
+    additional_properties = schema.get(_ADDITIONAL_PROPERTIES_KEYWORD)
     if additional_properties is not None and additional_properties is not False:
+        if isinstance(additional_properties, Mapping) and _consume_node_budget(result):
+            # An object-valued map entry schema (e.g. every value under the
+            # map is itself `{"properties": {"command": ...}}`) is a reachable
+            # subschema in its own right; walk it so a command channel hidden
+            # behind a dynamic map key is not silently admitted.
+            _walk_schema(
+                additional_properties,
+                root_schema,
+                depth + 1,
+                seen_refs,
+                is_strong_name,
+                is_executor_description,
+                result,
+            )
         if _property_is_free_form(additional_properties, True):
             # No fixed key name is available for a free-form map channel; it
             # only counts as executor-shaped evidence when corroborated by
@@ -537,6 +860,8 @@ def _walk_schema(
             # `unbounded-script-payload` already requires of payload keys).
             if is_strong_name or is_executor_description:
                 _record_free_form_key("<additionalProperties>", result)
+
+    _mark_unknown_schema_keywords(schema, result)
 
 
 def _classify_generic_executor(

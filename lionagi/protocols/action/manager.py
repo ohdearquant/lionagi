@@ -217,8 +217,14 @@ class ActionManager(Manager):
                 validate_mcp_tool_admission,
             )
 
+            # Validate the complete tool_names list before creating or
+            # registering any tool: a denial anywhere in the list must leave
+            # the registry exactly as it was, not partially populated with
+            # the names that happened to be validated first.
             for tool_name in tool_names:
                 validate_mcp_tool_admission(tool_name, None, None)
+
+            for tool_name in tool_names:
                 logger.warning(
                     f"MCP tool {tool_name!r} registered via the metadata-free "
                     "tool_names= shortcut with no descriptor (schema/description) "

@@ -617,6 +617,146 @@ class TestActionManagerMCPAdmission:
         assert "bash" not in manager.registry
         assert len(manager.registry) == 0
 
+    @pytest.mark.asyncio
+    async def test_register_mcp_server_denies_if_then_command_channel(self):
+        manager = await self._discover_and_expect_denial(
+            {
+                "name": "maintenance",
+                "description": "runs shell commands",
+                "inputSchema": {
+                    "type": "object",
+                    "if": {"properties": {"mode": {"const": "advanced"}}},
+                    "then": {"properties": {"command": {"type": "string"}}},
+                },
+            }
+        )
+        assert "maintenance" not in manager.registry
+
+    @pytest.mark.asyncio
+    async def test_register_mcp_server_denies_array_items_command_channel(self):
+        manager = await self._discover_and_expect_denial(
+            {
+                "name": "maintenance",
+                "description": "runs shell commands",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "cmds": {
+                            "type": "array",
+                            "items": {
+                                "type": "object",
+                                "properties": {"command": {"type": "string"}},
+                            },
+                        }
+                    },
+                },
+            }
+        )
+        assert "maintenance" not in manager.registry
+
+    @pytest.mark.asyncio
+    async def test_register_mcp_server_denies_prefix_items_command_channel(self):
+        manager = await self._discover_and_expect_denial(
+            {
+                "name": "maintenance",
+                "description": "runs shell commands",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "cmds": {
+                            "type": "array",
+                            "prefixItems": [
+                                {
+                                    "type": "object",
+                                    "properties": {"command": {"type": "string"}},
+                                }
+                            ],
+                        }
+                    },
+                },
+            }
+        )
+        assert "maintenance" not in manager.registry
+
+    @pytest.mark.asyncio
+    async def test_register_mcp_server_denies_object_valued_additional_properties_map(self):
+        manager = await self._discover_and_expect_denial(
+            {
+                "name": "maintenance",
+                "description": "runs shell commands",
+                "inputSchema": {
+                    "type": "object",
+                    "additionalProperties": {
+                        "type": "object",
+                        "properties": {"command": {"type": "string"}},
+                    },
+                },
+            }
+        )
+        assert "maintenance" not in manager.registry
+
+    @pytest.mark.asyncio
+    async def test_register_mcp_server_denies_executable_path_under_strong_name(self):
+        manager = await self._discover_and_expect_denial(
+            {
+                "name": "exec",
+                "description": None,
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "operation": {"type": "string", "enum": ["run"]},
+                        "executable_path": {"type": "string"},
+                    },
+                },
+            }
+        )
+        assert "exec" not in manager.registry
+
+    @pytest.mark.asyncio
+    async def test_register_mcp_server_denies_non_mapping_pattern_properties(self):
+        manager = await self._discover_and_expect_denial(
+            {
+                "name": "maintenance",
+                "description": "runs shell commands",
+                "inputSchema": {
+                    "type": "object",
+                    "patternProperties": ["not-a-mapping"],
+                },
+            }
+        )
+        assert "maintenance" not in manager.registry
+
+    @pytest.mark.asyncio
+    async def test_register_mcp_server_denies_invalid_pattern_regex(self):
+        manager = await self._discover_and_expect_denial(
+            {
+                "name": "maintenance",
+                "description": "runs shell commands",
+                "inputSchema": {
+                    "type": "object",
+                    "patternProperties": {"(": {"type": "string"}},
+                },
+            }
+        )
+        assert "maintenance" not in manager.registry
+
+    @pytest.mark.asyncio
+    async def test_register_mcp_server_tool_names_mixed_list_leaves_registry_untouched(self):
+        """The metadata-free `tool_names=` shortcut must be atomic on its own
+        input path too: a denied name anywhere in the list must not leave an
+        earlier, already-processed name registered."""
+        manager = ActionManager()
+
+        with pytest.raises(PermissionError):
+            await manager.register_mcp_server(
+                {"command": "python", "args": ["-m", "srv"]},
+                tool_names=["run_tests", "bash"],
+            )
+
+        assert "run_tests" not in manager.registry
+        assert "bash" not in manager.registry
+        assert len(manager.registry) == 0
+
 
 class TestLoadMCPToolsFunction:
     @pytest.mark.asyncio

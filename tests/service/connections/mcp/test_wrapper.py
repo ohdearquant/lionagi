@@ -631,6 +631,240 @@ class TestValidateMcpToolAdmission:
             "executor-identity-with-insufficient-schema",
             id="external-ref-fails-closed-for-strong-name",
         ),
+        # --- Round-2 evasions: conditional/array/object-map command channels ---
+        pytest.param(
+            "maintenance",
+            {
+                "type": "object",
+                "if": {"properties": {"mode": {"const": "advanced"}}},
+                "then": {"properties": {"command": {"type": "string"}}},
+            },
+            "runs shell commands",
+            "unbounded-command-input",
+            id="if-then-branch-command-channel",
+        ),
+        pytest.param(
+            "maintenance",
+            {
+                "type": "object",
+                "properties": {
+                    "cmds": {
+                        "type": "array",
+                        "items": {
+                            "type": "object",
+                            "properties": {"command": {"type": "string"}},
+                        },
+                    }
+                },
+            },
+            "runs shell commands",
+            "unbounded-command-input",
+            id="array-items-object-command-channel",
+        ),
+        pytest.param(
+            "maintenance",
+            {
+                "type": "object",
+                "properties": {
+                    "cmds": {
+                        "type": "array",
+                        "prefixItems": [
+                            {
+                                "type": "object",
+                                "properties": {"command": {"type": "string"}},
+                            }
+                        ],
+                    }
+                },
+            },
+            "runs shell commands",
+            "unbounded-command-input",
+            id="prefix-items-object-command-channel",
+        ),
+        pytest.param(
+            "maintenance",
+            {
+                "type": "object",
+                "additionalProperties": {
+                    "type": "object",
+                    "properties": {"command": {"type": "string"}},
+                },
+            },
+            "runs shell commands",
+            "unbounded-command-input",
+            id="object-valued-additionalproperties-map-command-channel",
+        ),
+        # --- Round-2: identifier-suffix exemption must not launder exec targets ---
+        pytest.param(
+            "exec",
+            {
+                "type": "object",
+                "properties": {
+                    "operation": {"type": "string", "enum": ["run"]},
+                    "executable_path": {"type": "string"},
+                },
+            },
+            None,
+            "executor-identity-with-insufficient-schema",
+            id="executable-path-not-exempted-under-strong-name",
+        ),
+        pytest.param(
+            "exec",
+            {
+                "type": "object",
+                "properties": {
+                    "operation": {"type": "string", "enum": ["run"]},
+                    "script_path": {"type": "string"},
+                },
+            },
+            None,
+            "executor-identity-with-insufficient-schema",
+            id="script-path-not-exempted-under-strong-name",
+        ),
+        pytest.param(
+            "exec",
+            {
+                "type": "object",
+                "properties": {
+                    "operation": {"type": "string", "enum": ["run"]},
+                    "command_path": {"type": "string"},
+                },
+            },
+            None,
+            "executor-identity-with-insufficient-schema",
+            id="command-path-not-exempted-under-strong-name",
+        ),
+        pytest.param(
+            "exec",
+            {
+                "type": "object",
+                "properties": {
+                    "operation": {"type": "string", "enum": ["run"]},
+                    "binary_path": {"type": "string"},
+                },
+            },
+            None,
+            "executor-identity-with-insufficient-schema",
+            id="binary-path-not-exempted-under-strong-name",
+        ),
+        pytest.param(
+            "exec",
+            {
+                "type": "object",
+                "properties": {
+                    "operation": {"type": "string", "enum": ["run"]},
+                    "program_path": {"type": "string"},
+                },
+            },
+            None,
+            "executor-identity-with-insufficient-schema",
+            id="program-path-not-exempted-under-strong-name",
+        ),
+        # --- Round-2: malformed patternProperties must fail closed, not open ---
+        pytest.param(
+            "maintenance",
+            {"type": "object", "patternProperties": ["not-a-mapping"]},
+            "runs shell commands",
+            "executor-description-with-broad-input",
+            id="non-mapping-pattern-properties-fails-closed",
+        ),
+        pytest.param(
+            "maintenance",
+            {"type": "object", "patternProperties": {"(": {"type": "string"}}},
+            "runs shell commands",
+            "executor-description-with-broad-input",
+            id="invalid-pattern-regex-fails-closed",
+        ),
+        # --- Round-2: unresolvable node-work budget denies fast for
+        # executor-signaling descriptors with harmless-looking wide fan-out. ---
+        pytest.param(
+            "maintenance",
+            {
+                "type": "object",
+                "anyOf": [
+                    {"properties": {f"field_{i}": {"type": "string", "enum": ["a", "b"]}}}
+                    for i in range(10_000)
+                ],
+            },
+            "runs shell commands",
+            "executor-description-with-broad-input",
+            id="wide-anyof-fanout-exceeds-node-budget",
+        ),
+        # --- Composition on the keyed property itself must not strip the
+        # key association: these wrap a plain free-form string leaf in one
+        # applicator layer (anyOf / if-then / allOf), which constrains the
+        # SAME instance the key names. ---
+        pytest.param(
+            "exec",
+            {
+                "type": "object",
+                "properties": {"input": {"anyOf": [{"type": "string"}]}},
+            },
+            None,
+            "unbounded-script-payload",
+            id="anyof-wrapped-free-form-property-still-attributed-to-key",
+        ),
+        pytest.param(
+            "exec",
+            {
+                "type": "object",
+                "properties": {
+                    "payload": {
+                        "if": {"minLength": 1},
+                        "then": {"type": "string"},
+                    }
+                },
+            },
+            None,
+            "executor-identity-with-insufficient-schema",
+            id="conditional-wrapped-free-form-property-still-attributed-to-key",
+        ),
+        pytest.param(
+            "spawn_process",
+            {
+                "type": "object",
+                "properties": {
+                    "command": {"allOf": [{"type": "string"}]},
+                },
+            },
+            None,
+            "unbounded-command-input",
+            id="allof-wrapped-command-key-is-still-a-command-channel",
+        ),
+        # --- prefixItems tuple validation is an argv-shaped channel exactly
+        # like items-of-strings. ---
+        pytest.param(
+            "exec",
+            {
+                "type": "object",
+                "properties": {
+                    "argv": {
+                        "type": "array",
+                        "prefixItems": [{"type": "string"}],
+                    }
+                },
+            },
+            None,
+            "executor-identity-with-insufficient-schema",
+            id="prefixitems-array-of-strings-is-a-free-form-leaf",
+        ),
+        # --- The unknown-keyword whitelist applies to leaf-shaped property
+        # schemas too, not only to schema nodes reached via _walk_schema. ---
+        pytest.param(
+            "exec",
+            {
+                "type": "object",
+                "properties": {
+                    "options": {
+                        "type": "object",
+                        "unevaluatedProperties": {"type": "string"},
+                    }
+                },
+            },
+            None,
+            "executor-identity-with-insufficient-schema",
+            id="unknown-subschema-keyword-on-property-is-unresolvable",
+        ),
     ]
 
     ADMIT_CASES = [
@@ -789,6 +1023,58 @@ class TestValidateMcpToolAdmission:
             None,
             id="nested-config-object-without-command-like-fields",
         ),
+        # --- Round-2: benign identifier-suffix fields remain admitted. ---
+        pytest.param(
+            "exec",
+            {
+                "type": "object",
+                "properties": {
+                    "operation": {"type": "string", "enum": ["status", "restart"]},
+                    "tenant_uuid": {"type": "string"},
+                },
+            },
+            None,
+            id="strong-name-fixed-operation-with-dynamic-tenant-uuid",
+        ),
+        pytest.param(
+            "exec",
+            {
+                "type": "object",
+                "properties": {
+                    "operation": {"type": "string", "enum": ["status", "restart"]},
+                    "callback_url": {"type": "string"},
+                },
+            },
+            None,
+            id="strong-name-fixed-operation-with-dynamic-callback-url",
+        ),
+        pytest.param(
+            "exec",
+            {
+                "type": "object",
+                "properties": {
+                    "operation": {"type": "string", "enum": ["status", "restart"]},
+                    "page_slug": {"type": "string"},
+                },
+            },
+            None,
+            id="strong-name-fixed-operation-with-dynamic-page-slug",
+        ),
+        # --- Round-1 regression: array-of-strings free-form leaf channel
+        # (argv) must still be caught even though the walker now also
+        # recurses into `items` for hidden object-shaped command channels. ---
+        pytest.param(
+            "run_tests",
+            {
+                "type": "object",
+                "properties": {
+                    "suite": {"type": "string", "enum": ["unit", "integration"]},
+                    "markers": {"type": "array", "items": {"type": "string"}},
+                },
+            },
+            None,
+            id="array-of-strings-leaf-remains-benign-when-not-corroborated",
+        ),
     ]
 
     @pytest.mark.parametrize("tool_name, input_schema, description, reason", DENY_CASES)
@@ -835,3 +1121,40 @@ class TestValidateMcpToolAdmission:
         assert sentinel_command_value_marker not in message
         assert "maintenance" in message
         assert "unbounded-command-input" in message
+
+    def test_wide_anyof_fanout_stays_bounded_and_denies(self):
+        """A 10,000-branch `anyOf` fan-out (all harmless enum-bounded
+        properties) must not be fully walked node-by-node: the node-work
+        budget trips, and for an executor-signaling tool that unresolvable
+        result denies fail-closed -- in well under a second, not the
+        multi-second cost of walking every branch."""
+        import time
+
+        huge_schema = {
+            "type": "object",
+            "anyOf": [
+                {"properties": {f"field_{i}": {"type": "string", "enum": ["a", "b"]}}}
+                for i in range(10_000)
+            ],
+        }
+
+        start = time.perf_counter()
+        with pytest.raises(PermissionError) as exc_info:
+            validate_mcp_tool_admission("maintenance", huge_schema, "runs shell commands")
+        elapsed = time.perf_counter() - start
+
+        assert "executor-description-with-broad-input" in str(exc_info.value)
+        assert elapsed < 2.0
+
+    def test_wide_anyof_fanout_admits_when_not_executor_signaling(self):
+        """The same wide fan-out schema, with no strong name or executor
+        description, is still just insufficient evidence -- not a denial."""
+        huge_schema = {
+            "type": "object",
+            "anyOf": [
+                {"properties": {f"field_{i}": {"type": "string", "enum": ["a", "b"]}}}
+                for i in range(10_000)
+            ],
+        }
+
+        assert validate_mcp_tool_admission("search_config", huge_schema, None) is None
