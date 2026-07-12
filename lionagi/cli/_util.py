@@ -5,6 +5,7 @@
 from __future__ import annotations
 
 import os
+from pathlib import Path
 from typing import Any
 
 EXIT_CODE_BY_STATUS: dict[str, int] = {
@@ -19,6 +20,28 @@ EXIT_CODE_BY_STATUS: dict[str, int] = {
     "aborted": 130,
     "cancelled": 143,
 }
+
+
+def validate_cwd_exists(cwd: str | None, *, flag: str = "--cwd") -> None:
+    """Fail fast when a user-supplied working directory doesn't exist.
+
+    Every CLI surface that forwards a ``cwd``/``repo`` value to a CLI-backed
+    agent spawn (claude/codex/gemini-code) must call this BEFORE allocating a
+    run or starting the spawn, so a typo'd path produces a clear, immediate
+    error instead of the provider layer silently creating the directory (or
+    the spawn failing deep inside an opaque subprocess). Raises
+    ``ConfigurationError`` (a ``ValueError`` subclass) naming both the path
+    and the flag; a caller with no cwd override (``cwd`` falsy) is a no-op.
+    """
+    if not cwd:
+        return
+    from lionagi._errors import ConfigurationError
+
+    path = Path(cwd).expanduser()
+    if not path.exists():
+        raise ConfigurationError(f"{flag} path does not exist: {cwd!r}")
+    if not path.is_dir():
+        raise ConfigurationError(f"{flag} path is not a directory: {cwd!r}")
 
 
 def classify_exception(exc: BaseException) -> str:

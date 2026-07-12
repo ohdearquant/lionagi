@@ -45,6 +45,7 @@ from .._runs import (
     save_last_branch_pointer,
     teardown_persist,
 )
+from .._util import validate_cwd_exists
 
 __all__ = (
     "OrchestrationEnv",
@@ -363,6 +364,10 @@ async def setup_orchestration(
 ) -> OrchestrationEnv:
     """Resolve orchestrator config, allocate run, build branch+session."""
     from lionagi.ln.concurrency.errors import cache_cancelled_exc_class
+
+    # Fail fast: a nonexistent --cwd must never silently spawn into a
+    # provider-created directory — validate before any run is allocated.
+    validate_cwd_exists(cwd)
 
     cache_cancelled_exc_class()
 
