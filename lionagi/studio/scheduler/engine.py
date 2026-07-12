@@ -15,9 +15,16 @@ from pathlib import Path
 from typing import Any
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
+from lionagi.ln.concurrency import ExceptionGroup
 from lionagi.state.reasons import RunReasons, ScheduleReasons
 from lionagi.studio.scheduler import subprocess as _subprocess
 from lionagi.studio.scheduler import threshold as _threshold
+from lionagi.studio.scheduler.signals import (
+    SchedulerSignalBus,
+    build_schedule_run_signal,
+    record_handler_failure,
+    register_default_handlers,
+)
 from lionagi.studio.services.scheduler_state import (
     SchedulerStateService,
     create_skipped_run,
@@ -230,8 +237,13 @@ async def _resolve_action_cwd(schedule: dict) -> tuple[str | None, str | None]:
 
 
 class SchedulerEngine:
-    def __init__(self, svc: SchedulerStateService | None = None) -> None:
+    def __init__(
+        self,
+        svc: SchedulerStateService | None = None,
+        signal_bus: SchedulerSignalBus | None = None,
+    ) -> None:
         self._svc = svc if svc is not None else default_scheduler_state
+        self._signal_bus = signal_bus if signal_bus is not None else SchedulerSignalBus()
         self._task: asyncio.Task | None = None
         self._running: dict[str, str] = {}  # schedule_id -> run_id
         self._stopping = False
@@ -1176,6 +1188,24 @@ class SchedulerEngine:
             )
         return written
 
+    async def _dispatch_signal(self, signal: Any) -> None:
+        """Emit *signal* on the scheduler's signal bus.
+
+        The schedule_run/invocation row this signal describes is already
+        committed by the time this runs (mint happens after
+        ``_guarded_terminal_status`` returns ``True``), so a handler
+        exception here must never be allowed to look like it undid that
+        write or to stop the tick loop from continuing on to the next
+        schedule. ``SchedulerSignalBus.emit`` fails loud (raises an
+        ``ExceptionGroup``, never swallows); this call site is where that
+        group gets caught, logged, and turned into a durable admin event.
+        """
+        try:
+            await self._signal_bus.emit(signal)
+        except ExceptionGroup as eg:
+            _log.error("Scheduler signal handler(s) failed for %s: %s", type(signal).__name__, eg)
+            await record_handler_failure(eg, signal)
+
     async def _check_max_runs(self, schedule: dict, chain_depth: int) -> None:
         """Auto-disable a schedule once its fired top-level runs hit max_runs.
 
@@ -1346,7 +1376,7 @@ class SchedulerEngine:
                     "error_detail": str(exc),
                 }
             )
-            await self._svc.update_status(
+            written = await self._svc.update_status(
                 "schedule_run",
                 run_id,
                 new_status="failed",
@@ -1357,6 +1387,19 @@ class SchedulerEngine:
                 actor=run_id,
                 metadata={"exception_class": type(exc).__name__},
             )
+            if written:
+                await self._dispatch_signal(
+                    build_schedule_run_signal(
+                        entity_id=run_id,
+                        new_status="failed",
+                        reason_code=RunReasons.FAILED_EXCEPTION,
+                        schedule_id=sid,
+                        action_kind=schedule.get("action_kind", ""),
+                        chain_depth=chain_depth,
+                        trigger_context=trigger_context,
+                        error_detail=f"{type(exc).__name__}: {exc}",
+                    )
+                )
             inv_status, inv_rc, inv_rs, inv_ev, inv_meta = await resolve_invocation_terminal(
                 self._svc, inv_id, fallback_status="failed", exception=exc
             )
@@ -1460,7 +1503,7 @@ class SchedulerEngine:
                 ended_at=end_time,
                 error_detail=stderr_tail if exit_code != 0 else None,
             )
-            await self._guarded_terminal_status(
+            written = await self._guarded_terminal_status(
                 "schedule_run",
                 run_id,
                 new_status=status,
@@ -1471,6 +1514,19 @@ class SchedulerEngine:
                 actor=run_id,
                 metadata={"exit_code": exit_code},
             )
+            if written:
+                await self._dispatch_signal(
+                    build_schedule_run_signal(
+                        entity_id=run_id,
+                        new_status=status,
+                        reason_code=reason_code,
+                        schedule_id=sid,
+                        action_kind=schedule.get("action_kind", ""),
+                        chain_depth=chain_depth,
+                        trigger_context=trigger_context,
+                        error_detail=stderr_tail if exit_code != 0 else "",
+                    )
+                )
             inv_status, inv_rc, inv_rs, inv_ev, inv_meta = await resolve_invocation_terminal(
                 self._svc, inv_id, fallback_status=status, exit_code=exit_code
             )
@@ -1533,7 +1589,7 @@ class SchedulerEngine:
                     ended_at=_end_time,
                     error_detail="Scheduler shutdown",
                 )
-                await self._guarded_terminal_status(
+                written = await self._guarded_terminal_status(
                     "schedule_run",
                     run_id,
                     new_status="cancelled",
@@ -1543,6 +1599,18 @@ class SchedulerEngine:
                     source="executor",
                     actor=run_id,
                 )
+                if written:
+                    await self._dispatch_signal(
+                        build_schedule_run_signal(
+                            entity_id=run_id,
+                            new_status="cancelled",
+                            reason_code=RunReasons.CANCELLED_SYSTEM,
+                            schedule_id=sid,
+                            action_kind=schedule.get("action_kind", ""),
+                            chain_depth=chain_depth,
+                            trigger_context=trigger_context,
+                        )
+                    )
                 inv_status, inv_rc, inv_rs, inv_ev, inv_meta = await resolve_invocation_terminal(
                     self._svc, inv_id, fallback_status="cancelled"
                 )
@@ -1570,7 +1638,7 @@ class SchedulerEngine:
                 ended_at=_end_time,
                 error_detail="Internal scheduler error",
             )
-            await self._guarded_terminal_status(
+            written = await self._guarded_terminal_status(
                 "schedule_run",
                 run_id,
                 new_status="failed",
@@ -1581,6 +1649,19 @@ class SchedulerEngine:
                 actor=run_id,
                 metadata={"exception_class": type(exc).__name__},
             )
+            if written:
+                await self._dispatch_signal(
+                    build_schedule_run_signal(
+                        entity_id=run_id,
+                        new_status="failed",
+                        reason_code=RunReasons.FAILED_EXCEPTION,
+                        schedule_id=sid,
+                        action_kind=schedule.get("action_kind", ""),
+                        chain_depth=chain_depth,
+                        trigger_context=trigger_context,
+                        error_detail=f"{type(exc).__name__}: {exc}",
+                    )
+                )
             inv_status, inv_rc, inv_rs, inv_ev, inv_meta = await resolve_invocation_terminal(
                 self._svc, inv_id, fallback_status="failed", exception=exc
             )
@@ -1637,3 +1718,4 @@ class SchedulerEngine:
 
 
 scheduler = SchedulerEngine()
+register_default_handlers(scheduler._signal_bus)
