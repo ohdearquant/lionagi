@@ -162,61 +162,6 @@ async def _execute_with_retry(
                 raise
 
 
-class _ChildCancelled(BaseException):
-    """Internal marker: a child raised CancelledError on its own.
-
-    Distinguishes a self-cancelled child from cancellation of the whole
-    batch, which must keep propagating as CancelledError. Each batch stamps
-    its markers with a per-call token so an instance raised by user code is
-    never mistaken for the internal signal and propagates like any other
-    exception.
-    """
-
-    def __init__(self, token: object = None) -> None:
-        super().__init__()
-        self.token = token
-
-
-async def _gather_all_or_cancel(loop, func, input_, kwargs) -> list[Any]:
-    """Concurrent fan-out that preserves the task-group failure contract.
-
-    On any child failure the remaining siblings are cancelled and awaited, so
-    no work outlives the failed batch. A normal exception re-raises after
-    cleanup; a child that cancelled itself yields the positional outcome list
-    (its slot holding the CancelledError), while external cancellation of the
-    batch keeps propagating.
-    """
-    out: list[Any] = [None] * len(input_)
-    token = object()
-
-    async def _run(item: Any, idx: int) -> None:
-        try:
-            out[idx] = await func(item, **kwargs)
-        except asyncio.CancelledError as exc:
-            out[idx] = exc
-            raise _ChildCancelled(token) from exc
-        except BaseException as exc:
-            out[idx] = exc
-            raise
-
-    tasks = [loop.create_task(_run(item, idx)) for idx, item in enumerate(input_)]
-    try:
-        # Shield each task from the gather future so cancelling the batch
-        # surfaces here as CancelledError while a self-cancelled child keeps
-        # its distinct marker type; either way the cleanup below cancels and
-        # awaits every child before control leaves this frame.
-        await asyncio.gather(*(asyncio.shield(task) for task in tasks))
-    except BaseException as exc:
-        for task in tasks:
-            task.cancel()
-        await asyncio.gather(*tasks, return_exceptions=True)
-        if isinstance(exc, _ChildCancelled) and exc.token is token:
-            return out
-        raise
-
-    return out
-
-
 async def alcall(
     input_: list[Any],
     func: Callable[..., T],
@@ -256,12 +201,17 @@ async def alcall(
     if delay_before_start:
         await sleep(delay_before_start)
 
-    # The default async path needs none of the retry, timeout, semaphore, or
-    # throttling layers below. Input and output sanitization remain shared
-    # with the general path. Sync callables and non-asyncio backends stay on
-    # the general path because it preserves their execution contracts.
+    # With return_exceptions=True and none of the retry, timeout, semaphore,
+    # or throttling layers engaged, a bare exception-collecting gather is
+    # behavior-identical to the general path and skips its per-item wrappers.
+    # The default (raising) mode stays on the general path: its task-group
+    # sibling-cancellation contract is not worth re-implementing — a measured
+    # quiet-host comparison showed a shielded-task re-implementation saved
+    # nothing over the task group. Sync callables and non-asyncio backends
+    # also stay general, preserving their execution contracts.
     fast_path = (
-        is_coro_func(func)
+        return_exceptions
+        and is_coro_func(func)
         and retry_attempts == 0
         and retry_timeout is None
         and max_concurrent is None
@@ -272,17 +222,14 @@ async def alcall(
     )
     if fast_path:
         try:
-            loop = asyncio.get_running_loop()
+            asyncio.get_running_loop()
         except RuntimeError:
             pass
         else:
-            if return_exceptions:
-                out = await asyncio.gather(
-                    *(func(item, **kwargs) for item in input_),
-                    return_exceptions=True,
-                )
-            else:
-                out = await _gather_all_or_cancel(loop, func, input_, kwargs)
+            out = await asyncio.gather(
+                *(func(item, **kwargs) for item in input_),
+                return_exceptions=True,
+            )
             return to_list(
                 out,
                 flatten=output_flatten,
