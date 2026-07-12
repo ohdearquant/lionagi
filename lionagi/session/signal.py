@@ -292,7 +292,17 @@ def _collect_branch_usage(branch: Any) -> dict[str, Any]:
         usage = mr.get("usage") if isinstance(mr.get("usage"), dict) else mr
         input_tokens += int(usage.get("input_tokens", usage.get("prompt_tokens", 0)) or 0)
         output_tokens += int(usage.get("output_tokens", usage.get("completion_tokens", 0)) or 0)
-        cost = mr.get("total_cost_usd") or mr.get("cost")
+        # Presence, not truthiness: a provider that explicitly reports
+        # total_cost_usd=0.0 (a real, known-free call) must not be treated
+        # the same as one that never reported a cost at all -- `x or y`
+        # would silently fall through the falsy 0.0 to the "cost" fallback
+        # (or None), losing the explicit zero.
+        if "total_cost_usd" in mr and mr["total_cost_usd"] is not None:
+            cost = mr["total_cost_usd"]
+        elif "cost" in mr and mr["cost"] is not None:
+            cost = mr["cost"]
+        else:
+            cost = None
         if isinstance(cost, (int, float)):
             total_cost_usd = (total_cost_usd or 0.0) + float(cost)
         num_turns += int(mr.get("num_turns", 0) or 0)

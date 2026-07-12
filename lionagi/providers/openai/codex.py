@@ -451,6 +451,19 @@ async def stream_codex_cli(
     theme = request.cli_display_theme or "light"
     _start_monotonic = asyncio.get_running_loop().time()
 
+    # turn.completed reports usage/cost as a running total-to-date, not a
+    # per-turn delta. run.py stamps each "result" chunk's metadata onto
+    # whichever AssistantResponse it next flushes, and _collect_branch_usage
+    # SUMS that metadata across every message on the branch -- if a tool call
+    # flushes a message between two turn.completed events, each cumulative
+    # snapshot lands on a different message and earlier turns get counted
+    # again. Track the last-seen cumulative values here so only the marginal
+    # (this-turn-only) delta is ever exposed per event.
+    _prev_input_tokens = 0
+    _prev_output_tokens = 0
+    _prev_cost: float = 0.0
+    _seen_cost = False
+
     stream = stream_codex_cli_events(request)
     try:
         async for obj in stream:
@@ -626,30 +639,53 @@ async def stream_codex_cli(
 
             # -- turn.completed (usage stats) --
             elif typ == "turn.completed":
-                session.usage = obj.get("usage", {})
-                session.total_cost_usd = obj.get("total_cost_usd", obj.get("cost"))
+                turn_usage = obj.get("usage", {}) or {}
+                session.usage = turn_usage
+                turn_cost = obj.get("total_cost_usd", obj.get("cost"))
+                session.total_cost_usd = turn_cost
                 session.num_turns = (session.num_turns or 0) + 1
 
                 # Terminal usage/cost/turns -- the only channel run.py reads
                 # provider-reported usage from (persisted onto model_response,
                 # see run.py's "result" chunk handling; mirrors claude_code's
                 # "result" event). turn.completed can fire more than once per
-                # run() call for multi-turn codex sessions; each event's
-                # usage/cost are assumed cumulative-to-date (codex reports a
-                # running total, not a per-turn delta -- num_turns is the only
-                # field this code increments locally), so re-emitting on every
-                # occurrence just keeps the latest (highest) snapshot.
+                # run() call for multi-turn codex sessions, and each event's
+                # usage/cost is cumulative-to-date, not a per-turn delta --
+                # emit only the marginal contribution since the previous
+                # event (clamped at 0 in case a provider quirk ever reports a
+                # lower running total) so summing across every flushed
+                # message reconstructs the true total exactly once, not N
+                # times over.
+                cur_input = int(
+                    turn_usage.get("input_tokens", turn_usage.get("prompt_tokens", 0)) or 0
+                )
+                cur_output = int(
+                    turn_usage.get("output_tokens", turn_usage.get("completion_tokens", 0)) or 0
+                )
+                delta_input = max(cur_input - _prev_input_tokens, 0)
+                delta_output = max(cur_output - _prev_output_tokens, 0)
+                _prev_input_tokens = cur_input
+                _prev_output_tokens = cur_output
+
                 result_meta: dict[str, Any] = {}
-                if session.usage:
-                    result_meta["usage"] = session.usage
-                if session.total_cost_usd is not None:
-                    result_meta["total_cost_usd"] = session.total_cost_usd
-                if session.num_turns is not None:
-                    result_meta["num_turns"] = session.num_turns
-                if result_meta:
-                    rsc = StreamChunk(type="result", metadata=result_meta)
-                    session.chunks.append(rsc)
-                    yield rsc
+                if delta_input or delta_output:
+                    result_meta["usage"] = {
+                        "input_tokens": delta_input,
+                        "output_tokens": delta_output,
+                    }
+                if isinstance(turn_cost, (int, float)):
+                    delta_cost = float(turn_cost) - (_prev_cost if _seen_cost else 0.0)
+                    _prev_cost = float(turn_cost)
+                    _seen_cost = True
+                    result_meta["total_cost_usd"] = max(delta_cost, 0.0)
+                # Each turn.completed occurrence is exactly one new turn --
+                # unlike usage/cost this is already a delta, never a running
+                # total (num_turns is incremented locally above, not read off
+                # the event), so it is always safe to emit as 1.
+                result_meta["num_turns"] = 1
+                rsc = StreamChunk(type="result", metadata=result_meta)
+                session.chunks.append(rsc)
+                yield rsc
 
             # -- turn.failed / error --
             elif typ in ("turn.failed", "error"):

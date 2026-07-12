@@ -88,11 +88,16 @@ async def test_turn_completed_without_usage_fabricates_no_tokens_or_cost():
 
 
 @pytest.mark.asyncio
-async def test_multiple_turn_completed_events_last_snapshot_wins():
-    """Codex may emit turn.completed more than once per run(); each is assumed
-    a cumulative-to-date snapshot (codex doesn't report a running turn
-    counter, so this code increments it locally), so the final result chunk
-    should carry the latest (highest) usage."""
+async def test_multiple_turn_completed_events_emit_marginal_deltas():
+    """Codex may emit turn.completed more than once per run(); each event's
+    usage/cost is cumulative-to-date, not a per-turn delta. Regression: this
+    code used to re-emit the raw (cumulative) snapshot on every occurrence.
+    Since _collect_branch_usage SUMS every "result" chunk's usage across all
+    flushed messages, and a tool call between two turn.completed events can
+    flush a separate message for each snapshot, re-emitting cumulative values
+    double-counts earlier turns. Each event must instead carry only its
+    marginal (this-turn-only) contribution, and num_turns must be exactly 1
+    per event (never the running turn count)."""
     events = [
         {"type": "turn.completed", "usage": {"input_tokens": 10, "output_tokens": 5}},
         {"type": "turn.completed", "usage": {"input_tokens": 30, "output_tokens": 15}},
@@ -101,8 +106,10 @@ async def test_multiple_turn_completed_events_last_snapshot_wins():
     result_chunks = [c for c in chunks if c.type == "result"]
     assert len(result_chunks) == 2
     assert result_chunks[0].metadata["num_turns"] == 1
-    assert result_chunks[1].metadata["num_turns"] == 2
-    assert result_chunks[-1].metadata["usage"] == {"input_tokens": 30, "output_tokens": 15}
+    assert result_chunks[1].metadata["num_turns"] == 1
+    assert result_chunks[0].metadata["usage"] == {"input_tokens": 10, "output_tokens": 5}
+    # Second event's cumulative snapshot (30/15) minus the first (10/5).
+    assert result_chunks[1].metadata["usage"] == {"input_tokens": 20, "output_tokens": 10}
 
 
 @pytest.mark.asyncio
@@ -184,3 +191,91 @@ async def test_end_to_end_run_populates_branch_usage_from_codex_turn_completed()
     assert usage["input_tokens"] == 75
     assert usage["output_tokens"] == 25
     assert usage["total_cost_usd"] is None
+
+
+@pytest.mark.asyncio
+async def test_end_to_end_run_does_not_double_count_across_multiple_turns():
+    """Regression for the multi-turn double-counting bug: a tool call between
+    two turn.completed events flushes a separate AssistantResponse for each
+    cumulative snapshot. _collect_branch_usage sums every message's usage, so
+    if turn.completed re-emitted the raw cumulative snapshot each time, the
+    first turn's tokens would be counted twice (once on the message flushed
+    right after turn 1, again inside turn 2's cumulative total on the message
+    flushed at the end). The collected totals must equal the FINAL cumulative
+    snapshot (input=30, output=15) -- not the sum of the two raw snapshots
+    (10+30=40, 5+15=20)."""
+    import types
+    from unittest.mock import AsyncMock
+
+    from lionagi.operations.run.run import RunParam, run
+    from lionagi.service.imodel import iModel
+    from lionagi.session.branch import Branch
+    from lionagi.session.signal import _collect_branch_usage
+
+    events = [
+        {"type": "thread.started", "thread_id": "codex-thread-multi"},
+        {"type": "item.completed", "item": {"type": "agent_message", "text": "turn one"}},
+        {"type": "turn.completed", "usage": {"input_tokens": 10, "output_tokens": 5}},
+        {
+            "type": "item.completed",
+            "item": {
+                "type": "function_call",
+                "id": "call-1",
+                "name": "some_tool",
+                "arguments": {"x": 1},
+            },
+        },
+        {
+            "type": "item.completed",
+            "item": {
+                "type": "function_call_output",
+                "call_id": "call-1",
+                "output": "tool result",
+            },
+        },
+        {"type": "item.completed", "item": {"type": "agent_message", "text": "turn two"}},
+        {"type": "turn.completed", "usage": {"input_tokens": 30, "output_tokens": 15}},
+        {"type": "done"},
+    ]
+    chunks = await _chunks_from_events(events)
+
+    m = iModel(provider="openai", model="gpt-5.5-codex", api_key="test_key")
+    endpoint_ns = types.SimpleNamespace(
+        is_cli=True,
+        session_id=None,
+        to_dict=lambda: {"type": "fake_cli"},
+    )
+    m.endpoint = endpoint_ns
+    m.streaming_process_func = None
+
+    async def create_event(**kw):
+        return object()
+
+    m.create_event = create_event
+    m.executor = types.SimpleNamespace(append=AsyncMock(), config={})
+
+    async def stream(api_call=None):
+        for chunk in chunks:
+            yield chunk
+
+    m.stream = stream
+
+    branch = Branch()
+    branch.chat_model = m
+
+    async for _ in run(branch, "hi", RunParam()):
+        pass
+
+    # Sanity: the tool call really did split the turn across two flushed
+    # AssistantResponse messages (the double-counting bug only manifests
+    # with at least two such messages carrying usage metadata).
+    assistant_messages_with_usage = [
+        msg
+        for msg in branch.msgs.messages
+        if isinstance(msg.metadata.get("model_response"), dict) and msg.metadata["model_response"]
+    ]
+    assert len(assistant_messages_with_usage) >= 2
+
+    usage = _collect_branch_usage(branch)
+    assert usage["input_tokens"] == 30
+    assert usage["output_tokens"] == 15

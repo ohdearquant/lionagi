@@ -111,6 +111,25 @@ def test_collect_branch_usage_openai_convention():
     assert usage["total_cost_usd"] == pytest.approx(0.005)
 
 
+def test_collect_branch_usage_preserves_explicit_zero_cost():
+    """A provider that explicitly reports total_cost_usd=0.0 (a real, known-
+    free call) must not be coerced into the "unknown" None sentinel -- `x or
+    y` truthiness would silently drop the falsy 0.0 and fall through to the
+    "cost" fallback (absent here), losing the explicit zero."""
+    msg = MagicMock()
+    msg.metadata = {
+        "model_response": {
+            "usage": {"input_tokens": 10, "output_tokens": 5},
+            "total_cost_usd": 0.0,
+        }
+    }
+    branch = MagicMock()
+    branch.msgs.messages = [msg]
+    usage = _collect_branch_usage(branch)
+    assert usage["total_cost_usd"] == 0.0
+    assert usage["total_cost_usd"] is not None
+
+
 def test_collect_branch_usage_anthropic_convention():
     msg = MagicMock()
     msg.metadata = {
