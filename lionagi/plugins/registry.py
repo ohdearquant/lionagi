@@ -71,6 +71,9 @@ class PluginRecord:
     enabled: bool
     manifest: PluginManifest | None = None
     error: str | None = None
+    declared_files: tuple[str, ...] = ()
+    """Bundle-relative paths the manifest declares — carried through so a capability
+    chokepoint can recompute trust fresh without re-running discovery."""
 
 
 class PluginActivationError(RuntimeError):
@@ -125,6 +128,7 @@ def _build_snapshot() -> list[PluginRecord]:
                     state=PluginState.INVALID,
                     enabled=False,
                     error=d.error,
+                    declared_files=d.declared_files,
                 )
             )
         else:
@@ -163,6 +167,7 @@ def _build_snapshot() -> list[PluginRecord]:
                     enabled=_enabled_flag(manifest.name, settings),
                     manifest=manifest,
                     error=forced_error,
+                    declared_files=d.declared_files,
                 )
             )
             continue
@@ -179,6 +184,7 @@ def _build_snapshot() -> list[PluginRecord]:
                     enabled=_enabled_flag(manifest.name, settings),
                     manifest=manifest,
                     error=f"requires lionagi {manifest.lionagi!r}, installed {_lionagi_version!r}",
+                    declared_files=d.declared_files,
                 )
             )
             continue
@@ -195,6 +201,7 @@ def _build_snapshot() -> list[PluginRecord]:
                     state=PluginState.DISABLED,
                     enabled=False,
                     manifest=manifest,
+                    declared_files=d.declared_files,
                 )
             )
             continue
@@ -211,6 +218,7 @@ def _build_snapshot() -> list[PluginRecord]:
                     state=PluginState.UNTRUSTED,
                     enabled=True,
                     manifest=manifest,
+                    declared_files=d.declared_files,
                 )
             )
             continue
@@ -226,6 +234,7 @@ def _build_snapshot() -> list[PluginRecord]:
                     enabled=True,
                     manifest=manifest,
                     error="manifest or a declared capability file changed since trust was recorded",
+                    declared_files=d.declared_files,
                 )
             )
             continue
@@ -265,6 +274,7 @@ def _build_snapshot() -> list[PluginRecord]:
                     enabled=True,
                     manifest=manifest,
                     error=collided[manifest.name],
+                    declared_files=d.declared_files,
                 )
             )
             continue
@@ -278,10 +288,50 @@ def _build_snapshot() -> list[PluginRecord]:
                 state=PluginState.ACTIVE,
                 enabled=True,
                 manifest=manifest,
+                declared_files=d.declared_files,
             )
         )
 
     return records
+
+
+def _revalidate_trust(record: PluginRecord) -> TrustState:
+    """Recompute trust fresh against the files on disk right now.
+
+    The process-wide snapshot (``PluginRegistry._snapshot``) is built once
+    and cached — an ``ACTIVE`` record in it can go stale the moment any
+    declared file is edited after that first scan, and nothing re-scans it
+    until ``reset()``. Capability-exposing calls (resolving a profile file,
+    importing a target) must not trust that cached verdict; they recompute
+    trust against the manifest + declared files right before handing out
+    content. Bundles are small, so a full rehash per call is cheap — this
+    avoids a second, separately-fallible staleness signal (e.g. mtime).
+    """
+    assert record.manifest is not None
+    discovered = DiscoveredPlugin(
+        dir_name=record.dir_name,
+        bundle_dir=record.bundle_dir,
+        manifest_path=record.manifest_path,
+        manifest=record.manifest,
+        declared_files=record.declared_files,
+    )
+    return _trust_state(discovered)
+
+
+def _declared_activation_targets(manifest: PluginManifest) -> frozenset[str]:
+    """The exact ``target``/``module`` strings ``activate_target`` may import.
+
+    Only tools and providers name Python-importable code; hooks run as
+    external commands and agents/playbooks/packs are read as file content,
+    so those never flow through this path. A caller-supplied target that
+    isn't literally one of these declared, already-path-validated strings
+    (an extra file in the bundle, a traversal-shaped string, a typo) is
+    rejected before any import is attempted — activation must stay confined
+    to what the trust disclosure actually showed the approver.
+    """
+    targets = {t.target for t in manifest.capabilities.tools}
+    targets.update(p.module for p in manifest.capabilities.providers)
+    return frozenset(targets)
 
 
 def _import_bundle_module(file_path: Path, *, module_key: str) -> Any:
@@ -347,6 +397,8 @@ class PluginRegistry:
         for record in cls._ensure_loaded():
             if record.state is not PluginState.ACTIVE or record.manifest is None:
                 continue
+            if _revalidate_trust(record) is not TrustState.TRUSTED:
+                continue
             for rel in record.manifest.capabilities.agents:
                 stem = Path(rel).stem
                 out[f"{record.name}/{stem}"] = (record.name, record.bundle_dir / rel)
@@ -368,6 +420,23 @@ class PluginRegistry:
         record = cls.get(plugin_name)
         if record is None or record.state is not PluginState.ACTIVE or record.manifest is None:
             msg = f"plugin {plugin_name!r} is not active (no such plugin, or untrusted/disabled/incompatible)"
+            cls._activation_errors[cache_key] = msg
+            raise PluginActivationError(plugin_name, target, msg)
+
+        if _revalidate_trust(record) is not TrustState.TRUSTED:
+            msg = (
+                f"plugin {plugin_name!r} is no longer trusted (a declared file changed "
+                f"since the cached scan) — re-run `li plugin trust {plugin_name}` or "
+                "`li plugin list` to refresh"
+            )
+            cls._activation_errors[cache_key] = msg
+            raise PluginActivationError(plugin_name, target, msg)
+
+        if target not in _declared_activation_targets(record.manifest):
+            msg = (
+                f"target {target!r} is not declared by plugin {plugin_name!r}'s manifest "
+                "(only tool/provider targets can be activated)"
+            )
             cls._activation_errors[cache_key] = msg
             raise PluginActivationError(plugin_name, target, msg)
 

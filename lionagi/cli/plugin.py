@@ -181,7 +181,11 @@ def _run_trust(name: str, *, assume_yes: bool) -> int:
             print("not trusted.")
             return 1
 
-    trust_plugin(discovered)
+    try:
+        trust_plugin(discovered)
+    except FileNotFoundError as exc:
+        log_error(str(exc))
+        return 1
     PluginRegistry.reset()
     print(f"trusted {name!r}.")
     return 0

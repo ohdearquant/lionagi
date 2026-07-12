@@ -42,8 +42,18 @@ def _sha256_bytes(data: bytes) -> str:
     return hashlib.sha256(data).hexdigest()
 
 
-def _sha256_file(path: Path) -> str:
-    return _sha256_bytes(path.read_bytes())
+def _sha256_file(path: Path) -> str | None:
+    """Hash *path*, or ``None`` if it can't be read (deleted/renamed/permission-denied).
+
+    Callers treat ``None`` as "definitely not the previously-recorded hash" —
+    a missing pinned file must revert a plugin to ``changed``, not crash
+    every caller (`li plugin list`, agent-profile discovery) with an
+    unhandled ``OSError``.
+    """
+    try:
+        return _sha256_bytes(path.read_bytes())
+    except OSError:
+        return None
 
 
 def compute_manifest_hash(discovered: DiscoveredPlugin) -> str:
@@ -58,7 +68,11 @@ def compute_manifest_hash(discovered: DiscoveredPlugin) -> str:
 
 
 def compute_trust_hashes(discovered: DiscoveredPlugin) -> dict[str, Any]:
-    """Return ``{"manifest": <hash>, "targets": {<rel_path>: <hash>, ...}}`` for every declared file."""
+    """Return ``{"manifest": <hash>, "targets": {<rel_path>: <hash-or-None>, ...}}``.
+
+    A target hashes to ``None`` when its file can't be read right now — see
+    ``_sha256_file``. Never raises on a missing file.
+    """
     targets = {rel: _sha256_file(discovered.bundle_dir / rel) for rel in discovered.declared_files}
     return {"manifest": compute_manifest_hash(discovered), "targets": targets}
 
@@ -119,13 +133,24 @@ def trust_plugin(discovered: DiscoveredPlugin) -> dict[str, Any]:
     Returns the disclosure payload that was (or should be) shown to the
     approver — callers render it before calling this, this call just persists
     the resulting hashes.
+
+    Raises ``FileNotFoundError`` if a declared capability file can't be read:
+    trusting is pinning content, so a bundle missing a file it declares can't
+    be trusted rather than silently pinning a placeholder hash for it.
     """
     assert discovered.manifest is not None
+    hashes = compute_trust_hashes(discovered)
+    missing = sorted(rel for rel, h in hashes["targets"].items() if h is None)
+    if missing:
+        raise FileNotFoundError(
+            f"cannot trust plugin {discovered.manifest.name!r}: declared file(s) "
+            f"missing or unreadable: {', '.join(missing)}"
+        )
     settings = read_user_settings()
     trusted = settings.setdefault("trusted_plugins", {})
     if not isinstance(trusted, dict):
         trusted = {}
         settings["trusted_plugins"] = trusted
-    trusted[discovered.manifest.name] = compute_trust_hashes(discovered)
+    trusted[discovered.manifest.name] = hashes
     write_user_settings(settings)
     return build_trust_disclosure(discovered)

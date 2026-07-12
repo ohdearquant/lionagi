@@ -175,13 +175,18 @@ class TestActivateTarget:
         # Cached: same object on second call.
         assert PluginRegistry.activate_target("p1", "tools/t.py:t") is fn
 
-    def test_missing_target_file_raises_named_diagnostic(self, write_plugin):
-        _write_tool_plugin(write_plugin, "p1")
+    def test_declared_file_deleted_after_trust_refuses_activation_as_untrusted(self, write_plugin):
+        """A target that *was* declared and trusted, but whose file is gone by the time
+        anything tries to activate it, is caught by the trust recheck (content-pinned
+        trust can't verify a file that no longer exists) rather than reaching the
+        importer's own bare-file-not-found path."""
+        bundle = _write_tool_plugin(write_plugin, "p1")
         _trust_by_dir_name("p1")
+        (bundle / "tools" / "t.py").unlink()
         PluginRegistry.reset()
 
         with pytest.raises(PluginActivationError) as excinfo:
-            PluginRegistry.activate_target("p1", "tools/missing.py:nope")
+            PluginRegistry.activate_target("p1", "tools/t.py:t")
         assert "p1" in str(excinfo.value)
 
     def test_raising_module_is_reported_once_and_cached(self, write_plugin):
@@ -202,3 +207,57 @@ class TestActivateTarget:
         # never trusted
         with pytest.raises(PluginActivationError):
             PluginRegistry.activate_target("p1", "tools/t.py:t")
+
+    def test_undeclared_target_is_rejected(self, write_plugin):
+        """Only the manifest's own declared tool/provider targets may be activated — an
+        extra file sitting in the bundle, never named by any capability, must not import
+        even though it's inside the trusted bundle directory."""
+        bundle = _write_tool_plugin(write_plugin, "p1")
+        (bundle / "tools" / "extra.py").write_text("def sneaky():\n    return 'nope'\n")
+        _trust_by_dir_name("p1")
+        PluginRegistry.reset()
+
+        with pytest.raises(PluginActivationError, match="not declared"):
+            PluginRegistry.activate_target("p1", "tools/extra.py:sneaky")
+
+    def test_traversal_shaped_target_is_rejected(self, write_plugin):
+        """A target string shaped to escape the bundle is rejected the same way as any
+        other undeclared target — never reaches the importer."""
+        bundle = _write_tool_plugin(write_plugin, "p1")
+        (bundle.parent / "outside.py").write_text("def pwn():\n    return 'escaped'\n")
+        _trust_by_dir_name("p1")
+        PluginRegistry.reset()
+
+        with pytest.raises(PluginActivationError, match="not declared"):
+            PluginRegistry.activate_target("p1", "../outside.py:pwn")
+
+    def test_editing_declared_file_after_first_access_refuses_next_activation(self, write_plugin):
+        """The registry's snapshot is cached for the process — a file edited *after* the
+        first registry access (e.g. an earlier `list_plugins()`/`get()` call) must not
+        let activate_target() keep serving trusted content for it."""
+        bundle = _write_tool_plugin(write_plugin, "p1", tool_body="def t():\n    return 1\n")
+        _trust_by_dir_name("p1")
+        PluginRegistry.reset()
+
+        # An earlier, unrelated registry access populates the process-cached snapshot.
+        assert PluginRegistry.get("p1").state is PluginState.ACTIVE
+
+        (bundle / "tools" / "t.py").write_text("def t():\n    return 999\n")
+
+        with pytest.raises(PluginActivationError, match="no longer trusted"):
+            PluginRegistry.activate_target("p1", "tools/t.py:t")
+
+    def test_editing_agent_profile_after_first_access_removes_it_from_active_files(
+        self, write_plugin
+    ):
+        bundle = _write_tool_plugin(write_plugin, "p1")
+        _trust_by_dir_name("p1")
+        PluginRegistry.reset()
+
+        # Populate the cached snapshot via an unrelated call first.
+        assert PluginRegistry.get("p1").state is PluginState.ACTIVE
+        assert "p1/a" in PluginRegistry.active_agent_profile_files()
+
+        (bundle / "agents" / "a.md").write_text("attacker-controlled instructions\n")
+
+        assert "p1/a" not in PluginRegistry.active_agent_profile_files()

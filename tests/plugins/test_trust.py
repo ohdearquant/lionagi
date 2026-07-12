@@ -6,6 +6,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
+
 from lionagi.plugins.discovery import discover_plugins
 from lionagi.plugins.trust import (
     TrustState,
@@ -114,6 +116,31 @@ capabilities:
     disclosure = build_trust_disclosure(d)
 
     assert disclosure["hooks_external"][0]["argv"] == ["hooks/rate_guard", "--strict", "--limit=5"]
+
+
+def test_deleting_pinned_file_reverts_to_changed_not_a_crash(write_plugin):
+    """A trusted plugin's declared file being deleted/renamed must surface as CHANGED
+    through the normal trust check, not raise — callers (`li plugin list`, agent-profile
+    discovery) call trust_state() without expecting to handle a bare OSError."""
+    d = _discover_one(write_plugin)
+    trust_plugin(d)
+    assert trust_state(d) is TrustState.TRUSTED
+
+    (d.bundle_dir / "tools" / "t.py").unlink()
+    d2 = discover_plugins()[0]
+    assert trust_state(d2) is TrustState.CHANGED
+
+
+def test_trusting_a_bundle_with_a_missing_declared_file_is_rejected(write_plugin):
+    """Trusting pins content — a bundle that declares a file it doesn't actually have
+    can't be trusted; a missing file must fail loudly at trust time, not silently pin
+    a placeholder hash for it."""
+    d = _discover_one(write_plugin)
+    (d.bundle_dir / "tools" / "t.py").unlink()
+
+    with pytest.raises(FileNotFoundError, match="tools/t.py"):
+        trust_plugin(d)
+    assert "web-research" not in read_trusted_plugins()
 
 
 def test_hash_is_stable_across_yaml_formatting_changes(write_plugin):
