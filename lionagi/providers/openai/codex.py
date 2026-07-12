@@ -630,6 +630,27 @@ async def stream_codex_cli(
                 session.total_cost_usd = obj.get("total_cost_usd", obj.get("cost"))
                 session.num_turns = (session.num_turns or 0) + 1
 
+                # Terminal usage/cost/turns -- the only channel run.py reads
+                # provider-reported usage from (persisted onto model_response,
+                # see run.py's "result" chunk handling; mirrors claude_code's
+                # "result" event). turn.completed can fire more than once per
+                # run() call for multi-turn codex sessions; each event's
+                # usage/cost are assumed cumulative-to-date (codex reports a
+                # running total, not a per-turn delta -- num_turns is the only
+                # field this code increments locally), so re-emitting on every
+                # occurrence just keeps the latest (highest) snapshot.
+                result_meta: dict[str, Any] = {}
+                if session.usage:
+                    result_meta["usage"] = session.usage
+                if session.total_cost_usd is not None:
+                    result_meta["total_cost_usd"] = session.total_cost_usd
+                if session.num_turns is not None:
+                    result_meta["num_turns"] = session.num_turns
+                if result_meta:
+                    rsc = StreamChunk(type="result", metadata=result_meta)
+                    session.chunks.append(rsc)
+                    yield rsc
+
             # -- turn.failed / error --
             elif typ in ("turn.failed", "error"):
                 session.is_error = True
@@ -741,6 +762,22 @@ async def stream_codex_cli(
                 session.num_turns = obj.get("num_turns", obj.get("turns"))
                 session.duration_ms = obj.get("duration_ms", obj.get("duration"))
                 session.is_error = obj.get("is_error", obj.get("error") is not None)
+
+                # Legacy terminal event (older CLI versions) -- same seam as
+                # turn.completed above.
+                result_meta: dict[str, Any] = {}
+                if session.usage:
+                    result_meta["usage"] = session.usage
+                if session.total_cost_usd is not None:
+                    result_meta["total_cost_usd"] = session.total_cost_usd
+                if session.num_turns is not None:
+                    result_meta["num_turns"] = session.num_turns
+                if session.duration_ms is not None:
+                    result_meta["duration_ms"] = session.duration_ms
+                if result_meta:
+                    rsc = StreamChunk(type="result", metadata=result_meta)
+                    session.chunks.append(rsc)
+                    yield rsc
 
             elif typ == "done":
                 break

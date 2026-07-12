@@ -722,6 +722,23 @@ async def stream_claude_code_cli(  # noqa: C901
                 session.duration_api_ms = obj.get("duration_api_ms")
                 session.is_error = obj.get("is_error", False)
 
+                # Terminal usage/cost/turns/duration -- the only channel run.py
+                # reads provider-reported usage from (persisted onto
+                # model_response, see run.py's "result" chunk handling).
+                result_meta: dict[str, Any] = {}
+                if session.usage:
+                    result_meta["usage"] = session.usage
+                if session.total_cost_usd is not None:
+                    result_meta["total_cost_usd"] = session.total_cost_usd
+                if session.num_turns is not None:
+                    result_meta["num_turns"] = session.num_turns
+                if session.duration_ms is not None:
+                    result_meta["duration_ms"] = session.duration_ms
+                if result_meta:
+                    rsc = StreamChunk(type="result", metadata=result_meta)
+                    session.chunks.append(rsc)
+                    yield rsc
+
             # ------------------------ DONE -------------------------------------
             elif typ == "done":
                 break

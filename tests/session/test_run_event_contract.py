@@ -67,7 +67,8 @@ def test_run_end_default_usage_fields():
     sig = RunEnd()
     assert sig.input_tokens == 0
     assert sig.output_tokens == 0
-    assert sig.total_cost_usd == 0.0
+    # Unknown, not free -- no provider reported a cost.
+    assert sig.total_cost_usd is None
     assert sig.num_turns == 0
     assert sig.duration_ms == 0.0
 
@@ -89,7 +90,8 @@ def test_collect_branch_usage_empty():
     usage = _collect_branch_usage(branch)
     assert usage["input_tokens"] == 0
     assert usage["output_tokens"] == 0
-    assert usage["total_cost_usd"] == 0.0
+    # Unknown, not free -- no messages, so no provider reported a cost.
+    assert usage["total_cost_usd"] is None
     assert usage["num_turns"] == 0
 
 
@@ -165,7 +167,8 @@ def test_collect_multi_branch_usage_empty():
     usage = _collect_multi_branch_usage([])
     assert usage["input_tokens"] == 0
     assert usage["output_tokens"] == 0
-    assert usage["total_cost_usd"] == 0.0
+    # Unknown, not free -- no branches, so no provider reported a cost.
+    assert usage["total_cost_usd"] is None
     assert usage["num_turns"] == 0
 
 

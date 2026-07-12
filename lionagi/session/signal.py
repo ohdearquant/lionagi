@@ -77,11 +77,16 @@ class RunStart(Signal):
 
 
 class RunEnd(Signal):
-    """Run lifecycle: completed. Usage fields are populated when available."""
+    """Run lifecycle: completed. Usage fields are populated when available.
+
+    total_cost_usd is None (unknown) unless a provider actually reports a
+    dollar cost -- providers that don't (bare API endpoints) must never be
+    recorded as a free (0.0) run.
+    """
 
     input_tokens: int = 0
     output_tokens: int = 0
-    total_cost_usd: float = 0.0
+    total_cost_usd: float | None = None
     num_turns: int = 0
     duration_ms: float = 0.0
 
@@ -262,17 +267,21 @@ def lane_for(signals: Iterable[Signal | Any]) -> NodeLifecycleState:
 
 def _collect_branch_usage(branch: Any) -> dict[str, Any]:
     """Sum provider-reported usage across all AssistantResponse messages on branch.
-    Keys: input_tokens, output_tokens, total_cost_usd, num_turns; all zero when
-    no provider data is available (subscription runs, tests)."""
+    Keys: input_tokens, output_tokens, total_cost_usd, num_turns. input_tokens/
+    output_tokens/num_turns are additive and default to 0 (no usage reported is
+    indistinguishable from zero usage). total_cost_usd defaults to None (unknown)
+    and is only ever set to a float once at least one message actually reports a
+    cost -- most providers (bare API endpoints) never report a dollar cost, and
+    that must read as "unknown", not "free" (subscription runs, tests)."""
     input_tokens = 0
     output_tokens = 0
-    total_cost_usd = 0.0
+    total_cost_usd: float | None = None
     num_turns = 0
 
     try:
         messages = list(branch.msgs.messages)
     except Exception:  # noqa: BLE001
-        return {"input_tokens": 0, "output_tokens": 0, "total_cost_usd": 0.0, "num_turns": 0}
+        return {"input_tokens": 0, "output_tokens": 0, "total_cost_usd": None, "num_turns": 0}
 
     for msg in messages:
         mr = (
@@ -285,7 +294,7 @@ def _collect_branch_usage(branch: Any) -> dict[str, Any]:
         output_tokens += int(usage.get("output_tokens", usage.get("completion_tokens", 0)) or 0)
         cost = mr.get("total_cost_usd") or mr.get("cost")
         if isinstance(cost, (int, float)):
-            total_cost_usd += float(cost)
+            total_cost_usd = (total_cost_usd or 0.0) + float(cost)
         num_turns += int(mr.get("num_turns", 0) or 0)
 
     return {
@@ -300,18 +309,20 @@ def _collect_multi_branch_usage(branches: Iterable[Any]) -> dict[str, Any]:
     """Sum _collect_branch_usage across multiple branches (multi-leg DAG runs).
 
     Same keys as _collect_branch_usage. duration_ms is deliberately excluded —
-    wall-clock across parallel legs isn't simply summable.
+    wall-clock across parallel legs isn't simply summable. total_cost_usd stays
+    None unless at least one branch actually reported a cost.
     """
     input_tokens = 0
     output_tokens = 0
-    total_cost_usd = 0.0
+    total_cost_usd: float | None = None
     num_turns = 0
 
     for branch in branches:
         usage = _collect_branch_usage(branch)
         input_tokens += usage["input_tokens"]
         output_tokens += usage["output_tokens"]
-        total_cost_usd += usage["total_cost_usd"]
+        if usage["total_cost_usd"] is not None:
+            total_cost_usd = (total_cost_usd or 0.0) + usage["total_cost_usd"]
         num_turns += usage["num_turns"]
 
     return {
