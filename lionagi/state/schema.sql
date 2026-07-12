@@ -761,9 +761,9 @@ CREATE INDEX IF NOT EXISTS idx_workflow_defs_updated
 -- task in cli/orchestrate/flow.py's _execute_dag reads unapplied rows
 -- (applied_at IS NULL) and applies them
 -- against the running executor.  Apply/stamp ordering is verb-classed:
--- pause/resume/stop are idempotent (apply, then stamp), message is not
+-- pause/resume are idempotent (apply, then stamp), message is not
 -- (stamp 'applying', then apply, then finalize).  'stop' is schema-reserved
--- for later support; no CLI verb emits it yet.
+-- and rejected by the current poller as unsupported; no CLI verb emits it yet.
 
 CREATE TABLE IF NOT EXISTS session_controls (
   id          TEXT    PRIMARY KEY,         -- uuid4 hex
