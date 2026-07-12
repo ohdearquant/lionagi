@@ -744,6 +744,217 @@ async def test_fire_cancellation_schedule_run_cas_miss_does_not_skip_side_effect
 
 
 # ---------------------------------------------------------------------------
+# Coordination telemetry: terminal-write races must not leak signal counters
+# ---------------------------------------------------------------------------
+
+
+def _lose_invocation_race(entity_type, entity_id, *, new_status, **kwargs):
+    """svc.update_status side_effect: the invocation terminal write always
+    loses its race (as if a concurrent finalizer, e.g. the deadline reaper,
+    already claimed the row); every other entity_type's write succeeds."""
+    return entity_type != "invocation"
+
+
+@pytest.mark.asyncio
+async def test_fire_normal_path_discards_counters_when_invocation_write_loses_race():
+    """The normal completion path mints a ScheduleRunSucceeded signal (whose
+    counters land on the bus) before the invocation's own terminal write
+    happens. If that write loses its race, flush_run_telemetry() is never
+    called to consume the counters -- they must be explicitly discarded
+    instead of sitting in the bus's per-run_id map forever."""
+    from lionagi.studio.scheduler.engine import SchedulerEngine
+
+    svc = _make_svc()
+    svc.update_status = AsyncMock(side_effect=_lose_invocation_race)
+    engine = SchedulerEngine(svc=svc)
+    schedule = _minimal_schedule()
+
+    with (
+        patch(
+            "lionagi.studio.scheduler.subprocess.build_argv",
+            return_value=(["uv", "run", "li", "agent", "ping"], None),
+        ),
+        patch(
+            "lionagi.studio.scheduler.subprocess.spawn_and_wait",
+            new=AsyncMock(return_value=(0, "")),
+        ),
+        patch(
+            "lionagi.studio.scheduler.engine.flush_run_telemetry",
+            new=AsyncMock(),
+        ) as flush_mock,
+    ):
+        await engine._fire(schedule, "run-race-normal", trigger_context={"scheduled": True})
+
+    flush_mock.assert_not_awaited()
+    assert engine._signal_bus.pop_run_counters("run-race-normal") is None
+
+
+@pytest.mark.asyncio
+async def test_fire_invalid_action_discards_counters_when_invocation_write_loses_race():
+    """Same race, on the invalid-schedule-action terminal path (build_argv
+    raising before any process spawns)."""
+    from lionagi.studio.scheduler.engine import SchedulerEngine
+
+    svc = _make_svc()
+    svc.update_status = AsyncMock(side_effect=_lose_invocation_race)
+    engine = SchedulerEngine(svc=svc)
+    schedule = _minimal_schedule()
+
+    with (
+        patch(
+            "lionagi.studio.scheduler.subprocess.build_argv",
+            side_effect=RuntimeError("bad template"),
+        ),
+        patch(
+            "lionagi.studio.scheduler.engine.flush_run_telemetry",
+            new=AsyncMock(),
+        ) as flush_mock,
+    ):
+        await engine._fire(schedule, "run-race-invalid", trigger_context={"scheduled": True})
+
+    flush_mock.assert_not_awaited()
+    assert engine._signal_bus.pop_run_counters("run-race-invalid") is None
+
+
+@pytest.mark.asyncio
+async def test_fire_cancellation_discards_counters_when_invocation_write_loses_race():
+    """Same race, on the CancelledError terminal path."""
+    from lionagi.studio.scheduler.engine import SchedulerEngine
+
+    svc = _make_svc()
+    svc.update_status = AsyncMock(side_effect=_lose_invocation_race)
+    engine = SchedulerEngine(svc=svc)
+    schedule = _minimal_schedule()
+
+    with (
+        patch(
+            "lionagi.studio.scheduler.subprocess.build_argv",
+            return_value=(["uv", "run", "li", "agent", "ping"], None),
+        ),
+        patch(
+            "lionagi.studio.scheduler.subprocess.spawn_and_wait",
+            new=AsyncMock(side_effect=asyncio.CancelledError()),
+        ),
+        patch(
+            "lionagi.studio.scheduler.engine.flush_run_telemetry",
+            new=AsyncMock(),
+        ) as flush_mock,
+    ):
+        with pytest.raises(asyncio.CancelledError):
+            await engine._fire(schedule, "run-race-cancel", trigger_context={"scheduled": True})
+
+    flush_mock.assert_not_awaited()
+    assert engine._signal_bus.pop_run_counters("run-race-cancel") is None
+
+
+@pytest.mark.asyncio
+async def test_fire_exception_path_discards_counters_when_invocation_write_loses_race():
+    """Same race, on the generic-exception terminal path."""
+    from lionagi.studio.scheduler.engine import SchedulerEngine
+
+    svc = _make_svc()
+    svc.update_status = AsyncMock(side_effect=_lose_invocation_race)
+    engine = SchedulerEngine(svc=svc)
+    schedule = _minimal_schedule()
+
+    with (
+        patch(
+            "lionagi.studio.scheduler.subprocess.build_argv",
+            return_value=(["uv", "run", "li", "agent", "ping"], None),
+        ),
+        patch(
+            "lionagi.studio.scheduler.subprocess.spawn_and_wait",
+            new=AsyncMock(side_effect=RuntimeError("boom")),
+        ),
+        patch(
+            "lionagi.studio.scheduler.engine.flush_run_telemetry",
+            new=AsyncMock(),
+        ) as flush_mock,
+    ):
+        await engine._fire(schedule, "run-race-exc", trigger_context={"scheduled": True})
+
+    flush_mock.assert_not_awaited()
+    assert engine._signal_bus.pop_run_counters("run-race-exc") is None
+
+
+@pytest.mark.asyncio
+async def test_fire_telemetry_flush_failure_does_not_alter_run_outcome():
+    """flush_run_telemetry() is best-effort (see
+    scheduler_state.flush_run_telemetry): a failure computing coordination
+    telemetry after the run's own terminal write has already committed must
+    never rewrite that run's recorded outcome, and must never raise back
+    into _fire()."""
+    from lionagi.studio.scheduler.engine import SchedulerEngine
+
+    svc = _make_svc()
+    svc.compute_files_overlap = AsyncMock(side_effect=OSError("disk error"))
+    engine = SchedulerEngine(svc=svc)
+    schedule = _minimal_schedule()
+
+    with (
+        patch(
+            "lionagi.studio.scheduler.subprocess.build_argv",
+            return_value=(["uv", "run", "li", "agent", "ping"], None),
+        ),
+        patch(
+            "lionagi.studio.scheduler.subprocess.spawn_and_wait",
+            new=AsyncMock(return_value=(0, "")),
+        ),
+    ):
+        await engine._fire(schedule, "run-flush-fails", trigger_context={"scheduled": True})
+
+    # Exactly the one update_schedule_run call from the normal completion
+    # path -- no second rewrite from a broad-except handler catching a
+    # telemetry failure that leaked out of flush_run_telemetry().
+    svc.update_schedule_run.assert_awaited_once()
+    _, kwargs = svc.update_schedule_run.await_args
+    assert kwargs["error_detail"] is None
+    # The invocation's own terminal write is untouched by the telemetry
+    # failure too.
+    invocation_terminal_calls = [
+        c
+        for c in svc.update_status.await_args_list
+        if c.args[0] == "invocation" and c.kwargs.get("new_status")
+    ]
+    assert len(invocation_terminal_calls) == 1
+    assert invocation_terminal_calls[0].kwargs["new_status"] == "completed"
+
+
+@pytest.mark.asyncio
+async def test_fire_normal_completion_dispatches_signal_before_flush_pops_counters():
+    """The terminal ScheduleRun* signal must be minted onto the bus BEFORE
+    flush_run_telemetry() pops that run's counters, so a normal completion's
+    persisted telemetry always includes its own terminal signal's emitted
+    count -- not zero because the flush raced ahead of the mint."""
+    from lionagi.studio.scheduler.engine import SchedulerEngine
+
+    svc = _make_svc()
+    engine = SchedulerEngine(svc=svc)
+    schedule = _minimal_schedule()
+
+    with (
+        patch(
+            "lionagi.studio.scheduler.subprocess.build_argv",
+            return_value=(["uv", "run", "li", "agent", "ping"], None),
+        ),
+        patch(
+            "lionagi.studio.scheduler.subprocess.spawn_and_wait",
+            new=AsyncMock(return_value=(0, "")),
+        ),
+    ):
+        await engine._fire(schedule, "run-order", trigger_context={"scheduled": True})
+
+    node_metadata_calls = [
+        call.kwargs["node_metadata"]
+        for call in svc.update_invocation.await_args_list
+        if "node_metadata" in call.kwargs
+    ]
+    assert len(node_metadata_calls) == 1
+    coordination = node_metadata_calls[0]["coordination"]
+    assert coordination["signals"]["emitted"] == {"ScheduleRunSucceeded": 1}
+
+
+# ---------------------------------------------------------------------------
 # SchedulerEngine.fire_now() — delegates through service
 # ---------------------------------------------------------------------------
 

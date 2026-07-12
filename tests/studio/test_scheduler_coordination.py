@@ -17,6 +17,7 @@ Covers:
 
 from __future__ import annotations
 
+import asyncio
 import time
 import uuid
 from unittest.mock import AsyncMock
@@ -315,3 +316,64 @@ async def test_flush_run_telemetry_writes_when_only_overlap_is_nonzero():
     assert telemetry["signals"] == {"emitted": {}, "received": 0, "acted_on": 0}
     assert telemetry["files_overlap"]["count"] == 2
     svc.update_invocation.assert_awaited_once()
+
+
+# ---------------------------------------------------------------------------
+# flush_run_telemetry must be best-effort: I/O failures never propagate
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_flush_run_telemetry_swallows_compute_overlap_failure():
+    """A failure computing files-overlap must not propagate -- the
+    invocation's terminal write it rides on has already committed by the
+    time flush runs."""
+    from lionagi.studio.services.scheduler_state import flush_run_telemetry
+
+    bus = SchedulerSignalBus()
+    await bus.emit(ScheduleRunSucceeded(run_id="run-6", schedule_id="s1", reason_code="ok"))
+
+    svc = _make_svc()
+    svc.compute_files_overlap = AsyncMock(side_effect=OSError("disk error"))
+
+    result = await flush_run_telemetry(svc, bus, run_id="run-6", invocation_id="inv-6")
+
+    assert result is None
+    svc.update_invocation.assert_not_awaited()
+    # Popped regardless of the failure -- best-effort means the counters are
+    # deliberately dropped, not retried.
+    assert bus.pop_run_counters("run-6") is None
+
+
+@pytest.mark.asyncio
+async def test_flush_run_telemetry_swallows_update_invocation_failure():
+    """A failure persisting node_metadata must not propagate either."""
+    from lionagi.studio.services.scheduler_state import flush_run_telemetry
+
+    bus = SchedulerSignalBus()
+    await bus.emit(ScheduleRunSucceeded(run_id="run-7", schedule_id="s1", reason_code="ok"))
+
+    svc = _make_svc()
+    svc.compute_files_overlap = AsyncMock(
+        return_value={"count": 1, "top": [{"path": "/shared.py", "workers": 2}]}
+    )
+    svc.update_invocation = AsyncMock(side_effect=OSError("disk error"))
+
+    result = await flush_run_telemetry(svc, bus, run_id="run-7", invocation_id="inv-7")
+
+    assert result is None
+
+
+@pytest.mark.asyncio
+async def test_flush_run_telemetry_reraises_cancellation():
+    """Cancellation must never be swallowed as a mere telemetry failure."""
+    from lionagi.studio.services.scheduler_state import flush_run_telemetry
+
+    bus = SchedulerSignalBus()
+    await bus.emit(ScheduleRunSucceeded(run_id="run-8", schedule_id="s1", reason_code="ok"))
+
+    svc = _make_svc()
+    svc.compute_files_overlap = AsyncMock(side_effect=asyncio.CancelledError())
+
+    with pytest.raises(asyncio.CancelledError):
+        await flush_run_telemetry(svc, bus, run_id="run-8", invocation_id="inv-8")

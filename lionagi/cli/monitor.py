@@ -582,6 +582,14 @@ def _parse_json_field(value: Any) -> dict[str, Any] | None:
     return None
 
 
+def _as_number(value: Any) -> int | float:
+    """Coerce *value* to a count, treating anything non-numeric as 0 --
+    persisted telemetry is untrusted (hand-edited state.db rows, a future
+    writer with a different shape), and a malformed count must never crash
+    the monitor."""
+    return value if isinstance(value, (int, float)) and not isinstance(value, bool) else 0
+
+
 def _format_coordination_line(telemetry: dict[str, Any]) -> str | None:
     """One-liner rendering of an invocation's coordination telemetry
     (`node_metadata["coordination"]`, written by the scheduler engine's
@@ -589,14 +597,23 @@ def _format_coordination_line(telemetry: dict[str, Any]) -> str | None:
     flush_run_telemetry`). Returns None when everything is zero: both the
     monitor drill-in and the `li monitor run` wait-line only print this when
     non-zero.
+
+    Every nested field is type-checked before use: `telemetry` is read back
+    from persisted state and may not match the shape this module writes
+    (e.g. `signals` or `files_overlap` landing as a list rather than a
+    dict) -- malformed nested values are treated as zero/absent rather than
+    raising `AttributeError`.
     """
-    signals = telemetry.get("signals") or {}
-    emitted = signals.get("emitted") or {}
-    emitted_total = sum(emitted.values()) if isinstance(emitted, dict) else 0
-    received = signals.get("received") or 0
-    acted_on = signals.get("acted_on") or 0
-    overlap = telemetry.get("files_overlap") or {}
-    overlap_count = overlap.get("count") or 0
+    signals = telemetry.get("signals")
+    signals = signals if isinstance(signals, dict) else {}
+    emitted = signals.get("emitted")
+    emitted = emitted if isinstance(emitted, dict) else {}
+    emitted_total = sum(_as_number(v) for v in emitted.values())
+    received = _as_number(signals.get("received"))
+    acted_on = _as_number(signals.get("acted_on"))
+    overlap = telemetry.get("files_overlap")
+    overlap = overlap if isinstance(overlap, dict) else {}
+    overlap_count = _as_number(overlap.get("count"))
     if not (emitted_total or received or acted_on or overlap_count):
         return None
     return (
@@ -627,7 +644,9 @@ async def _detail_invocation(db: Any, inv: dict[str, Any]) -> str:
             lines.append("")
             lines.append(_dim("  -- coordination --"))
             lines.append(f"    {coord_line}")
-            top = (coordination.get("files_overlap") or {}).get("top") or []
+            files_overlap = coordination.get("files_overlap")
+            top = files_overlap.get("top") if isinstance(files_overlap, dict) else None
+            top = top if isinstance(top, list) else []
             for entry in top:
                 if isinstance(entry, dict) and entry.get("path"):
                     lines.append(f"      {entry['path']}  (workers={entry.get('workers', '?')})")

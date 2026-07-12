@@ -361,29 +361,48 @@ async def flush_run_telemetry(
     or the files-read pattern leaves node_metadata untouched, matching the
     "measure-only" surfacing rule (the CLI/monitor summary lines only print
     when non-zero).
+
+    Best-effort: this rides an already-committed terminal write, so a
+    failure computing overlap or persisting node_metadata must never
+    propagate back into the caller and be mistaken for (or alter) that
+    run's actual outcome. Any such failure is logged and swallowed, and the
+    counters already popped above are lost with it rather than retried --
+    telemetry is measure-only, not authoritative state. Cancellation
+    (``asyncio.CancelledError`` and any other backend's cancellation
+    exception) is a ``BaseException``, not an ``Exception``, so it is never
+    caught here and always propagates.
     """
     signals = bus.pop_run_counters(run_id)
-    overlap = await svc.compute_files_overlap(invocation_id, top_n=top_n)
-    if signals is None and not overlap.get("count"):
-        return None
+    try:
+        overlap = await svc.compute_files_overlap(invocation_id, top_n=top_n)
+        if signals is None and not overlap.get("count"):
+            return None
 
-    telemetry = {
-        "signals": signals or {"emitted": {}, "received": 0, "acted_on": 0},
-        "files_overlap": overlap,
-    }
+        telemetry = {
+            "signals": signals or {"emitted": {}, "received": 0, "acted_on": 0},
+            "files_overlap": overlap,
+        }
 
-    invocation = await svc.get_invocation(invocation_id)
-    node_metadata = (invocation or {}).get("node_metadata")
-    if isinstance(node_metadata, str):
-        try:
-            node_metadata = json.loads(node_metadata)
-        except (ValueError, TypeError):
+        invocation = await svc.get_invocation(invocation_id)
+        node_metadata = (invocation or {}).get("node_metadata")
+        if isinstance(node_metadata, str):
+            try:
+                node_metadata = json.loads(node_metadata)
+            except (ValueError, TypeError):
+                node_metadata = {}
+        if not isinstance(node_metadata, dict):
             node_metadata = {}
-    if not isinstance(node_metadata, dict):
-        node_metadata = {}
-    node_metadata["coordination"] = telemetry
-    await svc.update_invocation(invocation_id, node_metadata=node_metadata)
-    return telemetry
+        node_metadata["coordination"] = telemetry
+        await svc.update_invocation(invocation_id, node_metadata=node_metadata)
+        return telemetry
+    except Exception:
+        _log.warning(
+            "Failed to flush coordination telemetry for run %s (invocation %s)",
+            run_id,
+            invocation_id,
+            exc_info=True,
+        )
+        return None
 
 
 # Singleton for production use

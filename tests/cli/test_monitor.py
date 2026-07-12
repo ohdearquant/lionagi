@@ -509,6 +509,31 @@ def test_format_coordination_line_none_when_missing_keys():
     assert _format_coordination_line({}) is None
 
 
+def test_format_coordination_line_malformed_signals_list_does_not_raise():
+    """`signals` persisted as a list (not a dict) must be treated as absent
+    rather than raising AttributeError on `.get()`."""
+    assert _format_coordination_line({"signals": [1]}) is None
+
+
+def test_format_coordination_line_malformed_emitted_and_overlap_do_not_raise():
+    telemetry = {
+        "signals": {"emitted": [1, 2], "received": "not-a-number", "acted_on": None},
+        "files_overlap": [{"path": "/a.py"}],
+    }
+    assert _format_coordination_line(telemetry) is None
+
+
+def test_format_coordination_line_malformed_nested_counts_ignored_alongside_valid_ones():
+    """A malformed `files_overlap` shape must not suppress a legitimate
+    nonzero signal count elsewhere in the same telemetry dict."""
+    telemetry = {
+        "signals": {"emitted": {"ScheduleRunSucceeded": 1}, "received": 1, "acted_on": 1},
+        "files_overlap": "not-a-dict",
+    }
+    line = _format_coordination_line(telemetry)
+    assert line == "emitted=1 received=1 acted_on=1 files_overlap=0"
+
+
 def test_invocation_to_row():
     inv = {
         "id": "inv001abc",
@@ -1142,6 +1167,26 @@ async def test_run_detail_invocation_no_node_metadata_omits_coordination(
         inv_id = await _make_invocation(db, skill="show")
     output = await _run_detail(inv_id)
     assert "coordination" not in output
+
+
+@pytest.mark.asyncio
+async def test_run_detail_invocation_malformed_nested_telemetry_does_not_raise(
+    temp_db_path: Path,
+) -> None:
+    """A `coordination` dict whose nested `signals`/`files_overlap` values
+    do not match the shape this module writes (e.g. hand-edited state.db,
+    or a future writer bug) must render without raising."""
+    coordination = {
+        "signals": [1],
+        "files_overlap": {"count": 1, "top": "not-a-list"},
+    }
+    async with StateDB() as db:
+        inv_id = await _make_invocation(
+            db, skill="scheduled:flow", node_metadata={"coordination": coordination}
+        )
+    output = await _run_detail(inv_id)
+    assert "INVOCATION" in output
+    assert "files_overlap=1" in output
 
 
 @pytest.mark.asyncio

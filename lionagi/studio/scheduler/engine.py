@@ -1420,6 +1420,14 @@ class SchedulerEngine:
                 await flush_run_telemetry(
                     self._svc, self._signal_bus, run_id=run_id, invocation_id=inv_id
                 )
+            else:
+                # Another finalizer already wrote this invocation's terminal
+                # status, so no flush happens here -- but a schedule_run
+                # signal was still minted onto the bus above. Drop its
+                # counters now instead of letting them sit in the bus's
+                # per-run_id map forever (it never gets a second flush call
+                # for this run_id to consume them).
+                self._signal_bus.pop_run_counters(run_id)
             update_fields: dict[str, Any] = {"last_fired_at": now}
             if next_at:
                 update_fields["next_fire_at"] = next_at
@@ -1551,6 +1559,14 @@ class SchedulerEngine:
                 await flush_run_telemetry(
                     self._svc, self._signal_bus, run_id=run_id, invocation_id=inv_id
                 )
+            else:
+                # Another finalizer already wrote this invocation's terminal
+                # status, so no flush happens here -- but a schedule_run
+                # signal was still minted onto the bus above. Drop its
+                # counters now instead of letting them sit in the bus's
+                # per-run_id map forever (it never gets a second flush call
+                # for this run_id to consume them).
+                self._signal_bus.pop_run_counters(run_id)
             await self._check_max_runs(schedule, chain_depth)
 
             if chain_depth < _MAX_CHAIN_DEPTH:
@@ -1639,6 +1655,13 @@ class SchedulerEngine:
                     await flush_run_telemetry(
                         self._svc, self._signal_bus, run_id=run_id, invocation_id=inv_id
                     )
+                else:
+                    # Another finalizer already wrote this invocation's
+                    # terminal status, so no flush happens here -- but a
+                    # schedule_run signal was still minted onto the bus
+                    # above. Drop its counters now instead of letting them
+                    # sit in the bus's per-run_id map forever.
+                    self._signal_bus.pop_run_counters(run_id)
                 await self._check_max_runs(schedule, chain_depth)
             except Exception:
                 _log.exception("Failed to record cancellation for run %s during shutdown", run_id)
@@ -1694,6 +1717,13 @@ class SchedulerEngine:
                 await flush_run_telemetry(
                     self._svc, self._signal_bus, run_id=run_id, invocation_id=inv_id
                 )
+            else:
+                # Another finalizer already wrote this invocation's terminal
+                # status, so no flush happens here -- but a schedule_run
+                # signal was still minted onto the bus above. Drop its
+                # counters now instead of letting them sit in the bus's
+                # per-run_id map forever.
+                self._signal_bus.pop_run_counters(run_id)
             await self._check_max_runs(schedule, chain_depth)
         finally:
             if chain_depth == 0:
