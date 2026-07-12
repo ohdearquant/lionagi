@@ -224,7 +224,8 @@ async def _run_agent(
     # Fail fast: a nonexistent --cwd must never silently spawn into a
     # provider-created directory (or a deep, opaque subprocess failure) —
     # validate before any run is allocated or persistence is set up.
-    validate_cwd_exists(cwd)
+    # Forward the returned tilde-expanded path; providers never expand `~`.
+    cwd = validate_cwd_exists(cwd)
     if resume and continue_last:
         raise ConfigurationError("--resume / -r and --continue-last / -c are mutually exclusive.")
     if preset and (resume or continue_last):

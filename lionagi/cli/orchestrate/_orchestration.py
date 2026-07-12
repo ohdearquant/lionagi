@@ -367,7 +367,8 @@ async def setup_orchestration(
 
     # Fail fast: a nonexistent --cwd must never silently spawn into a
     # provider-created directory — validate before any run is allocated.
-    validate_cwd_exists(cwd)
+    # Forward the returned tilde-expanded path; providers never expand `~`.
+    cwd = validate_cwd_exists(cwd)
 
     cache_cancelled_exc_class()
 

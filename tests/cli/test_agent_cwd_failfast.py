@@ -27,13 +27,27 @@ from lionagi.cli._util import validate_cwd_exists
 
 class TestValidateCwdExists:
     def test_none_is_a_noop(self):
-        validate_cwd_exists(None)  # must not raise
+        assert validate_cwd_exists(None) is None  # must not raise
 
     def test_empty_string_is_a_noop(self):
-        validate_cwd_exists("")  # must not raise
+        assert validate_cwd_exists("") == ""  # must not raise
 
     def test_existing_directory_passes(self, tmp_path):
-        validate_cwd_exists(str(tmp_path))  # must not raise
+        assert validate_cwd_exists(str(tmp_path)) == str(tmp_path)  # must not raise
+
+    def test_tilde_path_to_existing_dir_returns_expanded(self, tmp_path, monkeypatch):
+        """A `--cwd=~/...` value must come back tilde-expanded: validating the
+        expanded path while forwarding the literal would pass validation and
+        then fail deep in the provider layer, which never expands `~`."""
+        monkeypatch.setenv("HOME", str(tmp_path))
+        (tmp_path / "proj").mkdir()
+        assert validate_cwd_exists("~/proj") == str(tmp_path / "proj")
+
+    def test_tilde_path_to_nonexistent_dir_still_raises(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("HOME", str(tmp_path))
+        with pytest.raises(ConfigurationError) as exc_info:
+            validate_cwd_exists("~/does-not-exist-xyz")
+        assert "~/does-not-exist-xyz" in str(exc_info.value)
 
     def test_nonexistent_path_raises_naming_path_and_flag(self, tmp_path):
         bad = str(tmp_path / "does-not-exist-xyz")
@@ -95,10 +109,9 @@ async def test_run_agent_rejects_nonexistent_cwd_before_any_spawn(monkeypatch, t
     assert "--cwd" in msg
 
 
-@pytest.mark.asyncio
-async def test_run_agent_accepts_existing_cwd_and_reaches_spawn(monkeypatch, tmp_path):
-    """Regression guard: a *valid* --cwd must not be rejected — validation
-    only fires for a genuinely missing/non-directory path."""
+def _patch_agent_happy_path(monkeypatch, tmp_path) -> dict:
+    """Stub out everything around _run_agent's spawn so a test can observe
+    exactly what `repo` (the forwarded cwd) reaches Branch.operate."""
     import lionagi.cli.agent as agent_mod
     from lionagi import Branch
     from lionagi.service.manager import iModelManager
@@ -144,6 +157,16 @@ async def test_run_agent_accepts_existing_cwd_and_reaches_spawn(monkeypatch, tmp
         return "ok"
 
     monkeypatch.setattr(Branch, "operate", fake_operate)
+    return spawned
+
+
+@pytest.mark.asyncio
+async def test_run_agent_accepts_existing_cwd_and_reaches_spawn(monkeypatch, tmp_path):
+    """Regression guard: a *valid* --cwd must not be rejected — validation
+    only fires for a genuinely missing/non-directory path."""
+    import lionagi.cli.agent as agent_mod
+
+    spawned = _patch_agent_happy_path(monkeypatch, tmp_path)
 
     _result, _provider, _bid, terminal_status, _sid = await agent_mod._run_agent(
         "codex/model", "do the thing", cwd=str(tmp_path)
@@ -152,6 +175,25 @@ async def test_run_agent_accepts_existing_cwd_and_reaches_spawn(monkeypatch, tmp
     assert terminal_status == "completed"
     assert spawned.get("called") is True
     assert spawned.get("repo") == str(tmp_path)
+
+
+@pytest.mark.asyncio
+async def test_run_agent_forwards_tilde_expanded_cwd_to_spawn(monkeypatch, tmp_path):
+    """A `--cwd=~/...` value must reach the spawn tilde-expanded — the
+    provider layer never expands `~`, so forwarding the literal would fail
+    deep in the subprocess despite passing validation."""
+    import lionagi.cli.agent as agent_mod
+
+    monkeypatch.setenv("HOME", str(tmp_path))
+    (tmp_path / "ws").mkdir()
+    spawned = _patch_agent_happy_path(monkeypatch, tmp_path)
+
+    _result, _provider, _bid, terminal_status, _sid = await agent_mod._run_agent(
+        "codex/model", "do the thing", cwd="~/ws"
+    )
+
+    assert terminal_status == "completed"
+    assert spawned.get("repo") == str(tmp_path / "ws")
 
 
 # ---------------------------------------------------------------------------

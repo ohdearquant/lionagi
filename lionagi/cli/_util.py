@@ -22,7 +22,7 @@ EXIT_CODE_BY_STATUS: dict[str, int] = {
 }
 
 
-def validate_cwd_exists(cwd: str | None, *, flag: str = "--cwd") -> None:
+def validate_cwd_exists(cwd: str | None, *, flag: str = "--cwd") -> str | None:
     """Fail fast when a user-supplied working directory doesn't exist.
 
     Every CLI surface that forwards a ``cwd``/``repo`` value to a CLI-backed
@@ -31,10 +31,15 @@ def validate_cwd_exists(cwd: str | None, *, flag: str = "--cwd") -> None:
     error instead of the provider layer silently creating the directory (or
     the spawn failing deep inside an opaque subprocess). Raises
     ``ConfigurationError`` (a ``ValueError`` subclass) naming both the path
-    and the flag; a caller with no cwd override (``cwd`` falsy) is a no-op.
+    and the flag; a caller with no cwd override (``cwd`` falsy) gets it back
+    unchanged.
+
+    Returns the tilde-expanded path string, and callers must forward THAT:
+    validating ``~/proj`` expanded while forwarding the literal would pass
+    here and then fail deep in the provider layer, which never expands.
     """
     if not cwd:
-        return
+        return cwd
     from lionagi._errors import ConfigurationError
 
     path = Path(cwd).expanduser()
@@ -42,6 +47,7 @@ def validate_cwd_exists(cwd: str | None, *, flag: str = "--cwd") -> None:
         raise ConfigurationError(f"{flag} path does not exist: {cwd!r}")
     if not path.is_dir():
         raise ConfigurationError(f"{flag} path is not a directory: {cwd!r}")
+    return str(path)
 
 
 def classify_exception(exc: BaseException) -> str:
