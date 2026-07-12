@@ -57,12 +57,59 @@ class ActionManager(Manager):
         if callable(tool):
             tool = Tool(func_callable=tool)
         elif isinstance(tool, dict):
+            if len(tool) == 1:
+                (raw_tool_name,) = tool.keys()
+                if isinstance(raw_tool_name, str):
+                    from lionagi.service.connections.mcp_wrapper import (
+                        validate_mcp_tool_admission,
+                    )
+
+                    validate_mcp_tool_admission(raw_tool_name, None, None)
             tool = Tool(mcp_config=tool)
         elif not isinstance(tool, Tool):
             raise TypeError(
                 "Must provide a `Tool` object, a callable function, or an MCP config dict."
             )
+        elif tool.mcp_config is not None:
+            self._validate_prebuilt_mcp_tool_admission(tool)
+
         self.registry[tool.function] = tool
+
+    def _validate_prebuilt_mcp_tool_admission(self, tool: Tool) -> None:
+        from lionagi.service.connections.mcp_wrapper import (
+            is_synthetic_mcp_wrapper_schema,
+            validate_mcp_tool_admission,
+        )
+
+        mcp_tool_name, mcp_server_config = next(iter(tool.mcp_config.items()))
+        actual_name = mcp_server_config.get("_original_tool_name")
+        if not isinstance(actual_name, str) or not actual_name:
+            actual_name = mcp_tool_name
+
+        input_schema = None
+        description = None
+        advertised_name = None
+        if isinstance(tool.tool_schema, dict):
+            function = tool.tool_schema.get("function")
+            if isinstance(function, dict):
+                advertised_name = function.get("name")
+                input_schema = function.get("parameters")
+                description = function.get("description")
+
+        # A schema/description that is just the auto-generated `**kwargs`
+        # wrapper carries no remote-server information; treat it as absent
+        # metadata so strong identities fail closed instead of being
+        # laundered through their own synthetic schema, and so ordinary
+        # names are not falsely denied by the wrapper's generic docstring.
+        if is_synthetic_mcp_wrapper_schema(
+            mcp_tool_name, advertised_name, input_schema, description
+        ):
+            input_schema = None
+            description = None
+
+        validate_mcp_tool_admission(actual_name, input_schema, description)
+        if isinstance(advertised_name, str) and advertised_name != actual_name:
+            validate_mcp_tool_admission(advertised_name, input_schema, description)
 
     def register_tools(self, tools: list[FuncTool] | FuncTool, update: bool = False) -> None:
         tools_list = tools if isinstance(tools, list) else [tools]
@@ -166,7 +213,19 @@ class ActionManager(Manager):
                     request_options[f"{server_name}_{k}"] = request_options.pop(k)
 
         if tool_names:
+            from lionagi.service.connections.mcp_wrapper import (
+                validate_mcp_tool_admission,
+            )
+
             for tool_name in tool_names:
+                validate_mcp_tool_admission(tool_name, None, None)
+                logger.warning(
+                    f"MCP tool {tool_name!r} registered via the metadata-free "
+                    "tool_names= shortcut with no descriptor (schema/description) "
+                    "evidence; the generic-executor admission rule could not "
+                    "inspect its shape and admitted it by name alone."
+                )
+
                 config_with_metadata = dict(server_config)
                 config_with_metadata["_original_tool_name"] = tool_name
 
@@ -180,40 +239,42 @@ class ActionManager(Manager):
                 self.register_tool(tool, update=update)
                 registered_tools.append(tool_name)
         else:
-            from lionagi.service.connections.mcp_wrapper import MCPConnectionPool
+            from lionagi.service.connections.mcp_wrapper import (
+                MCPConnectionPool,
+                validate_mcp_tool_admission,
+            )
 
             client = await MCPConnectionPool.get_client(server_config, security=security)
             tools = await client.list_tools()
 
             for tool in tools:
-                config_with_metadata = dict(server_config)
-                config_with_metadata["_original_tool_name"] = tool.name
+                tool_name = tool.name
+                input_schema = getattr(tool, "inputSchema", None)
+                description = getattr(tool, "description", None)
+                validate_mcp_tool_admission(tool_name, input_schema, description)
 
-                mcp_config = {tool.name: config_with_metadata}
+                config_with_metadata = dict(server_config)
+                config_with_metadata["_original_tool_name"] = tool_name
+
+                mcp_config = {tool_name: config_with_metadata}
 
                 tool_request_options = None
-                if request_options and tool.name in request_options:
-                    tool_request_options = request_options[tool.name]
+                if request_options and tool_name in request_options:
+                    tool_request_options = request_options[tool_name]
 
                 tool_schema = None
                 try:
-                    if (
-                        hasattr(tool, "inputSchema")
-                        and tool.inputSchema is not None
-                        and isinstance(tool.inputSchema, dict)
-                    ):
+                    if isinstance(input_schema, dict):
                         tool_schema = {
                             "type": "function",
                             "function": {
-                                "name": tool.name,
-                                "description": (
-                                    tool.description if hasattr(tool, "description") else None
-                                ),
-                                "parameters": tool.inputSchema,
+                                "name": tool_name,
+                                "description": description,
+                                "parameters": input_schema,
                             },
                         }
                 except Exception as schema_error:
-                    logging.warning(f"Could not extract schema for {tool.name}: {schema_error}")
+                    logging.warning(f"Could not extract schema for {tool_name}: {schema_error}")
                     tool_schema = None
 
                 try:
@@ -223,9 +284,11 @@ class ActionManager(Manager):
                         tool_schema=tool_schema,
                     )
                     self.register_tool(tool_obj, update=update)
-                    registered_tools.append(tool.name)
+                    registered_tools.append(tool_name)
+                except PermissionError:
+                    raise
                 except Exception as e:
-                    logging.warning(f"Failed to register tool {tool.name}: {e}")
+                    logging.warning(f"Failed to register tool {tool_name}: {e}")
 
         return registered_tools
 
@@ -261,14 +324,8 @@ class ActionManager(Manager):
                 )
                 all_tools[server_name] = tools
                 logger.info("Registered %d tools from server '%s'", len(tools), server_name)
-            except PermissionError:
-                logger.error(
-                    "MCP server '%s' was denied by the active MCPSecurityConfig. "
-                    "Pass mcp_security=MCPSecurityConfig(allow_commands=True, "
-                    "allow_urls=True) (or an allowlist) to load_mcp_config to "
-                    "authorize it.",
-                    server_name,
-                )
+            except PermissionError as exc:
+                logger.error("MCP server %r registration denied: %s", server_name, exc)
                 raise
             except Exception as e:
                 logger.warning("Failed to register server '%s': %s", server_name, e)
@@ -316,14 +373,8 @@ async def load_mcp_tools(
                 security=mcp_security,
             )
             logger.info("Loaded %d tools from %s", len(tools_registered), server_name)
-        except PermissionError:
-            logger.error(
-                "MCP server '%s' was denied by the active MCPSecurityConfig. "
-                "Pass mcp_security=MCPSecurityConfig(allow_commands=True, "
-                "allow_urls=True) (or an allowlist) to load_mcp_tools to "
-                "authorize it.",
-                server_name,
-            )
+        except PermissionError as exc:
+            logger.error("MCP server %r registration denied: %s", server_name, exc)
             raise
         except Exception as e:
             logger.warning("Failed to load server '%s': %s", server_name, e)

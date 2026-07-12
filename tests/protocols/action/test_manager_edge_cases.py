@@ -251,6 +251,178 @@ class TestActionManagerMCPMethodStubs:
             assert result["test_server"] == ["tool1", "tool2"]
 
 
+class TestActionManagerMCPAdmission:
+    """Registration-boundary coverage for the generic-executor admission rule:
+    discovered descriptors, the metadata-free `tool_names=` shortcut, raw MCP
+    config dicts, and prebuilt `Tool` objects must all be checked before a
+    tool enters the registry."""
+
+    @pytest.mark.asyncio
+    async def test_register_mcp_server_denies_discovered_shell_executor(self):
+        manager = ActionManager()
+
+        with patch("lionagi.service.connections.mcp_wrapper.MCPConnectionPool") as mock_pool:
+            mock_client = AsyncMock()
+            mock_tool = Mock()
+            mock_tool.name = "bash"
+            mock_tool.description = None
+            mock_tool.inputSchema = {
+                "type": "object",
+                "properties": {"script": {"type": "string"}},
+            }
+            mock_client.list_tools = AsyncMock(return_value=[mock_tool])
+            mock_pool.get_client = AsyncMock(return_value=mock_client)
+
+            with pytest.raises(PermissionError):
+                await manager.register_mcp_server({"command": "python", "args": ["-m", "srv"]})
+
+        assert "bash" not in manager.registry
+
+    @pytest.mark.asyncio
+    async def test_register_mcp_server_admits_structured_run_tests(self):
+        manager = ActionManager()
+
+        with patch("lionagi.service.connections.mcp_wrapper.MCPConnectionPool") as mock_pool:
+            mock_client = AsyncMock()
+            mock_tool = Mock()
+            mock_tool.name = "run_tests"
+            mock_tool.description = "Runs the project test suite"
+            mock_tool.inputSchema = {
+                "type": "object",
+                "properties": {
+                    "suite": {"type": "string", "enum": ["unit", "integration"]},
+                    "test_path": {"type": "string"},
+                    "markers": {"type": "array", "items": {"type": "string"}},
+                    "coverage": {"type": "boolean"},
+                },
+            }
+            mock_client.list_tools = AsyncMock(return_value=[mock_tool])
+            mock_pool.get_client = AsyncMock(return_value=mock_client)
+
+            result = await manager.register_mcp_server({"command": "python", "args": ["-m", "srv"]})
+
+        assert result == ["run_tests"]
+        assert "run_tests" in manager.registry
+
+    @pytest.mark.asyncio
+    async def test_register_mcp_server_denial_error_is_actionable(self):
+        manager = ActionManager()
+
+        with patch("lionagi.service.connections.mcp_wrapper.MCPConnectionPool") as mock_pool:
+            mock_client = AsyncMock()
+            mock_tool = Mock()
+            mock_tool.name = "spawn_process"
+            mock_tool.description = None
+            mock_tool.inputSchema = {
+                "type": "object",
+                "properties": {
+                    "program": {"type": "string"},
+                    "argv": {"type": "array", "items": {"type": "string"}},
+                },
+            }
+            mock_client.list_tools = AsyncMock(return_value=[mock_tool])
+            mock_pool.get_client = AsyncMock(return_value=mock_client)
+
+            with pytest.raises(PermissionError) as exc_info:
+                await manager.register_mcp_server({"command": "python"})
+
+        message = str(exc_info.value)
+        assert "spawn_process" in message
+        assert "opt-out" in message
+
+    @pytest.mark.asyncio
+    async def test_register_mcp_server_tool_names_denies_executor_name(self):
+        manager = ActionManager()
+
+        with pytest.raises(PermissionError):
+            await manager.register_mcp_server(
+                {"command": "python", "args": ["-m", "srv"]},
+                tool_names=["run_command"],
+            )
+
+        assert "run_command" not in manager.registry
+
+    @pytest.mark.asyncio
+    async def test_register_mcp_server_tool_names_admits_non_executor_name(self):
+        manager = ActionManager()
+
+        result = await manager.register_mcp_server(
+            {"command": "python", "args": ["-m", "srv"]},
+            tool_names=["run_tests"],
+        )
+
+        assert result == ["run_tests"]
+        assert "run_tests" in manager.registry
+
+    def test_register_tool_denies_raw_dict_shell_executor(self):
+        manager = ActionManager()
+        mcp_config = {"run_command": {"command": "python", "args": ["-m", "test_server"]}}
+
+        with pytest.raises(PermissionError):
+            manager.register_tool(mcp_config)
+
+        assert "run_command" not in manager.registry
+
+    @pytest.mark.parametrize("tool_name", ["exec", "bash"])
+    def test_register_tool_denies_prebuilt_tool_shell_executor(self, tool_name):
+        """A directly constructed `Tool` gets an auto-generated `**kwargs`
+        wrapper schema with no real remote metadata; that synthetic schema
+        must not launder a strong executor identity past admission."""
+        manager = ActionManager()
+        tool = Tool(mcp_config={tool_name: {"command": "python"}})
+
+        with pytest.raises(PermissionError) as exc_info:
+            manager.register_tool(tool)
+
+        assert tool_name in str(exc_info.value)
+        assert tool_name not in manager.registry
+
+    def test_register_tool_admits_prebuilt_tool_with_rich_bounded_descriptor(self):
+        """A prebuilt `Tool` carrying a genuine, bounded remote descriptor
+        (not the synthetic wrapper shape) remains admitted."""
+        manager = ActionManager()
+        tool = Tool(
+            mcp_config={"exec": {"command": "python"}},
+            tool_schema={
+                "type": "function",
+                "function": {
+                    "name": "exec",
+                    "description": "Restart or check status of a managed process",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "operation": {
+                                "type": "string",
+                                "enum": ["status", "restart"],
+                            }
+                        },
+                    },
+                },
+            },
+        )
+
+        manager.register_tool(tool)
+
+        assert "exec" in manager.registry
+
+    @pytest.mark.asyncio
+    async def test_register_mcp_server_tool_names_admits_ordinary_name_containing_strong_phrase(
+        self,
+    ):
+        """`tool_names=["format_run_command"]` must not be falsely denied by
+        the auto-generated wrapper's docstring ('MCP tool: format_run_command')
+        colliding with the 'run command' description phrase."""
+        manager = ActionManager()
+
+        result = await manager.register_mcp_server(
+            {"command": "python", "args": ["-m", "srv"]},
+            tool_names=["format_run_command"],
+        )
+
+        assert result == ["format_run_command"]
+        assert "format_run_command" in manager.registry
+
+
 class TestLoadMCPToolsFunction:
     @pytest.mark.asyncio
     async def test_load_mcp_tools_no_servers_error(self):

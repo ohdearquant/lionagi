@@ -10,6 +10,7 @@ from lionagi.service.connections.mcp_wrapper import (
     MCPConnectionPool,
     MCPSecurityConfig,
     create_mcp_tool,
+    validate_mcp_tool_admission,
 )
 
 
@@ -399,3 +400,249 @@ class TestCreateMCPTool:
             result = await tool()
 
             assert result == {"custom": "data"}
+
+
+class TestValidateMcpToolAdmission:
+    """Pure classifier cases: representative tool name / schema / description
+    combinations that must be denied or admitted by the generic-executor
+    admission rule."""
+
+    DENY_CASES = [
+        pytest.param(
+            "run_tests",
+            {"type": "object", "properties": {"command": {"type": "string"}}},
+            None,
+            "unbounded-command-input",
+            id="command-only-field-benign-name",
+        ),
+        pytest.param(
+            "maintenance",
+            {
+                "type": "object",
+                "properties": {
+                    "command": {"type": "string"},
+                    "cwd": {"type": "string"},
+                    "timeout": {"type": "integer"},
+                },
+            },
+            None,
+            "unbounded-command-input",
+            id="command-field-with-auxiliary-modifiers",
+        ),
+        pytest.param(
+            "spawn_process",
+            {
+                "type": "object",
+                "properties": {
+                    "program": {"type": "string"},
+                    "argv": {"type": "array", "items": {"type": "string"}},
+                },
+            },
+            None,
+            "unbounded-process-input",
+            id="program-plus-argv",
+        ),
+        pytest.param(
+            "bash",
+            {"type": "object", "properties": {"script": {"type": "string"}}},
+            None,
+            "unbounded-script-payload",
+            id="strong-name-with-script-payload",
+        ),
+        pytest.param(
+            "maintenance",
+            {"type": "object", "properties": {"input": {"type": "string"}}},
+            "executes arbitrary shell commands",
+            "unbounded-script-payload",
+            id="payload-field-corroborated-by-description",
+        ),
+        pytest.param(
+            "maintenance",
+            {"type": "object", "properties": {"payload": {"type": "string"}}},
+            "run a command",
+            "executor-description-with-broad-input",
+            id="broad-field-corroborated-by-description",
+        ),
+        pytest.param(
+            "run_command",
+            None,
+            None,
+            "executor-identity-with-insufficient-schema",
+            id="strong-name-metadata-free",
+        ),
+        pytest.param(
+            "exec",
+            None,
+            None,
+            "executor-identity-with-insufficient-schema",
+            id="strong-name-explicit-registration-no-descriptor",
+        ),
+        pytest.param(
+            "run-command",
+            None,
+            None,
+            "executor-identity-with-insufficient-schema",
+            id="hyphen-normalizes-to-strong-name",
+        ),
+        pytest.param(
+            "runCommand",
+            None,
+            None,
+            "executor-identity-with-insufficient-schema",
+            id="camel-case-normalizes-to-strong-name",
+        ),
+        pytest.param(
+            "maintenance",
+            {
+                "type": "object",
+                "properties": {
+                    "command": {"type": "string"},
+                    "label": {"type": "string"},
+                },
+            },
+            "Runs a maintenance task",
+            "unbounded-command-input",
+            id="unrelated-extra-field-does-not-neutralize-command-key",
+        ),
+        pytest.param(
+            "exec",
+            {"type": "object", "properties": {"payload": {"type": "string"}}},
+            None,
+            "executor-identity-with-insufficient-schema",
+            id="strong-name-with-uncategorized-free-form-property",
+        ),
+        pytest.param(
+            "run_command",
+            {"type": "object", "properties": {"command": True}},
+            None,
+            "unbounded-command-input",
+            id="boolean-true-schema-accepts-any-value",
+        ),
+        pytest.param(
+            "run_command",
+            {"type": "object", "properties": {"command": {"type": ["string", "null"]}}},
+            None,
+            "unbounded-command-input",
+            id="nullable-type-union-still-accepts-string",
+        ),
+        pytest.param(
+            "maintenance",
+            {"type": "object", "properties": {"payload": {"type": "string"}}},
+            "Runs OS commands supplied by the caller",
+            "executor-description-with-broad-input",
+            id="plural-inflection-of-description-phrase",
+        ),
+        pytest.param(
+            "maintenance",
+            {
+                "type": ["object", "null"],
+                "properties": {"command": {"type": "string"}},
+            },
+            None,
+            "unbounded-command-input",
+            id="nullable-object-top-level-type-array-still-inspected",
+        ),
+    ]
+
+    ADMIT_CASES = [
+        pytest.param(
+            "run_tests",
+            {
+                "type": "object",
+                "properties": {
+                    "suite": {"type": "string", "enum": ["unit", "integration"]},
+                    "test_path": {"type": "string"},
+                    "markers": {"type": "array", "items": {"type": "string"}},
+                    "coverage": {"type": "boolean"},
+                },
+            },
+            None,
+            id="structured-run-tests-is-not-a-shell-executor",
+        ),
+        pytest.param(
+            "search",
+            {"type": "object", "properties": {"query": {"type": "string"}}},
+            None,
+            id="ordinary-single-string-search",
+        ),
+        pytest.param(
+            "execute_query",
+            {
+                "type": "object",
+                "properties": {
+                    "database_id": {"type": "string"},
+                    "query": {"type": "string"},
+                },
+            },
+            None,
+            id="execute-query-name-is-not-strong-name",
+        ),
+        pytest.param(
+            "command_status",
+            {"type": "object", "properties": {"job_id": {"type": "string"}}},
+            None,
+            id="command-status-is-observation-not-executor",
+        ),
+        pytest.param(
+            "shellfish_lookup",
+            {"type": "object", "properties": {"query": {"type": "string"}}},
+            None,
+            id="substring-shell-does-not-match",
+        ),
+        pytest.param(
+            "format_command",
+            {
+                "type": "object",
+                "properties": {"parts": {"type": "array", "items": {"type": "string"}}},
+            },
+            "formats a shell command",
+            id="formatter-phrase-is-not-a-description-signal",
+        ),
+        pytest.param(
+            "build_target",
+            {
+                "type": "object",
+                "properties": {"command": {"type": "string", "enum": ["build", "clean", "test"]}},
+            },
+            None,
+            id="enum-bounded-command-field",
+        ),
+        pytest.param(
+            "exec",
+            {
+                "type": "object",
+                "properties": {"operation": {"type": "string", "enum": ["status", "restart"]}},
+            },
+            None,
+            id="strong-name-with-rich-bounded-schema-overrides-heuristic",
+        ),
+        pytest.param(
+            "mocked_tool",
+            None,
+            None,
+            id="metadata-free-non-strong-name-compatibility",
+        ),
+        pytest.param(
+            "search",
+            {
+                "type": ["object", "null"],
+                "properties": {"query": {"type": "string"}},
+            },
+            None,
+            id="nullable-object-type-array-with-harmless-property-still-admitted",
+        ),
+    ]
+
+    @pytest.mark.parametrize("tool_name, input_schema, description, reason", DENY_CASES)
+    def test_denies_generic_executor_shape(self, tool_name, input_schema, description, reason):
+        with pytest.raises(PermissionError) as exc_info:
+            validate_mcp_tool_admission(tool_name, input_schema, description)
+
+        message = str(exc_info.value)
+        assert tool_name in message
+        assert reason in message
+        assert "opt-out" in message
+
+    @pytest.mark.parametrize("tool_name, input_schema, description", ADMIT_CASES)
+    def test_admits_ordinary_or_bounded_tool(self, tool_name, input_schema, description):
+        assert validate_mcp_tool_admission(tool_name, input_schema, description) is None

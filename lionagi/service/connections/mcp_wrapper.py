@@ -6,10 +6,12 @@ from __future__ import annotations
 import json
 import logging
 import os
+import re
 import threading
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal, TypeAlias
 from urllib.parse import urlparse
 
 from lionagi.ln._hash import compute_hash
@@ -50,6 +52,8 @@ __all__ = (
     "MCPSecurityConfig",
     "MCPConnectionPool",
     "create_mcp_tool",
+    "is_synthetic_mcp_wrapper_schema",
+    "validate_mcp_tool_admission",
 )
 
 
@@ -64,6 +68,352 @@ class MCPSecurityConfig:
     env_denylist_patterns: frozenset[str] = field(default_factory=lambda: _SENSITIVE_ENV_PATTERNS)
     filter_sensitive_env: bool = True
     max_connections_per_server: int = 5
+
+
+# --- Generic-executor admission rule -----------------------------------
+#
+# Registration-time admission control for MCP tool descriptors. This is
+# independent of MCPSecurityConfig (transport authorization) and of
+# PermissionPolicy (invocation-time, keyed by tool name): it rejects a
+# caller-shaped generic command/process/script executor before it ever
+# reaches the tool registry, regardless of transport settings.
+
+AdmissionReason: TypeAlias = Literal[
+    "unbounded-command-input",
+    "unbounded-process-input",
+    "unbounded-script-payload",
+    "executor-description-with-broad-input",
+    "executor-identity-with-insufficient-schema",
+]
+
+_STRONG_EXECUTOR_NAMES = frozenset(
+    {
+        "bash",
+        "sh",
+        "zsh",
+        "shell",
+        "cmd",
+        "powershell",
+        "pwsh",
+        "terminal",
+        "exec",
+        "exec_command",
+        "execute_command",
+        "run_command",
+        "run_shell",
+        "shell_exec",
+        "command_exec",
+        "spawn_process",
+        "run_process",
+    }
+)
+
+_EXECUTOR_DESCRIPTION_PHRASES = (
+    "arbitrary command",
+    "arbitrary commands",
+    "arbitrary shell",
+    "execute command",
+    "execute commands",
+    "executes command",
+    "executes commands",
+    "execute a command",
+    "execute os command",
+    "execute os commands",
+    "executes os commands",
+    "execute an os command",
+    "execute system command",
+    "execute system commands",
+    "executes system commands",
+    "execute a system command",
+    "execute shell command",
+    "execute shell commands",
+    "executes shell commands",
+    "execute a shell command",
+    "execute terminal command",
+    "execute terminal commands",
+    "executes terminal commands",
+    "execute a terminal command",
+    "run command",
+    "run commands",
+    "runs command",
+    "runs commands",
+    "run a command",
+    "run os command",
+    "run os commands",
+    "runs os commands",
+    "run an os command",
+    "run system command",
+    "run system commands",
+    "runs system commands",
+    "run a system command",
+    "run shell command",
+    "run shell commands",
+    "runs shell commands",
+    "run a shell command",
+    "run terminal command",
+    "run terminal commands",
+    "runs terminal commands",
+    "run a terminal command",
+    "run shell",
+    "run a shell",
+    "execute script",
+    "execute scripts",
+    "executes scripts",
+    "execute a script",
+    "spawn process",
+    "spawn processes",
+    "spawns processes",
+    "spawn a process",
+    "shell command executor",
+    "shell command runner",
+    "command line executor",
+    "command line runner",
+)
+
+_COMMAND_KEYS = frozenset({"command", "cmd", "command_line", "shell_command"})
+_PROGRAM_KEYS = frozenset({"program", "executable", "binary"})
+_ARGUMENT_KEYS = frozenset({"args", "argv"})
+_PAYLOAD_KEYS = frozenset({"script", "code", "input", "text"})
+_SELECTOR_KEYS = frozenset({"shell", "interpreter"})
+_AUXILIARY_KEYS = frozenset(
+    {
+        "cwd",
+        "working_directory",
+        "working_dir",
+        "env",
+        "environment",
+        "stdin",
+        "timeout",
+        "timeout_seconds",
+        "shell",
+        "interpreter",
+        "user",
+    }
+)
+_CATEGORIZED_KEYS = _COMMAND_KEYS | _PROGRAM_KEYS | _ARGUMENT_KEYS | _PAYLOAD_KEYS | _SELECTOR_KEYS
+
+_CAMEL_BOUNDARY_LOWER_UPPER = re.compile(r"(?<=[a-z0-9])(?=[A-Z])")
+_CAMEL_BOUNDARY_UPPER_RUN = re.compile(r"(?<=[A-Z])(?=[A-Z][a-z])")
+_NON_ALNUM_RUN = re.compile(r"[^a-zA-Z0-9]+")
+_REPEATED_UNDERSCORE = re.compile(r"_+")
+_NON_ALPHANUM_RUN = re.compile(r"[^a-z0-9]+")
+
+
+def _normalize_mcp_identifier(name: object) -> str:
+    """Case-fold a tool/property name to `_`-joined tokens, splitting camelCase first."""
+    if not isinstance(name, str):
+        return ""
+    split = _CAMEL_BOUNDARY_UPPER_RUN.sub("_", _CAMEL_BOUNDARY_LOWER_UPPER.sub("_", name))
+    folded = split.casefold()
+    replaced = _NON_ALNUM_RUN.sub("_", folded)
+    return _REPEATED_UNDERSCORE.sub("_", replaced).strip("_")
+
+
+def _normalize_mcp_description(description: object) -> str:
+    """Case-fold a description to single-space-joined tokens for phrase matching."""
+    if not isinstance(description, str):
+        return ""
+    folded = description.casefold()
+    return _NON_ALPHANUM_RUN.sub(" ", folded).strip()
+
+
+def _has_strong_executor_name(tool_name: object) -> bool:
+    return _normalize_mcp_identifier(tool_name) in _STRONG_EXECUTOR_NAMES
+
+
+def _has_executor_description_signal(description: object) -> bool:
+    normalized = _normalize_mcp_description(description)
+    if not normalized:
+        return False
+    padded = f" {normalized} "
+    return any(f" {phrase} " in padded for phrase in _EXECUTOR_DESCRIPTION_PHRASES)
+
+
+def _schema_is_insufficient(input_schema: object) -> bool:
+    if input_schema is None or not isinstance(input_schema, Mapping):
+        return True
+    top_type = input_schema.get("type")
+    # `type` may be a Draft 2020-12 type array (e.g. `["object", "null"]`);
+    # such a schema is an object schema whenever "object" is one of its
+    # allowed types, and its properties must still be inspected. Only a
+    # top-level type that excludes "object" entirely makes the schema
+    # insufficient.
+    if top_type is not None and not _schema_type_includes(top_type, "object"):
+        return True
+    if "properties" in input_schema and not isinstance(input_schema["properties"], Mapping):
+        return True
+    if "properties" not in input_schema and any(
+        k in input_schema for k in ("$ref", "oneOf", "anyOf", "allOf")
+    ):
+        return True
+    properties = input_schema.get("properties")
+    props = properties if isinstance(properties, Mapping) else {}
+    if not props:
+        return input_schema.get("additionalProperties") is not False
+    return False
+
+
+def _property_is_bounded(prop_schema: object) -> bool:
+    if not isinstance(prop_schema, Mapping):
+        return False
+    if "enum" in prop_schema or "const" in prop_schema:
+        return True
+    if _schema_type_includes(prop_schema.get("type"), "array"):
+        items = prop_schema.get("items")
+        if isinstance(items, Mapping) and ("enum" in items or "const" in items):
+            return True
+    return False
+
+
+def _schema_type_includes(type_value: object, target: str) -> bool:
+    """True when a JSON Schema `type` (string or Draft 2020-12 type array) allows `target`."""
+    if isinstance(type_value, list):
+        return target in type_value
+    return type_value == target
+
+
+def _property_is_free_form(prop_schema: object, is_categorized_key: bool) -> bool:
+    # JSON Schema boolean `true` matches any value, so it is at least as
+    # permissive as an untyped free-form string; `false` matches nothing.
+    if prop_schema is True:
+        return True
+    if prop_schema is False or not isinstance(prop_schema, Mapping):
+        return False
+    if _property_is_bounded(prop_schema):
+        return False
+    prop_type = prop_schema.get("type")
+    if _schema_type_includes(prop_type, "string"):
+        return True
+    if _schema_type_includes(prop_type, "array"):
+        items = prop_schema.get("items")
+        return isinstance(items, Mapping) and _schema_type_includes(items.get("type"), "string")
+    if prop_type is None and is_categorized_key:
+        return True
+    return False
+
+
+def _classify_generic_executor(
+    tool_name: str,
+    input_schema: object | None,
+    description: str | None,
+) -> AdmissionReason | None:
+    is_strong_name = _has_strong_executor_name(tool_name)
+    is_executor_description = _has_executor_description_signal(description)
+    schema_insufficient = _schema_is_insufficient(input_schema)
+
+    properties: Mapping[str, Any] = {}
+    if not schema_insufficient and isinstance(input_schema, Mapping):
+        raw_properties = input_schema.get("properties")
+        if isinstance(raw_properties, Mapping):
+            properties = raw_properties
+
+    free_form_command_keys: set[str] = set()
+    free_form_program_keys: set[str] = set()
+    free_form_argument_keys: set[str] = set()
+    free_form_payload_keys: set[str] = set()
+    non_auxiliary_free_form_keys: set[str] = set()
+    selector_key_present = False
+
+    for raw_key, prop_schema in properties.items():
+        norm_key = _normalize_mcp_identifier(raw_key)
+        if norm_key in _SELECTOR_KEYS:
+            selector_key_present = True
+
+        if not _property_is_free_form(prop_schema, norm_key in _CATEGORIZED_KEYS):
+            continue
+
+        if norm_key in _COMMAND_KEYS:
+            free_form_command_keys.add(norm_key)
+        elif norm_key in _PROGRAM_KEYS:
+            free_form_program_keys.add(norm_key)
+        elif norm_key in _ARGUMENT_KEYS:
+            free_form_argument_keys.add(norm_key)
+        elif norm_key in _PAYLOAD_KEYS:
+            free_form_payload_keys.add(norm_key)
+        if norm_key not in _AUXILIARY_KEYS:
+            non_auxiliary_free_form_keys.add(norm_key)
+
+    has_free_form_command = bool(free_form_command_keys)
+    s_process = bool(free_form_program_keys) and bool(free_form_argument_keys)
+    s_payload = bool(free_form_payload_keys) and (
+        selector_key_present or is_strong_name or is_executor_description
+    )
+    s_broad = bool(non_auxiliary_free_form_keys)
+
+    # An unbounded command-shaped field is dangerous on its own; unrelated
+    # extra properties (benign or not) do not make it safe, and no name or
+    # description corroboration is required to deny it.
+    if has_free_form_command:
+        return "unbounded-command-input"
+    if s_process:
+        return "unbounded-process-input"
+    if s_payload:
+        return "unbounded-script-payload"
+    if is_executor_description and s_broad:
+        return "executor-description-with-broad-input"
+    # A strong executor identity must be affirmatively demonstrated safe
+    # (empty/no schema, or every property bounded via enum/const); any
+    # remaining free-form property -- even one not in a recognized
+    # command/process/payload key set -- leaves the identity uncorroborated.
+    if is_strong_name and (schema_insufficient or non_auxiliary_free_form_keys):
+        return "executor-identity-with-insufficient-schema"
+    return None
+
+
+# `create_mcp_tool()` wraps every MCP tool in `async def mcp_callable(**kwargs)`.
+# When a `Tool` is built without an explicit `tool_schema` (e.g. a caller
+# constructs `Tool(mcp_config={"exec": {...}})` directly rather than going
+# through server discovery), `function_to_schema()` reflects that wrapper
+# into this exact deterministic shape. It carries no information from the
+# remote server -- it is a fixed artifact of the wrapper's own signature and
+# docstring -- and must not be treated as remote descriptor metadata by the
+# admission rule.
+_SYNTHETIC_MCP_WRAPPER_PARAMETERS = {
+    "type": "object",
+    "properties": {"kwargs": {"type": "string", "description": None}},
+    "required": ["kwargs"],
+}
+
+
+def is_synthetic_mcp_wrapper_schema(
+    mcp_tool_name: str,
+    advertised_name: object,
+    input_schema: object,
+    description: object,
+) -> bool:
+    """True when a prebuilt `Tool`'s schema is the auto-generated `**kwargs` wrapper.
+
+    `mcp_tool_name` is the key under which the tool was registered in
+    `Tool.mcp_config` -- the identity `create_mcp_tool()` used to name and
+    document the wrapper callable.
+    """
+    return (
+        advertised_name == mcp_tool_name
+        and description == f"MCP tool: {mcp_tool_name}"
+        and input_schema == _SYNTHETIC_MCP_WRAPPER_PARAMETERS
+    )
+
+
+def validate_mcp_tool_admission(
+    tool_name: str,
+    input_schema: object | None,
+    description: str | None,
+) -> None:
+    """Raise PermissionError when an MCP descriptor exposes a generic executor.
+
+    Pure and synchronous: does not read MCPSecurityConfig, environment
+    variables, files, pool state, or acquire a client. Registration-time
+    admission control only; it does not change transport authorization or
+    invocation-time permissions.
+    """
+    reason = _classify_generic_executor(tool_name, input_schema, description)
+    if reason is None:
+        return
+    raise PermissionError(
+        f"MCP tool {tool_name!r} was not registered: generic executor surface "
+        f"detected [{reason}]. Expose a structured, bounded operation instead; "
+        "this admission rule has no configuration opt-out."
+    )
 
 
 def _filter_env(env: dict[str, str], config: MCPSecurityConfig) -> dict[str, str]:
