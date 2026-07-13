@@ -151,12 +151,41 @@ class ActionManager(Manager):
             args = action_request.arguments
 
         tool = self.registry.get(func, None)
-        if not isinstance(tool, Tool):
+        if isinstance(tool, Tool):
+            self._warn_if_plugin_tool_shadowed(func)
+        else:
             tool = self._resolve_plugin_tool(func)
         if not isinstance(tool, Tool):
             raise ValueError(f"Function {func} is not registered.")
 
         return FunctionCalling(func_tool=tool, arguments=args)
+
+    def _warn_if_plugin_tool_shadowed(self, name: str) -> None:
+        """ADR-0088 D6: a plugin tool must never silently replace a name
+        already present in this manager's registry. Log a named diagnostic
+        when an active plugin also declares *name* -- the already-registered
+        tool wins and the plugin declaration is rejected."""
+        from lionagi.plugins.registry import (
+            PluginRegistry,
+            PluginToolCollisionError,
+        )
+
+        if not PluginRegistry.list_plugins():
+            return
+        try:
+            resolved = PluginRegistry.resolve_tool_target(name)
+        except PluginToolCollisionError:
+            # >1 plugin also declares this name; still shadowed by the
+            # already-registered tool -- nothing further to report here.
+            return
+        if resolved is not None:
+            logger.warning(
+                "plugin %r declares tool %r, which is already registered; "
+                "the registered tool wins and this plugin declaration is "
+                "rejected (ADR-0088 D6)",
+                resolved.plugin_name,
+                name,
+            )
 
     def _resolve_plugin_tool(self, name: str) -> Tool | None:
         """ADR-0088 D3: on a registry miss, resolve *name* against the plugin

@@ -269,10 +269,10 @@ class TestLiveRescanWithoutReset:
 
 
 class TestLocalRegistrationTakesPriority:
-    def test_locally_registered_tool_never_consults_plugins(self, write_plugin):
-        """A registry hit short-circuits before the plugin registry is even
-        asked — a same-named plugin (which would otherwise resolve fine on
-        its own) never even enters the picture."""
+    def test_locally_registered_tool_wins_over_a_colliding_plugin(self, write_plugin):
+        """A registry hit still wins over a same-named plugin declaration --
+        the plugin registry is consulted only to emit a named collision
+        diagnostic (ADR-0088 D6), never to override the registered tool."""
 
         def greet():
             return "local"
@@ -286,3 +286,70 @@ class TestLocalRegistrationTakesPriority:
 
         result = manager.match_tool({"function": "greet", "arguments": {}})
         assert result.func_tool.func_callable is greet
+
+
+class TestBuiltinToolCollisionDiagnostic:
+    """ADR-0088 D6: a plugin tool must never silently replace a name already
+    present in the manager's registry -- the registered tool wins, and the
+    plugin's declaration is rejected with a diagnostic naming which plugin
+    and which tool name lost."""
+
+    def test_shadow_is_logged_naming_plugin_and_tool(self, write_plugin, caplog):
+        import logging
+
+        def greet():
+            return "local"
+
+        manager = ActionManager()
+        manager.register_tool(greet)
+
+        _write_tool_plugin(write_plugin, "p1", name="greeter", tool_name="greet")
+        _trust("p1")
+        PluginRegistry.reset()
+
+        with caplog.at_level(logging.WARNING, logger="lionagi.protocols.action.manager"):
+            result = manager.match_tool({"function": "greet", "arguments": {}})
+
+        # The registered tool still wins...
+        assert result.func_tool.func_callable is greet
+        # ...but the collision was surfaced, naming the plugin and the tool.
+        assert "greeter" in caplog.text
+        assert "greet" in caplog.text
+
+    def test_no_diagnostic_when_no_plugin_declares_the_same_name(self, write_plugin, caplog):
+        """A non-colliding local tool call must not spuriously warn."""
+        import logging
+
+        def unrelated():
+            return "local"
+
+        manager = ActionManager()
+        manager.register_tool(unrelated)
+
+        _write_tool_plugin(write_plugin, "p1", name="greeter", tool_name="greet")
+        _trust("p1")
+        PluginRegistry.reset()
+
+        with caplog.at_level(logging.WARNING, logger="lionagi.protocols.action.manager"):
+            result = manager.match_tool({"function": "unrelated", "arguments": {}})
+
+        assert result.func_tool.func_callable is unrelated
+        assert caplog.text == ""
+
+    def test_no_diagnostic_when_no_plugins_are_installed(self, write_plugin, caplog):
+        """The common case (no plugins at all) must not pay for or log a
+        plugin-collision check on every registered-tool call."""
+        import logging
+
+        def greet():
+            return "local"
+
+        manager = ActionManager()
+        manager.register_tool(greet)
+        PluginRegistry.reset()
+
+        with caplog.at_level(logging.WARNING, logger="lionagi.protocols.action.manager"):
+            result = manager.match_tool({"function": "greet", "arguments": {}})
+
+        assert result.func_tool.func_callable is greet
+        assert caplog.text == ""
