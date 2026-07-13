@@ -824,6 +824,90 @@ async def test_finalize_branch_defaults_ended_at_to_now(db: StateDB):
     assert row["ended_at"] >= before
 
 
+@pytest.mark.parametrize(
+    "existing_status",
+    ["completed", "completed_empty", "failed", "timed_out", "aborted", "cancelled"],
+)
+async def test_finalize_branch_skips_every_terminal_status(db: StateDB, existing_status: str):
+    """Every value in the session terminal-status vocabulary is immutable on a
+    branch row, not just 'completed'/'failed' — a branch already at
+    'cancelled', 'timed_out', 'aborted', or 'completed_empty' must survive a
+    later run-level finalize carrying a different terminal status exactly
+    like 'completed'/'failed' already did."""
+    branch = await _make_branch(db, status=existing_status)
+    await db.update_branch(branch["id"], ended_at=555.0)
+
+    updated = await db.finalize_branch(branch["id"], status="completed", ended_at=999.0)
+
+    assert updated is False
+    row = await db.get_branch(branch["id"])
+    assert row["status"] == existing_status
+    assert row["ended_at"] == 555.0
+
+
+@pytest.mark.parametrize(
+    "terminal_status",
+    ["completed", "completed_empty", "failed", "timed_out", "aborted", "cancelled"],
+)
+async def test_finalize_branch_stamps_every_terminal_status_from_null(
+    db: StateDB, terminal_status: str
+):
+    """The full session terminal-status vocabulary (not just completed/failed)
+    is a legitimate finalize target from a fresh (NULL-status) row."""
+    branch = await _make_branch(db)
+
+    updated = await db.finalize_branch(branch["id"], status=terminal_status, ended_at=42.0)
+
+    assert updated is True
+    row = await db.get_branch(branch["id"])
+    assert row["status"] == terminal_status
+    assert row["ended_at"] == 42.0
+
+
+async def test_finalize_branch_rejects_running_payload(db: StateDB):
+    """'running' is not a terminal outcome -- BRANCH_END must never be able to
+    stamp a branch 'ended' with a non-terminal status, even against a fresh
+    (NULL-status) row that would otherwise pass the existing-row guard."""
+    branch = await _make_branch(db)
+
+    updated = await db.finalize_branch(branch["id"], status="running", ended_at=42.0)
+
+    assert updated is False
+    row = await db.get_branch(branch["id"])
+    assert row["status"] is None
+    assert row["ended_at"] is None
+
+
+async def test_finalize_branch_rejects_running_payload_against_running_row(db: StateDB):
+    """Same rejection when the existing row is itself 'running' (the state a
+    running payload would otherwise cleanly match against)."""
+    branch = await _make_branch(db, status="running")
+
+    updated = await db.finalize_branch(branch["id"], status="running", ended_at=42.0)
+
+    assert updated is False
+    row = await db.get_branch(branch["id"])
+    assert row["status"] == "running"
+    assert row["ended_at"] is None
+
+
+async def test_finalize_branch_repeated_call_does_not_flap_terminal_status(db: StateDB):
+    """A repeated (or concurrent-race-losing) finalization attempt carrying a
+    DIFFERENT terminal status than the one that already landed must not flap
+    either status or ended_at — the first genuine terminal write wins."""
+    branch = await _make_branch(db)
+
+    first = await db.finalize_branch(branch["id"], status="cancelled", ended_at=100.0)
+    assert first is True
+
+    second = await db.finalize_branch(branch["id"], status="completed", ended_at=200.0)
+    assert second is False
+
+    row = await db.get_branch(branch["id"])
+    assert row["status"] == "cancelled"
+    assert row["ended_at"] == 100.0
+
+
 # ── Shows ─────────────────────────────────────────────────────────────────────
 
 

@@ -1022,8 +1022,29 @@ async def test_stop_close_failure_logs_warning_and_clears_context(
 async def test_stop_persists_cancelled_status_with_dag_metadata(
     temp_db_path: Path,
 ):
-    env = _minimal_env()
+    """'cancelled' must land on both the session row AND every DAG leg's
+    branch row -- not just 'completed'/'failed', which finalize_branch()'s
+    guard used to special-case."""
+    from lionagi.protocols.messages.manager import MessageManager
+
+    orc_branch = Branch(name="orchestrator")
+    env = _minimal_env(orc_branch=orc_branch)
     await start_live_persist(env)
+    orc_hook = env._live_persist["hooks"][0][1]
+    await orc_hook(
+        MessageManager.create_instruction(
+            instruction="plan", sender="u", recipient=str(orc_branch.id)
+        )
+    )
+
+    worker = Branch(name="worker-1")
+    env.session.include_branches(worker)
+    _register_branch_hook(env._live_persist, worker)
+    worker_hook = env._live_persist["hooks"][-1][1]
+    await worker_hook(
+        MessageManager.create_instruction(instruction="do", sender="u", recipient=str(worker.id))
+    )
+
     ctx = env._live_persist
     env._finalize_extras = dag_extras()
 
@@ -1031,10 +1052,17 @@ async def test_stop_persists_cancelled_status_with_dag_metadata(
 
     async with StateDB() as db:
         s = await db.get_session(ctx["session_id"])
+        orc_row = await db.get_branch(str(orc_branch.id))
+        worker_row = await db.get_branch(str(worker.id))
 
     assert s["status"] == "cancelled"
     assert_dag_and_identity(s["node_metadata"])
     assert s["ended_at"] is not None
+
+    assert orc_row["status"] == "cancelled"
+    assert orc_row["ended_at"] is not None
+    assert worker_row["status"] == "cancelled"
+    assert worker_row["ended_at"] is not None
 
 
 # ── ADR-0064: artifact contract snapshot and verification ─────────────────────

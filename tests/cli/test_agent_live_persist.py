@@ -1409,6 +1409,58 @@ async def test_teardown_suppresses_failed_when_linked_engine_session_running(
     assert s["node_metadata"]["linked_engine_session_id"] == session_db_id(engine_uid)
 
 
+async def test_teardown_leaves_branch_untouched_when_suppressed_to_running(
+    temp_db_path: Path,
+):
+    """BRANCH_END must never fire for the phantom-'failed'-suppression case:
+    when the linked engine session is still running, teardown's final_status
+    resolves to 'running' (non-terminal), so the branch row — like the
+    session row above — must be left exactly as create_branch() left it, not
+    stamped with an ended_at from a status that isn't actually final."""
+    from lionagi.providers._provider_errors import ProviderError
+    from lionagi.state.claude_mirror import mirror_session
+
+    engine_uid = "aaaaaaaa-bbbb-cccc-dddd-111111111111"
+    async with StateDB() as db:
+        await mirror_session(
+            db,
+            session_uid=engine_uid,
+            events=[
+                {
+                    "type": "assistant",
+                    "uuid": "e1",
+                    "timestamp": "2026-07-05T00:00:00.000Z",
+                    "message": {
+                        "role": "assistant",
+                        "content": [{"type": "text", "text": "still working"}],
+                    },
+                }
+            ],
+            tool_names={},
+            status="running",
+        )
+
+    branch = Branch(name="b1")
+    ctx = await _setup_live_persist(branch, agent_name="implementer")
+    assert ctx is not None
+
+    async with StateDB() as db:
+        before = await db.get_branch(str(branch.id))
+    assert before["status"] is None
+    assert before["ended_at"] is None
+
+    exc = ProviderError("abandoned stream reader")
+    final_status = await _teardown_live_persist(
+        ctx, status="failed", exception=exc, engine_session_uid=engine_uid
+    )
+    assert final_status == "running"
+
+    async with StateDB() as db:
+        after = await db.get_branch(str(branch.id))
+    assert after["status"] is None
+    assert after["ended_at"] is None
+
+
 async def test_teardown_suppresses_failed_when_linked_engine_session_completed(
     temp_db_path: Path,
 ):

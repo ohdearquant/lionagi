@@ -729,14 +729,27 @@ async def teardown_persist(
             # signal (queued-but-never-started, or still "running" when the
             # DAG itself raised) -- persist_branch_end()/finalize_branch()'s
             # own guard skips any branch a per-op writer already finalized.
-            _end_at = time.time()
-            for _b in [_branch] if _branch is not None else _hook_branches:
-                await session_obj.hooks.emit(
-                    HookPoint.BRANCH_END,
-                    branch_id=str(_b.id),
-                    status=final_status,
-                    ended_at=_end_at,
-                )
+            #
+            # final_status is only ever a genuine terminal outcome
+            # (SESSION_TERMINAL_STATUSES) EXCEPT for one case: the
+            # linked-engine reconciliation above suppresses a phantom
+            # "failed" back to "running" when the real engine session is
+            # still alive -- this teardown's own view of the branch is not
+            # actually done. Never emit BRANCH_END for that case; a branch
+            # must never be stamped "ended" with a non-terminal status.
+            # finalize_branch() also rejects a non-terminal status outright,
+            # so this is belt-and-suspenders, not the only guard.
+            from lionagi.state.db import SESSION_TERMINAL_STATUSES
+
+            if final_status in SESSION_TERMINAL_STATUSES:
+                _end_at = time.time()
+                for _b in [_branch] if _branch is not None else _hook_branches:
+                    await session_obj.hooks.emit(
+                        HookPoint.BRANCH_END,
+                        branch_id=str(_b.id),
+                        status=final_status,
+                        ended_at=_end_at,
+                    )
 
             await session_obj.hooks.emit(
                 HookPoint.SESSION_END,
