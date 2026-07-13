@@ -267,6 +267,40 @@ async def _stream_with_liveness(
             return
 
 
+# Fields inside a "result" chunk's metadata that CLI providers may emit as a
+# per-turn delta rather than a running total (see codex.py's turn.completed
+# handler). Every provider that only ever emits one "result" chunk per run()
+# call (claude_code, gemini_code) reports these as the final total, which sums
+# correctly here too since there is nothing else to add it to.
+_RESULT_META_DELTA_KEYS = ("total_cost_usd", "num_turns")
+
+
+def _accumulate_result_meta(result_meta: dict, metadata: dict) -> None:
+    """Merge a "result" chunk's metadata into the in-progress accumulator.
+
+    Numeric usage/cost/turn fields are summed (codex emits marginal deltas
+    across multiple turn.completed events within one flush window); every
+    other field (e.g. duration_ms, a point-in-time snapshot rather than a
+    delta) is overwritten with the latest value.
+    """
+    for key, value in metadata.items():
+        if key == "usage" and isinstance(value, dict):
+            usage = result_meta.setdefault("usage", {})
+            for uk, uv in value.items():
+                if isinstance(uv, (int, float)) and not isinstance(uv, bool):
+                    usage[uk] = usage.get(uk, 0) + uv
+                else:
+                    usage[uk] = uv
+        elif (
+            key in _RESULT_META_DELTA_KEYS
+            and isinstance(value, (int, float))
+            and not isinstance(value, bool)
+        ):
+            result_meta[key] = result_meta.get(key, 0) + value
+        else:
+            result_meta[key] = value
+
+
 async def run(
     branch: Branch,
     instruction: JsonValue | Instruction,
@@ -526,7 +560,7 @@ async def run(
 
                         case "result":
                             if chunk.metadata:
-                                result_meta.update(chunk.metadata)
+                                _accumulate_result_meta(result_meta, chunk.metadata)
 
                         case "error":
                             # A CLI provider marks a resumed-session end-of-stream by

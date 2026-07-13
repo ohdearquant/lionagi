@@ -279,3 +279,80 @@ async def test_end_to_end_run_does_not_double_count_across_multiple_turns():
     usage = _collect_branch_usage(branch)
     assert usage["input_tokens"] == 30
     assert usage["output_tokens"] == 15
+
+
+@pytest.mark.asyncio
+async def test_end_to_end_run_sums_result_chunks_within_a_single_flush_window():
+    """Two turn.completed events with NO tool call (and thus no intervening
+    flush) between them land in the SAME result_meta accumulation window
+    inside run.py. Each event already carries its own marginal delta (per
+    codex.py's turn.completed handler); run.py must SUM those deltas into
+    result_meta rather than dict.update()-replacing them, or the first
+    turn's contribution is silently discarded when the second turn's
+    "usage"/"num_turns" keys overwrite it wholesale."""
+    import types
+    from unittest.mock import AsyncMock
+
+    from lionagi.operations.run.run import RunParam, run
+    from lionagi.service.imodel import iModel
+    from lionagi.session.branch import Branch
+    from lionagi.session.signal import _collect_branch_usage
+
+    events = [
+        {"type": "thread.started", "thread_id": "codex-thread-no-intervening-tool"},
+        {"type": "item.completed", "item": {"type": "agent_message", "text": "turn one"}},
+        {"type": "turn.completed", "usage": {"input_tokens": 10, "output_tokens": 5}},
+        {"type": "item.completed", "item": {"type": "agent_message", "text": "turn two"}},
+        {"type": "turn.completed", "usage": {"input_tokens": 20, "output_tokens": 8}},
+        {"type": "done"},
+    ]
+    chunks = await _chunks_from_events(events)
+
+    # Sanity: codex.py already emits marginal (not cumulative) deltas per
+    # event -- {10,5} then {10,3} (20-10, 8-5) -- confirming this test
+    # exercises run.py's accumulation, not codex.py's delta computation.
+    result_chunks = [c for c in chunks if c.type == "result"]
+    assert len(result_chunks) == 2
+    assert result_chunks[0].metadata["usage"] == {"input_tokens": 10, "output_tokens": 5}
+    assert result_chunks[1].metadata["usage"] == {"input_tokens": 10, "output_tokens": 3}
+
+    m = iModel(provider="openai", model="gpt-5.5-codex", api_key="test_key")
+    endpoint_ns = types.SimpleNamespace(
+        is_cli=True,
+        session_id=None,
+        to_dict=lambda: {"type": "fake_cli"},
+    )
+    m.endpoint = endpoint_ns
+    m.streaming_process_func = None
+
+    async def create_event(**kw):
+        return object()
+
+    m.create_event = create_event
+    m.executor = types.SimpleNamespace(append=AsyncMock(), config={})
+
+    async def stream(api_call=None):
+        for chunk in chunks:
+            yield chunk
+
+    m.stream = stream
+
+    branch = Branch()
+    branch.chat_model = m
+
+    async for _ in run(branch, "hi", RunParam()):
+        pass
+
+    # No tool call fired between the two turn.completed events, so both
+    # deltas land on the SAME (only) flushed AssistantResponse.
+    assistant_messages_with_usage = [
+        msg
+        for msg in branch.msgs.messages
+        if isinstance(msg.metadata.get("model_response"), dict) and msg.metadata["model_response"]
+    ]
+    assert len(assistant_messages_with_usage) == 1
+
+    usage = _collect_branch_usage(branch)
+    assert usage["input_tokens"] == 20
+    assert usage["output_tokens"] == 8
+    assert assistant_messages_with_usage[0].metadata["model_response"]["num_turns"] == 2
