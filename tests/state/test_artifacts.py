@@ -123,6 +123,11 @@ async def test_insert_artifact_rejects_dotdot_file_path(db: StateDB):
         await db.insert_artifact(kind="x", name="y", content={}, file_path="../../etc/passwd")
 
 
+async def test_insert_artifact_rejects_nul_byte_file_path(db: StateDB):
+    with pytest.raises(ValueError, match="NUL"):
+        await db.insert_artifact(kind="x", name="y", content={}, file_path="outputs/bad\x00path")
+
+
 async def test_insert_artifact_accepts_safe_relative_file_path(db: StateDB):
     art_id = await db.insert_artifact(
         kind="x", name="y", content={}, file_path="outputs/report.pdf"

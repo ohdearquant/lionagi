@@ -137,6 +137,11 @@ async def acreate_path(
     random_hash_digits: int = 0,
     timeout: float | None = None,
 ) -> AsyncPath:
+    """Async create_path: same validation, same return contract.
+
+    Returns a fully resolved absolute path even when *directory* is relative;
+    callers that need a cwd-relative representation must derive it themselves.
+    """
     from .concurrency import move_on_after
 
     async def _impl() -> AsyncPath:
@@ -451,6 +456,9 @@ def create_path(
     (see _build_safe_path) — a filename with `..`/absolute components, or a
     directory reached only through a symlink escape, is rejected here just as
     it is in the async constructor.
+
+    Returns a fully resolved absolute path even when *directory* is relative;
+    callers that need a cwd-relative representation must derive it themselves.
     """
     full_path = _build_safe_path(
         StdPath(directory),

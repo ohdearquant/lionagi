@@ -251,3 +251,25 @@ class TestCreatePathTraversalContainment:
 
         with pytest.raises(ValueError, match="escapes base directory"):
             create_path(directory=base, filename="link.txt", file_exist_ok=True)
+
+
+class TestReturnRepresentation:
+    """The shared builder returns a fully resolved absolute path from both
+    constructors, even for a relative directory argument. Previously each
+    constructor returned ``directory / filename`` in the caller's own
+    representation; this pins the new contract as intentional."""
+
+    def test_create_path_relative_directory_returns_resolved_absolute(self, tmp_path, monkeypatch):
+        monkeypatch.chdir(tmp_path)
+        result = create_path(directory="relbase", filename="file.txt")
+        assert result.is_absolute()
+        assert result == (tmp_path / "relbase" / "file.txt").resolve()
+
+    @pytest.mark.anyio
+    async def test_acreate_path_relative_directory_returns_resolved_absolute(
+        self, tmp_path, monkeypatch
+    ):
+        monkeypatch.chdir(tmp_path)
+        result = await acreate_path(directory="relbase", filename="file.txt")
+        assert Path(str(result)).is_absolute()
+        assert Path(str(result)) == (tmp_path / "relbase" / "file.txt").resolve()
