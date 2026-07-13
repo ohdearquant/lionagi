@@ -235,12 +235,7 @@ async def test_run_error_chunk_raises_and_restores_streaming_processor():
 
 
 async def test_run_preserves_primary_exception_when_aclose_raises_cancelled_error():
-    """The CLI close chain (ndjson_from_cli -> aterminate_process_group ->
-    asyncio.wait_for) can raise asyncio.CancelledError, a BaseException a
-    plain `except Exception` does not catch. Left unguarded, that would
-    escape run()'s cleanup finally and REPLACE the real "error" chunk
-    RuntimeError that was already propagating -- the caller would see a
-    misleading CancelledError instead of the actual provider failure."""
+    """The CLI close chain can raise asyncio.CancelledError, a BaseException a plain `except Exception` doesn't catch -- left unguarded it would escape run()'s cleanup finally and replace the real propagating error with a misleading CancelledError."""
     import asyncio
 
     async def stream(api_call=None):
@@ -261,11 +256,7 @@ async def test_run_preserves_primary_exception_when_aclose_raises_cancelled_erro
 
 
 async def test_run_caller_abandonment_closes_stream_without_raising():
-    """A consumer that stops iterating early (explicit aclose() after
-    consuming into the middle of the stream) triggers GeneratorExit through
-    run()'s own async generator; the finally block's stream_gen.aclose() must
-    complete cleanly (no leaked exception, no traceback) and the underlying
-    CLI stream must be closed."""
+    """A consumer that stops iterating early (explicit aclose() mid-stream) triggers GeneratorExit through run()'s own async generator; the finally block's stream_gen.aclose() must complete cleanly and the underlying CLI stream must be closed."""
     closed = False
 
     async def stream(api_call=None):
@@ -360,12 +351,7 @@ async def test_run_stream_persist_snapshot_dir_default_falls_back_to_persist_dir
 
 
 async def test_run_stream_persist_snapshot_survives_mid_stream_cancellation(tmp_path):
-    """A branch checkpoint exists and is loadable even if the turn is killed
-    before the model produces a single chunk (e.g. SIGTERM mid-stream on a
-    long-running CLI turn). The snapshot is written before streaming starts,
-    not only on clean completion, so `find_branch` + `Branch.from_dict`
-    can resume a branch whose first turn never finished.
-    """
+    """A branch checkpoint exists and is loadable even if the turn is killed before the model produces a single chunk -- the snapshot is written before streaming starts, not only on clean completion, so a branch whose first turn never finished can still be resumed."""
     import anyio as _anyio
 
     branches_dir = tmp_path / "branches"
@@ -437,14 +423,7 @@ async def test_run_stream_persist_snapshot_survives_mid_stream_cancellation(tmp_
 
 
 async def test_write_branch_snapshot_torn_write_keeps_prior_snapshot(tmp_path, monkeypatch):
-    """A kill landing mid-write must never corrupt an existing snapshot.
-
-    The write is staged through a sibling .tmp file, so a failure while the
-    bytes are going out tears only the staging file — the target keeps the
-    previous complete, parseable snapshot. Under a direct open('w') write the
-    target itself would be truncated/torn, so this test pins the staging
-    behavior: it fails if the helper ever writes the target in place again.
-    """
+    """A kill landing mid-write must never corrupt an existing snapshot: the write stages through a sibling .tmp file, so a failure mid-write tears only the staging file and the target keeps its previous complete snapshot -- fails if the helper ever writes the target in place."""
     import anyio as _anyio
 
     branch = Branch()
@@ -491,11 +470,7 @@ async def test_write_branch_snapshot_torn_write_keeps_prior_snapshot(tmp_path, m
 
 
 async def test_write_branch_snapshot_failed_replace_keeps_prior_snapshot(tmp_path, monkeypatch):
-    """If the final rename fails, the target must be untouched — pinning that
-    the helper publishes via os.replace rather than writing the target
-    directly (a direct write would have already clobbered it by this point,
-    and os.replace would never be reached at all).
-    """
+    """If the final rename fails, the target must be untouched, pinning that the helper publishes via os.replace rather than writing the target directly."""
     import os as _os
 
     branch = Branch()
@@ -865,12 +840,7 @@ async def test_imodel_stream_propagates_cancellation():
 
 
 def _make_hanging_cli_model(create_event_calls: list, streams_first_output_early: bool = True):
-    """A CLI iModel whose stream() never yields anything — simulates a worker
-    subprocess that dies at/near spawn and never produces a first chunk.
-
-    ``streams_first_output_early`` mirrors the endpoint capability flag that
-    gates run.py's config-default watchdog; defaults True (claude_code/codex-
-    style early streamer) since that's what most of these fakes stand in for."""
+    """A CLI iModel whose stream() never yields anything, simulating a worker subprocess that dies at/near spawn; streams_first_output_early defaults True (claude_code/codex-style early streamer) since that's what most of these fakes stand in for."""
     import anyio
 
     m = iModel(provider="openai", model="gpt-4.1-mini", api_key="test_key")
@@ -934,10 +904,7 @@ def _make_retry_recovers_cli_model(create_event_calls: list):
 
 
 def _make_buffered_delay_cli_model(create_event_calls: list, delay: float):
-    """A CLI iModel that stands in for a buffered transport (e.g. gemini_code):
-    it does not declare ``streams_first_output_early``, and its stream() sleeps
-    ``delay`` before yielding its one and only chunk — indistinguishable from a
-    dead worker to a naive first-chunk watchdog until the delay elapses."""
+    """A CLI iModel standing in for a buffered transport (e.g. gemini_code): it doesn't declare streams_first_output_early, and its stream() sleeps `delay` before its one chunk -- indistinguishable from a dead worker until the delay elapses."""
     import anyio
 
     m = iModel(provider="openai", model="gpt-4.1-mini", api_key="test_key")
@@ -1025,10 +992,7 @@ async def test_run_liveness_watchdog_disabled_by_zero():
 
 
 async def test_run_liveness_watchdog_uses_configured_default_when_absent(monkeypatch):
-    """When the caller doesn't pass liveness_timeout, run() falls back to
-    lionagi.config.settings.LIONAGI_WORKER_LIVENESS_TIMEOUT (monkeypatched
-    here to a small value so the test stays fast) — for an endpoint that
-    declares streams_first_output_early (the default of this fake)."""
+    """When the caller omits liveness_timeout, run() falls back to LIONAGI_WORKER_LIVENESS_TIMEOUT (monkeypatched small here) for an endpoint that declares streams_first_output_early."""
     import lionagi.config as config_module
     from lionagi.providers._provider_errors import WorkerLivenessError
 
@@ -1061,10 +1025,7 @@ async def test_run_liveness_watchdog_strips_kwarg_from_create_event():
 
 
 async def test_run_liveness_watchdog_yields_to_caller_stream_timeout():
-    """When the caller's own overall stream `timeout` is tighter than the
-    liveness window, the caller's TimeoutError fires unmodified (no retry) —
-    the caller asked for that total-stream budget deliberately, and it must
-    not be reinterpreted as a worker-liveness failure."""
+    """When the caller's own stream `timeout` is tighter than the liveness window, the caller's TimeoutError fires unmodified -- that deliberate total-stream budget must not be reinterpreted as a worker-liveness failure."""
     import time
 
     create_event_calls: list = []
@@ -1088,11 +1049,7 @@ async def test_run_liveness_watchdog_yields_to_caller_stream_timeout():
 
 
 async def test_run_liveness_watchdog_default_path_skips_buffered_endpoint(monkeypatch):
-    """A buffered transport (streams_first_output_early absent/False) whose
-    first chunk legitimately arrives after the configured default liveness
-    window must complete successfully with no retry and no
-    WorkerLivenessError under the config-default path — the default watchdog
-    is not applied at all for endpoints that don't declare the capability."""
+    """A buffered transport whose first chunk legitimately arrives after the default liveness window must complete successfully with no retry -- the default watchdog isn't applied at all for endpoints that don't declare streams_first_output_early."""
     import lionagi.config as config_module
 
     create_event_calls: list = []
@@ -1113,10 +1070,7 @@ async def test_run_liveness_watchdog_default_path_skips_buffered_endpoint(monkey
 
 
 async def test_run_liveness_watchdog_explicit_timeout_enforced_on_buffered_endpoint():
-    """An explicitly-passed liveness_timeout is always honored, even for a
-    buffered endpoint that doesn't declare streams_first_output_early — the
-    caller opted in deliberately, so the watchdog must still retry then
-    raise WorkerLivenessError on a worker that never produces output."""
+    """An explicitly-passed liveness_timeout is always honored, even for a buffered endpoint -- the caller opted in deliberately, so the watchdog still retries then raises WorkerLivenessError on a worker that never produces output."""
     from lionagi.providers._provider_errors import WorkerLivenessError
 
     create_event_calls: list = []

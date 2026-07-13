@@ -109,6 +109,22 @@ def contain_and_resolve(path: str | Path, root: Path) -> Path:
     return resolved
 
 
+def contain_relative_path(value: str | Path, root: Path, field_name: str = "path") -> Path:
+    """Validate `value` is a safe, root-relative path and resolve it under `root`.
+
+    The one containment predicate shared by workspace-relative consumers
+    (sandbox seed-input/artifact-manifest paths and others) — extend this
+    function rather than writing a new local check at each call site. Rejects
+    absolute paths (incl. Windows drive letters), NUL bytes, and `..`
+    traversal in the raw string via `check_path_safe()`, then resolves the
+    candidate against `root` (following symlinks) and rejects any result that
+    escapes `root` via `contain_and_resolve()`. Raises ValueError on any
+    violation and returns the resolved absolute Path on success.
+    """
+    check_path_safe(str(value), field_name)
+    return contain_and_resolve(value, root)
+
+
 def contain_path_in_root(
     value: str | Path,
     root: Path,

@@ -1,30 +1,8 @@
 # Copyright (c) 2023-2026, HaiyangLi <quantocean.li at gmail dot com>
 # SPDX-License-Identifier: Apache-2.0
-"""The plugin registry: combines discovery + trust + settings into one snapshot.
-
-Two-stage laziness, mirroring ``EndpointRegistry._ensure_loaded``:
-
-- **Stage 1 (this module, ``_ensure_loaded``)** — manifests are scanned and
-  parsed the first time any consumer asks the registry anything. Cheap,
-  data-only, cached for the process.
-- **Stage 2 (``activate_target``)** — a declared ``target``/``module`` is
-  imported only when that specific capability is actually invoked, never as a
-  side effect of discovery, listing, or an unrelated capability of the same
-  plugin firing. Trust is revalidated fresh on *every* call, re-reading
-  ``plugin.yaml`` from disk rather than trusting the process-cached snapshot
-  (see ``_rescan``) — a previously-activated target stops being handed out
-  the moment a declared file, or the manifest itself, no longer verifies.
-  The target file that actually gets executed is read exactly once and its
-  hash checked against the currently-recorded trust entry for that path in
-  that same read (see ``_read_and_verify_target_bytes``) — the check and the
-  bytes that get compiled/exec'd are never two separate reads of the file,
-  which would leave a window for the file to be swapped in between. Import
-  results (success or failure) are cached per ``(plugin, target, content
-  hash)``, so re-trusting changed content is a guaranteed cache miss rather
-  than depending on an earlier call happening to have evicted the old entry.
-
-Nothing in this module runs at ``import lionagi`` time — the registry is
-inert until a consumer calls one of its classmethods.
+"""The plugin registry: combines discovery + trust + settings into one
+snapshot. Two-stage laziness (scan-only, then per-call revalidated
+activation); nothing runs at ``import lionagi`` time. See docs/internals/runtime.md.
 """
 
 from __future__ import annotations
@@ -63,10 +41,8 @@ class PluginState(str, Enum):
     UNTRUSTED = "untrusted"
     CHANGED = "changed"
     INCOMPATIBLE = "incompatible"
-    # Extensions beyond the core lifecycle-state vocabulary, needed so a
-    # broken or colliding bundle is still visible in `li plugin list` instead
-    # of silently vanishing — an unparseable manifest or a same-name
-    # collision must surface loudly, not disappear.
+    # Extensions beyond the core lifecycle vocabulary, so a broken/colliding
+    # bundle stays visible in `li plugin list` instead of vanishing silently.
     INVALID = "invalid"
     COLLISION = "collision"
 
@@ -101,23 +77,16 @@ class PluginActivationError(RuntimeError):
 
 @dataclass
 class ToolTarget:
-    """A plugin-declared tool resolved for a consumer, e.g. ``ActionManager``.
-
-    Carries just enough to activate it: which plugin owns the name, and the
-    manifest's bundle-relative ``target`` string to hand to ``activate_target``.
-    """
+    """A plugin-declared tool resolved for a consumer (e.g. ``ActionManager``):
+    which plugin owns it, and its ``target`` string for ``activate_target``."""
 
     plugin_name: str
     target: str
 
 
 class PluginToolCollisionError(RuntimeError):
-    """ADR-0088 D6: two enabled plugins declare the same non-namespaced tool name.
-
-    Tool names are called bare by the model with no namespace to disambiguate
-    them, so this is a hard error rather than a shadow — the diagnostic names
-    both plugins and the surface, and resolution is human: disable one.
-    """
+    """ADR-0088 D6: two enabled plugins declare the same non-namespaced tool
+    name (called bare, no namespace to disambiguate) — a hard error, not a shadow."""
 
     def __init__(self, tool_name: str, message: str) -> None:
         self.tool_name = tool_name
@@ -145,14 +114,8 @@ def _tool_names(manifest: PluginManifest) -> list[str]:
     return [t.name for t in manifest.capabilities.tools]
 
 
-# Cross-plugin same-name hard-collision applies only to the global,
-# non-namespaced surface: tool names are called bare by the model, so there
-# is no way to disambiguate two plugins both declaring the same tool name.
-# Agent profiles and playbooks are addressable as `<plugin>/<name>` — two
-# plugins each shipping (say) a "researcher" profile is not an error, it
-# just makes the *bare* name ambiguous (resolved, or not, at the resolver —
-# see lionagi.cli._providers); each stays independently reachable via its
-# namespaced token. Packs follow the same reasoning.
+# Hard-collision applies only to the global, non-namespaced tool surface;
+# profiles/playbooks/packs are addressable as `<plugin>/<name>` instead.
 _NAMED_SURFACES: tuple[tuple[str, Any], ...] = (("tools", _tool_names),)
 
 
@@ -342,22 +305,9 @@ def _build_snapshot() -> list[PluginRecord]:
 
 
 def _rescan(record: PluginRecord) -> DiscoveredPlugin | None:
-    """Re-scan *record*'s bundle directory fresh, right now — including re-reading
-    and re-parsing ``plugin.yaml`` itself, not the already-parsed manifest object
-    cached on the process-wide snapshot (``record.manifest``).
-
-    The process-wide snapshot (``PluginRegistry._snapshot``) is built once and
-    cached — an ``ACTIVE`` record in it can go stale the moment any declared
-    file, *or the manifest itself*, is edited after that first scan, and
-    nothing re-scans it until ``reset()``. Reusing ``record.manifest`` to
-    recompute trust only catches drift in the individually-hashed target
-    files; the manifest hash is computed by re-serializing the *parsed
-    manifest object*, so a stale cached object always re-derives the same
-    "trusted" hash regardless of what's actually on disk in ``plugin.yaml``
-    right now. Returns ``None`` if the manifest no longer parses at all
-    (edited into something invalid, corrupted, or a declared path no longer
-    validates) — definitely not the content that was ever hashed and
-    approved.
+    """Re-scan *record*'s bundle directory fresh, re-reading and re-parsing
+    ``plugin.yaml`` itself rather than the cached ``record.manifest``.
+    Returns ``None`` if the manifest no longer parses. See docs/internals/runtime.md.
     """
     fresh = _scan_one(record.bundle_dir)
     return fresh if fresh.manifest is not None else None
@@ -378,13 +328,8 @@ def _fresh_active_plugins(
     dict[str, list[str]],
     dict[str, list[DiscoveredPlugin]],
 ]:
-    """Rebuild live eligibility and tool ownership from freshly scanned manifests.
-
-    The process-cached records are only bundle-directory candidates. Duplicate
-    manifest names and named-capability collisions must be recomputed from the
-    current manifests before any capability is exposed. Ownership lists retain
-    repeated declarations from one manifest so they collide just like declarations
-    from separate plugins.
+    """Rebuild live eligibility and tool ownership from freshly scanned
+    manifests; process-cached records are only bundle-directory candidates.
     """
     by_name: dict[str, list[DiscoveredPlugin]] = {}
     for record in records:
@@ -426,25 +371,9 @@ def _fresh_active_plugins(
 
 
 def _target_resolution_map(manifest: PluginManifest) -> dict[str, tuple[str, str | None]]:
-    """Map each declared, activatable target string to ``(module_path, attr_or_None)``.
-
-    Built directly from the manifest's own typed capability lists — a
-    tool's path/callable split comes from ``parse_tool_target`` on
-    ``tool.target`` (the exact call ``discovery._collect_declared_paths``
-    makes when deciding what to hash), never by re-splitting the caller's
-    ``target`` argument independently. That's what makes the file that gets
-    imported here provably the same file that got content-hashed at trust
-    time — two separately written splitting expressions could disagree on
-    where a target's path ends and its callable begins; one shared parser
-    over the manifest's own field can't.
-
-    Only tools and providers name Python-importable code; hooks run as
-    external commands and agents/playbooks/packs are read as file content,
-    so those never flow through this path. A caller-supplied target that
-    isn't literally a key in this map (an extra file in the bundle, a
-    traversal-shaped string, a typo) is rejected before any import is
-    attempted — activation must stay confined to what the trust disclosure
-    actually showed the approver.
+    """Map each declared, activatable target string to ``(module_path,
+    attr_or_None)``, using the same ``parse_tool_target`` split the hashing
+    path uses. Only tools/providers are Python-importable; see docs/internals/runtime.md.
     """
     resolved: dict[str, tuple[str, str | None]] = {}
     for tool in manifest.capabilities.tools:
@@ -456,19 +385,9 @@ def _target_resolution_map(manifest: PluginManifest) -> dict[str, tuple[str, str
 
 
 def _read_and_verify_target_bytes(*, bundle_dir: Path, module_path: str, plugin_name: str) -> bytes:
-    """Read the activation target's bytes exactly once, verify them against the
-    currently-recorded trust hash for that exact declared path, and hand back
-    those same bytes for the caller to compile/exec directly.
-
-    An earlier, broader trust check (``_trust_state`` over a freshly rescanned
-    manifest) also hashes this same file as part of validating the whole
-    plugin, but that read is not
-    what gets executed — if the file were hashed there and then reopened
-    separately for import, an atomic replacement of the file in between
-    would execute content that was never verified. This function is the one
-    read that matters for that guarantee: the hash it checks and the bytes
-    it returns come from the exact same ``read_bytes()`` call, with nothing
-    reopening the path in between.
+    """Read the activation target's bytes exactly once, verify against the
+    trust hash, and return those same bytes to compile/exec — the single
+    read closes a TOCTOU window a hash-then-reopen sequence would leave open.
     """
     file_path = bundle_dir / module_path
     try:
@@ -489,19 +408,10 @@ def _read_and_verify_target_bytes(*, bundle_dir: Path, module_path: str, plugin_
 
 
 def _exec_bundle_module(source: bytes, *, file_path: Path, module_key: str) -> Any:
-    """Compile and exec pre-read *source* bytes into a fresh module.
-
-    Deliberately takes already-read bytes rather than a file path: a version
-    of this function that re-read the file itself would reopen it, undoing
-    the single-read guarantee ``_read_and_verify_target_bytes`` exists to
-    provide. Also deliberately not ``importlib``'s
-    ``spec_from_file_location``/``exec_module`` path, which writes and reads
-    a ``__pycache__`` ``.pyc`` validated by a *second*-granularity source
-    mtime: two writes to the same target within the same wall-clock second
-    are indistinguishable to it, so a re-import right after a re-trusted
-    edit can silently execute stale bytecode instead of the content that was
-    just re-hashed and approved. Compiling the given bytes directly has no
-    cache to go stale.
+    """Compile and exec pre-read *source* bytes into a fresh module. Takes
+    bytes, not a path (preserves the single-read guarantee), and compiles
+    directly rather than through importlib's mtime-cached ``.pyc`` path.
+    See docs/internals/runtime.md.
     """
     module = types.ModuleType(module_key)
     module.__file__ = str(file_path)
@@ -520,11 +430,8 @@ class PluginRegistry:
 
     _snapshot: ClassVar[list[PluginRecord] | None] = None
     _lock: ClassVar[threading.Lock] = threading.Lock()
-    # Keyed by (plugin_name, target, content_hash-of-the-target-file) rather
-    # than just (plugin_name, target): a stale entry from before an edit
-    # simply lives under a different key than the post-re-trust content, so
-    # re-trusting changed bytes is structurally a cache miss, not something
-    # that depends on an earlier call having evicted the old entry first.
+    # Keyed by (plugin_name, target, content_hash) so re-trusted content is
+    # structurally a cache miss, not dependent on prior eviction.
     _activation_cache: ClassVar[dict[tuple[str, str, str], Any]] = {}
     _activation_errors: ClassVar[dict[tuple[str, str, str], str]] = {}
 
@@ -558,10 +465,8 @@ class PluginRegistry:
 
     @classmethod
     def active_agent_profile_files(cls) -> dict[str, tuple[str, Path]]:
-        """``<plugin>/<name>`` -> (plugin name, absolute profile path), for every ACTIVE plugin.
-
-        Consumed by ``lionagi.cli._providers``: a miss in the project/global
-        agent-profile search joins this list.
+        """``<plugin>/<name>`` -> (plugin name, absolute profile path), for
+        every ACTIVE plugin. Consumed by ``lionagi.cli._providers``.
         """
         out: dict[str, tuple[str, Path]] = {}
         active, _, _ = _fresh_active_plugins(cls._ensure_loaded())
@@ -574,20 +479,9 @@ class PluginRegistry:
 
     @classmethod
     def active_provider_targets(cls) -> list[tuple[str, str]]:
-        """``(plugin_name, module)`` pairs for every declared provider capability, across every live-eligible plugin.
-
-        Consumed by ``EndpointRegistry.match`` (``lionagi.service.connections.registry``)
-        on a provider-resolution miss: the manifest schema names only the
-        bundle-relative module to import (a provider module self-registers
-        the provider name it serves via ``@register_endpoint`` as an import
-        side effect — there is no separate declared-name field to filter on
-        ahead of time), so the caller imports each returned module through
-        ``activate_target`` and re-runs its match afterward.
-
-        Eligibility comes from ``_fresh_active_plugins`` — the same rescanned
-        manifests and collision handling every other capability surface uses —
-        never from the process-cached record state, which goes stale the
-        moment a plugin is disabled without a ``reset()``.
+        """``(plugin_name, module)`` pairs for every declared provider
+        capability, across every live-eligible plugin. Consumed by
+        ``EndpointRegistry.match`` on a resolution miss; see docs/internals/runtime.md.
         """
         active, _, _ = _fresh_active_plugins(cls._ensure_loaded())
         out: list[tuple[str, str]] = []
@@ -599,16 +493,9 @@ class PluginRegistry:
 
     @classmethod
     def resolve_tool_target(cls, tool_name: str) -> ToolTarget | None:
-        """ADR-0088 D3 consumer trigger: ``ActionManager`` tool-name-resolution miss.
-
-        ``_ensure_loaded()`` is only a candidate index of bundle directories;
-        eligibility and the declared target are both re-derived per call from
-        the same rescanned manifest, never from the cached ``PluginRecord``
-        (its ``state``/``enabled`` go stale without a ``reset()``). Returns
-        the target when exactly one live-eligible plugin declares
-        *tool_name*, ``None`` on a true miss (caller's own error applies
-        unchanged), and raises ``PluginToolCollisionError`` when more than
-        one live-eligible plugin claims it (ADR-0088 D6).
+        """ADR-0088 D3: ``ActionManager`` tool-name-resolution miss. Returns
+        the target when exactly one live-eligible plugin declares *tool_name*,
+        ``None`` on a true miss, raises ``PluginToolCollisionError`` on >1 (D6).
         """
         active, tool_owners, _ = _fresh_active_plugins(cls._ensure_loaded())
         owner_names = tool_owners.get(tool_name, [])
@@ -633,27 +520,10 @@ class PluginRegistry:
 
     @classmethod
     def activate_target(cls, plugin_name: str, target: str) -> Any:
-        """Stage 2: resolve a bundle-relative ``path.py:callable`` (or bare ``path.py`` module) reference.
-
-        Eligibility (compatible + enabled) and trust are both revalidated
-        fresh on *every* call, re-reading ``plugin.yaml``, current settings,
-        and every declared file from disk right now rather than trusting the
-        process-cached snapshot: an already-activated target must stop being
-        handed out the moment the plugin is disabled, or a declared file or
-        the manifest itself changes — not just refuse brand-new activations.
-        Once that broad check passes, the specific target file is read
-        exactly once more — that read's hash, checked against the
-        currently-recorded trust entry for it, and the bytes that get
-        compiled/exec'd, are the same read (see
-        ``_read_and_verify_target_bytes``); nothing here hashes the file and
-        then separately reopens it to execute, which would leave a window
-        for the file to be swapped in between.
-
-        Imported only on first use, cached (success or failure) by
-        ``(plugin, target, content hash)`` — a raising module is reported
-        once and never retried for the *same* content, but re-trusted,
-        changed content always misses the cache rather than depending on an
-        earlier call having evicted the stale entry.
+        """Stage 2: resolve a bundle-relative ``path.py:callable`` (or bare
+        ``path.py`` module) reference. Eligibility and trust are revalidated
+        fresh on every call, never from the cached snapshot. See
+        docs/internals/runtime.md for the single-read and cache-key contract.
         """
         active, _, by_name = _fresh_active_plugins(cls._ensure_loaded())
         fresh = active.get(plugin_name)

@@ -1,6 +1,6 @@
 # ADR-0088: Plugin system (directory-bundle manifest with lazy activation)
 
-- **Status**: Proposed
+- **Status**: Accepted
 - **Kind**: Aspirational
 - **Area**: substrates
 - **Date**: 2026-07-12
@@ -436,3 +436,74 @@ The design, recorded in full for the follow-up:
   dual manifests per the Consequences note.
 - The `x-` manifest-key escape hatch exists so downstream tooling can annotate
   bundles (provenance stamps, registry metadata) without schema violations.
+
+## Implementation status (2026-07-13)
+
+As of 2026-07-13, this ADR is materially further along than ADR-0048, with the
+bundle format, manifest schema, two-stage laziness, and trust boundary fully
+implemented and tested, and three of five declared consumer surfaces wired
+end-to-end.
+
+**Implemented and tested:**
+
+- **D1, bundle shape and discovery.** The directory-bundle layout under
+  `.lionagi/plugins/<name>/plugin.yaml`, discovery via `find_lionagi_dirs()` in
+  project-then-global order, missing-manifest-is-ignored, schema-failure-is-
+  excluded-not-partial, and the path-traversal check on every bundle-relative
+  reference are all implemented and covered by dedicated tests.
+- **D2, manifest schema.** The `name` pattern, the `version`/`lionagi:`
+  compatibility-specifier gate, the six capability fields (tools,
+  `hooks_external`, agents, playbooks, providers, packs), the
+  parse-imports-nothing guarantee, and the unknown-key-errors-except-`x-`-
+  prefix rule are all implemented and tested.
+- **D3, two-stage laziness.** Manifest discovery stays data-only; code import
+  is deferred to first use of a specific capability; `import lionagi` alone
+  triggers neither stage, verified by a dedicated import-laziness test. Three
+  of the five named consumer trigger points are wired end-to-end with tests:
+  the `ActionManager` tool-name-miss path, the endpoint registry's
+  match-miss interception before the generic OpenAI-compatible fallback, and
+  agent-profile resolution miss. A per-plugin failed-import cache (distinct
+  from the built-in provider loader's memoryless swallow-and-continue
+  behavior) is implemented and tested.
+- **D5, trust.** An untrusted plugin is fully inert across every consumer
+  path; the `li plugin trust` display contract renders every declared
+  capability (tool targets, hook argv, agent/playbook/pack files) without
+  truncation before approval; the trust hash pins the manifest plus every
+  declared file, not only executables, which is exercised by a test proving
+  non-executable files are pinned too; and trust records are written to
+  user-level settings, never project-level. This is the most rigorously
+  implemented and tested section of either ADR-0048 or ADR-0088.
+- **D6, collisions (partial) and D7, lifecycle.** Two enabled plugins
+  declaring the same tool name raise a hard collision error; a plugin colliding
+  with a user's own local agent-profile file resolves to the user's file with
+  a logged warning; and the full `li plugin list/info/trust/enable/disable`
+  command set is implemented, with disable implemented as a settings flag that
+  leaves the bundle directory untouched, matching the ADR's stated design.
+  Namespacing (`<plugin>/<name>`) is implemented and tested for agent profiles.
+
+**Known gaps:**
+
+- **Playbook discovery is not unified onto `find_lionagi_dirs()`.** Playbook
+  resolution still globs only the global `~/.lionagi/playbooks/` directory and
+  has no awareness of project-local or plugin-provided playbooks. The path
+  validator on the playbook-name argument rejects any component containing a
+  `/`, which is exactly the shape of the `<plugin>/<name>` token this ADR
+  specifies for referencing a plugin-provided playbook — so today that token
+  is rejected outright, not merely left unresolved. This is the one consumer
+  trigger point named in D3 that has not been started, and it also leaves the
+  playbook half of D6's namespacing commitment unimplemented (the agent-profile
+  half is done).
+- **The `hooks_external` capability has no runtime consumer.** A plugin's
+  `hooks_external` block is parsed, path-validated, and content-hashed for
+  trust, and rendered in `li plugin info`/`trust` output, but nothing joins it
+  into the session hook bus or agent-factory hook wiring. This is a direct
+  consequence of ADR-0048's external-hook execution layer not existing yet
+  (see that ADR's own implementation-status annex): a plugin's declared hooks
+  have nowhere to attach until that layer lands.
+- Two smaller, contained gaps: providers and tools have no explicit,
+  user-facing diagnostic when a plugin capability collides with an
+  already-registered built-in — the safety property holds today only because
+  the plugin-consultation branch is structurally unreachable once a built-in
+  match succeeds, not because a rejection path was exercised and reported; and
+  trust records for a plugin whose directory has since been deleted are not
+  garbage-collected, so they persist indefinitely in the user's settings file.

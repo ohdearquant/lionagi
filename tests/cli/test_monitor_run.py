@@ -310,10 +310,7 @@ async def test_poll_pending_once_leaves_running_run_pending(
 async def test_poll_pending_once_across_two_ticks_with_db_mutation_no_real_sleep(
     temp_db_path: Path, capsys: pytest.CaptureFixture
 ) -> None:
-    """Drives the run from running -> completed between two direct calls to
-    the tick function — the deterministic, zero-wall-clock way to exercise
-    'terminal across different poll iterations' (see also the real-thread
-    variant against _dispatch_wait below)."""
+    """Drives the run from running -> completed between two direct tick calls -- the deterministic, zero-wall-clock way to exercise 'terminal across different poll iterations' (see also the real-thread variant against _dispatch_wait below)."""
     async with StateDB() as db:
         sched_id = await _make_schedule(db)
         run_id = await _make_schedule_run(db, sched_id, status="running")
@@ -479,11 +476,7 @@ async def test_advance_chains_grace_expires_without_child_resolves_on_parent_exi
 async def test_advance_chains_cancelled_run_resolves_without_grace(
     temp_db_path: Path,
 ) -> None:
-    """A watched run that lands status="cancelled" can never get a chain
-    child fired for it -- the engine's CancelledError branch sets
-    status="cancelled" and skips its chain-fire block entirely -- so even
-    though the schedule declares a matching on_fail, no grace window opens;
-    the root resolves on the very next tick."""
+    """A watched run landing status='cancelled' never gets a chain child fired -- the engine's CancelledError branch skips the chain-fire block entirely -- so even with a matching on_fail declared, no grace window opens; the root resolves on the very next tick."""
     async with StateDB() as db:
         sched_id = await _make_schedule(db, name="declares-on-fail", on_fail={"kind": "agent"})
         run_id = await _make_schedule_run(db, sched_id, status="cancelled", exit_code=None)
@@ -500,11 +493,7 @@ async def test_advance_chains_cancelled_run_resolves_without_grace(
 async def test_advance_chains_skipped_run_resolves_without_grace(
     temp_db_path: Path,
 ) -> None:
-    """A skipped run (overlap or missed-fire policy) is created terminal by
-    create_skipped_run and never goes through the engine's fire path, so no
-    chain child can ever follow it -- even though its schedule declares a
-    matching on_fail (skipped runs have exit_code=None), no grace window
-    opens; the root resolves on the very next tick."""
+    """A skipped run (overlap/missed-fire policy) is created terminal by create_skipped_run and never goes through the fire path, so no chain child can follow it -- even with a matching on_fail declared (skipped runs have exit_code=None), no grace window opens; resolves on the very next tick."""
     async with StateDB() as db:
         sched_id = await _make_schedule(db, name="declares-on-fail-skip", on_fail={"kind": "agent"})
         run_id = await _make_schedule_run(db, sched_id, status="skipped", exit_code=None)
@@ -521,12 +510,7 @@ async def test_advance_chains_skipped_run_resolves_without_grace(
 async def test_advance_chains_failed_run_without_exit_code_resolves_without_grace(
     temp_db_path: Path,
 ) -> None:
-    """A run that failed before its subprocess ever spawned (argv build
-    error or internal exception) lands status="failed" with exit_code=None.
-    The engine's chain block sits after the subprocess returns a real exit
-    code, so such a run can never get a chain child -- even with a matching
-    on_fail declared, no grace window opens; the root resolves on the very
-    next tick."""
+    """A run that failed before its subprocess ever spawned lands status='failed' with exit_code=None; the chain block sits after a real exit code, so it can never get a chain child even with a matching on_fail -- no grace window opens, resolves on the very next tick."""
     async with StateDB() as db:
         sched_id = await _make_schedule(
             db, name="declares-on-fail-noexit", on_fail={"kind": "agent"}
@@ -545,11 +529,7 @@ async def test_advance_chains_failed_run_without_exit_code_resolves_without_grac
 async def test_advance_chains_chain_depth_at_cap_resolves_without_grace(
     temp_db_path: Path,
 ) -> None:
-    """A watched run already at the engine's chain-depth cap can never get a
-    chain child fired for it either -- the engine only fires when
-    chain_depth < _MAX_CHAIN_DEPTH (10) -- so a schedule declaring a
-    matching on_success still gets no grace window; the root resolves on
-    the very next tick."""
+    """A watched run already at the engine's chain-depth cap (chain_depth < _MAX_CHAIN_DEPTH == 10) can never get a chain child fired either -- a matching on_success still gets no grace window; resolves on the very next tick."""
     async with StateDB() as db:
         sched_id = await _make_schedule(
             db, name="declares-on-success", on_success={"kind": "agent"}
@@ -570,11 +550,7 @@ async def test_advance_chains_chain_depth_at_cap_resolves_without_grace(
 async def test_advance_chains_multi_hop_chain_followed_to_final_link(
     temp_db_path: Path, capsys: pytest.CaptureFixture
 ) -> None:
-    """(f) a retry-on-failure chain (on_fail declared, no on_success):
-    parent fails -> child1 fails -> child2 succeeds. Depth-2 chain; the
-    final link (child2) decides the aggregate, and child2's own schedule
-    has no on_success declared so it resolves immediately once it succeeds
-    (no further grace, no infinite chase)."""
+    """(f) A retry-on-failure chain (on_fail only): parent fails -> child1 fails -> child2 succeeds. Depth-2 chain; child2 (the final link, no on_success of its own) decides the aggregate and resolves immediately once it succeeds -- no further grace, no infinite chase."""
     async with StateDB() as db:
         sched_id = await _make_schedule(db, name="retry-on-fail", on_fail={"kind": "agent"})
         parent_id = await _make_schedule_run(db, sched_id, status="failed", exit_code=1)
@@ -725,10 +701,7 @@ async def test_dispatch_wait_mixed_unknown_and_resolved_still_returns_exit_unkno
 async def test_dispatch_wait_polls_across_real_iterations_until_background_mutation(
     temp_db_path: Path, capsys: pytest.CaptureFixture
 ) -> None:
-    """Integration-level companion to the deterministic two-tick test above:
-    a background thread flips the row to terminal partway through, proving
-    the sync orchestration loop (not just the inner tick function) actually
-    polls on a real cadence rather than resolving everything up front."""
+    """Integration companion to the deterministic two-tick test above: a background thread flips the row to terminal partway through, proving the sync orchestration loop -- not just the inner tick function -- actually polls on a real cadence."""
     async with StateDB() as db:
         sched_id = await _make_schedule(db)
         run_id = await _make_schedule_run(db, sched_id, status="running")
@@ -754,18 +727,7 @@ async def test_dispatch_wait_polls_across_real_iterations_until_background_mutat
 
 
 def _interrupt_dispatch_on_tick(monkeypatch: pytest.MonkeyPatch, *, tick: int) -> None:
-    """Deterministically interrupt a ``_dispatch_wait`` poll/follow loop.
-
-    Firing ``os.kill(os.getpid(), SIGINT)`` from a wall-clock timer thread aims
-    at the shared pytest-xdist worker: if the signal lands after
-    ``_dispatch_wait`` has already returned (during teardown) or while a
-    KeyboardInterrupt-raising handler is momentarily installed, it escapes and
-    crashes the worker. Making ``run_async`` raise ``KeyboardInterrupt`` on the
-    ``tick``-th call exercises the exact clean-exit path ``_dispatch_wait``
-    takes when SIGINT lands mid-tick, with no signal that can outlive the call.
-    Call 1 is the initial resolve, call 2 the first bounded tick, later calls
-    the follow-tail ticks.
-    """
+    """Deterministically interrupt a ``_dispatch_wait`` poll/follow loop: raising KeyboardInterrupt from ``run_async`` on the ``tick``-th call (rather than a real SIGINT, which could land after the loop returns and crash the shared pytest-xdist worker) exercises the same clean-exit path with no signal that can outlive the call. Call 1 is the initial resolve, call 2 the first bounded tick, later calls the follow-tail ticks."""
     import lionagi.ln.concurrency as concurrency_mod
 
     real_run_async = concurrency_mod.run_async
@@ -825,13 +787,7 @@ async def test_dispatch_wait_interrupted_during_resolve_returns_exit_running(
 async def test_dispatch_wait_keyboard_interrupt_after_tick_mutates_state_still_reports_failure(
     temp_db_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Regression: run_async can complete a tick's real work (printing a
-    terminal row, mutating `pending`/`done`) and *then* raise
-    KeyboardInterrupt before _dispatch_wait ever sees the tick's return
-    value -- exactly what happens when SIGINT is delivered right as the
-    tick's coroutine finishes. The already-observed failure must still be
-    reflected in the exit code, not lost to a vacuous empty-`done` success.
-    """
+    """Regression: run_async can mutate state (print a terminal row, update pending/done) and only then raise KeyboardInterrupt before _dispatch_wait sees the tick's return value -- exactly what SIGINT delivered at tick-completion looks like. The already-observed failure must still be reflected in the exit code, not lost to a vacuous empty-done success."""
     async with StateDB() as db:
         sched_id = await _make_schedule(db)
         run_id = await _make_schedule_run(db, sched_id, status="failed", exit_code=1)
@@ -861,10 +817,7 @@ async def test_dispatch_wait_keyboard_interrupt_after_tick_mutates_state_still_r
 async def test_dispatch_wait_chain_follow_on_fail_recovery_final_link_wins(
     temp_db_path: Path, capsys: pytest.CaptureFixture
 ) -> None:
-    """(b) a failed parent whose schedule declares on_fail, and whose
-    already-fired child succeeded, must report exit 0 -- the chain
-    recovered, and the *final* link decides, not the failed first one. Both
-    links' lines are printed."""
+    """(b) A failed parent whose schedule declares on_fail, whose already-fired child succeeded, must report exit 0 -- the chain recovered and the final link decides, not the failed first one."""
     async with StateDB() as db:
         sched_id = await _make_schedule(db, name="flaky", on_fail={"kind": "agent"})
         parent_id = await _make_schedule_run(db, sched_id, status="failed", exit_code=1)
@@ -945,15 +898,7 @@ async def test_dispatch_wait_no_chain_ignores_fired_children(
 async def test_dispatch_wait_overlapping_roots_child_watched_directly_succeeds(
     temp_db_path: Path, capsys: pytest.CaptureFixture
 ) -> None:
-    """Regression: a parent AND its already-linked chain child are both
-    passed as initial watch roots (e.g. from comma/list expansion). The
-    parent is terminal from the start, which starts a grace window that
-    discovers the child via chain_parent_id -- but the child is *also* one
-    of the originally-watched roots, and is still running at that moment.
-    The discovery must not clobber the child's own root ownership: once the
-    child later completes on its own, both the parent's root (resolved via
-    the child as its final link) and the child's own root must resolve, not
-    just the parent's."""
+    """Regression: parent and its already-linked chain child are both passed as initial watch roots (e.g. comma/list expansion); the parent's grace-window discovery of the child (via chain_parent_id) must not clobber the child's own root ownership -- once the still-running child later completes, both the parent's root (resolved via the child as final link) and the child's own root must resolve."""
     async with StateDB() as db:
         sched_id = await _make_schedule(db, name="chained", on_success={"kind": "agent"})
         parent_id = await _make_schedule_run(db, sched_id, status="completed", exit_code=0)
@@ -987,10 +932,7 @@ async def test_dispatch_wait_overlapping_roots_child_watched_directly_succeeds(
 async def test_dispatch_wait_overlapping_roots_child_watched_directly_fails(
     temp_db_path: Path, capsys: pytest.CaptureFixture
 ) -> None:
-    """Failure-side variant of the overlapping-roots regression above: the
-    child (also a directly-watched root) completes with a nonzero exit code
-    -- the aggregate must report failure (1), not fall back to EXIT_RUNNING
-    because the child's own root never resolved."""
+    """Failure-side variant of the overlapping-roots regression above: the child (also a directly-watched root) completes with a nonzero exit code -- the aggregate must report failure (1), not fall back to EXIT_RUNNING."""
     async with StateDB() as db:
         sched_id = await _make_schedule(db, name="chained", on_success={"kind": "agent"})
         parent_id = await _make_schedule_run(db, sched_id, status="completed", exit_code=0)
@@ -1024,14 +966,7 @@ async def test_dispatch_wait_overlapping_roots_child_watched_directly_fails(
 async def test_dispatch_wait_child_already_terminal_same_tick_prints_once(
     temp_db_path: Path, capsys: pytest.CaptureFixture
 ) -> None:
-    """Regression: parent AND its chain child are *both* already terminal
-    before `_dispatch_wait` even starts (no background flip needed) -- the
-    very first poll tick prints both directly, then the parent's grace-
-    window discovery finds the child via chain_parent_id. The child's own
-    schedule declares no chain action of its own, so it should already be
-    resolved outright by the time discovery reaches it -- re-adding it to
-    `pending` would make the next tick's `_poll_pending_once` print it a
-    second time."""
+    """Regression: parent and its chain child are both already terminal before _dispatch_wait starts; the first poll tick prints both, then the parent's grace-window discovery finds the child via chain_parent_id -- since the child declares no chain action of its own it is already resolved, so re-adding it to pending would print it a second time."""
     async with StateDB() as db:
         parent_sched = await _make_schedule(db, name="parent-sched", on_success={"kind": "agent"})
         parent_id = await _make_schedule_run(db, parent_sched, status="completed", exit_code=0)
@@ -1057,12 +992,7 @@ async def test_dispatch_wait_child_already_terminal_same_tick_prints_once(
 async def test_dispatch_wait_child_already_terminal_joins_own_grace_prints_once(
     temp_db_path: Path, capsys: pytest.CaptureFixture
 ) -> None:
-    """Variant of the above: the already-terminal child's own schedule
-    *also* declares a matching chain action (on_success), so discovery must
-    join the parent's root into the child's own `awaiting_grace` entry
-    instead of resolving it outright -- and once that grace window expires
-    (no grandchild ever fires), both roots resolve together on the child's
-    exit code, each line still printed exactly once."""
+    """Variant of the above: the already-terminal child's own schedule also declares a matching chain action (on_success), so discovery must join the parent's root into the child's own awaiting_grace entry instead of resolving it outright -- both roots then resolve together on the child's exit code, each line printed exactly once."""
     async with StateDB() as db:
         sched_id = await _make_schedule(db, name="chained", on_success={"kind": "agent"})
         parent_id = await _make_schedule_run(db, sched_id, status="completed", exit_code=0)
@@ -1083,17 +1013,7 @@ async def test_dispatch_wait_child_already_terminal_joins_own_grace_prints_once(
 async def test_dispatch_wait_deep_chain_follows_handoff_past_terminal_child(
     temp_db_path: Path, capsys: pytest.CaptureFixture, descendant_first: bool
 ) -> None:
-    """Regression: a three-link chain (parent failed -> child failed ->
-    grandchild succeeded), all terminal before the wait starts, watched via
-    both the parent AND the child as overlapping roots. When the child is
-    listed first, its grace window discovers the grandchild and hands its
-    root off BEFORE the parent's grace window discovers the child — so the
-    parent's discovery finds an already-processed child that is no longer
-    in awaiting_grace. It must follow the child's handoff forward to the
-    grandchild (the chain's real tail) instead of resolving the parent's
-    root on the child's intermediate failure: final-link-wins means this
-    recovered chain reports success in both watch orders, each run printed
-    exactly once."""
+    """Regression: a three-link chain (parent failed -> child failed -> grandchild succeeded), all terminal before the wait starts, watched via both parent and child. When the child is listed first its grace window discovers the grandchild and hands its root off before the parent's discovery reaches it -- the parent must follow that handoff to the grandchild (final-link-wins) rather than resolve on the child's intermediate failure, in either watch order, each run printed exactly once."""
     async with StateDB() as db:
         parent_sched = await _make_schedule(db, name="parent-sched", on_fail={"kind": "agent"})
         parent_id = await _make_schedule_run(db, parent_sched, status="failed", exit_code=1)
@@ -1178,11 +1098,7 @@ async def test_dispatch_wait_follow_sigint_clean(
 async def test_dispatch_wait_follow_preserves_initial_failure_exit_code(
     temp_db_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Regression: --follow must not collapse an initial bounded-set FAILURE
-    into a false success just because the follow phase was entered and later
-    interrupted. The initial watched set's aggregate result is the contract
-    --follow's exit code honors; the open-ended tail has no result of its
-    own to report."""
+    """Regression: --follow must not collapse an initial bounded-set FAILURE into a false success just because the follow phase was entered and later interrupted -- the initial watched set's aggregate result is the contract --follow's exit code honors."""
     async with StateDB() as db:
         sched_id = await _make_schedule(db)
         run_id = await _make_schedule_run(db, sched_id, status="failed", exit_code=1)
@@ -1658,10 +1574,7 @@ async def test_dispatch_wait_follows_linked_engine_session_to_completion(
 async def test_dispatch_wait_persists_reconciled_status_to_profile_row(
     temp_db_path: Path,
 ) -> None:
-    """`li monitor run` resolving a profile session via its linked engine row must
-    not just SYNTHESIZE the terminal status in memory for this one call -- it must
-    PERSIST it through StateDB.update_status() so the profile session's own DB row
-    reads the reconciled terminal status too, not stuck at 'running' forever."""
+    """`li monitor run` resolving a profile session via its linked engine row must PERSIST the reconciled terminal status through StateDB.update_status(), not just synthesize it in memory for this one call, so the profile session's own DB row doesn't stay stuck at 'running' forever."""
     from lionagi import Branch
     from lionagi.cli._runs import setup_agent_persist, teardown_agent_persist
     from lionagi.providers._provider_errors import ProviderError
@@ -1870,12 +1783,7 @@ async def test_dispatch_wait_max_wait_bounds_a_stuck_session(temp_db_path: Path)
 async def test_dispatch_wait_default_max_wait_bounds_a_stuck_session_without_caller_bound(
     temp_db_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """The caller supplies no max_wait at all (the real production default path for
-    `li monitor run` / `li monitor --run` when --max-wait is omitted) and there is no
-    external interrupt -- the built-in bounded default must still stop the wait and
-    report EXIT_RUNNING instead of hanging forever. The module-level default is
-    monkeypatched down to keep this test fast; the caller-facing contract under test
-    is that omitting max_wait entirely still bounds the wait."""
+    """With no max_wait supplied (the real production default for `li monitor run`/`li monitor --run`) and no external interrupt, the built-in bounded default must still stop the wait and report EXIT_RUNNING instead of hanging forever; the module-level default is monkeypatched down to keep the test fast."""
     import lionagi.cli.monitor as monitor_mod
 
     monkeypatch.setattr(monitor_mod, "_DEFAULT_MAX_WAIT_SECONDS", 0.3)

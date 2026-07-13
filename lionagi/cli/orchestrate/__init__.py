@@ -680,10 +680,8 @@ def add_orchestrate_subparser(
     )
     add_common_cli_args(fl)
 
-    # `li o ctl status <id>` is a generic alias into the same status renderer as
-    # `li agent status` / `li play status`. `pause` / `resume` / `msg` queue
-    # session_controls rows for the control poller while a live flow runs.
-    # `stop` is unsupported by the current CLI.
+    # `li o ctl status <id>` aliases the same status renderer as `li agent
+    # status`; pause/resume/msg queue session_controls rows for the poller.
     ctl = orch_sub.add_parser(
         "ctl",
         help="Control-plane surfaces for a run (status, pause, resume, msg).",

@@ -134,6 +134,136 @@ that would silently turn a git error into a false `completed_empty` on real work
 that *succeeds* is allowed to report an absence of evidence; any decisive failure bails the
 whole check out as unchecked (`checked=False`) so the caller keeps trusting `completed`.
 
+### `state/lifecycle/`
+
+Unified lifecycle transition service: one guarded read-check-write-history
+algorithm shared by every managed entity type's status transitions,
+replacing per-surface transition logic. Public surface: immutable
+command/result records (`models`), the policy registry (`policy`), the
+SQLAlchemy transaction implementation (`service`), and the
+StateDB/legacy-transition compatibility mapping (`adapters`).
+
+- `service.py` — `transition()` is the public entry point, enforcing the
+  policy's declared-edge graph: an undeclared move is a "rejected" outcome
+  with a rejection audit row, not a raise, so callers get the same outcome
+  shape for terminal-exit and undeclared-edge refusals alike; a valid
+  override is the audited escape hatch for either. `_transition()` accepts
+  additional keyword-only parameters outside the public `TransitionCommand`
+  shape, used only by `lionagi.state.lifecycle.adapters` to keep the two
+  legacy compatibility wrappers behaviorally identical to their
+  pre-existing selves: `extra_guard` (an arbitrary per-column WHERE-clause
+  guard, e.g. dispatch's `delivering -> delivering` crash-recovery claim
+  guarding on `attempt`, which the public typed command has no generic
+  field for), `enforce_edges` (`StateDB.update_status()` never enforced a
+  declared-edge graph, only terminal-exit-requires-override and vocabulary
+  membership, so it calls with `enforce_edges=False`; the legacy
+  `lionagi.state.transitions.transition()` did enforce one, for
+  schedule_run, so it calls with `enforce_edges=True`), and
+  `raise_on_unguarded_conflict` (an unguarded zero-row UPDATE is a storage
+  anomaly `StateDB.update_status()` has always raised `RuntimeError` on,
+  from inside the transaction so a same-transaction rollback still occurs).
+  A self-edge's `required_guard_fields` must be satisfied by either
+  `extra_guard` covering those exact columns or a generic
+  `expected_version` guard (`updated_at`, which the write always bumps) —
+  either is an equally strong optimistic-concurrency guard against two
+  callers holding the same snapshot both winning a crash-recovery claim;
+  missing both is a caller-contract violation, so it raises rather than
+  returning a conflict/rejected outcome. Commit (via the `_tx()` context
+  exit) happens strictly before the terminal-callback registry push, so a
+  handler can never delay, observe-before-commit, or roll back the write.
+  `_write()`'s `write_reason_columns` mirrors legacy per-surface behavior:
+  `StateDB.update_status()` always denormalized the reason onto the
+  entity row's own `status_reason_*` columns (the default); the legacy
+  `lionagi.state.transitions.transition()` surface never did, and
+  `dispatch_outbox` (only reachable through that surface) doesn't even
+  have those columns.
+- `callbacks.py` — a `RunTerminalEnvelope` is constructed by the lifecycle
+  service only after a guarded transition commits and lands on a terminal
+  status for an execution entity (session, invocation, schedule_run, play);
+  the registry then pushes it to every matching handler concurrently under
+  one shared deadline (best-effort — a handler failure, timeout, or
+  cancellation is logged and swallowed, never affecting the already-committed
+  transition or delaying the caller past budget). Within `schema_version ==
+  1` the envelope's guaranteed fields never change name/type/semantics/
+  requiredness; new optional fields may be added without a version bump.
+  `register()`'s `override` marks a per-run override: for any envelope it
+  matches, only override registrations fire, replacing any non-override
+  match for that run's scope only — other envelopes the override doesn't
+  match are unaffected. In `emit()`'s handler fan-out, a plain
+  (non-async-def) handler is offloaded to a worker thread rather than run
+  directly (which would block the event loop and starve the shared
+  `move_on_after` deadline); `abandon_on_cancel=True` is required (not the
+  default) so the deadline can still cut the await short without waiting for
+  the thread to finish on its own — the thread itself is only abandoned, not
+  killed, and may keep running in the background after return.
+- `notify_settings.py` — resolves `notify.on_terminal` (a string
+  compatibility form, or a mapping `{enabled, adapter: {kind: exec|python,
+  ...}, filter: {kinds, ids}}`) into a handler installable on a
+  `TerminalCallbackRegistry`. Precedence is per-run override > project
+  settings > global settings > disabled; absent key and explicit `enabled:
+  false` are both disabled. No configuration shape ever reaches a shell: a
+  plain command string is POSIX-word-split (`shlex.split`) and launched via
+  `asyncio.create_subprocess_exec`, never `create_subprocess_shell`; a
+  string that fails to split or needs shell features (pipes, redirection,
+  conjunction, variable expansion) warns with a migration diagnostic and
+  resolves to disabled, as does any resolution producing an empty argv. A
+  resolution error never fails or delays the run it would have described. In
+  the exec adapter, on cancellation the registry's own shared deadline races
+  the call's identical `wait_for` timeout (the outer one started first and
+  typically wins); either way the child (launched with
+  `start_new_session=True`, its own process group) must be reaped or it
+  orphans a live subprocess, so cleanup runs inside a shielded `CancelScope`
+  since the enclosing scope is already cancelled.
+- `deliveries.py` — acknowledgment is durable state written only by a named
+  reconciliation consumer, never by the in-process push path
+  (`TerminalCallbackRegistry` stays fire-and-forget and records nothing
+  here). The reconciliation query is a read-only anti-join: terminal
+  transitions on execution entities with no delivery row yet for the
+  requesting consumer, with no age filter on either side — a late-committing
+  older row, or an event from a long-offline consumer, stays unacknowledged
+  indefinitely (this module never expires an unacked event on its own).
+- `schema_meta.py`'s `session_controls` table — apply/stamp ordering is
+  verb-classed: `pause`/`resume` are idempotent (apply, then stamp — safe to
+  re-apply on a poller crash); `message` is not (stamp `'applying'`, then
+  apply, then finalize — a crash surfaces as an unapplied `'applying'` row
+  rather than risking a double injection). `'stop'` is schema-reserved and
+  rejected by the current poller as unsupported; no CLI verb emits it yet.
+
+## lionagi/plugins/registry.py
+
+Combines discovery + trust + settings into one snapshot, two-stage lazy like
+`EndpointRegistry._ensure_loaded`. Stage 1 (`_ensure_loaded`): manifests are
+scanned/parsed the first time any consumer asks, cached for the process.
+Stage 2 (`activate_target`): a declared target/module is imported only when
+that capability is actually invoked, never as a side effect of discovery or
+an unrelated capability firing. Eligibility (compatible + enabled) and trust
+are revalidated fresh on *every* call, re-reading `plugin.yaml`, settings,
+and every declared file from disk — an already-activated target stops being
+handed out the moment the plugin is disabled or a declared file/manifest
+changes, not just refusing brand-new activations. The specific target file
+is read exactly once: that read's hash (checked against the currently
+recorded trust entry) and the bytes that get compiled/exec'd are the same
+`read_bytes()` call (`_read_and_verify_target_bytes`), never a hash-then-
+reopen sequence that would leave a TOCTOU window for the file to be swapped.
+`_exec_bundle_module` compiles the pre-read bytes directly rather than going
+through importlib's `spec_from_file_location`/`exec_module` path, which
+writes/reads a `__pycache__` `.pyc` validated by second-granularity mtime —
+two writes within the same wall-clock second are indistinguishable to it, so
+a re-import right after a re-trusted edit could silently execute stale
+bytecode. Import results (success or failure) are cached per `(plugin,
+target, content hash)`, so re-trusting changed content is a guaranteed cache
+miss rather than depending on an earlier call having evicted the old entry.
+`_rescan()` re-reads and re-parses `plugin.yaml` itself rather than reusing
+the cached `record.manifest` — a stale cached manifest object always
+re-derives the same "trusted" hash regardless of what's actually on disk,
+since the manifest hash is computed by re-serializing the parsed object, not
+by re-reading the file. `_target_resolution_map` builds target ->
+(module_path, attr) from the manifest's own typed capability lists using the
+same `parse_tool_target` split the hashing path (`discovery
+._collect_declared_paths`) uses — two independently written splitting
+expressions could disagree on where a path ends and a callable begins; one
+shared parser can't. Nothing in this module runs at `import lionagi` time.
+
 ## lionagi/service/connections/mcp_wrapper.py
 
 Security-critical admission-control gate for MCP (Model Context Protocol) tool descriptors:
@@ -692,6 +822,22 @@ file on retry without this snapshot.
   `gemini_code.py`'s `agy` note above).
 
 ## lionagi/service/ (remaining)
+
+### `connections/registry.py`
+
+`EndpointRegistry.match()` — on a registry miss, consults the plugin
+registry (ADR-0088 D3) before falling back to the generic
+OpenAI-compatible endpoint: `_consult_plugin_providers()` imports every
+ACTIVE plugin's declared provider module (never at import time or
+discovery, preserving import-time O(1)), exclusively through
+`PluginRegistry.activate_target` — never a direct `importlib` call on
+plugin code — so the trust/enabled/active chokepoints enforced there apply
+here too. Each activation is cached by the plugin registry itself, so
+repeated misses are cheap. A plugin supplying no matching provider (or none
+at all) leaves the fallback identical to the no-plugin case.
+`_revalidate_plugin_entry` keeps a plugin-sourced registry entry available
+only while its declared target remains trusted, removing it on
+`PluginActivationError`.
 
 ### Retry & sentinel-exclusion contract (`connections/endpoint.py`, `providers.py`, `resilience.py`)
 
