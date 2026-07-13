@@ -89,6 +89,15 @@ def trust_state(discovered: DiscoveredPlugin) -> TrustState:
     record = read_trusted_plugins().get(discovered.manifest.name)
     if record is None:
         return TrustState.UNTRUSTED
+    if not isinstance(record, dict):
+        # A hand-edited settings.yaml can put anything under a plugin's key
+        # (e.g. `trusted_plugins: {p1: true}`) — the well-formed shape this
+        # module ever writes is always a dict (see trust_plugin() below), so
+        # anything else can't be the record it looks like and must not be
+        # dereferenced with .get() below. Treat it the same as "recorded
+        # hashes don't match the current ones" rather than raising and
+        # taking down every caller (discovery, `li plugin list`) with it.
+        return TrustState.CHANGED
     current = compute_trust_hashes(discovered)
     if record.get("manifest") != current.get("manifest"):
         return TrustState.CHANGED

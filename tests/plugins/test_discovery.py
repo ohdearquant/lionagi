@@ -128,6 +128,32 @@ capabilities:
     assert "must not contain ':'" in discovered[0].error
 
 
+def test_agent_profile_filename_with_extra_dot_is_excluded(write_plugin):
+    """``Path(rel).stem`` only strips the *last* suffix, so a declared agent file
+    ``research.v2.md`` would advertise the token ``<plugin>/research.v2`` --
+    which the bare-identifier profile-name validator (no dots allowed) then
+    rejects at load time. Reject the shape here, at discovery, instead of
+    letting the registry advertise a token nothing can ever load."""
+    write_plugin(
+        "profile-dots",
+        """\
+name: profile-dots
+version: "0.1.0"
+lionagi: ">=0.0,<100.0"
+
+capabilities:
+  agents: ["agents/research.v2.md"]
+""",
+        files={"agents/research.v2.md": "x\n"},
+    )
+
+    discovered = discover_plugins()
+
+    assert len(discovered) == 1
+    assert discovered[0].manifest is None
+    assert "research.v2" in discovered[0].error
+
+
 def test_symlink_escape_is_excluded(write_plugin, plugin_home: Path):
     bundle = write_plugin(
         "symlink-escape",

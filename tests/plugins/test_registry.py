@@ -78,6 +78,38 @@ class TestLifecycleStates:
         records = PluginRegistry.list_plugins()
         assert any(r.state is PluginState.INVALID for r in records)
 
+    def test_agent_profile_filename_producing_illegal_token_is_invalid(self, write_plugin):
+        write_plugin(
+            "p1",
+            """\
+name: p1
+version: "0.1.0"
+lionagi: ">=0.0,<100.0"
+
+capabilities:
+  agents: ["agents/research.v2.md"]
+""",
+            files={"agents/research.v2.md": "x\n"},
+        )
+
+        record = PluginRegistry.get("p1")
+        assert record is not None
+        assert record.state is PluginState.INVALID
+
+    def test_malformed_trust_record_does_not_crash_list_plugins(self, write_plugin):
+        """A hand-edited settings.yaml scalar under a plugin's trusted_plugins key must
+        degrade that one plugin's state, not raise out of list_plugins()/`li plugin
+        list` entirely."""
+        _write_tool_plugin(write_plugin, "p1")
+
+        settings = read_user_settings()
+        settings["trusted_plugins"] = {"p1": True}
+        write_user_settings(settings)
+
+        records = PluginRegistry.list_plugins()
+        record = next(r for r in records if r.name == "p1")
+        assert record.state is PluginState.CHANGED
+
     def test_disable_flips_state_without_touching_bundle(self, write_plugin):
         bundle = _write_tool_plugin(write_plugin, "p1")
         _trust_by_dir_name("p1")
@@ -284,6 +316,119 @@ class TestActivateTarget:
         (bundle / "agents" / "a.md").write_text("attacker-controlled instructions\n")
 
         assert "p1/a" not in PluginRegistry.active_agent_profile_files()
+
+
+class TestTrustExecutionAtomicity:
+    """Trust decisions and execution must operate on the same bytes/state, read
+    once -- covers manifest-edit staleness, the hash-then-reopen TOCTOU window,
+    and content-hash cache scoping."""
+
+    def test_editing_manifest_after_first_access_refuses_activation(self, write_plugin):
+        """The cached snapshot's already-parsed manifest object must not be reused to
+        revalidate trust: an edit to plugin.yaml itself (not a declared file) has to be
+        caught by re-reading plugin.yaml from disk. Reusing the stale cached manifest
+        object always re-derives the same manifest hash regardless of what's actually on
+        disk, so a manifest edit is silently never detected."""
+        bundle = _write_tool_plugin(write_plugin, "p1", tool_body="def t():\n    return 1\n")
+        _trust_by_dir_name("p1")
+        PluginRegistry.reset()
+
+        # Populate the cached snapshot (and its cached, already-parsed manifest object).
+        assert PluginRegistry.get("p1").state is PluginState.ACTIVE
+        assert "p1/a" in PluginRegistry.active_agent_profile_files()
+
+        # Edit plugin.yaml itself -- not any of the already-hashed declared files.
+        manifest_path = bundle / "plugin.yaml"
+        manifest_path.write_text(manifest_path.read_text() + "description: added after trust\n")
+
+        with pytest.raises(PluginActivationError, match="no longer trusted"):
+            PluginRegistry.activate_target("p1", "tools/t.py:t")
+        assert "p1/a" not in PluginRegistry.active_agent_profile_files()
+
+    def test_activate_edit_retrust_activate_returns_new_content_without_intervening_refusal(
+        self, write_plugin
+    ):
+        """Distinct from the refuse-then-recover flow above: here trust is re-established
+        *before* any activate_target() call ever observes the intermediate CHANGED state,
+        so a cache-eviction-on-refusal codepath never fires. The success cache must still
+        not hand back the pre-edit callable -- it has to be keyed by the content that was
+        actually executed, not just (plugin, target)."""
+        bundle = _write_tool_plugin(write_plugin, "p1", tool_body="def t():\n    return 1\n")
+        _trust_by_dir_name("p1")
+        PluginRegistry.reset()
+
+        fn1 = PluginRegistry.activate_target("p1", "tools/t.py:t")
+        assert fn1() == 1
+
+        (bundle / "tools" / "t.py").write_text("def t():\n    return 2\n")
+        _trust_by_dir_name("p1")  # re-trust immediately -- no intervening "no longer trusted"
+
+        fn2 = PluginRegistry.activate_target("p1", "tools/t.py:t")
+        assert fn2() == 2
+
+    def test_read_and_verify_target_bytes_reads_the_file_exactly_once(
+        self, write_plugin, monkeypatch
+    ):
+        """The hash that gets checked and the bytes that get compiled/exec'd must come
+        from the exact same read -- never a hash-then-reopen sequence, which would leave
+        a window for the file to be swapped in between."""
+        from pathlib import Path as _Path
+
+        from lionagi.plugins.registry import _read_and_verify_target_bytes
+
+        bundle = _write_tool_plugin(write_plugin, "p1", tool_body="def t():\n    return 1\n")
+        _trust_by_dir_name("p1")
+        PluginRegistry.reset()
+
+        target_path = bundle / "tools" / "t.py"
+        expected = target_path.read_bytes()
+
+        call_count = 0
+        real_read_bytes = _Path.read_bytes
+
+        def counting_read_bytes(self):
+            nonlocal call_count
+            if self == target_path:
+                call_count += 1
+            return real_read_bytes(self)
+
+        monkeypatch.setattr(_Path, "read_bytes", counting_read_bytes)
+
+        result = _read_and_verify_target_bytes(
+            bundle_dir=bundle, module_path="tools/t.py", plugin_name="p1"
+        )
+
+        assert result == expected
+        assert call_count == 1
+
+    def test_target_swapped_after_broad_trust_check_is_refused_not_executed(
+        self, write_plugin, monkeypatch
+    ):
+        """Simulates the TOCTOU window directly: the broad trust check reads and hashes
+        the target file, confirming it still matches the trusted content -- then, before
+        the dedicated read backing compile/exec happens, the file is swapped. The swapped
+        bytes must never be executed: the dedicated read's own hash check (against the
+        recorded hash) catches the mismatch, because it is not relying on the earlier,
+        separate read's verdict."""
+        import lionagi.plugins.registry as registry_mod
+
+        bundle = _write_tool_plugin(write_plugin, "p1", tool_body="def t():\n    return 1\n")
+        _trust_by_dir_name("p1")
+        PluginRegistry.reset()
+
+        real_rescan = registry_mod._rescan
+
+        def _rescan_then_swap(record):
+            fresh = real_rescan(record)
+            # Attacker replaces the file in the window right after the broad
+            # trust check read (and approved) its old, trusted content.
+            (bundle / "tools" / "t.py").write_text("def t():\n    return 999\n")
+            return fresh
+
+        monkeypatch.setattr(registry_mod, "_rescan", _rescan_then_swap)
+
+        with pytest.raises(PluginActivationError):
+            registry_mod.PluginRegistry.activate_target("p1", "tools/t.py:t")
 
 
 class TestMultiColonTargetBypass:

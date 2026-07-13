@@ -14,7 +14,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from lionagi._paths import find_lionagi_dirs
-from lionagi.libs.path_safety import has_traversal
+from lionagi.libs.path_safety import has_traversal, validate_bare_name
 
 from .manifest import ManifestError, PluginManifest, parse_manifest, parse_tool_target
 
@@ -95,6 +95,24 @@ def _validate_bundle_relative(bundle_dir: Path, rel: str, *, label: str) -> None
         raise ValueError(f"{label} entry {rel!r} resolves outside the plugin bundle") from exc
 
 
+def _validate_agent_profile_names(manifest: PluginManifest) -> None:
+    """Every declared agent profile filename must produce a legal profile token.
+
+    ``PluginRegistry.active_agent_profile_files()`` advertises
+    ``<plugin>/<Path(rel).stem>`` for each declared agent file, and
+    ``lionagi.cli._providers.load_agent_profile()`` validates that same
+    ``<plugin>/<name>`` token against a bare-identifier rule (no dots) before
+    resolving it. ``Path.stem`` only strips the last suffix, so a filename
+    like ``research.v2.md`` produces the advertised token ``p1/research.v2``
+    that ``load_agent_profile()`` then rejects outright — a plugin the
+    registry lists as fine but nothing can actually load. Reject that shape
+    at discovery, the same way any other manifest defect invalidates the
+    whole bundle, instead of letting it surface as a load-time dead end.
+    """
+    for rel in manifest.capabilities.agents:
+        validate_bare_name(Path(rel).stem, label=f"plugin {manifest.name!r} agent profile name")
+
+
 def _scan_one(bundle_dir: Path) -> DiscoveredPlugin:
     manifest_path = bundle_dir / "plugin.yaml"
     dir_name = bundle_dir.name
@@ -113,6 +131,7 @@ def _scan_one(bundle_dir: Path) -> DiscoveredPlugin:
         declared = _collect_declared_paths(manifest)
         for rel in declared:
             _validate_bundle_relative(bundle_dir, rel, label=f"plugin {manifest.name!r} capability")
+        _validate_agent_profile_names(manifest)
     except ValueError as exc:
         return DiscoveredPlugin(
             dir_name=dir_name,
