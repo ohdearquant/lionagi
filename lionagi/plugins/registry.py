@@ -134,6 +134,13 @@ def _enabled_flag(name: str, settings: dict[str, Any]) -> bool:
     return bool(entry.get("enabled", True))
 
 
+def _is_live_active(manifest: PluginManifest) -> bool:
+    """Compatible + enabled, read fresh from settings — never from a cached ``PluginRecord``."""
+    return manifest.is_compatible(_lionagi_version) and _enabled_flag(
+        manifest.name, read_user_settings()
+    )
+
+
 def _tool_names(manifest: PluginManifest) -> list[str]:
     return [t.name for t in manifest.capabilities.tools]
 
@@ -356,22 +363,6 @@ def _rescan(record: PluginRecord) -> DiscoveredPlugin | None:
     return fresh if fresh.manifest is not None else None
 
 
-def _revalidate_trust(record: PluginRecord) -> TrustState:
-    """Recompute trust fresh against the files (and manifest) on disk right now.
-
-    Capability-exposing calls (resolving a profile file, importing a target)
-    must not trust the process-cached snapshot's verdict; they recompute
-    trust against a freshly re-scanned manifest + declared files right
-    before handing out content. Bundles are small, so a full rescan+rehash
-    per call is cheap — this avoids a second, separately-fallible staleness
-    signal (e.g. mtime).
-    """
-    fresh = _rescan(record)
-    if fresh is None:
-        return TrustState.CHANGED
-    return _trust_state(fresh)
-
-
 def _tool_target_for(manifest: PluginManifest, tool_name: str) -> str | None:
     """The declared ``target`` string for *tool_name* in *manifest*, or ``None``."""
     for tool in manifest.capabilities.tools:
@@ -415,8 +406,9 @@ def _read_and_verify_target_bytes(*, bundle_dir: Path, module_path: str, plugin_
     currently-recorded trust hash for that exact declared path, and hand back
     those same bytes for the caller to compile/exec directly.
 
-    An earlier, broader trust check (``_revalidate_trust``) also hashes this
-    same file as part of validating the whole plugin, but that read is not
+    An earlier, broader trust check (``_trust_state`` over a freshly rescanned
+    manifest) also hashes this same file as part of validating the whole
+    plugin, but that read is not
     what gets executed — if the file were hashed there and then reopened
     separately for import, an atomic replacement of the file in between
     would execute content that was never verified. This function is the one
@@ -534,58 +526,59 @@ class PluginRegistry:
     def resolve_tool_target(cls, tool_name: str) -> ToolTarget | None:
         """ADR-0088 D3 consumer trigger: ``ActionManager`` tool-name-resolution miss.
 
-        Scans every plugin record for one declaring *tool_name* under
-        ``capabilities.tools``. Returns the owning plugin's target when
-        exactly one trusted, enabled, ACTIVE plugin declares it; returns
-        ``None`` when no plugin declares it at all, so a caller's own
-        "tool not registered" miss error applies unchanged. Raises
-        ``PluginToolCollisionError`` when the name is claimed by multiple
-        enabled plugins (ADR-0088 D6) — the discovery-time snapshot already
-        computed that ``COLLISION`` state (see ``_build_snapshot``'s
-        ``_NAMED_SURFACES`` pass); this call surfaces the same diagnostic
-        rather than re-deriving it.
-
-        Trust is revalidated per call (``_revalidate_trust``), not read from
-        the cached snapshot verdict, matching every other capability-exposing
-        read in this module.
+        ``_ensure_loaded()`` is only a candidate index of bundle directories;
+        eligibility and the declared target are both re-derived per call from
+        the same rescanned manifest, never from the cached ``PluginRecord``
+        (its ``state``/``enabled`` go stale without a ``reset()``). Returns
+        the target when exactly one live-eligible plugin declares
+        *tool_name*, ``None`` on a true miss (caller's own error applies
+        unchanged), and raises ``PluginToolCollisionError`` when more than
+        one live-eligible plugin claims it (ADR-0088 D6).
         """
-        collision_message: str | None = None
-        match: ToolTarget | None = None
+        owners: list[tuple[str, str]] = []
         for record in cls._ensure_loaded():
-            if record.manifest is None:
+            fresh = _rescan(record)
+            if fresh is None:
                 continue
-            target = _tool_target_for(record.manifest, tool_name)
+            assert fresh.manifest is not None
+            target = _tool_target_for(fresh.manifest, tool_name)
             if target is None:
                 continue
-            if record.state is PluginState.COLLISION:
-                collision_message = record.error or collision_message
+            if not _is_live_active(fresh.manifest):
                 continue
-            if record.state is not PluginState.ACTIVE:
+            if _trust_state(fresh) is not TrustState.TRUSTED:
                 continue
-            if _revalidate_trust(record) is not TrustState.TRUSTED:
-                continue
-            match = ToolTarget(plugin_name=record.name, target=target)
+            owners.append((fresh.manifest.name, target))
 
-        if collision_message is not None:
-            raise PluginToolCollisionError(tool_name, collision_message)
-
-        return match
+        if len(owners) > 1:
+            names = ", ".join(name for name, _ in owners)
+            msg = (
+                f"tool {tool_name!r} is declared by multiple enabled plugins "
+                f"({names}) — disable one with `li plugin disable <name>`"
+            )
+            raise PluginToolCollisionError(tool_name, msg)
+        if owners:
+            name, target = owners[0]
+            return ToolTarget(plugin_name=name, target=target)
+        return None
 
     @classmethod
     def activate_target(cls, plugin_name: str, target: str) -> Any:
         """Stage 2: resolve a bundle-relative ``path.py:callable`` (or bare ``path.py`` module) reference.
 
-        Trust is revalidated fresh on *every* call, re-reading ``plugin.yaml``
+        Eligibility (compatible + enabled) and trust are both revalidated
+        fresh on *every* call, re-reading ``plugin.yaml``, current settings,
         and every declared file from disk right now rather than trusting the
         process-cached snapshot: an already-activated target must stop being
-        handed out the moment a declared file, or the manifest itself,
-        changes — not just refuse brand-new activations. Once that broad
-        check passes, the specific target file is read exactly once more —
-        that read's hash, checked against the currently-recorded trust entry
-        for it, and the bytes that get compiled/exec'd, are the same read
-        (see ``_read_and_verify_target_bytes``); nothing here hashes the file
-        and then separately reopens it to execute, which would leave a
-        window for the file to be swapped in between.
+        handed out the moment the plugin is disabled, or a declared file or
+        the manifest itself changes — not just refuse brand-new activations.
+        Once that broad check passes, the specific target file is read
+        exactly once more — that read's hash, checked against the
+        currently-recorded trust entry for it, and the bytes that get
+        compiled/exec'd, are the same read (see
+        ``_read_and_verify_target_bytes``); nothing here hashes the file and
+        then separately reopens it to execute, which would leave a window
+        for the file to be swapped in between.
 
         Imported only on first use, cached (success or failure) by
         ``(plugin, target, content hash)`` — a raising module is reported
@@ -594,19 +587,27 @@ class PluginRegistry:
         earlier call having evicted the stale entry.
         """
         record = cls.get(plugin_name)
-        if record is None or record.state is not PluginState.ACTIVE or record.manifest is None:
+        if record is None:
             msg = f"plugin {plugin_name!r} is not active (no such plugin, or untrusted/disabled/incompatible)"
             raise PluginActivationError(plugin_name, target, msg)
 
         fresh = _rescan(record)
-        if fresh is None or _trust_state(fresh) is not TrustState.TRUSTED:
+        if fresh is None:
+            msg = f"plugin {plugin_name!r} is not active (no such plugin, or untrusted/disabled/incompatible)"
+            raise PluginActivationError(plugin_name, target, msg)
+        assert fresh.manifest is not None
+
+        if not _is_live_active(fresh.manifest):
+            msg = f"plugin {plugin_name!r} is not active (no such plugin, or untrusted/disabled/incompatible)"
+            raise PluginActivationError(plugin_name, target, msg)
+
+        if _trust_state(fresh) is not TrustState.TRUSTED:
             msg = (
                 f"plugin {plugin_name!r} is no longer trusted (the manifest or a "
                 f"declared file changed since the cached scan) — re-run "
                 f"`li plugin trust {plugin_name}` or `li plugin list` to refresh"
             )
             raise PluginActivationError(plugin_name, target, msg)
-        assert fresh.manifest is not None
 
         resolution = _target_resolution_map(fresh.manifest)
         if target not in resolution:

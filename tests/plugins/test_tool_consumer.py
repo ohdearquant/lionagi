@@ -17,7 +17,11 @@ import pytest
 
 from lionagi.plugins._user_settings import read_user_settings, write_user_settings
 from lionagi.plugins.discovery import discover_plugins
-from lionagi.plugins.registry import PluginRegistry, PluginToolCollisionError
+from lionagi.plugins.registry import (
+    PluginActivationError,
+    PluginRegistry,
+    PluginToolCollisionError,
+)
 from lionagi.plugins.trust import trust_plugin
 from lionagi.protocols.action.manager import ActionManager
 
@@ -178,6 +182,90 @@ class TestToolConsumerCollision:
         manager = ActionManager()
         result = manager.match_tool({"function": "greet", "arguments": {}})
         assert result.func_tool.function == "greet"
+
+
+class TestLiveRescanWithoutReset:
+    """The cached snapshot is only a candidate index -- enabled/collision/target
+    must be re-derived live on every call, not frozen at the last reset()."""
+
+    def test_disabling_after_first_resolve_excludes_it_live(self, write_plugin):
+        _write_tool_plugin(write_plugin, "p1", name="greeter", tool_name="greet")
+        _trust("p1")
+        PluginRegistry.reset()
+
+        manager = ActionManager()
+        first = manager.match_tool({"function": "greet", "arguments": {}})
+        assert first.func_tool.function == "greet"
+
+        settings = read_user_settings()
+        settings.setdefault("plugins", {})["greeter"] = {"enabled": False}
+        write_user_settings(settings)
+        # Deliberately no PluginRegistry.reset(): the disable must take
+        # effect on the very next call regardless.
+
+        with pytest.raises(ValueError, match="Function greet is not registered"):
+            manager.match_tool({"function": "greet", "arguments": {}})
+
+    def test_disabling_after_first_resolve_also_blocks_direct_activation(self, write_plugin):
+        _write_tool_plugin(write_plugin, "p1", name="greeter", tool_name="greet")
+        _trust("p1")
+        PluginRegistry.reset()
+
+        target = PluginRegistry.resolve_tool_target("greet")
+        assert target is not None
+        PluginRegistry.activate_target(target.plugin_name, target.target)
+
+        settings = read_user_settings()
+        settings.setdefault("plugins", {})["greeter"] = {"enabled": False}
+        write_user_settings(settings)
+
+        with pytest.raises(PluginActivationError):
+            PluginRegistry.activate_target(target.plugin_name, target.target)
+
+    def test_disabling_one_of_two_colliding_plugins_resolves_live(self, write_plugin):
+        _write_tool_plugin(write_plugin, "p1", name="plugin-one", tool_name="greet", func_name="a")
+        _write_tool_plugin(write_plugin, "p2", name="plugin-two", tool_name="greet", func_name="b")
+        _trust("p1")
+        _trust("p2")
+        PluginRegistry.reset()
+
+        manager = ActionManager()
+        with pytest.raises(PluginToolCollisionError):
+            manager.match_tool({"function": "greet", "arguments": {}})
+
+        settings = read_user_settings()
+        settings.setdefault("plugins", {})["plugin-two"] = {"enabled": False}
+        write_user_settings(settings)
+        # No reset(): the collision must resolve on the very next call.
+
+        result = manager.match_tool({"function": "greet", "arguments": {}})
+        assert result.func_tool.function == "greet"
+
+    def test_retrusted_target_change_resolves_to_new_target_live(self, write_plugin):
+        bundle = _write_tool_plugin(write_plugin, "p1", name="greeter", tool_name="greet")
+        _trust("p1")
+        PluginRegistry.reset()
+
+        first = PluginRegistry.resolve_tool_target("greet")
+        assert first is not None
+        assert first.target == "tools/impl.py:do_greet"
+
+        (bundle / "tools" / "new.py").write_text("def replacement():\n    return 'new behavior'\n")
+        (bundle / "plugin.yaml").write_text(
+            MANIFEST.format(name="greeter", tool_name="greet", func_name="replacement").replace(
+                "tools/impl.py", "tools/new.py"
+            )
+        )
+        _trust("p1")
+        # No reset(): the re-trusted target change must be visible on the
+        # very next call, not the target string captured by the first lookup.
+
+        second = PluginRegistry.resolve_tool_target("greet")
+        assert second is not None
+        assert second.target == "tools/new.py:replacement"
+
+        fn = PluginRegistry.activate_target(second.plugin_name, second.target)
+        assert fn() == "new behavior"
 
 
 class TestLocalRegistrationTakesPriority:
