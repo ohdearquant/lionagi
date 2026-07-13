@@ -369,6 +369,26 @@ async def _run_agent(
                 chat_model=chat_model,
                 log_config=DataLoggerConfig(auto_save_on_exit=False),
             )
+
+        # Fail fast: `li agent` only drives CLI-backed providers (the `run`
+        # operation raises this same ValueError deep inside
+        # operations/run/run.py once the turn is already streaming).
+        # Catching a bare/mistyped model spec here — before
+        # allocate_run/setup_agent_persist — means a bad provider prefix
+        # (e.g. 'gpt-5.3-codex-spark' instead of 'codex/gpt-5.3-codex-spark')
+        # never allocates a run or persists a session that would otherwise be
+        # recorded as a failed reliability event. Scoped to a brand-new
+        # branch only: a --resume/--continue-last model override changes
+        # only the model name under the branch's existing (already-CLI)
+        # provider, never the provider itself, so it can't regress this way.
+        if not branch.chat_model.is_cli:
+            cli_provider = getattr(branch.chat_model.endpoint.config, "provider", provider)
+            raise ConfigurationError(
+                f"run operation only supports CLI endpoints, but got provider={cli_provider!r}. "
+                "Use one of the CLI endpoint prefixes: claude_code, codex, gemini-cli, pi. "
+                "Did you mean 'gemini-cli/<model>' instead of 'gemini/<model>'? "
+                "The 'gemini' prefix routes to the REST API, not the local Gemini CLI."
+            )
     else:
         cfg = branch.chat_model.endpoint.config.kwargs
         if model_str is not None:
