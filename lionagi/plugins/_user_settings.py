@@ -97,11 +97,18 @@ def locked_user_settings():
     if it changed (compared against a snapshot taken before the yield), so a
     no-op pass (e.g. GC finding nothing stale) touches neither the file's
     mtime nor a concurrent reader.
+
+    Opens with ``O_CREAT`` but never ``O_TRUNC``: on first creation, two
+    concurrent callers racing to create the file must not truncate it before
+    either holds the lock, or the loser's truncate can blow away content the
+    winner already committed and unlocked. Truncation only happens below,
+    after the lock is held and the (possibly just-written) content has been
+    read.
     """
     path = user_settings_path()
     path.parent.mkdir(parents=True, exist_ok=True)
-    mode = "r+" if path.is_file() else "w+"
-    with open(path, mode) as fp:
+    fd = os.open(path, os.O_RDWR | os.O_CREAT, 0o600)
+    with os.fdopen(fd, "r+") as fp:
         fcntl.flock(fp.fileno(), fcntl.LOCK_EX)
         try:
             fp.seek(0)
