@@ -56,10 +56,9 @@ with `StateDB.update_status()`); this module keeps its own narrower entity-type 
   (`schedule_runs` table, `schedule_id` now nullable), registered here so ALL status movement
   on it routes through this guarded CAS store rather than a second, parallel implementation.
 - `_GUARD_PATCH_COLUMNS` — guard/patch column names are interpolated directly into SQL text
-  (values stay bound params) inside the lifecycle service. Every production call site today
-  passes literal dicts, but this module is a generic surface a future full transition backend
-  will absorb, so a per-entity allowlist closes the latent injection surface for future
-  callers instead of trusting the caller's dict keys outright.
+  (values stay bound params) inside the lifecycle service. Production call sites pass
+  literal dicts, but this module is a generic surface, so a per-entity allowlist closes
+  the latent injection surface instead of trusting the caller's dict keys outright.
 - `transition()` — `UPDATE ... WHERE id=:id AND status=:from`, writing the row status and an
   atomic `status_transitions` append inside one transaction. A mismatched current state
   reports a conflict rather than raising or silently overwriting (the CAS guard). An

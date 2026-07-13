@@ -1,6 +1,6 @@
 # Copyright (c) 2023-2026, HaiyangLi <quantocean.li at gmail dot com>
 # SPDX-License-Identifier: Apache-2.0
-"""Revival heartbeat reference implementation (ADR-0059 slice 1, item 5).
+"""Revival heartbeat reference implementation (ADR-0059).
 
 Demonstrates the durable-dispatch case of a consumer dead at fire time;
 dedup_key scoped to the reset epoch keeps re-fires idempotent. Deliberately

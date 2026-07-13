@@ -54,7 +54,7 @@ class WritebackPolicy:
 @dataclass(frozen=True)
 class KhiveInjectionPolicy:
     """Policy block controlling pre-turn khive injection (ADR-0008); see
-    docs/internals/runtime.md for the namespace/bench-arm isolation contract."""
+    docs/internals/runtime.md for the namespace isolation contract."""
 
     profile_id: str
     enabled: bool = True

@@ -1,7 +1,7 @@
 # Copyright (c) 2023-2026, HaiyangLi <quantocean.li at gmail dot com>
 # SPDX-License-Identifier: Apache-2.0
-"""Guarded compare-and-swap state transitions (ADR-0059 slice 1, spec-gate ruling 1) — minimal
-ADR-0058 fallback scoped to dispatch/schedule_run entities. See docs/internals/runtime.md."""
+"""Guarded compare-and-swap state transitions (ADR-0059) — minimal counterpart to ADR-0058's
+entity-agnostic API, scoped to dispatch/schedule_run entities. See docs/internals/runtime.md."""
 
 from __future__ import annotations
 

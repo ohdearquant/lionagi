@@ -60,7 +60,7 @@ _DELIVER_TO_TOKEN = "{deliver_to}"  # noqa: S105 -- template placeholder, not a 
 
 
 def backoff_seconds(attempt: int) -> float:
-    """``min(30 * 2**attempt, 1800)`` seconds (ADR-0059 spec-gate ruling 3, no jitter)."""
+    """``min(30 * 2**attempt, 1800)`` seconds (ADR-0059; no jitter)."""
     return min(_BASE_BACKOFF_SECONDS * (2**attempt), _MAX_BACKOFF_SECONDS)
 
 
