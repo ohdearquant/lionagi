@@ -69,6 +69,16 @@ class MCPSecurityConfig:
     filter_sensitive_env: bool = True
     max_connections_per_server: int = 5
 
+    @classmethod
+    def trusted(cls) -> MCPSecurityConfig:
+        """The named, observable transport-trust decision (ADR-0011 delta row 3).
+
+        Allows command and URL transports. A caller must reach for this
+        deliberately -- omitting a policy at MCP load time no longer implies
+        trust; it now preserves the fail-closed default above instead.
+        """
+        return cls(allow_commands=True, allow_urls=True)
+
 
 # --- Generic-executor admission rule -----------------------------------
 # Registration-time admission control, independent of MCPSecurityConfig

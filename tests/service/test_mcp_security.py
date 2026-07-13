@@ -35,6 +35,19 @@ class TestMCPSecurityConfig:
         with pytest.raises(AttributeError):
             config.filter_sensitive_env = False
 
+    def test_trusted_preset_allows_command_and_url_transports(self):
+        """MCPSecurityConfig.trusted() is the named, observable transport-
+        trust decision (ADR-0011 delta row 3) -- a caller reaches for it
+        deliberately; it is not the default."""
+        config = MCPSecurityConfig.trusted()
+        assert config.allow_commands is True
+        assert config.allow_urls is True
+        # Everything else keeps the fail-closed field defaults.
+        assert config == MCPSecurityConfig(allow_commands=True, allow_urls=True)
+        # The plain default constructor is unaffected by the preset existing.
+        assert MCPSecurityConfig().allow_commands is False
+        assert MCPSecurityConfig().allow_urls is False
+
 
 class TestFilterEnv:
     def test_filters_sensitive_keys(self):
@@ -236,7 +249,9 @@ class TestMCPConnectionPoolFailClosed:
 
 
 class TestLoadMcpConfigTrustedLoad:
-    """load_mcp_config is a trust action: must default to allow policy and surface denials loudly."""
+    """load_mcp_config's omitted policy must preserve the fail-closed default
+    (ADR-0011 delta row 3) while an explicit trust decision still threads
+    through and denials still surface loudly, never swallowed to []."""
 
     async def test_default_load_registers_only_the_loaded_files_servers(
         self, tmp_path, monkeypatch
@@ -271,7 +286,11 @@ class TestLoadMcpConfigTrustedLoad:
         assert result == {"local": ["local_echo"]}
         assert "earlier-server" not in result
 
-    async def test_default_load_sets_allow_policy_and_registers(self, tmp_path, monkeypatch):
+    async def test_default_load_leaves_policy_unset(self, tmp_path, monkeypatch):
+        """Omitting mcp_security no longer manufactures a permissive policy --
+        it stays None and is threaded through unchanged, so a fail-closed
+        downstream default (MCPConnectionPool.get_client/_create_client)
+        applies unless the caller opts in via MCPSecurityConfig.trusted()."""
         import json
 
         from lionagi.protocols.action.manager import ActionManager
@@ -283,18 +302,65 @@ class TestLoadMcpConfigTrustedLoad:
         seen = {}
 
         async def fake_register(server_config, update=False, security=None):
-            # The policy is THREADED in as an argument, not set on the global.
+            seen["security"] = security
+            return ["local_echo"]
+
+        monkeypatch.setattr(mgr, "register_mcp_server", fake_register)
+
+        result = await mgr.load_mcp_config(str(cfg))
+        # Normal usage must still register tools, not silently return [].
+        assert result == {"local": ["local_echo"]}
+        assert seen["security"] is None
+
+    async def test_explicit_trusted_preset_threads_through(self, tmp_path, monkeypatch):
+        """The named, observable trusted mode (MCPSecurityConfig.trusted())
+        allows command/URL transports when a caller opts in explicitly."""
+        import json
+
+        from lionagi.protocols.action.manager import ActionManager
+
+        cfg = tmp_path / ".mcp.json"
+        cfg.write_text(json.dumps({"mcpServers": {"local": {"command": "echo", "args": ["hi"]}}}))
+
+        mgr = ActionManager()
+        seen = {}
+
+        async def fake_register(server_config, update=False, security=None):
             seen["allow_commands"] = security.allow_commands
             seen["allow_urls"] = security.allow_urls
             return ["local_echo"]
 
         monkeypatch.setattr(mgr, "register_mcp_server", fake_register)
 
-        result = await mgr.load_mcp_config(str(cfg))
-        # Normal usage must register tools, not silently return [].
+        result = await mgr.load_mcp_config(str(cfg), mcp_security=MCPSecurityConfig.trusted())
         assert result == {"local": ["local_echo"]}
         assert seen["allow_commands"] is True
         assert seen["allow_urls"] is True
+
+    async def test_default_load_denies_command_transport_without_explicit_trust(self, tmp_path):
+        """End-to-end (no mocking of register_mcp_server): a command-based
+        server with no mcp_security passed must raise PermissionError, not
+        register anything -- an MCP server cannot contribute callable tools
+        without a recorded transport-trust decision."""
+        import json
+
+        from lionagi.protocols.action.manager import ActionManager
+
+        # Reset pool state and use a server name unused elsewhere in this
+        # file, so no cached client/policy from another test leaks in.
+        MCPConnectionPool._security = None
+        MCPConnectionPool._clients = {}
+        MCPConnectionPool._server_security.pop("server:trustcheck", None)
+
+        cfg = tmp_path / ".mcp.json"
+        cfg.write_text(
+            json.dumps({"mcpServers": {"trustcheck": {"command": "echo", "args": ["hi"]}}})
+        )
+
+        mgr = ActionManager()
+        with pytest.raises(PermissionError, match="allow_commands=False"):
+            await mgr.load_mcp_config(str(cfg))
+        assert mgr.registry == {}
 
     async def test_security_denial_is_raised_not_swallowed(self, tmp_path, monkeypatch):
         import json
@@ -316,7 +382,7 @@ class TestLoadMcpConfigTrustedLoad:
             await mgr.load_mcp_config(str(cfg), mcp_security=MCPSecurityConfig())
 
     async def test_load_does_not_mutate_global_security_scope(self, tmp_path, monkeypatch):
-        """The permissive policy is threaded as an arg, not set on the global; concurrent loads must not share trust scope."""
+        """An explicit policy is threaded as an arg, not set on the global; concurrent loads must not share trust scope."""
         import json
 
         from lionagi.protocols.action.manager import ActionManager
@@ -330,13 +396,14 @@ class TestLoadMcpConfigTrustedLoad:
             mgr = ActionManager()
 
             async def fake_register(server_config, update=False, security=None):
-                # Policy arrives as an argument; the global is NEVER mutated.
+                # An explicit, opted-in trusted policy arrives as an argument;
+                # the global is NEVER mutated.
                 assert security.allow_commands is True
                 assert MCPConnectionPool._security is None
                 return ["local_echo"]
 
             monkeypatch.setattr(mgr, "register_mcp_server", fake_register)
-            await mgr.load_mcp_config(str(cfg))
+            await mgr.load_mcp_config(str(cfg), mcp_security=MCPSecurityConfig.trusted())
 
             # The global default is untouched throughout.
             assert MCPConnectionPool._security is None
@@ -410,8 +477,11 @@ class TestLoadMcpConfigTrustedLoad:
             MCPConnectionPool._security = None
             MCPConnectionPool._clients.clear()
 
-    async def test_load_mcp_tools_helper_trusted_and_loud(self, tmp_path, monkeypatch):
-        """load_mcp_tools mirrors load_mcp_config: trusted-allow threaded, global untouched, denial raised loudly."""
+    async def test_load_mcp_tools_helper_omitted_policy_stays_unset(self, tmp_path, monkeypatch):
+        """load_mcp_tools mirrors load_mcp_config: an omitted policy is no
+        longer manufactured into a permissive one -- it stays None, global
+        untouched -- while an explicit trusted policy still threads through
+        and denials still surface loudly, never swallowed to []."""
         import json
 
         from lionagi.protocols.action.manager import ActionManager, load_mcp_tools
@@ -426,16 +496,22 @@ class TestLoadMcpConfigTrustedLoad:
             async def fake_register(
                 self, server_config, request_options=None, update=False, security=None
             ):
-                seen["allow_commands"] = security.allow_commands
+                seen["security"] = security
                 assert MCPConnectionPool._security is None
                 return ["local_echo"]
 
             monkeypatch.setattr(ActionManager, "register_mcp_server", fake_register)
 
-            # Normal load: no raise, policy permissive (threaded), global untouched.
+            # Normal load, no explicit policy: no raise, security stays None
+            # (fail-closed downstream), global untouched.
             await load_mcp_tools(str(cfg))
-            assert seen["allow_commands"] is True
+            assert seen["security"] is None
             assert MCPConnectionPool._security is None
+
+            # Explicit trusted policy: threaded through as-is.
+            monkeypatch.setattr(ActionManager, "register_mcp_server", fake_register)
+            await load_mcp_tools(str(cfg), mcp_security=MCPSecurityConfig.trusted())
+            assert seen["security"] == MCPSecurityConfig.trusted()
 
             # Restrictive policy: a denial must be raised, not swallowed to [].
             async def deny_register(

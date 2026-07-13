@@ -94,7 +94,10 @@ async def test_create_agent_with_permissions_sets_preprocessor():
     config.permissions = PermissionPolicy.read_only()
     branch = await _make(config)
 
-    # Only coding tools get permission preprocessors (MCP tools from ambient env are unaffected)
+    # No MCP servers are configured/resolvable in this test, so only the
+    # statically-registered coding tools exist to check here; MCP-discovered
+    # tools get the same preprocessor chain applied (see
+    # test_mcp_discovered_tool_gets_permission_preprocessor below).
     for name in _CODING_TOOLS:
         tool = branch.acts.registry.get(name)
         assert tool is not None, f"Coding tool '{name}' not registered"
@@ -115,6 +118,46 @@ async def test_create_agent_permission_deny_all_preprocessor_raises():
         await reader_tool.preprocessor(
             {"action": "read", "path": "/tmp/x.py"},
         )
+
+
+async def test_mcp_discovered_tool_gets_permission_preprocessor(tmp_path, monkeypatch):
+    """ADR-0041 delta row 2: a permission rule that blocks a static tool must
+    equally block a same-shaped MCP-discovered tool. MCP registration happens
+    after built-in tool interception (_register_tools) and must not bypass
+    the resolved permission/interceptor chain -- _load_mcp applies the same
+    _attach_hooks() used for static tools to every tool name MCP discovery
+    reports, not a copied/parallel chain."""
+    from lionagi.agent.permissions import PermissionPolicy
+    from lionagi.protocols.action.manager import ActionManager
+    from lionagi.protocols.action.tool import Tool
+
+    mcp_file = tmp_path / "custom.mcp.json"
+    mcp_file.write_text('{"mcpServers": {"demo": {"command": "true"}}}')
+
+    async def fake_load_mcp_config(
+        self, config_path, server_names=None, update=False, mcp_security=None
+    ):
+        # Mimic what register_mcp_server does after real discovery: put a
+        # plain Tool straight into the registry, bypassing hook attachment
+        # entirely -- exactly the gap this fix closes.
+        async def demo_tool(**kwargs):
+            return "ok"
+
+        demo_tool.__name__ = "demo_tool"
+        self.register_tool(Tool(func_callable=demo_tool), update=update)
+        return {"demo": ["demo_tool"]}
+
+    monkeypatch.setattr(ActionManager, "load_mcp_config", fake_load_mcp_config)
+
+    config = AgentSpec.compose("implementer")
+    config.mcp_config_path = str(mcp_file)
+    config.permissions = PermissionPolicy.deny_all()
+    branch = await create_agent(config, load_settings=False)
+
+    mcp_tool = branch.acts.registry["demo_tool"]
+    assert mcp_tool.preprocessor is not None, "MCP-discovered tool missing the spec's hook chain"
+    with pytest.raises(PermissionError):
+        await mcp_tool.preprocessor({"action": "call", "foo": "bar"})
 
 
 async def test_create_agent_coding_permissions_recheck_user_mutated_args(tmp_path):
@@ -191,7 +234,9 @@ async def test_create_agent_does_not_autoload_project_mcp_without_trust(tmp_path
 
     calls = []
 
-    async def fake_load_mcp_config(self, config_path, server_names=None, update=False):
+    async def fake_load_mcp_config(
+        self, config_path, server_names=None, update=False, mcp_security=None
+    ):
         calls.append((config_path, server_names, update))
         return {}
 
@@ -216,9 +261,13 @@ async def test_create_agent_autoloads_project_mcp_when_trusted(tmp_path, monkeyp
     monkeypatch.setenv("HOME", str(tmp_path / "home"))
 
     calls = []
+    security_seen = []
 
-    async def fake_load_mcp_config(self, config_path, server_names=None, update=False):
+    async def fake_load_mcp_config(
+        self, config_path, server_names=None, update=False, mcp_security=None
+    ):
         calls.append((config_path, server_names, update))
+        security_seen.append(mcp_security)
         return {}
 
     monkeypatch.setattr(ActionManager, "load_mcp_config", fake_load_mcp_config)
@@ -230,6 +279,11 @@ async def test_create_agent_autoloads_project_mcp_when_trusted(tmp_path, monkeyp
     )
 
     assert calls == [(str(mcp_path), None, False)]
+    # _load_mcp makes the transport-trust decision explicit at its one call
+    # site (ADR-0011 delta row 3) rather than relying on an implicit default.
+    from lionagi.service.connections.mcp_wrapper import MCPSecurityConfig
+
+    assert security_seen == [MCPSecurityConfig.trusted()]
 
 
 # ---------------------------------------------------------------------------
@@ -569,7 +623,7 @@ async def test_load_mcp_explicit_config_path_used(tmp_path, monkeypatch):
 
     calls = []
 
-    async def fake_load_mcp(self, config_path, server_names=None, update=False):
+    async def fake_load_mcp(self, config_path, server_names=None, update=False, mcp_security=None):
         calls.append(config_path)
         return {}
 
@@ -600,7 +654,7 @@ async def test_load_mcp_breaks_at_lionagi_dir(tmp_path, monkeypatch):
 
     calls = []
 
-    async def fake_load_mcp(self, config_path, server_names=None, update=False):
+    async def fake_load_mcp(self, config_path, server_names=None, update=False, mcp_security=None):
         calls.append(config_path)
         return {}
 

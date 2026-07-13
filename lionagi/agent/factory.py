@@ -323,10 +323,38 @@ async def _load_mcp(
     if mcp_path is None:
         return
 
-    await branch.acts.load_mcp_config(
+    from lionagi.service.connections.mcp_wrapper import MCPSecurityConfig
+
+    # ActionManager.load_mcp_config() no longer implies trust when its
+    # `mcp_security` argument is omitted (ADR-0011 delta row 3) -- an
+    # omitted policy now falls through to the wrapper's fail-closed
+    # default instead. Reaching this point already required an explicit
+    # trust act: either `spec.mcp_config_path` was set directly, or
+    # `mcp_path` resolved from the operator's own home-level `.mcp.json`
+    # (the same "global config is inherently trusted" precedent as
+    # settings.yaml's always-loaded global file), or the caller opted into
+    # `trust_project_settings=True` for a project-level file. This is the
+    # one, explicit, documented compatibility decision for lionagi's own
+    # MCP auto-load consumer -- not a silent default buried in the generic
+    # library call.
+    loaded = await branch.acts.load_mcp_config(
         mcp_path,
         server_names=spec.mcp_servers,
+        mcp_security=MCPSecurityConfig.trusted(),
     )
+
+    # Apply the same hook chain static tools get (security_pre/pre/post from
+    # spec.hook_handlers, wired via _attach_hooks in _register_tools) to
+    # MCP-discovered tools too -- they are registered after built-in tool
+    # interception and would otherwise keep their bare default preprocessor
+    # (ADR-0041 delta row 2). Reuses _attach_hooks, the same function static
+    # registration uses, so both paths stay on one shared chain-application
+    # path rather than a copied block.
+    for tool_names in loaded.values():
+        for tool_name in tool_names:
+            tool = branch.acts.registry.get(tool_name)
+            if tool is not None:
+                _attach_hooks(tool, spec, tool_name)
 
 
 def _forward_mcp_to_cli_request(
