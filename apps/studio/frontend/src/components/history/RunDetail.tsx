@@ -17,7 +17,7 @@ import { IconChevronDown, IconChevronRight } from "@/components/ui/icons";
 import { getSession, streamSession, streamSignals, SESSION_MESSAGE_PAGE } from "@/lib/api";
 import type { SessionDetail, SessionBranch, SessionMessage, SignalEvent } from "@/lib/api";
 import { buildNodeStatusesByName, buildOperationGraph, laneFor } from "@/lib/operationGraph";
-import type { OperationStatus } from "@/lib/operationGraph";
+import type { LaneSignal, OperationStatus } from "@/lib/operationGraph";
 import { deriveDisplayStatus } from "@/lib/runStatus";
 import type { RunMessage, RunStep, WorkerGraph } from "@/lib/types";
 import type { NodeExecStatus } from "@/components/canvas/StepNode";
@@ -531,6 +531,18 @@ const KIND_BADGE: Record<string, { label: string; tone: string }> = {
   StructuredOutput: { label: "output", tone: "bg-surface-overlay text-content-secondary" },
 };
 
+// A NodeEscalated with route="notify" is a soft ("fyi") help signal, not a
+// real escalation — badge it distinctly (warning tone, like an approval
+// request) instead of the unconditional error-toned "escalated" label.
+export function badgeForEvent(ev: SignalEvent): { label: string; tone: string } {
+  if (ev.kind === "NodeEscalated" && ev.payload?.route === "notify") {
+    return { label: "notify", tone: "bg-status-warning-bg text-status-warning" };
+  }
+  return (
+    KIND_BADGE[ev.kind] ?? { label: ev.kind, tone: "bg-surface-overlay text-content-muted" }
+  );
+}
+
 type LaneState = OperationStatus;
 
 const LANE_TONE: Record<LaneState, string> = {
@@ -552,11 +564,12 @@ interface LaneSummary {
 function EventsSection({ events, live }: { events: SignalEvent[]; live: boolean }) {
   const t = useTranslations("history.detail");
   const laneSummaries = useMemo((): LaneSummary[] => {
-    const byOp = new Map<string, string[]>();
+    const byOp = new Map<string, LaneSignal[]>();
     for (const ev of events) {
       if (!ev.op_id) continue;
       const list = byOp.get(ev.op_id) ?? [];
-      list.push(ev.kind);
+      const route = ev.payload?.route;
+      list.push(typeof route === "string" ? { kind: ev.kind, route } : ev.kind);
       byOp.set(ev.op_id, list);
     }
     return Array.from(byOp.entries()).map(([op_id, kinds]) => ({
@@ -611,10 +624,7 @@ function EventsSection({ events, live }: { events: SignalEvent[]; live: boolean 
         <div className="max-h-72 overflow-y-auto rounded border border-edge bg-surface-raised">
           <div className="flex flex-col divide-y divide-edge-subtle">
             {events.map((ev) => {
-              const badge = KIND_BADGE[ev.kind] ?? {
-                label: ev.kind,
-                tone: "bg-surface-overlay text-content-muted",
-              };
+              const badge = badgeForEvent(ev);
               const hasPayload = ev.payload && Object.keys(ev.payload).length > 0;
               return (
                 <div
