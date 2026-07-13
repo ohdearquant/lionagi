@@ -719,3 +719,128 @@ async def test_recovery_never_double_fires_across_two_passes(tmp_path, monkeypat
     assert statuses["run-orphaned"] == "failed"
     replacement_id = next(rid for rid in statuses if rid != "run-orphaned")
     assert statuses[replacement_id] == "completed"
+
+
+@pytest.mark.asyncio
+async def test_tombstone_and_replace_schedule_run_refuses_when_dispatch_confirmed(tmp_path):
+    """The CAS predicate must require dispatched_at IS NULL, not just
+    status='running'. A launch confirmation (dispatched_at stamped, status
+    unchanged -- see _mark_dispatched()) landing between a recovery scan and
+    this write means the row is no longer undispatched; tombstoning it and
+    inserting a replacement would flip a run that actually launched to
+    'failed' and fire a duplicate. Reviewer repro: dispatched_at already set
+    on the orphan before the call -- must refuse (applied=False), inserting
+    nothing.
+    """
+    db_path = tmp_path / "state.db"
+    sid = "sched-dispatched-race"
+
+    async with StateDB(db_path) as db:
+        await db.create_schedule(_schedule_row(sid, next_fire_at=2000.0))
+        await db.create_schedule_run_and_advance(
+            _run_row("run-live", sid, fired_at=1000.0),
+            schedule_id=sid,
+            schedule_fields={"next_fire_at": 2000.0, "last_fired_at": 1000.0},
+        )
+        # Launch confirmed -- status stays 'running', only dispatched_at
+        # moves (mirrors spawn_and_wait's on_launched callback).
+        await db.update_schedule_run("run-live", dispatched_at=1000.5)
+
+    async with StateDB(db_path) as db:
+        applied = await db.tombstone_and_replace_schedule_run(
+            "run-live",
+            _run_row("run-replacement", sid, fired_at=1500.0),
+            expected_orphan_status="running",
+        )
+        live = await db.get_schedule_run("run-live")
+        replacement = await db.get_schedule_run("run-replacement")
+
+    assert applied is False
+    assert live["status"] == "running"
+    assert live["dispatched_at"] == 1000.5
+    assert replacement is None
+
+
+@pytest.mark.asyncio
+async def test_recovery_refire_is_noop_when_dispatch_confirmed_mid_race(tmp_path, monkeypatch):
+    """The reviewer-specified race: recovery's scan finds "run-live" as
+    undispatched, but a concurrently-confirmed launch (dispatched_at
+    stamped) lands after the scan and before the recovery re-fire's own
+    atomic write. The strengthened CAS makes that write a no-op, so the
+    live run must come out completely untouched -- still 'running', its
+    dispatched_at preserved, no replacement row -- and the abandonment path
+    must cancel ONLY the pre-spawn recovery invocation it created for this
+    doomed attempt, never the live run's own (separate, still-running)
+    invocation.
+    """
+    import lionagi.state.db as state_db_mod
+
+    db_path = tmp_path / "state.db"
+    monkeypatch.setattr(state_db_mod, "DEFAULT_DB_PATH", db_path)
+
+    sid = "sched-race"
+
+    async with StateDB(db_path) as db:
+        await db.create_schedule(_schedule_row(sid, next_fire_at=2000.0))
+        await db.create_invocation({"id": "inv-live", "skill": "test", "started_at": 1000.0})
+        await db.create_schedule_run_and_advance(
+            _run_row("run-live", sid, fired_at=1000.0, invocation_id="inv-live"),
+            schedule_id=sid,
+            schedule_fields={"next_fire_at": 2000.0, "last_fired_at": 1000.0},
+        )
+
+    svc = _DBSchedulerStateService()
+    engine = SchedulerEngine(svc=svc)
+
+    original_create_invocation = svc.create_invocation
+    recovery_inv_ids: list[str] = []
+
+    async def _create_invocation_then_confirm_launch(invocation):
+        # Recovery already scanned and decided to re-fire "run-live" by the
+        # time this runs (it is _fire_inner()'s very first durable write for
+        # the re-fire attempt). Simulate a concurrent scheduler -- or the
+        # original background task -- confirming the ORIGINAL launch right
+        # here, strictly between the scan and the re-fire's own atomic
+        # tombstone-and-replace write further down in _fire_inner().
+        recovery_inv_ids.append(invocation["id"])
+        await original_create_invocation(invocation)
+        await svc.update_schedule_run("run-live", dispatched_at=1234.5)
+
+    with (
+        patch.object(svc, "create_invocation", side_effect=_create_invocation_then_confirm_launch),
+        patch(
+            "lionagi.studio.scheduler.subprocess.resolve_li_executable",
+            return_value=(["true"], None),
+        ),
+        patch("lionagi.studio.scheduler.subprocess.build_argv", return_value=(["true"], None)),
+        patch(
+            "lionagi.studio.scheduler.subprocess.spawn_and_wait",
+            new=AsyncMock(return_value=(0, "")),
+        ),
+    ):
+        await engine._recover_undispatched_fires()
+        if engine._fire_tasks:
+            await asyncio.gather(*engine._fire_tasks)
+
+    assert len(recovery_inv_ids) == 1
+    recovery_inv_id = recovery_inv_ids[0]
+
+    async with StateDB(db_path) as db:
+        live = await db.get_schedule_run("run-live")
+        runs = await db.list_schedule_runs(sid)
+        live_invocation = await db.get_invocation("inv-live")
+        recovery_invocation = await db.get_invocation(recovery_inv_id)
+
+    # The live, actually-launched run is untouched: never flipped to
+    # 'failed', and its dispatched_at survives exactly as the racing
+    # confirmation set it. No replacement occurrence was ever inserted.
+    assert live["status"] == "running"
+    assert live["dispatched_at"] == 1234.5
+    assert len(runs) == 1
+
+    # The live run's OWN invocation is completely untouched.
+    assert live_invocation["status"] == "running"
+
+    # Only the doomed recovery attempt's invocation was cancelled.
+    assert recovery_invocation["status"] == "cancelled"
+    assert recovery_invocation["status_reason_code"] == RunReasons.CANCELLED_STALE_AUTO

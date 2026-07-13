@@ -2434,23 +2434,11 @@ class StateDB:
         schedule_fields: dict[str, Any],
     ) -> None:
         """Insert one schedule_runs occurrence row and advance the owning
-        schedule's cursor fields (``next_fire_at`` / ``github_cursor`` /
-        ``last_fired_at``) in a single transaction.
-
-        This closes the gap that let a crash re-fire an already-recorded
-        occurrence: with two independently-committed writes, a process
-        death between them leaves a durable schedule_run row while the
-        schedule's cursor still points before it, so a restart re-derives
-        "still due" and queues another fire for a occurrence that already
-        exists. Wrapping both statements in one ``StateDB.transaction()``
-        means either both land or neither does -- a crash here can only
-        ever discard an occurrence that was never durably recorded, never
-        one that was.
-
-        *schedule_fields* goes through the same allowlist + JSON-column
-        handling as ``update_schedule`` (``_build_update_schedule_stmt`` is
-        the shared choke point for both), so an invalid key raises the same
-        ``ValueError`` here as it would through the public entrypoint.
+        schedule's cursor fields in a single transaction, so a crash can
+        only ever discard an occurrence that was never durably recorded --
+        never leave the cursor pointing before one that was, which would
+        make a restart re-fire it. *schedule_fields* goes through the same
+        allowlist as ``update_schedule``.
         """
         run_stmt, run_params = self._build_schedule_run_insert_stmt(run)
         sched_stmt, sched_params = self._build_update_schedule_stmt(schedule_id, schedule_fields)
@@ -2466,42 +2454,17 @@ class StateDB:
         expected_orphan_status: str = "running",
     ) -> bool:
         """Flip an undispatched orphan to a terminal status and insert its
-        replacement occurrence row in the SAME transaction.
+        replacement occurrence row in one transaction, so a crash leaves
+        either both writes durable or neither. The CAS also requires
+        ``dispatched_at IS NULL``: if a launch confirmation lands between
+        the recovery scan and this write, the row no longer qualifies as
+        undispatched and the call is a no-op (returns ``False``, nothing
+        inserted) rather than tombstoning a run that actually launched.
 
-        This is the write ``SchedulerEngine._recover_undispatched_fires()``
-        uses instead of two independent writes (a CAS status flip, then a
-        separate later insert once the replacement's fire task gets around
-        to it). Two independent writes leave a real window: a crash between
-        them leaves the orphan durably terminal (so it drops out of any
-        future ``list_undispatched_schedule_runs()`` scan -- terminal rows
-        are never selected) while the replacement was never durably
-        recorded (the in-memory task that would have inserted it is gone),
-        permanently losing the occurrence. Wrapping both writes in one
-        transaction closes that window the same way
-        ``create_schedule_run_and_advance()`` closes the occurrence-insert /
-        cursor-advance one: either both land or neither does, so a crash
-        here can only ever leave the orphan exactly as it was (still
-        'running', still undispatched, still visible to the next recovery
-        scan) -- never flipped with no replacement to show for it.
-
-        Only a bare status flip (status + updated_at) is written for the
-        orphan here, no reason-code/history bookkeeping -- callers follow
-        up with an ordinary ``update_status()`` same-status call afterward
-        for that (mirroring the existing pattern at the invalid-action
-        and happy-path insert sites in ``_fire_inner()``, which set status
-        directly in ``create_schedule_run_and_advance()``'s INSERT and only
-        layer reason/history on with a separate follow-up call). A crash
-        between this method returning and that follow-up call leaves the
-        orphan correctly terminal but without its reason annotation -- a
-        cosmetic gap, not a durability one, identical to the existing
-        pattern's own gap.
-
-        Returns ``False`` (inserting nothing) if the orphan's status no
-        longer matches *expected_orphan_status* -- something else (e.g. the
-        stale-run reaper, or an operator action) already resolved it
-        between the scan that found this orphan and this write; there is
-        nothing left to recover and no replacement should be created for
-        an occurrence someone else already finalized.
+        Returns ``False`` if the orphan's status no longer matches
+        *expected_orphan_status* or is no longer undispatched -- something
+        else already resolved it between the scan and this write, so there
+        is nothing to recover and no replacement should be created.
         """
         run_stmt, run_params = self._build_schedule_run_insert_stmt(replacement_run)
         now = time.time()
@@ -2509,7 +2472,8 @@ class StateDB:
             result = await conn.execute(
                 text(
                     "UPDATE schedule_runs SET status = 'failed', updated_at = :now "
-                    "WHERE id = :orphan_id AND status = :expected_status"
+                    "WHERE id = :orphan_id AND status = :expected_status "
+                    "AND dispatched_at IS NULL"
                 ),
                 {"now": now, "orphan_id": orphan_id, "expected_status": expected_orphan_status},
             )
@@ -2823,28 +2787,12 @@ class StateDB:
         return streak, last_status
 
     async def schedule_run_exists_since(self, schedule_id: str, since: float) -> bool:
-        """True if *schedule_id* already has a genuinely-fired schedule_runs
-        row at or after *since*.
-
-        Used by the missed-fire recovery scan (``SchedulerEngine.
-        _check_missed_fires``) to distinguish "genuinely never fired" from
-        "occurrence was durably recorded before a crash interrupted
-        whatever bookkeeping came after it" -- firing a fresh recovery run
-        for the latter would double-execute the external action for an
-        occurrence that already has a row. Any non-skipped status counts
-        (running, completed, failed, ...): the row's mere existence is what
-        matters here, not how it resolved.
-
-        Excludes ``status = 'skipped'`` rows. Two of the three writers of
-        that status (missed-fire skip, overlap skip) advance next_fire_at
-        in the same breath as writing the row, so the schedule is no
-        longer due by the time this scan would run again -- moot either
-        way. But the third, capacity-deferred throttling
-        (``_maybe_record_deferred``), deliberately leaves next_fire_at
-        untouched so the *same* due occurrence retries on the next tick;
-        counting that audit-only row as "already recorded" would make this
-        scan advance the cursor past a due occurrence that never actually
-        ran, silently dropping it if the process dies before that retry.
+        """True if *schedule_id* has a genuinely-fired schedule_runs row at
+        or after *since* -- used by missed-fire recovery to tell "never
+        fired" from "fired but crashed before follow-up bookkeeping".
+        Excludes ``status = 'skipped'`` rows so a capacity-deferred skip
+        (whose next_fire_at is deliberately left untouched) still counts as
+        due and retries, rather than being treated as already handled.
         """
         async with self._read() as conn:
             row = (
@@ -2861,27 +2809,12 @@ class StateDB:
 
     async def list_undispatched_schedule_runs(self) -> list[dict[str, Any]]:
         """Scheduler-fired occurrence rows whose transaction committed but
-        whose external process launch was never confirmed.
-
-        A row lands here when ``create_schedule_run_and_advance()`` commits
-        (the occurrence exists, the schedule's cursor has moved past it) but
-        the scheduler engine crashes before ``spawn_and_wait()``'s
-        ``on_launched`` callback stamps ``dispatched_at`` -- i.e. sometime
-        between the transaction committing and the OS process actually
-        existing. Because the cursor already moved, ``schedule_run_exists_
-        since()``-based missed-fire recovery will never reconsider this
-        occurrence (the schedule no longer looks due), and the external
-        action was never attempted -- so without a dedicated scan the fire
-        is silently lost, eventually just marked ``timed_out`` by the
-        stale-run reaper. ``SchedulerEngine._recover_undispatched_fires()``
-        runs this once at startup and re-fires each row.
-
-        Scoped to ``schedule_id IS NOT NULL`` (scheduler-fired rows only --
-        mirrors the same exclusion ``reap_stale_schedule_runs()`` applies to
-        the leased ad-hoc task queue, which has its own dispatch/lease model
-        entirely and is never launched through ``spawn_and_wait``'s
-        ``on_launched`` path in the first place, so it never sets
-        dispatched_at and would otherwise false-positive here).
+        whose external process launch was never confirmed (cursor already
+        moved, so ordinary missed-fire recovery will never reconsider them).
+        ``SchedulerEngine._recover_undispatched_fires()`` runs this once at
+        startup and re-fires each row. Scoped to ``schedule_id IS NOT NULL``
+        to exclude the leased ad-hoc task queue, which has its own
+        dispatch/lease model and never sets dispatched_at.
         """
         async with self._read() as conn:
             rows = (
