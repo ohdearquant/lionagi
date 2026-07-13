@@ -77,6 +77,22 @@ class MessagePersistRetryQueue:
                     ),
                     activity_at=event.activity_at,
                 )
+            except ValueError as exc:
+                # StateDB._validate_message raises ValueError for a
+                # deterministically malformed message (missing content/role);
+                # the same message will fail identically on every retry, so
+                # drop it instead of leaving it at the queue head where it
+                # would head-of-line-block every message queued behind it.
+                self._pending.popleft()
+                self._consecutive_failures = 0
+                self._logger.warning(
+                    "live persist dropping malformed message for %s "
+                    "(non-retryable validation error): %s",
+                    self._owner,
+                    exc,
+                    exc_info=exc,
+                )
+                continue
             except Exception as exc:  # noqa: BLE001 -- persistence is best effort here
                 self._consecutive_failures += 1
                 if self._consecutive_failures >= self._MAX_CONSECUTIVE_FAILURES:
