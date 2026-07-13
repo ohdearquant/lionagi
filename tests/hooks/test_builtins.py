@@ -808,6 +808,132 @@ class TestBranchCreateEmission:
             _m._SHARED.pop(normalize_state_db_url(None), None)
 
 
+class TestBranchEndEmission:
+    """BRANCH_END emit → persist handler fires and is guarded against clobbering
+    a more specific terminal status a per-op writer already recorded."""
+
+    async def test_handler_fires_on_emit(self, monkeypatch, tmp_path):
+        from lionagi.hooks.builtins import persist_branch_end
+        from lionagi.hooks.bus import HookBus, HookPoint
+
+        db_path = _redirect_shared_db(monkeypatch, tmp_path)
+
+        db = await _shared(db_path)
+        try:
+            sid, sprog = "be-session-1", "prog-be-s1"
+            bid, bprog = "be-branch-1", "prog-be-b1"
+            await _seed_session(db, sid, sprog)
+            await _seed_branch(db, bid, sid, bprog)
+
+            bus = HookBus()
+            bus.on(HookPoint.BRANCH_END, persist_branch_end)
+            await bus.emit(
+                HookPoint.BRANCH_END,
+                branch_id=bid,
+                status="completed",
+                ended_at=42.0,
+            )
+
+            row = await db.get_branch(bid)
+            assert row is not None
+            assert row["status"] == "completed"
+            assert row["ended_at"] == 42.0
+        finally:
+            await db.close()
+            import lionagi.state.db as _m
+            from lionagi.state.engine import normalize_state_db_url
+
+            _m._SHARED.pop(db_path, None)
+            _m._SHARED.pop(normalize_state_db_url(None), None)
+
+    async def test_guard_skips_already_terminal_status(self, monkeypatch, tmp_path):
+        """A per-op writer's more specific outcome (e.g. cli/orchestrate/flow.py's
+        NodeFailed branch-status update) must not be clobbered by a run-level
+        BRANCH_END carrying a different, coarser status."""
+        from lionagi.hooks.builtins import persist_branch_end
+        from lionagi.hooks.bus import HookBus, HookPoint
+
+        db_path = _redirect_shared_db(monkeypatch, tmp_path)
+
+        db = await _shared(db_path)
+        try:
+            sid, sprog = "be-session-2", "prog-be-s2"
+            bid, bprog = "be-branch-2", "prog-be-b2"
+            await _seed_session(db, sid, sprog)
+            await _seed_branch(db, bid, sid, bprog)
+            await db.update_branch(bid, status="failed", ended_at=10.0)
+
+            bus = HookBus()
+            bus.on(HookPoint.BRANCH_END, persist_branch_end)
+            await bus.emit(
+                HookPoint.BRANCH_END,
+                branch_id=bid,
+                status="completed",
+                ended_at=999.0,
+            )
+
+            row = await db.get_branch(bid)
+            assert row["status"] == "failed"
+            assert row["ended_at"] == 10.0
+        finally:
+            await db.close()
+            import lionagi.state.db as _m
+            from lionagi.state.engine import normalize_state_db_url
+
+            _m._SHARED.pop(db_path, None)
+            _m._SHARED.pop(normalize_state_db_url(None), None)
+
+    async def test_default_status_is_completed(self, monkeypatch, tmp_path):
+        from lionagi.hooks.builtins import persist_branch_end
+        from lionagi.hooks.bus import HookBus, HookPoint
+
+        db_path = _redirect_shared_db(monkeypatch, tmp_path)
+
+        db = await _shared(db_path)
+        try:
+            sid, sprog = "be-session-3", "prog-be-s3"
+            bid, bprog = "be-branch-3", "prog-be-b3"
+            await _seed_session(db, sid, sprog)
+            await _seed_branch(db, bid, sid, bprog)
+
+            bus = HookBus()
+            bus.on(HookPoint.BRANCH_END, persist_branch_end)
+            await bus.emit(HookPoint.BRANCH_END, branch_id=bid)
+
+            row = await db.get_branch(bid)
+            assert row["status"] == "completed"
+            assert row["ended_at"] is not None
+        finally:
+            await db.close()
+            import lionagi.state.db as _m
+            from lionagi.state.engine import normalize_state_db_url
+
+            _m._SHARED.pop(db_path, None)
+            _m._SHARED.pop(normalize_state_db_url(None), None)
+
+    async def test_missing_branch_row_does_not_raise(self, monkeypatch, tmp_path):
+        """A DAG leg branch that never got a first message (no create_branch()
+        call, so no row) must not make BRANCH_END raise."""
+        from lionagi.hooks.builtins import persist_branch_end
+        from lionagi.hooks.bus import HookBus, HookPoint
+
+        db_path = _redirect_shared_db(monkeypatch, tmp_path)
+
+        db = await _shared(db_path)
+        try:
+            bus = HookBus()
+            bus.on(HookPoint.BRANCH_END, persist_branch_end)
+            # MUST NOT raise.
+            await bus.emit(HookPoint.BRANCH_END, branch_id="no-such-branch", status="failed")
+        finally:
+            await db.close()
+            import lionagi.state.db as _m
+            from lionagi.state.engine import normalize_state_db_url
+
+            _m._SHARED.pop(db_path, None)
+            _m._SHARED.pop(normalize_state_db_url(None), None)
+
+
 class TestDefaultHookBusEmissions:
     """build_session_bus wires all three handlers; each fires on the correct point."""
 
@@ -883,6 +1009,35 @@ class TestDefaultHookBusEmissions:
 
             row = await db.get_branch(bid)
             assert row["model"] == "m2"
+        finally:
+            await db.close()
+            import lionagi.state.db as _m
+            from lionagi.state.engine import normalize_state_db_url
+
+            _m._SHARED.pop(db_path, None)
+            _m._SHARED.pop(normalize_state_db_url(None), None)
+
+    async def test_branch_end_handler_wired_in_default_bus(self, monkeypatch, tmp_path):
+        from lionagi.hooks.bus import HookPoint
+        from lionagi.hooks.loader import build_session_bus
+
+        db_path = _redirect_shared_db(monkeypatch, tmp_path)
+
+        db = await _shared(db_path)
+        try:
+            sid, sprog = "dbus-be-s1", "prog-dbus-bes1"
+            bid, bprog = "dbus-be-b1", "prog-dbus-beb1"
+            await _seed_session(db, sid, sprog)
+            await _seed_branch(db, bid, sid, bprog)
+
+            bus = build_session_bus()
+            handlers = bus.handlers_for(HookPoint.BRANCH_END)
+            assert len(handlers) == 1
+            await bus.emit(HookPoint.BRANCH_END, branch_id=bid, status="failed")
+
+            row = await db.get_branch(bid)
+            assert row["status"] == "failed"
+            assert row["ended_at"] is not None
         finally:
             await db.close()
             import lionagi.state.db as _m

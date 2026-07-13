@@ -67,7 +67,8 @@ def test_run_end_default_usage_fields():
     sig = RunEnd()
     assert sig.input_tokens == 0
     assert sig.output_tokens == 0
-    assert sig.total_cost_usd == 0.0
+    # Unknown, not free -- no provider reported a cost.
+    assert sig.total_cost_usd is None
     assert sig.num_turns == 0
     assert sig.duration_ms == 0.0
 
@@ -89,7 +90,8 @@ def test_collect_branch_usage_empty():
     usage = _collect_branch_usage(branch)
     assert usage["input_tokens"] == 0
     assert usage["output_tokens"] == 0
-    assert usage["total_cost_usd"] == 0.0
+    # Unknown, not free -- no messages, so no provider reported a cost.
+    assert usage["total_cost_usd"] is None
     assert usage["num_turns"] == 0
 
 
@@ -107,6 +109,25 @@ def test_collect_branch_usage_openai_convention():
     assert usage["input_tokens"] == 40
     assert usage["output_tokens"] == 20
     assert usage["total_cost_usd"] == pytest.approx(0.005)
+
+
+def test_collect_branch_usage_preserves_explicit_zero_cost():
+    """A provider that explicitly reports total_cost_usd=0.0 (a real, known-
+    free call) must not be coerced into the "unknown" None sentinel -- `x or
+    y` truthiness would silently drop the falsy 0.0 and fall through to the
+    "cost" fallback (absent here), losing the explicit zero."""
+    msg = MagicMock()
+    msg.metadata = {
+        "model_response": {
+            "usage": {"input_tokens": 10, "output_tokens": 5},
+            "total_cost_usd": 0.0,
+        }
+    }
+    branch = MagicMock()
+    branch.msgs.messages = [msg]
+    usage = _collect_branch_usage(branch)
+    assert usage["total_cost_usd"] == 0.0
+    assert usage["total_cost_usd"] is not None
 
 
 def test_collect_branch_usage_anthropic_convention():
@@ -165,7 +186,8 @@ def test_collect_multi_branch_usage_empty():
     usage = _collect_multi_branch_usage([])
     assert usage["input_tokens"] == 0
     assert usage["output_tokens"] == 0
-    assert usage["total_cost_usd"] == 0.0
+    # Unknown, not free -- no branches, so no provider reported a cost.
+    assert usage["total_cost_usd"] is None
     assert usage["num_turns"] == 0
 
 

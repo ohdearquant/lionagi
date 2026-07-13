@@ -612,6 +612,81 @@ async def test_teardown_updates_session_bookmarks_and_status(
     assert s["ended_at"] is not None
 
 
+async def test_teardown_finalizes_branch_status_and_ended_at(
+    temp_db_path: Path,
+):
+    """The single-branch agent path never gets branches.status written
+    anywhere else (create_branch() doesn't set it and there was no
+    terminal-status hook) — teardown's BRANCH_END emission is its only
+    finalize."""
+    branch = Branch(name="b1")
+    ctx = await _setup_live_persist(branch)
+
+    async with StateDB() as db:
+        before = await db.get_branch(str(branch.id))
+    assert before["status"] is None
+    assert before["ended_at"] is None
+
+    await _teardown_live_persist(ctx, status="completed")
+
+    async with StateDB() as db:
+        after = await db.get_branch(str(branch.id))
+    assert after["status"] == "completed"
+    assert after["ended_at"] is not None
+
+
+async def test_teardown_finalizes_branch_status_failed_on_exception(
+    temp_db_path: Path,
+):
+    """A branch whose operation raised must not be left with a NULL/'running'
+    status forever — teardown finalizes it to the run's actual outcome."""
+    branch = Branch(name="b1")
+    ctx = await _setup_live_persist(branch)
+
+    await _teardown_live_persist(ctx, status="failed", exception=RuntimeError("boom"))
+
+    async with StateDB() as db:
+        b = await db.get_branch(str(branch.id))
+    assert b["status"] == "failed"
+    assert b["ended_at"] is not None
+
+
+async def test_teardown_branch_end_skipped_when_defer_terminal(
+    temp_db_path: Path,
+):
+    """defer_terminal=True skips ALL DB mutation, including BRANCH_END — the
+    resumed leg's own (non-deferred) teardown owns the real finalize."""
+    branch = Branch(name="b1")
+    ctx = await _setup_live_persist(branch)
+
+    await _teardown_live_persist(ctx, status="timed_out", defer_terminal=True)
+
+    async with StateDB() as db:
+        b = await db.get_branch(str(branch.id))
+    assert b["status"] is None
+    assert b["ended_at"] is None
+
+
+async def test_teardown_branch_end_guard_skips_already_terminal_branch(
+    temp_db_path: Path,
+):
+    """finalize_branch()'s guard: a branch row already in a terminal status
+    (however it got there) is never overwritten by a later teardown's
+    coarser run-level status."""
+    branch = Branch(name="b1")
+    ctx = await _setup_live_persist(branch)
+
+    async with StateDB() as db:
+        await db.update_branch(str(branch.id), status="completed", ended_at=111.0)
+
+    await _teardown_live_persist(ctx, status="failed", exception=RuntimeError("boom"))
+
+    async with StateDB() as db:
+        b = await db.get_branch(str(branch.id))
+    assert b["status"] == "completed"
+    assert b["ended_at"] == 111.0
+
+
 async def test_teardown_detaches_persistence_from_bus(
     temp_db_path: Path,
 ):
@@ -1332,6 +1407,58 @@ async def test_teardown_suppresses_failed_when_linked_engine_session_running(
     assert s is not None
     assert s["status"] == "running"
     assert s["node_metadata"]["linked_engine_session_id"] == session_db_id(engine_uid)
+
+
+async def test_teardown_leaves_branch_untouched_when_suppressed_to_running(
+    temp_db_path: Path,
+):
+    """BRANCH_END must never fire for the phantom-'failed'-suppression case:
+    when the linked engine session is still running, teardown's final_status
+    resolves to 'running' (non-terminal), so the branch row — like the
+    session row above — must be left exactly as create_branch() left it, not
+    stamped with an ended_at from a status that isn't actually final."""
+    from lionagi.providers._provider_errors import ProviderError
+    from lionagi.state.claude_mirror import mirror_session
+
+    engine_uid = "aaaaaaaa-bbbb-cccc-dddd-111111111111"
+    async with StateDB() as db:
+        await mirror_session(
+            db,
+            session_uid=engine_uid,
+            events=[
+                {
+                    "type": "assistant",
+                    "uuid": "e1",
+                    "timestamp": "2026-07-05T00:00:00.000Z",
+                    "message": {
+                        "role": "assistant",
+                        "content": [{"type": "text", "text": "still working"}],
+                    },
+                }
+            ],
+            tool_names={},
+            status="running",
+        )
+
+    branch = Branch(name="b1")
+    ctx = await _setup_live_persist(branch, agent_name="implementer")
+    assert ctx is not None
+
+    async with StateDB() as db:
+        before = await db.get_branch(str(branch.id))
+    assert before["status"] is None
+    assert before["ended_at"] is None
+
+    exc = ProviderError("abandoned stream reader")
+    final_status = await _teardown_live_persist(
+        ctx, status="failed", exception=exc, engine_session_uid=engine_uid
+    )
+    assert final_status == "running"
+
+    async with StateDB() as db:
+        after = await db.get_branch(str(branch.id))
+    assert after["status"] is None
+    assert after["ended_at"] is None
 
 
 async def test_teardown_suppresses_failed_when_linked_engine_session_completed(

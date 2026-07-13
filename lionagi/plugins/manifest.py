@@ -26,9 +26,40 @@ __all__ = (
     "ProviderCapability",
     "ToolCapability",
     "parse_manifest",
+    "parse_tool_target",
 )
 
 _NAME_RE = re.compile(r"^[a-z0-9][a-z0-9-]{0,31}$")
+_CALLABLE_NAME_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+
+
+def parse_tool_target(target: str, *, label: str = "tool target") -> tuple[str, str]:
+    """Split a bundle-relative ``path.py:callable`` reference into ``(path, callable)``.
+
+    This is the single parser both declared-file collection (what gets
+    content-hashed at trust time, in ``discovery.py``) and activation (what
+    gets imported, in ``registry.py``) must use — never two independently
+    written splitting expressions. A target with anything other than
+    exactly one ``:`` is rejected outright (no "last colon wins" vs "first
+    colon wins" ambiguity is possible once that's enforced), and the
+    callable part must be a plain Python identifier: no colons, no path
+    separators, no dots. A bundle-relative filename is separately barred
+    from containing ``:`` at all (see ``discovery._validate_bundle_relative``),
+    which closes the same gap from the other side.
+    """
+    parts = target.split(":")
+    if len(parts) != 2:
+        raise ValueError(
+            f"{label} {target!r} must have exactly one ':' separator ('relative/path.py:callable')"
+        )
+    path_part, callable_name = parts
+    if not path_part or not callable_name:
+        raise ValueError(f"{label} {target!r} must be 'relative/path.py:callable'")
+    if not _CALLABLE_NAME_RE.match(callable_name):
+        raise ValueError(
+            f"{label} {target!r} callable {callable_name!r} must be a plain Python identifier"
+        )
+    return path_part, callable_name
 
 
 class ManifestError(ValueError):
@@ -59,6 +90,12 @@ class ToolCapability(BaseModel):
 
     name: str
     target: str
+
+    @field_validator("target")
+    @classmethod
+    def _validate_target(cls, v: str) -> str:
+        parse_tool_target(v, label="tool target")
+        return v
 
 
 class HookCommand(BaseModel):
