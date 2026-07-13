@@ -8,7 +8,12 @@ from pathlib import Path
 
 import pytest
 
-from lionagi.plugins.manifest import ManifestError, PluginManifest, parse_manifest
+from lionagi.plugins.manifest import (
+    ManifestError,
+    PluginManifest,
+    parse_manifest,
+    parse_tool_target,
+)
 
 VALID_MANIFEST = """\
 name: web-research
@@ -138,4 +143,67 @@ def test_invalid_yaml_raises_manifest_error(tmp_path: Path):
     path.write_text("name: [unterminated\n")
 
     with pytest.raises(ManifestError):
+        parse_manifest(path)
+
+
+class TestParseToolTarget:
+    """The single parser discovery's declared-file collection and registry's activation
+    both use — a target with anything other than exactly one ':' has no well-defined
+    path/callable split, and a permissive parser letting two call sites split it
+    differently is exactly how a hashed file and an executed file can diverge."""
+
+    def test_single_separator_round_trips(self):
+        assert parse_tool_target("tools/search.py:web_search") == (
+            "tools/search.py",
+            "web_search",
+        )
+
+    def test_zero_separators_rejected(self):
+        with pytest.raises(ValueError, match="exactly one"):
+            parse_tool_target("tools/search.py")
+
+    def test_two_separators_rejected(self):
+        with pytest.raises(ValueError, match="exactly one"):
+            parse_tool_target("tools/t.py:safe:run")
+
+    def test_many_separators_rejected(self):
+        with pytest.raises(ValueError, match="exactly one"):
+            parse_tool_target("a:b:c:d:e")
+
+    def test_empty_path_part_rejected(self):
+        with pytest.raises(ValueError):
+            parse_tool_target(":callable")
+
+    def test_empty_callable_part_rejected(self):
+        with pytest.raises(ValueError):
+            parse_tool_target("tools/t.py:")
+
+    @pytest.mark.parametrize(
+        "callable_name",
+        [
+            "has space",
+            "has/slash",
+            "has.dot",
+            "123starts_with_digit",
+            "has-dash",
+            "has(paren)",
+        ],
+    )
+    def test_non_identifier_callable_names_rejected(self, callable_name: str):
+        with pytest.raises(ValueError):
+            parse_tool_target(f"tools/t.py:{callable_name}")
+
+
+def test_tool_target_with_two_separators_is_rejected_at_manifest_parse_time(tmp_path: Path):
+    """The exact multi-colon bypass shape: `tools/t.py:safe:run` could be split as file
+    'tools/t.py:safe' + callable 'run' (last-colon-wins) or file 'tools/t.py' + callable
+    'safe:run' (first-colon-wins) — two different files. The manifest schema refuses this
+    target shape outright at parse time, before any file is declared, hashed, or trusted."""
+    path = tmp_path / "plugin.yaml"
+    path.write_text(
+        "name: x\nversion: '1.0'\nlionagi: '>=0.0'\n"
+        "capabilities:\n  tools:\n    - name: t\n      target: tools/t.py:safe:run\n"
+    )
+
+    with pytest.raises(ManifestError, match="exactly one"):
         parse_manifest(path)

@@ -106,6 +106,12 @@ async def parse(
             return result if not return_res_message else (result, None)
 
     async def _inner_parse(i):
+        # This retries a failed parse by calling the public Branch.chat()
+        # directly — not a user-originated turn, so it must never mint or
+        # fire its own USER_PROMPT_SUBMIT: the outer call this repair serves
+        # (whatever public ingress that was) already fired at most once.
+        from .._turn_origin import TurnOrigin
+
         _, res = await branch.chat(
             instruction="reformat text into specified model or structure",
             guidance="follow the required response format, using the model schema as a guide",
@@ -128,6 +134,7 @@ async def parse(
             sender=branch.user,
             recipient=branch.id,
             return_ins_res_message=True,
+            _turn_origin=TurnOrigin.no_origin(),
         )
 
         res.metadata["is_parsed"] = True

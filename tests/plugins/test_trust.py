@@ -8,6 +8,7 @@ from pathlib import Path
 
 import pytest
 
+from lionagi.plugins._user_settings import read_user_settings, write_user_settings
 from lionagi.plugins.discovery import discover_plugins
 from lionagi.plugins.trust import (
     TrustState,
@@ -141,6 +142,22 @@ def test_trusting_a_bundle_with_a_missing_declared_file_is_rejected(write_plugin
     with pytest.raises(FileNotFoundError, match="tools/t.py"):
         trust_plugin(d)
     assert "web-research" not in read_trusted_plugins()
+
+
+def test_malformed_trust_record_degrades_to_changed_not_crash(write_plugin):
+    """A hand-edited settings.yaml can put a bare scalar under a plugin's
+    ``trusted_plugins`` key (e.g. ``trusted_plugins: {web-research: true}``)
+    instead of the dict record ``trust_plugin()`` writes. ``trust_state()``
+    must not crash with an AttributeError from calling ``.get()`` on a
+    non-dict -- it degrades that plugin to CHANGED like any other trust
+    record that doesn't match what's on disk."""
+    d = _discover_one(write_plugin)
+
+    settings = read_user_settings()
+    settings["trusted_plugins"] = {"web-research": True}
+    write_user_settings(settings)
+
+    assert trust_state(d) is TrustState.CHANGED
 
 
 def test_hash_is_stable_across_yaml_formatting_changes(write_plugin):
