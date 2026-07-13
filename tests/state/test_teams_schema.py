@@ -249,3 +249,30 @@ async def test_import_teams_is_idempotent(tmp_path: Path, monkeypatch):
     assert first["teams"] == 1
     assert second["teams"] == 0
     assert second["skipped_teams"] == 1
+
+
+async def test_import_teams_skips_a_torn_file_via_shared_lock_read(tmp_path: Path, monkeypatch):
+    """A corrupt/torn team file must count as an error, not crash the
+    import — read_team_json (the same shared-flock reader every other
+    team-file consumer uses), not a raw json.loads(read_text())."""
+    teams_dir = tmp_path / "teams"
+    teams_dir.mkdir()
+    runs_dir = tmp_path / "runs"
+    runs_dir.mkdir()
+    state_db = tmp_path / "state.db"
+
+    (teams_dir / "good.json").write_text(
+        json.dumps({"id": "good", "name": "t", "members": [], "messages": []})
+    )
+    (teams_dir / "torn.json").write_text("{not valid json")
+
+    from lionagi.cli import state as state_mod
+    from lionagi.state import db as db_mod
+
+    monkeypatch.setattr(state_mod, "RUNS_ROOT", runs_dir)
+    monkeypatch.setattr(db_mod, "DEFAULT_DB_PATH", state_db)
+
+    counts = await state_mod._import_teams()
+
+    assert counts["teams"] == 1
+    assert counts["errors"] == 1

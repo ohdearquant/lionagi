@@ -140,6 +140,53 @@ class Exchange(Element):
         """Alias for collect_all(). Returns messages routed."""
         return await self.collect_all()
 
+    def collect_sync(self, owner_id: UUID) -> int:
+        """Synchronous twin of collect(), for callers that cannot await."""
+        flow = self.get(owner_id)
+        if flow is None:
+            raise ValueError(f"Owner {owner_id} not registered")
+
+        deliveries: list[tuple[UUID, Message]] = []
+        outbox = flow.get_progression(OUTBOX)
+        while len(outbox) > 0:
+            message_id = outbox.popleft()
+            message = flow.items.pop(message_id, None)
+            if message is None:
+                continue
+            if message.is_broadcast:
+                for other_id in self._owner_index:
+                    if other_id != owner_id:
+                        try:
+                            message_copy = message.model_copy(deep=True)
+                        except Exception:
+                            message_copy = message.model_copy()
+                        deliveries.append((other_id, message_copy))
+            elif message.recipient is not None and message.recipient in self._owner_index:
+                deliveries.append((message.recipient, message))
+
+        for recipient_id, message in deliveries:
+            recipient_flow = self.get(recipient_id)
+            if recipient_flow is None:
+                continue
+            inbox_name = _inbox_name(message.sender)
+            try:
+                recipient_flow.add_progression(Progression(name=inbox_name))
+            except ItemExistsError:
+                pass
+            recipient_flow.add_item(message, progressions=inbox_name)
+
+        return len({m.id for _, m in deliveries})
+
+    def collect_all_sync(self) -> int:
+        """Synchronous twin of collect_all()."""
+        total = 0
+        for owner_id in list(self._owner_index.keys()):
+            try:
+                total += self.collect_sync(owner_id)
+            except ValueError:
+                continue
+        return total
+
     async def run(self, interval: float = 1.0) -> None:
         """Continuous sync loop. Call stop() to exit.
 

@@ -10,6 +10,7 @@ from __future__ import annotations
 import asyncio
 import json
 from types import SimpleNamespace
+from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 from uuid import uuid4
 
@@ -567,6 +568,87 @@ async def test_execute_dag_real_executor_rejected_injection_does_not_crash_the_r
     assert exec_result.agent_results[0]["response"] == "pass 0"
     leaked = asyncio.all_tasks() - tasks_before
     assert leaked == set()
+
+
+async def test_check_round_sees_undelivered_outbox_mail_without_a_pre_collect(tmp_path):
+    """Bob's last turn sends to alice via the Exchange and never awaits
+    collect(); neither does this test. A real ReactiveExecutor is
+    constructed and stepped by hand (bypassing flow()'s Session/Pile branch
+    resolution and _execute_dag's background sync task, both of which
+    would mask the race) so check_round's own force-delivery is the only
+    thing that can surface bob's mail before alice's terminal check."""
+    from lionagi.operations.flow import ReactiveExecutor
+
+    team_id = "e2e-real-outbox-race"
+    _make_team(team_id, ["orchestrator", "alice", "bob"])
+
+    exchange = Exchange()
+    calls: dict[str, list] = {"alice": [], "bob": []}
+
+    async def alice_operate(**kw):
+        turn = len(calls["alice"])
+        calls["alice"].append(turn)
+        if turn == 0:
+            team.post_done_signal(team_id, worker="alice", summary="alice done")
+            return "alice done"
+        return "alice woke"
+
+    async def bob_operate(**kw):
+        calls["bob"].append(len(calls["bob"]))
+        exchange.send(sender=bob_branch.id, recipient=alice_branch.id, content="check this")
+        team.post_done_signal(team_id, worker="bob", summary="bob done")
+        return "bob done"
+
+    alice_branch = _build_stub_branch(alice_operate, name="alice")
+    bob_branch = _build_stub_branch(bob_operate, name="bob")
+    exchange.register(alice_branch.id)
+    exchange.register(bob_branch.id)
+
+    session = Session()
+    session.default_branch = alice_branch
+
+    graph = Graph()
+    alice_node = Operation(operation="operate", parameters={"instruction": "go"})
+    alice_node.branch_id = alice_branch.id
+    bob_node = Operation(operation="operate", parameters={"instruction": "go"})
+    bob_node.branch_id = bob_branch.id
+    graph.add_node(alice_node)
+    graph.add_node(bob_node)
+
+    coord = make_team_lifecycle_coordinator(
+        team_id,
+        ["alice", "bob"],
+        {"alice": alice_branch, "bob": bob_branch},
+        messenger_bound={"alice": True, "bob": True},
+        exchange=exchange,
+    )
+    executor_ref: dict[str, Any] = {}
+
+    def on_op_complete(node):
+        state = coord.check_round()
+        if not state.should_continue:
+            return
+        for op in coord.build_round_operations(state, prompt="task"):
+            executor_ref["executor"].inject(op, independent=True)
+
+    executor = ReactiveExecutor(
+        session=session,
+        graph=graph,
+        max_concurrent=2,
+        default_branch=alice_branch,
+        executor_ref=executor_ref,
+        on_op_complete=on_op_complete,
+    )
+    # A MagicMock never round-trips through the real Session.branches
+    # Pile, so route each node to its own stub branch directly.
+    executor.operation_branches[alice_node.id] = alice_branch
+    executor.operation_branches[bob_node.id] = bob_branch
+
+    await executor.execute()
+
+    # Alice must be woken by a round carrying bob's message.
+    assert len(calls["bob"]) == 1
+    assert len(calls["alice"]) == 2
 
 
 async def test_execute_dag_without_team_data_never_constructs_a_coordinator(tmp_path):

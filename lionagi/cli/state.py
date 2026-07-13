@@ -699,6 +699,8 @@ async def _import_teams() -> dict[str, int]:
 
     from lionagi.state.db import StateDB
 
+    from .team import read_team_json
+
     teams_dir = (RUNS_ROOT.parent / "teams").resolve()
     counts = {"teams": 0, "messages": 0, "skipped_teams": 0, "errors": 0}
     if not teams_dir.exists():
@@ -710,9 +712,8 @@ async def _import_teams() -> dict[str, int]:
 
     async with StateDB() as db:
         for path in json_files:
-            try:
-                data = json.loads(path.read_text())
-            except (OSError, json.JSONDecodeError):
+            data = read_team_json(path)  # shared-flock read; None on torn/corrupt
+            if data is None:
                 counts["errors"] += 1
                 continue
             team_id = data.get("id")

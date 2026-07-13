@@ -697,6 +697,13 @@ class TeamLifecycleCoordinator:
 
         from lionagi.cli import team
 
+        # Force-deliver queued outbox sends before the terminal read — the
+        # periodic async collect may not have ticked, and this sync hook
+        # cannot await it.
+        if self.exchange is not None:
+            with contextlib.suppress(Exception):
+                self.exchange.collect_all_sync()
+
         data = team._load_team(self.team_id)
         state = team.compute_quiescence(
             data.get("messages", []),
