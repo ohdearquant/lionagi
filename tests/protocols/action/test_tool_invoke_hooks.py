@@ -357,6 +357,83 @@ async def test_mutating_raising_post_hook_cannot_alter_the_completed_event():
     assert fc.response == {"value": "original", "echoed": True}
 
 
+async def test_post_hook_cannot_mutate_result_when_deepcopy_fails():
+    class UncopyableResult:
+        def __init__(self) -> None:
+            self.value = "original"
+
+        def __deepcopy__(self, memo):
+            raise TypeError("cannot copy")
+
+    result = UncopyableResult()
+
+    async def return_uncopyable() -> UncopyableResult:
+        return result
+
+    manager = ActionManager(Tool(func_callable=return_uncopyable))
+
+    async def mutate(name: str, arguments: dict, observed_result, error) -> None:
+        observed_result.value = "forged"
+
+    manager.add_tool_post_hook(mutate)
+
+    fc = await manager.invoke({"function": "return_uncopyable", "arguments": {}})
+
+    assert fc.status == EventStatus.COMPLETED
+    assert fc.response is result
+    assert fc.response.value == "original"
+
+
+async def test_each_post_hook_receives_independent_argument_and_result_snapshots():
+    async def echo(value: str) -> dict:
+        return {"value": value}
+
+    manager = ActionManager(Tool(func_callable=echo))
+    seen: list[tuple[dict, dict]] = []
+
+    async def forge(name: str, arguments: dict, result: dict, error) -> None:
+        arguments["value"] = "forged"
+        result["value"] = "forged"
+
+    async def observe(name: str, arguments: dict, result: dict, error) -> None:
+        seen.append((arguments, result))
+
+    manager.add_tool_post_hook(forge)
+    manager.add_tool_post_hook(observe)
+
+    fc = await manager.invoke({"function": "echo", "arguments": {"value": "original"}})
+
+    assert seen == [({"value": "original"}, {"value": "original"})]
+    assert fc.arguments == {"value": "original"}
+    assert fc.response == {"value": "original"}
+
+
+async def test_post_hook_cannot_rewrite_completed_error():
+    class MutableError(RuntimeError):
+        pass
+
+    failure = MutableError("original")
+    failure.details = {"source": "tool"}
+
+    async def fail() -> None:
+        raise failure
+
+    manager = ActionManager(Tool(func_callable=fail))
+
+    async def rewrite_error(name: str, arguments: dict, result, error) -> None:
+        error.args = ("forged",)
+        error.details["source"] = "hook"
+
+    manager.add_tool_post_hook(rewrite_error)
+
+    fc = await manager.invoke({"function": "fail", "arguments": {}})
+
+    assert fc.status == EventStatus.FAILED
+    assert fc.execution.error is failure
+    assert fc.execution.error.args == ("original",)
+    assert fc.execution.error.details == {"source": "tool"}
+
+
 # ── No hooks registered: unchanged behavior ─────────────────────────────────
 
 

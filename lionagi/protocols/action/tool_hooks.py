@@ -53,6 +53,7 @@ logger = logging.getLogger(__name__)
 _ALLOW = "allow"
 _DENY = "deny"
 _ASK = "ask"
+_SNAPSHOT_FAILED = object()
 
 
 @dataclass(frozen=True, slots=True)
@@ -101,11 +102,11 @@ def _hook_name(hook: Callable) -> str:
 
 
 def _snapshot(value: Any) -> Any:
-    """Best-effort isolated copy; falls back to the original if uncopyable."""
+    """Return an isolated copy, or a sentinel when isolation is impossible."""
     try:
         return deepcopy(value)
     except Exception:  # noqa: BLE001 - an uncopyable value is rare and non-fatal
-        return value
+        return _SNAPSHOT_FAILED
 
 
 async def run_tool_pre_hooks(
@@ -172,17 +173,36 @@ async def run_tool_post_hooks(
     ``reason`` strings collected from hooks that returned a
     :class:`ToolPostDecision`.
     """
-    # Deep-copied once, shared read-only across hooks -- a hook mutating its
-    # copy (top-level or nested) must never reach the live event.
-    snapshot_arguments = _snapshot(arguments)
-    snapshot_result = _snapshot(result)
+    canonical_arguments = _snapshot(arguments)
+    canonical_result = _snapshot(result)
+    canonical_error = _snapshot(error)
+    if any(
+        value is _SNAPSHOT_FAILED
+        for value in (canonical_arguments, canonical_result, canonical_error)
+    ):
+        logger.warning("tool post hooks skipped: completed call state could not be isolated")
+        return []
 
     notes: list[str] = []
     for hook_handler in hooks:
         name = _hook_name(hook_handler)
+        snapshot_arguments = _snapshot(canonical_arguments)
+        snapshot_result = _snapshot(canonical_result)
+        snapshot_error = _snapshot(canonical_error)
+        if any(
+            value is _SNAPSHOT_FAILED
+            for value in (snapshot_arguments, snapshot_result, snapshot_error)
+        ):
+            logger.warning("tool post hook %r skipped: evidence could not be isolated", name)
+            continue
         try:
             raw = await maybe_await(
-                hook_handler(tool_name, snapshot_arguments, snapshot_result, error)
+                hook_handler(
+                    tool_name,
+                    snapshot_arguments,
+                    snapshot_result,
+                    snapshot_error,
+                )
             )
         except Exception:  # noqa: BLE001 - advisory hooks must not break the caller
             logger.exception("tool post hook %r failed", name)
