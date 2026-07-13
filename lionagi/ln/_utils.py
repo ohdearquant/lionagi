@@ -44,6 +44,87 @@ def now_utc() -> datetime:
     return datetime.now(timezone.utc)
 
 
+def _build_safe_path(
+    directory: StdPath | str,
+    filename: str,
+    extension: str | None,
+    timestamp: bool,
+    time_prefix: bool,
+    timestamp_format: str | None,
+    random_hash_digits: int,
+) -> StdPath:
+    """Shared, symlink-safe path construction for create_path/acreate_path.
+
+    Validates the filename and resolves the final target without touching the
+    filesystem. Both the sync and async constructors call this so they share
+    identical traversal/containment semantics (ADR-0050 D5) — fix the check
+    once, here, rather than per-variant.
+    """
+    from lionagi.libs.path_safety import contain_and_resolve
+
+    directory = StdPath(directory)
+
+    # Resolve BEFORE filename can redirect directory into a subdirectory;
+    # all containment checks validate against this fixed root.
+    base_root = directory.resolve()
+
+    def _contained(candidate: StdPath) -> StdPath:
+        # contain_and_resolve() is the shared containment predicate (symlink-
+        # safe resolve + relative_to); re-raise with this module's historical
+        # wording so existing callers matching on message text keep working.
+        try:
+            return contain_and_resolve(candidate, base_root)
+        except ValueError as exc:
+            raise ValueError(
+                f"Resolved path {candidate.resolve()} escapes base directory "
+                f"{base_root}. Refusing to create path."
+            ) from exc
+
+    if "/" in filename:
+        parts = filename.split("/")
+        # Reject '.' or '..' to prevent directory traversal
+        for component in parts:
+            if component in (".", ".."):
+                raise ValueError(
+                    f"Filename components must not be '.' or '..'; "
+                    f"got component {component!r} in {filename!r}."
+                )
+        sub_dir, filename = (
+            parts[:-1],
+            parts[-1],
+        )
+        directory = directory / "/".join(sub_dir)
+
+    if "\\" in filename:
+        raise ValueError("Filename cannot contain directory separators.")
+
+    if filename in (".", ".."):
+        raise ValueError(f"Filename must not be '.' or '..'; got {filename!r}.")
+
+    # Both dir and candidate must resolve within base_root (symlink-safe) —
+    # the one shared containment predicate, applied twice: once for a
+    # slash-redirected directory, once for the final candidate.
+    dir_resolved = _contained(directory.resolve())
+
+    if "." in filename:
+        name, ext = filename.rsplit(".", 1)
+    else:
+        name = filename
+        ext = extension or ""
+    ext = f".{ext.lstrip('.')}" if ext else ""
+
+    if timestamp:
+        ts_str = datetime.now().strftime(timestamp_format or "%Y%m%d%H%M%S")
+        name = f"{ts_str}_{name}" if time_prefix else f"{name}_{ts_str}"
+
+    if random_hash_digits > 0:
+        random_suffix = uuid.uuid4().hex[:random_hash_digits]
+        name = f"{name}-{random_suffix}"
+
+    full_path = dir_resolved / f"{name}{ext}"
+    return _contained(full_path.resolve())
+
+
 async def acreate_path(
     directory: StdPath | AsyncPath | str,
     filename: str,
@@ -59,62 +140,17 @@ async def acreate_path(
     from .concurrency import move_on_after
 
     async def _impl() -> AsyncPath:
-        nonlocal directory, filename
-
-        # Resolve BEFORE filename can redirect directory into a subdirectory;
-        # all containment checks validate against this fixed root.
-        base_root = StdPath(str(directory)).resolve()
-
-        if "/" in filename:
-            parts = filename.split("/")
-            # Reject '.' or '..' to prevent directory traversal
-            for component in parts:
-                if component in (".", ".."):
-                    raise ValueError(
-                        f"Filename components must not be '.' or '..'; "
-                        f"got component {component!r} in {filename!r}."
-                    )
-            sub_dir, filename = (
-                parts[:-1],
-                parts[-1],
+        full_path = AsyncPath(
+            _build_safe_path(
+                StdPath(str(directory)),
+                filename,
+                extension,
+                timestamp,
+                time_prefix,
+                timestamp_format,
+                random_hash_digits,
             )
-            directory = AsyncPath(directory) / "/".join(sub_dir)
-
-        if "\\" in filename:
-            raise ValueError("Filename cannot contain directory separators.")
-
-        if filename in (".", ".."):
-            raise ValueError(f"Filename must not be '.' or '..'; got {filename!r}.")
-
-        # Both dir and candidate must resolve within base_root (symlink-safe)
-        dir_resolved = StdPath(str(directory)).resolve()
-        candidate_resolved = (dir_resolved / filename).resolve()
-        for escapee in (dir_resolved, candidate_resolved):
-            try:
-                escapee.relative_to(base_root)
-            except ValueError as exc:
-                raise ValueError(
-                    f"Resolved path {escapee} escapes base directory "
-                    f"{base_root}. Refusing to create path."
-                ) from exc
-
-        directory = AsyncPath(directory)
-        if "." in filename:
-            name, ext = filename.rsplit(".", 1)
-        else:
-            name = filename
-            ext = extension or ""
-        ext = f".{ext.lstrip('.')}" if ext else ""
-
-        if timestamp:
-            ts_str = datetime.now().strftime(timestamp_format or "%Y%m%d%H%M%S")
-            name = f"{ts_str}_{name}" if time_prefix else f"{name}_{ts_str}"
-
-        if random_hash_digits > 0:
-            random_suffix = uuid.uuid4().hex[:random_hash_digits]
-            name = f"{name}-{random_suffix}"
-
-        full_path = directory / f"{name}{ext}"
+        )
 
         await full_path.parent.mkdir(parents=True, exist_ok=dir_exist_ok)
 
@@ -409,32 +445,22 @@ def create_path(
     timestamp_format: str | None = None,
     random_hash_digits: int = 0,
 ) -> StdPath:
-    """Generate a file path under directory with optional timestamp and random suffix."""
-    if "/" in filename:
-        sub_dir, filename = filename.split("/")[:-1], filename.split("/")[-1]
-        directory = StdPath(directory) / "/".join(sub_dir)
+    """Generate a file path under directory with optional timestamp and random suffix.
 
-    if "\\" in filename:
-        raise ValueError("Filename cannot contain directory separators.")
-
-    directory = StdPath(directory)
-
-    if "." in filename:
-        name, ext = filename.rsplit(".", 1)
-    else:
-        name, ext = filename, extension
-
-    ext = f".{ext.lstrip('.')}" if ext else ""
-
-    if timestamp:
-        ts_str = datetime.now().strftime(timestamp_format or "%Y%m%d%H%M%S")
-        name = f"{ts_str}_{name}" if time_prefix else f"{name}_{ts_str}"
-
-    if random_hash_digits > 0:
-        random_suffix = uuid.uuid4().hex[:random_hash_digits]
-        name = f"{name}-{random_suffix}"
-
-    full_path = directory / f"{name}{ext}"
+    Shares symlink-safe traversal/containment validation with acreate_path
+    (see _build_safe_path) — a filename with `..`/absolute components, or a
+    directory reached only through a symlink escape, is rejected here just as
+    it is in the async constructor.
+    """
+    full_path = _build_safe_path(
+        StdPath(directory),
+        filename,
+        extension,
+        timestamp,
+        time_prefix,
+        timestamp_format,
+        random_hash_digits,
+    )
 
     full_path.parent.mkdir(parents=True, exist_ok=dir_exist_ok)
     if full_path.exists() and not file_exist_ok:

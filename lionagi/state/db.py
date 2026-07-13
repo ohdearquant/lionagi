@@ -17,6 +17,7 @@ from sqlalchemy.schema import CreateTable
 
 from lionagi._paths import LIONAGI_HOME
 from lionagi.config import settings
+from lionagi.libs.path_safety import check_path_safe as _check_path_safe
 from lionagi.ln import json_dumps as _json_dumps
 from lionagi.ln.concurrency import Lock
 from lionagi.state.engine import (
@@ -3130,6 +3131,12 @@ class StateDB:
             raise ValueError("artifact kind is required")
         if not name:
             raise ValueError("artifact name is required")
+        if file_path is not None:
+            # Studio artifact file references (ADR-0077 delta 5) must stay
+            # relative and non-traversing before they can ever be served for
+            # preview/download — reject absolute paths and `..` at write time
+            # rather than trusting whatever recorded the reference.
+            _check_path_safe(file_path, "file_path")
         now = time.time()
         existing_id = await self._find_artifact_id(
             kind=kind, name=name, invocation_id=invocation_id, session_id=session_id
