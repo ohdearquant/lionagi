@@ -9,6 +9,7 @@ REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 FRONTEND_DIR="$REPO_ROOT/apps/studio/frontend"
 MARKETPLACE_DIR="$REPO_ROOT/marketplace"
 NOTEBOOK_HYGIENE_SCRIPT="$REPO_ROOT/scripts/lint_notebook_hygiene.py"
+PY_HYGIENE_SCRIPT="$REPO_ROOT/scripts/lint_python_hygiene.py"
 
 _has_cmd() { command -v "$1" &>/dev/null; }
 
@@ -236,6 +237,38 @@ _hygiene_rg_scan() {
   return 2
 }
 
+# Same contract as _hygiene_rg_scan (0=pass, 1=match found, 2=scanner error),
+# plus one allowlist step: lines carrying the founder's public byline/credit
+# ("Haiyang (Ocean) Li", "Haiyang Li - Ocean", the mkdocs.yml copyright line
+# "Copyright ... Ocean Li ...") are intentionally public, not internal
+# process narration -- exclude those before deciding pass/fail. Public credit
+# always pairs "Ocean" with the surname ("Li") or the legal first name
+# ("Haiyang"); leaked internal narration uses the bare informal name alone.
+_hygiene_founder_name_scan() {
+  local rg_bin="$1"
+  local label="$2"
+  shift 2
+
+  local output
+  local rg_rc=0
+  output="$("$rg_bin" -n "$@" 2>&1)" || rg_rc=$?
+
+  if [ "$rg_rc" -gt 1 ]; then
+    printf '%s\n' "$output" >&2
+    echo "  scanner error: ripgrep failed while checking $label (exit $rg_rc)" >&2
+    return 2
+  fi
+
+  local leaked
+  leaked="$(printf '%s\n' "$output" | grep -vE 'Haiyang|Ocean Li' || true)"
+  if [ -n "$leaked" ]; then
+    printf '%s\n' "$leaked"
+    echo "  FAIL: $label found"
+    return 1
+  fi
+  return 0
+}
+
 lint-hygiene() {
   echo "==> publication hygiene lint (docs/notebooks/cookbooks/root)"
   cd "$REPO_ROOT"
@@ -273,8 +306,8 @@ lint-hygiene() {
   fi
 
   echo "  checking internal namespace identifiers (lambda:<name>)..."
-  # Source code is excluded from this textual pass. Notebook prose and outputs
-  # are parsed separately so valid lambda expressions in code cells are not
+  # .py/.ipynb are excluded from this textual pass and parsed separately
+  # (below) so valid Python lambda expressions in actual code are never
   # mistaken for namespace identifiers.
   if _hygiene_rg_scan "$rg_bin" "internal namespace identifiers" --hidden -g '!*.py' -g '!*.ipynb' '\blambda:[a-z][a-z0-9_-]*\b' "${CONTENT_PATHS[@]}"; then
     :
@@ -286,6 +319,17 @@ lint-hygiene() {
     :
   else
     scan_rc=$?
+    if [ "$scan_rc" -gt "$rc" ]; then rc=$scan_rc; fi
+  fi
+  if uv run python "$PY_HYGIENE_SCRIPT" docs/ notebooks/ cookbooks/; then
+    :
+  else
+    scan_rc=$?
+    if [ "$scan_rc" -eq 1 ]; then
+      echo "  FAIL: internal namespace identifiers found in Python comments/strings"
+    else
+      echo "  scanner error: python hygiene scan failed (exit $scan_rc)" >&2
+    fi
     if [ "$scan_rc" -gt "$rc" ]; then rc=$scan_rc; fi
   fi
   if uv run python "$NOTEBOOK_HYGIENE_SCRIPT" notebooks/ cookbooks/; then
@@ -315,14 +359,14 @@ lint-hygiene() {
     if [ "$scan_rc" -gt "$rc" ]; then rc=$scan_rc; fi
   fi
 
-  echo "  checking founder-name process narration (Ocean's)..."
-  if _hygiene_rg_scan "$rg_bin" "founder-name process narration" --hidden "\bOcean's\b" "${CONTENT_PATHS[@]}"; then
+  echo "  checking founder-name process narration (Ocean / Ocean's)..."
+  if _hygiene_founder_name_scan "$rg_bin" "founder-name process narration" --hidden "\bOcean('s)?\b" "${CONTENT_PATHS[@]}"; then
     :
   else
     scan_rc=$?
     if [ "$scan_rc" -gt "$rc" ]; then rc=$scan_rc; fi
   fi
-  if _hygiene_rg_scan "$rg_bin" "founder-name process narration at repo root" --hidden --max-depth 1 -g '!.git' "\bOcean's\b" .; then
+  if _hygiene_founder_name_scan "$rg_bin" "founder-name process narration at repo root" --hidden --max-depth 1 -g '!.git' "\bOcean('s)?\b" .; then
     :
   else
     scan_rc=$?
