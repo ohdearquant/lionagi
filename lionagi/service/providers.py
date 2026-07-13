@@ -50,7 +50,14 @@ def normalize_effort(effort: str | None) -> str | None:
 _CODEX_ULTRA_MODELS = frozenset({"gpt-5.6-sol", "gpt-5.6-terra"})
 _CODEX_MAX_ONLY_MODELS = frozenset({"gpt-5.6-luna"})
 _CODEX_XHIGH_CEILING_MODELS = frozenset(
-    {"gpt-5.5", "gpt-5.4", "gpt-5.4-mini", "gpt-5.3-codex-spark", "codex-auto-review"}
+    {
+        "gpt-5.5",
+        "gpt-5.4",
+        "gpt-5.4-mini",
+        "gpt-5.3-codex",
+        "gpt-5.3-codex-spark",
+        "codex-auto-review",
+    }
 )
 
 
