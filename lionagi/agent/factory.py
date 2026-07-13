@@ -126,13 +126,15 @@ def _wire_external_hooks(branch: Branch, spec: AgentSpec) -> None:
     The remaining supported events attach to ``branch._hooks`` (a ``HookBus``)
     -- present only once the branch is owned by a ``Session``; a standalone
     branch built via ``create_agent`` has none yet, so those entries are
-    queued on ``branch._pending_hook_bus_entries`` instead of dropped.
-    ``Branch.attach_hook_bus`` -- the only seam that ever assigns
+    queued on ``branch._pending_hook_bus_entries`` instead of dropped, and
+    the queue is kept for the branch's lifetime rather than cleared on
+    first use. ``Branch.attach_hook_bus`` -- the only seam that ever assigns
     ``branch._hooks`` (``Session.include_branches`` and the lazy
-    ``Session.hooks`` property) -- flushes the queue once a bus exists, so a
-    configured ``UserPromptSubmit``/``SessionStart``/``SessionEnd``/
-    ``PostToolUseFailure`` hook still attaches once this branch joins a
-    ``Session``, rather than silently never firing.
+    ``Session.hooks`` property) -- syncs unattached entries onto whichever
+    bus is current, so a configured ``UserPromptSubmit``/``SessionStart``/
+    ``SessionEnd``/``PostToolUseFailure`` hook attaches once this branch
+    joins a ``Session`` and re-attaches if it is later reparented to
+    another one, rather than silently never firing.
     """
     if not spec.external_hooks:
         return
@@ -162,16 +164,20 @@ def _wire_external_hooks(branch: Branch, spec: AgentSpec) -> None:
             branch.acts.add_tool_pre_hook(handler)
         elif entry["event"] == "PostToolUse":
             branch.acts.add_tool_post_hook(handler)
-        elif branch._hooks is not None:
-            branch._hooks.on(event_to_point[entry["event"]], handler)
         else:
             branch._pending_hook_bus_entries.append((event_to_point[entry["event"]], handler))
-            logger.debug(
-                "hooks_external: %r configured on a branch with no HookBus "
-                "attached yet (not part of a Session yet) -- queued for "
-                "attachment once it joins one",
-                entry["event"],
-            )
+            if branch._hooks is not None:
+                # Bus already attached (branch already owned by a Session):
+                # sync this newly queued entry onto it right away, and keep
+                # it tracked so it survives a later reparent to another bus.
+                branch.attach_hook_bus(branch._hooks)
+            else:
+                logger.debug(
+                    "hooks_external: %r configured on a branch with no HookBus "
+                    "attached yet (not part of a Session yet) -- queued for "
+                    "attachment once it joins one",
+                    entry["event"],
+                )
 
 
 def _apply_permissions(spec: AgentSpec) -> None:

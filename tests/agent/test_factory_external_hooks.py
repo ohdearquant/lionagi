@@ -126,9 +126,14 @@ def test_user_prompt_submit_without_hook_bus_is_queued_not_dropped():
     assert branch._hooks is None
     assert len(branch._pending_hook_bus_entries) == 1
 
-    branch.attach_hook_bus(HookBus())
+    bus = HookBus()
+    branch.attach_hook_bus(bus)
     assert len(branch._hooks.handlers_for(HookPoint.USER_PROMPT_SUBMIT)) == 1
-    assert branch._pending_hook_bus_entries == []
+    # Retained (not cleared) so the branch can re-register onto a later bus
+    # if reparented; re-attaching the same bus must not double-register.
+    assert len(branch._pending_hook_bus_entries) == 1
+    branch.attach_hook_bus(bus)
+    assert len(branch._hooks.handlers_for(HookPoint.USER_PROMPT_SUBMIT)) == 1
 
 
 def test_session_start_and_error_route_to_hook_bus():
@@ -237,4 +242,49 @@ async def test_user_prompt_submit_hook_fires_after_create_agent_and_session_incl
     with pytest.raises(PermissionError, match="hygiene check failed"):
         await branch._hooks.blocking_emit(
             HookPoint.USER_PROMPT_SUBMIT, session_id=str(session.id), prompt="do a thing"
+        )
+
+
+async def test_user_prompt_submit_hook_survives_reparent_to_another_session(
+    monkeypatch,
+):
+    """A blocking external hook must not silently vanish when its branch is
+    moved between sessions (`Session.remove_branch` then `include_branches`
+    on another session, a supported reparenting op). The handler was queued
+    onto `_pending_hook_bus_entries` while the branch was standalone, then
+    flushed onto session A's bus; it must also flush onto session B's bus."""
+    stdout = json.dumps({"decision": "block", "reason": "hygiene check failed"}).encode()
+    monkeypatch.setattr(
+        asyncio, "create_subprocess_exec", AsyncMock(return_value=_mock_proc(0, stdout=stdout))
+    )
+
+    spec = _spec_with(
+        [
+            {
+                "event": "UserPromptSubmit",
+                "matcher": None,
+                "command": ["hygiene"],
+                "timeout": 30.0,
+                "source": None,
+            }
+        ]
+    )
+    branch = await create_agent(spec, load_settings=False)
+
+    session_a = Session()
+    _ = session_a.hooks  # bus exists before the branch joins
+    session_a.include_branches(branch)
+    assert len(session_a.hooks.handlers_for(HookPoint.USER_PROMPT_SUBMIT)) == 1
+
+    session_a.remove_branch(branch)
+    session_b = Session()
+    _ = session_b.hooks  # bus exists before the reparented branch joins
+    session_b.include_branches(branch)
+
+    assert branch._hooks is session_b.hooks
+    assert len(session_b.hooks.handlers_for(HookPoint.USER_PROMPT_SUBMIT)) == 1
+
+    with pytest.raises(PermissionError, match="hygiene check failed"):
+        await branch._hooks.blocking_emit(
+            HookPoint.USER_PROMPT_SUBMIT, session_id=str(session_b.id), prompt="do a thing"
         )

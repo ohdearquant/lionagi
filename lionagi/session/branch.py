@@ -104,6 +104,8 @@ class Branch(Element, Relational):
     _observer: Any = PrivateAttr(None)
     _hooks: Any = PrivateAttr(None)
     _pending_hook_bus_entries: list = PrivateAttr(default_factory=list)
+    _hook_bus_synced_to: Any = PrivateAttr(None)
+    _hook_bus_synced_count: int = PrivateAttr(0)
     _memory: MemoryStore | None = PrivateAttr(None)
     _owning_session_id: Any = PrivateAttr(None)
     _capabilities: Any = PrivateAttr(None)
@@ -341,24 +343,36 @@ class Branch(Element, Relational):
         return await self._observer.authorize(action)
 
     def attach_hook_bus(self, bus: Any) -> None:
-        """Set this branch's :class:`HookBus` and flush any handlers queued
-        while it had none.
+        """Set this branch's :class:`HookBus` and (re)register any external
+        handlers queued for bus attachment.
 
         A standalone branch built via ``create_agent`` has no bus yet, so
         ``hooks_external`` entries bound to bus-only events (``UserPromptSubmit``,
         ``SessionStart``/``SessionEnd``/``PostToolUseFailure``) cannot attach
         at config time; ``lionagi.agent.factory._wire_external_hooks`` queues
         them onto ``_pending_hook_bus_entries`` instead of dropping them.
-        Every seam that later gives this branch a bus -- ``Session.include_branches``
+        That list is retained for the branch's lifetime, not cleared after
+        the first flush, so a branch moved between sessions (``Session.
+        remove_branch`` then ``include_branches``/``new_branch`` elsewhere)
+        re-registers the same external handlers on its new session's bus
+        instead of silently losing them. Re-attaching the same bus is a
+        no-op for entries already registered on it -- only the entries
+        appended since the last sync onto the current bus are flushed.
+        Every seam that gives this branch a bus -- ``Session.include_branches``
         and the lazy ``Session.hooks`` property -- must route the assignment
         through this method so those queued handlers actually attach, rather
         than a configured guard silently never firing.
         """
         self._hooks = bus
-        if bus is not None and self._pending_hook_bus_entries:
-            pending, self._pending_hook_bus_entries = self._pending_hook_bus_entries, []
-            for point, handler in pending:
-                bus.on(point, handler)
+        if bus is None:
+            return
+        if bus is not self._hook_bus_synced_to:
+            self._hook_bus_synced_to = bus
+            self._hook_bus_synced_count = 0
+        unsynced = self._pending_hook_bus_entries[self._hook_bus_synced_count :]
+        for point, handler in unsynced:
+            bus.on(point, handler)
+        self._hook_bus_synced_count = len(self._pending_hook_bus_entries)
 
     async def _persist_via_bus(self, msg: Any) -> None:
         """on_message_added hook: emit MESSAGE_ADD for ordered persistence."""
