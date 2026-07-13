@@ -29,6 +29,7 @@ from lionagi.hooks.bus import HookBus, HookPoint
 from lionagi.operations._turn_origin import TurnOrigin, consume_turn_origin, resolve_turn_origin
 from lionagi.operations.run.run import run
 from lionagi.operations.types import RunParam
+from lionagi.protocols.messages import Instruction
 from lionagi.service.imodel import iModel
 from lionagi.service.types.stream_chunk import StreamChunk
 from lionagi.session.branch import Branch
@@ -239,6 +240,57 @@ async def test_run_guard_rejection_reports_run_failed_not_run_end():
     assert len(failures) == 1, f"expected 1 RunFailed, got {len(failures)}"
     assert isinstance(failures[0], PermissionError)
     assert len(ends) == 0, "RunEnd must NOT fire when the guard rejects the prompt"
+
+
+class _SpyContextProvider:
+    """Records every instruction it is asked to render context for."""
+
+    def __init__(self):
+        self.calls: list = []
+
+    async def provide(self, branch, instruction):
+        self.calls.append(instruction)
+        return "spy context"
+
+
+async def test_run_guard_rejection_no_pre_guard_side_effects():
+    """A rejected prompt must leave no lifecycle trace beyond the rejection
+    itself: no RunStart is emitted (it does not persist), and no context
+    provider ever runs (no I/O side effects) — the guard is the first
+    awaited operation for this turn, strictly before both."""
+    from lionagi.session.session import Session
+    from lionagi.session.signal import RunEnd, RunFailed, RunStart
+
+    s = Session()
+    branch = s.new_branch(system="be helpful", as_default_branch=True)
+    branch.chat_model = _make_fake_cli_model([StreamChunk(type="text", content="ok")])
+
+    spy = _SpyContextProvider()
+    branch.providers.register(spy, name="spy")
+
+    bus = HookBus()
+
+    async def reject_submit(**kw):
+        raise PermissionError("blocked")
+
+    bus.on(HookPoint.USER_PROMPT_SUBMIT, reject_submit)
+    branch._hooks = bus
+
+    starts, failures, ends = [], [], []
+    s.observe(RunStart, lambda sig, _: starts.append(sig))
+    s.observe(RunFailed, lambda sig, _: failures.append(sig.data))
+    s.observe(RunEnd, lambda sig, _: ends.append(sig))
+
+    with pytest.raises(PermissionError):
+        async for _ in run(branch, "SECRET=top-secret", RunParam()):
+            pass
+
+    assert starts == [], "RunStart must NOT fire before the guard resolves"
+    assert spy.calls == [], "context providers must never run on a rejected prompt"
+    assert len(failures) == 1, f"expected 1 RunFailed, got {len(failures)}"
+    assert isinstance(failures[0], PermissionError)
+    assert ends == [], "RunEnd must NOT fire when the guard rejects the prompt"
+    assert not any(isinstance(m, Instruction) for m in branch.messages)
 
 
 async def test_run_yielded_instruction_already_in_branch_messages():

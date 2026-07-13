@@ -222,11 +222,17 @@ async def _apply_context_providers(
     branch: "Branch",
     instruction: JsonValue | Instruction,
     param: ChatParam,
+    *,
+    ins: Instruction | None = None,
 ) -> Instruction | None:
     """Gather registered ContextProviders into the branch's per-turn injection
-    slot; returns the pre-built Instruction, or None when no providers are
+    slot; returns the (pre-)built Instruction, or None when no providers are
     registered (zero-overhead path). A branch with no system message has no
     render target — providers are skipped, not invoked; see `branch.last_context_report`.
+
+    ``ins``, when given, is reused as-is instead of building a second
+    Instruction — for callers that already constructed one before this
+    async, potentially side-effecting gather runs.
     """
     if not branch._context_providers:
         return None
@@ -237,7 +243,8 @@ async def _apply_context_providers(
         branch._last_context_report = ProviderReport(skipped=list(branch._context_providers.names))
         return None
 
-    ins = _build_instruction(branch, instruction, param)
+    if ins is None:
+        ins = _build_instruction(branch, instruction, param)
     report = await branch._context_providers.gather(branch, ins)
     branch._last_context_report = report
     branch._context_injection_slot = report.blocks
