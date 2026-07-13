@@ -22,7 +22,9 @@ class Middle(Protocol):
 ```
 
 A Middle receives the branch state and instruction, runs the model, optionally parses output,
-and returns text, dict, or `BaseModel`. It advances the branch by exactly one assistant turn.
+and returns text, dict, or `BaseModel`. The built-in middles advance the branch by exactly one
+assistant turn. A custom middle owns its own model-call and message-recording semantics — for
+example, a cache-hit path that returns before calling `communicate()` records no turn at all.
 
 **Built-in middles**:
 

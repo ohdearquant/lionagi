@@ -71,7 +71,11 @@ jobs:
     - name: Check internal links
       uses: lycheeverse/lychee-action@v2
       with:
-        args: "--no-progress --offline docs/ README.md AGENT.md CLAUDE.md CONTRIBUTING.md"
+        # --fallback-extensions md: pages use mkdocs directory URLs (href="api/operations/")
+        #   which map to source api/operations.md; let lychee resolve the .md source offline.
+        # --exclude-path docs/overrides: theme template partials contain Jinja ({{ ... }}),
+        #   not documentation links.
+        args: "--no-progress --offline --fallback-extensions md --exclude-path docs/overrides docs/ README.md AGENT.md CLAUDE.md CONTRIBUTING.md"
         fail: true
 
     # Only when docs/adr/ or the lifecycle policy registry itself changed —

@@ -132,7 +132,8 @@ that still does not create a graph dependency between those children.
 ### Other builder methods
 
 ```python
-# add a conditional branch structure
+# add a labelled two-arm structure after a check operation.
+# NOTE: both arms currently execute — see the note below.
 ids = builder.add_conditional_branch(
     condition_check_op="communicate",
     true_op="communicate",
@@ -157,6 +158,13 @@ state = builder.visualize_state()
 # get the Graph object for session.flow()
 graph = builder.get_graph()
 ```
+
+`add_conditional_branch()` connects the check operation to `true_op` and
+`false_op` with label-only edges (`if_true` / `if_false`); it does not attach
+executable edge conditions. Under the current executor a label-only edge always
+passes, so **both arms run** — this is a labelled fan-out, not exclusive
+branch selection. Do not place mutually exclusive work or conflicting side
+effects in the two arms expecting only one to execute.
 
 ## Execution via `Session.flow()`
 
