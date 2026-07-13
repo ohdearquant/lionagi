@@ -159,6 +159,94 @@ def test_response_format_nested_object_mutated_in_place_invalidates_cache():
     assert cached == uncached
 
 
+def test_response_format_mutable_dict_key_mutation_invalidates_cache():
+    class Key:
+        """A hashable, mutable key whose repr changes with its state — used
+        as a `response_format` dict key, not a value."""
+
+        def __init__(self, value: str):
+            self.value = value
+
+        def __repr__(self) -> str:
+            return f"Key({self.value!r})"
+
+    key = Key("draft")
+    branch = Branch()
+    branch.msgs.add_message(instruction="historic", response_format={key: "string"})
+
+    first = branch.msgs.to_chat_msgs()[0]["content"]
+    assert "draft" in first
+
+    # `key` is a live object used as a dict KEY (not a value) inside a
+    # tracked `response_format` dict; the untracked-mutable walk must
+    # inspect keys too, or this mutation goes undetected and the cache
+    # keeps serving the pre-mutation rendering.
+    key.value = "final"
+
+    cached = branch.msgs.to_chat_msgs()[0]["content"]
+    uncached = branch.msgs.to_chat_msgs(_use_render_cache=False)[0]["content"]
+    assert "final" in cached
+    assert "draft" not in cached
+    assert cached == uncached
+
+
+def test_cyclic_prompt_context_does_not_raise_recursion_error():
+    branch = Branch()
+
+    # A tuple/list cycle: `_track_mutable` only wraps list/dict values into
+    # revision-tracking containers (not tuples), so a cycle that closes
+    # through a tuple boundary reaches the untracked-mutable guard intact
+    # instead of blowing the stack earlier, in unrelated tracked-container
+    # construction (list/dict cycles recurse infinitely there — a
+    # separate, pre-existing limitation of `_TrackedList`/`_TrackedDict`,
+    # not the guard under test here).
+    inner_list: list = []
+    cyclic_tuple = (inner_list,)
+    inner_list.append(cyclic_tuple)
+
+    # `plain_content` short-circuits rendering before `prompt_context` is
+    # ever read (InstructionContent._format_text_content), so this isolates
+    # the untracked-mutable guard itself: the guard still walks every
+    # allowed() field, including `prompt_context`, regardless of what the
+    # renderer actually uses.
+    message = branch.msgs.add_message(
+        instruction="ignored",
+        plain_content="stable",
+        context=[cyclic_tuple],
+    )
+
+    chat = message.chat_msg
+    assert chat is not None
+    assert chat["content"] == "stable"
+    assert branch.msgs.to_chat_msgs()[0]["content"] == "stable"
+
+
+def test_json_safe_content_untracked_mutable_walk_runs_once_per_revision(monkeypatch):
+    import lionagi.protocols.messages.message as message_module
+
+    branch = Branch()
+    branch.msgs.add_message(instruction="historic", context=[{"a": 1, "b": [1, 2, 3]}])
+
+    calls: list = []
+    original = message_module._content_has_untracked_mutable
+
+    def counting(content):
+        calls.append(content)
+        return original(content)
+
+    monkeypatch.setattr(message_module, "_content_has_untracked_mutable", counting)
+
+    branch.msgs.to_chat_msgs()
+    assert len(calls) == 1
+
+    # Two more warm, revision-unchanged renders: the walk verdict is
+    # memoized per (content identity, tracked revision), so the fast path
+    # must not re-run the full traversal on either hit.
+    branch.msgs.to_chat_msgs()
+    branch.msgs.to_chat_msgs()
+    assert len(calls) == 1
+
+
 def test_message_deepcopy_pickle_and_prepare_roundtrip():
     import copy
     import pickle
