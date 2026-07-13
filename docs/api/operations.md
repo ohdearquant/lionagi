@@ -36,7 +36,9 @@ recorded replay for deterministic tests, logging/tracing decorators.
 
 ## `MorphParam` Base Class
 
-All param types are frozen dataclasses — immutable, hashable, reproducible:
+All param types are frozen, slotted dataclasses. Freezing prevents field rebinding, but
+it is shallow: nested lists and dictionaries remain mutable, and values such as those
+can make a param instance unhashable.
 
 ```python
 @dataclass(slots=True, frozen=True, init=False)
@@ -60,6 +62,7 @@ from lionagi.operations.types import ChatParam
 | `sender` | `SenderRecipient` | `None` | Message sender identity |
 | `recipient` | `SenderRecipient` | `None` | Message recipient identity |
 | `response_format` | `type[BaseModel] \| dict` | `None` | Structured output schema |
+| `structure` | `type[Structure] \| str \| None` | `None` | Structure class or string selector used to render the response format in the instruction |
 | `progression` | `ID.RefSeq` | `None` | Custom message ordering |
 | `tool_schemas` | `list[dict]` | `None` | Raw tool schemas (override registered tools) |
 | `images` | `list` | `None` | Image inputs |
@@ -68,6 +71,7 @@ from lionagi.operations.types import ChatParam
 | `include_token_usage_to_model` | `bool` | `False` | Inject token stats into next prompt |
 | `imodel` | `iModel` | `None` | Override branch's chat model for this call |
 | `imodel_kw` | `dict` | `None` | Extra kwargs merged into model invocation |
+| `turn_origin` | `TurnOrigin` | `None` | Tri-state user-turn disposition for `USER_PROMPT_SUBMIT`; `None` resolves to an unset origin, while internal calls use forwarded or no-origin values to avoid duplicate hooks |
 
 ### `RunParam` — for `run()` (extends `ChatParam`)
 
@@ -79,6 +83,7 @@ from lionagi.operations.types import RunParam
 |-------|------|---------|-------|
 | `stream_persist` | `bool` | `False` | Write chunks to JSONL as they arrive |
 | `persist_dir` | `str \| Path` | `~/.lionagi/logs/runs` | JSONL output directory |
+| `snapshot_dir` | `str \| Path \| None` | `None` | Optional branch-snapshot directory for streaming persistence; falls back to `persist_dir` when unset |
 
 ### `ParseParam` — for `parse()`
 
@@ -89,6 +94,7 @@ from lionagi.operations.types import ParseParam
 | Field | Type | Default | Notes |
 |-------|------|---------|-------|
 | `response_format` | `type[BaseModel] \| dict` | `None` | Target Pydantic model |
+| `structure` | `Structure \| None` | `None` | Concrete structure instance used to parse the response; may be propagated from the instruction |
 | `fuzzy_match_params` | `FuzzyMatchKeysParams \| dict` | `None` | Fuzzy key matching config |
 | `handle_validation` | `HandleValidation` | `"raise"` | Failure behavior (see below) |
 | `alcall_params` | `AlcallParams \| dict` | `None` | Async call params for retry loop |

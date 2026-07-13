@@ -1,15 +1,14 @@
 # Multi-Model Pipeline
 
-Run a three-agent DAG where researcher, implementer, and reviewer each use a different model.
-Preview the planned DAG with `--dry-run` before spending tokens.
+Plan a role-based DAG, then route each assignment through an explicit worker-model pool.
+Preview the assignments with `--dry-run` before spending worker tokens.
 
 ## Setup
 
 ```bash
 pip install lionagi          # or: uv add lionagi
 pip install matplotlib       # only for --show-graph
-# claude — Option A (subscription): npm install -g @anthropic-ai/claude-code && claude login
-#          Option B (API key):      export ANTHROPIC_API_KEY="sk-ant-..."
+# claude — npm install -g @anthropic-ai/claude-code && claude login
 # codex  — requires ChatGPT Plus/Pro (not an API key):
 #          npm install -g @openai/codex && codex login
 ```
@@ -19,64 +18,31 @@ pip install matplotlib       # only for --show-graph
 ```bash
 li o flow claude/sonnet \
   "Research rate-limiting algorithms, implement one in Python, then review the implementation" \
-  --dry-run --show-graph
+  --workers codex/gpt-5.4-high,claude/sonnet,codex/gpt-5.3-codex-spark \
+  --dry-run
 ```
 
-```text
-# output:
-FlowPlan (3 agents, 3 ops, synthesis=False)
+The planner returns `TaskAssignment` entries, so the exact tasks and roles depend on the
+prompt. Dry-run output has two useful sections:
 
-Agents:
-  r1: researcher
-    model: codex/gpt-5.4-high
-  i1: implementer
-  rv1: reviewer
-    model: claude/opus-4-7-medium
+- `Plan (N assignments)` lists each assignment's number, assignee, task, dependencies,
+  and optional exit criteria.
+- `Model + modes resolution` shows the generated agent ID, selected worker model, and
+  any role modes.
 
-Operations:
-  o1 → r1
-    instruction: Research token-bucket, sliding-window, and fixed-window rate-limiting algorithms. Document trade-offs in research.md...
-
-  o2 → i1
-    instruction: Implement a Python rate-limiter based on r1's research.md. Write impl.py and implementation_notes.md...
-  depends_on: o1
-
-  o3 → rv1
-    instruction: Review impl.py for correctness and edge cases. Write findings to review.md...
-  depends_on: o2
-
-Model resolution:
-  r1: codex/gpt-5.4-high (plan)
-  i1: claude/sonnet (profile)
-  rv1: claude/opus-4-7-medium (plan)
-```
+`--workers` is what makes this run multi-model. Model 1 goes to assignment 1, model 2
+to assignment 2, and so on; the pool wraps if the planner creates more assignments.
+Assignments do not carry their own model field.
 
 ```bash
-# FlowAgent.model overrides role profile; omit to use profile default (i1 → claude/sonnet)
 li o flow claude/sonnet \
   "Research rate-limiting algorithms, implement one in Python, then review the implementation" \
-  --save ./pipeline-out
+  --workers codex/gpt-5.4-high,claude/sonnet,codex/gpt-5.3-codex-spark \
+  --save ./pipeline-out --show-graph
 ```
 
-```text
-# output:
-Planning DAG...
-Plan done (2.3s): 3 agents, 3 ops — o1:r1 | o2:i1 ← o1 | o3:rv1 ← o2
-Executing DAG: 3 agents / 3 ops...
-  ▶ researcher started
-  ✓ researcher done (8.4s)
-  ▶ implementer started
-  ✓ implementer done (11.2s)
-  ▶ reviewer started
-  ✓ reviewer done (9.6s)
-DAG done (29.2s).
-Saved to /path/to/pipeline-out
-
-[orchestrator] li agent -r orc-abc123 "..."
-[researcher]   li agent -r res-def456 "..."
-[implementer]  li agent -r imp-ghi789 "..."
-[reviewer]     li agent -r rv-jkl012 "..."
-```
+The live progress text and timing depend on the generated plan. Worker artifacts land
+under `pipeline-out/<agent_id>/`; `--show-graph` writes `pipeline-out/flow_dag.png`.
 
 ## Next
 

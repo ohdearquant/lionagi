@@ -1,8 +1,9 @@
 # DAG Pipeline API
 
-Two ways to run DAG pipelines:
+Two ways to run dependency-aware work:
 
-- **CLI** (`li o flow`): the orchestrator plans the DAG automatically from a prompt
+- **CLI** (`li o flow`): a planner emits `TaskAssignment` items whose `depends_on`
+  values form the initial DAG, and workers may expand it reactively
 - **Python API** (`Builder` + `Session.flow()`): you construct the DAG explicitly
 
 This page covers the Python API path.
@@ -37,7 +38,6 @@ asyncio.run(main())
 ```text
 # output:
 Quantum error correction uses...
-Run completed: 2 nodes, 1 parallel wave
 ```
 
 ## `Builder` (`OperationGraphBuilder`)
@@ -62,9 +62,14 @@ node_id = builder.add_operation(
 )
 ```
 
-Returns: `str` — node ID used in `depends_on` lists.
+Returns the node ID used in `depends_on` lists and result lookups.
 
 `operation` must be the name of a `Branch` method: `"communicate"`, `"operate"`, `"ReAct"`, `"parse"`, etc.
+
+`Builder` is incremental. The first operation has no predecessor. After that,
+omitting `depends_on` (or passing an empty list) attaches the new operation after
+every current head with sequential edges. This is convenient for building a chain,
+but it does **not** create another independent root.
 
 ### `add_aggregation()`
 
@@ -83,26 +88,46 @@ Adds a node that depends on multiple sources — useful for fan-in synthesis.
 ### `expand_from_result()`
 
 ```python
+from pydantic import BaseModel
+from lionagi.operations import ExpansionStrategy
+
+class AnalysisTask(BaseModel):
+    instruction: str
+
 new_ids = builder.expand_from_result(
-    items=results["operation_results"][n1],
+    items=[
+        AnalysisTask(instruction="Analyze latency."),
+        AnalysisTask(instruction="Analyze reliability."),
+    ],
     source_node_id=n1,
     operation="communicate",
     strategy=ExpansionStrategy.CONCURRENT,
     inherit_context=False,
-    instruction="Analyze this item: {item}",
 )
 ```
 
-Expands the graph dynamically after partial execution — useful for iterative pipelines.
+Expands siblings from a source — useful for iterative or fan-out pipelines. Fields
+from Pydantic items become operation parameters. Non-model items are supplied as the
+`item` string plus `item_index`; use an operation that accepts those parameters.
+
+`strategy` is declarative builder metadata. Every item receives the strategy value
+in its parameters and metadata, and every graph edge still runs directly from the
+source node to that child. The strategy does not add child-to-child dependency
+edges or implement executor scheduling or chunk boundaries.
 
 **`ExpansionStrategy` values**:
 
-| Value | Behavior |
-|-------|---------|
-| `CONCURRENT` | All expanded nodes run in parallel |
-| `SEQUENTIAL` | Expanded nodes chain one after another |
-| `SEQUENTIAL_CONCURRENT_CHUNK` | Sequential chunks, concurrent within each chunk |
-| `CONCURRENT_SEQUENTIAL_CHUNK` | Concurrent chunks, sequential within each chunk |
+| Value | Builder behavior |
+|-------|------------------|
+| `CONCURRENT` | Labels each source-to-child expansion and makes the expanded nodes the builder's current heads |
+| `SEQUENTIAL` | Labels each source-to-child expansion and makes the expanded nodes the builder's current heads; it does not chain siblings |
+| `SEQUENTIAL_CONCURRENT_CHUNK` | Records the label on source-to-child expansions; no chunk scheduling is created and current heads are unchanged |
+| `CONCURRENT_SEQUENTIAL_CHUNK` | Records the label on source-to-child expansions; no chunk scheduling is created and current heads are unchanged |
+
+Actual execution order comes from graph dependencies and the `Session.flow()`
+options. With `inherit_context=True`, `chain_context=True` and `SEQUENTIAL`, the
+builder can point each child's context inheritance metadata at the previous child;
+that still does not create a graph dependency between those children.
 
 ### Other builder methods
 
@@ -127,7 +152,7 @@ node = builder.get_node_by_reference("my_label")
 
 # inspect graph state
 state = builder.visualize_state()
-# {"total_nodes": 4, "executed": 2, "pending": 2, ...}
+# {"total_nodes": 4, "executed_nodes": 2, "unexecuted_nodes": 2, ...}
 
 # get the Graph object for session.flow()
 graph = builder.get_graph()
@@ -147,12 +172,26 @@ results = await session.flow(
 
 See [session.md#flow](session.md#flow) for full parameter reference.
 
+For event-at-a-time integration, iterate `session.flow_stream(...)`. For a graph that
+may grow while running, set `reactive=True` and provide the spawn emission type and
+node builder expected by your application. Reactive expansion is bounded by
+`max_spawn`.
+
 ## Parallel execution semantics
 
-Nodes without `depends_on` run concurrently (up to `max_concurrent`).
-Nodes with `depends_on` wait for all dependencies to complete.
-Nodes sharing a `branch=` reference run sequentially within that branch's message history —
-this lets one agent accumulate context across multiple DAG nodes.
+The executor runs graph roots and newly-ready nodes concurrently, up to
+`max_concurrent`, when `parallel=True`. A node waits until its incoming dependencies
+are satisfied.
+
+Do not confuse executor readiness with Builder shorthand: consecutive
+`add_operation()` calls without `depends_on` are linked sequentially by the builder.
+To express parallel work with this incremental API, expand concurrent children from
+a source node, then aggregate them. If constructing a `Graph` directly, independent
+root nodes are naturally eligible in the same wave.
+
+Assigning the same `branch=` controls which conversation executes an operation; it
+does not replace dependency edges. Add explicit edges whenever turns must be ordered
+to avoid concurrent mutation of one branch's history.
 
 ```python
 branch_a = session.new_branch(name="analyst")
@@ -160,17 +199,17 @@ branch_a = session.new_branch(name="analyst")
 n1 = builder.add_operation("communicate", branch=branch_a, instruction="Step 1")
 n2 = builder.add_operation("communicate", branch=branch_a, instruction="Step 2", depends_on=[n1])
 n3 = builder.add_operation("communicate", branch=branch_a, instruction="Step 3", depends_on=[n2])
-# n1 → n2 → n3 run sequentially on branch_a, accumulating history
+# explicit dependencies make n1 → n2 → n3 sequential
 ```
 
 ## CLI flow vs Python builder
 
 | Aspect | `li o flow` | Python `Builder` |
 |--------|-------------|-----------------|
-| DAG construction | LLM plans it | You define explicitly |
+| DAG construction | LLM emits assignments and dependencies | You define explicitly |
 | Flexibility | High (natural language) | Total (programmatic) |
-| Re-planning | Built-in (control nodes) | Manual via `expand_from_result` |
-| Typing | `FlowPlan` schema | `Operation` objects |
+| Live expansion | Built in through `SpawnRequest` and `--reactive` policy | Opt in with `reactive=True`, a spawn type, and a node builder |
+| Typing | `list[TaskAssignment]` | `Operation` objects |
 | Best for | Ad-hoc orchestration | Application embedding |
 
 ## Full example: fan-out + synthesis
@@ -179,19 +218,32 @@ n3 = builder.add_operation("communicate", branch=branch_a, instruction="Step 3",
 import asyncio
 import lionagi as li
 from lionagi import Builder
+from lionagi.operations import ExpansionStrategy
+from pydantic import BaseModel
+
+class WorkItem(BaseModel):
+    instruction: str
 
 async def analyze(topic: str) -> str:
     session = li.Session()
     builder = Builder()
 
-    aspects = ["technical feasibility", "market impact", "regulatory risk"]
-    worker_ids = []
-    for aspect in aspects:
-        nid = builder.add_operation(
-            "communicate",
-            instruction=f"Analyze the {aspect} of: {topic}",
-        )
-        worker_ids.append(nid)
+    # A source operation establishes the shared topic. expand_from_result then
+    # creates three siblings that are all ready after this source completes.
+    root = builder.add_operation(
+        "communicate",
+        instruction=f"State the key facts needed to assess: {topic}",
+    )
+    worker_ids = builder.expand_from_result(
+        items=[
+            WorkItem(instruction=f"Analyze the technical feasibility of: {topic}"),
+            WorkItem(instruction=f"Analyze the market impact of: {topic}"),
+            WorkItem(instruction=f"Analyze the regulatory risk of: {topic}"),
+        ],
+        source_node_id=root,
+        operation="communicate",
+        strategy=ExpansionStrategy.CONCURRENT,
+    )
 
     synthesis_id = builder.add_aggregation(
         operation="communicate",

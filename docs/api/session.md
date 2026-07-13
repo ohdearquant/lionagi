@@ -4,7 +4,9 @@
 class Session(Node, Relational)
 ```
 
-Manages multiple `Branch` instances with inter-branch messaging and DAG execution.
+Owns multiple `Branch` instances, their in-process exchange, shared memory, lifecycle
+observation, and DAG execution. A new session creates and includes a default branch
+when one is not supplied.
 
 ## Constructor
 
@@ -15,6 +17,7 @@ session = Session(
     default_branch=None,
     name="Session",
     user=None,
+    memory=None,
 )
 ```
 
@@ -25,6 +28,7 @@ session = Session(
 | `default_branch` | `Branch \| None` | `None` | Default for delegated operations |
 | `name` | `str` | `"Session"` | Human label |
 | `user` | `SenderRecipient \| None` | `None` | Session owner identity |
+| `memory` | `MemoryStore \| None` | `None` | Store shared with branches claimed by this session; lazy `InMemoryStore` by default |
 
 ## Branch management
 
@@ -59,7 +63,12 @@ branch = session.get_branch(branch_id)
 branch = session.get_branch("researcher")  # by name
 ```
 
-Returns: `Branch`. Raises `KeyError` if not found and no `default` given.
+Returns: `Branch`. Raises `ItemNotFoundError` if neither an ID nor a branch name
+matches and no positional `default` was supplied.
+
+```python
+branch = session.get_branch("optional-worker", None)  # returns None if absent
+```
 
 ### Other branch operations
 
@@ -103,12 +112,22 @@ print(results["operation_results"][n1])
 | `max_concurrent` | `int` | `5` | Concurrency cap |
 | `verbose` | `bool` | `False` | Print progress |
 | `default_branch` | `Branch \| ID.Ref \| None` | `None` | Branch for unassigned nodes |
+| `reactive` | `bool` | `False` | Allow completed operations to expand the live graph |
+| `spawn_type` | `type \| None` | `None` | Emission type that requests reactive expansion |
+| `node_builder` | callable | `None` | Convert a spawn emission into graph node(s) |
+| `max_spawn` | `int` | `50` | Maximum number of reactively spawned operations |
+| `on_progress` | callable | `None` | Progress callback used by orchestration surfaces |
+| `on_op_complete` | callable | `None` | Callback after each operation completes |
 
 Returns: `dict[str, Any]` — wrapper with keys `"completed_operations"` (list of node IDs),
 `"operation_results"` (dict mapping node ID to output), `"final_context"` (merged context dict),
 and `"skipped_operations"` (list of skipped node IDs).
 
 For building `graph`, see [flow.md](flow.md).
+
+`flow_stream()` uses the same graph kernel and yields a `FlowEvent` as operations
+complete. It is useful for UI or telemetry integration when waiting for the final
+result dictionary is not enough.
 
 ## Message exchange
 
@@ -134,7 +153,7 @@ msgs = session.receive(branch_id)
 df = session.to_df()
 
 # messages from specific branches only
-df = session.to_df(branches=[b1.ln_id, b2.ln_id])
+df = session.to_df(branches=[b1.id, b2.id])
 
 # merged Pile
 pile = session.concat_messages()
@@ -161,10 +180,10 @@ async def main():
 
     findings = await researcher.communicate("Summarize key advances in RAG architectures.")
 
-    session.send(researcher.ln_id, writer.ln_id, findings)
+    session.send(researcher.id, writer.id, findings)
     await session.sync()
 
-    msgs = session.receive(writer.ln_id)
+    msgs = session.receive(writer.id)
     report = await writer.communicate(
         f"Write a user-friendly guide based on: {msgs[0].content}"
     )

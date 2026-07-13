@@ -1,103 +1,72 @@
-# Choosing a Surface
+# Choose the Lightest Surface
 
-lionagi's CLI has several orchestration surfaces. They are layered, not
-competing: each one buys you something over the previous layer and costs
-something in latency and setup. This page is the decision guide; per-flag
-detail lives in the [CLI Reference](cli-reference.md).
+Start with the shape of the task. Move to a heavier surface only when the task
+needs its coordination or operational guarantees.
 
-## The decision table
+| Task shape | Use | Why |
+|------------|-----|-----|
+| One terminal task | `li agent MODEL "prompt"` | One agent, no planning turn |
+| Continue prior terminal work | `li agent -c` or `li agent -r BRANCH_ID` | Reuses saved conversation state |
+| Independent perspectives | `li o fanout` | Parallel workers, optional synthesis |
+| Work with dependencies | `li o flow` | Plans and executes a dependency-aware graph |
+| The same planned flow repeatedly | `li play NAME` | Named, parameterized, versionable playbook |
+| A shipped domain pipeline | `li engine run KIND` | Prebuilt coding, research, review, planning, or hypothesis engine |
+| Run later or repeatedly | `li schedule create` | Cron, interval, GitHub, and threshold triggers through Studio |
+| Operate runs visually | `li studio` | Hosted UI connected to the local daemon |
+| One recorded API-model turn in code | `Branch.communicate()` | Stateful chat without tool invocation |
+| Typed or tool-aware work in code | `Branch.operate()` | Structured output and, with `actions=True`, tools |
+| An application-owned DAG | `Builder` + `Session.flow()` | Your code owns graph construction and execution |
 
-| Your task shape | Reach for | Why |
-|-----------------|-----------|-----|
-| One question, one answer | `li agent MODEL "prompt"` | Single turn, no planning overhead |
-| Follow-up on earlier work | `li agent -r BRANCH_ID` / `-c` | Resumes the branch with full context |
-| Same role used often | `li agent -a NAME` | Profile carries model, effort, system prompt, yolo |
-| N independent subtasks, same shape | `li o fanout` | Decompose → parallel workers → optional synthesis |
-| Subtasks depend on each other | `li o flow` | Planner builds a DAG; engine runs legs as dependencies clear |
-| A pipeline you run repeatedly | `li play NAME` | Playbook = named, parametric, version-controlled flow |
-| A well-known domain pipeline | `li engine run KIND` | Prebuilt research / review / coding / hypothesis / planning engines |
-| Run it later, or on a cadence | `li schedule create` | Cron, interval, or repo-event triggers |
-| Script must wait for a scheduled run to finish | `li monitor run ID` | Takes a schedule-run ID; blocks until terminal state, exit code reflects outcome |
-| Watch progress live | `li monitor --watch` | Live table or per-run detail view |
-| Agents messaging each other across runs | `li team` | Persistent shared inbox |
-| Group many runs into one record | `li invoke` | One parent invocation row grouping N session rows |
+## A quick decision path
 
-## Sizing: don't pay for structure you don't need
+1. If the task belongs inside your application, use Python. Choose
+   `communicate()` for chat and `operate()` for structured or tool-aware work.
+2. If the task is in the terminal and one agent can finish it, use `li agent`.
+3. If subtasks are independent, use fan-out.
+4. If any subtask consumes another's result, use flow.
+5. If you run that flow repeatedly, promote it to a playbook.
+6. Add Studio or a schedule only when the run needs an operational UI, a
+   trigger, or unattended execution.
 
-Each layer adds a planning or coordination step that costs real wall-clock
-time before any work starts. The single most common misuse is reaching for a
-heavier surface than the task shape needs:
+## Cost of each step up
 
-- **1 leg** → `li agent`. Never `li o flow` — you would pay a planner turn
-  to produce a one-node DAG.
-- **2–3 independent legs** → `li o fanout`, or just two `li agent` calls in
-  parallel from your own script. Fanout's decomposition phase only earns its
-  cost when you want the orchestrator to *choose* the split.
-- **3+ legs with dependencies** → `li o flow`. This is the break-even point:
-  below it the planner turn dominates; above it dependency-aware parallelism
-  wins.
-- **The same flow, more than twice** → promote it to a playbook and use
-  `li play`. The point of a playbook is that the *second* invocation is one
-  short command with typed args — not that the first one is faster.
+- `li agent` makes one agent turn and starts immediately.
+- Fan-out adds a decomposition turn before workers run.
+- Flow adds planning and dependency management. Preview it with `--dry-run`
+  and cap growth with `--max-ops`.
+- A playbook improves repeatability, not first-run latency; it still uses the
+  flow execution path.
+- Schedules require the Studio daemon to be running when a trigger fires.
 
-The corollary: `li play` feeling slow is usually a shape problem, not an
-engine problem. A playbook wrapping a 2-leg task inherits the full
-plan-then-execute cycle. Check the DAG with `--dry-run` — if it plans one or
-two nodes, drop down a layer.
+## Common choices
 
-## Composition patterns
-
-The surfaces are designed to chain:
+### Inspect a repository once
 
 ```bash
-# Recurring pipeline: schedule an agent turn on a cron. Create prints
-# the schedule ID; trigger and runs take that ID, not the name.
-SCHED=$(li schedule create nightly-audit --cron "0 6 * * *" \
-  --action-kind agent --agent auditor --model sonnet \
-  --prompt "run the nightly audit" | awk '/^Created:/ {print $2}')
-
-# Fire it now, then list its firings — each row carries a run ID and
-# outcome. (Direct `li play` runs are watched with `li monitor --watch`.)
-li schedule trigger "$SCHED"
-li schedule runs "$SCHED"
-
-# Copy a run ID from that listing, then block until it goes terminal
-li monitor run "$RUN_ID" && echo "audit done"
-
-# One dashboard row for a multi-run skill
-INV=$(li invoke start --skill release-check --prompt "v0.28 gate")
-li play backend  --invocation "$INV"
-li play frontend --invocation "$INV"
-li invoke end "$INV" --status completed
-
-# Resume a worker that a fanout or flow left unfinished
-li agent -r BRANCH_ID "pick up where you left off"
+li agent codex "Identify the highest-risk module and explain why." --cwd .
 ```
 
-Two rules of thumb for choosing the chain:
+### Compare independent reviews
 
-1. **Automate the trigger before automating the pipeline.** If you find
-   yourself re-typing the same `li play` invocation daily, the next step is
-   `li schedule`, not a bigger playbook.
-2. **Poll the surface, not the filesystem.** `li monitor` and
-   `li monitor run` read the same state the engine writes; tailing run
-   directories or sleeping in shell loops re-implements them badly.
+```bash
+li o fanout codex "Review this repository." --cwd . -n 3 --with-synthesis
+```
 
-## What each layer persists
+### Plan dependent work safely
 
-All surfaces share one state database, but what each writes differs:
+```bash
+li o flow codex "Audit, fix, and verify this package." --cwd . --max-ops 6 --dry-run
+```
 
-- **`li agent` / `li o fanout` / `li o flow` / `li play`** write a run
-  directory under `~/.lionagi/runs/` (branch snapshots, stream buffers)
-  plus session rows in the state database. A flow or fanout leg is a
-  branch you can resume with `li agent -r`.
-- **`li engine run`** writes an engine-run row and its session rows to the
-  state database only — no run directory.
-- **`li invoke`** writes one parent invocation row; the runs you attach to
-  it keep their own persistence.
-- **`li schedule create`** writes schedule metadata; each firing records a
-  schedule run, listed by `li schedule runs ID`.
+### Build typed application behavior
 
-Because the state database is shared, anything you start on one surface is
-observable from the others, and escalating a task to a heavier surface
-never orphans the work the lighter one already did.
+```python
+result = await branch.operate(
+    instruction="Extract the risks from this report.",
+    response_format=RiskReport,
+)
+```
+
+Next, follow the [orchestration progression](guides/orchestration.md), the
+[durable operations guide](guides/durable-operations.md), or the
+[Studio and schedules guide](guides/studio.md).
