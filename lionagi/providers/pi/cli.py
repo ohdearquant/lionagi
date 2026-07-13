@@ -60,11 +60,8 @@ PiThinkingLevel = Literal[
 
 __all__ = ("PiChunk", "PiCodeRequest", "PiSession", "stream_pi_cli", "PiCLIEndpoint")
 
-# Model prefix → pi --provider. Only unambiguous prefixes (model name
-# uniquely identifies the provider); ambiguous names (llama, gemma,
-# mistral — available on multiple providers) are omitted, so set provider
-# explicitly or let pi resolve. strip=True removes the prefix from the
-# model (needed for openrouter/ routing).
+# Model prefix → pi --provider. Only unambiguous prefixes; ambiguous names
+# (llama, gemma, mistral) are omitted — set provider explicitly, or let pi resolve.
 _PI_MODEL_PROVIDER_MAP: list[tuple[str, str, bool]] = [
     ("openrouter/", "openrouter", True),
     ("deepseek-", "deepseek", False),
@@ -244,9 +241,8 @@ class PiCodeRequest(BaseModel):
         for f in self.file_args:
             args.append(f"@{f}" if not f.startswith("@") else f)
 
-        # Pi's arg parser has no -- terminator support; prompt is
-        # positional. Prompts starting with - or @ may be misparsed
-        # by Pi's CLI — callers should avoid leading dashes in prompts.
+        # Pi's arg parser has no -- terminator; prompt is positional and may be
+        # misparsed if it starts with - or @ — callers should avoid leading dashes.
         args.append(self.prompt)
 
         return args
@@ -550,9 +546,8 @@ async def stream_pi_cli(
                 yield chunk
 
             elif typ == "done":
-                # Top-level done: may carry final message with model/usage.
-                # Both AgentEvent.done (end-of-stream) and a top-level
-                # AssistantMessageEvent.done use this type.
+                # Top-level done: may carry final message with model/usage. Both
+                # AgentEvent.done and a top-level AssistantMessageEvent.done use this type.
                 _remember_assistant_message(session, obj.get("message"))
                 break
 
@@ -603,11 +598,8 @@ class PiCLIEndpoint(AgenticHandlersMixin, AgenticEndpoint):
     _handler_params = _PI_HANDLER_PARAMS
     _handler_kwarg = "pi_handlers"
     _request_model = PiCodeRequest
-    # streams_first_output_early stays False (AgenticEndpoint default): the
-    # transport emits "agent_start" right after spawn, but stream() below
-    # discards raw dict events and yields its first StreamChunk only once a
-    # PiChunk carries text/thinking/tool payload — so the first output the
-    # caller can observe may lag spawn by the model's full think time.
+    # streams_first_output_early stays False: stream() discards raw events and only
+    # yields once a PiChunk carries content, so first output may lag spawn by full think time.
 
     def __init__(self, config: EndpointConfig = None, **kwargs):
         handlers = kwargs.pop("pi_handlers", None)

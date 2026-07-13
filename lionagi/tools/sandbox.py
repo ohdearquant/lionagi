@@ -72,13 +72,7 @@ def _diff_untracked_file(wt: str, rel_path: str) -> tuple[str, str]:
 
 def _list_untracked_files(wt: str) -> list[str]:
     """List untracked (non-ignored) files, recursing into untracked directories.
-
-    Uses ``git ls-files --others --exclude-standard -z``: NUL-delimited raw
-    paths, unlike ``git status --porcelain`` which quotes/escapes paths with
-    spaces or special characters (breaking naive ``line[3:]`` slicing) and
-    reports an untracked directory as a single ``?? dir/`` entry instead of
-    the files inside it.
-    """
+    Uses NUL-delimited `git ls-files`, not `git status --porcelain` (see docs/internals/runtime.md)."""
     result = _subprocess_sync(
         ["git", "ls-files", "--others", "--exclude-standard", "-z"], False, 30.0, wt
     )
@@ -87,11 +81,7 @@ def _list_untracked_files(wt: str) -> list[str]:
 
 
 def _get_diff_sync(session: SandboxSession) -> dict:
-    """Get diff of all changes in the worktree vs base branch.
-
-    Reads the diff without staging anything — the worktree's index is left
-    exactly as the caller left it.
-    """
+    """Get diff of all changes in the worktree vs base branch, without staging anything (index untouched)."""
     wt = session.worktree_path
     if not Path(wt).is_dir():
         # Without this guard the git calls below fail silently and the
@@ -181,16 +171,8 @@ def _branch_exists(repo_root: str, branch_name: str) -> bool:
 
 
 def _cleanup_worktree_sync(session: SandboxSession) -> dict:
-    """Remove worktree and delete branch.
-
-    Retry-safe: a resource that is already absent counts as cleaned up, so a
-    partial failure (e.g. worktree removed but branch deletion blocked by
-    another checkout) can be completed by a later retry instead of failing
-    forever on the step that already succeeded. ``is_active`` is only flipped
-    to ``False`` once both resources are actually gone — a partial failure
-    keeps the session marked active so a caller cannot mistake it for
-    cleaned up.
-    """
+    """Remove worktree and delete branch; retry-safe (already-absent counts as cleaned up).
+    See docs/internals/runtime.md for the is_active / partial-failure contract."""
     _, err1, rc1 = _run_git(
         ["worktree", "remove", session.worktree_path, "--force"],
         cwd=session.repo_root,
@@ -213,14 +195,8 @@ def _cleanup_worktree_sync(session: SandboxSession) -> dict:
 
 
 def _merge_sync(session: SandboxSession, allow_protected: bool = False) -> dict:
-    """Merge worktree branch back into base branch.
-
-    Refuses to run when ``repo_root`` is in a detached HEAD state, when it is
-    not actually checked out on the session's recorded base branch (no
-    auto-checkout), and refuses to merge into a protected branch name
-    (``main``, ``master``, ``release*``) unless the caller explicitly opts
-    in via ``allow_protected``.
-    """
+    """Merge worktree branch back into base branch; refuses on detached HEAD, a
+    base-branch mismatch, or an unopted-in protected branch (see docs/internals/runtime.md)."""
     current_branch, err, rc = _run_git(["rev-parse", "--abbrev-ref", "HEAD"], cwd=session.repo_root)
     if rc != 0:
         return {
@@ -228,9 +204,8 @@ def _merge_sync(session: SandboxSession, allow_protected: bool = False) -> dict:
             "error": f"Could not determine the branch checked out at repo_root: {err}",
         }
     if current_branch == "HEAD":
-        # `--abbrev-ref HEAD` returns the literal string "HEAD" when detached
-        # rather than a branch name — merging here would move a detached
-        # HEAD forward with no branch ref pointing at the result.
+        # `--abbrev-ref HEAD` returns literal "HEAD" when detached — merging here
+        # would move a detached HEAD forward with no branch ref pointing at the result.
         return {
             "success": False,
             "error": "repo_root is in a detached HEAD state; refusing to merge into an unverified target.",
@@ -282,9 +257,8 @@ async def create_sandbox(
     if base_branch is None:
         stdout, _, _ = _run_git(["rev-parse", "--abbrev-ref", "HEAD"], cwd=repo_root)
         if stdout == "HEAD":
-            # `--abbrev-ref HEAD` returns the literal string "HEAD" when
-            # repo_root is in a detached HEAD state — there is no branch to
-            # record as the sandbox's merge target.
+            # `--abbrev-ref HEAD` returns literal "HEAD" when detached — there is no
+            # branch to record as the sandbox's merge target.
             raise RuntimeError(
                 "repo_root is in a detached HEAD state; pass an explicit base_branch."
             )
@@ -305,13 +279,8 @@ async def sandbox_commit(session: SandboxSession, message: str) -> dict:
 
 
 async def sandbox_merge(session: SandboxSession, *, allow_protected: bool = False) -> dict:
-    """Merge sandbox changes back and clean up.
-
-    Refuses when ``repo_root`` is in a detached HEAD state or isn't checked
-    out on the sandbox's recorded base branch, and refuses to merge into a
-    protected branch name (``main``, ``master``, ``release*``) unless
-    ``allow_protected=True``.
-    """
+    """Merge sandbox changes back into the base branch and clean up
+    (see _merge_sync's safety-refusal contract in docs/internals/runtime.md)."""
     return await run_sync(_merge_sync, session, allow_protected)
 
 

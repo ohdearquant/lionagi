@@ -411,12 +411,8 @@ class OpenAIChatCompletionsRequest(BaseModel):
 
 
 def uses_developer_messages(model: object) -> bool:
-    """Whether the given model expects `developer` in place of `system` messages.
-
-    Conservative and prefix-based: only o1/o3/o4/gpt-5 families (and dated
-    variants, matched by prefix after stripping any provider prefix) are
-    gated. Unknown or missing models fail closed and keep `system`.
-    """
+    """Whether the given model expects `developer` in place of `system` messages;
+    fails closed (keeps `system`) for unknown or missing models."""
     if not isinstance(model, str):
         return False
     model_name = model.rsplit("/", 1)[-1].lower()

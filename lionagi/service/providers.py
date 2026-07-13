@@ -40,22 +40,13 @@ EFFORT_LEVELS = frozenset(
 
 
 def normalize_effort(effort: str | None) -> str | None:
-    """Case-fold a raw effort string to lionagi's lowercase vocabulary.
-
-    Clamp tables below are keyed on lowercase levels and silently misclamp
-    (no raise) on an un-normalized value like "High" — call this once at
-    each boundary where a raw effort string enters lionagi (CLI flag,
-    profile frontmatter, orchestration spec).
-    """
+    """Case-fold a raw effort string to lionagi's lowercase vocabulary. Call once at
+    each entry boundary — clamp tables silently misclamp un-normalized values. See docs/internals/runtime.md."""
     return effort.lower() if isinstance(effort, str) else effort
 
 
-# Codex reasoning-effort support is model-dependent (source: the codex CLI's
-# live model list): gpt-5.6-sol and gpt-5.6-terra accept max and ultra,
-# gpt-5.6-luna accepts max, and every earlier model tops out at xhigh. Clamp
-# a requested tier down to the target model's ceiling; unrecognized (future)
-# models pass through so a genuinely supported new tier is never silently
-# degraded.
+# Codex reasoning-effort ceilings are model-dependent (source: codex CLI's live model
+# list); unrecognized (future) models pass through unclamped. See docs/internals/runtime.md.
 _CODEX_ULTRA_MODELS = frozenset({"gpt-5.6-sol", "gpt-5.6-terra"})
 _CODEX_MAX_ONLY_MODELS = frozenset({"gpt-5.6-luna"})
 _CODEX_XHIGH_CEILING_MODELS = frozenset(
@@ -92,10 +83,8 @@ def _clamp_claude_effort(effort: str, model: str) -> str:
     return "high"
 
 
-# agy (Antigravity CLI) has no effort flag or kwarg — effort is expressed only
-# as a Low/Medium/High suffix baked into the --model name, and Gemini 3.1 Pro
-# has no Medium tier. lionagi's none|minimal|low|medium|high|xhigh|max|ultra
-# vocabulary collapses onto this 3-tier scale.
+# agy has no effort kwarg — effort is baked into the --model name as Low/Medium/High,
+# and Gemini 3.1 Pro has no Medium tier. See docs/internals/runtime.md.
 _GEMINI_EFFORT_CLAMP: dict[str, str] = {
     "none": "Low",
     "minimal": "Low",
@@ -140,9 +129,8 @@ PROVIDER_EFFORT_KWARG: dict[str, str] = {
     "pi": "thinking",
 }
 
-# agy-backed aliases (see lionagi/providers/google/gemini_code.py) fold effort
-# into the resolved --model name via resolve_agy_model instead of a kwarg —
-# classified separately from PROVIDER_EFFORT_KWARG below.
+# agy-backed aliases fold effort into the resolved --model name via resolve_agy_model
+# instead of a kwarg — classified separately from PROVIDER_EFFORT_KWARG below.
 PROVIDERS_EFFORT_VIA_MODEL_NAME: frozenset[str] = frozenset(
     {
         "gemini_code",
@@ -152,9 +140,8 @@ PROVIDERS_EFFORT_VIA_MODEL_NAME: frozenset[str] = frozenset(
     }
 )
 
-# Bare "gemini" is the direct Google API provider (see
-# providers/google/_config.py:GeminiChatConfigs) — distinct from the agy CLI
-# above — and has no effort concept at all.
+# Bare "gemini" is the direct Google API provider, distinct from the agy CLI
+# above, and has no effort concept at all.
 PROVIDERS_NO_EFFORT: frozenset[str] = frozenset(
     {
         "gemini",

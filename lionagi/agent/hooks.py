@@ -58,16 +58,9 @@ def _is_hard_floor_error(exc: PermissionError) -> bool:
 def _resolve_against_any_root(raw_path: str, candidate: Path, allowed_roots: list[Path]) -> Path:
     """Accept iff resolve_workspace_path succeeds for >=1 root.
 
-    `candidate` is already absolute here — either the caller-supplied absolute
-    path, or a relative path pre-joined to the first allowed root — so every
-    root is tried purely as a containment check. This restores the
-    pre-existing multi-root contract: a relative path formed against the
-    first root is accepted as long as the resolved location falls under *any*
-    configured root, not only the first.
-
-    A symlink or protected basename fails the same way against every root (the
-    check runs before containment), so it can never be masked by trying another
-    root — surface that reason instead of a generic denial when it occurs.
+    A relative path is accepted if it resolves under *any* configured root,
+    not only the first; a symlink/protected-name denial always surfaces
+    over a generic one. See docs/internals/runtime.md.
     """
     hard_floor_error: PermissionError | None = None
     for root in allowed_roots:
@@ -97,10 +90,8 @@ def guard_paths(
 ):
     """Factory: return a pre-hook that enforces allowed/denied path constraints.
 
-    Validation happens at check time only: a filesystem mutation racing this
-    check and the tool's later I/O on the same path (e.g. swapping a
-    validated regular file for a symlink after the check passes) is out of
-    scope for this pathname-based guard.
+    Check-time only: a TOCTOU race (swap file for symlink after the check
+    passes) is out of scope. See docs/internals/runtime.md.
     """
 
     allowed_roots = [Path(p).expanduser().resolve(strict=False) for p in (allowed_paths or [])]
@@ -113,10 +104,8 @@ def guard_paths(
         expanded = Path(raw_path).expanduser()
 
         if allowed_roots:
-            # Documented workspace-relative rule: relative paths resolve
-            # against the first allowed root, not the process cwd. The
-            # resulting absolute candidate is then, like any absolute path,
-            # accepted if it is contained by *any* configured allowed root.
+            # Relative paths resolve against the first allowed root, not cwd;
+            # the result is accepted if contained by *any* configured root.
             candidate = expanded if expanded.is_absolute() else allowed_roots[0] / expanded
             resolved = _resolve_against_any_root(raw_path, candidate, allowed_roots)
         else:
@@ -131,9 +120,8 @@ def guard_paths(
                     if resolved == denied_resolved or denied_resolved in resolved.parents:
                         raise PermissionError(f"Path matches deny rule: {raw_path}")
                 else:
-                    # Relative deny pattern: glob patterns (*, ?, [) fnmatch each
-                    # resolved path component; plain-text patterns fall back to a
-                    # substring check so ".env" still blocks ".env.local".
+                    # Glob patterns fnmatch each path component; plain-text
+                    # patterns fall back to a substring check (".env" blocks ".env.local").
                     import fnmatch
 
                     _glob_chars = frozenset("*?[")

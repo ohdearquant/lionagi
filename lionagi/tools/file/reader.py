@@ -344,20 +344,7 @@ class ReaderTool(LionTool):
 
             async def reader_tool(**kwargs):
                 """Read files, convert documents (PDF/PPTX/DOCX/HTML via docling), or list directories.
-
-                Use action='read' for text files. Output format is `<number>\\t<code>` per line;
-                the number prefix is for reference only — strip the leading `<digits>\\t` before
-                using any line as an editor old_string. Use offset+limit to read large files in
-                windows (e.g. offset=200, limit=200 to get lines 200-400).
-
-                Use action='open' for documents needing conversion (PDF, PPTX, HTML) —
-                result is cached by path, then use 'read' with offset/limit on the same path.
-                Chain them in one turn: [open(path="report.pdf"), read(path="report.pdf", offset=0, limit=100)]
-
-                Use action='list_dir' for directory listings.
-
-                All paths are restricted to the configured workspace root. URL conversion
-                requires explicit host allowlisting.
+                action='read' returns `<number>\\t<code>` lines (strip the prefix before using as editor old_string); action='open' converts then caches by path for a follow-up 'read'.
                 """
                 return (await self.handle_request(ReaderRequest(**kwargs))).model_dump()
 

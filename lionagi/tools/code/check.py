@@ -267,19 +267,8 @@ class CodeCheckTool(LionTool):
         if self._tool is None:
 
             async def code_check(**kwargs):
-                """
-                Run static analysis on Python files and return structured
-                diagnostics. Call after editing a file for immediate feedback;
-                each diagnostic is file:line:col with code and message so the
-                agent can locate and fix the issue without re-reading the file.
-
-                Supported tools:
-                - 'ruff': fast Python linter (default). Requires ruff in PATH.
-                  Returns status='unavailable' if the binary is absent — not an error.
-
-                Result status: 'ok' (no issues) | 'diagnostics' (issues found,
-                see diagnostics list) | 'unavailable' (tool not installed)
-                | 'error' (tool failed unexpectedly)
+                """Run static analysis (ruff) on Python files and return structured file:line:col diagnostics.
+                Call after editing a file for immediate feedback; returns status='unavailable' if ruff is not installed.
                 """
                 return (await self.handle_request(CodeCheckRequest(**kwargs))).model_dump()
 

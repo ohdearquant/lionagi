@@ -24,11 +24,8 @@ from ._types import (
 
 
 def _build_entry(data: dict[str, Any]) -> ResponseEntry:
-    """Construct a ``ResponseEntry`` from a dict, picking the subclass by ``type``.
-
-    Pydantic v2 doesn't pick a discriminated-union member when fields beyond
-    ``type`` differ; we dispatch manually for clearer errors.
-    """
+    """Construct a ``ResponseEntry`` from a dict, dispatching to the subclass by ``type``
+    (manual dispatch, not a pydantic discriminated union — see docs/internals/runtime.md)."""
 
     if not isinstance(data, dict):
         raise TypeError(f"response entry must be dict, got {type(data).__name__}")
@@ -61,10 +58,8 @@ class ScriptModel(BaseModel):
     @model_validator(mode="before")
     @classmethod
     def _coerce_responses(cls, data: Any) -> Any:
-        """Accept raw dicts in ``responses`` and dispatch to subclasses.
-
-        Works on a shallow copy so the caller-supplied dict is never mutated.
-        """
+        """Accept raw dicts in ``responses`` and dispatch to subclasses; works on a shallow
+        copy so the caller-supplied dict is never mutated."""
 
         if isinstance(data, dict):
             data = dict(data)
@@ -83,11 +78,8 @@ class ScriptModel(BaseModel):
 
     @classmethod
     def coerce(cls, source: Any) -> ScriptModel:
-        """Best-effort load from anything that *could* be a script.
-
-        Accepts: ScriptModel, str/Path (file), dict (script shape), list (raw
-        responses).
-        """
+        """Best-effort load from a ScriptModel, str/Path (file), dict (script shape), or
+        list (raw responses)."""
         if isinstance(source, cls):
             return source.model_copy(deep=True)
         if isinstance(source, str | Path):
@@ -129,20 +121,8 @@ class ScriptModel(BaseModel):
     # ─────────────────────────────── matching ─────────────────────────────
 
     def next(self, payload: dict[str, Any], call_index: int) -> tuple[ResponseEntry, str]:
-        """Pick the next response.
-
-        Args:
-            payload: the request payload (messages, tools, model, ...)
-            call_index: 0-based count of calls already served
-
-        Returns:
-            (entry, matched_by) — ``matched_by`` describes why this entry was
-            picked (``"positional"``, ``"when:prompt_contains:foo"``, etc.).
-
-        Raises:
-            ScriptExhaustedError: when nothing matches and the positional
-                cursor has run out.
-        """
+        """Pick the next response: try ``when:`` matchers first (unless mode is
+        ``positional``), then fall back to positional order — see docs/internals/runtime.md."""
 
         # Phase 1: try ``when:`` matchers (skipped only when mode == positional).
         if self.mode != "positional":

@@ -23,13 +23,7 @@ def oai_chat_endpoint_config(
     request_options: type | None = None,
     kwargs: dict | None = None,
 ) -> EndpointConfig:
-    """OpenAI chat endpoint config for tests that need a real ``Endpoint`` shell.
-
-    Replaces the ad-hoc ``_get_oai_config`` helper duplicated across the legacy
-    test suite. Tests that build their own ``APICalling`` for cancellation /
-    streaming / hook scenarios should use this rather than re-copying the
-    config kwargs.
-    """
+    """OpenAI chat endpoint config for tests that need a real ``Endpoint`` shell."""
     return EndpointConfig(
         name=name,
         provider="openai",
@@ -61,12 +55,8 @@ class LionAGIMockFactory:
         tools: Any = None,
         api_key: str = "test_key",
     ) -> Branch:
-        """Build a Branch with a mocked iModel and optional system message/tools.
-
-        Subsumes every per-file ``make_mocked_branch_for_*`` /
-        ``_fake_invoke`` pattern in the legacy test suite. Pass
-        ``responses=[...]`` for multi-call tests that need a sequence.
-        """
+        """Build a Branch with a mocked iModel and optional system message/tools. Pass
+        ``responses=[...]`` for multi-call tests that need a sequence."""
         branch = Branch(user=user, name=name, system=system)
         mock_chat_model = LionAGIMockFactory.create_mocked_imodel(
             provider=provider,

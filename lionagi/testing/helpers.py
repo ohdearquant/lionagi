@@ -43,11 +43,7 @@ class AsyncTestHelpers:
         limit: int = 100,
         timeout: float = 10.0,
     ) -> list[T]:
-        """Collect up to *limit* items from an async generator within *timeout* seconds.
-
-        Uses ``lionagi.ln.move_on_after`` for Python 3.10-compatible timeout handling
-        (``asyncio.timeout`` requires Python 3.11+).
-        """
+        """Collect up to *limit* items from an async generator within *timeout* seconds."""
         results: list[T] = []
         with move_on_after(timeout):
             async for item in async_gen:
@@ -60,20 +56,14 @@ class AsyncTestHelpers:
     async def run_with_timeout(
         coro: Callable[..., Any], timeout: float = 5.0, *args: Any, **kwargs: Any
     ) -> Any:
-        """Run *coro* with a hard timeout, raising ``TimeoutError`` on expiry.
-
-        Uses ``lionagi.ln.fail_after`` for Python 3.10-compatible timeout handling.
-        """
+        """Run *coro* with a hard timeout, raising ``TimeoutError`` on expiry."""
         with fail_after(timeout):
             return await coro(*args, **kwargs)
 
     @staticmethod
     async def wait_for_all(tasks: list[asyncio.Task], timeout: float = 10.0) -> list[Any]:
-        """Await all *tasks* within *timeout* seconds.
-
-        Cancels any incomplete tasks on timeout and re-raises ``TimeoutError``.
-        Uses ``lionagi.ln.fail_after`` for Python 3.10-compatible timeout handling.
-        """
+        """Await all *tasks* within *timeout* seconds; cancels incomplete tasks and
+        re-raises ``TimeoutError`` on expiry."""
         try:
             with fail_after(timeout):
                 return list(await gather(*tasks))
@@ -240,9 +230,8 @@ class IModelKwargCaptor:
         return _Local
 
 
-# Module-level ``MockElement`` — defined once so it's picklable. The
-# duplicated ``class MockElement(Element): value: Any`` snippets in
-# tests/protocols/generic/* should import this instead.
+# Module-level so it's picklable; duplicated per-test snippets should import
+# this instead.
 class MockElement(Element):
     """Minimal ``Element`` subclass for Pile/Progression tests."""
 
