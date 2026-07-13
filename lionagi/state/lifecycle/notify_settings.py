@@ -172,6 +172,30 @@ def _resolve_mapping(cfg: dict[str, Any], *, scope: str) -> ResolvedNotifyHandle
     filt = cfg.get("filter") or {}
     kinds = filt.get("kinds") if isinstance(filt, dict) else None
     ids = filt.get("ids") if isinstance(filt, dict) else None
+    # filter.kinds/filter.ids must be a list of strings (or absent/empty) --
+    # a scalar (e.g. `kinds: 1`) would raise TypeError out of the bare
+    # tuple(...) coercion below and take down CLI/Studio bootstrap with it;
+    # a scalar *string* (e.g. `kinds: session`) would silently pass the old
+    # bare coercion by splitting into one-character tuple entries instead of
+    # ever matching anything. Both are settings typos, not runtime errors --
+    # log which key/value is wrong and resolve the whole config to disabled,
+    # same as every other malformed field in this function.
+    if kinds and not (isinstance(kinds, list) and all(isinstance(k, str) for k in kinds)):
+        logger.warning(
+            "notify.on_terminal (%s) filter.kinds must be a list of strings, "
+            "got %r; resolving to disabled.",
+            scope,
+            kinds,
+        )
+        return None
+    if ids and not (isinstance(ids, list) and all(isinstance(i, str) for i in ids)):
+        logger.warning(
+            "notify.on_terminal (%s) filter.ids must be a list of strings, "
+            "got %r; resolving to disabled.",
+            scope,
+            ids,
+        )
+        return None
     filter_kinds = tuple(kinds) if kinds else None
     filter_ids = tuple(ids) if ids else None
 

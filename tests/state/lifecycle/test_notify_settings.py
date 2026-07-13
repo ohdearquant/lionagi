@@ -148,6 +148,48 @@ def test_mapping_form_unknown_adapter_kind_disabled(caplog):
     assert any("must be 'exec' or 'python'" in r.message for r in caplog.records)
 
 
+@pytest.mark.parametrize(
+    "filter_value",
+    [
+        1,  # scalar int -- the crashing shape (bare tuple(1) raises TypeError)
+        "session",  # scalar string -- would silently char-split, never match
+        ["invocation", 1],  # list containing a non-string element
+    ],
+)
+def test_mapping_form_malformed_filter_kinds_disabled_not_raised(caplog, filter_value):
+    with caplog.at_level(logging.WARNING):
+        resolved = resolve_notify_config(
+            override={
+                "enabled": True,
+                "adapter": {"kind": "exec", "argv": ["echo", "ok"]},
+                "filter": {"kinds": filter_value},
+            }
+        )  # must not raise
+    assert resolved is None
+    assert any("filter.kinds must be a list of strings" in r.message for r in caplog.records)
+
+
+@pytest.mark.parametrize(
+    "filter_value",
+    [
+        1,
+        "inv-1",
+        ["inv-1", 1],
+    ],
+)
+def test_mapping_form_malformed_filter_ids_disabled_not_raised(caplog, filter_value):
+    with caplog.at_level(logging.WARNING):
+        resolved = resolve_notify_config(
+            override={
+                "enabled": True,
+                "adapter": {"kind": "exec", "argv": ["echo", "ok"]},
+                "filter": {"ids": filter_value},
+            }
+        )  # must not raise
+    assert resolved is None
+    assert any("filter.ids must be a list of strings" in r.message for r in caplog.records)
+
+
 def test_malformed_settings_never_raises(caplog, monkeypatch):
     def _boom(project_dir=None):
         raise ValueError("malformed yaml")
@@ -342,6 +384,34 @@ def test_register_settings_terminal_callback_bad_python_ref_never_raises(monkeyp
     )  # must not raise
     assert installed is False
     assert "test.bad-python" not in registry
+
+
+def test_register_settings_terminal_callback_malformed_filter_never_raises(monkeypatch, caplog):
+    # The exact regression this guards: `notify.on_terminal.filter.kinds: 1`
+    # (a scalar where the schema expects a list) used to raise TypeError out
+    # of a bare tuple(...) coercion, aborting CLI startup (lionagi/cli/main.py)
+    # and Studio lifespan startup (lionagi/studio/app.py) -- both call this
+    # function once per process with no guard of their own around it.
+    monkeypatch.setattr(
+        "lionagi.state.lifecycle.notify_settings.load_settings",
+        lambda project_dir=None: {
+            "notify": {
+                "on_terminal": {
+                    "enabled": True,
+                    "adapter": {"kind": "exec", "argv": ["echo", "ok"]},
+                    "filter": {"kinds": 1},
+                }
+            }
+        },
+    )
+    registry = TerminalCallbackRegistry()
+    with caplog.at_level(logging.WARNING):
+        installed = register_settings_terminal_callback(
+            registry, name="test.bad-filter"
+        )  # must not raise -- this is the bootstrap call site itself
+    assert installed is False
+    assert "test.bad-filter" not in registry
+    assert any("filter.kinds must be a list of strings" in r.message for r in caplog.records)
 
 
 # ── Legacy argv/env substitution hooks used by the flow `--notify` adapter ──
