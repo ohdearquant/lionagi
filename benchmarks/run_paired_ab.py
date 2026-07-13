@@ -9,25 +9,10 @@ import time
 from pathlib import Path
 from typing import Any
 
-# Drives one suite's baseline and current arms as alternating short chunks
-# (baseline chunk 0, current chunk 0, baseline chunk 1, current chunk 1, ...)
-# instead of two long back-to-back runs, then merges each arm's chunks back
-# into a single result JSON in the exact shape ci_check_provenance.py and
-# ci_compare.py already read -- neither of those needs to change.
-#
-# Why: a same-machine A/B comparison assumes the machine's own speed is
-# constant across the job. Running the whole baseline suite (tens of
-# seconds) and then the whole current suite back to back does not hold that
-# assumption -- if the runner's effective speed drifts over the job
-# (burstable-CPU credit decay, thermal throttling, a noisy neighbor), the
-# arm that runs later systematically measures a different machine, and that
-# shows up as a uniform, one-directional "regression" or "improvement"
-# across every CPU-bound scenario regardless of any code change. Splitting
-# each arm into several chunks and alternating them shrinks the wall-clock
-# gap between any baseline measurement and its paired current measurement
-# to roughly 1/chunks of the old gap, which is what actually cancels this
-# kind of drift -- reordering the comparison math without shrinking that
-# gap would not.
+# Alternates short baseline/current chunks (rather than two long back-to-back
+# runs) so wall-clock runner-speed drift can't masquerade as a code regression,
+# then merges each arm's chunks into the same result JSON shape ci_check_provenance.py
+# and ci_compare.py already read.
 
 
 def run_chunk(
@@ -49,9 +34,7 @@ def run_chunk(
         *extra_args,
     ]
     t0 = time.time()
-    # Arguments are workflow-controlled CLI paths/flags (interpreter paths
-    # from prior steps, this repo's own benchmark module names), not
-    # untrusted input.
+    # Arguments are workflow-controlled paths/flags, not untrusted input.
     subprocess.run(cmd, check=True, cwd=cwd)  # noqa: S603
     wall = time.time() - t0
     data = json.loads(output_path.read_text(encoding="utf-8"))
@@ -62,18 +45,7 @@ def run_chunk(
 
 
 def merge_arm(chunks: list[dict[str, Any]]) -> dict[str, Any]:
-    """Merge K per-chunk result dicts (each already in the normal bench
-    JSON shape) into one result dict of that same shape.
-
-    Per-scenario stats are combined without needing the raw per-repeat
-    samples (each chunk process only ever wrote its own aggregated Stat to
-    disk): runs sums across chunks, min/max take the extremes across
-    chunks, mean is the runs-weighted mean of the chunk means, and median
-    is the median of the per-chunk medians -- a standard, outlier-resistant
-    way to combine already-aggregated batches (one slow chunk, e.g. from a
-    scheduling hiccup during that window, is down-weighted rather than
-    setting the whole result).
-    """
+    """Merge per-chunk result dicts into one result dict of the same shape."""
     if not chunks:
         raise ValueError("no chunks to merge")
 
@@ -82,6 +54,7 @@ def merge_arm(chunks: list[dict[str, Any]]) -> dict[str, Any]:
         for name, stat in chunk.get("results", {}).items():
             all_scenarios.setdefault(name, []).append(stat)
 
+    # Median of per-chunk medians (not a merge of raw samples) is more outlier-resistant to one slow chunk.
     merged_results: dict[str, Any] = {}
     for name, stats in all_scenarios.items():
         total_runs = sum(s["runs"] for s in stats)
@@ -95,20 +68,14 @@ def merge_arm(chunks: list[dict[str, Any]]) -> dict[str, Any]:
             "max": max(s["max"] for s in stats),
         }
 
-    # All chunks of one arm share the same venv/install, so provenance and
-    # dependency versions must be identical across them -- assert that
-    # instead of silently picking the first chunk's value, so a bug that
-    # somehow varies the interpreter mid-arm is caught here rather than
-    # producing a quietly-wrong merged result.
+    # Assert (not silently take chunk 0's value) so a mid-arm interpreter/install change is caught here.
     base_meta = dict(chunks[0].get("meta", {}))
     for key in ("lionagi_file", "lionagi_version", "python_executable"):
         values = {c.get("meta", {}).get(key) for c in chunks}
         if len(values) > 1:
             raise ValueError(f"chunks disagree on meta.{key}: {sorted(values)}")
 
-    # Per-chunk timing and CPU-probe series, so drift across the interleave
-    # is directly inspectable in the uploaded artifact rather than only
-    # inferable from a failed compare.
+    # Per-chunk series for artifact inspection.
     base_meta["chunk_count"] = len(chunks)
     base_meta["chunk_cpu_probe_seconds"] = [
         c.get("meta", {}).get("cpu_probe_seconds") for c in chunks
@@ -165,9 +132,7 @@ def main() -> int:
     for i, size in enumerate(sizes):
         b_path = scratch / f"baseline-chunk-{i}.json"
         c_path = scratch / f"current-chunk-{i}.json"
-        # Alternate baseline then current for the SAME chunk index so each
-        # pair sits back-to-back in wall-clock time -- that adjacency, not
-        # the merge math above, is what cancels drift.
+        # Adjacency (baseline then current, same chunk index) is what cancels drift, not the merge math above.
         print(f"[run_paired_ab] chunk {i + 1}/{len(sizes)}: baseline (repeat={size})", flush=True)
         baseline_chunks.append(
             run_chunk(args.baseline_python, args.module, size, extra, b_path, args.work_dir)

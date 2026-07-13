@@ -1,78 +1,10 @@
 name: Benchmarks
 
-# Same-machine A/B: every suite runs twice on this runner, once against a
-# baseline lionagi install (older commit) and once against the current
-# checkout, using the exact same benchmark harness both times. Only the
-# library implementation differs between the two runs, so the comparison
-# isolates the code change instead of cross-runner hardware/load variance.
-#
-# Both runs execute from a neutral working directory (a copy of benchmarks/
-# with no sibling lionagi/ source tree) rather than the checkout root.
-# `python -m benchmarks.X` prepends cwd to sys.path; running from the
-# checkout root would let a stray `lionagi/` directory there shadow
-# whichever venv's install the interpreter should actually be using,
-# silently making both runs measure identical code. See
-# benchmarks/_compat.py:lionagi_provenance and
-# benchmarks/ci_check_provenance.py, which asserts the two runs disagree
-# on which lionagi install they imported.
-#
-# Same-machine still assumes the machine's own speed is constant across the
-# job, and that assumption can be false on a hosted runner: burstable-CPU
-# credit decay, thermal throttling, or a noisy neighbor can make the runner
-# measurably slower (or faster) later in the job than earlier, with nothing
-# to do with the code under test. A naive "run the whole baseline arm, then
-# the whole current arm" ordering puts a full suite's wall-clock duration
-# (tens of seconds) between any baseline measurement and its paired current
-# measurement, which is enough for that kind of drift to look exactly like
-# a uniform, one-directional regression across every CPU-bound scenario.
-# Each suite below instead runs via benchmarks/run_paired_ab.py, which
-# alternates SHORT baseline/current chunks (baseline chunk 0, current chunk
-# 0, baseline chunk 1, current chunk 1, ...) and merges each arm's chunks
-# back into one result JSON, using the median of the per-chunk medians per
-# scenario. This shrinks the wall-clock gap between a baseline measurement
-# and its paired current measurement to roughly 1/chunks of the naive gap,
-# which is what actually cancels drift -- see run_paired_ab.py's own header
-# comment for the reasoning, and benchmarks/README.md for a local repro of
-# the false-positive this replaced. The merged JSON has the identical shape
-# the old two-run-per-suite design produced, so ci_check_provenance.py and
-# ci_compare.py below are unchanged.
-#
-# Keep-arms-identical invariant: everything about how a benchmark scenario
-# actually runs -- interpreter binary, shared dependency versions, harness
-# code, working directory -- must be identical between the baseline and
-# current venvs; only the lionagi implementation may differ. Temporal
-# drift (above) is one way that assumption quietly breaks; a diverging
-# interpreter is another, and it is not just "same version number is
-# enough", and not just a matter of passing --python once: UV_PYTHON is
-# exported to $GITHUB_ENV right after the Setup Python step (see "Pin uv
-# to the toolcache interpreter"), pointing at the literal
-# "$pythonLocation/bin/python" binary actions/setup-python just installed,
-# so every uv invocation for the rest of the job -- venv creation, sync,
-# pip install, in both arms -- resolves that same binary rather than a
-# version string uv might resolve differently on its own. This had to be
-# ambient, not per-command: a bare `uv venv` (no --python) ignores the
-# setup-python toolcache and instead honors this repo's committed
-# .python-version, and `uv venv --python X` immediately followed by `uv
-# sync` in the same step is not enough either -- `uv sync` is a *project*
-# command that re-resolves against .python-version on its own regardless
-# of what the preceding `uv venv` in the same step just built, which is
-# exactly how the current arm ended up on a different Python MINOR
-# version than the baseline arm even after an explicit --python was added
-# to its `uv venv` call. Two builds reporting the same version string are
-# also not guaranteed to be the same binary (an official PGO+LTO-optimized
-# toolcache build can measurably outperform a generic build on CPU-bound
-# work), which is why both arms are pinned to the one path rather than to
-# "3.12". ci_check_provenance.py asserts the two arms' recorded interpreter
-# identity (full sys.version, python_build, python_compiler) actually
-# matches, not just their lionagi install paths. The remaining difference
-# between the two install commands -- current runs `uv sync --all-extras`,
-# baseline runs a plain `uv pip install <path> trio` with no extras -- is
-# benign: every benchmarked module (lionagi.ln.concurrency, lionagi.ln,
-# lionagi.ln.fuzzy) is a core, non-optional dependency, none of this
-# repo's optional extras (reader/ollama/mcp/rich/schema/pandas/postgres)
-# touch them, and any shared dependency the two installs do have in
-# common is already pinned to the same version by the constraints file
-# below regardless of which extras requested it.
+# Same-machine A/B: each suite runs twice on this runner (baseline vs
+# current lionagi install, identical harness) so the delta isolates the
+# code change from runner variance. Keep-arms-identical invariant:
+# interpreter binary, dependency versions, and harness code must match
+# between arms -- only the lionagi implementation may differ.
 
 on:
   push:
@@ -95,8 +27,7 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v7
         with:
-          # Full history is required to compute a true merge-base for the
-          # baseline ref below (a shallow clone has no common ancestor).
+          # Full history needed to compute a true merge-base for the baseline ref below.
           fetch-depth: 0
 
       - name: Setup Python ${{ matrix.python-version }}
@@ -106,31 +37,7 @@ jobs:
 
       - name: Pin uv to the toolcache interpreter for the rest of this job
         run: |
-          # UV_PYTHON, once exported to $GITHUB_ENV here, applies to every
-          # later step's uv invocation in this job -- this has to be a step
-          # (using $GITHUB_ENV), not a job-level `env:` block: a job-level
-          # `env:` is evaluated once at job start, before Setup Python has
-          # run, so it can not see $pythonLocation (verified against
-          # GitHub's own docs on variable scoping). $pythonLocation itself
-          # is the env var actions/setup-python exports once it runs,
-          # pointing at the exact interpreter it just installed.
-          #
-          # Why ambient rather than a per-command --python flag: `uv venv
-          # --python X` is not "sticky" for a later `uv sync` in the same
-          # step -- `uv sync` is a *project* command (it resolves against
-          # this repo's pyproject.toml/.python-version, not against
-          # whatever interpreter an earlier `uv venv` in the same step
-          # happened to build) and will silently re-resolve and REBUILD the
-          # venv under a different interpreter if it disagrees with the
-          # project pin. This repo has a committed .python-version (3.10),
-          # which is exactly what `uv sync --all-extras` in "Install
-          # dependencies" below picked up instead of the matrix's 3.12 --
-          # confirmed from a real job log: `uv venv --python
-          # "$pythonLocation/bin/python"` correctly built a 3.12 venv, and
-          # the very next command in the same step, `uv sync --all-extras`,
-          # then downloaded and rebuilt onto a uv-managed 3.10 install.
-          # UV_PYTHON removes that ambiguity for every uv subcommand
-          # (venv/sync/pip), including any added to this job later.
+          # $GITHUB_ENV (not a job-level env:, which can't see $pythonLocation yet) so every later uv venv/sync/pip in this job resolves this exact binary instead of uv re-resolving .python-version on its own.
           echo "UV_PYTHON=$pythonLocation/bin/python" >> "$GITHUB_ENV"
 
       - name: Install uv
@@ -140,10 +47,6 @@ jobs:
 
       - name: Install dependencies
         run: |
-          # UV_PYTHON (set above) pins the interpreter for both commands
-          # below. The explicit --python on `uv venv` is redundant with it
-          # and kept anyway -- belt and suspenders, and it keeps this step
-          # readable without cross-referencing the earlier step.
           uv venv --python "$pythonLocation/bin/python"
           source .venv/bin/activate
           uv sync --all-extras
@@ -155,19 +58,11 @@ jobs:
           zero_sha="0000000000000000000000000000000000000000"
 
           if [ "${{ github.event_name }}" = "pull_request" ]; then
+            # PR: merge-base with the target branch (handles a target that has moved since the PR opened).
             base_ref="origin/${{ github.event.pull_request.base.ref }}"
             base_sha=$(git merge-base HEAD "$base_ref")
           else
-            # push event: the webhook's own record of the branch tip right
-            # before this push (github.event.before) is the correct
-            # baseline -- HEAD^ is only the previous commit in the pushed
-            # range, so a push of several commits at once would leave an
-            # earlier commit's regression already inside the "baseline"
-            # and ungated. Two edge cases fall back to HEAD^ instead:
-            #   - a brand new branch, where before is the all-zero SHA;
-            #   - a force push whose old tip is no longer reachable from
-            #     any ref and can't be fetched (rare, but possible if the
-            #     job runs long enough after the push for it to be gone).
+            # push: use github.event.before (the pre-push tip), not just HEAD^, so a multi-commit push doesn't leave an earlier regression inside the baseline; falls back to HEAD^ if before is zero/unfetchable.
             before_sha="${{ github.event.before }}"
             if [ -z "$before_sha" ] || [ "$before_sha" = "$zero_sha" ]; then
               echo "push 'before' is the zero SHA (new branch); falling back to HEAD^."
@@ -200,51 +95,11 @@ jobs:
         run: |
           set -euo pipefail
           git worktree add --detach "$RUNNER_TEMP/lionagi-baseline" "$BASELINE_SHA"
-          # --python "$pythonLocation/bin/python" (not the bare version
-          # string "${{ matrix.python-version }}"): the interpreter binary
-          # must be identical to the current arm's venv above, not merely
-          # the same version *string*. uv can resolve "3.12" to its own
-          # downloaded build rather than reusing the toolcache interpreter
-          # actions/setup-python already installed, and two same-numbered
-          # builds are not guaranteed identical (e.g. a PGO+LTO-optimized
-          # official toolcache build vs. a generic community build can
-          # measurably differ on CPU-bound work). Pointing both venvs at
-          # the literal $pythonLocation binary removes that as a variable
-          # entirely. ci_check_provenance.py asserts the two arms' recorded
-          # interpreter identity actually matches. UV_PYTHON (set earlier
-          # in the job) already pins every uv command here too; every
-          # invocation in this step keeps its own explicit --python anyway
-          # since none of them are "project" commands that would silently
-          # re-resolve without it (unlike `uv sync` in "Install
-          # dependencies" above, which is why that step needed the ambient
-          # env var and not just a --python flag on its `uv venv` call).
+          # Pin to the literal toolcache binary (not a version string) so this venv's interpreter is identical to the current arm's, not just same-numbered.
           uv venv "$RUNNER_TEMP/.venv-baseline" --python "$pythonLocation/bin/python"
-          # Same-machine A/B applies to the dependency axis too, not just
-          # the interpreter and the OS: only the lionagi implementation
-          # should differ between arms. Export every package version
-          # uv.lock actually resolved for the current venv and pass it as
-          # a constraints file to the baseline install, so anyio, orjson,
-          # and every other shared dependency land on identical versions
-          # in both venvs -- otherwise a compare delta could be dependency
-          # drift (a transitive package released a new version between
-          # the baseline commit and today) rather than a lionagi change.
-          # Drop the `-e file://...` line: that is this checkout's own
-          # editable lionagi entry, and constraining the *baseline*
-          # install to point back at the *current* checkout's source
-          # would defeat the whole point of building a separate baseline.
-          # If the baseline commit's own pyproject.toml requirements are
-          # incompatible with a constraint from today's lock (e.g. a
-          # dependency floor or cap that has since changed), `uv pip
-          # install` fails this step outright with an unresolvable-
-          # constraints error rather than silently falling back to an
-          # unconstrained resolution -- treated as a hard CI failure here,
-          # consistent with this workflow's fail-loud posture elsewhere.
+          # Constrain the baseline install to current's exact resolved dependency versions so a compare delta can't be dependency drift instead of a lionagi change. Drops the `-e file://...` line (current checkout's own editable entry) to avoid pointing baseline back at current's source.
           uv pip freeze --python .venv/bin/python | grep -v '^-e ' > "$RUNNER_TEMP/current-deps.constraints.txt"
-          # trio is a dev-only extra, not a runtime dependency of the
-          # lionagi package itself, so it must be requested explicitly (a
-          # constraints file only pins versions of packages something else
-          # already pulls in -- it can't cause trio to be installed on its
-          # own). Its version still comes from the constraints file above.
+          # trio is a dev-only extra (the constraints file alone won't pull it in) so it's installed explicitly; its version still comes from that constraints file.
           uv pip install --python "$RUNNER_TEMP/.venv-baseline/bin/python" \
             --constraints "$RUNNER_TEMP/current-deps.constraints.txt" \
             "$RUNNER_TEMP/lionagi-baseline" trio
@@ -254,33 +109,13 @@ jobs:
           set -euo pipefail
           mkdir -p "$RUNNER_TEMP/bench-harness"
           cp -R "$GITHUB_WORKSPACE/benchmarks" "$RUNNER_TEMP/bench-harness/benchmarks"
-          # Sanity: this dir must contain benchmarks/ but NOT a lionagi/
-          # source tree, otherwise `-m benchmarks.X` would shadow both
-          # venvs' installs the same way the checkout root does.
+          # Must not contain a lionagi/ dir -- `-m benchmarks.X` would shadow both venvs' installs the same way the checkout root does.
           if [ -e "$RUNNER_TEMP/bench-harness/lionagi" ]; then
             echo "::error::neutral bench harness unexpectedly contains a lionagi/ dir"
             exit 1
           fi
 
-      # Every suite below runs through run_paired_ab.py, which alternates
-      # short baseline/current chunks (see the header comment above and
-      # run_paired_ab.py's own docstring for why) and writes one merged
-      # result JSON per arm, in the same shape a plain `-m benchmarks.X`
-      # run always produced. --chunks 5 was picked by locally simulating the
-      # drift this replaced (benchmarks/README.md) -- it cuts a realistic
-      # false-positive delta from ~20%+ to low single digits without
-      # multiplying the job's wall-clock time by chunk count (interpreter
-      # startup is the per-chunk overhead, not the benchmarked work itself).
-      # --total-repeat matches this job's previous --repeat counts for
-      # concurrency (50); ln and fuzzy are bumped from the previous 10 to 20
-      # so 5 chunks still leaves 4 repeats/chunk instead of 2 -- a real
-      # local run at repeat 10/chunks 5 (2/chunk) showed materially noisier
-      # per-chunk medians for these suites' faster scenarios, since a
-      # 2-sample "median" is really just an average of two single
-      # timings. 4/chunk is still thin next to concurrency's 10/chunk, but
-      # it's the cheaper suites getting extra repeats, not fewer chunks
-      # (fewer chunks would weaken the temporal pairing this design exists
-      # for).
+      # run_paired_ab.py interleaves short baseline/current chunks to cancel runner-speed drift (see its own docstring); --chunks/--total-repeat tuned by local drift simulation in benchmarks/README.md.
 
       - name: Run concurrency benchmarks (asyncio, paired baseline/current)
         run: |

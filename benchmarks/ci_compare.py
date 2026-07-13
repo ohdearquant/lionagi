@@ -13,21 +13,7 @@ def load(path: Path):
 
 
 def _validate_stat(name: str, side: str, stat: dict) -> str | None:
-    """Return an error message if `stat` (one arm's result entry for
-    scenario `name`) is not safe to compute a delta from, else None.
-
-    Without this, a missing or malformed numeric field flows straight into
-    the delta arithmetic below and silently produces a meaningless-but-
-    passing result: `stat.get("median", 0)` on a missing key defaults to
-    0.0 instead of failing, and a literal NaN -- valid JSON under the
-    stdlib parser's non-standard NaN/Infinity extension, and directly
-    reachable from a malformed or corrupted producer -- makes `delta >
-    threshold` evaluate to False for ANY threshold, since every comparison
-    against NaN is False in Python. Either way a broken measurement would
-    pass the regression gate instead of failing it, so every numeric field
-    is checked for presence, correct type, and finiteness before any delta
-    is computed.
-    """
+    """Error message if `stat` isn't safe to compute a delta from (missing/non-numeric/NaN), else None."""
     runs = stat.get("runs")
     if not isinstance(runs, int) or isinstance(runs, bool) or runs <= 0:
         return f"{name} ({side}): 'runs' must be a positive integer, got {runs!r}"
@@ -113,14 +99,7 @@ def compare(
             ok = False
 
     if compared == 0:
-        # Belt-and-suspenders: ci_check_provenance.py is meant to catch an
-        # empty-or-disjoint scenario set before this ever runs, but if that
-        # step is ever skipped, reordered, or removed, this function would
-        # otherwise silently skip every scenario as "no baseline" above and
-        # return ok=True -- a gate that ran, compared nothing, and reported
-        # success. Zero comparisons is always a failure here, independent
-        # of why (empty baseline, empty current, or disjoint scenario
-        # names), and applies even without --normalize-by.
+        # Belt-and-suspenders for ci_check_provenance.py's same check, in case that step is ever skipped or reordered.
         lines.append(
             "ERROR: zero scenarios were actually compared (baseline and current share "
             "no scenario in common) -- this gate produced no signal, not a clean pass."

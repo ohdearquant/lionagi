@@ -7,19 +7,7 @@ from pathlib import Path
 
 SUITES = ["concurrency-asyncio", "concurrency-trio", "ln-asyncio", "ln-trio", "fuzzy"]
 
-# Suite -> shared (non-lionagi) dependency keys that suite's result JSON
-# meta MUST carry. Every bench script's system_info() records anyio; only
-# fuzzy_bench.py additionally records orjson (benchmarks/fuzzy_bench.py,
-# benchmarks/concurrency_bench.py, benchmarks/ln_bench.py). These must
-# match across baseline and current: the baseline venv's install is
-# constrained to the current venv's resolved versions (see
-# benchmarks.yml), so any drift here means that constraint mechanism
-# broke. This is a per-suite REQUIRED list, not "check whichever of these
-# keys happens to be present" -- a key missing from either arm on a suite
-# that's supposed to carry it is itself a failure (the dependency axis
-# went unverified), not something to skip. An unrecognized suite name
-# (e.g. a caller-supplied --suites value) falls back to requiring anyio,
-# since every currently-defined bench script records it.
+# Suite -> required shared (non-lionagi) dependency keys; missing on either arm is a hard failure, not a skip.
 REQUIRED_DEP_META_KEYS: dict[str, list[str]] = {
     "concurrency-asyncio": ["anyio"],
     "concurrency-trio": ["anyio"],
@@ -28,90 +16,14 @@ REQUIRED_DEP_META_KEYS: dict[str, list[str]] = {
     "fuzzy": ["anyio", "orjson"],
 }
 
-# Interpreter identity recorded in each result JSON's meta
-# (benchmarks/_compat.py:lionagi_provenance). Unlike lionagi_file (must
-# DIFFER) and python_executable (a venv-local path, expected to differ
-# even on an identical interpreter binary), these describe the actual
-# Python build running the benchmark and must be IDENTICAL across arms --
-# always present, never suite-specific, so unlike SHARED_DEP_META_KEYS a
-# missing value here is itself a failure, not something to skip.
+# Interpreter identity (benchmarks/_compat.py:lionagi_provenance); must be identical across arms, always required.
 PYTHON_IDENTITY_META_KEYS = ["python_full_version", "python_build", "python_compiler"]
 
 
 def check(baseline_dir: Path, current_dir: Path, suites: list[str]) -> bool:
-    """Return True iff, for every suite: (1) baseline and current used
-    distinct lionagi installs, (2) baseline and current scenario sets
-    overlap and current covers every scenario baseline reported,
-    (3) shared dependency versions match across both arms, and (4) the
-    two arms ran under the identical Python interpreter build.
-
-    (1) is only meaningful if the baseline run and the current run
-    actually imported different code. A prior version of this job ran
-    `python -m benchmarks.X` from the repo checkout root, whose cwd is
-    prepended to sys.path by `-m` -- since the checkout root contains a
-    `lionagi/` source directory, both venvs' `import lionagi` silently
-    resolved there instead of to their own site-packages install, and the
-    gate compared identical code against itself. Every result JSON now
-    records lionagi.__file__ (benchmarks/_compat.py:lionagi_provenance).
-
-    (2) guards two failure modes of the same soft-skip mechanism: each
-    bench script drops a scenario from its results if a symbol it needs is
-    missing from whichever lionagi install ran it
-    (benchmarks/_compat.py:soft_import).
-
-    The partial case -- some scenarios missing, not all -- is intentional
-    when the OLDER baseline predates a brand-new symbol the PR adds:
-    current has a scenario baseline doesn't, which is fine. It is a bug
-    report, silently swallowed, when the NEWER current install is missing
-    a symbol the OLDER baseline still has: something in the PR broke or
-    removed an API a benchmark scenario depends on, and ci_compare.py only
-    iterates current's results, so it would never notice the scenario went
-    missing. Any scenario present in baseline but absent from current
-    fails this check.
-
-    The total case -- one side's results object is entirely empty (e.g.
-    the baseline install couldn't import the module at all) -- is a
-    different, worse failure: with baseline empty, the partial-case diff
-    above (`baseline_scenarios - current_scenarios`) is also empty, since
-    baseline has nothing to be missing FROM current. ci_compare.py then
-    finds no scenario has a matching baseline entry, skips all of them as
-    "no baseline", and exits 0 -- the gate ran and reported success while
-    comparing nothing. Any suite where baseline or current has zero
-    scenarios, or where the two scenario sets share no overlap at all,
-    fails this check.
-
-    (3) guards the dependency axis of the same-machine A/B design: only
-    the lionagi implementation should differ between baseline and
-    current, not a transitive dependency's version. If a package like
-    anyio or orjson released a newer version between the baseline commit
-    and today, an unconstrained baseline install could pick it up while
-    current stays pinned to what uv.lock resolved (or vice versa), and a
-    compare delta could then reflect dependency drift instead of a
-    lionagi change. benchmarks.yml constrains the baseline install to
-    current's exact resolved versions; this is the check that the
-    constraint actually held. Each suite's REQUIRED_DEP_META_KEYS entry
-    must be present and equal on BOTH arms -- a key missing from either
-    side is a hard failure, not "not applicable to this suite" (that
-    distinction is what REQUIRED_DEP_META_KEYS itself encodes per suite;
-    it is not inferred from which keys happen to show up).
-
-    (4) guards the interpreter itself, the one thing "same-machine A/B"
-    assumes is truly shared: if the two venvs are created under different
-    Python builds, every CPU-bound scenario can show a uniform,
-    one-directional delta that has nothing to do with the code under
-    test and survives even paired-in-time interleaving (drift-cancelling
-    only helps when the underlying speed difference is noise, not a
-    structural interpreter difference). This has actually happened here: a
-    bare `uv venv` (no --python) silently honored this repo's committed
-    .python-version instead of the CI matrix's Python version, putting one
-    arm on a materially different interpreter than the other.
-    benchmarks.yml now pins both venv creations to the literal
-    $pythonLocation binary rather than a version string; this is the check
-    that the pin actually held, comparing the fully-detailed version
-    string plus build/compiler identity rather than just the short
-    version -- two builds can report the same "3.12.13" while being
-    differently optimized (e.g. PGO+LTO vs. not).
-    """
+    """True iff every suite's arms show distinct lionagi installs, overlapping scenario
+    coverage with nothing dropped from baseline, matching required dependency versions,
+    and identical interpreter identity."""
     ok = True
     for suite in suites:
         b_path = baseline_dir / f"{suite}.json"
@@ -151,18 +63,6 @@ def check(baseline_dir: Path, current_dir: Path, suites: list[str]) -> bool:
         c_scenarios = set(current.get("results", {}).keys())
         overlap = b_scenarios & c_scenarios
         if not b_scenarios or not c_scenarios or not overlap:
-            # A fourth variant of the same "gate silently becomes a no-op"
-            # class as (1)/(2) above: if baseline's results object is empty
-            # (e.g. the baseline install couldn't import the module at all,
-            # so soft_import dropped every scenario in the suite), `dropped
-            # = b_scenarios - c_scenarios` below is also empty -- there is
-            # nothing to report as "missing from current" when baseline
-            # never had anything to begin with. ci_compare.py then iterates
-            # current's scenarios, finds none of them have a baseline entry,
-            # skips all of them as "no baseline", and exits 0: the gate ran,
-            # produced no signal, and reported success. Same failure shape
-            # if current is the empty side, or if the two sets are simply
-            # disjoint (no scenario name shared at all).
             which = (
                 "baseline"
                 if not b_scenarios
