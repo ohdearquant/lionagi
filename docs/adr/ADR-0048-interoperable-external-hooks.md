@@ -718,11 +718,7 @@ emission counts, not fixture hooks run against current Claude Code/Codex
 schemas. Until this layer lands, no foreign hook suite can run under LionAGI
 and no config can declare one.
 
-One additional defect, unrelated to the above scope but found while
-reconciling this ADR's D5 language against the current implementation:
-`ActionManager.invoke()` awaits its post-hook run inside a `finally` block
-without capturing the return value, so the `notes` list `run_tool_post_hooks`
-computes (populated when a post hook returns a block reason) is discarded and
-never reaches the branch as a system-visible message. This is a correctness
-gap in already-merged code, independent of the unstarted work above, and
-should be tracked as a bug fix on its own.
+On D5's note surfacing: post-hook reason notes are collected by the hook
+runner and attached to the returned tool-call event's metadata. The stronger
+D5 shape, surfacing them into the branch as a system-visible message, belongs
+to the external-hook adapter layer above and remains unbuilt with it.
