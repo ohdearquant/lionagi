@@ -43,6 +43,19 @@ def temp_db_path(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     return db_path
 
 
+@pytest.fixture
+def sleep_probe(monkeypatch: pytest.MonkeyPatch) -> list[float]:
+    """Record `_dispatch_wait`'s poll-interval sleep calls instead of letting
+    them block. `_dispatch_wait` only reaches its `_sleep_interval(interval)`
+    call *after* a tick that leaves the chain still open (see the loop in
+    `lionagi/cli/monitor.py`) -- so an empty list here is a deterministic,
+    load-independent proof that the wait resolved on its first tick rather
+    than a wall-clock bound that flakes under machine contention."""
+    calls: list[float] = []
+    monkeypatch.setattr(time, "sleep", lambda secs: calls.append(secs))
+    return calls
+
+
 async def _make_schedule(
     db: StateDB,
     *,
@@ -611,18 +624,16 @@ async def test_advance_chains_multi_hop_chain_followed_to_final_link(
 
 @pytest.mark.asyncio
 async def test_dispatch_wait_single_immediately_terminal_success(
-    temp_db_path: Path, capsys: pytest.CaptureFixture
+    temp_db_path: Path, capsys: pytest.CaptureFixture, sleep_probe: list[float]
 ) -> None:
     async with StateDB() as db:
         sched_id = await _make_schedule(db, name="my-sched")
         run_id = await _make_schedule_run(db, sched_id, status="completed", exit_code=0)
 
-    started = time.monotonic()
     exit_code = _dispatch_wait([run_id], interval=5.0, follow=False)
-    elapsed = time.monotonic() - started
 
     assert exit_code == 0
-    assert elapsed < 2.0, "already-terminal run must not wait out a full poll interval"
+    assert sleep_probe == [], "already-terminal run must not wait out a full poll interval"
     out = capsys.readouterr().out
     assert run_id in out
     assert "status=completed" in out
@@ -662,7 +673,7 @@ async def test_dispatch_wait_multi_id_one_nonzero_exit_fails_aggregate(temp_db_p
 
 @pytest.mark.asyncio
 async def test_dispatch_wait_unknown_id_returns_exit_unknown_without_blocking(
-    temp_db_path: Path, caplog: pytest.LogCaptureFixture
+    temp_db_path: Path, caplog: pytest.LogCaptureFixture, sleep_probe: list[float]
 ) -> None:
     # Open+close once so state.db actually exists on disk — this test is
     # about an id that isn't among the (existing) schedule_runs, not about
@@ -670,13 +681,11 @@ async def test_dispatch_wait_unknown_id_returns_exit_unknown_without_blocking(
     async with StateDB():
         pass
 
-    started = time.monotonic()
     with caplog.at_level(logging.ERROR, logger="lionagi.cli.error"):
         exit_code = _dispatch_wait(["nonexistent-id"], interval=5.0, follow=False)
-    elapsed = time.monotonic() - started
 
     assert exit_code == EXIT_UNKNOWN
-    assert elapsed < 2.0, "unresolved id must not enter the poll loop at all"
+    assert sleep_probe == [], "unresolved id must not enter the poll loop at all"
     assert "nonexistent-id" in caplog.text
 
 
@@ -874,6 +883,7 @@ async def test_dispatch_wait_chain_follow_on_fail_recovery_final_link_wins(
 @pytest.mark.asyncio
 async def test_dispatch_wait_chain_follow_no_declared_action_resolves_immediately(
     temp_db_path: Path,
+    sleep_probe: list[float],
 ) -> None:
     """(c) a schedule declaring on_success only, hit by a FAILED run, needs
     no grace wait at all -- must resolve well before a full poll interval,
@@ -882,12 +892,10 @@ async def test_dispatch_wait_chain_follow_no_declared_action_resolves_immediatel
         sched_id = await _make_schedule(db, name="success-only", on_success={"kind": "agent"})
         run_id = await _make_schedule_run(db, sched_id, status="failed", exit_code=1)
 
-    started = time.monotonic()
     exit_code = _dispatch_wait([run_id], interval=5.0, follow=False)
-    elapsed = time.monotonic() - started
 
     assert exit_code == 1
-    assert elapsed < 2.0, "no matching chain action declared -- must not enter a grace wait"
+    assert sleep_probe == [], "no matching chain action declared -- must not enter a grace wait"
 
 
 @pytest.mark.asyncio
