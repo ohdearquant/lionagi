@@ -27,7 +27,9 @@ def add_plugin_subparser(subparsers: argparse._SubParsersAction) -> None:
         help="List discovered plugins and their state.",
         description=(
             "State is one of: active, disabled, untrusted, changed, "
-            "incompatible, collision, invalid."
+            "incompatible, collision, invalid. Also garbage-collects trust "
+            "records whose bundle directory no longer exists, printing which "
+            "ones were pruned and why."
         ),
     )
 
@@ -76,6 +78,12 @@ def _state_row(record) -> str:  # noqa: ANN001 — PluginRecord, imported lazily
 
 def _run_list() -> int:
     from lionagi.plugins import PluginRegistry
+    from lionagi.plugins.discovery import discover_plugins
+    from lionagi.plugins.trust import gc_trust_records
+
+    pruned = gc_trust_records(discover_plugins())
+    for name in pruned:
+        print(f"pruned stale trust record for {name!r}: plugin directory no longer found")
 
     PluginRegistry.reset()
     records = PluginRegistry.list_plugins()

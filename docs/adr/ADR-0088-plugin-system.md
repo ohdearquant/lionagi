@@ -480,6 +480,10 @@ end-to-end.
   command set is implemented, with disable implemented as a settings flag that
   leaves the bundle directory untouched, matching the ADR's stated design.
   Namespacing (`<plugin>/<name>`) is implemented and tested for agent profiles.
+  Trust records for a plugin whose bundle directory has been removed are
+  garbage-collected on `li plugin list` (`gc_trust_records`), printing which
+  entries were pruned and why; a plugin later reappearing under the same name
+  is not resurrected from the removed record and must be re-trusted.
 
 **Known gaps:**
 
@@ -500,10 +504,8 @@ end-to-end.
   consequence of ADR-0048's external-hook execution layer not existing yet
   (see that ADR's own implementation-status annex): a plugin's declared hooks
   have nowhere to attach until that layer lands.
-- Two smaller, contained gaps: providers and tools have no explicit,
+- One smaller, contained gap: providers and tools have no explicit,
   user-facing diagnostic when a plugin capability collides with an
   already-registered built-in — the safety property holds today only because
   the plugin-consultation branch is structurally unreachable once a built-in
-  match succeeds, not because a rejection path was exercised and reported; and
-  trust records for a plugin whose directory has since been deleted are not
-  garbage-collected, so they persist indefinitely in the user's settings file.
+  match succeeds, not because a rejection path was exercised and reported.

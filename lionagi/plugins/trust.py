@@ -26,6 +26,7 @@ __all__ = (
     "TrustState",
     "build_trust_disclosure",
     "compute_trust_hashes",
+    "gc_trust_records",
     "read_trusted_plugins",
     "trust_plugin",
     "trust_state",
@@ -81,6 +82,40 @@ def read_trusted_plugins() -> dict[str, Any]:
     settings = read_user_settings()
     trusted = settings.get("trusted_plugins", {})
     return trusted if isinstance(trusted, dict) else {}
+
+
+def gc_trust_records(discovered: list[DiscoveredPlugin]) -> list[str]:
+    """Prune ``trusted_plugins`` entries whose bundle is no longer discoverable (D7).
+
+    A trust record is keyed by the manifest ``name:`` field, not a path — once
+    ``rm -r`` removes the bundle directory (D7's stated uninstall step), that
+    name simply no longer appears among *discovered*'s parsed manifests, and
+    the record does nothing but sit in ``~/.lionagi/settings.yaml``. Pruning it
+    is not just tidiness: if it were left in place and a *different* bundle
+    later reappeared under the same name with content that happens to hash the
+    same as what was pinned before (a stale checkout, a re-cloned repo), that
+    lingering record would trust it silently — the exact resurrection D5's
+    content-pinning is meant to prevent. Garbage-collecting on every notice
+    means a reappearing plugin is always ``untrusted`` again, never grandfathered
+    in on an old hash.
+
+    Returns the pruned names, sorted, so the caller can report exactly what
+    happened and why — this must never prune silently. Idempotent: a second
+    call with nothing newly absent returns an empty list and writes nothing.
+    """
+    settings = read_user_settings()
+    trusted = settings.get("trusted_plugins", {})
+    if not isinstance(trusted, dict) or not trusted:
+        return []
+    live_names = {d.manifest.name for d in discovered if d.manifest is not None}
+    stale = sorted(name for name in trusted if name not in live_names)
+    if not stale:
+        return []
+    for name in stale:
+        trusted.pop(name, None)
+    settings["trusted_plugins"] = trusted
+    write_user_settings(settings)
+    return stale
 
 
 def trust_state(discovered: DiscoveredPlugin) -> TrustState:

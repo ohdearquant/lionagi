@@ -4,6 +4,7 @@
 
 from __future__ import annotations
 
+import shutil
 from pathlib import Path
 
 import pytest
@@ -13,6 +14,7 @@ from lionagi.plugins.discovery import discover_plugins
 from lionagi.plugins.trust import (
     TrustState,
     build_trust_disclosure,
+    gc_trust_records,
     read_trusted_plugins,
     trust_plugin,
     trust_state,
@@ -168,3 +170,103 @@ def test_hash_is_stable_across_yaml_formatting_changes(write_plugin):
     (d.manifest_path).write_text("# just a comment\n\n" + MANIFEST)
     d2 = discover_plugins()[0]
     assert trust_state(d2) is TrustState.TRUSTED
+
+
+# --- ADR-0088 D7: trust-record garbage collection for absent plugins -------
+
+
+def test_gc_keeps_trust_record_for_existing_bundle(write_plugin):
+    """A trusted plugin whose bundle directory is still there survives GC untouched."""
+    d = _discover_one(write_plugin)
+    trust_plugin(d)
+
+    pruned = gc_trust_records(discover_plugins())
+
+    assert pruned == []
+    assert "web-research" in read_trusted_plugins()
+
+
+def test_gc_prunes_record_for_absent_bundle_and_names_it(write_plugin):
+    """Uninstall (D7: `rm -r` the bundle) leaves a trust record with nothing behind it --
+    GC must remove it and name which entry it removed, never silently."""
+    d = _discover_one(write_plugin)
+    trust_plugin(d)
+    assert "web-research" in read_trusted_plugins()
+
+    shutil.rmtree(d.bundle_dir)
+
+    pruned = gc_trust_records(discover_plugins())
+
+    assert pruned == ["web-research"]
+    assert "web-research" not in read_trusted_plugins()
+
+
+def test_gc_is_idempotent(write_plugin):
+    """A second GC pass over the same state prunes nothing further and writes nothing."""
+    d = _discover_one(write_plugin)
+    trust_plugin(d)
+    shutil.rmtree(d.bundle_dir)
+
+    first = gc_trust_records(discover_plugins())
+    second = gc_trust_records(discover_plugins())
+
+    assert first == ["web-research"]
+    assert second == []
+
+
+def test_gc_does_not_touch_other_trusted_plugins(write_plugin):
+    """GC prunes only the absent entry, leaving unrelated trust records alone."""
+    gone = _discover_one(write_plugin)
+    trust_plugin(gone)
+    write_plugin(
+        "still-here",
+        MANIFEST.replace("web-research", "still-here"),
+        files={"tools/t.py": "def t():\n    return 1\n", "agents/a.md": "x\n"},
+    )
+    discovered = discover_plugins()
+    still_here = next(
+        d for d in discovered if d.manifest is not None and d.manifest.name == "still-here"
+    )
+    trust_plugin(still_here)
+    shutil.rmtree(gone.bundle_dir)
+
+    pruned = gc_trust_records(discover_plugins())
+
+    assert pruned == ["web-research"]
+    trusted = read_trusted_plugins()
+    assert "web-research" not in trusted
+    assert "still-here" in trusted
+
+
+def test_gc_prevents_resurrection_of_stale_hash_on_reappearance(write_plugin):
+    """A plugin that reappears later under the same name -- even with byte-identical
+    content -- must come back UNTRUSTED, not silently re-trusted off the pruned record.
+    D5's content-pinning is an explicit-approval promise, not a hash cache."""
+    d = _discover_one(write_plugin)
+    trust_plugin(d)
+    assert trust_state(d) is TrustState.TRUSTED
+
+    shutil.rmtree(d.bundle_dir)
+    gc_trust_records(discover_plugins())
+
+    # Re-create the exact same bundle: identical manifest + files -> identical hashes.
+    d2 = _discover_one(write_plugin)
+
+    assert trust_state(d2) is TrustState.UNTRUSTED
+
+
+def test_gc_no_op_when_nothing_is_trusted(plugin_home: Path):
+    """GC over an empty/absent trusted_plugins block is a safe no-op."""
+    assert gc_trust_records(discover_plugins()) == []
+
+
+def test_gc_ignores_malformed_trusted_plugins_block(write_plugin):
+    """A hand-edited settings.yaml with a non-dict `trusted_plugins` value must not
+    crash GC -- degrade to "nothing to prune", matching trust_state()'s handling of
+    the same malformed shape."""
+    _discover_one(write_plugin)
+    settings = read_user_settings()
+    settings["trusted_plugins"] = "not-a-dict"
+    write_user_settings(settings)
+
+    assert gc_trust_records(discover_plugins()) == []

@@ -4,6 +4,7 @@
 
 from __future__ import annotations
 
+import shutil
 from pathlib import Path
 
 import pytest
@@ -113,6 +114,43 @@ def test_disable_does_not_mutate_bundle(web_research_bundle):
     code = cli_main(["plugin", "disable", "web-research"])
     assert code == 0
     assert (web_research_bundle / "plugin.yaml").read_text() == manifest_before
+
+
+def test_list_prunes_stale_trust_record_for_removed_bundle(capsys, web_research_bundle):
+    """ADR-0088 D7: `li plugin list` garbage-collects a trust record whose bundle
+    directory was removed (uninstall), naming what it pruned and why -- never silently."""
+    code = cli_main(["plugin", "trust", "web-research", "--yes"])
+    assert code == 0
+    capsys.readouterr()
+
+    shutil.rmtree(web_research_bundle)
+
+    code = cli_main(["plugin", "list"])
+    assert code == 0
+    out = capsys.readouterr().out
+    assert "pruned" in out
+    assert "web-research" in out
+    assert "no longer found" in out
+
+    trusted = read_trusted_plugins_helper()
+    assert "web-research" not in trusted
+
+
+def test_list_prune_is_idempotent(capsys, web_research_bundle):
+    code = cli_main(["plugin", "trust", "web-research", "--yes"])
+    assert code == 0
+    capsys.readouterr()
+
+    shutil.rmtree(web_research_bundle)
+
+    code = cli_main(["plugin", "list"])
+    assert code == 0
+    capsys.readouterr()
+
+    code = cli_main(["plugin", "list"])
+    assert code == 0
+    out = capsys.readouterr().out
+    assert "pruned" not in out
 
 
 def read_trusted_plugins_helper() -> dict:
