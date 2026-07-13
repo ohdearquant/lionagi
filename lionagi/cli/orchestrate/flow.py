@@ -1805,20 +1805,31 @@ async def _run_flow_inner(
         )
 
         progress("Planning DAG...")
-        assignments = await plan(
-            env.orc_branch, prompt, roles=roster, dag=True, guidance=guidance, max_tasks=max_ops
-        )
+        try:
+            assignments = await plan(
+                env.orc_branch, prompt, roles=roster, dag=True, guidance=guidance, max_tasks=max_ops
+            )
+        except ValueError as exc:
+            # plan() raises a bare ValueError when the orchestrator still
+            # overshoots max_tasks after the cap was stated in guidance —
+            # route it through the same clean-failure channel as every
+            # other plan-time failure in this function.
+            raise FlowPlanError(str(exc)) from exc
         if not assignments:
             # Fail loud rather than silently exiting 0 with no work done.
             _warn("Orchestrator returned no assignments; retrying once with a sharper instruction.")
-            assignments = await plan(
-                env.orc_branch,
-                prompt,
-                roles=roster,
-                dag=True,
-                guidance=guidance + " Return ONLY the assignments list — do not perform the task.",
-                max_tasks=max_ops,
-            )
+            try:
+                assignments = await plan(
+                    env.orc_branch,
+                    prompt,
+                    roles=roster,
+                    dag=True,
+                    guidance=guidance
+                    + " Return ONLY the assignments list — do not perform the task.",
+                    max_tasks=max_ops,
+                )
+            except ValueError as exc:
+                raise FlowPlanError(str(exc)) from exc
         if not assignments:
             raise FlowPlanError(
                 "Orchestrator produced no usable plan (an empty TaskAssignment list) after a "
