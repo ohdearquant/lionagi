@@ -398,7 +398,7 @@ class TestNonexistentCwdFailFastEndToEnd:
         assert captured.out == ""
         assert captured.err == ""
 
-    def test_fanout_cwd_failfast(self, monkeypatch, tmp_path):
+    def test_fanout_cwd_failfast(self, monkeypatch, tmp_path, capsys):
         import lionagi.cli.orchestrate._orchestration as orch_mod
 
         def _boom(*a, **kw):
@@ -414,6 +414,13 @@ class TestNonexistentCwdFailFastEndToEnd:
 
         assert bad_cwd in str(exc_info.value)
         assert "--cwd" in str(exc_info.value)
+        # Same as the flow case above: fanout shares `_run_orch_command`'s
+        # generic BaseException branch, which only calls log_error for its
+        # own extra_handlers, not for a bare re-raise — pin that nothing
+        # reaches either stream before the exception propagates.
+        captured = capsys.readouterr()
+        assert captured.out == ""
+        assert captured.err == ""
 
     def test_flow_json_output_mode_emits_no_partial_json_on_cwd_failure(self, tmp_path, capsys):
         """--output json must never leave partial/invalid JSON on stdout: an
