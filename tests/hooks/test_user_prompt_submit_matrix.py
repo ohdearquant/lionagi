@@ -241,6 +241,23 @@ async def test_run_guard_rejection_reports_run_failed_not_run_end():
     assert len(ends) == 0, "RunEnd must NOT fire when the guard rejects the prompt"
 
 
+async def test_run_yielded_instruction_already_in_branch_messages():
+    """A consumer that receives the first yielded Instruction must find it
+    already committed to branch.messages at that moment — the guard runs
+    (and, if it passes, commits) strictly before the first yield, not after."""
+    branch = Branch()
+    branch.chat_model = _make_fake_cli_model([StreamChunk(type="text", content="ok")])
+    _wire_prompt_submit_counter(branch)
+
+    gen = run(branch, "hi there", RunParam())
+    first = await gen.__anext__()
+
+    assert first in branch.messages
+    assert len(branch.messages) == 1
+
+    await gen.aclose()
+
+
 # ---------------------------------------------------------------------------
 # Row 6: ReAct() with extension rounds + a final-answer turn -> 1 total
 # ---------------------------------------------------------------------------

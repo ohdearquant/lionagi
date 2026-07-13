@@ -315,6 +315,39 @@ async def run(
             logger.exception("run: observer raised during RunStart emission; run proceeds normally")
 
     try:
+        # Consumed exactly once, before anything about this turn is committed
+        # or yielded: fires USER_PROMPT_SUBMIT iff the operation context
+        # carries a turn-origin token (see operations/_turn_origin.py). A
+        # handler that rejects this prompt must leave no trace of it in the
+        # branch's message history and must never reach a consumer via
+        # yield; the rejection is recorded as this run's failure (not
+        # silently dropped) so the terminal signal below reports it
+        # correctly.
+        _turn_origin_token = consume_turn_origin(param.turn_origin)
+        if _turn_origin_token is not None and branch._hooks is not None:
+            from lionagi.hooks.bus import HookPoint
+
+            _prompt = ins.rendered
+            if not isinstance(_prompt, str):
+                _prompt = str(_prompt)
+            try:
+                await branch._hooks.emit(
+                    HookPoint.USER_PROMPT_SUBMIT,
+                    session_id=str(branch._owning_session_id or branch.id),
+                    branch_id=str(branch.id),
+                    prompt=_prompt,
+                )
+            except GeneratorExit:
+                raise
+            except BaseException as _exc:
+                _run_exc = _exc
+                raise
+
+        # Committed before the yield below: any consumer that receives this
+        # Instruction from the generator must find it already present in
+        # branch.messages, not merely in flight.
+        await branch.msgs.a_add_message(instruction=ins)
+
         yield ins
 
         if branch.chat_model.provider_session_id is not None:
@@ -405,35 +438,6 @@ async def run(
                 _liveness_timeout = _app_settings.LIONAGI_WORKER_LIVENESS_TIMEOUT
         if not isinstance(_liveness_timeout, int | float) or _liveness_timeout <= 0:
             _liveness_timeout = None
-
-        # Consumed exactly once, immediately before streaming begins: fires
-        # USER_PROMPT_SUBMIT iff the operation context carries a turn-origin
-        # token (see operations/_turn_origin.py). Runs before the instruction
-        # is added to the branch — a handler that rejects this prompt must
-        # leave no trace of it in the branch's message history, and the
-        # rejection must be recorded as this run's failure (not silently
-        # dropped) so the terminal signal below reports it correctly.
-        _turn_origin_token = consume_turn_origin(param.turn_origin)
-        if _turn_origin_token is not None and branch._hooks is not None:
-            from lionagi.hooks.bus import HookPoint
-
-            _prompt = ins.rendered
-            if not isinstance(_prompt, str):
-                _prompt = str(_prompt)
-            try:
-                await branch._hooks.emit(
-                    HookPoint.USER_PROMPT_SUBMIT,
-                    session_id=str(branch._owning_session_id or branch.id),
-                    branch_id=str(branch.id),
-                    prompt=_prompt,
-                )
-            except GeneratorExit:
-                raise
-            except BaseException as _exc:
-                _run_exc = _exc
-                raise
-
-        await branch.msgs.a_add_message(instruction=ins)
 
         kw["stream"] = True
         _api_call_holder: list = []
