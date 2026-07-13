@@ -308,15 +308,7 @@ async def _linked_engine_session(
 ) -> dict[str, Any] | None:
     """The claude/codex-mirror session row for a CLI provider's real engine session.
 
-    ``engine_session_uid`` is the provider-native session id (e.g. a Claude Code
-    session uuid or a Codex thread id), captured from ``endpoint.session_id`` while
-    streaming — the same id the mirror derives its StateDB session id from, so this
-    is the link between a profile-typed agent session and its engine-typed twin.
-
-    A present ``engine_session_uid`` means the engine session is real (it was
-    captured off a live stream chunk); the mirror row can simply not have been
-    written yet at teardown time. Retry a bounded number of times before giving
-    up — never spin unbounded waiting for a session that may never mirror.
+    Retries a bounded number of times, since the mirror row may not be written yet at teardown.
     """
     if not engine_session_uid:
         return None
@@ -359,13 +351,8 @@ async def _teardown_common(
     )
 
     if defer_terminal:
-        # A recursive auto-resume leg is about to run on this same session
-        # (see _run_agent's finally block) and will own the real terminal
-        # write. Stamping ended_at/status here would leave the session
-        # terminal while the resumed leg is still working, so the resumed
-        # leg's own teardown hits the ADR-0035 terminal guard. Skip every
-        # DB mutation and let the caller's non-status bookkeeping (hook
-        # unroute, usage emit, observer detach) run as usual.
+        # A resumed leg on this same session owns the real terminal write (ADR-0035);
+        # skip the DB mutation here and let the caller's non-status bookkeeping run.
         return status
 
     all_msgs = await db.get_progression(session_prog_id)
@@ -399,18 +386,9 @@ async def _teardown_common(
     final_reason_summary = reason_summary
     final_evidence_refs = evidence_refs
 
-    # A profile-typed session's own async wrapper can raise a stream/transport
-    # error (the CLI provider's own reported "error" chunk that classify_provider_error
-    # could not attribute to a known quota/auth/context pattern, so it stays the base
-    # ProviderError) while the engine session it wraps — mirrored separately from the
-    # on-disk transcript — is still alive or already completed. Reading that as "failed"
-    # is a phantom: the actual work is running or done. Narrowly suppress the demotion
-    # for THIS known, unclassified-stream-error class only: an exact-type check (not
-    # isinstance) excludes the ProviderQuotaError/ProviderAuthError/ProviderContextError
-    # subclasses, so a genuine quota/auth/context failure always stays "failed" even
-    # with a linked engine session running/completed, exactly like a generic bug
-    # elsewhere in the wrapper (message persistence, artifact verification, hook
-    # handling, branch mutation) must still fail loud.
+    # Suppress a phantom "failed" only for this exact unclassified ProviderError class
+    # when the linked engine session is still alive/completed; exact-type (not isinstance)
+    # so genuine ProviderQuotaError/AuthError/ContextError subclasses still fail loud.
     if final_status == "failed" and type(exception) is ProviderError and engine_session_uid:
         from lionagi.state.claude_mirror import session_db_id
         from lionagi.state.db import SESSION_TERMINAL_STATUSES
@@ -419,11 +397,8 @@ async def _teardown_common(
         linked_id = session_db_id(engine_session_uid)
         linked = await _linked_engine_session(db, engine_session_uid)
 
-        # Record the link durably regardless of whether the mirror row exists
-        # yet — the id is deterministic from engine_session_uid, so `li
-        # monitor run <profile_session_id>` can follow it and resolve the
-        # real status once the mirror row lands, even if this teardown's
-        # bounded wait ran out first.
+        # Record the link durably (id is deterministic) so `li monitor run <id>` can
+        # resolve status later, even if this teardown's bounded wait ran out first.
         metadata = dict(metadata or {})
         metadata["linked_engine_session_id"] = linked_id
         existing_node_meta = session_row.get("node_metadata") or {}
@@ -479,15 +454,8 @@ async def _teardown_common(
                 str(entry.get("id", "")) for entry in missing
             ]
 
-    # Completion-trust gate: a leg that declared no artifact contract (or
-    # declared one but produced nothing) still must not read as a trustworthy
-    # "completed" on faith alone. Fall back to a cheap local git check — HEAD
-    # ahead of its base ref, or a dirty working tree — before accepting the
-    # loop's own "I'm done" as ground truth. A run whose deliverable is its
-    # response text (research/read-only agents) is legitimate work too, so a
-    # durable assistant message counts as evidence in its own right — this
-    # gate only demotes runs with neither a file/git trace nor a real answer.
-    # Only fires when nothing else already made the run loud.
+    # Completion-trust gate: don't accept "completed" on faith. Require a git trace
+    # (commits ahead/dirty tree) or a durable assistant response as real evidence.
     if final_status == "completed" and not (verification and verification.get("produced")):
         from lionagi.state.completion_evidence import (
             check_completion_evidence,
@@ -521,11 +489,8 @@ async def _teardown_common(
                     }
                 ]
 
-    # Escalation backstop: a leg that never declared an artifact (so the check
-    # above has nothing to verify) but gave up mid-run via EscalationRequest
-    # still must not read as a clean completion. Only fires when nothing else
-    # already made the run loud — an existing failure reason (including the
-    # artifact check above) is preserved untouched.
+    # Escalation backstop: a leg that gave up mid-run via EscalationRequest without
+    # an artifact contract must not read as a clean completion.
     if escalated_evidence and final_status == "completed":
         from lionagi.state.reasons import RunReasons
 
@@ -540,25 +505,14 @@ async def _teardown_common(
 
     from lionagi.state.db import SESSION_TERMINAL_STATUSES, TransitionRejectedError
 
-    # Snapshot of the status this teardown itself observed when it started
-    # (session_row was read above, before any status-changing write in this
-    # function) -- the signal that tells apart the two rejection causes below.
-    # Only the status is used as the CAS guard below, not updated_at: this
-    # same function may itself have already touched the row's updated_at
-    # (artifact verification, the linked-engine metadata write) between that
-    # snapshot and the guarded write, and none of those are the concurrent
-    # writer the guard exists to catch.
+    # Snapshot of status observed at the start of this teardown; used only as the
+    # CAS guard below (not updated_at, which this function may itself have touched).
     pre_write_status = session_row.get("status")
 
     if pre_write_status in SESSION_TERMINAL_STATUSES:
-        # This teardown's OWN view of the session was already terminal before
-        # it attempted anything (e.g. a later resume/follow-up reattached to
-        # a session an earlier, unrelated run already finalized). Writing
-        # again would be a redundant terminal overwrite the ADR-0035 floor
-        # would reject -- skip it outright rather than attempt-and-catch, and
-        # report THIS invocation's honest outcome rather than the persisted
-        # one, or a genuine failure/timeout would silently read back as
-        # success.
+        # Already terminal before this teardown attempted anything (e.g. reattached
+        # to a session an earlier run already finalized) -- skip the redundant write
+        # and report this invocation's own outcome (ADR-0035 protects the earlier record).
         if pre_write_status != final_status:
             _log.warning(
                 "session %s already terminal at %r; this invocation's %r "
@@ -589,12 +543,8 @@ async def _teardown_common(
                 expected_statuses={pre_write_status},
             )
             if not written:
-                # CAS miss: another writer (e.g. a concurrent teardown of the
-                # same in-flight session) touched the row between this
-                # teardown's snapshot and this write. Read back the
-                # now-persisted status instead of raising past callers -- it
-                # reflects the outcome that actually won the race for this
-                # same live invocation.
+                # CAS miss: a concurrent teardown of the same session won the race.
+                # Read back the persisted status rather than raising past callers.
                 persisted = await db.get_session(session_id) or {}
                 final_status = persisted.get("status", final_status)
                 _log.debug(
@@ -616,11 +566,8 @@ async def _teardown_common(
 
 
 async def _has_assistant_output_evidence(db: StateDB, message_ids: list[str]) -> bool:
-    """A run whose deliverable is its response text (a research/read-only
-    agent, a chat answer) is legitimate work even though it left no commit,
-    dirty tree, or artifact. Walk the progression newest-first and treat any
-    non-empty assistant message as durable completion evidence.
-    """
+    """Walk the progression newest-first; a non-empty assistant message counts as
+    durable completion evidence even when there's no commit, dirty tree, or artifact."""
     for message_id in reversed(message_ids):
         msg = await db.get_message(message_id)
         if not msg or msg.get("role") != "assistant":
@@ -692,14 +639,8 @@ async def teardown_persist(
             unroute_message_persistence(branch, h)
 
         session_obj = ctx.get("session")
-        # persist_session_end's own fallback branch (row not yet terminal)
-        # writes status straight through update_session() -- a plain column
-        # SET with no ADR-0035 guard. Emitting SESSION_END here would let that
-        # fallback re-introduce the exact premature terminal stamp
-        # defer_terminal just skipped, through a side door _teardown_common
-        # never touches. The resumed leg's own (non-deferred) teardown emits
-        # SESSION_END once for the whole session, carrying the cumulative
-        # branch usage for both legs, so nothing is lost by skipping it here.
+        # Skip SESSION_END here when deferred: the resumed leg's own (non-deferred)
+        # teardown emits it once, carrying cumulative usage for both legs.
         if session_obj is not None and not defer_terminal:
             err_str = str(exception) if exception is not None else None
             _usage: dict = {}
@@ -710,9 +651,7 @@ async def teardown_persist(
 
                     _usage = _collect_branch_usage(_branch)
                 else:
-                    # Orchestrator/DAG sessions never set a singular ctx["branch"];
-                    # every leg (including the orchestrator branch itself) is
-                    # tracked in ctx["hooks"] as (branch, handler) pairs instead.
+                    # Orchestrator/DAG sessions track legs via ctx["hooks"] pairs, not ctx["branch"].
                     _hook_branches = [b for b, _h in ctx.get("hooks", [])]
                     if _hook_branches:
                         from lionagi.session.signal import _collect_multi_branch_usage
@@ -741,11 +680,8 @@ async def teardown_persist(
         _log.warning("live persist teardown failed: %s", exc, exc_info=True)
         return status
     finally:
-        # Release session ownership of every branch this ephemeral persist
-        # session wired, so a later setup (e.g. in-process resume) can wrap
-        # the same long-lived branch in a fresh session. This must run even
-        # when the bookkeeping above failed: a stranded owner marker would
-        # make the long-lived branch unresumable.
+        # Release branch ownership even when the bookkeeping above failed -- a
+        # stranded owner marker would make the long-lived branch unresumable.
         _session_obj = ctx.get("session")
         if _session_obj is not None:
             for _b in [ctx.get("branch"), *(b for b, _h in ctx.get("hooks", []))]:
@@ -782,19 +718,14 @@ async def teardown_orchestration_persist(*args, **kwargs) -> str:
 
 
 async def _open_shared_db():
-    """Open a StateDB, register it as the process-wide shared connection, and return it.
-
-    On failure, closes and unregisters before re-raising so callers never hold a
-    half-initialised or double-registered connection.
-    """
+    """Open a StateDB and register it as the process-wide shared connection."""
     from lionagi.state.db import StateDB, register_shared_db, unregister_shared_db
 
     db = StateDB()
     try:
         await db.open()
-        # Lifecycle hooks (SESSION_START/END, BRANCH_CREATE) reach a db via
-        # get_shared_db(); register ours so they reuse this owned connection
-        # rather than opening a second one whose aiosqlite worker thread leaks.
+        # Lifecycle hooks reach a db via get_shared_db(); register ours so they reuse
+        # this connection rather than opening a second one whose worker thread leaks.
         await register_shared_db(db)
     except Exception:
         try:
@@ -818,14 +749,7 @@ def _make_message_handler(
     on_first_msg=None,
     message_retry_queues: list | None = None,
 ):
-    """Return an async _on_message handler for live DB persistence.
-
-    dedup_set: when provided, skip append_to_progression for already-seen IDs
-               (resume dedup for the agent path).
-    new_msg_ids_list: when provided, newly appended IDs are recorded here.
-    on_first_msg: async callable invoked at the start of each message write
-                  (used for lazy branch-row creation on the orchestration path).
-    """
+    """Return an async _on_message handler for live DB persistence."""
     from copy import deepcopy
 
     from lionagi.hooks._message_retry import MessagePersistRetryQueue, PendingMessageEvent
@@ -898,10 +822,8 @@ async def setup_agent_persist(
     db = None
     session = None
     try:
-        # Claim the branch BEFORE touching the shared DB registry: a branch
-        # still owned by a live persist session must be rejected here without
-        # side effects (registering a shared DB closes the previous handle,
-        # which would break the owning context's teardown).
+        # Claim the branch before touching the shared DB registry: registering a
+        # shared DB closes the previous handle, which would break its owner's teardown.
         session = Session(name="agent", default_branch=branch)
         session_id = str(session.id)
         branch_id = str(branch.id)
@@ -1042,9 +964,8 @@ async def setup_agent_persist(
             message_retry_queues=message_retry_queues,
         )
 
-        # Bind signal persistence through the already-open DB so every Signal
-        # emitted on this session's observer lands in session_signals without
-        # opening a new connection per signal (matches message-write cost).
+        # Bind through the already-open DB so signals land in session_signals
+        # without opening a new connection per signal.
         session.observer.bind_db_persistence(session_id, db=db)
 
         from lionagi.hooks import route_message_persistence

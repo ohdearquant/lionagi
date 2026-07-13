@@ -244,9 +244,7 @@ def add_common_cli_args(parser: argparse.ArgumentParser) -> None:
             "accordingly."
         ),
     )
-    # Opt-in skill-orchestration grouping. Set by a skill via
-    # ``li invoke start``; threaded through to the session row so the
-    # Studio /invocations page can show 14 sessions under one /show row.
+    # Set by a skill via ``li invoke start``; groups sessions under one /show row.
     parser.add_argument(
         "--invocation",
         dest="invocation",
@@ -342,10 +340,7 @@ def _resolve_profile_path(agents_dir: Path, name: str) -> Path | None:
 
 
 def list_agents() -> list[str]:
-    """List available agent profile names (merged across all .lionagi/ dirs).
-
-    Discovers both directory (<name>/<name>.md) and flat (<name>.md) layouts.
-    """
+    """List available agent profile names, merged across all .lionagi/ dirs."""
     seen: set[str] = set()
     for d in _find_lionagi_dirs():
         agents_dir = d / "agents"
@@ -388,9 +383,7 @@ def load_agent_profile(name: str) -> AgentProfile:
 def _parse_profile_timeout(name: str, raw: Any) -> int | None:
     """Validate the profile 'timeout' field; warn and ignore garbage rather than raising.
 
-    Only a genuine positive int is accepted — YAML booleans (True/False are
-    ints in Python) and floats (which int() would silently truncate) are
-    rejected rather than coerced.
+    See docs/internals/cli.md for why bool/float are rejected, not coerced.
     """
     if raw is None:
         return None

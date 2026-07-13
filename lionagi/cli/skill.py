@@ -32,9 +32,8 @@ def resolve_skill_path(name: str) -> tuple[Path | None, str | None]:
             else " No skills installed at ~/.lionagi/skills/"
         )
         return None, f"skill not found: {candidate}.{hint}"
-    # Symlink containment — reject any path whose resolved target escapes
-    # the resolved skills root. Blocks the disclosure vector where a
-    # `SKILL.md` is itself a symlink to an arbitrary file on disk.
+    # Symlink containment: blocks a SKILL.md symlinked to an arbitrary file.
+    # See docs/internals/cli.md.
     try:
         resolved_root = _skills_root().resolve(strict=True)
         resolved_candidate = candidate.resolve(strict=True)

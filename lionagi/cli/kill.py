@@ -254,9 +254,8 @@ async def _persist_cancel(
             actor="user",
         )
     except TransitionRejectedError:
-        # The entity went terminal between the pre-check above and this
-        # write (e.g. it finished on its own right as `li kill` reached
-        # it) — nothing to cancel, same as the pre-check `return`s above.
+        # The entity went terminal between the pre-check and this write —
+        # nothing to cancel, same as the pre-check `return`s above.
         pass
 
 

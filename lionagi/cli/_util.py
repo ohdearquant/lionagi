@@ -9,10 +9,7 @@ from typing import Any
 
 EXIT_CODE_BY_STATUS: dict[str, int] = {
     "completed": 0,
-    # Completion-trust gate: loop exited clean but no commits ahead of base
-    # and no artifacts were produced. Exits non-zero so scripts, CI, and
-    # schedule on_fail chaining treat it as a failure rather than silently
-    # trusting an empty run.
+    # Completion-trust gate: no commits/artifacts. See docs/internals/cli.md.
     "completed_empty": 1,
     "failed": 1,
     "timed_out": 124,
@@ -31,9 +28,8 @@ def classify_exception(exc: BaseException) -> str:
     from lionagi.ln.concurrency.errors import cancelled_exc_classes
     from lionagi.ln.concurrency.utils import SigtermInterrupt
 
-    # SIGTERM is an external termination request, not an internal failure —
-    # it lands in the same terminal bucket as a runtime-cancelled task
-    # (same reason class, same exit code 143) rather than a new status.
+    # SIGTERM shares the cancelled bucket (exit 143), not a new status.
+    # See docs/internals/cli.md.
     if isinstance(exc, SigtermInterrupt):
         return "cancelled"
     if isinstance(exc, cancelled_exc_classes()):
