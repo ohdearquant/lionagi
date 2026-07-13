@@ -124,6 +124,24 @@ are supplementary — full results are auto-posted to the team at flow end.
 - **Artifact files**: structured deliverables (still your primary output)
 - **stdout**: progress updates only
 
+### Signaling done
+
+When you finish your assigned work, signal it explicitly so the run knows \
+whether it can wrap up:
+- If you have a `messenger` tool bound to this session, call it with \
+`action="done"` and a one-line `content` summary if you might still be \
+asked to continue, or `action="finished"` if you are permanently done and \
+should never be revived.
+- Otherwise, run `li team send "<summary>" -t {team_id} --to all --kind \
+done --from {worker_name}` (or `--kind finished`).
+
+Either way, the signal is written by that tool/command itself — you never \
+need to hand-format it. If teammates leave you a new message after you \
+signal done, the orchestrator may start one short follow-up round and wake \
+you with that message attached to your next turn's context (never rewritten \
+into your instructions). Re-check your inbox and signal done/finished again \
+when you're through.
+
 ### Resuming
 After this round, teammates or the orchestrator can follow up:
 - `li team receive -t {team_id} --as {worker_name}` to read messages

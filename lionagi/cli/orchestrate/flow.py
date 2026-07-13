@@ -120,6 +120,14 @@ _CONTROL_POLL_INTERVAL = 2.0
 # controls overtake it — the whole batch re-reads in order next tick.
 _CONTROL_UNSTAMPED = "unstamped"
 
+# ── Team lifecycle (done-signal / wakeup rounds / quiescence) ───────────────
+# Polls the team inbox (a plain JSON file — same channel `li team show`
+# reads) for the quiescence predicate defined in lionagi.cli.team, and
+# injects a bounded round of follow-up Operations via the reactive
+# executor's public inject() when it fires. See TeamLifecycleCoordinator in
+# _orchestration.py for the actual decision logic; this loop only drives it.
+_TEAM_POLL_INTERVAL = 2.0
+
 
 async def _apply_session_control(db, executor, row: dict) -> str | None:
     """Apply one session_controls row against *executor*. Returns the finalize
@@ -405,6 +413,14 @@ class _DagState:
     # contract for a reactively spawned node run under that role — spawned
     # nodes don't exist yet at DAG-build time so can't be folded in there.
     role_artifact_defaults: dict[str, dict | None] = field(default_factory=dict)
+    # agent_id → its own worker branch (not just role_base's one-per-role
+    # entry — team-lifecycle wakeup rounds re-invoke a SPECIFIC worker's own
+    # session, which role_base can't address once a role has >1 named
+    # instance) and agent_id → whether it got the in-process messenger tool
+    # bound, so a round-injected node mirrors the same actions= wiring its
+    # planned leg got. Both populated in _build_dag's per-assignment loop.
+    worker_branches: dict[str, object] = field(default_factory=dict)
+    messenger_bound: dict[str, bool] = field(default_factory=dict)
 
 
 @dataclass
@@ -444,6 +460,8 @@ async def _build_dag(
     role_base: dict[str, object] = {}
     role_artifact_entries: list[dict] = []
     role_artifact_defaults: dict[str, dict | None] = {}
+    worker_branches: dict[str, object] = {}
+    worker_messenger_bound: dict[str, bool] = {}
 
     for i, ta in enumerate(assignments):
         w_branch, w_model, w_profile, messenger_bound = await build_worker_branch(
@@ -455,6 +473,8 @@ async def _build_dag(
             grant_spawn=_may_spawn(ta.assignee),
             modes=ta.modes or None,
         )
+        worker_branches[agent_ids[i]] = w_branch
+        worker_messenger_bound[agent_ids[i]] = messenger_bound
         worker_models.append(w_model)
         role_base.setdefault(ta.assignee, w_branch)
 
@@ -585,6 +605,8 @@ async def _build_dag(
         role_base=role_base,
         worker_models=worker_models,
         role_artifact_defaults=role_artifact_defaults,
+        worker_branches=worker_branches,
+        messenger_bound=worker_messenger_bound,
     )
 
 
@@ -665,6 +687,7 @@ async def _execute_dag(
     checkpoint_config: dict | None = None,
     checkpoint_ops_seed: dict[str, dict] | None = None,
     checkpoint_flow_context: dict | None = None,
+    team_max_rounds: int = 2,
 ) -> _ExecResult:
     """Drive the planning engine over the DAG and collect per-agent results.
 
@@ -886,6 +909,56 @@ async def _execute_dag(
 
         _asyncio.ensure_future(_do())
 
+    # Team lifecycle: only wired when team messaging is active, reactive
+    # mode is on (round injection rides ReactiveExecutor.inject(), which a
+    # plain non-reactive DependencyAwareExecutor doesn't have), and at least
+    # one worker actually got a branch built (dag_state.worker_branches is
+    # empty for a --team-attach CLI-only run with zero in-process workers,
+    # in which case there is nothing this coordinator could ever inject).
+    _team_coordinator: Any = None
+    if (
+        env.team_data
+        and getattr(env, "messenger", None) is not None
+        and dag_state.reactive
+        and dag_state.worker_branches
+    ):
+        from ._orchestration import make_team_lifecycle_coordinator
+
+        _team_coordinator = make_team_lifecycle_coordinator(
+            env.team_data["id"],
+            agent_ids,
+            dag_state.worker_branches,
+            messenger_bound=dag_state.messenger_bound,
+            max_rounds=team_max_rounds,
+        )
+        env.messenger.on("done", _team_coordinator.on_done)
+        env.messenger.on("finished", _team_coordinator.on_finished)
+
+    async def _team_lifecycle_loop() -> None:
+        if _team_coordinator is None:
+            return
+        while True:
+            await _asyncio.sleep(_TEAM_POLL_INTERVAL)
+            executor = _executor_ref.get("executor")
+            if executor is None:
+                continue
+            try:
+                state = _team_coordinator.check_round()
+            except FileNotFoundError:
+                continue
+            if not state.should_continue:
+                if state.quiescent:
+                    return
+                continue
+            new_ops = _team_coordinator.build_round_operations(state, prompt=checkpoint_prompt)
+            for op in new_ops:
+                executor.inject(op, independent=True)
+            if new_ops:
+                progress(
+                    f"  ↻ team round {_team_coordinator.rounds_run}: "
+                    f"woke {', '.join(sorted(state.pending_targets))}"
+                )
+
     async def _control_poll_loop() -> None:
         while True:
             await _asyncio.sleep(_CONTROL_POLL_INTERVAL)
@@ -955,6 +1028,9 @@ async def _execute_dag(
     t_exec = time.monotonic()
     _hb_task = _asyncio.ensure_future(_heartbeat_loop())
     _ctl_task = _asyncio.ensure_future(_control_poll_loop())
+    _team_task = (
+        _asyncio.ensure_future(_team_lifecycle_loop()) if _team_coordinator is not None else None
+    )
     _exchange = getattr(env, "exchange", None)
     _exch_task = _asyncio.ensure_future(_exchange.run(0.5)) if _exchange is not None else None
     try:
@@ -977,10 +1053,15 @@ async def _execute_dag(
     finally:
         _hb_task.cancel()
         _ctl_task.cancel()
+        if _team_task is not None:
+            _team_task.cancel()
         with contextlib.suppress(_asyncio.CancelledError):
             await _hb_task
         with contextlib.suppress(_asyncio.CancelledError):
             await _ctl_task
+        if _team_task is not None:
+            with contextlib.suppress(_asyncio.CancelledError):
+                await _team_task
         if _exch_task is not None:
             _exchange.stop()
             with contextlib.suppress(_asyncio.CancelledError):
@@ -1368,6 +1449,7 @@ async def _run_flow(
     save_dir: str | None = None,
     team_name: str | None = None,
     team_attach: str | None = None,
+    team_max_rounds: int = 2,
     cwd: str | None = None,
     timeout: int | None = None,
     agent_name: str | None = None,
@@ -1418,6 +1500,7 @@ async def _run_flow(
         "save_dir": save_dir,
         "team_name": team_name,
         "team_attach": team_attach,
+        "team_max_rounds": team_max_rounds,
         "cwd": cwd,
         "timeout": timeout,
         "agent_name": agent_name,
@@ -1496,6 +1579,7 @@ async def _run_flow(
         output_format=output_format,
         team_name=team_name,
         team_attach=team_attach,
+        team_max_rounds=team_max_rounds,
         workers_str=workers_str,
         max_ops=max_ops,
         dry_run=dry_run,
@@ -1601,6 +1685,7 @@ async def _run_flow_inner(
     output_format: str = "text",
     team_name: str | None = None,
     team_attach: str | None = None,
+    team_max_rounds: int = 2,
     workers_str: str | None = None,
     max_ops: int = 0,
     dry_run: bool = False,
@@ -1810,6 +1895,7 @@ async def _run_flow_inner(
         checkpoint_flow_context=(
             resume_checkpoint.get("flow_context") if resume_checkpoint is not None else None
         ),
+        team_max_rounds=team_max_rounds,
     )
 
     synthesis_result = None
