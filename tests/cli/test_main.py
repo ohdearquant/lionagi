@@ -6,7 +6,11 @@
 import subprocess
 import sys
 
+import pytest
+import yaml
+
 from lionagi.cli.main import _handle_play_shortcut, main
+from lionagi.state.lifecycle.callbacks import DEFAULT_TERMINAL_CALLBACKS
 
 
 def test_main_resolves_notify_settings_project_dir_from_cwd_flag(monkeypatch):
@@ -74,6 +78,42 @@ def test_main_notify_settings_ignores_cwd_after_end_of_options_sentinel(monkeypa
     )
     main(["skill", "definitely-not-a-real-skill-xyz", "--", "--cwd", "/should/not/be/used"])
     assert calls == [{"project_dir": None}]
+
+
+@pytest.mark.parametrize(
+    "filter_value",
+    [
+        "session",
+        {"unexpected": True},
+        {"kinds": 0},
+        {"kinds": ["not-a-terminal-entity"]},
+    ],
+    ids=["non-mapping", "unknown-key", "non-list-kinds", "unknown-kind"],
+)
+def test_main_bootstrap_disables_invalid_notify_filter(tmp_path, filter_value):
+    settings_dir = tmp_path / ".lionagi"
+    settings_dir.mkdir()
+    (settings_dir / "settings.yaml").write_text(
+        yaml.safe_dump(
+            {
+                "notify": {
+                    "on_terminal": {
+                        "enabled": True,
+                        "adapter": {"kind": "exec", "argv": ["echo", "ok"]},
+                        "filter": filter_value,
+                    }
+                }
+            }
+        )
+    )
+
+    name = "notify.settings.on_terminal"
+    DEFAULT_TERMINAL_CALLBACKS.unregister(name)
+    try:
+        main(["skill", f"--cwd={tmp_path}", "definitely-not-a-real-skill-xyz"])
+        assert name not in DEFAULT_TERMINAL_CALLBACKS
+    finally:
+        DEFAULT_TERMINAL_CALLBACKS.unregister(name)
 
 
 def test_handle_play_shortcut_rewrites_name_to_flow_argv():

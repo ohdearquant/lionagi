@@ -149,6 +149,31 @@ def test_mapping_form_unknown_adapter_kind_disabled(caplog):
 
 
 @pytest.mark.parametrize(
+    ("filter_value", "diagnostic"),
+    [
+        ("session", "filter must be a non-empty mapping"),
+        ({"unexpected": True}, "filter keys must be 'kinds' and/or 'ids'"),
+        ({"kinds": 0}, "filter.kinds must be a list of strings"),
+        (
+            {"kinds": ["not-a-terminal-entity"]},
+            "filter.kinds contains unsupported terminal entity kinds",
+        ),
+    ],
+)
+def test_mapping_form_invalid_filter_disables_handler(caplog, filter_value, diagnostic):
+    with caplog.at_level(logging.WARNING):
+        resolved = resolve_notify_config(
+            override={
+                "enabled": True,
+                "adapter": {"kind": "exec", "argv": ["echo", "ok"]},
+                "filter": filter_value,
+            }
+        )
+    assert resolved is None
+    assert any(diagnostic in record.message for record in caplog.records)
+
+
+@pytest.mark.parametrize(
     "filter_value",
     [
         1,  # scalar int -- the crashing shape (bare tuple(1) raises TypeError)

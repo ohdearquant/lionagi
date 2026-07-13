@@ -40,6 +40,7 @@ from lionagi.ln.concurrency import CancelScope, get_cancelled_exc_class
 
 from .callbacks import (
     DEFAULT_TERMINAL_CALLBACKS,
+    EXECUTION_ENTITY_KINDS,
     HANDLER_BUDGET_SECONDS,
     RunTerminalEnvelope,
     TerminalCallbackHandler,
@@ -169,35 +170,71 @@ def _resolve_string(command: str, *, scope: str) -> ResolvedNotifyHandler | None
 def _resolve_mapping(cfg: dict[str, Any], *, scope: str) -> ResolvedNotifyHandler | None:
     if cfg.get("enabled") is False:
         return None
-    filt = cfg.get("filter") or {}
-    kinds = filt.get("kinds") if isinstance(filt, dict) else None
-    ids = filt.get("ids") if isinstance(filt, dict) else None
-    # filter.kinds/filter.ids must be a list of strings (or absent/empty) --
-    # a scalar (e.g. `kinds: 1`) would raise TypeError out of the bare
-    # tuple(...) coercion below and take down CLI/Studio bootstrap with it;
-    # a scalar *string* (e.g. `kinds: session`) would silently pass the old
-    # bare coercion by splitting into one-character tuple entries instead of
-    # ever matching anything. Both are settings typos, not runtime errors --
-    # log which key/value is wrong and resolve the whole config to disabled,
-    # same as every other malformed field in this function.
-    if kinds and not (isinstance(kinds, list) and all(isinstance(k, str) for k in kinds)):
-        logger.warning(
-            "notify.on_terminal (%s) filter.kinds must be a list of strings, "
-            "got %r; resolving to disabled.",
-            scope,
-            kinds,
-        )
-        return None
-    if ids and not (isinstance(ids, list) and all(isinstance(i, str) for i in ids)):
-        logger.warning(
-            "notify.on_terminal (%s) filter.ids must be a list of strings, "
-            "got %r; resolving to disabled.",
-            scope,
-            ids,
-        )
-        return None
-    filter_kinds = tuple(kinds) if kinds else None
-    filter_ids = tuple(ids) if ids else None
+
+    filter_kinds: tuple[str, ...] | None = None
+    filter_ids: tuple[str, ...] | None = None
+    if "filter" in cfg:
+        filt = cfg["filter"]
+        if not isinstance(filt, Mapping) or not filt:
+            logger.warning(
+                "notify.on_terminal (%s) filter must be a non-empty mapping, "
+                "got %r; resolving to disabled.",
+                scope,
+                filt,
+            )
+            return None
+
+        unknown_keys = tuple(key for key in filt if key not in {"kinds", "ids"})
+        if unknown_keys:
+            logger.warning(
+                "notify.on_terminal (%s) filter keys must be 'kinds' and/or "
+                "'ids', got unknown keys %r; resolving to disabled.",
+                scope,
+                unknown_keys,
+            )
+            return None
+
+        if "kinds" in filt:
+            kinds = filt["kinds"]
+            if (
+                not isinstance(kinds, list)
+                or not kinds
+                or not all(isinstance(kind, str) for kind in kinds)
+            ):
+                logger.warning(
+                    "notify.on_terminal (%s) filter.kinds must be a list of "
+                    "strings with at least one value, got %r; resolving to disabled.",
+                    scope,
+                    kinds,
+                )
+                return None
+            unsupported_kinds = tuple(kind for kind in kinds if kind not in EXECUTION_ENTITY_KINDS)
+            if unsupported_kinds:
+                logger.warning(
+                    "notify.on_terminal (%s) filter.kinds contains unsupported "
+                    "terminal entity kinds %r; expected only %r; resolving to disabled.",
+                    scope,
+                    unsupported_kinds,
+                    tuple(sorted(EXECUTION_ENTITY_KINDS)),
+                )
+                return None
+            filter_kinds = tuple(kinds)
+
+        if "ids" in filt:
+            ids = filt["ids"]
+            if (
+                not isinstance(ids, list)
+                or not ids
+                or not all(isinstance(entity_id, str) and bool(entity_id) for entity_id in ids)
+            ):
+                logger.warning(
+                    "notify.on_terminal (%s) filter.ids must be a list of "
+                    "strings with at least one value, got %r; resolving to disabled.",
+                    scope,
+                    ids,
+                )
+                return None
+            filter_ids = tuple(ids)
 
     adapter = cfg.get("adapter")
     if not isinstance(adapter, dict):
