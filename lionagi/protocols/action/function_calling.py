@@ -17,6 +17,15 @@ from lionagi.ln.concurrency import is_coro_func
 
 from ..generic.event import Event
 from .tool import Tool
+from .tool_hooks import ActionGovernanceDeniedError
+
+
+class RevalidationDeniedError(ActionGovernanceDeniedError):
+    """Raised when rewritten tool arguments fail schema revalidation after a
+    hook or preprocessor rewrite. A governance denial, not an ordinary tool
+    exception -- distinct from a tool body raising ``PermissionError`` for
+    its own business reasons.
+    """
 
 
 def _add_alias_keys(alias: Any, keys: set[str]) -> None:
@@ -108,7 +117,7 @@ class FunctionCalling(Event):
             try:
                 validated = self.func_tool.request_options(**self.arguments)
             except Exception as e:
-                raise PermissionError(
+                raise RevalidationDeniedError(
                     f"rewritten arguments failed validation for {self.func_tool.function!r}: {e}"
                 ) from e
             validated_args = validated.model_dump(exclude_unset=True)
