@@ -888,7 +888,16 @@ class TeamLifecycleCoordinator:
                 params["actions"] = True
             node = create_operation("operate", parameters=params)
             node.branch_id = branch.id
-            node.metadata["reference_id"] = f"{worker}-round{self.rounds_run + 1}"
+            round_id = f"{worker}-round{self.rounds_run + 1}"
+            node.metadata["reference_id"] = round_id
+            # Stamp the same assignee/spawn_id pair role_node_builder stamps
+            # on every reactively-injected node (patterns.py) — flow.py's
+            # finalize-time result scan and checkpoint capture both key off
+            # these two fields to attribute a spawned node back to its
+            # worker/round instead of falling through to a generic
+            # "spawned"/"spawn-N" entry.
+            node.metadata["assignee"] = worker
+            node.metadata["spawn_id"] = round_id
             with contextlib.suppress(FileNotFoundError):
                 team.post_wakeup_signal(self.team_id, target=worker, content="follow-up round")
             ops.append(node)

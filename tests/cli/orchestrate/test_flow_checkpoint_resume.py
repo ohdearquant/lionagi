@@ -315,8 +315,37 @@ async def test_checkpoint_writer_record_spawned_keeps_separate_from_ops_and_dedu
             "instruction": "critique the draft",
             "parent_id": "node-0",
             "spawn_id": "spawn-3",
+            "context": None,
         }
     ]
+
+
+async def test_checkpoint_writer_record_spawned_captures_context_payload(tmp_path: Path):
+    """context (added alongside CHECKPOINT_VERSION 2's other reconstruction
+    fields) round-trips independently of instruction — a team round op's
+    prior_team_messages lives in context, not instruction, so it must be
+    captured the same way the other reconstruction fields are."""
+    path = tmp_path / "checkpoint.json"
+    writer = CheckpointWriter(path=path, session_id="s", prompt="p", plan=[], config={})
+
+    context_payload = [
+        {"original_task": "t"},
+        {"prior_team_messages": {"total_count": 1, "messages": [{"from": "bob", "content": "hi"}]}},
+    ]
+    await writer.record_spawned(
+        "spawned-2",
+        status="completed",
+        response="child-result",
+        operation="operate",
+        assignee="alice",
+        instruction="Team follow-up round: teammates left you new message(s)...",
+        parent_id="node-0",
+        spawn_id="alice-round1",
+        context=context_payload,
+    )
+
+    data = load_checkpoint(path)
+    assert data["spawned"][0]["context"] == context_payload
 
 
 # ── _apply_checkpoint_precompletion ──────────────────────────────────────────
@@ -557,6 +586,89 @@ def test_reconstruct_spawned_nodes_precompletes_completed_child_with_edge_and_br
     assert child.metadata["reference_id"] == "spawn-1"
     incoming_heads = list(graph.node_edge_mapping[UUID(child_id)]["in"].values())
     assert parent_id in incoming_heads
+
+
+def test_reconstruct_spawned_nodes_restores_context_into_rebuilt_parameters():
+    """Checkpoint/resume round-trip for a team round op: the checkpointed
+    entry's `context` (prior_team_messages — the actual teammate mail, never
+    present in the generic `instruction` boilerplate) must land back in the
+    rebuilt node's `parameters["context"]`, or a resumed round op loses that
+    payload silently."""
+    builder, parent_id, worker_branch = _real_planned_node("worker")
+    env = SimpleNamespace(builder=builder)
+    dag_state = _DagState(
+        node_ids=[parent_id],
+        known_nodes={parent_id},
+        deps_by_node={},
+        reactive=True,
+        spawn_roles=None,
+        role_base={"worker": worker_branch},
+        worker_models=[],
+    )
+    plan_result, checkpoint_ops = _terminal_plan_and_ops("worker", parent_id)
+    child_id = str(uuid4())
+    context_payload = [
+        {"original_task": "t"},
+        {"prior_team_messages": {"total_count": 1, "messages": [{"from": "bob", "content": "hi"}]}},
+    ]
+    checkpoint_spawned = [
+        {
+            "node_id": child_id,
+            "status": "completed",
+            "response": "child result",
+            "operation": "operate",
+            "assignee": "worker",
+            "instruction": "Team follow-up round: ...",
+            "parent_id": str(parent_id),
+            "spawn_id": "spawn-1",
+            "context": context_payload,
+        }
+    ]
+
+    _reconstruct_spawned_nodes(env, plan_result, dag_state, checkpoint_ops, checkpoint_spawned)
+
+    graph = builder.get_graph()
+    child = graph.internal_nodes[UUID(child_id)]
+    assert child.parameters["instruction"] == "Team follow-up round: ..."
+    assert child.parameters["context"] == context_payload
+
+
+def test_reconstruct_spawned_nodes_omits_context_key_when_checkpoint_has_none():
+    """A checkpoint entry with no context payload (the common case, and
+    every pre-context-capture checkpoint) must rebuild parameters without a
+    `context` key at all -- not clobber it with an explicit None, which
+    would differ from a live-built node that never had the key either."""
+    builder, parent_id, worker_branch = _real_planned_node("worker")
+    env = SimpleNamespace(builder=builder)
+    dag_state = _DagState(
+        node_ids=[parent_id],
+        known_nodes={parent_id},
+        deps_by_node={},
+        reactive=True,
+        spawn_roles=None,
+        role_base={"worker": worker_branch},
+        worker_models=[],
+    )
+    plan_result, checkpoint_ops = _terminal_plan_and_ops("worker", parent_id)
+    child_id = str(uuid4())
+    checkpoint_spawned = [
+        {
+            "node_id": child_id,
+            "status": "completed",
+            "response": "child result",
+            "operation": "operate",
+            "assignee": "worker",
+            "instruction": "follow-up task",
+            "parent_id": str(parent_id),
+            "spawn_id": "spawn-1",
+            "context": None,
+        }
+    ]
+
+    _reconstruct_spawned_nodes(env, plan_result, dag_state, checkpoint_ops, checkpoint_spawned)
+
+    child = builder.get_graph().internal_nodes[UUID(child_id)]
+    assert "context" not in child.parameters
 
 
 def test_reconstruct_spawned_nodes_marks_failed_child_terminal_not_rerun():
@@ -997,6 +1109,7 @@ async def test_checkpoint_spawned_node_name_collision_does_not_overwrite_planned
             "instruction": None,
             "parent_id": "node-critic",
             "spawn_id": None,
+            "context": None,
         }
     ]
 
@@ -1086,8 +1199,100 @@ async def test_checkpoint_record_captures_spawn_id_from_live_role_routed_graph_n
             "instruction": "follow-up",
             "parent_id": str(parent_id),
             "spawn_id": "spawn-7",
+            "context": None,
         }
     ]
+
+
+async def test_checkpoint_record_captures_context_from_live_graph_node_parameters(
+    tmp_path: Path,
+):
+    """Write-side counterpart for context: a team round op's params are
+    {"instruction": <boilerplate>, "context": [...prior_team_messages...]}
+    — _checkpoint_record must capture context off the live graph node's
+    parameters the same way it captures instruction, or resume rebuilds the
+    node with the boilerplate instruction and silently drops the teammate
+    mail that motivated the round."""
+    builder, parent_id, worker_branch = _real_planned_node("worker")
+    env = _make_resume_env(tmp_path)
+    env.builder = builder
+    env.session = Session(default_branch=Branch(name="orchestrator"))
+    env.run.checkpoint_path = tmp_path / "checkpoint.json"
+
+    assignments = [TaskAssignment(task="write the brief", assignee="worker")]
+    plan_result = _PlanResult(
+        assignments=assignments,
+        agent_ids=["worker"],
+        dep_indices=[[]],
+        pool=[],
+        budget_preambles={},
+    )
+    dag_state = _DagState(
+        node_ids=[parent_id],
+        known_nodes={parent_id},
+        deps_by_node={parent_id: []},
+        reactive=True,
+        spawn_roles=None,
+        role_base={"worker": worker_branch},
+        worker_models=["claude"],
+    )
+
+    from lionagi.operations.node import create_operation
+
+    context_payload = [
+        {"original_task": "write the brief"},
+        {"prior_team_messages": {"total_count": 1, "messages": [{"from": "bob", "content": "hi"}]}},
+    ]
+    spawned_node = create_operation(
+        "operate",
+        parameters={"instruction": "Team follow-up round: ...", "context": context_payload},
+    )
+    spawned_node.metadata["assignee"] = "worker"
+    spawned_node.metadata["spawn_id"] = "worker-round1"
+    spawned_node.metadata["reference_id"] = "worker-round1"
+    builder.get_graph().add_node(spawned_node)
+    spawned_id_str = str(spawned_node.id)
+
+    async def _run_dag_result(*args, executor_ref=None, **_kw):
+        executor_ref["executor"] = SimpleNamespace(
+            context=SimpleNamespace(content={}),
+            results={spawned_node.id: "spawned-result"},
+        )
+        await env.session.emit(
+            NodeCompleted(
+                op_id=spawned_id_str,
+                name="worker-clone",
+                elapsed=0.1,
+                parent_id=str(parent_id),
+                depends_on=[str(parent_id)],
+            )
+        )
+        return {
+            "operation_results": {spawned_id_str: "spawned-result"},
+            "spawned_operations": 1,
+            "escalated_operations": [],
+        }
+
+    fake_engine_run = MagicMock()
+    fake_engine_run.run_dag = _run_dag_result
+
+    from lionagi.engines import PlanningEngine
+
+    with patch.object(PlanningEngine, "new_run", return_value=fake_engine_run):
+        await _execute_dag(
+            env,
+            plan_result,
+            dag_state,
+            max_concurrent=1,
+            max_ops=0,
+            checkpoint_prompt="write the brief",
+            checkpoint_plan=[{"agent_id": "worker"}],
+            checkpoint_config={"model_spec": "claude"},
+        )
+
+    data = load_checkpoint(env.run.checkpoint_path)
+    assert data["spawned"][0]["context"] == context_payload
+    assert data["spawned"][0]["instruction"] == "Team follow-up round: ..."
 
 
 async def test_execute_dag_seeds_fresh_checkpoint_with_already_reconstructed_spawned_entries(
