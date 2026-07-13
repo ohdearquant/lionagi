@@ -224,8 +224,8 @@ message ids) must not fall through to `0 or fallback`.
   entity, `schedule_id` NULL) as a plain INSERT (no prior CAS state to
   guard); every status move after routes through
   `lionagi.state.transitions.transition()`. No worker/lease loop or remote
-  execution lives here — `execution_target`/`library_ref` are provenance for
-  a later slice (D3, shipped; ADR-0073). `required_capabilities` derives the
+  execution lives here — `execution_target`/`library_ref` record provenance
+  (ADR-0073). `required_capabilities` derives the
   D4 host-scoped `concurrency_key` at submit time only (`capabilities.py`);
   claim-time eligibility/affinity matching lives in `worker.py`.
 - **Action-kind vocabulary widen** — ADR pair adds `"workflow"` (ADR-0073
