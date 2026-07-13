@@ -256,6 +256,15 @@ TERMINAL_STATUSES_BY_ENTITY_TYPE: dict[str, frozenset[str]] = {
     for entity_type in ("session", "invocation", "schedule_run", "show", "play", "team")
 }
 SESSION_TERMINAL_STATUSES = TERMINAL_STATUSES_BY_ENTITY_TYPE["session"]
+
+# Terminal branches.status values. branches has no lifecycle-policy entry of
+# its own (it never goes through update_status()'s ADR-0035 machinery) — but
+# every status finalize_branch() ever receives is a session final_status
+# passed straight through by cli/_runs.py teardown_persist(), so this IS
+# SESSION_TERMINAL_STATUSES, not a second hand-maintained list that could
+# drift from it.
+_BRANCH_TERMINAL_STATUSES = SESSION_TERMINAL_STATUSES
+
 INVOCATION_TERMINAL_STATUSES = TERMINAL_STATUSES_BY_ENTITY_TYPE[
     "invocation"
 ]  # invocations share the session terminal-status vocabulary
@@ -3171,6 +3180,54 @@ class StateDB:
         if bind_params:
             stmt = stmt.bindparams(*bind_params)
         await conn.execute(stmt, params)
+
+    async def finalize_branch(
+        self, branch_id: str, *, status: str, ended_at: float | None = None
+    ) -> bool:
+        """Guarded terminal-status write for one branch row (BRANCH_END).
+
+        Two-sided guard; both conditions must hold for the write to land:
+
+        - *status* itself must be a genuine terminal outcome
+          (``_BRANCH_TERMINAL_STATUSES`` == ``SESSION_TERMINAL_STATUSES`` —
+          every value BRANCH_END ever carries is a session final_status
+          passed straight through by cli/_runs.py teardown_persist()). A
+          non-terminal payload — e.g. the "running" the linked-engine
+          reconciliation path can produce when it suppresses a phantom
+          "failed" back to "running" — is rejected outright: this method
+          never stamps a branch "ended" with a non-terminal status. Returns
+          False without touching the row.
+        - the EXISTING row must still be in a legitimate pre-terminal state:
+          NULL (never touched) or "running" (the only two values flow.py's
+          own per-op writer -- or anything else -- ever leaves a branch in
+          before its real terminal outcome lands; this method itself never
+          writes "running", it only ever writes a terminal status). Any
+          other existing value — whichever terminal status it already
+          holds — is immutable: a run-level finalize must never flap a
+          branch that already reached its outcome, regardless of which
+          terminal status that was (completed, failed, cancelled,
+          timed_out, aborted, completed_empty) or what this call's own
+          *status* argument is.
+
+        A branch row that was never created (a DAG leg that never emitted a
+        first message) matches zero rows and is a harmless no-op.
+        Returns True when a row was actually updated.
+        """
+        if status not in _BRANCH_TERMINAL_STATUSES:
+            return False
+        async with self._tx() as conn:
+            result = await conn.execute(
+                text(
+                    "UPDATE branches SET status = :status, ended_at = :ended_at "
+                    "WHERE id = :id AND (status IS NULL OR status = 'running')"
+                ),
+                {
+                    "status": status,
+                    "ended_at": ended_at if ended_at is not None else time.time(),
+                    "id": branch_id,
+                },
+            )
+        return result.rowcount > 0
 
     async def repair_branch_progression(
         self,

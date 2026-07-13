@@ -26,6 +26,7 @@ def test_builtins_resolvable_by_name():
         "persist_session_start",
         "persist_session_end",
         "persist_branch_provenance",
+        "persist_branch_end",
         "persist_message",
         "log_api_metrics",
         "log_tool_call",
@@ -129,6 +130,7 @@ def test_default_hooks_only_cover_session_lifecycle_and_persistence():
         HookPoint.SESSION_END,
         HookPoint.MESSAGE_ADD,
         HookPoint.BRANCH_CREATE,
+        HookPoint.BRANCH_END,
     }
 
 

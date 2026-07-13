@@ -177,12 +177,13 @@ def test_hook_decorator_rejects_unknown_point():
 
 
 def test_hook_point_vocabulary():
-    """Pin the 11-event vocabulary so a removal is visible in this test."""
+    """Pin the 12-event vocabulary so a removal is visible in this test."""
     values = {p.value for p in HookPoint}
     assert values == {
         "session.start",
         "session.end",
         "branch.create",
+        "branch.end",
         "api.pre_call",
         "api.post_call",
         "api.stream_chunk",

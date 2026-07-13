@@ -11,6 +11,7 @@ lifecycle hook points — and the built-in handlers registered via
 | Point | Value | Callsite |
 |-------|-------|---------|
 | `MESSAGE_ADD` | `message.add` | `branch.py _persist_via_bus` — every inbound message |
+| `BRANCH_END` | `branch.end` | `cli/_runs.py teardown_persist` — once per branch the teardown owns, only when the run reached a genuine terminal outcome (never for the "running" reconciliation-suppression case) |
 
 ### Registered in DEFAULT_HOOKS (handlers wired; emit callsite deferred to ADR-0023b)
 
@@ -56,6 +57,7 @@ keep their defaults.
 | `persist_session_start` | `SESSION_START` |
 | `persist_session_end` | `SESSION_END` |
 | `persist_branch_provenance` | `BRANCH_CREATE` |
+| `persist_branch_end` | `BRANCH_END` |
 | `persist_message` | `MESSAGE_ADD` |
 | `log_api_metrics` | (name-addressable; not in DEFAULT_HOOKS) |
 | `log_tool_call` | (name-addressable; not in DEFAULT_HOOKS) |
