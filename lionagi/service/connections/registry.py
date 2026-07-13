@@ -21,6 +21,9 @@ __all__ = (
 
 logger = logging.getLogger(__name__)
 
+# (mtime_ns, ctime_ns, size, inode) for one file -- see _plugin_entry_stat.
+_FileStat = tuple[int, int, int, int]
+
 
 class EndpointType(Enum):
     API = "api"
@@ -86,10 +89,10 @@ class _RegistryEntry:
         self.plugin_name: str | None = None
         self.plugin_target: str | None = None
         # Fast-path cache for _revalidate_plugin_entry: the PluginRegistry
-        # snapshot generation and (manifest, target) mtimes as of the last
-        # clean activate_target() call. See _revalidate_plugin_entry.
+        # snapshot generation and (manifest, target) stat signatures as of
+        # the last clean activate_target() call. See _revalidate_plugin_entry.
         self._validated_generation: int | None = None
-        self._validated_stat: tuple[int, int] | None = None
+        self._validated_stat: tuple[_FileStat, _FileStat] | None = None
 
 
 class EndpointRegistry:
@@ -203,9 +206,13 @@ class EndpointRegistry:
         rehashes every installed plugin on each call, not just this one --
         too expensive to pay on every ``match()`` hit against an endpoint
         that already activated cleanly. Only re-runs it when the
-        ``PluginRegistry`` snapshot has been reset, or this plugin's
-        manifest or declared target file has been touched on disk since the
-        last clean revalidation; otherwise reuses that prior result.
+        ``PluginRegistry`` snapshot generation has strictly advanced (a
+        ``reset()`` happened), or this plugin's manifest or declared target
+        file's content-pinned stat signature (see ``_plugin_entry_stat``,
+        which is ctime/size/inode-backed, not mtime-only -- mtime alone can
+        be restored via ``os.utime`` after an edit and would let a stale
+        entry be served) no longer matches the last clean revalidation;
+        otherwise reuses that prior result.
         """
         if entry.plugin_name is None or entry.plugin_target is None:
             return True
@@ -235,12 +242,26 @@ class EndpointRegistry:
         return True
 
     @classmethod
-    def _plugin_entry_stat(cls, plugin_name: str, target: str) -> tuple[int, int] | None:
-        """``(manifest_mtime_ns, target_mtime_ns)`` for a plugin-provided
-        endpoint's backing files -- a cheap ``anything on disk moved`` signal
-        for ``_revalidate_plugin_entry``'s fast path. ``None`` (unknown
-        plugin, unresolvable path, either file missing) always forces the
-        caller back onto the full ``activate_target()`` path.
+    def _plugin_entry_stat(
+        cls, plugin_name: str, target: str
+    ) -> tuple[_FileStat, _FileStat] | None:
+        """``(manifest_stat, target_stat)`` for a plugin-provided endpoint's
+        backing files -- a cheap ``has anything on disk changed`` signal for
+        ``_revalidate_plugin_entry``'s fast path.
+
+        Each element is ``(mtime_ns, ctime_ns, size, inode)``. mtime ALONE is
+        not a valid content-pinning signal: ``os.utime()`` lets a caller edit
+        a file's bytes and then restore its original mtime, which would make
+        a stale, unrevalidated entry look unchanged forever. ctime closes
+        that hole -- it records the last *inode metadata* change (which an
+        mtime write, restored or not, always triggers) and cannot be set by
+        any standard API, so it can't be forged back to an old value the way
+        mtime can. size and inode are free extra signal from the same
+        ``stat()`` call (no additional syscall) and catch same-second
+        same-mtime same-ctime edits and delete+recreate respectively.
+
+        ``None`` (unknown plugin, unresolvable path, either file missing)
+        always forces the caller back onto the full ``activate_target()`` path.
         """
         from lionagi.plugins import PluginRegistry
 
@@ -249,11 +270,24 @@ class EndpointRegistry:
             return None
         module_path = target.split(":", 1)[0]
         try:
-            manifest_mtime = record.manifest_path.stat().st_mtime_ns
-            target_mtime = (record.bundle_dir / module_path).stat().st_mtime_ns
+            manifest_stat = record.manifest_path.stat()
+            target_stat = (record.bundle_dir / module_path).stat()
         except OSError:
             return None
-        return (manifest_mtime, target_mtime)
+        return (
+            (
+                manifest_stat.st_mtime_ns,
+                manifest_stat.st_ctime_ns,
+                manifest_stat.st_size,
+                manifest_stat.st_ino,
+            ),
+            (
+                target_stat.st_mtime_ns,
+                target_stat.st_ctime_ns,
+                target_stat.st_size,
+                target_stat.st_ino,
+            ),
+        )
 
     @classmethod
     def _consult_plugin_providers(cls) -> bool:

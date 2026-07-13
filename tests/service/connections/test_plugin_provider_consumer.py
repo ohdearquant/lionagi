@@ -12,6 +12,7 @@ identical to today's behavior.
 
 from __future__ import annotations
 
+import os
 import sys
 
 import pytest
@@ -225,6 +226,58 @@ class TestPluginProviderRevalidationCaching:
 
         assert call_count > calls_before_edit
         assert type(second).__name__ == "Endpoint"
+
+    def test_target_edited_then_mtime_restored_forces_a_fresh_rescan(
+        self, write_plugin, monkeypatch
+    ):
+        """mtime alone cannot pin content: editing a target's bytes and then
+        restoring its ORIGINAL mtime (e.g. ``os.utime`` after a backup
+        restore, or a deliberate attempt to dodge an mtime-only staleness
+        check) must not let the fast path keep serving the entry cached as
+        valid before the edit. The very next match() must still revalidate
+        and observe the edit, exactly as the live-edit case above does."""
+        bundle = _write_provider_plugin(
+            write_plugin, "wr", name="web-research", provider="acme-llm"
+        )
+        target_path = bundle / "providers" / "endpoint.py"
+        original_stat = target_path.stat()
+
+        call_count = 0
+        original_activate_target = PluginRegistry.activate_target.__func__
+
+        def counting_activate_target(cls, plugin_name, target):
+            nonlocal call_count
+            call_count += 1
+            return original_activate_target(cls, plugin_name, target)
+
+        monkeypatch.setattr(
+            PluginRegistry, "activate_target", classmethod(counting_activate_target)
+        )
+
+        first = match_endpoint(provider="acme-llm", endpoint="chat")
+        assert type(first).__name__ == "PluginProviderEndpoint"
+        cached_hit = match_endpoint(provider="acme-llm", endpoint="chat")
+        assert type(cached_hit).__name__ == "PluginProviderEndpoint"
+        calls_before_attack = call_count
+
+        target_path.write_text(
+            PROVIDER_MODULE.format(provider="acme-llm") + "\n# changed after activation\n"
+        )
+        os.utime(target_path, ns=(original_stat.st_atime_ns, original_stat.st_mtime_ns))
+        assert target_path.stat().st_mtime_ns == original_stat.st_mtime_ns, (
+            "test setup must actually restore the original mtime"
+        )
+
+        second = match_endpoint(provider="acme-llm", endpoint="chat")
+
+        assert call_count > calls_before_attack, (
+            "restoring a target file's mtime after editing its content must "
+            "still force a fresh activate_target() revalidation on the next "
+            "match() -- mtime alone is not a valid content-pinning signal"
+        )
+        assert type(second).__name__ == "Endpoint", (
+            "the stale, edited-but-mtime-restored plugin entry must not be served after the edit"
+        )
 
 
 class TestPluginProviderMiss:

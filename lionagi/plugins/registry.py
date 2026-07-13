@@ -430,6 +430,13 @@ class PluginRegistry:
 
     _snapshot: ClassVar[list[PluginRecord] | None] = None
     _lock: ClassVar[threading.Lock] = threading.Lock()
+    # Monotonic counter bumped every time _snapshot is (re)built. id()-based
+    # tokens are reusable once the prior snapshot list is garbage-collected,
+    # so a rebuilt snapshot could get the SAME id() as an earlier one a
+    # caller had cached -- making a stale entry look current and skipping
+    # the post-reset trust/enablement/peer-collision recheck. A counter that
+    # only ever increases cannot repeat.
+    _generation: ClassVar[int] = 0
     # Keyed by (plugin_name, target, content_hash) so re-trusted content is
     # structurally a cache miss, not dependent on prior eviction.
     _activation_cache: ClassVar[dict[tuple[str, str, str], Any]] = {}
@@ -442,6 +449,7 @@ class PluginRegistry:
         with cls._lock:
             if cls._snapshot is None:
                 cls._snapshot = _build_snapshot()
+                cls._generation += 1
             return cls._snapshot
 
     @classmethod
@@ -456,13 +464,17 @@ class PluginRegistry:
     def snapshot_generation(cls) -> int:
         """Cheap process-lifetime token for the cached plugin scan: identical
         across calls until ``reset()`` forces a rebuild, at which point it
-        changes. Lets a caller that already fully validated a plugin against
-        the live snapshot cheaply detect ``nothing has been reset since``
-        without repeating the scan itself; never a substitute for the
-        full, per-target trust/eligibility check ``activate_target()``
-        performs whenever this token *does* change.
+        strictly increases. Lets a caller that already fully validated a
+        plugin against the live snapshot cheaply detect ``nothing has been
+        reset since`` without repeating the scan itself; never a substitute
+        for the full, per-target trust/eligibility check ``activate_target()``
+        performs whenever this token *does* change. A monotonic counter
+        (not ``id()`` of the cached snapshot list) so the token can never
+        repeat across the process lifetime, even after many reset() cycles
+        recycle the same memory address for a new snapshot object.
         """
-        return id(cls._ensure_loaded())
+        cls._ensure_loaded()
+        return cls._generation
 
     @classmethod
     def list_plugins(cls) -> list[PluginRecord]:
