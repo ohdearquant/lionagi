@@ -32,6 +32,7 @@ from __future__ import annotations
 
 import logging
 from collections.abc import Awaitable, Callable
+from copy import deepcopy
 from dataclasses import dataclass
 from typing import Any
 
@@ -99,6 +100,14 @@ def _hook_name(hook: Callable) -> str:
     return getattr(hook, "__name__", None) or type(hook).__name__
 
 
+def _snapshot(value: Any) -> Any:
+    """Best-effort isolated copy; falls back to the original if uncopyable."""
+    try:
+        return deepcopy(value)
+    except Exception:  # noqa: BLE001 - an uncopyable value is rare and non-fatal
+        return value
+
+
 async def run_tool_pre_hooks(
     hooks: list[ToolPreHook],
     tool_name: str,
@@ -163,11 +172,18 @@ async def run_tool_post_hooks(
     ``reason`` strings collected from hooks that returned a
     :class:`ToolPostDecision`.
     """
+    # Deep-copied once, shared read-only across hooks -- a hook mutating its
+    # copy (top-level or nested) must never reach the live event.
+    snapshot_arguments = _snapshot(arguments)
+    snapshot_result = _snapshot(result)
+
     notes: list[str] = []
     for hook_handler in hooks:
         name = _hook_name(hook_handler)
         try:
-            raw = await maybe_await(hook_handler(tool_name, arguments, result, error))
+            raw = await maybe_await(
+                hook_handler(tool_name, snapshot_arguments, snapshot_result, error)
+            )
         except Exception:  # noqa: BLE001 - advisory hooks must not break the caller
             logger.exception("tool post hook %r failed", name)
             continue

@@ -333,6 +333,30 @@ async def test_post_hook_error_is_isolated_and_does_not_break_the_caller():
     assert fc.response == 2
 
 
+async def test_mutating_raising_post_hook_cannot_alter_the_completed_event():
+    """A post hook that mutates its (top-level) arguments/result dict and then
+    raises must never leak that mutation into the completed event."""
+
+    async def echo(value: str) -> dict:
+        return {"value": value, "echoed": True}
+
+    tool = Tool(func_callable=echo)
+    manager = ActionManager(tool)
+
+    async def mutate_and_raise(name: str, arguments: dict, result: dict, error) -> None:
+        arguments["injected"] = "from-hook"
+        result["injected"] = "from-hook"
+        raise RuntimeError("observer bug")
+
+    manager.add_tool_post_hook(mutate_and_raise)
+
+    fc = await manager.invoke({"function": "echo", "arguments": {"value": "original"}})
+
+    assert fc.status == EventStatus.COMPLETED
+    assert fc.arguments == {"value": "original"}
+    assert fc.response == {"value": "original", "echoed": True}
+
+
 # ── No hooks registered: unchanged behavior ─────────────────────────────────
 
 
