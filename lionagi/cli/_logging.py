@@ -75,10 +75,7 @@ def _setup_channel(name: str, level: int, formatter: logging.Formatter) -> loggi
 
 
 def configure_cli_logging(verbose: bool) -> None:
-    """Configure the three CLI channels plus library logger levels.
-
-    Idempotent — safe to call multiple times.
-    """
+    """Configure the three CLI channels plus library logger levels. Idempotent."""
     # Progress: on in normal mode, off in verbose (provider stream replaces it)
     _setup_channel(
         _PROGRESS_LOGGER_NAME,

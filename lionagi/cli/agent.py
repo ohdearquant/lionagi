@@ -53,10 +53,7 @@ from ._runs import (
 )
 from ._util import EXIT_CODE_BY_STATUS, classify_exception, validate_cwd_exists
 
-# ---------------------------------------------------------------------------
-# Preset names supported by --preset
-# ---------------------------------------------------------------------------
-
+# Preset names supported by --preset.
 _PRESET_CHOICES = ("coding",)
 
 
@@ -72,9 +69,7 @@ def _make_coding_preset(
     return AgentSpec.coding(cwd=cwd, effort=effort, system_prompt=system_prompt, role=role)
 
 
-# ---------------------------------------------------------------------------
-# WorkForm loading helpers (for --form)
-# ---------------------------------------------------------------------------
+# WorkForm loading helpers (for --form).
 
 
 _FORM_SPEC_ALLOWED_KEYS = frozenset({"title", "fields", "values"})
@@ -143,9 +138,8 @@ def _build_work_form(spec: dict, spec_path: str):
     raw_fields: dict = raw_fields_raw or {}
     raw_values: dict = raw_values_raw or {}
 
-    # Enforce: values without declared fields is not a valid use of --form.
-    # --form is a validation gate; forwarding unvalidated values silently
-    # defeats its purpose.  Use the prompt directly for unstructured context.
+    # --form is a validation gate; values without declared fields would be
+    # forwarded unvalidated, defeating that purpose.
     if raw_values and not raw_fields:
         raise ValueError(
             f"form spec {spec_path!r}: 'values' are declared but 'fields' is "
@@ -181,11 +175,8 @@ def _build_work_form(spec: dict, spec_path: str):
 
 
 def _form_to_context_block(form) -> str:
-    """Render a validated WorkForm's values as a structured context preamble.
-
-    Returns a string that can be prepended to the user's prompt so the LLM
-    receives the form values as structured inputs.
-    """
+    """Render a validated WorkForm's values as a structured context preamble
+    to prepend to the user's prompt."""
     lines = [f"[Work Form: {form.title}]"]
     for key, value in form.values.items():
         lines.append(f"  {key}: {value!r}")
@@ -216,9 +207,7 @@ async def _run_agent(
 ) -> tuple[str, str, str, str, str | None]:
     """Execute one agent turn; returns (result, provider, branch_id, terminal_status, session_id).
 
-    session_id is None whenever live persistence never started (e.g. the
-    mangled resume-model-override guard fires before setup_agent_persist is
-    called, or setup itself failed and disabled persistence for this run).
+    session_id is None whenever live persistence never started.
     """
     effort = normalize_effort(effort)
     # Fail fast: a nonexistent --cwd must never silently spawn into a
@@ -276,16 +265,8 @@ async def _run_agent(
         if profile.resume_on_timeout and not resume_on_timeout:
             resume_on_timeout = True
 
-    # Validate a declared profile `role:` key up front, before the
-    # resume/new-branch split — a malformed profile must fail loudly on every
-    # invocation shape, not only when a new branch is composed. The value
-    # itself is only USED when composing a new branch (a resumed branch keeps
-    # its persisted system message). A declared key must be a non-empty
-    # string: `role: ""`, `role: false`, or `role: 0` parse to falsy Python
-    # values, and a truthiness fallback would silently grant the implementer
-    # role (and its coding authority) instead of surfacing the malformed
-    # config. The "implementer" default applies ONLY when the key is
-    # genuinely absent (bare `--preset coding` with no declared role).
+    # Validate a declared profile `role:` key up front: a falsy-but-present
+    # value must fail loudly here, not silently fall back to "implementer".
     profile_role_extra = (getattr(profile, "extra", None) or {}) if profile else {}
     has_role_key = "role" in profile_role_extra
     profile_role = profile_role_extra.get("role") if has_role_key else None
@@ -297,10 +278,8 @@ async def _run_agent(
             "the plain profile path (no role/policy composition)."
         )
 
-    # Set True only when a NEW branch takes the create_agent path (either
-    # --preset coding or an opted-in profile `role:` key) — the profile
-    # system-prompt block below must not double-add via add_message in that
-    # case (the profile extension was already composed into the spec).
+    # True only when a NEW branch took the create_agent path (--preset coding
+    # or an opted-in profile `role:` key) — see the add_message guard below.
     took_create_agent_path = False
 
     branch: Branch | None = None
@@ -318,13 +297,8 @@ async def _run_agent(
     if model_str is not None:
         ms = parse_model_spec(model_str)
         if branch is not None and "/" not in ms.model and ms.model not in BACKENDS:
-            # A resume-path override is grafted into the existing branch's
-            # config with no further validation (unlike a new branch, whose
-            # provider must resolve via build_chat_model/match_endpoint or
-            # fail naturally). A bare token that isn't a known backend name
-            # is almost always a mangled command — e.g. a --resume id split
-            # across two argv tokens leaves [fragment, prompt] as positionals
-            # and the fragment is read as MODEL.
+            # A bare token that isn't a known backend name is almost always a
+            # mangled command (e.g. a --resume id split across two argv tokens).
             log_error(
                 f"resume model override {model_str!r} does not look like a "
                 "model spec (expected 'provider/model', or a known name "
@@ -363,42 +337,16 @@ async def _run_agent(
         chat_model = build_chat_model(provider, model, yolo, verbose, theme, effort, fast, bypass)
         effort = resolve_persisted_effort(provider, chat_model, effort)
 
-        # Opt-in profile frontmatter key `role`: an explicit `role:` in the
-        # profile's frontmatter (parsed into AgentProfile.extra by
-        # _parse_profile) switches a plain `-a <profile>` leg onto the same
-        # create_agent path `--preset coding` uses, parameterized with the
-        # profile's own role instead of the hardcoded "implementer" default —
-        # so a reviewer profile gets the reviewer policy block, not the
-        # implementer's. `role` is read ONLY from this explicit key — it is
-        # NEVER defaulted from the profile name, since many deployed profiles
-        # name no matching built-in Role and would hit Role.load's fail-closed
-        # ValueError the moment they were defaulted into this path. A profile
-        # without the key keeps today's plain Branch(...) path byte-for-byte.
-        # (The key was already validated as a non-empty string right after
-        # profile load, before the resume/new-branch split.)
+        # Opt-in profile `role:` key switches a plain `-a <profile>` leg onto
+        # the same create_agent path as --preset coding, parameterized by role.
         if preset == "coding" or has_role_key:
             took_create_agent_path = True
-            # 3a: use create_agent so CodingToolkit tools and path-guards are
-            # fully wired (guard_destructive on bash, guard_paths on
-            # reader/editor).  The factory installs the full system message via
-            # set_system() — compose the profile extension into the spec BEFORE
-            # calling create_agent so both preset role/policy AND the profile
-            # prompt land in a single system message.
-            #
-            # AgentSpec.coding(system_prompt=...) maps to spec.extra_prompt,
-            # which build_system_message() appends AFTER the role header and
-            # policy block — no duplication of the LION system text.
-            # The post-factory add_message on the preset path is skipped to
-            # avoid set_system replacing the composed message.
+            # Use create_agent so CodingToolkit tools and path-guards are wired;
+            # compose the profile extension into the spec before calling it.
             from lionagi.agent.factory import create_agent
 
-            # Use profile.raw_body (not profile.system_prompt) to avoid
-            # duplicating LION_SYSTEM_MESSAGE: _parse_profile prepends it into
-            # system_prompt when lion_system=True, and factory.py:117-125 also
-            # prepends it because spec.lion_system remains True.  raw_body is
-            # the profile body before that expansion; the factory adds the
-            # header exactly once.  When lion_system=False, raw_body==system_prompt
-            # so both paths are consistent.
+            # Use profile.raw_body, not profile.system_prompt, to avoid
+            # duplicating LION_SYSTEM_MESSAGE (see docs/internals/cli.md).
             profile_extra = (getattr(profile, "raw_body", None) or "") if profile else ""
             spec = _make_coding_preset(
                 cwd=cwd,
@@ -407,12 +355,7 @@ async def _run_agent(
                 role=profile_role if has_role_key else "implementer",
             )
             # AgentSpec.coding()/compose() default lion_system=True regardless
-            # of the profile's own frontmatter — propagate an explicit
-            # `lion_system: false` opt-out onto the spec, or a role profile
-            # can never suppress the LION system preamble once it takes this
-            # path (unlike the non-preset path, where _parse_profile already
-            # folds lion_system into profile.system_prompt before this code
-            # ever runs).
+            # of the profile's frontmatter — propagate an explicit opt-out.
             if profile is not None and not profile.lion_system:
                 spec.lion_system = False
             branch = await create_agent(
@@ -446,11 +389,6 @@ async def _run_agent(
             elif provider in PROVIDERS_EFFORT_VIA_MODEL_NAME:
                 # agy (Antigravity CLI) has no effort kwarg — fold effort into
                 # the resolved --model name instead (see resolve_agy_model).
-                # cfg["model"] here is the *persisted* prior resolution
-                # (already a concrete agy display name) unless the caller
-                # also passed a new model_str this turn — reapply_effort
-                # lets a fresh --effort replace that persisted suffix,
-                # while an explicit model_str given on this call still wins.
                 from lionagi.providers.google.gemini_code import resolve_agy_model
 
                 cfg["model"] = resolve_agy_model(
@@ -465,15 +403,8 @@ async def _run_agent(
         if fast:
             cfg.update(PROVIDER_FAST_KWARGS.get(provider, {}))
 
-    # Profile system prompt for a brand-new, non-preset branch only.
-    # On the preset/role path the profile extension was already composed into
-    # the spec before create_agent ran (add_message would call set_system and
-    # replace the preset system message — see protocols/messages/manager.py:385).
-    # A resumed or continued branch (-r / --continue-last / the automatic
-    # timeout-resume leg) already carries its persisted system message —
-    # which, for a role/preset branch, is the composed role+policy block, not
-    # the bare profile body — so add_message must not run for it either, or
-    # it clobbers that persisted message via set_system.
+    # Profile system prompt for a brand-new, non-preset branch only — see
+    # docs/internals/cli.md for why the preset/resume paths must skip this.
     if (
         profile
         and profile.system_prompt
@@ -557,10 +488,8 @@ async def _run_agent(
             log_error(f"{type(exc).__name__}: {exc}")
         raise
     finally:
-        # Known before teardown runs: an auto-resume leg is about to fire on
-        # this same session, so this leg's teardown must not stamp a terminal
-        # status the resumed leg would then be blocked from overwriting by
-        # the ADR-0035 terminal guard.
+        # See docs/internals/cli.md for why an about-to-auto-resume leg must
+        # not stamp a terminal status here (ADR-0035 terminal guard).
         will_auto_resume = (
             _terminal_status == "timed_out" and resume_on_timeout and not _auto_resumed
         )
@@ -577,10 +506,8 @@ async def _run_agent(
         import anyio
 
         with anyio.CancelScope(shield=True):
-            # The CLI provider's real engine session id (e.g. a Claude Code
-            # session uuid), captured from a "system" stream chunk — the
-            # link teardown uses to tell a genuine failure from a wrapper
-            # exception racing an engine session that is still alive.
+            # Engine session id, used by teardown to tell a genuine failure
+            # from a wrapper exception racing a still-live engine session.
             _engine_session_uid = getattr(branch.chat_model.endpoint, "session_id", None)
             effective_status = await teardown_agent_persist(
                 live,
@@ -613,11 +540,8 @@ async def _run_agent(
             f"[auto-resume] session {session_id or branch_id} timed out after "
             f"{timeout}s — resuming once with 'continue and conclude the task'"
         )
-        # Carry the model that actually ran this leg (explicit --model, profile
-        # default, or whatever a prior resume already grafted) forward as an
-        # explicit override. Passing model_str=None here would let the
-        # agent_name profile's model re-apply on the resumed leg (see the
-        # profile-precedence block above), silently switching models mid-run.
+        # Carry the model forward explicitly — None would let the profile's
+        # model silently re-apply on the resumed leg, switching models.
         _effective_cfg = branch.chat_model.endpoint.config
         _effective_model_str = f"{_effective_cfg.provider}/{_effective_cfg.kwargs.get('model')}"
         return await _run_agent(
@@ -688,7 +612,9 @@ def add_agent_subparser(subparsers: argparse._SubParsersAction) -> argparse.Argu
         default=None,
         help=(
             "Load agent profile by name. Resolves "
-            ".lionagi/agents/<NAME>/<NAME>.md first, then .lionagi/agents/<NAME>.md. "
+            ".lionagi/agents/<NAME>/<NAME>.md first, then .lionagi/agents/<NAME>.md, "
+            "then a trusted+enabled plugin's declared profile "
+            "('<plugin>/<NAME>', or a bare NAME when only one plugin declares it). "
             "Profile provides system prompt, default model, effort, yolo, "
             "timeout, resume_on_timeout. CLI flags override profile settings."
         ),

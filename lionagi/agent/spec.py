@@ -44,11 +44,8 @@ class HooksMixin:
 def _wire_secure_guards(obj: HooksMixin, cwd: str | None) -> None:
     """Register the standard destructive-command + path-containment guards.
 
-    ``obj`` must support .security_pre() (HooksMixin). Registering into the
-    security_pre bucket (not the ordinary user pre bucket) means these guards
-    participate in the security -> user -> security recheck and evaluate
-    final, post-mutation arguments the same way an explicit PermissionPolicy
-    does (ADR-0086 delta row 1).
+    Uses the security_pre bucket (not user pre) so these guards participate
+    in the security -> user -> security recheck (ADR-0086 delta row 1).
     """
     from lionagi.agent.hooks import guard_destructive, guard_paths
 
@@ -129,12 +126,7 @@ class AgentSpec(HooksMixin):
     ) -> AgentSpec:
         """Preset for a coding agent; ``secure=True`` wires guard_destructive + guard_paths.
 
-        ``role`` defaults to ``"implementer"`` (every existing caller relies on this
-        default). Pass a different role name to compose the preset's tools/hooks
-        around another role's own body and policy block instead.
-
-        ``context_management=False`` drops the context tool from the default coding
-        toolset and skips the context-curation one-liner in the system prompt.
+        ``context_management=False`` drops the context tool and its system-prompt one-liner.
         """
         spec = cls.compose(
             role,
@@ -226,13 +218,8 @@ class AgentSpec(HooksMixin):
         role_name = self.profile.role.name
         policy = pack.policy(role_name)
         if policy is None:
-            # A role that loads (Role.load succeeded) but has no entry in the
-            # active pack must not silently run unconstrained — that is a
-            # privilege gap, not a no-op. A role genuinely meant to run with
-            # no authority/boundary/escalation constraints says so explicitly
-            # via an empty-but-present entry in the pack yaml (e.g. `roles:
-            # {my-role: {}}`), which resolves to an empty RolePolicy here, not
-            # None — distinct from the role being absent from `roles:` entirely.
+            # Missing pack entry = privilege gap, fails loud (not a silent
+            # no-op). An explicit empty entry (`{}`) opts into unconstrained.
             raise ValueError(
                 f"Role {role_name!r} has no policy entry in pack {pack.name!r}. "
                 "Add an entry under `roles:` in the pack yaml — an empty entry "

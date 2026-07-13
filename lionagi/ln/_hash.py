@@ -57,11 +57,8 @@ _TYPE_MARKER_MSGSPEC = 6
 
 
 def _generate_hashable_representation(item: Any) -> Any:
-    """Convert object to stable, order-independent hashable representation.
-
-    Recursively transforms dicts/sets into sorted tuples with type markers
-    to ensure consistent hashing regardless of insertion order.
-    """
+    """Convert object to a stable, order-independent hashable representation
+    (dicts/sets become sorted tuples tagged with a type marker)."""
     if isinstance(item, _PRIMITIVE_TYPES):
         return item
 

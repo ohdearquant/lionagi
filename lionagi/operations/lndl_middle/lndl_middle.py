@@ -1,14 +1,7 @@
 # Copyright (c) 2023-2026, HaiyangLi <quantocean.li at gmail dot com>
 # SPDX-License-Identifier: Apache-2.0
 
-"""LNDL seam Middle — advances a branch one LNDL round per inner chat call,
-looping internally up to a round budget (default 3). Implements ADR-0024
-§1 (the seam over ``operate()``) and §2 (round outcomes and repair
-semantics).
-
-Opt-in per call: ``branch.operate(instruction=..., middle=lndl_middle)``.
-Nothing changes for callers who don't pass it.
-"""
+"""LNDL seam Middle — advances a branch one LNDL round per inner chat call, looping up to a round budget (ADR-0024 §1-2). Opt-in via ``branch.operate(middle=lndl_middle)``."""
 
 from __future__ import annotations
 
@@ -68,9 +61,7 @@ def _unwrap_optional_type(t: Any) -> Any:
 
 
 def _render_type(annotation: Any) -> str:
-    """Render a field's type the way LNDL_SYSTEM_PROMPT's own ``Specs:``
-    examples do -- e.g. ``int``, ``list[str]``, ``dict[str, float]``, or
-    ``ModelName: field1, field2`` for a nested pydantic model."""
+    """Render a field's type the way LNDL_SYSTEM_PROMPT's ``Specs:`` examples do."""
     annotation = _unwrap_optional_type(annotation)
     origin = get_origin(annotation)
     if origin is list:
@@ -92,9 +83,7 @@ def _render_type(annotation: Any) -> str:
 
 
 def _render_target_spec(target: Any) -> str | None:
-    """Render the target model's fields as an LNDL ``Specs:`` line, the format
-    LNDL_SYSTEM_PROMPT's examples use — required since the per-round chat
-    call strips native ``response_format``. None for a plain-dict/no-target caller."""
+    """Render the target model's fields as an LNDL ``Specs:`` line; None for a plain-dict/no-target caller."""
     model_fields = getattr(target, "model_fields", None)
     if not model_fields:
         return None
@@ -108,9 +97,7 @@ def _render_target_spec(target: Any) -> str | None:
 
 
 async def _bridge_action_calls(branch: Branch, calls: list[ActionCall]) -> dict[str, Any]:
-    """Translate ActionCall placeholders into ActionRequests and execute them
-    through the branch's normal act() path, so permission policies and hooks
-    apply unchanged (ADR-0024 §1). Returns a dict of alias -> result."""
+    """Translate ActionCall placeholders into ActionRequests and run them through the branch's normal act() path (ADR-0024 §1)."""
     if not calls:
         return {}
 
@@ -134,9 +121,7 @@ async def _run_round_chat(
     instruction: JsonValue | Instruction,
     chat_param: ChatParam,
 ) -> str:
-    """Run one inner-chat turn, dispatching to communicate() (API models) or
-    run_and_collect() (CLI models) — mirrors operate()'s own default-Middle
-    selection so LNDL behaves the same for both endpoint families."""
+    """Run one inner-chat turn, dispatching to communicate() (API) or run_and_collect() (CLI) — mirrors operate()'s own selection."""
     if isinstance(chat_param, RunParam) or getattr(branch.chat_model, "is_cli", False):
         from ..run.run import run_and_collect
 
@@ -168,12 +153,7 @@ def _classify_round(
     target: Any,
     action_results: dict[str, Any],
 ) -> tuple[RoundOutcome, list[ActionCall], dict[str, Any] | None]:
-    """Parse and assemble one round's raw text into a RoundOutcome.
-
-    Returns ``(outcome, pending_action_calls, assembled_dict)``; ``pending`` is
-    every lact for Continue, only OUT{}-reachable lacts for Success; ``assembled``
-    is set only on Success.
-    """
+    """Parse and assemble one round's raw text into a RoundOutcome; returns (outcome, pending_action_calls, assembled_dict)."""
     blocks = extract_lndl_blocks(text)
     if not blocks:
         return Continue(), [], None
@@ -196,11 +176,7 @@ def _classify_round(
 
 
 def build_lndl_middle(round_budget: int = DEFAULT_ROUND_BUDGET):
-    """Build an LNDL seam Middle (ADR-0024 §1) with a custom round budget.
-
-    Returns a callable satisfying the Middle protocol (``operations/types.py``).
-    ``lndl_middle`` (module-level, below) is the ready-to-use default.
-    """
+    """Build an LNDL seam Middle (ADR-0024 §1) with a custom round budget; ``lndl_middle`` is the ready-to-use default."""
 
     async def _lndl_middle(
         branch: Branch,

@@ -45,10 +45,7 @@ class Rule(BaseModel):
     model_config = {"arbitrary_types_allowed": True}
 
     def apply(self, form: WorkForm) -> str | None:
-        """Apply this rule to *form*.
-
-        Returns an error string on failure, ``None`` on pass or when disabled.
-        """
+        """Apply this rule to *form*; returns an error string on failure, ``None`` on pass or when disabled."""
         if not self.enabled:
             return None
 
@@ -67,9 +64,7 @@ class Rule(BaseModel):
 
         return f"Rule {self.rule_id!r}: unknown check kind {self.check!r}."
 
-    # ------------------------------------------------------------------
     # Internal checkers
-    # ------------------------------------------------------------------
 
     def _check_required(self, value: Any) -> str | None:
         if value is None:

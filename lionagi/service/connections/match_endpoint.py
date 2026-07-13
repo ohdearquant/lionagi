@@ -12,9 +12,5 @@ def match_endpoint(
     endpoint: str,
     **kwargs,
 ) -> Endpoint:
-    """Match a provider + endpoint to an Endpoint class.
-
-    Delegates to EndpointRegistry which uses @register_endpoint
-    decorators for auto-discovery.
-    """
+    """Match a provider + endpoint to an Endpoint class via EndpointRegistry."""
     return EndpointRegistry.match(provider, endpoint, **kwargs)

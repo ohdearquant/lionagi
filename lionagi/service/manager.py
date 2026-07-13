@@ -39,13 +39,7 @@ class iModelManager(Manager):  # noqa: N801 — mirrors iModel naming
 
     async def shutdown(self, *, per_model_timeout: float = 10.0) -> None:
         """Close every registered iModel concurrently, with a per-model timeout.
-
-        Without this, each iModel's background replenisher task stays
-        scheduled and prevents ``anyio.run``/``asyncio.run`` from
-        returning. Idempotent; per-model failures (including
-        ``CancelledError``) are logged and swallowed so one broken
-        endpoint can't block the rest.
-        """
+        Idempotent; per-model failures are logged and swallowed. See docs/internals/runtime.md."""
         import asyncio
         import logging
 

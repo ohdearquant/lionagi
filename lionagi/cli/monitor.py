@@ -181,11 +181,7 @@ async def _query_active_shows(
     since: float | None = None,
 ) -> list[dict[str, Any]]:
     """Active only by default; with since, all statuses in the window.
-
-    `repo` on a show is a filesystem path, not a project slug, so it can't
-    be matched against `--project` in SQL — that scoping happens in Python
-    (_gather_table_rows) via detect_project().
-    """
+    `repo` is a path, not a project slug; scoped in Python via _show_project_matches."""
     query = "SELECT * FROM shows WHERE 1=1"  # noqa: S608
     params: list[Any] = []
     if since is not None:
@@ -205,10 +201,7 @@ async def _query_running_plays(
     project: str | None = None,
 ) -> list[dict[str, Any]]:
     """In-flight statuses only by default; with since, all statuses in the window.
-
-    Plays have no project column; project-scoping joins through the
-    linked session (session_id). A play with no linked session is excluded.
-    """
+    Plays have no project column; scoping joins through the linked session."""
     query = (
         "SELECT plays.*, "  # noqa: S608
         "(SELECT COUNT(*) FROM branches WHERE session_id = plays.session_id) AS branch_count, "
@@ -303,22 +296,14 @@ def _stdout_is_tty() -> bool:
     return sys.stdout.isatty()
 
 
-# Ceiling on a non-TTY column's *layout* width (header/separator/padding).
-# A single pathological long value (e.g. a malformed project string) must
-# never blow up every row's padding to that value's length — the
-# requirement is "grep never false-negatives on identifying columns", not
-# "pad every row to the longest value seen". Values longer than this still
-# render in full (Python format specs never clip a value shorter than its
-# field width), just without alignment padding past the ceiling.
+# Ceiling on a non-TTY column's *layout* width — caps padding, not the
+# value itself (a pathological value still prints in full, unaligned).
 _NON_TTY_MAX_COL_WIDTH = 200
 
 
 def _format_table(rows: list[dict[str, Any]]) -> str:
-    """Render a table of entity rows (keys: id, type, project, status, phase, elapsed, agents).
-
-    On a TTY, identifying columns truncate to fixed widths. Piped output
-    never truncates, so grep against a project name or id can't false-negative.
-    """
+    """Render entity rows as a table. TTY truncates columns; piped output
+    never truncates (grep-safe)."""
     if not rows:
         return _dim("(no running entities)")
 
@@ -370,10 +355,7 @@ def _format_table(rows: list[dict[str, Any]]) -> str:
         }
 
         def _field(key: str, value: str) -> str:
-            # Never clip the value itself — only the layout width above is
-            # capped. A format spec width smaller than len(value) is a no-op
-            # (Python never truncates), so a pathological value still prints
-            # in full, just without alignment padding past the ceiling.
+            # Layout width is capped above; the value itself is never clipped.
             return value
 
     header_parts = [
@@ -518,9 +500,8 @@ async def _detail_session(db: Any, sess: dict[str, Any]) -> str:
     if last_msg:
         lines.append(f"  last_msg:  {time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(last_msg))}")
 
-    # Completion-trust evidence: surface why a terminal status landed where it
-    # did, so trusting `completed` (or catching `completed_empty`) doesn't
-    # require a manual git read.
+    # Completion-trust evidence: surface why the status landed, so trusting
+    # it doesn't require a manual git read.
     if sess.get("status") in ("completed", "completed_empty"):
         reason_summary = sess.get("status_reason_summary")
         if reason_summary:
@@ -569,8 +550,7 @@ async def _detail_session(db: Any, sess: dict[str, Any]) -> str:
 
 def _parse_json_field(value: Any) -> dict[str, Any] | None:
     """Best-effort JSON-object decode for a column that may come back as a
-    Python dict (Postgres JSON auto-decode) or a raw string (SQLite text
-    storage via an ad-hoc `text()` query with no column typing)."""
+    dict (Postgres) or a raw string (SQLite)."""
     if isinstance(value, dict):
         return value
     if isinstance(value, str):
@@ -583,27 +563,14 @@ def _parse_json_field(value: Any) -> dict[str, Any] | None:
 
 
 def _as_number(value: Any) -> int | float:
-    """Coerce *value* to a count, treating anything non-numeric as 0 --
-    persisted telemetry is untrusted (hand-edited state.db rows, a future
-    writer with a different shape), and a malformed count must never crash
-    the monitor."""
+    """Coerce *value* to a count, treating anything non-numeric as 0 —
+    persisted telemetry is untrusted and must never crash the monitor."""
     return value if isinstance(value, (int, float)) and not isinstance(value, bool) else 0
 
 
 def _format_coordination_line(telemetry: dict[str, Any]) -> str | None:
-    """One-liner rendering of an invocation's coordination telemetry
-    (`node_metadata["coordination"]`, written by the scheduler engine's
-    finalize path -- see `lionagi.studio.services.scheduler_state.
-    flush_run_telemetry`). Returns None when everything is zero: both the
-    monitor drill-in and the `li monitor run` wait-line only print this when
-    non-zero.
-
-    Every nested field is type-checked before use: `telemetry` is read back
-    from persisted state and may not match the shape this module writes
-    (e.g. `signals` or `files_overlap` landing as a list rather than a
-    dict) -- malformed nested values are treated as zero/absent rather than
-    raising `AttributeError`.
-    """
+    """One-liner rendering of coordination telemetry; returns None when zero.
+    See docs/internals/cli.md for the telemetry shape contract."""
     signals = telemetry.get("signals")
     signals = signals if isinstance(signals, dict) else {}
     emitted = signals.get("emitted")
@@ -773,18 +740,13 @@ def _cached_detect_project(repo: str) -> tuple[str | None, str | None]:
 
 
 def _show_project_matches(show: dict[str, Any], project: str) -> bool:
-    """A show's `repo` is a filesystem path, not a project slug — derive its
-    slug via detect_project() and compare. A missing/unresolvable repo path
-    excludes the show under --project (same orphan semantics as a play with
-    no linked session).
-    """
+    """Derive the show's project slug via detect_project() and compare;
+    a missing/unresolvable repo path excludes the show under --project."""
     repo = show.get("repo")
     if not repo:
         return False
     # Strip a trailing "(remote, ...)" annotation some _show.md authors
-    # append after the path so the bare path is what gets resolved. Anchored
-    # to the end of the string so a legitimate path segment containing
-    # " (something)" mid-path is left untouched.
+    # append after the path; anchored to end-of-string only.
     repo = _TRAILING_ANNOTATION_RE.sub("", repo)
     if not repo:
         return False
@@ -818,10 +780,7 @@ async def _gather_table_rows(
     if entity_type in (None, "play"):
         plays = await _query_running_plays(db, since=since, project=project)
         # A play row is the canonical rendering of its backing session, so
-        # drop that session only when the play row itself is being shown —
-        # dedup against what this view actually fetched, never in SQL, so a
-        # session view or a play row outside the window still renders the
-        # session once.
+        # drop that session only when the play row itself is being shown.
         play_session_ids = {p["session_id"] for p in plays if p.get("session_id")}
         sessions = [s for s in sessions if s["id"] not in play_session_ids]
 
@@ -906,11 +865,7 @@ def _watch_loop(
     entity_type: str | None,
     project: str | None,
 ) -> int:
-    """Repeatedly clear screen and reprint; exit cleanly on SIGINT/SIGTERM.
-
-    The since cutoff is re-derived every tick so the window slides with the
-    clock instead of accumulating rows for the life of the watch.
-    """
+    """Repeatedly clear screen and reprint; exit cleanly on SIGINT/SIGTERM."""
     from lionagi.ln.concurrency import run_async
 
     interrupted = False
@@ -945,37 +900,14 @@ def _watch_loop(
 
 
 # ── Wait-for-terminal primitive (li monitor run / li monitor --run) ───────────
-#
-# A scripting primitive, not a view: append-only stdout lines (no screen
-# clearing, no table), meant for a harness to poll `li monitor run <id>` as a
-# background task rather than hand-rolling raw sqlite polling against the
-# live WAL-mode state.db. Separate code path from _watch_loop above — that
-# one is a human dashboard; this one blocks until specific schedule_runs go
-# terminal, then exits with a meaningful code.
-#
-# Chain-following (default on; opt out with --no-chain): the scheduler can
-# fire a child run from a terminal run's schedule on_success/on_fail (engine
-# records chain_parent_id/chain_depth on the child — see
-# lionagi/studio/scheduler/engine.py's _fire). A watched run going terminal
-# is not necessarily the end of its chain, so once it lands we extend the
-# watch frontier with any already-fired children and keep watching. A
-# schedule that declares a chain action for the outcome but whose child
-# hasn't fired yet gets a bounded grace window (_CHAIN_GRACE_TICKS poll
-# ticks) before the chain is concluded on the parent's own exit code — a
-# schedule with no matching chain action needs no grace wait at all. The
-# aggregate exit code is final-link-wins: each chain's *last* link decides,
-# not every link along the way (an on_fail recovery child that succeeds
-# means the chain as a whole succeeded).
+# Scripting primitive; see docs/internals/cli.md for the full contract.
 
 _TERMINAL_SCHEDULE_RUN_STATUSES = frozenset({"completed", "failed", "cancelled", "skipped"})
-# Scripting wait bound applied when the caller doesn't supply --max-wait/max_wait —
-# a stuck session or run must not hang `li monitor run`/`li monitor --run` forever.
-# Pass max_wait=0 (or --max-wait 0) to opt into the old unbounded behavior explicitly.
+# Default wait bound so a stuck run can't hang forever; pass max_wait=0 to opt
+# into unbounded waiting explicitly.
 _DEFAULT_MAX_WAIT_SECONDS = 900.0
 _CHAIN_GRACE_TICKS = 2
-# Mirrors the scheduler engine's own chain-depth cap (lionagi/studio/scheduler/engine.py
-# _MAX_CHAIN_DEPTH) -- the engine never fires a chain child at or past this depth, so a
-# grace window here would just burn ticks waiting on a child that is never coming.
+# Mirrors the scheduler engine's own chain-depth cap (engine.py _MAX_CHAIN_DEPTH).
 _MAX_CHAIN_DEPTH = 10
 
 
@@ -992,8 +924,7 @@ def _split_watched_ids(raw: list[str]) -> list[str]:
 
 async def _resolve_schedule_run(db: Any, raw_id: str) -> dict[str, Any] | None:
     """Exact match then prefix match. schedule_run ids are 12-char hex, not
-    36-char UUIDs, so _util.py's length-36 prefix heuristic doesn't apply.
-    """
+    36-char UUIDs, so _util.py's length-36 prefix heuristic doesn't apply."""
     row = await db.get_schedule_run(raw_id)
     if row:
         return row
@@ -1021,13 +952,8 @@ def _format_session_wait_line(row: dict[str, Any]) -> str:
 
 
 async def _effective_session_status(db: Any, row: dict[str, Any]) -> dict[str, Any]:
-    """Reconcile a profile session's status against its linked engine session
-    (node_metadata.linked_engine_session_id), which can otherwise stay pinned
-    at "running" forever after teardown. When the linked row is terminal,
-    persists that status onto the profile row via CAS-guarded update_status()
-    so the DB reflects it, not just the return value. An already-terminal
-    profile row is authoritative and never rewritten (ADR-0035 terminal guard).
-    """
+    """Reconcile a profile session's status against its linked engine session.
+    See docs/internals/cli.md for the CAS/terminal-guard contract (ADR-0035)."""
     from lionagi.state.db import SESSION_TERMINAL_STATUSES, TransitionRejectedError
     from lionagi.state.reasons import RunReasons
 
@@ -1068,17 +994,13 @@ async def _effective_session_status(db: Any, row: dict[str, Any]) -> dict[str, A
                 expected_statuses={row["status"]},
             )
         except TransitionRejectedError:
-            # The profile row went terminal between our read and this write (a race
-            # with another writer) — the persisted row is authoritative; report it
-            # instead of the synthesized status below, and never crash the monitor.
+            # Raced with another writer that took the row terminal first —
+            # the persisted row is authoritative, not the synthesized status.
             persisted = await db.get_session(row["id"])
             return persisted if persisted is not None else row
         if not updated:
-            # CAS mismatch: the persisted row changed between our read and this
-            # write but did not hit the terminal guard (e.g. it moved to a
-            # different non-terminal or terminal status). The write never landed,
-            # so the persisted row — not the synthesized value below — is
-            # authoritative.
+            # CAS mismatch: the write never landed, so the persisted row —
+            # not the synthesized value below — is authoritative.
             persisted = await db.get_session(row["id"])
             return persisted if persisted is not None else row
     return {**row, "status": linked["status"]}
@@ -1111,11 +1033,8 @@ async def _poll_pending_sessions_once(
 async def _resolve_watched_runs(
     db: Any, ids: list[str]
 ) -> tuple[dict[str, dict[str, Any]], dict[str, dict[str, Any]], list[str]]:
-    """Resolve every requested id once, up front (not retried per poll tick,
-    unlike the --follow discovery scan below). Ids that aren't schedule_runs
-    are also tried against sessions, so `li monitor run <session_id>` can
-    drill into an agent run, not just scheduler runs.
-    """
+    """Resolve every requested id once, up front. Ids that aren't schedule_runs
+    are also tried against sessions (`li monitor run <session_id>` support)."""
     pending: dict[str, dict[str, Any]] = {}
     session_pending: dict[str, dict[str, Any]] = {}
     unresolved: list[str] = []
@@ -1154,23 +1073,15 @@ async def _poll_pending_once(
     schedule_names: dict[str, str],
     done: list[dict[str, Any]],
 ) -> None:
-    """Check every still-pending run once; print, record into `done`, and
-    drop from `pending` any that are now terminal. Prints immediately per
-    row (not batched) so a harness tailing stdout sees each result as it lands.
-
-    `done` is mutated in place: the print/append/delete trio has no `await`
-    between them, so it's atomic wrt task cancellation — a row can't leave
-    `pending` without also landing in `done`, even if a SIGINT discards this
-    coroutine's return value.
-    """
+    """Check every still-pending run once; print, record, and drop terminal
+    ones. See docs/internals/cli.md for the cancellation-atomicity contract."""
     from ._logging import log_error
 
     for run_id in list(pending):
         row = await db.get_schedule_run(run_id)
         if row is None:
-            # Existed at resolution time but is gone now (e.g. its parent
-            # schedule was deleted, cascading the run) — resolve it as a
-            # failure so the wait can't hang on state that never comes back.
+            # Gone now (e.g. parent schedule deleted, cascading the run) —
+            # resolve as failure so the wait can't hang on state that never returns.
             row = {**pending[run_id], "status": "failed", "exit_code": None}
             log_error(f"schedule_run {run_id!r} disappeared from state.db while waiting")
         elif row["status"] not in _TERMINAL_SCHEDULE_RUN_STATUSES:
@@ -1227,18 +1138,8 @@ def _new_chain_state(pending: dict[str, dict[str, Any]], *, chain: bool) -> dict
         "resolved_roots": set(),
         "schedule_cache": {},
         "chain": chain,
-        # run ids that have already gone terminal and been folded once below
-        # (printed by _poll_pending_once) — lets discovery tell an
-        # already-processed child apart from one still in `pending`.
         "done_ids": set(),
-        # run id -> exit_code observed when that run was folded — unlike
-        # chain_tail_exit (keyed by root), this answers "what did run X
-        # itself exit with" for any folded run, watched root or not.
         "exit_of": {},
-        # parent run id -> the chain child its grace window handed off to.
-        # Lets a later-discovering ancestor follow an already-processed
-        # link forward to wherever the chain currently lives instead of
-        # stopping at that link's own exit.
         "handoff": {},
     }
 
@@ -1251,21 +1152,8 @@ async def _advance_chains(
     chain_state: dict[str, Any],
     processed: int,
 ) -> int:
-    """Fold the newly-terminal tail of `done` (index `processed` onward)
-    into chain bookkeeping: extend `pending` with any already-fired
-    children, resolve roots with no matching chain action immediately, and
-    start/advance a grace countdown for roots awaiting one. Returns the new
-    `processed` index. Mutates `pending` in place, tick-by-tick, like
-    `_poll_pending_once` mutates `done`.
-
-    `chain_state` keys: root_of (run_id -> watched roots it accounts for),
-    chain_tail_exit (root id -> most recent terminal exit_code),
-    awaiting_grace (run_id -> {roots, ticks_left}), resolved_roots (roots
-    whose chain concluded), schedule_cache (memoized schedule lookups),
-    chain (bool, chain-following on/off), done_ids (already-folded run
-    ids), exit_of (run id -> its folded exit_code), handoff (parent run id
-    -> the chain child its grace window handed off to).
-    """
+    """Fold the newly-terminal tail of `done` into chain bookkeeping; returns
+    the new `processed` index. See docs/internals/cli.md for the algorithm."""
     root_of = chain_state["root_of"]
     chain_tail_exit = chain_state["chain_tail_exit"]
     awaiting_grace = chain_state["awaiting_grace"]
@@ -1282,16 +1170,8 @@ async def _advance_chains(
         roots = root_of.get(row["id"]) or {row["id"]}
         for root in roots:
             chain_tail_exit[root] = row.get("exit_code")
-        # The engine only ever fires a chain child when chain_depth is still
-        # under its cap AND the run actually completed its fire path: its
-        # chain block sits after the subprocess returns a real exit code, so
-        # a cancelled run (the CancelledError branch sets status="cancelled"),
-        # a skipped run (created terminal by create_skipped_run, never fired),
-        # and a run that failed before spawning (argv build error or internal
-        # exception; status="failed" with exit_code=None) all bypass it
-        # entirely. A run past any of these gates can never get a child, no
-        # matter what its schedule declares, and opening a grace window for
-        # it would just burn the full window before falling back.
+        # A cancelled/skipped/no-exit-code run can never get a chain child —
+        # skip the grace window rather than burn it waiting on nothing.
         if (
             chain
             and row.get("chain_depth", 0) < _MAX_CHAIN_DEPTH
@@ -1313,54 +1193,32 @@ async def _advance_chains(
             if children:
                 for child in children:
                     child_id = child["id"]
-                    # A discovered child can itself already own a root — it
-                    # may be a directly-watched id in an overlapping watch
-                    # set (e.g. `li monitor run parent child` where child is
-                    # parent's own chain_parent_id link). Union the parent's
-                    # root(s) into whatever the child already owns instead
-                    # of overwriting, so the child's own root still resolves
-                    # once the child (now the chain's tail) goes terminal.
+                    # Union rather than overwrite: the child may already own
+                    # a root if it's also a directly-watched id.
                     root_of.setdefault(child_id, set()).update(info["roots"])
                     handoff[parent_id] = child_id
                     if child_id in done_ids:
-                        # The child already went terminal (possibly in the
-                        # very same tick as its parent) and was already
-                        # printed once by _poll_pending_once. Re-adding it
-                        # to `pending` would print it again on the next
-                        # tick, so fold the parent's root(s) into whatever
-                        # bookkeeping the chain currently lives in instead —
-                        # never touch `pending` for an already-printed run.
-                        # The child's own grace window may itself have
-                        # already handed off to a deeper link, so follow the
-                        # handoff trail to the chain's current carrier
-                        # first; stopping at this child would resolve the
-                        # parent's root(s) with an intermediate exit code
-                        # instead of the final link's.
+                        # Already printed once — never re-add to `pending`.
+                        # Follow the handoff trail to resolve on the final link.
                         carrier = child_id
                         seen = {carrier}
                         while carrier in handoff and handoff[carrier] not in seen:
                             carrier = handoff[carrier]
                             seen.add(carrier)
                         if carrier not in done_ids:
-                            # The chain's tail is a still-live descendant in
-                            # `pending` — the parent's root(s) ride on it and
-                            # resolve when it goes terminal, like any other
-                            # handed-off root.
+                            # Still-live descendant in `pending` — ride on it.
                             root_of.setdefault(carrier, set()).update(info["roots"])
                         else:
                             carrier_exit = exit_of.get(carrier)
                             for root in info["roots"]:
                                 chain_tail_exit[root] = carrier_exit
                             if carrier in awaiting_grace:
-                                # The carrier's own schedule also declares a
-                                # matching chain action — join its still-open
-                                # grace window rather than spinning up
-                                # separate bookkeeping for the same run.
+                                # Join the carrier's own still-open grace
+                                # window instead of separate bookkeeping.
                                 awaiting_grace[carrier]["roots"].update(info["roots"])
                             else:
-                                # The carrier resolved outright (no matching
-                                # chain action of its own) — the parent's
-                                # root(s) resolve right along with it.
+                                # Carrier resolved outright with no matching
+                                # chain action of its own.
                                 resolved_roots.update(info["roots"])
                     else:
                         pending[child_id] = child
@@ -1376,11 +1234,7 @@ async def _advance_chains(
 
 async def _query_schedule_runs_since(db: Any, baseline: float) -> list[dict[str, Any]]:
     """--follow discovery query: schedule_runs created strictly after
-    `baseline`, oldest first. Strict '>' (not '>=') is the same
-    baseline-first, anti-backlog-replay discipline used by any other
-    "watch for new stuff" loop in this codebase — a row already seen at
-    exactly `baseline` must never be re-reported on the next tick.
-    """
+    `baseline` (exclusive), oldest first — anti-backlog-replay discipline."""
     return await db.fetch_all(
         "SELECT * FROM schedule_runs WHERE created_at > ? ORDER BY created_at ASC",
         (baseline,),
@@ -1395,23 +1249,8 @@ def _dispatch_wait(
     chain: bool = True,
     max_wait: float | None = None,
 ) -> int:
-    """Block until every id in `ids` reaches a terminal schedule_run status,
-    printing one line per run the moment it lands; with --follow, keep
-    watching (tail -f style) for newly created runs after the initial set
-    drains, exiting only on SIGINT/SIGTERM.
-
-    Chain-following (default on; `chain=False` for --no-chain): a watched
-    run going terminal extends the watch frontier with any scheduler
-    on_success/on_fail chain children (see _advance_chains). The aggregate
-    exit code is final-link-wins per chain, not every link along the way.
-
-    Ticks via per-call run_async (not one long-lived asyncio.sleep loop) so
-    both SIGINT and SIGTERM get a clean exit — see _watch_loop for why.
-
-    max_wait: None (the default) applies the bounded
-    `_DEFAULT_MAX_WAIT_SECONDS` fallback so a stuck run can't hang this call
-    forever. Pass 0 (or negative) for the old unbounded wait explicitly.
-    """
+    """Block until every id in `ids` reaches a terminal schedule_run status;
+    see docs/internals/cli.md for chain-following and max_wait semantics."""
     from lionagi.ln.concurrency import run_async
     from lionagi.state.db import DEFAULT_DB_PATH, StateDB
 
@@ -1440,11 +1279,8 @@ def _dispatch_wait(
             time.sleep(0.1)
 
     def _run_tick(coro: Any) -> Any:
-        # run_async raises bare KeyboardInterrupt when SIGINT lands during
-        # its own call (it installs a temporary handler for that duration —
-        # see run_async's docstring in ln/concurrency/utils.py). Treat that
-        # exactly like `interrupted` being set between ticks: no traceback,
-        # no half-updated state, just the same clean stop.
+        # run_async raises bare KeyboardInterrupt on SIGINT during its own
+        # call (see run_async's docstring in ln/concurrency/utils.py).
         nonlocal interrupted
         try:
             return run_async(coro)
@@ -1460,9 +1296,8 @@ def _dispatch_wait(
 
     resolved = _run_tick(_resolve())
     if resolved is None:
-        # Interrupted before resolving even completed — we don't yet know
-        # which ids exist or what state they're in, so there is no aggregate
-        # to report. This is "still in progress", not success or failure.
+        # Interrupted before resolving completed — "still in progress",
+        # not success or failure.
         return EXIT_RUNNING
     pending, session_pending, unresolved = resolved
     for raw_id in unresolved:
@@ -1487,12 +1322,8 @@ def _dispatch_wait(
     def _chain_open() -> bool:
         return bool(pending or session_pending or chain_state["awaiting_grace"])
 
-    # A stuck session (an unresolvable linked-engine mirror, a wedged
-    # subprocess) must not hang this loop forever — max_wait bounds total
-    # wall-clock; on expiry, whatever is still pending is reported the same
-    # way an interrupt would (EXIT_RUNNING below), not a silent hang. None
-    # falls back to the bounded default; 0/negative is the explicit opt-in
-    # to unbounded waiting.
+    # max_wait bounds total wall-clock so a stuck session can't hang forever;
+    # None falls back to the bounded default, 0/negative opts into unbounded.
     effective_max_wait = _DEFAULT_MAX_WAIT_SECONDS if max_wait is None else max_wait
     deadline = time.monotonic() + effective_max_wait if effective_max_wait > 0 else None
 
@@ -1513,11 +1344,7 @@ def _dispatch_wait(
     if unresolved:
         exit_code = EXIT_UNKNOWN
     elif len(resolved_roots) < total_watched or len(session_done) < total_sessions:
-        # Some watched chain (or session) never concluded before we had to
-        # stop — either still pending outright or still inside its grace
-        # window. `done`/`session_done` (mutated in the poll helpers above)
-        # and `chain_state` (mutated in _advance_chains) are the ground
-        # truth that survives a tick being interrupted mid-flight.
+        # Some watched chain (or session) never concluded before we stopped.
         exit_code = EXIT_RUNNING
     elif all(chain_tail_exit.get(root) == 0 for root in resolved_roots) and session_ok:
         # Final-link-wins: each resolved chain's most recently seen terminal
@@ -1548,10 +1375,8 @@ def _dispatch_wait(
             if interrupted:
                 break
             _sleep_interval(interval)
-        # --follow has no natural end, so its exit code is whatever the
-        # *initial* bounded set already resolved to (see exit_code above)
-        # — new runs discovered during the tail print their own lines but
-        # don't feed the final aggregate.
+        # --follow has no natural end; exit code stays whatever the initial
+        # bounded set resolved to — new runs print but don't feed the aggregate.
 
     return exit_code
 
@@ -1604,9 +1429,7 @@ def run_monitor_wait(argv: list[str]) -> int:
     args = parser.parse_args(argv)
     watched_ids = _split_watched_ids(args.ids)
     if not watched_ids:
-        # nargs="+" only guarantees argv had at least one token, not that any
-        # of them survive comma-splitting (e.g. a lone "," or ""). Without
-        # this check that degenerates into a silent, instant, exit-0 no-op.
+        # Tokens can survive nargs="+" but not comma-splitting (e.g. a lone ",").
         parser.error("no schedule_run ids given (only empty/comma-only tokens)")
     return _dispatch_wait(
         watched_ids,

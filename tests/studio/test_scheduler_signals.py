@@ -69,6 +69,8 @@ def _make_svc() -> AsyncMock:
     svc.list_schedules = AsyncMock(return_value=[])
     svc.update_schedule = AsyncMock()
     svc.create_schedule_run = AsyncMock()
+    svc.create_schedule_run_and_advance = AsyncMock()
+    svc.schedule_run_exists_since = AsyncMock(return_value=False)
     svc.update_schedule_run = AsyncMock()
     svc.create_invocation = AsyncMock()
     svc.update_invocation = AsyncMock()
@@ -869,7 +871,8 @@ async def test_broken_handler_surfaces_admin_event_and_fire_completes(tmp_path, 
     # The schedule_run's own bookkeeping (invocation/run rows, status writes,
     # max_runs check) still ran normally despite the broken handler.
     svc.create_invocation.assert_awaited_once()
-    svc.create_schedule_run.assert_awaited_once()
+    svc.create_schedule_run.assert_not_awaited()
+    svc.create_schedule_run_and_advance.assert_awaited_once()
     assert svc.update_status.await_count == 3  # running + completed + invocation
 
     async with StateDB(fake_db) as db:
@@ -967,4 +970,4 @@ async def test_unrelated_fire_still_succeeds_after_a_prior_handler_failure(tmp_p
         # have crashed the tick loop or left the bus/engine in a bad state.
         await engine._fire(schedule, "run-009", trigger_context={"scheduled": True})
 
-    assert svc.create_schedule_run.await_count == 2
+    assert svc.create_schedule_run_and_advance.await_count == 2

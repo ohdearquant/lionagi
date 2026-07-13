@@ -184,9 +184,8 @@ def _make_shell_hook(command_template: list[str], phase: str, tool_name: str) ->
                     timeout=10,
                 )
             except asyncio.TimeoutError as err:
-                # Kill the whole process group (start_new_session=True guarantees a
-                # new PGID) so lingering child processes cannot continue side effects
-                # after the hook is considered timed-out.
+                # Kill the whole process group so lingering children can't
+                # continue side effects after the hook times out.
                 if proc is not None:
                     await aterminate_process_group(proc, grace=None)
                     await _wait_proc(proc)

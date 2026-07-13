@@ -52,6 +52,8 @@ def _make_svc() -> AsyncMock:
     svc.list_schedules = AsyncMock(return_value=[])
     svc.update_schedule = AsyncMock()
     svc.create_schedule_run = AsyncMock()
+    svc.create_schedule_run_and_advance = AsyncMock()
+    svc.schedule_run_exists_since = AsyncMock(return_value=False)
     svc.update_schedule_run = AsyncMock()
     svc.create_invocation = AsyncMock()
     svc.update_invocation = AsyncMock()
@@ -122,15 +124,30 @@ async def test_multi_event_poll_fires_once_per_dispatchable_event():
 
     # One create_invocation per dispatched event -- not one for the whole batch.
     assert svc.create_invocation.await_count == 3
+    # Occurrence-insert + cursor-advance land atomically through
+    # create_schedule_run_and_advance() now, not a bare create_schedule_run().
     contexts = [
         call.args[0]["trigger_context"]["github_events"]
-        for call in svc.create_schedule_run.await_args_list
+        for call in svc.create_schedule_run_and_advance.await_args_list
     ]
     assert [ctx[0]["pr_number"] for ctx in contexts] == [1, 2, 3]
     for ctx in contexts:
         assert len(ctx) == 1  # each fire's trigger_context carries exactly its own event
 
-    # Cursor advances to the newest dispatched event.
+    # Each event's own atomic call advances github_cursor to its own updated_at.
+    github_cursors = [
+        call.kwargs["schedule_fields"]["github_cursor"]
+        for call in svc.create_schedule_run_and_advance.await_args_list
+    ]
+    assert github_cursors == [
+        "2026-07-07T10:00:00Z",
+        "2026-07-07T11:00:00Z",
+        "2026-07-07T12:00:00Z",
+    ]
+
+    # Trailing safety-net batched write still lands on the newest event too
+    # (harmless re-write of what the last event's own atomic call already
+    # persisted).
     svc.update_schedule.assert_any_call("sched-001", github_cursor="2026-07-07T12:00:00Z")
     assert engine._global_inflight == 0
 
@@ -158,9 +175,10 @@ async def test_single_event_poll_behavior_unchanged():
         await engine._tick_github(schedule, now=10_000.0)
 
     assert svc.create_invocation.await_count == 1
-    (run_payload,), _ = svc.create_schedule_run.await_args
+    (run_payload,), kwargs = svc.create_schedule_run_and_advance.await_args
     assert [e["pr_number"] for e in run_payload["trigger_context"]["github_events"]] == [7]
     assert run_payload["trigger_context"]["repo"] == "acme/widgets"
+    assert kwargs["schedule_fields"]["github_cursor"] == "2026-07-07T10:00:00Z"
     svc.update_schedule.assert_any_call("sched-001", github_cursor="2026-07-07T10:00:00Z")
     assert engine._global_inflight == 0
 
@@ -175,11 +193,11 @@ async def test_max_runs_exhaustion_mid_batch_stops_cursor_before_undispatched(ca
     svc = _make_svc()
     fired = 0
 
-    async def _create_schedule_run(_payload):
+    async def _create_schedule_run_and_advance(_payload, *, schedule_id, schedule_fields):
         nonlocal fired
         fired += 1
 
-    svc.create_schedule_run = AsyncMock(side_effect=_create_schedule_run)
+    svc.create_schedule_run_and_advance = AsyncMock(side_effect=_create_schedule_run_and_advance)
     svc.count_schedule_runs = AsyncMock(side_effect=lambda *a, **k: fired)
 
     engine = SchedulerEngine(svc=svc)
@@ -379,11 +397,11 @@ async def test_undispatched_event_is_relisted_on_next_poll(monkeypatch, caplog):
     svc = _make_svc()
     fired = 0
 
-    async def _create_schedule_run(_payload):
+    async def _create_schedule_run_and_advance(_payload, *, schedule_id, schedule_fields):
         nonlocal fired
         fired += 1
 
-    svc.create_schedule_run = AsyncMock(side_effect=_create_schedule_run)
+    svc.create_schedule_run_and_advance = AsyncMock(side_effect=_create_schedule_run_and_advance)
     svc.count_schedule_runs = AsyncMock(side_effect=lambda *a, **k: fired)
 
     engine = SchedulerEngine(svc=svc)
@@ -460,10 +478,10 @@ async def test_merged_mode_truncated_scan_no_skip_no_duplicate_across_two_ticks(
     svc = _make_svc()
     fired_prs: list[int] = []
 
-    async def _create_schedule_run(payload):
+    async def _create_schedule_run_and_advance(payload, *, schedule_id, schedule_fields):
         fired_prs.append(payload["trigger_context"]["github_events"][0]["pr_number"])
 
-    svc.create_schedule_run = AsyncMock(side_effect=_create_schedule_run)
+    svc.create_schedule_run_and_advance = AsyncMock(side_effect=_create_schedule_run_and_advance)
     svc.count_schedule_runs = AsyncMock(side_effect=lambda *a, **k: len(fired_prs))
 
     engine = SchedulerEngine(svc=svc)

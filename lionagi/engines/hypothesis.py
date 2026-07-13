@@ -34,10 +34,8 @@ __all__ = (
 )
 
 
-# ---------------------------------------------------------------------------
-# Events — the pipeline vocabulary. Each carries refs to upstream events;
-# the engine stamps ``eid``, agents fill refs from their instructions.
-# ---------------------------------------------------------------------------
+# --- Events — the pipeline vocabulary (engine stamps eid; agents fill refs
+# from their instructions). Each event carries refs to upstream events. ---
 
 
 class FindingPosted(Finding, ChainEvent):
@@ -154,9 +152,7 @@ _REF_ATTRS = (
 )
 
 
-# ---------------------------------------------------------------------------
-# Audit trail
-# ---------------------------------------------------------------------------
+# --- Audit trail ---
 
 
 def trace_chains(events: list[ChainEvent]) -> list[list[ChainEvent]]:
@@ -202,9 +198,7 @@ def _label(e: ChainEvent) -> str:
     return f"{e.eid}[{type(e).__name__}] {text}"
 
 
-# ---------------------------------------------------------------------------
-# Instructions
-# ---------------------------------------------------------------------------
+# --- Instructions ---
 
 
 def _register_block(decisions: str) -> str:
@@ -385,9 +379,7 @@ def _synthesis_instruction(run: HypothesisRun) -> str:
     )
 
 
-# ---------------------------------------------------------------------------
-# Run context
-# ---------------------------------------------------------------------------
+# --- Run context ---
 
 
 class HypothesisRun(ChainRun):
@@ -441,9 +433,7 @@ class HypothesisRun(ChainRun):
         return {"chains": str(chains_path), "report": str(report_path)}
 
 
-# ---------------------------------------------------------------------------
-# Engine
-# ---------------------------------------------------------------------------
+# --- Engine ---
 
 
 class HypothesisEngine(Engine):

@@ -148,11 +148,6 @@ class DependencyAwareExecutor:
         self.results = {}
         self.completion_events = {}
         self.operation_branches = {}
-        # Flow call sites only need to iterate predecessors. Keep their plain
-        # lists private so Graph.get_predecessors() retains its public Pile
-        # contract. Each entry is keyed by the incoming adjacency topology,
-        # which makes an entry refresh if a reactive expansion rewires a node.
-        self._predecessor_cache: dict[Any, tuple[tuple[tuple[Any, Any], ...], list[Any]]] = {}
         self.skipped_operations = set()
         self._op_start_times = {}
         self._pause_event: ConcurrencyEvent | None = None
@@ -180,7 +175,6 @@ class DependencyAwareExecutor:
         if not self.graph.is_acyclic():
             raise OperationError("Graph must be acyclic for flow execution")
 
-        self._predecessor_cache.clear()
         self._validate_edge_conditions()
         await self._preallocate_all_branches()
 
@@ -266,24 +260,15 @@ class DependencyAwareExecutor:
         if self.verbose:
             logger.debug("Pre-allocated %d branches", len(operations_needing_branches))
 
-    def _get_predecessors(self, operation: Operation) -> list[Any]:
-        """Return a cached plain predecessor list for executor-internal use.
+    def _get_predecessors(self, operation: Operation) -> tuple[Any, ...]:
+        """Return a cached, immutable predecessor tuple for executor-internal use.
 
-        Graph maintains incoming adjacency in insertion order. The tuple key
-        preserves that order and refreshes the cached list if a running
-        reactive flow adds or replaces an incoming edge.
+        Delegates to Graph's own memoized accessor, which is invalidated by
+        Graph's own mutators (add_edge/remove_edge/etc.) — including the
+        add_node/add_edge/remove_edge calls a running reactive flow makes to
+        rewire a node — so this always reflects current topology.
         """
-        incoming = self.graph.node_edge_mapping[operation.id]["in"]
-        topology = tuple(incoming.items())
-        cached = self._predecessor_cache.get(operation.id)
-        if cached is not None and cached[0] == topology:
-            return cached[1]
-
-        predecessors = [
-            self.graph.internal_nodes[predecessor_id] for predecessor_id in incoming.values()
-        ]
-        self._predecessor_cache[operation.id] = (topology, predecessors)
-        return predecessors
+        return self.graph.get_predecessors_cached(operation)
 
     def pause(self) -> None:
         """Install a pause gate at the next operation boundary; idempotent."""
@@ -750,7 +735,6 @@ class ReactiveExecutor(DependencyAwareExecutor):
     async def execute(self) -> dict[str, Any]:
         if not self.graph.is_acyclic():
             raise OperationError("Graph must be acyclic for flow execution")
-        self._predecessor_cache.clear()
         self._validate_edge_conditions()
         await self._preallocate_all_branches()
 
@@ -797,7 +781,6 @@ class ReactiveExecutor(DependencyAwareExecutor):
         """Yield a FlowEvent the instant each operation completes."""
         if not self.graph.is_acyclic():
             raise OperationError("Graph must be acyclic for flow execution")
-        self._predecessor_cache.clear()
         self._validate_edge_conditions()
         await self._preallocate_all_branches()
 

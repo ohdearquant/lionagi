@@ -17,9 +17,7 @@ __all__ = (
     "run_stats",
 )
 
-# --group-by KEY -> sessions column. Closed vocabulary — any other key is a
-# loud, non-zero-exit error (validated before the query is ever built, so it
-# is also the only place a group-by key gets interpolated into SQL).
+# --group-by KEY -> sessions column. Closed vocabulary; see _query_run_stats.
 GROUP_BY_COLUMNS: dict[str, str] = {
     "project": "project",
     "kind": "invocation_kind",
@@ -45,11 +43,7 @@ def _validate_group_by(raw: str) -> list[str]:
 def _reject_non_positive_since(window: str) -> None:
     """Reject a `--since` window that isn't strictly positive.
 
-    Monitor's shared `_since_timestamp()` accepts `0d`/`-1d` without
-    complaint (fine for its own semantics), but for an aggregate report
-    that silently produces a false-empty or nonsensical result instead of
-    failing loudly — this only tightens `li stats runs`. Malformed values
-    (bad unit, non-numeric) are left to `_since_timestamp` to reject.
+    See docs/internals/cli.md for why this tightens Monitor's shared parser.
     """
     try:
         value = int(window[:-1])
@@ -71,10 +65,10 @@ async def _query_run_stats(
     since: float,
     group_by: list[str],
 ) -> list[dict[str, Any]]:
-    """Aggregate sessions rows updated within the window, grouped by the
-    requested keys. group_by entries are validated against GROUP_BY_COLUMNS
-    before this is ever called, so interpolating the resolved column names
-    below is safe."""
+    """Aggregate sessions rows updated within the window, grouped by the requested keys.
+
+    See docs/internals/cli.md for the group_by validate-before-interpolate contract.
+    """
     select_cols = ", ".join(f"{GROUP_BY_COLUMNS[k]} AS {k}" for k in group_by)
     group_cols = ", ".join(GROUP_BY_COLUMNS[k] for k in group_by)
     query = (
@@ -96,10 +90,8 @@ async def _run_stats_runs(*, since: float, group_by: list[str]) -> list[dict[str
 
     if not DEFAULT_DB_PATH.exists():
         return []
-    # readonly=True: open() skips schema application, the BEGIN IMMEDIATE
-    # write-lock event, and every mutating PRAGMA — see StateDB.open() /
-    # make_readonly_engine(). A reporting command must never write to the
-    # DB it's reporting on, even implicitly via a schema-reconcile pass.
+    # readonly=True: a reporting command must never write to the DB it
+    # reports on, even implicitly via schema-reconcile. See docs/internals/cli.md.
     async with StateDB(readonly=True) as db:
         return await _query_run_stats(db, since=since, group_by=group_by)
 

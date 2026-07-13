@@ -34,13 +34,8 @@ def is_scripted_provider_active() -> bool:
 
 @contextlib.contextmanager
 def scripted_env(script_path: str | Path, model: str = DEFAULT_SCRIPTED_MODEL) -> Iterator[None]:
-    """Context manager: set env so ``li`` subprocesses pick up the scripted provider.
-
-    Restores prior values on exit. Useful for ``subprocess.run`` tests::
-
-        with scripted_env("/path/to/script.yaml"):
-            r = subprocess.run(["li", "agent", "hi"], capture_output=True, text=True)
-    """
+    """Context manager: set env so ``li`` subprocesses pick up the scripted provider,
+    restoring prior values on exit."""
     previous: dict[str, str | None] = {
         ENV_PROVIDER: os.environ.get(ENV_PROVIDER),
         ENV_MODEL: os.environ.get(ENV_MODEL),
@@ -62,9 +57,8 @@ def scripted_env(script_path: str | Path, model: str = DEFAULT_SCRIPTED_MODEL) -
 def subprocess_env(
     script_path: str | Path, model: str = DEFAULT_SCRIPTED_MODEL, base: dict | None = None
 ) -> dict[str, str]:
-    """Return a dict suitable for passing to ``subprocess.run(env=...)``.
-
-    Layered on top of ``base`` (defaults to a copy of ``os.environ``)."""
+    """Return a dict for ``subprocess.run(env=...)``, layered on ``base`` (defaults to a
+    copy of ``os.environ``)."""
     env = dict(base if base is not None else os.environ)
     env[ENV_PROVIDER] = SCRIPTED_PROVIDER
     env[ENV_MODEL] = model

@@ -31,11 +31,7 @@ def build_model_type(
     frozen: bool = False,
     validators: dict | None = None,
 ) -> type[BaseModel]:
-    # Keep this low-level constructor uncached: FieldInfo and validator inputs can
-    # be mutable. Operative model construction caches only immutable schemas,
-    # keyed by the actual base class object plus frozen build options. Class-object
-    # identity keeps distinct same-named/shaped classes separate, unlike the old
-    # structural hash that cross-wired their generated models.
+    # Keep this low-level constructor uncached: FieldInfo/validator inputs can be mutable.
     # Field precedence (later wins): parameter_fields → base_type → field_models.
     if base_type is not None and not (
         inspect.isclass(base_type) and issubclass(base_type, BaseModel)

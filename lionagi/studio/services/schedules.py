@@ -32,11 +32,7 @@ _NON_NULLABLE_SCHEDULE_FIELDS: frozenset[str] = frozenset(
 
 
 def _svc_validate_action_model(model: str | None) -> None:
-    """Service-boundary check: reject action_model values that inject CLI flags.
-
-    Delegates to subprocess._validate_action_model so the allowed-character
-    rule is defined in exactly one place.
-    """
+    """Service-boundary check: reject action_model values that inject CLI flags."""
     if not model:
         return
     from lionagi.studio.scheduler.subprocess import _validate_action_model
@@ -45,13 +41,8 @@ def _svc_validate_action_model(model: str | None) -> None:
 
 
 def _svc_validate_identifier(value: str | None, field_name: str) -> None:
-    """Service-boundary check: reject identifier fields (agent/project/playbook) starting with '-'.
-
-    Identifier fields are not freeform text — they name profiles, projects, or
-    playbooks and must not start with '-'.  A leading '-' causes argparse to
-    treat the value as a flag, producing either a flag toggle or a usage error
-    depending on the subcommand.  Reject both outcomes at write time.
-    """
+    """Service-boundary check: reject identifier fields (agent/project/playbook)
+    starting with '-' — a leading '-' would make argparse treat it as a flag."""
     if not value:
         return
     from lionagi.studio.scheduler.subprocess import _validate_identifier
@@ -60,13 +51,8 @@ def _svc_validate_identifier(value: str | None, field_name: str) -> None:
 
 
 def _svc_validate_action_cwd(cwd: str | None) -> None:
-    """Service-boundary check: an explicit action_cwd must be an existing absolute directory.
-
-    ADR-0070 delta 1: this is the schedule's persisted execution root. A
-    relative path has no stable meaning once resolved by the daemon at fire
-    time (relative to what?), and a directory that does not exist yet would
-    only defer the same "no resolvable cwd" failure to the first fire.
-    """
+    """Service-boundary check: an explicit action_cwd (ADR-0070 delta 1's persisted
+    execution root) must be an existing absolute directory."""
     if not cwd:
         return
     p = Path(cwd)
@@ -77,11 +63,7 @@ def _svc_validate_action_cwd(cwd: str | None) -> None:
 
 
 def _svc_validate_extra_args(extra: list | None) -> None:
-    """Service-boundary check: reject action_extra_args elements that inject CLI flags.
-
-    Delegates to subprocess._validate_extra_args so the flag-rejection rule is
-    defined in exactly one place.
-    """
+    """Service-boundary check: reject action_extra_args elements that inject CLI flags."""
     if not extra:
         return
     from lionagi.studio.scheduler.subprocess import _validate_extra_args
@@ -91,13 +73,8 @@ def _svc_validate_extra_args(extra: list | None) -> None:
 
 def _svc_validate_action_command(command: str | None) -> None:
     """Service-boundary check: reject an action_command that is unsafe or not
-    allow-listed.
-
-    Delegates to subprocess validators so the charset and allow-list rules
-    are defined in exactly one place. This is the "refused loudly at build
-    time" half of the guarantee; ``build_argv`` re-checks the allow-list
-    again at spawn time since ``LIONAGI_SCHEDULER_COMMAND_ALLOWLIST`` can
-    change between schedule creation and fire.
+    allow-listed. ``build_argv`` re-checks the allow-list again at spawn time
+    since ``LIONAGI_SCHEDULER_COMMAND_ALLOWLIST`` can change between create and fire.
     """
     if not command:
         return
@@ -111,13 +88,8 @@ def _svc_validate_action_command(command: str | None) -> None:
 
 
 def _svc_validate_command_args(args: list | None) -> None:
-    """Service-boundary check: action_command_args must be a list.
-
-    Elements are ``{{var}}`` templates rendered against trigger_context only
-    at fire time (no trigger_context exists yet at schedule build time), so
-    the leading-'-'/charset checks on the *rendered* value happen inside
-    ``build_argv`` (via ``_render_command_arg``), not here.
-    """
+    """Service-boundary check: action_command_args must be a list. Elements are
+    ``{{var}}`` templates rendered against trigger_context at fire time, not here."""
     if args is None:
         return
     if not isinstance(args, list):
@@ -126,11 +98,8 @@ def _svc_validate_command_args(args: list | None) -> None:
 
 def _svc_validate_cron_expr(expr: str | None, *, required: bool = False) -> None:
     """Service-boundary check: reject a syntactically invalid cron expression.
-
-    `required=True` also rejects a missing/empty expression — callers pass
-    this when trigger_type == "cron", since a cron-triggered schedule with no
-    expression commits fine but never fires (next_fire_at stays None forever).
-    """
+    `required=True` also rejects a missing/empty one — otherwise the schedule
+    commits fine but never fires (next_fire_at stays None forever)."""
     if not expr:
         if required:
             raise ValueError("cron_expr is required when trigger_type is 'cron'")
@@ -142,10 +111,7 @@ def _svc_validate_cron_expr(expr: str | None, *, required: bool = False) -> None
 
 
 def _svc_validate_max_runs(max_runs: Any) -> None:
-    """Service-boundary check: reject a non-positive max_runs.
-
-    None means unlimited (the column default) and is always accepted.
-    """
+    """Service-boundary check: reject a non-positive max_runs. None (unlimited) is always accepted."""
     if max_runs is None:
         return
     if isinstance(max_runs, bool) or not isinstance(max_runs, int) or max_runs < 1:
@@ -153,10 +119,7 @@ def _svc_validate_max_runs(max_runs: Any) -> None:
 
 
 def _svc_validate_budget_usd(budget_usd: Any) -> None:
-    """Service-boundary check: reject a non-positive budget_usd.
-
-    None means unlimited (the column default) and is always accepted.
-    """
+    """Service-boundary check: reject a non-positive budget_usd. None (unlimited) is always accepted."""
     if budget_usd is None:
         return
     if (
@@ -169,10 +132,7 @@ def _svc_validate_budget_usd(budget_usd: Any) -> None:
 
 
 def _svc_validate_budget_tokens(budget_tokens: Any) -> None:
-    """Service-boundary check: reject a non-positive budget_tokens.
-
-    None means unlimited (the column default) and is always accepted.
-    """
+    """Service-boundary check: reject a non-positive budget_tokens. None (unlimited) is always accepted."""
     if budget_tokens is None:
         return
     if isinstance(budget_tokens, bool) or not isinstance(budget_tokens, int) or budget_tokens <= 0:
@@ -181,13 +141,8 @@ def _svc_validate_budget_tokens(budget_tokens: Any) -> None:
 
 def _svc_validate_interval_sec(interval: Any, *, required: bool = False) -> None:
     """Service-boundary check: reject a missing or non-positive interval.
-
-    `required=True` rejects a missing/null value — callers pass this when
-    trigger_type == "interval", since an interval-triggered schedule without
-    interval_sec commits fine but never fires (next-fire computation returns
-    None forever), the same enabled-but-dead shape as a cron schedule with
-    no expression.
-    """
+    `required=True` rejects a missing/null value — otherwise the schedule
+    commits fine but never fires (next_fire_at stays None forever)."""
     if interval is None:
         if required:
             raise ValueError("interval_sec is required when trigger_type is 'interval'")
@@ -197,15 +152,8 @@ def _svc_validate_interval_sec(interval: Any, *, required: bool = False) -> None
 
 
 async def _svc_recompute_next_fire_guarded(effective: dict[str, Any], context: str) -> None:
-    """Recompute next_fire_at after a committed write, without raising.
-
-    The caller's DB write has already committed, so a recompute failure must
-    not surface as an unhandled 500. One immediate retry covers transient DB
-    contention. If both attempts fail the row keeps its stale next_fire_at:
-    the tick loop only touches rows that are due or have no next_fire_at, so
-    a stale *future* timestamp is healed only by the daemon-startup recompute
-    (or fires once on the old timestamp and recomputes from there).
-    """
+    """Recompute next_fire_at after a committed write, without raising — the
+    write already committed, so a recompute failure must not surface as a 500."""
     from ..scheduler.engine import scheduler
 
     for attempt in range(2):
@@ -227,11 +175,7 @@ async def _svc_recompute_next_fire_guarded(effective: dict[str, Any], context: s
 
 def _svc_validate_threshold_config(config: dict | None) -> None:
     """Service-boundary check: validate a metric-threshold alert config.
-
-    Delegates to threshold.validate_threshold_config so the metric/op/shape
-    rules are defined in exactly one place. None (no threshold configured on
-    this schedule) is always accepted.
-    """
+    None (no threshold configured) is always accepted."""
     if config is None:
         return
     from lionagi.studio.scheduler.threshold import validate_threshold_config
@@ -240,14 +184,8 @@ def _svc_validate_threshold_config(config: dict | None) -> None:
 
 
 def _svc_validate_github_repo(repo: str | None) -> None:
-    """Service-boundary check: reject github_repo values that would manipulate the API path.
-
-    Delegates to github._validate_github_repo so the owner/name regex is defined
-    in exactly one place (CWE-918 — path manipulation in URL construction).
-
-    None means the field was not supplied (no-op); an empty string is an
-    explicit invalid value and is forwarded to the validator for rejection.
-    """
+    """Service-boundary check: reject github_repo values that would manipulate
+    the API path (CWE-918). None is a no-op; an empty string is rejected."""
     if repo is None:
         return
     from lionagi.studio.scheduler.github import _validate_github_repo
@@ -255,18 +193,9 @@ def _svc_validate_github_repo(repo: str | None) -> None:
     _validate_github_repo(repo)
 
 
-# github_filter's known keys. "event" narrows *which* PR lifecycle moment
-# fires the trigger; the rest narrow *which PRs* are considered at all. Only
-# "pr_merged" has real dispatch semantics in github_poll() today (state=closed
-# poll, fires on newly-merged PRs only) -- "pr_opened", "pr_updated", and
-# "pr_closed" are accepted because the Studio frontend's create-schedule form
-# already ships all four as event choices (and defaults new schedules to
-# "pr_updated"; see apps/studio/frontend/src/components/schedules/
-# CreateScheduleModal.tsx), but are currently inert server-side: github_poll()
-# only branches on "pr_merged" and otherwise polls open PRs unfiltered by
-# event, the same as omitting the key entirely. "same_repo_only" restricts
-# dispatch to PRs whose head repository matches the polled repository --
-# excluding fork PRs, whose diffs are attacker-controlled input.
+# github_filter's known keys. Only "pr_merged" has real dispatch semantics in
+# github_poll() today; "pr_opened"/"pr_updated"/"pr_closed" are accepted (the
+# frontend ships all four) but currently inert server-side.
 _GITHUB_FILTER_ALLOWED_KEYS: frozenset[str] = frozenset(
     {"state", "base", "draft", "event", "same_repo_only"}
 )
@@ -276,14 +205,9 @@ _GITHUB_FILTER_ALLOWED_EVENTS: frozenset[str] = frozenset(
 
 
 def _svc_validate_github_filter(github_filter: Any) -> None:
-    """Service-boundary check: reject unknown github_filter keys/values.
-
-    None means the field was not supplied (no-op). An empty dict matches
-    every PR, same as omitting the field, and is accepted. Unknown keys are
-    rejected outright rather than silently ignored -- a typo'd or
-    speculative filter key would otherwise match everything and fire on
-    every poll instead of failing loudly at create/update time.
-    """
+    """Service-boundary check: reject unknown github_filter keys/values — a typo'd
+    key would otherwise match everything and fire on every poll instead of
+    failing loudly at create/update time."""
     if github_filter is None:
         return
     if not isinstance(github_filter, dict):
@@ -310,14 +234,8 @@ def _svc_validate_github_filter(github_filter: Any) -> None:
 
 
 def _svc_validate_prompt(prompt: str | None) -> None:
-    """Service-boundary check: reject action_prompt == '--'.
-
-    The literal end-of-options token '--' is silently consumed by argparse and
-    would not reach the runner as prompt text.  All other prompt content —
-    including values starting with '-' — is unrestricted because the structural
-    argv fix places a '--' sentinel before all positionals.  Delegates to
-    subprocess._validate_prompt so the rule is defined in one place.
-    """
+    """Service-boundary check: reject action_prompt == '--', the literal
+    end-of-options token that argparse would silently swallow."""
     if not prompt:
         return
     from lionagi.studio.scheduler.subprocess import _validate_prompt
@@ -326,14 +244,9 @@ def _svc_validate_prompt(prompt: str | None) -> None:
 
 
 def _validate_flow_yaml_spec(yaml_text: str) -> str | None:
-    """Parse and validate an inline YAML flow spec.
-
-    Returns an error message string on failure, or None on success.
-    Mirrors lionagi/cli/orchestrate/__init__.py::_validate_spec_fields() and
-    lionagi/studio/services/playbooks.py::_check_spec_fields() — implemented
-    inline to avoid loading fastapi or the full orchestrate module at import time.
-    Authoritative source for field rules: _validate_spec_fields() in the CLI.
-    """
+    """Parse and validate an inline YAML flow spec; returns an error message on
+    failure or None on success. Mirrors _validate_spec_fields() in the CLI —
+    that's the authoritative source for field rules."""
     import yaml  # lazy — not needed on every import of this module
 
     try:
@@ -548,16 +461,9 @@ async def create_schedule(data: dict[str, Any]) -> dict[str, Any]:
             "action_command is required and must not be empty for action_kind='command'"
         )
 
-    # ADR-0070 delta 1: snapshot a stable execution root at creation time.
-    # An explicit action_cwd (already validated above) always wins. Failing
-    # that, a registered action_project's stored path is captured here, once
-    # -- not re-resolved at every fire -- so a later change to the project
-    # registry, or the daemon restarting from a different directory, cannot
-    # move this schedule's spawn cwd out from under it. Neither resolves
-    # (e.g. no action_project, or its path isn't registered/doesn't exist
-    # yet) -> action_cwd stays None and the engine falls back to
-    # LIONAGI_SCHEDULER_CWD / the daemon's own cwd at fire time, same as a
-    # pre-migration row.
+    # ADR-0070 delta 1: snapshot a stable execution root once at creation time
+    # (not re-resolved at every fire) so later project-registry or daemon-cwd
+    # changes can't move this schedule's spawn cwd out from under it.
     action_cwd = data.get("action_cwd")
     if not action_cwd and data.get("action_project"):
         from lionagi.studio.services.projects import get_project
@@ -657,14 +563,10 @@ async def update_schedule(schedule_id: str, fields: dict[str, Any]) -> bool:
 
         await db.update_schedule(schedule_id, **fields)
 
-    # A PATCH that touches cron_expr (or trigger_type) must take effect on
-    # next_fire_at immediately rather than waiting for the next fire — the
-    # stored `effective` dict already reflects the post-update schedule, so
-    # this recomputes under the new interpretation and logs iff it shifted.
-    # The field update above already committed; a recompute failure here
-    # (e.g. a transient DB error) must not turn an already-committed PATCH
-    # into an unhandled 500 — it degrades to a stale next_fire_at (retried
-    # once; healed at daemon startup if both attempts fail).
+    # A PATCH touching cron_expr/trigger_type must recompute next_fire_at
+    # immediately rather than waiting for the next fire. The field update
+    # already committed, so a recompute failure here degrades to a stale
+    # next_fire_at rather than turning the PATCH into an unhandled 500.
     if effective.get("trigger_type") == "cron":
         await _svc_recompute_next_fire_guarded(effective, "update")
     return True
@@ -684,14 +586,9 @@ async def enable_schedule(schedule_id: str) -> bool:
             _svc_validate_cron_expr(schedule.get("cron_expr"), required=True)
         if schedule.get("trigger_type") == "interval":
             _svc_validate_interval_sec(schedule.get("interval_sec"), required=True)
-        # Re-enable semantics: a bounded schedule that has already consumed
-        # its max_runs budget stays refused rather than silently resetting
-        # the counter. There is no per-enable-cycle counting — max_runs is a
-        # lifetime cap on the schedule's id, not a cap per enabled period —
-        # so enabling it would either immediately re-trip _check_max_runs on
-        # the next fire (confusing) or require introducing new schema state
-        # to track "cycles", which is more machinery than this footgun
-        # warrants. Raise so the caller can increase/clear max_runs first.
+        # max_runs is a lifetime cap on the schedule id, not per-enabled-period —
+        # re-enabling a schedule that already hit it stays refused rather than
+        # silently resetting the counter.
         max_runs = schedule.get("max_runs")
         if max_runs:
             used = await db.count_schedule_runs(schedule_id, chain_depth=0)
@@ -703,12 +600,8 @@ async def enable_schedule(schedule_id: str) -> bool:
                 )
         await db.update_schedule(schedule_id, enabled=1)
 
-    # A schedule can sit disabled for a long time; its stored next_fire_at
-    # may be stale (in the past, or computed under an old interpretation).
-    # Recompute now so re-enabling never fires immediately on stale data —
-    # it only fires immediately if the *current* cron interpretation says so.
-    # The enabled flag above already committed; a recompute failure here
-    # must not turn an already-committed enable into an unhandled 500.
+    # A long-disabled schedule's next_fire_at may be stale; recompute now so
+    # re-enabling only fires immediately if the *current* interpretation says so.
     effective = {**schedule, "enabled": 1}
     if effective.get("trigger_type") == "cron":
         await _svc_recompute_next_fire_guarded(effective, "enable")
@@ -838,9 +731,7 @@ async def list_schedules_route(
 
 @studio_route("/schedules/limits", method="GET", area="schedules", name="schedule_limits")
 async def schedule_limits_route() -> dict[str, Any]:
-    # A literal path registered before the /{schedule_id} param route below
-    # so "limits" resolves here rather than being captured as a schedule id
-    # (routes are matched in registration order — see registry.py).
+    # Registered before /{schedule_id} so "limits" resolves here, not as an id.
     from lionagi.studio import config
 
     from ..scheduler.engine import scheduler
@@ -882,11 +773,8 @@ async def create_schedule_route(body: CreateScheduleRequest) -> dict[str, Any]:
     name="update_schedule",
 )
 async def update_schedule_route(schedule_id: str, body: UpdateScheduleRequest) -> dict[str, Any]:
-    # exclude_unset (not exclude_none): a field the client never mentioned is
-    # left untouched, while a field explicitly sent as null is passed through
-    # so update_schedule can clear it (where the column allows) or reject it
-    # (where it doesn't). exclude_none would silently drop explicit nulls,
-    # making an all-null PATCH indistinguishable from an empty one.
+    # exclude_unset (not exclude_none): an explicit null must pass through so
+    # update_schedule can clear/reject it, distinct from a field never sent.
     fields = body.model_dump(exclude_unset=True)
     try:
         ok = await update_schedule(schedule_id, fields)

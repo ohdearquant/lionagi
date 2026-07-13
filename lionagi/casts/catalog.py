@@ -12,10 +12,7 @@ __all__ = ("build_catalog",)
 
 def _load_packaged_pack(*, raise_on_error: bool = False):
     """Load the packaged default pack from the lionagi.casts resource tree.
-
-    Returns the Pack on success. On failure, raises if raise_on_error is True,
-    otherwise returns None.
-    """
+    Raises if raise_on_error is True, otherwise returns None on failure."""
     try:
         from importlib.resources import as_file, files
 

@@ -66,9 +66,18 @@ class TestLoadAgentProfileValidation:
         with pytest.raises(ValueError, match="bare identifier"):
             load_agent_profile("../agents/orchestrator")
 
-    def test_rejects_separator_name(self):
-        with pytest.raises(ValueError, match="bare identifier"):
+    def test_single_separator_name_is_a_plugin_token_not_rejected(self):
+        """A single '/' is now a `<plugin>/<name>` token (each side still validated as a
+        bare identifier) — it proceeds past validation to plugin/file lookup, raising
+        FileNotFoundError (no matching plugin here), not the bare-identifier ValueError."""
+        with pytest.raises(FileNotFoundError):
             load_agent_profile("a/b")
+
+    def test_rejects_separator_name_with_invalid_component(self):
+        """Each side of a `<plugin>/<name>` token is still validated — a component that
+        fails the bare-identifier check (here, a second separator) still fails closed."""
+        with pytest.raises(ValueError, match="bare identifier"):
+            load_agent_profile("a/b/c")
 
     def test_rejects_hidden_name(self):
         with pytest.raises(ValueError, match="bare identifier"):

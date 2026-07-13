@@ -16,6 +16,8 @@ from lionagi.protocols.types import ID, SenderRecipient
 from lionagi.service.imodel import iModel
 from lionagi.utils import LIONAGI_HOME
 
+from ._turn_origin import TurnOrigin
+
 if TYPE_CHECKING:
     from lionagi.protocols.messages.instruction import Instruction
     from lionagi.session.branch import Branch
@@ -49,6 +51,11 @@ class ChatParam(MorphParam):
     include_token_usage_to_model: bool = False  # deprecated
     imodel: iModel = None
     imodel_kw: dict = None
+    # Tri-state USER_PROMPT_SUBMIT disposition (see ._turn_origin.TurnOrigin).
+    # Unset by default: a genuine outside caller lets the model-submission
+    # boundary mint and fire. Internal callers set an explicit forwarded/
+    # no-origin value to control whether that boundary fires again.
+    turn_origin: TurnOrigin = None
 
     @classmethod
     def from_branch(cls, branch: "Branch", **overrides) -> "ChatParam":

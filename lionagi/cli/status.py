@@ -2,28 +2,7 @@
 # SPDX-License-Identifier: Apache-2.0
 """`li agent status` / `li play status` / `li o ctl status` — read-only lifecycle surfaces.
 
-Pure reads over sessions/invocations/plays/session_signals. Resolves an id (or
-the latest matching run) regardless of terminal state, unlike `li monitor`
-which only lists running/active rows.
-
-`--json` emits a flat object with this stable key set (parsed by other
-lambdas/tools):
-
-  id, entity_type, command, status, terminal, exit_class, exit_code,
-  current_phase, progress_completed, progress_total, model, provider,
-  project, last_activity_at, session_id, branch_id, invocation_id, label,
-  degraded, degraded_reason,
-  status_reason_code, status_reason_summary, status_evidence_refs,
-  pending_controls
-
-Exit codes: 0 terminal-success, 1 terminal-failure, 3 still running/active,
-2 lookup failed (unknown id, or state.db unreachable; also argparse's own
-usage-error code).
-
-`pending_controls`: unapplied session_controls rows (id, verb, created_at)
-for the resolved session, oldest first — queued via `li o ctl
-pause|resume|msg`, then consumed by the control poller while a flow runs.
-`[]` when no backing session or nothing queued.
+See docs/internals/cli.md for the `--json` output key-set and exit-code contract.
 """
 
 from __future__ import annotations
@@ -45,16 +24,11 @@ __all__ = (
 )
 
 # ── Status vocabularies (mirror the CHECK constraints / VALID_* sets in state/db.py) ──
-# sessions/invocations share one vocabulary (VALID_SESSION_STATUSES); plays have
-# their own (_PLAY_STATUSES). "cancelled" is a real terminal non-success status
-# and lands in FAILURE
-# by elimination (neither success nor still-running).
+# "cancelled" lands in FAILURE by elimination (neither success nor still-running).
 
 _SESSION_SUCCESS = frozenset({"completed"})
-# "completed_empty" (the loop exited clean but produced no commits ahead of
-# base and no artifacts — the completion-trust gate) reads as a failure here:
-# a verified-empty run is not something an operator or a schedule chain
-# should treat as a trustworthy success.
+# "completed_empty" (ran clean but produced no commits/artifacts — the
+# completion-trust gate) is classified as failure here, not success.
 _SESSION_FAILURE = frozenset({"completed_empty", "failed", "timed_out", "aborted", "cancelled"})
 _PLAY_SUCCESS = frozenset({"merged"})
 _PLAY_FAILURE = frozenset({"gate_failed", "escalated", "blocked", "aborted_after_finish"})
@@ -62,13 +36,8 @@ _PLAY_FAILURE = frozenset({"gate_failed", "escalated", "blocked", "aborted_after
 EXIT_RUNNING = 3
 EXIT_UNKNOWN = 2
 
-# Bound on a single status read's total DB time (open + resolve + render).
-# StateDB.open() always runs a schema-apply step under a write transaction
-# (BEGIN IMMEDIATE), even for a pure read — so a status check can, in the
-# pathological case of another writer holding a long transaction, wait far
-# longer than is reasonable for a diagnostic command. busy_timeout is already
-# 5s at the sqlite layer; this wraps the whole call so a stuck read fails
-# fast with a clear message instead of hanging indefinitely.
+# StateDB.open() always runs a schema-apply step under a write transaction,
+# even for pure reads — this bounds a status read so it fails fast, not hangs.
 _DB_BUSY_TIMEOUT_S = 10.0
 
 
@@ -76,12 +45,8 @@ _DB_BUSY_TIMEOUT_S = 10.0
 
 
 async def _fetch_by_id(db: Any, table: str, id_or_short: str) -> dict[str, Any] | None:
-    """Exact-id fetch for full ids, prefix (LIKE) fetch for short ids.
-
-    Mirrors _util.resolve_entity's length-gated match, scoped to one table
-    at a time so each command can define its own per-table resolution order
-    instead of the fixed 4-table sweep resolve_entity uses.
-    """
+    """Exact-id fetch for full ids, prefix (LIKE) fetch for short ids, scoped
+    to one table (see _util.resolve_entity for the multi-table sweep)."""
     id_or_short = id_or_short.strip()
     if len(id_or_short) < 36:
         row = await db.fetch_one(
@@ -112,13 +77,9 @@ async def _latest_session(
 
 
 async def _resolve_session_by_branch_id(db: Any, entity_id: str) -> dict[str, Any] | None:
-    """Fallback: treat *entity_id* as a branch_id (the resume token printed in
-    `li agent -r <branch_id> "..."` hints and echoed as `branch_id` in the status
-    view) and resolve it to its owning session.
+    """Fallback: resolve *entity_id* as a branch_id to its owning session.
 
-    There is no `branch_id` column on `sessions` — `branches` is a separate
-    table, and `branches.session_id` is a NOT NULL FK, so a matched branch row
-    always names exactly one owning session.
+    See docs/internals/cli.md for the branches/sessions schema note.
     """
     branch = await _fetch_by_id(db, "branches", entity_id)
     if branch is None:
@@ -129,13 +90,8 @@ async def _resolve_session_by_branch_id(db: Any, entity_id: str) -> dict[str, An
 async def _resolve_agent_target(
     db: Any, entity_id: str | None, project: str | None
 ) -> tuple[str, dict[str, Any]] | None:
-    """`li agent status` resolution: session (any kind), invocation, or
-    a branch_id (resolved to its owning session), by id; default-latest is
-    scoped to agent-kind sessions for *project*.
-
-    Kind scoping only gates the no-id default: an explicit id is honoured
-    regardless of invocation_kind, since the id is already unambiguous.
-    """
+    """`li agent status` resolution: session (any kind), invocation, or a
+    branch_id, by id; default-latest is scoped to agent-kind sessions."""
     if entity_id:
         row = await _fetch_by_id(db, "sessions", entity_id)
         if row is not None:
@@ -173,11 +129,8 @@ async def _resolve_play_target(
 
 
 async def _resolve_any_target(db: Any, entity_id: str) -> tuple[str, dict[str, Any]] | None:
-    """`li o ctl status <id>` resolution: no kind scoping, id required (no latest).
-
-    Falls back to branch_id (resolved to its owning session) last, after
-    sessions/invocations/plays all miss — see _resolve_session_by_branch_id.
-    """
+    """`li o ctl status <id>` resolution: no kind scoping, id required (no
+    latest). Falls back to branch_id last, after sessions/invocations/plays."""
     row = await _fetch_by_id(db, "sessions", entity_id)
     if row is not None:
         return "session", row
@@ -278,25 +231,8 @@ def _classify(entity_type: str, status: str) -> tuple[bool, str, int]:
 def _detect_degraded(
     *, entity_type: str, status: str, primary_session: dict[str, Any] | None
 ) -> tuple[bool, str | None]:
-    """Terminal-success record whose backing session shows no sign the normal
-    teardown path (persist_session_end / SESSION_END hook) ever ran — a proxy
-    for an orphan/limit-exit that forced a "completed" status.
-
-    Deliberately narrower than a literal "current_phase non-terminal OR
-    duration_ms is NULL" check: current_phase is only ever written as
-    "executing"/"synthesizing" (lionagi/cli/orchestrate/flow.py) and is never
-    reset to a terminal marker on ANY path, healthy or not, so alone it would
-    flag every successful flow/play run. duration_ms is never populated by
-    the CLI teardown path at all (_collect_branch_usage's return has no
-    duration_ms key) — checking it alone would flag every completed session,
-    healthy or not. num_turns IS populated by that path (persist_session_end
-    receives it from _collect_branch_usage, default 0, not None), so its
-    absence is a real signal — scoped to source_kind='live' because mirrored
-    Claude Code transcripts (source_kind='imported_fs') use a dormancy-based
-    "completed" with no usage metrics by design
-    (lionagi/state/claude_mirror.reconcile_session_status) and must not be
-    flagged as degraded.
-    """
+    """Detect a terminal-success record whose backing session shows no sign
+    normal teardown ran. See docs/internals/cli.md for the heuristic rationale."""
     if primary_session is None:
         return False, None
     success = status in (_PLAY_SUCCESS if entity_type == "play" else _SESSION_SUCCESS)
@@ -522,18 +458,8 @@ def _dispatch(command: str, entity_id: str | None, as_json: bool) -> int:
 
 
 async def _audit_degraded(db: Any) -> dict[str, Any]:
-    """Scan terminal-success play/flow records once; count how many never
-    recorded run-usage metrics per _detect_degraded — a trust-debt baseline.
-
-    Known coverage gap: setup_orchestration_persist() (cli/orchestrate/_orchestration.py)
-    never populates a singular ctx["branch"] for multi-leg DAG sessions (it tracks
-    per-leg branches via ctx["hooks"] instead), so teardown_persist()'s
-    `if _branch is not None` guard (cli/_runs.py) always skips _collect_branch_usage()
-    for invocation_kind IN ('play', 'flow') — num_turns/duration_ms/tokens/cost are
-    therefore never recorded for ANY such session, healthy or not. Until that's fixed,
-    a 100% (or near-100%) sessions_degraded rate reflects this detector-coverage gap,
-    not a real degradation rate — see the printed note in _dispatch_audit.
-    """
+    """Scan terminal-success play/flow records; count degraded per
+    _detect_degraded. See docs/internals/cli.md for a known coverage gap."""
     sessions = await db.fetch_all(
         "SELECT * FROM sessions WHERE invocation_kind IN ('play', 'flow') AND status = 'completed'"
     )

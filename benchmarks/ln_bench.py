@@ -14,9 +14,16 @@ from typing import Any
 
 import anyio
 
-from lionagi.ln import alcall, bcall, to_list
-from lionagi.ln._hash import hash_dict
-from lionagi.ln._json_dump import json_dumps
+from benchmarks._compat import cpu_probe, dep_version, lionagi_provenance, soft_import
+
+_sym = soft_import("lionagi.ln", ["alcall", "bcall", "to_list"])
+_sym.update(soft_import("lionagi.ln._hash", ["hash_dict"]))
+_sym.update(soft_import("lionagi.ln._json_dump", ["json_dumps"]))
+alcall = _sym["alcall"]
+bcall = _sym["bcall"]
+to_list = _sym["to_list"]
+hash_dict = _sym["hash_dict"]
+json_dumps = _sym["json_dumps"]
 
 
 @dataclass
@@ -149,26 +156,38 @@ def scenario_json_dumps_medium_1000() -> Callable[[], Coroutine[Any, Any, Any]]:
     return _run
 
 
-SCENARIOS: list[tuple[str, Callable[[], Coroutine[Any, Any, Any]]]] = [
+_SCENARIO_SPECS: list[
+    tuple[str, Callable[[], Callable[[], Coroutine[Any, Any, Any]]], tuple[str, ...]]
+] = [
     (
         "alcall_async_noop_1000_conc_100",
-        scenario_alcall_async_noop_1000_conc_100(),
+        scenario_alcall_async_noop_1000_conc_100,
+        ("alcall",),
     ),
     (
         "alcall_sync_noop_1000_conc_64",
-        scenario_alcall_sync_noop_1000_conc_64(),
+        scenario_alcall_sync_noop_1000_conc_64,
+        ("alcall",),
     ),
     (
         "bcall_async_noop_1000_batch_50",
-        scenario_bcall_async_noop_1000_batch_50(),
+        scenario_bcall_async_noop_1000_batch_50,
+        ("bcall",),
     ),
-    ("to_list_flatten_nested_10000", scenario_to_list_flatten_nested_10000()),
+    ("to_list_flatten_nested_10000", scenario_to_list_flatten_nested_10000, ("to_list",)),
     (
         "to_list_flatten_unique_2000_mixed",
-        scenario_to_list_flatten_unique_2000_mixed(),
+        scenario_to_list_flatten_unique_2000_mixed,
+        ("to_list",),
     ),
-    ("hash_dict_complex_1000", scenario_hash_dict_complex_1000()),
-    ("json_dumps_medium_1000", scenario_json_dumps_medium_1000()),
+    ("hash_dict_complex_1000", scenario_hash_dict_complex_1000, ("hash_dict",)),
+    ("json_dumps_medium_1000", scenario_json_dumps_medium_1000, ("json_dumps",)),
+]
+
+SCENARIOS: list[tuple[str, Callable[[], Coroutine[Any, Any, Any]]]] = [
+    (name, factory())
+    for name, factory, required in _SCENARIO_SPECS
+    if all(_sym.get(sym) is not None for sym in required)
 ]
 
 
@@ -181,13 +200,13 @@ async def run_benchmarks_async(repeat: int) -> dict[str, Any]:
 
 
 def system_info() -> dict[str, Any]:
-    import anyio as _anyio
-
     return {
         "python": sys.version.split()[0],
         "platform": platform.platform(),
-        "anyio": getattr(_anyio, "__version__", "unknown"),
+        "anyio": dep_version("anyio"),
         "timestamp": datetime.now(timezone.utc).isoformat(),
+        "cpu_probe_seconds": cpu_probe(),
+        **lionagi_provenance(),
     }
 
 

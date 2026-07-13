@@ -2,23 +2,7 @@
 # SPDX-License-Identifier: Apache-2.0
 """Server-side approval ledger for operator-proposed mutating actions.
 
-An action is proposed (pending) -> a human grants or denies it -> the real
-endpoint consumes the granted approval exactly once. Expiry and single-use
-are enforced here, not by caller convention: a granted approval that is
-expired, already consumed, or whose params don't hash-match the action being
-executed is rejected.
-
-Principal separation (grant/deny only): a request carrying the
-operator/service principal marker header is rejected before the row is
-touched -- the studio frontend never sends that header, so a legitimate
-browser confirm click always passes. Additive to the bearer-token gate, not
-a replacement for it.
-
-Evidence chain: every lifecycle event appends a hash-chained row to
-`approval_evidence` in the same transaction as the status change
-(chain_hash = sha256(content_hash + previous_hash), genesis = "0"*64).
-Evidence rows never store raw params. Optional HMAC-SHA256 signing is OFF by
-default; set LIONAGI_STUDIO_EVIDENCE_HMAC_KEY to turn it on.
+Lifecycle: proposed (pending) -> a human grants or denies it -> the real endpoint consumes the granted approval exactly once, with a hash-chained evidence row per event.
 """
 
 from __future__ import annotations
@@ -45,10 +29,8 @@ APPROVAL_TTL_SECONDS = 5 * 60
 
 _STATUSES = frozenset({"pending", "granted", "consumed", "expired", "denied"})
 
-# Header a caller uses to identify itself as an operator/service principal
-# rather than the human browser session. Its mere presence (any non-empty
-# value) is disqualifying for grant/deny -- there is no "correct" value that
-# passes, so a caller can't guess its way past the check.
+# Header identifying an operator/service principal. Mere presence (any non-empty value)
+# disqualifies the caller from grant/deny -- there is no "correct" value that passes.
 _SERVICE_PRINCIPAL_HEADER = "x-lionagi-operator-principal"
 
 # Mirrors the approvals table in schema.sql -- a defensive fallback so direct
@@ -134,9 +116,7 @@ def _is_service_principal(request: Request) -> bool:
 
 
 def _require_human_principal(request: Request) -> None:
-    """Grant/deny require the caller to PRESENT the configured bearer token. With
-    no token configured, granting is unavailable entirely (fail closed) rather
-    than open to any local caller."""
+    """Grant/deny require the caller to PRESENT the configured bearer token; with none configured, granting is unavailable entirely (fail closed)."""
     if _is_service_principal(request):
         raise HTTPException(
             status_code=403,
@@ -198,10 +178,7 @@ async def _write_evidence(
     justification_class: str | None = None,
     justification_reason: str | None = None,
 ) -> dict[str, Any]:
-    """Append one evidence row to the chain. Caller MUST already hold the write
-    lock on *db* (a preceding `BEGIN IMMEDIATE` in the same transaction as the
-    approvals status change) so the tail read is race-free -- this function
-    does not open its own transaction."""
+    """Append one evidence row to the chain. Caller MUST already hold the write lock on *db* (a preceding `BEGIN IMMEDIATE`) so the tail read is race-free."""
     cur = await db.execute(
         "SELECT sequence, chain_hash FROM approval_evidence ORDER BY sequence DESC LIMIT 1"
     )
@@ -484,12 +461,7 @@ async def deny_approval(
 async def require_approval(
     approval_id: str, *, action_kind: str, params: dict[str, Any]
 ) -> dict[str, Any]:
-    """Validate a granted approval for exactly this action and consume it
-    atomically. Not wired into any route yet -- a future mutating route calls
-    this before performing its side effect, passing the same
-    action_kind/params it is about to act on. Raises HTTPException
-    (404/409/422) on any failure; the approval is consumed only when every
-    check passes."""
+    """Validate a granted approval for exactly this action_kind/params and consume it atomically. Not wired into any route yet; consumed only when every check passes."""
     row = await get_approval(approval_id)
     if row is None:
         raise HTTPException(status_code=404, detail=f"approval {approval_id!r} not found")

@@ -77,9 +77,8 @@ def create_lionagi_async_postgres_adapter() -> type[AsyncAdapter]:
     return LionAGIAsyncPostgresAdapter
 
 
-# Built lazily by _ensure_postgres_adapter() in node.py, not at import time. The
-# module-level name stays defined so test patching of this attribute resolves
-# without triggering the factory.
+# Built lazily by _ensure_postgres_adapter() in node.py; stays defined here so
+# test patching of this attribute resolves without triggering the factory.
 LionAGIAsyncPostgresAdapter = None  # populated lazily by _ensure_postgres_adapter()
 
 __all__ = ("LionAGIAsyncPostgresAdapter", "create_lionagi_async_postgres_adapter")
