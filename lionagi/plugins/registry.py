@@ -573,6 +573,31 @@ class PluginRegistry:
         return out
 
     @classmethod
+    def active_provider_targets(cls) -> list[tuple[str, str]]:
+        """``(plugin_name, module)`` pairs for every declared provider capability, across every live-eligible plugin.
+
+        Consumed by ``EndpointRegistry.match`` (``lionagi.service.connections.registry``)
+        on a provider-resolution miss: the manifest schema names only the
+        bundle-relative module to import (a provider module self-registers
+        the provider name it serves via ``@register_endpoint`` as an import
+        side effect — there is no separate declared-name field to filter on
+        ahead of time), so the caller imports each returned module through
+        ``activate_target`` and re-runs its match afterward.
+
+        Eligibility comes from ``_fresh_active_plugins`` — the same rescanned
+        manifests and collision handling every other capability surface uses —
+        never from the process-cached record state, which goes stale the
+        moment a plugin is disabled without a ``reset()``.
+        """
+        active, _, _ = _fresh_active_plugins(cls._ensure_loaded())
+        out: list[tuple[str, str]] = []
+        for plugin_name, fresh in active.items():
+            assert fresh.manifest is not None
+            for cap in fresh.manifest.capabilities.providers:
+                out.append((plugin_name, cap.module))
+        return out
+
+    @classmethod
     def resolve_tool_target(cls, tool_name: str) -> ToolTarget | None:
         """ADR-0088 D3 consumer trigger: ``ActionManager`` tool-name-resolution miss.
 
