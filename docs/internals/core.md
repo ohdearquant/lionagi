@@ -1,9 +1,8 @@
 # Internals Reference
 
-Invariants, protocol contracts, and design rationale extracted from source
-during the comment/docstring trim sweep. Organized by module path. This is
-the durable home for content that used to live as long inline prose — the
-source now carries a 1-2 line pointer, the full contract lives here.
+Invariants, protocol contracts, and design rationale for lionagi's core
+packages that don't belong inline as long-form comments. Organized by module
+path. Inline comments stay short; the full contract lives here.
 
 ## `operations/`
 
@@ -321,9 +320,9 @@ re-register every server from previously loaded, unrelated configs.
 **`patterns.py`** — `role_node_builder` returns a node_builder closure
 routing `SpawnRequest`s to role branches. `decorate_instruction`, when given,
 receives the request and the node's freshly allocated `spawn_id` and must
-return the full instruction text the child runs with (CLI callers use it to
-inject the artifact-directory + REQUIRED-file text a planned leg gets, see
-`lionagi.cli.orchestrate.flow`). `start` seeds the closure's spawn-id
+return the full instruction text the child runs with
+(`lionagi.cli.orchestrate.flow` uses it to prepend per-node artifact-directory
+and required-output instructions). `start` seeds the closure's spawn-id
 sequence past ordinals already issued in a prior generation (e.g. a CLI
 resume reconstructing completed spawns from a checkpoint) — without it, a
 fresh sequence restarting at 1 would reissue an id already used by a restored
