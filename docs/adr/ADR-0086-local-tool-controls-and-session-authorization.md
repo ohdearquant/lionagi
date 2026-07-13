@@ -302,13 +302,14 @@ Exact semantics:
   caller supplies them again or loads them from trusted settings.
 
 Why this way: the second security pass closes the concrete mutation gap in which a user hook
-turns allowed arguments into denied arguments after the first check — but only for the
-`security_pre` bucket, i.e. an explicit `PermissionPolicy`. The built-in coding guards sit in
-the ordinary pre chain and do not get that recheck today; unifying the two (delta row 1's
-"each configured control runs exactly once" contract) is where that asymmetry gets resolved.
-Reusing `Tool.preprocessor` keeps the mechanism local to existing tool invocation. The cost is
-construction-path coupling: a tool registered outside that path does not inherit the controls
-automatically.
+turns allowed arguments into denied arguments after the first check. Both an explicit
+`PermissionPolicy` (`_apply_permissions`) and the built-in coding guards (`_wire_secure_guards`)
+register into the same `security_pre` bucket, so both get the same security → user → security
+recheck — delta row 1's "each configured control runs exactly once" contract, closing the
+former asymmetry in which only an explicit `PermissionPolicy` was re-run after a mutating user
+pre-hook, is resolved on main. Reusing `Tool.preprocessor` keeps the mechanism local to existing
+tool invocation. The cost is construction-path coupling: a tool registered outside that path
+does not inherit the controls automatically.
 
 ### D3 — `Tool` processors are the local callable interception mechanism
 
