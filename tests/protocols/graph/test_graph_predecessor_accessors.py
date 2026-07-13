@@ -106,6 +106,33 @@ class TestCacheHitBehavior:
         second = graph.get_successors_cached(nodes[0])
         assert first is second
 
+    def test_repeated_hits_do_not_acquire_graph_lock(self, complex_graph):
+        graph, nodes, _ = complex_graph
+        predecessor = graph.get_predecessors_cached(nodes[3])
+        successor = graph.get_successors_cached(nodes[0])
+
+        class CountingLock:
+            def __init__(self):
+                self.acquisitions = 0
+                self._lock = threading.RLock()
+
+            def __enter__(self):
+                self.acquisitions += 1
+                self._lock.acquire()
+                return self
+
+            def __exit__(self, exc_type, exc_value, traceback):
+                self._lock.release()
+
+        counting_lock = CountingLock()
+        graph._lock = counting_lock
+
+        for _ in range(10):
+            assert graph.get_predecessors_cached(nodes[3]) is predecessor
+            assert graph.get_successors_cached(nodes[0]) is successor
+
+        assert counting_lock.acquisitions == 0
+
 
 class TestCacheInvalidationOnMutators:
     """Every mutator that changes adjacency must invalidate stale cache entries."""

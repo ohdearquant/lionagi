@@ -81,9 +81,13 @@ class Graph(Element, Relational, Generic[T]):
         get_predecessors_cached()/get_successors_cached() never serve stale
         adjacency; add_node is exempt (a brand-new node has no edges yet).
         """
+        predecessor_cache = self._predecessor_cache.copy()
+        successor_cache = self._successor_cache.copy()
         for nid in node_ids:
-            self._predecessor_cache.pop(nid, None)
-            self._successor_cache.pop(nid, None)
+            predecessor_cache.pop(nid, None)
+            successor_cache.pop(nid, None)
+        self._predecessor_cache = predecessor_cache
+        self._successor_cache = successor_cache
 
     @_graph_synchronized
     def add_node(self, node: Relational) -> None:
@@ -206,7 +210,6 @@ class Graph(Element, Relational, Generic[T]):
             raise RelationError(f"Node {node} not found in the graph nodes.")
         return tuple(self.node_edge_mapping[_id]["out"].values())
 
-    @_graph_synchronized
     def get_predecessors_cached(self, node: Any, /) -> tuple[Node, ...]:
         """Plain-tuple predecessor lookup, memoized until a mutator invalidates it.
 
@@ -229,42 +232,51 @@ class Graph(Element, Relational, Generic[T]):
         stored tuple directly, no per-call copy), so it costs nothing extra
         over returning a list.
 
-        Synchronized (unlike get_predecessors()/find_node_edge()): this cache
-        is stored on the Graph instance itself, so it is visible to every
-        concurrent consumer, not just the caller that populated it. Without
-        the same lock a mutator holds, a miss could read node_edge_mapping,
-        a mutator could invalidate and update it, and this call could then
-        store the pre-mutation result — a wrong answer that persists until
-        an unrelated future mutation happens to evict that node's entry,
-        rather than the transient, self-healing staleness plain unsynchronized
-        reads already tolerate.
+        Cache snapshots are never modified after publication, so a hit only
+        dereferences the current snapshot. Misses take the graph lock and
+        publish a copied snapshot after building the result. Mutators evict
+        entries by the same copy-and-replace strategy under that lock, which
+        prevents a concurrent miss from publishing stale adjacency.
         """
         _id = ID.get_id(node)
         cached = self._predecessor_cache.get(_id)
         if cached is not None:
             return cached
-        if _id not in self.internal_nodes:
-            raise RelationError(f"Node {node} not found in the graph nodes.")
-        result = tuple(
-            self.internal_nodes[head_id] for head_id in self.node_edge_mapping[_id]["in"].values()
-        )
-        self._predecessor_cache[_id] = result
-        return result
+        with self._lock:
+            cached = self._predecessor_cache.get(_id)
+            if cached is not None:
+                return cached
+            if _id not in self.internal_nodes:
+                raise RelationError(f"Node {node} not found in the graph nodes.")
+            result = tuple(
+                self.internal_nodes[head_id]
+                for head_id in self.node_edge_mapping[_id]["in"].values()
+            )
+            cache = self._predecessor_cache.copy()
+            cache[_id] = result
+            self._predecessor_cache = cache
+            return result
 
-    @_graph_synchronized
     def get_successors_cached(self, node: Any, /) -> tuple[Node, ...]:
         """Symmetric with get_predecessors_cached()."""
         _id = ID.get_id(node)
         cached = self._successor_cache.get(_id)
         if cached is not None:
             return cached
-        if _id not in self.internal_nodes:
-            raise RelationError(f"Node {node} not found in the graph nodes.")
-        result = tuple(
-            self.internal_nodes[tail_id] for tail_id in self.node_edge_mapping[_id]["out"].values()
-        )
-        self._successor_cache[_id] = result
-        return result
+        with self._lock:
+            cached = self._successor_cache.get(_id)
+            if cached is not None:
+                return cached
+            if _id not in self.internal_nodes:
+                raise RelationError(f"Node {node} not found in the graph nodes.")
+            result = tuple(
+                self.internal_nodes[tail_id]
+                for tail_id in self.node_edge_mapping[_id]["out"].values()
+            )
+            cache = self._successor_cache.copy()
+            cache[_id] = result
+            self._successor_cache = cache
+            return result
 
     def to_networkx(self, **kwargs) -> Any:
         global _NETWORKX_AVAILABLE
