@@ -14,6 +14,26 @@ from typing import Any
 # then merges each arm's chunks into the same result JSON shape ci_check_provenance.py
 # and ci_compare.py already read.
 
+# meta keys that legitimately vary per chunk (timing canaries, not provenance); everything
+# else a bench script writes to meta (lionagi/python identity, dependency versions) must be
+# an identical non-empty string across every chunk of one arm -- a later chunk silently
+# running under a different interpreter/install than chunk 0 must not be discarded.
+_CHUNK_VARYING_META_KEYS = {"cpu_probe_seconds", "chunk_wall_seconds", "chunk_started_at_epoch"}
+
+
+def _validate_provenance_across_chunks(chunks: list[dict[str, Any]]) -> None:
+    all_keys: set[str] = set()
+    for c in chunks:
+        all_keys.update(c.get("meta", {}).keys())
+    for key in sorted(all_keys - _CHUNK_VARYING_META_KEYS):
+        values = [c.get("meta", {}).get(key) for c in chunks]
+        if any(not isinstance(v, str) or v == "" for v in values):
+            raise ValueError(
+                f"chunks disagree on meta.{key} (missing/non-string on some chunk): {values!r}"
+            )
+        if len(set(values)) > 1:
+            raise ValueError(f"chunks disagree on meta.{key}: {sorted(set(values))}")
+
 
 def run_chunk(
     python_bin: str,
@@ -68,12 +88,9 @@ def merge_arm(chunks: list[dict[str, Any]]) -> dict[str, Any]:
             "max": max(s["max"] for s in stats),
         }
 
-    # Assert (not silently take chunk 0's value) so a mid-arm interpreter/install change is caught here.
+    # Validate every provenance field across ALL chunks (not just chunk 0) so a mid-arm interpreter/install/dependency change is caught here.
+    _validate_provenance_across_chunks(chunks)
     base_meta = dict(chunks[0].get("meta", {}))
-    for key in ("lionagi_file", "lionagi_version", "python_executable"):
-        values = {c.get("meta", {}).get(key) for c in chunks}
-        if len(values) > 1:
-            raise ValueError(f"chunks disagree on meta.{key}: {sorted(values)}")
 
     # Per-chunk series for artifact inspection.
     base_meta["chunk_count"] = len(chunks)

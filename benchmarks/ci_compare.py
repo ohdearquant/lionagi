@@ -141,8 +141,8 @@ def main() -> int:
     current_path = Path(args.current)
 
     if not baseline_path.exists():
-        print(f"[ci_compare] Baseline missing: {baseline_path}. Skipping gating.")
-        return 0
+        print(f"[ci_compare] Baseline missing: {baseline_path}.")
+        return 1
     if not current_path.exists():
         print(f"[ci_compare] Current results missing: {current_path}.")
         return 1

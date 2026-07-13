@@ -20,6 +20,11 @@ REQUIRED_DEP_META_KEYS: dict[str, list[str]] = {
 PYTHON_IDENTITY_META_KEYS = ["python_full_version", "python_build", "python_compiler"]
 
 
+def _is_valid_provenance_str(value) -> bool:
+    """True iff `value` is a non-empty string -- equality/truthiness alone can't tell 123 == "123" apart from a real match."""
+    return isinstance(value, str) and value != ""
+
+
 def check(baseline_dir: Path, current_dir: Path, suites: list[str]) -> bool:
     """True iff every suite's arms show distinct lionagi installs, overlapping scenario
     coverage with nothing dropped from baseline, matching required dependency versions,
@@ -40,9 +45,10 @@ def check(baseline_dir: Path, current_dir: Path, suites: list[str]) -> bool:
 
         b_file = baseline.get("meta", {}).get("lionagi_file")
         c_file = current.get("meta", {}).get("lionagi_file")
-        if not b_file or not c_file:
+        if not _is_valid_provenance_str(b_file) or not _is_valid_provenance_str(c_file):
             print(
-                f"[provenance] {suite}: missing lionagi_file in result metadata",
+                f"[provenance] {suite}: lionagi_file must be a non-empty string on both "
+                f"arms -- baseline={b_file!r} current={c_file!r}",
                 file=sys.stderr,
             )
             ok = False
@@ -98,12 +104,12 @@ def check(baseline_dir: Path, current_dir: Path, suites: list[str]) -> bool:
         for dep in REQUIRED_DEP_META_KEYS.get(suite, ["anyio"]):
             b_version = b_meta.get(dep)
             c_version = c_meta.get(dep)
-            if not b_version or not c_version:
+            if not _is_valid_provenance_str(b_version) or not _is_valid_provenance_str(c_version):
                 print(
-                    f"[provenance] {suite}: {dep} is required for this suite but "
-                    f"missing from result metadata -- baseline={b_version!r} "
-                    f"current={c_version!r}. The dependency axis went unverified for "
-                    "this suite instead of failing loud.",
+                    f"[provenance] {suite}: {dep} must be a non-empty string on both "
+                    f"arms -- baseline={b_version!r} current={c_version!r}. The "
+                    "dependency axis went unverified for this suite instead of failing "
+                    "loud.",
                     file=sys.stderr,
                 )
                 ok = False
@@ -123,10 +129,11 @@ def check(baseline_dir: Path, current_dir: Path, suites: list[str]) -> bool:
         for key in PYTHON_IDENTITY_META_KEYS:
             b_val = b_meta.get(key)
             c_val = c_meta.get(key)
-            if not b_val or not c_val:
+            if not _is_valid_provenance_str(b_val) or not _is_valid_provenance_str(c_val):
                 print(
-                    f"[provenance] {suite}: missing {key} in result metadata -- cannot "
-                    "verify baseline and current ran under the same interpreter build.",
+                    f"[provenance] {suite}: {key} must be a non-empty string on both "
+                    f"arms -- baseline={b_val!r} current={c_val!r}. Cannot verify "
+                    "baseline and current ran under the same interpreter build.",
                     file=sys.stderr,
                 )
                 ok = False
