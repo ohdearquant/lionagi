@@ -657,6 +657,43 @@ class StateDB:
                 if name not in existing:
                     async with self._engine.begin() as conn:
                         await conn.execute(text(f"ALTER TABLE {table} ADD COLUMN {name} {defn}"))
+                        if table == "schedule_runs" and name == "dispatched_at":
+                            await self._backfill_dispatched_at(conn)
+
+    async def _backfill_dispatched_at(self, conn) -> None:
+        """One-time migration backfill for the ``dispatched_at`` column just
+        added to ``schedule_runs``.
+
+        ``dispatched_at`` is only stamped going forward, by
+        ``SchedulerEngine._mark_dispatched()``. Without a backfill, every row
+        left at ``status = 'running'`` from before this column existed would
+        have ``dispatched_at IS NULL`` -- indistinguishable from a row whose
+        launch genuinely never got confirmed. ``list_undispatched_schedule_
+        runs()`` (consumed by ``SchedulerEngine._recover_undispatched_
+        fires()`` on the next daemon startup) would then treat every such row
+        as crashed-before-dispatch and re-fire it, even one that is still
+        genuinely executing across the upgrade restart.
+
+        Stamping ``dispatched_at`` to the row's own ``fired_at`` (NOT NULL by
+        schema) excludes these pre-existing rows from that scan -- the same
+        "no signal to distinguish, so don't auto-retry" resolution
+        ``_backfill_action_cwd()`` applies to ``action_cwd``. A still-running
+        row is left alone (nothing re-fires it); a row that actually crashed
+        pre-migration falls through to ``reap_stale_schedule_runs()``'s
+        wall-clock deadline instead of being auto-retried on ambiguous
+        evidence. Scoped to ``schedule_id IS NOT NULL`` to match
+        ``list_undispatched_schedule_runs()`` and leave the leased ad-hoc
+        task queue (its own dispatch/lease model) untouched. Runs inside the
+        same transaction as the ``ALTER TABLE`` that adds the column, so it
+        only ever executes once, the moment the column is created.
+        """
+        await conn.execute(
+            text(
+                "UPDATE schedule_runs SET dispatched_at = fired_at "
+                "WHERE status = 'running' AND dispatched_at IS NULL "
+                "AND schedule_id IS NOT NULL"
+            )
+        )
 
     _LEGACY_SESSION_STATUS_CHECK_MARKER = "'running', 'completed', 'failed', 'aborted'"
 
