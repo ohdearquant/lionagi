@@ -71,6 +71,7 @@ class AgentSpec(HooksMixin):
     lion_system: bool = True
     extra_prompt: str | None = None
     hook_handlers: dict[str, list[Callable]] = field(default_factory=dict)
+    external_hooks: list[dict[str, Any]] = field(default_factory=list)
     cwd: str | None = None
     yolo: bool = False
     mcp_servers: list[str] | None = None

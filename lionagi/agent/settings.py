@@ -18,6 +18,7 @@ from lionagi.ln._proc import aterminate_process_group
 __all__ = (
     "apply_hooks_from_settings",
     "load_settings",
+    "parse_external_hooks",
 )
 
 import yaml
@@ -73,7 +74,19 @@ def apply_hooks_from_settings(
     *,
     trusted_hook_modules: set[str] | frozenset[str] | None = None,
 ) -> AgentSpec:
-    """Resolve hook specs from settings and register them on the AgentSpec; returns config."""
+    """Resolve hook specs from settings and register them on the AgentSpec; returns config.
+
+    Handles two independent settings blocks: the legacy ``hooks:``
+    ``{pre,post,on_error}`` shape (in-process callables, resolved and
+    attached to ``config.hook_handlers`` right here), and the
+    ``hooks_external:`` block (external commands, parsed and validated here
+    but attached to ``config.external_hooks`` for ``create_agent`` to wire
+    once a ``Branch`` -- and its ``ActionManager``/``HookBus`` -- exists).
+    ``hooks_external:`` here is unrelated to the field of the same name on a
+    plugin manifest (``lionagi.plugins.manifest.Capabilities.hooks_external``),
+    which is parsed as inert data only; this is the block that actually loads
+    and executes.
+    """
     if settings is None:
         settings = load_settings()
 
@@ -98,7 +111,72 @@ def apply_hooks_from_settings(
                 elif phase == "on_error":
                     config.on_error(tool_name, handler)
 
+    external_config = settings.get("hooks_external", {})
+    if external_config:
+        config.external_hooks.extend(parse_external_hooks(external_config))
+
     return config
+
+
+def parse_external_hooks(external_config: dict[str, Any]) -> list[dict[str, Any]]:
+    """Parse + validate a ``hooks_external:`` block into flat entry dicts.
+
+    Each returned entry is ``{event, matcher, command, timeout, source}``.
+    Raises ``ExternalHookConfigError`` (a ``ValueError`` subtype) at the
+    first unmappable event, non-``command`` type, or invalid argv -- config
+    load fails loud rather than silently dropping a declared guard.
+    """
+    from lionagi.hooks.external import (
+        SUPPORTED_EVENTS,
+        ExternalHookConfigError,
+        validate_argv,
+    )
+
+    if not isinstance(external_config, dict):
+        raise ExternalHookConfigError(
+            f"hooks_external: must be a mapping of event -> matcher groups, got {external_config!r}"
+        )
+
+    entries: list[dict[str, Any]] = []
+    for event, matcher_groups in external_config.items():
+        if event not in SUPPORTED_EVENTS:
+            raise ExternalHookConfigError(
+                f"hooks_external: no seam for event {event!r}; LionAGI has no "
+                f"hook point for it. Supported events: {sorted(SUPPORTED_EVENTS)}"
+            )
+        if not isinstance(matcher_groups, list):
+            matcher_groups = [matcher_groups]
+        for group in matcher_groups:
+            if not isinstance(group, dict):
+                raise ExternalHookConfigError(
+                    f"hooks_external.{event}: entry must be a mapping, got {group!r}"
+                )
+            matcher = group.get("matcher")
+            hook_specs = group.get("hooks", [])
+            if not isinstance(hook_specs, list):
+                hook_specs = [hook_specs]
+            for spec in hook_specs:
+                if not isinstance(spec, dict):
+                    raise ExternalHookConfigError(
+                        f"hooks_external.{event}: hook entry must be a mapping, got {spec!r}"
+                    )
+                hook_type = spec.get("type", "command")
+                if hook_type != "command":
+                    raise ExternalHookConfigError(
+                        f"hooks_external.{event}: unsupported hook type {hook_type!r}; "
+                        "only 'command' is implemented (reserved: http, mcp_tool, prompt)"
+                    )
+                command = validate_argv(spec.get("command"))
+                entries.append(
+                    {
+                        "event": event,
+                        "matcher": matcher,
+                        "command": command,
+                        "timeout": float(spec.get("timeout", 60.0)),
+                        "source": spec.get("source"),
+                    }
+                )
+    return entries
 
 
 def _resolve_hook_spec(

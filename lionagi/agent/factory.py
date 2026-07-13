@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import logging
 from collections.abc import Callable
 from typing import Any
 
@@ -12,6 +13,8 @@ from lionagi.session.branch import Branch
 from .spec import AgentSpec
 
 __all__ = ("create_agent", "_chain_pre_hooks", "_chain_post_hooks")
+
+logger = logging.getLogger(__name__)
 
 
 async def create_agent(
@@ -107,11 +110,61 @@ async def create_agent(
     _register_tools(branch, spec)
     await _load_mcp(branch, spec, trust_project_settings=trust_project_settings)
     _forward_mcp_to_cli_request(branch, spec, trust_project_settings=trust_project_settings)
+    _wire_external_hooks(branch, spec)
 
     if op := spec.emission_operable():
         branch.grant_capabilities(op)
 
     return branch
+
+
+def _wire_external_hooks(branch: Branch, spec: AgentSpec) -> None:
+    """Attach ``hooks_external`` entries (parsed by ``apply_hooks_from_settings``)
+    to the seam their event maps to.
+
+    ``PreToolUse``/``PostToolUse`` attach to ``branch.acts`` (always present).
+    The remaining supported events attach to ``branch._hooks`` (a ``HookBus``)
+    -- present only once the branch is owned by a ``Session``; a standalone
+    branch built via ``create_agent`` has none yet, so those entries are
+    skipped with a warning rather than raising, matching the existing
+    no-hooks-bus-attached behavior elsewhere in the runtime.
+    """
+    if not spec.external_hooks:
+        return
+
+    from lionagi.hooks.bus import HookPoint
+    from lionagi.hooks.external import external_hook_adapter
+
+    session_id = str(branch._owning_session_id or branch.id)
+    event_to_point = {
+        "SessionStart": HookPoint.SESSION_START,
+        "SessionEnd": HookPoint.SESSION_END,
+        "UserPromptSubmit": HookPoint.USER_PROMPT_SUBMIT,
+        "PostToolUseFailure": HookPoint.TOOL_ERROR,
+    }
+
+    for entry in spec.external_hooks:
+        handler = external_hook_adapter(
+            event=entry["event"],
+            command=entry["command"],
+            timeout=entry["timeout"],
+            matcher=entry.get("matcher"),
+            source=entry.get("source"),
+            cwd=spec.cwd,
+            session_id=session_id,
+        )
+        if entry["event"] == "PreToolUse":
+            branch.acts.add_tool_pre_hook(handler)
+        elif entry["event"] == "PostToolUse":
+            branch.acts.add_tool_post_hook(handler)
+        elif branch._hooks is not None:
+            branch._hooks.on(event_to_point[entry["event"]], handler)
+        else:
+            logger.warning(
+                "hooks_external: %r configured but this branch has no HookBus "
+                "attached (not part of a Session yet) -- skipping until it is",
+                entry["event"],
+            )
 
 
 def _apply_permissions(spec: AgentSpec) -> None:
