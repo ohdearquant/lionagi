@@ -473,6 +473,7 @@ class SchedulerEngine:
         return run_id
 
     async def _tick_loop(self) -> None:
+        await self._recover_undispatched_fires()
         await self._check_missed_fires()
         while not self._stopping:
             try:
@@ -480,6 +481,98 @@ class SchedulerEngine:
             except Exception:
                 _log.exception("Scheduler tick error")
             await asyncio.sleep(_TICK_INTERVAL)
+
+    async def _mark_dispatched(self, run_id: str) -> None:
+        """Stamp ``dispatched_at`` the instant spawn_and_wait confirms the
+        external process exists -- see _fire_inner()'s delivery-contract
+        docstring for what this closes."""
+        await self._svc.update_schedule_run(run_id, dispatched_at=time.time())
+
+    async def _recover_undispatched_fires(self) -> None:
+        """Startup-only recovery for the delivery-contract gap _fire_inner()
+        documents: an occurrence whose transaction committed (row exists,
+        schedule cursor already advanced past it) but whose external
+        process launch was never confirmed, because the engine crashed
+        somewhere between the two.
+
+        Only meaningful right after a restart. Under normal (non-crash)
+        operation this window is a single non-blocking DB write immediately
+        following ``create_subprocess_exec`` -- it always closes itself
+        within the same fire, so there is nothing for a periodic scan to
+        usefully catch mid-lifetime; running this once at startup (mirroring
+        ``_check_missed_fires()``, called right alongside it) is sufficient.
+
+        Each orphaned row is tombstoned (never resurrected as "running" --
+        that status is reserved for a fire this engine currently owns) and,
+        for a top-level occurrence (chain_depth == 0), replaced with a fresh
+        fire carrying the SAME trigger_context the orphaned attempt never
+        got to use, so a github_poll event (or any other occurrence-specific
+        context) is retried faithfully rather than generically. Chain
+        children are tombstoned only -- see _fire_inner()'s docstring for
+        why that narrower gap is accepted.
+        """
+        try:
+            orphans = await self._svc.list_undispatched_schedule_runs()
+        except Exception:
+            _log.exception("Failed to scan for undispatched schedule_runs")
+            return
+
+        for row in orphans:
+            run_id = row["id"]
+            sid = row.get("schedule_id")
+            try:
+                written = await self._svc.update_status(
+                    "schedule_run",
+                    run_id,
+                    new_status="failed",
+                    reason_code=RunReasons.FAILED_NEVER_DISPATCHED,
+                    reason_summary=(
+                        "Scheduler crashed after committing this occurrence but "
+                        "before confirming the external process launched."
+                    ),
+                    evidence_refs=[{"kind": "schedule", "id": sid}] if sid else [],
+                    source="system",
+                    actor="scheduler_startup_recovery",
+                    expected_statuses={"running"},
+                )
+            except Exception:
+                _log.exception("Failed to tombstone undispatched schedule_run %s", run_id)
+                continue
+            if not written:
+                # Raced with something else finalizing this row between the
+                # scan and here (e.g. the stale-run reaper); nothing left to
+                # recover -- it already resolved through some other path.
+                continue
+
+            if row.get("chain_depth", 0) != 0:
+                _log.info(
+                    "Undispatched chain-child schedule_run %s tombstoned; not auto-retried",
+                    run_id,
+                )
+                continue
+
+            schedule = await self._svc.get_schedule(sid) if sid else None
+            if schedule is None or not schedule.get("enabled"):
+                _log.info(
+                    "Skipping re-fire for undispatched schedule_run %s: "
+                    "owning schedule %s missing or disabled",
+                    run_id,
+                    sid,
+                )
+                continue
+
+            new_run_id = uuid.uuid4().hex[:12]
+            _log.info(
+                "Re-firing undispatched schedule_run %s as %s for schedule %s",
+                run_id,
+                new_run_id,
+                sid,
+            )
+            self._tracked_fire(
+                schedule,
+                new_run_id,
+                trigger_context=row.get("trigger_context") or {},
+            )
 
     async def _check_missed_fires(self) -> None:
         try:
@@ -1381,21 +1474,44 @@ class SchedulerEngine:
     ) -> None:
         """Fire one occurrence of *schedule*.
 
-        The occurrence-insert (``create_schedule_run``) and the schedule's
-        cursor advance (``last_fired_at``/``next_fire_at``, plus whatever
-        *extra_schedule_fields* adds -- e.g. ``github_cursor`` for a
-        github_poll event) land in a SINGLE transaction via
-        ``create_schedule_run_and_advance()``, executed BEFORE
-        ``spawn_and_wait()`` ever runs the external action. A crash at any
-        point before that transaction commits leaves neither the row nor
-        the cursor move durable, so a restart sees "never fired" and fires
-        fresh -- never a duplicate. A crash any time after it commits
-        (including mid-spawn) leaves a row + advanced cursor that will
-        never be re-derived as "still due" (closing the double-fire this
-        replaces), at the cost of the row staying at status="running"
-        until the schedule_runs reaper (lifecycle.reap_stale_schedule_runs)
-        or the run's own terminal write, whichever comes first, resolves
-        it.
+        DELIVERY CONTRACT -- at-least-once up to confirmed process launch,
+        at-most-once past it. Three windows, three outcomes:
+
+        1. Before the transaction commits (below): a crash here leaves
+           neither the occurrence row nor the cursor move durable, so a
+           restart sees "never fired" and fires fresh. Never a duplicate.
+
+        2. Between the transaction committing and ``spawn_and_wait()``
+           confirming the external process actually launched (its
+           ``on_launched`` callback stamping ``dispatched_at``): the
+           occurrence row and cursor advance ARE durable, but the external
+           action was never attempted. Because the cursor already moved,
+           ordinary missed-fire recovery (``_check_missed_fires`` /
+           ``schedule_run_exists_since``) will never reconsider this
+           schedule as due again -- so a dedicated startup scan,
+           ``_recover_undispatched_fires()``, finds every top-level
+           (chain_depth == 0) ``status='running' AND dispatched_at IS
+           NULL`` row, tombstones it (``failed`` /
+           ``RunReasons.FAILED_NEVER_DISPATCHED``), and re-fires a fresh
+           occurrence with the SAME ``trigger_context`` it never got to
+           use. This is the at-least-once guarantee: an occurrence that
+           was committed to is retried until it is genuinely attempted.
+           Chain children (chain_depth > 0) are tombstoned but not
+           auto-retried -- narrower, accepted gap; the parent occurrence's
+           own outcome is unaffected, only a follow-on on_success/on_fail
+           step is lost.
+
+        3. After ``dispatched_at`` is confirmed: the external process
+           genuinely exists. A crash from here on is NOT retried -- the
+           row is left at status="running" until the schedule_runs reaper
+           (``lifecycle.reap_stale_schedule_runs``) or the run's own
+           terminal write resolves it to ``timed_out``/``completed``/
+           ``failed``. Re-firing here would risk running the same external
+           action twice (it may already be running independently in its
+           own process group, or have already finished) -- the explicit
+           at-most-once boundary of this contract, chosen because a
+           duplicate real-world side effect is worse than one lost/
+           unretried outcome once launch is confirmed.
         """
         sid = schedule["id"]
         now = time.time()
@@ -1549,6 +1665,10 @@ class SchedulerEngine:
             # spawn_and_wait() below always runs AFTER this transaction
             # commits, never inside it, so a crash before this call can at
             # worst discard an occurrence that was never durably recorded.
+            # A crash AFTER this commits but before spawn_and_wait confirms
+            # launch is the second window in this method's delivery-
+            # contract docstring above -- _recover_undispatched_fires()
+            # handles it at the next startup, not here.
             await self._svc.create_schedule_run_and_advance(
                 {
                     "id": run_id,
@@ -1591,6 +1711,12 @@ class SchedulerEngine:
                 tmp_path=_tmp_path,
                 cwd=action_cwd,
                 action_kind=schedule.get("action_kind"),
+                # Stamps dispatched_at the instant the OS process is
+                # confirmed to exist -- the signal _recover_undispatched_
+                # fires() uses to tell "committed but never launched" (safe
+                # to re-fire) apart from "launched, outcome merely lost"
+                # (never re-fired; see this method's docstring).
+                on_launched=lambda: self._mark_dispatched(run_id),
             )
             end_time = time.time()
             status = "completed" if exit_code == 0 else "failed"

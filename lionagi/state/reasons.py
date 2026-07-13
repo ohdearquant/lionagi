@@ -86,6 +86,11 @@ class RunReasons:
     # ADR-0071 D4: task-application worker lease outcomes.
     QUEUED_LEASE_EXPIRED = "run.queued.lease_expired"
     FAILED_LEASE_ATTEMPTS_EXHAUSTED = "run.failed.lease_attempts_exhausted"
+    # The occurrence's transaction committed but the scheduler crashed
+    # before confirming the external process launched; a startup recovery
+    # scan tombstones the orphaned row with this code and re-fires a fresh
+    # occurrence in its place.
+    FAILED_NEVER_DISPATCHED = "run.failed.never_dispatched"
 
 
 class SessionReasons:

@@ -47,6 +47,8 @@ class SchedulerStateService(Protocol):
 
     async def schedule_run_exists_since(self, schedule_id: str, since: float) -> bool: ...
 
+    async def list_undispatched_schedule_runs(self) -> list[dict[str, Any]]: ...
+
     async def update_schedule_run(self, run_id: str, **fields: Any) -> None: ...
 
     async def create_invocation(self, invocation: dict[str, Any]) -> None: ...
@@ -123,6 +125,10 @@ class _DBSchedulerStateService:
     async def schedule_run_exists_since(self, schedule_id: str, since: float) -> bool:
         async with StateDB() as db:
             return await db.schedule_run_exists_since(schedule_id, since)
+
+    async def list_undispatched_schedule_runs(self) -> list[dict[str, Any]]:
+        async with StateDB() as db:
+            return await db.list_undispatched_schedule_runs()
 
     async def update_schedule_run(self, run_id: str, **fields: Any) -> None:
         async with StateDB() as db:

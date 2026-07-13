@@ -1243,7 +1243,8 @@ class StateDB:
                       required_capabilities  JSON,
                       execution_target       TEXT,
                       library_ref             TEXT,
-                      library_content_hash    TEXT
+                      library_content_hash    TEXT,
+                      dispatched_at           REAL
                     )
                     """
                 )
@@ -2469,7 +2470,14 @@ class StateDB:
         **fields: Any,
     ) -> None:
         """Update schedule_run fields; route status through update_status()."""
-        allowed = {"status", "exit_code", "ended_at", "error_detail", "invocation_id"}
+        allowed = {
+            "status",
+            "exit_code",
+            "ended_at",
+            "error_detail",
+            "invocation_id",
+            "dispatched_at",
+        }
         bad = set(fields) - allowed
         if bad:
             raise ValueError(f"Invalid schedule_run field(s): {bad}")
@@ -2790,6 +2798,45 @@ class StateDB:
                 )
             ).first()
         return row is not None
+
+    async def list_undispatched_schedule_runs(self) -> list[dict[str, Any]]:
+        """Scheduler-fired occurrence rows whose transaction committed but
+        whose external process launch was never confirmed.
+
+        A row lands here when ``create_schedule_run_and_advance()`` commits
+        (the occurrence exists, the schedule's cursor has moved past it) but
+        the scheduler engine crashes before ``spawn_and_wait()``'s
+        ``on_launched`` callback stamps ``dispatched_at`` -- i.e. sometime
+        between the transaction committing and the OS process actually
+        existing. Because the cursor already moved, ``schedule_run_exists_
+        since()``-based missed-fire recovery will never reconsider this
+        occurrence (the schedule no longer looks due), and the external
+        action was never attempted -- so without a dedicated scan the fire
+        is silently lost, eventually just marked ``timed_out`` by the
+        stale-run reaper. ``SchedulerEngine._recover_undispatched_fires()``
+        runs this once at startup and re-fires each row.
+
+        Scoped to ``schedule_id IS NOT NULL`` (scheduler-fired rows only --
+        mirrors the same exclusion ``reap_stale_schedule_runs()`` applies to
+        the leased ad-hoc task queue, which has its own dispatch/lease model
+        entirely and is never launched through ``spawn_and_wait``'s
+        ``on_launched`` path in the first place, so it never sets
+        dispatched_at and would otherwise false-positive here).
+        """
+        async with self._read() as conn:
+            rows = (
+                (
+                    await conn.execute(
+                        text(
+                            "SELECT * FROM schedule_runs WHERE status = 'running' "
+                            "AND dispatched_at IS NULL AND schedule_id IS NOT NULL"
+                        )
+                    )
+                )
+                .mappings()
+                .all()
+            )
+        return [self._row_to_dict(r) for r in rows]
 
     async def get_schedule_run(self, run_id: str) -> dict[str, Any] | None:
         async with self._read() as conn:

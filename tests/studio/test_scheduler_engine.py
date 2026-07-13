@@ -51,6 +51,7 @@ def _make_svc() -> AsyncMock:
     svc.create_schedule_run = AsyncMock()
     svc.create_schedule_run_and_advance = AsyncMock()
     svc.schedule_run_exists_since = AsyncMock(return_value=False)
+    svc.list_undispatched_schedule_runs = AsyncMock(return_value=[])
     svc.update_schedule_run = AsyncMock()
     svc.create_invocation = AsyncMock()
     svc.update_invocation = AsyncMock()
