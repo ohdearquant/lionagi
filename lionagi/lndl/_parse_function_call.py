@@ -1,17 +1,8 @@
 # Copyright (c) 2025, HaiyangLi <quantocean.li at gmail dot com>
 # SPDX-License-Identifier: Apache-2.0
 
-"""Function call parser for LNDL <lact> bodies.
-
-Parses Python-style function calls into a dict with 'operation', optional
-'service', and 'arguments'.  When a service prefix is present (e.g.
-``svc.tool(...)``), ``qualified_name`` returns ``"svc.tool"`` — this is the
-name that should be used for tool-registry lookup so namespaced tools work.
-
-Also supports:
-- Batch parsing: [call1(...), call2(...)]
-- Reserved keyword handling: from= -> from_= (Python keywords as args)
-"""
+"""Function call parser for LNDL <lact> bodies — parses Python-style calls
+into a dict of action/service/arguments, plus batch and reserved-keyword handling."""
 
 from __future__ import annotations
 
@@ -44,46 +35,22 @@ __all__ = (
 
 
 def qualified_name(parsed: dict[str, Any]) -> str:
-    """Return the tool name suitable for registry lookup.
-
-    When the parsed call has a service prefix, returns ``"service.action"``;
-    otherwise returns just ``"action"``.
-    """
+    """Return the tool-registry lookup name: ``"service.action"`` when a
+    service prefix is present, else just ``"action"``."""
     svc = parsed.get("service")
     act = parsed["action"]
     return f"{svc}.{act}" if svc else act
 
 
 def _escape_reserved_keywords(call_str: str) -> str:
-    """Escape Python reserved keywords used as argument names.
-
-    Converts `from=` to `from_=` so ast.parse can handle it.
-    The underscore version is what Pydantic expects for aliased fields.
-
-    Args:
-        call_str: Function call string that may contain reserved keywords
-
-    Returns:
-        String with reserved keywords escaped
-    """
+    """Convert ``from=`` to ``from_=`` (etc.) so ``ast.parse`` can handle
+    Python reserved keywords used as argument names."""
     return _RESERVED_KWARG_PATTERN.sub(r"\1_=", call_str)
 
 
 def _ast_to_value(node: ast.AST) -> Any:
-    """Convert AST node to Python value with recursive dict/list processing.
-
-    Handles nested dicts, lists, tuples, and JSON-style literals (true/false/null).
-    Normalizes JSON literals: true->True, false->False, null->None.
-
-    Args:
-        node: AST node to convert
-
-    Returns:
-        Python value
-
-    Raises:
-        ValueError: If node cannot be converted to a value
-    """
+    """Convert an AST node to a Python value, recursing into dicts/lists/tuples
+    and normalizing JSON-style literals (true/false/null)."""
     # Handle JSON-style boolean/null names: true, false, null
     if isinstance(node, ast.Name):
         if node.id in ("true", "false", "null"):
@@ -112,21 +79,8 @@ def _ast_to_value(node: ast.AST) -> Any:
 
 
 def parse_function_call(call_str: str) -> dict[str, Any]:
-    """Parse a Python-style function call string.
-
-    Handles optional service prefix (``service.action(...)``):
-        - Simple: ``search("q")`` → ``{action: "search", ...}``
-        - Namespaced: ``svc.tool("x")`` → ``{service: "svc", action: "tool", ...}``
-
-    Use ``qualified_name(parsed)`` to get the registry-lookup name
-    (``"svc.action"`` when service is present, else ``"action"``).
-
-    Returns:
-        Dict with ``action``, optional ``service``, and ``arguments``.
-
-    Raises:
-        ValueError: If the string is not a valid function call.
-    """
+    """Parse a Python-style function call string, handling an optional
+    service prefix (``svc.tool(...)`` → ``{service: "svc", action: "tool", ...}``)."""
     try:
         escaped_str = _escape_reserved_keywords(call_str)
 
@@ -175,13 +129,8 @@ def parse_function_call(call_str: str) -> dict[str, Any]:
 
 
 def parse_batch_function_calls(batch_str: str) -> list[dict[str, Any]]:
-    """Parse an array of function calls: ``[fn1(...), fn2(...)]``.
-
-    Returns a list of dicts in the same shape as ``parse_function_call``.
-
-    Raises:
-        ValueError: If the string is not a valid array of function calls.
-    """
+    """Parse ``[fn1(...), fn2(...)]`` into a list of dicts, each shaped like
+    ``parse_function_call``'s return value."""
     try:
         # Remove whitespace for easier parsing
         batch_str = batch_str.strip()

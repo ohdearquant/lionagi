@@ -377,9 +377,8 @@ async def _ndjson_from_cli(request: CodexCodeRequest):
     if CODEX_CLI is None:
         raise RuntimeError("Codex CLI not found. Install with: npm i -g @openai/codex")
     cmd = [CODEX_CLI, *request.as_cmd_args()]
-    # Do NOT pass cwd here: Codex CLI already receives the workspace via the
-    # '-C <repo>' argument emitted by as_cmd_args().  Setting cwd= would cause
-    # the CLI to resolve '-C repo' from inside 'repo', producing 'repo/repo'.
+    # Do NOT pass cwd here — Codex CLI already gets the workspace via -C <repo>;
+    # setting both double-resolves to 'repo/repo'. See docs/internals/runtime.md.
     async with contextlib.aclosing(ndjson_from_cli(cmd)) as stream:
         async for obj in stream:
             yield obj
@@ -477,9 +476,7 @@ async def stream_codex_cli(
                 )
                 session.model = obj.get("model")
                 # Codex uses "thread_id" not "session_id"; normalize into the
-                # metadata key every CLI provider's system chunk carries
-                # (mirrors claude_code.py) so run.py's engine-session-id
-                # capture works for Codex too.
+                # metadata key every CLI provider's system chunk carries.
                 sc = StreamChunk(type="system", metadata={**obj, "session_id": session.session_id})
                 session.chunks.append(sc)
                 yield sc
@@ -691,13 +688,8 @@ async def stream_codex_cli(
             elif typ in ("turn.failed", "error"):
                 session.is_error = True
                 err = obj.get("error", {})
-                # Message location varies by event type: "error" events carry
-                # a top-level "message" with no "error" key; "turn.failed"
-                # nests it under error.message. Check both.
-                # Capture the raw value before null-normalising: the
-                # benign-EOS check below must distinguish an explicit
-                # "error": null (malformed envelope, real error) from the
-                # bare {} sentinel (benign EOF) — see below.
+                # Error message location varies by event type; capture the raw
+                # value pre-normalization for the benign-EOS check below.
                 _raw_err = err
                 if err is None:
                     err = {}
@@ -714,14 +706,8 @@ async def stream_codex_cli(
                     if isinstance(err, dict)
                     else obj.get("message", str(err))
                 )
-                # Some codex CLI versions emit {"type": "error", "error": {}}
-                # when a resumed session ends normally (benign EOS, not a real
-                # failure) — tag it so run() treats it as clean EOS rather
-                # than RunFailed. All must hold: type == "error" ("turn.failed"
-                # is never benign); the RAW payload is exactly {} (a
-                # structured-but-empty payload or explicit null is a real,
-                # if sparse, failure — test _raw_err, pre null-normalisation);
-                # no other failure keys (code/message/status) present.
+                # Benign-EOS sentinel on resumed sessions — see docs/internals/runtime.md
+                # for the exact 3-condition classification.
                 _is_benign_eos = (
                     typ == "error"
                     and "error" in obj  # a bare {"type": "error"} is malformed, not EOF

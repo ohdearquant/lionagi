@@ -133,11 +133,8 @@ async def _execute_with_retry(
     default: Any,
     **kwargs,
 ) -> tuple[int, Any]:
-    """Execute function with exponential backoff retry.
-
-    Returns (index, result) tuple to preserve ordering in concurrent execution.
-    Cancellation exceptions are never retried (respects structured concurrency).
-    """
+    """Execute function with exponential backoff retry; returns (index, result) to
+    preserve ordering. Cancellation is never retried (respects structured concurrency)."""
     attempts = 0
     current_delay = initial_delay
 

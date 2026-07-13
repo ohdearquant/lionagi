@@ -28,9 +28,7 @@ class StopStream(Exception):  # noqa: N818
 
 def attempt_extract(text: str, capabilities: Operable) -> tuple[list[Any], list[Any], list[Any]]:
     """Parse fenced JSON capability blocks from an assistant message; returns (bundles, violations, rejects).
-
-    Keys ⊆ grant → validated bundle; keys outside grant → CapabilityViolation; schema failure → EmissionRejected.
-    """
+    Keys ⊆ grant → validated bundle; keys outside grant → violation; schema failure → reject."""
     if not text or not isinstance(text, str):
         return [], [], []
     from lionagi.ln.fuzzy._extract_json import extract_json

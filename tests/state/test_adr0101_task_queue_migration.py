@@ -757,6 +757,11 @@ _EXCLUDED_COLUMNS = {
     # for a schedule-spawned run); excluded here for the same reason as the
     # D2 columns above.
     "lease_attempts",
+    # Delivery-contract marker (see schema.sql) — additive, asserted
+    # separately (must be NULL for a schedule-spawned run that hasn't
+    # confirmed dispatch); excluded here for the same reason as the D2
+    # columns above.
+    "dispatched_at",
 }
 
 
@@ -809,6 +814,7 @@ async def test_schedule_spawned_run_stays_byte_identical(db: StateDB) -> None:
         "execution_target",
         "library_ref",
         "library_content_hash",
+        "dispatched_at",
     ):
         assert row_after_create[col] is None
     # ADR-0071 D4 additive column — defaults to 0, not NULL.

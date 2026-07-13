@@ -3,10 +3,8 @@
 
 """NudgeEngine — just-in-time guidance and status nudges for coding-agent tool calls.
 
-Rides the CodingToolkit "*" post-hook plane: on every tool call it assembles a
-NudgeContext (token budget, message counts, recent tool-call history) and asks
-each registered NudgeRule whether it should fire. Triggered messages are merged
-into a single suffix, highest priority first, dropped once a token cap is hit.
+Rides the CodingToolkit "*" post-hook plane, evaluating NudgeRules against
+live branch state and merging triggered messages under a token cap.
 """
 
 from __future__ import annotations
@@ -176,11 +174,9 @@ class NudgeEngine:
     def evaluate(self, *, files_tracked: int = 0) -> str | None:
         """Build a NudgeContext, fire eligible rules, and return the merged suffix.
 
-        Firing bookkeeping (once/cooldown state) is only committed for rules whose
-        message actually survives the token-cap merge — a message dropped by the
-        cap must not be silently consumed as if it had been delivered. A rule whose
-        condition or message raises is skipped and logged; it never breaks the
-        other rules or the caller.
+        Once/cooldown bookkeeping commits only for rules whose message survives
+        the token-cap merge — a dropped message must not count as delivered.
+        See docs/internals/runtime.md.
         """
         self._call_count += 1
         ctx = self._build_context(files_tracked)
@@ -249,9 +245,8 @@ class NudgeEngine:
     def _merge(self, candidates: list[tuple[NudgeRule, str]]) -> tuple[str | None, list[NudgeRule]]:
         """Merge candidate messages under the token cap; return (text, surviving rules).
 
-        Only rules present in the returned survivor list actually had their message
-        delivered — callers must gate once/cooldown bookkeeping on that list, not on
-        `candidates`, or a cap-dropped message is wrongly treated as delivered.
+        Only the returned survivor list had its message delivered — gate
+        once/cooldown bookkeeping on that, not on `candidates`.
         """
         if not candidates:
             return None, []

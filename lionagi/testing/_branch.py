@@ -24,17 +24,8 @@ def scripted_imodel(
     model: str = "scripted-test",
     **imodel_kwargs: Any,
 ) -> iModel:
-    """Build an iModel wired to a ``ScriptedEndpoint``.
-
-    Args:
-        script: a path (str/Path), dict, list of response dicts, or
-            ``ScriptModel`` instance.
-        model: model name to record in payloads (cosmetic for tests).
-        **imodel_kwargs: forwarded to ``iModel(...)``.
-
-    Returns:
-        ``iModel`` ready to plug into a ``Branch``.
-    """
+    """Build an iModel wired to a ``ScriptedEndpoint``. ``script`` accepts a path, dict,
+    list of response dicts, or ``ScriptModel`` instance."""
 
     script_obj = ScriptModel.coerce(script)
     # iModel doesn't know about ``script``; the endpoint pops it. We pass it
@@ -64,11 +55,8 @@ class TestBranch:
         system: Any = None,
         **branch_kwargs: Any,
     ) -> Branch:
-        """Build a branch backed by ``script``.
-
-        ``script`` accepts any input ``ScriptModel.coerce`` accepts: a path
-        (YAML/JSON), a dict, a list of response dicts, or a ``ScriptModel``.
-        """
+        """Build a branch backed by ``script`` (path, dict, list of response dicts, or
+        ``ScriptModel``, per ``ScriptModel.coerce``)."""
         chat_model = scripted_imodel(script, model=model)
         return Branch(
             chat_model=chat_model,
@@ -93,11 +81,7 @@ class TestBranch:
         text: str | list[str],
         **kwargs: Any,
     ) -> Branch:
-        """Cheapest fixture: one or more pure-text responses, in order.
-
-        ``TestBranch.from_text("hi")`` is equivalent to
-        ``TestBranch.from_responses([{"type": "text", "content": "hi"}])``.
-        """
+        """Cheapest fixture: one or more pure-text responses, in order."""
         if isinstance(text, str):
             responses = [{"type": "text", "content": text}]
         else:
@@ -116,11 +100,8 @@ class TestBranch:
 
     @staticmethod
     def scripted(branch: Branch) -> ScriptedEndpoint:
-        """Return the ``ScriptedEndpoint`` driving this branch.
-
-        Raises ``TypeError`` if the branch isn't scripted — useful for
-        defending shared fixtures against accidental real-API leaks.
-        """
+        """Return the ``ScriptedEndpoint`` driving this branch; raises ``TypeError`` if
+        the branch isn't scripted (defends shared fixtures against real-API leaks)."""
         endpoint = branch.chat_model.endpoint
         if not isinstance(endpoint, ScriptedEndpoint):
             raise TypeError(

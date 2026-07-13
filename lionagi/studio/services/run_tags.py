@@ -43,9 +43,8 @@ async def add_tag(session_id: str, tag: str) -> None:
         raise HTTPException(status_code=422, detail="tag must not be empty")
 
     if not DEFAULT_DB_PATH.exists():
-        # A tag write on a fresh install must not leave a partial db behind
-        # (only run_tags, no sessions/etc). Apply the full schema first via
-        # StateDB so every table exists before this module adds run_tags.
+        # Apply the full schema first so a tag write never leaves a partial
+        # db behind (only run_tags, no sessions/etc).
         _db = StateDB()
         await _db.open()
         await _db.close()
@@ -63,10 +62,8 @@ async def add_tag(session_id: str, tag: str) -> None:
 async def remove_tag(session_id: str, tag: str) -> None:
     """Detach a tag from a run (session)."""
     if not DEFAULT_DB_PATH.exists():
-        # Nothing to detach, and a delete must never create the db file
-        # (mirrors the read-path guards). Only add_tag initializes the full
-        # schema — a bare _ensure_table here would leave a run_tags-only db
-        # that makes every later sessions query fail.
+        # Nothing to detach; a delete must never create the db file (a bare
+        # _ensure_table would leave a run_tags-only db behind).
         return
     async with _open_db(_DB) as db:
         await _ensure_table(db)
@@ -78,12 +75,8 @@ async def remove_tag(session_id: str, tag: str) -> None:
 
 
 async def tags_for_sessions(session_ids: list[str]) -> dict[str, list[str]]:
-    """Batch-fetch tags for many sessions in ONE query (no N+1).
-
-    Returns {session_id: [tags...]} for sessions that carry at least one tag;
-    sessions with no tags are simply absent from the result (caller defaults
-    to []).
-    """
+    """Batch-fetch tags for many sessions in ONE query (no N+1). Returns
+    {session_id: [tags...]}; sessions with no tags are absent from the result."""
     if not DEFAULT_DB_PATH.exists():
         return {}
     if not session_ids:
@@ -91,8 +84,6 @@ async def tags_for_sessions(session_ids: list[str]) -> dict[str, list[str]]:
 
     # Chunk the IN(...) list so a large run history cannot exceed SQLite's
     # bound-variable limit (SQLITE_MAX_VARIABLE_NUMBER, 999 on older builds).
-    # Each session_id falls in exactly one chunk, so its tags all come back
-    # from a single ordered query.
     out: dict[str, list[str]] = {}
     async with _open_db(_DB) as db:
         await _ensure_table(db)
@@ -111,11 +102,8 @@ async def tags_for_sessions(session_ids: list[str]) -> dict[str, list[str]]:
 
 async def session_ids_with_tags(tags: list[str]) -> set[str] | None:
     """The F8 SQL pre-filter: session_ids carrying ALL of `tags` (AND-composed).
-
-    Contract: an empty/None `tags` list returns None, meaning "no tag filter
-    requested" — callers must treat None as pass-through, not as "no matches".
-    A non-empty list with no matching sessions returns an empty set.
-    """
+    Contract: empty/None `tags` returns None ("no filter"), not "no matches" —
+    callers must treat None as pass-through."""
     if not DEFAULT_DB_PATH.exists():
         return None
     if not tags:
@@ -142,11 +130,8 @@ class TagBody(BaseModel):
 
 @studio_route("/sessions/{session_id}/tags", method="POST", area="sessions", name="add_run_tag")
 async def add_run_tag(session_id: str, body: TagBody) -> dict[str, Any]:
-    # Reject tagging a session that does not exist, matching the other
-    # session-child endpoints (stream, signals). list_runs() only surfaces
-    # rows joined from `sessions`, so a tag written against a stale or
-    # mistyped id would succeed with 200 yet stay invisible in /api/runs —
-    # a silent orphan. 404 instead of writing one.
+    # Reject tagging a nonexistent session: list_runs() only surfaces rows
+    # joined from `sessions`, so a tag on a stale id would be a silent orphan.
     from .sessions import session_exists
 
     if not await session_exists(session_id):

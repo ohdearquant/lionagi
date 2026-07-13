@@ -43,10 +43,8 @@ async def ndjson_from_cli(
     if stdin is not _INHERIT_STDIN:
         kwargs["stdin"] = stdin
     proc = await asyncio.create_subprocess_exec(*cmd, **kwargs)
-    # Capture PGID immediately — if we wait until teardown, the child may have
-    # exited and been reaped, and os.getpgid(proc.pid) would raise
-    # ProcessLookupError. start_new_session=True makes pgid == proc.pid.
-    # The pid-guard and platform check live in aterminate_process_group.
+    # Capture PGID immediately — waiting until teardown risks ProcessLookupError
+    # if the child already exited. See docs/internals/runtime.md.
 
     decoder = codecs.getincrementaldecoder("utf-8")()
     json_decoder = json.JSONDecoder()
@@ -169,11 +167,7 @@ def resolve_cli_workspace(repo: Path | None, workspace: str | None) -> Path:
 
 
 def validate_message_prompt(data: dict) -> dict:
-    """Extract prompt from a messages list when prompt is not already set.
-
-    Shared by Gemini, Pi, and Codex request models. Extracts non-system message
-    content into prompt; hoists the first system message into system_prompt.
-    """
+    """Derive prompt/system_prompt from messages when prompt is unset (shared by Gemini, Pi, Codex request models)."""
     from lionagi import ln
 
     if data.get("prompt"):

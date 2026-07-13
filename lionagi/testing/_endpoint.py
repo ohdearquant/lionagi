@@ -60,9 +60,8 @@ class ScriptedEndpoint(AgenticEndpoint):
     DEFAULT_CONCURRENCY_LIMIT: ClassVar[int] = 3
 
     def __init__(self, config: Any = None, **kwargs: Any) -> None:
-        # ── pop our test-only kwargs BEFORE super so EndpointConfig doesn't
-        # see them. EndpointConfig drops unknown keys into ``config.kwargs``
-        # which then leak into request payloads.
+        # pop test-only kwargs BEFORE super: EndpointConfig drops unknown keys
+        # into config.kwargs, which then leak into request payloads.
         script = kwargs.pop("script", None)
         script_was_passed = script is not None
         if script is None:
@@ -80,9 +79,8 @@ class ScriptedEndpoint(AgenticEndpoint):
         else:
             self._script = ScriptModel()
             if not script_was_passed:
-                # No script kwarg AND no env var — the first call will raise
-                # a confusing "exhausted" error several layers downstream.
-                # Surface it now so tests fail with a clear message.
+                # No script and no env var: surface a clear warning now instead of
+                # a confusing ScriptExhaustedError several layers downstream.
                 logger.warning(
                     "ScriptedEndpoint constructed with no script and no "
                     "%s env var. The first call will raise "
@@ -222,14 +220,8 @@ class ScriptedEndpoint(AgenticEndpoint):
         return None
 
     def copy_runtime_state_to(self, other: Endpoint) -> None:
-        """Carry script + recorded calls across an ``iModel.copy()`` clone.
-
-        The script is **deep-copied** so the clone gets an independent cursor
-        — otherwise positional matching would cross-contaminate (clone A
-        consuming entry 0, clone B getting entry 1 instead of 0). Recorded
-        calls are shallow-copied for inspection but each clone records its
-        own future calls.
-        """
+        """Carry script + recorded calls across an ``iModel.copy()`` clone. Script is
+        deep-copied for an independent cursor; see docs/internals/runtime.md."""
         super().copy_runtime_state_to(other)
         if isinstance(other, ScriptedEndpoint):
             other._script = copy.deepcopy(self._script)

@@ -52,6 +52,8 @@ __all__ = (
     "PluginRecord",
     "PluginRegistry",
     "PluginState",
+    "PluginToolCollisionError",
+    "ToolTarget",
 )
 
 
@@ -97,6 +99,31 @@ class PluginActivationError(RuntimeError):
         super().__init__(message)
 
 
+@dataclass
+class ToolTarget:
+    """A plugin-declared tool resolved for a consumer, e.g. ``ActionManager``.
+
+    Carries just enough to activate it: which plugin owns the name, and the
+    manifest's bundle-relative ``target`` string to hand to ``activate_target``.
+    """
+
+    plugin_name: str
+    target: str
+
+
+class PluginToolCollisionError(RuntimeError):
+    """ADR-0088 D6: two enabled plugins declare the same non-namespaced tool name.
+
+    Tool names are called bare by the model with no namespace to disambiguate
+    them, so this is a hard error rather than a shadow — the diagnostic names
+    both plugins and the surface, and resolution is human: disable one.
+    """
+
+    def __init__(self, tool_name: str, message: str) -> None:
+        self.tool_name = tool_name
+        super().__init__(message)
+
+
 def _enabled_flag(name: str, settings: dict[str, Any]) -> bool:
     plugins_block = settings.get("plugins", {})
     if not isinstance(plugins_block, dict):
@@ -105,6 +132,13 @@ def _enabled_flag(name: str, settings: dict[str, Any]) -> bool:
     if not isinstance(entry, dict):
         return True
     return bool(entry.get("enabled", True))
+
+
+def _is_live_active(manifest: PluginManifest) -> bool:
+    """Compatible + enabled, read fresh from settings — never from a cached ``PluginRecord``."""
+    return manifest.is_compatible(_lionagi_version) and _enabled_flag(
+        manifest.name, read_user_settings()
+    )
 
 
 def _tool_names(manifest: PluginManifest) -> list[str]:
@@ -329,20 +363,66 @@ def _rescan(record: PluginRecord) -> DiscoveredPlugin | None:
     return fresh if fresh.manifest is not None else None
 
 
-def _revalidate_trust(record: PluginRecord) -> TrustState:
-    """Recompute trust fresh against the files (and manifest) on disk right now.
+def _tool_target_for(manifest: PluginManifest, tool_name: str) -> str | None:
+    """The declared ``target`` string for *tool_name* in *manifest*, or ``None``."""
+    for tool in manifest.capabilities.tools:
+        if tool.name == tool_name:
+            return tool.target
+    return None
 
-    Capability-exposing calls (resolving a profile file, importing a target)
-    must not trust the process-cached snapshot's verdict; they recompute
-    trust against a freshly re-scanned manifest + declared files right
-    before handing out content. Bundles are small, so a full rescan+rehash
-    per call is cheap — this avoids a second, separately-fallible staleness
-    signal (e.g. mtime).
+
+def _fresh_active_plugins(
+    records: list[PluginRecord],
+) -> tuple[
+    dict[str, DiscoveredPlugin],
+    dict[str, list[str]],
+    dict[str, list[DiscoveredPlugin]],
+]:
+    """Rebuild live eligibility and tool ownership from freshly scanned manifests.
+
+    The process-cached records are only bundle-directory candidates. Duplicate
+    manifest names and named-capability collisions must be recomputed from the
+    current manifests before any capability is exposed. Ownership lists retain
+    repeated declarations from one manifest so they collide just like declarations
+    from separate plugins.
     """
-    fresh = _rescan(record)
-    if fresh is None:
-        return TrustState.CHANGED
-    return _trust_state(fresh)
+    by_name: dict[str, list[DiscoveredPlugin]] = {}
+    for record in records:
+        fresh = _rescan(record)
+        if fresh is None:
+            continue
+        assert fresh.manifest is not None
+        by_name.setdefault(fresh.manifest.name, []).append(fresh)
+
+    collided_names = {name for name, group in by_name.items() if len(group) > 1}
+    candidates: list[DiscoveredPlugin] = []
+    for name, group in by_name.items():
+        if name in collided_names:
+            continue
+        fresh = group[0]
+        assert fresh.manifest is not None
+        if not _is_live_active(fresh.manifest):
+            continue
+        if _trust_state(fresh) is not TrustState.TRUSTED:
+            continue
+        candidates.append(fresh)
+
+    tool_owners: dict[str, list[str]] = {}
+    for fresh in candidates:
+        assert fresh.manifest is not None
+        for tool_name in _tool_names(fresh.manifest):
+            tool_owners.setdefault(tool_name, []).append(fresh.manifest.name)
+
+    for owner_names in tool_owners.values():
+        if len(owner_names) > 1:
+            collided_names.update(owner_names)
+
+    active = {
+        fresh.manifest.name: fresh
+        for fresh in candidates
+        if fresh.manifest is not None and fresh.manifest.name not in collided_names
+    }
+    return active, tool_owners, by_name
 
 
 def _target_resolution_map(manifest: PluginManifest) -> dict[str, tuple[str, str | None]]:
@@ -380,8 +460,9 @@ def _read_and_verify_target_bytes(*, bundle_dir: Path, module_path: str, plugin_
     currently-recorded trust hash for that exact declared path, and hand back
     those same bytes for the caller to compile/exec directly.
 
-    An earlier, broader trust check (``_revalidate_trust``) also hashes this
-    same file as part of validating the whole plugin, but that read is not
+    An earlier, broader trust check (``_trust_state`` over a freshly rescanned
+    manifest) also hashes this same file as part of validating the whole
+    plugin, but that read is not
     what gets executed — if the file were hashed there and then reopened
     separately for import, an atomic replacement of the file in between
     would execute content that was never verified. This function is the one
@@ -483,33 +564,65 @@ class PluginRegistry:
         agent-profile search joins this list.
         """
         out: dict[str, tuple[str, Path]] = {}
-        for record in cls._ensure_loaded():
-            if record.state is not PluginState.ACTIVE or record.manifest is None:
-                continue
-            fresh = _rescan(record)
-            if fresh is None or _trust_state(fresh) is not TrustState.TRUSTED:
-                continue
+        active, _, _ = _fresh_active_plugins(cls._ensure_loaded())
+        for plugin_name, fresh in active.items():
             assert fresh.manifest is not None
             for rel in fresh.manifest.capabilities.agents:
                 stem = Path(rel).stem
-                out[f"{record.name}/{stem}"] = (record.name, fresh.bundle_dir / rel)
+                out[f"{plugin_name}/{stem}"] = (plugin_name, fresh.bundle_dir / rel)
         return out
+
+    @classmethod
+    def resolve_tool_target(cls, tool_name: str) -> ToolTarget | None:
+        """ADR-0088 D3 consumer trigger: ``ActionManager`` tool-name-resolution miss.
+
+        ``_ensure_loaded()`` is only a candidate index of bundle directories;
+        eligibility and the declared target are both re-derived per call from
+        the same rescanned manifest, never from the cached ``PluginRecord``
+        (its ``state``/``enabled`` go stale without a ``reset()``). Returns
+        the target when exactly one live-eligible plugin declares
+        *tool_name*, ``None`` on a true miss (caller's own error applies
+        unchanged), and raises ``PluginToolCollisionError`` when more than
+        one live-eligible plugin claims it (ADR-0088 D6).
+        """
+        active, tool_owners, _ = _fresh_active_plugins(cls._ensure_loaded())
+        owner_names = tool_owners.get(tool_name, [])
+        distinct_owners = list(dict.fromkeys(owner_names))
+        if len(distinct_owners) > 1:
+            names = ", ".join(distinct_owners)
+            msg = (
+                f"tool {tool_name!r} is declared by multiple enabled plugins "
+                f"({names}) — disable one with `li plugin disable <name>`"
+            )
+            raise PluginToolCollisionError(tool_name, msg)
+        if len(owner_names) != 1:
+            return None
+        plugin_name = owner_names[0]
+        fresh = active.get(plugin_name)
+        if fresh is None:
+            return None
+        assert fresh.manifest is not None
+        target = _tool_target_for(fresh.manifest, tool_name)
+        assert target is not None
+        return ToolTarget(plugin_name=plugin_name, target=target)
 
     @classmethod
     def activate_target(cls, plugin_name: str, target: str) -> Any:
         """Stage 2: resolve a bundle-relative ``path.py:callable`` (or bare ``path.py`` module) reference.
 
-        Trust is revalidated fresh on *every* call, re-reading ``plugin.yaml``
+        Eligibility (compatible + enabled) and trust are both revalidated
+        fresh on *every* call, re-reading ``plugin.yaml``, current settings,
         and every declared file from disk right now rather than trusting the
         process-cached snapshot: an already-activated target must stop being
-        handed out the moment a declared file, or the manifest itself,
-        changes — not just refuse brand-new activations. Once that broad
-        check passes, the specific target file is read exactly once more —
-        that read's hash, checked against the currently-recorded trust entry
-        for it, and the bytes that get compiled/exec'd, are the same read
-        (see ``_read_and_verify_target_bytes``); nothing here hashes the file
-        and then separately reopens it to execute, which would leave a
-        window for the file to be swapped in between.
+        handed out the moment the plugin is disabled, or a declared file or
+        the manifest itself changes — not just refuse brand-new activations.
+        Once that broad check passes, the specific target file is read
+        exactly once more — that read's hash, checked against the
+        currently-recorded trust entry for it, and the bytes that get
+        compiled/exec'd, are the same read (see
+        ``_read_and_verify_target_bytes``); nothing here hashes the file and
+        then separately reopens it to execute, which would leave a window
+        for the file to be swapped in between.
 
         Imported only on first use, cached (success or failure) by
         ``(plugin, target, content hash)`` — a raising module is reported
@@ -517,18 +630,24 @@ class PluginRegistry:
         changed content always misses the cache rather than depending on an
         earlier call having evicted the stale entry.
         """
-        record = cls.get(plugin_name)
-        if record is None or record.state is not PluginState.ACTIVE or record.manifest is None:
+        active, _, by_name = _fresh_active_plugins(cls._ensure_loaded())
+        fresh = active.get(plugin_name)
+        if fresh is None:
+            matches = by_name.get(plugin_name, [])
+            if len(matches) == 1:
+                candidate = matches[0]
+                assert candidate.manifest is not None
+                if (
+                    _is_live_active(candidate.manifest)
+                    and _trust_state(candidate) is not TrustState.TRUSTED
+                ):
+                    msg = (
+                        f"plugin {plugin_name!r} is no longer trusted (the manifest or a "
+                        f"declared file changed since the cached scan) — re-run "
+                        f"`li plugin trust {plugin_name}` or `li plugin list` to refresh"
+                    )
+                    raise PluginActivationError(plugin_name, target, msg)
             msg = f"plugin {plugin_name!r} is not active (no such plugin, or untrusted/disabled/incompatible)"
-            raise PluginActivationError(plugin_name, target, msg)
-
-        fresh = _rescan(record)
-        if fresh is None or _trust_state(fresh) is not TrustState.TRUSTED:
-            msg = (
-                f"plugin {plugin_name!r} is no longer trusted (the manifest or a "
-                f"declared file changed since the cached scan) — re-run "
-                f"`li plugin trust {plugin_name}` or `li plugin list` to refresh"
-            )
             raise PluginActivationError(plugin_name, target, msg)
         assert fresh.manifest is not None
 

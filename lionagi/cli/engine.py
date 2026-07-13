@@ -208,10 +208,8 @@ async def _do_engine_run(args: argparse.Namespace) -> int:
     started_at = time.time()
 
     db = None
-    # session_id for signal persistence: the engine run creates its own
-    # sessions row (run_id) so Studio can stream signals live.  The
-    # engine_runs.session_id column still carries the user-supplied
-    # --session-id for cross-linking to an existing session.
+    # engine_runs.session_id carries the user's --session-id; signal_session_id
+    # is a separate sessions row (run_id) the engine creates for Studio streaming.
     signal_session_id: str | None = None
     if not args.no_persist:
         try:
@@ -230,15 +228,10 @@ async def _do_engine_run(args: argparse.Namespace) -> int:
             warn(f"could not open StateDB for persistence: {exc}")
             db = None
     if db is not None:
-        # Create a sessions row so session_signals FK is satisfied.  Guarded
-        # separately: a failure here only disables live signal streaming,
-        # never the engine_runs record itself.
+        # Guarded separately: failure here only disables live signal streaming.
         try:
-            # create_session is INSERT OR IGNORE: a pre-existing row with this
-            # id would be silently reused, appending our signals to an
-            # unrelated session and mirroring terminal status onto it.  run_id
-            # is a fresh uuid4 so this should never happen — but never bind to
-            # a row this run did not create.
+            # create_session is INSERT OR IGNORE — never bind to a pre-existing
+            # row. See docs/internals/cli.md for the silent-reuse risk.
             if await db.get_session(run_id) is not None:
                 warn(f"sessions row {run_id} already exists; skipping signal binding")
             else:
@@ -303,9 +296,8 @@ async def _do_engine_run(args: argparse.Namespace) -> int:
     ended_at: float | None = None
     try:
         engine = engine_class(**engine_kwargs)
-        # CodingEngine has its own .run() signature (positional spec + keyword
-        # test_cmd/workspace/export_dir); other engines use Engine.run() which
-        # dispatches to _run(run, <main_arg>, **run_kwargs).
+        # CodingEngine's .run() signature diverges from the other engines'.
+        # See docs/internals/cli.md.
         result = await engine.run(spec, on_event=on_event, session=_session, **run_kwargs)
     except Exception as exc:
         log_error(f"engine[{kind}] failed: {exc}")
@@ -322,12 +314,8 @@ async def _do_engine_run(args: argparse.Namespace) -> int:
             await db.close()
         return 1
     except BaseException as exc:
-        # asyncio.CancelledError and KeyboardInterrupt are BaseException paths that
-        # bypass the `except Exception` handler above.  Mark the row cancelled before
-        # re-raising so Studio doesn't show it as permanently 'running'.
-        # run_async() in lionagi/ln/concurrency/utils.py:86 cancels the task on
-        # SIGINT and then raises KeyboardInterrupt at :108; we re-raise here to
-        # preserve that exit-code behaviour (interpreter default for SIGINT).
+        # CancelledError/KeyboardInterrupt bypass `except Exception` above; mark
+        # cancelled before re-raising. See docs/internals/cli.md.
         ended_at = time.time()
         await _maybe_update_db(
             db,
@@ -351,9 +339,7 @@ async def _do_engine_run(args: argparse.Namespace) -> int:
     if _emission_failures:
         emission_error = "emission_missing: " + "; ".join(_emission_failures)
 
-    # A run where every agent made terminally errored (e.g. missing API key)
-    # must not be reported "completed" — fold the agent errors into the error
-    # column and mark the run failed instead of green.
+    # Every agent terminally erroring must not report "completed" as green.
     _total_agent_failure: bool = getattr(engine, "_total_agent_failure", False)
     if _total_agent_failure:
         _agent_errors: list[str] = getattr(engine, "_agent_errors", [])
@@ -362,12 +348,7 @@ async def _do_engine_run(args: argparse.Namespace) -> int:
             f"{emission_error}; {agent_error_text}" if emission_error else agent_error_text
         )
 
-    # Serialise result to stdout as JSON.
-    # export_dir: the CLI knows what directory it passed; neither CodeResultRecorded
-    # (lionagi/engines/coding.py:153 — fields: passed, measurements, caveats,
-    # experiment_ref, verdict_ref) nor the hypothesis string echo it back.  Source
-    # export_dir from args directly for kinds that accept the flag, falling back to
-    # result_data for any future engine model that does include it.
+    # Serialise result to stdout as JSON. export_dir sourcing: see docs/internals/cli.md.
     export_dir_from_args: str | None = args.export_dir if kind in ("coding", "hypothesis") else None
     export_dir_for_db: str | None = export_dir_from_args
     try:

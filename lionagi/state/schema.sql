@@ -523,7 +523,17 @@ CREATE TABLE IF NOT EXISTS schedule_runs (
   required_capabilities  JSON,
   execution_target       TEXT,
   library_ref             TEXT,
-  library_content_hash    TEXT
+  library_content_hash    TEXT,
+  -- Delivery-contract marker: stamped the moment the scheduler engine
+  -- confirms the external process for this occurrence was actually
+  -- launched (create_subprocess_exec returned), separate from fired_at
+  -- (when the occurrence + cursor advance committed) and updated_at (any
+  -- write). NULL means the occurrence's transaction committed but launch
+  -- was never confirmed -- the signal a startup recovery scan uses to
+  -- distinguish "crashed before dispatch, safe to re-fire" from
+  -- "dispatched, outcome merely lost" (see SchedulerEngine._fire_inner and
+  -- SchedulerEngine._recover_undispatched_fires).
+  dispatched_at           REAL
 );
 
 CREATE INDEX IF NOT EXISTS idx_sched_runs_schedule

@@ -607,6 +607,10 @@ schedule_runs = Table(
     Column("execution_target", Text),
     Column("library_ref", Text),
     Column("library_content_hash", Text),
+    # Delivery-contract marker: stamped once the scheduler engine confirms
+    # the external process for this occurrence was actually launched. See
+    # the schema.sql CREATE TABLE comment for the full rationale.
+    Column("dispatched_at", Float),
 )
 
 Index("idx_sched_runs_schedule", schedule_runs.c.schedule_id, schedule_runs.c.fired_at)

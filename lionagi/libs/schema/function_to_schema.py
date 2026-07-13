@@ -77,36 +77,7 @@ def function_to_schema(
     return_obj: bool = False,
 ) -> dict:
     """Generate an OpenAI-format function schema from type hints and docstrings.
-
-    Args:
-        func (Callable): The function to generate a schema for.
-        style (str): The docstring format. Can be 'google' (default) or
-            'reST'.
-        func_description (str, optional): A custom description for the
-            function. If not provided, the description will be extracted
-            from the function's docstring.
-        params_description (dict, optional): A dictionary mapping
-            parameter names to their descriptions. If not provided, the
-            parameter descriptions will be extracted from the function's
-            docstring.
-
-    Returns:
-        dict: A schema describing the function, including its name,
-        description, and parameter details.
-
-    Example:
-        >>> def example_func(param1: int, param2: str) -> bool:
-        ...     '''Example function.
-        ...
-        ...     Args:
-        ...         param1 (int): The first parameter.
-        ...         param2 (str): The second parameter.
-        ...     '''
-        ...     return True
-        >>> schema = function_to_schema(example_func)
-        >>> schema['function']['name']
-        'example_func'
-    """
+    func_description/parametert_description override extraction from the docstring."""
     func_name = f_.__name__
 
     if not func_description or not parametert_description:
