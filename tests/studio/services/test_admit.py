@@ -376,6 +376,35 @@ def test_notify_request_rejects_malformed_field_types():
     }
 
 
+def test_notify_request_rejects_present_but_null_optional_fields():
+    # An explicit `kind: null`/`dedup_key: null` is KEY-PRESENT, not
+    # KEY-ABSENT -- it must be rejected the same as any other wrong type,
+    # never silently passed through to DispatchSignal.
+    assert (
+        notify_request({"admission": {"notify": {"deliver_to": "lambda:leo", "kind": None}}})
+        is None
+    )
+    assert (
+        notify_request({"admission": {"notify": {"deliver_to": "lambda:leo", "dedup_key": None}}})
+        is None
+    )
+    # Empty string is also rejected for present optional fields.
+    assert (
+        notify_request({"admission": {"notify": {"deliver_to": "lambda:leo", "kind": ""}}}) is None
+    )
+    assert (
+        notify_request({"admission": {"notify": {"deliver_to": "lambda:leo", "dedup_key": ""}}})
+        is None
+    )
+    # A genuinely ABSENT kind/dedup_key stays optional -- payload still passes.
+    assert notify_request({"admission": {"notify": {"deliver_to": "lambda:leo"}}}) == {
+        "deliver_to": "lambda:leo"
+    }
+    assert notify_request(
+        {"admission": {"notify": {"deliver_to": "lambda:leo", "kind": "terminal_notify"}}}
+    ) == {"deliver_to": "lambda:leo", "kind": "terminal_notify"}
+
+
 # ── 6. waiter_ahead_count / holder_is_running direct coverage ───────────────
 
 

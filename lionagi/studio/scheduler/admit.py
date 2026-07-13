@@ -196,22 +196,26 @@ def notify_request(action_args: Mapping[str, Any]) -> dict[str, Any] | None:
     else ``None``.
 
     ``deliver_to`` must be a non-empty ``str``; the optional ``kind`` and
-    ``dedup_key`` fields, if present, must also be ``str``. A malformed
-    payload (e.g. ``deliver_to`` as an ``int``) is treated as no notify
-    request -- it must never surface later as a claim-time crash in
-    ``DispatchSignal``/``enqueue_dispatch``."""
+    ``dedup_key`` fields, when the key is present at all, must be a
+    non-empty ``str`` -- an explicit ``null`` is rejected the same as any
+    other wrong type, it is not treated as "absent". A malformed payload
+    (e.g. ``deliver_to`` as an ``int``, or an explicit ``kind: null``) is
+    treated as no notify request -- it must never surface later as a
+    claim-time crash in ``DispatchSignal``/``enqueue_dispatch``."""
     notify = _admission_opts(action_args).get("notify")
     if not isinstance(notify, dict):
         return None
     deliver_to = notify.get("deliver_to")
     if not isinstance(deliver_to, str) or not deliver_to:
         return None
-    kind = notify.get("kind")
-    if kind is not None and not isinstance(kind, str):
-        return None
-    dedup_key = notify.get("dedup_key")
-    if dedup_key is not None and not isinstance(dedup_key, str):
-        return None
+    if "kind" in notify:
+        kind = notify["kind"]
+        if not isinstance(kind, str) or not kind:
+            return None
+    if "dedup_key" in notify:
+        dedup_key = notify["dedup_key"]
+        if not isinstance(dedup_key, str) or not dedup_key:
+            return None
     return notify
 
 
