@@ -44,6 +44,7 @@ class HookPoint(str, Enum):
     SESSION_START = "session.start"
     SESSION_END = "session.end"
     BRANCH_CREATE = "branch.create"
+    BRANCH_END = "branch.end"
     # not-yet-wired: no emit() call in the codebase
     API_PRE_CALL = "api.pre_call"
     API_POST_CALL = "api.post_call"

@@ -418,6 +418,13 @@ async def run(
                 metadata["thinking"] = "\n".join(thinking_parts)
             if result_meta:
                 metadata["model_response"] = dict(result_meta)
+                # Clear after stamping so a later flush within the same run()
+                # call (e.g. a provider that reports usage per internal turn,
+                # with tool calls in between) doesn't restamp already-recorded
+                # usage onto a second AssistantResponse -- _collect_branch_usage
+                # sums across every message on the branch, so a stale/repeated
+                # result_meta here would double-count tokens/cost.
+                result_meta.clear()
             res = AssistantResponse(
                 content=AssistantResponseContent(assistant_response=text),
                 sender=branch.id,

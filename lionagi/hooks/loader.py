@@ -27,6 +27,7 @@ DEFAULT_HOOKS: dict[HookPoint, list[HookHandler]] = {
     HookPoint.SESSION_END: [_builtins.persist_session_end],
     HookPoint.MESSAGE_ADD: [_builtins.persist_message],
     HookPoint.BRANCH_CREATE: [_builtins.persist_branch_provenance],
+    HookPoint.BRANCH_END: [_builtins.persist_branch_end],
 }
 
 
@@ -34,6 +35,7 @@ _REGISTRY: dict[str, HookHandler] = {
     "persist_session_start": _builtins.persist_session_start,
     "persist_session_end": _builtins.persist_session_end,
     "persist_branch_provenance": _builtins.persist_branch_provenance,
+    "persist_branch_end": _builtins.persist_branch_end,
     "persist_message": _builtins.persist_message,
     "log_api_metrics": _builtins.log_api_metrics,
     "log_tool_call": _builtins.log_tool_call,

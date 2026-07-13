@@ -52,6 +52,8 @@ from ._orchestration import (
     start_live_persist,
     stop_live_persist,
     team_guidance,
+    team_history_context,
+    worker_is_cli,
 )
 
 logger = logging.getLogger(__name__)
@@ -496,6 +498,13 @@ async def _build_dag(
                     }
                 }
             )
+            # Attached-team history (if any) rides in operation context, not
+            # the system prompt — see team_history_context's docstring for why.
+            history_ctx = team_history_context(
+                env.team_data, agent_ids[i], messenger_bound=messenger_bound
+            )
+            if history_ctx:
+                ctx.append(history_ctx)
         w_effort = env.effort
         if not env.bare and w_profile and w_profile.effort:
             w_effort = w_profile.effort
@@ -591,6 +600,147 @@ async def _build_dag(
 # ── Resume: pre-mark checkpoint-completed nodes ───────────────────────────────
 
 
+def _reconstruct_spawned_nodes(
+    env: OrchestrationEnv,
+    plan_result: _PlanResult,
+    dag_state: _DagState,
+    checkpoint_ops: dict[str, dict],
+    checkpoint_spawned: list[dict],
+) -> None:
+    """Rebuild reactively spawned nodes from a checkpoint into the fresh graph.
+
+    A reactively spawned node has no entry in the persisted plan (only
+    planned legs do) — it must be reconstructed from what its own `spawned`
+    checkpoint entry recorded, then pre-completed exactly like a planned node
+    so the executor's terminal-status short-circuit (never a live re-run)
+    picks it up.
+
+    Three things must hold for a given entry, checked BEFORE any node is added
+    to the graph so a refusal never leaves it partially mutated:
+
+    1. It must carry `operation` (added in CHECKPOINT_VERSION 2, alongside
+       `assignee`/`instruction`/`parent_id`/`spawn_id`) — a checkpoint written
+       before that field set existed has nothing to rebuild an Operation node
+       from.
+    2. If it has a `parent_id`, that id must resolve to either a planned node
+       that is ITSELF checkpointed terminal (completed or failed in
+       `checkpoint_ops`), or another entry in this same `checkpoint_spawned`
+       list. A planned parent merely existing in the DAG is not enough — if
+       it crashed before its own checkpoint write landed, resume would
+       pre-complete this child while rerunning that parent live, and the
+       rerun can emit the same follow-up spawn again (duplicate work). If
+       the parent hasn't reached a checkpointed terminal state at all, the
+       spawn decision cannot be soundly replayed — resuming risks either
+       duplicating or silently dropping that work.
+    3. If it recorded an `assignee` (role-routed spawn), it must also carry a
+       `spawn_id` — role_node_builder stamps both together unconditionally at
+       construction time, and the finalize-time result-collection scan raises
+       a hard invariant error for any assignee-bearing node it finds without
+       one. A checkpoint entry missing `spawn_id` despite an `assignee` is
+       itself corrupt/pre-dates that field, not soundly replayable.
+
+    Either failure refuses resume for only the affected node(s), named in the
+    error, never the whole run merely because a spawn occurred.
+    """
+    from uuid import UUID as _UUID
+
+    from lionagi.operations.node import create_operation
+    from lionagi.protocols.graph.edge import Edge
+    from lionagi.protocols.types import EventStatus
+
+    legacy = [e for e in checkpoint_spawned if not e.get("operation")]
+    if legacy:
+        ids = ", ".join(str(e.get("node_id", "?")) for e in legacy)
+        raise FlowResumeError(
+            f"Resume refused for reactively spawned node(s) [{ids}]: this "
+            "checkpoint predates spawn-reconstruction support (no operation "
+            "type recorded for them), so they cannot be rebuilt. Re-run the "
+            "flow from scratch."
+        )
+
+    unrecognized = [
+        e["node_id"] for e in checkpoint_spawned if e.get("status") not in ("completed", "failed")
+    ]
+    if unrecognized:
+        raise FlowResumeError(
+            "Resume refused for reactively spawned node(s) "
+            f"[{', '.join(unrecognized)}]: checkpoint status is neither "
+            "'completed' nor 'failed', so it cannot be safely replayed."
+        )
+
+    unstamped = [
+        e["node_id"] for e in checkpoint_spawned if e.get("assignee") and not e.get("spawn_id")
+    ]
+    if unstamped:
+        raise FlowResumeError(
+            "Resume refused for reactively spawned node(s) "
+            f"[{', '.join(unstamped)}]: recorded a role assignee but no "
+            "spawn_id — role_node_builder stamps both together, so this "
+            "checkpoint predates spawn_id capture (or is otherwise corrupt) "
+            "and cannot be soundly rebuilt. Re-run the flow from scratch."
+        )
+
+    known_ids = {str(n) for n in dag_state.node_ids}
+    candidate_ids = {e["node_id"] for e in checkpoint_spawned}
+    terminal_planned_ids = {
+        str(node_id)
+        for agent_id, node_id in zip(plan_result.agent_ids, dag_state.node_ids, strict=True)
+        if (checkpoint_ops.get(agent_id) or {}).get("status") in ("completed", "failed")
+    }
+
+    unsound = [
+        f"{e['node_id']} (parent {e['parent_id']})"
+        for e in checkpoint_spawned
+        if e.get("parent_id")
+        and e["parent_id"] not in candidate_ids
+        and not (e["parent_id"] in known_ids and e["parent_id"] in terminal_planned_ids)
+    ]
+    if unsound:
+        raise FlowResumeError(
+            f"Resume refused for reactively spawned node(s) [{'; '.join(unsound)}]: "
+            "the op that spawned them had not itself reached a checkpointed "
+            "terminal state, so the spawn decision cannot be soundly replayed "
+            "— resuming risks either duplicating or silently dropping that "
+            "work. Re-run the flow from scratch."
+        )
+
+    graph = env.builder.get_graph()
+    built: dict[str, Any] = {}
+    for entry in checkpoint_spawned:
+        node_id = entry["node_id"]
+        assignee = entry.get("assignee")
+        spawn_id = entry.get("spawn_id")
+        metadata: dict[str, Any] = {}
+        if assignee:
+            metadata["assignee"] = assignee
+        if spawn_id:
+            metadata["spawn_id"] = spawn_id
+            metadata["reference_id"] = spawn_id
+        node = create_operation(
+            entry["operation"],
+            parameters={"instruction": entry.get("instruction") or ""},
+            id=_UUID(node_id),
+            metadata=metadata,
+        )
+        node.execution.status = (
+            EventStatus.COMPLETED if entry["status"] == "completed" else EventStatus.FAILED
+        )
+        node.execution.response = entry.get("response")
+        role_branch = dag_state.role_base.get(assignee) if assignee else None
+        if role_branch is not None:
+            node.branch_id = role_branch.id
+        built[node_id] = node
+
+    for node in built.values():
+        graph.add_node(node)
+    for entry in checkpoint_spawned:
+        parent_id = entry.get("parent_id")
+        if not parent_id:
+            continue
+        parent_uuid = _UUID(parent_id) if parent_id in known_ids else built[parent_id].id
+        graph.add_edge(Edge(head=parent_uuid, tail=built[entry["node_id"]].id, label=["spawn"]))
+
+
 def _apply_checkpoint_precompletion(
     env: OrchestrationEnv,
     plan_result: _PlanResult,
@@ -607,21 +757,16 @@ def _apply_checkpoint_precompletion(
     FAILED rather than silently re-run (they may have had side effects before
     the process died). A pending op with inherit_context is refused unless the
     caller passes allow_degraded_context — resume restores results-context
-    only, not conversation history (v1). checkpoint_spawned refuses resume
-    outright when non-empty: reactively spawned nodes aren't replayable from
-    the persisted plan, and silently proceeding would drop completed work.
+    only, not conversation history (v1). checkpoint_spawned entries are
+    rebuilt into the graph and pre-completed the same way (see
+    _reconstruct_spawned_nodes) — resume refuses only the specific spawned
+    node(s) it genuinely cannot replay soundly, never the whole run just
+    because a spawn occurred.
     """
     from lionagi.protocols.types import EventStatus
 
     if checkpoint_spawned:
-        spawned_ids = ", ".join(str(e.get("node_id", "?")) for e in checkpoint_spawned)
-        raise FlowResumeError(
-            "Resume refused: this checkpoint recorded reactively spawned "
-            f"node(s) [{spawned_ids}] that this version cannot replay. "
-            "Resuming would silently drop that completed work. Re-run the "
-            "flow from scratch, or resume only checkpoints without spawned "
-            "entries."
-        )
+        _reconstruct_spawned_nodes(env, plan_result, dag_state, checkpoint_ops, checkpoint_spawned)
 
     graph = env.builder.get_graph()
     degraded: list[str] = []
@@ -665,6 +810,7 @@ async def _execute_dag(
     checkpoint_config: dict | None = None,
     checkpoint_ops_seed: dict[str, dict] | None = None,
     checkpoint_flow_context: dict | None = None,
+    checkpoint_spawned_seed: list[dict] | None = None,
 ) -> _ExecResult:
     """Drive the planning engine over the DAG and collect per-agent results.
 
@@ -673,6 +819,13 @@ async def _execute_dag(
     completion/failure observers. checkpoint_flow_context seeds the
     executor's shared context workspace on resume with what was accumulated
     before the crash, so pending ops see the same workspace they would live.
+    checkpoint_spawned_seed carries forward any reactively spawned entries a
+    prior checkpoint already recorded (reconstructed into the graph by
+    _apply_checkpoint_precompletion before this call) — without it, this
+    generation's first flush would overwrite `spawned` with `[]`, and since
+    pre-completed nodes never re-emit a completion signal to re-record
+    themselves, a second crash before any NEW spawn occurs would silently
+    lose all the previously reconstructed work.
     """
     assignments = plan_result.assignments
     agent_ids = plan_result.agent_ids
@@ -710,6 +863,7 @@ async def _execute_dag(
             # lose it despite nothing having gone wrong with restoration.
             flow_context=dict(checkpoint_flow_context or {}),
             ops=dict(checkpoint_ops_seed or {}),
+            spawned=list(checkpoint_spawned_seed or []),
         )
         with contextlib.suppress(Exception):
             await _checkpoint_writer.flush()
@@ -721,10 +875,35 @@ async def _execute_dag(
     else:
         progress(f"Executing DAG (reactive off): {len(assignments)} assignments...")
     conc = max_concurrent if max_concurrent > 0 else max(len(assignments), 1)
+    # Restored spawns (from a prior checkpoint's `spawned` list, reconstructed
+    # into the graph before this call) already consumed part of the run's
+    # spawn budget and already exist as completed/failed work — both the
+    # live budget below and this generation's spawn accounting must count
+    # them, or a resumed --max-ops run could accept spawns beyond what was
+    # ever allowed, and restored-only spawned work would look like zero
+    # spawns happened at all.
+    restored_spawn_count = len(checkpoint_spawned_seed or [])
     # Spawn budget: when --max-ops is set, the initial plan + spawns share it.
     # Otherwise fall back to a conservative default so an un-capped reactive run
-    # cannot quietly fan out to dozens of (costly) child agents.
-    max_spawn = max(0, max_ops - len(assignments)) if max_ops > 0 else 20
+    # cannot quietly fan out to dozens of (costly) child agents. Either way,
+    # spawns already restored from a checkpoint count against it.
+    max_spawn = max(0, (max_ops - len(assignments) if max_ops > 0 else 20) - restored_spawn_count)
+    # role_node_builder's spawn-id sequence is closure-scoped and rebuilt
+    # fresh below every generation — on resume it must start past whatever
+    # ordinals the restored spawns already used, or a live spawn this
+    # generation reissues the same spawn_id (and artifact directory) as a
+    # restored one. Takes the MAX existing ordinal + 1 rather than assuming
+    # count == max: a crashed run can have gaps (a spawn allocated but never
+    # completed before the crash never made it into `spawned` at all), so
+    # counting restored entries would double-allocate into that gap.
+    _spawn_seq_start = 1
+    for _entry in checkpoint_spawned_seed or []:
+        _sid = _entry.get("spawn_id")
+        if not _sid:
+            continue
+        _, _, _suffix = _sid.rpartition("-")
+        if _suffix.isdigit():
+            _spawn_seq_start = max(_spawn_seq_start, int(_suffix) + 1)
 
     heartbeat_interval = 60
     max_idle_seconds = 600
@@ -819,10 +998,44 @@ async def _execute_dag(
                 )
             )
         else:
+            # Capture what resume needs to rebuild this node into a fresh
+            # graph: the operation type, its routed role (if any), and the
+            # instruction it ran with, read back off the still-live graph
+            # node (never removed once _accept_node adds it). parent_id
+            # comes straight off the signal — flow_progress_signals already
+            # resolves it (including through reactive spawns) via its own
+            # NodeSpawned observer. A lookup failure (should not normally
+            # happen) leaves operation/assignee/instruction unset, which
+            # resume treats as unreconstructable for this node alone.
+            spawn_fields: dict[str, Any] = {"parent_id": sig.parent_id}
+            with contextlib.suppress(Exception):
+                from uuid import UUID as _UUID
+
+                spawned_node = env.builder.get_graph().internal_nodes.get(_UUID(sig.op_id))
+                if spawned_node is not None:
+                    params = spawned_node.parameters
+                    spawn_fields["operation"] = spawned_node.operation
+                    spawn_fields["assignee"] = spawned_node.metadata.get("assignee")
+                    spawn_fields["instruction"] = (
+                        params.get("instruction")
+                        if isinstance(params, dict)
+                        else getattr(params, "instruction", None)
+                    )
+                    # role_node_builder stamps spawn_id unconditionally
+                    # (lionagi/orchestration/patterns.py), independent of
+                    # whether the request carried an assignee — captured the
+                    # same way regardless so reconstruction can restore it
+                    # and the finalize-time assignee-without-spawn_id
+                    # invariant check never trips for a resumed node.
+                    spawn_fields["spawn_id"] = spawned_node.metadata.get("spawn_id")
             _checkpoint_tasks.append(
                 _asyncio.ensure_future(
                     _checkpoint_writer.record_spawned(
-                        sig.op_id, status=status, response=response, flow_context=flow_ctx
+                        sig.op_id,
+                        status=status,
+                        response=response,
+                        flow_context=flow_ctx,
+                        **spawn_fields,
                     )
                 )
             )
@@ -963,7 +1176,11 @@ async def _execute_dag(
             reactive=reactive,
             spawn_type=SpawnRequest if reactive else None,
             node_builder=(
-                role_node_builder(role_base, decorate_instruction=_decorate_spawn_instruction)
+                role_node_builder(
+                    role_base,
+                    decorate_instruction=_decorate_spawn_instruction,
+                    start=_spawn_seq_start,
+                )
                 if reactive
                 else None
             ),
@@ -998,7 +1215,13 @@ async def _execute_dag(
             await _asyncio.gather(*_checkpoint_tasks, return_exceptions=True)
 
     op_results = dag_result.get("operation_results", {})
-    n_spawned = dag_result.get("spawned_operations", 0)
+    # Total spawn count for this run includes restored spawns from a prior
+    # checkpoint generation, not just what this generation's live executor
+    # spawned — otherwise a resume that reconstructs every spawned node as
+    # already-terminal (zero NEW spawns this generation) would report
+    # n_spawned=0 and silently skip the automatic synthesis path that gates
+    # on it (see the with_synthesis-or-n_spawned check in _run_flow_inner).
+    n_spawned = restored_spawn_count + dag_result.get("spawned_operations", 0)
 
     # Escalation backstop: a leg the executor tracked as escalated (gave up
     # instead of producing a result — see NodeEscalated / EscalationRequest)
@@ -1758,6 +1981,18 @@ async def _run_flow_inner(
         env.messenger = LionMessenger(env.exchange)
         env.messenger.on("help", make_help_coordinator(env))
         env.roster = {}
+        # Mixed-provider teams (heterogeneous --workers pool) build one worker
+        # branch at a time, so which teammates end up messenger-bound isn't
+        # fully known until _build_dag's loop below finishes. Resolve it here,
+        # for every team member up front, so each worker's prompt can flag
+        # CLI-provider teammates as unreachable via messenger regardless of
+        # build order (worker_is_cli is a cheap, side-effect-free pre-pass —
+        # no branch/iModel with real I/O is constructed).
+        env.messenger_names = frozenset(
+            agent_ids[i]
+            for i, ta in enumerate(assignments)
+            if not worker_is_cli(env, ta.assignee, pool[i % len(pool)] if pool else None)
+        )
 
     budget_preambles: dict[int, str] = {}
     if env.total_budget and assignments:
@@ -1809,6 +2044,9 @@ async def _run_flow_inner(
         checkpoint_ops_seed=resume_checkpoint.get("ops") if resume_checkpoint is not None else None,
         checkpoint_flow_context=(
             resume_checkpoint.get("flow_context") if resume_checkpoint is not None else None
+        ),
+        checkpoint_spawned_seed=(
+            resume_checkpoint.get("spawned") if resume_checkpoint is not None else None
         ),
     )
 
