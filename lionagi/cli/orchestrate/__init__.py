@@ -162,6 +162,30 @@ def _warn_if_shadowing_plugin_playbook(name: str) -> None:
     )
 
 
+def _warn_if_shadowing_global_playbook(name: str, matched_dir: Path) -> None:
+    """Log a shadow warning when a project-local playbook hides the same-named global one.
+
+    The nearer (project-local) file always wins on a bare-name collision;
+    this only makes the shadowing visible instead of silent — an untrusted
+    checkout could otherwise supply model instructions the user did not
+    intend to run whenever they invoke a familiar (globally-defined) name.
+    """
+    global_dir = Path.home() / ".lionagi"
+    if matched_dir == global_dir:
+        return
+    global_candidate = global_dir / "playbooks" / f"{name}.playbook.yaml"
+    if not global_candidate.is_file():
+        return
+
+    from .._logging import warn
+
+    local_candidate = matched_dir / "playbooks" / f"{name}.playbook.yaml"
+    warn(
+        f"playbook {name!r} at {local_candidate} shadows the global playbook "
+        f"at {global_candidate}; using the project-local file."
+    )
+
+
 def list_playbooks() -> list[str]:
     """List available playbook names, merged across ``.lionagi/`` dirs and active plugins.
 
@@ -241,6 +265,7 @@ def _resolve_playbook_path(name: str) -> tuple[object, str | None]:
                     f"playbook {name!r} resolves outside playbooks root (symlink escape blocked)",
                 )
             _warn_if_shadowing_plugin_playbook(name)
+            _warn_if_shadowing_global_playbook(name, d)
             return candidate, None
 
     plugin_path = _resolve_plugin_playbook_path(name)

@@ -122,6 +122,61 @@ def test_local_shadow_logs_a_warning(write_plugin, plugin_home, caplog):
     assert any("web-research" in rec.message for rec in caplog.records)
 
 
+def test_local_playbook_shadows_global_playbook_and_warns(tmp_path, monkeypatch, caplog):
+    """A project-local playbook wins over a same-named global one, but the
+    shadowing is now visible (not silent) since an untrusted checkout could
+    otherwise supply model instructions the user did not intend to run.
+    """
+    global_home = tmp_path / "global-home"
+    project_dir = tmp_path / "project"
+    global_home.mkdir()
+    project_dir.mkdir()
+
+    monkeypatch.setenv("HOME", str(global_home))
+    monkeypatch.chdir(project_dir)
+
+    global_playbooks = global_home / ".lionagi" / "playbooks"
+    global_playbooks.mkdir(parents=True)
+    (global_playbooks / "deploy.playbook.yaml").write_text("prompt: from-global\n")
+
+    local_playbooks = project_dir / ".lionagi" / "playbooks"
+    local_playbooks.mkdir(parents=True)
+    (local_playbooks / "deploy.playbook.yaml").write_text("prompt: from-local\n")
+
+    with caplog.at_level("WARNING", logger="lionagi.cli.warn"):
+        path, err = _resolve_playbook_path("deploy")
+
+    assert err is None
+    assert path.read_text() == "prompt: from-local\n"
+    assert any(
+        "deploy" in rec.message and "global" in rec.message for rec in caplog.records
+    )
+
+
+def test_local_playbook_without_global_collision_does_not_warn(tmp_path, monkeypatch, caplog):
+    global_home = tmp_path / "global-home"
+    project_dir = tmp_path / "project"
+    global_home.mkdir()
+    project_dir.mkdir()
+
+    monkeypatch.setenv("HOME", str(global_home))
+    monkeypatch.chdir(project_dir)
+
+    # Global dir exists but has no same-named playbook.
+    (global_home / ".lionagi" / "playbooks").mkdir(parents=True)
+
+    local_playbooks = project_dir / ".lionagi" / "playbooks"
+    local_playbooks.mkdir(parents=True)
+    (local_playbooks / "deploy.playbook.yaml").write_text("prompt: from-local\n")
+
+    with caplog.at_level("WARNING", logger="lionagi.cli.warn"):
+        path, err = _resolve_playbook_path("deploy")
+
+    assert err is None
+    assert path.read_text() == "prompt: from-local\n"
+    assert not any("global" in rec.message for rec in caplog.records)
+
+
 def test_disabled_plugin_playbook_is_unreachable(write_plugin):
     from lionagi.plugins._user_settings import read_user_settings, write_user_settings
     from lionagi.plugins.registry import PluginRegistry
