@@ -130,9 +130,22 @@ class BashTool(LionTool):
         if self._tool is None:
 
             async def bash_tool(**kwargs):
-                """Execute a single shell command (no shell interpretation) and return stdout, stderr, and return code.
-                Shell operators (;, &&, ||, |, redirects, backticks) are rejected — one command per call; use cwd= instead of `cd dir && cmd`.
-                Recovery: 'command not found' → check PATH; timed out → raise timeout= or split into steps.
+                """Execute a single shell command and return its output.
+
+                Runs the command safely without shell interpretation. Shell operators
+                (;, &&, ||, |, redirects, backticks, $(...)) are rejected — run one
+                command per call. Use cwd= to set the working directory instead of
+                `cd dir && cmd`. For file search/read/edit, prefer the dedicated
+                reader/editor/search tools.
+
+                Enforces a configurable timeout (default 30 s, max 5 min). Output
+                exceeding 100 KB per stream is truncated — redirect to a file and
+                use the reader tool for large outputs.
+
+                Recovery hints:
+                - 'command not found': check the executable is installed and in PATH
+                - 'timed out': increase timeout= or split into smaller steps
+                - 'operators not supported': use cwd= and separate calls
                 """
                 return (await self.handle_request(BashRequest(**kwargs))).model_dump()
 
