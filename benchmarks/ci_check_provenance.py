@@ -16,8 +16,9 @@ SHARED_DEP_META_KEYS = ["anyio", "orjson"]
 
 def check(baseline_dir: Path, current_dir: Path, suites: list[str]) -> bool:
     """Return True iff, for every suite: (1) baseline and current used
-    distinct lionagi installs, (2) current covers every scenario baseline
-    reported, and (3) shared dependency versions match across both arms.
+    distinct lionagi installs, (2) baseline and current scenario sets
+    overlap and current covers every scenario baseline reported, and
+    (3) shared dependency versions match across both arms.
 
     (1) is only meaningful if the baseline run and the current run
     actually imported different code. A prior version of this job ran
@@ -28,18 +29,31 @@ def check(baseline_dir: Path, current_dir: Path, suites: list[str]) -> bool:
     gate compared identical code against itself. Every result JSON now
     records lionagi.__file__ (benchmarks/_compat.py:lionagi_provenance).
 
-    (2) guards a different failure mode of the same soft-skip mechanism:
-    each bench script drops a scenario from its results if a symbol it
-    needs is missing from whichever lionagi install ran it
-    (benchmarks/_compat.py:soft_import). That is intentional when the
-    OLDER baseline predates a brand-new symbol the PR adds -- current has
-    a scenario baseline doesn't, which is fine. It is a bug report,
-    silently swallowed, when the NEWER current install is missing a
-    symbol the OLDER baseline still has: something in the PR broke or
-    removed an API that a benchmark scenario depends on, and
-    ci_compare.py only iterates current's results, so it would never
-    notice the scenario went missing. Any scenario present in baseline
-    but absent from current fails this check.
+    (2) guards two failure modes of the same soft-skip mechanism: each
+    bench script drops a scenario from its results if a symbol it needs is
+    missing from whichever lionagi install ran it
+    (benchmarks/_compat.py:soft_import).
+
+    The partial case -- some scenarios missing, not all -- is intentional
+    when the OLDER baseline predates a brand-new symbol the PR adds:
+    current has a scenario baseline doesn't, which is fine. It is a bug
+    report, silently swallowed, when the NEWER current install is missing
+    a symbol the OLDER baseline still has: something in the PR broke or
+    removed an API a benchmark scenario depends on, and ci_compare.py only
+    iterates current's results, so it would never notice the scenario went
+    missing. Any scenario present in baseline but absent from current
+    fails this check.
+
+    The total case -- one side's results object is entirely empty (e.g.
+    the baseline install couldn't import the module at all) -- is a
+    different, worse failure: with baseline empty, the partial-case diff
+    above (`baseline_scenarios - current_scenarios`) is also empty, since
+    baseline has nothing to be missing FROM current. ci_compare.py then
+    finds no scenario has a matching baseline entry, skips all of them as
+    "no baseline", and exits 0 -- the gate ran and reported success while
+    comparing nothing. Any suite where baseline or current has zero
+    scenarios, or where the two scenario sets share no overlap at all,
+    fails this check.
 
     (3) guards the dependency axis of the same-machine A/B design: only
     the lionagi implementation should differ between baseline and
@@ -89,6 +103,37 @@ def check(baseline_dir: Path, current_dir: Path, suites: list[str]) -> bool:
 
         b_scenarios = set(baseline.get("results", {}).keys())
         c_scenarios = set(current.get("results", {}).keys())
+        overlap = b_scenarios & c_scenarios
+        if not b_scenarios or not c_scenarios or not overlap:
+            # A fourth variant of the same "gate silently becomes a no-op"
+            # class as (1)/(2) above: if baseline's results object is empty
+            # (e.g. the baseline install couldn't import the module at all,
+            # so soft_import dropped every scenario in the suite), `dropped
+            # = b_scenarios - c_scenarios` below is also empty -- there is
+            # nothing to report as "missing from current" when baseline
+            # never had anything to begin with. ci_compare.py then iterates
+            # current's scenarios, finds none of them have a baseline entry,
+            # skips all of them as "no baseline", and exits 0: the gate ran,
+            # produced no signal, and reported success. Same failure shape
+            # if current is the empty side, or if the two sets are simply
+            # disjoint (no scenario name shared at all).
+            which = (
+                "baseline"
+                if not b_scenarios
+                else "current"
+                if not c_scenarios
+                else "baseline and current (disjoint sets)"
+            )
+            print(
+                f"[provenance] {suite}: {which} reported zero overlapping scenarios "
+                f"(baseline={sorted(b_scenarios)}, current={sorted(c_scenarios)}). "
+                "ci_compare.py would silently skip every scenario as 'no baseline' and "
+                "exit 0 -- the benchmark gate would be disabled for this suite instead "
+                "of failing loud.",
+                file=sys.stderr,
+            )
+            ok = False
+
         dropped = b_scenarios - c_scenarios
         if dropped:
             print(

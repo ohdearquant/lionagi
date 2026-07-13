@@ -23,6 +23,7 @@ def compare(
     norm_note = f" (normalized by {normalize_by})" if normalize_by else ""
     lines.append(f"Threshold: {threshold:.0%} (negative = faster, positive = slower){norm_note}")
     ok = True
+    compared = 0
 
     cur_results = current.get("results", {})
     base_results = baseline.get("results", {})
@@ -45,6 +46,7 @@ def compare(
         if not base:
             lines.append(f"- {name}: no baseline; skipping")
             continue
+        compared += 1
         cur_med = float(cur.get("median", 0))
         base_med = float(base.get("median", 0))
 
@@ -69,6 +71,21 @@ def compare(
         lines.append(line)
         if delta > threshold:
             ok = False
+
+    if compared == 0:
+        # Belt-and-suspenders: ci_check_provenance.py is meant to catch an
+        # empty-or-disjoint scenario set before this ever runs, but if that
+        # step is ever skipped, reordered, or removed, this function would
+        # otherwise silently skip every scenario as "no baseline" above and
+        # return ok=True -- a gate that ran, compared nothing, and reported
+        # success. Zero comparisons is always a failure here, independent
+        # of why (empty baseline, empty current, or disjoint scenario
+        # names), and applies even without --normalize-by.
+        lines.append(
+            "ERROR: zero scenarios were actually compared (baseline and current share "
+            "no scenario in common) -- this gate produced no signal, not a clean pass."
+        )
+        ok = False
 
     return ok, "\n".join(lines)
 
