@@ -1253,7 +1253,8 @@ class StateDB:
                       execution_target       TEXT,
                       library_ref             TEXT,
                       library_content_hash    TEXT,
-                      dispatched_at           REAL
+                      dispatched_at           REAL,
+                      resume_packet           JSON
                     )
                     """
                 )
@@ -2510,6 +2511,7 @@ class StateDB:
             "error_detail",
             "invocation_id",
             "dispatched_at",
+            "resume_packet",
         }
         bad = set(fields) - allowed
         if bad:
@@ -2543,11 +2545,11 @@ class StateDB:
             sets = ", ".join(f'"{k}" = :{k}' for k in fields)
             params = dict(fields)
             params["_id"] = run_id
+            stmt = text(f"UPDATE schedule_runs SET {sets} WHERE id = :_id")  # noqa: S608
+            if "resume_packet" in fields:
+                stmt = stmt.bindparams(bindparam("resume_packet", type_=JSON))
             async with self._tx() as conn:
-                await conn.execute(
-                    text(f"UPDATE schedule_runs SET {sets} WHERE id = :_id"),  # noqa: S608
-                    params,
-                )
+                await conn.execute(stmt, params)
 
     async def list_schedule_runs(
         self,
@@ -4459,6 +4461,7 @@ class StateDB:
             "artifact_verification_json",
             "status_evidence_refs",
             "payload",
+            "resume_packet",
         ):
             if key in d and isinstance(d[key], str):
                 try:

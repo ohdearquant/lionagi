@@ -611,6 +611,10 @@ schedule_runs = Table(
     # the external process for this occurrence was actually launched. See
     # the schema.sql CREATE TABLE comment for the full rationale.
     Column("dispatched_at", Float),
+    # Nullable sidecar metadata blob for resuming a run, shaped like an
+    # Element.to_dict(mode="db") payload. NULL means no resume state has
+    # been captured for this run.
+    Column("resume_packet", JSON),
 )
 
 Index("idx_sched_runs_schedule", schedule_runs.c.schedule_id, schedule_runs.c.fired_at)

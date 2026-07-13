@@ -246,6 +246,25 @@ async def test_schedule_runs_upgrade_path(old_schema_db):
     assert adr28_cols <= actual, f"Missing cols: {adr28_cols - actual}"
 
 
+async def test_schedule_runs_upgrade_path_gains_resume_packet(old_schema_db):
+    """After upgrade, an existing schedule_runs table gains resume_packet."""
+    db = old_schema_db
+
+    for table, columns in MIGRATION_COLUMNS.items():
+        cur = await db.execute(f"PRAGMA table_info({table})")
+        rows = await cur.fetchall()
+        if not rows:
+            continue
+        existing = {row["name"] for row in rows}
+        for name, defn in columns:
+            if name not in existing:
+                await db.execute(f"ALTER TABLE {table} ADD COLUMN {name} {defn}")
+    await db.commit()
+
+    actual = await _column_names(db, "schedule_runs")
+    assert "resume_packet" in actual
+
+
 async def test_schedules_upgrade_path_gains_budget_columns(old_schema_db):
     """After upgrade, an existing schedules table gains budget_usd/budget_tokens."""
     db = old_schema_db
@@ -510,5 +529,127 @@ async def test_max_runs_nullable_defaults_unlimited():
     )
     fetched = await state.get_schedule("sched-unlimited")
     assert fetched["max_runs"] is None
+
+    await state.close()
+
+
+# ── resume_packet round-trip (PR 1 — resume_packet column) ──────────────────
+
+
+async def test_resume_packet_roundtrips_as_dict():
+    """A dict-shaped resume_packet written via update_schedule_run reads back
+    identical via get_schedule_run, mirroring an Element.to_dict(mode="db")
+    sidecar payload."""
+    from lionagi.state.db import StateDB
+
+    state = StateDB(":memory:")
+    await state.open()
+
+    await state.create_schedule(
+        {
+            "id": "sched-resume-1",
+            "name": "resume-test-1",
+            "trigger_type": "interval",
+            "interval_sec": 60,
+            "action_kind": "agent",
+        }
+    )
+    await state.create_schedule_run(
+        {
+            "id": "run-resume-1",
+            "schedule_id": "sched-resume-1",
+            "trigger_context": {},
+            "action_kind": "agent",
+            "action_args": {},
+            "status": "running",
+            "fired_at": 1.0,
+        }
+    )
+
+    packet = {
+        "lion_class": "lionagi.protocols.generic.element.Element",
+        "id": "elem-1",
+        "created_at": 1700000000.0,
+        "metadata": {"turn": 3, "tags": ["a", "b"]},
+    }
+    await state.update_schedule_run(
+        "run-resume-1",
+        resume_packet=packet,
+    )
+
+    fetched = await state.get_schedule_run("run-resume-1")
+    assert fetched is not None
+    assert fetched["resume_packet"] == packet
+
+    await state.close()
+
+
+async def test_resume_packet_null_roundtrips_as_none():
+    """A schedule_run created without resume_packet stores NULL, which reads
+    back as None, not a JSON-decode error or empty dict."""
+    from lionagi.state.db import StateDB
+
+    state = StateDB(":memory:")
+    await state.open()
+
+    await state.create_schedule(
+        {
+            "id": "sched-resume-2",
+            "name": "resume-test-2",
+            "trigger_type": "interval",
+            "interval_sec": 60,
+            "action_kind": "agent",
+        }
+    )
+    await state.create_schedule_run(
+        {
+            "id": "run-resume-2",
+            "schedule_id": "sched-resume-2",
+            "trigger_context": {},
+            "action_kind": "agent",
+            "action_args": {},
+            "status": "running",
+            "fired_at": 1.0,
+        }
+    )
+
+    fetched = await state.get_schedule_run("run-resume-2")
+    assert fetched is not None
+    assert fetched["resume_packet"] is None
+
+    await state.close()
+
+
+async def test_update_schedule_run_rejects_unknown_field():
+    """update_schedule_run's field allowlist still rejects unrecognized
+    fields — resume_packet joining the allowed set must not widen it."""
+    from lionagi.state.db import StateDB
+
+    state = StateDB(":memory:")
+    await state.open()
+
+    await state.create_schedule(
+        {
+            "id": "sched-resume-3",
+            "name": "resume-test-3",
+            "trigger_type": "interval",
+            "interval_sec": 60,
+            "action_kind": "agent",
+        }
+    )
+    await state.create_schedule_run(
+        {
+            "id": "run-resume-3",
+            "schedule_id": "sched-resume-3",
+            "trigger_context": {},
+            "action_kind": "agent",
+            "action_args": {},
+            "status": "running",
+            "fired_at": 1.0,
+        }
+    )
+
+    with pytest.raises(ValueError, match="Invalid schedule_run field"):
+        await state.update_schedule_run("run-resume-3", not_a_real_field="x")
 
     await state.close()
