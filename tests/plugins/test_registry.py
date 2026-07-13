@@ -139,6 +139,16 @@ class TestCollisions:
         assert all(r.state is PluginState.COLLISION for r in records)
         assert all("same-name" in (r.error or "") for r in records)
 
+    def test_duplicate_plugin_name_has_no_resolvable_or_activatable_owner(self, write_plugin):
+        _write_tool_plugin(write_plugin, "dir-one", name="same-name", tool_name="greet")
+        _write_tool_plugin(write_plugin, "dir-two", name="same-name", tool_name="greet")
+        _trust_by_dir_name("dir-one")
+        PluginRegistry.reset()
+
+        assert PluginRegistry.resolve_tool_target("greet") is None
+        with pytest.raises(PluginActivationError, match="not active"):
+            PluginRegistry.activate_target("same-name", "tools/t.py:t")
+
     def test_two_active_plugins_same_tool_name_is_collision(self, write_plugin):
         # Distinct agent names so only the tool-name surface collides.
         _write_tool_plugin(write_plugin, "p1", tool_name="shared_tool", agent_name="a1")
@@ -194,6 +204,34 @@ class TestCollisions:
 
         PluginRegistry.reset()
         assert PluginRegistry.get("p1").state is PluginState.ACTIVE
+
+    def test_repeated_tool_name_has_no_resolvable_or_activatable_owner(self, write_plugin):
+        write_plugin(
+            "p1",
+            """\
+name: p1
+version: "0.1.0"
+lionagi: ">=0.0,<100.0"
+
+capabilities:
+  tools:
+    - name: greet
+      target: tools/a.py:run
+    - name: greet
+      target: tools/b.py:run
+""",
+            files={
+                "tools/a.py": "def run():\n    return 'a'\n",
+                "tools/b.py": "def run():\n    return 'b'\n",
+            },
+        )
+        _trust_by_dir_name("p1")
+        PluginRegistry.reset()
+
+        assert PluginRegistry.get("p1").state is PluginState.COLLISION
+        assert PluginRegistry.resolve_tool_target("greet") is None
+        with pytest.raises(PluginActivationError, match="not active"):
+            PluginRegistry.activate_target("p1", "tools/a.py:run")
 
 
 class TestActivateTarget:
@@ -314,6 +352,20 @@ class TestActivateTarget:
         assert "p1/a" in PluginRegistry.active_agent_profile_files()
 
         (bundle / "agents" / "a.md").write_text("attacker-controlled instructions\n")
+
+        assert "p1/a" not in PluginRegistry.active_agent_profile_files()
+
+    def test_disabling_after_first_access_removes_agent_profiles_without_reset(self, write_plugin):
+        _write_tool_plugin(write_plugin, "p1")
+        _trust_by_dir_name("p1")
+        PluginRegistry.reset()
+
+        assert PluginRegistry.get("p1").state is PluginState.ACTIVE
+        assert "p1/a" in PluginRegistry.active_agent_profile_files()
+
+        settings = read_user_settings()
+        settings.setdefault("plugins", {})["p1"] = {"enabled": False}
+        write_user_settings(settings)
 
         assert "p1/a" not in PluginRegistry.active_agent_profile_files()
 

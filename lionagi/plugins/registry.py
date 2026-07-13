@@ -371,6 +371,60 @@ def _tool_target_for(manifest: PluginManifest, tool_name: str) -> str | None:
     return None
 
 
+def _fresh_active_plugins(
+    records: list[PluginRecord],
+) -> tuple[
+    dict[str, DiscoveredPlugin],
+    dict[str, list[str]],
+    dict[str, list[DiscoveredPlugin]],
+]:
+    """Rebuild live eligibility and tool ownership from freshly scanned manifests.
+
+    The process-cached records are only bundle-directory candidates. Duplicate
+    manifest names and named-capability collisions must be recomputed from the
+    current manifests before any capability is exposed. Ownership lists retain
+    repeated declarations from one manifest so they collide just like declarations
+    from separate plugins.
+    """
+    by_name: dict[str, list[DiscoveredPlugin]] = {}
+    for record in records:
+        fresh = _rescan(record)
+        if fresh is None:
+            continue
+        assert fresh.manifest is not None
+        by_name.setdefault(fresh.manifest.name, []).append(fresh)
+
+    collided_names = {name for name, group in by_name.items() if len(group) > 1}
+    candidates: list[DiscoveredPlugin] = []
+    for name, group in by_name.items():
+        if name in collided_names:
+            continue
+        fresh = group[0]
+        assert fresh.manifest is not None
+        if not _is_live_active(fresh.manifest):
+            continue
+        if _trust_state(fresh) is not TrustState.TRUSTED:
+            continue
+        candidates.append(fresh)
+
+    tool_owners: dict[str, list[str]] = {}
+    for fresh in candidates:
+        assert fresh.manifest is not None
+        for tool_name in _tool_names(fresh.manifest):
+            tool_owners.setdefault(tool_name, []).append(fresh.manifest.name)
+
+    for owner_names in tool_owners.values():
+        if len(owner_names) > 1:
+            collided_names.update(owner_names)
+
+    active = {
+        fresh.manifest.name: fresh
+        for fresh in candidates
+        if fresh.manifest is not None and fresh.manifest.name not in collided_names
+    }
+    return active, tool_owners, by_name
+
+
 def _target_resolution_map(manifest: PluginManifest) -> dict[str, tuple[str, str | None]]:
     """Map each declared, activatable target string to ``(module_path, attr_or_None)``.
 
@@ -510,16 +564,12 @@ class PluginRegistry:
         agent-profile search joins this list.
         """
         out: dict[str, tuple[str, Path]] = {}
-        for record in cls._ensure_loaded():
-            if record.state is not PluginState.ACTIVE or record.manifest is None:
-                continue
-            fresh = _rescan(record)
-            if fresh is None or _trust_state(fresh) is not TrustState.TRUSTED:
-                continue
+        active, _, _ = _fresh_active_plugins(cls._ensure_loaded())
+        for plugin_name, fresh in active.items():
             assert fresh.manifest is not None
             for rel in fresh.manifest.capabilities.agents:
                 stem = Path(rel).stem
-                out[f"{record.name}/{stem}"] = (record.name, fresh.bundle_dir / rel)
+                out[f"{plugin_name}/{stem}"] = (plugin_name, fresh.bundle_dir / rel)
         return out
 
     @classmethod
@@ -535,32 +585,26 @@ class PluginRegistry:
         unchanged), and raises ``PluginToolCollisionError`` when more than
         one live-eligible plugin claims it (ADR-0088 D6).
         """
-        owners: list[tuple[str, str]] = []
-        for record in cls._ensure_loaded():
-            fresh = _rescan(record)
-            if fresh is None:
-                continue
-            assert fresh.manifest is not None
-            target = _tool_target_for(fresh.manifest, tool_name)
-            if target is None:
-                continue
-            if not _is_live_active(fresh.manifest):
-                continue
-            if _trust_state(fresh) is not TrustState.TRUSTED:
-                continue
-            owners.append((fresh.manifest.name, target))
-
-        if len(owners) > 1:
-            names = ", ".join(name for name, _ in owners)
+        active, tool_owners, _ = _fresh_active_plugins(cls._ensure_loaded())
+        owner_names = tool_owners.get(tool_name, [])
+        distinct_owners = list(dict.fromkeys(owner_names))
+        if len(distinct_owners) > 1:
+            names = ", ".join(distinct_owners)
             msg = (
                 f"tool {tool_name!r} is declared by multiple enabled plugins "
                 f"({names}) — disable one with `li plugin disable <name>`"
             )
             raise PluginToolCollisionError(tool_name, msg)
-        if owners:
-            name, target = owners[0]
-            return ToolTarget(plugin_name=name, target=target)
-        return None
+        if len(owner_names) != 1:
+            return None
+        plugin_name = owner_names[0]
+        fresh = active.get(plugin_name)
+        if fresh is None:
+            return None
+        assert fresh.manifest is not None
+        target = _tool_target_for(fresh.manifest, tool_name)
+        assert target is not None
+        return ToolTarget(plugin_name=plugin_name, target=target)
 
     @classmethod
     def activate_target(cls, plugin_name: str, target: str) -> Any:
@@ -586,28 +630,26 @@ class PluginRegistry:
         changed content always misses the cache rather than depending on an
         earlier call having evicted the stale entry.
         """
-        record = cls.get(plugin_name)
-        if record is None:
-            msg = f"plugin {plugin_name!r} is not active (no such plugin, or untrusted/disabled/incompatible)"
-            raise PluginActivationError(plugin_name, target, msg)
-
-        fresh = _rescan(record)
+        active, _, by_name = _fresh_active_plugins(cls._ensure_loaded())
+        fresh = active.get(plugin_name)
         if fresh is None:
+            matches = by_name.get(plugin_name, [])
+            if len(matches) == 1:
+                candidate = matches[0]
+                assert candidate.manifest is not None
+                if (
+                    _is_live_active(candidate.manifest)
+                    and _trust_state(candidate) is not TrustState.TRUSTED
+                ):
+                    msg = (
+                        f"plugin {plugin_name!r} is no longer trusted (the manifest or a "
+                        f"declared file changed since the cached scan) — re-run "
+                        f"`li plugin trust {plugin_name}` or `li plugin list` to refresh"
+                    )
+                    raise PluginActivationError(plugin_name, target, msg)
             msg = f"plugin {plugin_name!r} is not active (no such plugin, or untrusted/disabled/incompatible)"
             raise PluginActivationError(plugin_name, target, msg)
         assert fresh.manifest is not None
-
-        if not _is_live_active(fresh.manifest):
-            msg = f"plugin {plugin_name!r} is not active (no such plugin, or untrusted/disabled/incompatible)"
-            raise PluginActivationError(plugin_name, target, msg)
-
-        if _trust_state(fresh) is not TrustState.TRUSTED:
-            msg = (
-                f"plugin {plugin_name!r} is no longer trusted (the manifest or a "
-                f"declared file changed since the cached scan) — re-run "
-                f"`li plugin trust {plugin_name}` or `li plugin list` to refresh"
-            )
-            raise PluginActivationError(plugin_name, target, msg)
 
         resolution = _target_resolution_map(fresh.manifest)
         if target not in resolution:
