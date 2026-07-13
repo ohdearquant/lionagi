@@ -10,6 +10,11 @@ from pathlib import Path
 
 import pytest
 
+pytestmark = pytest.mark.skipif(
+    shutil.which("rg") is None,
+    reason="ripgrep required for publication-hygiene self-tests",
+)
+
 REPO_ROOT = Path(__file__).resolve().parents[2]
 CI_SCRIPT = REPO_ROOT / "scripts" / "ci.sh"
 NOTEBOOK_HYGIENE_SCRIPT = REPO_ROOT / "scripts" / "lint_notebook_hygiene.py"
