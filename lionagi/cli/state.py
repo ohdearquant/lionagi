@@ -616,11 +616,8 @@ async def _doctor(
         if dry_run:
             swept_count = len(victims)
         else:
-            # Per-row, through the single guarded write path (ADR-0035):
-            # expected_statuses={"running"} re-asserts the CAS the old bulk
-            # UPDATE did inline, and routes the sweep through update_status()
-            # so it gets a reason_code + status_transitions audit row instead
-            # of a raw column write.
+            # Per-row through the guarded write path (ADR-0035): update_status()
+            # re-asserts the CAS and records a reason_code + audit row.
             for vid in victims:
                 transitioned = await db.update_status(
                     "session",

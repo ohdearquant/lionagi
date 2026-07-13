@@ -2,13 +2,7 @@
 # SPDX-License-Identifier: Apache-2.0
 """`li agent --context-from <ref>`: resolve prior-run refs into a bounded context block.
 
-Ref resolution order: session id (state.db, prefix match) -> branch id
-(~/.lionagi/runs/*/branches/*.json, prefix match) -> run id (run.json manifest
-prefix match) -> file path. Distillation is mechanical (no LLM): a saved
-artifact/summary verbatim, else the final assistant message + initial
-instruction, else a loudly-marked head/tail truncation to fit budget. Budget
-is shared across the combined injected block (including XML wrapper and
-inter-block separators), allocated in argv order.
+See docs/internals/cli.md for the ref-resolution order and distillation contract.
 """
 
 from __future__ import annotations
@@ -58,10 +52,7 @@ class ContextCandidate:
 def _find_branch_candidates(ref: str) -> list[tuple[str, Path]]:
     """All distinct (branch_id, path) matches for *ref* as an exact id or prefix.
 
-    Mirrors _runs.find_branch's glob scan but collects every distinct branch_id
-    across all run dirs (instead of returning the first) so ambiguity can be
-    detected; the same branch_id snapshotted into multiple run dirs (resume)
-    is one candidate, not many.
+    See docs/internals/cli.md for the branch-candidate dedup contract.
     """
     seen: dict[str, Path] = {}
     if RUNS_ROOT.exists():
@@ -306,17 +297,7 @@ _BLOCK_SEPARATOR = "\n\n"
 def build_context_block(candidates: Sequence[ContextCandidate], budget_tokens: int) -> str:
     """Assemble the XML-delimited context block(s), argv order, total-not-per-ref budget.
 
-    `budget_tokens` bounds the COMBINED injected block (XML wrapper +
-    separators included, not just distilled payload text); wrapper/marker
-    overhead is reserved first, in argv order, before payload text.
-
-    A single ref always yields at least one loud-marker-only block, even at
-    `budget_tokens == 0` — a slightly over-budget marker beats silently
-    dropping the one ref the caller asked for. With multiple refs, the total
-    budget is a hard ceiling: any ref that can't fit even its minimum
-    marker overhead is dropped (and everything after it, since the reserved
-    budget only shrinks). If even the first ref can't fit, injection is
-    skipped entirely.
+    See docs/internals/cli.md for the budget-allocation and drop-order contract.
     """
     from lionagi.cli._logging import warn
 
@@ -338,10 +319,8 @@ def build_context_block(candidates: Sequence[ContextCandidate], budget_tokens: i
 
     marker_min = len(_TRUNCATION_MARKER.strip())
 
-    # Reserve wrapper + separator + minimum loud-marker overhead for each
-    # candidate, in argv order, dropping any candidate (and all after it,
-    # since the reserved budget only shrinks) that cannot fit even that
-    # minimum within what remains of the total budget.
+    # Reserve overhead per candidate in argv order; drop a candidate (and
+    # all after it) once it can't fit even the minimum marker.
     fitted: list[tuple[ContextCandidate, int]] = []
     reserved = 0
     for candidate in candidates:
