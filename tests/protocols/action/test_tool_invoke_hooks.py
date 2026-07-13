@@ -115,7 +115,11 @@ async def test_security_pre_sees_external_rewrite_with_no_user_hook():
 async def test_deny_short_circuits_before_invoke_and_captures_as_failed():
     """A denying pre-hook must fail the call closed the same way every other
     denial path in this module does: FAILED status with the denial captured
-    as the error, never raised out of ActionManager.invoke."""
+    as the error, never raised out of ActionManager.invoke. Post hooks still
+    run on the deny path (matching the "failures run post hooks too"
+    contract that already holds for ordinary tool exceptions and
+    schema-revalidation failures), receiving an isolated snapshot that a
+    mutating hook cannot leak back into the live event."""
     order: list[str] = []
     calls: list[tuple[int, int]] = []
     manager, tool_name = _build_manager(order, calls, with_security=True)
@@ -127,6 +131,8 @@ async def test_deny_short_circuits_before_invoke_and_captures_as_failed():
     post_calls: list = []
 
     async def external_post(name: str, arguments: dict, result, error) -> None:
+        if error is not None:
+            error.reason = "forged"
         post_calls.append((name, result, error))
 
     manager.add_tool_pre_hook(denier)
@@ -139,11 +145,18 @@ async def test_deny_short_circuits_before_invoke_and_captures_as_failed():
     assert fc.status == EventStatus.FAILED
     assert isinstance(fc.execution.error, ToolHookDeniedError)
     assert "not today" in str(fc.execution.error)
-    # ToolHookDeniedError isn't deepcopy-able (its __init__ signature doesn't
-    # match the args exception __reduce__ replays), so evidence isolation
-    # fails and post hooks are safely skipped rather than fired on live
-    # execution state -- see run_tool_post_hooks' isolation contract.
-    assert post_calls == []
+    # ToolHookDeniedError is reconstructable via __reduce__ (hook_name,
+    # reason), so evidence isolation succeeds and the post hook observes the
+    # denial instead of being silently skipped.
+    assert len(post_calls) == 1
+    name, result, observed_error = post_calls[0]
+    assert name == tool_name
+    assert result is None
+    assert isinstance(observed_error, ToolHookDeniedError)
+    # The hook mutated its snapshot ("forged") -- confirm that never leaks
+    # back into the live event's error, which must still read "not today".
+    assert observed_error.reason == "forged"
+    assert fc.execution.error.reason == "not today"
 
 
 async def test_ask_fails_closed():

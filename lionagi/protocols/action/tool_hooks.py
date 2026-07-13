@@ -72,6 +72,15 @@ class ToolHookDeniedError(PermissionError):
         self.hook_name = hook_name
         self.reason = reason
 
+    def __reduce__(self):
+        # BaseException's default __reduce__ replays via `self.args`, which
+        # here is the single formatted message string -- not the two
+        # positional args this __init__ requires. That mismatch makes
+        # deepcopy() (used by run_tool_post_hooks' evidence isolation) raise
+        # and silently skip post hooks on the deny path. Reconstruct from
+        # the named fields instead so deepcopy/pickle round-trip correctly.
+        return (self.__class__, (self.hook_name, self.reason))
+
 
 def _hook_name(hook: Callable) -> str:
     return getattr(hook, "__name__", None) or type(hook).__name__
