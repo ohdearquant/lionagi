@@ -181,6 +181,23 @@ def test_classify_unsupported_tool_returns_unsupported_error():
     assert isinstance(err, ProviderUnsupportedModelError)
 
 
+def test_stream_disconnect_mentioning_unsupported_reconnect_stays_retryable():
+    err = classify_provider_error(
+        "stream disconnected before completion; automatic reconnect is not supported by the proxy"
+    )
+    assert isinstance(err, ProviderStreamDisconnectError)
+    assert err.retryable is True
+
+
+def test_agy_wrapped_stream_disconnect_stays_retryable():
+    err = classify_provider_error(
+        "agy returned status=ERROR: stream disconnected before completion; "
+        "automatic reconnect is not supported by the proxy"
+    )
+    assert isinstance(err, ProviderStreamDisconnectError)
+    assert err.retryable is True
+
+
 # ---------------------------------------------------------------------------
 # Safety patterns
 # ---------------------------------------------------------------------------

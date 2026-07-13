@@ -537,6 +537,8 @@ class TestTeardownReasonResolution:
             ("ProviderContextError", "context window exceeded", "nonretryable"),
             ("ProviderUnsupportedModelError", "model is not supported", "nonretryable"),
             ("ProviderSafetyError", "flagged for cybersecurity risk", "nonretryable"),
+            # The unclassified base class defaults to non-retryable.
+            ("ProviderError", "something unrecognized went wrong", "nonretryable"),
         ],
     )
     def test_classified_provider_error_maps_to_retryable_reason_code(

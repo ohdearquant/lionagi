@@ -146,9 +146,13 @@ _CAPACITY_PATTERNS: list[re.Pattern[str]] = [
 ]
 
 _UNSUPPORTED_MODEL_PATTERNS: list[re.Pattern[str]] = [
-    # Covers both "the '<model>' model is not supported when using Codex with
-    # a ChatGPT account" and "Tool '<name>' is not supported with <model>".
-    re.compile(r"is\s+not\s+supported", re.IGNORECASE),
+    # "the '<model>' model is not supported when using Codex with a ChatGPT
+    # account" — anchored on "model" so an incidental "is not supported"
+    # inside a transient message (e.g. a dropped-stream notice mentioning
+    # reconnect support) is not misread as a permanent model rejection.
+    re.compile(r"model\s+is\s+not\s+supported", re.IGNORECASE),
+    # "Tool '<name>' is not supported with <model>".
+    re.compile(r"tool\s+'[^']+'\s+is\s+not\s+supported", re.IGNORECASE),
 ]
 
 _SAFETY_PATTERNS: list[re.Pattern[str]] = [
