@@ -238,6 +238,13 @@ def _patch_db(monkeypatch, db_path: Path) -> None:
     import lionagi.studio.services.schedules as schedules_mod
     import lionagi.studio.services.sessions as sessions_mod
 
+    # An environment with LIONAGI_STUDIO_AUTH_TOKEN set (a dev machine, CI)
+    # would make every unauthenticated request in this file 401 before it
+    # ever reaches the handler being pinned -- neutralize it, matching the
+    # delenv pattern the rest of this suite uses (test_security_batch1.py,
+    # test_audit_remediation.py, test_launches_api.py, test_startup_warnings.py).
+    monkeypatch.delenv("LIONAGI_STUDIO_AUTH_TOKEN", raising=False)
+
     # StateDB's path cascade consults settings.LIONAGI_STATE_DB_URL BEFORE
     # DEFAULT_DB_PATH, so an environment with that set (dev machine, CI)
     # would route these tests at the real configured DB — neutralize it.
@@ -656,6 +663,95 @@ def test_schedules_unknown_id_404_shape_across_mutation_routes(
     r = getattr(client, method)(f"/api/schedules/does-not-exist{path_suffix}", **kwargs)
     assert r.status_code == 404
     assert sorted(r.json().keys()) == ["detail"]
+
+
+# Success-path contracts for the same five mutation routes above. The 404
+# parametrization only proves "unknown id is rejected"; it says nothing
+# about what a successful call returns, so a handler's success shape could
+# regress (e.g. PATCH's {"ok": True} silently becoming {}) without failing
+# anything in this file. Each test creates its own schedule through the
+# same temp-DB path the rest of the family uses, then pins the real response.
+
+
+def test_schedules_patch_success_response_shape(tmp_path, monkeypatch):
+    db_path = tmp_path / "state.db"
+    _patch_db(monkeypatch, db_path)
+    schedule_id = _create_gate_schedule(db_path)
+    client = _make_client()
+
+    r = client.patch(f"/api/schedules/{schedule_id}", json={"description": "gate patch"})
+    assert r.status_code == 200
+    assert r.json() == {"ok": True}
+
+    # The write actually landed, not just an accepted-and-dropped no-op.
+    detail = client.get(f"/api/schedules/{schedule_id}")
+    assert detail.json()["description"] == "gate patch"
+
+
+def test_schedules_delete_success_response_shape(tmp_path, monkeypatch):
+    db_path = tmp_path / "state.db"
+    _patch_db(monkeypatch, db_path)
+    schedule_id = _create_gate_schedule(db_path)
+    client = _make_client()
+
+    r = client.delete(f"/api/schedules/{schedule_id}")
+    assert r.status_code == 200
+    assert r.json() == {"ok": True}
+
+    # The schedule is actually gone, not just acknowledged.
+    assert client.get(f"/api/schedules/{schedule_id}").status_code == 404
+
+
+def test_schedules_enable_success_response_shape(tmp_path, monkeypatch):
+    db_path = tmp_path / "state.db"
+    _patch_db(monkeypatch, db_path)
+    schedule_id = _create_gate_schedule(db_path)
+    client = _make_client()
+
+    r = client.post(f"/api/schedules/{schedule_id}/enable")
+    assert r.status_code == 200
+    assert r.json() == {"ok": True, "enabled": True}
+
+
+def test_schedules_disable_success_response_shape(tmp_path, monkeypatch):
+    db_path = tmp_path / "state.db"
+    _patch_db(monkeypatch, db_path)
+    schedule_id = _create_gate_schedule(db_path)
+    client = _make_client()
+
+    r = client.post(f"/api/schedules/{schedule_id}/disable")
+    assert r.status_code == 200
+    assert r.json() == {"ok": True, "enabled": False}
+
+    # The write actually landed: a disabled schedule reads back falsy.
+    # SQLite has no native boolean -- the column round-trips as the
+    # integer 0/1, not Python False/True.
+    detail = client.get(f"/api/schedules/{schedule_id}")
+    assert not detail.json()["enabled"]
+
+
+def test_schedules_trigger_success_response_shape(tmp_path, monkeypatch):
+    """scheduler.fire_now() is mocked out: a real fire spawns a background
+    asyncio task that launches a subprocess (engine.py::_tracked_fire), which
+    has no place in a response-shape pin. This isolates the route handler's
+    own success contract -- {"ok": True, "run_id": <the value fire_now
+    returned>} -- from the scheduler engine's fire machinery, which has its
+    own coverage elsewhere."""
+    db_path = tmp_path / "state.db"
+    _patch_db(monkeypatch, db_path)
+    schedule_id = _create_gate_schedule(db_path)
+    client = _make_client()
+
+    from lionagi.studio.scheduler.engine import scheduler
+
+    async def _fake_fire_now(_schedule_id: str) -> str:
+        return "gate-fake-run-id"
+
+    monkeypatch.setattr(scheduler, "fire_now", _fake_fire_now)
+
+    r = client.post(f"/api/schedules/{schedule_id}/trigger")
+    assert r.status_code == 200
+    assert r.json() == {"ok": True, "run_id": "gate-fake-run-id"}
 
 
 def test_schedule_runs_list_response_shape(tmp_path, monkeypatch):
