@@ -120,6 +120,59 @@ def test_local_shadow_logs_a_warning(write_plugin, plugin_home, caplog):
     assert any("web-research" in rec.message for rec in caplog.records)
 
 
+def test_resolve_worker_spec_resolves_plugin_namespaced_role(write_plugin):
+    """A `<plugin>/<name>` role assigned by the orchestrator's planner must resolve to the
+    plugin's declared profile, not silently fall back to a bare model spec.
+    """
+    from lionagi.cli.orchestrate._orchestration import resolve_worker_spec
+
+    _write_plugin_profile(
+        write_plugin,
+        "wr",
+        "web-research",
+        "researcher",
+        "---\nmodel: codex/gpt-5.5\n---\n\nresearch body\n",
+    )
+
+    model, profile = resolve_worker_spec("web-research/researcher")
+
+    assert model == "codex/gpt-5.5"
+    assert profile is not None
+    assert profile.name == "web-research/researcher"
+
+
+def test_resolve_worker_spec_falls_back_to_raw_model_spec_for_unknown_slash_token(write_plugin):
+    """A literal `provider/model` token (no matching plugin profile) still resolves as a raw
+    model spec, unaffected by the plugin-namespaced-role fix.
+    """
+    from lionagi.cli.orchestrate._orchestration import resolve_worker_spec
+
+    model, profile = resolve_worker_spec("openai/gpt-4.1")
+
+    assert model == "openai/gpt-4.1"
+    assert profile is None
+
+
+def test_resolve_worker_spec_falls_back_for_dotted_model_version(write_plugin):
+    """A dotted model version (invalid as a bare profile-name component) must still fall back
+    to a raw model spec instead of raising.
+    """
+    from lionagi.cli.orchestrate._orchestration import resolve_worker_spec
+
+    _write_plugin_profile(
+        write_plugin,
+        "wr",
+        "web-research",
+        "researcher",
+        "---\nmodel: codex/gpt-5.5\n---\n\nresearch body\n",
+    )
+
+    model, profile = resolve_worker_spec("anthropic/claude-3.7")
+
+    assert model == "anthropic/claude-3.7"
+    assert profile is None
+
+
 def test_disabled_plugin_profile_is_unreachable(write_plugin):
     from lionagi.plugins._user_settings import read_user_settings, write_user_settings
     from lionagi.plugins.registry import PluginRegistry
