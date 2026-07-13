@@ -95,6 +95,7 @@ class CheckpointWriter:
         instruction: str | None = None,
         parent_id: str | None = None,
         spawn_id: str | None = None,
+        context: Any | None = None,
     ) -> None:
         """Record one reactively spawned node's outcome, keyed by its own node id.
 
@@ -115,6 +116,12 @@ class CheckpointWriter:
         checkpoint written before this field set existed carries entries
         without `operation`; resume treats those as unreconstructable and
         refuses only for the affected node(s), not the whole run.
+
+        context is the spawned node's `parameters["context"]` payload (e.g. a
+        team round op's `prior_team_messages`) — distinct from `instruction`,
+        which for a team round is generic boilerplate; the actual teammate
+        mail that motivated the round lives only in `context`. None for
+        spawned nodes with no context payload (the common case).
         """
         async with self._lock:
             entry = {
@@ -126,6 +133,7 @@ class CheckpointWriter:
                 "instruction": instruction,
                 "parent_id": parent_id,
                 "spawn_id": spawn_id,
+                "context": context,
             }
             for i, existing in enumerate(self.spawned):
                 if existing.get("node_id") == node_id:
