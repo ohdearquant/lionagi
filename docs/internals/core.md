@@ -320,14 +320,11 @@ re-register every server from previously loaded, unrelated configs.
 **`patterns.py`** — `role_node_builder` returns a node_builder closure
 routing `SpawnRequest`s to role branches. `decorate_instruction`, when given,
 receives the request and the node's freshly allocated `spawn_id` and must
-return the full instruction text the child runs with
-(`lionagi.cli.orchestrate.flow` uses it to prepend per-node artifact-directory
-and required-output instructions). `start` seeds the closure's spawn-id
-sequence past ordinals already issued in a prior generation (e.g. a CLI
-resume reconstructing completed spawns from a checkpoint) — without it, a
+return the full instruction text the child runs with. `start` seeds the
+closure's spawn-id sequence past ordinals already issued in a prior generation
+(e.g. a resume reconstructing completed spawns from a checkpoint) — without it, a
 fresh sequence restarting at 1 would reissue an id already used by a restored
-node, colliding with any live spawn this generation (same `spawn_id`, same
-artifact directory).
+node, colliding with any live spawn this generation on the same `spawn_id`.
 
 `_next_spawn_seq = itertools.count(start)` is closure-scoped and is the
 **only** correct source of a spawned node's stable id: it must be allocated
