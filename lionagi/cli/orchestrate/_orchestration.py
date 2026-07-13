@@ -739,25 +739,13 @@ class TeamLifecycleCoordinator:
         if branch is None:
             return []
         try:
-            pending = self.exchange.receive(branch.id)
+            drained = self.exchange.drain_pending(branch.id)
         except Exception as e:  # noqa: BLE001
-            _log_orch.debug("team round: exchange.receive(%r) failed: %s", worker, e)
+            _log_orch.debug("team round: exchange.drain_pending(%r) failed: %s", worker, e)
             return []
-        if not pending:
+        if not drained:
             return []
         name_by_id = {b.id: name for name, b in self.worker_branches.items()}
-        senders = {m.sender for m in pending}
-        drained = []
-        for s in senders:
-            while True:
-                try:
-                    m = self.exchange.pop_message(owner_id=branch.id, sender=s)
-                except Exception as e:  # noqa: BLE001
-                    _log_orch.debug("team round: exchange.pop_message(%r) failed: %s", worker, e)
-                    break
-                if m is None:
-                    break
-                drained.append(m)
         drained.sort(key=lambda m: m.created_datetime)
         return [
             {"from": name_by_id.get(m.sender, str(m.sender)[:8]), "content": m.content}

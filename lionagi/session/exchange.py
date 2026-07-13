@@ -6,7 +6,7 @@
 from __future__ import annotations
 
 import threading
-from typing import Any
+from typing import Any, cast
 from uuid import UUID
 
 from pydantic import PrivateAttr
@@ -33,7 +33,7 @@ class Exchange(Element):
     flows: Pile[Flow[Message, Progression]] = None  # type: ignore
     _owner_index: dict[UUID, UUID] = PrivateAttr(default_factory=dict)
     _stop: bool = PrivateAttr(default=False)
-    _in_flight: dict[UUID, int] = PrivateAttr(default_factory=dict)
+    _in_flight: dict[UUID, list[Message]] = PrivateAttr(default_factory=dict)
     _in_flight_lock: threading.RLock = PrivateAttr(default_factory=threading.RLock)
 
     def __init__(self, **kwargs: Any) -> None:
@@ -125,34 +125,64 @@ class Exchange(Element):
     def _mark_in_flight(self, deliveries: list[tuple[UUID, Message]], *, increment: bool) -> None:
         """Track recipients while messages are between outbox and inbox."""
         with self._in_flight_lock:
-            for recipient_id, _ in deliveries:
-                count = self._in_flight.get(recipient_id, 0)
+            for recipient_id, message in deliveries:
                 if increment:
-                    self._in_flight[recipient_id] = count + 1
-                elif count <= 1:
-                    self._in_flight.pop(recipient_id, None)
+                    self._in_flight.setdefault(recipient_id, []).append(message)
                 else:
-                    self._in_flight[recipient_id] = count - 1
+                    self._remove_in_flight_locked(recipient_id, message)
+
+    def _remove_in_flight_locked(self, recipient_id: UUID, message: Message) -> bool:
+        pending = self._in_flight.get(recipient_id)
+        if not pending:
+            return False
+        for index, candidate in enumerate(pending):
+            if candidate is message:
+                pending.pop(index)
+                if not pending:
+                    self._in_flight.pop(recipient_id, None)
+                return True
+        return False
+
+    def _deliver_locked(self, recipient_id: UUID, message: Message) -> None:
+        recipient_flow = self.get(recipient_id)
+        if recipient_flow is None:
+            return
+
+        inbox_name = _inbox_name(cast(UUID, message.sender))
+        try:
+            recipient_flow.add_progression(Progression(name=inbox_name))
+        except ItemExistsError:
+            pass
+        recipient_flow.add_item(message, progressions=inbox_name)
 
     def peek_pending(self, owner_id: UUID) -> tuple[list[Message], bool]:
         """Atomically peek at delivered and in-transit mail for an owner."""
         with self._in_flight_lock:
-            return self.receive(owner_id), self._in_flight.get(owner_id, 0) > 0
+            return self.receive(owner_id), bool(self._in_flight.get(owner_id))
+
+    def drain_pending(self, owner_id: UUID) -> list[Message]:
+        """Atomically deliver and consume all pending mail for an owner."""
+        with self._in_flight_lock:
+            for message in list(self._in_flight.get(owner_id, [])):
+                self._deliver_locked(owner_id, message)
+                self._remove_in_flight_locked(owner_id, message)
+
+            pending = self.receive(owner_id)
+            drained: list[Message] = []
+            senders = {cast(UUID, message.sender) for message in pending}
+            for sender in senders:
+                while message := self.pop_message(owner_id=owner_id, sender=sender):
+                    drained.append(message)
+            return drained
 
     async def _deliver_to(self, recipient_id: UUID, message: Message) -> None:
         """Deliver to recipient inbox. No-op if recipient unregistered."""
         with self._in_flight_lock:
-            recipient_flow = self.get(recipient_id)
-            if recipient_flow is None:
-                return  # Recipient unregistered, drop message
-
-            inbox_name = _inbox_name(message.sender)
-            try:
-                recipient_flow.add_progression(Progression(name=inbox_name))
-            except ItemExistsError:
-                pass
-
-            recipient_flow.add_item(message, progressions=inbox_name)
+            pending = self._in_flight.get(recipient_id, [])
+            if not any(candidate is message for candidate in pending):
+                return
+            self._deliver_locked(recipient_id, message)
+            self._remove_in_flight_locked(recipient_id, message)
 
     async def collect_all(self) -> int:
         """Route all outboxes. Returns total messages routed."""

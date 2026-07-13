@@ -552,6 +552,126 @@ async def test_execute_dag_real_executor_respects_team_max_rounds_bound(tmp_path
     assert len(calls) == 2  # initial turn + exactly one bounded round
 
 
+async def test_execute_dag_followup_contains_message_still_in_handoff(tmp_path, monkeypatch):
+    """A worker woken by in-transit mail receives that mail in its context."""
+    team_id = "e2e-real-in-flight-context"
+    _make_team(team_id, ["orchestrator", "alice", "bob"])
+
+    env = _make_env(tmp_path)
+    env.team_data = {
+        "id": team_id,
+        "name": "e2e",
+        "members": ["orchestrator", "alice", "bob"],
+    }
+    env.messenger = _FakeMessenger()
+    exchange = Exchange()
+    env.exchange = exchange
+
+    alice_done = asyncio.Event()
+    handoff_started = asyncio.Event()
+    release_handoff = asyncio.Event()
+    followup_contexts: list[list[dict]] = []
+    collect_tasks: list[asyncio.Task] = []
+
+    exchange_module = importlib.import_module("lionagi.session.exchange")
+    real_gather = exchange_module.gather
+
+    async def paused_gather(*aws, **kwargs):
+        handoff_started.set()
+        await release_handoff.wait()
+        return await real_gather(*aws, **kwargs)
+
+    monkeypatch.setattr(exchange_module, "gather", paused_gather)
+
+    async def alice_operate(**kw):
+        if not alice_done.is_set():
+            team.post_done_signal(team_id, worker="alice", summary="waiting")
+            alice_done.set()
+            return "waiting"
+        followup_contexts.append(kw["context"])
+        release_handoff.set()
+        team.post_done_signal(team_id, worker="alice", summary="reviewed")
+        return "reviewed"
+
+    async def bob_operate(**kw):
+        await alice_done.wait()
+        exchange.send(
+            sender=bob_branch.id,
+            recipient=alice_branch.id,
+            content="please check the handoff",
+        )
+        collect_tasks.append(asyncio.create_task(exchange.collect(bob_branch.id)))
+        await handoff_started.wait()
+        team.post_done_signal(team_id, worker="bob", summary="message sent")
+        return "message sent"
+
+    async def worker_operate(**kw):
+        if kw["instruction"] == "bob":
+            return await bob_operate(**kw)
+        return await alice_operate(**kw)
+
+    alice_branch = _build_stub_branch(worker_operate, name="alice")
+    bob_branch = _build_stub_branch(worker_operate, name="bob")
+    exchange.register(alice_branch.id)
+    exchange.register(bob_branch.id)
+
+    session = Session()
+    session.branches.include(alice_branch)
+    session.branches.include(bob_branch)
+    session.default_branch = alice_branch
+    env.session = session
+
+    graph = Graph()
+    alice_node = Operation(operation="operate", parameters={"instruction": "alice"})
+    alice_node.branch_id = alice_branch.id
+    bob_node = Operation(operation="operate", parameters={"instruction": "bob"})
+    bob_node.branch_id = bob_branch.id
+    graph.add_node(alice_node)
+    graph.add_node(bob_node)
+    env.builder.get_graph = lambda: graph
+
+    plan_result = _PlanResult(
+        assignments=[
+            TaskAssignment(task="wait for messages", assignee="researcher"),
+            TaskAssignment(task="send a message", assignee="researcher"),
+        ],
+        agent_ids=["alice", "bob"],
+        dep_indices=[[], []],
+        pool=[],
+        budget_preambles={},
+    )
+    dag_state = _DagState(
+        node_ids=[alice_node.id, bob_node.id],
+        known_nodes={alice_node.id, bob_node.id},
+        deps_by_node={alice_node.id: [], bob_node.id: []},
+        reactive=True,
+        spawn_roles=set(),
+        role_base={},
+        worker_models=["codex/gpt-5.5", "codex/gpt-5.5"],
+        worker_branches={"alice": alice_branch, "bob": bob_branch},
+        messenger_bound={"alice": True, "bob": True},
+    )
+
+    try:
+        await _execute_dag(
+            env,
+            plan_result,
+            dag_state,
+            max_concurrent=2,
+            max_ops=0,
+            team_max_rounds=1,
+        )
+    finally:
+        release_handoff.set()
+        if collect_tasks:
+            await asyncio.gather(*collect_tasks)
+
+    assert len(followup_contexts) == 1
+    prior = followup_contexts[0][1]["prior_team_messages"]
+    assert prior["total_count"] == 1
+    assert prior["messages"] == [{"from": "bob", "content": "please check the handoff"}]
+
+
 async def test_execute_dag_real_executor_rejected_injection_does_not_crash_the_run(tmp_path):
     """max_ops=1 zeroes the executor's spawn budget, so the real
     ReactiveExecutor rejects the injected round op — the run must still
