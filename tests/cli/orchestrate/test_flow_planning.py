@@ -80,6 +80,28 @@ async def test_no_plan_after_retry_raises_flow_plan_error(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_over_max_tasks_plan_raises_flow_plan_error(tmp_path):
+    """plan() raises ValueError when the orchestrator overshoots max_tasks even
+    after the cap was stated in guidance — flow.py must translate that into the
+    same FlowPlanError channel as every other plan-time failure, not let a bare
+    ValueError escape uncaught."""
+    orc = _FakeOrcBranch(
+        [
+            SimpleNamespace(
+                assignments=[
+                    TaskAssignment(task="a", assignee="researcher"),
+                    TaskAssignment(task="b", assignee="architect"),
+                ]
+            )
+        ]
+    )
+    with pytest.raises(FlowPlanError, match="exceeding max_tasks"):
+        await _run_flow_inner(
+            "codex/gpt-5.5", "task", env=_env(tmp_path, orc), dry_run=True, max_ops=1
+        )
+
+
+@pytest.mark.asyncio
 async def test_unknown_assignees_dropped_then_loud_fail(tmp_path):
     """plan() drops assignees outside the roster; an all-unknown plan is empty."""
     bad = SimpleNamespace(assignments=[TaskAssignment(task="x", assignee="not_a_role")])
