@@ -161,8 +161,9 @@ async def plan(
             continue
         valid.append(ta)
     if max_tasks and len(valid) > max_tasks:
-        logger.warning("plan: truncating %d assignments to max_tasks=%d", len(valid), max_tasks)
-        valid = valid[:max_tasks]
+        raise ValueError(
+            f"plan produced {len(valid)} assignments, exceeds max_tasks={max_tasks}"
+        )
     return valid
 
 
