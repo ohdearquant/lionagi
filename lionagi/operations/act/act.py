@@ -94,13 +94,20 @@ async def _act(
 
         # ActionManager.invoke() is total: a pre-hook denial, a schema-
         # revalidation failure, or an ordinary tool exception is captured as
-        # FAILED status + execution.error rather than raised. Route it
-        # through the same except-block error path below instead of letting
-        # a `None` response read as a silent successful result.
-        if func_call.status == EventStatus.FAILED:
-            raise func_call.execution.error or RuntimeError(
-                f"action {_request['function']!r} failed with no captured error"
-            )
+        # FAILED status + execution.error rather than raised. A denial
+        # (ToolHookDeniedError) or a schema-revalidation failure (a plain
+        # PermissionError raised in FunctionCalling._invoke()) is a
+        # governance/policy outcome, not a business result -- it must be
+        # visibly distinguishable from a tool that legitimately returned
+        # `None`, so route it through the same except-block error path
+        # below instead of the success path. An ordinary tool exception
+        # (any other error type) keeps the historical degrade-to-`None`
+        # contract under suppress_errors=True (test_invoke_action_suppress_errors) --
+        # only the two governance-denial error shapes changed behavior here.
+        if func_call.status == EventStatus.FAILED and isinstance(
+            func_call.execution.error, PermissionError
+        ):
+            raise func_call.execution.error
 
         if _hooks is not None:
             from lionagi.hooks.bus import HookPoint
