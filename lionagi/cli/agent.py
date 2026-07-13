@@ -688,7 +688,9 @@ def add_agent_subparser(subparsers: argparse._SubParsersAction) -> argparse.Argu
         default=None,
         help=(
             "Load agent profile by name. Resolves "
-            ".lionagi/agents/<NAME>/<NAME>.md first, then .lionagi/agents/<NAME>.md. "
+            ".lionagi/agents/<NAME>/<NAME>.md first, then .lionagi/agents/<NAME>.md, "
+            "then a trusted+enabled plugin's declared profile "
+            "('<plugin>/<NAME>', or a bare NAME when only one plugin declares it). "
             "Profile provides system prompt, default model, effort, yolo, "
             "timeout, resume_on_timeout. CLI flags override profile settings."
         ),

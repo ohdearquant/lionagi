@@ -36,6 +36,12 @@ _FORBIDDEN_MODULE_PREFIXES: tuple[str, ...] = (
     "lionagi.providers.",
     "lionagi.cli",
     "lionagi.operations.flow",
+    # Plugin discovery/activation must stay opt-in: a bare `import lionagi`
+    # must never scan `.lionagi/plugins/` or import bundle code. A consumer
+    # that eagerly imports the plugin registry at module import time would
+    # re-break the import-time invariant in a way no other assertion here
+    # would catch.
+    "lionagi.plugins",
 )
 
 # Third-party packages that a bare `import lionagi` does not need today.
