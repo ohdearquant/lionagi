@@ -278,3 +278,58 @@ class TestBuiltinProviderRestoration:
         result = match_endpoint(provider="openai", endpoint="chat")
 
         assert isinstance(result, OpenaiChatEndpoint)
+
+
+class TestPluginProviderBuiltinCollision:
+    """ADR-0088 D6: a plugin provider must never silently shadow an
+    already-registered built-in. ``EndpointRegistry._reject_builtin_collisions``
+    drops the colliding plugin entry and logs a named diagnostic instead."""
+
+    def test_builtin_wins_when_a_plugin_declares_the_same_provider(self, write_plugin, caplog):
+        import logging
+
+        from lionagi.providers.openai.chat import OpenaiChatEndpoint
+
+        # "openai" collides with a built-in; the plugin also declares an
+        # unrelated provider so a genuine miss (below) triggers import of
+        # both -- mirroring how a real plugin's provider module gets
+        # imported regardless of which specific provider is being resolved.
+        _write_provider_plugin(write_plugin, "wr", name="web-research", provider="openai")
+
+        with caplog.at_level(logging.WARNING, logger="lionagi.service.connections.registry"):
+            # A miss on an unrelated provider is what drives `match()` to
+            # consult (and thus import) every active plugin provider target,
+            # including the one that collides with "openai".
+            match_endpoint(provider="totally-unrelated", endpoint="chat")
+
+        assert "web-research" in caplog.text
+        assert "openai" in caplog.text
+
+        result = match_endpoint(provider="openai", endpoint="chat")
+        assert isinstance(result, OpenaiChatEndpoint)
+
+    def test_sibling_noncolliding_provider_in_the_same_manifest_still_resolves(self, write_plugin):
+        """A collision on one declared provider must not take down a sibling,
+        non-colliding provider declared by the same plugin manifest."""
+        write_plugin(
+            "wr",
+            (
+                "name: web-research\n"
+                'version: "0.1.0"\n'
+                'lionagi: ">=0.0,<100.0"\n\n'
+                "capabilities:\n"
+                "  providers:\n"
+                "    - module: providers/colliding.py\n"
+                "    - module: providers/ok.py\n"
+            ),
+            files={
+                "providers/colliding.py": PROVIDER_MODULE.format(provider="openai"),
+                "providers/ok.py": PROVIDER_MODULE.format(provider="acme-llm"),
+            },
+        )
+        _trust("wr")
+
+        result = match_endpoint(provider="acme-llm", endpoint="chat")
+
+        assert type(result).__name__ == "PluginProviderEndpoint"
+        assert result.config.provider == "acme-llm"

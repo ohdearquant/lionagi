@@ -34,6 +34,7 @@ class ActionManager(Manager):
         self.registry: dict[str, Tool] = {}
         self._tool_pre_hooks: list[ToolPreHook] = []
         self._tool_post_hooks: list[ToolPostHook] = []
+        self._plugin_shadow_warned: set[tuple[str, str]] = set()
 
         tools = []
         if args:
@@ -151,12 +152,43 @@ class ActionManager(Manager):
             args = action_request.arguments
 
         tool = self.registry.get(func, None)
-        if not isinstance(tool, Tool):
+        if isinstance(tool, Tool):
+            self._warn_if_plugin_tool_shadowed(func)
+        else:
             tool = self._resolve_plugin_tool(func)
         if not isinstance(tool, Tool):
             raise ValueError(f"Function {func} is not registered.")
 
         return FunctionCalling(func_tool=tool, arguments=args)
+
+    def _warn_if_plugin_tool_shadowed(self, name: str) -> None:
+        """ADR-0088 D6: a plugin tool must never silently replace a name
+        already present in this manager's registry. Log a named diagnostic
+        (once per plugin+tool identity) when an active plugin also declares
+        *name* -- the already-registered tool wins and the plugin declaration
+        is rejected.
+
+        When more than one enabled plugin declares *name*, that is a peer
+        collision, a hard error regardless of the local registration -- it
+        is not caught here and propagates to the caller."""
+        from lionagi.plugins.registry import PluginRegistry
+
+        if not PluginRegistry.list_plugins():
+            return
+        resolved = PluginRegistry.resolve_tool_target(name)
+        if resolved is None:
+            return
+        warn_key = (resolved.plugin_name, name)
+        if warn_key in self._plugin_shadow_warned:
+            return
+        self._plugin_shadow_warned.add(warn_key)
+        logger.warning(
+            "plugin %r declares tool %r, which is already registered; "
+            "the registered tool wins and this plugin declaration is "
+            "rejected (ADR-0088 D6)",
+            resolved.plugin_name,
+            name,
+        )
 
     def _resolve_plugin_tool(self, name: str) -> Tool | None:
         """ADR-0088 D3: on a registry miss, resolve *name* against the plugin
