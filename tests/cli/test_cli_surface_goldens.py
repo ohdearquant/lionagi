@@ -145,6 +145,7 @@ TOP_LEVEL_COMMANDS = [
     "monitor",
     "o",
     "orchestrate",
+    "plugin",
     "schedule",
     "state",
     "stats",
