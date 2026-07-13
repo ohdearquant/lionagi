@@ -285,6 +285,70 @@ async def test_reactive_flow_notifies_for_injected_clone():
     assert len(injected_created) == 1
 
 
+@pytest.mark.asyncio
+async def test_on_op_complete_can_inject_before_task_group_closes():
+    """A single-node graph finishing in one turn (no sleep) still gets its
+    on_op_complete-driven follow-up injected and run — a poll loop
+    checking on a later tick would lose this race."""
+    ran: list[str] = []
+
+    async def alice_turn(**kw):
+        ran.append("alice_turn")
+        return "done fast"
+
+    async def alice_followup(**kw):
+        ran.append("alice_followup")
+        return "followup ran"
+
+    session = _session_with_ops(alice_turn=alice_turn, alice_followup=alice_followup)
+    builder = OperationGraphBuilder()
+    builder.add_operation("alice_turn")
+    graph = builder.get_graph()
+
+    executor_ref: dict[str, Any] = {}
+    injected_once = {"done": False}
+
+    def on_op_complete(node):
+        if injected_once["done"]:
+            return
+        injected_once["done"] = True
+        followup = create_operation("alice_followup", parameters={})
+        assert executor_ref["executor"].inject(followup, independent=True) is True
+
+    result = await flow(
+        session,
+        graph,
+        reactive=True,
+        executor_ref=executor_ref,
+        on_op_complete=on_op_complete,
+    )
+
+    assert ran == ["alice_turn", "alice_followup"]
+    assert len(result["completed_operations"]) == 2
+
+
+@pytest.mark.asyncio
+async def test_on_op_complete_exception_does_not_break_the_flow(caplog):
+    """A raising on_op_complete callback must not take down the run."""
+
+    async def alice_turn(**kw):
+        return "ok"
+
+    session = _session_with_ops(alice_turn=alice_turn)
+    builder = OperationGraphBuilder()
+    builder.add_operation("alice_turn")
+    graph = builder.get_graph()
+
+    def on_op_complete(node):
+        raise RuntimeError("boom")
+
+    with caplog.at_level(logging.WARNING):
+        result = await flow(session, graph, reactive=True, on_op_complete=on_op_complete)
+
+    assert len(result["completed_operations"]) == 1
+    assert "on_op_complete" in caplog.text
+
+
 def test_inject_rejected_when_not_running():
     """inject() is a no-op (returns False) outside an active flow."""
     from lionagi.operations.flow import ReactiveExecutor

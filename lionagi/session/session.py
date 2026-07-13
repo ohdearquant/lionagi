@@ -373,6 +373,7 @@ class Session(Node, Relational):
         executor_ref: dict[str, Any] | None = None,
         on_branch_created: Callable[[Any], None] | None = None,
         spawn_branch_setup: Callable[[Any, Any], None] | None = None,
+        on_op_complete: Callable[[Any], None] | None = None,
     ) -> dict[str, Any]:
         """Execute a graph-based DAG workflow, optionally reactive (self-expanding)."""
         from lionagi.operations.flow import flow
@@ -398,6 +399,7 @@ class Session(Node, Relational):
             executor_ref=executor_ref,
             on_branch_created=on_branch_created,
             spawn_branch_setup=spawn_branch_setup,
+            on_op_complete=on_op_complete,
         )
 
     async def flow_stream(

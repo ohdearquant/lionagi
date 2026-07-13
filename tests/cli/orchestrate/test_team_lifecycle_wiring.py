@@ -1,19 +1,16 @@
 # Copyright (c) 2023-2026, HaiyangLi <quantocean.li at gmail dot com>
 # SPDX-License-Identifier: Apache-2.0
-"""Team-lifecycle wiring: `TeamLifecycleCoordinator` (mirrors
-`make_help_coordinator`'s test shape in `test_help_coordinator.py`) and the
-`_execute_dag` integration that polls it for wakeup rounds (mirrors
-`test_control_poller_lifecycle.py`'s fake-run_dag pattern for the control
-poller). Covers requirement (a) done-signal-as-code, (b) bounded wakeup
-rounds, and (c) quiescence termination end to end with fake workers — no
-real agent or LLM call anywhere in this file."""
+"""Team-lifecycle wiring: `TeamLifecycleCoordinator` unit tests plus
+`_execute_dag` integration (fake executor for decision-logic tests, the
+real `ReactiveExecutor` for the on_op_complete wakeup-round regressions).
+No real agent or LLM call anywhere — branches are stubbed."""
 
 from __future__ import annotations
 
 import asyncio
 import json
 from types import SimpleNamespace
-from unittest.mock import MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 from uuid import uuid4
 
 import pytest
@@ -24,6 +21,10 @@ from lionagi.cli.orchestrate import flow as _flow
 from lionagi.cli.orchestrate._orchestration import make_team_lifecycle_coordinator
 from lionagi.cli.orchestrate.flow import _DagState, _execute_dag, _PlanResult
 from lionagi.engines import PlanningEngine
+from lionagi.operations.node import Operation
+from lionagi.protocols.graph.graph import Graph
+from lionagi.session.exchange import Exchange
+from lionagi.session.session import Session
 
 from .test_flow_phases import _FakeBranch, _make_env
 
@@ -223,6 +224,92 @@ class TestTeamLifecycleCoordinatorBuildRoundOperations:
         assert "alice" in state2.active_workers
 
 
+class TestTeamLifecycleCoordinatorExchangeUnion:
+    async def test_exchange_only_mail_revives_a_worker_the_file_inbox_cannot_see(self):
+        """Alice done -> bob messenger-sends alice (Exchange only, never the
+        team file) -> bob done -> alice must still be revived."""
+        _make_team("t8", ["orchestrator", "alice", "bob"])
+        alice_branch = _FakeBranch("alice")
+        bob_branch = _FakeBranch("bob")
+        exchange = Exchange()
+        exchange.register(alice_branch.id)
+        exchange.register(bob_branch.id)
+        coord = make_team_lifecycle_coordinator(
+            "t8",
+            ["alice", "bob"],
+            {"alice": alice_branch, "bob": bob_branch},
+            messenger_bound={"alice": True, "bob": True},
+            exchange=exchange,
+        )
+        coord.on_done(name="alice", sender_id=uuid4(), reason="")
+        exchange.send(sender=bob_branch.id, recipient=alice_branch.id, content="see this")
+        await exchange.collect(bob_branch.id)
+        coord.on_done(name="bob", sender_id=uuid4(), reason="")
+
+        state = coord.check_round()
+        assert state.should_continue
+        assert "alice" in state.pending_targets
+
+        ops = coord.build_round_operations(state, prompt="task")
+        assert len(ops) == 1
+        prior = ops[0].request["context"][1]["prior_team_messages"]
+        assert prior["messages"] == [{"from": "bob", "content": "see this"}]
+
+        # Consumed — a second read must not re-trigger on the same mail.
+        state2 = coord.check_round()
+        assert "alice" not in state2.pending_targets
+
+    async def test_exchange_and_file_mail_are_both_folded_into_one_round(self):
+        _make_team("t9", ["orchestrator", "alice", "bob"])
+        alice_branch = _FakeBranch("alice")
+        bob_branch = _FakeBranch("bob")
+        exchange = Exchange()
+        exchange.register(alice_branch.id)
+        exchange.register(bob_branch.id)
+        coord = make_team_lifecycle_coordinator(
+            "t9",
+            ["alice", "bob"],
+            {"alice": alice_branch, "bob": bob_branch},
+            messenger_bound={"alice": True, "bob": True},
+            exchange=exchange,
+        )
+        coord.on_done(name="alice", sender_id=uuid4(), reason="")
+        with team._locked_team("t9") as data:
+            data["messages"].append(
+                {
+                    "id": "m1",
+                    "from": "orchestrator",
+                    "to": ["alice"],
+                    "content": "file note",
+                    "kind": "message",
+                    "read_by": {},
+                    "timestamp": "2026-01-01T00:00:00",
+                }
+            )
+        exchange.send(sender=bob_branch.id, recipient=alice_branch.id, content="exchange note")
+        await exchange.collect(bob_branch.id)
+        coord.on_done(name="bob", sender_id=uuid4(), reason="")
+
+        state = coord.check_round()
+        ops = coord.build_round_operations(state, prompt="task")
+        prior = ops[0].request["context"][1]["prior_team_messages"]
+        assert prior["total_count"] == 2
+        contents = {m["content"] for m in prior["messages"]}
+        assert contents == {"file note", "exchange note"}
+
+    async def test_no_exchange_configured_falls_back_to_file_inbox_only(self):
+        """exchange=None (CLI-only team) must behave exactly as before —
+        no AttributeError, file-inbox quiescence unaffected."""
+        _make_team("t10", ["orchestrator", "alice"])
+        coord = make_team_lifecycle_coordinator(
+            "t10", ["alice"], {"alice": _FakeBranch("alice")}, messenger_bound={"alice": True}
+        )
+        coord.on_done(name="alice", sender_id=uuid4(), reason="")
+        state = coord.check_round()
+        assert state.quiescent
+        assert not state.should_continue
+
+
 # ── Source-level wiring guard (mirrors TestCoordinatorWiredAtMessengerConstruction) ──
 
 
@@ -234,7 +321,7 @@ def test_flow_wires_team_lifecycle_done_and_finished_callbacks():
     assert "_team_coordinator.on_finished" in src
 
 
-# ── _execute_dag integration: real polling loop against a fake executor ────
+# ── _execute_dag integration against a fake executor (decision-logic only) ──
 
 
 def _plan_and_dag(agent_id: str, *, worker_branches=None, messenger_bound=None):
@@ -259,155 +346,225 @@ def _plan_and_dag(agent_id: str, *, worker_branches=None, messenger_bound=None):
     return plan_result, dag_state
 
 
-async def test_execute_dag_wakes_idle_worker_with_pending_mail_then_quiesces(tmp_path, monkeypatch):
-    """End-to-end (fake workers, no LLM): alice signals done, a teammate
-    leaves her a message, the coordinator wakes her with one injected
-    Operation carrying prior_team_messages, and the run settles once she
-    signals done again with nothing left pending."""
-    monkeypatch.setattr(_flow, "_TEAM_POLL_INTERVAL", 0.02)
+# ── _execute_dag integration against the REAL ReactiveExecutor ─────────────
+# No fake executor: PlanningEngine.new_run is unpatched, so eng_run.run_dag
+# drives the real ReactiveExecutor. Only branch.operate is stubbed.
 
-    team_id = "e2e-team"
+
+def _build_stub_branch(operate_fn, name: str = "alice") -> MagicMock:
+    """MagicMock branch whose "operate" resolves via operate_fn; .clone()
+    rebuilds fresh, sharing the same operate_fn closure (the executor
+    always clones an injected op's branch). ``name`` must be a real string —
+    the executor's NodeStarted/NodeCompleted signals pydantic-validate it."""
+
+    def _build() -> MagicMock:
+        b = MagicMock()
+        b.id = uuid4()
+        b.name = name
+        b._message_manager = MagicMock()
+        b._message_manager.pile = MagicMock()
+        b._message_manager.pile.clear = MagicMock()
+        b.metadata = {}
+        b.operate = AsyncMock(side_effect=operate_fn)
+        b.get_operation = MagicMock(side_effect=lambda name: {"operate": b.operate}.get(name))
+        b.clone = MagicMock(side_effect=lambda sender=None: _build())
+        return b
+
+    return _build()
+
+
+def _plan_and_dag_real(
+    node: Operation, agent_id: str, *, worker_branches=None, messenger_bound=None
+):
+    """Like _plan_and_dag, but node_ids key off *node*'s real UUID — the
+    real executor's operation_results is keyed by Operation.id."""
+    plan_result = _PlanResult(
+        assignments=[TaskAssignment(task="x", assignee="researcher")],
+        agent_ids=[agent_id],
+        dep_indices=[[]],
+        pool=[],
+        budget_preambles={},
+    )
+    dag_state = _DagState(
+        node_ids=[node.id],
+        known_nodes={node.id},
+        deps_by_node={node.id: []},
+        reactive=True,
+        spawn_roles=set(),
+        role_base={},
+        worker_models=["codex/gpt-5.5"],
+        worker_branches=worker_branches or {},
+        messenger_bound=messenger_bound or {},
+    )
+    return plan_result, dag_state
+
+
+async def test_execute_dag_real_executor_wakes_alice_before_task_group_closes(tmp_path):
+    """Finding-1 regression: alice leaves herself mail and signals done in
+    one turn, no sleep — the wakeup round must still fire against the real
+    executor, with no poll loop left to race."""
+    team_id = "e2e-real-team"
     _make_team(team_id, ["orchestrator", "alice"])
 
     env = _make_env(tmp_path)
     env.team_data = {"id": team_id, "name": "e2e", "members": ["orchestrator", "alice"]}
     env.messenger = _FakeMessenger()
 
-    alice_branch = _FakeBranch("alice")
-    plan_result, dag_state = _plan_and_dag(
-        "alice",
-        worker_branches={"alice": alice_branch},
-        messenger_bound={"alice": True},
+    calls: list[int] = []
+
+    async def alice_operate(**kw):
+        turn = len(calls)
+        calls.append(turn)
+        if turn == 0:
+            with team._locked_team(team_id) as data:
+                data["messages"].append(
+                    {
+                        "id": "m1",
+                        "from": "orchestrator",
+                        "to": ["alice"],
+                        "content": "please double-check section 2",
+                        "kind": "message",
+                        "read_by": {},
+                        "timestamp": "2026-01-01T00:00:00",
+                    }
+                )
+            team.post_done_signal(team_id, worker="alice", summary="first pass done")
+            return "first pass done"
+        team.post_done_signal(team_id, worker="alice", summary="all clear now")
+        return "all clear now"
+
+    alice_branch = _build_stub_branch(alice_operate)
+
+    session = Session()
+    session.default_branch = alice_branch
+    env.session = session
+
+    graph = Graph()
+    node = Operation(operation="operate", parameters={"instruction": "do the work"})
+    node.branch_id = alice_branch.id
+    graph.add_node(node)
+    env.builder.get_graph = lambda: graph
+
+    plan_result, dag_state = _plan_and_dag_real(
+        node, "alice", worker_branches={"alice": alice_branch}, messenger_bound={"alice": True}
     )
 
-    fake_executor = _FakeExecutor()
+    exec_result = await _execute_dag(
+        env, plan_result, dag_state, max_concurrent=1, max_ops=0, team_max_rounds=2
+    )
 
-    async def _fake_run_dag(graph, *, executor_ref, **_kw):
-        executor_ref["executor"] = fake_executor
-        # Turn 1: alice finishes and signals done.
-        team.post_done_signal(team_id, worker="alice", summary="first pass done")
-        # A teammate leaves her something before she's revived.
+    # The round-injected op actually ran — proves inject() was not rejected.
+    assert len(calls) == 2
+    assert exec_result.agent_results[0]["response"] == "first pass done"
+
+
+async def test_execute_dag_real_executor_respects_team_max_rounds_bound(tmp_path):
+    """Alice leaves new mail every turn; team_max_rounds=1 caps it at one
+    injected round against the real executor."""
+    team_id = "e2e-real-bounded"
+    _make_team(team_id, ["orchestrator", "alice"])
+
+    env = _make_env(tmp_path)
+    env.team_data = {"id": team_id, "name": "e2e", "members": ["orchestrator", "alice"]}
+    env.messenger = _FakeMessenger()
+
+    calls: list[int] = []
+
+    async def alice_operate(**kw):
+        turn = len(calls)
+        calls.append(turn)
+        with team._locked_team(team_id) as data:
+            data["messages"].append(
+                {
+                    "id": f"m{turn}",
+                    "from": "orchestrator",
+                    "to": ["alice"],
+                    "content": f"round {turn} note",
+                    "kind": "message",
+                    "read_by": {},
+                    "timestamp": "2026-01-01T00:00:00",
+                }
+            )
+        team.post_done_signal(team_id, worker="alice", summary=f"pass {turn}")
+        return f"pass {turn}"
+
+    alice_branch = _build_stub_branch(alice_operate)
+
+    session = Session()
+    session.default_branch = alice_branch
+    env.session = session
+
+    graph = Graph()
+    node = Operation(operation="operate", parameters={"instruction": "do the work"})
+    node.branch_id = alice_branch.id
+    graph.add_node(node)
+    env.builder.get_graph = lambda: graph
+
+    plan_result, dag_state = _plan_and_dag_real(
+        node, "alice", worker_branches={"alice": alice_branch}, messenger_bound={"alice": True}
+    )
+
+    await _execute_dag(env, plan_result, dag_state, max_concurrent=1, max_ops=0, team_max_rounds=1)
+
+    assert len(calls) == 2  # initial turn + exactly one bounded round
+
+
+async def test_execute_dag_real_executor_rejected_injection_does_not_crash_the_run(tmp_path):
+    """max_ops=1 zeroes the executor's spawn budget, so the real
+    ReactiveExecutor rejects the injected round op — the run must still
+    finish cleanly with no leaked task."""
+    team_id = "e2e-real-rejected"
+    _make_team(team_id, ["orchestrator", "alice"])
+
+    env = _make_env(tmp_path)
+    env.team_data = {"id": team_id, "name": "e2e", "members": ["orchestrator", "alice"]}
+    env.messenger = _FakeMessenger()
+
+    calls: list[int] = []
+
+    async def alice_operate(**kw):
+        turn = len(calls)
+        calls.append(turn)
         with team._locked_team(team_id) as data:
             data["messages"].append(
                 {
                     "id": "m1",
                     "from": "orchestrator",
                     "to": ["alice"],
-                    "content": "please double-check section 2",
+                    "content": "one more thing",
                     "kind": "message",
                     "read_by": {},
                     "timestamp": "2026-01-01T00:00:00",
                 }
             )
-        await asyncio.sleep(0.12)  # several poll ticks — the round must fire
-        assert len(fake_executor.injected) == 1
-        # Turn 2 (simulated): alice signals done again with nothing pending.
-        team.post_done_signal(team_id, worker="alice", summary="all clear now")
-        await asyncio.sleep(0.08)  # let the loop observe quiescence and stop
-        return {"operation_results": {"alice": "ok"}, "spawned_operations": 0}
+        team.post_done_signal(team_id, worker="alice", summary=f"pass {turn}")
+        return f"pass {turn}"
 
-    fake_engine_run = MagicMock()
-    fake_engine_run.run_dag = _fake_run_dag
+    alice_branch = _build_stub_branch(alice_operate)
 
-    with patch.object(PlanningEngine, "new_run", return_value=fake_engine_run):
-        exec_result = await _execute_dag(
-            env, plan_result, dag_state, max_concurrent=1, max_ops=0, team_max_rounds=2
-        )
+    session = Session()
+    session.default_branch = alice_branch
+    env.session = session
 
-    assert exec_result.agent_results[0]["response"] == "ok"
-    assert len(fake_executor.injected) == 1
-    injected = fake_executor.injected[0]
-    assert injected.branch_id == alice_branch.id
-    assert injected.request["actions"] is True
-    prior = injected.request["context"][1]["prior_team_messages"]
-    assert prior["messages"] == [
-        {"from": "orchestrator", "content": "please double-check section 2"}
-    ]
+    graph = Graph()
+    node = Operation(operation="operate", parameters={"instruction": "do the work"})
+    node.branch_id = alice_branch.id
+    graph.add_node(node)
+    env.builder.get_graph = lambda: graph
 
-
-async def test_execute_dag_respects_team_max_rounds_bound(tmp_path, monkeypatch):
-    """Teammate keeps leaving new mail every turn — without a bound this
-    would loop forever; team_max_rounds=1 caps it at exactly one round."""
-    monkeypatch.setattr(_flow, "_TEAM_POLL_INTERVAL", 0.02)
-
-    team_id = "e2e-bounded"
-    _make_team(team_id, ["orchestrator", "alice"])
-
-    env = _make_env(tmp_path)
-    env.team_data = {"id": team_id, "name": "e2e", "members": ["orchestrator", "alice"]}
-    env.messenger = _FakeMessenger()
-
-    alice_branch = _FakeBranch("alice")
-    plan_result, dag_state = _plan_and_dag(
-        "alice", worker_branches={"alice": alice_branch}, messenger_bound={"alice": True}
+    plan_result, dag_state = _plan_and_dag_real(
+        node, "alice", worker_branches={"alice": alice_branch}, messenger_bound={"alice": True}
     )
-    fake_executor = _FakeExecutor()
-
-    def _leave_mail(n: int) -> None:
-        with team._locked_team(team_id) as data:
-            data["messages"].append(
-                {
-                    "id": f"m{n}",
-                    "from": "orchestrator",
-                    "to": ["alice"],
-                    "content": f"round {n} note",
-                    "kind": "message",
-                    "read_by": {},
-                    "timestamp": "2026-01-01T00:00:00",
-                }
-            )
-
-    async def _fake_run_dag(graph, *, executor_ref, **_kw):
-        executor_ref["executor"] = fake_executor
-        team.post_done_signal(team_id, worker="alice", summary="pass 1")
-        _leave_mail(1)
-        await asyncio.sleep(0.1)  # round 1 fires
-        team.post_done_signal(team_id, worker="alice", summary="pass 2")
-        _leave_mail(2)
-        await asyncio.sleep(0.1)  # round budget exhausted — must NOT fire again
-        return {"operation_results": {"alice": "ok"}, "spawned_operations": 0}
-
-    fake_engine_run = MagicMock()
-    fake_engine_run.run_dag = _fake_run_dag
-
-    with patch.object(PlanningEngine, "new_run", return_value=fake_engine_run):
-        await _execute_dag(
-            env, plan_result, dag_state, max_concurrent=1, max_ops=0, team_max_rounds=1
-        )
-
-    assert len(fake_executor.injected) == 1
-
-
-async def test_execute_dag_team_task_cancelled_cleanly_at_run_end(tmp_path, monkeypatch):
-    """No leaked polling task once _execute_dag returns, mirroring
-    test_ctl_task_and_hb_task_are_cancelled_cleanly_at_run_end."""
-    monkeypatch.setattr(_flow, "_TEAM_POLL_INTERVAL", 0.02)
-
-    team_id = "e2e-cleanup"
-    _make_team(team_id, ["orchestrator", "alice"])
-
-    env = _make_env(tmp_path)
-    env.team_data = {"id": team_id, "name": "e2e", "members": ["orchestrator", "alice"]}
-    env.messenger = _FakeMessenger()
-
-    alice_branch = _FakeBranch("alice")
-    plan_result, dag_state = _plan_and_dag(
-        "alice", worker_branches={"alice": alice_branch}, messenger_bound={"alice": True}
-    )
-    fake_executor = _FakeExecutor()
-
-    async def _fake_run_dag(graph, *, executor_ref, **_kw):
-        executor_ref["executor"] = fake_executor
-        await asyncio.sleep(0.05)
-        return {"operation_results": {"alice": "ok"}, "spawned_operations": 0}
-
-    fake_engine_run = MagicMock()
-    fake_engine_run.run_dag = _fake_run_dag
 
     tasks_before = asyncio.all_tasks()
-    with patch.object(PlanningEngine, "new_run", return_value=fake_engine_run):
-        await _execute_dag(env, plan_result, dag_state, max_concurrent=1, max_ops=0)
+    exec_result = await _execute_dag(
+        env, plan_result, dag_state, max_concurrent=1, max_ops=1, team_max_rounds=2
+    )
 
+    # Rejected: max_ops=1 leaves a zero spawn budget, so the coordinator's
+    # attempted round never actually ran alice a second time.
+    assert len(calls) == 1
+    assert exec_result.agent_results[0]["response"] == "pass 0"
     leaked = asyncio.all_tasks() - tasks_before
     assert leaked == set()
 

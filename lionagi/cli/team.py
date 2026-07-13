@@ -40,26 +40,27 @@ def _teams_dir() -> Path:
     return TEAMS_DIR
 
 
-def _team_file(team_id: str) -> Path:
-    """Resolve a team by id/prefix/name to its JSON path.
+def read_team_json(path: Path) -> dict[str, Any] | None:
+    """Read one team JSON file under a SHARED flock — the canonical
+    safe-read every team-file reader goes through. Returns None (never
+    raises) for a missing, unreadable, or corrupt file."""
+    try:
+        with open(path) as fp:
+            fcntl.flock(fp.fileno(), fcntl.LOCK_SH)
+            try:
+                raw = fp.read()
+            finally:
+                fcntl.flock(fp.fileno(), fcntl.LOCK_UN)
+        return json.loads(raw) if raw.strip() else {}
+    except (OSError, json.JSONDecodeError):
+        return None
 
-    Reads each candidate under a SHARED flock so a resolution scan can
-    never observe a concurrent `_locked_team` write mid-truncate. A plain
-    unlocked `read_text()` here could catch a file between the writer's
-    exclusive-lock truncate() and its write() — under concurrent senders
-    that showed up as a spurious "No team found" for a team that plainly
-    exists on disk a moment later.
-    """
+
+def _team_file(team_id: str) -> Path:
+    """Resolve a team by id/prefix/name to its JSON path."""
     for p in _teams_dir().glob("*.json"):
-        try:
-            with open(p) as fp:
-                fcntl.flock(fp.fileno(), fcntl.LOCK_SH)
-                try:
-                    raw = fp.read()
-                finally:
-                    fcntl.flock(fp.fileno(), fcntl.LOCK_UN)
-            data = json.loads(raw) if raw.strip() else {}
-        except (OSError, json.JSONDecodeError):
+        data = read_team_json(p)
+        if data is None:
             continue
         if data.get("id") == team_id or data.get("id", "").startswith(team_id):
             return p
@@ -100,9 +101,13 @@ def _locked_team(team_id: str, *, create_path: Path | None = None):
 
 
 def _load_team(team_id: str) -> dict:
-    """Snapshot read — no lock held after return. Use when only reading."""
+    """Snapshot read under a shared lock. Raises FileNotFoundError
+    uniformly for both a missing team and a failed decode."""
     path = _team_file(team_id)
-    return json.loads(path.read_text())
+    data = read_team_json(path)
+    if data is None:
+        raise FileNotFoundError(f"Team '{team_id}' is empty or missing")
+    return data
 
 
 def _read_by_map(read_by) -> dict[str, str]:
@@ -188,7 +193,9 @@ def cmd_list(args: argparse.Namespace) -> int:
         return 0
 
     for p in files:
-        data = json.loads(p.read_text())
+        data = read_team_json(p)
+        if data is None:
+            continue  # skip, don't crash the listing
         n_msgs = len(data.get("messages", []))
         members = ", ".join(data.get("members", []))
         print(f"  {data['id']}  {data['name']:20s}  [{members}]  {n_msgs} msgs")

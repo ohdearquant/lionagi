@@ -121,12 +121,9 @@ _CONTROL_POLL_INTERVAL = 2.0
 _CONTROL_UNSTAMPED = "unstamped"
 
 # ── Team lifecycle (done-signal / wakeup rounds / quiescence) ───────────────
-# Polls the team inbox (a plain JSON file — same channel `li team show`
-# reads) for the quiescence predicate defined in lionagi.cli.team, and
-# injects a bounded round of follow-up Operations via the reactive
-# executor's public inject() when it fires. See TeamLifecycleCoordinator in
-# _orchestration.py for the actual decision logic; this loop only drives it.
-_TEAM_POLL_INTERVAL = 2.0
+# Driven by ReactiveExecutor's on_op_complete hook, not a poll loop — a poll
+# loop's next tick races the executor's own task-group teardown. See
+# TeamLifecycleCoordinator in _orchestration.py for the decision logic.
 
 
 async def _apply_session_control(db, executor, row: dict) -> str | None:
@@ -909,12 +906,8 @@ async def _execute_dag(
 
         _asyncio.ensure_future(_do())
 
-    # Team lifecycle: only wired when team messaging is active, reactive
-    # mode is on (round injection rides ReactiveExecutor.inject(), which a
-    # plain non-reactive DependencyAwareExecutor doesn't have), and at least
-    # one worker actually got a branch built (dag_state.worker_branches is
-    # empty for a --team-attach CLI-only run with zero in-process workers,
-    # in which case there is nothing this coordinator could ever inject).
+    # Only wired when team messaging + reactive mode are on and at least
+    # one worker got a branch built (nothing to inject otherwise).
     _team_coordinator: Any = None
     if (
         env.team_data
@@ -930,34 +923,47 @@ async def _execute_dag(
             dag_state.worker_branches,
             messenger_bound=dag_state.messenger_bound,
             max_rounds=team_max_rounds,
+            exchange=getattr(env, "exchange", None),
         )
         env.messenger.on("done", _team_coordinator.on_done)
         env.messenger.on("finished", _team_coordinator.on_finished)
 
-    async def _team_lifecycle_loop() -> None:
+    def _on_team_op_complete(node: Any) -> None:
+        """ReactiveExecutor.on_op_complete callback: race-free inject() for
+        team wakeup rounds. Called for every completed node."""
         if _team_coordinator is None:
             return
-        while True:
-            await _asyncio.sleep(_TEAM_POLL_INTERVAL)
-            executor = _executor_ref.get("executor")
-            if executor is None:
-                continue
-            try:
-                state = _team_coordinator.check_round()
-            except FileNotFoundError:
-                continue
-            if not state.should_continue:
-                if state.quiescent:
-                    return
-                continue
+        executor = _executor_ref.get("executor")
+        if executor is None:
+            return
+        try:
+            state = _team_coordinator.check_round()
+        except FileNotFoundError:
+            return  # team file transiently unavailable — next node retries
+        except Exception as e:  # noqa: BLE001 — never let a coordinator bug kill the run
+            logger.warning("team round: check_round() failed: %s", e)
+            return
+        if not state.should_continue:
+            return
+        try:
             new_ops = _team_coordinator.build_round_operations(state, prompt=checkpoint_prompt)
-            for op in new_ops:
-                executor.inject(op, independent=True)
-            if new_ops:
-                progress(
-                    f"  ↻ team round {_team_coordinator.rounds_run}: "
-                    f"woke {', '.join(sorted(state.pending_targets))}"
+        except Exception as e:  # noqa: BLE001
+            logger.warning("team round: build_round_operations() failed: %s", e)
+            return
+        injected = []
+        for op in new_ops:
+            if executor.inject(op, independent=True):
+                injected.append(op)
+            else:
+                logger.warning(
+                    "team round: inject() rejected op %s (flow no longer running)",
+                    str(getattr(op, "id", op))[:8],
                 )
+        if injected:
+            progress(
+                f"  ↻ team round {_team_coordinator.rounds_run}: "
+                f"woke {', '.join(sorted(state.pending_targets))}"
+            )
 
     async def _control_poll_loop() -> None:
         while True:
@@ -1028,9 +1034,6 @@ async def _execute_dag(
     t_exec = time.monotonic()
     _hb_task = _asyncio.ensure_future(_heartbeat_loop())
     _ctl_task = _asyncio.ensure_future(_control_poll_loop())
-    _team_task = (
-        _asyncio.ensure_future(_team_lifecycle_loop()) if _team_coordinator is not None else None
-    )
     _exchange = getattr(env, "exchange", None)
     _exch_task = _asyncio.ensure_future(_exchange.run(0.5)) if _exchange is not None else None
     try:
@@ -1049,19 +1052,15 @@ async def _execute_dag(
             executor_ref=_executor_ref,
             context=checkpoint_flow_context,
             spawn_branch_setup=_spawn_branch_setup if reactive else None,
+            on_op_complete=_on_team_op_complete if _team_coordinator is not None else None,
         )
     finally:
         _hb_task.cancel()
         _ctl_task.cancel()
-        if _team_task is not None:
-            _team_task.cancel()
         with contextlib.suppress(_asyncio.CancelledError):
             await _hb_task
         with contextlib.suppress(_asyncio.CancelledError):
             await _ctl_task
-        if _team_task is not None:
-            with contextlib.suppress(_asyncio.CancelledError):
-                await _team_task
         if _exch_task is not None:
             _exchange.stop()
             with contextlib.suppress(_asyncio.CancelledError):

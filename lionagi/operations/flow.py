@@ -714,6 +714,7 @@ class ReactiveExecutor(DependencyAwareExecutor):
         node_builder: Any = None,
         max_spawn: int = 50,
         spawn_branch_setup: Callable[[Operation, Any], None] | None = None,
+        on_op_complete: Callable[[Operation], None] | None = None,
         **kwargs: Any,
     ):
         super().__init__(*args, **kwargs)
@@ -732,6 +733,10 @@ class ReactiveExecutor(DependencyAwareExecutor):
         # planned leg's — the clone otherwise inherits the emitter's repo,
         # which sits outside the spawned node's own artifact directory.
         self.spawn_branch_setup = spawn_branch_setup
+        # Sync callback fired once per node at the tail of _run_tracked,
+        # before that task returns to the task group — the only point a
+        # caller's inject() is race-free against the group's convergence.
+        self.on_op_complete = on_op_complete
         self._spawn_count = 0
         self._dropped_spawns: list[dict[str, Any]] = []
         self._running = False
@@ -860,6 +865,14 @@ class ReactiveExecutor(DependencyAwareExecutor):
             self._inject_request(req, emitter=node)
         for req in _extract_spawn_requests(self.results.get(node.id), EscalationRequest):
             self._schedule_escalation(req, emitter=node)
+
+        if self.on_op_complete is not None:
+            # Best-effort, and still inside the task group tracking this
+            # coroutine — a caller's inject() here is never rejected.
+            try:
+                self.on_op_complete(node)
+            except Exception as e:  # noqa: BLE001
+                logger.warning("on_op_complete callback raised for %s: %s", str(node.id)[:8], e)
 
     def _make_event(self, node: Operation) -> FlowEvent:
         if node.id in self.skipped_operations:
@@ -1140,6 +1153,7 @@ async def flow(
     executor_ref: dict[str, Any] | None = None,
     on_branch_created: Callable[[Any], None] | None = None,
     spawn_branch_setup: Callable[[Operation, Any], None] | None = None,
+    on_op_complete: Callable[[Operation], None] | None = None,
 ) -> dict[str, Any]:
     """Execute a graph with dependency management and optional reactive self-expansion.
 
@@ -1152,6 +1166,9 @@ async def flow(
 
     ``spawn_branch_setup``, when given, runs after each reactively-spawned
     node's branch is cloned (reactive mode only) — see ``ReactiveExecutor``.
+
+    ``on_op_complete`` (reactive mode only) runs synchronously at the tail
+    of every node's execution, race-free for a caller's ``inject()``.
     """
 
     if not parallel:
@@ -1171,6 +1188,7 @@ async def flow(
             max_spawn=max_spawn,
             executor_ref=executor_ref,
             spawn_branch_setup=spawn_branch_setup,
+            on_op_complete=on_op_complete,
         )
     else:
         executor = DependencyAwareExecutor(

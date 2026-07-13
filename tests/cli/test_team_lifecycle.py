@@ -7,6 +7,7 @@ flock-safety under concurrent writers."""
 
 from __future__ import annotations
 
+import argparse
 import json
 import threading
 
@@ -273,6 +274,49 @@ class TestSignalWriters:
         assert "alice" in data["messages"][0]["read_by"]
 
 
+# ── read_team_json / _load_team / cmd_list: shared-flock reads ─────────────
+
+
+class TestReadTeamJson:
+    def test_reads_valid_file(self):
+        _make_team("r1", ["orchestrator", "alice"])
+        path = team._teams_dir() / "r1.json"
+        data = team.read_team_json(path)
+        assert data["id"] == "r1"
+
+    def test_missing_file_returns_none(self, tmp_path):
+        assert team.read_team_json(tmp_path / "nope.json") is None
+
+    def test_corrupt_json_returns_none(self):
+        path = team._teams_dir() / "corrupt.json"
+        path.write_text("{not json")
+        assert team.read_team_json(path) is None
+
+    def test_load_team_raises_file_not_found_for_missing(self):
+        with pytest.raises(FileNotFoundError):
+            team._load_team("nonexistent")
+
+    def test_load_team_raises_file_not_found_for_corrupt(self, monkeypatch):
+        """A corrupt/torn file must raise the SAME exception type as a
+        missing one — a poller only catching FileNotFoundError must not
+        die on a decode error."""
+        _make_team("r2", ["orchestrator", "alice"])
+        path = team._teams_dir() / "r2.json"
+
+        monkeypatch.setattr(team, "_team_file", lambda team_id: path)
+        path.write_text("{not json")
+        with pytest.raises(FileNotFoundError):
+            team._load_team("r2")
+
+    def test_cmd_list_skips_corrupt_files_without_crashing(self, capsys):
+        _make_team("r3", ["orchestrator", "alice"])
+        (team._teams_dir() / "corrupt2.json").write_text("{not json")
+        rc = team.cmd_list(argparse.Namespace())
+        assert rc == 0
+        out = capsys.readouterr().out
+        assert "r3" in out
+
+
 # ── flock-safety under concurrent writers ───────────────────────────────────
 
 
@@ -330,3 +374,56 @@ class TestConcurrentWrites:
         wakeup_count = sum(1 for m in data["messages"] if m["kind"] == "wakeup")
         assert done_count == len(workers)
         assert wakeup_count == len(workers)
+
+    def test_readers_never_observe_a_torn_write_under_concurrent_writers(self):
+        """Readers hammering read_team_json,
+        _load_team, and cmd_list while writers are actively truncating and
+        rewriting the same file must never see a decode error or a
+        partially-written 'messages' list — every read is either the
+        pre-write or post-write snapshot, never a torn one."""
+        team_id = "concurrent-reads"
+        workers = [f"w{i}" for i in range(8)]
+        _make_team(team_id, ["orchestrator", *workers])
+        path = team._teams_dir() / f"{team_id}.json"
+
+        stop = threading.Event()
+        errors: list[BaseException] = []
+        read_count = 0
+        read_lock = threading.Lock()
+
+        def _writer(name: str) -> None:
+            try:
+                for _ in range(20):
+                    team.post_done_signal(team_id, worker=name, summary=f"{name} pass")
+            except BaseException as exc:  # noqa: BLE001
+                errors.append(exc)
+
+        def _reader() -> None:
+            nonlocal read_count
+            try:
+                while not stop.is_set():
+                    data = team.read_team_json(path)
+                    if data is not None:
+                        assert isinstance(data.get("messages"), list)
+                        with read_lock:
+                            read_count += 1
+                    team.cmd_list(argparse.Namespace())
+            except BaseException as exc:  # noqa: BLE001
+                errors.append(exc)
+
+        writer_threads = [threading.Thread(target=_writer, args=(w,)) for w in workers]
+        reader_threads = [threading.Thread(target=_reader) for _ in range(4)]
+        for t in reader_threads:
+            t.start()
+        for t in writer_threads:
+            t.start()
+        for t in writer_threads:
+            t.join(timeout=30)
+        stop.set()
+        for t in reader_threads:
+            t.join(timeout=10)
+
+        assert not errors
+        assert read_count > 0
+        data = team._load_team(team_id)
+        assert len(data["messages"]) == 20 * len(workers)

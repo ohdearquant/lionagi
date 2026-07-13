@@ -4,11 +4,11 @@ from typing import Any
 
 from fastapi import HTTPException, Query
 
+from lionagi.cli.team import read_team_json as _read_json
 from lionagi.libs.path_safety import safe_join
 from lionagi.utils import LIONAGI_HOME
 
 from ..registry import studio_route
-from ._io import read_json_file as _read_json
 
 _TEAMS_ROOT = LIONAGI_HOME / "teams"
 
