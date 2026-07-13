@@ -13,7 +13,9 @@ identical to today's behavior.
 from __future__ import annotations
 
 import os
+import pathlib
 import sys
+from types import SimpleNamespace
 
 import pytest
 
@@ -277,6 +279,98 @@ class TestPluginProviderRevalidationCaching:
         )
         assert type(second).__name__ == "Endpoint", (
             "the stale, edited-but-mtime-restored plugin entry must not be served after the edit"
+        )
+
+    def test_equal_length_edit_with_static_ctime_still_forces_a_fresh_rescan(
+        self, write_plugin, monkeypatch
+    ):
+        """Neither mtime nor ctime alone is a portable content-pinning
+        signal. mtime can be restored with ``os.utime()``; ctime is not even
+        a metadata-change token everywhere -- current CPython documents
+        ``st_ctime``/``st_ctime_ns`` as file *creation* time on Windows, so a
+        content write or ``os.utime()`` never advances it there. An attacker
+        (or a naive backup/restore tool) that performs a same-length
+        in-place edit, restores the original mtime, and leaves ctime static
+        must still be detected: the fast path must fall back to a content
+        digest whenever its stat signature claims nothing changed, not trust
+        the stat tuple by itself. This reproduces the Windows/static-ctime
+        case on any host by freezing the ctime this test observes back to
+        its pre-edit value after performing the edit.
+        """
+        bundle = _write_provider_plugin(
+            write_plugin, "wr", name="web-research", provider="acme-llm"
+        )
+        target_path = bundle / "providers" / "endpoint.py"
+        original_stat = target_path.stat()
+
+        call_count = 0
+        original_activate_target = PluginRegistry.activate_target.__func__
+
+        def counting_activate_target(cls, plugin_name, target):
+            nonlocal call_count
+            call_count += 1
+            return original_activate_target(cls, plugin_name, target)
+
+        monkeypatch.setattr(
+            PluginRegistry, "activate_target", classmethod(counting_activate_target)
+        )
+
+        first = match_endpoint(provider="acme-llm", endpoint="chat")
+        assert type(first).__name__ == "PluginProviderEndpoint"
+        cached_hit = match_endpoint(provider="acme-llm", endpoint="chat")
+        assert type(cached_hit).__name__ == "PluginProviderEndpoint"
+        calls_before_attack = call_count
+
+        original_bytes = target_path.read_bytes()
+        edited_bytes = original_bytes.replace(b"pass", b"PASS", 1)
+        assert edited_bytes != original_bytes
+        assert len(edited_bytes) == len(original_bytes), (
+            "test setup must keep the edit equal-length so size cannot betray it"
+        )
+        target_path.write_bytes(edited_bytes)
+        os.utime(target_path, ns=(original_stat.st_atime_ns, original_stat.st_mtime_ns))
+        edited_stat = target_path.stat()
+        assert edited_stat.st_size == original_stat.st_size, (
+            "test setup must actually preserve the original size"
+        )
+        assert edited_stat.st_mtime_ns == original_stat.st_mtime_ns, (
+            "test setup must actually restore the original mtime"
+        )
+        assert edited_stat.st_ino == original_stat.st_ino, (
+            "test setup must actually preserve the original inode"
+        )
+
+        # Freeze what this file reports for st_ctime_ns back to its pre-edit
+        # value from here on, so this test reproduces the Windows/
+        # static-ctime case regardless of what the host filesystem actually
+        # does to ctime for an in-place write + os.utime().
+        real_stat = pathlib.Path.stat
+        frozen_ctime_ns = original_stat.st_ctime_ns
+
+        def frozen_ctime_stat(self, *args, **kwargs):
+            result = real_stat(self, *args, **kwargs)
+            if self == target_path:
+                return SimpleNamespace(
+                    st_mtime_ns=result.st_mtime_ns,
+                    st_ctime_ns=frozen_ctime_ns,
+                    st_size=result.st_size,
+                    st_ino=result.st_ino,
+                )
+            return result
+
+        monkeypatch.setattr(pathlib.Path, "stat", frozen_ctime_stat)
+
+        second = match_endpoint(provider="acme-llm", endpoint="chat")
+
+        assert call_count > calls_before_attack, (
+            "a same-length in-place edit whose mtime is restored and whose "
+            "ctime never advances (the Windows case) must still force a "
+            "fresh activate_target() revalidation on the next match() -- "
+            "the fast path must confirm with a content digest whenever "
+            "its stat signature alone claims nothing changed"
+        )
+        assert type(second).__name__ == "Endpoint", (
+            "the stale, edited-but-signature-preserved plugin entry must not be served after the edit"
         )
 
 
