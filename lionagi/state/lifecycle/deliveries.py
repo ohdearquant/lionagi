@@ -1,18 +1,8 @@
 # Copyright (c) 2023-2026, HaiyangLi <quantocean.li at gmail dot com>
 # SPDX-License-Identifier: Apache-2.0
-"""Durable reconciliation-consumer acknowledgment ledger.
-
-Acknowledgment is durable state written only by a named reconciliation
-consumer, never by the in-process push path (``TerminalCallbackRegistry``
-stays fire-and-forget and records nothing here). The reconciliation query is
-a read-only anti-join: terminal transitions on execution entities with no
-delivery row yet for the requesting consumer. Neither side of that join
-carries an age filter — a late-committing older row, or an event from a
-consumer that has been offline far longer than any retention horizon,
-remains in the unacknowledged set until it is acknowledged. What may
-eventually be pruned is the *other* side: already-acknowledged delivery rows
-older than a retention horizon (not implemented here — out of scope for this
-slice; the query below never expires an unacked event on its own).
+"""Durable reconciliation-consumer acknowledgment ledger. Written only by a
+named reconciliation consumer, never by the fire-and-forget push path
+(``TerminalCallbackRegistry``); see docs/internals/runtime.md.
 """
 
 from __future__ import annotations
@@ -31,11 +21,7 @@ __all__ = ("ack_delivery", "is_acknowledged", "reconcile_unacknowledged")
 
 async def ack_delivery(db: StateDB, transition_id: str, consumer: str) -> None:
     """Record that *consumer* has durably processed *transition_id*.
-
-    Idempotent by construction (``INSERT ... ON CONFLICT DO NOTHING`` on the
-    composite primary key): concurrent or repeated acks of the same
-    (transition_id, consumer) pair collapse to a single row and neither
-    write errors.
+    Idempotent by construction (``ON CONFLICT DO NOTHING`` on the composite key).
     """
     await db.execute(
         "INSERT INTO terminal_deliveries (transition_id, consumer, acked_at) "
@@ -63,12 +49,9 @@ async def reconcile_unacknowledged(
     limit: int | None = None,
 ) -> list[dict[str, Any]]:
     """Every terminal transition on an execution entity that *consumer* has
-    not yet acknowledged, oldest first.
-
-    "Terminal" is re-derived per entity kind from the same policy registry
-    the lifecycle service itself consults when deciding whether to emit a
-    callback in the first place — one definition of "terminal", not two.
-    This is a plain read; it never writes an acknowledgment itself.
+    not yet acknowledged, oldest first. "Terminal" is re-derived per entity
+    kind from the same policy registry the lifecycle service itself consults
+    (one definition, not two). Plain read; never writes an acknowledgment.
     """
     entity_kinds = kinds if kinds is not None else EXECUTION_ENTITY_KINDS
     clauses: list[str] = []
@@ -91,8 +74,8 @@ async def reconcile_unacknowledged(
     if not clauses:
         return []
 
-    # clauses/params above hold only bind placeholders (:kindN, :kindN_statusM)
-    # built from the fixed policy registry, never caller-supplied SQL text.
+    # clauses/params hold only bind placeholders built from the fixed policy
+    # registry, never caller-supplied SQL text.
     sql = (
         "SELECT st.id AS transition_id, st.entity_type, st.entity_id, "  # noqa: S608
         "st.previous_status, st.status AS terminal_status, st.reason_code, "

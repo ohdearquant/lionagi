@@ -1,15 +1,8 @@
 # Copyright (c) 2023-2026, HaiyangLi <quantocean.li at gmail dot com>
 # SPDX-License-Identifier: Apache-2.0
 """Post-commit terminal-event envelope and the process-wide handler registry
-that delivers it.
-
-A ``RunTerminalEnvelope`` is constructed by the lifecycle service only after
-a guarded transition has committed and landed on a terminal status for an
-execution entity (session, invocation, schedule_run, play). The registry
-then pushes that envelope to every matching registered handler, concurrently,
-under one shared deadline. The push is best-effort: a handler failure,
-timeout, or cancellation is logged and swallowed, and can never affect the
-already-committed transition or delay the caller past the shared budget.
+that delivers it. Best-effort fan-out under one shared deadline; see
+docs/internals/runtime.md.
 """
 
 from __future__ import annotations
@@ -47,16 +40,12 @@ __all__ = (
 SCHEMA_NAME = "lionagi.run-terminal"
 SCHEMA_VERSION = 1
 
-# The closed set of entity kinds the lifecycle service constructs terminal
-# events for — everything else (dispatch, team, show, ...) never reaches
-# the registry.
+# Closed set of entity kinds the lifecycle service emits terminal events for.
 EXECUTION_ENTITY_KINDS: frozenset[str] = frozenset(
     {"session", "invocation", "schedule_run", "play"}
 )
 
-# One shared deadline for the whole handler fan-out, not a per-handler
-# timeout: a hanging handler is cancelled at this point, but
-# never starves the others, and never delays the transition caller past it.
+# Shared deadline for the whole fan-out, not per-handler.
 HANDLER_BUDGET_SECONDS = 10.0
 
 # A handler may be sync or async; either return value is discarded.
@@ -74,12 +63,8 @@ class EntityRef:
 
 @dataclass(frozen=True)
 class Correlation:
-    """Stable but nullable correlation keys.
-
-    The lifecycle service never performs a surface-specific join to
-    populate these beyond the transitioning entity's own id — a play's
-    envelope, for instance, does not carry its underlying invocation id.
-    """
+    """Stable but nullable correlation keys, populated only from the
+    transitioning entity's own id (no surface-specific join)."""
 
     invocation_id: str | None = None
     session_id: str | None = None
@@ -97,14 +82,8 @@ class Correlation:
 
 @dataclass(frozen=True)
 class RunTerminalEnvelope:
-    """The minimal versioned terminal-event fact.
-
-    Within ``schema_version == 1`` the guaranteed fields below never change
-    name, type, semantics, or requiredness; new optional fields may be added
-    without a version bump. ``event_id`` is the committed
-    ``status_transitions.id`` for a durable event, or a synthetic id for the
-    sole non-durable exception (``--no-persist`` engine runs).
-    """
+    """The minimal versioned terminal-event fact; see docs/internals/runtime.md
+    for the schema-version stability contract."""
 
     event_id: str
     entity: EntityRef
@@ -152,11 +131,7 @@ class _Registration:
 
 class TerminalCallbackRegistry:
     """Process-local registry of post-commit terminal-event handlers.
-
-    Registration is idempotent by name: registering the same name again
-    replaces its handler/filters in place rather than adding a second entry,
-    so a caller that re-registers on every call site never double-fires.
-    """
+    Registration is idempotent by name (replaces in place)."""
 
     def __init__(self, *, budget_seconds: float = HANDLER_BUDGET_SECONDS) -> None:
         self._registrations: dict[str, _Registration] = {}
@@ -172,15 +147,8 @@ class TerminalCallbackRegistry:
         override: bool = False,
     ) -> None:
         """Register *handler* under *name* (replaces an existing same-name
-        registration in place).
-
-        *override* marks this registration as a per-run override: for any
-        envelope it matches, only override registrations fire -- any
-        non-override registration that would otherwise also match (e.g. an
-        unscoped settings-level handler) is skipped for that one envelope.
-        This is scoped strictly to the envelopes the override itself
-        matches (normally via ``ids``); it never disables a non-override
-        handler for entities outside the override's own filter.
+        registration in place). ``override`` semantics: see
+        docs/internals/runtime.md.
         """
         self._registrations[name] = _Registration(
             name=name,
@@ -201,22 +169,16 @@ class TerminalCallbackRegistry:
 
     async def emit(self, envelope: RunTerminalEnvelope) -> None:
         """Invoke every matching handler concurrently under one deadline.
-
         Never raises: a handler exception or timeout is logged and
-        swallowed. Cancellation of the emitting task itself still
-        propagates (this must not turn a real shutdown into a silent
-        no-op), it is only the *handlers'* own failures that are absorbed.
+        swallowed; cancellation of the emitting task itself still propagates.
         """
         targets = [r for r in self._registrations.values() if r.matches(envelope)]
         if not targets:
             return
         overrides = [r for r in targets if r.override]
         if overrides:
-            # A per-run override wins this envelope outright -- any
-            # non-override handler that would also have matched (typically
-            # an unscoped settings-level handler) is skipped, replacing it
-            # for this run's scope only. Other envelopes the override does
-            # not match are entirely unaffected.
+            # A per-run override wins this envelope outright, replacing any
+            # non-override match for this run's scope only.
             targets = overrides
 
         async def _run_one(reg: _Registration) -> None:
@@ -224,26 +186,9 @@ class TerminalCallbackRegistry:
                 if is_coro_func(reg.handler):
                     await maybe_await(reg.handler(envelope))
                 else:
-                    # A plain (non-async-def) handler is invoked in a worker
-                    # thread, not on this event loop. Calling it directly
-                    # here would run its body -- and any blocking I/O or
-                    # time.sleep() inside it -- synchronously on the loop,
-                    # during which the shared move_on_after deadline can
-                    # never fire (nothing yields back to it) and no other
-                    # handler in this fan-out can make progress either.
-                    # abandon_on_cancel=True is required, not just the
-                    # default offload: with the default (False), anyio
-                    # defers delivering cancellation to this awaiting task
-                    # until the worker thread finishes on its own, which
-                    # would let a slow handler silently re-block the shared
-                    # deadline it was just moved off of. With True, the
-                    # move_on_after deadline can still cut this await short
-                    # -- but the thread itself is only abandoned, not
-                    # killed: its body may keep running to completion in
-                    # the background after this returns. The budget
-                    # guarantees the fan-out and the caller are never
-                    # blocked by a slow sync handler, not that the handler
-                    # itself stops.
+                    # Offload to a worker thread (never run sync handler body
+                    # on the loop); abandon_on_cancel=True so a slow handler
+                    # can't re-block the shared deadline — see runtime.md.
                     await maybe_await(
                         await anyio.to_thread.run_sync(
                             reg.handler, envelope, abandon_on_cancel=True

@@ -1,12 +1,7 @@
 # Copyright (c) 2023-2026, HaiyangLi <quantocean.li at gmail dot com>
 # SPDX-License-Identifier: Apache-2.0
 """Unified lifecycle transition service: one guarded status-transition
-algorithm shared by every managed entity type, replacing per-surface
-transition logic.
-
-Public surface: immutable command/result records (`models`), the policy
-registry (`policy`), the SQLAlchemy transaction implementation (`service`),
-and the StateDB/legacy-transition compatibility mapping (`adapters`).
+algorithm shared by every managed entity type. See docs/internals/runtime.md.
 """
 
 from __future__ import annotations

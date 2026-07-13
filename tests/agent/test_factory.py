@@ -627,10 +627,7 @@ async def test_load_mcp_breaks_at_lionagi_dir(tmp_path, monkeypatch):
 
 @pytest.fixture(autouse=True)
 def _isolate_mcp_pool_state():
-    """MCPConnectionPool accumulates configs process-globally; tests here load
-    real config files through create_agent, so snapshot and restore the pool's
-    class-level state to keep those loads from leaking into other test files
-    on the same worker."""
+    """MCPConnectionPool accumulates configs process-globally; snapshot and restore its class-level state around tests that load real config files through create_agent, so loads don't leak into other test files on the same worker."""
     from lionagi.service.connections.mcp_wrapper import MCPConnectionPool
 
     saved_configs = dict(MCPConnectionPool._configs)
@@ -784,14 +781,7 @@ async def test_forward_mcp_global_candidate_trusted_by_default(tmp_path, monkeyp
 
 
 async def test_forward_mcp_explicit_empty_allowlist_forces_zero_servers(tmp_path):
-    """spec.mcp_servers=[] is an EXPLICIT empty selection, not 'no filter'.
-
-    Before the fix, `if spec.mcp_servers:` treated an empty list the same as
-    None (no filter at all) and forwarded every configured server; here it
-    must forward zero servers, and the resulting ClaudeCodeRequest must still
-    emit `--mcp-config {"mcpServers": {}}` (not silently omit the flag and
-    let the claude CLI fall back to its own MCP discovery).
-    """
+    """spec.mcp_servers=[] is an EXPLICIT empty selection, not 'no filter' -- the old `if spec.mcp_servers:` check treated an empty list like None and forwarded every server; it must forward zero and still emit `--mcp-config {"mcpServers": {}}` rather than silently omit the flag."""
     from lionagi.providers.anthropic.claude_code import ClaudeCodeRequest
 
     mcp_path = _write_mcp_config(
@@ -823,15 +813,7 @@ async def test_forward_mcp_explicit_empty_allowlist_forces_zero_servers(tmp_path
 async def test_forward_mcp_explicit_empty_allowlist_enforced_with_no_resolvable_config(
     tmp_path, monkeypatch
 ):
-    """spec.mcp_servers=[] must be enforced even when NO config file resolves.
-
-    Before the fix, an unresolvable mcp_path made `_forward_mcp_to_cli_request`
-    return early, leaving `mcp_servers` unset on the request entirely — the
-    claude CLI would then fall back to its OWN MCP discovery instead of
-    honoring the explicit zero-server allowlist. Isolated HOME + cwd with no
-    .mcp.json anywhere (nothing auto-discoverable) reproduces "no resolvable
-    config" while spec.mcp_servers=[] still declares explicit caller intent.
-    """
+    """spec.mcp_servers=[] must be enforced even when no config file resolves -- previously an unresolvable mcp_path made `_forward_mcp_to_cli_request` return early, leaving mcp_servers unset and letting the claude CLI fall back to its own MCP discovery instead of honoring the explicit zero-server allowlist."""
     from lionagi.providers.anthropic.claude_code import ClaudeCodeRequest
 
     monkeypatch.setenv("HOME", str(tmp_path / "home"))
@@ -860,12 +842,7 @@ async def test_forward_mcp_explicit_empty_allowlist_enforced_with_no_resolvable_
 
 
 async def test_forward_mcp_does_not_mutate_shared_chat_model_across_branches(tmp_path):
-    """Two create_agent calls sharing one iModel must get independent MCP filters.
-
-    Branch.__init__ keeps a caller-supplied chat_model by reference (no copy),
-    so mutating branch.chat_model.endpoint.config.kwargs in place would leak
-    one branch's MCP server selection into the other's payload.
-    """
+    """Two create_agent calls sharing one iModel must get independent MCP filters: Branch.__init__ keeps a caller-supplied chat_model by reference, so mutating its config.kwargs in place would leak one branch's MCP selection into the other's payload."""
     from lionagi.service.imodel import iModel
 
     mcp_path = _write_mcp_config(
@@ -897,16 +874,7 @@ async def test_forward_mcp_does_not_mutate_shared_chat_model_across_branches(tmp
 
 
 async def test_forward_mcp_preserves_shared_executor_and_session(tmp_path):
-    """Branch-local MCP filtering must not silently drop the caller-supplied
-    iModel's shared rate limiter or CLI session_id.
-
-    Before the fix, ``branch.chat_model.copy()`` (with no share_session/
-    share_executor kwargs) always built a FRESH RateLimitedAPIExecutor and,
-    since share_session defaulted False, dropped any pre-existing CLI
-    session_id — silently changing the runtime semantics of a caller-supplied
-    iModel that two branches were meant to share (rate limits/queue capacity,
-    and mid-session continuation).
-    """
+    """Branch-local MCP filtering must not silently drop the caller-supplied iModel's shared rate limiter or CLI session_id -- the old `chat_model.copy()` (no share_session/share_executor) always built a fresh executor and dropped any pre-existing session_id, changing the runtime semantics of an iModel two branches were meant to share."""
     from lionagi.service.imodel import iModel
 
     mcp_path = _write_mcp_config(
@@ -945,15 +913,7 @@ async def test_forward_mcp_preserves_shared_executor_and_session(tmp_path):
 
 
 async def test_forward_mcp_explicit_path_read_failure_raises(tmp_path):
-    """An explicitly configured mcp_config_path that fails to read/parse is a
-    configuration error (caller declared intent), not a silent skip.
-
-    Exercises ``_forward_mcp_to_cli_request`` directly (island 2) rather than
-    through the full ``create_agent`` flow: island 1's ``_load_mcp`` already
-    raises its own (unrelated, pre-existing) json.JSONDecodeError for the
-    same malformed file before island 2 ever runs, which would make this
-    regression test pass for the wrong reason if routed through create_agent.
-    """
+    """An explicit mcp_config_path that fails to read/parse is a configuration error, not a silent skip -- exercises `_forward_mcp_to_cli_request` directly rather than through create_agent, since island 1's `_load_mcp` would otherwise raise its own JSONDecodeError first and mask the intended regression."""
     from lionagi._errors import ConfigurationError
     from lionagi.agent.factory import _forward_mcp_to_cli_request
     from lionagi.service.imodel import iModel
@@ -995,17 +955,7 @@ async def test_forward_mcp_auto_discovered_path_read_failure_soft_skips(tmp_path
 
 
 async def test_explicit_mcp_config_path_missing_file_raises_configuration_error(tmp_path):
-    """An explicitly set spec.mcp_config_path pointing at a nonexistent path
-    is a configuration error, not a silent no-op.
-
-    Before the fix, `_resolve_mcp_path` returned None for ANY unresolved
-    mcp_config_path — indistinguishable from "no path configured at all" —
-    so both `_load_mcp` and `_forward_mcp_to_cli_request` silently no-opped
-    even though the caller explicitly declared intent to load a specific
-    file. Exercised through the full create_agent() flow since either island
-    raising is sufficient evidence of the fix (island 1's _load_mcp runs
-    first and shares the same _resolve_mcp_path).
-    """
+    """An explicit spec.mcp_config_path pointing at a nonexistent path is a configuration error, not a silent no-op -- previously `_resolve_mcp_path` returned None for any unresolved path, indistinguishable from 'no path configured', so both islands silently no-opped despite the caller's declared intent."""
     from lionagi._errors import ConfigurationError
 
     config = AgentSpec.compose("reviewer", model="claude_code/sonnet")
@@ -1018,14 +968,7 @@ async def test_explicit_mcp_config_path_missing_file_raises_configuration_error(
 async def test_explicit_empty_string_mcp_config_path_raises_not_autodiscovers(
     tmp_path, monkeypatch
 ):
-    """An explicit empty-string mcp_config_path is a declared (malformed)
-    path, not absence: it must raise, never fall through into auto-discovery.
-
-    Presence is checked with `is not None`, not truthiness — otherwise
-    `mcp_config_path=""` silently auto-discovers whatever candidate exists
-    (e.g. ~/.lionagi/.mcp.json) and loads a config the caller never pointed
-    at.
-    """
+    """An explicit empty-string mcp_config_path is a declared malformed path, not absence -- it must raise, never fall through to auto-discovery; presence is checked with `is not None`, not truthiness, so `mcp_config_path=""` can't silently auto-discover an unrelated config."""
     from lionagi._errors import ConfigurationError
     from lionagi.agent.factory import _resolve_mcp_path
 
@@ -1043,12 +986,7 @@ async def test_explicit_empty_string_mcp_config_path_raises_not_autodiscovers(
 
 
 async def test_search_tool_gets_workspace_root_from_cwd(tmp_path):
-    """tools=["search"] must wire spec.cwd into SearchTool.workspace_root.
-
-    Regression: the standalone search branch registered SearchTool() with no
-    workspace_root, so normal agents got no containment. Here a search outside
-    the configured cwd must be rejected fail-closed.
-    """
+    """tools=['search'] must wire spec.cwd into SearchTool.workspace_root -- previously the standalone search branch registered SearchTool() with no workspace_root, so normal agents got no containment and a search outside the configured cwd wasn't rejected."""
     ws = tmp_path / "workspace"
     ws.mkdir()
     outside = tmp_path / "outside"

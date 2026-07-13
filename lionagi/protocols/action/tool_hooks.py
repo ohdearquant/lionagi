@@ -3,29 +3,9 @@
 
 """Tool-event hook contract at the ``ActionManager.invoke`` chokepoint.
 
-This is the mutation-capable layer that sits outermost around every tool
-call routed through ``ActionManager`` (plain function tools, ``Tool``
-objects, and MCP-discovered tools alike). It is deliberately separate from
-``lionagi.hooks.bus.HookBus`` (the summary-payload audit plane) and from the
-per-``Tool`` ``preprocessor``/``postprocessor`` chain wired by
-``lionagi.agent.spec.HooksMixin`` (the spec-level security/user chain,
-which keeps running innermost, closest to the tool).
-
-A pre hook receives the tool name and the current argument dict and returns
-a verdict:
-
-- ``None`` -- allow, arguments unchanged.
-- a plain ``dict`` -- allow, replace the arguments with this dict.
-- a :class:`ToolPreDecision` -- full control: ``"allow"`` (optionally with
-  ``updated_input``), ``"deny"``, ``"ask"`` (fails closed -- no interactive
-  approval surface exists), or any other value (fails closed with a
-  diagnostic naming the unrecognized value).
-
-A post hook receives the tool name, the final arguments, the result (or
-``None`` on failure), and the error (or ``None`` on success). Post hooks are
-advisory only: the action has already happened, so a post hook cannot deny
-or rewrite anything, matching the harness convention that ``block`` on a
-post-invocation event cannot un-run the call.
+Mutation-capable layer around every tool call, outermost and distinct from
+``HookBus`` (audit-only) and the spec-level pre/postprocessor chain
+(innermost). See docs/internals/core.md for the full pre/post verdict shape.
 """
 
 from __future__ import annotations
@@ -58,12 +38,8 @@ _SNAPSHOT_FAILED = object()
 
 @dataclass(frozen=True, slots=True)
 class ToolPreDecision:
-    """One pre-hook's verdict on a pending tool call.
-
-    ``decision`` follows the cross-harness intersection vocabulary
-    (``allow | deny | ask``); any other value is treated as unrecognized and
-    fails closed the same as ``deny``.
-    """
+    """One pre-hook's verdict: ``decision`` in ``allow | deny | ask``; any
+    other value fails closed the same as ``deny``."""
 
     decision: str = _ALLOW
     reason: str = ""
@@ -114,12 +90,10 @@ async def run_tool_pre_hooks(
     tool_name: str,
     arguments: dict[str, Any],
 ) -> dict[str, Any]:
-    """Run pre hooks in config order; return the (possibly rewritten) arguments.
+    """Run pre hooks in order; return the (possibly rewritten) arguments.
 
-    Raises ``ToolHookDeniedError`` -- a ``PermissionError`` subtype -- on the
-    first ``deny``, ``ask``, or unrecognized decision (fail closed), or when
-    a hook itself raises. ``ask`` has no interactive-approval surface in this
-    runtime, so it is treated exactly like ``deny``.
+    Raises ``ToolHookDeniedError`` on the first ``deny``/``ask``/unrecognized
+    decision, or when a hook itself raises (fail closed).
     """
     for hook_handler in hooks:
         name = _hook_name(hook_handler)
@@ -168,10 +142,8 @@ async def run_tool_post_hooks(
 ) -> list[str]:
     """Run post hooks in order; advisory only, never affects the outcome.
 
-    A post hook that raises is logged and skipped -- an observer must not be
-    able to take down a call that already completed. Returns the non-empty
-    ``reason`` strings collected from hooks that returned a
-    :class:`ToolPostDecision`.
+    A raising hook is logged and skipped. Returns the non-empty ``reason``
+    strings collected from hooks that returned a :class:`ToolPostDecision`.
     """
     canonical_arguments = _snapshot(arguments)
     canonical_result = _snapshot(result)

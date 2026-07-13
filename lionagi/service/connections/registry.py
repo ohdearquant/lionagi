@@ -122,14 +122,9 @@ class EndpointRegistry:
 
     @classmethod
     def match(cls, provider: str, endpoint: str = "", **kwargs) -> Any:
-        """Find and instantiate the best matching endpoint.
-
-        On a registry miss, consults the plugin registry (ADR-0088 D3) before
-        falling back to the generic OpenAI-compatible endpoint: any
-        trusted + enabled + still-trusted plugin's declared provider modules
-        are imported (firing their ``@register_endpoint`` decorators), and
-        the match is re-run once. A plugin that supplies no matching provider
-        — or none at all — leaves the fallback identical to today's.
+        """Find and instantiate the best matching endpoint. On a registry
+        miss, consults the plugin registry (ADR-0088 D3) before falling back
+        to the generic OpenAI-compatible endpoint; see docs/internals/runtime.md.
         """
         cls._ensure_loaded()
 
@@ -206,16 +201,9 @@ class EndpointRegistry:
 
     @classmethod
     def _consult_plugin_providers(cls) -> bool:
-        """Import every ACTIVE plugin's declared provider module (ADR-0088 D3), lazily.
-
-        Runs only from ``match()`` after a registered-entry miss — never at
-        import time or discovery, preserving import-time O(1). Goes through
-        ``PluginRegistry.activate_target`` exclusively (never a direct
-        ``importlib`` call on plugin code), so the trust/enabled/active
-        chokepoints already enforced there apply here too. Each activation is
-        cached by the plugin registry itself, so repeated misses are cheap.
-        Returns whether any module import succeeded — the caller only retries
-        the match when this is true.
+        """Import every ACTIVE plugin's declared provider module (ADR-0088
+        D3), lazily, only from ``match()`` after a registered-entry miss —
+        never at import time. Returns whether any import succeeded.
         """
         try:
             from lionagi.plugins import PluginActivationError, PluginRegistry
