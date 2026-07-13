@@ -37,6 +37,14 @@ from lionagi.tools.sandbox_backend import (
 # ---------------------------------------------------------------------------
 
 
+def _symlink_or_skip(link: Path, target: Path, *, target_is_directory: bool = False) -> None:
+    """Create a symlink, or skip the test on platforms without symlink support."""
+    try:
+        link.symlink_to(target, target_is_directory=target_is_directory)
+    except OSError as exc:
+        pytest.skip(f"symlinks not supported on this platform: {exc}")
+
+
 def _init_git_repo(path: Path) -> None:
     cmds = [
         ["git", "init"],
@@ -299,6 +307,74 @@ async def test_local_worktree_backend_nonzero_exit_reported(git_repo):
 
 
 # ---------------------------------------------------------------------------
+# LocalWorktreeBackend — seed-input/artifact-manifest containment (ADR-0090
+# delta 4): absolute paths, `..` traversal, and symlink escapes must all be
+# rejected before write (seed_inputs) or read (artifact_manifest/collect).
+# ---------------------------------------------------------------------------
+
+
+async def test_local_worktree_backend_rejects_absolute_seed_input_path(git_repo):
+    backend = LocalWorktreeBackend()
+    handle = await backend.provision(ProvisionSpec(repo_root=str(git_repo)))
+    cell = Cell(kind="exec_cell", entrypoint="true", seed_inputs={"/etc/pwned.txt": "x"})
+    with pytest.raises(ValueError, match="absolute path"):
+        await backend.run_cell(handle, cell)
+    await backend.teardown(handle)
+
+
+async def test_local_worktree_backend_rejects_dotdot_seed_input_path(git_repo):
+    backend = LocalWorktreeBackend()
+    handle = await backend.provision(ProvisionSpec(repo_root=str(git_repo)))
+    cell = Cell(kind="exec_cell", entrypoint="true", seed_inputs={"../escape.txt": "x"})
+    with pytest.raises(ValueError, match="traversal"):
+        await backend.run_cell(handle, cell)
+    assert not (Path(handle.remote_repo_path).parent / "escape.txt").exists()
+    await backend.teardown(handle)
+
+
+async def test_local_worktree_backend_rejects_symlinked_seed_input_escape(git_repo, tmp_path):
+    backend = LocalWorktreeBackend()
+    handle = await backend.provision(ProvisionSpec(repo_root=str(git_repo)))
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    _symlink_or_skip(Path(handle.remote_repo_path) / "link", outside, target_is_directory=True)
+    cell = Cell(kind="exec_cell", entrypoint="true", seed_inputs={"link/escape.txt": "pwned"})
+    with pytest.raises(ValueError, match="escape"):
+        await backend.run_cell(handle, cell)
+    assert not (outside / "escape.txt").exists()
+    await backend.teardown(handle)
+
+
+async def test_local_worktree_backend_rejects_absolute_artifact_path(git_repo):
+    backend = LocalWorktreeBackend()
+    handle = await backend.provision(ProvisionSpec(repo_root=str(git_repo)))
+    with pytest.raises(ValueError, match="absolute path"):
+        await backend.collect(handle, ["/etc/passwd"])
+    await backend.teardown(handle)
+
+
+async def test_local_worktree_backend_rejects_dotdot_artifact_path(git_repo):
+    backend = LocalWorktreeBackend()
+    handle = await backend.provision(ProvisionSpec(repo_root=str(git_repo)))
+    with pytest.raises(ValueError, match="traversal"):
+        await backend.collect(handle, ["../secret.txt"])
+    await backend.teardown(handle)
+
+
+async def test_local_worktree_backend_rejects_symlinked_artifact_escape(git_repo, tmp_path):
+    backend = LocalWorktreeBackend()
+    handle = await backend.provision(ProvisionSpec(repo_root=str(git_repo)))
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    secret = outside / "secret.txt"
+    secret.write_text("do-not-leak")
+    _symlink_or_skip(Path(handle.remote_repo_path) / "link.txt", secret)
+    with pytest.raises(ValueError, match="escape"):
+        await backend.collect(handle, ["link.txt"])
+    await backend.teardown(handle)
+
+
+# ---------------------------------------------------------------------------
 # DaytonaBackend — thin adapter, exercised via an injected fake sandbox.
 # ---------------------------------------------------------------------------
 
@@ -404,3 +480,41 @@ async def test_daytona_backend_provision_without_repo_url_uses_home_dir():
     assert handle.remote_repo_path == "/home/daytona"
     sandbox: _FakeDaytonaSandbox = handle.metadata["sandbox"]
     assert sandbox.cloned == []
+
+
+# ---------------------------------------------------------------------------
+# DaytonaBackend — seed-input/artifact-manifest containment (ADR-0090 delta
+# 4). The remote filesystem can't be resolve()-d locally, so only the
+# string-level checks (absolute, `..`) apply here; symlink-escape checking
+# is scoped to the local backend, which has real filesystem access.
+# ---------------------------------------------------------------------------
+
+
+async def test_daytona_backend_rejects_absolute_seed_input_path():
+    backend = DaytonaBackend(create_fn=_FakeDaytonaSandbox.create)
+    handle = await backend.provision(ProvisionSpec(repo_root="/repo"))
+    cell = Cell(kind="exec_cell", entrypoint="true", seed_inputs={"/etc/pwned.txt": "x"})
+    with pytest.raises(ValueError, match="absolute path"):
+        await backend.run_cell(handle, cell)
+
+
+async def test_daytona_backend_rejects_dotdot_seed_input_path():
+    backend = DaytonaBackend(create_fn=_FakeDaytonaSandbox.create)
+    handle = await backend.provision(ProvisionSpec(repo_root="/repo"))
+    cell = Cell(kind="exec_cell", entrypoint="true", seed_inputs={"../escape.txt": "x"})
+    with pytest.raises(ValueError, match="traversal"):
+        await backend.run_cell(handle, cell)
+
+
+async def test_daytona_backend_rejects_absolute_artifact_path():
+    backend = DaytonaBackend(create_fn=_FakeDaytonaSandbox.create)
+    handle = await backend.provision(ProvisionSpec(repo_root="/repo"))
+    with pytest.raises(ValueError, match="absolute path"):
+        await backend.collect(handle, ["/etc/passwd"])
+
+
+async def test_daytona_backend_rejects_dotdot_artifact_path():
+    backend = DaytonaBackend(create_fn=_FakeDaytonaSandbox.create)
+    handle = await backend.provision(ProvisionSpec(repo_root="/repo"))
+    with pytest.raises(ValueError, match="traversal"):
+        await backend.collect(handle, ["../secret.txt"])
