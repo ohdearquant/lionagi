@@ -2799,12 +2799,15 @@ class StateDB:
         return streak, last_status
 
     async def schedule_run_exists_since(self, schedule_id: str, since: float) -> bool:
-        """True if *schedule_id* has a genuinely-fired schedule_runs row at
-        or after *since* -- used by missed-fire recovery to tell "never
+        """True if *schedule_id* has a genuinely-fired top-level schedule_runs
+        row at or after *since* -- used by missed-fire recovery to tell "never
         fired" from "fired but crashed before follow-up bookkeeping".
         Excludes ``status = 'skipped'`` rows so a capacity-deferred skip
         (whose next_fire_at is deliberately left untouched) still counts as
         due and retries, rather than being treated as already handled.
+        Excludes ``chain_depth != 0`` rows (on_success/on_fail chain children,
+        which share the parent's schedule_id) so a chain-child fire cannot
+        mask a due top-level occurrence.
         """
         async with self._read() as conn:
             row = (
@@ -2812,7 +2815,7 @@ class StateDB:
                     text(
                         "SELECT 1 FROM schedule_runs "
                         "WHERE schedule_id = :schedule_id AND fired_at >= :since "
-                        "AND status != 'skipped' LIMIT 1"
+                        "AND status != 'skipped' AND chain_depth = 0 LIMIT 1"
                     ),
                     {"schedule_id": schedule_id, "since": since},
                 )
