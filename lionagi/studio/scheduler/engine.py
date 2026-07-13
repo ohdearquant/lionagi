@@ -502,14 +502,29 @@ class SchedulerEngine:
         usefully catch mid-lifetime; running this once at startup (mirroring
         ``_check_missed_fires()``, called right alongside it) is sufficient.
 
-        Each orphaned row is tombstoned (never resurrected as "running" --
-        that status is reserved for a fire this engine currently owns) and,
-        for a top-level occurrence (chain_depth == 0), replaced with a fresh
-        fire carrying the SAME trigger_context the orphaned attempt never
-        got to use, so a github_poll event (or any other occurrence-specific
-        context) is retried faithfully rather than generically. Chain
-        children are tombstoned only -- see _fire_inner()'s docstring for
-        why that narrower gap is accepted.
+        Two shapes, depending on whether this orphan will get a replacement:
+
+        - Chain children (chain_depth != 0), and top-level occurrences whose
+          owning schedule is missing or disabled: tombstoned directly, right
+          here, via an ordinary CAS ``update_status()`` call -- no
+          replacement will ever be created for these, so there is no
+          insert-vs-flip ordering to get wrong (nothing else needs to become
+          durable alongside the flip).
+
+        - Everything else (a top-level occurrence of a live, enabled
+          schedule): handed to ``_tracked_fire(..., supersedes_run_id=...)``,
+          which tombstones this orphan AND inserts the replacement
+          occurrence row in ONE transaction inside ``_fire_inner()`` (see
+          its delivery-contract docstring) -- carrying the SAME
+          trigger_context the orphaned attempt never got to use, so a
+          github_poll event (or any other occurrence-specific context) is
+          retried faithfully rather than generically. The tombstone does
+          NOT happen here in the scan loop for this shape; it happens
+          atomically with the insert, inside the (backgrounded) fire task.
+          A crash before that task runs leaves the orphan completely
+          untouched -- still 'running', still visible to the next boot's
+          scan -- which is exactly the same "never fired" starting point as
+          before this scan ever ran, not a lost occurrence.
         """
         try:
             orphans = await self._svc.list_undispatched_schedule_runs()
@@ -520,44 +535,19 @@ class SchedulerEngine:
         for row in orphans:
             run_id = row["id"]
             sid = row.get("schedule_id")
-            try:
-                written = await self._svc.update_status(
-                    "schedule_run",
-                    run_id,
-                    new_status="failed",
-                    reason_code=RunReasons.FAILED_NEVER_DISPATCHED,
-                    reason_summary=(
-                        "Scheduler crashed after committing this occurrence but "
-                        "before confirming the external process launched."
-                    ),
-                    evidence_refs=[{"kind": "schedule", "id": sid}] if sid else [],
-                    source="system",
-                    actor="scheduler_startup_recovery",
-                    expected_statuses={"running"},
-                )
-            except Exception:
-                _log.exception("Failed to tombstone undispatched schedule_run %s", run_id)
-                continue
-            if not written:
-                # Raced with something else finalizing this row between the
-                # scan and here (e.g. the stale-run reaper); nothing left to
-                # recover -- it already resolved through some other path.
-                continue
 
             if row.get("chain_depth", 0) != 0:
-                _log.info(
-                    "Undispatched chain-child schedule_run %s tombstoned; not auto-retried",
-                    run_id,
+                await self._tombstone_orphan_only(
+                    run_id, sid=sid, log_note="chain-child, not auto-retried"
                 )
                 continue
 
             schedule = await self._svc.get_schedule(sid) if sid else None
             if schedule is None or not schedule.get("enabled"):
-                _log.info(
-                    "Skipping re-fire for undispatched schedule_run %s: "
-                    "owning schedule %s missing or disabled",
+                await self._tombstone_orphan_only(
                     run_id,
-                    sid,
+                    sid=sid,
+                    log_note=f"owning schedule {sid} missing or disabled, not auto-retried",
                 )
                 continue
 
@@ -572,7 +562,42 @@ class SchedulerEngine:
                 schedule,
                 new_run_id,
                 trigger_context=row.get("trigger_context") or {},
+                supersedes_run_id=run_id,
             )
+
+    async def _tombstone_orphan_only(self, run_id: str, *, sid: str | None, log_note: str) -> None:
+        """CAS-tombstone an undispatched orphan with no replacement to
+        follow -- the simple case _recover_undispatched_fires() uses when
+        it has already decided not to re-fire (chain child, or owning
+        schedule missing/disabled). Safe as an ordinary standalone write:
+        with no replacement row for anything to race against, there is no
+        insert-vs-flip ordering concern here at all.
+        """
+        try:
+            written = await self._svc.update_status(
+                "schedule_run",
+                run_id,
+                new_status="failed",
+                reason_code=RunReasons.FAILED_NEVER_DISPATCHED,
+                reason_summary=(
+                    "Scheduler crashed after committing this occurrence but "
+                    "before confirming the external process launched."
+                ),
+                evidence_refs=[{"kind": "schedule", "id": sid}] if sid else [],
+                source="system",
+                actor="scheduler_startup_recovery",
+                expected_statuses={"running"},
+            )
+        except Exception:
+            _log.exception("Failed to tombstone undispatched schedule_run %s", run_id)
+            return
+        if written:
+            _log.info("Undispatched schedule_run %s tombstoned: %s", run_id, log_note)
+        else:
+            # Raced with something else finalizing this row between the
+            # scan and here (e.g. the stale-run reaper); nothing left to
+            # recover -- it already resolved through some other path.
+            pass
 
     async def _check_missed_fires(self) -> None:
         try:
@@ -1400,6 +1425,7 @@ class SchedulerEngine:
         global_slot_claim: _GlobalSlotClaim | None = None,
         threshold_cooldown_claim: _ThresholdCooldownClaim | None = None,
         extra_schedule_fields: dict[str, Any] | None = None,
+        supersedes_run_id: str | None = None,
     ) -> None:
         """Thin wrapper around _fire_inner() that guarantees max_runs_claim,
         global_slot_claim, and threshold_cooldown_claim are each released
@@ -1418,6 +1444,11 @@ class SchedulerEngine:
         _tick_github() uses this, to fold that event's github_cursor
         advance into the SAME atomic transaction as its occurrence insert
         (see _fire_inner()'s docstring).
+
+        *supersedes_run_id*: passed through to _fire_inner() -- only
+        _recover_undispatched_fires() uses this, to atomically tombstone
+        the orphan it names in the SAME transaction as this fire's own
+        occurrence insert (see _fire_inner()'s docstring).
         """
         try:
             await self._fire_inner(
@@ -1427,6 +1458,7 @@ class SchedulerEngine:
                 chain_parent_id=chain_parent_id,
                 chain_depth=chain_depth,
                 extra_schedule_fields=extra_schedule_fields,
+                supersedes_run_id=supersedes_run_id,
             )
         finally:
             if max_runs_claim is not None:
@@ -1462,6 +1494,102 @@ class SchedulerEngine:
             return {}
         return {"last_alert_at": now}
 
+    async def _write_occurrence(
+        self,
+        run: dict[str, Any],
+        *,
+        schedule_id: str,
+        schedule_fields: dict[str, Any],
+        supersedes_run_id: str | None,
+    ) -> bool:
+        """Durably record one occurrence row -- the single choke point both
+        _fire_inner() write sites (the invalid-action failure path and the
+        happy path) go through, so they don't each need their own
+        ordinary-fire-vs-recovery-refire branch.
+
+        An ordinary tick-triggered fire (*supersedes_run_id* is None) is
+        atomic with the schedule's own cursor advance
+        (``create_schedule_run_and_advance()``) and always succeeds. A
+        recovery re-fire (*supersedes_run_id* set, by
+        ``_recover_undispatched_fires()``) is instead atomic with
+        tombstoning the orphan it replaces (``tombstone_and_replace_
+        schedule_run()``), and skips the cursor advance entirely -- the
+        cursor already moved when the orphan's own occurrence was first
+        recorded; a re-fire is not a new occurrence, just a fresh attempt
+        at the same one. See _fire_inner()'s delivery-contract docstring
+        for why these two writes must land atomically with their
+        respective counterpart.
+
+        Returns ``False`` only for the recovery path, when the orphan no
+        longer matched its expected status (raced away by something else,
+        e.g. the stale-run reaper, between the scan that found it and this
+        write) -- no replacement is inserted in that case, and *run* was
+        never durably recorded.
+        """
+        if supersedes_run_id is not None:
+            applied = await self._svc.tombstone_and_replace_schedule_run(
+                supersedes_run_id, run, expected_orphan_status="running"
+            )
+            if applied:
+                # The atomic write above only sets status + updated_at (no
+                # reason columns -- see tombstone_and_replace_schedule_run()'s
+                # docstring); layer the reason code/history on now, same
+                # pattern as create_schedule_run_and_advance()'s own callers
+                # (they set status directly in the INSERT and only add
+                # reason/history with a separate follow-up update_status()
+                # call). A same-status "failed"->"failed" append, not a CAS
+                # -- the orphan is already durably terminal by this point.
+                await self._svc.update_status(
+                    "schedule_run",
+                    supersedes_run_id,
+                    new_status="failed",
+                    reason_code=RunReasons.FAILED_NEVER_DISPATCHED,
+                    reason_summary=(
+                        "Scheduler crashed after committing this occurrence but "
+                        "before confirming the external process launched."
+                    ),
+                    evidence_refs=[{"kind": "schedule_run", "id": run["id"]}],
+                    source="system",
+                    actor="scheduler_startup_recovery",
+                )
+            return applied
+        await self._svc.create_schedule_run_and_advance(
+            run, schedule_id=schedule_id, schedule_fields=schedule_fields
+        )
+        return True
+
+    async def _abandon_superseded_recovery_fire(self, inv_id: str, *, orphan_id: str) -> None:
+        """A recovery re-fire's occurrence write was refused because the
+        orphan it was meant to supersede (*orphan_id*) no longer matched
+        its expected status -- something else (the stale-run reaper, an
+        operator action) already resolved it between
+        _recover_undispatched_fires()'s scan and this write landing. No
+        schedule_run row was ever created for this attempt; only the
+        invocation _fire_inner() already durably created before reaching
+        that write needs cleaning up.
+        """
+        _log.info(
+            "Abandoning recovery re-fire for invocation %s: orphan %s was "
+            "already resolved by something else",
+            inv_id,
+            orphan_id,
+        )
+        await self._svc.update_invocation(inv_id, ended_at=time.time())
+        await self._guarded_terminal_status(
+            "invocation",
+            inv_id,
+            new_status="cancelled",
+            reason_code=RunReasons.CANCELLED_STALE_AUTO,
+            reason_summary=(
+                f"Recovery re-fire abandoned: the orphaned schedule_run "
+                f"{orphan_id} it was meant to supersede was already resolved "
+                "by something else before this re-fire's own write landed."
+            ),
+            evidence_refs=[{"kind": "schedule_run", "id": orphan_id}],
+            source="system",
+            actor="scheduler_startup_recovery",
+        )
+
     async def _fire_inner(
         self,
         schedule: dict,
@@ -1471,6 +1599,7 @@ class SchedulerEngine:
         chain_parent_id: str | None = None,
         chain_depth: int = 0,
         extra_schedule_fields: dict[str, Any] | None = None,
+        supersedes_run_id: str | None = None,
     ) -> None:
         """Fire one occurrence of *schedule*.
 
@@ -1491,15 +1620,39 @@ class SchedulerEngine:
            schedule as due again -- so a dedicated startup scan,
            ``_recover_undispatched_fires()``, finds every top-level
            (chain_depth == 0) ``status='running' AND dispatched_at IS
-           NULL`` row, tombstones it (``failed`` /
-           ``RunReasons.FAILED_NEVER_DISPATCHED``), and re-fires a fresh
-           occurrence with the SAME ``trigger_context`` it never got to
-           use. This is the at-least-once guarantee: an occurrence that
-           was committed to is retried until it is genuinely attempted.
-           Chain children (chain_depth > 0) are tombstoned but not
-           auto-retried -- narrower, accepted gap; the parent occurrence's
-           own outcome is unaffected, only a follow-on on_success/on_fail
-           step is lost.
+           NULL`` row and re-fires it by calling back into THIS method
+           with *supersedes_run_id* set to the orphan's id.
+
+           That re-fire's own occurrence-insert transaction (below) does
+           double duty when *supersedes_run_id* is set: it tombstones the
+           orphan (``failed`` / ``RunReasons.FAILED_NEVER_DISPATCHED``) AND
+           inserts this fresh occurrence's row IN THE SAME TRANSACTION,
+           via ``tombstone_and_replace_schedule_run()`` instead of
+           ``create_schedule_run_and_advance()`` (and skips the cursor
+           advance entirely -- the cursor already moved when the orphan's
+           own occurrence was first recorded; a re-fire is not a new
+           occurrence, just a fresh attempt at the same one). Flipping the
+           orphan and inserting its replacement as two independent writes
+           would reopen exactly this window one level up: a crash between
+           them would leave the orphan durably terminal (dropped from any
+           future undispatched-scan) with no replacement ever recorded,
+           losing the occurrence for good. Atomic together, a crash here
+           can only ever leave the orphan exactly as it was -- still
+           'running', still undispatched, still visible to the next
+           recovery scan -- never flipped with nothing to show for it.
+
+           The re-fire carries the orphan's SAME ``trigger_context`` (it
+           never got to use it), so a github_poll event (or any other
+           occurrence-specific context) is retried faithfully rather than
+           generically. This is the at-least-once guarantee: an occurrence
+           that was committed to is retried until it is genuinely
+           attempted -- and each retry is itself covered by the same
+           guarantee, recursively, until one actually dispatches. Chain
+           children (chain_depth > 0) are tombstoned by
+           ``_recover_undispatched_fires()`` directly, without going
+           through this re-fire path at all -- narrower, accepted gap; the
+           parent occurrence's own outcome is unaffected, only a follow-on
+           on_success/on_fail step is lost.
 
         3. After ``dispatched_at`` is confirmed: the external process
            genuinely exists. A crash from here on is NOT retried -- the
@@ -1572,7 +1725,10 @@ class SchedulerEngine:
             # invalid-action failure path -- otherwise a permanently
             # misconfigured github_poll schedule would never advance its
             # cursor past the offending event and re-fail it forever.
-            await self._svc.create_schedule_run_and_advance(
+            # (A recovery re-fire skips the cursor advance and is instead
+            # atomic with tombstoning the orphan it supersedes -- see
+            # _write_occurrence()'s docstring.)
+            written_occurrence = await self._write_occurrence(
                 {
                     "id": run_id,
                     "schedule_id": sid,
@@ -1589,7 +1745,11 @@ class SchedulerEngine:
                 },
                 schedule_id=sid,
                 schedule_fields=failed_schedule_fields,
+                supersedes_run_id=supersedes_run_id,
             )
+            if not written_occurrence:
+                await self._abandon_superseded_recovery_fire(inv_id, orphan_id=supersedes_run_id)
+                return
             written = await self._svc.update_status(
                 "schedule_run",
                 run_id,
@@ -1668,8 +1828,11 @@ class SchedulerEngine:
             # A crash AFTER this commits but before spawn_and_wait confirms
             # launch is the second window in this method's delivery-
             # contract docstring above -- _recover_undispatched_fires()
-            # handles it at the next startup, not here.
-            await self._svc.create_schedule_run_and_advance(
+            # handles it at the next startup, not here. (A recovery
+            # re-fire skips the cursor advance and is instead atomic with
+            # tombstoning the orphan it supersedes -- see
+            # _write_occurrence()'s docstring.)
+            written_occurrence = await self._write_occurrence(
                 {
                     "id": run_id,
                     "schedule_id": sid,
@@ -1684,7 +1847,11 @@ class SchedulerEngine:
                 },
                 schedule_id=sid,
                 schedule_fields=update_fields,
+                supersedes_run_id=supersedes_run_id,
             )
+            if not written_occurrence:
+                await self._abandon_superseded_recovery_fire(inv_id, orphan_id=supersedes_run_id)
+                return
             await self._svc.update_status(
                 "schedule_run",
                 run_id,

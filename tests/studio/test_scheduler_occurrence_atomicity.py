@@ -489,3 +489,233 @@ async def test_recovery_tombstones_undispatched_chain_child_without_retry(tmp_pa
         run = await db.get_schedule_run("run-chain-child")
     assert run["status"] == "failed"
     assert run["status_reason_code"] == RunReasons.FAILED_NEVER_DISPATCHED
+
+
+@pytest.mark.asyncio
+async def test_tombstone_and_replace_schedule_run_is_atomic(tmp_path):
+    """The OLD shape recovery briefly took (flip the orphan via a standalone
+    update_status() call, THEN separately -- in a backgrounded fire task --
+    insert the replacement row once _fire_inner() got around to it) had a
+    real gap: a crash between those two independent writes left the orphan
+    durably 'failed' (terminal, so dropped from every future
+    list_undispatched_schedule_runs() scan) with no replacement ever
+    recorded -- the occurrence lost for good, invisible to recovery AND
+    never retried.
+
+    tombstone_and_replace_schedule_run() closes that by doing both writes
+    in ONE transaction. Prove it directly: force the second statement
+    (the replacement INSERT) to raise mid-transaction and confirm the
+    first statement (the orphan's UPDATE) rolled back too -- the orphan
+    must come back out exactly as it went in, still 'running', still
+    undispatched, still visible to a fresh scan. A crash here can only
+    ever discard a replacement that was never durably recorded, never
+    leave a flipped orphan with nothing to show for it.
+    """
+    db_path = tmp_path / "state.db"
+    sid = "sched-atomic"
+
+    async with StateDB(db_path) as db:
+        await db.create_schedule(_schedule_row(sid, next_fire_at=2000.0))
+        await db.create_schedule_run_and_advance(
+            _run_row("run-orphan", sid, fired_at=1000.0),
+            schedule_id=sid,
+            schedule_fields={"next_fire_at": 2000.0, "last_fired_at": 1000.0},
+        )
+
+    original_execute = AsyncConnection.execute
+
+    async def _crash_on_insert(self, statement, *args, **kwargs):
+        if "INSERT INTO schedule_runs" in str(statement):
+            raise RuntimeError("simulated crash between flip and insert")
+        return await original_execute(self, statement, *args, **kwargs)
+
+    async with StateDB(db_path) as db:
+        with patch.object(AsyncConnection, "execute", _crash_on_insert):
+            with pytest.raises(RuntimeError, match="simulated crash"):
+                await db.tombstone_and_replace_schedule_run(
+                    "run-orphan",
+                    _run_row("run-replacement", sid, fired_at=1500.0),
+                    expected_orphan_status="running",
+                )
+
+    # Post-crash: the orphan's flip rolled back along with the aborted
+    # insert -- never neither, never "flipped but replacement missing".
+    async with StateDB(db_path) as db:
+        orphan = await db.get_schedule_run("run-orphan")
+        replacement = await db.get_schedule_run("run-replacement")
+        undispatched = await db.list_undispatched_schedule_runs()
+    assert orphan["status"] == "running"
+    assert orphan["dispatched_at"] is None
+    assert replacement is None
+    assert [r["id"] for r in undispatched] == ["run-orphan"]
+
+    # "Restart": a real (non-crashing) call now succeeds atomically.
+    async with StateDB(db_path) as db:
+        applied = await db.tombstone_and_replace_schedule_run(
+            "run-orphan",
+            _run_row("run-replacement", sid, fired_at=1500.0),
+            expected_orphan_status="running",
+        )
+        orphan = await db.get_schedule_run("run-orphan")
+        replacement = await db.get_schedule_run("run-replacement")
+    assert applied is True
+    assert orphan["status"] == "failed"
+    assert replacement["status"] == "running"
+    assert replacement["dispatched_at"] is None
+
+
+@pytest.mark.asyncio
+async def test_recovery_leaves_orphan_untouched_when_refire_crashes_before_atomic_write(
+    tmp_path, monkeypatch
+):
+    """A crash during a recovery re-fire attempt, at any point BEFORE
+    _write_occurrence()'s atomic transaction runs (e.g. while building the
+    replacement invocation or resolving the action), must leave the
+    orphan completely untouched -- neither half of the tombstone+insert
+    pair exists yet, so there is nothing to roll back; the orphan is
+    simply still exactly where it started. A fresh recovery pass over the
+    same state must find and retry it again, proving the occurrence is
+    never lost even when the re-fire attempt itself fails early.
+    """
+    import lionagi.state.db as state_db_mod
+
+    db_path = tmp_path / "state.db"
+    monkeypatch.setattr(state_db_mod, "DEFAULT_DB_PATH", db_path)
+
+    sid = "sched-early-crash"
+    orphaned_trigger_context = {"source": "cron"}
+
+    async with StateDB(db_path) as db:
+        await db.create_schedule(_schedule_row(sid, next_fire_at=2000.0))
+        await db.create_schedule_run_and_advance(
+            _run_row(
+                "run-orphaned", sid, fired_at=1000.0, trigger_context=orphaned_trigger_context
+            ),
+            schedule_id=sid,
+            schedule_fields={"next_fire_at": 2000.0, "last_fired_at": 1000.0},
+        )
+
+    svc = _DBSchedulerStateService()
+    engine = SchedulerEngine(svc=svc)
+
+    # Simulate a crash mid-fire, well before _write_occurrence() ever runs:
+    # create_invocation() succeeds (it always durably lands first, same as
+    # the ordinary happy path), but build_argv() (a plain sync function)
+    # blows up with something that is NOT the ordinary "invalid action"
+    # exception path -- an unrecoverable crash of the fire task itself.
+    # A BaseException that is deliberately NOT KeyboardInterrupt/SystemExit:
+    # those two are special-cased by asyncio's event loop and by pytest-xdist
+    # itself (a KeyboardInterrupt propagating out of an awaited task reads as
+    # a real Ctrl-C and takes the whole worker process down with it) -- this
+    # only needs to be something _fire_inner()'s `except Exception` does not
+    # catch, not literally the SIGINT-flavored crash signal.
+    class _SimulatedHardCrash(BaseException):
+        pass
+
+    def _crash(*_args, **_kwargs):
+        raise _SimulatedHardCrash("simulated hard crash mid-fire")
+
+    with patch("lionagi.studio.scheduler.subprocess.build_argv", side_effect=_crash):
+        await engine._recover_undispatched_fires()
+        for task in list(engine._fire_tasks):
+            with pytest.raises(_SimulatedHardCrash):
+                await task
+
+    # Untouched: no atomic write ever ran, so nothing changed.
+    async with StateDB(db_path) as db:
+        orphan = await db.get_schedule_run("run-orphaned")
+        runs = await db.list_schedule_runs(sid)
+        undispatched = await db.list_undispatched_schedule_runs()
+    assert orphan["status"] == "running"
+    assert orphan["dispatched_at"] is None
+    assert len(runs) == 1  # no replacement row was ever inserted
+    assert [r["id"] for r in undispatched] == ["run-orphaned"]
+
+    # A fresh recovery pass (no crash this time) finds and retries it.
+    with (
+        patch(
+            "lionagi.studio.scheduler.subprocess.resolve_li_executable",
+            return_value=(["true"], None),
+        ),
+        patch("lionagi.studio.scheduler.subprocess.build_argv", return_value=(["true"], None)),
+        patch(
+            "lionagi.studio.scheduler.subprocess.spawn_and_wait",
+            new=AsyncMock(return_value=(0, "")),
+        ),
+    ):
+        await engine._recover_undispatched_fires()
+        if engine._fire_tasks:
+            await asyncio.gather(*engine._fire_tasks)
+
+    async with StateDB(db_path) as db:
+        orphan = await db.get_schedule_run("run-orphaned")
+        runs = await db.list_schedule_runs(sid)
+    assert orphan["status"] == "failed"
+    assert orphan["status_reason_code"] == RunReasons.FAILED_NEVER_DISPATCHED
+    assert len(runs) == 2
+
+
+@pytest.mark.asyncio
+async def test_recovery_never_double_fires_across_two_passes(tmp_path, monkeypatch):
+    """Running _recover_undispatched_fires() a second time over state left
+    behind by a first, fully-completed pass must find nothing left to do:
+    once the replacement occurrence from pass one is durably dispatched
+    (dispatched_at set), it is entirely out of scope for pass two, and the
+    original orphan it superseded is already terminal. Two passes over the
+    same eventually-successful recovery must produce exactly one re-fire,
+    never two.
+    """
+    import lionagi.state.db as state_db_mod
+
+    db_path = tmp_path / "state.db"
+    monkeypatch.setattr(state_db_mod, "DEFAULT_DB_PATH", db_path)
+
+    sid = "sched-no-double-fire"
+
+    async with StateDB(db_path) as db:
+        await db.create_schedule(_schedule_row(sid, next_fire_at=2000.0))
+        await db.create_schedule_run_and_advance(
+            _run_row("run-orphaned", sid, fired_at=1000.0),
+            schedule_id=sid,
+            schedule_fields={"next_fire_at": 2000.0, "last_fired_at": 1000.0},
+        )
+
+    svc = _DBSchedulerStateService()
+    engine = SchedulerEngine(svc=svc)
+
+    with (
+        patch(
+            "lionagi.studio.scheduler.subprocess.resolve_li_executable",
+            return_value=(["true"], None),
+        ),
+        patch("lionagi.studio.scheduler.subprocess.build_argv", return_value=(["true"], None)),
+        patch(
+            "lionagi.studio.scheduler.subprocess.spawn_and_wait",
+            new=AsyncMock(return_value=(0, "")),
+        ),
+    ):
+        # Pass one: finds the orphan, re-fires it, and the mocked
+        # spawn_and_wait's on_launched callback stamps dispatched_at on
+        # the replacement -- a fully successful recovery cycle.
+        await engine._recover_undispatched_fires()
+        if engine._fire_tasks:
+            await asyncio.gather(*engine._fire_tasks)
+
+        async with StateDB(db_path) as db:
+            undispatched_after_pass_one = await db.list_undispatched_schedule_runs()
+        assert undispatched_after_pass_one == []
+
+        with patch.object(engine, "_tracked_fire") as mock_tracked_fire:
+            # Pass two: nothing left to recover.
+            await engine._recover_undispatched_fires()
+        mock_tracked_fire.assert_not_called()
+
+    async with StateDB(db_path) as db:
+        runs = await db.list_schedule_runs(sid)
+    # Exactly one re-fire happened across both passes: the original orphan
+    # plus its single replacement, never a second independent retry.
+    assert len(runs) == 2
+    statuses = {r["id"]: r["status"] for r in runs}
+    assert statuses["run-orphaned"] == "failed"
+    replacement_id = next(rid for rid in statuses if rid != "run-orphaned")
+    assert statuses[replacement_id] == "completed"

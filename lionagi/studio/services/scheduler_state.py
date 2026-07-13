@@ -49,6 +49,14 @@ class SchedulerStateService(Protocol):
 
     async def list_undispatched_schedule_runs(self) -> list[dict[str, Any]]: ...
 
+    async def tombstone_and_replace_schedule_run(
+        self,
+        orphan_id: str,
+        replacement_run: dict[str, Any],
+        *,
+        expected_orphan_status: str = "running",
+    ) -> bool: ...
+
     async def update_schedule_run(self, run_id: str, **fields: Any) -> None: ...
 
     async def create_invocation(self, invocation: dict[str, Any]) -> None: ...
@@ -129,6 +137,20 @@ class _DBSchedulerStateService:
     async def list_undispatched_schedule_runs(self) -> list[dict[str, Any]]:
         async with StateDB() as db:
             return await db.list_undispatched_schedule_runs()
+
+    async def tombstone_and_replace_schedule_run(
+        self,
+        orphan_id: str,
+        replacement_run: dict[str, Any],
+        *,
+        expected_orphan_status: str = "running",
+    ) -> bool:
+        async with StateDB() as db:
+            return await db.tombstone_and_replace_schedule_run(
+                orphan_id,
+                replacement_run,
+                expected_orphan_status=expected_orphan_status,
+            )
 
     async def update_schedule_run(self, run_id: str, **fields: Any) -> None:
         async with StateDB() as db:

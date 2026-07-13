@@ -2458,6 +2458,66 @@ class StateDB:
             await conn.execute(run_stmt, run_params)
             await conn.execute(sched_stmt, sched_params)
 
+    async def tombstone_and_replace_schedule_run(
+        self,
+        orphan_id: str,
+        replacement_run: dict[str, Any],
+        *,
+        expected_orphan_status: str = "running",
+    ) -> bool:
+        """Flip an undispatched orphan to a terminal status and insert its
+        replacement occurrence row in the SAME transaction.
+
+        This is the write ``SchedulerEngine._recover_undispatched_fires()``
+        uses instead of two independent writes (a CAS status flip, then a
+        separate later insert once the replacement's fire task gets around
+        to it). Two independent writes leave a real window: a crash between
+        them leaves the orphan durably terminal (so it drops out of any
+        future ``list_undispatched_schedule_runs()`` scan -- terminal rows
+        are never selected) while the replacement was never durably
+        recorded (the in-memory task that would have inserted it is gone),
+        permanently losing the occurrence. Wrapping both writes in one
+        transaction closes that window the same way
+        ``create_schedule_run_and_advance()`` closes the occurrence-insert /
+        cursor-advance one: either both land or neither does, so a crash
+        here can only ever leave the orphan exactly as it was (still
+        'running', still undispatched, still visible to the next recovery
+        scan) -- never flipped with no replacement to show for it.
+
+        Only a bare status flip (status + updated_at) is written for the
+        orphan here, no reason-code/history bookkeeping -- callers follow
+        up with an ordinary ``update_status()`` same-status call afterward
+        for that (mirroring the existing pattern at the invalid-action
+        and happy-path insert sites in ``_fire_inner()``, which set status
+        directly in ``create_schedule_run_and_advance()``'s INSERT and only
+        layer reason/history on with a separate follow-up call). A crash
+        between this method returning and that follow-up call leaves the
+        orphan correctly terminal but without its reason annotation -- a
+        cosmetic gap, not a durability one, identical to the existing
+        pattern's own gap.
+
+        Returns ``False`` (inserting nothing) if the orphan's status no
+        longer matches *expected_orphan_status* -- something else (e.g. the
+        stale-run reaper, or an operator action) already resolved it
+        between the scan that found this orphan and this write; there is
+        nothing left to recover and no replacement should be created for
+        an occurrence someone else already finalized.
+        """
+        run_stmt, run_params = self._build_schedule_run_insert_stmt(replacement_run)
+        now = time.time()
+        async with self._tx() as conn:
+            result = await conn.execute(
+                text(
+                    "UPDATE schedule_runs SET status = 'failed', updated_at = :now "
+                    "WHERE id = :orphan_id AND status = :expected_status"
+                ),
+                {"now": now, "orphan_id": orphan_id, "expected_status": expected_orphan_status},
+            )
+            if result.rowcount == 0:
+                return False
+            await conn.execute(run_stmt, run_params)
+        return True
+
     async def update_schedule_run(
         self,
         run_id: str,
