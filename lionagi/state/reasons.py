@@ -63,6 +63,12 @@ class RunReasons:
     COMPLETED_OK = "run.completed.ok"
     FAILED_EXIT_NONZERO = "run.failed.exit_nonzero"
     FAILED_EXCEPTION = "run.failed.exception"
+    # A terminal ProviderError (provider CLI subprocess failure) classified
+    # by lionagi.providers._provider_errors.classify_provider_error, split by
+    # its retryable classification (rate limit / capacity / dropped stream vs
+    # bad credentials / unsupported model / context overflow / safety block).
+    FAILED_PROVIDER_RETRYABLE = "run.failed.provider_retryable"
+    FAILED_PROVIDER_NONRETRYABLE = "run.failed.provider_nonretryable"
     FAILED_MISSING_ARTIFACT = "run.failed.missing_artifact"  # ADR-0029
     # The schedule's persisted execution root (action_cwd) or its
     # action_project's registered path no longer existed at fire time (e.g.
