@@ -175,6 +175,73 @@ async def test_direct_run_fires_once():
 
 
 # ---------------------------------------------------------------------------
+# CLI guard-rejection failure semantics: a USER_PROMPT_SUBMIT handler that
+# rejects a run() prompt must leave no trace of it in the transcript, and
+# the rejection must surface as this run's failure, not a silent success.
+# ---------------------------------------------------------------------------
+
+
+async def test_run_guard_rejection_leaves_no_instruction_persisted():
+    """A denied prompt must never enter branch.messages, and must never
+    dispatch MESSAGE_ADD persistence for it — construct-then-guard-then-commit,
+    not guard-after-persist."""
+    branch = Branch()
+    branch.chat_model = _make_fake_cli_model([StreamChunk(type="text", content="ok")])
+
+    bus = HookBus()
+    message_add_calls: list[dict] = []
+
+    async def reject_submit(**kw):
+        raise PermissionError("blocked")
+
+    async def on_message_add(**kw):
+        message_add_calls.append(kw)
+
+    bus.on(HookPoint.USER_PROMPT_SUBMIT, reject_submit)
+    bus.on(HookPoint.MESSAGE_ADD, on_message_add)
+    branch._hooks = bus
+    branch.on_message_added.append(branch._persist_via_bus)
+
+    with pytest.raises(PermissionError):
+        async for _ in run(branch, "SECRET=top-secret", RunParam()):
+            pass
+
+    assert len(branch.messages) == 0
+    assert message_add_calls == []
+
+
+async def test_run_guard_rejection_reports_run_failed_not_run_end():
+    """A USER_PROMPT_SUBMIT rejection must route through the same failure
+    bookkeeping as a mid-stream provider error, so an observer sees RunFailed
+    (with the exception attached), not a silently-successful RunEnd."""
+    from lionagi.session.session import Session
+    from lionagi.session.signal import RunEnd, RunFailed
+
+    s = Session()
+    s.default_branch.chat_model = _make_fake_cli_model([StreamChunk(type="text", content="ok")])
+
+    bus = HookBus()
+
+    async def reject_submit(**kw):
+        raise PermissionError("blocked")
+
+    bus.on(HookPoint.USER_PROMPT_SUBMIT, reject_submit)
+    s.default_branch._hooks = bus
+
+    failures, ends = [], []
+    s.observe(RunFailed, lambda sig, _: failures.append(sig.data))
+    s.observe(RunEnd, lambda sig, _: ends.append(sig))
+
+    with pytest.raises(PermissionError):
+        async for _ in run(s.default_branch, "SECRET=top-secret", RunParam()):
+            pass
+
+    assert len(failures) == 1, f"expected 1 RunFailed, got {len(failures)}"
+    assert isinstance(failures[0], PermissionError)
+    assert len(ends) == 0, "RunEnd must NOT fire when the guard rejects the prompt"
+
+
+# ---------------------------------------------------------------------------
 # Row 6: ReAct() with extension rounds + a final-answer turn -> 1 total
 # ---------------------------------------------------------------------------
 

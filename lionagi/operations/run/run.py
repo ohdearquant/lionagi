@@ -296,7 +296,6 @@ async def run(
         ins, kw = _prepare_run_kwargs(branch, instruction, param, ins=pre_ins)
     finally:
         branch._context_injection_slot = None
-    await branch.msgs.a_add_message(instruction=ins)
 
     from lionagi.session._lifecycle_ctx import suppress_lifecycle_var
 
@@ -409,7 +408,11 @@ async def run(
 
         # Consumed exactly once, immediately before streaming begins: fires
         # USER_PROMPT_SUBMIT iff the operation context carries a turn-origin
-        # token (see operations/_turn_origin.py).
+        # token (see operations/_turn_origin.py). Runs before the instruction
+        # is added to the branch — a handler that rejects this prompt must
+        # leave no trace of it in the branch's message history, and the
+        # rejection must be recorded as this run's failure (not silently
+        # dropped) so the terminal signal below reports it correctly.
         _turn_origin_token = consume_turn_origin(param.turn_origin)
         if _turn_origin_token is not None and branch._hooks is not None:
             from lionagi.hooks.bus import HookPoint
@@ -417,12 +420,20 @@ async def run(
             _prompt = ins.rendered
             if not isinstance(_prompt, str):
                 _prompt = str(_prompt)
-            await branch._hooks.emit(
-                HookPoint.USER_PROMPT_SUBMIT,
-                session_id=str(branch._owning_session_id or branch.id),
-                branch_id=str(branch.id),
-                prompt=_prompt,
-            )
+            try:
+                await branch._hooks.emit(
+                    HookPoint.USER_PROMPT_SUBMIT,
+                    session_id=str(branch._owning_session_id or branch.id),
+                    branch_id=str(branch.id),
+                    prompt=_prompt,
+                )
+            except GeneratorExit:
+                raise
+            except BaseException as _exc:
+                _run_exc = _exc
+                raise
+
+        await branch.msgs.a_add_message(instruction=ins)
 
         kw["stream"] = True
         _api_call_holder: list = []
