@@ -37,13 +37,13 @@ externally-driven sessions mirrored into the DB). Decision order matters:
 3. Confirmed dead (`process_alive is False`) outranks the activity guard below it — the
    process is gone no matter how fresh the last message is.
 4. Unknown liveness (no matchable pid) trusts recent messages more than process visibility,
-   because externally-driven sessions (CLI seats mirrored into the DB) never expose a
+   because externally-driven sessions (mirrored into the DB from another process) never expose a
    matchable pid — an unmatched process only means dead once activity has also gone quiet
    past the kind-aware threshold.
 
 ### `state/transitions.py`
 
-Guarded compare-and-swap state transitions (ADR-0059 slice 1, spec-gate ruling 1) — a minimal
+Guarded compare-and-swap state transitions (ADR-0059 slice 1) — a minimal
 fallback for ADR-0058's proposed-but-unbuilt entity-agnostic `transition()` API. Carries the
 same request/result shape and reason-code discipline so ADR-0058 can absorb it later as a
 refactor, not a migration. Scoped to `entity_type='dispatch'` (`dispatch_outbox`) and
@@ -109,8 +109,8 @@ studio-side change.
   back to `running`. ADR-0035's integrity floor treats every session terminal status (not just
   `completed`) as terminal on the sessions table for orchestrated runs, so reactivating a
   mirror session out of any of them goes through the sanctioned override path — a real,
-  deliberate, well-understood write (not a repair), attributed to a fixed system actor rather
-  than a human operator, landing in `admin_events` like any other override. A mirror session
+  deliberate, well-understood write (not a repair), attributed to the recorded automated
+  override identity, landing in `admin_events` like any other override. A mirror session
   that is idle and already sitting on a non-`completed` terminal status (e.g. independently
   marked `failed` or `cancelled`) is left alone rather than rewritten to `completed` — only a
   live transcript resuming can justify pulling it back to `running`.
@@ -850,11 +850,11 @@ invoked by the `operate()` Middle (not `provide()`), and it is NOT the nudge pla
 proceeds.
 
 `KhiveInjectionPolicy.namespace`, when set, is threaded onto every khive verb the provider
-emits (recall, compose, auto_feedback, remember) as the bench-arm isolation mechanism.
-`auto_feedback` WRITES to the live brain store, so an unpinned "read-only" arm still mutates
-posteriors and contaminates cross-arm comparisons — pinning a namespace is required, not
-optional, for any enabled bench arm. Currently only the write verb honors namespace (read
-verbs reject unknown params); this is forward-wired for when reads grow namespace scoping too.
+emits (recall, compose, auto_feedback, remember) to isolate its writes to a named store.
+`auto_feedback` WRITES to the live brain store, so an unpinned "read-only" caller still mutates
+posteriors — pinning a namespace is required, not optional, wherever writes must stay isolated.
+Currently only the write verb honors namespace (read verbs reject unknown params); this is
+forward-wired for when reads grow namespace scoping too.
 
 ### `sandbox.py`
 
