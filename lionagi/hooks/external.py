@@ -211,7 +211,11 @@ async def _run_hook_process(
             proc.communicate(json.dumps(envelope).encode()),
             timeout=timeout,
         )
-    except TimeoutError as err:
+    except (TimeoutError, asyncio.TimeoutError) as err:
+        # asyncio.wait_for raises asyncio.TimeoutError, which is a distinct
+        # class from the builtin TimeoutError before Python 3.11 (they only
+        # became aliases in 3.11) -- catch both so the teardown below runs on
+        # every supported interpreter, not just 3.11+.
         # Kill the whole process group so a hung hook's children cannot
         # continue side effects after the timeout is declared.
         await aterminate_process_group(proc, grace=None)

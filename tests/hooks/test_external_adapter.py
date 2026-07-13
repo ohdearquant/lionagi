@@ -359,7 +359,10 @@ async def test_post_tool_use_error_result_maps_tool_response_to_error_dict(monke
 async def test_pre_tool_use_timeout_kills_process_group_and_denies(monkeypatch):
     proc = MagicMock()
     proc.pid = 9999
-    proc.communicate = AsyncMock(side_effect=TimeoutError)
+    # asyncio.wait_for raises asyncio.TimeoutError, which is NOT the builtin
+    # TimeoutError before 3.11 -- inject the real raised type so this exercises
+    # the pre-3.11 teardown path rather than passing by luck on 3.11+.
+    proc.communicate = AsyncMock(side_effect=asyncio.TimeoutError)
     proc.wait = AsyncMock(return_value=None)
     monkeypatch.setattr(asyncio, "create_subprocess_exec", AsyncMock(return_value=proc))
 
@@ -376,7 +379,7 @@ async def test_pre_tool_use_timeout_kills_process_group_and_denies(monkeypatch):
 async def test_post_tool_use_timeout_surfaces_reason_not_raise(monkeypatch):
     proc = MagicMock()
     proc.pid = 8888
-    proc.communicate = AsyncMock(side_effect=TimeoutError)
+    proc.communicate = AsyncMock(side_effect=asyncio.TimeoutError)
     proc.wait = AsyncMock(return_value=None)
     monkeypatch.setattr(asyncio, "create_subprocess_exec", AsyncMock(return_value=proc))
     monkeypatch.setattr("lionagi.ln._proc.os.killpg", lambda pgid, sig: None)
