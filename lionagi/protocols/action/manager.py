@@ -10,11 +10,18 @@ if TYPE_CHECKING:
     from lionagi.service.connections.mcp_wrapper import MCPSecurityConfig
 
 from lionagi.protocols._concepts import Manager
+from lionagi.protocols.generic.event import EventStatus
 from lionagi.protocols.messages.action_request import ActionRequest
 from lionagi.utils import to_list
 
 from .function_calling import FunctionCalling
 from .tool import FuncTool, FuncToolRef, Tool, ToolRef
+from .tool_hooks import (
+    ToolPostHook,
+    ToolPreHook,
+    run_tool_post_hooks,
+    run_tool_pre_hooks,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -25,6 +32,8 @@ class ActionManager(Manager):
     def __init__(self, *args: FuncTool, **kwargs) -> None:
         super().__init__()
         self.registry: dict[str, Tool] = {}
+        self._tool_pre_hooks: list[ToolPreHook] = []
+        self._tool_post_hooks: list[ToolPostHook] = []
 
         tools = []
         if args:
@@ -33,6 +42,22 @@ class ActionManager(Manager):
             tools.extend(to_list(kwargs.values(), dropna=True, flatten=True))
 
         self.register_tools(tools, update=True)
+
+    def add_tool_pre_hook(self, hook: ToolPreHook) -> None:
+        """Register a tool-pre hook, outermost, ahead of the spec-level chain.
+
+        Hooks run in registration order at ``invoke()``, before the tool's
+        own ``preprocessor`` (the spec-level security/user chain) ever sees
+        the arguments -- see ``tool_hooks.py`` for the decision contract.
+        """
+        self._tool_pre_hooks.append(hook)
+
+    def add_tool_post_hook(self, hook: ToolPostHook) -> None:
+        """Register a tool-post hook, outermost, after the spec-level chain.
+
+        Advisory only -- see ``tool_hooks.py``.
+        """
+        self._tool_post_hooks.append(hook)
 
     def __contains__(self, tool: FuncToolRef) -> bool:
         if isinstance(tool, Tool):
@@ -167,8 +192,54 @@ class ActionManager(Manager):
         self,
         func_call: BaseModel | ActionRequest,
     ) -> FunctionCalling:
+        """Match, run tool-pre hooks, invoke, then run tool-post hooks.
+
+        Every tool routed through this method -- plain function tools,
+        ``Tool`` objects, and MCP-discovered tools alike -- passes through
+        the same tool-pre/tool-post hook layer. A construction directly on
+        ``FunctionCalling`` (bypassing this manager) skips this layer
+        entirely; that is a documented, tested limit, not an oversight.
+
+        Tool-pre hooks run before the tool's own ``preprocessor`` chain (the
+        spec-level security/user hooks, which keep running last of the
+        pre-stage validators) and may rewrite the arguments; a denial raises
+        directly out of this call, before the tool is ever invoked. The
+        rewritten arguments are revalidated against the tool's declared
+        request model inside ``FunctionCalling._invoke()``, after the
+        spec-level chain has also had a chance to mutate them and before the
+        callable executes.
+
+        Tool-post hooks run after invocation completes (success or failure)
+        and are advisory only -- they observe the final arguments, the
+        result (``None`` on failure), and the error (``None`` on success),
+        and cannot change either.
+        """
         function_calling = self.match_tool(func_call)
-        await function_calling.invoke()
+        tool_name = function_calling.function
+
+        if self._tool_pre_hooks:
+            function_calling.arguments = await run_tool_pre_hooks(
+                self._tool_pre_hooks, tool_name, function_calling.arguments
+            )
+
+        error: BaseException | None = None
+        try:
+            await function_calling.invoke()
+            if function_calling.status == EventStatus.FAILED:
+                error = function_calling.execution.error
+        except BaseException as exc:
+            error = exc
+            raise
+        finally:
+            if self._tool_post_hooks:
+                await run_tool_post_hooks(
+                    self._tool_post_hooks,
+                    tool_name,
+                    function_calling.arguments,
+                    function_calling.response,
+                    error,
+                )
+
         return function_calling
 
     @property
