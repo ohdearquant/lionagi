@@ -185,6 +185,10 @@ class TestHandlePlayShortcut:
 
     def test_play_list_empty_dir(self, monkeypatch, tmp_path, capsys):
         monkeypatch.setenv("HOME", str(tmp_path))
+        # find_lionagi_dirs() also walks up from cwd for a project-local
+        # `.lionagi/`; chdir into the scratch dir so this test's "empty"
+        # expectation isn't defeated by a real one reachable from cwd.
+        monkeypatch.chdir(tmp_path)
         code = _handle_play_shortcut(["play", "list"])
         assert code == 0
         out = capsys.readouterr().out
@@ -196,6 +200,7 @@ class TestHandlePlayShortcut:
         (pb / "alpha.playbook.yaml").write_text("prompt: a\n")
         (pb / "beta.playbook.yaml").write_text("prompt: b\n")
         monkeypatch.setenv("HOME", str(tmp_path))
+        monkeypatch.chdir(tmp_path)
         code = _handle_play_shortcut(["play", "list"])
         assert code == 0
         out = capsys.readouterr().out

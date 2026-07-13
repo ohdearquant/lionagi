@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import argparse
 import sys
+from pathlib import Path
 
 from lionagi._errors import TimeoutError as LionTimeoutError
 from lionagi.libs.path_safety import validate_path_component as validate_path_component
@@ -108,46 +109,157 @@ def inject_playbook_schema_into_parser(
     return resolved_schema
 
 
-def _resolve_playbook_path(name: str) -> tuple[object, str | None]:
-    """Resolve a playbook NAME to (Path, None) or (None, error_message)."""
-    from pathlib import Path
+def _plugin_playbook_files() -> dict[str, tuple[str, Path]]:
+    """``<plugin>/<name>`` -> (plugin name, playbook path) for every ACTIVE
+    plugin (trusted+enabled+compatible).
 
+    A plugin's playbooks only ever join the search *after* project and
+    global playbooks: local files always win, and an untrusted or disabled
+    plugin contributes nothing here at all.
+    """
+    from lionagi.plugins import PluginRegistry
+
+    return PluginRegistry.active_playbook_files()
+
+
+def _resolve_plugin_playbook_path(name: str) -> Path | None:
+    """Resolve *name* against active plugins: an explicit ``<plugin>/<playbook>``
+
+    token always resolves via direct lookup; a bare name resolves only when
+    exactly one active plugin declares it (ambiguous bare names are left
+    unresolved — namespacing exists precisely so a caller can disambiguate).
+    """
+    plugin_playbooks = _plugin_playbook_files()
+    if "/" in name:
+        entry = plugin_playbooks.get(name)
+        return entry[1] if entry is not None else None
+
+    matches = [
+        path for token, (_plugin, path) in plugin_playbooks.items() if token.endswith(f"/{name}")
+    ]
+    if len(matches) == 1:
+        return matches[0]
+    return None
+
+
+def _warn_if_shadowing_plugin_playbook(name: str) -> None:
+    """Log a shadow warning when a local playbook hides a same-named plugin playbook.
+
+    The user's own explicit local file always wins on a bare-name collision;
+    this only makes the shadowing visible instead of silent.
+    """
+    plugin_playbooks = _plugin_playbook_files()
+    owners = sorted(
+        {token.split("/", 1)[0] for token in plugin_playbooks if token.endswith(f"/{name}")}
+    )
+    if not owners:
+        return
+    from .._logging import warn
+
+    warn(
+        f"playbook {name!r} is also declared by plugin(s) {', '.join(owners)}; "
+        f"using the local file (load the plugin's version with '<plugin>/{name}')."
+    )
+
+
+def list_playbooks() -> list[str]:
+    """List available playbook names, merged across ``.lionagi/`` dirs and active plugins.
+
+    Plugin-declared playbooks are namespaced as ``<plugin>/<name>``.
+    """
+    from lionagi._paths import find_lionagi_dirs
+
+    seen: set[str] = set()
+    for d in find_lionagi_dirs():
+        playbooks_dir = d / "playbooks"
+        if not playbooks_dir.is_dir():
+            continue
+        for p in sorted(playbooks_dir.glob("*.playbook.yaml")):
+            if p.is_file():
+                seen.add(p.name.removesuffix(".playbook.yaml"))
+    seen.update(_plugin_playbook_files().keys())
+    return sorted(seen)
+
+
+def _resolve_playbook_path(name: str) -> tuple[object, str | None]:
+    """Resolve a playbook NAME to (Path, None) or (None, error_message).
+
+    Searches project-local then global ``.lionagi/playbooks/`` (via
+    ``find_lionagi_dirs()``), then active plugin bundles: a plugin's
+    playbooks join the search only after a project/global miss (bare name),
+    or via an explicit ``<plugin>/<name>`` token, and only for a plugin that
+    is trusted + enabled + version-compatible (see ``lionagi.plugins``).
+    """
+    from lionagi._paths import find_lionagi_dirs
     from lionagi.libs.path_safety import validate_path_component
 
     if not name or not isinstance(name, str):
         return None, "playbook name must be a non-empty string"
-    try:
-        validate_path_component(name, label="playbook NAME")
-    except ValueError:
+
+    plugin_token = "/" in name
+    if plugin_token:
+        # A `<plugin>/<name>` token is opaque to the single-component
+        # validator (which forbids '/'); validate each half separately
+        # instead of rejecting the whole string outright — this is exactly
+        # the shape ADR-0088 D6 specifies for a plugin-namespaced playbook.
+        plugin_part, _, playbook_part = name.partition("/")
+        try:
+            validate_path_component(plugin_part, label="plugin NAME")
+            validate_path_component(playbook_part, label="playbook NAME")
+        except ValueError:
+            return (
+                None,
+                "playbook NAME must be a bare identifier or <plugin>/<name> "
+                f"token, got {name!r}. Use -f /abs/path.yaml for ad-hoc specs.",
+            )
+    else:
+        try:
+            validate_path_component(name, label="playbook NAME")
+        except ValueError:
+            return (
+                None,
+                f"playbook NAME must be a bare identifier, got {name!r}. "
+                "Use -f /abs/path.yaml for ad-hoc specs.",
+            )
+        plugin_part = playbook_part = None
+
+    dirs = find_lionagi_dirs()
+
+    if not plugin_token:
+        for d in dirs:
+            playbooks_dir = d / "playbooks"
+            candidate = playbooks_dir / f"{name}.playbook.yaml"
+            if not candidate.is_file():
+                continue
+            try:
+                resolved_root = playbooks_dir.resolve(strict=True)
+                resolved_candidate = candidate.resolve(strict=True)
+                resolved_candidate.relative_to(resolved_root)
+            except (OSError, ValueError):
+                return (
+                    None,
+                    f"playbook {name!r} resolves outside playbooks root (symlink escape blocked)",
+                )
+            _warn_if_shadowing_plugin_playbook(name)
+            return candidate, None
+
+    plugin_path = _resolve_plugin_playbook_path(name)
+    if plugin_path is not None:
+        return plugin_path, None
+
+    if plugin_token:
         return (
             None,
-            f"playbook NAME must be a bare identifier, got {name!r}. "
-            "Use -f /abs/path.yaml for ad-hoc specs.",
+            f"playbook not found: plugin {plugin_part!r} is not active (no "
+            "such plugin, or untrusted/disabled/incompatible), or does not "
+            f"declare a playbook named {playbook_part!r}",
         )
-    root = Path("~/.lionagi/playbooks").expanduser()
-    candidate = root / f"{name}.playbook.yaml"
-    if not candidate.is_file():
-        # Look for near-matches to suggest.
-        suggestions = []
-        if root.is_dir():
-            for p in sorted(root.glob("*.playbook.yaml")):
-                suggestions.append(p.stem.removesuffix(".playbook"))
-        hint_text = (
-            f" Available: {', '.join(suggestions[:10])}"
-            if suggestions
-            else " No playbooks found in ~/.lionagi/playbooks/"
-        )
-        return None, f"playbook not found: {candidate}.{hint_text}"
-    try:
-        resolved_root = root.resolve(strict=True)
-        resolved_candidate = candidate.resolve(strict=True)
-        resolved_candidate.relative_to(resolved_root)
-    except (OSError, ValueError):
-        return (
-            None,
-            f"playbook {name!r} resolves outside playbooks root (symlink escape blocked)",
-        )
-    return candidate, None
+
+    suggestions = list_playbooks()
+    hint_text = (
+        f" Available: {', '.join(suggestions[:10])}" if suggestions else " No playbooks found."
+    )
+    return None, f"playbook not found: {name!r}.{hint_text}"
 
 
 def _parse_argument_hint(hint: str) -> dict:
