@@ -217,9 +217,8 @@ def _build_parser(selected: _CommandSpec | None) -> tuple[argparse.ArgumentParse
         version=f"%(prog)s {_get_version()}",
     )
     subparsers = parser.add_subparsers(dest="command", required=True)
-    # Every command is always registered so the root usage line and error
-    # messages list the full command set; only the selected command loads its
-    # real parser module, the rest stay metadata-only stubs.
+    # Every command is registered for usage/error listing; only the selected
+    # one loads its real parser module, the rest stay metadata-only stubs.
     selected_parser = None
     for spec in _COMMAND_REGISTRY:
         if selected is not None and spec.name == selected.name:
@@ -349,9 +348,7 @@ def _print_playbook_help(name: str) -> int:
 
 
 # The unknown-subfield warning is shared with the runtime spec validator
-# (lionagi/cli/orchestrate/__init__.py) — see warn_unknown_artifact_keys
-# in lionagi/state/artifact_verifier.py. Importing here keeps the
-# pre-flight and runtime warnings in lockstep.
+# (warn_unknown_artifact_keys in lionagi/state/artifact_verifier.py).
 
 
 def _handle_play_check(argv: list[str]) -> int:
@@ -378,11 +375,8 @@ def _handle_play_check(argv: list[str]) -> int:
         return 1
 
     artifacts_block = spec.get("artifacts")
-    # Load the agent profile the playbook names so its artifact_defaults
-    # participate in the merge — a real invocation sees them. The actual
-    # `li play` path raises if the profile is missing, so pre-flight
-    # must FAIL in the same case rather than silently green-light an
-    # invocation that will crash at execution start.
+    # Load the named agent profile so artifact_defaults join the merge; must
+    # FAIL here (not green-light) when the real `li play` path would raise.
     agent_defaults = None
     agent_name = spec.get("agent")
     if agent_name:
@@ -405,9 +399,8 @@ def _handle_play_check(argv: list[str]) -> int:
         return 0
 
     if artifacts_block:
-        # Same warning the runtime spec validator emits (via
-        # logger.warning there); on the pre-flight surface we want it
-        # visible in the operator's terminal, so default print is fine.
+        # Same warning the runtime validator emits via logger.warning;
+        # printed here so it's visible on the pre-flight terminal.
         warn_unknown_artifact_keys(artifacts_block, source=f"playbook '{name}'")
 
     try:
@@ -479,22 +472,15 @@ def _handle_play_shortcut(argv: list[str]) -> list[str] | int:
         return ["o", "flow", *rest]
 
     if not head.startswith("-"):
-        # NAME already comes first — unchanged fast path. Custom playbook
-        # args declared in the playbook's own `args:` schema are only
-        # registered once NAME is known (via inject_playbook_schema_into_parser,
-        # downstream), so they can only be recognized when they follow NAME;
-        # this path leaves them untouched, exactly as before.
+        # NAME comes first — fast path. Custom playbook args (from the
+        # playbook's own `args:` schema) are only recognized once they
+        # follow NAME, so this path leaves them untouched.
         name, other = head, rest[1:]
     else:
-        # A flag precedes NAME (`li play --bypass NAME "prompt"`). Probe with
-        # the flow subparser's own base flags (before playbook-specific
-        # schema injection) to separate recognized flag(+value) pairs from
-        # bare positional tokens — same sentinel-safe split-and-fold shape as
-        # the `agent`/`o flow` interception below, minus dispatch (we only
-        # need to locate NAME here; the real parse happens later once the
-        # playbook's own args: schema can be injected). Only base flags are
-        # understood at this point, so this path does not support custom
-        # playbook flags placed before NAME — they must follow it.
+        # A flag precedes NAME; probe with the flow subparser's base flags
+        # only (playbook-specific args aren't injected yet) just to locate
+        # NAME — see docs/internals/cli.md. Custom flags before NAME aren't
+        # supported; they must follow it.
         probe_parser = argparse.ArgumentParser(prog="li", add_help=False)
         probe_sub = probe_parser.add_subparsers(dest="command")
         fl_probe = _load_orchestrate().add_orchestrate_subparser(probe_sub)["flow"]
@@ -503,11 +489,8 @@ def _handle_play_shortcut(argv: list[str]) -> list[str] | int:
             p_head, p_post = rest[:i], rest[i + 1 :]
         else:
             p_head, p_post = rest, []
-        # Keep the probe help-inert: argparse executes --help/-h during
-        # parse_known_args (printing flow help and exiting) before the
-        # playbook-specific help check below could run. Strip help tokens
-        # from the probe input only; the reconstruction below still works
-        # from the original partitions, so the help check sees them.
+        # Strip help tokens from the probe input only (argparse would print
+        # flow help and exit); the reconstruction below still sees them.
         p_head_probe = [t for t in p_head if t not in ("--help", "-h")]
         p_ns, p_extras = fl_probe.parse_known_args(p_head_probe)
         unknown = [e for e in p_extras if e.startswith("-") and e != "-"]
@@ -523,11 +506,9 @@ def _handle_play_shortcut(argv: list[str]) -> list[str] | int:
             )
             return 1
         name = bare[0]
-        # Remove the NAME occurrence from the partition it was actually
-        # selected from, never by string value across the whole argv: an
-        # earlier flag VALUE equal to NAME (e.g. `--team-mode foo -- foo`)
-        # must not be deleted in its place. Within a single partition,
-        # identical strings rewrite equivalently, so first-match is safe.
+        # Remove NAME from the partition it was selected from, never by
+        # string value across argv (an earlier flag VALUE equal to NAME
+        # must not be deleted in its place).
         if p_ns.query or p_extras:
             head_tokens = list(p_head)
             head_tokens.remove(name)
@@ -550,13 +531,10 @@ def _get_version() -> str:
 def main(argv: list[str] | None = None) -> int:
     signal.signal(signal.SIGPIPE, signal.SIG_DFL)
 
-    # Resolve verbose once before any CLI code emits. argparse happens
-    # below but we need the flag now to configure log levels.
+    # Resolve verbose before any CLI code emits (argparse hasn't run yet).
     _argv = argv if argv is not None else sys.argv[1:]
-    # Only scan for -v/--verbose BEFORE the '--' end-of-options sentinel so that
-    # a scheduled action_prompt containing '--verbose' does not flip verbose mode.
-    # Human CLI invocations (e.g. `li agent -v sonnet "hi"`) place -v before '--',
-    # so their behaviour is unchanged.
+    # Scan only before the '--' sentinel so a scheduled action_prompt
+    # containing '--verbose' can't flip verbose mode.
     try:
         _sentinel_idx = _argv.index("--")
         _pre_sentinel = _argv[:_sentinel_idx]
@@ -565,11 +543,8 @@ def main(argv: list[str] | None = None) -> int:
     verbose = "-v" in _pre_sentinel or "--verbose" in _pre_sentinel
     configure_cli_logging(verbose)
 
-    # Same pre-argparse scan as verbose above, for the same reason: this
-    # bootstrap runs before any subcommand parser has seen `--cwd`, so a
-    # project-scoped `.lionagi/settings.yaml` next to a `--cwd DIR` target
-    # (e.g. `li o flow --cwd /project ...`) would otherwise be missed in
-    # favor of the shell's own current directory.
+    # Same pre-argparse scan, so a project-scoped .lionagi/settings.yaml
+    # next to a `--cwd DIR` target isn't missed in favor of the shell's cwd.
     _cwd_override: str | None = None
     for _i, _tok in enumerate(_pre_sentinel):
         if _tok == "--cwd" and _i + 1 < len(_pre_sentinel):
@@ -579,50 +554,39 @@ def main(argv: list[str] | None = None) -> int:
             _cwd_override = _tok.split("=", 1)[1]
             break
 
-    # One of the two settings-driven notify bootstrap points: resolve
-    # notify.on_terminal from settings once per process and register it on
-    # the shared terminal-callback registry (the other is Studio service
-    # startup).
-    # Settings-resolution failures are already swallowed inside this call
-    # (a malformed .lionagi/settings.yaml must never block a CLI command).
+    # The first of the two settings-driven notify bootstrap points (Studio
+    # service startup is the other); resolution failures are swallowed inside.
     from lionagi.state.lifecycle.notify_settings import register_settings_terminal_callback
 
     register_settings_terminal_callback(project_dir=_cwd_override)
 
-    # `li skill NAME` prints a CC-compatible skill body to stdout.
-    # Never falls through to argparse — dispatch directly.
+    # `li skill NAME` dispatches directly, never falling through to argparse.
     if _argv and _argv[0] == "skill":
         return run_skill(_argv[1:])
 
-    # `li play NAME [...]` is sugar for `li o flow -p NAME [...]`.
-    # Rewrite argv before argparse runs. Also handles `li play list`.
+    # `li play NAME [...]` is sugar for `li o flow -p NAME [...]`; rewrite
+    # argv before argparse runs (also handles `li play list`).
     rewritten = _handle_play_shortcut(_argv)
     if isinstance(rewritten, int):
         return rewritten
     _argv = rewritten
 
-    # `li agent status [<id>] [--json]` is a pure-read status surface, not a
-    # prompt to send — must be intercepted before the intermixed agent-flag
-    # parsing below, which otherwise treats "status" as query text.
+    # `li agent status` is a pure-read surface, not a prompt to send — must
+    # be intercepted before intermixed agent-flag parsing below.
     if _argv and _argv[0] == "agent" and len(_argv) > 1 and _argv[1] == "status":
         from .status import run_agent_status
 
         return run_agent_status(_argv[2:])
 
-    # `li monitor run <id> [...]` / `li mon run <id> [...]` is a scriptable
-    # wait-for-terminal primitive, not a detail-view lookup — must be
-    # intercepted before argparse's positional `id` slot would otherwise
-    # swallow the literal token "run" as an entity-id (same reasoning as the
-    # `agent status` interception above).
+    # `li monitor run <id>` is a wait-for-terminal primitive; intercepted so
+    # argparse's positional `id` slot doesn't swallow "run" as an entity-id.
     if _argv and _argv[0] in ("monitor", "mon") and len(_argv) > 1 and _argv[1] == "run":
         from .monitor import run_monitor_wait
 
         return run_monitor_wait(_argv[2:])
 
-    # `li wait <id> [<id2> ...] [--interval SECS]` — the ADR-0035 completion
-    # contract. Intercepted before argparse for the same reason as `monitor
-    # run` above: free-form positional ids must not go through subparser
-    # dispatch.
+    # `li wait <id> [<id2> ...]` — ADR-0035 completion contract; intercepted
+    # for the same reason as `monitor run` above.
     if _argv and _argv[0] == "wait":
         from .wait import run_wait
 
@@ -637,20 +601,17 @@ def main(argv: list[str] | None = None) -> int:
         log_error(f"command {_argv[0]!r} failed to load: {type(exc).__name__}: {exc}")
         return 1
 
-    # If the user is invoking `li o flow -p NAME`, inject the playbook's
-    # declared args as flags on the flow sub-parser BEFORE argparse runs,
-    # so positional prompts don't swallow flag values.
+    # `li o flow -p NAME`: inject the playbook's declared args as flags on
+    # the flow sub-parser before argparse runs, so prompts don't swallow them.
     orch_parsers: dict[str, argparse.ArgumentParser] | None = None
     if selected is _COMMAND_BY_NAME["orchestrate"]:
         orch_parsers = selected_parser
         _load_orchestrate().inject_playbook_schema_into_parser(orch_parsers["flow"], _argv)
 
     # `li agent` parses standalone so flags may appear anywhere relative to
-    # the [MODEL] PROMPT positionals (subparser dispatch cannot intermix).
-    # parse_intermixed_args is unusable here: it drops the `--` sentinel
-    # between its two passes, letting a hostile prompt like "--bypass" placed
-    # after `--` toggle real flags on the re-parse. Split at the sentinel
-    # ourselves, parse flags, and fold leftover positionals back in order.
+    # [MODEL] PROMPT. parse_intermixed_args is unusable: it drops the `--`
+    # sentinel between passes, letting a prompt like "--bypass" after `--`
+    # toggle real flags on re-parse. Split at the sentinel ourselves instead.
     if selected is _COMMAND_BY_NAME["agent"]:
         agent_parser = selected_parser
         tail = _argv[1:]
@@ -666,15 +627,9 @@ def main(argv: list[str] | None = None) -> int:
         args.query = [*(args.query or []), *extras, *post]
         return run_agent(args)
 
-    # `li o flow` / `li o fanout` (and their `orchestrate` alias) parse
-    # standalone for the same reason as `agent` above: nested subparser
-    # dispatch can't intermix flags with the [MODEL] PROMPT positionals.
-    # Both had the disease pre-fix — flow silently misassigned a
-    # flags-preceded prompt to the model slot (both positionals were
-    # nargs='?', so argparse's greedy left-to-right fill grabbed the first
-    # one), while fanout hard-rejected with "unrecognized arguments" (a flag
-    # between its two positionals split them into two separate groups
-    # argparse can't reconcile). Same sentinel-safe split + fold as `agent`.
+    # `li o flow` / `li o fanout` parse standalone for the same reason as
+    # `agent` above (nested subparser dispatch can't intermix flags with
+    # the [MODEL] PROMPT positionals). See docs/internals/cli.md.
     if (
         _argv
         and selected is _COMMAND_BY_NAME["orchestrate"]
@@ -708,10 +663,8 @@ def main(argv: list[str] | None = None) -> int:
         if extras:
             from lionagi.studio.cli import suggest_schedule_flag
 
-            # Any leftover token — flag-shaped or not — is unrecognized and
-            # must error like plain argparse would (rc=2); did-you-mean
-            # suggestions only make sense for dash-prefixed tokens, since a
-            # bare positional like a surplus id has no "real flag" to guess.
+            # Did-you-mean only applies to dash-prefixed tokens; a bare
+            # positional has no "real flag" to guess.
             for tok in extras:
                 if tok.startswith("-") and tok != "-":
                     suggestion = suggest_schedule_flag(tok)

@@ -2,27 +2,8 @@
 # SPDX-License-Identifier: Apache-2.0
 """SQLAlchemy transaction implementation of the guarded lifecycle transition
 algorithm: one atomic read-check-write-history sequence shared by every
-managed entity type's status transitions.
-
-``transition()`` is the public entry point, enforcing the policy's
-declared-edge graph: an undeclared move is a "rejected" outcome with a
-rejection audit row, and a valid override is the audited escape hatch.
-``_transition()`` accepts additional keyword-only parameters not part of the
-public ``TransitionCommand`` shape, used only by
-``lionagi.state.lifecycle.adapters`` to keep the two legacy compatibility
-wrappers behaviorally identical to their pre-existing selves:
-
-- ``extra_guard``: an arbitrary per-column WHERE-clause guard (e.g.
-  dispatch's ``delivering -> delivering`` crash-recovery claim guarding on
-  ``attempt``), which the public typed command has no generic field for.
-- ``enforce_edges``: ``StateDB.update_status()`` never enforced a
-  declared-edge graph — only terminal-exit-requires-override and vocabulary
-  membership — so it calls with ``enforce_edges=False`` (the default).
-  ``lionagi.state.transitions.transition()`` did enforce one (for
-  schedule_run), so it calls with ``enforce_edges=True``.
-- ``raise_on_unguarded_conflict``: an unguarded zero-row UPDATE is a storage
-  anomaly ``StateDB.update_status()`` has always raised ``RuntimeError`` on,
-  from inside the transaction so a same-transaction rollback still occurs.
+managed entity type's status transitions. See docs/internals/runtime.md for
+the ``_transition()`` adapter-only kwargs contract.
 """
 
 from __future__ import annotations
@@ -52,12 +33,8 @@ if TYPE_CHECKING:
 
 
 class _TxProvider(Protocol):
-    """Structural requirement on the object handed to SQLAlchemyLifecycleService.
-
-    Satisfied by ``lionagi.state.db.StateDB`` without importing it here (that
-    module imports this package's adapters, so importing StateDB at module
-    scope would be circular).
-    """
+    """Structural requirement satisfied by ``lionagi.state.db.StateDB``
+    without importing it here (would be circular)."""
 
     dialect: str
 
@@ -69,10 +46,7 @@ def _json_list(evidence_refs: tuple) -> list:
 
 
 def _correlation_for(entity_type: str, entity_id: str) -> Correlation:
-    # The lifecycle service never performs a surface-specific join to
-    # populate correlation keys beyond the transitioning entity's own id --
-    # a play's envelope, for instance, does not carry its underlying
-    # invocation id.
+    # Populated only from the transitioning entity's own id (no join).
     if entity_type == "session":
         return Correlation(session_id=entity_id)
     if entity_type == "invocation":
@@ -112,10 +86,7 @@ class SQLAlchemyLifecycleService:
     ) -> None:
         self._db = db
         self._registry = registry
-        # A process-wide TerminalCallbackRegistry is injected into the
-        # lifecycle service by default; callers may inject their own
-        # instance (tests, isolated bootstraps) so ordinary callers need
-        # not wire one up.
+        # Process-wide registry by default; callers may inject their own.
         self._terminal_callbacks = (
             terminal_callbacks if terminal_callbacks is not None else DEFAULT_TERMINAL_CALLBACKS
         )
@@ -211,22 +182,15 @@ class SQLAlchemyLifecycleService:
     # ── public entry point ──────────────────────────────────────────────
 
     async def transition(self, command: TransitionCommand) -> TransitionOutcome:
-        # The public entry point enforces the policy's declared-edge graph.
-        # An undeclared move is a "rejected" outcome (with rejection audit),
-        # not a raise, so callers get the same outcome shape for both
-        # terminal-exit and undeclared-edge refusals; a valid override is the
-        # audited escape hatch for either.
-        # The legacy wrappers validate the reason code before calling in; the
-        # public API must do the same or it becomes the one path that writes
-        # uncontrolled reason_code values into status_transitions.
+        # Enforces the declared-edge graph; undeclared moves reject with an
+        # audit row rather than raise, so a valid override is the escape hatch.
         if command.reason.code not in VALID_REASON_CODES:
             raise LifecycleValidationError(
                 f"invalid reason_code: {command.reason.code!r}; must be one of "
                 "the codes registered in lionagi.state.reasons.VALID_REASON_CODES"
             )
-        # A globally registered code from another entity's domain (e.g. a
-        # dispatch.* code on a schedule_run row) would still corrupt audit
-        # semantics; the policy declares which prefixes belong to this entity.
+        # The policy declares which reason-code prefixes belong to this entity
+        # (a globally registered code from another domain would still corrupt audit).
         policy = self._registry.get(command.entity_type)
         prefix = command.reason.code.split(".", 1)[0]
         if prefix not in policy.reason_prefixes:
@@ -237,9 +201,7 @@ class SQLAlchemyLifecycleService:
             )
         if not command.actor.id:
             raise LifecycleValidationError("TransitionCommand.actor.id must be non-empty")
-        # ActorRecord is a plain dataclass; the ActorType Literal is not
-        # enforced at runtime, and status_transitions.source is a controlled
-        # vocabulary the legacy surfaces validated.
+        # ActorType is a Literal, not enforced at runtime by the dataclass itself.
         if command.actor.type not in get_args(ActorType):
             raise LifecycleValidationError(
                 f"invalid actor type: {command.actor.type!r}; must be one of "
@@ -299,7 +261,7 @@ class SQLAlchemyLifecycleService:
         now = time.time()
 
         async with self._db._tx() as conn:
-            # Step 4: SELECT (FOR UPDATE on PostgreSQL).
+            # SELECT (FOR UPDATE on PostgreSQL).
             guard_cols = list(extra_guard)
             select_cols = ", ".join(["status", "updated_at", *guard_cols])
             sel = f"SELECT {select_cols} FROM {policy.table} WHERE id = :id"  # noqa: S608
@@ -307,14 +269,13 @@ class SQLAlchemyLifecycleService:
                 sel += " FOR UPDATE"
             row = (await conn.execute(text(sel), {"id": command.entity_id})).mappings().first()
 
-            # Step 5: missing row.
             if row is None:
                 raise LifecycleNotFoundError(
                     f"{command.entity_type} {command.entity_id!r} not found (table={policy.table})"
                 )
             previous_status = row["status"]
 
-            # Step 6: expected_statuses / expected_version guards.
+            # expected_statuses / expected_version guards.
             if (
                 command.expected_statuses is not None
                 and previous_status not in command.expected_statuses
@@ -344,9 +305,8 @@ class SQLAlchemyLifecycleService:
             rejected = False
 
             if self_edge is not None:
-                # Step 7: an ordinary declared edge (covers both regular
-                # moves and a declared same-status edge like dispatch's
-                # delivering -> delivering crash-recovery claim).
+                # An ordinary declared edge, or a declared same-status edge
+                # (e.g. dispatch's delivering -> delivering recovery claim).
                 if (
                     self_edge.actor_types is not None
                     and command.actor.type not in self_edge.actor_types
@@ -364,20 +324,10 @@ class SQLAlchemyLifecycleService:
                         f"{sorted(missing_patch)}"
                     )
                 if self_edge.required_guard_fields:
-                    # A crash-recovery same-status claim (e.g. dispatch's
-                    # delivering -> delivering) must never let two callers
-                    # holding the same snapshot both win. The edge's own
-                    # required_guard_fields is satisfied either by an
-                    # extra_guard covering those exact columns (the legacy
-                    # `guard=` kwarg the pre-existing transition surface
-                    # used) or by a generic expected_version guard
-                    # (updated_at, which this same write always bumps) —
-                    # either is an equally strong optimistic-concurrency
-                    # guard against the same race.
-                    # Without one, the edge is refused before BEGIN does any
-                    # work; this is a caller-contract violation, not a
-                    # legitimate lost race, so it raises rather than
-                    # returning a "conflict"/"rejected" outcome.
+                    # required_guard_fields must be satisfied by extra_guard or
+                    # expected_version (equally strong race guards) so two
+                    # callers holding the same snapshot can't both win; missing
+                    # either is a caller-contract violation, so this raises.
                     guarded_by_extra = self_edge.required_guard_fields <= set(extra_guard)
                     guarded_by_version = command.expected_version is not None
                     if not (guarded_by_extra or guarded_by_version):
@@ -388,9 +338,7 @@ class SQLAlchemyLifecycleService:
                             "an equivalent guard); none was supplied"
                         )
             elif same_status:
-                # Step 7 (same-status, no declared self-edge): policy's
-                # same_status rule governs — "append" is the only rule any
-                # built-in policy currently uses.
+                # No declared self-edge: policy's same_status rule governs.
                 if policy.same_status == "noop":
                     return TransitionOutcome(
                         result="applied",
@@ -402,18 +350,9 @@ class SQLAlchemyLifecycleService:
                     rejected = True
                 # "append": falls through to the guarded write below.
             elif enforce_edges:
-                # Undeclared edge (terminal or not), with the declared-edge
-                # graph enforced. A valid override is the audited escape
-                # hatch. Otherwise `undeclared_edge_mode` selects the
-                # refusal shape: the legacy
-                # `lionagi.state.transitions.transition()` surface never had
-                # an override/rejection-audit concept — an undeclared move
-                # there was and remains a plain vocabulary-violation
-                # ValueError ("raise") — while the public `transition()`
-                # entry point reports the same "rejected" outcome (with
-                # rejection audit) it uses for terminal exits ("reject").
-                # This must be checked before the terminal_statuses branch
-                # below (which is only reachable when enforce_edges=False).
+                # Undeclared edge, declared-edge graph enforced. A valid
+                # override is the escape hatch; else undeclared_edge_mode
+                # selects raise (legacy) vs reject (public entry point).
                 if command.override is not None:
                     override_admin_event = True
                 elif undeclared_edge_mode == "reject":
@@ -426,24 +365,18 @@ class SQLAlchemyLifecycleService:
                         f"{sorted(e.to_status for e in declared_edges)})"
                     )
             elif previous_status in policy.terminal_statuses:
-                # Step 7/8/9: undeclared edge exiting a terminal status —
-                # rejected unless a valid override is supplied.
-                # `StateDB.update_status()` never enforced a declared-edge
-                # graph at all (enforce_edges=False), only this
-                # terminal-exit-requires-override check and vocabulary
-                # membership.
+                # Undeclared edge exiting a terminal status — rejected unless
+                # a valid override is supplied (enforce_edges=False path).
                 if command.override is not None:
                     override_admin_event = True
                 else:
                     rejected = True
             # else: enforce_edges=False, nonterminal, no self-edge, not
-            # same-status — an ordinary unrestricted move. Falls through to
-            # the guarded write, matching StateDB.update_status()'s legacy
-            # permissiveness (it never had a declared-edge graph).
+            # same-status — an ordinary unrestricted move falls through to
+            # the guarded write (legacy StateDB.update_status() permissiveness).
 
             if rejected:
-                # Step 8: rejection audit commits; ordinary history is not
-                # appended (current status did not change).
+                # Rejection audit commits; ordinary history is not appended.
                 await conn.execute(
                     text(
                         "INSERT INTO admin_events "
@@ -462,11 +395,8 @@ class SQLAlchemyLifecycleService:
                             "reason_code": command.reason.code,
                             "source": command.actor.type,
                         },
-                        # admin_events.actor is NOT NULL; legacy
-                        # update_status() wrote `actor or source` here (the
-                        # id is often None — a system-initiated write), unlike
-                        # status_transitions.actor below, which stores the
-                        # raw (possibly-None) id as given.
+                        # admin_events.actor is NOT NULL; falls back to the
+                        # actor type for a system-initiated write with no id.
                         "actor": command.actor.id or command.actor.type,
                     },
                 )
@@ -478,7 +408,7 @@ class SQLAlchemyLifecycleService:
                 )
 
             if override_admin_event:
-                # Step 9: override audit, same transaction as the write.
+                # Override audit, same transaction as the write.
                 await conn.execute(
                     text(
                         "INSERT INTO admin_events "
@@ -501,9 +431,8 @@ class SQLAlchemyLifecycleService:
                     },
                 )
 
-            # extra_guard columns re-checked here (post edge/terminal
-            # validation, matching the legacy transitions.transition()
-            # ordering: CAS -> vocabulary -> guard columns -> UPDATE).
+            # Ordering matches legacy transitions.transition(): CAS ->
+            # vocabulary -> guard columns -> UPDATE.
             for col, expected in extra_guard.items():
                 if row[col] != expected:
                     return TransitionOutcome(
@@ -513,7 +442,7 @@ class SQLAlchemyLifecycleService:
                         transition_id=None,
                     )
 
-            # Steps 10-12: guarded UPDATE + status_transitions append.
+            # Guarded UPDATE + status_transitions append.
             transition_id = await self._write(
                 conn,
                 policy.table,
@@ -524,20 +453,16 @@ class SQLAlchemyLifecycleService:
                 write_reason_columns=write_reason_columns,
             )
             if transition_id is None:
-                # Step 11: zero rows -> conflict, append nothing.
+                # Zero rows -> conflict, append nothing.
                 guarded = (
                     command.expected_statuses is not None
                     or command.expected_version is not None
                     or bool(extra_guard)
                 )
                 if raise_on_unguarded_conflict and not guarded:
-                    # No guard of any kind was supplied, yet the row changed
-                    # between the SELECT and this UPDATE — a storage-level
-                    # anomaly, not a legitimate lost race. Raising here
-                    # (inside the still-open transaction) rolls back
-                    # whatever else happened in this transaction, matching
-                    # the pre-existing `_apply_status_write` behavior of
-                    # raising before the `async with` block could commit.
+                    # No guard supplied, yet the row changed between SELECT
+                    # and UPDATE — a storage anomaly; raising here (inside
+                    # the open transaction) rolls back the whole transaction.
                     raise RuntimeError(
                         f"status CAS lost for {command.entity_type} "
                         f"{command.entity_id!r}: row changed under update_status"
@@ -549,10 +474,8 @@ class SQLAlchemyLifecycleService:
                     transition_id=None,
                 )
 
-        # Step 13: commit (via _tx() context exit) -> applied. The registry
-        # push happens strictly after this point -- the transaction has
-        # already exited successfully, so a handler can never delay,
-        # observe-before-commit, or roll back the write.
+        # Commit (via _tx() context exit) happens before this point, so a
+        # terminal-callback handler can never delay or roll back the write.
         if (
             transition_id is not None
             and previous_status != command.to_status
@@ -585,19 +508,8 @@ class SQLAlchemyLifecycleService:
         write_reason_columns: bool = True,
     ) -> str | None:
         """The guarded UPDATE and its status_transitions append, factored out
-        so both the ordinary and override paths share it (and so tests can
-        inject a concurrent write immediately before this runs, the same
-        seam the pre-existing `StateDB._apply_status_write` provided).
-
-        *write_reason_columns* mirrors legacy per-surface behavior: the
-        `StateDB.update_status()` surface always denormalized the reason onto
-        the entity row's own `status_reason_*` columns (True, the default);
-        the legacy `lionagi.state.transitions.transition()` surface never
-        did (False) — and `dispatch_outbox` (only reachable through that
-        surface) does not even have those columns.
-
-        Returns the new transition id, or ``None`` if the guarded UPDATE
-        matched zero rows (conflict — caller appends nothing further).
+        so both the ordinary and override paths share it. Returns the new
+        transition id, or ``None`` on a zero-row UPDATE (conflict).
         """
         set_clauses = ["status = :status", "updated_at = :now"]
         if write_reason_columns:
