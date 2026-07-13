@@ -14,11 +14,16 @@ from typing import Any
 # then merges each arm's chunks into the same result JSON shape ci_check_provenance.py
 # and ci_compare.py already read.
 
-# meta keys that legitimately vary per chunk (timing canaries, not provenance); everything
+# Meta keys that legitimately vary per chunk (run timing metadata, not stable provenance); everything
 # else a bench script writes to meta (lionagi/python identity, dependency versions) must be
 # an identical non-empty string across every chunk of one arm -- a later chunk silently
 # running under a different interpreter/install than chunk 0 must not be discarded.
-_CHUNK_VARYING_META_KEYS = {"cpu_probe_seconds", "chunk_wall_seconds", "chunk_started_at_epoch"}
+_CHUNK_VARYING_META_KEYS = {
+    "timestamp",
+    "cpu_probe_seconds",
+    "chunk_wall_seconds",
+    "chunk_started_at_epoch",
+}
 
 
 def _validate_provenance_across_chunks(chunks: list[dict[str, Any]]) -> None:
