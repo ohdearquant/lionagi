@@ -158,11 +158,14 @@ _GOLDEN_ROUTES: tuple[tuple[str, str], ...] = (
 )
 
 
-def _live_app_routes() -> list[tuple[str, str]]:
-    """(method, path) pairs for every route on the live app, docs routes excluded."""
-    from lionagi.studio.app import app
-
-    pairs: set[tuple[str, str]] = set()
+def _entries_from_fastapi_app(app: fastapi.FastAPI) -> list[tuple[str, str]]:
+    """Every (method, path) entry on a FastAPI app's route table, as a LIST
+    (not a set) -- a route registered twice at the same (method, path)
+    produces two entries here, one per registration. HEAD is excluded:
+    FastAPI auto-adds it for every GET, so it is never an independent
+    registration and would double every GET row for no contract value.
+    """
+    entries: list[tuple[str, str]] = []
     for route in app.routes:
         path = getattr(route, "path", None)
         methods = getattr(route, "methods", None)
@@ -170,21 +173,50 @@ def _live_app_routes() -> list[tuple[str, str]]:
             # Non-endpoint route entries (e.g. a static asset Mount when a
             # frontend dist is configured) carry no HTTP method set at all.
             continue
-        if path in _DOCS_PATHS:
-            continue
         for method in methods:
             if method == "HEAD":
-                # FastAPI auto-adds HEAD for every GET; it is not an
-                # independently-registered endpoint and would double every
-                # GET row in the golden list for no contract value.
                 continue
-            pairs.add((method, path))
-    return sorted(pairs)
+            entries.append((method, path))
+    return entries
+
+
+def _find_duplicate_routes(entries: list[tuple[str, str]]) -> dict[tuple[str, str], int]:
+    """Return {(method, path): count} for every entry registered more than once.
+
+    A duplicate (method, path) is a shadowed, unreachable handler: FastAPI's
+    router matches the first registration for a given (method, path) and
+    never even considers a later one. Collapsing entries into a set before
+    comparing against the golden list (the prior version of this gate) would
+    hide that shadowing entirely -- the golden comparison would stay green
+    while a second, dead handler sat in the route table.
+    """
+    counts: dict[tuple[str, str], int] = {}
+    for entry in entries:
+        counts[entry] = counts.get(entry, 0) + 1
+    return {pair: n for pair, n in counts.items() if n > 1}
+
+
+def _live_app_routes() -> list[tuple[str, str]]:
+    """(method, path) entries for every route on the live app, docs routes
+    excluded. Preserves duplicates -- see _find_duplicate_routes."""
+    from lionagi.studio.app import app
+
+    return [
+        (method, path) for method, path in _entries_from_fastapi_app(app) if path not in _DOCS_PATHS
+    ]
 
 
 def test_golden_route_table_matches_pinned_snapshot():
     """Any added/renamed/removed studio endpoint must be a deliberate edit here."""
-    actual = _live_app_routes()
+    actual_entries = _live_app_routes()
+
+    duplicates = _find_duplicate_routes(actual_entries)
+    assert not duplicates, (
+        "duplicate route registration(s) found -- each shadows an "
+        f"unreachable handler behind the first match: {duplicates}"
+    )
+
+    actual = sorted(set(actual_entries))
     expected = sorted(_GOLDEN_ROUTES)
     missing = set(expected) - set(actual)
     unexpected = set(actual) - set(expected)
@@ -195,6 +227,48 @@ def test_golden_route_table_matches_pinned_snapshot():
 
 def test_golden_route_count_pinned():
     assert len(_GOLDEN_ROUTES) == 98
+
+
+def test_find_duplicate_routes_detects_a_shadowed_pair():
+    entries = [
+        ("GET", "/api/schedules/{schedule_id}"),
+        ("GET", "/api/schedules/"),
+        ("GET", "/api/schedules/{schedule_id}"),
+    ]
+    assert _find_duplicate_routes(entries) == {("GET", "/api/schedules/{schedule_id}"): 2}
+
+
+def test_find_duplicate_routes_empty_for_unique_entries():
+    entries = [("GET", "/api/schedules/"), ("POST", "/api/schedules/")]
+    assert _find_duplicate_routes(entries) == {}
+
+
+def test_duplicate_route_registration_is_caught_on_a_live_fastapi_app():
+    """End-to-end proof, not just a property of the tuple-list helper: a
+    genuinely duplicated route on a real FastAPI app's route table is
+    detected by the same collection path _live_app_routes() uses.
+
+    A duplicate can't be produced through the studio_route registry itself
+    (registry.py's dedup guard raises ValueError on a second registration at
+    the same (path, method, module, qualname) -- see test_route_registry.py
+    ::test_dedup_guard_raises_on_duplicate), so this mounts two routes
+    directly on a throwaway FastAPI app the way FastAPI itself would if that
+    guard were ever bypassed or missing.
+    """
+    from fastapi import FastAPI
+
+    app = FastAPI()
+
+    async def _handler() -> dict:
+        return {}
+
+    app.add_api_route("/api/schedules/{schedule_id}", _handler, methods=["GET"])
+    app.add_api_route(
+        "/api/schedules/{schedule_id}", _handler, methods=["GET"]
+    )  # shadows the first
+
+    duplicates = _find_duplicate_routes(_entries_from_fastapi_app(app))
+    assert duplicates == {("GET", "/api/schedules/{schedule_id}"): 2}
 
 
 # ---------------------------------------------------------------------------
