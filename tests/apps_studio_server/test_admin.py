@@ -221,6 +221,29 @@ def test_stale_lock_gated_on_staleness(tmp_path):
     )
 
 
+def test_stale_session_empty_but_existing_artifact_root_not_missing_artifacts(tmp_path):
+    """Once allocate_run creates the artifact directory up front, a stale/not-live
+    session whose artifacts dir exists (even empty, e.g. a bare chat run with no
+    artifact_contract) must never classify as missing_artifacts -- only a
+    genuinely absent directory counts as that evidence. It still reaps
+    (process_dead), preserving cleanup for true positives."""
+    import lionagi.studio.services.admin as admin_svc
+
+    artifacts_dir = tmp_path / "artifacts"
+    artifacts_dir.mkdir()  # exists, but empty -- no lock file, no output written
+
+    now = time.time()
+    row = {
+        "id": str(uuid.uuid4()),
+        "updated_at": now - 7200,
+        "artifacts_path": str(artifacts_dir),
+    }
+
+    reason = admin_svc._classify_phantom(row, now=now, stale_seconds=3600, ps_snapshot="")
+    assert reason != "missing_artifacts"
+    assert reason == "process_dead"
+
+
 # ─── /api/admin/health + /api/admin/transition ───────────────────────────────
 
 
