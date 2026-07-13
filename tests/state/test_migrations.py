@@ -533,7 +533,7 @@ async def test_max_runs_nullable_defaults_unlimited():
     await state.close()
 
 
-# ── resume_packet round-trip (PR 1 — resume_packet column) ──────────────────
+# ── resume_packet round-trip ─────────────────────────────────────────────────
 
 
 async def test_resume_packet_roundtrips_as_dict():
