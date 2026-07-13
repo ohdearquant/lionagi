@@ -225,7 +225,7 @@ def test_model_type_cache_key_opts_out_for_list_and_dict_metadata():
 
 
 def test_step_request_operative_with_mutable_default_metadata_bypasses_cache():
-    """Distinct mutable-default Specs never raise and never get cross-wired to the wrong shared model type (regression class: type-identity cache collision, #1356)."""
+    """Distinct mutable-default Specs never raise and never get cross-wired to the wrong shared model type (regression class: type-identity cache collision)."""
 
     class Payload(BaseModel):
         value: int
