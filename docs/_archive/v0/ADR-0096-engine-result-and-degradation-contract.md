@@ -1,9 +1,9 @@
 # ADR-0096: Engine Result & Degradation Contract
 
-**Status**: Accepted — λ:leo spec gate + Fable sign-off (one gate) 2026-07-06, APPROVE-WITH-AMENDMENT; the R5 success-path amendment is folded in below per the gate verdict. Dependent implementation may start.
+**Status**: Accepted 2026-07-06 — approved with amendment; the R5 success-path amendment is folded in below per the gate verdict. Dependent implementation may start.
 **Date**: 2026-07-06
 **Scope**: `lionagi/engines/` — the return value and failure semantics of `Engine.run()`. Extends ADR-0075 (engine design) and ADR-0077 (autonomy protections); does not relitigate them.
-**Authored by**: `advisor` subagent (engine: Opus 4.8 xhigh) from packet `.khive/workspaces/20260706/engine-adr/PACKET.md`. All code cites re-verified at source at main `a38add627`.
+**Authored by**: `advisor` subagent (engine: Opus 4.8 xhigh) from an internal design brief (not in this repo). All code cites re-verified at source at main `a38add627`.
 
 ---
 
@@ -11,7 +11,7 @@
 
 `lionagi/engines/` is the "safe front door" over the raw reactive `session.flow` substrate: five reusable orchestration shapes (`PlanningEngine`, `ResearchEngine`, `ReviewEngine`, `HypothesisEngine`, `CodingEngine`) over a stateless `Engine` base + per-run `EngineRun`. Its advertised value is four protections that raw reactive flow lacks: a judge quality-gate, a hard `EngineBudgetError` agent cap, a deadline watchdog, and shielded partial-export on cancel. Under the #122 / #67 adoption mandate ("we can ban subagent and still be fine"), this construct is the intended front door.
 
-A live dogfood on 2026-07-06 (λ:lionagi + analyst, real `codex` model; `tests/engines/` = 190 passing) found the mechanics work in isolation but the construct is **not adoption-ready as a general front door**, for three evidenced reasons: protections are inconsistent across the five engines, a real crash exists under reactive expansion (**gap-1**, reproduced live — FRICTION_LOG run 5a), and there is no structured-result path for programmatic callers (**gap-3/gap-4**). Evidence: `.khive/workspaces/20260706/engine-dogfood/REPORT.md` and `FRICTION_LOG.md`.
+A live dogfood on 2026-07-06 (real `codex` model; `tests/engines/` = 190 passing) found the mechanics work in isolation but the construct is **not adoption-ready as a general front door**, for three evidenced reasons: protections are inconsistent across the five engines, a real crash exists under reactive expansion (**gap-1**, reproduced live — FRICTION_LOG run 5a), and there is no structured-result path for programmatic callers (**gap-3/gap-4**). Evidence: an internal dogfood report and friction log (not in this repo).
 
 This ADR resolves **one contract seen from two faces**: what `Engine.run()` **RETURNS** (structured result, skipped dimensions surfaced) and how it **DEGRADES** (budget/deadline behavior, real partial-export coverage). The two are mechanically coupled — the degrade path's return value *is* the result contract — so they are decided together.
 
@@ -27,7 +27,7 @@ Per the packet's §5 refute mandate. I attacked the framing before authoring; th
 
 **Why it loses (framing holds):** stopping the crash without a result contract silently converts a *loud crash* into a *silent truncated success*. After the filter, a budget-truncated research run returns its normal synthesized `str` with **no signal that a whole subtree was dropped** — which is exactly gap-4's already-demonstrated failure (a confident `ReviewVerdict` that never had `correctness` data). The dogfood is direct evidence that silent-partial is the *more* dangerous mode, not the safer one. The crash fix's *output* ("what does a truncated run return, and how does the caller know it was truncated?") is undefined without the result object. So the design is one contract: Fork A's degrade path returns Fork C's shape; Fork B guarantees that shape is non-empty. **Verdict: the "one contract, four sides" framing survives on the merits — the coupling is mechanical, not rhetorical.**
 
-**The honest nuance Leo should have:** *sequencing* can front-load the crash-stop. The `wait_quiescence` `EngineBudgetError` filter (Fork A, part 1) is strictly safe to land as an immediate hotfix ahead of the full contract, because crash→silent-empty is strictly better than crash→total-data-loss for a run that already did real work — **provided** the degraded-flag follow-up (Fork C) lands to close the gap-4 silence it opens. Design is one ADR; delivery can be two PRs with a named ordering.
+**The honest nuance to carry forward:** *sequencing* can front-load the crash-stop. The `wait_quiescence` `EngineBudgetError` filter (Fork A, part 1) is strictly safe to land as an immediate hotfix ahead of the full contract, because crash→silent-empty is strictly better than crash→total-data-loss for a run that already did real work — **provided** the degraded-flag follow-up (Fork C) lands to close the gap-4 silence it opens. Design is one ADR; delivery can be two PRs with a named ordering.
 
 ### T2 — the typed-result-object fork: does lionagi already have a result idiom to match?
 
@@ -58,9 +58,9 @@ So "graceful degrade" that *swallows* a too-tight `max_agents` silently would be
 
 The cheapest path: document that ReviewEngine/PlanningEngine don't degrade and that structured access needs the `engine._run(engine.new_run(), ...)` bypass. **Why it is insufficient for #122 specifically:** the adoption thesis is "ban subagents, use engines, and be fine" — its entire value is the *safety guarantee*. (a) A documented crash is not a safe front door. The gap-1 race destroys a run that already did real, paid work; no doc makes `max_agents` a *safe ceiling* rather than "usually fine, occasionally detonates your whole run." (b) Documenting "structured access needs the bypass" tells every CI-gate / dashboard adopter to *forfeit all four protections* to read their own results — i.e. the front door is usable only for prose, which is precisely the non-goal. Documentation converts a product claim ("safe front door") into a caveat sheet. For #122, that fails the goal by definition, not by degree.
 
-### Corpus check (khive recall + compose + graph)
+### Corpus check (prior-art recall + compose + graph)
 
-- Prior semantic memory `31475c41` (λ:lionagi, 50m before this authoring) independently records the exact gap-1 mechanism and cites — corroborates the packet, no contradiction.
+- Prior semantic memory `31475c41` (recorded 50m before this authoring) independently records the exact gap-1 mechanism and cites — corroborates this design brief, no contradiction.
 - Memory `db5cbbd3` (the reactive-engine adoption thesis) confirms the framing: "how to use reactive well" = "use it through an engine"; the protections *are* the product. This raises the stakes on gap-1 (the protection that most defines the pitch is the one that crashes).
 - Compose surfaced generic distributed-systems corroboration, not lionagi-specific prior art: **"a timeout is a budget contract for a whole unit of work; deadline exhaustion is operationally different from a generic failure and must drive different handling"** (atom `a3-e-0201`). That is precisely the T4 argument — budget/deadline is a control signal, not an error — arrived at independently. **"Background import with partial failure report"** (atom `a3-h-0104`): the honest pattern is "finished with N rejected rows" linking to a structured result, *not* a generic "complete" toast — direct support for Fork C's `degraded` + `skipped` over a bare string. No corpus hit contradicts the design.
 
@@ -173,7 +173,7 @@ class EngineResult(str):
 - **R1 — GATE RULING: YES.** The `wait_quiescence` `EngineBudgetError` filter (Fork A edit 1) ships as an immediate hotfix PR **ahead** of the full contract, *conditional on Fork C landing in the same milestone*. With the R5 success-path flag (edit 3) folded in, there is **no interim silent window** — the hotfix carries edit 1 + edit 3 together, so a truncated run is crash-free *and* flagged `degraded` from the first PR; the silence T1 warned about is named in the ADR, not hidden.
 - **R2 — GATE RULING: two-value vocab** `degrade_reason ∈ {"budget", "deadline"}` for v1 (plus `""` for a clean run). `.skipped` carries the root-vs-expansion distinction, so `"budget:root"`/`"budget:expansion"` granularity is not needed now.
 - **R3 — GATE RULING: expose `.run`**, documented as a live handle ("live; do not retain"). The power-user affordance for #122 CI-gate callers is worth the retention footgun given the docstring warning + the snapshot `.events_by_type()` alternative.
-- **R4 (Ocean-level):** none. This is an engine-layer API contract, reversible, non-strategic — a spec-gate/Fable call, not an Ocean fork. (Confirmed: the gate signed off without Ocean escalation.)
+- **R4 (operator-level):** none. This is an engine-layer API contract, reversible, non-strategic — a spec-gate call, not an operator-level fork. (Confirmed: the gate signed off without escalation.)
 
 ---
 
@@ -209,7 +209,7 @@ class EngineResult(str):
 
 ## Evidence artifacts
 
-- Dogfood report: `.khive/workspaces/20260706/engine-dogfood/REPORT.md`
-- FRICTION_LOG (gap-1 repro = run 5a; budget raw-raise = run 3): `.khive/workspaces/20260706/engine-dogfood/FRICTION_LOG.md`
+- Dogfood report: an internal design-review record (not in this repo)
+- FRICTION_LOG (gap-1 repro = run 5a; budget raw-raise = run 3): an internal design-review record (not in this repo)
 - Source (all at main `a38add627`): `lionagi/engines/engine.py`, `research.py`, `review.py`, `planning.py`, `hypothesis.py`, `coding.py`; `docs/reference/engines.md`
 - Baseline: `tests/engines/` = 190 passing at dogfood time.

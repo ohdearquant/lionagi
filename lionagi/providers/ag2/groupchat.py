@@ -32,9 +32,7 @@ __all__ = [
 ]
 
 
-# ---------------------------------------------------------------------------
-# Models (structured output targets)
-# ---------------------------------------------------------------------------
+# --- Models (structured output targets) ---
 
 
 class HandoffCondition(BaseModel):
@@ -117,9 +115,7 @@ class AG2GroupChatRequest(BaseModel):
     context_variables: dict[str, Any] = Field(default_factory=dict)
 
 
-# ---------------------------------------------------------------------------
-# Callback types (parallel to claude_code.py on_* handlers)
-# ---------------------------------------------------------------------------
+# --- Callback types (parallel to claude_code.py on_* handlers) ---
 
 AG2_HANDLER_PARAMS = (
     "on_text",
@@ -130,9 +126,7 @@ AG2_HANDLER_PARAMS = (
 )
 
 
-# ---------------------------------------------------------------------------
-# Runner (in-process — no subprocess, unlike claude_code.py)
-# ---------------------------------------------------------------------------
+# --- Runner (in-process — no subprocess, unlike claude_code.py) ---
 
 
 def build_group_chat(
@@ -141,10 +135,7 @@ def build_group_chat(
     tool_registry: dict[str, Callable] | None = None,
     code_executor: Any | None = None,
 ):
-    """Build AG2 agents and DefaultPattern from a GroupChatSpec.
-
-    Returns (user_proxy, pattern, agents_by_name).
-    """
+    """Build AG2 agents and DefaultPattern from a GroupChatSpec; returns (user_proxy, pattern, agents_by_name)."""
     from autogen import ConversableAgent, register_function
     from autogen.agentchat.conversable_agent import UpdateSystemMessage
     from autogen.agentchat.group import (
@@ -271,10 +262,7 @@ async def stream_group_chat(
     on_speaker: Callable[[str], None] | None = None,
     on_complete: Callable[[Any], None] | None = None,
 ) -> AsyncIterator[Any]:
-    """Stream AG2 GroupChat events. In-process, no subprocess.
-
-    Yields AG2 BaseEvent objects. Optionally calls on_* handlers.
-    """
+    """Stream AG2 GroupChat events in-process (no subprocess), yielding AG2 BaseEvent objects and calling on_* handlers."""
     from autogen.agentchat.group.multi_agent_chat import a_run_group_chat_iter
     from autogen.events.agent_events import (
         GroupChatRunChatEvent,

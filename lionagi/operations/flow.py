@@ -1,7 +1,13 @@
 # Copyright (c) 2023-2025, HaiyangLi <quantocean.li at gmail dot com>
 # SPDX-License-Identifier: Apache-2.0
 
-"""Dependency-aware flow execution with structured concurrency."""
+"""Dependency-aware graph execution.
+
+Graph scheduling and executor construction live in this module. New APIs, commands,
+and services that execute operation graphs must delegate through ``Session.flow`` or
+the existing streaming flow kernel. Keep executor construction here and add
+conformance coverage for every new graph-execution surface.
+"""
 
 import asyncio
 import contextlib
@@ -217,7 +223,7 @@ class DependencyAwareExecutor:
                     )
                 continue
 
-            predecessors = self.graph.get_predecessors(node)
+            predecessors = self._get_predecessors(node)
             if predecessors or node.metadata.get("inherit_context"):
                 operations_needing_branches.append(node)
 
@@ -253,6 +259,16 @@ class DependencyAwareExecutor:
 
         if self.verbose:
             logger.debug("Pre-allocated %d branches", len(operations_needing_branches))
+
+    def _get_predecessors(self, operation: Operation) -> tuple[Any, ...]:
+        """Return a cached, immutable predecessor tuple for executor-internal use.
+
+        Delegates to Graph's own memoized accessor, which is invalidated by
+        Graph's own mutators (add_edge/remove_edge/etc.) — including the
+        add_node/add_edge/remove_edge calls a running reactive flow makes to
+        rewire a node — so this always reflects current topology.
+        """
+        return self.graph.get_predecessors_cached(operation)
 
     def pause(self) -> None:
         """Install a pause gate at the next operation boundary; idempotent."""
@@ -429,16 +445,19 @@ class DependencyAwareExecutor:
 
     async def _check_edge_conditions(self, operation: Operation) -> bool:
         """Return True if at least one valid incoming path exists or no edges; False if all incoming edges failed."""
-        incoming_edges = [
-            edge for edge in self.graph.internal_edges.values() if edge.tail == operation.id
-        ]
-
-        if not incoming_edges:
+        # Snapshot before awaiting: reactive injection can attach an edge to
+        # this operation while a predecessor is awaited, and iterating the
+        # live adjacency dict across that await would raise RuntimeError. A
+        # dependency added after the snapshot is deferred to the next check,
+        # matching the previous full-scan's stable-list semantics.
+        incoming_edge_ids = tuple(self.graph.node_edge_mapping[operation.id]["in"])
+        if not incoming_edge_ids:
             return True
 
         has_valid_path = False
 
-        for edge in incoming_edges:
+        for edge_id in incoming_edge_ids:
+            edge = self.graph.internal_edges[edge_id]
             if edge.head in self.completion_events:
                 await self.completion_events[edge.head].wait()
 
@@ -476,7 +495,7 @@ class DependencyAwareExecutor:
                         await self.completion_events[op_id].wait()
                         break
 
-        predecessors = self.graph.get_predecessors(operation)
+        predecessors = self._get_predecessors(operation)
         for pred in predecessors:
             if self.verbose:
                 logger.debug(
@@ -488,7 +507,7 @@ class DependencyAwareExecutor:
 
     def _prepare_operation(self, operation: Operation):
         """Prepare operation with context and branch assignment."""
-        predecessors = self.graph.get_predecessors(operation)
+        predecessors = self._get_predecessors(operation)
         if predecessors:
             pred_ctx = Note()
             for pred in predecessors:
@@ -680,6 +699,7 @@ class ReactiveExecutor(DependencyAwareExecutor):
         node_builder: Any = None,
         max_spawn: int = 50,
         spawn_branch_setup: Callable[[Operation, Any], None] | None = None,
+        on_op_complete: Callable[[Operation], None] | None = None,
         **kwargs: Any,
     ):
         super().__init__(*args, **kwargs)
@@ -698,6 +718,10 @@ class ReactiveExecutor(DependencyAwareExecutor):
         # planned leg's — the clone otherwise inherits the emitter's repo,
         # which sits outside the spawned node's own artifact directory.
         self.spawn_branch_setup = spawn_branch_setup
+        # Sync callback fired once per node at the tail of _run_tracked,
+        # before that task returns to the task group — the only point a
+        # caller's inject() is race-free against the group's convergence.
+        self.on_op_complete = on_op_complete
         self._spawn_count = 0
         self._dropped_spawns: list[dict[str, Any]] = []
         self._running = False
@@ -824,6 +848,14 @@ class ReactiveExecutor(DependencyAwareExecutor):
             self._inject_request(req, emitter=node)
         for req in _extract_spawn_requests(self.results.get(node.id), EscalationRequest):
             self._schedule_escalation(req, emitter=node)
+
+        if self.on_op_complete is not None:
+            # Best-effort, and still inside the task group tracking this
+            # coroutine — a caller's inject() here is never rejected.
+            try:
+                self.on_op_complete(node)
+            except Exception as e:  # noqa: BLE001
+                logger.warning("on_op_complete callback raised for %s: %s", str(node.id)[:8], e)
 
     def _make_event(self, node: Operation) -> FlowEvent:
         if node.id in self.skipped_operations:
@@ -969,6 +1001,17 @@ class ReactiveExecutor(DependencyAwareExecutor):
             return True
         return False
 
+    def can_inject(self, count: int = 1) -> bool:
+        """Return whether a batch can fit without exceeding the spawn cap."""
+        if count < 0:
+            raise ValueError("count must be non-negative")
+        with self._graph_lock:
+            return (
+                self._running
+                and self._tg is not None
+                and self._spawn_count + count <= self.max_spawn
+            )
+
     def _accept_node(
         self,
         child: Operation,
@@ -1104,6 +1147,7 @@ async def flow(
     executor_ref: dict[str, Any] | None = None,
     on_branch_created: Callable[[Any], None] | None = None,
     spawn_branch_setup: Callable[[Operation, Any], None] | None = None,
+    on_op_complete: Callable[[Operation], None] | None = None,
 ) -> dict[str, Any]:
     """Execute a graph with dependency management and optional reactive self-expansion.
 
@@ -1116,6 +1160,9 @@ async def flow(
 
     ``spawn_branch_setup``, when given, runs after each reactively-spawned
     node's branch is cloned (reactive mode only) — see ``ReactiveExecutor``.
+
+    ``on_op_complete`` (reactive mode only) runs synchronously at the tail
+    of every node's execution, race-free for a caller's ``inject()``.
     """
 
     if not parallel:
@@ -1135,6 +1182,7 @@ async def flow(
             max_spawn=max_spawn,
             executor_ref=executor_ref,
             spawn_branch_setup=spawn_branch_setup,
+            on_op_complete=on_op_complete,
         )
     else:
         executor = DependencyAwareExecutor(

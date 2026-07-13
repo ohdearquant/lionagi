@@ -297,10 +297,10 @@ async def test_hook_swallows_db_write_failure(
     _register_branch_hook(env._live_persist, worker)
     hook = env._live_persist["hooks"][-1][1]
 
-    async def boom(self, msg):
+    async def boom(self, msg, **kwargs):
         raise RuntimeError("simulated busy timeout")
 
-    monkeypatch.setattr(StateDB, "insert_message", boom)
+    monkeypatch.setattr(StateDB, "_persist_live_message", boom)
 
     msg = MessageManager.create_instruction(
         instruction="hi",
@@ -445,6 +445,77 @@ async def test_stop_aggregates_usage_across_all_dag_leg_branches(
     # Must be a real sum across every leg, not just one branch's value and not zero.
     assert s["num_turns"] not in (0, 1, 3, 2)
     assert s["input_tokens"] not in (0, 10, 100, 200)
+
+
+async def test_stop_finalizes_branch_status_for_all_dag_legs(
+    temp_db_path: Path,
+):
+    """BRANCH_END: every leg tracked via ctx["hooks"] (including the
+    orchestrator branch itself, which never gets a per-op NodeCompleted/
+    NodeFailed status write from cli/orchestrate/flow.py) gets its terminal
+    status/ended_at written at teardown."""
+    from lionagi.protocols.messages.manager import MessageManager
+
+    orc_branch = Branch(name="orchestrator")
+    env = _minimal_env(orc_branch=orc_branch)
+    await start_live_persist(env)
+    orc_hook = env._live_persist["hooks"][0][1]
+    orc_msg = MessageManager.create_instruction(
+        instruction="plan", sender="u", recipient=str(orc_branch.id)
+    )
+    await orc_hook(orc_msg)  # first message -> lazily creates the orc branch row
+
+    worker = Branch(name="worker-1")
+    env.session.include_branches(worker)
+    _register_branch_hook(env._live_persist, worker)
+    worker_hook = env._live_persist["hooks"][-1][1]
+    worker_msg = MessageManager.create_instruction(
+        instruction="do", sender="u", recipient=str(worker.id)
+    )
+    await worker_hook(worker_msg)
+
+    await stop_live_persist(env, status="failed")
+
+    async with StateDB() as db:
+        orc_row = await db.get_branch(str(orc_branch.id))
+        worker_row = await db.get_branch(str(worker.id))
+
+    assert orc_row is not None
+    assert orc_row["status"] == "failed"
+    assert orc_row["ended_at"] is not None
+    assert worker_row is not None
+    assert worker_row["status"] == "failed"
+    assert worker_row["ended_at"] is not None
+
+
+async def test_stop_does_not_clobber_worker_status_flow_already_finalized(
+    temp_db_path: Path,
+):
+    """A worker branch flow.py's own NodeCompleted handler already marked
+    'completed' must survive teardown's coarser run-level BRANCH_END even
+    when the overall session ends 'failed' because a different leg failed."""
+    from lionagi.protocols.messages.manager import MessageManager
+
+    env = _minimal_env()
+    await start_live_persist(env)
+
+    worker = Branch(name="worker-done")
+    env.session.include_branches(worker)
+    _register_branch_hook(env._live_persist, worker)
+    hook = env._live_persist["hooks"][-1][1]
+    msg = MessageManager.create_instruction(instruction="a", sender="u", recipient=str(worker.id))
+    await hook(msg)
+
+    ctx = env._live_persist
+    # Simulate flow.py's NodeCompleted per-op write finalizing this leg early.
+    await ctx["db"].update_branch(str(worker.id), status="completed", ended_at=111.0)
+
+    await stop_live_persist(env, status="failed")
+
+    async with StateDB() as db:
+        worker_row = await db.get_branch(str(worker.id))
+    assert worker_row["status"] == "completed"
+    assert worker_row["ended_at"] == 111.0
 
 
 async def test_stop_removes_persistence_handler_from_bus(
@@ -951,8 +1022,29 @@ async def test_stop_close_failure_logs_warning_and_clears_context(
 async def test_stop_persists_cancelled_status_with_dag_metadata(
     temp_db_path: Path,
 ):
-    env = _minimal_env()
+    """'cancelled' must land on both the session row AND every DAG leg's
+    branch row -- not just 'completed'/'failed', which finalize_branch()'s
+    guard used to special-case."""
+    from lionagi.protocols.messages.manager import MessageManager
+
+    orc_branch = Branch(name="orchestrator")
+    env = _minimal_env(orc_branch=orc_branch)
     await start_live_persist(env)
+    orc_hook = env._live_persist["hooks"][0][1]
+    await orc_hook(
+        MessageManager.create_instruction(
+            instruction="plan", sender="u", recipient=str(orc_branch.id)
+        )
+    )
+
+    worker = Branch(name="worker-1")
+    env.session.include_branches(worker)
+    _register_branch_hook(env._live_persist, worker)
+    worker_hook = env._live_persist["hooks"][-1][1]
+    await worker_hook(
+        MessageManager.create_instruction(instruction="do", sender="u", recipient=str(worker.id))
+    )
+
     ctx = env._live_persist
     env._finalize_extras = dag_extras()
 
@@ -960,10 +1052,17 @@ async def test_stop_persists_cancelled_status_with_dag_metadata(
 
     async with StateDB() as db:
         s = await db.get_session(ctx["session_id"])
+        orc_row = await db.get_branch(str(orc_branch.id))
+        worker_row = await db.get_branch(str(worker.id))
 
     assert s["status"] == "cancelled"
     assert_dag_and_identity(s["node_metadata"])
     assert s["ended_at"] is not None
+
+    assert orc_row["status"] == "cancelled"
+    assert orc_row["ended_at"] is not None
+    assert worker_row["status"] == "cancelled"
+    assert worker_row["ended_at"] is not None
 
 
 # ── ADR-0064: artifact contract snapshot and verification ─────────────────────
@@ -1224,6 +1323,52 @@ async def test_stop_assistant_output_only_stays_completed(
         s = await db.get_session(ctx["session_id"])
     assert s is not None
     assert s["status"] == "completed"
+
+
+async def test_stop_flushes_pending_only_message_before_completion_evidence(
+    temp_db_path: Path,
+    tmp_path: Path,
+):
+    """Teardown retries the only text event before deciding the run is empty."""
+    from sqlalchemy import event
+
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    _init_git_repo(repo)
+
+    env = _minimal_env()
+    env.cwd = str(repo)
+    await start_live_persist(env, invocation_kind="flow")
+    ctx = env._live_persist
+    assert ctx is not None
+    db = ctx["db"]
+    progression_updates = 0
+
+    def fail_second_progression(conn, cursor, statement, parameters, context, executemany):
+        nonlocal progression_updates
+        if statement.lstrip().startswith("UPDATE progressions"):
+            progression_updates += 1
+            if progression_updates == 2:
+                raise RuntimeError("injected middle progression failure")
+
+    event.listen(db._engine.sync_engine, "before_cursor_execute", fail_second_progression)
+    try:
+        only_message = await env.orc_branch.msgs.a_add_message(assistant_response="durable answer")
+    finally:
+        event.remove(db._engine.sync_engine, "before_cursor_execute", fail_second_progression)
+
+    assert await db.get_progression(ctx["session_prog_id"]) == []
+    assert ctx["message_retry_queues"][0].pending_count == 1
+
+    final_status = await stop_live_persist(env, status="completed")
+
+    async with StateDB() as check_db:
+        session_progression = await check_db.get_progression(ctx["session_prog_id"])
+        session = await check_db.get_session(ctx["session_id"])
+    assert session_progression == [str(only_message.id)]
+    assert final_status == "completed"
+    assert session["status"] == "completed"
+    assert session["status_reason_code"] != "run.completed_empty.no_evidence"
 
 
 async def test_stop_whitespace_only_assistant_message_still_gates(

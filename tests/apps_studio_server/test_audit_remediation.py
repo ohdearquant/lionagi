@@ -416,7 +416,9 @@ class TestFireCancellationRecorded:
 
         started = asyncio.Event()
 
-        async def blocking_spawn(argv, inv_id, *, tmp_path=None, cwd=None, action_kind=None):
+        async def blocking_spawn(
+            argv, inv_id, *, tmp_path=None, cwd=None, action_kind=None, on_launched=None
+        ):
             started.set()
             await asyncio.Event().wait()  # block until the _fire task is cancelled
 
@@ -535,9 +537,8 @@ class TestInvocationReasonAggregation:
 
 
 # ---------------------------------------------------------------------------
-# Codex round-2 Low — router-level PATCH validation (HTTP 400 for invalid
-# flow_yaml transitions), covering the ValueError→HTTPException translation
-# added to services/schedules.py.
+# Router-level PATCH validation (HTTP 400 for invalid flow_yaml transitions),
+# covering the ValueError→HTTPException translation in services/schedules.py.
 # ---------------------------------------------------------------------------
 
 
@@ -748,7 +749,7 @@ class TestScheduleArgvInjectionRouterValidation:
 
 
 # ---------------------------------------------------------------------------
-# CWE-88 argument injection — real-service router tests (round 2)
+# CWE-88 argument injection — real-service router tests
 #
 # These tests use the REAL service layer (no mock) with a temp SQLite DB to
 # validate that flag-injection rejections propagate through the router as 400.

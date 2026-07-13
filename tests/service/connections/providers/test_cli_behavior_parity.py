@@ -126,7 +126,7 @@ async def test_claude_ndjson_uses_repair_callback():
 
 
 @pytest.mark.asyncio
-async def test_codex_ndjson_does_not_pass_cwd():
+async def test_codex_ndjson_does_not_pass_cwd(tmp_path):
     """Codex _ndjson_from_cli must NOT pass cwd= to ndjson_from_cli.
 
     The Codex CLI already receives the workspace via '-C <repo>' in as_cmd_args().
@@ -145,7 +145,11 @@ async def test_codex_ndjson_does_not_pass_cwd():
         patch.object(codex_models, "CODEX_CLI", "/fake/codex"),
         patch.object(codex_models, "ndjson_from_cli", _fake_ndjson),
     ):
-        req = codex_models.CodexCodeRequest(prompt="p", repo=Path("relative_repo"))
+        # repo must exist on disk: resolve_cli_workspace() now validates it
+        # (a nonexistent --cwd must fail fast, not spawn) — the fictional
+        # relative path this test previously used only worked because that
+        # validation didn't exist yet.
+        req = codex_models.CodexCodeRequest(prompt="p", repo=tmp_path)
         async for _ in codex_models._ndjson_from_cli(req):
             pass
 
@@ -156,16 +160,17 @@ async def test_codex_ndjson_does_not_pass_cwd():
     )
 
 
-def test_codex_as_cmd_args_contains_dash_c_flag():
+def test_codex_as_cmd_args_contains_dash_c_flag(tmp_path):
     """Codex as_cmd_args() emits '-C <repo>' so the CLI handles the workspace itself."""
     from lionagi.providers.openai.codex import CodexCodeRequest
 
-    req = CodexCodeRequest(prompt="hello", repo=Path("my_repo"))
+    # repo must exist on disk (see comment in test_codex_ndjson_does_not_pass_cwd).
+    req = CodexCodeRequest(prompt="hello", repo=tmp_path)
     args = req.as_cmd_args()
 
     assert "-C" in args
     c_idx = args.index("-C")
-    assert args[c_idx + 1] == "my_repo"
+    assert args[c_idx + 1] == str(tmp_path)
 
 
 # ---------------------------------------------------------------------------

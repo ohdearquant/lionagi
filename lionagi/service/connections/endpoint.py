@@ -19,11 +19,8 @@ from .header_factory import HeaderFactory
 
 
 class _NonRetryableClientError(Exception):
-    """Sentinel: 4xx (non-429) client error that must not be retried.
-
-    Wraps the original aiohttp.ClientResponseError so callers can inspect it
-    via the __cause__ chain while the retry engine sees an excluded type.
-    """
+    """Sentinel: 4xx (non-429) error that must not be retried. Wraps the original
+    via __cause__ so callers can inspect it while the retry engine sees an excluded type."""
 
     def __init__(self, original: Exception):
         super().__init__(str(original))
@@ -190,10 +187,8 @@ class Endpoint:
         if self.retry_config:
 
             async def call_func(p, h, **kw):
-                # The 4xx sentinel must stay excluded until this outer retry
-                # layer has decided not to retry — unwrapping earlier would let
-                # a retry_exceptions=(aiohttp.ClientError,) config replay
-                # 400/401/403 responses the transport contract keeps single-shot.
+                # 4xx sentinel stays excluded until this retry layer gives up, else a
+                # broad retry_exceptions config could replay a single-shot 4xx response.
                 retry_kwargs = self.retry_config.as_kwargs()
                 retry_kwargs["exclude_exceptions"] = (
                     *retry_kwargs.get("exclude_exceptions", ()),
@@ -241,12 +236,8 @@ class Endpoint:
 
     def _can_retry(self) -> bool:
         """Whether more than one request attempt can occur for this endpoint.
-
-        True when an explicit RetryConfig wraps the call, or when the native
-        path's total-attempt cap allows a second attempt. Single-shot
-        endpoints (max_retries<=1, no RetryConfig) never replay a body, so
-        callers may hand over non-replayable inputs like one-shot streams.
-        """
+        Single-shot endpoints (max_retries<=1, no RetryConfig) never replay a body —
+        see docs/internals/runtime.md."""
         if self.retry_config:
             return self.retry_config.max_retries > 0
         return self.config.max_retries > 1
@@ -268,9 +259,8 @@ class Endpoint:
         build_body = request_body_factory or (lambda: {"json": payload})
 
         async def _make_request():
-            # The body is rebuilt inside the per-attempt function, not before retry
-            # orchestration, because FormData/BytesIO/file streams can be consumed by
-            # the first POST and must not be silently replayed by a later attempt.
+            # Body rebuilt per-attempt, not before retry orchestration: FormData/BytesIO/
+            # file streams get consumed by the first POST and must not be silently replayed.
             body_kwargs = build_body()
             collision = set(body_kwargs) & set(request_kwargs)
             if collision:
@@ -321,17 +311,13 @@ class Endpoint:
                     if response is not None and not response.closed:
                         response.release()
 
-        # When retry_config is set, the outer call() wraps _call in retry_with_backoff
-        # and owns both the sentinel exclusion and the unwrap; run the raw request and
-        # let the sentinel propagate to that layer.
+        # When retry_config is set, call() already wraps this in retry_with_backoff and
+        # owns the sentinel unwrap — just run the raw request and let it propagate.
         if self.retry_config:
             return await _make_request()
 
-        # No RetryConfig: use the native retry path with aiohttp transport errors.
-        # _NonRetryableClientError is in exclude_exceptions so 4xx non-429 gives up immediately.
-        # Re-raise the wrapped original so callers see aiohttp.ClientResponseError.
-        # config.max_retries is a total-attempt cap (it was backoff's max_tries); retry_with_backoff
-        # runs max_retries+1 attempts, so subtract one to preserve the same total attempt count.
+        # No RetryConfig: native path excludes the 4xx sentinel so it gives up immediately.
+        # max_retries is a total-attempt cap; retry_with_backoff runs +1 attempts, so subtract one.
         try:
             return await retry_with_backoff(
                 _make_request,

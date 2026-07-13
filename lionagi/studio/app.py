@@ -158,6 +158,14 @@ async def lifespan(app_instance):
     from .services.lifecycle import run_startup_reconciliation
 
     _emit_startup_warnings()
+    # The other of the two settings-driven notify bootstrap points (the CLI
+    # entry point is the first): resolve notify.on_terminal from settings
+    # once per process and register it on the shared terminal-callback
+    # registry so Studio-launched runs get the same settings-driven handler
+    # as `li`.
+    from lionagi.state.lifecycle.notify_settings import register_settings_terminal_callback
+
+    register_settings_terminal_callback()
     await scheduler.start()
     # Corrects phantom/stale-status rows that stateful /api routes read
     # directly, so it must complete before we serve.

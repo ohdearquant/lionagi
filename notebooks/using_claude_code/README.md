@@ -2,7 +2,7 @@ need to add the following into your .env file:
 
 ```
 # Claude Code workspace (where it should run commands)
-CLAUDE_CODE_WORKSPACE=/Users/lion/xxxxx
+CLAUDE_CODE_WORKSPACE=/path/to/workspace
 
 # Server configuration
 PORT=8080

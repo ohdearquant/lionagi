@@ -34,7 +34,7 @@ from ._common import (
     _format_result_text,
     _post_results_to_team,
 )
-from ._notify import fire_terminal_notify
+from ._notify import register_flow_notify_scope, unregister_flow_notify_scope
 from ._orchestration import (
     EFFORT_MAP,
     OrchestrationEnv,
@@ -52,6 +52,8 @@ from ._orchestration import (
     start_live_persist,
     stop_live_persist,
     team_guidance,
+    team_history_context,
+    worker_is_cli,
 )
 
 logger = logging.getLogger(__name__)
@@ -119,6 +121,11 @@ _CONTROL_POLL_INTERVAL = 2.0
 # pending in the DB. The poller must stop the tick rather than let later
 # controls overtake it — the whole batch re-reads in order next tick.
 _CONTROL_UNSTAMPED = "unstamped"
+
+# ── Team lifecycle (done-signal / wakeup rounds / quiescence) ───────────────
+# Driven by ReactiveExecutor's on_op_complete hook, not a poll loop — a poll
+# loop's next tick races the executor's own task-group teardown. See
+# TeamLifecycleCoordinator in _orchestration.py for the decision logic.
 
 
 async def _apply_session_control(db, executor, row: dict) -> str | None:
@@ -405,6 +412,14 @@ class _DagState:
     # contract for a reactively spawned node run under that role — spawned
     # nodes don't exist yet at DAG-build time so can't be folded in there.
     role_artifact_defaults: dict[str, dict | None] = field(default_factory=dict)
+    # agent_id → its own worker branch (not just role_base's one-per-role
+    # entry — team-lifecycle wakeup rounds re-invoke a SPECIFIC worker's own
+    # session, which role_base can't address once a role has >1 named
+    # instance) and agent_id → whether it got the in-process messenger tool
+    # bound, so a round-injected node mirrors the same actions= wiring its
+    # planned leg got. Both populated in _build_dag's per-assignment loop.
+    worker_branches: dict[str, object] = field(default_factory=dict)
+    messenger_bound: dict[str, bool] = field(default_factory=dict)
 
 
 @dataclass
@@ -444,6 +459,8 @@ async def _build_dag(
     role_base: dict[str, object] = {}
     role_artifact_entries: list[dict] = []
     role_artifact_defaults: dict[str, dict | None] = {}
+    worker_branches: dict[str, object] = {}
+    worker_messenger_bound: dict[str, bool] = {}
 
     for i, ta in enumerate(assignments):
         w_branch, w_model, w_profile, messenger_bound = await build_worker_branch(
@@ -455,14 +472,17 @@ async def _build_dag(
             grant_spawn=_may_spawn(ta.assignee),
             modes=ta.modes or None,
         )
+        worker_branches[agent_ids[i]] = w_branch
+        worker_messenger_bound[agent_ids[i]] = messenger_bound
         worker_models.append(w_model)
         role_base.setdefault(ta.assignee, w_branch)
 
-        # Fold this leg's OWN declared artifact contract (profile
-        # first, else the casts role's artifact_defaults — e.g. reviewer/
-        # critic) into the flow-wide contract, namespaced under this leg's
-        # own artifact subdirectory. A role that declares nothing leaves the
-        # contract untouched — this only fires for a real declaration.
+        # Fold this leg's OWN declared artifact contract (profile first, else
+        # the casts role's artifact_defaults — e.g. reviewer/critic) into the
+        # flow-wide contract, namespaced under this leg's own artifact
+        # subdirectory (ADR-0064 D3: per-leg role-default artifact
+        # expectations). A role that declares nothing leaves the contract
+        # untouched — this only fires for a real declaration.
         if ta.assignee in role_artifact_defaults:
             role_defaults = role_artifact_defaults[ta.assignee]
         else:
@@ -495,6 +515,13 @@ async def _build_dag(
                     }
                 }
             )
+            # Attached-team history (if any) rides in operation context, not
+            # the system prompt — see team_history_context's docstring for why.
+            history_ctx = team_history_context(
+                env.team_data, agent_ids[i], messenger_bound=messenger_bound
+            )
+            if history_ctx:
+                ctx.append(history_ctx)
         w_effort = env.effort
         if not env.bare and w_profile and w_profile.effort:
             w_effort = w_profile.effort
@@ -584,10 +611,153 @@ async def _build_dag(
         role_base=role_base,
         worker_models=worker_models,
         role_artifact_defaults=role_artifact_defaults,
+        worker_branches=worker_branches,
+        messenger_bound=worker_messenger_bound,
     )
 
 
 # ── Resume: pre-mark checkpoint-completed nodes ───────────────────────────────
+
+
+def _reconstruct_spawned_nodes(
+    env: OrchestrationEnv,
+    plan_result: _PlanResult,
+    dag_state: _DagState,
+    checkpoint_ops: dict[str, dict],
+    checkpoint_spawned: list[dict],
+) -> None:
+    """Rebuild reactively spawned nodes from a checkpoint into the fresh graph.
+
+    A reactively spawned node has no entry in the persisted plan (only
+    planned legs do) — it must be reconstructed from what its own `spawned`
+    checkpoint entry recorded, then pre-completed exactly like a planned node
+    so the executor's terminal-status short-circuit (never a live re-run)
+    picks it up.
+
+    Three things must hold for a given entry, checked BEFORE any node is added
+    to the graph so a refusal never leaves it partially mutated:
+
+    1. It must carry `operation` (added in CHECKPOINT_VERSION 2, alongside
+       `assignee`/`instruction`/`parent_id`/`spawn_id`) — a checkpoint written
+       before that field set existed has nothing to rebuild an Operation node
+       from.
+    2. If it has a `parent_id`, that id must resolve to either a planned node
+       that is ITSELF checkpointed terminal (completed or failed in
+       `checkpoint_ops`), or another entry in this same `checkpoint_spawned`
+       list. A planned parent merely existing in the DAG is not enough — if
+       it crashed before its own checkpoint write landed, resume would
+       pre-complete this child while rerunning that parent live, and the
+       rerun can emit the same follow-up spawn again (duplicate work). If
+       the parent hasn't reached a checkpointed terminal state at all, the
+       spawn decision cannot be soundly replayed — resuming risks either
+       duplicating or silently dropping that work.
+    3. If it recorded an `assignee` (role-routed spawn), it must also carry a
+       `spawn_id` — role_node_builder stamps both together unconditionally at
+       construction time, and the finalize-time result-collection scan raises
+       a hard invariant error for any assignee-bearing node it finds without
+       one. A checkpoint entry missing `spawn_id` despite an `assignee` is
+       itself corrupt/pre-dates that field, not soundly replayable.
+
+    Either failure refuses resume for only the affected node(s), named in the
+    error, never the whole run merely because a spawn occurred.
+    """
+    from uuid import UUID as _UUID
+
+    from lionagi.operations.node import create_operation
+    from lionagi.protocols.graph.edge import Edge
+    from lionagi.protocols.types import EventStatus
+
+    legacy = [e for e in checkpoint_spawned if not e.get("operation")]
+    if legacy:
+        ids = ", ".join(str(e.get("node_id", "?")) for e in legacy)
+        raise FlowResumeError(
+            f"Resume refused for reactively spawned node(s) [{ids}]: this "
+            "checkpoint predates spawn-reconstruction support (no operation "
+            "type recorded for them), so they cannot be rebuilt. Re-run the "
+            "flow from scratch."
+        )
+
+    unrecognized = [
+        e["node_id"] for e in checkpoint_spawned if e.get("status") not in ("completed", "failed")
+    ]
+    if unrecognized:
+        raise FlowResumeError(
+            "Resume refused for reactively spawned node(s) "
+            f"[{', '.join(unrecognized)}]: checkpoint status is neither "
+            "'completed' nor 'failed', so it cannot be safely replayed."
+        )
+
+    unstamped = [
+        e["node_id"] for e in checkpoint_spawned if e.get("assignee") and not e.get("spawn_id")
+    ]
+    if unstamped:
+        raise FlowResumeError(
+            "Resume refused for reactively spawned node(s) "
+            f"[{', '.join(unstamped)}]: recorded a role assignee but no "
+            "spawn_id — role_node_builder stamps both together, so this "
+            "checkpoint predates spawn_id capture (or is otherwise corrupt) "
+            "and cannot be soundly rebuilt. Re-run the flow from scratch."
+        )
+
+    known_ids = {str(n) for n in dag_state.node_ids}
+    candidate_ids = {e["node_id"] for e in checkpoint_spawned}
+    terminal_planned_ids = {
+        str(node_id)
+        for agent_id, node_id in zip(plan_result.agent_ids, dag_state.node_ids, strict=True)
+        if (checkpoint_ops.get(agent_id) or {}).get("status") in ("completed", "failed")
+    }
+
+    unsound = [
+        f"{e['node_id']} (parent {e['parent_id']})"
+        for e in checkpoint_spawned
+        if e.get("parent_id")
+        and e["parent_id"] not in candidate_ids
+        and not (e["parent_id"] in known_ids and e["parent_id"] in terminal_planned_ids)
+    ]
+    if unsound:
+        raise FlowResumeError(
+            f"Resume refused for reactively spawned node(s) [{'; '.join(unsound)}]: "
+            "the op that spawned them had not itself reached a checkpointed "
+            "terminal state, so the spawn decision cannot be soundly replayed "
+            "— resuming risks either duplicating or silently dropping that "
+            "work. Re-run the flow from scratch."
+        )
+
+    graph = env.builder.get_graph()
+    built: dict[str, Any] = {}
+    for entry in checkpoint_spawned:
+        node_id = entry["node_id"]
+        assignee = entry.get("assignee")
+        spawn_id = entry.get("spawn_id")
+        metadata: dict[str, Any] = {}
+        if assignee:
+            metadata["assignee"] = assignee
+        if spawn_id:
+            metadata["spawn_id"] = spawn_id
+            metadata["reference_id"] = spawn_id
+        node = create_operation(
+            entry["operation"],
+            parameters={"instruction": entry.get("instruction") or ""},
+            id=_UUID(node_id),
+            metadata=metadata,
+        )
+        node.execution.status = (
+            EventStatus.COMPLETED if entry["status"] == "completed" else EventStatus.FAILED
+        )
+        node.execution.response = entry.get("response")
+        role_branch = dag_state.role_base.get(assignee) if assignee else None
+        if role_branch is not None:
+            node.branch_id = role_branch.id
+        built[node_id] = node
+
+    for node in built.values():
+        graph.add_node(node)
+    for entry in checkpoint_spawned:
+        parent_id = entry.get("parent_id")
+        if not parent_id:
+            continue
+        parent_uuid = _UUID(parent_id) if parent_id in known_ids else built[parent_id].id
+        graph.add_edge(Edge(head=parent_uuid, tail=built[entry["node_id"]].id, label=["spawn"]))
 
 
 def _apply_checkpoint_precompletion(
@@ -606,21 +776,16 @@ def _apply_checkpoint_precompletion(
     FAILED rather than silently re-run (they may have had side effects before
     the process died). A pending op with inherit_context is refused unless the
     caller passes allow_degraded_context — resume restores results-context
-    only, not conversation history (v1). checkpoint_spawned refuses resume
-    outright when non-empty: reactively spawned nodes aren't replayable from
-    the persisted plan, and silently proceeding would drop completed work.
+    only, not conversation history (v1). checkpoint_spawned entries are
+    rebuilt into the graph and pre-completed the same way (see
+    _reconstruct_spawned_nodes) — resume refuses only the specific spawned
+    node(s) it genuinely cannot replay soundly, never the whole run just
+    because a spawn occurred.
     """
     from lionagi.protocols.types import EventStatus
 
     if checkpoint_spawned:
-        spawned_ids = ", ".join(str(e.get("node_id", "?")) for e in checkpoint_spawned)
-        raise FlowResumeError(
-            "Resume refused: this checkpoint recorded reactively spawned "
-            f"node(s) [{spawned_ids}] that this version cannot replay. "
-            "Resuming would silently drop that completed work. Re-run the "
-            "flow from scratch, or resume only checkpoints without spawned "
-            "entries."
-        )
+        _reconstruct_spawned_nodes(env, plan_result, dag_state, checkpoint_ops, checkpoint_spawned)
 
     graph = env.builder.get_graph()
     degraded: list[str] = []
@@ -664,6 +829,8 @@ async def _execute_dag(
     checkpoint_config: dict | None = None,
     checkpoint_ops_seed: dict[str, dict] | None = None,
     checkpoint_flow_context: dict | None = None,
+    checkpoint_spawned_seed: list[dict] | None = None,
+    team_max_rounds: int = 2,
 ) -> _ExecResult:
     """Drive the planning engine over the DAG and collect per-agent results.
 
@@ -672,6 +839,13 @@ async def _execute_dag(
     completion/failure observers. checkpoint_flow_context seeds the
     executor's shared context workspace on resume with what was accumulated
     before the crash, so pending ops see the same workspace they would live.
+    checkpoint_spawned_seed carries forward any reactively spawned entries a
+    prior checkpoint already recorded (reconstructed into the graph by
+    _apply_checkpoint_precompletion before this call) — without it, this
+    generation's first flush would overwrite `spawned` with `[]`, and since
+    pre-completed nodes never re-emit a completion signal to re-record
+    themselves, a second crash before any NEW spawn occurs would silently
+    lose all the previously reconstructed work.
     """
     assignments = plan_result.assignments
     agent_ids = plan_result.agent_ids
@@ -709,6 +883,7 @@ async def _execute_dag(
             # lose it despite nothing having gone wrong with restoration.
             flow_context=dict(checkpoint_flow_context or {}),
             ops=dict(checkpoint_ops_seed or {}),
+            spawned=list(checkpoint_spawned_seed or []),
         )
         with contextlib.suppress(Exception):
             await _checkpoint_writer.flush()
@@ -720,10 +895,35 @@ async def _execute_dag(
     else:
         progress(f"Executing DAG (reactive off): {len(assignments)} assignments...")
     conc = max_concurrent if max_concurrent > 0 else max(len(assignments), 1)
+    # Restored spawns (from a prior checkpoint's `spawned` list, reconstructed
+    # into the graph before this call) already consumed part of the run's
+    # spawn budget and already exist as completed/failed work — both the
+    # live budget below and this generation's spawn accounting must count
+    # them, or a resumed --max-ops run could accept spawns beyond what was
+    # ever allowed, and restored-only spawned work would look like zero
+    # spawns happened at all.
+    restored_spawn_count = len(checkpoint_spawned_seed or [])
     # Spawn budget: when --max-ops is set, the initial plan + spawns share it.
     # Otherwise fall back to a conservative default so an un-capped reactive run
-    # cannot quietly fan out to dozens of (costly) child agents.
-    max_spawn = max(0, max_ops - len(assignments)) if max_ops > 0 else 20
+    # cannot quietly fan out to dozens of (costly) child agents. Either way,
+    # spawns already restored from a checkpoint count against it.
+    max_spawn = max(0, (max_ops - len(assignments) if max_ops > 0 else 20) - restored_spawn_count)
+    # role_node_builder's spawn-id sequence is closure-scoped and rebuilt
+    # fresh below every generation — on resume it must start past whatever
+    # ordinals the restored spawns already used, or a live spawn this
+    # generation reissues the same spawn_id (and artifact directory) as a
+    # restored one. Takes the MAX existing ordinal + 1 rather than assuming
+    # count == max: a crashed run can have gaps (a spawn allocated but never
+    # completed before the crash never made it into `spawned` at all), so
+    # counting restored entries would double-allocate into that gap.
+    _spawn_seq_start = 1
+    for _entry in checkpoint_spawned_seed or []:
+        _sid = _entry.get("spawn_id")
+        if not _sid:
+            continue
+        _, _, _suffix = _sid.rpartition("-")
+        if _suffix.isdigit():
+            _spawn_seq_start = max(_spawn_seq_start, int(_suffix) + 1)
 
     heartbeat_interval = 60
     max_idle_seconds = 600
@@ -818,10 +1018,44 @@ async def _execute_dag(
                 )
             )
         else:
+            # Capture what resume needs to rebuild this node into a fresh
+            # graph: the operation type, its routed role (if any), and the
+            # instruction it ran with, read back off the still-live graph
+            # node (never removed once _accept_node adds it). parent_id
+            # comes straight off the signal — flow_progress_signals already
+            # resolves it (including through reactive spawns) via its own
+            # NodeSpawned observer. A lookup failure (should not normally
+            # happen) leaves operation/assignee/instruction unset, which
+            # resume treats as unreconstructable for this node alone.
+            spawn_fields: dict[str, Any] = {"parent_id": sig.parent_id}
+            with contextlib.suppress(Exception):
+                from uuid import UUID as _UUID
+
+                spawned_node = env.builder.get_graph().internal_nodes.get(_UUID(sig.op_id))
+                if spawned_node is not None:
+                    params = spawned_node.parameters
+                    spawn_fields["operation"] = spawned_node.operation
+                    spawn_fields["assignee"] = spawned_node.metadata.get("assignee")
+                    spawn_fields["instruction"] = (
+                        params.get("instruction")
+                        if isinstance(params, dict)
+                        else getattr(params, "instruction", None)
+                    )
+                    # role_node_builder stamps spawn_id unconditionally
+                    # (lionagi/orchestration/patterns.py), independent of
+                    # whether the request carried an assignee — captured the
+                    # same way regardless so reconstruction can restore it
+                    # and the finalize-time assignee-without-spawn_id
+                    # invariant check never trips for a resumed node.
+                    spawn_fields["spawn_id"] = spawned_node.metadata.get("spawn_id")
             _checkpoint_tasks.append(
                 _asyncio.ensure_future(
                     _checkpoint_writer.record_spawned(
-                        sig.op_id, status=status, response=response, flow_context=flow_ctx
+                        sig.op_id,
+                        status=status,
+                        response=response,
+                        flow_context=flow_ctx,
+                        **spawn_fields,
                     )
                 )
             )
@@ -884,6 +1118,74 @@ async def _execute_dag(
                 )
 
         _asyncio.ensure_future(_do())
+
+    # Only wired when team messaging + reactive mode are on and at least
+    # one worker got a branch built (nothing to inject otherwise).
+    _team_coordinator: Any = None
+    if (
+        env.team_data
+        and getattr(env, "messenger", None) is not None
+        and dag_state.reactive
+        and dag_state.worker_branches
+    ):
+        from ._orchestration import make_team_lifecycle_coordinator
+
+        _team_coordinator = make_team_lifecycle_coordinator(
+            env.team_data["id"],
+            agent_ids,
+            dag_state.worker_branches,
+            messenger_bound=dag_state.messenger_bound,
+            max_rounds=team_max_rounds,
+            exchange=getattr(env, "exchange", None),
+        )
+        env.messenger.on("done", _team_coordinator.on_done)
+        env.messenger.on("finished", _team_coordinator.on_finished)
+
+    def _on_team_op_complete(node: Any) -> None:
+        """ReactiveExecutor.on_op_complete callback: race-free inject() for
+        team wakeup rounds. Called for every completed node."""
+        if _team_coordinator is None:
+            return
+        executor = _executor_ref.get("executor")
+        if executor is None:
+            return
+        try:
+            state = _team_coordinator.check_round()
+        except FileNotFoundError:
+            return  # team file transiently unavailable — next node retries
+        except Exception as e:  # noqa: BLE001 — never let a coordinator bug kill the run
+            logger.warning("team round: check_round() failed: %s", e)
+            return
+        if not state.should_continue:
+            return
+        batch_size = sum(
+            worker in _team_coordinator.worker_branches for worker in state.pending_targets
+        )
+        if batch_size and not executor.can_inject(batch_size):
+            logger.warning(
+                "team round: wakeup batch of %d exceeds remaining operation capacity",
+                batch_size,
+            )
+            return
+        try:
+            new_ops = _team_coordinator.build_round_operations(state, prompt=checkpoint_prompt)
+        except Exception as e:  # noqa: BLE001
+            logger.warning("team round: build_round_operations() failed: %s", e)
+            return
+        injected = []
+        for op in new_ops:
+            if executor.inject(op, independent=True):
+                injected.append(op)
+            else:
+                logger.warning(
+                    "team round: inject() rejected op %s (flow no longer running)",
+                    str(getattr(op, "id", op))[:8],
+                )
+        if injected:
+            progress(
+                f"  ↻ team round {_team_coordinator.rounds_run}: "
+                f"woke {', '.join(sorted(state.pending_targets))}"
+            )
 
     async def _control_poll_loop() -> None:
         while True:
@@ -962,7 +1264,11 @@ async def _execute_dag(
             reactive=reactive,
             spawn_type=SpawnRequest if reactive else None,
             node_builder=(
-                role_node_builder(role_base, decorate_instruction=_decorate_spawn_instruction)
+                role_node_builder(
+                    role_base,
+                    decorate_instruction=_decorate_spawn_instruction,
+                    start=_spawn_seq_start,
+                )
                 if reactive
                 else None
             ),
@@ -972,6 +1278,7 @@ async def _execute_dag(
             executor_ref=_executor_ref,
             context=checkpoint_flow_context,
             spawn_branch_setup=_spawn_branch_setup if reactive else None,
+            on_op_complete=_on_team_op_complete if _team_coordinator is not None else None,
         )
     finally:
         _hb_task.cancel()
@@ -997,15 +1304,21 @@ async def _execute_dag(
             await _asyncio.gather(*_checkpoint_tasks, return_exceptions=True)
 
     op_results = dag_result.get("operation_results", {})
-    n_spawned = dag_result.get("spawned_operations", 0)
+    # Total spawn count for this run includes restored spawns from a prior
+    # checkpoint generation, not just what this generation's live executor
+    # spawned — otherwise a resume that reconstructs every spawned node as
+    # already-terminal (zero NEW spawns this generation) would report
+    # n_spawned=0 and silently skip the automatic synthesis path that gates
+    # on it (see the with_synthesis-or-n_spawned check in _run_flow_inner).
+    n_spawned = restored_spawn_count + dag_result.get("spawned_operations", 0)
 
     # Escalation backstop: a leg the executor tracked as escalated (gave up
     # instead of producing a result — see NodeEscalated / EscalationRequest)
-    # reads as a normal completed op_result to the loop below.
-    # Without this, a reviewer/critic that emits EscalationRequest(route=
-    # "give_up") instead of writing its artifact is indistinguishable from a
-    # clean completion once execution finishes — this makes it loud at
-    # teardown even when no artifact_defaults declaration exists to catch it.
+    # reads as a normal completed op_result to the loop below. Without this,
+    # a reviewer/critic that emits EscalationRequest(route="give_up") instead
+    # of writing its artifact is indistinguishable from a clean completion
+    # once execution finishes — this makes it loud at teardown even when no
+    # artifact_defaults declaration exists to catch it.
     #
     # The escalation tracker itself is plan-agnostic: it records any emitting
     # node's id whether that node was planned up front or spawned mid-run via
@@ -1367,6 +1680,7 @@ async def _run_flow(
     save_dir: str | None = None,
     team_name: str | None = None,
     team_attach: str | None = None,
+    team_max_rounds: int = 2,
     cwd: str | None = None,
     timeout: int | None = None,
     agent_name: str | None = None,
@@ -1417,6 +1731,7 @@ async def _run_flow(
         "save_dir": save_dir,
         "team_name": team_name,
         "team_attach": team_attach,
+        "team_max_rounds": team_max_rounds,
         "cwd": cwd,
         "timeout": timeout,
         "agent_name": agent_name,
@@ -1448,6 +1763,28 @@ async def _run_flow(
         total_budget=timeout,
         pack=pack,
     )
+
+    # `--notify` is scoped compatibility sugar over the terminal-callback
+    # registry: registered here against this run's own
+    # entity (its invocation if tracked, else its session), unregistered in
+    # the `finally` block below. There is no longer a direct notify call at
+    # teardown -- the registered handler fires from the same guarded
+    # lifecycle transition that persists the terminal status itself.
+    _notify_scope_name: str | None = None
+    if notify:
+        _notify_entity_kind = "invocation" if invocation_id else "session"
+        _notify_entity_id = invocation_id if invocation_id else str(env.session.id)
+        _notify_scope_name = register_flow_notify_scope(
+            override=notify,
+            entity_kind=_notify_entity_kind,
+            entity_id=_notify_entity_id,
+            invocation_id=invocation_id,
+            flow_kind=_invocation_kind,
+            playbook=playbook_name,
+            save_dir=save_dir,
+            cwd=cwd or os.getcwd(),
+            started_at=_started_at,
+        )
 
     _orc_model, _orc_provider = parse_orchestrator_provider(env.default_model_spec)
 
@@ -1495,6 +1832,7 @@ async def _run_flow(
         output_format=output_format,
         team_name=team_name,
         team_attach=team_attach,
+        team_max_rounds=team_max_rounds,
         workers_str=workers_str,
         max_ops=max_ops,
         dry_run=dry_run,
@@ -1525,13 +1863,16 @@ async def _run_flow(
                 _terminal_status = effective_status
             import time as _time
 
-            from lionagi.cli.status import _classify
-
-            # ended_at/notify_status are meaningful regardless of whether an
-            # invocation_id is tracked — an invocation-less --notify run must
-            # still fire (the caller asked for it), just with a null id.
+            # ended_at is meaningful regardless of whether an invocation_id
+            # is tracked. The terminal-notify hook no longer fires from a
+            # direct call here: stop_live_persist()'s own session status
+            # write, and the invocation status write just below, are both
+            # guarded lifecycle transitions that push through the
+            # terminal-callback registry on commit -- whatever was
+            # registered by register_flow_notify_scope() above (or by the
+            # settings-level handler bootstrapped at process start) fires
+            # from there, exactly once, on whichever entity is authoritative.
             _ended_at = _time.time()
-            _notify_status = _terminal_status
             if invocation_id:
                 from lionagi.state.db import StateDB
 
@@ -1545,7 +1886,6 @@ async def _run_flow(
                     ) = await _resolve_invocation_terminal_flow(
                         invocation_id, fallback_status=_terminal_status
                     )
-                    _notify_status = inv_status
                     async with StateDB() as _inv_db:
                         await _inv_db.update_invocation(invocation_id, ended_at=_ended_at)
                         await _inv_db.update_status(
@@ -1566,23 +1906,7 @@ async def _run_flow(
                         "Failed to finalize invocation %s", invocation_id
                     )
 
-            # Fire the terminal-notify hook exactly once, after the
-            # invocation's terminal status is as final as it gets here —
-            # never lets a hook failure affect the run's own status.
-            _, _notify_exit_class, _ = _classify("invocation", _notify_status)
-            await fire_terminal_notify(
-                invocation_id=invocation_id,
-                kind=_invocation_kind,
-                playbook=playbook_name,
-                status=_notify_status,
-                save_dir=save_dir,
-                cwd=cwd or os.getcwd(),
-                exit_class=_notify_exit_class,
-                started_at=_started_at,
-                ended_at=_ended_at,
-                override_command=notify,
-                project_dir=cwd,
-            )
+            unregister_flow_notify_scope(_notify_scope_name)
             for _br in env.session.branches:
                 await _br.mdls.shutdown()
 
@@ -1600,6 +1924,7 @@ async def _run_flow_inner(
     output_format: str = "text",
     team_name: str | None = None,
     team_attach: str | None = None,
+    team_max_rounds: int = 2,
     workers_str: str | None = None,
     max_ops: int = 0,
     dry_run: bool = False,
@@ -1757,6 +2082,18 @@ async def _run_flow_inner(
         env.messenger = LionMessenger(env.exchange)
         env.messenger.on("help", make_help_coordinator(env))
         env.roster = {}
+        # Mixed-provider teams (heterogeneous --workers pool) build one worker
+        # branch at a time, so which teammates end up messenger-bound isn't
+        # fully known until _build_dag's loop below finishes. Resolve it here,
+        # for every team member up front, so each worker's prompt can flag
+        # CLI-provider teammates as unreachable via messenger regardless of
+        # build order (worker_is_cli is a cheap, side-effect-free pre-pass —
+        # no branch/iModel with real I/O is constructed).
+        env.messenger_names = frozenset(
+            agent_ids[i]
+            for i, ta in enumerate(assignments)
+            if not worker_is_cli(env, ta.assignee, pool[i % len(pool)] if pool else None)
+        )
 
     budget_preambles: dict[int, str] = {}
     if env.total_budget and assignments:
@@ -1809,6 +2146,10 @@ async def _run_flow_inner(
         checkpoint_flow_context=(
             resume_checkpoint.get("flow_context") if resume_checkpoint is not None else None
         ),
+        checkpoint_spawned_seed=(
+            resume_checkpoint.get("spawned") if resume_checkpoint is not None else None
+        ),
+        team_max_rounds=team_max_rounds,
     )
 
     synthesis_result = None

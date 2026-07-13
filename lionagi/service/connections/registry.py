@@ -68,17 +68,20 @@ class EndpointMeta:
 
 
 class _RegistryEntry:
-    __slots__ = ("meta", "cls")
+    __slots__ = ("meta", "cls", "plugin_name", "plugin_target")
 
     def __init__(self, meta: EndpointMeta, cls: type):
         self.meta = meta
         self.cls = cls
+        self.plugin_name: str | None = None
+        self.plugin_target: str | None = None
 
 
 class EndpointRegistry:
     _entries: ClassVar[list[_RegistryEntry]] = []
     _loaded: ClassVar[bool] = False
     _lock: ClassVar[threading.Lock] = threading.Lock()
+    _plugin_registration: ClassVar[threading.local] = threading.local()
 
     @classmethod
     def register(
@@ -108,38 +111,36 @@ class EndpointRegistry:
                 api_key_env=api_key_env,
             )
             endpoint_cls._ENDPOINT_META = meta
-            cls._entries.append(_RegistryEntry(meta=meta, cls=endpoint_cls))
+            entry = _RegistryEntry(meta=meta, cls=endpoint_cls)
+            provenance = getattr(cls._plugin_registration, "provenance", None)
+            if provenance is not None:
+                entry.plugin_name, entry.plugin_target = provenance
+            cls._entries.append(entry)
             return endpoint_cls
 
         return decorator
 
     @classmethod
     def match(cls, provider: str, endpoint: str = "", **kwargs) -> Any:
-        """Find and instantiate the best matching endpoint."""
+        """Find and instantiate the best matching endpoint.
+
+        On a registry miss, consults the plugin registry (ADR-0088 D3) before
+        falling back to the generic OpenAI-compatible endpoint: any
+        trusted + enabled + still-trusted plugin's declared provider modules
+        are imported (firing their ``@register_endpoint`` decorators), and
+        the match is re-run once. A plugin that supplies no matching provider
+        — or none at all — leaves the fallback identical to today's.
+        """
         cls._ensure_loaded()
 
-        first_for_provider = None
-        for entry in cls._entries:
-            m = entry.meta
-            if not (provider == m.provider or provider in m.provider_aliases):
-                continue
-            if first_for_provider is None:
-                first_for_provider = entry
-            if not endpoint or endpoint == m.endpoint or endpoint in m.aliases:
-                return entry.cls(None, **kwargs)
+        matched = cls._match_registered(provider, endpoint, kwargs)
+        if matched is not None:
+            return matched
 
-        if first_for_provider is not None:
-            # Single-endpoint providers (claude_code, codex, pi) always match; non-empty unmatched falls through.
-            if not endpoint:
-                return first_for_provider.cls(None, **kwargs)
-            prov = first_for_provider.meta.provider
-            n = sum(
-                1
-                for e in cls._entries
-                if e.meta.provider == prov or prov in e.meta.provider_aliases
-            )
-            if n == 1:
-                return first_for_provider.cls(None, **kwargs)
+        if cls._consult_plugin_providers():
+            matched = cls._match_registered(provider, endpoint, kwargs)
+            if matched is not None:
+                return matched
 
         from .endpoint import Endpoint, EndpointConfig
 
@@ -153,6 +154,98 @@ class EndpointRegistry:
             requires_tokens=True,
         )
         return Endpoint(config, **kwargs)
+
+    @classmethod
+    def _match_registered(cls, provider: str, endpoint: str, kwargs: dict[str, Any]) -> Any | None:
+        """Scan currently-registered entries (built-in + any plugin-activated). ``None`` = no match."""
+        first_for_provider = None
+        for entry in tuple(cls._entries):
+            m = entry.meta
+            if not (provider == m.provider or provider in m.provider_aliases):
+                continue
+            if not cls._revalidate_plugin_entry(entry):
+                continue
+            if first_for_provider is None:
+                first_for_provider = entry
+            if not endpoint or endpoint == m.endpoint or endpoint in m.aliases:
+                return entry.cls(None, **kwargs)
+
+        if first_for_provider is not None:
+            # Single-endpoint providers (claude_code, codex, pi) always match; non-empty unmatched falls through.
+            if not endpoint:
+                return first_for_provider.cls(None, **kwargs)
+            prov = first_for_provider.meta.provider
+            n = sum(
+                1
+                for e in tuple(cls._entries)
+                if e.meta.provider == prov or prov in e.meta.provider_aliases
+                if cls._revalidate_plugin_entry(e)
+            )
+            if n == 1:
+                return first_for_provider.cls(None, **kwargs)
+
+        return None
+
+    @classmethod
+    def _revalidate_plugin_entry(cls, entry: _RegistryEntry) -> bool:
+        """Keep plugin entries available only while their declared target remains trusted."""
+        if entry.plugin_name is None or entry.plugin_target is None:
+            return True
+
+        from lionagi.plugins import PluginActivationError, PluginRegistry
+
+        try:
+            PluginRegistry.activate_target(entry.plugin_name, entry.plugin_target)
+        except PluginActivationError:
+            try:
+                cls._entries.remove(entry)
+            except ValueError:
+                pass
+            return False
+        return True
+
+    @classmethod
+    def _consult_plugin_providers(cls) -> bool:
+        """Import every ACTIVE plugin's declared provider module (ADR-0088 D3), lazily.
+
+        Runs only from ``match()`` after a registered-entry miss — never at
+        import time or discovery, preserving import-time O(1). Goes through
+        ``PluginRegistry.activate_target`` exclusively (never a direct
+        ``importlib`` call on plugin code), so the trust/enabled/active
+        chokepoints already enforced there apply here too. Each activation is
+        cached by the plugin registry itself, so repeated misses are cheap.
+        Returns whether any module import succeeded — the caller only retries
+        the match when this is true.
+        """
+        try:
+            from lionagi.plugins import PluginActivationError, PluginRegistry
+        except ImportError:
+            return False
+
+        targets = PluginRegistry.active_provider_targets()
+        if not targets:
+            return False
+
+        imported = False
+        for plugin_name, module in targets:
+            previous = getattr(cls._plugin_registration, "provenance", None)
+            cls._plugin_registration.provenance = (plugin_name, module)
+            try:
+                activated = PluginRegistry.activate_target(plugin_name, module)
+                module_name = getattr(activated, "__name__", None)
+                for entry in cls._entries:
+                    if module_name is not None and entry.cls.__module__ == module_name:
+                        entry.plugin_name = plugin_name
+                        entry.plugin_target = module
+                imported = True
+            except PluginActivationError:
+                continue
+            finally:
+                if previous is None:
+                    del cls._plugin_registration.provenance
+                else:
+                    cls._plugin_registration.provenance = previous
+        return imported
 
     @classmethod
     def _ensure_loaded(cls):

@@ -523,7 +523,17 @@ CREATE TABLE IF NOT EXISTS schedule_runs (
   required_capabilities  JSON,
   execution_target       TEXT,
   library_ref             TEXT,
-  library_content_hash    TEXT
+  library_content_hash    TEXT,
+  -- Delivery-contract marker: stamped the moment the scheduler engine
+  -- confirms the external process for this occurrence was actually
+  -- launched (create_subprocess_exec returned), separate from fired_at
+  -- (when the occurrence + cursor advance committed) and updated_at (any
+  -- write). NULL means the occurrence's transaction committed but launch
+  -- was never confirmed -- the signal a startup recovery scan uses to
+  -- distinguish "crashed before dispatch, safe to re-fire" from
+  -- "dispatched, outcome merely lost" (see SchedulerEngine._fire_inner and
+  -- SchedulerEngine._recover_undispatched_fires).
+  dispatched_at           REAL
 );
 
 CREATE INDEX IF NOT EXISTS idx_sched_runs_schedule
@@ -663,6 +673,24 @@ CREATE INDEX IF NOT EXISTS idx_status_transitions_reason
 CREATE INDEX IF NOT EXISTS idx_status_transitions_created
   ON status_transitions(created_at DESC);
 
+-- ── Terminal deliveries (run-terminal callbacks) ────────────────────────────
+-- Durable reconciliation-consumer acknowledgment ledger for post-commit
+-- terminal-event callbacks. Never written by the in-process push path (that
+-- stays fire-and-forget); only a registered reconciliation consumer inserts a
+-- row here, once, when it has durably processed a terminal event. The
+-- composite primary key makes concurrent/repeated acks of the same event by
+-- the same consumer a single-row no-op (INSERT ... ON CONFLICT DO NOTHING).
+
+CREATE TABLE IF NOT EXISTS terminal_deliveries (
+  transition_id   TEXT    NOT NULL REFERENCES status_transitions(id),
+  consumer        TEXT    NOT NULL,
+  acked_at        REAL    NOT NULL,
+  PRIMARY KEY (transition_id, consumer)
+);
+
+CREATE INDEX IF NOT EXISTS idx_terminal_deliveries_consumer
+  ON terminal_deliveries(consumer, acked_at);
+
 -- ── Session signals (Phase C Move 1) ─────────────────────────────────────────
 -- Append-only lifecycle signal log emitted by SessionObserver.emit().
 -- seq is a monotonic per-session counter (assigned at INSERT via MAX+1).
@@ -763,7 +791,7 @@ CREATE INDEX IF NOT EXISTS idx_workflow_defs_updated
 -- against the running executor.  Apply/stamp ordering is verb-classed:
 -- pause/resume are idempotent (apply, then stamp), message is not
 -- (stamp 'applying', then apply, then finalize).  'stop' is schema-reserved
--- and currently unsupported; no CLI verb emits it and the poller rejects it.
+-- and rejected by the current poller as unsupported; no CLI verb emits it yet.
 
 CREATE TABLE IF NOT EXISTS session_controls (
   id          TEXT    PRIMARY KEY,         -- uuid4 hex

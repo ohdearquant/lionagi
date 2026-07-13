@@ -70,10 +70,8 @@ async def create_agent(
         if spec.yolo:
             extra.update(PROVIDER_YOLO_KWARGS.get(provider, {}))
 
-        # CLI providers (codex/claude_code) auth via subprocess — a placeholder
-        # api_key is fine. API providers must resolve their real key from
-        # settings; forcing "dummy" there silently breaks auth (the model can
-        # never call out). So only pin the placeholder for CLI providers.
+        # CLI providers auth via subprocess, so a placeholder api_key is fine;
+        # API providers need their real key or auth silently breaks.
         if provider in CLI_PROVIDERS:
             extra["api_key"] = "dummy"
 
@@ -146,17 +144,9 @@ def _chain_pre_hooks(
 ) -> Callable | None:
     """Compose security controls and user pre-hooks into one preprocessor.
 
-    Every security hook (an explicit PermissionPolicy's pre-hook, or a
-    built-in guard such as guard_destructive/guard_paths) is adapted into a
-    GateResult evaluator and run through the shared gate pass runner: each
-    control evaluates exactly once per pass, and an evaluator that raises
-    unexpectedly is treated as a fail-closed deny rather than propagating an
-    unrelated exception (ADR-0086 delta row 1).
-
-    When user pre-hooks are present, the security pass runs twice — once
-    before the user hooks and once after, against the final, possibly
-    mutated arguments — so a user hook cannot rewrite arguments past a
-    control that already approved them. With no user pre-hooks it runs once.
+    With user pre-hooks present, the security pass runs twice (before and
+    after) so a user hook cannot rewrite args past an already-approved
+    control. See docs/internals/runtime.md.
     """
     from .gate import GateDeniedError, adapt_legacy_hook, run_gate_pass
 
@@ -284,27 +274,14 @@ def _register_coding_tools(branch: Branch, spec: AgentSpec) -> None:
 def _resolve_mcp_path(spec: AgentSpec, *, trust_project_settings: bool = False) -> str | None:
     """Resolve the ``.mcp.json`` path an AgentSpec's MCP fields point at.
 
-    Shared by ``_load_mcp`` (island 1: lionagi-native ``branch.acts`` tools) and
-    ``_forward_mcp_to_cli_request`` (island 2: the CLI-native request) so
-    both islands agree on which file is authoritative and under what trust
-    gate. An explicit ``spec.mcp_config_path`` always wins; otherwise a
-    project-scoped ``.lionagi/.mcp.json`` / ``.mcp.json`` is only considered
-    when ``trust_project_settings=True`` (mirrors the settings-loading trust
-    gate), while the user-home ``~/.lionagi/.mcp.json`` candidate is trusted
-    unconditionally, since it lives in the user's own home directory rather
-    than an arbitrary project checkout.
-
-    An explicit ``spec.mcp_config_path`` that does not resolve to an existing
-    file raises ``ConfigurationError`` — the caller declared intent, so a
-    missing/typo'd path is a configuration error, not a soft no-op. Only the
-    auto-discovered candidates below fall through silently when none exist.
+    Shared by ``_load_mcp`` and ``_forward_mcp_to_cli_request`` so both agree
+    on the authoritative file and trust gate. See docs/internals/runtime.md.
     """
     from pathlib import Path
 
     if spec.mcp_config_path is not None:
-        # Presence check, not truthiness: an explicit empty string is still a
-        # declared path and must fail loudly below, never fall through into
-        # auto-discovery (which could silently load a different config).
+        # Presence check, not truthiness: an explicit empty string must fail
+        # loudly below, never fall through into auto-discovery.
         p = Path(spec.mcp_config_path)
         if p.is_file():
             return str(p)
@@ -360,46 +337,9 @@ def _forward_mcp_to_cli_request(
 ) -> None:
     """Forward AgentSpec MCP fields into the claude_code CLI's own request.
 
-    ``_load_mcp`` above only reaches island 1 (lionagi-native ``branch.acts``
-    tools, consulted by API function-calling endpoints) — inert for CLI
-    providers, which spawn their own subprocess and parse only that
-    subprocess's own tool_use/tool_result chunks, never calling back into
-    ``branch.acts``. This reaches island 2: the per-turn request kwargs a CLI
-    provider builds (``ClaudeCodeRequest.mcp_servers``, which ``as_cmd_args()``
-    turns into a literal ``--mcp-config`` flag for the ``claude`` CLI
-    subprocess). Setting it onto the chat_model endpoint's ``config.kwargs``
-    makes it land in every per-turn payload (``Endpoint.create_payload``
-    starts from ``config.kwargs`` and merges the per-call request on top),
-    the same mechanism already used for provider-specific extras like a
-    placeholder ``api_key``.
-
-    Why ``mcp_servers`` (dict) rather than ``mcp_config`` (path): although
-    ``as_cmd_args()`` prefers ``mcp_config`` over ``mcp_servers`` when both
-    are set, ``mcp_config``'s field validator
-    (``claude_code.py`` ``_validate_path_fields`` -> ``check_path_safe``)
-    unconditionally rejects absolute paths, and both resolved candidates
-    here (``~/.lionagi/.mcp.json`` and a project ``.mcp.json`` found via
-    parent-directory search) are absolute and not generally repo-relative —
-    so setting ``mcp_config`` would raise a ValidationError on the very next
-    turn for the common case. ``mcp_servers`` (a plain dict field) carries no
-    such validator, so this always loads the resolved file and forwards the
-    (optionally filtered) dict — never the path.
-
-    Only ``claude_code`` has an MCP-capable request model today; other
-    providers get a logged warning
-    rather than a silent no-op — but only when there is actually something
-    to forward (a resolvable config), so a caller can tell "no passthrough
-    exists" apart from "nothing was configured" (mirrors ``_load_mcp``,
-    which no-ops the same way for island 1 when nothing resolves).
-
-    ``spec.mcp_servers`` set (even to an explicit empty list) is itself
-    caller intent independent of whether any config file resolves: an
-    explicit allowlist must be enforced regardless of config presence, so a
-    ``claude_code`` leg with ``mcp_servers=[]`` and no resolvable
-    ``.mcp.json`` anywhere still forwards ``{}`` (filtering nothing against
-    an empty selection), forcing zero MCP servers rather than leaving the
-    per-turn request untouched and letting the CLI fall back to its own MCP
-    discovery.
+    ``_load_mcp`` only reaches lionagi-native ``branch.acts`` tools (inert for
+    CLI providers); this reaches the per-turn request kwargs a CLI provider
+    subprocess actually reads. See docs/internals/runtime.md.
     """
     mcp_path = _resolve_mcp_path(spec, trust_project_settings=trust_project_settings)
     if mcp_path is None and spec.mcp_servers is None:
@@ -419,17 +359,13 @@ def _forward_mcp_to_cli_request(
                 "run.",
                 provider,
             )
-        # provider != claude_code has no MCP-capable request model to forward
-        # into at all — an explicit mcp_servers filter with no resolvable
-        # config file has nothing to filter and nowhere to land, so this
-        # stays a silent no-op (mirrors _load_mcp's own no-op shape).
+        # No MCP-capable request model for this provider to forward into,
+        # so this stays a silent no-op (mirrors _load_mcp's own shape).
         return
 
     if mcp_path is None:
-        # claude_code + an explicit spec.mcp_servers filter (possibly empty)
-        # but no config file resolves: there is nothing to read, so the
-        # "servers available" set is empty — filtering it by the allowlist
-        # is still {}, which is exactly the explicit-empty-allowlist case.
+        # No config file resolves: the available-servers set is empty, which
+        # matches the explicit-empty-allowlist case.
         servers: dict = {}
     else:
         import json
@@ -449,9 +385,8 @@ def _forward_mcp_to_cli_request(
                 exc,
             )
             if spec.mcp_config_path:
-                # An explicitly configured path (as opposed to an auto-discovered
-                # candidate) failing to read/parse is a configuration error, not
-                # a soft "nothing to forward" — the caller declared intent.
+                # An explicitly configured path failing to parse is a
+                # configuration error, not a soft no-op.
                 raise ConfigurationError(
                     f"spec.mcp_config_path={spec.mcp_config_path!r} could not be "
                     f"read or parsed as JSON: {type(exc).__name__}: {exc}"
@@ -460,19 +395,12 @@ def _forward_mcp_to_cli_request(
         servers = data.get("mcpServers", {}) if isinstance(data, dict) else {}
 
     if spec.mcp_servers is not None:
-        # A server-name filter is set (possibly an explicit empty list): the
-        # two islands must agree on selection (mirrors _load_mcp's
-        # server_names semantics, where server_names=[] loads nothing).
+        # Explicit filter set (possibly empty): mirrors _load_mcp's
+        # server_names semantics, where an empty list loads nothing.
         servers = {name: cfg for name, cfg in servers.items() if name in spec.mcp_servers}
 
-    # Mutating config.kwargs in place would corrupt any OTHER branch sharing
-    # this same iModel instance (Branch.__init__ keeps a caller-supplied
-    # chat_model by reference, not by copy — two create_agent calls given the
-    # same iModel would otherwise cross-contaminate each other's MCP server
-    # filter through the shared config.kwargs dict). Give this branch its own
-    # copy of the chat_model/endpoint/config before mutating so the change is
-    # branch-local. share_session/share_executor keep the copy's CLI session
-    # and the caller-supplied rate limiter/queue shared with the original —
-    # only the endpoint config (and thus the MCP filter) is branch-local.
+    # Copy chat_model before mutating config.kwargs: Branch keeps a
+    # caller-supplied chat_model by reference, so mutating in place would
+    # cross-contaminate other branches sharing the same iModel.
     branch.chat_model = branch.chat_model.copy(share_session=True, share_executor=True)
     branch.chat_model.endpoint.config.kwargs["mcp_servers"] = servers

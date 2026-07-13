@@ -1,7 +1,7 @@
 # Copyright (c) 2023-2026, HaiyangLi <quantocean.li at gmail dot com>
 # SPDX-License-Identifier: Apache-2.0
 
-"""SQLAlchemy MetaData for all 27 StateDB tables — single source of truth for schema DDL."""
+"""SQLAlchemy MetaData for all 28 StateDB tables — single source of truth for schema DDL."""
 
 from __future__ import annotations
 
@@ -607,6 +607,10 @@ schedule_runs = Table(
     Column("execution_target", Text),
     Column("library_ref", Text),
     Column("library_content_hash", Text),
+    # Delivery-contract marker: stamped once the scheduler engine confirms
+    # the external process for this occurrence was actually launched. See
+    # the schema.sql CREATE TABLE comment for the full rationale.
+    Column("dispatched_at", Float),
 )
 
 Index("idx_sched_runs_schedule", schedule_runs.c.schedule_id, schedule_runs.c.fired_at)
@@ -792,6 +796,28 @@ Index(
 )
 Index("idx_status_transitions_created", status_transitions.c.created_at)
 
+# ── terminal_deliveries ─────────────────────────────────────────────────────────
+# Durable reconciliation-consumer acknowledgment ledger for post-commit
+# terminal-event callbacks (never written by the in-process push path itself —
+# only a registered reconciliation consumer inserts a row, once it has
+# durably processed a terminal event). The composite primary key makes
+# concurrent/repeated acks of the same event by the same consumer a
+# single-row no-op.
+
+terminal_deliveries = Table(
+    "terminal_deliveries",
+    metadata,
+    Column("transition_id", Text, ForeignKey("status_transitions.id"), primary_key=True),
+    Column("consumer", Text, primary_key=True),
+    Column("acked_at", Float, nullable=False),
+)
+
+Index(
+    "idx_terminal_deliveries_consumer",
+    terminal_deliveries.c.consumer,
+    terminal_deliveries.c.acked_at,
+)
+
 # ── session_signals ───────────────────────────────────────────────────────────
 
 session_signals = Table(
@@ -898,8 +924,8 @@ Index("idx_workflow_defs_updated", workflow_defs.c.updated_at)
 # idempotent (apply, then stamp — safe to re-apply on a poller crash); message
 # is not (stamp 'applying', then apply, then finalize — a crash surfaces as an
 # unapplied 'applying' row rather than risking a double injection). 'stop' is
-# schema-reserved and currently unsupported; no CLI verb emits it and the
-# poller rejects it.
+# schema-reserved and rejected by the current poller as unsupported; no CLI
+# verb emits it yet.
 
 session_controls = Table(
     "session_controls",

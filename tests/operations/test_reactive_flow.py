@@ -198,6 +198,157 @@ async def test_spawn_branch_setup_fires_with_operation_and_cloned_branch():
     assert isinstance(branch, Branch)
 
 
+@pytest.mark.xfail(
+    strict=True,
+    raises=AssertionError,
+    reason="Reactive flows do not yet notify branch-created persistence callbacks "
+    "for a preallocated (dependency-created) branch clone (the reactive kernel "
+    "path never forwards on_branch_created to the executor for it).",
+)
+@pytest.mark.asyncio
+async def test_reactive_flow_notifies_for_preallocated_clone():
+    """A dependency-created (preallocated) branch clone must fire
+    on_branch_created exactly once, the same guarantee non-reactive flow
+    already provides. It currently fires zero times: this reproduces the
+    confirmed gap so a future runtime fix turns this into a loud XPASS
+    instead of silently leaving the branch-created persistence hook unfired
+    for reactive runs. Pinned to AssertionError so an unrelated exception
+    from either production `flow(...)` call surfaces as a real failure
+    instead of being swallowed as this known violation, and split from the
+    injected-clone leg below so a partial repair (one leg fixed, not the
+    other) surfaces as an XPASS on exactly one test instead of being hidden
+    inside a combined assertion."""
+
+    # A dependent two-node graph — the second node has no explicit branch, so
+    # the executor preallocates a clone of the default branch.
+    async def dependent_step(**kw):
+        return "done"
+
+    dep_session = _session_with_ops(dependent_step=dependent_step)
+    dep_builder = OperationGraphBuilder()
+    n1 = dep_builder.add_operation("dependent_step")
+    dep_builder.add_operation("dependent_step", depends_on=[n1])
+    dep_graph = dep_builder.get_graph()
+
+    preallocated_created: list = []
+    await flow(dep_session, dep_graph, reactive=True, on_branch_created=preallocated_created.append)
+
+    assert len(preallocated_created) == 1
+
+
+@pytest.mark.xfail(
+    strict=True,
+    raises=AssertionError,
+    reason="Reactive flows do not yet notify branch-created persistence callbacks "
+    "for a reactively injected (SpawnRequest) branch clone (injected clones "
+    "never invoke on_branch_created either).",
+)
+@pytest.mark.asyncio
+async def test_reactive_flow_notifies_for_injected_clone():
+    """A reactively injected (SpawnRequest) branch clone must fire
+    on_branch_created exactly once, the same guarantee non-reactive flow
+    already provides. It currently fires zero times: this reproduces the
+    confirmed gap so a future runtime fix turns this into a loud XPASS
+    instead of silently leaving the branch-created persistence hook unfired
+    for reactive runs. Pinned to AssertionError so an unrelated exception
+    from the production `flow(...)` call surfaces as a real failure instead
+    of being swallowed as this known violation, and split from the
+    preallocated-clone leg above so a partial repair surfaces as an XPASS on
+    exactly one test instead of being hidden inside a combined assertion."""
+
+    # A spawner node injects a follow-up node via SpawnRequest — the injected
+    # node's branch is cloned by _assign_injected_branch.
+    async def spawner(**kw):
+        return SpawnRequest(instruction="follow-up", independent=True)
+
+    async def follow_up(**kw):
+        return "did the follow-up work"
+
+    inj_session = _session_with_ops(spawner=spawner, follow_up=follow_up)
+
+    def node_builder(req: SpawnRequest, emitter: Operation) -> Operation:
+        return create_operation("follow_up", parameters={})
+
+    inj_builder = OperationGraphBuilder()
+    inj_builder.add_operation("spawner")
+    inj_graph = inj_builder.get_graph()
+
+    injected_created: list = []
+    await flow(
+        inj_session,
+        inj_graph,
+        reactive=True,
+        node_builder=node_builder,
+        on_branch_created=injected_created.append,
+    )
+
+    assert len(injected_created) == 1
+
+
+@pytest.mark.asyncio
+async def test_on_op_complete_can_inject_before_task_group_closes():
+    """A single-node graph finishing in one turn (no sleep) still gets its
+    on_op_complete-driven follow-up injected and run — a poll loop
+    checking on a later tick would lose this race."""
+    ran: list[str] = []
+
+    async def alice_turn(**kw):
+        ran.append("alice_turn")
+        return "done fast"
+
+    async def alice_followup(**kw):
+        ran.append("alice_followup")
+        return "followup ran"
+
+    session = _session_with_ops(alice_turn=alice_turn, alice_followup=alice_followup)
+    builder = OperationGraphBuilder()
+    builder.add_operation("alice_turn")
+    graph = builder.get_graph()
+
+    executor_ref: dict[str, Any] = {}
+    injected_once = {"done": False}
+
+    def on_op_complete(node):
+        if injected_once["done"]:
+            return
+        injected_once["done"] = True
+        followup = create_operation("alice_followup", parameters={})
+        assert executor_ref["executor"].inject(followup, independent=True) is True
+
+    result = await flow(
+        session,
+        graph,
+        reactive=True,
+        executor_ref=executor_ref,
+        on_op_complete=on_op_complete,
+    )
+
+    assert ran == ["alice_turn", "alice_followup"]
+    assert len(result["completed_operations"]) == 2
+
+
+@pytest.mark.asyncio
+async def test_on_op_complete_exception_does_not_break_the_flow(caplog):
+    """A raising on_op_complete callback must not take down the run."""
+
+    async def alice_turn(**kw):
+        return "ok"
+
+    session = _session_with_ops(alice_turn=alice_turn)
+    builder = OperationGraphBuilder()
+    builder.add_operation("alice_turn")
+    graph = builder.get_graph()
+
+    def on_op_complete(node):
+        raise RuntimeError("boom")
+
+    with caplog.at_level(logging.WARNING):
+        result = await flow(session, graph, reactive=True, on_op_complete=on_op_complete)
+
+    assert len(result["completed_operations"]) == 1
+    assert "on_op_complete" in caplog.text
+
+
 def test_inject_rejected_when_not_running():
     """inject() is a no-op (returns False) outside an active flow."""
     from lionagi.operations.flow import ReactiveExecutor

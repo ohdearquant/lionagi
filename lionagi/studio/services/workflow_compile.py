@@ -2,10 +2,7 @@
 # SPDX-License-Identifier: Apache-2.0
 """Compile a Studio WorkflowDef spec into an executable lionagi OperationGraph.
 
-The only new security surface here is `StudioExprCondition` — a restricted-grammar
-expression evaluator for edge conditions authored in the Studio designer. It never
-calls eval/exec/compile/__import__; the AST is walked against a closed node-type
-allowlist before it is ever evaluated.
+Security surface: `StudioExprCondition` is a restricted-grammar expression evaluator that never calls eval/exec/compile/__import__.
 """
 
 from __future__ import annotations
@@ -50,11 +47,7 @@ class UnsafeExpressionError(ValueError):
 
 
 class WorkflowCompileError(Exception):
-    """A WorkflowDef spec could not compile to an executable graph.
-
-    Carries the offending node/edge id so callers (the run route, the designer
-    UI) can annotate the error in place instead of surfacing a bare 500.
-    """
+    """A WorkflowDef spec could not compile to an executable graph. Carries the offending node/edge id so callers can annotate the error in place."""
 
     def __init__(
         self, message: str, *, node_id: str | None = None, edge_id: str | None = None
@@ -69,12 +62,8 @@ class WorkflowCompileError(Exception):
 
 
 # ─── Safe expression grammar ───────────────────────────────────────────────
-#
-# Allowed: comparisons (== != < <= > >=), boolean and/or/not, literals
-# (str/int/float/bool/None), list/tuple literals of the above, names,
-# attribute access, subscript/key access, in/not in. Everything else
-# (calls, lambdas, comprehensions, f-strings, walrus, imports, dunder
-# names/attributes) is rejected before the tree is ever evaluated.
+# Allowed: comparisons, boolean and/or/not, literals, list/tuple, names, attribute/subscript
+# access, in/not in. Calls/lambdas/comprehensions/f-strings/walrus/imports/dunder are rejected.
 
 
 def _check_depth(node: ast.AST, depth: int = 0) -> None:
@@ -133,11 +122,7 @@ def _validate_node(node: ast.AST) -> None:
 
 
 def _resolve_node_cwd(node_id: str, raw_cwd: Any, base_dir: str | None) -> str:
-    """Resolve and contain a node's config.cwd against the run's base_dir.
-
-    Order matters: raw-string traversal check before path resolution, then
-    symlink resolution before the containment check, then existence check.
-    """
+    """Resolve and contain a node's config.cwd against the run's base_dir. Order matters: traversal check, then symlink resolution, then containment, then existence."""
     if not isinstance(raw_cwd, str) or not raw_cwd:
         raise WorkflowCompileError(
             f"node {node_id!r} config.cwd must be a non-empty string, "
@@ -266,19 +251,14 @@ def _eval_node(node: ast.AST, ctx: dict[str, Any]) -> Any:
 
 
 class StudioExprCondition(EdgeCondition):
-    """Restricted-grammar edge condition compiled from a Studio WorkflowEdge.condition string.
-
-    Evaluated strictly against ``{"result": <upstream operation result>,
-    "context": <flow context>}`` — no builtins, no globals, no calls.
-    """
+    """Restricted-grammar edge condition compiled from a Studio WorkflowEdge.condition string. Evaluated against ``{"result": ..., "context": ...}`` — no builtins, no globals, no calls."""
 
     expr: str = Field(...)
     _tree: Any = PrivateAttr(default=None)
 
     def __init__(self, **data: Any) -> None:
-        # Parse BEFORE pydantic's validation machinery runs: a model_validator
-        # would have its UnsafeExpressionError wrapped into pydantic_core.
-        # ValidationError, breaking callers that match on UnsafeExpressionError.
+        # Parse BEFORE pydantic's validation machinery runs -- a model_validator
+        # would wrap UnsafeExpressionError into pydantic_core.ValidationError.
         tree = _parse_expr(data.get("expr", ""))
         super().__init__(**data)
         self._tree = tree
@@ -298,18 +278,7 @@ async def compile_workflow_def(
     resolve_engine_def: Callable[[str], Awaitable[dict[str, Any] | None]],
     base_dir: str | None = None,
 ) -> tuple[Graph, dict[str, str]]:
-    """Compile a validated WorkflowDef spec into an executable Graph.
-
-    Returns ``(graph, id_map)`` where ``id_map`` maps authored node ids to the
-    internal Operation ids lionagi assigned them. Raises WorkflowCompileError
-    (node_id/edge_id set) on any problem — never lets a bad expr, unknown
-    engine_def_id, or a parse/fanout/gate node reach the executor.
-
-    ``base_dir`` is a run-level containment root for node ``config.cwd``
-    values — it is never read from the spec itself (a spec carrying a
-    top-level ``base_dir`` field is rejected below): a shared/contributed
-    def must not be able to pin its own containment root.
-    """
+    """Compile a validated WorkflowDef spec into an executable Graph. Returns ``(graph, id_map)``; raises WorkflowCompileError (node_id/edge_id set) on any problem, never letting a bad expr or unknown engine_def_id reach the executor."""
     if "base_dir" in spec:
         raise WorkflowCompileError(
             "spec_json must not carry a top-level 'base_dir' field — "
@@ -367,17 +336,13 @@ async def compile_workflow_def(
                         "Use provider/model, e.g. openai/gpt-4.1-mini.",
                         node_id=node_id,
                     )
-                # Built here, not passed as a bare string: chat_and_record
-                # forwards kwargs into Branch.chat(), whose model-override
-                # parameter is `imodel` (an iModel instance), not a string.
+                # chat_and_record forwards kwargs into Branch.chat(), whose model-override
+                # parameter is `imodel` (an iModel instance), not a bare string.
                 from lionagi.service.imodel import iModel
 
                 chat_kwargs["imodel"] = iModel(model=model)
-            # "chat_and_record", not the native "chat" op: Branch.chat() does
-            # not add messages to the branch by design, so a plain "chat" node
-            # would leave nothing for workflow_run.py's persistence hook to
-            # record. chat_and_record() records via the same hooked
-            # a_add_message path communicate() uses.
+            # "chat_and_record", not native "chat": Branch.chat() doesn't add messages
+            # to the branch, so a plain "chat" node would leave nothing to persist.
             op_id = builder.add_operation(
                 "chat_and_record", node_id=node_id, instruction=prompt, **chat_kwargs
             )
@@ -392,11 +357,8 @@ async def compile_workflow_def(
                 raise WorkflowCompileError(
                     f"unknown engine_def_id {engine_def_id!r}", node_id=node_id
                 )
-            # Node-level config overrides never went through engine_defs'
-            # creation-time checks (allowed keys, no CLI-flag/shell-metachar
-            # injection, budgets in [1, 100]); re-validate the effective
-            # values so a saved workflow can't smuggle a hostile test_cmd or
-            # an unbounded agent/depth budget.
+            # Node-level config overrides never went through engine_defs' creation-time
+            # checks; re-validate so a saved workflow can't smuggle a hostile test_cmd.
             from .engine_defs import (
                 _validate_budget,
                 _validate_kind_options,
@@ -429,10 +391,8 @@ async def compile_workflow_def(
             except ValueError as exc:
                 raise WorkflowCompileError(str(exc), node_id=node_id) from exc
 
-            # Per-node working directory, contained via _resolve_node_cwd.
-            # v1.1 only wires it to a 'coding' node's run(workspace=...) --
-            # other engine kinds have no such kwarg and would crash at run
-            # time (not compile) if one were smuggled in.
+            # Per-node working directory, contained via _resolve_node_cwd. v1.1 only wires
+            # it to 'coding' nodes -- other engine kinds have no such kwarg.
             engine_workspace: str | None = None
             node_cwd = config.get("cwd")
             if node_cwd is not None:
@@ -475,9 +435,8 @@ async def compile_workflow_def(
             )
         src_op = id_map.get(src_wf)
         if src_op is None:
-            # Source is an 'input' node -- no Operation-level edge is created,
-            # so a condition here would be silently dropped and the target
-            # would run unconditionally. Reject; gate via an intermediate node.
+            # Source is an 'input' node -- no Operation-level edge exists, so a condition
+            # here would be silently dropped. Reject; gate via an intermediate node.
             if e.get("condition"):
                 raise WorkflowCompileError(
                     "a condition on an edge from an 'input' node is not "
@@ -508,12 +467,7 @@ async def compile_workflow_def(
 
 
 def build_early_graph(spec: dict[str, Any]) -> dict[str, Any]:
-    """Build the authored-graph shape stored at session.node_metadata.early_graph.
-
-    Matches the frontend's WorkerGraph shape (WorkerStepNode/WorkerLinkEdge) so
-    the existing run-detail renderer (sessions.py:_graph_from_metadata ->
-    WorkerCanvas) can draw it without any new frontend code.
-    """
+    """Build the authored-graph shape stored at session.node_metadata.early_graph, matching the frontend's WorkerGraph shape so the existing renderer can draw it."""
     nodes: list[dict[str, Any]] = []
     for n in spec.get("nodes", []):
         if n.get("kind") not in EXECUTABLE_NODE_KINDS:
@@ -570,11 +524,7 @@ def build_early_graph(spec: dict[str, Any]) -> dict[str, Any]:
 
 
 def _derive_engine_input(context: dict[str, Any] | None) -> str:
-    """Heuristic mapping from upstream flow context to an engine's main positional input.
-
-    Prefers an upstream predecessor's textual result (``{pred_id}_result``
-    keys), falling back to flow-level inputs.
-    """
+    """Heuristic mapping from upstream flow context to an engine's main positional input. Prefers a predecessor's ``{pred_id}_result`` text, falling back to flow-level inputs."""
     if not context:
         return ""
     for key, value in context.items():
@@ -589,16 +539,7 @@ def _derive_engine_input(context: dict[str, Any] | None) -> str:
 def make_engine_operation(
     session: Any, *, on_branch_created: Callable[[Any], None] | None = None
 ) -> Callable[..., Awaitable[Any]]:
-    """Build the 'engine' Branch-operation closure for one workflow run.
-
-    Resolves the engine class per kind (reusing the CLI's kind registry —
-    FindExisting, not a new one) and runs it in-process against the SAME
-    session, so any sub-agent branches it spawns are wired into this run.
-
-    ``on_branch_created``, when given, is threaded into ``engine.run()`` so
-    each sub-agent branch the engine spawns (``Engine.make_agent``) gets
-    registered for persistence the same way flow-cloned branches already are.
-    """
+    """Build the 'engine' Branch-operation closure for one workflow run. Runs in-process against the SAME session so any sub-agent branches it spawns are wired into this run."""
 
     async def _engine_op(
         context: dict[str, Any] | None = None,

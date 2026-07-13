@@ -98,12 +98,8 @@ def dialect_of(url: str) -> str:
 
 
 def make_engine(url: str, **overrides):
-    """Create and return an AsyncEngine for *url*.
-
-    SQLite: registers a connect-event listener that applies the six pragmas
-    (busy_timeout first) on every new DBAPI connection.
-    PostgreSQL: pool_pre_ping=True; sslmode query param translated to asyncpg ssl arg.
-    """
+    """Create an AsyncEngine for *url*. SQLite gets a busy_timeout-first pragma
+    listener; PostgreSQL gets pool_pre_ping and sslmode→ssl arg translation."""
     from sqlalchemy.event import listen
     from sqlalchemy.ext.asyncio import create_async_engine
 
@@ -159,24 +155,8 @@ _SQLITE_ASYNC_PREFIX = "sqlite+aiosqlite:///"
 
 
 def make_readonly_engine(url: str, **overrides):
-    """Read-only AsyncEngine over an EXISTING SQLite file.
-
-    Opens the file through SQLite's own URI read-only mode (`mode=ro`) rather
-    than `make_engine()`'s normal path, so:
-
-    - no schema/PRAGMA write ever reaches the file (the OS-level open is
-      read-only; SQLite raises if any statement attempts to write)
-    - none of `make_engine()`'s mutating connect-time PRAGMAs are applied
-      (`journal_mode`, `synchronous`, `wal_autocheckpoint` all persist into
-      the database file itself and are skipped here on purpose)
-    - only `busy_timeout` (session-scoped, never persisted) and `query_only`
-      (belt-and-suspenders: SQLite itself rejects any write statement) are
-      set
-
-    Sqlite only — a caller wanting a genuinely read-only Postgres connection
-    should use a read-only DB role instead; there is no equivalent "connect
-    without side effects" mode to fake at this layer for Postgres.
-    """
+    """Read-only AsyncEngine over an existing SQLite file via URI `mode=ro`.
+    SQLite only — see docs/internals/runtime.md for the read-only contract."""
     from sqlalchemy.event import listen
     from sqlalchemy.ext.asyncio import create_async_engine
 

@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import asyncio
 from typing import Any
+from unittest import mock
 
 import pytest
 
@@ -275,6 +276,54 @@ async def test_run_dag_emits_node_queued_before_started():
     qi = next(i for i, e in enumerate(signal_log) if e.startswith("queued:"))
     si = next(i for i, e in enumerate(signal_log) if e.startswith("started:"))
     assert qi < si, "NodeQueued must precede NodeStarted in the signal log"
+
+
+@pytest.mark.asyncio
+async def test_run_dag_calls_session_flow_once_with_same_graph():
+    """Pins the EngineRun.run_dag -> Session.flow bridge boundary directly,
+    independent of the NodeQueued/NodeStarted ordering assertion above.
+
+    Session is a pydantic model, so its methods can only be patched at the
+    class level (not per-instance) — the wrapper below forwards self/args
+    explicitly to the real implementation rather than relying on an
+    AsyncMock(wraps=...), which would drop the bound `self` and mis-route
+    the graph argument into it.
+    """
+    from lionagi.engines import Engine
+    from lionagi.operations.builder import OperationGraphBuilder
+    from lionagi.session.branch import Branch
+    from lionagi.session.session import Session
+
+    async def work(**kw):
+        return "ok"
+
+    session = Session()
+    branch = Branch(name="root")
+    session.include_branches(branch)
+    session.default_branch = branch
+    session.register_operation("work", work)
+
+    builder = OperationGraphBuilder()
+    builder.add_operation("work")
+    graph = builder.get_graph()
+
+    calls: list[tuple] = []
+    original_flow = Session.flow
+
+    async def _spy_flow(self, *args, **kwargs):
+        calls.append((self, args, kwargs))
+        return await original_flow(self, *args, **kwargs)
+
+    with mock.patch.object(Session, "flow", _spy_flow):
+        run = Engine().new_run(session=session)
+        result = await run.run_dag(graph)
+
+    assert len(result["completed_operations"]) == 1
+    assert len(calls) == 1
+    called_self, called_args, called_kwargs = calls[0]
+    assert called_self is session
+    passed_graph = called_args[0] if called_args else called_kwargs.get("graph")
+    assert passed_graph is graph
 
 
 # ---------------------------------------------------------------------------

@@ -48,11 +48,8 @@ async def run_sync(func: Callable[P, R], *args: P.args, **kwargs: P.kwargs) -> R
     return await anyio.to_thread.run_sync(func, *args)
 
 
-# Process-wide latch set by run_async's SIGTERM handler the moment the signal
-# arrives. SigtermInterrupt itself is only raised after the worker thread has
-# joined — by then teardown code has already classified a plain CancelledError
-# and stamped the terminal record. Persist paths consult this flag so an
-# external SIGTERM stays distinguishable from an internal runtime cancel.
+# Process-wide latch set by run_async's SIGTERM handler; lets persist paths
+# distinguish an external SIGTERM from an internal runtime cancel.
 _SIGTERM_RECEIVED = threading.Event()
 _SIGTERM_RECEIVED_LOCK = threading.Lock()
 
@@ -63,11 +60,8 @@ def sigterm_received() -> bool:
 
 
 def consume_sigterm_received() -> bool:
-    """Read-and-clear the latch so one external SIGTERM labels one run.
-
-    Without consuming, the latch stays set for the lifetime of the process
-    and mislabels every later run/test's cancellation as SIGTERM-caused.
-    """
+    """Read-and-clear the latch so one external SIGTERM labels one run
+    (otherwise it stays set and mislabels every later cancellation)."""
     with _SIGTERM_RECEIVED_LOCK:
         received = _SIGTERM_RECEIVED.is_set()
         if received:
@@ -76,23 +70,12 @@ def consume_sigterm_received() -> bool:
 
 
 class SigtermInterrupt(BaseException):
-    """Raised by run_async() when the process received SIGTERM mid-run.
-
-    Deliberately not a KeyboardInterrupt subclass (that's the SIGINT/user
-    convention); subclasses BaseException instead so a bare
-    ``except Exception:`` can't silently swallow it.
-    """
+    """Raised by run_async() when SIGTERM arrives mid-run; subclasses
+    BaseException (not KeyboardInterrupt) so ``except Exception:`` can't swallow it."""
 
 
-# Signal-aware run_async: installs temporary SIGINT/SIGTERM handlers from the
-# main thread that cancel the inner asyncio task via call_soon_threadsafe
-# instead of leaving the default disposition in place. SIGINT's default would
-# raise KeyboardInterrupt in join(), orphaning the child thread and leaving
-# session rows stuck in "running" state; SIGTERM's default is immediate
-# process termination with no unwind at all, so without a handler here an
-# external SIGTERM (a timeout supervisor, a process-group kill) is silent.
-
-
+# Installs temporary SIGINT/SIGTERM handlers that cancel the inner task via
+# call_soon_threadsafe instead of leaving the default (silent-kill) disposition.
 def run_async(coro: Awaitable[T]) -> T:
     """Run an awaitable from sync context in an isolated thread+event loop."""
     result_container: list[Any] = []
@@ -111,11 +94,8 @@ def run_async(coro: Awaitable[T]) -> T:
                 task = asyncio.current_task()
                 _loop_and_task_future.set_result((asyncio.get_event_loop(), task))
                 if _cancel_requested.is_set() or _term_requested.is_set():
-                    # A signal was latched before this future existed, so the
-                    # handler's call_soon_threadsafe(task.cancel) had nothing
-                    # to call yet (this is the only path for SIGTERM, whose
-                    # default disposition isn't callable as a fallback).
-                    # Cancel ourselves now instead of running to completion.
+                    # A signal was latched before this future existed (the only
+                    # path for SIGTERM) — cancel ourselves instead of running on.
                     task.cancel()
                 return await coro
 

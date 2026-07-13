@@ -1,7 +1,7 @@
 # Copyright (c) 2023-2026, HaiyangLi <quantocean.li at gmail dot com>
 # SPDX-License-Identifier: Apache-2.0
 
-"""Tests for ADR-0047 built-in handlers (FIX 4: persist_message dual progressions)."""
+"""Tests for ADR-0047 built-in handlers and message persistence."""
 
 from __future__ import annotations
 
@@ -21,7 +21,7 @@ def _make_mock_db():
     return AsyncMock()
 
 
-# ── persist_message: dual progressions ───────────────────────────────────────
+# ── persist_message: one logical persistence event ───────────────────────────
 
 
 async def test_persist_message_appends_to_branch_progression():
@@ -35,9 +35,14 @@ async def test_persist_message_appends_to_branch_progression():
             branch_progression_id="bp1",
         )
 
-    mock_db.insert_message.assert_awaited_once_with(msg)
-    mock_db.append_to_progression.assert_any_await("bp1", "msg1")
-    mock_db.touch_session_activity.assert_awaited_once_with("sess1")
+    mock_db._persist_live_message.assert_awaited_once_with(
+        msg,
+        session_id="sess1",
+        branch_progression_id="bp1",
+        session_progression_id=None,
+        system_branch_id=None,
+        system_branch_update_before_activity=True,
+    )
 
 
 async def test_persist_message_appends_to_session_progression():
@@ -51,7 +56,14 @@ async def test_persist_message_appends_to_session_progression():
             session_progression_id="sp1",
         )
 
-    mock_db.append_to_progression.assert_any_await("sp1", "msg2")
+    mock_db._persist_live_message.assert_awaited_once_with(
+        msg,
+        session_id="sess1",
+        branch_progression_id=None,
+        session_progression_id="sp1",
+        system_branch_id=None,
+        system_branch_update_before_activity=True,
+    )
 
 
 async def test_persist_message_appends_to_both_progressions():
@@ -66,10 +78,14 @@ async def test_persist_message_appends_to_both_progressions():
             session_progression_id="sp1",
         )
 
-    calls = mock_db.append_to_progression.await_args_list
-    progression_ids = [c.args[0] for c in calls]
-    assert "bp1" in progression_ids
-    assert "sp1" in progression_ids
+    mock_db._persist_live_message.assert_awaited_once_with(
+        msg,
+        session_id="sess1",
+        branch_progression_id="bp1",
+        session_progression_id="sp1",
+        system_branch_id=None,
+        system_branch_update_before_activity=True,
+    )
 
 
 async def test_persist_message_updates_system_msg_id_for_system_role():
@@ -83,7 +99,14 @@ async def test_persist_message_updates_system_msg_id_for_system_role():
             branch_id="branch1",
         )
 
-    mock_db.update_branch.assert_awaited_once_with("branch1", system_msg_id="sys1")
+    mock_db._persist_live_message.assert_awaited_once_with(
+        msg,
+        session_id="sess1",
+        branch_progression_id=None,
+        session_progression_id=None,
+        system_branch_id="branch1",
+        system_branch_update_before_activity=True,
+    )
 
 
 async def test_persist_message_no_system_msg_update_for_non_system_role():
@@ -97,7 +120,14 @@ async def test_persist_message_no_system_msg_update_for_non_system_role():
             branch_id="branch1",
         )
 
-    mock_db.update_branch.assert_not_awaited()
+    mock_db._persist_live_message.assert_awaited_once_with(
+        msg,
+        session_id="sess1",
+        branch_progression_id=None,
+        session_progression_id=None,
+        system_branch_id=None,
+        system_branch_update_before_activity=True,
+    )
 
 
 async def test_persist_message_legacy_progression_id_still_works():
@@ -112,7 +142,87 @@ async def test_persist_message_legacy_progression_id_still_works():
             progression_id="legacy_prog",
         )
 
-    mock_db.append_to_progression.assert_any_await("legacy_prog", "msg_legacy")
+    mock_db._persist_live_message.assert_awaited_once_with(
+        msg,
+        session_id="sess1",
+        branch_progression_id="legacy_prog",
+        session_progression_id=None,
+        system_branch_id=None,
+        system_branch_update_before_activity=True,
+    )
+
+
+async def test_default_message_hook_retries_middle_transaction_failure(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path,
+):
+    """HookBus keeps a rolled-back transcript event for the next emission."""
+    from sqlalchemy import event
+
+    import lionagi.state.db as state_db_module
+    from lionagi.hooks import build_session_bus
+    from lionagi.hooks.bus import HookPoint
+    from lionagi.protocols.messages.manager import MessageManager
+    from lionagi.state.engine import normalize_state_db_url
+
+    db_url = _redirect_shared_db(monkeypatch, tmp_path)
+    null_url = normalize_state_db_url(None)
+    db = await _shared(db_url)
+    session_id = "hook-retry-session"
+    branch_id = "hook-retry-branch"
+    branch_prog_id = "hook-retry-branch-progression"
+    session_prog_id = "hook-retry-session-progression"
+    await _seed_session(db, session_id, session_prog_id)
+    await _seed_branch(db, branch_id, session_id, branch_prog_id)
+    bus = build_session_bus()
+    progression_updates = 0
+
+    def fail_second_progression(conn, cursor, statement, parameters, context, executemany):
+        nonlocal progression_updates
+        if statement.lstrip().startswith("UPDATE progressions"):
+            progression_updates += 1
+            if progression_updates == 2:
+                raise RuntimeError("injected middle progression failure")
+
+    lost = MessageManager.create_instruction(instruction="lost").to_dict(mode="db")
+    event.listen(db._engine.sync_engine, "before_cursor_execute", fail_second_progression)
+    try:
+        await bus.emit(
+            HookPoint.MESSAGE_ADD,
+            message=lost,
+            session_id=session_id,
+            branch_id=branch_id,
+            branch_progression_id=branch_prog_id,
+            session_progression_id=session_prog_id,
+        )
+    finally:
+        event.remove(db._engine.sync_engine, "before_cursor_execute", fail_second_progression)
+
+    retry_queue = next(iter(bus._message_retry_queues.values()))
+    assert retry_queue.pending_count == 1
+    assert await db.get_message(lost["id"]) is None
+    assert await db.get_progression(branch_prog_id) == []
+    assert await db.get_progression(session_prog_id) == []
+
+    next_message = MessageManager.create_instruction(instruction="next").to_dict(mode="db")
+    await bus.emit(
+        HookPoint.MESSAGE_ADD,
+        message=next_message,
+        session_id=session_id,
+        branch_id=branch_id,
+        branch_progression_id=branch_prog_id,
+        session_progression_id=session_prog_id,
+    )
+
+    assert await db.get_progression(branch_prog_id) == [lost["id"], next_message["id"]]
+    assert await db.get_progression(session_prog_id) == [lost["id"], next_message["id"]]
+    assert await db.get_message(lost["id"]) is not None
+    assert await db.get_message(next_message["id"]) is not None
+    assert retry_queue.pending_count == 0
+
+    await db.close()
+    state_db_module._SHARED.pop(db_url, None)
+    state_db_module._SHARED.pop(null_url, None)
 
 
 # ── persist_session_start: running status must carry a reason_code ─────────────
@@ -698,6 +808,132 @@ class TestBranchCreateEmission:
             _m._SHARED.pop(normalize_state_db_url(None), None)
 
 
+class TestBranchEndEmission:
+    """BRANCH_END emit → persist handler fires and is guarded against clobbering
+    a more specific terminal status a per-op writer already recorded."""
+
+    async def test_handler_fires_on_emit(self, monkeypatch, tmp_path):
+        from lionagi.hooks.builtins import persist_branch_end
+        from lionagi.hooks.bus import HookBus, HookPoint
+
+        db_path = _redirect_shared_db(monkeypatch, tmp_path)
+
+        db = await _shared(db_path)
+        try:
+            sid, sprog = "be-session-1", "prog-be-s1"
+            bid, bprog = "be-branch-1", "prog-be-b1"
+            await _seed_session(db, sid, sprog)
+            await _seed_branch(db, bid, sid, bprog)
+
+            bus = HookBus()
+            bus.on(HookPoint.BRANCH_END, persist_branch_end)
+            await bus.emit(
+                HookPoint.BRANCH_END,
+                branch_id=bid,
+                status="completed",
+                ended_at=42.0,
+            )
+
+            row = await db.get_branch(bid)
+            assert row is not None
+            assert row["status"] == "completed"
+            assert row["ended_at"] == 42.0
+        finally:
+            await db.close()
+            import lionagi.state.db as _m
+            from lionagi.state.engine import normalize_state_db_url
+
+            _m._SHARED.pop(db_path, None)
+            _m._SHARED.pop(normalize_state_db_url(None), None)
+
+    async def test_guard_skips_already_terminal_status(self, monkeypatch, tmp_path):
+        """A per-op writer's more specific outcome (e.g. cli/orchestrate/flow.py's
+        NodeFailed branch-status update) must not be clobbered by a run-level
+        BRANCH_END carrying a different, coarser status."""
+        from lionagi.hooks.builtins import persist_branch_end
+        from lionagi.hooks.bus import HookBus, HookPoint
+
+        db_path = _redirect_shared_db(monkeypatch, tmp_path)
+
+        db = await _shared(db_path)
+        try:
+            sid, sprog = "be-session-2", "prog-be-s2"
+            bid, bprog = "be-branch-2", "prog-be-b2"
+            await _seed_session(db, sid, sprog)
+            await _seed_branch(db, bid, sid, bprog)
+            await db.update_branch(bid, status="failed", ended_at=10.0)
+
+            bus = HookBus()
+            bus.on(HookPoint.BRANCH_END, persist_branch_end)
+            await bus.emit(
+                HookPoint.BRANCH_END,
+                branch_id=bid,
+                status="completed",
+                ended_at=999.0,
+            )
+
+            row = await db.get_branch(bid)
+            assert row["status"] == "failed"
+            assert row["ended_at"] == 10.0
+        finally:
+            await db.close()
+            import lionagi.state.db as _m
+            from lionagi.state.engine import normalize_state_db_url
+
+            _m._SHARED.pop(db_path, None)
+            _m._SHARED.pop(normalize_state_db_url(None), None)
+
+    async def test_default_status_is_completed(self, monkeypatch, tmp_path):
+        from lionagi.hooks.builtins import persist_branch_end
+        from lionagi.hooks.bus import HookBus, HookPoint
+
+        db_path = _redirect_shared_db(monkeypatch, tmp_path)
+
+        db = await _shared(db_path)
+        try:
+            sid, sprog = "be-session-3", "prog-be-s3"
+            bid, bprog = "be-branch-3", "prog-be-b3"
+            await _seed_session(db, sid, sprog)
+            await _seed_branch(db, bid, sid, bprog)
+
+            bus = HookBus()
+            bus.on(HookPoint.BRANCH_END, persist_branch_end)
+            await bus.emit(HookPoint.BRANCH_END, branch_id=bid)
+
+            row = await db.get_branch(bid)
+            assert row["status"] == "completed"
+            assert row["ended_at"] is not None
+        finally:
+            await db.close()
+            import lionagi.state.db as _m
+            from lionagi.state.engine import normalize_state_db_url
+
+            _m._SHARED.pop(db_path, None)
+            _m._SHARED.pop(normalize_state_db_url(None), None)
+
+    async def test_missing_branch_row_does_not_raise(self, monkeypatch, tmp_path):
+        """A DAG leg branch that never got a first message (no create_branch()
+        call, so no row) must not make BRANCH_END raise."""
+        from lionagi.hooks.builtins import persist_branch_end
+        from lionagi.hooks.bus import HookBus, HookPoint
+
+        db_path = _redirect_shared_db(monkeypatch, tmp_path)
+
+        db = await _shared(db_path)
+        try:
+            bus = HookBus()
+            bus.on(HookPoint.BRANCH_END, persist_branch_end)
+            # MUST NOT raise.
+            await bus.emit(HookPoint.BRANCH_END, branch_id="no-such-branch", status="failed")
+        finally:
+            await db.close()
+            import lionagi.state.db as _m
+            from lionagi.state.engine import normalize_state_db_url
+
+            _m._SHARED.pop(db_path, None)
+            _m._SHARED.pop(normalize_state_db_url(None), None)
+
+
 class TestDefaultHookBusEmissions:
     """build_session_bus wires all three handlers; each fires on the correct point."""
 
@@ -773,6 +1009,35 @@ class TestDefaultHookBusEmissions:
 
             row = await db.get_branch(bid)
             assert row["model"] == "m2"
+        finally:
+            await db.close()
+            import lionagi.state.db as _m
+            from lionagi.state.engine import normalize_state_db_url
+
+            _m._SHARED.pop(db_path, None)
+            _m._SHARED.pop(normalize_state_db_url(None), None)
+
+    async def test_branch_end_handler_wired_in_default_bus(self, monkeypatch, tmp_path):
+        from lionagi.hooks.bus import HookPoint
+        from lionagi.hooks.loader import build_session_bus
+
+        db_path = _redirect_shared_db(monkeypatch, tmp_path)
+
+        db = await _shared(db_path)
+        try:
+            sid, sprog = "dbus-be-s1", "prog-dbus-bes1"
+            bid, bprog = "dbus-be-b1", "prog-dbus-beb1"
+            await _seed_session(db, sid, sprog)
+            await _seed_branch(db, bid, sid, bprog)
+
+            bus = build_session_bus()
+            handlers = bus.handlers_for(HookPoint.BRANCH_END)
+            assert len(handlers) == 1
+            await bus.emit(HookPoint.BRANCH_END, branch_id=bid, status="failed")
+
+            row = await db.get_branch(bid)
+            assert row["status"] == "failed"
+            assert row["ended_at"] is not None
         finally:
             await db.close()
             import lionagi.state.db as _m

@@ -24,12 +24,7 @@ class SelectionModel(BaseModel):
 def parse_to_representation(
     choices: Enum | dict | list | tuple | set,
 ) -> tuple[list[str], JsonValue]:
-    """
-    should use
-    1. iterator of string | BaseModel
-    2. dict[str, JsonValue | BaseModel]
-    3. Enum[str, JsonValue | BaseModel]
-    """
+    """Accepts an iterable of str/BaseModel, a dict[str, JsonValue|BaseModel], or an Enum."""
 
     if isinstance(choices, tuple | set | list):
         choices = list(choices)

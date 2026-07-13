@@ -616,11 +616,8 @@ async def _doctor(
         if dry_run:
             swept_count = len(victims)
         else:
-            # Per-row, through the single guarded write path (ADR-0035):
-            # expected_statuses={"running"} re-asserts the CAS the old bulk
-            # UPDATE did inline, and routes the sweep through update_status()
-            # so it gets a reason_code + status_transitions audit row instead
-            # of a raw column write.
+            # Per-row through the guarded write path (ADR-0035): update_status()
+            # re-asserts the CAS and records a reason_code + audit row.
             for vid in victims:
                 transitioned = await db.update_status(
                     "session",
@@ -699,6 +696,8 @@ async def _import_teams() -> dict[str, int]:
 
     from lionagi.state.db import StateDB
 
+    from .team import read_team_json
+
     teams_dir = (RUNS_ROOT.parent / "teams").resolve()
     counts = {"teams": 0, "messages": 0, "skipped_teams": 0, "errors": 0}
     if not teams_dir.exists():
@@ -710,9 +709,8 @@ async def _import_teams() -> dict[str, int]:
 
     async with StateDB() as db:
         for path in json_files:
-            try:
-                data = json.loads(path.read_text())
-            except (OSError, json.JSONDecodeError):
+            data = read_team_json(path)  # shared-flock read; None on torn/corrupt
+            if data is None:
                 counts["errors"] += 1
                 continue
             team_id = data.get("id")

@@ -1,7 +1,7 @@
 # Copyright (c) 2023-2026, HaiyangLi <quantocean.li at gmail dot com>
 # SPDX-License-Identifier: Apache-2.0
 
-"""Build a Pydantic model from field sources. No cache"""
+"""Build a Pydantic model from field sources."""
 
 from __future__ import annotations
 
@@ -31,8 +31,7 @@ def build_model_type(
     frozen: bool = False,
     validators: dict | None = None,
 ) -> type[BaseModel]:
-    # Fresh model per call, no cache: a shared cache keyed on a structural hash
-    # cross-wires distinct same-named/shaped classes onto one another's models.
+    # Keep this low-level constructor uncached: FieldInfo/validator inputs can be mutable.
     # Field precedence (later wins): parameter_fields → base_type → field_models.
     if base_type is not None and not (
         inspect.isclass(base_type) and issubclass(base_type, BaseModel)

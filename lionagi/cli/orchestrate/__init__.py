@@ -568,6 +568,18 @@ def add_orchestrate_subparser(
         ),
     )
     fl.add_argument(
+        "--team-max-rounds",
+        type=int,
+        default=2,
+        metavar="N",
+        help=(
+            "In team mode (reactive), how many extra wakeup rounds the "
+            "coordinator may run after all currently-running workers signal "
+            "done, to deliver unread teammate messages before the run "
+            "wraps up (default: 2)."
+        ),
+    )
+    fl.add_argument(
         "--dry-run",
         action="store_true",
         help="Plan the DAG but don't execute. Shows agents, deps, and model resolution.",
@@ -1018,6 +1030,7 @@ def run_orchestrate(args: argparse.Namespace) -> int:
                 save_dir=args.save,
                 team_name=args.team_mode,
                 team_attach=getattr(args, "team_attach", None),
+                team_max_rounds=getattr(args, "team_max_rounds", 2),
                 cwd=args.cwd,
                 timeout=args.timeout,
                 agent_name=args.agent,

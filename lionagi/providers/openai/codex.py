@@ -67,6 +67,8 @@ CodexReasoningEffort = Literal[
     "medium",
     "high",
     "xhigh",
+    "max",
+    "ultra",
 ]
 
 __all__ = ("CodexCodeRequest", "stream_codex_cli", "CodexCLIEndpoint")
@@ -217,10 +219,13 @@ class CodexCodeRequest(BaseModel):
     @model_validator(mode="before")
     @classmethod
     def _clamp_effort(cls, values):
-        """Clamp effort 'max' → 'xhigh' for both effort fields (Codex enum does not include 'max')."""
+        """Clamp max/ultra down to the target model's supported ceiling (model-dependent: the gpt-5.6 family accepts max, sol/terra also ultra; earlier models top out at xhigh)."""
+        from lionagi.service.providers import _clamp_codex_effort
+
         for key in ("reasoning_effort", "plan_mode_reasoning_effort"):
-            if values.get(key) == "max":
-                values[key] = "xhigh"
+            effort = values.get(key)
+            if isinstance(effort, str):
+                values[key] = _clamp_codex_effort(effort, values.get("model"))
         return values
 
     # ── images & config (special-cased) ───────────────────────────
@@ -372,9 +377,8 @@ async def _ndjson_from_cli(request: CodexCodeRequest):
     if CODEX_CLI is None:
         raise RuntimeError("Codex CLI not found. Install with: npm i -g @openai/codex")
     cmd = [CODEX_CLI, *request.as_cmd_args()]
-    # Do NOT pass cwd here: Codex CLI already receives the workspace via the
-    # '-C <repo>' argument emitted by as_cmd_args().  Setting cwd= would cause
-    # the CLI to resolve '-C repo' from inside 'repo', producing 'repo/repo'.
+    # Do NOT pass cwd here — Codex CLI already gets the workspace via -C <repo>;
+    # setting both double-resolves to 'repo/repo'. See docs/internals/runtime.md.
     async with contextlib.aclosing(ndjson_from_cli(cmd)) as stream:
         async for obj in stream:
             yield obj
@@ -446,6 +450,19 @@ async def stream_codex_cli(
     theme = request.cli_display_theme or "light"
     _start_monotonic = asyncio.get_running_loop().time()
 
+    # turn.completed reports usage/cost as a running total-to-date, not a
+    # per-turn delta. run.py stamps each "result" chunk's metadata onto
+    # whichever AssistantResponse it next flushes, and _collect_branch_usage
+    # SUMS that metadata across every message on the branch -- if a tool call
+    # flushes a message between two turn.completed events, each cumulative
+    # snapshot lands on a different message and earlier turns get counted
+    # again. Track the last-seen cumulative values here so only the marginal
+    # (this-turn-only) delta is ever exposed per event.
+    _prev_input_tokens = 0
+    _prev_output_tokens = 0
+    _prev_cost: float = 0.0
+    _seen_cost = False
+
     stream = stream_codex_cli_events(request)
     try:
         async for obj in stream:
@@ -459,9 +476,7 @@ async def stream_codex_cli(
                 )
                 session.model = obj.get("model")
                 # Codex uses "thread_id" not "session_id"; normalize into the
-                # metadata key every CLI provider's system chunk carries
-                # (mirrors claude_code.py) so run.py's engine-session-id
-                # capture works for Codex too.
+                # metadata key every CLI provider's system chunk carries.
                 sc = StreamChunk(type="system", metadata={**obj, "session_id": session.session_id})
                 session.chunks.append(sc)
                 yield sc
@@ -621,21 +636,60 @@ async def stream_codex_cli(
 
             # -- turn.completed (usage stats) --
             elif typ == "turn.completed":
-                session.usage = obj.get("usage", {})
-                session.total_cost_usd = obj.get("total_cost_usd", obj.get("cost"))
+                turn_usage = obj.get("usage", {}) or {}
+                session.usage = turn_usage
+                turn_cost = obj.get("total_cost_usd", obj.get("cost"))
+                session.total_cost_usd = turn_cost
                 session.num_turns = (session.num_turns or 0) + 1
+
+                # Terminal usage/cost/turns -- the only channel run.py reads
+                # provider-reported usage from (persisted onto model_response,
+                # see run.py's "result" chunk handling; mirrors claude_code's
+                # "result" event). turn.completed can fire more than once per
+                # run() call for multi-turn codex sessions, and each event's
+                # usage/cost is cumulative-to-date, not a per-turn delta --
+                # emit only the marginal contribution since the previous
+                # event (clamped at 0 in case a provider quirk ever reports a
+                # lower running total) so summing across every flushed
+                # message reconstructs the true total exactly once, not N
+                # times over.
+                cur_input = int(
+                    turn_usage.get("input_tokens", turn_usage.get("prompt_tokens", 0)) or 0
+                )
+                cur_output = int(
+                    turn_usage.get("output_tokens", turn_usage.get("completion_tokens", 0)) or 0
+                )
+                delta_input = max(cur_input - _prev_input_tokens, 0)
+                delta_output = max(cur_output - _prev_output_tokens, 0)
+                _prev_input_tokens = cur_input
+                _prev_output_tokens = cur_output
+
+                result_meta: dict[str, Any] = {}
+                if delta_input or delta_output:
+                    result_meta["usage"] = {
+                        "input_tokens": delta_input,
+                        "output_tokens": delta_output,
+                    }
+                if isinstance(turn_cost, (int, float)):
+                    delta_cost = float(turn_cost) - (_prev_cost if _seen_cost else 0.0)
+                    _prev_cost = float(turn_cost)
+                    _seen_cost = True
+                    result_meta["total_cost_usd"] = max(delta_cost, 0.0)
+                # Each turn.completed occurrence is exactly one new turn --
+                # unlike usage/cost this is already a delta, never a running
+                # total (num_turns is incremented locally above, not read off
+                # the event), so it is always safe to emit as 1.
+                result_meta["num_turns"] = 1
+                rsc = StreamChunk(type="result", metadata=result_meta)
+                session.chunks.append(rsc)
+                yield rsc
 
             # -- turn.failed / error --
             elif typ in ("turn.failed", "error"):
                 session.is_error = True
                 err = obj.get("error", {})
-                # Message location varies by event type: "error" events carry
-                # a top-level "message" with no "error" key; "turn.failed"
-                # nests it under error.message. Check both.
-                # Capture the raw value before null-normalising: the
-                # benign-EOS check below must distinguish an explicit
-                # "error": null (malformed envelope, real error) from the
-                # bare {} sentinel (benign EOF) — see below.
+                # Error message location varies by event type; capture the raw
+                # value pre-normalization for the benign-EOS check below.
                 _raw_err = err
                 if err is None:
                     err = {}
@@ -652,14 +706,8 @@ async def stream_codex_cli(
                     if isinstance(err, dict)
                     else obj.get("message", str(err))
                 )
-                # Some codex CLI versions emit {"type": "error", "error": {}}
-                # when a resumed session ends normally (benign EOS, not a real
-                # failure) — tag it so run() treats it as clean EOS rather
-                # than RunFailed. All must hold: type == "error" ("turn.failed"
-                # is never benign); the RAW payload is exactly {} (a
-                # structured-but-empty payload or explicit null is a real,
-                # if sparse, failure — test _raw_err, pre null-normalisation);
-                # no other failure keys (code/message/status) present.
+                # Benign-EOS sentinel on resumed sessions — see docs/internals/runtime.md
+                # for the exact 3-condition classification.
                 _is_benign_eos = (
                     typ == "error"
                     and "error" in obj  # a bare {"type": "error"} is malformed, not EOF
@@ -736,6 +784,22 @@ async def stream_codex_cli(
                 session.num_turns = obj.get("num_turns", obj.get("turns"))
                 session.duration_ms = obj.get("duration_ms", obj.get("duration"))
                 session.is_error = obj.get("is_error", obj.get("error") is not None)
+
+                # Legacy terminal event (older CLI versions) -- same seam as
+                # turn.completed above.
+                result_meta: dict[str, Any] = {}
+                if session.usage:
+                    result_meta["usage"] = session.usage
+                if session.total_cost_usd is not None:
+                    result_meta["total_cost_usd"] = session.total_cost_usd
+                if session.num_turns is not None:
+                    result_meta["num_turns"] = session.num_turns
+                if session.duration_ms is not None:
+                    result_meta["duration_ms"] = session.duration_ms
+                if result_meta:
+                    rsc = StreamChunk(type="result", metadata=result_meta)
+                    session.chunks.append(rsc)
+                    yield rsc
 
             elif typ == "done":
                 break

@@ -2,12 +2,9 @@
 # SPDX-License-Identifier: Apache-2.0
 """Run a compiled WorkflowDef through lionagi's Session.flow, persisted like any other run.
 
-Deliberately does NOT reuse `_orchestration.setup_orchestration_persist`/`teardown_persist`
-verbatim: those helpers close a PROCESS-WIDE shared StateDB singleton meant for one-shot CLI
-processes, but the Studio server is long-lived with several runs in flight at once -- closing
-the shared registry would tear down every concurrent run's connection. This module opens and
-closes its own request-scoped StateDB connection instead, reusing only the session-row/
-branch-hook/teardown-reason logic those helpers are built on.
+Does not reuse `_orchestration.setup_orchestration_persist`/`teardown_persist` verbatim: those
+close a process-wide shared StateDB singleton, which would tear down every concurrent run's
+connection on this long-lived server. This module opens its own request-scoped connection instead.
 """
 
 from __future__ import annotations
@@ -68,6 +65,7 @@ async def _setup_run_persist(
         "session_prog_id": session_prog_id,
         "branch_prog_ids": {},
         "hooks": [],
+        "message_retry_queues": [],
     }
     session.observer.bind_db_persistence(session_id, db=db)
     for branch in session.branches:
@@ -84,11 +82,12 @@ async def _teardown_run_persist(
     if ctx is None:
         return status
 
-    from lionagi.cli._runs import _teardown_common
+    from lionagi.cli._runs import _flush_pending_message_events, _teardown_common
     from lionagi.hooks import unroute_message_persistence
 
     db = ctx["db"]
     try:
+        await _flush_pending_message_events(ctx)
         final_status = await _teardown_common(
             db,
             session_id=ctx["session_id"],
@@ -119,16 +118,8 @@ async def run_workflow_def(
     _session: Any | None = None,
 ) -> dict[str, Any]:
     """Load, compile, and execute a WorkflowDef; return ``{run_id, status}``.
-
-    ``run_id`` is the lionagi Session id, so the run shows up like any other
-    flow run via GET /api/sessions/{id}. Raises WorkflowNotFoundError (404)
-    or WorkflowCompileError (422, carries node_id/edge_id) on compile
-    failure -- never a bare 500 for those two cases.
-
-    ``base_dir`` is a run-level containment root for node ``config.cwd``
-    values (never a spec field). ``_session`` is a private testability seam
-    (inject a Session with a mocked branch); real callers never pass it.
-    """
+    Raises WorkflowNotFoundError (404) or WorkflowCompileError (422) on
+    compile failure -- never a bare 500 for those two cases."""
     from lionagi.session.session import Session
 
     from . import engine_defs
@@ -172,10 +163,8 @@ async def run_workflow_def(
     from lionagi.cli.orchestrate._orchestration import register_branch_hook
 
     # ctx must exist before the "engine" operation is registered: engine
-    # sub-agent branches (Engine.make_agent) are born mid-run, the same way
-    # flow-cloned branches are, so they need the same on_branch_created seam
-    # used below for session.flow() rather than the setup-time-only loop in
-    # _setup_run_persist.
+    # sub-agent branches are born mid-run and need the same on_branch_created
+    # seam as session.flow(), not the setup-time-only loop in _setup_run_persist.
     session.register_operation(
         "engine",
         make_engine_operation(session, on_branch_created=lambda b: register_branch_hook(ctx, b)),
@@ -186,33 +175,25 @@ async def run_workflow_def(
     try:
         from lionagi.engines.flow_signals import flow_progress_signals
 
-        # Emit per-node lifecycle signals (NodeQueued/Started/Completed/Failed)
-        # for the authored workflow DAG. run_workflow_def drives session.flow
-        # directly (bypassing the engine, which is the usual source of these
-        # signals), so without this the run persists structure + results but no
-        # node-progress rows — RunDetail could not show nodes running/completing.
+        # Emit per-node lifecycle signals; run_workflow_def drives session.flow
+        # directly (bypassing the engine, the usual signal source), so without
+        # this RunDetail would show no node-progress rows.
         async with flow_progress_signals(session, graph) as on_progress:
             result = await session.flow(
                 graph,
                 context=inputs or {},
                 on_progress=on_progress,
-                # Flow-created clone branches (any op with a predecessor and no
-                # explicit branch_id — see FlowExecutor._preallocate_all_branches)
-                # are born AFTER _setup_run_persist already registered
-                # persistence for the branches that existed at setup time.
-                # Without this, a clone's transcript never persists even though
-                # the run-DAG signals still render (those persist via the
-                # session-level observer, not per-branch hooks).
+                # Flow-created clone branches are born after _setup_run_persist
+                # already registered persistence for setup-time branches;
+                # without this a clone's transcript never persists.
                 on_branch_created=lambda b: register_branch_hook(ctx, b),
             )
         op_results = result.get("operation_results", {}) if isinstance(result, dict) else {}
         if any(isinstance(v, dict) and "error" in v for v in op_results.values()):
             status = "failed"
     except asyncio.CancelledError:
-        # A cancelled Studio request/task aborts session.flow with
-        # CancelledError, which is a BaseException and so bypasses the
-        # `except Exception` below. Record the run as cancelled (not the
-        # optimistic "completed" default) before re-propagating the cancel.
+        # CancelledError is a BaseException and bypasses `except Exception`
+        # below; record the run as cancelled before re-propagating.
         status = "cancelled"
         raise
     except Exception as e:  # noqa: BLE001

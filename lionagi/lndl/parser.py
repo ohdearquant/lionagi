@@ -321,11 +321,8 @@ class Parser:
         return Lact(model=model, field=field, alias=alias, call=call, extra_id=extra_id)
 
     def _parse_out_list(self, depth: int = 0) -> list:
-        """Parse one bracketed list (refs or nested groups) starting at LBRACKET.
-
-        Returns ``list[str]`` for flat refs and ``list[list[str]]`` when the
-        contents are themselves bracketed (e.g. ``[[a, b], [c, d]]``).
-        """
+        """Parse one bracketed list starting at LBRACKET: ``list[str]`` for flat
+        refs, ``list[list[str]]`` when contents are themselves bracketed."""
         if depth >= _MAX_OUT_NESTING_DEPTH:
             raise ParseError(
                 f"OUT block nesting too deep - exceeded max depth of {_MAX_OUT_NESTING_DEPTH}",
@@ -363,14 +360,8 @@ class Parser:
         return items
 
     def _resolve_alias_to_spec(self, alias: str) -> str | None:
-        """Look up an alias in already-parsed lvars/lacts and return its implied spec name.
-
-        Resolution priority (most-specific first):
-          1. Declared field on a ``Model.field`` form   → returns the field name
-          2. Declared model on a ``Model.field`` form   → returns the model name
-          3. Two-token hint on a ``<l_ hint alias>`` form → returns the hint
-        Returns None when the alias has no spec context (single-token raw form).
-        """
+        """Look up an alias in already-parsed lvars/lacts and return its implied
+        spec name (field > model > two-token hint), or None if no spec context."""
         for la in getattr(self, "_lacts_so_far", []) or []:
             if la.alias == alias:
                 return la.field or la.model or getattr(la, "extra_id", None)
@@ -433,15 +424,12 @@ class Parser:
 
             # Shortcut: OUT{a, b}  — bare alias, no colon. Resolve to its declared spec.
             if not self.match(TokenType.COLON):
-                # ``note.X`` shortcut: routes to the schema field whose
-                # declared spec name was set when the lvar was parsed
-                # (``<lvar Field.name … note.X …>`` is unusual, so the typical
-                # path is to look up which spec the note was declared under).
+                # ``note.X`` shortcut: resolves to the spec name the lvar
+                # was declared under, when one exists.
                 spec = self._resolve_alias_to_spec(field_name)
                 if spec is None and "." in field_name:
-                    # Pure note.X with no host spec — caller must use explicit
-                    # OUT{spec: [note.X]} form. We still surface it under its
-                    # last segment so a downstream tool can hint the user.
+                    # No host spec — surface under the note's own head
+                    # segment as a hint (caller should use OUT{spec: [note.X]}).
                     head = field_name.split(".", 1)[0]
                     spec = head
                 if spec is None:

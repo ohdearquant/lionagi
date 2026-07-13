@@ -33,6 +33,8 @@ from ._orchestration import (
     setup_orchestration,
     start_live_persist,
     stop_live_persist,
+    team_history_context,
+    worker_is_cli,
 )
 
 
@@ -190,6 +192,18 @@ async def _run_fanout_inner(
         env.exchange = Exchange()
         env.messenger = LionMessenger(env.exchange)
         env.roster = {}
+        # Mixed-provider teams (heterogeneous --workers pool) build one worker
+        # branch at a time, so which teammates end up messenger-bound isn't
+        # fully known until the whole loop below finishes. Resolve it here,
+        # for every team member up front, so each worker's prompt can flag
+        # CLI-provider teammates as unreachable via messenger regardless of
+        # build order (worker_is_cli is a cheap, side-effect-free pre-pass —
+        # no branch/iModel with real I/O is constructed).
+        env.messenger_names = frozenset(
+            wname
+            for i, (wname, ta) in enumerate(zip(worker_names, assignments, strict=True))
+            if not worker_is_cli(env, ta.assignee, pool[i % len(pool)] if pool else None)
+        )
         progress(f"Team '{team_name}' created ({env.team_data['id']}): {', '.join(worker_names)}")
 
     if _shared is not None:
@@ -209,11 +223,17 @@ async def _run_fanout_inner(
             explicit_name=wname,
             modes=ta.modes or None,
         )
+        ctx = [{"overall_task": prompt}]
+        # Attached-team history (if any) rides in operation context, not the
+        # system prompt — see team_history_context's docstring for why.
+        history_ctx = team_history_context(env.team_data, wname, messenger_bound=messenger_bound)
+        if history_ctx:
+            ctx.append(history_ctx)
         node = _build_worker_operate_node(
             env.builder,
             branch=w_branch,
             instruction=ta.task,
-            context=[{"overall_task": prompt}],
+            context=ctx,
             messenger_bound=messenger_bound,
         )
         fanned_nodes.append(node)

@@ -1,11 +1,11 @@
 {
   "mcpServers": {
     "search": {
-      "command": "/Users/lion/projects/lionagi/.venv/bin/python",
+      "command": "/path/to/lionagi/.venv/bin/python",
       "args": [
         "-m",
         "khivemcp.cli",
-        "/Users/lion/projects/lionagi/cookbooks/using_mcp/search_group_config.json"
+        "/path/to/lionagi/cookbooks/using_mcp/search_group_config.json"
       ],
       "timeout": 300,
       "alwaysAllow": []

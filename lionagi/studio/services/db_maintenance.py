@@ -33,12 +33,7 @@ async def _exec_chunked(
 ) -> int:
     """Execute *sql_prefix* + ' IN (?,?,...)' for *ids* in chunks of _CHUNK.
 
-    *sql_prefix* must end just before the IN clause, e.g.
-        'DELETE FROM foo WHERE id'
-    or
-        'UPDATE foo SET x=NULL WHERE x'
-
-    Returns total rowcount across all chunks.
+    *sql_prefix* must end just before the IN clause. Returns total rowcount.
     """
     total = 0
     for i in range(0, len(ids), _CHUNK):
@@ -138,20 +133,8 @@ async def prune_old_data(
 ) -> dict[str, int]:
     """Remove terminal sessions/runs/dispatches older than their keep windows, in one transaction.
 
-    FK safety: branches CASCADE on sessions; artifacts/plays/team_messages and
-    dispatch_outbox have soft FKs (no CASCADE) so session_id is nullified before
-    DELETE; schedule_runs chain_parent_id self-reference and
-    dispatch_outbox.schedule_run_id are nullified before parent delete.
-
-    dispatch_outbox rows (ADR-0059 delta 3) use two separate windows: terminal
-    success (delivered/acked) and dead-lettered/expired. pending/delivering
-    rows are excluded from both DELETEs — a live scheduler tick may still
-    claim or retry them. Unlike the session branch above, status_transitions
-    rows for purged dispatch ids are left in place: there is no foreign key
-    from status_transitions to dispatch_outbox (ADR-0057 D2), and the
-    dispatch transition trail is the compact, low-volume audit record this
-    delta exists to keep — not the high-volume per-session history the
-    session branch intentionally cascades away.
+    FK safety: soft-FK children (artifacts/plays/team_messages/dispatch_outbox) are
+    nullified before DELETE since they lack CASCADE.
     """
     from lionagi.studio.config import (
         DISPATCH_RETENTION_DEAD_LETTER_DAYS,
@@ -251,10 +234,8 @@ async def prune_old_data(
                     "UPDATE team_messages SET session_id = NULL WHERE session_id",
                     session_ids,
                 )
-                # dispatch_outbox.session_id is a plain FK (no CASCADE/SET NULL);
-                # a dispatch row can outlive its session under the separate
-                # dispatch retention windows, so nullify before the parent DELETE
-                # or the whole prune aborts on the FK constraint.
+                # dispatch_outbox.session_id is a plain FK (no CASCADE) — nullify
+                # before the parent DELETE or the prune aborts on the FK constraint.
                 await _exec_chunked(
                     conn,
                     "UPDATE dispatch_outbox SET session_id = NULL WHERE session_id",
@@ -270,9 +251,9 @@ async def prune_old_data(
                     conn, "DELETE FROM sessions WHERE id", session_ids
                 )
 
-                # Targeted orphan cleanup — scoped to pruned lineage only.
-                # Never touch rows outside that lineage: prevents newborn-orphan race
-                # where _persist.py commits a progression before the session row exists.
+                # Targeted orphan cleanup scoped to pruned lineage only — avoids a
+                # newborn-orphan race where _persist.py commits a progression before
+                # the session row exists.
                 if candidate_prog_ids:
                     for i in range(0, len(candidate_prog_ids), _CHUNK):
                         chunk = candidate_prog_ids[i : i + _CHUNK]
@@ -323,9 +304,8 @@ async def prune_old_data(
                 await conn.execute(*_q(del_sql, (*_TERMINAL_RUN_STATUSES, cutoff)))
             ).rowcount
 
-            # dispatch_outbox retention (ADR-0059 delta 3) — see docstring for
-            # the two-window rationale and the status_transitions-preservation
-            # decision. pending/delivering are never in either status list.
+            # dispatch_outbox retention (ADR-0059 delta 3): two separate windows for
+            # success vs dead-lettered; pending/delivering are never in either list.
             dispatch_success_cutoff = time.time() - dispatch_success_keep_days * 86400.0
             dispatch_dead_letter_cutoff = time.time() - dispatch_dead_letter_keep_days * 86400.0
             success_purged = (
@@ -348,9 +328,8 @@ async def prune_old_data(
             ).rowcount
             dispatch_purged = success_purged + dead_letter_purged
 
-        # Audit event runs after the prune transaction commits; insert_admin_event
-        # opens its own write transaction and nesting it would self-deadlock on the
-        # sqlite write lock.
+        # Runs after the prune transaction commits — insert_admin_event opens its own
+        # write transaction; nesting would self-deadlock on the sqlite write lock.
         await db.insert_admin_event(
             action="prune",
             details={

@@ -73,18 +73,7 @@ __all__ = ("ClaudeCodeRequest", "stream_claude_code_cli", "ClaudeCodeCLIEndpoint
 
 
 # --------------------------------------------------------------------------- flag metadata
-#
-# Each CLI-mappable field carries a ``json_schema_extra`` dict produced by
-# ``_cli()``.  The generic ``_build_declarative_args()`` loop reads these
-# dicts (sorted by *order*) and emits the correct flag sequence.
-#
-# kind semantics:
-#   value      – ``--flag <str(val)>``
-#   bool       – ``--flag`` when truthy, omit otherwise
-#   bool_pair  – ``--flag`` when True, ``--neg-flag`` when False, omit when None
-#   list_args  – ``--flag arg1 arg2 …`` (one flag, many positional args)
-#   json_value – ``--flag '<json>'``   (dict/list serialised to JSON string)
-#   repeat     – ``--flag a --flag b`` (flag repeated per item)
+# json_schema_extra-driven CLI flag protocol — see docs/internals/runtime.md.
 
 
 # --------------------------------------------------------------------------- request model
@@ -117,8 +106,7 @@ class ClaudeCodeRequest(BaseModel):
     )
 
     # ── model & runtime (order 20–29) ─────────────────────────────
-    # Bare "sonnet" is pinned to Sonnet 5 (see _pin_sonnet_alias) rather than
-    # left to the CLI's own alias resolution.
+    # Bare "sonnet" is pinned to Sonnet 5 — see _pin_sonnet_alias.
     model: Literal["sonnet", "opus", "haiku"] | str | None = Field(
         default="claude-sonnet-5",
         json_schema_extra=_cli("--model", 20),
@@ -191,11 +179,7 @@ class ClaudeCodeRequest(BaseModel):
         json_schema_extra=_cli("--strict-mcp-config", 51, "bool"),
     )
     # Legacy: if set and mcp_config is absent, serialised to --mcp-config JSON.
-    # Default is None (not {}) so a request that never touched this field is
-    # distinguishable from a caller that explicitly forwarded an empty server
-    # selection — the latter must still emit `--mcp-config {"mcpServers":{}}`
-    # to force zero MCP servers rather than silently falling back to the CLI's
-    # own MCP discovery (see as_cmd_args below).
+    # None-vs-{} is a deliberate invariant — see docs/internals/runtime.md.
     mcp_servers: dict[str, Any] | None = Field(default=None, exclude=True)
 
     # ── agents (order 60–69) ──────────────────────────────────────
@@ -405,10 +389,8 @@ class ClaudeCodeRequest(BaseModel):
                     f"Workspace: {cwd_resolved}"
                 ) from None
 
-        # Repo-containment: resolve write-target path fields and reject symlink
-        # escapes.  ``add_dir`` is a read-only grant validated separately by
-        # ``_validate_add_dir`` — absolute paths there are deliberate grants,
-        # not escapes, and must not be rejected here.
+        # Repo-containment on write-target path fields; add_dir is excluded
+        # (read-only grant, validated separately) — see docs/internals/runtime.md.
         repo_root = self.repo.resolve()
         for fname, fval in (
             ("system_prompt_file", self.system_prompt_file),
@@ -464,11 +446,8 @@ class ClaudeCodeRequest(BaseModel):
             else:
                 args.append("--debug")
 
-        # Legacy mcp_servers dict → serialise as --mcp-config JSON inline.
-        # `is not None` (not truthiness) so an explicitly forwarded empty
-        # selection (mcp_servers={}) still emits the flag — forcing zero MCP
-        # servers — rather than silently omitting it and letting the CLI fall
-        # back to its own MCP discovery.
+        # `is not None` (not truthiness) — an explicit {} must still force
+        # zero MCP servers rather than falling back to CLI discovery.
         if self.mcp_servers is not None and not self.mcp_config:
             args.extend(
                 [
@@ -721,6 +700,23 @@ async def stream_claude_code_cli(  # noqa: C901
                 session.duration_ms = obj.get("duration_ms")
                 session.duration_api_ms = obj.get("duration_api_ms")
                 session.is_error = obj.get("is_error", False)
+
+                # Terminal usage/cost/turns/duration -- the only channel run.py
+                # reads provider-reported usage from (persisted onto
+                # model_response, see run.py's "result" chunk handling).
+                result_meta: dict[str, Any] = {}
+                if session.usage:
+                    result_meta["usage"] = session.usage
+                if session.total_cost_usd is not None:
+                    result_meta["total_cost_usd"] = session.total_cost_usd
+                if session.num_turns is not None:
+                    result_meta["num_turns"] = session.num_turns
+                if session.duration_ms is not None:
+                    result_meta["duration_ms"] = session.duration_ms
+                if result_meta:
+                    rsc = StreamChunk(type="result", metadata=result_meta)
+                    session.chunks.append(rsc)
+                    yield rsc
 
             # ------------------------ DONE -------------------------------------
             elif typ == "done":

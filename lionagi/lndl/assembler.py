@@ -1,22 +1,8 @@
 # Copyright (c) 2025 - 2026, HaiyangLi <quantocean.li at gmail dot com>
 # SPDX-License-Identifier: Apache-2.0
 
-"""LNDL value assembler — turns parsed LNDL programs into typed Python values.
-
-The assembler takes:
-- a Program (lvars, lacts, out_block from the LNDL parser)
-- a target type (response_format Pydantic model)
-- optionally a mapping of alias → executed action result
-
-and returns a dict ready for `target.model_validate()`.
-
-Supports:
-- scalar specs (int, float, str, bool)
-- nested model specs (Report.title + Report.summary → Report instance)
-- list[scalar] (multiple raw aliases)
-- list[Model] (field-repeat detection groups aliases into instances)
-- dict[str, V] (model.field-style → key-value pairs)
-"""
+"""LNDL value assembler — turns parsed LNDL programs into typed Python values
+ready for ``target.model_validate()``."""
 
 from __future__ import annotations
 
@@ -41,12 +27,8 @@ def _note_key(ref: str) -> str:
 
 
 def collect_notes(program: Program) -> dict[str, Any]:
-    """Pull every <lvar note.X alias>...</lvar> out of a parsed program.
-
-    Returns a dict keyed by the note name (without the 'note.' prefix). Used
-    by the multi-round operate loop to populate the scratchpad each round —
-    note values written this round become referenceable in later rounds.
-    """
+    """Pull every ``<lvar note.X alias>...</lvar>`` out of a parsed program,
+    keyed by note name (without the ``note.`` prefix)."""
     notes: dict[str, Any] = {}
     for lv in program.lvars:
         if isinstance(lv, Lvar) and lv.model and lv.model.lower() == NOTE_NAMESPACE:
@@ -61,17 +43,8 @@ def _is_model_cls(t: Any) -> bool:
 
 
 def _coerce_str_to_list(s: str) -> list[Any]:
-    """Best-effort coerce a string to a list.
-
-    Strict order:
-    1. JSON array → use as-is.
-    2. Python list literal → use as-is.
-    3. Newline-separated lines → split on newlines.
-    4. Bracketed comma list (``"[a, b, c]"``) → split inside brackets.
-    5. Otherwise → return ``[s]``: treat the whole string as a single item.
-       This avoids shredding prose by commas (e.g. "Step 1, then step 2, …"
-       used to fragment into noise).
-    """
+    """Best-effort coerce a string to a list, trying JSON array → Python
+    literal → newline-split → bracketed comma-list → single-item fallback, in that order."""
     s = s.strip()
     if not s:
         return []
@@ -110,11 +83,8 @@ def _coerce_str_to_list(s: str) -> list[Any]:
 
 
 def _coerce_field_value(value: Any, field_type: Any) -> Any:
-    """Coerce a single value to roughly match ``field_type``.
-
-    Handles list[scalar] from a string. Other cases pass through —
-    pydantic's own validators will do the rest.
-    """
+    """Coerce a single value to roughly match ``field_type``; other cases
+    pass through for pydantic's own validators."""
     field_type = _unwrap_optional(field_type)
     origin = get_origin(field_type)
     if origin is list and isinstance(value, str):
@@ -137,12 +107,8 @@ def _coerce_model_dict(value: dict, model_cls: type) -> dict:
 
 
 def _unwrap_optional(t: Any) -> Any:
-    """If ``t`` is Optional[X] / X | None, return X. Else return ``t``.
-
-    Handles ``Union[X, None]``, ``Optional[X]``, and PEP 604 ``X | None``.
-    For unions of multiple non-None types, returns the first model type if any,
-    else the first non-None type.
-    """
+    """If ``t`` is Optional[X] / X | None, return X (preferring a model type
+    when multiple non-None types are present); else return ``t``."""
     origin = get_origin(t)
     if origin is Union or origin is _types.UnionType:
         args = [a for a in get_args(t) if a is not type(None)]
@@ -164,12 +130,7 @@ def _alias_field(node: Lvar | RLvar | Lact) -> str | None:
 
 def build_action_call(alias: str, node: Lact) -> ActionCall:
     """Parse a lact node's call text into an ``ActionCall`` placeholder.
-
-    Shared by ``_alias_value`` (OUT-gated resolution) and callers executing
-    lacts directly (e.g. a Continue-round tool pass with no OUT{} to gate
-    against). Raises ``InvalidConstructorError`` when the call text isn't a
-    parseable ``fn(args)`` expression.
-    """
+    Raises ``InvalidConstructorError`` if the call text isn't a parseable ``fn(args)`` expression."""
     from ._parse_function_call import parse_function_call, qualified_name
 
     try:
@@ -193,22 +154,8 @@ def _alias_value(
     action_results: dict[str, Any] | None,
     scratchpad: dict[str, Any] | None = None,
 ) -> tuple[bool, Any]:
-    """Return (found, value) for an alias.
-
-    For a lact alias:
-    - if action_results has its result → return the result
-    - else return the ActionCall placeholder (caller will execute later)
-
-    For an OUT-side ``note.X`` ref: pull the value from ``scratchpad``.
-
-    An alias not declared this round (neither an lvar nor a lact here) but
-    present in ``action_results`` resolves to that historical result — a
-    later round's OUT{} can reference a lact executed in an earlier round
-    without re-declaring it, matching "tool results already in history".
-
-    Raises ``MissingLvarError`` when the alias is not declared anywhere
-    (this round's lvars/lacts) and has no historical result either.
-    """
+    """Return (found, value) for an alias (lact result/placeholder, lvar
+    content, or ``note.X`` scratchpad); raises ``MissingLvarError`` if undeclared."""
     if _is_note_ref(alias):
         if scratchpad is not None:
             key = _note_key(alias)
@@ -262,9 +209,7 @@ def assemble_spec_value(
     if origin is list:
         elem = args[0] if args else Any
         if _is_model_cls(elem):
-            # list[Model] — handled below from the original refs list, since
-            # we need to know if the OUT block used explicit nested groups.
-            # The caller (assemble) routes nested groups to _assemble_grouped.
+            # list[Model]: nested groups are routed here by `assemble`.
             ordered_fields = list(elem.model_fields.keys())
             items: list[dict] = []
             current: dict = {}
@@ -331,14 +276,8 @@ def _assemble_grouped_list(
     action_results: dict[str, Any] | None,
     scratchpad: dict[str, Any] | None = None,
 ) -> list[Any]:
-    """Assemble explicit nested groups: ``[[n1, s1], [n2, s2]]`` → 2 items.
-
-    Each inner list is one item; aliases inside are assembled as a single value
-    of ``elem_type``. Inner items that turn out to be string literals (not
-    declared aliases) get dropped onto the model's first string-typed field —
-    a fallback for when the model writes ``[["raw text 1"], ["raw text 2"]]``
-    instead of nested aliases.
-    """
+    """Assemble explicit nested groups (``[[n1, s1], [n2, s2]]`` → 2 items);
+    falls back to piping raw string literals into the model's first string field."""
     items: list[Any] = []
     for group in groups:
         if not isinstance(group, list):
@@ -354,15 +293,12 @@ def _assemble_grouped_list(
                 scratchpad,
             )
         except MissingLvarError:
-            # None of this group's entries resolved as declared aliases —
-            # the model likely wrote raw string literals directly instead of
-            # nested aliases. Fall through to the salvage fallback below
-            # rather than treating a within-group literal as a real error.
+            # No entry resolved as a declared alias — fall through to the
+            # string-literal salvage below instead of raising.
             value = None
         if value is None and _is_model_cls(elem_type):
-            # All entries in the group were string literals (none of them
-            # registered aliases). Salvage by piping the joined text into
-            # the first string-typed field on the model.
+            # Salvage: pipe the joined literal text into the first
+            # string-typed field on the model.
             target_field = None
             for fname, finfo in elem_type.model_fields.items():
                 if _unwrap_optional(finfo.annotation) is str:
@@ -382,13 +318,7 @@ def assemble(
     scratchpad: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Build a dict from a parsed LNDL program suitable for ``target.model_validate``.
-
-    Returns a dict keyed by spec name (matching ``target.model_fields``).
-    Values may be:
-    - resolved scalars / lists / dicts / nested-model dicts
-    - ``ActionCall`` placeholders if a lact has not been executed yet (caller
-      should walk the result, execute, then call assemble again with results)
-    """
+    Values may include unexecuted ``ActionCall`` placeholders for lacts."""
     if not program.out_block:
         return {}
 
@@ -474,10 +404,8 @@ def collect_actions(value: Any) -> list[ActionCall]:
 
 
 def replace_actions(value: Any, results_by_name: dict[str, Any]) -> Any:
-    """Substitute ActionCall placeholders with their executed results.
-
-    ``results_by_name`` maps the ActionCall.name (alias) → result value.
-    """
+    """Substitute ActionCall placeholders with their executed results
+    (``results_by_name`` maps ActionCall.name → result value)."""
     if isinstance(value, ActionCall):
         if value.name in results_by_name:
             return results_by_name[value.name]

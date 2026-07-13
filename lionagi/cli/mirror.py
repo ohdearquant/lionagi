@@ -93,11 +93,8 @@ class _FileState:
 class _Lineage:
     """Cross-session conversation-lineage detector, kept across poll passes.
 
-    A continued conversation opens a fresh transcript whose first message
-    points — via ``parentUuid`` — at the last message of the session it
-    continues. Indexes each file's current leaf uuid and, when a file's
-    root parent resolves to a different session's leaf, records a
-    provenance link.
+    Indexes each file's leaf uuid; when a file's root parent resolves to a
+    different session's leaf (a continuation via ``parentUuid``), records the link.
     """
 
     leaf_owner: dict[str, str] = field(default_factory=dict)  # event uuid -> session_uid
@@ -144,11 +141,8 @@ class _Lineage:
 
 
 def _fallback_project(cwd: str) -> tuple[str, str]:
-    """Attribute a cwd that detect_project couldn't place to a project.
-
-    Bucket it by the cwd's own folder name, or "others" when that directory no
-    longer exists (e.g. a transcript mirrored from a machine/path that is gone).
-    """
+    """Attribute a cwd that detect_project couldn't place, by its folder name
+    (or "others" if that directory no longer exists)."""
     p = Path(cwd)
     if p.is_dir():
         return p.name, "cwd_dir"
@@ -170,9 +164,7 @@ def _resolve_project_for_mirror(cwd: str) -> tuple[str, str]:
 
 def _load_states() -> dict[str, _FileState]:
     # Persist tool_names + leaf_uuid alongside the byte offset so a restart resumes
-    # mid-conversation without dropping a later tool_result's function name or
-    # losing cross-session lineage — both live only in process memory otherwise.
-    # Legacy {path: int} caches (offset only) load as bare cursors, then upgrade.
+    # without losing state that otherwise lives only in process memory.
     try:
         raw = json.loads(_OFFSETS_PATH.read_text())
     except (FileNotFoundError, json.JSONDecodeError):
@@ -220,10 +212,7 @@ _WINDOW_UNITS = {"m": 60, "h": 3600, "d": 86400}
 
 def _parse_window(spec: str) -> float | None:
     """Seconds for a window like '30m'/'12h'/'7d', or bare seconds; None if empty.
-
-    Raises ValueError on a non-empty but unparseable spec so callers fail loudly
-    instead of silently falling back to an unbounded scan.
-    """
+    Raises ValueError (not a silent unbounded-scan fallback) on a bad spec."""
     spec = spec.strip().lower()
     if not spec:
         return None
@@ -251,11 +240,8 @@ def _since_window(spec: str) -> float:
 def _read_new_events(path: Path, state: _FileState) -> tuple[list[dict[str, Any]], int]:
     """Read complete JSONL lines past the cursor; return (events, new_offset).
 
-    The cursor is NOT advanced here — the caller sets ``state.offset`` to the
-    returned offset only after the batch is durably mirrored, so a write failure
-    re-reads the same lines next pass instead of skipping them. Non-object JSON (a
-    bare ``[]`` or a scalar) is dropped as malformed rather than handed on as an
-    event.
+    The cursor is NOT advanced here — the caller only commits it after the batch
+    is durably mirrored, so a write failure re-reads the same lines next pass.
     """
     size = path.stat().st_size
     if state.offset > size:  # file truncated/rotated — re-read from the top.
@@ -308,9 +294,7 @@ def _derive_metadata(state: _FileState, events: list[dict[str, Any]]) -> None:
 def _peek_head(path: Path) -> tuple[str, str | None]:
     """Recover (sessionId, cwd) from a transcript's head without consuming the tail.
 
-    Needed for idle files after a restart: with no new events to read, the session
-    id is otherwise unknown (the liveness sweep would never flip it completed) and
-    the cwd needed to attribute it to a project is otherwise unavailable.
+    Needed for idle files after a restart, which have no new events to derive these from.
     """
     uid = ""
     cwd: str | None = None
@@ -340,10 +324,8 @@ def _peek_head(path: Path) -> tuple[str, str | None]:
 async def _attribute_idle(db, state: _FileState, cwd: str) -> None:
     """Attribute an idle/already-read transcript and backfill its session row.
 
-    The activity path attributes a project from streamed events, but a session
-    fully mirrored before project attribution existed (or before its cwd could be
-    placed) has no new events to trigger that. This derives the project from the
-    head cwd and backfills the existing row — without moving the liveness clock.
+    Covers sessions mirrored before project attribution existed, which have no new
+    events to trigger the normal (streamed-event) attribution path.
     """
     from lionagi.state.claude_mirror import session_db_id
 
@@ -393,8 +375,7 @@ async def _mirror_one(db, path: Path, state: _FileState, lineage: _Lineage) -> i
     lineage.note_leaf(state, events)
 
     # Always created/kept running; the session-level idle sweep (after the whole
-    # pass) is what flips it to completed, so a fresh transcript anywhere in a
-    # multi-file session keeps the whole session live.
+    # pass) is what flips it to completed.
     written = await mirror_session(
         db,
         session_uid=state.session_uid,
@@ -406,9 +387,8 @@ async def _mirror_one(db, path: Path, state: _FileState, lineage: _Lineage) -> i
         name=state.name,
         status="running",
     )
-    # Advance the cursor only after the batch is durably mirrored: if the write
-    # above raised, state.offset is unchanged and the batch is re-read (idempotently)
-    # next pass rather than silently lost.
+    # Advance the cursor only after the batch is durably mirrored, so a failed
+    # write re-reads (idempotently) rather than losing the batch.
     state.offset = new_offset
     if written and not state.created:
         state.created = True
@@ -436,8 +416,7 @@ async def _one_pass(db, root: Path, states, offsets, *, since, live_window, line
             total += await _mirror_one(db, path, state, lineage)
             offsets[key] = state.offset
             # Idle/already-read files have no streamed events to derive from: peek
-            # the head once to recover the session id and (one-time) attribute the
-            # project, backfilling a row left as "(no project)" by an earlier pass.
+            # the head once to recover the session id and attribute the project.
             if not state.session_uid or (state.project is None and not state.attr_peeked):
                 uid, cwd = _peek_head(path)
                 if not state.session_uid:
@@ -473,9 +452,7 @@ async def mirror_forever(
 ) -> None:
     """Tail recent Claude transcripts into StateDB until ``stop`` is set.
 
-    ``since`` bounds the scan to the recent window, so it catches up and tails
-    live without ever backfilling full history. Studio's in-process entry point;
-    ``li mirror`` keeps its own loop in ``_run``.
+    Studio's in-process entry point; ``li mirror`` keeps its own loop in ``_run``.
     """
     from lionagi.state.db import StateDB
 
@@ -487,12 +464,8 @@ async def mirror_forever(
     offsets = {key: st.offset for key, st in states.items()}  # _one_pass new-file seed
     lineage = _Lineage()
     _seed_lineage(lineage, states)
-    # The connection lives inside the supervise loop so a failure to OPEN it —
-    # e.g. a locked or half-migrated state.db during first-run startup, when the
-    # studio is creating the schema and checkpointing on another connection — is
-    # retried, not fatal. Opening it once outside the loop meant a single
-    # transient open error silently ended the in-process mirror for the whole
-    # life of the studio process.
+    # The connection lives inside the supervise loop so a failure to open it (e.g. a
+    # locked/half-migrated state.db at studio startup) is retried, not fatal.
     while not stop.is_set():
         try:
             async with StateDB() as db:

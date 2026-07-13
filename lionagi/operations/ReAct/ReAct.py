@@ -14,6 +14,7 @@ from lionagi.models.field_model import FieldModel
 from lionagi.service.imodel import iModel
 
 from .._defaults import make_parse_param
+from .._turn_origin import TurnOrigin
 from ..fields import Instruct
 from ..types import ActionParam, ChatParam, HandleValidation, InterpretParam, ParseParam
 from .utils import Analysis, ReActAnalysis
@@ -392,11 +393,15 @@ async def ReActStream(  # noqa: N802  # public name preserves the ReAct acronym
         else:
             return s_
 
+    # The interpret pre-pass, when requested, is the earliest point this
+    # turn's raw instruction reaches a model — it inherits this call's own
+    # turn-origin disposition (so it mints, iff this ReAct() call is itself
+    # a fresh public ingress) rather than deferring to round 1.
     intp = None
     if intp_param:
         from ..interpret.interpret import interpret
 
-        intp = await interpret(branch, instruction, intp_param)
+        intp = await interpret(branch, instruction, intp_param, turn_origin=chat_param.turn_origin)
 
     fms = handle_field_models(
         field_models,
@@ -408,6 +413,10 @@ async def ReActStream(  # noqa: N802  # public name preserves the ReAct acronym
     from ..operate.operate import operate
 
     initial_chat_param = chat_param.with_updates(response_format=ReActAnalysis)
+    if intp is not None:
+        # The interpret pre-pass already consumed this turn's origin token;
+        # round 1 continues the same turn and must not re-fire.
+        initial_chat_param = initial_chat_param.with_updates(turn_origin=TurnOrigin.no_origin())
 
     initial_parse_param = (
         parse_param.with_updates(response_format=ReActAnalysis) if parse_param else None
@@ -459,7 +468,10 @@ async def ReActStream(  # noqa: N802  # public name preserves the ReAct acronym
         else:
             new_instruction = ReActAnalysis.CONTINUE_EXT_PROMPT.format(extensions=exts)
 
-        updates = {"response_format": ReActAnalysis}
+        # Extension round: an internal continuation of the same ReAct() call,
+        # not a fresh user turn — no-origin, so it never re-fires
+        # USER_PROMPT_SUBMIT (only the round-1 analysis call does).
+        updates = {"response_format": ReActAnalysis, "turn_origin": TurnOrigin.no_origin()}
 
         if reasoning_effort:
             guide = {
@@ -504,7 +516,12 @@ async def ReActStream(  # noqa: N802  # public name preserves the ReAct acronym
             if injected:
                 from ..operate.operate import operate as _op
 
-                _inj_chat = chat_param.with_updates(response_format=ReActAnalysis)
+                # Injected between-round turn: an internal continuation of the
+                # same ReAct() call, not a fresh user turn — no-origin, so it
+                # never re-fires USER_PROMPT_SUBMIT.
+                _inj_chat = chat_param.with_updates(
+                    response_format=ReActAnalysis, turn_origin=TurnOrigin.no_origin()
+                )
                 analysis = await _op(
                     branch,
                     instruction=injected,
@@ -577,6 +594,11 @@ async def ReActStream(  # noqa: N802  # public name preserves the ReAct acronym
         for k, v in resp_ctx.items():
             if k in chat_param.allowed() and k != "response_format":
                 resp_ctx_updates[k] = v
+
+    # Final-answer turn: an internal continuation of the same ReAct() call,
+    # not a fresh user turn — always no-origin, unconditionally (never
+    # overridable via resp_ctx), so it never re-fires USER_PROMPT_SUBMIT.
+    resp_ctx_updates["turn_origin"] = TurnOrigin.no_origin()
 
     final_chat_param = chat_param.with_updates(**resp_ctx_updates)
 

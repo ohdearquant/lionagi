@@ -15,6 +15,15 @@ from typing import Protocol
 
 from sqlalchemy.ext.asyncio import AsyncConnection
 
+from .callbacks import (
+    DEFAULT_TERMINAL_CALLBACKS,
+    EXECUTION_ENTITY_KINDS,
+    Correlation,
+    EntityRef,
+    RunTerminalEnvelope,
+    TerminalCallbackHandler,
+    TerminalCallbackRegistry,
+)
 from .models import (
     ActorRecord,
     ActorType,
@@ -34,8 +43,12 @@ from .policy import DEFAULT_REGISTRY, PolicyRegistry, build_default_registry
 __all__ = (
     "ActorRecord",
     "ActorType",
+    "Correlation",
     "DEFAULT_REGISTRY",
+    "DEFAULT_TERMINAL_CALLBACKS",
     "EdgePolicy",
+    "EntityRef",
+    "EXECUTION_ENTITY_KINDS",
     "InitialStateCommand",
     "JsonValue",
     "LifecycleError",
@@ -47,7 +60,10 @@ __all__ = (
     "OverrideRecord",
     "PolicyRegistry",
     "ReasonRecord",
+    "RunTerminalEnvelope",
     "SameStatusRule",
+    "TerminalCallbackHandler",
+    "TerminalCallbackRegistry",
     "TransitionCommand",
     "TransitionOutcome",
     "TransitionResultKind",

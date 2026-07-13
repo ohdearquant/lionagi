@@ -26,7 +26,7 @@ Phase 1: Orchestrator decomposing task into 3 agent requests...
 Phase 1 done (2.1s): 3 requests generated.
 Phase 2: Fanning out to 3 workers: [codex/gpt-5.3-codex-spark, codex/gpt-5.3-codex-spark, codex/gpt-5.3-codex-spark]
 Phase 2 done (9.4s).
-Saved 3 worker results to /home/ocean/project/audit-out
+Saved 3 worker results to /home/you/project/audit-out
 ════════════════════════════════════════════════════════════
   Worker 1/3  [codex/gpt-5.3-codex-spark]
 [...trimmed...]

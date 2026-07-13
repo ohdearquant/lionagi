@@ -34,31 +34,47 @@ EFFORT_LEVELS = frozenset(
         "high",
         "xhigh",
         "max",
+        "ultra",
     }
 )
 
 
 def normalize_effort(effort: str | None) -> str | None:
-    """Case-fold a raw effort string to lionagi's lowercase vocabulary.
-
-    Clamp tables below are keyed on lowercase levels and silently misclamp
-    (no raise) on an un-normalized value like "High" — call this once at
-    each boundary where a raw effort string enters lionagi (CLI flag,
-    profile frontmatter, orchestration spec).
-    """
+    """Case-fold a raw effort string to lionagi's lowercase vocabulary. Call once at
+    each entry boundary — clamp tables silently misclamp un-normalized values. See docs/internals/runtime.md."""
     return effort.lower() if isinstance(effort, str) else effort
 
 
-# Codex accepts none|minimal|low|medium|high|xhigh — NOT "max".
-# Profiles/orchestrators may emit "max"; clamp to "xhigh" for codex.
-_CODEX_EFFORT_CLAMP: dict[str, str] = {"max": "xhigh"}
+# Codex reasoning-effort ceilings are model-dependent (source: codex CLI's live model
+# list); unrecognized (future) models pass through unclamped. See docs/internals/runtime.md.
+_CODEX_ULTRA_MODELS = frozenset({"gpt-5.6-sol", "gpt-5.6-terra"})
+_CODEX_MAX_ONLY_MODELS = frozenset({"gpt-5.6-luna"})
+_CODEX_XHIGH_CEILING_MODELS = frozenset(
+    {"gpt-5.5", "gpt-5.4", "gpt-5.4-mini", "gpt-5.3-codex-spark", "codex-auto-review"}
+)
+
+
+def _clamp_codex_effort(effort: str, model: str | None) -> str:
+    """Clamp max/ultra down to the target codex model's supported ceiling."""
+    if effort not in ("max", "ultra"):
+        return effort
+    model_part = (model or "").split("/", 1)[-1]
+    if model_part in _CODEX_XHIGH_CEILING_MODELS:
+        return "xhigh"
+    if effort == "ultra" and model_part in _CODEX_MAX_ONLY_MODELS:
+        return "max"
+    return effort
+
 
 # Claude: only opus-4-7 accepts xhigh. All other models clamp to high.
+# Claude has no ultra tier at all: ultra clamps to max for every model.
 _CLAUDE_XHIGH_MODELS = frozenset({"opus", "opus-4-7", "claude-opus-4-7"})
 
 
 def _clamp_claude_effort(effort: str, model: str) -> str:
-    """Clamp xhigh to high for non-opus-4-7 Claude models."""
+    """Clamp ultra to max, and xhigh to high for non-opus-4-7 Claude models."""
+    if effort == "ultra":
+        return "max"
     if effort != "xhigh":
         return effort
     model_part = model.split("/", 1)[-1] if "/" in model else model
@@ -67,10 +83,8 @@ def _clamp_claude_effort(effort: str, model: str) -> str:
     return "high"
 
 
-# agy (Antigravity CLI) has no effort flag or kwarg — effort is expressed only
-# as a Low/Medium/High suffix baked into the --model name, and Gemini 3.1 Pro
-# has no Medium tier. lionagi's 5-level none|minimal|low|medium|high|xhigh|max
-# collapses onto this 3-tier scale.
+# agy has no effort kwarg — effort is baked into the --model name as Low/Medium/High,
+# and Gemini 3.1 Pro has no Medium tier. See docs/internals/runtime.md.
 _GEMINI_EFFORT_CLAMP: dict[str, str] = {
     "none": "Low",
     "minimal": "Low",
@@ -79,11 +93,12 @@ _GEMINI_EFFORT_CLAMP: dict[str, str] = {
     "high": "High",
     "xhigh": "High",
     "max": "High",
+    "ultra": "High",
 }
 
 
 def _clamp_gemini_effort(effort: str, is_pro: bool) -> str:
-    """Map lionagi's 5-level effort onto agy's Low/Medium/High tiers; Pro has no Medium."""
+    """Map lionagi's effort vocabulary onto agy's Low/Medium/High tiers; Pro has no Medium."""
     tier = _GEMINI_EFFORT_CLAMP.get(effort, "Medium")
     if is_pro and tier == "Medium":
         return "High"
@@ -114,9 +129,8 @@ PROVIDER_EFFORT_KWARG: dict[str, str] = {
     "pi": "thinking",
 }
 
-# agy-backed aliases (see lionagi/providers/google/gemini_code.py) fold effort
-# into the resolved --model name via resolve_agy_model instead of a kwarg —
-# classified separately from PROVIDER_EFFORT_KWARG below.
+# agy-backed aliases fold effort into the resolved --model name via resolve_agy_model
+# instead of a kwarg — classified separately from PROVIDER_EFFORT_KWARG below.
 PROVIDERS_EFFORT_VIA_MODEL_NAME: frozenset[str] = frozenset(
     {
         "gemini_code",
@@ -126,9 +140,8 @@ PROVIDERS_EFFORT_VIA_MODEL_NAME: frozenset[str] = frozenset(
     }
 )
 
-# Bare "gemini" is the direct Google API provider (see
-# providers/google/_config.py:GeminiChatConfigs) — distinct from the agy CLI
-# above — and has no effort concept at all.
+# Bare "gemini" is the direct Google API provider, distinct from the agy CLI
+# above, and has no effort concept at all.
 PROVIDERS_NO_EFFORT: frozenset[str] = frozenset(
     {
         "gemini",

@@ -822,9 +822,9 @@ async def test_signals_generator_cancellation_on_disconnect(tmp_path, monkeypatc
 
 
 # ---------------------------------------------------------------------------
-# MAJOR-1 (Round 2): _write_lock must be connection-wide — concurrent signal
-# emits must not race with update_status, update_session, or insert_message
-# on the same bound StateDB connection.
+# Invariant: _write_lock must be connection-wide — concurrent signal emits
+# must not race with update_status, update_session, or insert_message on
+# the same bound StateDB connection.
 # ---------------------------------------------------------------------------
 
 
@@ -1054,9 +1054,9 @@ async def test_concurrent_emit_and_artifact_verification_no_failures(tmp_path):
 
 
 # ---------------------------------------------------------------------------
-# MAJOR-2 (Round 2): Byte cap must hold on the FINAL serialized form,
-# including JSON escaping overhead.  Codex repro: quote/backslash-heavy
-# payloads stored 32 KB instead of the claimed 16 KB cap.
+# Invariant: byte cap must hold on the FINAL serialized form, including JSON
+# escaping overhead. Regression: quote/backslash-heavy payloads stored 32 KB
+# instead of the claimed 16 KB cap.
 # ---------------------------------------------------------------------------
 
 

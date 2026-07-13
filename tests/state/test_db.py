@@ -75,6 +75,35 @@ async def _make_show(db: StateDB, *, status: str = "active") -> dict:
     return show
 
 
+async def _make_live_persist_fixture(db: StateDB) -> tuple[str, str, str, str]:
+    session_id = "live-persist-session"
+    session_prog_id = "live-persist-session-progression"
+    branch_id = "live-persist-branch"
+    branch_prog_id = "live-persist-branch-progression"
+    await db.create_progression(session_prog_id)
+    await db.create_progression(branch_prog_id)
+    await db.create_session(
+        {
+            "id": session_id,
+            "created_at": 100.0,
+            "progression_id": session_prog_id,
+            "status": "running",
+            "started_at": 100.0,
+            "last_message_at": 100.0,
+            "updated_at": 100.0,
+        }
+    )
+    await db.create_branch(
+        {
+            "id": branch_id,
+            "created_at": 100.0,
+            "session_id": session_id,
+            "progression_id": branch_prog_id,
+        }
+    )
+    return session_id, session_prog_id, branch_id, branch_prog_id
+
+
 # ── Connection lifecycle ───────────────────────────────────────────────────────
 
 
@@ -293,6 +322,92 @@ async def test_insert_message_idempotent(db: StateDB):
             .first()
         )
     assert row["n"] == 1
+
+
+async def test_persist_live_message_uses_one_transaction_and_preserves_rows(db: StateDB):
+    """The live message bundle matches the prior writes in one SQLite transaction."""
+    baseline = StateDB(":memory:")
+    await baseline.open()
+    try:
+        session_id, session_prog_id, branch_id, branch_prog_id = await _make_live_persist_fixture(
+            db
+        )
+        await _make_live_persist_fixture(baseline)
+        msg = make_message(role="assistant")
+        msg["id"] = "live-persist-message"
+        msg["created_at"] = 200.0
+
+        await baseline.insert_message(msg)
+        await baseline.append_to_progression(branch_prog_id, msg["id"])
+        await baseline.append_to_progression(session_prog_id, msg["id"])
+        await baseline.touch_session_activity(session_id, at=msg["created_at"])
+
+        statements: list[str] = []
+        async with db._read() as conn:
+            raw_conn = await conn.get_raw_connection()
+            await raw_conn.driver_connection.set_trace_callback(statements.append)
+        try:
+            await db._persist_live_message(
+                msg,
+                session_id=session_id,
+                branch_progression_id=branch_prog_id,
+                session_progression_id=session_prog_id,
+                activity_at=msg["created_at"],
+            )
+        finally:
+            async with db._read() as conn:
+                raw_conn = await conn.get_raw_connection()
+                await raw_conn.driver_connection.set_trace_callback(None)
+
+        tx_statements = [statement.strip().upper() for statement in statements]
+        assert tx_statements.count("BEGIN IMMEDIATE") == 1
+        assert tx_statements.count("COMMIT") == 1
+        assert await db.get_message(msg["id"]) == await baseline.get_message(msg["id"])
+        assert await db.get_progression(branch_prog_id) == await baseline.get_progression(
+            branch_prog_id
+        )
+        assert await db.get_progression(session_prog_id) == await baseline.get_progression(
+            session_prog_id
+        )
+        assert await db.get_session(session_id) == await baseline.get_session(session_id)
+        assert await db.get_branch(branch_id) == await baseline.get_branch(branch_id)
+    finally:
+        await baseline.close()
+
+
+async def test_persist_live_message_rolls_back_when_last_statement_fails(db: StateDB):
+    """A failure on activity touch leaves no message or progression orphan."""
+    from sqlalchemy import event
+
+    session_id, session_prog_id, _branch_id, branch_prog_id = await _make_live_persist_fixture(db)
+    msg = make_message(role="assistant")
+    msg["id"] = "live-persist-rollback-message"
+    msg["created_at"] = 200.0
+
+    def fail_activity_touch(conn, cursor, statement, parameters, context, executemany):
+        if statement.startswith("UPDATE sessions SET last_message_at"):
+            raise RuntimeError("simulated final live-persist statement failure")
+
+    event.listen(db._engine.sync_engine, "before_cursor_execute", fail_activity_touch)
+    try:
+        with pytest.raises(RuntimeError, match="final live-persist statement"):
+            await db._persist_live_message(
+                msg,
+                session_id=session_id,
+                branch_progression_id=branch_prog_id,
+                session_progression_id=session_prog_id,
+                activity_at=msg["created_at"],
+            )
+    finally:
+        event.remove(db._engine.sync_engine, "before_cursor_execute", fail_activity_touch)
+
+    assert await db.get_message(msg["id"]) is None
+    assert await db.get_progression(branch_prog_id) == []
+    assert await db.get_progression(session_prog_id) == []
+    session = await db.get_session(session_id)
+    assert session is not None
+    assert session["last_message_at"] == 100.0
+    assert session["updated_at"] == 100.0
 
 
 async def test_resolve_lion_class_known(db: StateDB):
@@ -619,6 +734,178 @@ async def test_get_branch_messages(db: StateDB):
     assert len(result) == 3
     # Order must match progression order
     assert [r["id"] for r in result] == [m["id"] for m in msgs]
+
+
+# ── finalize_branch (BRANCH_END guarded terminal write) ─────────────────────
+
+
+async def _make_branch(db: StateDB, *, status: str | None = None) -> dict:
+    s = await _make_session(db)
+    prog_id = uid()
+    await db.create_progression(prog_id)
+    branch = {
+        "id": uid(),
+        "session_id": s["id"],
+        "progression_id": prog_id,
+        "name": "leg",
+    }
+    await db.create_branch(branch)
+    if status is not None:
+        await db.update_branch(branch["id"], status=status)
+    return branch
+
+
+async def test_finalize_branch_stamps_status_and_ended_at_when_null(db: StateDB):
+    """A branch row that never had a status written (the single-branch agent
+    path's gap) is finalized on the first BRANCH_END-equivalent call."""
+    branch = await _make_branch(db)
+    assert (await db.get_branch(branch["id"]))["status"] is None
+
+    updated = await db.finalize_branch(branch["id"], status="completed", ended_at=123.0)
+
+    assert updated is True
+    row = await db.get_branch(branch["id"])
+    assert row["status"] == "completed"
+    assert row["ended_at"] == 123.0
+
+
+async def test_finalize_branch_stamps_failed_status(db: StateDB):
+    """A raising operation must not leave the branch row 'running' forever."""
+    branch = await _make_branch(db, status="running")
+
+    updated = await db.finalize_branch(branch["id"], status="failed", ended_at=456.0)
+
+    assert updated is True
+    row = await db.get_branch(branch["id"])
+    assert row["status"] == "failed"
+    assert row["ended_at"] == 456.0
+
+
+async def test_finalize_branch_skips_already_completed(db: StateDB):
+    """A per-op writer's 'completed' must not be clobbered by a coarser run-level finalize."""
+    branch = await _make_branch(db, status="completed")
+    await db.update_branch(branch["id"], ended_at=100.0)
+
+    updated = await db.finalize_branch(branch["id"], status="failed", ended_at=999.0)
+
+    assert updated is False
+    row = await db.get_branch(branch["id"])
+    assert row["status"] == "completed"
+    assert row["ended_at"] == 100.0
+
+
+async def test_finalize_branch_skips_already_failed(db: StateDB):
+    """Same guard, the other terminal value: 'failed' is never overwritten either."""
+    branch = await _make_branch(db, status="failed")
+    await db.update_branch(branch["id"], ended_at=200.0)
+
+    updated = await db.finalize_branch(branch["id"], status="completed", ended_at=999.0)
+
+    assert updated is False
+    row = await db.get_branch(branch["id"])
+    assert row["status"] == "failed"
+    assert row["ended_at"] == 200.0
+
+
+async def test_finalize_branch_missing_row_is_noop(db: StateDB):
+    """A branch id with no row (e.g. a DAG leg that never emitted a first
+    message, so create_branch() never ran) matches zero rows — harmless."""
+    updated = await db.finalize_branch(uid(), status="completed")
+    assert updated is False
+
+
+async def test_finalize_branch_defaults_ended_at_to_now(db: StateDB):
+    branch = await _make_branch(db)
+    before = time.time()
+
+    await db.finalize_branch(branch["id"], status="completed")
+
+    row = await db.get_branch(branch["id"])
+    assert row["ended_at"] >= before
+
+
+@pytest.mark.parametrize(
+    "existing_status",
+    ["completed", "completed_empty", "failed", "timed_out", "aborted", "cancelled"],
+)
+async def test_finalize_branch_skips_every_terminal_status(db: StateDB, existing_status: str):
+    """Every value in the session terminal-status vocabulary is immutable on a
+    branch row, not just 'completed'/'failed' — a branch already at
+    'cancelled', 'timed_out', 'aborted', or 'completed_empty' must survive a
+    later run-level finalize carrying a different terminal status exactly
+    like 'completed'/'failed' already did."""
+    branch = await _make_branch(db, status=existing_status)
+    await db.update_branch(branch["id"], ended_at=555.0)
+
+    updated = await db.finalize_branch(branch["id"], status="completed", ended_at=999.0)
+
+    assert updated is False
+    row = await db.get_branch(branch["id"])
+    assert row["status"] == existing_status
+    assert row["ended_at"] == 555.0
+
+
+@pytest.mark.parametrize(
+    "terminal_status",
+    ["completed", "completed_empty", "failed", "timed_out", "aborted", "cancelled"],
+)
+async def test_finalize_branch_stamps_every_terminal_status_from_null(
+    db: StateDB, terminal_status: str
+):
+    """The full session terminal-status vocabulary (not just completed/failed)
+    is a legitimate finalize target from a fresh (NULL-status) row."""
+    branch = await _make_branch(db)
+
+    updated = await db.finalize_branch(branch["id"], status=terminal_status, ended_at=42.0)
+
+    assert updated is True
+    row = await db.get_branch(branch["id"])
+    assert row["status"] == terminal_status
+    assert row["ended_at"] == 42.0
+
+
+async def test_finalize_branch_rejects_running_payload(db: StateDB):
+    """'running' is not a terminal outcome -- BRANCH_END must never be able to
+    stamp a branch 'ended' with a non-terminal status, even against a fresh
+    (NULL-status) row that would otherwise pass the existing-row guard."""
+    branch = await _make_branch(db)
+
+    updated = await db.finalize_branch(branch["id"], status="running", ended_at=42.0)
+
+    assert updated is False
+    row = await db.get_branch(branch["id"])
+    assert row["status"] is None
+    assert row["ended_at"] is None
+
+
+async def test_finalize_branch_rejects_running_payload_against_running_row(db: StateDB):
+    """Same rejection when the existing row is itself 'running' (the state a
+    running payload would otherwise cleanly match against)."""
+    branch = await _make_branch(db, status="running")
+
+    updated = await db.finalize_branch(branch["id"], status="running", ended_at=42.0)
+
+    assert updated is False
+    row = await db.get_branch(branch["id"])
+    assert row["status"] == "running"
+    assert row["ended_at"] is None
+
+
+async def test_finalize_branch_repeated_call_does_not_flap_terminal_status(db: StateDB):
+    """A repeated (or concurrent-race-losing) finalization attempt carrying a
+    DIFFERENT terminal status than the one that already landed must not flap
+    either status or ended_at — the first genuine terminal write wins."""
+    branch = await _make_branch(db)
+
+    first = await db.finalize_branch(branch["id"], status="cancelled", ended_at=100.0)
+    assert first is True
+
+    second = await db.finalize_branch(branch["id"], status="completed", ended_at=200.0)
+    assert second is False
+
+    row = await db.get_branch(branch["id"])
+    assert row["status"] == "cancelled"
+    assert row["ended_at"] == 100.0
 
 
 # ── Shows ─────────────────────────────────────────────────────────────────────

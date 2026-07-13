@@ -92,9 +92,8 @@ __all__ = (
     "ApplicationMapped",
     "trace_chains",
     "render_evidence",
-    # coding (Gated-Loop shape — plan/implement/test/fix/verify with a
-    # ground-truth subprocess test runner; CodeVerifyResult disambiguates the
-    # review engine's VerifyResult at the package level)
+    # coding (Gated-Loop shape); CodeVerifyResult disambiguates the review
+    # engine's VerifyResult at the package level
     "CodingEngine",
     "CodingRun",
     "CodingChainEvent",

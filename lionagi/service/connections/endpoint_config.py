@@ -21,6 +21,10 @@ from .header_factory import AUTH_TYPES
 
 logger = logging.getLogger(__name__)
 
+# Keyed on id(cls), not the class object, to bypass metaclass __eq__/__hash__ overrides —
+# see docs/internals/runtime.md.
+_FIELD_KEYS_BY_CLASS: dict[int, tuple[type, frozenset[str]]] = {}
+
 
 B = TypeVar("B", bound=type[BaseModel])
 
@@ -54,7 +58,15 @@ class EndpointConfig(BaseModel):
     @model_validator(mode="before")
     def _validate_kwargs(cls, data: dict):
         kwargs = data.pop("kwargs", {})
-        field_keys = list(cls.model_json_schema().get("properties", {}).keys())
+        # Field keys (aliases included) are cached per class — rebuilding the JSON
+        # schema on every construction costs more than the rest of validation combined.
+        entry = _FIELD_KEYS_BY_CLASS.get(id(cls))
+        if entry is not None and entry[0] is cls:
+            field_keys = entry[1]
+        else:
+            properties = cls.model_json_schema().get("properties", {})
+            field_keys = frozenset(properties)
+            _FIELD_KEYS_BY_CLASS[id(cls)] = (cls, field_keys)
         for k in list(data.keys()):
             if k not in field_keys:
                 kwargs[k] = data.pop(k)

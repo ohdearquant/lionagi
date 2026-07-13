@@ -132,7 +132,9 @@ collisions. Unused numbers inside a block are intentional gaps, not missing docu
 
 - [ADR-0047](ADR-0047-hook-mechanism-scopes-and-canonical-ownership.md) — Hook mechanism scopes
   and canonical ownership
-- 0048-0049 — unused (intentional gaps)
+- [ADR-0048](ADR-0048-interoperable-external-hooks.md) — Interoperable external hooks
+  (Claude Code / Codex hook contract)
+- 0049 — unused (intentional gap)
 
 ### utilities (0050-0054)
 
@@ -155,7 +157,7 @@ collisions. Unused numbers inside a block are intentional gaps, not missing docu
   service
 - [ADR-0059](ADR-0059-durable-dispatch-outbox.md) — Durable dispatch outbox
 - [ADR-0060](ADR-0060-run-supervision-terminal-callback-and-orphan-detection.md) — Run
-  supervision: generic terminal callback and two-stage orphan detection
+  supervision: generic terminal callback and two-stage orphan detection (superseded by ADR-0095)
 - 0061 — unused (intentional gap)
 
 ### cli-surface (0062-0067)
@@ -205,7 +207,7 @@ collisions. Unused numbers inside a block are intentional gaps, not missing docu
 - [ADR-0086](ADR-0086-local-tool-controls-and-session-authorization.md) — Local tool controls and
   session authorization observation
 - [ADR-0087](ADR-0087-evidence-backed-governed-execution.md) — Evidence-backed governed execution
-- 0088-0089 — unused (intentional gaps)
+- 0088-0089 — unused (0088 allocated to a substrates record from this gap; see below)
 
 ### substrates (0090-0095)
 
@@ -219,7 +221,10 @@ collisions. Unused numbers inside a block are intentional gaps, not missing docu
   fidelity contract
 - [ADR-0094](ADR-0094-automated-pr-review-pipeline.md) — Automated PR-review pipeline over
   github-poll schedules
-- 0095 — unused (intentional gap)
+- [ADR-0095](ADR-0095-run-terminal-callbacks-and-orphan-recovery.md) — Run-terminal
+  callbacks and orphan recovery (supersedes ADR-0060)
+- [ADR-0088](ADR-0088-plugin-system.md) — Plugin system (directory-bundle manifest with
+  lazy activation; number from the adjacent free gap — the substrates block is exhausted)
 
 Remaining areas land here as their records are accepted.
 

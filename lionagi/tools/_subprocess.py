@@ -48,9 +48,8 @@ def _subprocess_sync(
     timeout_ms: int | None = None,
     env: Mapping[str, str] | None = None,
 ) -> dict:
-    """Run ``cmd`` synchronously. ``env=None`` inherits the full parent
-    environment; pass an explicit mapping to scope less-trusted commands
-    (e.g. the ADR-0090 sandbox-backend seam) to a minimal environment."""
+    """Run ``cmd`` synchronously; ``env=None`` inherits the parent environment,
+    an explicit mapping scopes less-trusted commands to a minimal one."""
     try:
         proc = subprocess.Popen(  # noqa: S603
             cmd,

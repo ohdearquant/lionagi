@@ -5,8 +5,10 @@
 
 from __future__ import annotations
 
+from types import FunctionType, GenericAlias, UnionType
 from typing import TYPE_CHECKING
 
+from lionagi.ln._cache import BoundedLRUCache
 from lionagi.ln.types import is_sentinel
 
 from ._protocol import SpecAdapter
@@ -18,6 +20,63 @@ if TYPE_CHECKING:
     from pydantic.fields import FieldInfo
 
     from lionagi.ln.types import Operable, Spec
+
+
+# Shared across identical constructions — callers must not mutate a returned model class.
+# LIONAGI_OPERATIVE_MODEL_CACHE_SIZE=0 disables sharing entirely.
+_model_type_cache: BoundedLRUCache[tuple[type[BaseModel], tuple], type[BaseModel]] = (
+    BoundedLRUCache("LIONAGI_OPERATIVE_MODEL_CACHE_SIZE", 512)
+)
+
+
+def _is_cache_safe_value(value: object) -> bool:
+    """Return whether a Spec metadata value is immutable enough for a shared model type."""
+    if value is None or isinstance(value, (bool, bytes, float, int, str, type)):
+        return True
+    if isinstance(value, (FunctionType, GenericAlias, UnionType)):
+        return True
+    if isinstance(value, tuple):
+        return all(_is_cache_safe_value(item) for item in value)
+    if isinstance(value, frozenset):
+        return all(_is_cache_safe_value(item) for item in value)
+    return False
+
+
+def _model_type_cache_key(
+    *,
+    base_type: type[BaseModel] | None,
+    model_name: str,
+    specs: tuple[Spec, ...],
+    include: set[str] | None,
+    exclude: set[str] | None,
+    doc: str | None,
+) -> tuple[type[BaseModel], tuple] | None:
+    """Build an identity-safe cache key, or opt out for mutable field metadata."""
+    if base_type is None:
+        return None
+
+    if not all(
+        _is_cache_safe_value(spec.base_type)
+        and all(_is_cache_safe_value(meta.value) for meta in spec.metadata)
+        for spec in specs
+    ):
+        return None
+
+    spec_options = tuple(
+        (spec.base_type, tuple((meta.key, meta.value) for meta in spec.metadata)) for spec in specs
+    )
+    options = (
+        model_name,
+        spec_options,
+        frozenset(include) if include is not None else None,
+        frozenset(exclude) if exclude is not None else None,
+        doc,
+    )
+    try:
+        hash((base_type, options))
+    except TypeError:
+        return None
+    return base_type, options
 
 
 class PydanticSpecAdapter(SpecAdapter):
@@ -57,6 +116,21 @@ class PydanticSpecAdapter(SpecAdapter):
         from lionagi.models._build_model import build_model_type
 
         use_specs = op.get_specs(include=include, exclude=exclude)
+        cache_key = _model_type_cache_key(
+            base_type=base_type,
+            model_name=model_name,
+            specs=use_specs,
+            include=include,
+            exclude=exclude,
+            doc=doc,
+        )
+        if cache_key is not None:
+            cached = _model_type_cache.get(cache_key)
+            if cached is not None:
+                if not cached.__pydantic_complete__:
+                    cached.model_rebuild()
+                return cached
+
         use_fields = {i.name: cls.create_field(i) for i in use_specs if i.name}
 
         # Collect validators from specs
@@ -77,6 +151,8 @@ class PydanticSpecAdapter(SpecAdapter):
         )
 
         model_cls.model_rebuild()
+        if cache_key is not None:
+            _model_type_cache.put(cache_key, model_cls)
         return model_cls
 
     @classmethod

@@ -13,12 +13,8 @@ __all__ = (
     "SYNTHESIS_INSTRUCTION",
 )
 
-# ── Planning (orchestrator emits a list[TaskAssignment]) ──────────────────────
-#
-# The orchestrator decomposes the task into TaskAssignments — the casts
-# coordination emission. ``assignee`` names a role from the roster; ``task`` is
-# the concrete objective. There is no bespoke plan model: a list of
-# TaskAssignments *is* the plan (and, with depends_on, the DAG).
+# ── Planning (orchestrator emits a list[TaskAssignment]) ──────────────
+# No bespoke plan model: a list of TaskAssignments *is* the plan (with depends_on, the DAG).
 
 DECOMPOSE_INSTRUCTION = """\
 Decompose the task into parallel TaskAssignments — one per distinct angle or \

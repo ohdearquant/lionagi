@@ -270,10 +270,8 @@ async def retry_with_backoff(
         return await func(*args, **kwargs)
 
     if exclude_exceptions:
-        # Runtime dispatch: exclude_exceptions must be checked per-instance,
-        # not per-type, to correctly handle subclass hierarchies (e.g.
-        # retry_on=(OSError,), exclude=(ConnectionError,) — ConnectionError
-        # IS-A OSError but must not be retried).
+        # Checked per-instance, not per-type, so subclass hierarchies exclude
+        # correctly (e.g. retry_on=(OSError,), exclude=(ConnectionError,)).
         class _Excluded(BaseException):
             def __init__(self, inner: Exception):
                 self.inner = inner

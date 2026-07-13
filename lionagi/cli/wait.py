@@ -2,18 +2,8 @@
 # SPDX-License-Identifier: Apache-2.0
 """`li wait <id>...` — the ADR-0035 run-completion contract.
 
-Blocks until every named run (an agent session, a play, a flow invocation, or
-a scheduled run — any kind, mixed freely) reaches a terminal state, then
-prints one frozen, tab-delimited line per run on stdout:
-
-    <run_id>\tstatus=<terminal_status>\treason=<reason_code>\t
-        artifact_dir=<run_dir>\texit_code=<n>
-
-Stdout carries contract lines only; every diagnostic goes to stderr via
-``_logging``. `wait_for_terminal()` is the reusable, importable core (no
-argv, signal handling, or printing) so other surfaces can await completion
-without shelling out; `run_wait()` is the thin CLI shim that resolves
-argv, drives the poll loop with clean SIGINT/SIGTERM handling, and prints.
+See docs/internals/cli.md for the frozen stdout line format and the
+wait_for_terminal/run_wait split.
 """
 
 from __future__ import annotations
@@ -40,8 +30,7 @@ __all__ = (
 _UNKNOWN_REASON = "unknown"
 
 # Per-kind "waited run succeeded" predicate, for the aggregate exit code.
-# Mirrors status.py's _SESSION_SUCCESS / _PLAY_SUCCESS: a session/invocation
-# that completed with no evidence reads as a failure, not a success.
+# Mirrors status.py's _SESSION_SUCCESS / _PLAY_SUCCESS.
 _SUCCESS_STATUS_BY_ENTITY_TYPE: dict[str, frozenset[str]] = {
     "session": frozenset({"completed"}),
     "invocation": frozenset({"completed"}),
@@ -51,10 +40,7 @@ _SUCCESS_STATUS_BY_ENTITY_TYPE: dict[str, frozenset[str]] = {
 
 
 async def _resolve_wait_target(db: Any, raw_id: str) -> tuple[str, dict[str, Any]] | None:
-    """Any-kind resolver: session, invocation, play (`_resolve_any_target`,
-    which also falls back to a branch_id), then schedule_run. Terminal-state
-    definitions live in TERMINAL_STATUSES_BY_ENTITY_TYPE (lionagi/state/db.py, ADR-0035).
-    """
+    """Any-kind resolver: session, invocation, play (falls back to branch_id), then schedule_run."""
     hit = await _resolve_any_target(db, raw_id)
     if hit is not None:
         return hit
@@ -78,9 +64,7 @@ async def _refetch(db: Any, kind: str, entity_id: str) -> dict[str, Any] | None:
 
 
 async def _artifact_dir_for(db: Any, kind: str, row: dict[str, Any]) -> str | None:
-    """The run directory backing *row* — always ``RUNS_ROOT / <session id>``,
-    resolved via the backing/primary session id (may not exist on disk yet).
-    Returns ``None`` only when there is no backing session id to anchor on."""
+    """The run directory backing *row*: always ``RUNS_ROOT / <session id>``, or None if unanchored."""
     if kind == "session":
         return str(RUNS_ROOT / row["id"])
     if kind == "invocation":
@@ -139,16 +123,9 @@ async def wait_for_terminal(
     on_result: Callable[[dict[str, Any]], None] | None = None,
     should_stop: Callable[[], bool] | None = None,
 ) -> list[dict[str, Any]]:
-    """Block until every id in *ids* reaches a terminal state; return one
-    outcome dict per id, in the order given (ADR-0035 completion contract).
+    """Block until every id in *ids* reaches a terminal state; return one outcome dict per id.
 
-    Importable and awaitable directly — no CLI concerns (argv, signals,
-    printing) live here; `run_wait()` below is the CLI shim over this core.
-
-    *on_result* is called once per resolved run, the moment it goes terminal
-    (or is found unresolvable), so a caller can print incrementally instead
-    of waiting for the whole set to drain. *should_stop* is polled between
-    ticks so a CLI wrapper can wire SIGINT/SIGTERM into a clean early return.
+    See docs/internals/cli.md for the on_result/should_stop callback contract.
     """
     from lionagi.state.db import StateDB
 
@@ -191,9 +168,7 @@ async def wait_for_terminal(
                 kind = pending[run_id]
                 row = await _refetch(db, kind, run_id)
                 if row is None:
-                    # Existed at resolution time but is gone now (e.g. cascade
-                    # delete of its parent) — resolve as unknown rather than
-                    # hang the wait on state that never comes back.
+                    # Gone now (e.g. cascade delete) — resolve unknown, don't hang.
                     outcome = {
                         "run_id": run_id,
                         "kind": kind,
@@ -227,10 +202,7 @@ async def wait_for_terminal(
 def run_wait(argv: list[str]) -> int:
     """Entry point for `li wait <id> [<id2> ...] [--interval SECS]`.
 
-    run_async (lionagi.ln.concurrency) installs its own SIGINT/SIGTERM
-    handlers for the duration of this call, mirroring how monitor.py's
-    `_dispatch_wait` drives its own poll loop, so Ctrl-C/SIGTERM interrupt
-    the wait cleanly instead of leaving a stray process.
+    See docs/internals/cli.md for the SIGINT/SIGTERM handling contract.
     """
     from lionagi.ln.concurrency import SigtermInterrupt, run_async
     from lionagi.state.db import DEFAULT_DB_PATH
@@ -269,9 +241,7 @@ def run_wait(argv: list[str]) -> int:
             return
         print(format_wait_line(outcome))
 
-    # run_async installs its own SIGINT/SIGTERM handlers for the duration of
-    # this call and raises KeyboardInterrupt/SigtermInterrupt if either lands
-    # mid-wait — a still-in-progress wait is neither success nor failure.
+    # A still-in-progress wait (SIGINT/SIGTERM mid-wait) is neither success nor failure.
     interrupted = False
     try:
         outcomes = run_async(

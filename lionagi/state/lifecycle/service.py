@@ -36,6 +36,14 @@ from sqlalchemy import JSON, bindparam, text
 
 from ..reasons import VALID_REASON_CODES
 from . import LifecycleNotFoundError, LifecycleValidationError
+from .callbacks import (
+    DEFAULT_TERMINAL_CALLBACKS,
+    EXECUTION_ENTITY_KINDS,
+    Correlation,
+    EntityRef,
+    RunTerminalEnvelope,
+    TerminalCallbackRegistry,
+)
 from .models import ActorType, InitialStateCommand, TransitionCommand, TransitionOutcome
 from .policy import DEFAULT_REGISTRY, PolicyRegistry
 
@@ -60,12 +68,57 @@ def _json_list(evidence_refs: tuple) -> list:
     return [dict(e) for e in evidence_refs]
 
 
+def _correlation_for(entity_type: str, entity_id: str) -> Correlation:
+    # The lifecycle service never performs a surface-specific join to
+    # populate correlation keys beyond the transitioning entity's own id --
+    # a play's envelope, for instance, does not carry its underlying
+    # invocation id.
+    if entity_type == "session":
+        return Correlation(session_id=entity_id)
+    if entity_type == "invocation":
+        return Correlation(invocation_id=entity_id)
+    if entity_type == "schedule_run":
+        return Correlation(schedule_run_id=entity_id)
+    return Correlation()
+
+
+def _build_terminal_envelope(
+    command: TransitionCommand,
+    *,
+    previous_status: str | None,
+    transition_id: str,
+    occurred_at: float,
+) -> RunTerminalEnvelope:
+    return RunTerminalEnvelope(
+        event_id=transition_id,
+        entity=EntityRef(kind=command.entity_type, id=command.entity_id),
+        previous_status=previous_status,
+        terminal_status=command.to_status,
+        reason_code=command.reason.code,
+        occurred_at=occurred_at,
+        correlation=_correlation_for(command.entity_type, command.entity_id),
+    )
+
+
 class SQLAlchemyLifecycleService:
     """The LifecycleService implementation, bound to one StateDB backend."""
 
-    def __init__(self, db: _TxProvider, registry: PolicyRegistry = DEFAULT_REGISTRY) -> None:
+    def __init__(
+        self,
+        db: _TxProvider,
+        registry: PolicyRegistry = DEFAULT_REGISTRY,
+        *,
+        terminal_callbacks: TerminalCallbackRegistry | None = None,
+    ) -> None:
         self._db = db
         self._registry = registry
+        # A process-wide TerminalCallbackRegistry is injected into the
+        # lifecycle service by default; callers may inject their own
+        # instance (tests, isolated bootstraps) so ordinary callers need
+        # not wire one up.
+        self._terminal_callbacks = (
+            terminal_callbacks if terminal_callbacks is not None else DEFAULT_TERMINAL_CALLBACKS
+        )
 
     # ── creation writes initial history in the caller's transaction ────────
 
@@ -496,7 +549,23 @@ class SQLAlchemyLifecycleService:
                     transition_id=None,
                 )
 
-        # Step 13: commit (via _tx() context exit) -> applied.
+        # Step 13: commit (via _tx() context exit) -> applied. The registry
+        # push happens strictly after this point -- the transaction has
+        # already exited successfully, so a handler can never delay,
+        # observe-before-commit, or roll back the write.
+        if (
+            transition_id is not None
+            and previous_status != command.to_status
+            and command.entity_type in EXECUTION_ENTITY_KINDS
+            and command.to_status in policy.terminal_statuses
+        ):
+            envelope = _build_terminal_envelope(
+                command,
+                previous_status=previous_status,
+                transition_id=transition_id,
+                occurred_at=now,
+            )
+            await self._terminal_callbacks.emit(envelope)
         return TransitionOutcome(
             result="applied",
             previous_status=previous_status,

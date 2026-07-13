@@ -3,13 +3,8 @@
 
 """Unified security-control verdict contract (ADR-0086 delta row 1).
 
-``GateResult`` is the one immutable shape every tool-invocation security
-control produces. Adapters convert the shipped controls — ``PermissionPolicy``
-(via its legacy ``to_pre_hook()`` callable), the built-in coding guards
-(``guard_destructive``, ``guard_paths``), and the session-level gate — into
-that shape so callers can run a set of controls exactly once per evaluation
-pass and treat an evaluator exception as a recorded deny instead of an
-uncaught crash or a silent pass.
+``GateResult`` is the one immutable shape every security control produces;
+see docs/internals/runtime.md for the full contract.
 """
 
 from __future__ import annotations
@@ -60,12 +55,8 @@ class GateDeniedError(PermissionError):
 def adapt_legacy_hook(control: str, hook: Callable) -> GateEvaluator:
     """Adapt a legacy ``(tool_name, action, args) -> dict | None`` pre-hook.
 
-    Legacy hooks (``PermissionPolicy.to_pre_hook()``, ``guard_destructive``,
-    ``guard_paths(...)``) signal denial by raising ``PermissionError`` and
-    signal an argument rewrite by returning a ``dict``. Any other raised
-    exception is an evaluator failure, not a policy decision — it is caught
-    here and turned into a deny ``GateResult`` (fail-closed) rather than
-    propagating uncaught.
+    Denial = raise ``PermissionError``; rewrite = return a ``dict``; any
+    other exception fails closed as a deny GateResult. See docs/internals/runtime.md.
     """
 
     async def evaluate(tool_name: str, action: str, args: dict) -> GateResult:

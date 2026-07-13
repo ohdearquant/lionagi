@@ -8,6 +8,7 @@ set -euo pipefail
 REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 FRONTEND_DIR="$REPO_ROOT/apps/studio/frontend"
 MARKETPLACE_DIR="$REPO_ROOT/marketplace"
+NOTEBOOK_HYGIENE_SCRIPT="$REPO_ROOT/scripts/lint_notebook_hygiene.py"
 
 _has_cmd() { command -v "$1" &>/dev/null; }
 
@@ -206,6 +207,140 @@ sys.exit(rc)
 }
 
 # ---------------------------------------------------------------------------
+# Publication hygiene (docs/, docs/_archive/, notebooks/, cookbooks/, repo root)
+#
+# lint-marketplace's absolute-path check above only covers marketplace/ +
+# .claude-plugin/ + README.md. This check covers the rest of the tree that
+# can carry publication leaks: archived ADRs, notebooks, cookbooks, and stray files
+# dropped at the repo root (e.g. internal review scratch files).
+# ---------------------------------------------------------------------------
+
+_hygiene_rg_scan() {
+  local rg_bin="$1"
+  local label="$2"
+  shift 2
+
+  local rg_rc=0
+  if "$rg_bin" "$@"; then
+    echo "  FAIL: $label found"
+    return 1
+  else
+    rg_rc=$?
+  fi
+
+  if [ "$rg_rc" -eq 1 ]; then
+    return 0
+  fi
+
+  echo "  scanner error: ripgrep failed while checking $label (exit $rg_rc)" >&2
+  return 2
+}
+
+lint-hygiene() {
+  echo "==> publication hygiene lint (docs/notebooks/cookbooks/root)"
+  cd "$REPO_ROOT"
+  local rc=0
+  local scan_rc=0
+  local rg_bin="${RG_BIN:-rg}"
+  if ! _has_cmd "$rg_bin"; then
+    echo "ERROR: ripgrep (rg) is required for publication hygiene. Install ripgrep and retry." >&2
+    return 2
+  fi
+
+  # docs/ is scanned recursively, so docs/_archive/ (nested under it) is
+  # covered by the same pass. Repo root is scanned at depth 1 only (its own
+  # files), so this never descends into src/tests/benchmarks trees where
+  # "lambda:" is overwhelmingly Python's own closure syntax.
+  local CONTENT_PATHS=(docs/ notebooks/ cookbooks/)
+
+  echo "  checking absolute machine-local paths..."
+  # Scanned across ALL file types, including .py — a hardcoded machine path
+  # in a committed Python helper (e.g. a notebook script) is exactly
+  # as much of a leak as one in markdown; the .py exclusion below is scoped
+  # to the lambda namespace check only, where it guards against
+  # Python's own closure syntax, not this check.
+  if _hygiene_rg_scan "$rg_bin" "machine-local paths" --hidden '/Users/[^/[:space:]"]+/' "${CONTENT_PATHS[@]}"; then
+    :
+  else
+    scan_rc=$?
+    if [ "$scan_rc" -gt "$rc" ]; then rc=$scan_rc; fi
+  fi
+  if _hygiene_rg_scan "$rg_bin" "machine-local paths at repo root" --hidden --max-depth 1 -g '!.git' '/Users/[^/[:space:]"]+/' .; then
+    :
+  else
+    scan_rc=$?
+    if [ "$scan_rc" -gt "$rc" ]; then rc=$scan_rc; fi
+  fi
+
+  echo "  checking internal namespace identifiers (lambda:<name>)..."
+  # Source code is excluded from this textual pass. Notebook prose and outputs
+  # are parsed separately so valid lambda expressions in code cells are not
+  # mistaken for namespace identifiers.
+  if _hygiene_rg_scan "$rg_bin" "internal namespace identifiers" --hidden -g '!*.py' -g '!*.ipynb' '\blambda:[a-z][a-z0-9_-]*\b' "${CONTENT_PATHS[@]}"; then
+    :
+  else
+    scan_rc=$?
+    if [ "$scan_rc" -gt "$rc" ]; then rc=$scan_rc; fi
+  fi
+  if _hygiene_rg_scan "$rg_bin" "internal namespace identifiers at repo root" --hidden --max-depth 1 -g '!*.py' -g '!*.ipynb' -g '!.git' '\blambda:[a-z][a-z0-9_-]*\b' .; then
+    :
+  else
+    scan_rc=$?
+    if [ "$scan_rc" -gt "$rc" ]; then rc=$scan_rc; fi
+  fi
+  if uv run python "$NOTEBOOK_HYGIENE_SCRIPT" notebooks/ cookbooks/; then
+    :
+  else
+    scan_rc=$?
+    if [ "$scan_rc" -eq 1 ]; then
+      echo "  FAIL: internal namespace identifiers found in notebook prose or outputs"
+    else
+      echo "  scanner error: notebook hygiene scan failed (exit $scan_rc)" >&2
+    fi
+    if [ "$scan_rc" -gt "$rc" ]; then rc=$scan_rc; fi
+  fi
+
+  # The Unicode shorthand cannot be Python's lambda keyword, so source files
+  # do not need the code-cell exclusion used above.
+  if _hygiene_rg_scan "$rg_bin" "internal Unicode namespace identifiers" --hidden 'λ:[a-z][a-z0-9_-]*' "${CONTENT_PATHS[@]}"; then
+    :
+  else
+    scan_rc=$?
+    if [ "$scan_rc" -gt "$rc" ]; then rc=$scan_rc; fi
+  fi
+  if _hygiene_rg_scan "$rg_bin" "internal Unicode namespace identifiers at repo root" --hidden --max-depth 1 -g '!.git' 'λ:[a-z][a-z0-9_-]*' .; then
+    :
+  else
+    scan_rc=$?
+    if [ "$scan_rc" -gt "$rc" ]; then rc=$scan_rc; fi
+  fi
+
+  echo "  checking founder-name process narration (Ocean's)..."
+  if _hygiene_rg_scan "$rg_bin" "founder-name process narration" --hidden "\bOcean's\b" "${CONTENT_PATHS[@]}"; then
+    :
+  else
+    scan_rc=$?
+    if [ "$scan_rc" -gt "$rc" ]; then rc=$scan_rc; fi
+  fi
+  if _hygiene_rg_scan "$rg_bin" "founder-name process narration at repo root" --hidden --max-depth 1 -g '!.git' "\bOcean's\b" .; then
+    :
+  else
+    scan_rc=$?
+    if [ "$scan_rc" -gt "$rc" ]; then rc=$scan_rc; fi
+  fi
+
+  if [ "$rc" -eq 0 ]; then
+    echo "  publication hygiene: PASS"
+  elif [ "$rc" -eq 1 ]; then
+    echo "  publication hygiene: FAIL"
+    return 1
+  else
+    echo "  publication hygiene: ERROR" >&2
+    return "$rc"
+  fi
+}
+
+# ---------------------------------------------------------------------------
 # Composite
 # ---------------------------------------------------------------------------
 
@@ -213,6 +348,7 @@ lint() {
   lint-python "$@"
   lint-frontend
   lint-marketplace
+  lint-hygiene
 }
 
 fmt() {
@@ -225,6 +361,7 @@ ci() {
   lint-python
   lint-frontend
   lint-marketplace
+  lint-hygiene
 
   echo ""
   echo "=== CI: test ==="
@@ -248,7 +385,7 @@ shift 2>/dev/null || true
 case "$cmd" in
   lint-python|fmt-python|test-python|test-python-cov) "$cmd" "$@" ;;
   lint-frontend|fmt-frontend|fmt-check-frontend|build-frontend|typecheck-frontend|fe-install) "$cmd" "$@" ;;
-  lint-marketplace) "$cmd" "$@" ;;
+  lint-marketplace|lint-hygiene) "$cmd" "$@" ;;
   lint|fmt|ci) "$cmd" "$@" ;;
   help|--help|-h)
     echo "Usage: scripts/ci.sh <command>"
@@ -257,6 +394,7 @@ case "$cmd" in
     echo "Frontend:    fe-install, lint-frontend, fmt-frontend, fmt-check-frontend,"
     echo "             build-frontend, typecheck-frontend"
     echo "Marketplace: lint-marketplace"
+    echo "Hygiene:     lint-hygiene (publication leaks: docs/notebooks/cookbooks/root)"
     echo "Composite:   lint (all linters), fmt (all formatters), ci (full pipeline)"
     ;;
   *)

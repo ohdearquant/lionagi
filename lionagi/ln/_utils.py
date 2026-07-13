@@ -179,9 +179,7 @@ def is_import_installed(package_name: str) -> bool:
     return importlib.util.find_spec(package_name) is not None
 
 
-# ---------------------------------------------------------------------------
-# Dynamic type loading
-# ---------------------------------------------------------------------------
+# --- Dynamic type loading ---
 
 _TYPE_CACHE: dict[str, type] = {}
 
@@ -229,9 +227,7 @@ def load_type_from_string(type_str: str) -> type:
         raise ValueError(f"Failed to load type '{type_str}': {e}") from e
 
 
-# ---------------------------------------------------------------------------
-# Type extraction
-# ---------------------------------------------------------------------------
+# --- Type extraction ---
 
 
 def extract_types(item_type: Any) -> set[type]:
@@ -265,9 +261,7 @@ def extract_types(item_type: Any) -> set[type]:
     return {item_type}
 
 
-# ---------------------------------------------------------------------------
-# UUID / datetime coercion
-# ---------------------------------------------------------------------------
+# --- UUID / datetime coercion ---
 
 
 def to_uuid(value: Any) -> UUID:
@@ -311,9 +305,7 @@ def coerce_created_at(v: Any) -> datetime:
     raise ValueError(f"Expected datetime/timestamp/string, got {type(v).__name__}")
 
 
-# ---------------------------------------------------------------------------
-# Synchronization decorators
-# ---------------------------------------------------------------------------
+# --- Synchronization decorators ---
 
 
 def synchronized(func: Callable[P, R]) -> Callable[P, R]:

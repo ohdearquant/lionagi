@@ -1,15 +1,7 @@
 # Copyright (c) 2023-2026, HaiyangLi <quantocean.li at gmail dot com>
 # SPDX-License-Identifier: Apache-2.0
 
-"""Antigravity CLI (`agy`) backend for the `gemini-code` / `gemini-cli` provider.
-
-Google folded Gemini Code Assist CLI into Antigravity (`agy`); this provider
-drives `agy` in headless print mode (``--output-format json``), which emits
-one terminal JSON object — exactly one NDJSON record, consumed unchanged by
-the shared ``ndjson_from_cli`` plumbing. ``conversation_id`` is stored as
-``session.session_id`` so native resume works via ``--conversation``. Public
-names/aliases (``gemini-code`` / ``gemini-cli`` / ``gemini_cli``) are kept.
-"""
+"""Antigravity CLI (`agy`) backend for the `gemini-code` / `gemini-cli` provider — see docs/internals/runtime.md."""
 
 from __future__ import annotations
 
@@ -84,9 +76,8 @@ CONTEXT_WINDOWS: dict[str, int] = {
 
 # --------------------------------------------------------------------------- model mapping
 
-# `agy --model` wants an exact display name + effort suffix; map legacy Gemini
-# CLI strings / bare family names onto it. Unknown values pass through so agy
-# surfaces a clear error rather than us silently forcing a default.
+# `agy --model` wants an exact display name + effort suffix; unknown values pass
+# through so agy surfaces a clear error rather than us silently forcing a default.
 _AGY_MODELS: frozenset[str] = frozenset(
     {
         "Gemini 3.5 Flash (Medium)",
@@ -133,20 +124,8 @@ def resolve_agy_model(
     *,
     reapply_effort: bool = False,
 ) -> str:
-    """Map a lionagi model spec onto an exact `agy --model` name.
-
-    agy has no effort flag — effort is expressed only via the Low/Medium/High
-    suffix on the model name. `effort` is lionagi's 5-level scale
-    (none|minimal|low|medium|high|xhigh|max), clamped onto Gemini 3.1 Pro's
-    Low/High-only range (`_clamp_gemini_effort`). An exact `(...)`-qualified
-    `model` (already a concrete agy display name) wins over `effort` by
-    default.
-
-    `reapply_effort=True` lets a new `effort` replace the suffix already
-    baked into a *persisted* prior resolution (e.g. `li agent -r ...
-    --effort ...`); a `model` the caller explicitly typed this turn still
-    wins regardless.
-    """
+    """Map a lionagi model spec + effort onto an exact `agy --model` display name (effort folds into
+    the Low/Medium/High suffix; see docs/internals/runtime.md for the precedence rules)."""
     if not model:
         model = "gemini-3.5-flash"
     if model in _AGY_MODELS:
@@ -167,9 +146,8 @@ def resolve_agy_model(
             return f"Gemini 3.1 Pro ({_clamp_gemini_effort(effort, True)})"
         return target  # cross-family alias (Claude/GPT-OSS via agy) — no effort tiers
 
-    # effort given but the string isn't a known alias: still resolve a
-    # gemini family from it (e.g. "gemini-3-pro-experimental") so --effort
-    # keeps working on forward-compatible model names.
+    # Effort given but string isn't a known alias: still resolve a gemini family
+    # from it so --effort works on forward-compatible model names.
     is_pro = "pro" in key
     if effort is not None and (is_pro or "flash" in key or "gemini" in key):
         family = "Gemini 3.1 Pro" if is_pro else "Gemini 3.5 Flash"
@@ -321,9 +299,8 @@ async def _ndjson_from_cli(request: GeminiCodeRequest):
             "(it installs to ~/.local/bin/agy); run `agy` once to authenticate."
         )
     cmd = [AGY_CLI, *request.as_cmd_args()]
-    # agy resolves relative --add-dir entries against the process cwd and has no
-    # '-C'-style flag, so pass the resolved workspace as cwd. Default stdin is
-    # DEVNULL — print mode reads nothing from stdin.
+    # agy resolves relative --add-dir entries against process cwd (no '-C' flag).
+    # Default stdin DEVNULL — print mode reads nothing from stdin.
     async with contextlib.aclosing(ndjson_from_cli(cmd, cwd=request.cwd())) as stream:
         async for obj in stream:
             yield obj
@@ -370,12 +347,8 @@ async def stream_gemini_cli(
     on_tool_result: Callable[[dict[str, Any]], None] | None = None,
     on_final: Callable[[CLISession], None] | None = None,
 ) -> AsyncIterator[StreamChunk | CLISession]:
-    """Run agy in json print mode and project its result object into StreamChunks.
-
-    agy's json format surfaces no per-tool events on stdout (they live only in
-    the per-session transcript), so ``on_tool_use`` / ``on_tool_result`` are
-    accepted for interface parity but do not fire in this transport.
-    """
+    """Run agy in json print mode and project its result into StreamChunks; on_tool_use/on_tool_result
+    are accepted for interface parity but never fire (agy's json format has no per-tool stdout events)."""
     if session is None:
         session = CLISession()
     theme = request.cli_display_theme or "light"
@@ -411,10 +384,8 @@ async def stream_gemini_cli(
                 yield sys_sc
 
             if session.is_error:
-                # Error chunk must lead with status, not delivered content —
-                # a degraded termination after a complete response otherwise
-                # impersonates the response. Bounded detail keeps quota/auth
-                # patterns classifiable.
+                # Error chunk leads with status, not delivered content — a degraded
+                # termination after a complete response would otherwise impersonate it.
                 detail = f": {response[:500]}" if response else ""
                 msg = f"agy returned status={status or 'UNKNOWN'}{detail}"
                 sc = StreamChunk(type="error", content=msg, is_error=True, metadata=obj)
@@ -484,10 +455,8 @@ class GeminiCLIEndpoint(AgenticHandlersMixin, AgenticEndpoint):
     _handler_kwarg = "gemini_handlers"
     _request_model = GeminiCodeRequest
     _filter_model_fields = False
-    # streams_first_output_early stays False (AgenticEndpoint default): agy's
-    # json print mode yields only after the whole result object arrives —
-    # see stream_gemini_cli() above — so a healthy long-running call would
-    # look identical to a dead worker to a first-chunk watchdog.
+    # streams_first_output_early stays False: agy's json mode yields only after
+    # the whole result arrives, so a first-chunk watchdog can't tell it from a hang.
 
     def __init__(self, config: EndpointConfig = None, **kwargs):
         handlers = kwargs.pop("gemini_handlers", None)

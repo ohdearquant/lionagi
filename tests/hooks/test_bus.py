@@ -177,12 +177,13 @@ def test_hook_decorator_rejects_unknown_point():
 
 
 def test_hook_point_vocabulary():
-    """Pin the 11-event vocabulary so a removal is visible in this test."""
+    """Pin the 12-event vocabulary so a removal is visible in this test."""
     values = {p.value for p in HookPoint}
     assert values == {
         "session.start",
         "session.end",
         "branch.create",
+        "branch.end",
         "api.pre_call",
         "api.post_call",
         "api.stream_chunk",
@@ -191,6 +192,7 @@ def test_hook_point_vocabulary():
         "tool.error",
         "message.add",
         "artifact.created",
+        "prompt.submit",
     }
 
 
@@ -282,6 +284,51 @@ async def test_blocking_emit_stop_hook_short_circuits_without_error():
 
 
 # ── FIX 3: handlers snapshotted before dispatch ───────────────────────────────
+
+
+# ── USER_PROMPT_SUBMIT is the second blocking point (ADR-0048 D2) ───────────
+
+
+async def test_blocking_emit_propagates_exception_for_user_prompt_submit():
+    bus = HookBus()
+
+    async def guard(**kw):
+        raise PermissionError("blocked prompt")
+
+    bus.on(HookPoint.USER_PROMPT_SUBMIT, guard)
+
+    with pytest.raises(PermissionError, match="blocked prompt"):
+        await bus.blocking_emit(HookPoint.USER_PROMPT_SUBMIT, prompt="hi")
+
+
+async def test_emit_user_prompt_submit_propagates_exception():
+    """emit() on USER_PROMPT_SUBMIT must propagate — it routes through blocking_emit."""
+    bus = HookBus()
+
+    async def guard(**kw):
+        raise PermissionError("blocked via emit")
+
+    bus.on(HookPoint.USER_PROMPT_SUBMIT, guard)
+
+    with pytest.raises(PermissionError, match="blocked via emit"):
+        await bus.emit(HookPoint.USER_PROMPT_SUBMIT, prompt="hi")
+
+
+async def test_user_prompt_submit_stophook_short_circuits_without_error():
+    bus = HookBus()
+    calls: list[str] = []
+
+    async def stopper(**kw):
+        calls.append("stopper")
+        raise StopHook
+
+    async def never(**kw):  # pragma: no cover
+        calls.append("never")
+
+    bus.on(HookPoint.USER_PROMPT_SUBMIT, stopper)
+    bus.on(HookPoint.USER_PROMPT_SUBMIT, never)
+    await bus.emit(HookPoint.USER_PROMPT_SUBMIT, prompt="hi")
+    assert calls == ["stopper"]
 
 
 async def test_emit_handler_registered_during_emit_does_not_fire():

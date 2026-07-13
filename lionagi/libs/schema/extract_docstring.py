@@ -9,35 +9,8 @@ from typing import Literal
 def extract_docstring(
     func: Callable, style: Literal["google", "rest"] = "google"
 ) -> tuple[str | None, dict[str, str]]:
-    """Extract function description and parameter descriptions from a Google- or reST-style docstring.
-
-    Args:
-        func: The function from which to extract docstring details.
-        style: The style of docstring to parse ('google' or 'rest').
-
-    Returns:
-        A tuple containing the function description and a dictionary with
-        parameter names as keys and their descriptions as values.
-
-    Raises:
-        ValueError: If an unsupported style is provided.
-
-    Examples:
-        >>> def example_function(param1: int, param2: str):
-        ...     '''Example function.
-        ...
-        ...     Args:
-        ...         param1 (int): The first parameter.
-        ...         param2 (str): The second parameter.
-        ...     '''
-        ...     pass
-        >>> description, params = extract_docstring_details(example_function)
-        >>> description
-        'Example function.'
-        >>> params == {'param1': 'The first parameter.',
-        ...            'param2': 'The second parameter.'}
-        True
-    """
+    """Extract function description and parameter descriptions from a Google- or
+    reST-style docstring. Raises ValueError if style is unsupported."""
     style = str(style).strip().lower()
 
     if style == "google":
@@ -52,32 +25,7 @@ def extract_docstring(
 def _extract_docstring_details_google(
     func: Callable,
 ) -> tuple[str | None, dict[str, str]]:
-    """Extract description and parameter map from a Google-style docstring.
-
-    Args:
-        func: The function from which to extract docstring details.
-
-    Returns:
-        A tuple containing the function description and a dictionary with
-        parameter names as keys and their descriptions as values.
-
-    Examples:
-        >>> def example_function(param1: int, param2: str):
-        ...     '''Example function.
-        ...
-        ...     Args:
-        ...         param1 (int): The first parameter.
-        ...         param2 (str): The second parameter.
-        ...     '''
-        ...     pass
-        >>> description, params = _extract_docstring_details_google(
-        ...     example_function)
-        >>> description
-        'Example function.'
-        >>> params == {'param1': 'The first parameter.',
-        ...            'param2': 'The second parameter.'}
-        True
-    """
+    """Extract description and parameter map from a Google-style docstring."""
     docstring = inspect.getdoc(func)
     if not docstring:
         return None, {}
@@ -121,33 +69,7 @@ def _extract_docstring_details_google(
 def _extract_docstring_details_rest(
     func: Callable,
 ) -> tuple[str | None, dict[str, str]]:
-    """Extract description and parameter map from a reST-style docstring.
-
-    Args:
-        func: The function from which to extract docstring details.
-
-    Returns:
-        A tuple containing the function description and a dictionary with
-        parameter names as keys and their descriptions as values.
-
-    Examples:
-        >>> def example_function(param1: int, param2: str):
-        ...     '''Example function.
-        ...
-        ...     :param param1: The first parameter.
-        ...     :type param1: int
-        ...     :param param2: The second parameter.
-        ...     :type param2: str
-        ...     '''
-        ...     pass
-        >>> description, params = _extract_docstring_details_rest(
-        ...     example_function)
-        >>> description
-        'Example function.'
-        >>> params == {'param1': 'The first parameter.',
-        ...            'param2': 'The second parameter.'}
-        True
-    """
+    """Extract description and parameter map from a reST-style docstring."""
     docstring = inspect.getdoc(func)
     if not docstring:
         return None, {}

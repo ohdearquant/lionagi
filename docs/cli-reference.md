@@ -180,9 +180,9 @@ Phase 1: Orchestrator decomposing task into 3 agent requests...
 Phase 1 done (3.2s): 3 requests generated.
 Phase 2: Fanning out to 3 workers: [claude/opus, claude/opus, claude/opus]
 Phase 2 done (14.1s).
-Saved 3 worker results to /Users/ocean/audit-out
+Saved 3 worker results to /path/to/audit-out
 Phase 3: Synthesis [claude/opus]...
-Saved to /Users/ocean/audit-out
+Saved to /path/to/audit-out
 ```
 
 Worker outputs: `worker_1.md … worker_N.md` in artifact root (`fanout.py:269`). Synthesis: `synthesis.md` (`fanout.py:317`). Resume cancelled workers with `li agent -r BRANCH_ID`.

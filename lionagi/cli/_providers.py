@@ -15,7 +15,6 @@ from lionagi.libs.frontmatter import parse_frontmatter as _parse_frontmatter
 from lionagi.libs.path_safety import validate_bare_name
 from lionagi.service.providers import (
     _CLAUDE_PROVIDER_NAMES,
-    _CODEX_EFFORT_CLAMP,
     BACKENDS,
     CLI_PROVIDERS,
     EFFORT_LEVELS,
@@ -28,6 +27,7 @@ from lionagi.service.providers import (
     PROVIDERS_NO_EFFORT,
     ModelSpec,
     _clamp_claude_effort,
+    _clamp_codex_effort,
     normalize_effort,
     parse_model_spec,
 )
@@ -97,7 +97,7 @@ def build_imodel_from_spec(
         kwarg = PROVIDER_EFFORT_KWARG.get(provider_raw)
         if kwarg is not None:
             if provider_raw == "codex":
-                effort = _CODEX_EFFORT_CLAMP.get(effort, effort)
+                effort = _clamp_codex_effort(effort, ms.model)
             elif provider_raw in _CLAUDE_PROVIDER_NAMES:
                 effort = _clamp_claude_effort(effort, ms.model)
             extra[kwarg] = effort
@@ -144,7 +144,7 @@ def build_chat_model(
         kwarg = PROVIDER_EFFORT_KWARG.get(provider)
         if kwarg is not None:
             if provider == "codex":
-                effort = _CODEX_EFFORT_CLAMP.get(effort, effort)
+                effort = _clamp_codex_effort(effort, model)
             elif provider in _CLAUDE_PROVIDER_NAMES:
                 effort = _clamp_claude_effort(effort, model)
             extra[kwarg] = effort
@@ -220,7 +220,8 @@ def add_common_cli_args(parser: argparse.ArgumentParser) -> None:
         help=(
             "Override effort (overrides spec suffix). "
             "claude: low|medium|high|xhigh|max. "
-            "codex: none|minimal|low|medium|high|xhigh. "
+            "codex: none|minimal|low|medium|high|xhigh|max|ultra "
+            "(max/ultra clamp per model support). "
             "gemini-code/gemini-cli: folded into --model as Low|Medium|High "
             "(Gemini 3.1 Pro has no Medium)."
         ),
@@ -243,9 +244,7 @@ def add_common_cli_args(parser: argparse.ArgumentParser) -> None:
             "accordingly."
         ),
     )
-    # Opt-in skill-orchestration grouping. Set by a skill via
-    # ``li invoke start``; threaded through to the session row so the
-    # Studio /invocations page can show 14 sessions under one /show row.
+    # Set by a skill via ``li invoke start``; groups sessions under one /show row.
     parser.add_argument(
         "--invocation",
         dest="invocation",
@@ -340,10 +339,22 @@ def _resolve_profile_path(agents_dir: Path, name: str) -> Path | None:
     return None
 
 
-def list_agents() -> list[str]:
-    """List available agent profile names (merged across all .lionagi/ dirs).
+def _plugin_agent_profiles() -> dict[str, tuple[str, Path]]:
+    """``<plugin>/<name>`` -> (plugin name, profile path) for every ACTIVE plugin (trusted+enabled+compatible).
 
-    Discovers both directory (<name>/<name>.md) and flat (<name>.md) layouts.
+    A plugin's agent profiles only ever join the search *after* project and
+    global profiles: local files always win, and an untrusted or disabled
+    plugin contributes nothing here at all.
+    """
+    from lionagi.plugins import PluginRegistry
+
+    return PluginRegistry.active_agent_profile_files()
+
+
+def list_agents() -> list[str]:
+    """List available agent profile names, merged across .lionagi/ dirs and active plugins.
+
+    Plugin-declared profiles are namespaced as ``<plugin>/<name>``.
     """
     seen: set[str] = set()
     for d in _find_lionagi_dirs():
@@ -358,24 +369,85 @@ def list_agents() -> list[str]:
         for p in agents_dir.glob("*.md"):
             if p.is_file():
                 seen.add(p.stem)
+    seen.update(_plugin_agent_profiles().keys())
     return sorted(seen)
 
 
+def _resolve_plugin_profile_path(name: str) -> Path | None:
+    """Resolve *name* against active plugins: an explicit ``<plugin>/<agent>`` token always
+
+    resolves; a bare name resolves only when exactly one active plugin declares it
+    (ambiguous bare names are left unresolved — namespacing exists precisely so a
+    caller can disambiguate).
+    """
+    plugin_profiles = _plugin_agent_profiles()
+    if "/" in name:
+        entry = plugin_profiles.get(name)
+        return entry[1] if entry is not None else None
+
+    matches = [
+        path for token, (_plugin, path) in plugin_profiles.items() if token.endswith(f"/{name}")
+    ]
+    if len(matches) == 1:
+        return matches[0]
+    return None
+
+
+def _warn_if_shadowing_plugin_profile(name: str) -> None:
+    """Log a shadow warning when a local agent profile hides a same-named plugin profile.
+
+    The user's own explicit local file always wins on a bare-name collision;
+    this only makes the shadowing visible instead of silent.
+    """
+    plugin_profiles = _plugin_agent_profiles()
+    owners = sorted(
+        {token.split("/", 1)[0] for token in plugin_profiles if token.endswith(f"/{name}")}
+    )
+    if not owners:
+        return
+    from ._logging import warn
+
+    warn(
+        f"agent profile {name!r} is also declared by plugin(s) {', '.join(owners)}; "
+        f"using the local file (load the plugin's version with '<plugin>/{name}')."
+    )
+
+
 def load_agent_profile(name: str) -> AgentProfile:
-    """Load a named agent profile, searching project-local then global ~/.lionagi/agents/."""
-    _validate_bare_name(name)
+    """Load a named agent profile, searching project-local then global ~/.lionagi/agents/,
+
+    then active plugin bundles: a plugin's agent profiles join the search
+    only after a project/global miss, and only for a plugin that is trusted +
+    enabled + version-compatible (see ``lionagi.plugins``).
+    """
+    plugin_token = "/" in name
+    if plugin_token:
+        # A `<plugin>/<name>` token is opaque to the bare-name validator
+        # (which forbids '/'); validate each component instead.
+        plugin_part, _, agent_part = name.partition("/")
+        _validate_bare_name(plugin_part)
+        _validate_bare_name(agent_part)
+    else:
+        _validate_bare_name(name)
+
     dirs = _find_lionagi_dirs()
-    if not dirs:
+    if not plugin_token:
+        for d in dirs:
+            path = _resolve_profile_path(d / "agents", name)
+            if path is not None:
+                _warn_if_shadowing_plugin_profile(name)
+                text = path.read_text()
+                return _parse_profile(name, text)
+
+    plugin_path = _resolve_plugin_profile_path(name)
+    if plugin_path is not None:
+        return _parse_profile(name, plugin_path.read_text())
+
+    if not dirs and not plugin_token:
         raise FileNotFoundError(
             "No .lionagi/ directory found. Create .lionagi/agents/ in your repo "
             "or ~/.lionagi/agents/ globally."
         )
-
-    for d in dirs:
-        path = _resolve_profile_path(d / "agents", name)
-        if path is not None:
-            text = path.read_text()
-            return _parse_profile(name, text)
 
     available = list_agents()
     msg = f"Agent profile '{name}' not found"
@@ -387,9 +459,7 @@ def load_agent_profile(name: str) -> AgentProfile:
 def _parse_profile_timeout(name: str, raw: Any) -> int | None:
     """Validate the profile 'timeout' field; warn and ignore garbage rather than raising.
 
-    Only a genuine positive int is accepted — YAML booleans (True/False are
-    ints in Python) and floats (which int() would silently truncate) are
-    rejected rather than coerced.
+    See docs/internals/cli.md for why bool/float are rejected, not coerced.
     """
     if raw is None:
         return None

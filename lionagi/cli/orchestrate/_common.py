@@ -90,6 +90,15 @@ BARE_WORKER_SYSTEM = _bare_worker_system()
 # profile's system_prompt) when the worker runs in team mode. This is a
 # SECTION, not a replacement — workers still need the artifact protocol
 # and tool guidance from the base prompt.
+#
+# Two variants exist because a team-mode worker reaches the team through
+# exactly one of two disjoint channels, never both: CLI-provider workers
+# (codex/gemini subprocesses, no tool-calling surface) get only the bash
+# `li team` channel; API-model workers additionally get the in-process
+# `messenger` tool bound to their branch and should coordinate through that
+# instead. Which variant applies is decided by `messenger_bound` in
+# `build_worker_branch` before the system prompt is assembled — see
+# `team_worker_system()` in `_orchestration.py`.
 
 TEAM_COORD_SECTION = """\
 ## Team Coordination
@@ -124,10 +133,71 @@ are supplementary — full results are auto-posted to the team at flow end.
 - **Artifact files**: structured deliverables (still your primary output)
 - **stdout**: progress updates only
 
+### Signaling done
+
+When you finish your assigned work, signal it explicitly so the run knows \
+whether it can wrap up:
+- If you have a `messenger` tool bound to this session, call it with \
+`action="done"` and a one-line `content` summary if you might still be \
+asked to continue, or `action="finished"` if you are permanently done and \
+should never be revived.
+- Otherwise, run `li team send "<summary>" -t {team_id} --to all --kind \
+done --from {worker_name}` (or `--kind finished`).
+
+Either way, the signal is written by that tool/command itself — you never \
+need to hand-format it. If teammates leave you a new message after you \
+signal done, the orchestrator may start one short follow-up round and wake \
+you with that message attached to your next turn's context (never rewritten \
+into your instructions). Re-check your inbox and signal done/finished again \
+when you're through.
+
 ### Resuming
 After this round, teammates or the orchestrator can follow up:
 - `li team receive -t {team_id} --as {worker_name}` to read messages
 - `li team send "..." -t {team_id} --to {worker_name}` to reply
+- `li agent -r {{branch_id}} "follow-up"` to continue your session\
+"""
+
+TEAM_COORD_SECTION_MESSENGER = """\
+## Team Coordination
+
+You are **{worker_name}** on team "{team_name}" (id: {team_id}).
+
+### Your team
+{roster_text}
+
+### Protocol
+
+You have the **messenger** tool bound to this session — use it for team \
+coordination. You do NOT have a `li team` shell channel; the messenger tool \
+is your only coordination path.
+
+**Before starting work**: Call the messenger tool with `action="receive"` \
+to check your inbox for anything relevant from teammates.
+
+**During work**: Call the messenger tool with `action="send"`, \
+`to="<teammate>"`, and `content="..."` to send coordination signals when \
+you discover something affecting them. Keep them short and actionable — \
+NOT full deliverables.
+
+**If you get stuck**: Call the messenger tool with `action="help"`, \
+`content="<reason>"`, and `urgency="fyi"` (soft, you're continuing) or \
+`urgency="blocked"` (hard, you cannot proceed) to signal you need input or \
+authority you don't have.
+
+**After work**: Your artifact files are the deliverable. Team messages \
+are supplementary — full results are auto-posted to the team at flow end.
+
+### What goes where
+- **Team messages** (via the messenger tool): coordination signals, \
+warnings, discoveries affecting others
+- **Artifact files**: structured deliverables (still your primary output)
+- **stdout**: progress updates only
+
+### Resuming
+After this round, teammates or the orchestrator can follow up:
+- Call the messenger tool with `action="receive"` to read messages
+- Call the messenger tool with `action="send"` to reply
 - `li agent -r {{branch_id}} "follow-up"` to continue your session\
 """
 

@@ -24,12 +24,8 @@ async def _start_invocation(
     from lionagi.state.db import StateDB
 
     inv_id = uuid.uuid4().hex[:12]
-    # No pid markers here: `li invoke start` is a short-lived CLI command that
-    # creates the row and exits (INV=$(li invoke start ...)); it is NOT the
-    # long-lived owner. Recording its pid would be a recycled-PID hazard — a
-    # later live process reusing it could make `li kill` mis-signal or make
-    # --all-stale skip the invocation. An invocation is a PID-less umbrella over
-    # the child sessions it spawns; those carry their own pid markers.
+    # No pid markers here — invocation is a PID-less umbrella; see
+    # docs/internals/cli.md for the recycled-PID hazard this avoids.
     async with StateDB() as db:
         await db.create_invocation(
             {

@@ -23,19 +23,8 @@ Handler = Callable[[Any, "SessionObserver"], Any]
 Predicate = Callable[[Any], bool]
 Gate = Callable[[Any], Any]
 
-# Maximum byte size for the persisted payload JSON column in session_signals.
-# This is a PAYLOAD cap, not a frame cap: it bounds
-# ``len(_to_json_column(payload).encode("utf-8"))`` — the value stored in the
-# ``payload`` column.  The SSE generator wraps each row in a full JSON object
-# (id, session_id, seq, kind, op_id, ts, payload) and prefixes it with
-# ``data: ...\n\n``; that envelope adds bounded overhead (~176 bytes for
-# typical row metadata) so SSE frames can exceed this cap by that margin.
-# Callers that need a hard frame cap must reserve the envelope overhead before
-# calling _sanitize_signal_payload.
-# Payloads exceeding the cap are truncated: the dict is serialised to JSON,
-# sliced to fit (accounting for JSON escaping of backslashes and quotes), and a
-# ``truncated`` + ``original_bytes`` marker is injected so downstream
-# consumers know the data is partial.
+# PAYLOAD cap (not frame cap) for the persisted payload JSON column; SSE
+# envelope overhead (~176B) can push frames over this. See _sanitize_signal_payload.
 _PAYLOAD_BYTE_CAP: int = 16_384  # 16 KB (payload column only; see note above)
 
 # Signal fields that are part of Signal base and must not be promoted into the
@@ -82,9 +71,8 @@ def _sanitize_signal_payload(sig: Any) -> dict[str, Any]:
         except Exception:  # noqa: BLE001
             raw["data"] = repr(sig.data)
 
-    # Serialise with safe_fallback so no TypeError escapes, then parse back to
-    # a dict of JSON-native types.  This is the single serialisation gate:
-    # after this point, ``payload`` contains only str/int/float/bool/list/dict.
+    # Serialise with safe_fallback so no TypeError escapes, then parse back —
+    # single serialisation gate: after this, payload is str/int/float/bool/list/dict only.
     safe_json: str | None = None
     try:
         safe_json = _jd(raw, safe_fallback=True)
@@ -92,17 +80,8 @@ def _sanitize_signal_payload(sig: Any) -> dict[str, Any]:
     except Exception:  # noqa: BLE001
         payload = {"sanitize_error": repr(sig)[:256]}
 
-    # Apply byte cap on the FINAL serialized form, not the intermediate
-    # safe_json string.  safe_json may be under the cap, but after wrapping in
-    # a truncation-marker dict and re-serializing (with JSON escaping of
-    # backslashes, quotes, etc.) the stored column can be 2× larger.
-    #
-    # Strategy:
-    #  1. Measure the final serialized payload.  If under cap, done.
-    #  2. If over cap, build a truncation-marker dict with a data slice whose
-    #     byte length starts at (cap - marker_overhead) and shrinks until the
-    #     whole re-serialized dict fits.  The loop terminates quickly because
-    #     each iteration exactly measures the excess; at most a few rounds.
+    # Byte cap applies to the FINAL serialized form (re-serializing the
+    # truncation marker can 2x the size) — see strategy in the batch report.
     try:
         if safe_json is not None:
             original_bytes = safe_json.encode("utf-8")
@@ -111,9 +90,8 @@ def _sanitize_signal_payload(sig: Any) -> dict[str, Any]:
         original_len = len(original_bytes)
 
         if original_len > _PAYLOAD_BYTE_CAP:
-            # Estimate marker overhead: serialise the marker with an empty data
-            # string to get the fixed-cost JSON bytes, then allow the remainder
-            # of the cap budget for the escaped data content.
+            # Estimate marker overhead via an empty-data marker's fixed JSON
+            # cost, then budget the remainder for escaped data content.
             _marker_empty = _jd(
                 {"truncated": True, "original_bytes": original_len, "data": ""},
                 safe_fallback=True,
@@ -228,13 +206,7 @@ class SessionObserver(Observer):
         return self
 
     async def authorize(self, action: Any) -> bool:
-        """Pre-invoke gate. Returns True when no gate set. Denials recorded as GateDenied.
-
-        Routed through the shared GateResult adapter (lionagi.agent.gate) so the
-        session gate's fail-closed-on-exception behavior is expressed as the
-        same typed verdict shape as PermissionPolicy and the built-in coding
-        guards (ADR-0086 delta row 1).
-        """
+        """Pre-invoke gate. Returns True when no gate set; denials recorded as GateDenied. Routed through the shared GateResult adapter (ADR-0086) for a consistent fail-closed verdict shape."""
         if self._gate is None:
             return True
         from lionagi.agent.gate import adapt_session_gate
@@ -327,9 +299,8 @@ class SessionObserver(Observer):
         """Register a subscription persisting every Signal to StateDB; pass db to reuse an open connection."""
         import time as _time
 
-        # Capture the caller-supplied db reference.  In production CLI paths this
-        # is the long-lived StateDB opened by setup_agent_persist /
-        # setup_orchestration_persist — the same instance used for message writes.
+        # Caller-supplied db: in production this is the long-lived StateDB
+        # from setup_agent_persist/setup_orchestration_persist (reused for message writes).
         _bound_db = db
 
         async def _persist(event: Any, _ctx: Any = None) -> None:
@@ -341,9 +312,8 @@ class SessionObserver(Observer):
             kind = type(sig).__name__
             op_id = getattr(sig, "op_id", "") or ""
             ts = _time.time()
-            # Build a JSON-safe, size-bounded payload.  _sanitize_signal_payload
-            # never raises: unknown objects fall back to repr, MessageAdded stores
-            # only a compact message reference, and oversized payloads are capped.
+            # _sanitize_signal_payload never raises: unknown objects fall back
+            # to repr, MessageAdded stores a compact ref, oversized payloads capped.
             payload = _sanitize_signal_payload(sig)
 
             try:

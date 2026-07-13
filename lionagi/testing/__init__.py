@@ -3,9 +3,7 @@
 
 """Supported public testing surface for lionagi downstream projects.
 
-Provides scripted endpoints, mock factories, pytest fixtures, async helpers,
-and test-data loaders. Register ``lionagi.testing.pytest_plugin`` in your
-conftest (or ``pytest_plugins``) to get the bundled fixtures automatically.
+Register ``lionagi.testing.pytest_plugin`` in your conftest to get the bundled fixtures.
 """
 
 from __future__ import annotations

@@ -8,6 +8,7 @@ import json
 import logging
 import time
 import warnings
+from copy import deepcopy
 from typing import Any
 
 logger = logging.getLogger("lionagi.hooks.builtins")
@@ -23,6 +24,7 @@ __all__ = (
     "persist_session_start",
     "persist_session_end",
     "persist_branch_provenance",
+    "persist_branch_end",
     "persist_message",
     "log_api_metrics",
     "log_tool_call",
@@ -56,11 +58,8 @@ async def persist_session_start(
         return
     await db.update_session(
         session_id,
-        # status="running" routes through update_status(), which requires
-        # a reason_code — pass it explicitly so the transition records a
-        # canonical "started" cause instead of tripping the deprecation
-        # shim (which would raise on the running status and be swallowed by
-        # the bus, silently dropping all the provenance fields above).
+        # Explicit reason_code avoids tripping the deprecation shim, which
+        # would swallow the transition and silently drop provenance fields.
         reason_code=RunReasons.STARTED_OK,
         model=model,
         provider=provider,
@@ -85,21 +84,8 @@ async def persist_session_end(
     duration_ms: float | None = None,
     **_unused: Any,
 ) -> None:
-    """Stamp ended_at/status + usage on the session row.
-
-    teardown_persist() always stamps the terminal status (via
-    _teardown_common()'s update_status() call) before emitting SESSION_END, so
-    by the time this handler runs in the normal CLI flow the row is already
-    terminal. In that case only the pure usage fields (input_tokens,
-    output_tokens, total_cost_usd, num_turns, duration_ms) are written — the
-    status/reason_code/ended_at transition is skipped (avoids a duplicate
-    status_transitions row and keeps a genuine double-fire from clobbering an
-    already-recorded status), and node_metadata is left untouched too, since
-    _teardown_common() already owns it for a terminal row (its own
-    extras/identity-markers write happens before update_status()) and
-    update_session() does a plain column SET, not a merge — writing
-    {"error": ...} here would clobber that richer data rather than add to it.
-    """
+    """Stamp ended_at/status + usage on the session row; usually only usage
+    fields are written since teardown_persist already stamped status."""
     from lionagi.state.db import SESSION_TERMINAL_STATUSES
     from lionagi.state.reasons import RunReasons
 
@@ -114,11 +100,8 @@ async def persist_session_end(
     if not already_terminal:
         fields["ended_at"] = time.time()
         if error is not None:
-            # update_session() binds this as a raw SQL param (no JSON
-            # bindparam), so pre-serialize to avoid sqlite3.InterfaceError.
-            # update_session() also does a plain column SET, not a merge, so
-            # start from whatever node_metadata the row already carries
-            # (e.g. identity markers) rather than clobbering it.
+            # Pre-serialize (raw SQL param, no JSON bindparam) and merge
+            # onto existing node_metadata rather than clobbering it.
             existing_metadata = row.get("node_metadata")
             if not isinstance(existing_metadata, dict):
                 existing_metadata = {}
@@ -174,6 +157,31 @@ async def persist_branch_provenance(
     )
 
 
+async def persist_branch_end(
+    *,
+    branch_id: str,
+    status: str = "completed",
+    ended_at: float | None = None,
+    **_unused: Any,
+) -> None:
+    """Stamp the branch row's terminal status/ended_at — the BRANCH_END
+    counterpart to BRANCH_CREATE's persist_branch_provenance.
+
+    Delegates the actual guard to StateDB.finalize_branch(): a no-op when
+    *status* is not itself a genuine terminal outcome (e.g. "running"), a
+    no-op when the branch row is already at ANY terminal status (not just
+    "completed"/"failed" -- "cancelled", "timed_out", "aborted", and
+    "completed_empty" are equally immutable), so this run-level finalize
+    never clobbers a more specific outcome a per-op writer already recorded
+    (e.g. the reactive DAG runner's own NodeCompleted/NodeFailed
+    branch-status updates in cli/orchestrate/flow.py). Also a no-op when the
+    branch row doesn't exist yet (a DAG leg that never got a first message,
+    so create_branch() never ran for it) -- there is nothing to finalize.
+    """
+    db = await _db()
+    await db.finalize_branch(branch_id, status=status, ended_at=ended_at or time.time())
+
+
 async def persist_message(
     *,
     message: dict[str, Any],
@@ -189,14 +197,51 @@ async def persist_message(
     effective_branch_prog = branch_progression_id or progression_id
 
     db = await _db()
-    await db.insert_message(message)
-    if effective_branch_prog is not None:
-        await db.append_to_progression(effective_branch_prog, message["id"])
-    if session_progression_id is not None:
-        await db.append_to_progression(session_progression_id, message["id"])
-    if message.get("role") == "system" and branch_id is not None:
-        await db.update_branch(branch_id, system_msg_id=message["id"])
-    await db.touch_session_activity(session_id)
+    from ._message_retry import MessagePersistRetryQueue, PendingMessageEvent
+    from .bus import _current_emitting_bus
+
+    bus = _current_emitting_bus()
+    if bus is None:
+        await db._persist_live_message(
+            message,
+            session_id=session_id,
+            branch_progression_id=effective_branch_prog,
+            session_progression_id=session_progression_id,
+            system_branch_id=branch_id if message.get("role") == "system" else None,
+            system_branch_update_before_activity=True,
+        )
+        return
+
+    queue_key = (
+        id(db),
+        session_id,
+        branch_id,
+        effective_branch_prog,
+        session_progression_id,
+    )
+    queues = getattr(bus, "_message_retry_queues", None)
+    if queues is None:
+        queues = {}
+        bus._message_retry_queues = queues
+    retry_queue = queues.get(queue_key)
+    if retry_queue is None:
+        retry_queue = MessagePersistRetryQueue(
+            db,
+            logger=logger,
+            owner=f"hook session {session_id}",
+        )
+        queues[queue_key] = retry_queue
+
+    await retry_queue.submit(
+        PendingMessageEvent(
+            message=deepcopy(message),
+            session_id=session_id,
+            branch_progression_id=effective_branch_prog,
+            session_progression_id=session_progression_id,
+            system_branch_id=branch_id if message.get("role") == "system" else None,
+            system_branch_update_before_activity=True,
+        )
+    )
 
 
 async def log_api_metrics(

@@ -15,12 +15,8 @@ from lionagi.libs.path_safety import GLOB_CHARS as _GLOB_CHARS
 _ARTIFACT_ID_RE = re.compile(r"^[A-Za-z0-9_-]+$")
 _VALIDATION_ROOT = os.path.realpath("/tmp/__contract_validate__")  # noqa: S108 — synthetic root for path-validation only, never written to
 
-# ADR-0064 D3: v1 entry fields; unknown subfields are warned about.
-# `kind`, `min_size`, `mime_type` are deliberately not accepted yet —
-# silently accepting them now would let contract files drift into
-# looking stricter than the executor actually is.
-# Both the `li play check` pre-flight AND the real `li play` runtime
-# path emit a warning for unknown subfields via warn_unknown_artifact_keys().
+# v1 entry fields. `kind`/`min_size`/`mime_type` reserved for v1.1 — unknown
+# subfields warn via warn_unknown_artifact_keys() (ADR-0064 D3) rather than silently pass.
 _ARTIFACT_ENTRY_ALLOWED_KEYS = frozenset({"id", "path", "required", "description", "source"})
 
 
@@ -83,7 +79,7 @@ def warn_unknown_artifact_keys(
     source: str = "playbook",
     emit: Any = None,
 ) -> list[str]:
-    """Warn about unrecognized subfields in expected[] entries (ADR-0064 D3 unknown-field warning); returns messages."""
+    """Warn about unrecognized subfields in expected[] entries (v1.1-reserved fields); returns messages."""
     if contract is None:
         return []
     expected = contract.get("expected") or []
