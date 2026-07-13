@@ -1,6 +1,6 @@
 # ADR-0095: Run-terminal callbacks and orphan recovery
 
-- **Status**: Proposed
+- **Status**: Accepted
 - **Kind**: Aspirational
 - **Area**: scheduling-control-plane
 - **Date**: 2026-07-12
@@ -89,8 +89,14 @@ entities with no delivery row for the requesting consumer.
 Retention never expires an unacknowledged event out of an active consumer's reconciliation
 set: an event remains in that set until the consumer acknowledges it, however old it gets —
 a consumer offline longer than any horizon still recovers every missed terminal event on
-return. What expires is the other side: delivery rows older than the retention horizon
-(default ninety days) may be pruned once acknowledged. Consumer registrations end only by
+return. What expires is the other side: acknowledged delivery rows past the retention
+horizon (default ninety days) — but a delivery row is prunable **only once its transition
+row has left the reconciliation-queryable set** (pruned together with it, or after it).
+The reconciliation query is an anti-join of transition rows against delivery rows, so
+removing an ack whose transition row is still queryable would resurrect that event into
+the consumer's unacknowledged set and redeliver work processed long ago, past any
+consumer-side dedup state. Age alone is therefore never a sufficient pruning condition
+for a delivery row; the transition row's own lifecycle bounds it. Consumer registrations end only by
 explicit retirement — a recorded action taken by the registration's owner or a deployment
 operator, never a side effect of inactivity. A registered consumer that merely stops
 querying remains active and its unacknowledged set is retained indefinitely, regardless of
@@ -355,11 +361,16 @@ wrapper makes the resume decision against the recovery projection.
    consumer-side dedup makes processing idempotent.
 1b-i. Offline-longer-than-horizon: a registered consumer stops querying for longer than the
    retention horizon while terminal events accumulate; on return, every unacknowledged
-   event is still in its reconciliation set (retention expires acks and explicitly retired
-   consumers, never unacked events for a registered consumer; inactivity alone retires
-   nothing).
+   event is still in its reconciliation set (retention expires acks only alongside their
+   transition rows, and consumers only by explicit retirement — never unacked events for
+   a registered consumer; inactivity alone retires nothing).
 1b-ii. Parallel acknowledgment: two workers of the same consumer ack the same event
    concurrently; exactly one delivery row exists and neither write errors.
+1b-iii. Ack pruning never resurrects: acknowledge a set of terminal events, prune every
+   delivery row eligible under the retention policy (transition rows still queryable),
+   run reconciliation for that consumer, and assert zero redelivered events — pruning
+   eligibility must have excluded every ack whose transition row remains in the
+   reconciliation-queryable set.
 1c. Settings contract: string form, mapping form, invalid value (warns, disabled, run
    unaffected), per-run override replacing the settings handler for its scope only, and the
    explicit `enabled: false` state. No-shell path: assert no executable adapter invocation

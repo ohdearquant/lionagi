@@ -565,6 +565,30 @@ def main(argv: list[str] | None = None) -> int:
     verbose = "-v" in _pre_sentinel or "--verbose" in _pre_sentinel
     configure_cli_logging(verbose)
 
+    # Same pre-argparse scan as verbose above, for the same reason: this
+    # bootstrap runs before any subcommand parser has seen `--cwd`, so a
+    # project-scoped `.lionagi/settings.yaml` next to a `--cwd DIR` target
+    # (e.g. `li o flow --cwd /project ...`) would otherwise be missed in
+    # favor of the shell's own current directory.
+    _cwd_override: str | None = None
+    for _i, _tok in enumerate(_pre_sentinel):
+        if _tok == "--cwd" and _i + 1 < len(_pre_sentinel):
+            _cwd_override = _pre_sentinel[_i + 1]
+            break
+        if _tok.startswith("--cwd="):
+            _cwd_override = _tok.split("=", 1)[1]
+            break
+
+    # One of the two settings-driven notify bootstrap points: resolve
+    # notify.on_terminal from settings once per process and register it on
+    # the shared terminal-callback registry (the other is Studio service
+    # startup).
+    # Settings-resolution failures are already swallowed inside this call
+    # (a malformed .lionagi/settings.yaml must never block a CLI command).
+    from lionagi.state.lifecycle.notify_settings import register_settings_terminal_callback
+
+    register_settings_terminal_callback(project_dir=_cwd_override)
+
     # `li skill NAME` prints a CC-compatible skill body to stdout.
     # Never falls through to argparse — dispatch directly.
     if _argv and _argv[0] == "skill":

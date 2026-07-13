@@ -673,6 +673,24 @@ CREATE INDEX IF NOT EXISTS idx_status_transitions_reason
 CREATE INDEX IF NOT EXISTS idx_status_transitions_created
   ON status_transitions(created_at DESC);
 
+-- ── Terminal deliveries (run-terminal callbacks) ────────────────────────────
+-- Durable reconciliation-consumer acknowledgment ledger for post-commit
+-- terminal-event callbacks. Never written by the in-process push path (that
+-- stays fire-and-forget); only a registered reconciliation consumer inserts a
+-- row here, once, when it has durably processed a terminal event. The
+-- composite primary key makes concurrent/repeated acks of the same event by
+-- the same consumer a single-row no-op (INSERT ... ON CONFLICT DO NOTHING).
+
+CREATE TABLE IF NOT EXISTS terminal_deliveries (
+  transition_id   TEXT    NOT NULL REFERENCES status_transitions(id),
+  consumer        TEXT    NOT NULL,
+  acked_at        REAL    NOT NULL,
+  PRIMARY KEY (transition_id, consumer)
+);
+
+CREATE INDEX IF NOT EXISTS idx_terminal_deliveries_consumer
+  ON terminal_deliveries(consumer, acked_at);
+
 -- ── Session signals (Phase C Move 1) ─────────────────────────────────────────
 -- Append-only lifecycle signal log emitted by SessionObserver.emit().
 -- seq is a monotonic per-session counter (assigned at INSERT via MAX+1).

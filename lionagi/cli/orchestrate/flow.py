@@ -34,7 +34,7 @@ from ._common import (
     _format_result_text,
     _post_results_to_team,
 )
-from ._notify import fire_terminal_notify
+from ._notify import register_flow_notify_scope, unregister_flow_notify_scope
 from ._orchestration import (
     EFFORT_MAP,
     OrchestrationEnv,
@@ -1764,6 +1764,28 @@ async def _run_flow(
         pack=pack,
     )
 
+    # `--notify` is scoped compatibility sugar over the terminal-callback
+    # registry: registered here against this run's own
+    # entity (its invocation if tracked, else its session), unregistered in
+    # the `finally` block below. There is no longer a direct notify call at
+    # teardown -- the registered handler fires from the same guarded
+    # lifecycle transition that persists the terminal status itself.
+    _notify_scope_name: str | None = None
+    if notify:
+        _notify_entity_kind = "invocation" if invocation_id else "session"
+        _notify_entity_id = invocation_id if invocation_id else str(env.session.id)
+        _notify_scope_name = register_flow_notify_scope(
+            override=notify,
+            entity_kind=_notify_entity_kind,
+            entity_id=_notify_entity_id,
+            invocation_id=invocation_id,
+            flow_kind=_invocation_kind,
+            playbook=playbook_name,
+            save_dir=save_dir,
+            cwd=cwd or os.getcwd(),
+            started_at=_started_at,
+        )
+
     _orc_model, _orc_provider = parse_orchestrator_provider(env.default_model_spec)
 
     artifact_contract = None
@@ -1841,13 +1863,16 @@ async def _run_flow(
                 _terminal_status = effective_status
             import time as _time
 
-            from lionagi.cli.status import _classify
-
-            # ended_at/notify_status are meaningful regardless of whether an
-            # invocation_id is tracked — an invocation-less --notify run must
-            # still fire (the caller asked for it), just with a null id.
+            # ended_at is meaningful regardless of whether an invocation_id
+            # is tracked. The terminal-notify hook no longer fires from a
+            # direct call here: stop_live_persist()'s own session status
+            # write, and the invocation status write just below, are both
+            # guarded lifecycle transitions that push through the
+            # terminal-callback registry on commit -- whatever was
+            # registered by register_flow_notify_scope() above (or by the
+            # settings-level handler bootstrapped at process start) fires
+            # from there, exactly once, on whichever entity is authoritative.
             _ended_at = _time.time()
-            _notify_status = _terminal_status
             if invocation_id:
                 from lionagi.state.db import StateDB
 
@@ -1861,7 +1886,6 @@ async def _run_flow(
                     ) = await _resolve_invocation_terminal_flow(
                         invocation_id, fallback_status=_terminal_status
                     )
-                    _notify_status = inv_status
                     async with StateDB() as _inv_db:
                         await _inv_db.update_invocation(invocation_id, ended_at=_ended_at)
                         await _inv_db.update_status(
@@ -1882,23 +1906,7 @@ async def _run_flow(
                         "Failed to finalize invocation %s", invocation_id
                     )
 
-            # Fire the terminal-notify hook exactly once, after the
-            # invocation's terminal status is as final as it gets here —
-            # never lets a hook failure affect the run's own status.
-            _, _notify_exit_class, _ = _classify("invocation", _notify_status)
-            await fire_terminal_notify(
-                invocation_id=invocation_id,
-                kind=_invocation_kind,
-                playbook=playbook_name,
-                status=_notify_status,
-                save_dir=save_dir,
-                cwd=cwd or os.getcwd(),
-                exit_class=_notify_exit_class,
-                started_at=_started_at,
-                ended_at=_ended_at,
-                override_command=notify,
-                project_dir=cwd,
-            )
+            unregister_flow_notify_scope(_notify_scope_name)
             for _br in env.session.branches:
                 await _br.mdls.shutdown()
 
