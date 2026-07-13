@@ -212,19 +212,11 @@ class ActionManager(Manager):
         Tool-post hooks run after invocation completes (success or failure)
         and are advisory only -- they observe the final arguments, the
         result (``None`` on failure), and the error (``None`` on success),
-        and cannot change either. A hook that returns a ``ToolPostDecision``
-        with a non-empty ``reason`` has that reason collected into a list of
-        notes; when any notes are collected they are attached to the
-        returned event at ``function_calling.metadata["tool_post_hook_notes"]``
-        and logged, whether the tool itself succeeded or failed (a tool
-        exception is captured onto ``function_calling.status`` without
-        re-raising, so the event -- and its notes -- always reach the
-        caller). The finally block runs the post hooks unconditionally,
-        including on the rarer path where invocation raises a
-        ``BaseException`` that propagates past this call; the notes are
-        recorded on ``function_calling`` before that exception continues
-        outward, but nothing here changes the exception itself or the fact
-        that this method never returns a value on that path.
+        and cannot change either. Non-empty ``ToolPostDecision`` reasons are
+        collected and, when present, attached to the returned event at
+        ``function_calling.metadata["tool_post_hook_notes"]`` and logged, on
+        success and failure paths alike (recorded before any propagating
+        ``BaseException`` continues outward).
         """
         function_calling = self.match_tool(func_call)
         tool_name = function_calling.function
