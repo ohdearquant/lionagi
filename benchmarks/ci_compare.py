@@ -12,8 +12,18 @@ def load(path: Path):
     return json.loads(path.read_text(encoding="utf-8"))
 
 
-def _validate_stat(name: str, side: str, stat: dict) -> str | None:
+def _finite_float(raw: str) -> float:
+    """argparse type= for --threshold: rejects NaN/Infinity (every delta > threshold is False for a NaN threshold)."""
+    value = float(raw)
+    if not math.isfinite(value):
+        raise argparse.ArgumentTypeError(f"must be a finite number, got {raw!r}")
+    return value
+
+
+def _validate_stat(name: str, side: str, stat) -> str | None:
     """Error message if `stat` isn't safe to compute a delta from (missing/non-numeric/NaN), else None."""
+    if not isinstance(stat, dict):
+        return f"{name} ({side}): entry must be an object, got {type(stat).__name__}: {stat!r}"
     runs = stat.get("runs")
     if not isinstance(runs, int) or isinstance(runs, bool) or runs <= 0:
         return f"{name} ({side}): 'runs' must be a positive integer, got {runs!r}"
@@ -61,10 +71,10 @@ def compare(
                 cur_anchor = base_anchor = None
 
     for name, cur in sorted(cur_results.items()):
-        base = base_results.get(name)
-        if not base:
+        if name not in base_results:
             lines.append(f"- {name}: no baseline; skipping")
             continue
+        base = base_results[name]
         compared += 1
 
         error = _validate_stat(name, "current", cur) or _validate_stat(name, "baseline", base)
@@ -115,7 +125,7 @@ def main() -> int:
     ap.add_argument("--current", required=True, help="Path to current JSON")
     ap.add_argument(
         "--threshold",
-        type=float,
+        type=_finite_float,
         default=0.2,
         help="Relative regression threshold (e.g., 0.2 = 20%)",
     )
