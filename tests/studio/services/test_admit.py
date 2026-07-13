@@ -344,6 +344,38 @@ def test_notify_request_requires_deliver_to():
     assert notify_request({}) is None
 
 
+def test_notify_request_rejects_malformed_field_types():
+    # deliver_to of the wrong type (e.g. int) must not be surfaced -- it
+    # would otherwise crash DispatchSignal validation at claim time, after
+    # the row is already persisted as skipped.
+    assert notify_request({"admission": {"notify": {"deliver_to": 1}}}) is None
+    assert notify_request({"admission": {"notify": {"deliver_to": ""}}}) is None
+    assert notify_request({"admission": {"notify": {"deliver_to": None}}}) is None
+    assert (
+        notify_request({"admission": {"notify": {"deliver_to": "lambda:leo", "kind": 7}}}) is None
+    )
+    assert (
+        notify_request({"admission": {"notify": {"deliver_to": "lambda:leo", "dedup_key": 123}}})
+        is None
+    )
+    # Valid optional fields still pass through unchanged.
+    assert notify_request(
+        {
+            "admission": {
+                "notify": {
+                    "deliver_to": "lambda:leo",
+                    "kind": "terminal_notify",
+                    "dedup_key": "abc",
+                }
+            }
+        }
+    ) == {
+        "deliver_to": "lambda:leo",
+        "kind": "terminal_notify",
+        "dedup_key": "abc",
+    }
+
+
 # ── 6. waiter_ahead_count / holder_is_running direct coverage ───────────────
 
 

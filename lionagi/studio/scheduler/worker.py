@@ -509,18 +509,28 @@ async def _reject_claim(db: StateDB, row: Any, decision: AdmissionDecision) -> N
     action_args = normalize_action_args(row.get("action_args"))
     notify = notify_request(action_args)
     if notify is not None:
-        await enqueue_dispatch(
-            db,
-            kind=notify.get("kind", "terminal_notify"),
-            deliver_to=notify["deliver_to"],
-            body={
-                "schedule_run_id": run_id,
-                "reason_code": decision.reason_code,
-                "reason_summary": decision.reason_summary,
-            },
-            dedup_key=notify.get("dedup_key"),
-            schedule_run_id=run_id,
-        )
+        # The row is already correctly skipped above; an optional
+        # notification failing (e.g. an outbox/DB hiccup) must never abort
+        # the claim pass -- other queued rows still need to be claimed this
+        # tick. Contain and log instead of letting it propagate.
+        try:
+            await enqueue_dispatch(
+                db,
+                kind=notify.get("kind", "terminal_notify"),
+                deliver_to=notify["deliver_to"],
+                body={
+                    "schedule_run_id": run_id,
+                    "reason_code": decision.reason_code,
+                    "reason_summary": decision.reason_summary,
+                },
+                dedup_key=notify.get("dedup_key"),
+                schedule_run_id=run_id,
+            )
+        except Exception:
+            _log.exception(
+                "terminal-rejection notify dispatch failed for schedule_run %s",
+                run_id,
+            )
 
 
 async def _execute_claimed(

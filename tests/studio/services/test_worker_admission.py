@@ -331,3 +331,73 @@ async def test_notify_carrying_submission_produces_outbox_row_on_duration_guard_
     body = payload["body"] if "body" in payload else payload
     assert body["schedule_run_id"] == run_id
     assert body["reason_code"] == RunReasons.SKIPPED_DURATION_EXCEEDS_LEASE
+
+
+async def test_malformed_notify_does_not_abort_claim_pass(db: StateDB) -> None:
+    """A malformed ``admission.notify`` payload (a wrong-typed
+    ``deliver_to``) on a claim-time-rejected row must not raise -- the row
+    is still skipped, no dispatch_outbox row is emitted, and a later
+    candidate in the same pass is still claimed."""
+    rejected_id = await _insert_raw_queued_row(
+        db,
+        action_args={
+            "admission": {
+                "max_duration_seconds": 99999,
+                "notify": {"deliver_to": 1},
+            }
+        },
+    )
+    claimable_id = await _insert_raw_queued_row(db)
+
+    claimed = await claim_and_execute(db, worker_id="w1", execute=_never_completes_execute)
+
+    rejected_row = await _status_of(db, rejected_id)
+    assert rejected_row["status"] == "skipped"
+    assert rejected_row["status_reason_code"] == RunReasons.SKIPPED_DURATION_EXCEEDS_LEASE
+
+    dispatches = await list_dispatches(db)
+    assert [d for d in dispatches if d["schedule_run_id"] == rejected_id] == []
+
+    assert claimed == 1
+    claimable_row = await db.fetch_one(
+        "SELECT status FROM schedule_runs WHERE id = ?", (claimable_id,)
+    )
+    assert claimable_row["status"] == "completed"
+
+
+async def test_enqueue_dispatch_failure_does_not_abort_claim_pass(
+    db: StateDB, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A well-formed notify request whose ``enqueue_dispatch`` call fails
+    for an unrelated reason (a DB hiccup, say) must be contained: the row
+    is already correctly skipped by the time the notify fires, and a later
+    candidate in the same pass is still claimed."""
+    import lionagi.studio.scheduler.worker as worker_module
+
+    async def _boom(*args, **kwargs):
+        raise RuntimeError("outbox insert failed")
+
+    monkeypatch.setattr(worker_module, "enqueue_dispatch", _boom)
+
+    rejected_id = await _insert_raw_queued_row(
+        db,
+        action_args={
+            "admission": {
+                "max_duration_seconds": 99999,
+                "notify": {"deliver_to": "lambda:leo"},
+            }
+        },
+    )
+    claimable_id = await _insert_raw_queued_row(db)
+
+    claimed = await claim_and_execute(db, worker_id="w1", execute=_never_completes_execute)
+
+    rejected_row = await _status_of(db, rejected_id)
+    assert rejected_row["status"] == "skipped"
+    assert rejected_row["status_reason_code"] == RunReasons.SKIPPED_DURATION_EXCEEDS_LEASE
+
+    assert claimed == 1
+    claimable_row = await db.fetch_one(
+        "SELECT status FROM schedule_runs WHERE id = ?", (claimable_id,)
+    )
+    assert claimable_row["status"] == "completed"

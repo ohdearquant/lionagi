@@ -40,11 +40,15 @@ same style as D5's ``SeatSpec`` convention):
         "allow_deferred_over_cap": <bool>,     # opt out of terminal rejection
                                                 # when the waiter cap is hit
         "notify": {
-            "deliver_to": <str>,                # required
+            "deliver_to": <str>,                # required, non-empty
             "kind": <str>,                      # optional, default "terminal_notify"
             "dedup_key": <str | None>,          # optional
         },
     }
+
+A ``notify`` payload with a field of the wrong type (e.g. ``deliver_to`` as
+an int) is dropped by ``notify_request()`` rather than surfaced -- it must
+never crash the claim loop for a row that is already correctly skipped.
 
 A claim-time
 terminal rejection must surface observably even though the submitter is no
@@ -188,12 +192,27 @@ def allows_deferred_over_cap(action_args: Mapping[str, Any]) -> bool:
 
 
 def notify_request(action_args: Mapping[str, Any]) -> dict[str, Any] | None:
-    """The job's ``admission.notify`` payload if present and carrying a
-    ``deliver_to``, else ``None``."""
+    """The job's ``admission.notify`` payload if present and well-formed,
+    else ``None``.
+
+    ``deliver_to`` must be a non-empty ``str``; the optional ``kind`` and
+    ``dedup_key`` fields, if present, must also be ``str``. A malformed
+    payload (e.g. ``deliver_to`` as an ``int``) is treated as no notify
+    request -- it must never surface later as a claim-time crash in
+    ``DispatchSignal``/``enqueue_dispatch``."""
     notify = _admission_opts(action_args).get("notify")
-    if isinstance(notify, dict) and notify.get("deliver_to"):
-        return notify
-    return None
+    if not isinstance(notify, dict):
+        return None
+    deliver_to = notify.get("deliver_to")
+    if not isinstance(deliver_to, str) or not deliver_to:
+        return None
+    kind = notify.get("kind")
+    if kind is not None and not isinstance(kind, str):
+        return None
+    dedup_key = notify.get("dedup_key")
+    if dedup_key is not None and not isinstance(dedup_key, str):
+        return None
+    return notify
 
 
 async def holder_is_running(db: StateDB, concurrency_key: str) -> bool:
