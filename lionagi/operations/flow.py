@@ -1,13 +1,9 @@
 # Copyright (c) 2023-2025, HaiyangLi <quantocean.li at gmail dot com>
 # SPDX-License-Identifier: Apache-2.0
 
-"""Dependency-aware graph execution.
-
-Graph scheduling and executor construction live in this module. New APIs, commands,
-and services that execute operation graphs must delegate through ``Session.flow`` or
-the existing streaming flow kernel. Keep executor construction here and add
-conformance coverage for every new graph-execution surface.
-"""
+"""Dependency-aware graph execution. New graph-execution surfaces must
+delegate through ``Session.flow`` or the existing streaming flow kernel,
+not build their own executor."""
 
 import asyncio
 import contextlib
@@ -72,13 +68,9 @@ def _format_operator_ts(ts: Any) -> str:
 
 
 def _render_operator_messages(operation: "Operation", context: dict[str, Any]) -> None:
-    """Lift ``operator_messages`` out of context and render unconsumed entries into the instruction.
-
-    Always pops the key so it never rides along as raw JSON in the model's
-    context, whether or not there was anything new to render. Consume-once:
-    an entry already carrying a ``rendered_into_op`` breadcrumb was rendered
-    into an earlier operation and is skipped here.
-    """
+    """Lift ``operator_messages`` out of context and render unconsumed
+    entries into the instruction. Always pops the key so it never rides
+    along as raw JSON; consume-once via the ``rendered_into_op`` breadcrumb."""
     messages = context.pop("operator_messages", None)
     if not messages:
         return
@@ -138,12 +130,10 @@ class DependencyAwareExecutor:
         self._alcall = alcall_params or AlcallParams()
         self._default_branch = default_branch
         self.on_progress = None
-        # Persistence-only seam: a caller
-        # (e.g. Studio's workflow_run) can pass a sync callback invoked with
-        # every branch this executor clones during pre-allocation, so it can
-        # wire per-branch persistence (register_branch_hook) on branches that
-        # did not exist yet when the caller set up persistence for the
-        # session's initial branches. Never touches execution/branch semantics.
+        # Persistence-only seam: a caller (e.g. Studio's workflow_run) can
+        # pass a sync callback invoked with every branch this executor clones
+        # during pre-allocation, to wire per-branch persistence on branches
+        # that didn't exist when the caller set up the session's initial ones.
         self._on_branch_created = on_branch_created
         self.results = {}
         self.completion_events = {}
@@ -155,10 +145,9 @@ class DependencyAwareExecutor:
         # NodeSpawned), retained until each finishes so a weakly referenced
         # task can't disappear before it runs. See _emit_best_effort().
         self._signal_tasks: set[asyncio.Task[Any]] = set()
-        # An out-of-band handle lets a control poller running alongside this flow
-        # reach pause()/resume()/context/graph on the live executor. Set
-        # synchronously here (before any awaiting) so it is available the
-        # instant execute() starts.
+        # Out-of-band handle for a control poller running alongside this flow
+        # to reach pause()/resume()/context/graph; set synchronously before
+        # any awaiting so it's available the instant execute() starts.
         if executor_ref is not None:
             executor_ref["executor"] = self
         for node in graph.internal_nodes.values():
@@ -261,13 +250,9 @@ class DependencyAwareExecutor:
             logger.debug("Pre-allocated %d branches", len(operations_needing_branches))
 
     def _get_predecessors(self, operation: Operation) -> tuple[Any, ...]:
-        """Return a cached, immutable predecessor tuple for executor-internal use.
-
-        Delegates to Graph's own memoized accessor, which is invalidated by
-        Graph's own mutators (add_edge/remove_edge/etc.) — including the
-        add_node/add_edge/remove_edge calls a running reactive flow makes to
-        rewire a node — so this always reflects current topology.
-        """
+        """Return a cached, immutable predecessor tuple for executor-internal
+        use. Delegates to Graph's own memoized accessor, invalidated by
+        Graph's own mutators, so this always reflects current topology."""
         return self.graph.get_predecessors_cached(operation)
 
     def pause(self) -> None:
@@ -282,16 +267,10 @@ class DependencyAwareExecutor:
             self._pause_event = None
 
     def _emit_best_effort(self, factory: Callable[[], "Signal"]) -> None:
-        """Build and schedule a fire-and-forget flow signal on the session bus.
-
-        `factory` is called (never the already-built signal) so that imports,
-        payload extraction, and signal construction all live inside the same
-        failure-isolation boundary. Every failure mode — construction, no
-        running loop, scheduling, or the awaited `session.emit()` call — is
-        logged as a structured warning here and never changes the caller's
-        (pause / escalation / spawn) outcome. Delivery is intentionally
-        best-effort: these are observations, not an outbox.
-        """
+        """Build and schedule a fire-and-forget flow signal on the session
+        bus. `factory` (not a pre-built signal) keeps construction inside
+        this failure-isolation boundary; every failure mode is logged and
+        never changes the caller's outcome — delivery is best-effort."""
         try:
             sig = factory()
         except Exception as e:  # noqa: BLE001
@@ -445,11 +424,10 @@ class DependencyAwareExecutor:
 
     async def _check_edge_conditions(self, operation: Operation) -> bool:
         """Return True if at least one valid incoming path exists or no edges; False if all incoming edges failed."""
-        # Snapshot before awaiting: reactive injection can attach an edge to
-        # this operation while a predecessor is awaited, and iterating the
-        # live adjacency dict across that await would raise RuntimeError. A
-        # dependency added after the snapshot is deferred to the next check,
-        # matching the previous full-scan's stable-list semantics.
+        # Snapshot before awaiting: iterating the live adjacency dict across
+        # an await would raise RuntimeError if reactive injection attaches an
+        # edge mid-wait. A dependency added after the snapshot is deferred
+        # to the next check.
         incoming_edge_ids = tuple(self.graph.node_edge_mapping[operation.id]["in"])
         if not incoming_edge_ids:
             return True
@@ -554,14 +532,10 @@ class DependencyAwareExecutor:
         self.operation_branches[operation.id] = branch
 
     def _render_pending_operator_steers(self, operation: Operation) -> None:
-        """Last-chance render, called immediately before the provider call.
-
-        A steer can land in ``self.context.content["operator_messages"]``
-        after this operation's own ``_prepare_operation`` already ran (e.g.
-        a control-plane poller appending mid-run). Re-reading the canonical
-        queue here, right before ``invoke()``, catches that window instead
-        of silently dropping the steer for the rest of the flow.
-        """
+        """Last-chance render, called immediately before the provider call —
+        catches a steer landing in ``operator_messages`` after this
+        operation's own ``_prepare_operation`` already ran (e.g. a
+        control-plane poller appending mid-run)."""
         messages = self.context.content.get("operator_messages")
         if not messages:
             return
@@ -710,17 +684,13 @@ class ReactiveExecutor(DependencyAwareExecutor):
         self.spawn_type = spawn_type
         self.node_builder = node_builder
         self.max_spawn = max_spawn
-        # CLI-workspace seam: a caller (cli/orchestrate/flow.py) can pass a
-        # sync callback invoked with (spawned_operation, cloned_branch) right
-        # after a reactively-spawned node's branch is cloned, so it can
-        # retarget a CLI-backed chat_model's writable workspace (endpoint
-        # kwargs["repo"]) to that spawn's own artifact dir instead of the
-        # planned leg's — the clone otherwise inherits the emitter's repo,
-        # which sits outside the spawned node's own artifact directory.
+        # CLI-workspace seam: called with (spawned_operation, cloned_branch)
+        # right after a spawned node's branch is cloned, so a caller can
+        # retarget a CLI-backed chat_model's writable workspace to that
+        # spawn's own artifact dir (the clone otherwise inherits the emitter's).
         self.spawn_branch_setup = spawn_branch_setup
-        # Sync callback fired once per node at the tail of _run_tracked,
-        # before that task returns to the task group — the only point a
-        # caller's inject() is race-free against the group's convergence.
+        # Fired once per node at the tail of _run_tracked, before that task
+        # returns to the task group — the only race-free point for inject().
         self.on_op_complete = on_op_complete
         self._spawn_count = 0
         self._dropped_spawns: list[dict[str, Any]] = []
@@ -883,15 +853,10 @@ class ReactiveExecutor(DependencyAwareExecutor):
         self._schedule_escalation(req, emitter=_CURRENT_OP.get())
 
     def _schedule_escalation(self, req: Any, *, emitter: Operation | None) -> None:
-        """Consume an EscalationRequest/help signal.
-
-        Route resolution: an explicit ``context["route"]`` always wins.
-        Otherwise the default route follows ``urgency`` — "blocked" (the
-        historical default) still defaults to "higher_tier" (retry); a soft
-        "fyi" help signal defaults to "notify" (informational, no retry, the
-        emitting node's own completion is untouched — an unanswered help
-        semantics: a help signal must never hang or redirect the worker).
-        """
+        """Consume an EscalationRequest/help signal. An explicit
+        ``context["route"]`` always wins; otherwise the route follows
+        ``urgency`` — "blocked" defaults to "higher_tier" (retry), "fyi"
+        defaults to "notify" (no retry; the emitter's completion is untouched)."""
         if id(req) in self._seen_reqs:
             return
         self._seen_reqs.add(id(req))
@@ -1149,21 +1114,11 @@ async def flow(
     spawn_branch_setup: Callable[[Operation, Any], None] | None = None,
     on_op_complete: Callable[[Operation], None] | None = None,
 ) -> dict[str, Any]:
-    """Execute a graph with dependency management and optional reactive self-expansion.
-
-    Returns ``{completed_operations, operation_results, final_context,
-    skipped_operations}`` always; with ``reactive=True`` also
-    ``spawned_operations`` (successful-spawn count), ``escalated_operations``
-    (emitter ids), and ``dropped_spawns`` (rejected spawn/inject attempts as
-    ``{reason, assignee, emitter_id, ...}``; reasons: builder_error,
-    null_child, cycle, max_spawn_exceeded, duplicate).
-
-    ``spawn_branch_setup``, when given, runs after each reactively-spawned
-    node's branch is cloned (reactive mode only) — see ``ReactiveExecutor``.
-
-    ``on_op_complete`` (reactive mode only) runs synchronously at the tail
-    of every node's execution, race-free for a caller's ``inject()``.
-    """
+    """Execute a graph with dependency management and optional reactive
+    self-expansion. Returns ``{completed_operations, operation_results,
+    final_context, skipped_operations}`` always, plus ``spawned_operations``/
+    ``escalated_operations``/``dropped_spawns`` when ``reactive=True`` — see
+    docs/internals/core.md for the full return-shape and hook contracts."""
 
     if not parallel:
         max_concurrent = 1

@@ -21,9 +21,8 @@ from .registry import iter_studio_routes, load_studio_route_modules
 
 _log = logging.getLogger(__name__)
 
-# Paths that remain reachable without a bearer token regardless of whether
-# LIONAGI_STUDIO_AUTH_TOKEN is set.  This is intentionally a very small set:
-# only pure liveness probes that carry no application state belong here.
+# Reachable without a bearer token regardless of LIONAGI_STUDIO_AUTH_TOKEN;
+# deliberately just pure liveness probes with no application state.
 _PUBLIC_PATHS = frozenset({"/health"})
 
 # FastAPI built-in schema/docs routes that are NOT under /api but expose API
@@ -39,12 +38,8 @@ _GUARDED_NON_API_PATHS = frozenset(
 
 
 def _collect_cors_methods(application: FastAPI) -> list[str]:
-    """Derive the CORS method allowlist from the app's actual route table.
-
-    Hardcoding is brittle: FastAPI auto-generates HEAD for every GET route, so
-    a manual list silently omits served methods (CORS preflight then 400s).
-    Walking routes after all routers are mounted keeps the allowlist in sync.
-    OPTIONS is always included so CORSMiddleware can answer preflight requests.
+    """Derive the CORS method allowlist from the app's actual route table
+    (hardcoding silently omits FastAPI's auto-generated HEAD routes).
     """
     methods: set[str] = {"OPTIONS"}
     for route in application.routes:
@@ -95,9 +90,7 @@ def _start_claude_mirror() -> tuple[asyncio.Event, asyncio.Task] | tuple[None, N
     )
 
     def _log_unexpected_exit(t: asyncio.Task) -> None:
-        # The retained task handle suppresses asyncio's "exception was never
-        # retrieved" warning, so a raised failure is otherwise silent; surface
-        # it loudly here instead.
+        # Retained handle suppresses asyncio's own warning; surface it loudly instead.
         if t.cancelled():
             return
         exc = t.exception()
@@ -126,9 +119,8 @@ async def _stop_claude_mirror(stop: asyncio.Event | None, task: asyncio.Task | N
 
 
 async def _startup_warmup() -> None:
-    """Deferred WAL checkpoint, kept off the critical path so /health serves as
-    soon as reconciliation completes rather than waiting on it. Guarded so an
-    unexpected failure is logged, not silently dropped, at shutdown."""
+    """Deferred WAL checkpoint, off the critical path so /health serves as
+    soon as reconciliation completes."""
     try:
         from .services.db_maintenance import checkpoint_state_db
 
@@ -138,8 +130,8 @@ async def _startup_warmup() -> None:
 
 
 async def _finalize_warmup(task: asyncio.Task | None) -> None:
-    """Cancel the warmup task if still running, then await it so it's retrieved
-    (avoids an un-retrieved-task warning); a failure is logged, not dropped."""
+    """Cancel the warmup task if still running, then await it (avoids an
+    un-retrieved-task warning)."""
     if task is None:
         return
     if not task.done():
@@ -158,20 +150,15 @@ async def lifespan(app_instance):
     from .services.lifecycle import run_startup_reconciliation
 
     _emit_startup_warnings()
-    # The other of the two settings-driven notify bootstrap points (the CLI
-    # entry point is the first): resolve notify.on_terminal from settings
-    # once per process and register it on the shared terminal-callback
-    # registry so Studio-launched runs get the same settings-driven handler
-    # as `li`.
+    # The second of the two settings-driven notify bootstrap points (CLI is the first).
     from lionagi.state.lifecycle.notify_settings import register_settings_terminal_callback
 
     register_settings_terminal_callback()
     await scheduler.start()
-    # Corrects phantom/stale-status rows that stateful /api routes read
-    # directly, so it must complete before we serve.
+    # Corrects phantom/stale-status rows /api routes read directly; must precede serving.
     await run_startup_reconciliation()
     mirror_stop, mirror_task = _start_claude_mirror()
-    # WAL checkpoint is pure maintenance; defer so readiness isn't gated on it.
+    # Pure maintenance; deferred so readiness isn't gated on it.
     warmup_task = asyncio.create_task(_startup_warmup(), name="studio-startup-warmup")
     yield
     from .services.launches import shutdown_launches
@@ -182,19 +169,15 @@ async def lifespan(app_instance):
     await scheduler.stop()
 
 
-# Strict Host-header authority grammar: `host` or `host:port` (1-5 digit
-# port), or a bracketed IPv6 literal `[addr]` with an optional `:port` after
-# the closing bracket -- nothing else. Deliberately stricter than
-# `request.url.hostname`, which normalizes/mis-parses authorities like
-# "127.0.0.1:8765.evil.com" or "[::1]evil.com" into an accepted hostname.
+# Strict Host-header authority grammar, deliberately stricter than
+# `request.url.hostname`; see docs/internals/studio.md.
 _HOST_AUTHORITY_RE = re.compile(r"^(?P<host>[A-Za-z0-9.\-]+)(?::(?P<port>\d{1,5}))?$")
 _IPV6_AUTHORITY_RE = re.compile(r"^\[(?P<host>[0-9A-Fa-f:]+)\](?::(?P<port>\d{1,5}))?$")
 
 
 def _parse_host_authority(raw_host: str) -> str | None:
-    """Strictly parse a raw Host header value, returning the normalized host
-    (lowercased, brackets stripped for IPv6) or None if it doesn't match the
-    exact authority grammar above."""
+    """Strictly parse a raw Host header value: normalized host (lowercased,
+    brackets stripped for IPv6), or None if it doesn't match the grammar."""
     raw_host = (raw_host or "").strip()
     if not raw_host:
         return None
@@ -211,11 +194,8 @@ def _parse_host_authority(raw_host: str) -> str | None:
 
 async def validate_host_header(request: Request, call_next):
     """Reject requests whose Host header doesn't match an expected value —
-    defends against DNS rebinding, where a malicious page points a browser at
-    http://127.0.0.1:<port> with an attacker-controlled Host and, once past
-    CORS/auth, reaches the daemon as if same-origin. Registered outermost
-    (outside CORSMiddleware) so every request, including preflight, is checked
-    before anything answers."""
+    defends against DNS rebinding; see docs/internals/studio.md.
+    """
     hostname = _parse_host_authority(request.headers.get("host", ""))
     bind_host = os.getenv("LIONAGI_STUDIO_HOST", HOST)
     allowed_hosts = {"localhost", "127.0.0.1", "::1"}
@@ -230,11 +210,8 @@ async def validate_host_header(request: Request, call_next):
 
 
 def _mount_studio_routes(application: FastAPI) -> None:
-    """Add every route registered via the @studio_route decorator to `application`.
-
-    Area modules listed in _STUDIO_ROUTE_MODULES are imported here so their
-    @studio_route decorators fire and populate _ROUTES; import_module caches
-    modules, so calling this once per app instance is cheap and idempotent.
+    """Add every route registered via the @studio_route decorator to
+    `application`; importing the area modules here fires the decorators.
     """
     load_studio_route_modules()
     for _route in iter_studio_routes():
@@ -264,11 +241,8 @@ def _mount_studio_routes(application: FastAPI) -> None:
 
 
 def _resolve_frontend_dist() -> Path | None:
-    """Return the dist/ directory to serve, or None if absent.
-
-    Reads LIONAGI_STUDIO_FRONTEND_DIST; when unset (e.g. raw uvicorn without
-    the CLI), the app starts in API-only mode.
-    """
+    """Return the dist/ directory to serve, or None if absent (reads
+    LIONAGI_STUDIO_FRONTEND_DIST; unset means API-only mode)."""
     env_override = os.environ.get("LIONAGI_STUDIO_FRONTEND_DIST")
     if not env_override:
         return None
@@ -277,12 +251,9 @@ def _resolve_frontend_dist() -> Path | None:
 
 
 def _mount_spa(application: FastAPI, dist: Path) -> None:
-    """Mount static assets and register an SPA 404 fallback.
-
-    Uses a 404 exception handler (not a catch-all route) for the SPA fallback:
-    a catch-all /{full_path:path} route intercepts /api/shows before FastAPI's
-    trailing-slash redirect fires, whereas an exception handler runs only after
-    all routes have been tried and none matched.
+    """Mount static assets and register an SPA 404 fallback. Uses a 404
+    exception handler, not a catch-all route (which would intercept
+    /api/shows before FastAPI's trailing-slash redirect fires).
     """
     assets_dir = dist / "assets"
     if assets_dir.is_dir():
@@ -292,7 +263,7 @@ def _mount_spa(application: FastAPI, dist: Path) -> None:
 
     @application.exception_handler(404)
     async def _spa_fallback(request: Request, exc: Exception) -> FileResponse | JSONResponse:
-        # /api/* paths that reach here stay 404 JSON, not the SPA HTML shell.
+        # /api/* paths stay 404 JSON here, not the SPA HTML shell.
         path = request.url.path
         if path.startswith("/api/") or path == "/api":
             return JSONResponse({"detail": "Not Found"}, status_code=404)
@@ -308,9 +279,8 @@ def _mount_spa(application: FastAPI, dist: Path) -> None:
 
 
 def create_app() -> FastAPI:
-    """Build and return a fresh Studio FastAPI app instance, so callers that
-    need a clean app (notably tests that monkeypatch service globals first) can
-    get one without `importlib.reload`-ing this module's shared singleton."""
+    """Build and return a fresh Studio FastAPI app instance, so callers
+    (notably tests) can get a clean one without `importlib.reload`."""
     application = FastAPI(title="Lion Studio Server", lifespan=lifespan)
 
     @application.exception_handler(LionError)
@@ -323,17 +293,14 @@ def create_app() -> FastAPI:
 
     @application.middleware("http")
     async def require_studio_bearer_token(request: Request, call_next):
-        # CORS preflight arrives without an Authorization header by design;
-        # let it through so CORSMiddleware can answer with Allow-* headers.
+        # CORS preflight has no Authorization header by design; let it through.
         if request.method == "OPTIONS":
             return await call_next(request)
         token = os.getenv("LIONAGI_STUDIO_AUTH_TOKEN")
         path = request.url.path
         if token and request.headers.get("authorization") != f"Bearer {token}":
-            # All /api/* paths and the FastAPI schema/docs endpoints are
-            # gated. Non-API GET/HEAD (SPA shell, hashed assets, liveness)
-            # stay public -- browsers navigate without an Authorization
-            # header, so gating the shell would make the UI unloadable.
+            # /api/* and schema/docs are gated; non-API GET/HEAD (SPA shell,
+            # hashed assets) stay public or the UI becomes unloadable.
             is_api = path == "/api" or path.startswith("/api/")
             is_guarded_non_api = path in _GUARDED_NON_API_PATHS
             is_public_static = (
@@ -345,16 +312,10 @@ def create_app() -> FastAPI:
 
     @application.middleware("http")
     async def require_json_content_type(request: Request, call_next):
-        """Reject state-changing /api requests that don't declare a JSON body.
-
-        FastAPI parses request bodies as JSON regardless of the declared
-        Content-Type, so a cross-site "simple request" (text/plain, no CORS
-        preflight) carrying a JSON-shaped body would otherwise reach route
-        handlers unchecked -- the classic form-based JSON CSRF vector. The SPA
-        always sends `application/json` on requests that carry a body (see
-        apps/studio/frontend/src/lib/api.ts `fetchJson`) and sends no body at all
-        for the handful of routes that need none, so this only rejects traffic
-        the frontend itself never produces.
+        """Reject state-changing /api requests that don't declare a JSON
+        body — closes the form-based JSON CSRF vector where a cross-site
+        "simple request" carries a JSON-shaped body with no CORS preflight.
+        See docs/internals/studio.md.
         """
         if request.method in ("GET", "HEAD", "OPTIONS"):
             return await call_next(request)
@@ -379,21 +340,14 @@ def create_app() -> FastAPI:
     async def health() -> dict[str, Any]:
         return {"status": "ok"}
 
-    # Mount the SPA before CORSMiddleware so _collect_cors_methods sees the
-    # Mount entry (the 404 handler itself is order-independent).
+    # Mount SPA before CORSMiddleware so _collect_cors_methods sees the Mount entry.
     dist = _resolve_frontend_dist()
     if dist is not None:
         _mount_spa(application, dist)
 
-    # Starlette wraps middleware LIFO (most-recently-added sees the request
-    # first). CORSMiddleware is added after every router/mount so its method
-    # allowlist reflects the full route table. Host validation is added
-    # after CORS, making it OUTERMOST: every request -- including preflight
-    # OPTIONS -- has its Host checked before CORS can answer, closing the
-    # window where an invalid-Host request could get a valid preflight
-    # response. Request order: Host validation -> CORS -> Content-Type/CSRF
-    # check -> bearer-token gate -> route. A real preflight never reaches the
-    # bearer-token/Content-Type middlewares because CORS answers it first.
+    # Starlette wraps middleware LIFO; added-after-CORS makes Host validation
+    # OUTERMOST (checked before CORS answers preflight). See docs/internals/studio.md
+    # for the full request order.
     application.add_middleware(
         CORSMiddleware,
         allow_origins=CORS_ORIGINS,

@@ -128,9 +128,8 @@ def mode_roster(pack: Pack | None = None) -> str:
     for r in available_roles():
         cfg = role_config(r, pack)
         if cfg is not None and cfg.modes_allow:
-            # Advertise only names the mode catalog recognizes — resolve_modes
-            # existence-checks every mode, so an unknown allowlist entry from a
-            # custom pack would be advertised here yet dropped at execution.
+            # Advertise only catalog-recognized names; an unknown allowlist
+            # entry would otherwise be advertised yet dropped at execution.
             valid = sorted(m for m in cfg.modes_allow if m in known)
             if valid:
                 restricted.append(f"{r} accepts only {', '.join(valid)}")
@@ -174,12 +173,8 @@ def role_config(role: str, pack: Pack | None = None) -> Any:
 def resolve_modes(
     role: str, override: list[str] | None = None, pack: Pack | None = None
 ) -> list[str]:
-    """Cognitive modes for *role*: validated per-task override, else pack defaults.
-
-    A per-task *override* is gated by the role's ``modes_allow`` (empty =
-    unrestricted); every mode is existence-checked against the casts roster.
-    Invalid/disallowed modes are dropped with a warning.
-    """
+    """Cognitive modes for *role*: validated per-task override, else pack
+    defaults. Invalid/disallowed modes are dropped with a warning."""
     import logging
 
     from lionagi.casts.pattern import Mode
@@ -268,37 +263,8 @@ def team_worker_system(
     messenger_names: frozenset[str] | None = None,
 ) -> str | None:
     """TEAM coordination section to append to worker system prompt, or None.
-
-    ``messenger_bound`` selects which channel's instructions the section
-    describes: the in-process `messenger` tool (bound to API-model workers)
-    or the bash `li team` channel (the only path CLI-provider workers have).
-    A worker never has both, so the section must never describe both.
-
-    ``messenger_names`` is the set of team members that ARE messenger-bound
-    (computed once for the whole team, before any worker branch is built —
-    see `worker_is_cli`). In a mixed-provider team some teammates listed in
-    `team_data["members"]` won't be messenger-bound (CLI-provider workers);
-    when this worker IS messenger-bound, those teammates are flagged in the
-    roster and called out explicitly, so the prompt never tells a worker to
-    `messenger(action="send", to=...)` a name the tool will reject.
-
-    The orchestrator itself is never registered into the live messenger
-    roster (`build_worker_branch` only binds worker branches) — nothing
-    reads a coordinator inbox mid-run, escalation goes through
-    `action="help"` instead. For a messenger-bound worker the roster line
-    reflects that: it's listed for context but flagged as not a `to=`
-    target, same as an unreachable CLI teammate. Bash-channel workers are
-    unaffected — `li team send --to orchestrator` always succeeds against
-    the shared file channel, so that line stays plain there.
-
-    Prior team messages (attached-team history) are NOT included here even
-    for messenger-bound workers — see `team_history_context`. Message
-    *content* is untrusted transcript data (arbitrary prior user/agent
-    text), not an instruction; inlining it into the system prompt would
-    hand it the same authority as the coordination instructions in this
-    section. It belongs in operation context instead, clearly labeled as
-    data.
-    """
+    See docs/internals/cli.md for the messenger-bound vs bash-channel
+    contract, roster-flagging, and why prior messages are excluded here."""
     if not team_data:
         return None
     from ._common import (  # avoid import cycle
@@ -355,23 +321,8 @@ def team_history_context(
     messenger_bound: bool,
 ) -> dict | None:
     """Prior team messages relevant to this worker, shaped for operation
-    CONTEXT — never the system prompt.
-
-    A messenger-bound worker's Exchange is fresh in-memory state created new
-    every run; it never replays messages sent before the messenger tool
-    existed. For `--team-attach` onto an existing team, a bash-channel
-    worker can still read that history live with `li team receive`; a
-    messenger-bound worker has no other path to it, so any prior message
-    addressed to it (or broadcast) is surfaced here instead — as data the
-    caller passes into `operate(context=...)`, clearly labeled as an
-    untrusted transcript rather than promoted into the system prompt (prior
-    message *content* is arbitrary prior user/agent text, not a vetted
-    instruction).
-
-    Returns None when there's nothing to add: not messenger-bound, no
-    team_data, or (the common case — a freshly created team) no prior
-    messages exist yet.
-    """
+    CONTEXT — never the system prompt. See docs/internals/cli.md for the
+    `--team-attach` Exchange-replay contract; None if there's nothing to add."""
     if not messenger_bound or not team_data:
         return None
     prior = [
@@ -446,12 +397,9 @@ class OrchestrationEnv:
     messenger: LionMessenger | None = None
     roster: dict[str, UUID] | None = None
 
-    # Names of team members that WILL be messenger-bound, computed once for
-    # the whole team before any worker branch is built (mixed-provider teams
-    # build workers one at a time, so `roster` above is only ever partially
-    # populated mid-loop — this set is known up front instead, from each
-    # assignment's resolved role/model, independent of build order). None
-    # when team messaging isn't active for this run.
+    # Team members that WILL be messenger-bound, computed once up front (not
+    # from `roster`, which is only partially populated mid-loop for
+    # mixed-provider teams). None when team messaging isn't active.
     messenger_names: frozenset[str] | None = None
 
     # None falls through to the default pack for role_config / resolve_modes.
@@ -499,8 +447,7 @@ async def setup_orchestration(
     from lionagi.ln.concurrency.errors import cache_cancelled_exc_class
 
     # Fail fast: a nonexistent --cwd must never silently spawn into a
-    # provider-created directory — validate before any run is allocated.
-    # Forward the returned tilde-expanded path; providers never expand `~`.
+    # provider-created directory. Forward the tilde-expanded path (providers never expand `~`).
     cwd = validate_cwd_exists(cwd)
 
     cache_cancelled_exc_class()
@@ -597,10 +544,8 @@ def _resolve_worker_model_spec(
     model_override: str | None = None,
 ) -> tuple[str, AgentProfile | None, Any]:
     """Resolve which model spec a worker with this role/override would use,
-    without building anything. Shared by `build_worker_branch` (real branch
-    construction) and `worker_is_cli` (a cheap pre-pass over a whole team's
-    assignments, run before any branch exists) so the resolution logic lives
-    in exactly one place."""
+    without building anything. Shared by `build_worker_branch` and
+    `worker_is_cli` so the resolution logic lives in exactly one place."""
     # Pack per-role config (ADR-0043): model/effort/modes defaults for casts
     # roles. Ignored in bare mode (workers are the raw CLI spec there).
     w_cfg = None if env.bare else role_config(role, env.pack)
@@ -627,12 +572,10 @@ def worker_is_cli(
     role: str,
     model_override: str | None = None,
 ) -> bool:
-    """Whether a worker with this role/model_override resolves to a CLI-provider
-    iModel (no tool-calling surface, never messenger-bound). Cheap — just parses
-    the model spec and constructs an iModel with a dummy key, no network I/O —
-    so it is safe to call once per team member ahead of the per-worker build
-    loop, to know which teammates will end up messenger-bound for the WHOLE
-    team regardless of the order workers are actually built in."""
+    """Whether a worker with this role/model_override resolves to a
+    CLI-provider iModel (no tool-calling surface, never messenger-bound).
+    Cheap (no network I/O) — safe to call once per team member ahead of
+    the per-worker build loop."""
     w_model, _, _ = _resolve_worker_model_spec(env, role, model_override)
     return bool(getattr(build_imodel_from_spec(w_model), "is_cli", False))
 
@@ -648,13 +591,9 @@ async def build_worker_branch(
     grant_spawn: bool = False,
     modes: list[str] | None = None,
 ) -> tuple[Branch, str, AgentProfile | None, bool]:
-    """Resolve model/profile/system and build a worker Branch.
-
-    The fourth return value is ``messenger_bound``: True when this worker
-    actually got the in-process messenger tool registered (team messaging
-    active AND a non-CLI worker), so callers building `operate` DAG nodes
-    know to enable action serialization for this branch.
-    """
+    """Resolve model/profile/system and build a worker Branch. The fourth
+    return value, ``messenger_bound``, is True when this worker got the
+    in-process messenger tool registered — see docs/internals/cli.md."""
     from ._common import BARE_WORKER_SYSTEM
 
     w_model, w_profile, w_cfg = _resolve_worker_model_spec(env, role, model_override)
@@ -695,12 +634,9 @@ async def build_worker_branch(
     else:
         wname = env.assign_name(role)
 
-    # In-process team messaging: only API-model workers can call tools
-    # (operate() only surfaces branch.acts for non-CLI providers); CLI
-    # workers keep the existing file-based `li team` channel untouched.
-    # Decided here, before the system prompt is assembled below, so the
-    # coordination section names the channel this worker actually gets
-    # instead of unconditionally instructing the bash `li team` path.
+    # Only API-model workers can call tools (operate() only surfaces
+    # branch.acts for non-CLI providers); decided before the system prompt
+    # is assembled so the coordination section names the right channel.
     exchange = getattr(env, "exchange", None)
     messenger = getattr(env, "messenger", None)
     messenger_bound = (
@@ -773,16 +709,10 @@ async def build_worker_branch(
 
 
 def make_help_coordinator(env: OrchestrationEnv) -> Any:
-    """Build the rung-2 coordinator callback for ``LionMessenger``'s "help" event.
-
-    Plain Python routing logic — no LLM call, matching the shape
-    ``ReactiveExecutor._schedule_escalation`` already uses for flow-mode.
-    Every help signal is logged for bring-up visibility; a "blocked"-urgency
-    signal is additionally folded into ``env._escalated_evidence``, the same
-    list the human rung already surfaces post-hoc in the run summary (rung 4
-    stays post-hoc by default). Model-bump (rung 3) and
-    synchronous human paging are out of scope for this coordinator.
-    """
+    """Build the rung-2 coordinator callback for ``LionMessenger``'s "help"
+    event. Plain Python routing, no LLM call; a "blocked"-urgency signal is
+    folded into ``env._escalated_evidence`` for the run summary. Model-bump
+    (rung 3) and synchronous human paging are out of scope here."""
 
     def _on_help(*, name: str, sender_id: Any, reason: str, urgency: str = "fyi") -> None:
         _log_orch.info(
@@ -802,17 +732,9 @@ def make_help_coordinator(env: OrchestrationEnv) -> Any:
 @dataclass
 class TeamLifecycleCoordinator:
     """Rung-2 coordinator (plain Python, no LLM call) for a team-mode run's
-    done/finished/wakeup lifecycle — the counterpart to
-    ``make_help_coordinator`` for LionMessenger's "help" event.
-
-    Deliberately keeps no separate liveness bookkeeping of its own: every
-    fact about who is running, idle, or retired comes straight from the
-    team inbox via ``team.compute_quiescence`` (a pure function over message
-    ``kind``), so what a live coordinator decides is always exactly what
-    ``li team show`` displays and what the pure predicate's own unit tests
-    already cover — there's no separate in-memory state to drift out of
-    sync with the file.
-    """
+    done/finished/wakeup lifecycle, counterpart to ``make_help_coordinator``.
+    Keeps no liveness state of its own — reads it from ``team.compute_quiescence``
+    each time, so it never drifts from what ``li team show`` displays."""
 
     team_id: str
     worker_names: tuple[str, ...]
@@ -825,10 +747,8 @@ class TeamLifecycleCoordinator:
     rounds_run: int = field(default=0, init=False)
 
     def on_done(self, *, name: str, sender_id: Any, reason: str) -> None:
-        """Wired to ``LionMessenger.on("done", ...)``: a messenger-bound
-        worker calling ``action="done"`` reaches here; the actual structured
-        team-inbox entry is written by ``team.post_done_signal`` (code, not
-        the model), never by the worker formatting JSON itself."""
+        """Wired to ``LionMessenger.on("done", ...)``; writes the structured
+        team-inbox entry via ``team.post_done_signal`` (code, not the model)."""
         from lionagi.cli import team
 
         with contextlib.suppress(FileNotFoundError):
@@ -869,9 +789,8 @@ class TeamLifecycleCoordinator:
 
         from lionagi.cli import team
 
-        # Force-deliver queued outbox sends before the terminal read — the
-        # periodic async collect may not have ticked, and this sync hook
-        # cannot await it.
+        # Force-deliver queued outbox sends: the periodic async collect may
+        # not have ticked, and this sync hook cannot await it.
         if self.exchange is not None:
             with contextlib.suppress(Exception):
                 self.exchange.collect_all_sync()
@@ -926,20 +845,10 @@ class TeamLifecycleCoordinator:
 
     def build_round_operations(self, state: Any, *, prompt: str) -> list[Any]:
         """One re-invocation ``Operation`` per worker in
-        ``state.pending_targets``, each targeting that worker's OWN branch
-        (session continuity — the whole point of a "round" instead of a
-        fresh spawn) with its unread mail folded into ``context`` as
-        ``prior_team_messages`` — never the system prompt, so a teammate's
-        message content can never smuggle new standing instructions into
-        the model's persistent framing.
-
-        Consumes the pending workers' unread mail as a side effect (file
-        inbox via ``team.pop_unread_messages``, Exchange via
-        ``_exchange_prior_messages``) and posts a coordinator-authored
-        ``wakeup`` signal for each — the second effect is what flips those
-        workers back to "active" in the very next quiescence read, so the
-        same round is never double-injected.
-        """
+        ``state.pending_targets``, targeting each worker's own branch with
+        unread mail folded into ``context`` (never the system prompt).
+        See docs/internals/cli.md for the unread-mail-consumption and
+        wakeup-signal side effects that prevent double-injecting a round."""
         from lionagi.cli import team
         from lionagi.operations.node import create_operation
 

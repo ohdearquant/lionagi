@@ -1,24 +1,8 @@
 # Copyright (c) 2023-2026, HaiyangLi <quantocean.li at gmail dot com>
 # SPDX-License-Identifier: Apache-2.0
-"""Settings-driven terminal-callback handler.
-
-Resolves ``notify.on_terminal`` -- a string (compatibility form) or a mapping
-(``{enabled, adapter: {kind: exec|python, ...}, filter: {kinds, ids}}``) --
-into a handler installable on a ``TerminalCallbackRegistry``. Precedence is
-per-run override > project settings > global settings > disabled; the
-absent key and an explicit ``enabled: false`` are both the disabled state.
-
-No configuration shape ever reaches a shell. A plain command string is
-POSIX-word-split (``shlex.split``) and launched via
-``asyncio.create_subprocess_exec`` -- never ``create_subprocess_shell``. A
-string that fails to split, or whose intent requires shell features (pipes,
-redirection, conjunction, variable expansion), warns with a migration
-diagnostic naming the argv-list mapping form and resolves to disabled. Any
-resolution producing an empty argv (empty string, whitespace-only string, an
-explicit empty ``argv`` array, or the same via a per-run override or
-``--notify``) resolves to disabled the same way, before any process is
-launched. A resolution error never fails or delays the run it would have
-described.
+"""Settings-driven terminal-callback handler. Resolves ``notify.on_terminal``
+into a handler installable on a ``TerminalCallbackRegistry``; no
+configuration shape ever reaches a shell. See docs/internals/runtime.md.
 """
 
 from __future__ import annotations
@@ -106,11 +90,8 @@ def resolve_notify_config(
     project_dir: str | None = None,
 ) -> ResolvedNotifyHandler | None:
     """Resolve ``notify.on_terminal`` to a handler spec, or ``None`` (disabled).
-
-    *override* wins outright when supplied (the per-run/``--notify`` case);
-    otherwise settings are loaded once (snapshot semantics -- a settings edit
-    takes effect on the next process, not this one) and resolved through the
-    project-then-global merge ``load_settings`` already implements.
+    *override* wins outright when supplied; otherwise settings are loaded
+    once (snapshot semantics) via the project-then-global merge.
     """
     if override is not None:
         return _resolve_shape(override, scope="override")
@@ -340,18 +321,9 @@ def _make_exec_handler(
             logger.warning("notify.on_terminal exec adapter %r timed out", launch_argv)
             return
         except get_cancelled_exc_class():
-            # The registry's own shared deadline (TerminalCallbackRegistry's
-            # move_on_after, HANDLER_BUDGET_SECONDS by default) races this
-            # call's identical wait_for timeout -- the outer one started
-            # counting first, so it typically wins and delivers cancellation
-            # here instead of the asyncio.TimeoutError branch above. Either
-            # way the child must be reaped: it was launched with
-            # start_new_session=True (its own process group), so leaving it
-            # unkilled orphans a live notify.on_terminal/--notify subprocess
-            # after this run has already returned. Cleanup runs inside a
-            # shielded scope since the enclosing scope is already cancelled
-            # -- an unshielded await here would itself be cancelled before
-            # the kill completes.
+            # The registry's shared deadline races this call's own timeout and
+            # typically wins; the child (its own process group) must still be
+            # reaped, shielded since the enclosing scope is already cancelled.
             if proc is not None:
                 with CancelScope(shield=True):
                     await aterminate_process_group(proc, grace=None)
@@ -387,19 +359,8 @@ def build_handler(
     env_fn: EnvBuilder | None = None,
 ) -> TerminalCallbackHandler | None:
     """Build the process-local handler for a resolved adapter spec, or
-    ``None`` if the spec fails to build (never raises).
-
-    *payload_fn* only affects the exec adapter (whose stdin bytes are the
-    only surface an external payload shape controls); a python adapter is
-    called with the envelope object directly regardless. *argv_fn*/*env_fn*
-    let a caller (the flow/play `--notify` legacy adapter) derive per-event
-    argv substitutions or extra environment variables from the same
-    envelope; the generic settings-driven adapter leaves both unset.
-
-    A python adapter ref is imported eagerly here (at build time, not at
-    call time), so a malformed ``module:callable`` reference is caught and
-    logged rather than raised -- a typo in configuration must resolve to
-    disabled, never crash the bootstrap call site.
+    ``None`` if the spec fails to build (never raises). A python adapter ref
+    is imported eagerly here so a bad ref resolves to disabled, not a crash.
     """
     if resolved.python_ref is not None:
         try:
@@ -421,13 +382,9 @@ def register_settings_terminal_callback(
     name: str = "notify.settings.on_terminal",
     project_dir: str | None = None,
 ) -> bool:
-    """Resolve ``notify.on_terminal`` from settings once and register it.
-
-    This is one of the two bootstrap points: the CLI entry
-    point and the Studio service startup each call this once per process
-    rather than every command growing its own ``--notify``-style flag.
-    Returns ``True`` if a handler was installed, ``False`` for the disabled
-    state (absent key, ``enabled: false``, or an invalid value).
+    """Resolve ``notify.on_terminal`` from settings once and register it (the
+    CLI entry point and Studio service startup each call this once per
+    process). Returns ``True`` iff a handler was installed.
     """
     resolved = resolve_notify_config(project_dir=project_dir)
     if resolved is None:
