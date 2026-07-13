@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import logging
 import threading
 from dataclasses import dataclass
 from typing import Any, ClassVar
@@ -17,6 +18,8 @@ __all__ = (
     "EndpointRegistry",
     "register_endpoint",
 )
+
+logger = logging.getLogger(__name__)
 
 
 class EndpointType(Enum):
@@ -225,6 +228,7 @@ class EndpointRegistry:
                     if module_name is not None and entry.cls.__module__ == module_name:
                         entry.plugin_name = plugin_name
                         entry.plugin_target = module
+                cls._reject_builtin_collisions(plugin_name, module, module_name)
                 imported = True
             except PluginActivationError:
                 continue
@@ -234,6 +238,50 @@ class EndpointRegistry:
                 else:
                     cls._plugin_registration.provenance = previous
         return imported
+
+    @classmethod
+    def _reject_builtin_collisions(
+        cls, plugin_name: str, module: str, module_name: str | None
+    ) -> None:
+        """ADR-0088 D6: a plugin provider must never silently take over a
+        provider name a built-in already serves. Drop (and log) any entry
+        this activation just added whose provider name (or provider alias)
+        matches an already-registered built-in entry -- the built-in stays
+        authoritative and the plugin entry is rejected.
+        """
+        if module_name is None:
+            return
+
+        builtin_names: set[str] = set()
+        for entry in cls._entries:
+            if entry.plugin_name is None:
+                builtin_names.add(entry.meta.provider)
+                builtin_names.update(entry.meta.provider_aliases)
+        if not builtin_names:
+            return
+
+        kept: list[_RegistryEntry] = []
+        for entry in cls._entries:
+            is_this_activation = (
+                entry.plugin_name == plugin_name
+                and entry.plugin_target == module
+                and entry.cls.__module__ == module_name
+            )
+            collides = entry.meta.provider in builtin_names or any(
+                alias in builtin_names for alias in entry.meta.provider_aliases
+            )
+            if is_this_activation and collides:
+                logger.warning(
+                    "plugin %r provider module %r declares provider %r, which "
+                    "a built-in already serves; the built-in wins and this "
+                    "plugin entry is rejected (ADR-0088 D6)",
+                    plugin_name,
+                    module,
+                    entry.meta.provider,
+                )
+                continue
+            kept.append(entry)
+        cls._entries[:] = kept
 
     @classmethod
     def _ensure_loaded(cls):

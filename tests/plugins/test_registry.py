@@ -370,6 +370,92 @@ class TestActivateTarget:
         assert "p1/a" not in PluginRegistry.active_agent_profile_files()
 
 
+PLAYBOOK_MANIFEST = """\
+name: {name}
+version: "0.1.0"
+lionagi: ">=0.0,<100.0"
+
+capabilities:
+  playbooks: [playbooks/{playbook}.playbook.yaml]
+"""
+
+
+def _write_playbook_plugin(
+    write_plugin, dir_name: str, *, name: str | None = None, playbook: str = "pb"
+):
+    return write_plugin(
+        dir_name,
+        PLAYBOOK_MANIFEST.format(name=name or dir_name, playbook=playbook),
+        files={f"playbooks/{playbook}.playbook.yaml": "prompt: hi\n"},
+    )
+
+
+class TestActivePlaybookFiles:
+    """ADR-0088 D3/D6: a plugin's declared playbooks join the search namespaced
+    as ``<plugin>/<name>``, only for a trusted + enabled + compatible plugin."""
+
+    def test_active_plugin_playbook_is_namespaced(self, write_plugin):
+        _write_playbook_plugin(write_plugin, "p1", playbook="deep-research")
+        _trust_by_dir_name("p1")
+        PluginRegistry.reset()
+
+        files = PluginRegistry.active_playbook_files()
+        assert "p1/deep-research" in files
+        plugin_name, path = files["p1/deep-research"]
+        assert plugin_name == "p1"
+        assert path.name == "deep-research.playbook.yaml"
+
+    def test_untrusted_plugin_playbook_is_absent(self, write_plugin):
+        _write_playbook_plugin(write_plugin, "p1", playbook="deep-research")
+        # never trusted
+        assert "p1/deep-research" not in PluginRegistry.active_playbook_files()
+
+    def test_two_active_plugins_same_playbook_name_is_not_a_collision(self, write_plugin):
+        """Playbooks are namespaced — same local name across two plugins is not a
+        hard error, only the bare name becomes ambiguous (resolver's job)."""
+        _write_playbook_plugin(write_plugin, "p1", playbook="research")
+        _write_playbook_plugin(write_plugin, "p2", playbook="research")
+        _trust_by_dir_name("p1")
+        _trust_by_dir_name("p2")
+        PluginRegistry.reset()
+
+        assert PluginRegistry.get("p1").state is PluginState.ACTIVE
+        assert PluginRegistry.get("p2").state is PluginState.ACTIVE
+        files = PluginRegistry.active_playbook_files()
+        assert "p1/research" in files
+        assert "p2/research" in files
+
+    def test_editing_playbook_after_first_access_removes_it_from_active_files(
+        self, write_plugin
+    ):
+        bundle = _write_playbook_plugin(write_plugin, "p1", playbook="deep-research")
+        _trust_by_dir_name("p1")
+        PluginRegistry.reset()
+
+        assert PluginRegistry.get("p1").state is PluginState.ACTIVE
+        assert "p1/deep-research" in PluginRegistry.active_playbook_files()
+
+        (bundle / "playbooks" / "deep-research.playbook.yaml").write_text(
+            "prompt: attacker-controlled\n"
+        )
+
+        assert "p1/deep-research" not in PluginRegistry.active_playbook_files()
+
+    def test_disabling_after_first_access_removes_playbooks_without_reset(self, write_plugin):
+        _write_playbook_plugin(write_plugin, "p1", playbook="deep-research")
+        _trust_by_dir_name("p1")
+        PluginRegistry.reset()
+
+        assert PluginRegistry.get("p1").state is PluginState.ACTIVE
+        assert "p1/deep-research" in PluginRegistry.active_playbook_files()
+
+        settings = read_user_settings()
+        settings.setdefault("plugins", {})["p1"] = {"enabled": False}
+        write_user_settings(settings)
+
+        assert "p1/deep-research" not in PluginRegistry.active_playbook_files()
+
+
 class TestTrustExecutionAtomicity:
     """Trust decisions and execution must operate on the same bytes/state, read
     once -- covers manifest-edit staleness, the hash-then-reopen TOCTOU window,

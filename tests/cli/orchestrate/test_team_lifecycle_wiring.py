@@ -150,6 +150,44 @@ class TestTeamLifecycleCoordinatorBuildRoundOperations:
         assert prior["total_count"] == 1
         assert prior["messages"] == [{"from": "bob", "content": "come back"}]
 
+    def test_build_round_operations_stamps_assignee_and_spawn_id_for_attribution(self):
+        """role_node_builder (patterns.py) stamps assignee+spawn_id on every
+        reactively-injected node; flow.py's finalize-time result scan and
+        checkpoint capture both key off those two fields. A round op that
+        skips this stamping surfaces in agent_results as an anonymous
+        "spawned"/"spawn-N" entry instead of being attributed to its worker
+        and round (regression watch)."""
+        _make_team("t4b", ["orchestrator", "alice"])
+        alice_branch = _FakeBranch("alice")
+        coord = make_team_lifecycle_coordinator(
+            "t4b", ["alice"], {"alice": alice_branch}, messenger_bound={"alice": True}
+        )
+        coord.on_done(name="alice", sender_id=uuid4(), reason="")
+        with team._locked_team("t4b") as data:
+            data["messages"].append(
+                {
+                    "id": "m1",
+                    "from": "bob",
+                    "to": ["alice"],
+                    "content": "come back",
+                    "kind": "message",
+                    "read_by": {},
+                    "timestamp": "2026-01-01T00:00:00",
+                }
+            )
+
+        state = coord.check_round()
+        ops = coord.build_round_operations(state, prompt="original task")
+
+        assert len(ops) == 1
+        op = ops[0]
+        assert op.metadata["assignee"] == "alice"
+        assert op.metadata["spawn_id"] == "alice-round1"
+        assert op.metadata["reference_id"] == "alice-round1"
+        # assignee/spawn_id must agree with reference_id, matching
+        # role_node_builder's unconditional stamp-together invariant.
+        assert op.metadata["spawn_id"] == op.metadata["reference_id"]
+
     def test_build_round_operations_omits_actions_for_non_messenger_worker(self):
         _make_team("t5", ["orchestrator", "cli-worker"])
         branch = _FakeBranch("cli-worker")
@@ -499,6 +537,18 @@ async def test_execute_dag_real_executor_wakes_alice_before_task_group_closes(tm
     # The round-injected op actually ran — proves inject() was not rejected.
     assert len(calls) == 2
     assert exec_result.agent_results[0]["response"] == "first pass done"
+
+    # The round op's result must be attributed to alice/round1, not surface
+    # as a generic anonymous "spawned"/"spawn-N" entry (regression watch:
+    # build_round_operations must stamp assignee+spawn_id like every other
+    # reactively-injected node).
+    assert len(exec_result.agent_results) == 2
+    round_result = exec_result.agent_results[1]
+    assert round_result["spawned"] is True
+    assert round_result["assignee"] == "alice"
+    assert round_result["name"] == "alice"
+    assert round_result["id"] == "alice-round1"
+    assert round_result["response"] == "all clear now"
 
 
 async def test_execute_dag_real_executor_respects_team_max_rounds_bound(tmp_path):

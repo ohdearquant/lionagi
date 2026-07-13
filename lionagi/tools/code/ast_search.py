@@ -186,8 +186,21 @@ class AstSearchTool(LionTool):
         if self._tool is None:
 
             async def ast_search(**kwargs):
-                """Search source code by AST shape using ast-grep (structural patterns, not text — e.g. 'except: pass' regardless of whitespace).
-                Requires the 'sg'/'ast-grep' binary in PATH; returns status='unavailable' if absent, not an error.
+                """
+                Search source code by AST shape using ast-grep (sg binary) —
+                structural patterns rather than text (e.g. 'except: pass'
+                regardless of whitespace, or all calls with a None first arg).
+
+                Requires the 'sg' or 'ast-grep' binary in PATH; returns
+                status='unavailable' if absent (not an error).
+
+                Pattern syntax: https://ast-grep.github.io/reference/pattern.html
+                  '$X'    — matches any single AST node, captured as X
+                  '$$$'   — matches zero or more nodes (variadic)
+                  '...'   — elides sub-patterns (wildcard for bodies)
+
+                Result status: 'ok' (no matches) | 'matches' (see matches list)
+                | 'unavailable' (sg not installed) | 'error' (tool failed)
                 """
                 return (await self.handle_request(AstSearchRequest(**kwargs))).model_dump()
 

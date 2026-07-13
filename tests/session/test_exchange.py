@@ -422,6 +422,41 @@ class TestExchangeEdgeCases:
         assert exch_task.done()
 
     @pytest.mark.anyio
+    async def test_run_after_stop_raises_instead_of_silent_noop(self):
+        """Regression: calling run() again on an Exchange that has already
+        completed a run/stop cycle must raise loudly instead of silently
+        returning without ever syncing again -- a caller starting a
+        "restart" task would otherwise get no signal that nothing ran."""
+        import asyncio
+
+        from lionagi.ln.concurrency import fail_after
+
+        exchange = Exchange()
+        first_run = asyncio.ensure_future(exchange.run(0.01))
+        await asyncio.sleep(0.05)
+        exchange.stop()
+        with fail_after(2):
+            await first_run
+        assert first_run.done()
+
+        with pytest.raises(RuntimeError, match="already been run"):
+            await exchange.run(0.01)
+
+    @pytest.mark.anyio
+    async def test_stop_before_first_tick_does_not_raise_on_first_call(self):
+        """The stop()-races-ahead-of-run() shape (the fix target of the
+        earlier task-group tests above) is a legitimate first call and must
+        still return promptly without tripping the already-run guard added
+        for the run()-after-stop() regression."""
+        exchange = Exchange()
+        exchange.stop()
+
+        # First-ever call to run(): must return immediately, not raise.
+        await exchange.run(0.01)
+
+        assert exchange._stop is True
+
+    @pytest.mark.anyio
     async def test_collect_empty_outbox(self):
         exchange = Exchange()
         owner_id = uuid4()
