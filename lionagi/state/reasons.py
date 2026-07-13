@@ -91,8 +91,8 @@ class RunReasons:
     # scan tombstones the orphaned row with this code and re-fires a fresh
     # occurrence in its place.
     FAILED_NEVER_DISPATCHED = "run.failed.never_dispatched"
-    # ADR-0071 D3/PR2: admit() seam claim-time terminal rejections (the
-    # sign-off binding condition on observable claim-time surfacing).
+    # ADR-0071 D3: admit() seam claim-time terminal rejections, surfaced
+    # observably on the row itself.
     SKIPPED_WAITER_CAP_EXCEEDED = "run.skipped.waiter_cap_exceeded"
     SKIPPED_DURATION_EXCEEDS_LEASE = "run.skipped.duration_exceeds_lease"
 

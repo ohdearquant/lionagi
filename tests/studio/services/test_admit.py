@@ -1,7 +1,7 @@
 # Copyright (c) 2023-2026, HaiyangLi <quantocean.li at gmail dot com>
 # SPDX-License-Identifier: Apache-2.0
 
-"""ADR-0071 D3/PR2: the admit() admission seam, in isolation.
+"""ADR-0071 D3: the admit() admission seam, in isolation.
 
 Direct unit tests against StateDB fixtures for each admission condition
 (capability mismatch, concurrency block, waiter-cap overflow, duration
@@ -59,7 +59,7 @@ async def _insert_raw_queued_row(
     concurrency_key: str | None = None,
 ) -> str:
     """Insert a ``queued`` row directly, bypassing ``submit_task()``'s
-    synchronous admission pre-check (ADR-0071 D3/PR2) -- for fixture rows
+    synchronous admission pre-check (ADR-0071 D3) -- for fixture rows
     that deliberately violate a condition ``admit()`` alone should catch at
     claim time, independent of whether submit_task() would also reject it."""
     run_id = str(uuid.uuid4())
@@ -291,7 +291,7 @@ async def test_duration_guard_absent_declaration_admits(db: StateDB) -> None:
 
 
 async def test_duration_guard_takes_priority_over_capability_mismatch(db: StateDB) -> None:
-    """The duration guard is unconditional (SPEC section 6, condition 4):
+    """The duration guard is unconditional:
     it is checked regardless of whether the row is also capability-blocked."""
     run_id = await _insert_raw_queued_row(
         db,

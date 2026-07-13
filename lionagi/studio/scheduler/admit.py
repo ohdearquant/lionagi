@@ -12,7 +12,7 @@ and in-process only, which would only ever see jobs submitted inside its own
 process and is useless for a fleet of independent CLI processes claiming from
 a shared ``schedule_runs`` table.
 
-Conditions evaluated (SPEC section 6):
+Conditions evaluated (ADR-0071 D3):
 
 1. Capability match (``capabilities.worker_can_serve``) -- a mismatch defers
    (the row is left ``queued``, never faked; unchanged D4 behavior).
@@ -46,7 +46,7 @@ same style as D5's ``SeatSpec`` convention):
         },
     }
 
-The sign-off binding condition (SPEC section 6, last paragraph): a claim-time
+A claim-time
 terminal rejection must surface observably even though the submitter is no
 longer on the wire by then. ``worker.py``'s claim loop, on a terminal
 ``AdmissionDecision``, transitions the row ``queued -> skipped`` carrying the

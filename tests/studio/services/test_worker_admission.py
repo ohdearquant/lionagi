@@ -1,11 +1,11 @@
 # Copyright (c) 2023-2026, HaiyangLi <quantocean.li at gmail dot com>
 # SPDX-License-Identifier: Apache-2.0
 
-"""ADR-0071 D3/PR2: the admit() seam wired into the worker claim loop.
+"""ADR-0071 D3: the admit() seam wired into the worker claim loop.
 
 Covers the convoy-incident regression (N jobs behind one holder, the
 (N+1)th over the waiter cap is rejected, not silently queued) and the
-sign-off binding condition that a claim-time terminal rejection surfaces
+requirement that a claim-time terminal rejection surfaces
 observably: the row lands on a terminal status carrying the reason, and a
 notify-carrying submission produces a dispatch_outbox row. Direct
 admit()-in-isolation unit tests live in test_admit.py.
@@ -56,7 +56,7 @@ async def _insert_raw_queued_row(
     required_capabilities: list[str] | None = None,
 ) -> str:
     """Insert a ``queued`` row directly, bypassing ``submit_task()``'s
-    synchronous admission pre-check (ADR-0071 D3/PR2) -- for fixture rows
+    synchronous admission pre-check (ADR-0071 D3) -- for fixture rows
     that deliberately violate the duration guard, so the CLAIM-TIME path
     (rather than the submit-time short-circuit) is what gets exercised."""
     run_id = str(uuid.uuid4())
@@ -189,7 +189,7 @@ async def test_concurrency_block_holds_across_a_fresh_pass_via_db_state(db: Stat
 
 
 async def test_claim_time_rejection_persists_reason_on_the_row(db: StateDB) -> None:
-    """The sign-off binding condition's letter: the rejection reason must
+    """The rejection reason must
     land on the schedule_runs row itself (status_reason_code /
     status_reason_summary), not only in the status_transitions audit
     history."""
@@ -280,7 +280,7 @@ async def test_duration_guard_rejection_at_claim_time_is_never_leased(db: StateD
     (bypassing submit_task()'s own synchronous pre-check, covered separately
     in test_task_applications.py) so this exercises admit()'s claim-time
     evaluation specifically. The rejection reason lands on the row's own
-    columns (the sign-off binding condition), same as the waiter-cap path."""
+    columns, same as the waiter-cap path."""
     run_id = await _insert_raw_queued_row(
         db, action_args={"admission": {"max_duration_seconds": 99999}}
     )

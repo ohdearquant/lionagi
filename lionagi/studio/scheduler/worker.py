@@ -18,12 +18,12 @@ serve is left ``queued``, never faked. Remote execution targets and
 workflow-registry resolution remain later slices (ADR-0073, remote worker
 binding).
 
-ADR-0071 D3/PR2 extracts the per-row admission predicate (capability match,
+ADR-0071 D3 extracts the per-row admission predicate (capability match,
 concurrency-key block, the waiter cap, and the duration guard) into
 ``lionagi.studio.scheduler.admit.admit()``. A terminal ``AdmissionDecision``
 transitions the row ``queued -> skipped`` (never faked as "running") and, when
 the submission carried a notify request, emits a ``dispatch_outbox``
-notification -- the sign-off binding condition that a claim-time rejection
+notification -- a claim-time rejection
 must surface observably even though the submitter is no longer on the wire.
 """
 
@@ -340,7 +340,7 @@ async def claim_and_execute(
     *execution_targets* (NULL/empty target = claimable by anyone). Candidates
     are then ordered by affinity match, ties broken by ``queued_at``.
 
-    ADR-0071 D3/PR2: each candidate is routed through
+    ADR-0071 D3: each candidate is routed through
     ``lionagi.studio.scheduler.admit.admit()``, which folds in the
     capability match above, the concurrency-key block (a matching key
     currently ``running`` -- this pass or a prior one -- defers the row),
@@ -473,8 +473,7 @@ async def claim_and_execute(
 
 
 async def _reject_claim(db: StateDB, row: Any, decision: AdmissionDecision) -> None:
-    """Surface a terminal admission rejection observably (SPEC section 6's
-    sign-off binding condition): the row moves ``queued -> skipped`` carrying
+    """Surface a terminal admission rejection observably: the row moves ``queued -> skipped`` carrying
     the rejection reason on the schedule_runs row itself (status_reason_code
     / status_reason_summary), and -- whenever the original submission carried
     a notify request (``admit.notify_request``) -- a ``dispatch_outbox``
@@ -486,8 +485,7 @@ async def _reject_claim(db: StateDB, row: Any, decision: AdmissionDecision) -> N
     schedule_run transition in this module): the legacy transition surface
     hardcodes ``write_reason_columns=False`` and only appends to the
     status_transitions audit table, which satisfies every other caller here
-    but not this one -- the binding condition requires the row's own reason
-    columns to carry it. ``update_status()`` writes those columns by default
+    but not this one -- the row's own reason columns must carry it. ``update_status()`` writes those columns by default
     for schedule_run (nothing overrides the schedule_run lifecycle policy's
     ``reason_columns=True``), so this is a one-call, no-side-channel fix that
     leaves claim/complete/fail's own transitions unchanged."""

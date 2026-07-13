@@ -2,7 +2,7 @@
 # SPDX-License-Identifier: Apache-2.0
 """ADR-0071 D1: the task-application submit surface. ``TaskApplication`` is the frozen submit shape every binding (in-process, CLI, HTTP) shares.
 
-ADR-0071 D3/PR2 adds a synchronous admission pre-check to ``submit_task()``
+ADR-0071 D3 adds a synchronous admission pre-check to ``submit_task()``
 for the two conditions that are cheaply checkable at submission time -- the
 duration guard (D6) and the waiter cap (D-Cap), when a holder is already
 running for the derived ``concurrency_key``. A violation raises
@@ -11,8 +11,8 @@ so a submitter gets fast, observable feedback instead of a silent later
 vanish. This is a best-effort early rejection only: the authoritative gate is
 ``lionagi.studio.scheduler.admit.admit()``, run again inside the worker claim
 loop with whatever concurrency configuration the worker actually uses, which
-is why the sign-off binding condition additionally requires claim-time
-rejections to surface observably (see ``worker._reject_claim``).
+is why claim-time rejections must additionally surface observably
+(see ``worker._reject_claim``).
 """
 
 from __future__ import annotations
