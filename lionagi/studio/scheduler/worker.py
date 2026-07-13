@@ -475,27 +475,35 @@ async def claim_and_execute(
 async def _reject_claim(db: StateDB, row: Any, decision: AdmissionDecision) -> None:
     """Surface a terminal admission rejection observably (SPEC section 6's
     sign-off binding condition): the row moves ``queued -> skipped`` carrying
-    the rejection reason, and -- whenever the original submission carried a
-    notify request (``admit.notify_request``) -- a ``dispatch_outbox``
+    the rejection reason on the schedule_runs row itself (status_reason_code
+    / status_reason_summary), and -- whenever the original submission carried
+    a notify request (``admit.notify_request``) -- a ``dispatch_outbox``
     notification is emitted, since the submitter already received a success
-    at submit time and is no longer on the wire by claim time."""
+    at submit time and is no longer on the wire by claim time.
+
+    Goes through ``StateDB.update_status()`` rather than
+    ``lionagi.state.transitions.transition()`` (used by every other
+    schedule_run transition in this module): the legacy transition surface
+    hardcodes ``write_reason_columns=False`` and only appends to the
+    status_transitions audit table, which satisfies every other caller here
+    but not this one -- the binding condition requires the row's own reason
+    columns to carry it. ``update_status()`` writes those columns by default
+    for schedule_run (nothing overrides the schedule_run lifecycle policy's
+    ``reason_columns=True``), so this is a one-call, no-side-channel fix that
+    leaves claim/complete/fail's own transitions unchanged."""
     run_id = row["id"]
-    result = await transition(
-        db,
-        TransitionRequest(
-            entity_type="schedule_run",
-            entity_id=run_id,
-            from_state="queued",
-            to_state="skipped",
-            reason=StateReason(
-                code=decision.reason_code or RunReasons.SKIPPED_WAITER_CAP_EXCEEDED,
-                summary=decision.reason_summary or "",
-            ),
-            actor=Actor(type="system", id="task_admission"),
-            idempotency_key=f"admission_reject:{run_id}:{decision.reason_code}",
-        ),
+    reason_code = decision.reason_code or RunReasons.SKIPPED_WAITER_CAP_EXCEEDED
+    applied = await db.update_status(
+        "schedule_run",
+        run_id,
+        new_status="skipped",
+        reason_code=reason_code,
+        reason_summary=decision.reason_summary or "",
+        source="system",
+        actor="task_admission",
+        expected_statuses={"queued"},
     )
-    if not result.applied:
+    if not applied:
         # Lost the race (the row was cancelled or otherwise moved
         # concurrently) -- nothing further to surface.
         return

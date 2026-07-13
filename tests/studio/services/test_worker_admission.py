@@ -189,6 +189,10 @@ async def test_concurrency_block_holds_across_a_fresh_pass_via_db_state(db: Stat
 
 
 async def test_claim_time_rejection_persists_reason_on_the_row(db: StateDB) -> None:
+    """The sign-off binding condition's letter: the rejection reason must
+    land on the schedule_runs row itself (status_reason_code /
+    status_reason_summary), not only in the status_transitions audit
+    history."""
     holder_id = await _submit(db)
     waiter_1 = await _submit(db)
     waiter_2 = await _submit(db)
@@ -200,6 +204,11 @@ async def test_claim_time_rejection_persists_reason_on_the_row(db: StateDB) -> N
         execute=_never_completes_execute,
         advertised_capabilities=["gpu-exclusive"],
     )
+
+    row = await _status_of(db, waiter_3)
+    assert row["status"] == "skipped"
+    assert row["status_reason_code"] == RunReasons.SKIPPED_WAITER_CAP_EXCEEDED
+    assert "waiter cap" in row["status_reason_summary"]
 
     history = await _reason_history(db, waiter_3)
     assert history[-1]["status"] == "skipped"
@@ -270,7 +279,8 @@ async def test_duration_guard_rejection_at_claim_time_is_never_leased(db: StateD
     concurrency contention at all -- the guard is unconditional. Raw-insert
     (bypassing submit_task()'s own synchronous pre-check, covered separately
     in test_task_applications.py) so this exercises admit()'s claim-time
-    evaluation specifically."""
+    evaluation specifically. The rejection reason lands on the row's own
+    columns (the sign-off binding condition), same as the waiter-cap path."""
     run_id = await _insert_raw_queued_row(
         db, action_args={"admission": {"max_duration_seconds": 99999}}
     )
@@ -280,6 +290,44 @@ async def test_duration_guard_rejection_at_claim_time_is_never_leased(db: StateD
     assert claimed == 0
     row = await _status_of(db, run_id)
     assert row["status"] == "skipped"
-    assert row["status_reason_code"] is None  # legacy transitions surface never denormalizes
+    assert row["status_reason_code"] == RunReasons.SKIPPED_DURATION_EXCEEDS_LEASE
+    assert row["status_reason_summary"]
     history = await _reason_history(db, run_id)
     assert history[-1]["reason_code"] == RunReasons.SKIPPED_DURATION_EXCEEDS_LEASE
+
+
+async def test_notify_carrying_submission_produces_outbox_row_on_duration_guard_rejection(
+    db: StateDB,
+) -> None:
+    """The duration-guard path fires a dispatch_outbox notify row too, not
+    only the waiter-cap path -- both terminal-rejection routes share the
+    same _reject_claim() surfacing, but each is exercised independently."""
+    run_id = await _insert_raw_queued_row(
+        db,
+        action_args={
+            "admission": {
+                "max_duration_seconds": 99999,
+                "notify": {"deliver_to": "lambda:leo", "dedup_key": "duration-guard-dedup"},
+            }
+        },
+    )
+
+    await claim_and_execute(db, worker_id="w1", execute=_never_completes_execute)
+
+    row = await _status_of(db, run_id)
+    assert row["status"] == "skipped"
+    assert row["status_reason_code"] == RunReasons.SKIPPED_DURATION_EXCEEDS_LEASE
+
+    dispatches = await list_dispatches(db)
+    matching = [d for d in dispatches if d["schedule_run_id"] == run_id]
+    assert len(matching) == 1
+    dispatch = matching[0]
+    assert dispatch["deliver_to"] == "lambda:leo"
+    assert dispatch["kind"] == "terminal_notify"
+    assert dispatch["dedup_key"] == "duration-guard-dedup"
+    payload = dispatch["payload"]
+    if isinstance(payload, str):
+        payload = json.loads(payload)
+    body = payload["body"] if "body" in payload else payload
+    assert body["schedule_run_id"] == run_id
+    assert body["reason_code"] == RunReasons.SKIPPED_DURATION_EXCEEDS_LEASE
