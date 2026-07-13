@@ -208,6 +208,94 @@ async def test_invoke_action_suppress_errors(branch_with_mock_imodel: Branch):
     assert logs[-1].content["execution"]["response"] is None
 
 
+@pytest.mark.asyncio
+async def test_invoke_action_suppress_errors_plain_permission_error_from_tool_body(
+    branch_with_mock_imodel: Branch,
+):
+    """A tool body that raises a plain `PermissionError` for its own business
+    reasons (e.g. filesystem access denied) is an ORDINARY tool exception --
+    it must keep the same historical degrade-to-`None` contract as any other
+    exception type, not be promoted to a visible error just because its
+    type happens to be `PermissionError`. Only governance denials
+    (`ToolHookDeniedError`, schema-revalidation denial) surface."""
+
+    def fail_tool(**kwargs):
+        raise PermissionError("filesystem denied by the tool")
+
+    branch_with_mock_imodel.acts.register_tool(fail_tool)
+    req = ActionRequest(content={"function": "fail_tool", "arguments": {}})
+
+    result = await branch_with_mock_imodel.act(req, suppress_errors=True)
+    assert result == [ActionResponseModel(function="fail_tool", arguments={}, output=None)]
+    logs = branch_with_mock_imodel.logs
+    assert len(logs) == 1
+    assert logs[-1].content["execution"]["response"] is None
+
+
+@pytest.mark.asyncio
+async def test_invoke_action_suppress_errors_hook_denial_surfaces(
+    branch_with_mock_imodel: Branch,
+):
+    """A tool-pre hook denial is a governance outcome, not an ordinary tool
+    exception -- unlike a plain `PermissionError` from a tool body, it must
+    surface as a visible error even though `ToolHookDeniedError` is itself a
+    `PermissionError` subclass."""
+    from lionagi.protocols.action.tool_hooks import ToolPreDecision
+
+    def ok_tool(**kwargs):
+        return "should never run"
+
+    branch_with_mock_imodel.acts.register_tool(ok_tool)
+
+    async def denier(name: str, arguments: dict):
+        return ToolPreDecision(decision="deny", reason="policy denied")
+
+    branch_with_mock_imodel._action_manager.add_tool_pre_hook(denier)
+
+    req = ActionRequest(content={"function": "ok_tool", "arguments": {}})
+    result = await branch_with_mock_imodel.act(req, suppress_errors=True)
+
+    assert len(result) == 1
+    assert result[0].output is not None
+    assert "error" in result[0].output
+    assert "policy denied" in str(result[0].output["error"])
+
+
+@pytest.mark.asyncio
+async def test_invoke_action_suppress_errors_revalidation_denial_surfaces(
+    branch_with_mock_imodel: Branch,
+):
+    """A hook rewrite that fails schema revalidation is a governance denial
+    (`RevalidationDeniedError`) -- it must surface as a visible error, not
+    degrade to `output=None` like an ordinary tool exception."""
+    from lionagi.protocols.action.tool import Tool
+    from lionagi.protocols.action.tool_hooks import ToolPreDecision
+
+    class AddArgs(BaseModel):
+        a: int
+        b: int
+
+    def add(a: int, b: int) -> int:
+        return a + b
+
+    tool = Tool(func_callable=add, request_options=AddArgs)
+    branch_with_mock_imodel.acts.register_tool(tool)
+
+    async def bad_rewriter(name: str, arguments: dict):
+        # Drops the required 'b' field -- fails AddArgs validation.
+        return ToolPreDecision(decision="allow", updated_input={"a": 999})
+
+    branch_with_mock_imodel._action_manager.add_tool_pre_hook(bad_rewriter)
+
+    req = ActionRequest(content={"function": "add", "arguments": {"a": 1, "b": 2}})
+    result = await branch_with_mock_imodel.act(req, suppress_errors=True)
+
+    assert len(result) == 1
+    assert result[0].output is not None
+    assert "error" in result[0].output
+    assert "rewritten arguments failed validation" in str(result[0].output["error"])
+
+
 def test_clone_with_id_sender(branch_with_mock_imodel: Branch):
     msg = Instruction(
         content={"instruction": "Hello original"},

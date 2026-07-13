@@ -19,6 +19,7 @@ from typing import Any
 from lionagi.ln.concurrency import maybe_await
 
 __all__ = (
+    "ActionGovernanceDeniedError",
     "ToolHookDeniedError",
     "ToolPostDecision",
     "ToolPostHook",
@@ -64,7 +65,17 @@ ToolPostHook = Callable[
 ]
 
 
-class ToolHookDeniedError(PermissionError):
+class ActionGovernanceDeniedError(PermissionError):
+    """Base for governance/policy denials raised at the tool-invocation
+    boundary (hook deny, schema-rewrite revalidation). A plain
+    ``PermissionError`` raised by a tool's own body is NOT an instance of
+    this class -- callers that need to distinguish "this call was denied by
+    governance" from "the tool raised its own permission error" should match
+    on this type, not on ``PermissionError`` directly.
+    """
+
+
+class ToolHookDeniedError(ActionGovernanceDeniedError):
     """Raised when a tool-pre hook denies (or fails closed on) a call."""
 
     def __init__(self, hook_name: str, reason: str) -> None:
