@@ -8,6 +8,7 @@ set -euo pipefail
 REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 FRONTEND_DIR="$REPO_ROOT/apps/studio/frontend"
 MARKETPLACE_DIR="$REPO_ROOT/marketplace"
+NOTEBOOK_HYGIENE_SCRIPT="$REPO_ROOT/scripts/lint_notebook_hygiene.py"
 
 _has_cmd() { command -v "$1" &>/dev/null; }
 
@@ -206,74 +207,137 @@ sys.exit(rc)
 }
 
 # ---------------------------------------------------------------------------
-# Publication hygiene (docs/, docs/_archive/, notebooks/, repo root)
+# Publication hygiene (docs/, docs/_archive/, notebooks/, cookbooks/, repo root)
 #
 # lint-marketplace's absolute-path check above only covers marketplace/ +
 # .claude-plugin/ + README.md. This check covers the rest of the tree that
-# can carry publication leaks: archived ADRs, notebooks, and stray files
+# can carry publication leaks: archived ADRs, notebooks, cookbooks, and stray files
 # dropped at the repo root (e.g. internal review scratch files).
 # ---------------------------------------------------------------------------
 
+_hygiene_rg_scan() {
+  local rg_bin="$1"
+  local label="$2"
+  shift 2
+
+  local rg_rc=0
+  if "$rg_bin" "$@"; then
+    echo "  FAIL: $label found"
+    return 1
+  else
+    rg_rc=$?
+  fi
+
+  if [ "$rg_rc" -eq 1 ]; then
+    return 0
+  fi
+
+  echo "  scanner error: ripgrep failed while checking $label (exit $rg_rc)" >&2
+  return 2
+}
+
 lint-hygiene() {
-  echo "==> publication hygiene lint (docs/notebooks/root)"
+  echo "==> publication hygiene lint (docs/notebooks/cookbooks/root)"
   cd "$REPO_ROOT"
   local rc=0
+  local scan_rc=0
+  local rg_bin="${RG_BIN:-rg}"
+  if ! _has_cmd "$rg_bin"; then
+    echo "ERROR: ripgrep (rg) is required for publication hygiene. Install ripgrep and retry." >&2
+    return 2
+  fi
+
   # docs/ is scanned recursively, so docs/_archive/ (nested under it) is
   # covered by the same pass. Repo root is scanned at depth 1 only (its own
   # files), so this never descends into src/tests/benchmarks trees where
   # "lambda:" is overwhelmingly Python's own closure syntax.
-  local DOC_PATHS="docs/ notebooks/"
-  # Known, tracked exception: these three notebooks carry absolute local
-  # paths inside already-executed output cells (LLM tool-call results from
-  # a prior run). Fixing them means re-running the notebooks end to end,
-  # which is out of scope for a text-only hygiene pass — tracked as a
-  # follow-up rather than silently left to rot the gate.
-  local IPYNB_EXCEPTIONS=(-g '!notebooks/react.ipynb' -g '!notebooks/react_rag.ipynb' -g '!notebooks/references/test_instruct.ipynb')
+  local CONTENT_PATHS=(docs/ notebooks/ cookbooks/)
 
   echo "  checking absolute machine-local paths..."
-  # Scanned across ALL file types, including .py — a hardcoded /Users/lion
-  # path in a committed Python helper (e.g. a notebook script) is exactly
+  # Scanned across ALL file types, including .py — a hardcoded machine path
+  # in a committed Python helper (e.g. a notebook script) is exactly
   # as much of a leak as one in markdown; the .py exclusion below is scoped
-  # to the lambda: actor-identifier check only, where it guards against
+  # to the lambda namespace check only, where it guards against
   # Python's own closure syntax, not this check.
-  if rg --hidden "${IPYNB_EXCEPTIONS[@]}" "/Users/lion" $DOC_PATHS 2>/dev/null; then
-    echo "  FAIL: absolute /Users/lion paths found in docs/notebooks"; rc=1
+  if _hygiene_rg_scan "$rg_bin" "machine-local paths" --hidden '/Users/[^/[:space:]"]+/' "${CONTENT_PATHS[@]}"; then
+    :
+  else
+    scan_rc=$?
+    if [ "$scan_rc" -gt "$rc" ]; then rc=$scan_rc; fi
   fi
-  if rg --hidden --max-depth 1 -g '!.git' "/Users/lion" . 2>/dev/null; then
-    echo "  FAIL: absolute /Users/lion paths found at repo root"; rc=1
+  if _hygiene_rg_scan "$rg_bin" "machine-local paths at repo root" --hidden --max-depth 1 -g '!.git' '/Users/[^/[:space:]"]+/' .; then
+    :
+  else
+    scan_rc=$?
+    if [ "$scan_rc" -gt "$rc" ]; then rc=$scan_rc; fi
   fi
 
-  echo "  checking internal actor identifiers (lambda:<name>)..."
-  # "lambda:" immediately followed by a non-whitespace char is the internal
-  # actor-identifier shape. Python's own zero-arg lambda syntax always has a
-  # space after the colon once ruff-formatted (lambda: expr), so this does
-  # not match committed .py source; -g '!*.py' additionally excludes .py
-  # files outright as a second guard.
-  if rg --hidden -g '!*.py' "${IPYNB_EXCEPTIONS[@]}" 'lambda:\S' $DOC_PATHS 2>/dev/null; then
-    echo "  FAIL: internal actor identifiers (lambda:...) found in docs/notebooks"; rc=1
+  echo "  checking internal namespace identifiers (lambda:<name>)..."
+  # Source code is excluded from this textual pass. Notebook prose and outputs
+  # are parsed separately so valid lambda expressions in code cells are not
+  # mistaken for namespace identifiers.
+  if _hygiene_rg_scan "$rg_bin" "internal namespace identifiers" --hidden -g '!*.py' -g '!*.ipynb' '\blambda:[a-z][a-z0-9_-]*\b' "${CONTENT_PATHS[@]}"; then
+    :
+  else
+    scan_rc=$?
+    if [ "$scan_rc" -gt "$rc" ]; then rc=$scan_rc; fi
   fi
-  if rg --hidden --max-depth 1 -g '!*.py' -g '!.git' 'lambda:\S' . 2>/dev/null; then
-    echo "  FAIL: internal actor identifiers (lambda:...) found at repo root"; rc=1
+  if _hygiene_rg_scan "$rg_bin" "internal namespace identifiers at repo root" --hidden --max-depth 1 -g '!*.py' -g '!*.ipynb' -g '!.git' '\blambda:[a-z][a-z0-9_-]*\b' .; then
+    :
+  else
+    scan_rc=$?
+    if [ "$scan_rc" -gt "$rc" ]; then rc=$scan_rc; fi
   fi
-  # The Unicode "λ:" shorthand for the same actor-identifier shape (λ:leo,
-  # λ:lionagi). λ is not Python's lambda keyword, so there is no closure-
-  # syntax ambiguity here — no .py exclusion needed.
-  if rg --hidden "${IPYNB_EXCEPTIONS[@]}" 'λ:\S' $DOC_PATHS 2>/dev/null; then
-    echo "  FAIL: internal actor identifiers (λ:...) found in docs/notebooks"; rc=1
+  if uv run python "$NOTEBOOK_HYGIENE_SCRIPT" notebooks/ cookbooks/; then
+    :
+  else
+    scan_rc=$?
+    if [ "$scan_rc" -eq 1 ]; then
+      echo "  FAIL: internal namespace identifiers found in notebook prose or outputs"
+    else
+      echo "  scanner error: notebook hygiene scan failed (exit $scan_rc)" >&2
+    fi
+    if [ "$scan_rc" -gt "$rc" ]; then rc=$scan_rc; fi
   fi
-  if rg --hidden --max-depth 1 -g '!.git' 'λ:\S' . 2>/dev/null; then
-    echo "  FAIL: internal actor identifiers (λ:...) found at repo root"; rc=1
+
+  # The Unicode shorthand cannot be Python's lambda keyword, so source files
+  # do not need the code-cell exclusion used above.
+  if _hygiene_rg_scan "$rg_bin" "internal Unicode namespace identifiers" --hidden 'λ:[a-z][a-z0-9_-]*' "${CONTENT_PATHS[@]}"; then
+    :
+  else
+    scan_rc=$?
+    if [ "$scan_rc" -gt "$rc" ]; then rc=$scan_rc; fi
+  fi
+  if _hygiene_rg_scan "$rg_bin" "internal Unicode namespace identifiers at repo root" --hidden --max-depth 1 -g '!.git' 'λ:[a-z][a-z0-9_-]*' .; then
+    :
+  else
+    scan_rc=$?
+    if [ "$scan_rc" -gt "$rc" ]; then rc=$scan_rc; fi
   fi
 
   echo "  checking founder-name process narration (Ocean's)..."
-  if rg --hidden "${IPYNB_EXCEPTIONS[@]}" "\bOcean's\b" $DOC_PATHS 2>/dev/null; then
-    echo "  FAIL: founder-name process narration found in docs/notebooks"; rc=1
+  if _hygiene_rg_scan "$rg_bin" "founder-name process narration" --hidden "\bOcean's\b" "${CONTENT_PATHS[@]}"; then
+    :
+  else
+    scan_rc=$?
+    if [ "$scan_rc" -gt "$rc" ]; then rc=$scan_rc; fi
   fi
-  if rg --hidden --max-depth 1 -g '!.git' "\bOcean's\b" . 2>/dev/null; then
-    echo "  FAIL: founder-name process narration found at repo root"; rc=1
+  if _hygiene_rg_scan "$rg_bin" "founder-name process narration at repo root" --hidden --max-depth 1 -g '!.git' "\bOcean's\b" .; then
+    :
+  else
+    scan_rc=$?
+    if [ "$scan_rc" -gt "$rc" ]; then rc=$scan_rc; fi
   fi
 
-  [ $rc -eq 0 ] && echo "  publication hygiene: PASS" || { echo "  publication hygiene: FAIL"; return 1; }
+  if [ "$rc" -eq 0 ]; then
+    echo "  publication hygiene: PASS"
+  elif [ "$rc" -eq 1 ]; then
+    echo "  publication hygiene: FAIL"
+    return 1
+  else
+    echo "  publication hygiene: ERROR" >&2
+    return "$rc"
+  fi
 }
 
 # ---------------------------------------------------------------------------
@@ -330,7 +394,7 @@ case "$cmd" in
     echo "Frontend:    fe-install, lint-frontend, fmt-frontend, fmt-check-frontend,"
     echo "             build-frontend, typecheck-frontend"
     echo "Marketplace: lint-marketplace"
-    echo "Hygiene:     lint-hygiene (publication leaks: docs/notebooks/root)"
+    echo "Hygiene:     lint-hygiene (publication leaks: docs/notebooks/cookbooks/root)"
     echo "Composite:   lint (all linters), fmt (all formatters), ci (full pipeline)"
     ;;
   *)

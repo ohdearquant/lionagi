@@ -28,7 +28,7 @@ async def test_react_with_mcp():
     # 1. Load MCP search tools with proper Pydantic schemas
     print("\n1. Loading MCP search tools with Pydantic validation...")
     tools = await load_mcp_tools(
-        "/Users/you/lionagi/cookbooks/using_mcp/.mcp.json",
+        "/path/to/lionagi/cookbooks/using_mcp/.mcp.json",
         server_names=["search"],
         request_options_map={
             "search": {

@@ -70,7 +70,7 @@ Executing DAG: 3 agents / 3 ops...
   ▶ reviewer started
   ✓ reviewer done (9.6s)
 DAG done (29.2s).
-Saved to /Users/you/pipeline-out
+Saved to /path/to/pipeline-out
 
 [orchestrator] li agent -r orc-abc123 "..."
 [researcher]   li agent -r res-def456 "..."

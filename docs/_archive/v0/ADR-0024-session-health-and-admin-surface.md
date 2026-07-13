@@ -251,7 +251,7 @@ GET  /api/admin/events          # Recent admin events log
   "resources": {
     "worktrees": [
       {
-        "path": "/Users/you/work/worktrees/lionagi-issue-sweep-backend",
+        "path": "/path/to/work/worktrees/lionagi-issue-sweep-backend",
         "branch": "show/lionagi-issue-sweep/backend",
         "status": "stale",
         "last_modified": 1716250000.0,

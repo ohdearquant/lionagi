@@ -74,8 +74,8 @@ Returns a `SandboxSession`. Raises `RuntimeError` if `repo_root` is in a detache
 (there is no branch name to fork from or merge back into) or if `git worktree add` fails.
 
 ```python
-session = await create_sandbox("/Users/me/project")
-# session.worktree_path → "/Users/me/project/.worktrees/sandbox-a1b2c3d4"
+session = await create_sandbox("/path/to/project")
+# session.worktree_path → "/path/to/project/.worktrees/sandbox-a1b2c3d4"
 # session.branch_name   → "sandbox-a1b2c3d4"
 # session.base_branch   → "main"
 # session.base_sha      → "a1b2c3d4e5f6..." (40-char SHA of main's tip at creation)
@@ -254,7 +254,7 @@ from lionagi.tools.sandbox import (
 )
 
 # 1. Create sandbox forked from current branch
-session = await create_sandbox("/Users/me/project")
+session = await create_sandbox("/path/to/project")
 
 # 2. Run an agent confined to the worktree
 spec = AgentSpec.coding(cwd=session.worktree_path)

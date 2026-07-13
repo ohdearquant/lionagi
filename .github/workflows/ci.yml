@@ -29,6 +29,10 @@ jobs:
         uv sync --all-extras
     - name: Lint Python
       run: scripts/ci.sh lint-python
+    - name: Install ripgrep
+      run: sudo apt-get install -y ripgrep
+    - name: Lint publication hygiene
+      run: scripts/ci.sh lint-hygiene
 
   docs:
     needs: changes
