@@ -5,7 +5,7 @@ don't belong inline as long-form comments/docstrings. Organized by module. Sourc
 inline comments stay 1-2 lines; anything needing more context lives here.
 
 Scope note: `lionagi/cli/main.py`, `lionagi/cli/orchestrate/**`, and `lionagi/cli/team.py` are
-covered by their own in-flight work and are not indexed here yet.
+not indexed here.
 
 ## `_context_from.py` — context-ref resolution and distillation
 
