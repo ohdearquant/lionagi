@@ -37,6 +37,26 @@ class SchedulerStateService(Protocol):
 
     async def create_schedule_run(self, run: dict[str, Any]) -> None: ...
 
+    async def create_schedule_run_and_advance(
+        self,
+        run: dict[str, Any],
+        *,
+        schedule_id: str,
+        schedule_fields: dict[str, Any],
+    ) -> None: ...
+
+    async def schedule_run_exists_since(self, schedule_id: str, since: float) -> bool: ...
+
+    async def list_undispatched_schedule_runs(self) -> list[dict[str, Any]]: ...
+
+    async def tombstone_and_replace_schedule_run(
+        self,
+        orphan_id: str,
+        replacement_run: dict[str, Any],
+        *,
+        expected_orphan_status: str = "running",
+    ) -> bool: ...
+
     async def update_schedule_run(self, run_id: str, **fields: Any) -> None: ...
 
     async def create_invocation(self, invocation: dict[str, Any]) -> None: ...
@@ -97,6 +117,40 @@ class _DBSchedulerStateService:
     async def create_schedule_run(self, run: dict[str, Any]) -> None:
         async with StateDB() as db:
             await db.create_schedule_run(run)
+
+    async def create_schedule_run_and_advance(
+        self,
+        run: dict[str, Any],
+        *,
+        schedule_id: str,
+        schedule_fields: dict[str, Any],
+    ) -> None:
+        async with StateDB() as db:
+            await db.create_schedule_run_and_advance(
+                run, schedule_id=schedule_id, schedule_fields=schedule_fields
+            )
+
+    async def schedule_run_exists_since(self, schedule_id: str, since: float) -> bool:
+        async with StateDB() as db:
+            return await db.schedule_run_exists_since(schedule_id, since)
+
+    async def list_undispatched_schedule_runs(self) -> list[dict[str, Any]]:
+        async with StateDB() as db:
+            return await db.list_undispatched_schedule_runs()
+
+    async def tombstone_and_replace_schedule_run(
+        self,
+        orphan_id: str,
+        replacement_run: dict[str, Any],
+        *,
+        expected_orphan_status: str = "running",
+    ) -> bool:
+        async with StateDB() as db:
+            return await db.tombstone_and_replace_schedule_run(
+                orphan_id,
+                replacement_run,
+                expected_orphan_status=expected_orphan_status,
+            )
 
     async def update_schedule_run(self, run_id: str, **fields: Any) -> None:
         async with StateDB() as db:

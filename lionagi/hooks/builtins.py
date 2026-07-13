@@ -24,6 +24,7 @@ __all__ = (
     "persist_session_start",
     "persist_session_end",
     "persist_branch_provenance",
+    "persist_branch_end",
     "persist_message",
     "log_api_metrics",
     "log_tool_call",
@@ -173,6 +174,31 @@ async def persist_branch_provenance(
         provider=provider,
         agent_name=agent_name,
     )
+
+
+async def persist_branch_end(
+    *,
+    branch_id: str,
+    status: str = "completed",
+    ended_at: float | None = None,
+    **_unused: Any,
+) -> None:
+    """Stamp the branch row's terminal status/ended_at — the BRANCH_END
+    counterpart to BRANCH_CREATE's persist_branch_provenance.
+
+    Delegates the actual guard to StateDB.finalize_branch(): a no-op when
+    *status* is not itself a genuine terminal outcome (e.g. "running"), a
+    no-op when the branch row is already at ANY terminal status (not just
+    "completed"/"failed" -- "cancelled", "timed_out", "aborted", and
+    "completed_empty" are equally immutable), so this run-level finalize
+    never clobbers a more specific outcome a per-op writer already recorded
+    (e.g. the reactive DAG runner's own NodeCompleted/NodeFailed
+    branch-status updates in cli/orchestrate/flow.py). Also a no-op when the
+    branch row doesn't exist yet (a DAG leg that never got a first message,
+    so create_branch() never ran for it) -- there is nothing to finalize.
+    """
+    db = await _db()
+    await db.finalize_branch(branch_id, status=status, ended_at=ended_at or time.time())
 
 
 async def persist_message(
