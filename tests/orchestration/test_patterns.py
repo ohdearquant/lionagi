@@ -339,10 +339,32 @@ class TestPlan:
         assert [a.assignee for a in out] == ["researcher"]
 
     @pytest.mark.asyncio
-    async def test_truncates_to_max_tasks(self):
+    async def test_over_limit_plan_raises_instead_of_truncating(self):
+        """A plan that still exceeds max_tasks after the orchestrator was told
+        the cap must fail loudly, not silently drop the overflow (coverage
+        loss must never read as a clean run)."""
         orc = _FakeOrc([TaskAssignment(task=str(i), assignee="researcher") for i in range(5)])
+        with pytest.raises(ValueError, match=r"5 assignments.*max_tasks=2"):
+            await plan(orc, "task", roles={"researcher"}, max_tasks=2)
+
+    @pytest.mark.asyncio
+    async def test_within_limit_plan_passes_through(self):
+        orc = _FakeOrc([TaskAssignment(task=str(i), assignee="researcher") for i in range(2)])
         out = await plan(orc, "task", roles={"researcher"}, max_tasks=2)
         assert len(out) == 2
+
+    @pytest.mark.asyncio
+    async def test_guidance_states_cap_when_max_tasks_set(self):
+        orc = _FakeOrc([])
+        await plan(orc, "task", roles={"researcher"}, max_tasks=8)
+        assert "8" in orc.calls[0]["guidance"]
+        assert "HARD CAP" in orc.calls[0]["guidance"]
+
+    @pytest.mark.asyncio
+    async def test_guidance_omits_cap_when_max_tasks_unset(self):
+        orc = _FakeOrc([])
+        await plan(orc, "task", roles={"researcher"})
+        assert "HARD CAP" not in orc.calls[0]["guidance"]
 
     @pytest.mark.asyncio
     async def test_dag_vs_fanout_instruction(self):
