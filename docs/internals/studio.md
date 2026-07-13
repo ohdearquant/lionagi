@@ -1,8 +1,8 @@
 # Studio Internals Reference
 
-Non-obvious invariants, protocol contracts, and design rationale pulled out of
-`lionagi/studio/` during the 2026-07 comment-hygiene sweep. Terse reference —
-not a narrative. Organized by module path.
+Non-obvious invariants, protocol contracts, and design rationale for
+`lionagi/studio/` that don't belong inline as long-form comments. Terse
+reference — not a narrative. Organized by module path.
 
 ## lionagi/studio/cli.py
 
