@@ -1,9 +1,23 @@
-import time
+from contextlib import nullcontext
 
 import anyio
 import pytest
 
 from lionagi.ln.concurrency import bounded_map, fail_after, gather, race, retry
+
+
+@pytest.fixture
+def retry_sleep_calls(monkeypatch: pytest.MonkeyPatch) -> list[float]:
+    """Record retry backoff requests without advancing a real backend clock."""
+    import lionagi.ln.concurrency.patterns as patterns_mod
+
+    calls: list[float] = []
+
+    async def fake_sleep(delay: float) -> None:
+        calls.append(delay)
+
+    monkeypatch.setattr(patterns_mod.anyio, "sleep", fake_sleep)
+    return calls
 
 
 @pytest.mark.slow
@@ -28,19 +42,12 @@ async def test_gather_first_error_cancels_peers(anyio_backend):
             cancelled.set()
             raise
 
-    t0 = time.perf_counter()
     with pytest.raises(RuntimeError):
         await gather(boom(), peer(), return_exceptions=False)
-    dt = time.perf_counter() - t0
 
-    # Behavioral: peer must have been cancelled (not completed naturally).
+    # The peer sets this only from its cancellation path, so this signal also
+    # proves gather did not wait for the peer's natural sleep to complete.
     assert cancelled.is_set(), "peer was not cancelled after gather error"
-    # Relative timing: gather must return well before the peer would have
-    # finished on its own — any value << peer_sleep catches the regression
-    # where cancellation is not propagated at all.
-    assert dt < peer_sleep / 2, (
-        f"gather took {dt:.2f}s — cancellation may not have propagated promptly"
-    )
 
 
 @pytest.mark.anyio
@@ -85,7 +92,7 @@ async def test_race_multiple_exceptions_vs_success(anyio_backend):
 
 
 @pytest.mark.anyio
-async def test_retry_respects_attempts_count(anyio_backend):
+async def test_retry_respects_attempts_count(anyio_backend, retry_sleep_calls):
     calls = {"n": 0}
 
     async def always():
@@ -101,6 +108,7 @@ async def test_retry_respects_attempts_count(anyio_backend):
             retry_on=(TimeoutError,),
         )
     assert calls["n"] == 3
+    assert len(retry_sleep_calls) == 2
 
 
 @pytest.mark.anyio
@@ -288,36 +296,41 @@ async def test_race_requires_at_least_one(anyio_backend):
 
 
 @pytest.mark.anyio
-async def test_retry_deadline_capped_by_parent(anyio_backend):
+async def test_retry_deadline_capped_by_parent(anyio_backend, monkeypatch: pytest.MonkeyPatch):
+    import lionagi.ln.concurrency.patterns as patterns_mod
+
     calls = {"n": 0}
+    sleep_calls: list[float] = []
 
     async def always():
         calls["n"] += 1
         raise TimeoutError("x")
 
-    # Test that retry respects parent deadline
-    start = anyio.current_time()
+    async def fake_sleep(delay: float) -> None:
+        sleep_calls.append(delay)
 
-    # The fail_after deadline should cause retry to exit early
+    clock = iter((9.0, 10.0))
+    monkeypatch.setattr(patterns_mod, "effective_deadline", lambda: 10.0)
+    monkeypatch.setattr(patterns_mod, "current_time", lambda: next(clock))
+    monkeypatch.setattr(patterns_mod, "move_on_at", lambda _deadline: nullcontext())
+    monkeypatch.setattr(patterns_mod.anyio, "sleep", fake_sleep)
+
     with pytest.raises(TimeoutError):
-        with fail_after(0.05):  # Short deadline
-            await retry(
-                always,
-                attempts=50,
-                base_delay=0.01,  # Longer delays to test deadline capping
-                max_delay=0.1,
-                retry_on=(TimeoutError,),
-                jitter=0.0,
-            )
+        await retry(
+            always,
+            attempts=50,
+            base_delay=0.01,
+            max_delay=0.1,
+            retry_on=(TimeoutError,),
+            jitter=0.0,
+        )
 
-    elapsed = anyio.current_time() - start
-    # Should complete quickly due to deadline, not after many retries
-    assert elapsed <= 2.0  # CI runners can have large scheduling jitter
-    assert calls["n"] >= 1
+    assert calls["n"] == 1
+    assert sleep_calls == [0.01]
 
 
 @pytest.mark.anyio
-async def test_retry_with_and_without_jitter(anyio_backend):
+async def test_retry_with_and_without_jitter(anyio_backend, retry_sleep_calls):
     seen = {"n": 0}
 
     async def boom():
@@ -345,10 +358,11 @@ async def test_retry_with_and_without_jitter(anyio_backend):
             jitter=0.001,
         )
     assert seen["n"] >= 4
+    assert len(retry_sleep_calls) == 2
 
 
 @pytest.mark.anyio
-async def test_retry_eventual_success(anyio_backend):
+async def test_retry_eventual_success(anyio_backend, retry_sleep_calls):
     attempts = {"count": 0}
 
     async def flaky():
@@ -361,6 +375,7 @@ async def test_retry_eventual_success(anyio_backend):
 
     assert result == "success"
     assert attempts["count"] == 3  # Succeeded on third attempt
+    assert len(retry_sleep_calls) == 2
 
 
 @pytest.mark.anyio
@@ -390,7 +405,7 @@ async def test_retry_exception_filtering(anyio_backend):
 
 
 @pytest.mark.anyio
-async def test_retry_mixed_exceptions(anyio_backend):
+async def test_retry_mixed_exceptions(anyio_backend, retry_sleep_calls):
     attempts = {"count": 0}
 
     async def mixed_failures():
@@ -413,6 +428,7 @@ async def test_retry_mixed_exceptions(anyio_backend):
 
     assert str(exc_info.value) == "Critical error"
     assert attempts["count"] == 3  # Two retries then critical failure
+    assert len(retry_sleep_calls) == 2
 
 
 # NOTE: Lines 82 and 168 are defensive code for rare edge cases where
@@ -437,31 +453,33 @@ async def test_bounded_map_invalid_limit(anyio_backend):
 
 
 @pytest.mark.anyio
-async def test_retry_deadline_expired_immediately(anyio_backend):
+async def test_retry_deadline_expired_immediately(anyio_backend, monkeypatch: pytest.MonkeyPatch):
+    import lionagi.ln.concurrency.patterns as patterns_mod
+
     calls = {"n": 0}
 
     async def always_fail():
         calls["n"] += 1
-        # Consume time on first call to bring us near deadline
-        if calls["n"] == 1:
-            await anyio.sleep(0.04)
         raise TimeoutError("Failed")
 
-    # Use a deadline that expires right after the first attempt
-    # The retry code should detect remaining <= 0 and raise at line 299
-    with pytest.raises(TimeoutError):
-        with fail_after(0.045):  # Very tight deadline
-            await retry(
-                always_fail,
-                attempts=100,
-                base_delay=1.0,  # Long delay so deadline check happens first
-                max_delay=2.0,
-                retry_on=(TimeoutError,),
-                jitter=0.0,
-            )
+    async def unexpected_sleep(_delay: float) -> None:
+        pytest.fail("retry slept after its effective deadline had expired")
 
-    # Verify we made at least one attempt
-    assert calls["n"] >= 1
+    monkeypatch.setattr(patterns_mod, "effective_deadline", lambda: 10.0)
+    monkeypatch.setattr(patterns_mod, "current_time", lambda: 10.0)
+    monkeypatch.setattr(patterns_mod.anyio, "sleep", unexpected_sleep)
+
+    with pytest.raises(TimeoutError):
+        await retry(
+            always_fail,
+            attempts=100,
+            base_delay=1.0,
+            max_delay=2.0,
+            retry_on=(TimeoutError,),
+            jitter=0.0,
+        )
+
+    assert calls["n"] == 1
 
 
 @pytest.mark.anyio

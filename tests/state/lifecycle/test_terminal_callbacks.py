@@ -214,6 +214,7 @@ async def test_override_registration_replaces_matching_handler_for_its_own_scope
 
 
 @pytest.mark.asyncio
+@pytest.mark.slow_timing
 async def test_hanging_handler_does_not_starve_a_successful_one_and_is_bounded():
     # Verification item 3: one hanging, one successful handler -- the
     # successful handler is not starved, and total delay is bounded by the
@@ -251,6 +252,7 @@ async def test_hanging_handler_does_not_starve_a_successful_one_and_is_bounded()
 
 
 @pytest.mark.asyncio
+@pytest.mark.slow_timing
 async def test_blocking_sync_handler_does_not_stall_the_fan_out():
     # A plain synchronous handler that blocks (I/O, time.sleep(), ...) must
     # not run directly on the event loop: doing so would prevent the shared

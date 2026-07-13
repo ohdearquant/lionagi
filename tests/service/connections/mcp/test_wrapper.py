@@ -2741,6 +2741,7 @@ class TestValidateMcpToolAdmission:
         assert "maintenance" in message
         assert "unbounded-command-input" in message
 
+    @pytest.mark.performance
     def test_wide_anyof_fanout_stays_bounded_and_denies(self):
         """A 10,000-branch `anyOf` fan-out (all harmless enum-bounded
         properties) must not be fully walked node-by-node: the node-work

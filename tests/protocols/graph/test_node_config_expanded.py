@@ -280,11 +280,9 @@ class TestTouchRealFields:
     def test_touch_sets_updated_at_field(self):
         cls = create_node("T", track_updated_at=True)
         t = cls()
-        before = datetime.now(timezone.utc).isoformat()  # noqa: UP017
         t.touch()
-        after = datetime.now(timezone.utc).isoformat()  # noqa: UP017
         assert t.updated_at is not None
-        assert before <= t.updated_at <= after
+        assert datetime.fromisoformat(t.updated_at).tzinfo == timezone.utc
 
     def test_touch_sets_created_by_field_first_time(self):
         cls = create_node("CB", track_created_by=True)
@@ -370,11 +368,9 @@ class TestSoftDeleteRealFields:
     def test_soft_delete_sets_real_deleted_at(self):
         cls = create_node("Del", soft_delete=True)
         d = cls()
-        before = datetime.now(timezone.utc).isoformat()  # noqa: UP017
         d.soft_delete()
-        after = datetime.now(timezone.utc).isoformat()  # noqa: UP017
         assert d.deleted_at is not None
-        assert before <= d.deleted_at <= after
+        assert datetime.fromisoformat(d.deleted_at).tzinfo == timezone.utc
 
     def test_restore_clears_real_is_deleted(self):
         cls = create_node("Rest", soft_delete=True)

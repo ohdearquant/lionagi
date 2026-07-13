@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import time
 import uuid
+from types import SimpleNamespace
 
 import pytest
 
@@ -144,6 +145,32 @@ async def test_context_manager():
 async def test_engine_is_none_when_closed():
     """_engine is None before open() is called."""
     state = StateDB(":memory:")
+    assert state._engine is None
+
+
+async def test_context_open_failure_disposes_partial_engine(monkeypatch):
+    """A context-entry error must not leave the driver's worker alive."""
+    from unittest.mock import AsyncMock, MagicMock
+
+    import lionagi.state.db as db_mod
+
+    engine = MagicMock()
+    engine.dispose = AsyncMock()
+    monkeypatch.setattr(db_mod, "make_engine", lambda *_args, **_kwargs: engine)
+    monkeypatch.setattr(db_mod, "_install_begin_immediate", lambda *_args: None)
+
+    state = StateDB(":memory:")
+
+    async def fail_schema() -> None:
+        raise RuntimeError("schema is locked")
+
+    monkeypatch.setattr(state, "_apply_schema", fail_schema)
+
+    with pytest.raises(RuntimeError, match="schema is locked"):
+        async with state:
+            raise AssertionError("context body must not run")
+
+    engine.dispose.assert_awaited_once()
     assert state._engine is None
 
 
@@ -814,14 +841,19 @@ async def test_finalize_branch_missing_row_is_noop(db: StateDB):
     assert updated is False
 
 
-async def test_finalize_branch_defaults_ended_at_to_now(db: StateDB):
+async def test_finalize_branch_defaults_ended_at_to_now(
+    db: StateDB, monkeypatch: pytest.MonkeyPatch
+):
+    import lionagi.state.db as state_db_mod
+
+    fixed_now = 1_000_000.0
+    monkeypatch.setattr(state_db_mod, "time", SimpleNamespace(time=lambda: fixed_now))
     branch = await _make_branch(db)
-    before = time.time()
 
     await db.finalize_branch(branch["id"], status="completed")
 
     row = await db.get_branch(branch["id"])
-    assert row["ended_at"] >= before
+    assert row["ended_at"] == fixed_now
 
 
 @pytest.mark.parametrize(

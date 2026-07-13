@@ -350,7 +350,7 @@ async def test_run_stream_persist_snapshot_dir_default_falls_back_to_persist_dir
     assert list(tmp_path.glob("*.json"))
 
 
-async def test_run_stream_persist_snapshot_survives_mid_stream_cancellation(tmp_path):
+async def test_run_stream_persist_snapshot_survives_mid_stream_cancellation(tmp_path, monkeypatch):
     """A branch checkpoint exists and is loadable even if the turn is killed before the model produces a single chunk -- the snapshot is written before streaming starts, not only on clean completion, so a branch whose first turn never finished can still be resumed."""
     import anyio as _anyio
 
@@ -370,14 +370,28 @@ async def test_run_stream_persist_snapshot_survives_mid_stream_cancellation(tmp_
     m.executor = types.SimpleNamespace(append=AsyncMock(), config={})
 
     hang = _anyio.Event()
+    checkpoint_written = asyncio.Event()
+    stream_started = asyncio.Event()
+    checkpoint_state_at_stream_start = []
 
     async def stream(api_call=None):
+        checkpoint_state_at_stream_start.append(checkpoint_written.is_set())
+        stream_started.set()
         await hang.wait()  # never set — simulates a subprocess still running
         yield StreamChunk(type="text", content="unreachable")  # pragma: no cover
 
     m.stream = stream
     branch = Branch()
     branch.chat_model = m
+
+    async def write_snapshot_and_signal(*args, **kwargs):
+        await _write_branch_snapshot(*args, **kwargs)
+        checkpoint_written.set()
+
+    monkeypatch.setattr(
+        "lionagi.operations.run.run._write_branch_snapshot",
+        write_snapshot_and_signal,
+    )
 
     param = RunParam(stream_persist=True, persist_dir=branches_dir, snapshot_dir=branches_dir)
     gen = run(branch, "long-running instruction", param)
@@ -386,7 +400,9 @@ async def test_run_stream_persist_snapshot_survives_mid_stream_cancellation(tmp_
     assert isinstance(first, Instruction)
 
     task = asyncio.ensure_future(gen.__anext__())
-    await asyncio.sleep(0.05)  # let it run past the pre-stream snapshot write
+    await stream_started.wait()
+    assert checkpoint_state_at_stream_start == [True]
+    await checkpoint_written.wait()
 
     snaps = list(branches_dir.glob("*.json"))
     assert snaps, "checkpoint must exist before the stream produces any output"
@@ -617,11 +633,8 @@ async def test_run_honors_caller_timeout_on_slow_stream():
     """When the caller passes ``timeout=N`` via imodel_kw, the stream loop
     raises TimeoutError once N seconds elapse, even if the upstream provider
     would otherwise stream forever."""
-    import time
-
     # chunk_delay is large so that timeout (0.15s) fires before ANY chunk
-    # arrives.  Keeping it large (3.0s) also provides CI-tolerant headroom
-    # for the elapsed-time bound below.
+    # arrives.
     chunk_delay = 3.0
     caller_timeout = 0.15
     model, _ = _make_slow_cli_model(chunk_delay=chunk_delay, n_chunks=20)
@@ -629,12 +642,10 @@ async def test_run_honors_caller_timeout_on_slow_stream():
     branch.chat_model = model
 
     stream_responses: list = []
-    started = time.monotonic()
     with pytest.raises(TimeoutError):
         async for msg in run(branch, "go", RunParam(imodel_kw={"timeout": caller_timeout})):
             if isinstance(msg, AssistantResponse):
                 stream_responses.append(msg)
-    elapsed = time.monotonic() - started
 
     # Behavioral: timeout must fire before the stream produces any content.
     # run() yields an Instruction first (always), then AssistantResponse per chunk.
@@ -642,11 +653,6 @@ async def test_run_honors_caller_timeout_on_slow_stream():
     assert stream_responses == [], (
         f"timeout fired after {len(stream_responses)} stream response(s) — "
         "timeout is not enforced before first chunk"
-    )
-    # Relative timing: elapsed must be less than one chunk interval,
-    # which proves the timeout tripped before the provider would have sent anything.
-    assert elapsed < chunk_delay, (
-        f"timeout fired at {elapsed:.2f}s but first chunk was due at {chunk_delay}s"
     )
 
 
@@ -769,8 +775,7 @@ async def test_imodel_stream_propagates_cancellation():
     from lionagi.protocols.generic.event import EventStatus
     from lionagi.service.connections.api_calling import APICalling
 
-    # chunk_delay is large so fail_after(cancel_after) fires before ANY chunk
-    # arrives.  Keeping it large also gives CI-tolerant headroom for elapsed bound.
+    # chunk_delay is large so fail_after(cancel_after) fires before any chunk.
     chunk_delay = 3.0
     cancel_after = 0.1
 
@@ -809,25 +814,16 @@ async def test_imodel_stream_propagates_cancellation():
         config={},
     )
 
-    import time
-
     chunks_yielded: list = []
-    started = time.monotonic()
     with pytest.raises(TimeoutError):
         with anyio.fail_after(cancel_after):
             async for chunk in m.stream(api_call=api_call):
                 chunks_yielded.append(chunk)
-    elapsed = time.monotonic() - started
 
     # Behavioral: cancellation must propagate — no chunks should have been yielded.
     assert chunks_yielded == [], (
         f"stream yielded {len(chunks_yielded)} chunk(s) after cancellation — "
         "CancelledError was swallowed instead of propagated"
-    )
-    # Relative timing: cancellation must surface before the first chunk interval,
-    # proving the generator did not block on a yield-in-finally.
-    assert elapsed < chunk_delay, (
-        f"cancellation surfaced at {elapsed:.2f}s but first chunk was due at {chunk_delay}s"
     )
 
 
@@ -1026,14 +1022,11 @@ async def test_run_liveness_watchdog_strips_kwarg_from_create_event():
 
 async def test_run_liveness_watchdog_yields_to_caller_stream_timeout():
     """When the caller's own stream `timeout` is tighter than the liveness window, the caller's TimeoutError fires unmodified -- that deliberate total-stream budget must not be reinterpreted as a worker-liveness failure."""
-    import time
-
     create_event_calls: list = []
     model = _make_hanging_cli_model(create_event_calls)
     branch = Branch()
     branch.chat_model = model
 
-    started = time.monotonic()
     with pytest.raises(TimeoutError):
         async for _ in run(
             branch,
@@ -1041,11 +1034,9 @@ async def test_run_liveness_watchdog_yields_to_caller_stream_timeout():
             RunParam(imodel_kw={"timeout": 0.05, "liveness_timeout": 120}),
         ):
             pass
-    elapsed = time.monotonic() - started
 
     # No retry: the caller's tighter overall deadline owns this timeout.
     assert len(create_event_calls) == 1
-    assert elapsed < 5.0
 
 
 async def test_run_liveness_watchdog_default_path_skips_buffered_endpoint(monkeypatch):

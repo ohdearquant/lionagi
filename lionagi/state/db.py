@@ -470,7 +470,15 @@ class StateDB:
             self._engine = None
 
     async def __aenter__(self) -> StateDB:
-        await self.open()
+        try:
+            await self.open()
+        except BaseException:
+            # __aexit__ is not entered when __aenter__ fails. Dispose the
+            # partially opened engine here so its driver worker cannot outlive
+            # a lock-contention or migration failure. Direct open() retains its
+            # established inspect-and-retry behavior on schema failures.
+            await self.close()
+            raise
         return self
 
     async def __aexit__(self, *exc: Any) -> None:

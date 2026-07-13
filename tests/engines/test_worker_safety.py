@@ -61,6 +61,7 @@ class _ScriptedBranch:
 
 
 @pytest.mark.asyncio
+@pytest.mark.slow_timing
 async def test_cancel_active_returns_within_timeout_when_task_swallows_cancelled_error():
     """cancel_active must return within ~timeout+buffer even when a task swallows CancelledError."""
     run = _StubEngine().new_run()
@@ -83,7 +84,7 @@ async def test_cancel_active_returns_within_timeout_when_task_swallows_cancelled
 
 
 @pytest.mark.asyncio
-async def test_cancel_active_returns_fast_when_tasks_cooperate():
+async def test_cancel_active_returns_fast_when_tasks_cooperate(monkeypatch: pytest.MonkeyPatch):
     """When tasks cooperate with cancellation, cancel_active returns well before timeout."""
     run = _StubEngine().new_run()
 
@@ -93,10 +94,18 @@ async def test_cancel_active_returns_fast_when_tasks_cooperate():
     run.spawn(cooperative())
     run.spawn(cooperative())
     run.engine.cancel_timeout_s = 5.0
-    t0 = time.monotonic()
+    original_wait = asyncio.wait
+    wait_results: list[tuple[float | None, set[asyncio.Task]]] = []
+
+    async def recording_wait(tasks, *, timeout=None):
+        done, pending = await original_wait(tasks, timeout=timeout)
+        wait_results.append((timeout, pending))
+        return done, pending
+
+    monkeypatch.setattr(asyncio, "wait", recording_wait)
     await run.cancel_active()
-    elapsed = time.monotonic() - t0
-    assert elapsed < 1.0
+
+    assert wait_results == [(5.0, set())]
     assert not run._active
 
 

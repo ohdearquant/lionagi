@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import time
 import uuid
+from types import SimpleNamespace
 
 import pytest
 
@@ -135,13 +136,17 @@ def test_threshold_for_kind_returns_expected_values():
 # ── touch_session_activity DB heartbeat ────────────────────────────────────────
 
 
-async def test_touch_session_activity_bumps_last_message_at(db: StateDB):
+async def test_touch_session_activity_bumps_last_message_at(
+    db: StateDB, monkeypatch: pytest.MonkeyPatch
+):
+    import lionagi.state.db as state_db_mod
+
+    fixed_now = 1_000_000.0
+    monkeypatch.setattr(state_db_mod, "time", SimpleNamespace(time=lambda: fixed_now))
     s = await _make_session(db, status="running", invocation_kind="agent")
-    before = time.time()
     await db.touch_session_activity(s["id"])
-    after = time.time()
     row = await db.get_session(s["id"])
-    assert before <= row["last_message_at"] <= after
+    assert row["last_message_at"] == fixed_now
 
 
 async def test_touch_session_activity_with_explicit_at(db: StateDB):

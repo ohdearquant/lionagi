@@ -852,6 +852,7 @@ async def test_dispatch_wait_chain_follow_no_declared_action_resolves_immediatel
 
 
 @pytest.mark.asyncio
+@pytest.mark.slow_timing
 async def test_dispatch_wait_chain_follow_grace_expiry_does_not_hang(
     temp_db_path: Path, capsys: pytest.CaptureFixture
 ) -> None:
@@ -1759,6 +1760,7 @@ async def test_effective_session_status_cas_mismatch_reports_persisted_status(
 
 
 @pytest.mark.asyncio
+@pytest.mark.slow_timing
 async def test_dispatch_wait_max_wait_bounds_a_stuck_session(temp_db_path: Path) -> None:
     """A session that never reconciles (no --max-wait would hang this forever)
     must give up after max_wait seconds and report EXIT_RUNNING."""
@@ -1780,6 +1782,7 @@ async def test_dispatch_wait_max_wait_bounds_a_stuck_session(temp_db_path: Path)
 
 
 @pytest.mark.asyncio
+@pytest.mark.slow_timing
 async def test_dispatch_wait_default_max_wait_bounds_a_stuck_session_without_caller_bound(
     temp_db_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

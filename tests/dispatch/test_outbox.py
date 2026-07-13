@@ -334,11 +334,12 @@ async def test_ack_required_tier_loops_back_to_pending_on_success(tmp_path: Path
         dispatch_id = await enqueue_dispatch(
             db, kind="terminal_notify", deliver_to="seat-1", ack_required=True
         )
-        await deliver_due_dispatches(db, now=time.time(), notify_template=_SUCCESS_TEMPLATE)
+        now = time.time()
+        await deliver_due_dispatches(db, now=now, notify_template=_SUCCESS_TEMPLATE)
         row = await get_dispatch(db, dispatch_id)
 
     assert row["status"] == "pending"
-    assert row["next_attempt_at"] > time.time()
+    assert row["next_attempt_at"] == now + backoff_seconds(1)
 
 
 async def test_ack_required_with_no_expiry_is_bounded_by_max_attempts(tmp_path: Path):

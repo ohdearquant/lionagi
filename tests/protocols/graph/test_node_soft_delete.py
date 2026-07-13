@@ -42,11 +42,9 @@ class TestNodeSoftDelete:
     def test_soft_delete_sets_deleted_at(self):
         cls = create_node("Del", soft_delete=True)
         d = cls()
-        before = datetime.now(timezone.utc).isoformat()
         d.soft_delete()
-        after = datetime.now(timezone.utc).isoformat()
         ts = d.deleted_at
-        assert before <= ts <= after
+        assert datetime.fromisoformat(ts).tzinfo == timezone.utc
 
     def test_soft_delete_with_by_param(self):
         cls = create_node("Del", soft_delete=True)

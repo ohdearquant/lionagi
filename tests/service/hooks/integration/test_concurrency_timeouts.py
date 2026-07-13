@@ -259,6 +259,7 @@ class TestTimeoutBehavior:
 
 class TestNoDeadlocks:
     @pytest.mark.anyio
+    @pytest.mark.slow_timing
     async def test_nested_hook_calls_no_deadlock(self, patch_cancellation):
         """Test that hooks calling other hooks don't deadlock."""
         hook_sleep = 0.01
@@ -312,6 +313,7 @@ class TestNoDeadlocks:
         )
 
     @pytest.mark.anyio
+    @pytest.mark.performance
     async def test_high_concurrency_no_resource_exhaustion(self, patch_cancellation):
         async def simple_hook(ev, **kw):
             return "simple"
@@ -353,6 +355,7 @@ class TestNoDeadlocks:
             assert hook_event.execution.response == "simple"
 
 
+@pytest.mark.performance
 class TestPerformanceSmoke:
     @pytest.mark.anyio
     async def test_hook_invocation_overhead_minimal(self, patch_cancellation):

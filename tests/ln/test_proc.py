@@ -100,6 +100,21 @@ async def test_aterminate_proc_group_pid_1_no_killpg_grace():
         mock_killpg.assert_not_called()
 
 
+def test_terminate_proc_group_never_signals_callers_group(monkeypatch):
+    """A leaked parent PGID must fall back to direct-child termination."""
+    import lionagi.ln._proc as proc_mod
+
+    proc = _fake_proc(pid=4242)
+    mock_killpg = MagicMock()
+    monkeypatch.setattr(proc_mod.os, "killpg", mock_killpg, raising=False)
+    monkeypatch.setattr(proc_mod.os, "getpgrp", lambda: 4242, raising=False)
+
+    terminate_process_group(proc, grace=None)
+
+    mock_killpg.assert_not_called()
+    proc.kill.assert_called_once()
+
+
 # ---------------------------------------------------------------------------
 # Normal pid (> 1): killpg is called with the right signal
 # ---------------------------------------------------------------------------

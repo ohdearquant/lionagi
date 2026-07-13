@@ -40,19 +40,8 @@ linear=718ms / fanout=502ms. The ceilings below are ~10x this host's noisy
 local median, which comfortably clears both that quiet-host reference and
 every noisy sample observed here.
 
-DELIBERATELY UNMARKED: this file does not carry ``@pytest.mark.performance``.
-The CI wrapper's ``-m "not performance"`` default (see scripts/ci.sh) exists
-to keep genuinely slow/exploratory benchmark-style tests out of the normal
-test jobs; applying that marker here would deselect this file in every CI
-job and defeat the entire point of a gate meant to catch a regression before
-merge — an unmarked-but-collected gate that never runs is strictly worse
-than a plain test that costs a few extra seconds. Measured cost: both tests
-combined add on the order of 10-30s to a test job whose total wall time runs
-several minutes, which is smaller than the fixed per-job startup cost
-(checkout, interpreter setup, dependency sync) a dedicated CI lane would add
-on top of it. If this file's runtime grows enough to matter, widen the
-ceilings or move it to a dedicated lane then — don't restore the marker as a
-shortcut, that silently kills the gate again.
+This is a wall-clock performance gate and therefore runs in the repository's
+dedicated performance lane, outside the required correctness suite.
 """
 
 from __future__ import annotations
@@ -67,6 +56,8 @@ from lionagi.operations.node import Operation
 from lionagi.protocols.types import EventStatus
 from lionagi.session.branch import Branch
 from lionagi.session.session import Session
+
+pytestmark = pytest.mark.performance
 
 N_NODES = 1000
 

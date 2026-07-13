@@ -174,22 +174,15 @@ def test_elapsed_none_start():
 
 
 def test_elapsed_seconds():
-    start = time.time() - 45
-    result = _elapsed(start)
-    assert result.endswith("s")
-    assert "45" in result or "44" in result  # allow 1s wall clock drift
+    assert _elapsed(100.0, ended_at=145.0) == "45s"
 
 
 def test_elapsed_minutes():
-    start = time.time() - 90
-    result = _elapsed(start)
-    assert "m" in result
+    assert _elapsed(100.0, ended_at=190.0) == "1m30s"
 
 
 def test_elapsed_hours():
-    start = time.time() - 7200
-    result = _elapsed(start)
-    assert "h" in result
+    assert _elapsed(100.0, ended_at=7300.0) == "2h00m"
 
 
 def test_trunc_short():
@@ -202,19 +195,19 @@ def test_trunc_long():
     assert result.endswith("…")
 
 
-def test_since_timestamp_hours():
-    cutoff = _since_timestamp("1h")
-    assert abs(cutoff - (time.time() - 3600)) < 2
+def test_since_timestamp_hours(monkeypatch: pytest.MonkeyPatch):
+    monkeypatch.setattr("lionagi.cli.monitor.time.time", lambda: 100_000.0)
+    assert _since_timestamp("1h") == 96_400.0
 
 
-def test_since_timestamp_minutes():
-    cutoff = _since_timestamp("30m")
-    assert abs(cutoff - (time.time() - 1800)) < 2
+def test_since_timestamp_minutes(monkeypatch: pytest.MonkeyPatch):
+    monkeypatch.setattr("lionagi.cli.monitor.time.time", lambda: 100_000.0)
+    assert _since_timestamp("30m") == 98_200.0
 
 
-def test_since_timestamp_days():
-    cutoff = _since_timestamp("2d")
-    assert abs(cutoff - (time.time() - 2 * 86400)) < 2
+def test_since_timestamp_days(monkeypatch: pytest.MonkeyPatch):
+    monkeypatch.setattr("lionagi.cli.monitor.time.time", lambda: 200_000.0)
+    assert _since_timestamp("2d") == 27_200.0
 
 
 def test_since_timestamp_invalid():
@@ -1718,26 +1711,31 @@ def test_background_hint_includes_session_id(
 
 def test_watch_mode_sigint_clean(temp_db_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """Watch loop exits cleanly when SIGINT is received."""
-    import os
-    import threading
+    import lionagi.cli.monitor as monitor_mod
+    import lionagi.ln.concurrency as concurrency_mod
 
-    from lionagi.cli.monitor import _watch_loop
+    handlers: dict[int, Any] = {}
+    monkeypatch.setattr(
+        monitor_mod.signal,
+        "signal",
+        lambda signum, handler: handlers.__setitem__(signum, handler),
+    )
+    monkeypatch.setattr(monitor_mod, "_clear_screen", lambda: None)
 
-    # Trigger SIGINT after a short delay from a background thread
-    def _send_interrupt():
-        time.sleep(0.3)
-        os.kill(os.getpid(), signal.SIGINT)
+    def interrupting_run_async(coro: Any) -> str:
+        coro.close()
+        handlers[signal.SIGINT](signal.SIGINT, None)
+        return ""
 
-    t = threading.Thread(target=_send_interrupt, daemon=True)
-    t.start()
+    monkeypatch.setattr(concurrency_mod, "run_async", interrupting_run_async)
 
-    exit_code = _watch_loop(
+    exit_code = monitor_mod._watch_loop(
         1,
         None,
         since_window=None,
         entity_type=None,
         project=None,
     )
-    t.join(timeout=2)
-    # Watch loop must return 0 (not raise or hang)
+
+    assert signal.SIGINT in handlers
     assert exit_code == 0

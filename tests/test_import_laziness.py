@@ -117,6 +117,7 @@ def test_import_lionagi_does_not_pull_heavy_modules(import_probe: dict):
     )
 
 
+@pytest.mark.performance
 def test_import_lionagi_is_fast(import_probe: dict):
     """A bare `import lionagi` must stay well under a generous time ceiling."""
     elapsed = import_probe["elapsed"]

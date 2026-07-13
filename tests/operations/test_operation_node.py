@@ -2,6 +2,7 @@
 # SPDX-License-Identifier: Apache-2.0
 
 import asyncio
+from datetime import datetime, timezone
 from unittest.mock import AsyncMock, MagicMock
 from uuid import UUID
 
@@ -129,7 +130,7 @@ def test_operation_response_property():
 
 # Test async operations
 @pytest.mark.asyncio
-async def test_operation_invoke_chat():
+async def test_operation_invoke_chat(monkeypatch: pytest.MonkeyPatch):
     """Test invoking a chat operation."""
     op = Operation(operation="chat", parameters={"instruction": "Hello, how are you?"})
 
@@ -152,6 +153,11 @@ async def test_operation_invoke_chat():
     branch.get_operation = MagicMock(side_effect=mock_get_operation)
 
     _set_branch(op, branch)
+    clock = iter((100.0, 100.25))
+    monkeypatch.setattr(
+        "lionagi.protocols.generic.event.ln.now_utc",
+        lambda: datetime.fromtimestamp(next(clock), tz=timezone.utc),
+    )
     await op.invoke()
 
     # Verify operation was called
@@ -161,7 +167,7 @@ async def test_operation_invoke_chat():
     assert op.execution.status == EventStatus.COMPLETED
     assert op.response == "chat_response: Hello, how are you?"
     assert str(op.branch_id) == branch.id
-    assert op.execution.duration > 0
+    assert op.execution.duration == pytest.approx(0.25)
 
 
 @pytest.mark.asyncio

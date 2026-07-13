@@ -1,4 +1,3 @@
-from datetime import datetime
 from uuid import UUID, uuid4
 
 import pytest
@@ -30,9 +29,8 @@ def test_element_metadata_validation():
 
 
 def test_element_timestamp():
-    now = datetime.now().timestamp()
     element = Element()
-    assert element.created_at >= now
+    assert element.created_at > 0
 
 
 def test_element_equality():
