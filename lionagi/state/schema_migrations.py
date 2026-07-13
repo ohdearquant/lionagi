@@ -129,6 +129,11 @@ MIGRATION_COLUMNS: dict[str, list[tuple[str, str]]] = {
         ("library_content_hash", "TEXT"),
         # ADR-0071 D4: bounds the lease-expiry recovery loop (worker.py's reaper).
         ("lease_attempts", "INTEGER NOT NULL DEFAULT 0"),
+        # Delivery-contract marker: stamped once the scheduler engine
+        # confirms the external process was actually launched. NULL on a
+        # row whose occurrence-insert transaction committed but launch was
+        # never confirmed -- see the CREATE TABLE comment in schema.sql.
+        ("dispatched_at", "REAL"),
     ],
     # Phase C Move 2: engine run persistence.
     # New table created via schema.sql; these columns allow ALTER TABLE on
