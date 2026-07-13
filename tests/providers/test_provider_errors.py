@@ -3,7 +3,11 @@
 
 """Unit tests for lionagi/providers/_provider_errors.py.
 
-classify_provider_error matches quota/auth/context patterns case-insensitively; unmatched text returns base ProviderError; all subclasses are RuntimeError; EmissionError attrs preserved.
+classify_provider_error matches quota/auth/context/capacity/unsupported-model/
+safety/stream-disconnect/adapter patterns case-insensitively; unmatched text
+returns base ProviderError; all subclasses are RuntimeError; EmissionError
+attrs preserved; the retryable classification is grounded in real
+`li agent`/`li o flow` failure-message signatures.
 """
 
 from __future__ import annotations
@@ -12,10 +16,15 @@ import pytest
 
 from lionagi.providers._provider_errors import (
     EmissionError,
+    ProviderAdapterError,
     ProviderAuthError,
+    ProviderCapacityError,
     ProviderContextError,
     ProviderError,
     ProviderQuotaError,
+    ProviderSafetyError,
+    ProviderStreamDisconnectError,
+    ProviderUnsupportedModelError,
     classify_provider_error,
 )
 
@@ -107,6 +116,142 @@ def test_classify_context_case_insensitive():
     assert isinstance(err, ProviderContextError)
 
 
+def test_classify_codex_ran_out_of_room_returns_context_error():
+    """Real cohort signature: Codex's own context-overflow message never uses
+    the exceeded/too-long wording — grounded in `li agent` telemetry."""
+    err = classify_provider_error(
+        "Codex ran out of room in the model's context window. Start a new "
+        "thread or clear earlier history before retrying."
+    )
+    assert isinstance(err, ProviderContextError)
+    assert err.retryable is False
+
+
+# ---------------------------------------------------------------------------
+# Quota — date-formatted retry time (real cohort gap: no digit after "at")
+# ---------------------------------------------------------------------------
+
+
+def test_classify_usage_limit_with_date_formatted_retry_time():
+    err = classify_provider_error(
+        "You've hit your usage limit. Visit https://chatgpt.com/codex/settings/usage "
+        "to purchase more credits or try again at Jul 6th, 2026 11:08 PM."
+    )
+    assert isinstance(err, ProviderQuotaError)
+    assert err.retryable is True
+
+
+def test_classify_hit_your_usage_limit_returns_quota_error():
+    err = classify_provider_error(
+        "You've hit your usage limit for GPT-5.3-Codex-Spark. Switch to another model now."
+    )
+    assert isinstance(err, ProviderQuotaError)
+
+
+# ---------------------------------------------------------------------------
+# Capacity patterns
+# ---------------------------------------------------------------------------
+
+
+def test_classify_model_at_capacity_returns_capacity_error():
+    err = classify_provider_error("Selected model is at capacity. Please try a different model.")
+    assert isinstance(err, ProviderCapacityError)
+    assert err.retryable is True
+
+
+# ---------------------------------------------------------------------------
+# Unsupported model/tool patterns
+# ---------------------------------------------------------------------------
+
+
+def test_classify_unsupported_model_for_account_returns_unsupported_error():
+    err = classify_provider_error(
+        '{"type":"error","status":400,"error":{"type":"invalid_request_error",'
+        '"message":"The \'gpt-5.6\' model is not supported when using Codex '
+        'with a ChatGPT account."}}'
+    )
+    assert isinstance(err, ProviderUnsupportedModelError)
+    assert err.retryable is False
+
+
+def test_classify_unsupported_tool_returns_unsupported_error():
+    err = classify_provider_error(
+        "Tool 'image_generation' is not supported with gpt-5.3-codex-spark-1p."
+    )
+    assert isinstance(err, ProviderUnsupportedModelError)
+
+
+def test_stream_disconnect_mentioning_unsupported_reconnect_stays_retryable():
+    err = classify_provider_error(
+        "stream disconnected before completion; automatic reconnect is not supported by the proxy"
+    )
+    assert isinstance(err, ProviderStreamDisconnectError)
+    assert err.retryable is True
+
+
+def test_agy_wrapped_stream_disconnect_stays_retryable():
+    err = classify_provider_error(
+        "agy returned status=ERROR: stream disconnected before completion; "
+        "automatic reconnect is not supported by the proxy"
+    )
+    assert isinstance(err, ProviderStreamDisconnectError)
+    assert err.retryable is True
+
+
+# ---------------------------------------------------------------------------
+# Safety patterns
+# ---------------------------------------------------------------------------
+
+
+def test_classify_cybersecurity_safety_block_returns_safety_error():
+    err = classify_provider_error(
+        "This content was flagged for possible cybersecurity risk. If this "
+        "seems wrong, try rephrasing your request."
+    )
+    assert isinstance(err, ProviderSafetyError)
+    assert err.retryable is False
+
+
+# ---------------------------------------------------------------------------
+# Stream-disconnect patterns
+# ---------------------------------------------------------------------------
+
+
+def test_classify_stream_disconnected_returns_stream_disconnect_error():
+    err = classify_provider_error(
+        "Reconnecting... 2/5 (stream disconnected before completion: idle "
+        "timeout waiting for websocket)"
+    )
+    assert isinstance(err, ProviderStreamDisconnectError)
+    assert err.retryable is True
+
+
+# ---------------------------------------------------------------------------
+# Adapter catch-all (agy) — only fires when nothing more specific matches
+# ---------------------------------------------------------------------------
+
+
+def test_classify_agy_generic_error_status_returns_adapter_error():
+    err = classify_provider_error("agy returned status=ERROR")
+    assert isinstance(err, ProviderAdapterError)
+    assert err.retryable is True
+
+
+def test_classify_agy_status_with_substantial_content_returns_adapter_error():
+    err = classify_provider_error(
+        "agy returned status=ERROR: I will start by checking the git show of "
+        "the specified commit to understand the changes."
+    )
+    assert isinstance(err, ProviderAdapterError)
+
+
+def test_classify_agy_quota_message_still_wins_over_adapter_catchall():
+    """A more specific pattern embedded in an agy payload must classify as
+    that specific error, not fall through to the generic adapter bucket."""
+    err = classify_provider_error("agy returned status=ERROR: hit your usage limit")
+    assert isinstance(err, ProviderQuotaError)
+
+
 # ---------------------------------------------------------------------------
 # Unmatched → base ProviderError (not a subclass)
 # ---------------------------------------------------------------------------
@@ -155,6 +300,44 @@ def test_emission_error_is_runtime_error():
 def test_classify_result_is_runtime_error():
     err = classify_provider_error("usage limit reached")
     assert isinstance(err, RuntimeError)
+
+
+# ---------------------------------------------------------------------------
+# retryable classification — the machine-readable retry/non-retry split
+# ---------------------------------------------------------------------------
+
+
+def test_base_provider_error_defaults_to_non_retryable():
+    assert ProviderError.retryable is False
+    assert ProviderError("unclassified").retryable is False
+
+
+@pytest.mark.parametrize(
+    "cls",
+    [
+        ProviderQuotaError,
+        ProviderCapacityError,
+        ProviderStreamDisconnectError,
+        ProviderAdapterError,
+    ],
+)
+def test_transient_classes_are_retryable(cls):
+    assert cls.retryable is True
+    assert cls("msg").retryable is True
+
+
+@pytest.mark.parametrize(
+    "cls",
+    [
+        ProviderAuthError,
+        ProviderContextError,
+        ProviderUnsupportedModelError,
+        ProviderSafetyError,
+    ],
+)
+def test_permanent_classes_are_non_retryable(cls):
+    assert cls.retryable is False
+    assert cls("msg").retryable is False
 
 
 # ---------------------------------------------------------------------------
