@@ -294,6 +294,11 @@ async def _run_agent(
             hint(f"[resume] prefix-matched {resume} → {resolved_branch_id}")
         branch = Branch.from_dict(json.loads(branch_path.read_text()))
 
+    # Captured before the `branch is None` new-branch block below reassigns
+    # `branch` — the only reliable way to tell "this leg reopened an existing
+    # branch" from "this leg is minting a brand-new one" once that block runs.
+    is_resumed_branch = branch is not None
+
     if model_str is not None:
         ms = parse_model_spec(model_str)
         if branch is not None and "/" not in ms.model and ms.model not in BACKENDS:
@@ -424,17 +429,28 @@ async def _run_agent(
             cfg.update(PROVIDER_FAST_KWARGS.get(provider, {}))
 
     # Profile system prompt for every leg EXCEPT one whose branch carries (or
-    # would carry, on the resumed leg) a create_agent-composed system message
+    # would carry, on a brand-new leg) a create_agent-composed system message
     # (role header + policy block) — see docs/internals/cli.md. `preset` can
     # never be set together with resume/continue_last (validated above), so
-    # on a resumed leg the only signal that the ORIGINAL branch went through
-    # create_agent is the profile's own `role:` key: it is stable per profile
-    # file, so a role-profile branch always took (and, if resumed, always
-    # took) the create_agent path. Plain profiles (no `role:` key) never go
-    # through create_agent, on a fresh branch or a resumed one, so they must
-    # keep getting their system prompt (re)applied here on every leg,
-    # including resume/continue-last.
-    composed_via_create_agent = took_create_agent_path or has_role_key
+    # `took_create_agent_path` alone is authoritative for a brand-new branch.
+    #
+    # A RESUMED branch is different: the profile loaded for *this*
+    # invocation (and therefore `has_role_key`) describes only what was
+    # passed to *this* leg, not how the persisted branch was originally
+    # built — it may have been created via create_agent under a role profile
+    # and now be resumed with a different, plain `-a` profile (or the same
+    # profile with `role:` since removed). Re-deriving the guard from the
+    # current profile would then clobber that branch's composed role/policy
+    # system message. The persisted branch itself carries the answer: every
+    # branch create_agent builds is stamped with an immutable origin marker
+    # in `branch.metadata` (see CREATE_AGENT_BRANCH_ORIGIN_KEY) that
+    # round-trips through save/resume — consult THAT instead.
+    if is_resumed_branch:
+        from lionagi.agent.factory import CREATE_AGENT_BRANCH_ORIGIN_KEY
+
+        composed_via_create_agent = bool(branch.metadata.get(CREATE_AGENT_BRANCH_ORIGIN_KEY))
+    else:
+        composed_via_create_agent = took_create_agent_path
     if profile and profile.system_prompt and not composed_via_create_agent:
         branch.msgs.add_message(system=profile.system_prompt)
 
