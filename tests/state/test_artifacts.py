@@ -102,6 +102,40 @@ async def test_insert_artifact_requires_name(db: StateDB):
         await db.insert_artifact(kind="x", name="", content={})
 
 
+# ── file_path containment (path/symlink containment defect class) ───────────
+#
+# Studio artifact file references (ADR-0077 delta 5) must stay relative and
+# non-traversing before the API can ever expose them for preview/download.
+# There is no filesystem-resolution consumer for this column yet (no
+# non-test caller of insert_artifact, and GET /api/artifacts/{id} never
+# reads file content — see ADR-0077 D5), so a symlink-escape case has no
+# root to resolve against here; that check belongs with whatever build the
+# download path lands with it.
+
+
+async def test_insert_artifact_rejects_absolute_file_path(db: StateDB):
+    with pytest.raises(ValueError, match="absolute path"):
+        await db.insert_artifact(kind="x", name="y", content={}, file_path="/etc/passwd")
+
+
+async def test_insert_artifact_rejects_dotdot_file_path(db: StateDB):
+    with pytest.raises(ValueError, match="traversal"):
+        await db.insert_artifact(kind="x", name="y", content={}, file_path="../../etc/passwd")
+
+
+async def test_insert_artifact_rejects_nul_byte_file_path(db: StateDB):
+    with pytest.raises(ValueError, match="NUL"):
+        await db.insert_artifact(kind="x", name="y", content={}, file_path="outputs/bad\x00path")
+
+
+async def test_insert_artifact_accepts_safe_relative_file_path(db: StateDB):
+    art_id = await db.insert_artifact(
+        kind="x", name="y", content={}, file_path="outputs/report.pdf"
+    )
+    row = await db.get_artifact(art_id)
+    assert row["file_path"] == "outputs/report.pdf"
+
+
 # ── FK cascade ────────────────────────────────────────────────────────────────
 
 

@@ -63,15 +63,8 @@ class FunctionCalling(Event):
                     self.arguments, **self.func_tool.preprocessor_kwargs
                 )
 
-        # A tool-hook layer above this event (ActionManager.invoke) may have
-        # rewritten self.arguments before invoke() was even called, and the
-        # preprocessor above may have rewritten it again -- neither rewrite
-        # re-runs the request-model validation that already happened once at
-        # construction time. Re-validate the final dict here, after every
-        # pre-stage mutation and before the callable executes, so a rewrite
-        # can never bypass the tool's declared schema. A tool with no
-        # request_options never had schema enforcement, and this step does
-        # not invent one.
+        # Re-validate after any pre-stage rewrite (hook layer or preprocessor
+        # above) so a rewrite can never bypass the tool's declared schema.
         if self.func_tool.request_options:
             try:
                 validated = self.func_tool.request_options(**self.arguments)

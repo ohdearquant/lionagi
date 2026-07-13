@@ -4,6 +4,40 @@ Non-obvious invariants, protocol contracts, and design rationale for
 `lionagi/studio/` that don't belong inline as long-form comments. Terse
 reference — not a narrative. Organized by module path.
 
+## lionagi/studio/app.py
+
+**Host-header validation (`_HOST_AUTHORITY_RE`/`validate_host_header`)** —
+strict authority grammar (`host` or `host:port`, or bracketed IPv6 `[addr]`
+with optional `:port`), deliberately stricter than `request.url.hostname`,
+which normalizes/mis-parses authorities like `"127.0.0.1:8765.evil.com"` or
+`"[::1]evil.com"` into an accepted hostname. `validate_host_header` defends
+against DNS rebinding, where a malicious page points a browser at
+`http://127.0.0.1:<port>` with an attacker-controlled Host and, once past
+CORS/auth, reaches the daemon as if same-origin — registered outermost
+(added after CORSMiddleware, so it runs first under Starlette's LIFO
+middleware wrapping) so every request, including preflight OPTIONS, has its
+Host checked before CORS can answer.
+
+**Middleware order** in `create_app()`: Host validation -> CORS ->
+Content-Type/CSRF check -> bearer-token gate -> route. A real preflight
+never reaches the bearer-token/Content-Type middlewares because CORS
+answers it first.
+
+**`require_json_content_type`** — rejects state-changing `/api` requests
+that don't declare a JSON body. FastAPI parses request bodies as JSON
+regardless of declared Content-Type, so a cross-site "simple request"
+(`text/plain`, no CORS preflight) carrying a JSON-shaped body would
+otherwise reach route handlers unchecked — the classic form-based JSON CSRF
+vector. The SPA always sends `application/json` on requests carrying a body
+(`apps/studio/frontend/src/lib/api.ts` `fetchJson`) and no body at all for
+routes that need none, so this only rejects traffic the frontend itself
+never produces.
+
+**`_mount_spa`** — uses a 404 exception handler, not a catch-all route, for
+the SPA fallback: a catch-all `/{full_path:path}` route would intercept
+`/api/shows` before FastAPI's trailing-slash redirect fires, whereas an
+exception handler runs only after every route has been tried and missed.
+
 ## lionagi/studio/cli.py
 
 **`_validate_chain_action_node`** — Validates one `chain_action` node, recursing

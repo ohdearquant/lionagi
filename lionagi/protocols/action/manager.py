@@ -159,19 +159,8 @@ class ActionManager(Manager):
         return FunctionCalling(func_tool=tool, arguments=args)
 
     def _resolve_plugin_tool(self, name: str) -> Tool | None:
-        """ADR-0088 D3 consumer: on a registry miss, ask the plugin registry whether a
-        trusted, enabled, version-compatible plugin declares a tool named *name*.
-
-        Deferred import — `lionagi.plugins` must stay out of the import graph
-        until an actual miss occurs (see tests/test_import_laziness.py).
-        Resolution and trust are re-checked fresh on every call (never cached
-        onto ``self.registry``), so a plugin disabled or edited mid-session
-        stops being reachable through this path immediately. Returns ``None``
-        when no plugin declares *name* — the caller's existing "not
-        registered" error applies unchanged. Raises ``PluginToolCollisionError``
-        unmodified when two enabled plugins declare the same tool name
-        (ADR-0088 D6): that is a hard error, not a miss.
-        """
+        """ADR-0088 D3: on a registry miss, resolve *name* against the plugin
+        registry (fresh trust check each call). See docs/internals/core.md."""
         from lionagi.libs.schema.function_to_schema import function_to_schema
         from lionagi.plugins.registry import PluginRegistry
 
@@ -194,25 +183,12 @@ class ActionManager(Manager):
     ) -> FunctionCalling:
         """Match, run tool-pre hooks, invoke, then run tool-post hooks.
 
-        Every tool routed through this method -- plain function tools,
-        ``Tool`` objects, and MCP-discovered tools alike -- passes through
-        the same tool-pre/tool-post hook layer. A construction directly on
-        ``FunctionCalling`` (bypassing this manager) skips this layer
-        entirely; that is a documented, tested limit, not an oversight.
+        Bypassing this manager (constructing ``FunctionCalling`` directly)
+        skips the hook layer entirely. See docs/internals/core.md.
 
-        Tool-pre hooks run before the tool's own ``preprocessor`` chain (the
-        spec-level security/user hooks, which keep running last of the
-        pre-stage validators) and may rewrite the arguments; a denial raises
-        directly out of this call, before the tool is ever invoked. The
-        rewritten arguments are revalidated against the tool's declared
-        request model inside ``FunctionCalling._invoke()``, after the
-        spec-level chain has also had a chance to mutate them and before the
-        callable executes.
-
-        Tool-post hooks run after invocation completes (success or failure)
-        and are advisory only -- they observe the final arguments, the
-        result (``None`` on failure), and the error (``None`` on success),
-        and cannot change either.
+        Non-empty tool-post-hook reasons are attached to the returned event
+        at ``metadata["tool_post_hook_notes"]`` and logged, on success and
+        failure paths alike.
         """
         function_calling = self.match_tool(func_call)
         tool_name = function_calling.function
@@ -232,13 +208,16 @@ class ActionManager(Manager):
             raise
         finally:
             if self._tool_post_hooks:
-                await run_tool_post_hooks(
+                notes = await run_tool_post_hooks(
                     self._tool_post_hooks,
                     tool_name,
                     function_calling.arguments,
                     function_calling.response,
                     error,
                 )
+                if notes:
+                    function_calling.metadata["tool_post_hook_notes"] = notes
+                    logger.info("tool post hook notes for %r: %s", tool_name, notes)
 
         return function_calling
 

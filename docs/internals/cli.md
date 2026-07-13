@@ -4,8 +4,183 @@ Non-obvious invariants, protocol contracts, and design rationale for the CLI pac
 don't belong inline as long-form comments/docstrings. Organized by module. Source-of-truth
 inline comments stay 1-2 lines; anything needing more context lives here.
 
-Scope note: `lionagi/cli/main.py`, `lionagi/cli/orchestrate/**`, and `lionagi/cli/team.py` are
-not indexed here.
+## `main.py` — `li` entry point
+
+`_handle_play_shortcut`: expands `li play NAME [...]` sugar into `li o flow
+-p NAME [...]` before argparse runs. When a flag precedes NAME (`li play
+--bypass NAME "prompt"`), a throwaway probe parser (the flow subparser's
+base flags only, before playbook-specific schema injection) locates NAME by
+separating recognized flag(+value) pairs from bare positional tokens — the
+real parse happens later once the playbook's own `args:` schema can be
+injected, so only base flags are understood at this point and custom
+playbook flags placed before NAME aren't supported (they must follow it).
+NAME is removed from the exact partition it was selected from, never by
+string value across the whole argv, so an earlier flag VALUE equal to NAME
+(e.g. `--team-mode foo -- foo`) isn't deleted in its place.
+
+`main()`: `-v`/`--verbose` and `--cwd` are scanned before argparse runs
+(before any subcommand parser exists), strictly before the `--` sentinel so
+a scheduled `action_prompt` containing `--verbose` can't flip verbose mode.
+`li agent`, `li o flow`/`li o fanout`, and `li schedule` each parse
+standalone rather than through normal subparser dispatch, because
+`parse_intermixed_args` drops the `--` sentinel between its two passes
+(letting a hostile prompt like `--bypass` placed after `--` toggle real
+flags on the re-parse) and nested subparser dispatch can't intermix flags
+with `[MODEL] PROMPT` positionals. Both `flow` and `fanout` had a
+pre-fix disease from the same root cause: flow silently misassigned a
+flags-preceded prompt to the model slot (both positionals were `nargs='?'`,
+so argparse's greedy left-to-right fill grabbed the first one), while
+fanout hard-rejected with "unrecognized arguments" (a flag between its two
+positionals split them into two groups argparse can't reconcile). All three
+special-cases split manually at the `--` sentinel, parse flags, and fold
+leftover positionals back in order. `li agent status`, `li monitor run
+<id>`, and `li wait <id>` are each intercepted before their command's
+argparse dispatch, because a positional `id`/free-form-ids slot would
+otherwise swallow a literal token like `"status"` or `"run"`.
+
+## `orchestrate/` (`li o fanout` / `li o flow`)
+
+`_common.py`'s `TEAM_COORD_SECTION` / `TEAM_COORD_SECTION_MESSENGER`: two
+variants of the team-mode coordination prompt section, appended onto the
+base worker system prompt. CLI-provider workers (codex/gemini subprocesses,
+no tool-calling surface) get only the bash `li team` channel
+(`TEAM_COORD_SECTION`); API-model workers additionally get the in-process
+`messenger` tool bound to their branch and get the messenger-only variant
+instead. Which variant applies is decided by `messenger_bound` in
+`build_worker_branch` before the system prompt is assembled — see
+`team_worker_system()` in `_orchestration.py`.
+
+`_notify.py`: `--notify` is scoped compatibility sugar over the terminal-
+callback registry. After the flow/play run's own entity id is known, it
+registers the legacy payload shape (kind/playbook/save_dir/cwd/exit_class/
+started_at/ended_at/status/invocation_id) as an exec adapter filtered to
+that one entity, and unregisters it once the run's teardown fires. This is
+deliberately different from the settings-level `notify.on_terminal` handler
+(bootstrapped once per process, unscoped, delivering the new minimal
+envelope) — `--notify` is a per-run override carrying the old payload shape
+for existing consumers, not a second copy of the same delivery. It
+registers as an *override* (`TerminalCallbackRegistry.register`), so it
+replaces the settings-resolved handler for this one run's entity only;
+other runs still get the settings-level handler unaffected. For backward
+compatibility with the documented `{payload}`/`{status}`/`{invocation_id}`
+command-template placeholders and the legacy `LIONAGI_NOTIFY_PAYLOAD`/
+`LIONAGI_NOTIFY_STATUS`/`LIONAGI_NOTIFY_INVOCATION_ID` environment
+variables, both are populated: placeholders are substituted into each
+parsed argv token directly (no shell is ever constructed, so a literal
+`{payload}` inside a quoted argument stays exactly one argv element), and
+the same three values are set as environment variables on the child
+process. There is no longer a direct teardown call into a notify hook: the
+terminal event now comes from the guarded lifecycle transition itself
+(`db.update_status()` on the run's session/invocation), so registering here
+and letting the registry's own post-commit push fire it is what prevents
+double delivery.
+
+### `_orchestration.py` — team-mode worker/coordinator wiring
+
+`team_worker_system()`/`team_history_context()`: a worker never has both
+channels — `messenger_bound` selects which of `TEAM_COORD_SECTION` /
+`TEAM_COORD_SECTION_MESSENGER` (see above) describes its channel.
+`messenger_names` (computed once per team, before any branch exists, via
+`worker_is_cli`) flags teammates that are CLI-provider and therefore
+unreachable via `messenger(action="send", to=...)`, so the prompt never
+names an unreachable target. The orchestrator itself is never bound into
+the live messenger roster — a messenger-bound worker escalates via
+`action="help"` instead, and its roster line is flagged not-a-`to=`-target
+the same way an unreachable CLI teammate is. `team_history_context` handles
+`--team-attach` onto an existing team: a messenger-bound worker's Exchange
+is fresh in-memory state that never replays messages predating the
+messenger tool, so any prior message addressed to it is surfaced instead as
+`operate(context=...)` data — explicitly labeled transcript, never promoted
+into the system prompt, since message content is untrusted prior text, not
+a vetted instruction. A bash-channel worker doesn't need this: `li team
+receive` already gives it live access to the same history.
+
+`build_worker_branch`'s `messenger_bound` return value: True only when
+team messaging is active AND the worker is a non-CLI provider; callers use
+it to decide whether to enable action serialization on that branch.
+
+Rung-2 coordinators (`make_help_coordinator`, `TeamLifecycleCoordinator`):
+plain Python routing, no LLM call — the counterpart to
+`ReactiveExecutor._schedule_escalation` for flow-mode. The help coordinator
+folds "blocked"-urgency signals into `env._escalated_evidence` for the run
+summary; rung 3 (model-bump) and synchronous human paging are out of scope.
+`TeamLifecycleCoordinator` keeps no separate liveness bookkeeping — every
+running/idle/retired fact comes straight from `team.compute_quiescence`
+over the team inbox, so what it decides always matches `li team show` and
+the pure predicate's own unit tests, with no in-memory state to drift out
+of sync with the file. `on_done`/`on_finished` write structured team-inbox
+entries via `team.post_done_signal`/`post_finished_signal` (code, not the
+model); `on_finished` retires a worker permanently — `compute_quiescence`
+never revives it. `build_round_operations` re-invokes one `Operation` per
+pending worker on that worker's OWN branch (session continuity is the
+point of a "round" instead of a fresh spawn), folding unread mail into
+`context` as `prior_team_messages` — never the system prompt, so a
+teammate's message can't smuggle new standing instructions into the
+model's persistent framing. Consuming the unread mail (file inbox via
+`team.pop_unread_messages`, Exchange via `_exchange_prior_messages`) and
+posting a coordinator-authored `wakeup` signal are side effects: the
+`wakeup` post is what flips those workers back to "active" on the next
+quiescence read, which is what prevents the same round from being
+double-injected.
+
+### `flow.py` — reactive DAG orchestrator (`li o flow`)
+
+Artifact contract has two write classes to `artifact_contract_json`: `_build_dag`
+does the planned-leg write once at DAG-build time (all roles resolved, before
+any leg runs), and `_execute_dag` does a second, append-only write after each
+reactively spawned node completes. Both are sound because what's expected of a
+spawned node (role defaults + spawn_id) is frozen before it's ever queued — the
+append only adds entries, never edits the planned-leg set. The planned-leg
+write must reach the session row directly (not just `env._live_persist`) so a
+crash or orphan exit before teardown still leaves the DB accurate.
+
+`_reconstruct_spawned_nodes` rebuilds a checkpoint's `spawned` entries into a
+fresh graph on resume, checked BEFORE any node is added so a refusal never
+leaves the graph partially mutated. Three soundness checks per entry: (1) it
+must carry `operation` (CHECKPOINT_VERSION 2+; older checkpoints have nothing
+to rebuild from); (2) if it has a `parent_id`, that parent must itself be
+checkpointed terminal (completed/failed) or be another entry in the same
+`checkpoint_spawned` list — a parent merely existing in the DAG isn't enough,
+since resuming while that parent reruns live risks duplicating or dropping the
+spawn decision; (3) an entry with `assignee` must also carry `spawn_id` (both
+are stamped together unconditionally by `role_node_builder`, so one without
+the other means the checkpoint predates that field or is corrupt). Any failure
+refuses resume for only the affected node(s), never the whole run.
+
+Spawn-id sequencing: on resume, the ordinal sequence must start past the MAX
+existing ordinal among restored spawns + 1 (not `count`, since a crashed run
+can leave gaps — an allocated-but-never-completed spawn never made it into
+`spawned`), or a live spawn this generation could reissue a restored spawn_id
+and its artifact directory. `n_spawned` accounting always includes restored
+spawns from a prior checkpoint generation, not just what the live executor
+spawned this generation — otherwise a resume that reconstructs every spawned
+node as already-terminal would report `n_spawned=0` and silently skip the
+`with_synthesis`-or-`n_spawned` gate in `_run_flow_inner`.
+
+## `team.py` — `li team` persistent messaging (inbox pattern)
+
+`_locked_team`: read-modify-write under an exclusive POSIX flock. Explicit
+`fp.flush()` + `os.fsync()` before releasing the lock is required — without
+it, a waiting reader can acquire the lock the instant it releases and
+observe stale (pre-write) content, since `fp.write()` only fills a buffer
+and doesn't guarantee bytes have left the process; under concurrent writers
+this showed up as a spurious "No team found" moment after a team plainly
+existed on disk.
+
+`compute_quiescence`: pure predicate over message `kind`/`from`/`to`/
+`read_by` only, never touching a file/branch/agent. Lifecycle model,
+derived purely from message kinds: every named worker starts **active**
+(presumed still running, nobody has said otherwise yet); a `kind="done"`
+message *from* a worker makes it **idle** (finished this turn, may be
+revived by a later round); a `kind="finished"` message *from* a worker
+**retires** it permanently (never revived again, mirroring
+`LionMessenger`'s `finished` action); a `kind="wakeup"` message addressed
+*to* a worker makes it **active** again, whether from a teammate (peer
+wakeup) or the coordinator's own round injection. The run is quiescent once
+every worker has settled (none **active**) AND there is nothing left for
+the coordinator to do about it: no unread `kind="message"` mail sitting in
+an **idle** worker's inbox, and either the round budget is exhausted or the
+caller isn't asking for one more round anyway.
 
 ## `_context_from.py` — context-ref resolution and distillation
 

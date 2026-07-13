@@ -293,10 +293,7 @@ async def test_operate_node_omits_actions_kwarg_for_cli_worker(tmp_path):
 
 @pytest.mark.asyncio
 async def test_fanout_and_flow_call_sites_use_the_same_shared_node_builder():
-    """Regression guard for the exact bug class this module protects against:
-    if either fanout.py or flow.py stopped routing its static operate-node
-    construction through the shared `_build_worker_operate_node` helper (e.g.
-    reverting to an inline, independently-editable conditional), this fails."""
+    """Regression guard: if either fanout.py or flow.py stopped routing its static operate-node construction through the shared `_build_worker_operate_node` helper (e.g. reverting to an inline, independently-editable conditional), this fails."""
     import lionagi.cli.orchestrate.fanout as fanout_mod
     import lionagi.cli.orchestrate.flow as flow_mod
     from lionagi.cli.orchestrate._common import _build_worker_operate_node
@@ -307,12 +304,7 @@ async def test_fanout_and_flow_call_sites_use_the_same_shared_node_builder():
 
 @pytest.mark.asyncio
 async def test_bound_worker_operate_serializes_messenger_tool_schema(tmp_path):
-    """End-to-end: build a real bound worker branch, construct its operate
-    node through the real shared builder, then drive the EXACT request dict
-    produced by production through Branch.operate() with a capturing middle.
-    Confirms actions=True flows through Operation._invoke() -> operate() ->
-    action_param construction -> get_tool_schema(), and that the messenger
-    tool's schema is what gets serialized to the model."""
+    """End-to-end: build a real bound worker branch, construct its operate node through the real shared builder, then drive the exact request dict production produces through Branch.operate() with a capturing middle -- confirms actions=True flows through to get_tool_schema() and the messenger tool's schema is what gets serialized to the model."""
     exchange = Exchange()
     messenger = LionMessenger(exchange)
     roster: dict = {}
@@ -557,10 +549,7 @@ def test_team_worker_system_no_unreachable_note_when_all_teammates_bound():
 
 
 def test_team_worker_system_bash_channel_ignores_messenger_names():
-    """A bash-channel (messenger_bound=False) worker's prompt is unaffected by
-    messenger_names — only messenger-bound workers need the reachability
-    filter, since the bash `li team` channel's own reachability is unrelated
-    to Exchange/roster registration."""
+    """A bash-channel (messenger_bound=False) worker's prompt is unaffected by messenger_names -- only messenger-bound workers need the reachability filter, since the bash `li team` channel's own reachability is unrelated to Exchange/roster registration."""
     section = team_worker_system(
         _mixed_team_data(),
         "alice",
@@ -574,10 +563,7 @@ def test_team_worker_system_bash_channel_ignores_messenger_names():
 
 @pytest.mark.asyncio
 async def test_messenger_bound_worker_prompt_flags_cli_teammate_end_to_end(tmp_path):
-    """End-to-end: build_worker_branch's real system prompt for a messenger-bound
-    worker in a mixed-provider team (env.messenger_names precomputed the way
-    fanout.py/flow.py do it) never tells the worker to message a CLI-only
-    teammate as if it were reachable."""
+    """End-to-end: build_worker_branch's real system prompt for a messenger-bound worker in a mixed-provider team (env.messenger_names precomputed the way fanout.py/flow.py do it) never tells the worker to message a CLI-only teammate as if it were reachable."""
     exchange = Exchange()
     messenger = LionMessenger(exchange)
     roster: dict = {}
@@ -666,10 +652,7 @@ def test_team_history_context_none_without_team_data():
 
 
 def test_team_worker_system_never_contains_prior_message_content():
-    """The system prompt is the one place attached-team history must NEVER
-    appear — regression guard for the injection-surface concern: message
-    content sent by a prior (potentially untrusted) sender must not be
-    promoted to the same authority as coordination instructions."""
+    """The system prompt is the one place attached-team history must NEVER appear -- regression guard for the injection-surface concern: message content from a prior (potentially untrusted) sender must not be promoted to the same authority as coordination instructions."""
     section = team_worker_system(
         _attached_team_data(),
         "alice",
@@ -686,11 +669,7 @@ def test_team_worker_system_never_contains_prior_message_content():
 async def test_messenger_bound_worker_system_prompt_excludes_attached_history_end_to_end(
     tmp_path,
 ):
-    """End-to-end: build_worker_branch's real system prompt for a messenger-
-    bound worker attaching to a team with prior messages never contains that
-    history — it must only ever reach the worker via operation context,
-    which build_worker_branch itself does not construct (fanout.py/flow.py
-    do, using team_history_context — see the tests above for its content)."""
+    """End-to-end: build_worker_branch's real system prompt for a messenger-bound worker attaching to a team with prior messages never contains that history -- it must only reach the worker via operation context, which build_worker_branch itself does not construct."""
     exchange = Exchange()
     messenger = LionMessenger(exchange)
     roster: dict = {}
@@ -764,12 +743,7 @@ def test_team_worker_system_orchestrator_line_stays_plain_for_bash_channel_worke
 
 
 def _parse_advertised_roster(section: str) -> list[tuple[str, bool]]:
-    """Parse the '### Your team' roster block of a rendered coordination
-    section into (name, flagged_unreachable) pairs, driven entirely by the
-    rendered text — never a hardcoded name list. A line is "flagged" when
-    its own annotation says it isn't a valid messenger `to=` target (the
-    same wording team_worker_system uses for both CLI-only teammates and
-    the orchestrator); anything else is advertised as reachable."""
+    """Parse the '### Your team' roster block of a rendered coordination section into (name, flagged_unreachable) pairs, driven entirely by the rendered text, never a hardcoded name list -- a line is 'flagged' when its own annotation says it isn't a valid messenger `to=` target."""
     block = section.split("### Your team", 1)[1].split("\n###", 1)[0]
     parsed = []
     for line in block.splitlines():
@@ -785,14 +759,7 @@ def _parse_advertised_roster(section: str) -> list[tuple[str, bool]]:
 
 @pytest.mark.asyncio
 async def test_every_advertised_messenger_recipient_is_actually_reachable(tmp_path):
-    """Structural guard requested for this class of bug: parse the roster a
-    real messenger-bound worker's OWN rendered prompt advertises, then check
-    each parsed name against the live roster/tool it actually ships with —
-    never hardcode which names should or shouldn't work. A name advertised
-    as plain (not flagged) must be a valid `to=` target; a name flagged
-    unreachable must actually be rejected. This is exactly the assertion
-    that would have failed pre-fix: 'orchestrator' used to appear as a
-    plain roster line while never being registered in env.roster."""
+    """Structural guard: parse the roster a real messenger-bound worker's OWN rendered prompt advertises, then check each parsed name against the live roster/tool it ships with, never hardcoding which names should work -- exactly the assertion that would have failed pre-fix, when 'orchestrator' appeared as a plain roster line while never being registered in env.roster."""
     exchange = Exchange()
     messenger = LionMessenger(exchange)
     roster: dict = {}

@@ -85,20 +85,10 @@ BARE_WORKER_SYSTEM = _bare_worker_system()
 
 
 # ── Team-mode coordination section ────────────────────────────────────────
-#
-# Appended onto the base worker system prompt (BARE_WORKER_SYSTEM or a
-# profile's system_prompt) when the worker runs in team mode. This is a
-# SECTION, not a replacement — workers still need the artifact protocol
-# and tool guidance from the base prompt.
-#
-# Two variants exist because a team-mode worker reaches the team through
-# exactly one of two disjoint channels, never both: CLI-provider workers
-# (codex/gemini subprocesses, no tool-calling surface) get only the bash
-# `li team` channel; API-model workers additionally get the in-process
-# `messenger` tool bound to their branch and should coordinate through that
-# instead. Which variant applies is decided by `messenger_bound` in
-# `build_worker_branch` before the system prompt is assembled — see
-# `team_worker_system()` in `_orchestration.py`.
+# Appended (a section, not a replacement) onto the base worker system prompt
+# in team mode. Two variants: CLI-provider workers get the bash `li team`
+# channel; API-model workers get the in-process `messenger` tool instead —
+# see docs/internals/cli.md and `messenger_bound` in `_orchestration.py`.
 
 TEAM_COORD_SECTION = """\
 ## Team Coordination
@@ -201,13 +191,7 @@ After this round, teammates or the orchestrator can follow up:
 - `li agent -r {{branch_id}} "follow-up"` to continue your session\
 """
 
-# Deprecated: TEAM_WORKER_SYSTEM is a backward-compatible composed alias for
-# the old standalone template ("You are a specialist..." + TEAM_COORD_SECTION).
-# It has no production caller in this repository. A module-level constant
-# cannot emit a call-time DeprecationWarning without added attribute-access
-# machinery, so this comment (plus the changelog and docs) is the deprecation
-# signal for this cycle. Use TEAM_COORD_SECTION directly, appended onto the
-# worker's own system prompt, instead of importing TEAM_WORKER_SYSTEM.
+# Deprecated, no production caller: use TEAM_COORD_SECTION directly instead.
 TEAM_WORKER_SYSTEM = BARE_WORKER_SYSTEM + "\n\n" + TEAM_COORD_SECTION
 
 
@@ -221,9 +205,8 @@ def _build_worker_operate_node(
     depends_on: list[str] | None = None,
 ) -> str:
     """Add the static `operate` node for a worker branch (shared by fanout.py
-    and flow.py). Passes `actions=True` only when this worker actually got
-    the in-process messenger tool bound (team messaging active AND a
-    non-CLI worker), so Branch.operate() serializes branch.acts for it."""
+    and flow.py); passes `actions=True` only when the messenger tool is bound.
+    """
     return builder.add_operation(
         "operate",
         branch=branch,

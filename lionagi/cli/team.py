@@ -23,12 +23,8 @@ from ._logging import log_error, warn
 TEAMS_DIR = LIONAGI_HOME / "teams"
 
 # ── Message kinds ────────────────────────────────────────────────────────
-#
-# "message" (the default) is ordinary coordination content. The other three
-# are lifecycle SIGNALS a worker's messenger tool (or, for CLI workers, `li
-# team send --kind ...`) emits about itself, not content addressed to a
-# reader — `compute_quiescence` below reads them to derive who is still
-# running, who has gone idle, and who is permanently retired.
+# "message" is ordinary content; the other three are lifecycle SIGNALS a
+# worker emits about itself, read by `compute_quiescence` below.
 MESSAGE_KIND = "message"
 DONE_KIND = "done"
 FINISHED_KIND = "finished"
@@ -73,9 +69,7 @@ def _team_file(team_id: str) -> Path:
 def _locked_team(team_id: str, *, create_path: Path | None = None):
     """Read-modify-write a team file under an exclusive POSIX lock; concurrent sends serialize."""
     path = create_path if create_path is not None else _team_file(team_id)
-    # Open in r+ so we can read current contents AND truncate+rewrite.
-    # If the file doesn't exist yet (create flow), the caller supplies
-    # create_path and we open w+ to initialize.
+    # r+ to read-then-rewrite; w+ to initialize on the create flow.
     mode = "r+" if path.exists() else "w+"
     with open(path, mode) as fp:
         fcntl.flock(fp.fileno(), fcntl.LOCK_EX)
@@ -87,13 +81,9 @@ def _locked_team(team_id: str, *, create_path: Path | None = None):
             fp.seek(0)
             fp.truncate()
             fp.write(json.dumps(data, indent=2, default=str))
-            # Push the write out of Python's io buffer and the OS page cache
-            # BEFORE releasing the lock. Without this, a waiting reader can
-            # acquire the lock the instant it's released and observe stale
-            # (pre-write) content, since fp.write() only fills a buffer —
-            # it does not guarantee bytes have left this process. Under
-            # concurrent writers that showed up as a spurious "No team
-            # found" a moment after a team plainly existed on disk.
+            # flush+fsync before unlock: otherwise a waiting reader can
+            # acquire the lock and observe stale content (write() only fills
+            # a buffer) — see docs/internals/cli.md.
             fp.flush()
             os.fsync(fp.fileno())
         finally:
@@ -270,11 +260,8 @@ def cmd_send(args: argparse.Namespace) -> int:
 
 
 # ── Lifecycle signals (done / finished / wakeup) ────────────────────────────
-#
-# Every writer here goes through `_build_message` and the same `_locked_team`
-# flock discipline `cmd_send`/`cmd_receive` use — a worker's "I'm done"
-# never depends on an LLM formatting a JSON blob correctly; the structure is
-# always produced by this code.
+# Every writer here goes through `_build_message` and `_locked_team`'s flock
+# discipline — the structure is always produced by this code, never an LLM.
 
 
 def post_done_signal(
@@ -335,13 +322,9 @@ def post_wakeup_signal(
 
 
 def pop_unread_messages(team_id: str, member: str) -> list[dict]:
-    """Read + consume *member*'s unread ``kind="message"`` mail under lock,
-    mirroring ``cmd_receive``'s read/mark semantics but filtered to plain
-    coordination content — lifecycle signals (done/finished/wakeup) are
-    bookkeeping, not something a revived worker needs echoed back to it.
-
-    Returns plain ``{"from", "content", "timestamp"}`` dicts, shaped for
-    embedding into a round-injection's ``prior_team_messages`` context.
+    """Read + consume *member*'s unread ``kind="message"`` mail under lock
+    (lifecycle signals are bookkeeping, excluded here). Returns plain
+    ``{"from", "content", "timestamp"}`` dicts for round-injection context.
     """
     with _locked_team(team_id) as data:
         if not data:
@@ -400,26 +383,9 @@ def compute_quiescence(
     coordinator_wants_round: bool = False,
 ) -> QuiescenceState:
     """Pure predicate: is this team-mode run done, or does it need another
-    wakeup round? Reads only message ``kind``/``from``/``to``/``read_by`` —
-    never touches a file, a branch, or an agent.
-
-    Lifecycle model, derived purely from message kinds:
-    - every named worker starts **active** (presumed still running its
-      current turn — nobody has said otherwise yet);
-    - a ``kind="done"`` message *from* a worker makes it **idle** (it
-      finished this turn and may be revived by a later round);
-    - a ``kind="finished"`` message *from* a worker **retires** it
-      permanently — a retired worker is never revived again, mirroring
-      ``LionMessenger``'s ``finished`` action;
-    - a ``kind="wakeup"`` message addressed *to* a worker makes it
-      **active** again, whether the wakeup came from a teammate (peer
-      wakeup) or the coordinator's own round injection.
-
-    The run is quiescent once every worker has settled (none **active**)
-    AND there is nothing left for the coordinator to do about it: no unread
-    ``kind="message"`` mail sitting in an **idle** worker's inbox, and
-    either the round budget is exhausted or the caller isn't asking for one
-    more round anyway.
+    wakeup round? Reads only message ``kind``/``from``/``to``/``read_by``,
+    never a file/branch/agent. See docs/internals/cli.md for the lifecycle
+    model (active/idle/retired) and the quiescence condition.
     """
     names = list(dict.fromkeys(worker_names))  # de-dup, preserve order
     state: dict[str, str] = dict.fromkeys(names, "active")

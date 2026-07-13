@@ -6,6 +6,20 @@ path. Inline comments stay short; the full contract lives here.
 
 ## `operations/`
 
+**`flow.py`** — `run_dag()` returns `{completed_operations, operation_results,
+final_context, skipped_operations}` always; with `reactive=True` also
+`spawned_operations` (successful-spawn count), `escalated_operations` (emitter
+ids), and `dropped_spawns` (rejected spawn/inject attempts as `{reason,
+assignee, emitter_id, ...}`; reasons: builder_error, null_child, cycle,
+max_spawn_exceeded, duplicate). `spawn_branch_setup`, when given, runs after
+each reactively-spawned node's branch is cloned (reactive mode only) — the
+seam `cli/orchestrate/flow.py` uses to retarget a CLI-backed chat_model's
+writable workspace to the spawn's own artifact dir (the clone otherwise
+inherits the emitter's `repo` kwarg). `on_op_complete` (reactive mode only)
+runs synchronously at the tail of every node's execution — the only
+race-free point for a caller's `inject()` against the task group's
+convergence; `cli/orchestrate/flow.py`'s team-round wakeup logic is wired here.
+
 **`lndl_middle/lndl_middle.py`** — LNDL seam Middle (ADR-0024 §1-2): advances
 a branch one LNDL round per inner chat call, looping internally up to a round
 budget (default 3). Opt-in via `branch.operate(instruction=..., middle=lndl_middle)`;
@@ -314,6 +328,40 @@ populated with whichever names/tools happened to validate first.
 loaded, not the full pool — `MCPConnectionPool` accumulates configs
 process-globally across loads, so enumerating the pool here would silently
 re-register every server from previously loaded, unrelated configs.
+`invoke()`: every tool routed through this method (function tools, `Tool`
+objects, MCP-discovered tools) passes through the same tool-pre/tool-post
+hook layer; constructing `FunctionCalling` directly bypasses it entirely
+(documented, tested limit). Pre hooks run before the tool's own
+`preprocessor` chain and may rewrite arguments; a denial raises before the
+tool is invoked. Rewritten arguments are revalidated against the tool's
+declared request model inside `FunctionCalling._invoke()`, after the
+spec-level chain has also had a chance to mutate them — the re-validation
+step means a rewrite can never bypass the tool's declared schema, and a
+tool with no `request_options` never had schema enforcement to bypass. Post
+hooks run after invocation completes (success or failure) and are advisory
+only — they observe final arguments/result/error and cannot change any of
+them. `_resolve_plugin_tool` (ADR-0088 D3): on a registry miss, asks the
+plugin registry whether a trusted, enabled, version-compatible plugin
+declares the tool. Import of `lionagi.plugins` is deferred until an actual
+miss (see `tests/test_import_laziness.py`); resolution and trust are
+re-checked fresh on every call, never cached onto `self.registry`, so a
+plugin disabled or edited mid-session stops being reachable immediately.
+Raises `PluginToolCollisionError` unmodified when two enabled plugins
+declare the same tool name (ADR-0088 D6) — a hard error, not a miss.
+
+**`action/tool_hooks.py`** — Hook contract at the `ActionManager.invoke`
+chokepoint: the mutation-capable layer outermost around every tool call,
+deliberately separate from `lionagi.hooks.bus.HookBus` (summary-payload
+audit plane) and the per-`Tool` `preprocessor`/`postprocessor` chain wired
+by `lionagi.agent.spec.HooksMixin` (spec-level security/user chain, runs
+innermost). A pre hook returns `None` (allow, unchanged), a plain `dict`
+(allow, replace arguments), or a `ToolPreDecision` (`"allow"` optionally
+with `updated_input`, `"deny"`, `"ask"` — fails closed, no interactive
+approval surface exists — or any other value, which fails closed with a
+diagnostic). A post hook receives the tool name, final arguments, result
+(`None` on failure), and error (`None` on success); post hooks are advisory
+only since the action already happened, matching the harness convention
+that `block` on a post-invocation event cannot un-run the call.
 
 ## `orchestration/`
 
