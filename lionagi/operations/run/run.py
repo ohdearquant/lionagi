@@ -26,7 +26,7 @@ from lionagi.protocols.messages import (
 from lionagi.providers._provider_errors import WorkerLivenessError, classify_provider_error
 
 from .._turn_origin import consume_turn_origin
-from ..chat._prepare import _apply_context_providers, _prepare_run_kwargs
+from ..chat._prepare import _apply_context_providers, _build_instruction, _prepare_run_kwargs
 from ..types import ChatParam, ParseParam, RunParam
 
 if TYPE_CHECKING:
@@ -274,7 +274,11 @@ async def run(
 ) -> AsyncGenerator[RoledMessage]:
     """Stream a CLI-backed model turn, yielding Instruction/AssistantResponse/ActionRequest/ActionResponse messages.
 
-    Emits exactly one RunEnd (clean exit or consumer abandon) or RunFailed per RunStart.
+    Emits at most one terminal signal (RunEnd on clean exit or consumer
+    abandon, RunFailed on any failure) per call when an observer is
+    attached. RunStart precedes it only once the turn has passed the
+    origin guard below — a prompt the guard rejects is recorded as
+    RunFailed with no preceding RunStart and no other lifecycle trace.
     suppress_lifecycle_var suppresses nested signals inside Branch.ReAct() turns.
     """
     if not param._is_sentinel(param.imodel):
@@ -291,12 +295,11 @@ async def run(
 
     import time as _time  # noqa: PLC0415
 
-    pre_ins = await _apply_context_providers(branch, instruction, param)
-    try:
-        ins, kw = _prepare_run_kwargs(branch, instruction, param, ins=pre_ins)
-    finally:
-        branch._context_injection_slot = None
-    await branch.msgs.a_add_message(instruction=ins)
+    # Built synchronously and purely from (instruction, param) — no context-
+    # provider I/O, no persistence, no signal emission. This is the only
+    # thing the origin guard below needs, so it happens before any other
+    # awaited operation for this turn.
+    ins = _build_instruction(branch, instruction, param)
 
     from lionagi.session._lifecycle_ctx import suppress_lifecycle_var
 
@@ -307,15 +310,59 @@ async def run(
     _terminal_emitted: bool = False
     _t0_run = _time.monotonic()
 
-    if has_observer:
-        from lionagi.session.signal import RunStart
-
-        try:
-            await branch.emit(RunStart())
-        except Exception:
-            logger.exception("run: observer raised during RunStart emission; run proceeds normally")
-
     try:
+        # Consumed exactly once, as the first awaited operation for this
+        # turn — before context providers run, before RunStart is emitted
+        # (which persists via the observer), before anything is committed
+        # or yielded: fires USER_PROMPT_SUBMIT iff the operation context
+        # carries a turn-origin token (see operations/_turn_origin.py). A
+        # handler that rejects this prompt must leave no lifecycle trace
+        # beyond the rejection itself — no context-provider side effects,
+        # no RunStart, nothing committed to branch.messages, nothing
+        # yielded to a consumer. The rejection is still recorded as this
+        # run's failure (not silently dropped) so the terminal signal below
+        # reports it correctly.
+        _turn_origin_token = consume_turn_origin(param.turn_origin)
+        if _turn_origin_token is not None and branch._hooks is not None:
+            from lionagi.hooks.bus import HookPoint
+
+            _prompt = ins.rendered
+            if not isinstance(_prompt, str):
+                _prompt = str(_prompt)
+            try:
+                await branch._hooks.emit(
+                    HookPoint.USER_PROMPT_SUBMIT,
+                    session_id=str(branch._owning_session_id or branch.id),
+                    branch_id=str(branch.id),
+                    prompt=_prompt,
+                )
+            except GeneratorExit:
+                raise
+            except BaseException as _exc:
+                _run_exc = _exc
+                raise
+
+        if has_observer:
+            from lionagi.session.signal import RunStart
+
+            try:
+                await branch.emit(RunStart())
+            except Exception:
+                logger.exception(
+                    "run: observer raised during RunStart emission; run proceeds normally"
+                )
+
+        await _apply_context_providers(branch, instruction, param, ins=ins)
+        try:
+            ins, kw = _prepare_run_kwargs(branch, instruction, param, ins=ins)
+        finally:
+            branch._context_injection_slot = None
+
+        # Committed before the yield below: any consumer that receives this
+        # Instruction from the generator must find it already present in
+        # branch.messages, not merely in flight.
+        await branch.msgs.a_add_message(instruction=ins)
+
         yield ins
 
         if branch.chat_model.provider_session_id is not None:
@@ -371,6 +418,13 @@ async def run(
                 metadata["thinking"] = "\n".join(thinking_parts)
             if result_meta:
                 metadata["model_response"] = dict(result_meta)
+                # Clear after stamping so a later flush within the same run()
+                # call (e.g. a provider that reports usage per internal turn,
+                # with tool calls in between) doesn't restamp already-recorded
+                # usage onto a second AssistantResponse -- _collect_branch_usage
+                # sums across every message on the branch, so a stale/repeated
+                # result_meta here would double-count tokens/cost.
+                result_meta.clear()
             res = AssistantResponse(
                 content=AssistantResponseContent(assistant_response=text),
                 sender=branch.id,
@@ -406,23 +460,6 @@ async def run(
                 _liveness_timeout = _app_settings.LIONAGI_WORKER_LIVENESS_TIMEOUT
         if not isinstance(_liveness_timeout, int | float) or _liveness_timeout <= 0:
             _liveness_timeout = None
-
-        # Consumed exactly once, immediately before streaming begins: fires
-        # USER_PROMPT_SUBMIT iff the operation context carries a turn-origin
-        # token (see operations/_turn_origin.py).
-        _turn_origin_token = consume_turn_origin(param.turn_origin)
-        if _turn_origin_token is not None and branch._hooks is not None:
-            from lionagi.hooks.bus import HookPoint
-
-            _prompt = ins.rendered
-            if not isinstance(_prompt, str):
-                _prompt = str(_prompt)
-            await branch._hooks.emit(
-                HookPoint.USER_PROMPT_SUBMIT,
-                session_id=str(branch._owning_session_id or branch.id),
-                branch_id=str(branch.id),
-                prompt=_prompt,
-            )
 
         kw["stream"] = True
         _api_call_holder: list = []
@@ -594,6 +631,16 @@ async def run(
                 await branch.emit(build_run_end(branch, duration_ms=duration_ms))
             except Exception:
                 logger.exception("run: observer raised during RunEnd emission on GeneratorExit")
+        raise
+    except BaseException as _exc:
+        # Catches anything raised in this turn's setup/commit/yield/stream
+        # path that the more specific handlers above didn't already
+        # classify (context providers, kw preparation, message persistence,
+        # pre-stream snapshot/liveness setup) — without this, the finally
+        # below would see _run_exc still None for those failures and emit a
+        # false RunEnd instead of RunFailed.
+        if _run_exc is None:
+            _run_exc = _exc
         raise
     finally:
         # _terminal_emitted guards against double emission on Python <3.11 where finally also runs after GeneratorExit.

@@ -183,6 +183,7 @@ def test_hook_point_vocabulary():
         "session.start",
         "session.end",
         "branch.create",
+        "branch.end",
         "api.pre_call",
         "api.post_call",
         "api.stream_chunk",

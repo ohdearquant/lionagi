@@ -29,6 +29,7 @@ from lionagi.hooks.bus import HookBus, HookPoint
 from lionagi.operations._turn_origin import TurnOrigin, consume_turn_origin, resolve_turn_origin
 from lionagi.operations.run.run import run
 from lionagi.operations.types import RunParam
+from lionagi.protocols.messages import Instruction
 from lionagi.service.imodel import iModel
 from lionagi.service.types.stream_chunk import StreamChunk
 from lionagi.session.branch import Branch
@@ -172,6 +173,141 @@ async def test_direct_run_fires_once():
 
     assert len(calls) == 1
     assert calls[0]["branch_id"] == str(branch.id)
+
+
+# ---------------------------------------------------------------------------
+# CLI guard-rejection failure semantics: a USER_PROMPT_SUBMIT handler that
+# rejects a run() prompt must leave no trace of it in the transcript, and
+# the rejection must surface as this run's failure, not a silent success.
+# ---------------------------------------------------------------------------
+
+
+async def test_run_guard_rejection_leaves_no_instruction_persisted():
+    """A denied prompt must never enter branch.messages, and must never
+    dispatch MESSAGE_ADD persistence for it — construct-then-guard-then-commit,
+    not guard-after-persist."""
+    branch = Branch()
+    branch.chat_model = _make_fake_cli_model([StreamChunk(type="text", content="ok")])
+
+    bus = HookBus()
+    message_add_calls: list[dict] = []
+
+    async def reject_submit(**kw):
+        raise PermissionError("blocked")
+
+    async def on_message_add(**kw):
+        message_add_calls.append(kw)
+
+    bus.on(HookPoint.USER_PROMPT_SUBMIT, reject_submit)
+    bus.on(HookPoint.MESSAGE_ADD, on_message_add)
+    branch._hooks = bus
+    branch.on_message_added.append(branch._persist_via_bus)
+
+    with pytest.raises(PermissionError):
+        async for _ in run(branch, "SECRET=top-secret", RunParam()):
+            pass
+
+    assert len(branch.messages) == 0
+    assert message_add_calls == []
+
+
+async def test_run_guard_rejection_reports_run_failed_not_run_end():
+    """A USER_PROMPT_SUBMIT rejection must route through the same failure
+    bookkeeping as a mid-stream provider error, so an observer sees RunFailed
+    (with the exception attached), not a silently-successful RunEnd."""
+    from lionagi.session.session import Session
+    from lionagi.session.signal import RunEnd, RunFailed
+
+    s = Session()
+    s.default_branch.chat_model = _make_fake_cli_model([StreamChunk(type="text", content="ok")])
+
+    bus = HookBus()
+
+    async def reject_submit(**kw):
+        raise PermissionError("blocked")
+
+    bus.on(HookPoint.USER_PROMPT_SUBMIT, reject_submit)
+    s.default_branch._hooks = bus
+
+    failures, ends = [], []
+    s.observe(RunFailed, lambda sig, _: failures.append(sig.data))
+    s.observe(RunEnd, lambda sig, _: ends.append(sig))
+
+    with pytest.raises(PermissionError):
+        async for _ in run(s.default_branch, "SECRET=top-secret", RunParam()):
+            pass
+
+    assert len(failures) == 1, f"expected 1 RunFailed, got {len(failures)}"
+    assert isinstance(failures[0], PermissionError)
+    assert len(ends) == 0, "RunEnd must NOT fire when the guard rejects the prompt"
+
+
+class _SpyContextProvider:
+    """Records every instruction it is asked to render context for."""
+
+    def __init__(self):
+        self.calls: list = []
+
+    async def provide(self, branch, instruction):
+        self.calls.append(instruction)
+        return "spy context"
+
+
+async def test_run_guard_rejection_no_pre_guard_side_effects():
+    """A rejected prompt must leave no lifecycle trace beyond the rejection
+    itself: no RunStart is emitted (it does not persist), and no context
+    provider ever runs (no I/O side effects) — the guard is the first
+    awaited operation for this turn, strictly before both."""
+    from lionagi.session.session import Session
+    from lionagi.session.signal import RunEnd, RunFailed, RunStart
+
+    s = Session()
+    branch = s.new_branch(system="be helpful", as_default_branch=True)
+    branch.chat_model = _make_fake_cli_model([StreamChunk(type="text", content="ok")])
+
+    spy = _SpyContextProvider()
+    branch.providers.register(spy, name="spy")
+
+    bus = HookBus()
+
+    async def reject_submit(**kw):
+        raise PermissionError("blocked")
+
+    bus.on(HookPoint.USER_PROMPT_SUBMIT, reject_submit)
+    branch._hooks = bus
+
+    starts, failures, ends = [], [], []
+    s.observe(RunStart, lambda sig, _: starts.append(sig))
+    s.observe(RunFailed, lambda sig, _: failures.append(sig.data))
+    s.observe(RunEnd, lambda sig, _: ends.append(sig))
+
+    with pytest.raises(PermissionError):
+        async for _ in run(branch, "SECRET=top-secret", RunParam()):
+            pass
+
+    assert starts == [], "RunStart must NOT fire before the guard resolves"
+    assert spy.calls == [], "context providers must never run on a rejected prompt"
+    assert len(failures) == 1, f"expected 1 RunFailed, got {len(failures)}"
+    assert isinstance(failures[0], PermissionError)
+    assert ends == [], "RunEnd must NOT fire when the guard rejects the prompt"
+    assert not any(isinstance(m, Instruction) for m in branch.messages)
+
+
+async def test_run_yielded_instruction_already_in_branch_messages():
+    """A consumer that receives the first yielded Instruction must find it
+    already committed to branch.messages at that moment — the guard runs
+    (and, if it passes, commits) strictly before the first yield, not after."""
+    branch = Branch()
+    branch.chat_model = _make_fake_cli_model([StreamChunk(type="text", content="ok")])
+    _wire_prompt_submit_counter(branch)
+
+    gen = run(branch, "hi there", RunParam())
+    first = await gen.__anext__()
+
+    assert first in branch.messages
+    assert len(branch.messages) == 1
+
+    await gen.aclose()
 
 
 # ---------------------------------------------------------------------------

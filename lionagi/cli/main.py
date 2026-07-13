@@ -55,6 +55,10 @@ def _load_orchestrate() -> ModuleType:
     return import_module(".orchestrate", __package__)
 
 
+def _load_plugin() -> ModuleType:
+    return import_module(".plugin", __package__)
+
+
 def _load_state() -> ModuleType:
     return import_module(".state", __package__)
 
@@ -189,6 +193,13 @@ _COMMAND_REGISTRY = (
         "add_stats_subparser",
         "run_stats",
     ),
+    _CommandSpec(
+        "plugin",
+        "Inspect, trust, and enable/disable LionAGI plugin bundles.",
+        _load_plugin,
+        "add_plugin_subparser",
+        "run_plugin",
+    ),
 )
 _COMMAND_BY_NAME = {
     command_name: spec for spec in _COMMAND_REGISTRY for command_name in (spec.name, *spec.aliases)
@@ -259,6 +270,10 @@ def run_monitor(args: argparse.Namespace) -> int:
 
 def run_orchestrate(args: argparse.Namespace) -> int:
     return _load_orchestrate().run_orchestrate(args)
+
+
+def run_plugin(args: argparse.Namespace) -> int:
+    return _load_plugin().run_plugin(args)
 
 
 def run_schedule(args: argparse.Namespace) -> int:
