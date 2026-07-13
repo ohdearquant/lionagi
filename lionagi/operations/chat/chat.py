@@ -11,7 +11,7 @@ from lionagi.protocols.messages import AssistantResponse, Instruction
 
 from .._turn_origin import consume_turn_origin
 from ..types import ChatParam
-from ._prepare import _apply_context_providers, _prepare_run_kwargs
+from ._prepare import _apply_context_providers, _build_instruction, _prepare_run_kwargs
 
 if TYPE_CHECKING:
     from lionagi.session.branch import Branch
@@ -43,13 +43,21 @@ async def chat(
     chat_param: ChatParam,
     return_ins_res_message: bool = False,
 ) -> tuple[Instruction, AssistantResponse] | str:
-    pre_ins = await _apply_context_providers(branch, instruction, chat_param)
-    try:
-        ins, kw = _prepare_run_kwargs(branch, instruction, chat_param, ins=pre_ins)
-    finally:
-        branch._context_injection_slot = None
+    # Built synchronously and purely from (instruction, chat_param) — no
+    # context-provider I/O. This is the only thing the guard below needs,
+    # so it happens before any other awaited operation for this turn,
+    # mirroring run()'s ordering (operations/run/run.py): the guard is
+    # evaluated before context providers get a chance to run their
+    # (potentially side-effecting) gather.
+    ins = _build_instruction(branch, instruction, chat_param)
 
     await _emit_user_prompt_submit(branch, chat_param, ins)
+
+    await _apply_context_providers(branch, instruction, chat_param, ins=ins)
+    try:
+        ins, kw = _prepare_run_kwargs(branch, instruction, chat_param, ins=ins)
+    finally:
+        branch._context_injection_slot = None
 
     imodel = chat_param.imodel or branch.chat_model
     if not chat_param._is_sentinel(chat_param.include_token_usage_to_model):
