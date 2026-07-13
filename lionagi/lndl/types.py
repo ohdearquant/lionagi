@@ -146,19 +146,15 @@ def _coerce_result(result: Any, target_type: Any) -> Any:
     scalar = _unwrap_scalar(target_type)
     if scalar is None:
         return result
-    # A legitimately-None result for an Optional scalar (str | None, int | None)
-    # must pass through untouched. Coercing would corrupt it: scalar(None) yields
-    # the literal "None" for str and raises for int/float. Leaving it None lets
-    # model_validate accept it for Optional fields and raise a clear error for
-    # required ones — never silently fabricate a value.
+    # None must pass through untouched: scalar(None) yields "None" for str
+    # and raises for int/float — never silently fabricate a value.
     if result is None:
         return None
     if isinstance(result, dict):
         return json_dumps(result)
     if not isinstance(result, scalar):
-        # bool(str) uses Python truthiness: bool('false') == True.
-        # Use validate_boolean so that 'false'/'0'/'no' → False and
-        # 'true'/'1'/'yes' → True, matching common tool return conventions.
+        # bool(str) uses Python truthiness (bool('false') == True); use
+        # validate_boolean for 'false'/'0'/'no' → False semantics instead.
         if scalar is bool:
             return validate_boolean(result)
         return scalar(result)

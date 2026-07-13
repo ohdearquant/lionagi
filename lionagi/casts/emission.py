@@ -399,16 +399,7 @@ class Postmortem(_EmissionModel):
 
 class EscalationRequest(_EmissionModel):
     """Hand off to a human or higher authority, or ask for help while continuing.
-
-    ``urgency`` is the single authoritative field for how hard the ask is:
-    ``"fyi"`` is soft (work continues, this is informational — a help
-    signal), ``"blocked"`` is hard (work cannot continue without a resolution
-    — the original escalation semantics). ``blocking`` is a read-only,
-    back-compat alias for ``urgency == "blocked"``; it can no longer be set
-    directly (a legacy ``blocking=`` constructor kwarg is still accepted and
-    mapped onto ``urgency`` for one release of grace) and will be removed in
-    a future release — set ``urgency`` instead.
-    """
+    ``urgency`` is authoritative; ``blocking`` is a deprecated read-only alias for ``urgency == "blocked"``."""
 
     reason: str = Field(
         description="Why escalation is needed — the blocker, uncertainty, or decision beyond your authority."
@@ -476,10 +467,8 @@ _CAMEL_RE = re.compile(r"(?<=[a-z0-9])(?=[A-Z])|(?<=[A-Z])(?=[A-Z][a-z])")
 
 
 def field_name_for(model: type[BaseModel]) -> str:
-    """Convert a PascalCase model name to a snake_case field key.
-
-    Handles acronym runs: ``CIResult`` → ``ci_result``.
-    """
+    """Convert a PascalCase model name to a snake_case field key
+    (handles acronym runs: ``CIResult`` → ``ci_result``)."""
     return _CAMEL_RE.sub("_", model.__name__).lower()
 
 

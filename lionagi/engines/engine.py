@@ -373,12 +373,8 @@ class EngineRun:
             task.add_done_callback(self._active.discard)
 
     async def cancel_active(self) -> None:
-        """Cancel and await all in-flight spawned tasks.
-
-        Waits up to ``engine.cancel_timeout_s``; tasks that don't settle in
-        that window (e.g. catch CancelledError and loop) are abandoned with a
-        logged warning so the caller's lifetime guarantee is preserved.
-        """
+        """Cancel and await all in-flight spawned tasks; tasks that don't settle
+        within ``engine.cancel_timeout_s`` are abandoned with a logged warning."""
         if not self._active:
             return
         tasks = list(self._active)
@@ -415,11 +411,8 @@ class EngineRun:
             self._run_task.cancel()
 
     async def wait_quiescence(self) -> None:
-        """Block until all spawned tasks settle; re-raise non-cancellation, non-budget failures.
-
-        EngineBudgetError is a benign "expansion stopped" signal (discretionary
-        work declined, not a crash) and is swallowed like CancelledError.
-        """
+        """Block until all spawned tasks settle; re-raise non-cancellation, non-budget
+        failures. EngineBudgetError is benign (discretionary work declined) and swallowed."""
         task_errors: list[BaseException] = []
         while self._active:
             results = await gather(*list(self._active), return_exceptions=True)
@@ -542,12 +535,8 @@ class ChainRun(EngineRun):
 
 
 class EngineResult(str):
-    """Return type of Engine.run(): a str (back-compat) carrying the run's structured outcome.
-
-    ``str(result)`` and ``result.text`` are the same synthesized text. ``.run``
-    is a live EngineRun handle — do not retain it past reading the result, it
-    keeps the whole Session (and its branches) alive.
-    """
+    """Return type of Engine.run(): a str (back-compat) carrying the run's structured
+    outcome. ``.run`` is a live handle — don't retain it, it keeps the Session alive."""
 
     text: str
     skipped: list[str]
@@ -651,12 +640,8 @@ class Engine:
         )
 
     async def _degrade_export(self, run: EngineRun, args: tuple, kwargs: dict) -> Any:
-        """Cancel in-flight spawned tasks, then run _partial_export shielded + timeout-bounded.
-
-        Shared by the deadline and root-budget degrade paths in run(). Returns
-        _UNSET if the export failed or timed out (logged, not raised); an
-        external cancel during the shielded phase still propagates.
-        """
+        """Cancel in-flight spawned tasks, then run _partial_export shielded + timeout-
+        bounded. Returns _UNSET on failure/timeout; an external cancel still propagates."""
         # Cancel background tasks so synthesis sees a stable snapshot and no
         # work burns tokens past budget exhaustion (no-op if _active is empty).
         if run._active:
@@ -671,9 +656,8 @@ class Engine:
                 timeout=_PARTIAL_EXPORT_TIMEOUT_S,
             )
         except asyncio.CancelledError:
-            # wait_for converts its own timeout into TimeoutError, so a
-            # CancelledError here is always an external cancel of run() itself
-            # — clean up partial_task and re-raise to honour it.
+            # wait_for turns its own timeout into TimeoutError, so CancelledError
+            # here is always an external cancel — clean up and re-raise.
             if not partial_task.done():
                 partial_task.cancel()
                 with contextlib.suppress(asyncio.CancelledError, Exception):
@@ -726,20 +710,13 @@ class Engine:
         degrade_reason: str = ""
         try:
             result = await run_task
-            # A run that reached the success path may still have silently dropped
-            # a discretionary budget-capped subtree (wait_quiescence filters
-            # EngineBudgetError out of task_errors) — flag it so a clean-looking
-            # result doesn't hide the truncation.
+            # A "successful" run may still have silently dropped a discretionary
+            # budget-capped subtree — flag it so a clean-looking result doesn't hide it.
             if run._budget_notified:
                 degrade_reason = "budget"
         except asyncio.CancelledError:
-            # Distinguish internal cancellation (the watchdog, which sets
-            # _budget_notified before cancelling run_task) from external
-            # cancellation (the caller cancelled run()). task.cancelling() > 0
-            # (Python >=3.11 only) additionally detects a simultaneous external
-            # cancel; on 3.10 we fall back to _budget_notified alone, so a
-            # caller cancel landing at the exact instant the budget is hit
-            # runs partial export instead of raising — an acceptable edge case.
+            # Distinguish internal (watchdog) vs external (caller) cancellation via
+            # task.cancelling() (3.11+; 3.10 falls back to _budget_notified alone).
             current = asyncio.current_task()
             caller_cancelled = (
                 current is not None and hasattr(current, "cancelling") and current.cancelling() > 0
@@ -753,20 +730,15 @@ class Engine:
                 # External cancellation — surface it after cleanup (below).
                 raise
         except (EngineBudgetError, ExceptionGroup) as exc:
-            # A root-level (non-spawned) make_agent() call hit the budget and
-            # raised straight out of _run() — route to partial-export instead of
-            # crashing the run. Masking guard: a non-budget leaf anywhere in the
-            # group (including nested groups) must not be laundered into a
-            # partial — re-raise so the real error surfaces.
+            # A root-level make_agent() budget hit routes to partial-export; a
+            # non-budget leaf anywhere in the group must not be laundered into one.
             if not _is_all_budget_error(exc):
                 raise
             degrade_reason = "budget"
             partial_result = await self._degrade_export(run, args, kwargs)
         finally:
-            # Copy per-run diagnostics back onto the engine instance (fresh list,
-            # no shared-reference aliasing) so the CLI read site
-            # (getattr(engine, "_emission_failures", [])) sees them regardless of
-            # which return/exception path was taken.
+            # Copy diagnostics onto the engine instance (fresh list) so the CLI's
+            # getattr(engine, "_emission_failures", []) sees them on every exit path.
             self._emission_failures = list(run._emission_failures)
             # Flag total failure only when every agent made for this run
             # terminally errored, so partial/soft-empty runs aren't over-flagged.
@@ -778,11 +750,8 @@ class Engine:
                 watchdog.cancel()
                 with contextlib.suppress(asyncio.CancelledError):
                     await watchdog
-            # Drain any tasks still in _active so nothing leaks past run(),
-            # regardless of whether _run() succeeded, failed, or was cancelled.
-            # Shielded so it completes even if the caller cancels run()
-            # mid-cleanup — but that external CancelledError is still re-raised;
-            # swallowing it would hand the caller a stale result.
+            # Drain tasks still in _active regardless of how run() exited; shielded so
+            # cleanup finishes even under a caller cancel (which still re-raises below).
             if run._active:
                 drain = asyncio.ensure_future(run.cancel_active())
                 try:
@@ -790,9 +759,8 @@ class Engine:
                 except asyncio.CancelledError:
                     if drain.cancelled():
                         raise
-                    # External cancel of run() itself: wait the shielded drain
-                    # out (absorbing repeated cancellations) so no run-owned
-                    # task outlives run(), then surface the cancellation.
+                    # External cancel: keep waiting the shielded drain (absorbing
+                    # repeat cancels) so no run-owned task outlives run().
                     while not drain.done():
                         try:
                             await asyncio.shield(drain)

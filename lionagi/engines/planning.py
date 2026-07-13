@@ -24,9 +24,8 @@ class PlanError(RuntimeError):
     """Raised when the orchestrator produces an empty TaskAssignment list, so a planning run never silently no-ops."""
 
 
-# A small default roster the orchestrator may assign to. Callers pass their own
-# via ``roles=`` when they want a different set (the CLI uses the full casts ∪
-# user-profile roster).
+# A small default roster the orchestrator may assign to; callers pass their own
+# via ``roles=`` for a different set (the CLI uses the full casts ∪ user-profile roster).
 _DEFAULT_ROLES: tuple[str, ...] = ("researcher", "analyst", "critic", "architect", "synthesizer")
 
 

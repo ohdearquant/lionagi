@@ -58,9 +58,7 @@ class JsonStructure(Structure):
             fuzzy_match_params or _DEFAULT_FUZZY,
         )
 
-    # ------------------------------------------------------------------
     # Canonical rendering — copied from InstructionContent
-    # ------------------------------------------------------------------
 
     @staticmethod
     def _format_response_format(

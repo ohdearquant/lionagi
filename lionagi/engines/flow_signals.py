@@ -1,12 +1,7 @@
 # Copyright (c) 2023-2026, HaiyangLi <quantocean.li at gmail dot com>
 # SPDX-License-Identifier: Apache-2.0
-"""Turn ``DependencyAwareExecutor`` node transitions and ``NodeSpawned`` bus
-events into ``NodeQueued``/``NodeStarted``/``NodeCompleted``/``NodeFailed``
-session-bus signals, so a ``Session.flow`` run's DAG can be rendered live.
-
-Shared by the engine's own DAG run and Studio's ``workflow_run`` — both drive
-``session.flow`` directly and need the same node-progress signals.
-"""
+"""Turn executor node transitions into NodeQueued/Started/Completed/Failed
+session-bus signals for a live-rendered Session.flow DAG run (shared by the engine and Studio)."""
 
 from __future__ import annotations
 
@@ -28,12 +23,8 @@ __all__ = ("flow_progress_signals",)
 
 
 def _build_node_edge_meta(graph: Any) -> dict[str, dict]:
-    """Map each Operation node id to {parent_id, depends_on, name} from the graph.
-
-    ``name`` is the authored id (``metadata['reference_id']``, e.g. Studio's
-    ``chat1``) when set, preferred over the executor's callback name (which
-    the executor renames after the branch for started/completed/failed).
-    """
+    """Map each Operation node id to {parent_id, depends_on, name}; name prefers the
+    authored reference_id over the executor's callback name (renamed post-hoc)."""
     from lionagi.operations.node import Operation
 
     meta: dict[str, dict] = {}
@@ -53,15 +44,8 @@ def _build_node_edge_meta(graph: Any) -> dict[str, dict]:
 async def flow_progress_signals(
     session: Any, graph: Any
 ) -> AsyncIterator[Callable[[str, str, str, float], None]]:
-    """Yield an ``on_progress`` callback that persists node-lifecycle signals.
-
-    Usage: ``async with flow_progress_signals(session, graph) as on_progress:
-    await session.flow(graph, on_progress=on_progress, ...)``.
-
-    Tracks reactive ``NodeSpawned`` events so late-added nodes carry their
-    parent/depends_on edges, and awaits every emitted signal on exit so
-    observers finish persisting before the caller reads what they wrote.
-    """
+    """Yield an ``on_progress`` callback that persists node-lifecycle signals; awaits
+    every emitted signal on exit so observers finish before the caller reads what they wrote."""
     emits: list[asyncio.Future] = []
     node_edge_meta = _build_node_edge_meta(graph)
 
@@ -98,9 +82,8 @@ async def flow_progress_signals(
             )
         else:
             return
-        # on_progress is sync (called from inside the executor); fan the signal onto
-        # the async bus, collected so the caller can await observers before reading
-        # what they wrote. suppress guards the no-running-loop case.
+        # on_progress is sync; fan the signal onto the async bus, collected so the
+        # caller can await observers before reading what they wrote.
         with contextlib.suppress(RuntimeError):
             emits.append(asyncio.ensure_future(session.emit(sig)))
 

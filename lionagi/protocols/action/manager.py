@@ -96,11 +96,8 @@ class ActionManager(Manager):
                 input_schema = function.get("parameters")
                 description = function.get("description")
 
-        # A schema/description that is just the auto-generated `**kwargs`
-        # wrapper carries no remote-server information; treat it as absent
-        # metadata so strong identities fail closed instead of being
-        # laundered through their own synthetic schema, and so ordinary
-        # names are not falsely denied by the wrapper's generic docstring.
+        # A generic `**kwargs` wrapper schema carries no remote-server info;
+        # treat it as absent so identities fail closed, not laundered through it.
         if is_synthetic_mcp_wrapper_schema(
             mcp_tool_name, advertised_name, input_schema, description
         ):
@@ -217,10 +214,8 @@ class ActionManager(Manager):
                 validate_mcp_tool_admission,
             )
 
-            # Validate the complete tool_names list before creating or
-            # registering any tool: a denial anywhere in the list must leave
-            # the registry exactly as it was, not partially populated with
-            # the names that happened to be validated first.
+            # Validate the whole list before registering any tool: a denial
+            # anywhere must leave the registry unchanged, not partially populated.
             for tool_name in tool_names:
                 validate_mcp_tool_admission(tool_name, None, None)
 
@@ -253,10 +248,8 @@ class ActionManager(Manager):
             client = await MCPConnectionPool.get_client(server_config, security=security)
             tools = await client.list_tools()
 
-            # Validate every discovered descriptor BEFORE mutating the
-            # registry: a denial anywhere in the list must leave the
-            # registry exactly as it was, not partially populated with the
-            # tools that happened to be validated first.
+            # Validate every descriptor before mutating the registry: a
+            # denial anywhere must leave the registry unchanged.
             for tool in tools:
                 validate_mcp_tool_admission(
                     tool.name,
@@ -327,10 +320,8 @@ class ActionManager(Manager):
         loaded_names = MCPConnectionPool.load_config(config_path)
 
         if server_names is None:
-            # Default to the servers declared in THIS config file. The pool
-            # accumulates configs process-globally across loads, so
-            # enumerating the pool here would silently re-register every
-            # server from previously loaded, unrelated configs.
+            # Default to servers in THIS config file — the pool accumulates
+            # configs globally, so enumerating it would re-register unrelated servers.
             server_names = loaded_names
         all_tools = {}
         for server_name in server_names:

@@ -16,14 +16,8 @@ _DENIED_NAMES_CASEFOLD: frozenset[str] = frozenset(name.casefold() for name in D
 
 
 def is_protected_name(name: str) -> bool:
-    """True if name matches a protected basename, case-insensitively.
-
-    Filesystems (notably default macOS/Windows volumes) are case-insensitive,
-    so a case-sensitive membership test against DENIED_NAMES can be bypassed
-    with a spelling like ".ENV" that still resolves to the same file as
-    ".env". This is the one primitive both resolve_workspace_path and the
-    deny-only hook floor use for the protected-basename check.
-    """
+    """True if name matches a protected basename, case-insensitively (case-insensitive
+    filesystems can bypass a case-sensitive check)."""
     return name.casefold() in _DENIED_NAMES_CASEFOLD
 
 
@@ -40,15 +34,8 @@ def has_traversal(p: Path) -> bool:
 
 
 def resolve_workspace_path(path: str | Path, workspace_root: Path) -> Path:
-    """Resolve a tool-supplied path against workspace root with full safety checks.
-
-    Checks: expanduser, symlink detection pre-resolve, containment, denied names.
-    Raises PermissionError on any violation. Validation happens at check time only:
-    a concurrent filesystem mutation between this check and a later I/O call on the
-    same path (e.g. swapping a regular file for a symlink) is out of scope — callers
-    that need a stronger guarantee against a racing filesystem must perform the
-    final I/O through a root-anchored, no-follow file descriptor instead.
-    """
+    """Resolve a tool-supplied path against workspace root with full safety checks
+    (symlink, containment, denied names). Raises PermissionError on any violation."""
     raw = Path(path).expanduser()
     candidate = raw if raw.is_absolute() else workspace_root / raw
     if candidate.is_symlink():
@@ -70,11 +57,8 @@ def check_path_safe(
     reject_absolute: bool = True,
     strip_at: bool = False,
 ) -> str:
-    """Validate a path string: reject traversal, NUL bytes, and optionally absolute paths.
-
-    Also rejects Windows-style drive-letter paths (e.g. C:foo) when reject_absolute is True.
-    Raises ValueError on any violation.
-    """
+    """Validate a path string: reject traversal, NUL bytes, and optionally absolute paths
+    (incl. Windows drive-letter paths). Raises ValueError on any violation."""
     entry = value.lstrip("@") if strip_at else value
     if "\x00" in entry:
         raise ValueError(f"{field_name} entry {value!r} contains NUL bytes")

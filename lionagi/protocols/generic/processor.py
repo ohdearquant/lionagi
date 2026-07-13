@@ -101,11 +101,8 @@ class Processor(Observer):
         return cls(**kwargs)
 
     async def process(self) -> None:
-        """Dequeue and process events up to available capacity.
-
-        Denied events are either terminal (SKIPPED) or deferred (re-enqueued).
-        Cycle stops when all queued events have been deferred to avoid busy-spin.
-        """
+        """Dequeue and process events up to available capacity; stops once all
+        queued events have been deferred, to avoid busy-spin."""
         events_processed = 0
         deferred = 0
 
