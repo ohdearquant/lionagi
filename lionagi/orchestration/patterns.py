@@ -49,6 +49,15 @@ __all__ = (
 # Named "assignments" so a parsed operate() result exposes ``res.assignments``.
 _ASSIGNMENTS_FIELD = FieldModel(list[TaskAssignment], name="assignments")
 
+# Appended to the planning guidance when a worker cap is in effect, so the
+# orchestrator packs coverage into the cap instead of a downstream truncation
+# silently dropping assignments it was never told to avoid.
+_MAX_TASKS_CONSTRAINT = (
+    "HARD CAP: emit AT MOST {max_tasks} assignments total. If the work is "
+    "wider than that, consolidate steps onto shared roles rather than "
+    "dropping coverage — every assignment must still be packed within the cap."
+)
+
 
 def grant_spawn(branch: Branch, *, prompt: bool = True) -> None:
     """Let an agent grow the live DAG by emitting a ``SpawnRequest``; grants the capability and, when *prompt*, injects the instruction block."""
@@ -143,12 +152,24 @@ async def plan(
     max_tasks: int = 0,
     context: dict | None = None,
 ) -> list[TaskAssignment]:
-    """Have orchestrator decompose prompt into TaskAssignments; unknown assignees are dropped."""
+    """Have orchestrator decompose prompt into TaskAssignments; unknown assignees are dropped.
+
+    When *max_tasks* is set, the cap is stated in the planning guidance so a
+    compliant plan never needs truncation. If the orchestrator still returns
+    more assignments than the cap after being told it, this raises
+    ``ValueError`` rather than silently dropping the overflow — a warning
+    alone reads as "covered everything" to a caller that isn't watching logs.
+    """
     instruction = DECOMPOSE_DAG_INSTRUCTION if dag else DECOMPOSE_INSTRUCTION
+    full_guidance = f"{guidance} {DECOMPOSE_DISCIPLINE}".strip()
+    if max_tasks:
+        full_guidance = (
+            f"{full_guidance} {_MAX_TASKS_CONSTRAINT.format(max_tasks=max_tasks)}".strip()
+        )
     res = await orchestrator.operate(
         instruction=instruction,
         context={"task": prompt, **(context or {})},
-        guidance=f"{guidance} {DECOMPOSE_DISCIPLINE}".strip(),
+        guidance=full_guidance,
         field_models=[_ASSIGNMENTS_FIELD],
         reason=True,
     )
@@ -161,8 +182,10 @@ async def plan(
             continue
         valid.append(ta)
     if max_tasks and len(valid) > max_tasks:
-        logger.warning("plan: truncating %d assignments to max_tasks=%d", len(valid), max_tasks)
-        valid = valid[:max_tasks]
+        raise ValueError(
+            f"plan: orchestrator returned {len(valid)} assignments, exceeding "
+            f"max_tasks={max_tasks} even after the cap was stated in its guidance"
+        )
     return valid
 
 

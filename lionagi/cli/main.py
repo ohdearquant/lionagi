@@ -145,7 +145,7 @@ _COMMAND_REGISTRY = (
     ),
     _CommandSpec(
         "invoke",
-        "Track a skill-level orchestration (ADR-0020).",
+        "Track a skill-level orchestration.",
         _load_invoke,
         "add_invoke_subparser",
         "run_invoke",
