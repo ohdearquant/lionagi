@@ -43,9 +43,9 @@ externally-driven sessions mirrored into the DB). Decision order matters:
 
 ### `state/transitions.py`
 
-Guarded compare-and-swap state transitions (ADR-0059 slice 1) — a minimal
-fallback for ADR-0058's proposed-but-unbuilt entity-agnostic `transition()` API. Carries the
-same request/result shape and reason-code discipline so ADR-0058 can absorb it later as a
+Guarded compare-and-swap state transitions (ADR-0059) — a minimal
+counterpart to the entity-agnostic `transition()` API proposed in ADR-0058. Carries the
+same request/result shape and reason-code discipline so ADR-0058 can absorb it as a
 refactor, not a migration. Scoped to `entity_type='dispatch'` (`dispatch_outbox`) and
 `entity_type='schedule_run'` (`schedule_runs`) only — not a general TransitionStore. The
 guarded read/CAS/vocabulary/write algorithm itself lives in `lionagi.state.lifecycle` (shared
@@ -126,8 +126,8 @@ studio-side change.
 
 Completion-trust gate: cheap, local, no-network evidence that a run produced something. A
 session can exit its loop cleanly with nothing to show for it — no commits, no artifacts, no
-diff — and historically that still got stamped `completed`, so operators stopped trusting the
-status and re-verified by hand. This module gives the teardown path a lightweight git-based
+diff — and stamping that `completed` makes the status meaningless as evidence of delivered
+work. This module gives the teardown path a lightweight git-based
 signal to fall back on when no artifact contract caught the emptiness: is HEAD ahead of the
 base ref, or does the working tree carry uncommitted changes? A probe that actually runs and
 fails (transient error, timeout, git hiccup) must never be read as "ran and found nothing" —
@@ -179,11 +179,11 @@ registry, regardless of transport settings.
 ### Keyword registry for the sufficiency proof
 
 Answers exactly one question: is this schema document provably closed against an undeclared
-value? An earlier iteration used a per-property "is this value a key channel" discriminator
-deciding which positions deserve scrutiny — the same defect class as enumerating "dangerous
-keywords," re-entered through the traversal axis: it omitted the conditional applicators
-(`if`/`then`/`else`/`not`) and array applicators (`items`/`prefixItems`), so a property
-carrying one was never visited, and the allowlist check that would have denied it never ran.
+value? A per-property "is this value a key channel" discriminator — deciding which positions
+deserve scrutiny — is the same defect class as enumerating "dangerous keywords," re-entered
+through the traversal axis: omit the conditional applicators (`if`/`then`/`else`/`not`) or
+array applicators (`items`/`prefixItems`) and a property carrying one is never visited, so
+the allowlist check that would have denied it never runs.
 The fix: classify EVERY Draft 2020-12 keyword into EXACTLY ONE of four classes (inert/
 bounding/modeled/denied), then walk the ENTIRE document — every property value, composition
 branch, `$ref` target, `$defs` entry — UNCONDITIONALLY, checking each node's own keywords
@@ -299,10 +299,10 @@ cannot carry a subschema.
 
 ### Walker (`_walk_schema`)
 
-The walker is a WHITELIST, not blacklist. Design history: earlier rounds each closed a
-specific evasion (nested properties, anyOf, `$ref`, additionalProperties, patternProperties;
-then if/then/else, not, items, prefixItems) only to have the next keyword reopen the same
-bypass class. Enumerating "keywords we deny" loses that arms race by construction. Instead the
+The walker is a WHITELIST, not blacklist. Closing specific evasions one at a time (nested
+properties, anyOf, `$ref`, additionalProperties, patternProperties; if/then/else, not, items,
+prefixItems) leaves every future keyword free to reopen the same bypass class — enumerating
+"keywords we deny" loses that arms race by construction. Instead the
 walker enumerates keywords it affirmatively understands; any other subschema-shaped key is
 unresolvable — future/unsupported keywords (unevaluatedProperties, dependentSchemas, contains,
 propertyNames) deny by default for executor-signaling tools instead of admitting by default.
@@ -543,10 +543,9 @@ shell), so shell metacharacters are inert.
 This is a plain library call, not a new schedule `action_kind`: wiring a first-class
 action_kind through the scheduler's fire/subprocess-spawn machinery would require rebuilding
 the `schedules.action_kind` CHECK constraint (the same SQLite rename-rebuild migration
-`_drop_legacy_action_kind_check` performs for the existing enum) — judged out of proportion
-for a slice-1 reference implementation. An operator wires this in today via any schedule
-action that can call a Python function; a first-class action_kind is a natural follow-up once
-a concrete caller needs it.
+`_drop_legacy_action_kind_check` performs for the existing enum) — heavier machinery than a
+library call needs. Any schedule action that can call a Python function can invoke it;
+nothing in the module assumes a dedicated action_kind.
 
 ### `hooks/builtins.py`
 
